@@ -10,9 +10,18 @@ use crate::core::assurance::{Profile, ResolvedControl, findings, resolve_catalog
 use crate::core::error::{Error, Result};
 
 /// Parse a `--profile` filter value to a [`Profile`] (case-insensitive), or an
-/// actionable error naming the valid values.
-fn parse_profile(s: &str) -> Result<Profile> {
+/// actionable error naming the valid values. Shared with the `hse bsi` family
+/// (see [`super::bsi`]) so profile parsing has one home.
+///
+/// `railway` is accepted as an alias for [`Profile::Cloud`]: a Railway (or any
+/// container) deployment is exactly the cloud-hosted profile under which C5
+/// becomes applicable, and the directive names `hse bsi profile railway`
+/// explicitly.
+pub(super) fn parse_profile(s: &str) -> Result<Profile> {
     let want = s.trim().to_ascii_lowercase();
+    if want == "railway" {
+        return Ok(Profile::Cloud);
+    }
     Profile::all()
         .iter()
         .copied()

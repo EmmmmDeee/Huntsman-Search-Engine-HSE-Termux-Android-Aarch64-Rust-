@@ -404,3 +404,128 @@ fn findings_are_ordered_most_severe_first_and_exclude_met_and_na() {
     assert!(resolved[0].severity.is_some());
     assert!(resolved[1].severity.is_none());
 }
+
+// ── Verification gate (evidence-derived PASS/FAIL policy) ─────────────────────
+
+/// A synthetic control with the given applicability, criticality, protection
+/// need and evidence — the string metadata is filler; only the fields the
+/// verdict reasons about vary.
+fn syn(
+    id: &str,
+    applicability: Applicability,
+    criticality: Criticality,
+    need: ProtectionNeed,
+    evidence: Vec<Evidence>,
+) -> GermanControl {
+    GermanControl {
+        id: id.to_string(),
+        framework: "IT-Grundschutz".to_string(),
+        framework_version: "test".to_string(),
+        module: "TST.0".to_string(),
+        requirement: "synthetic".to_string(),
+        profile: Profile::Core,
+        applicability,
+        applicability_reason: "synthetic".to_string(),
+        protection_need: need,
+        criticality,
+        evidence,
+    }
+}
+
+#[test]
+fn verify_passes_on_the_honest_catalogue() {
+    // The seeded catalogue records only verifiable static facts, so every
+    // in-scope control holds at least its defined rung: the gate is green with
+    // nothing blocking and nothing regressed.
+    let v = verify(&resolve_catalog());
+    assert!(v.ok, "honest catalogue must verify");
+    assert!(v.regressions.is_empty());
+    assert!(v.blocking.is_empty());
+}
+
+#[test]
+fn a_regression_fails_verification_whatever_its_severity() {
+    // Routine + Normal + REGRESSED: severity is only Medium, BELOW the High
+    // blocking band — yet a regression must fail the gate regardless. This is
+    // the case that separates "regression fails" from "severity >= High fails".
+    let c = syn(
+        "TST-REG",
+        Applicability::Applicable,
+        Criticality::Routine,
+        ProtectionNeed::default(),
+        vec![], // no current evidence → level Unknown
+    );
+    // Prior Defined sits above the current (Unknown) rung → Regressed.
+    let resolved = vec![c.resolve(Some(ControlState::Defined))];
+    assert_eq!(resolved[0].state, ControlState::Regressed);
+    assert!(
+        resolved[0].severity.unwrap() < GapSeverity::High,
+        "this regression is deliberately sub-High to prove severity is not why it fails"
+    );
+    let v = verify(&resolved);
+    assert!(!v.ok, "any regression fails the gate");
+    assert_eq!(v.regressions.len(), 1);
+    assert!(v.blocking.is_empty(), "it is not High/Critical");
+    assert!(
+        v.warnings.is_empty(),
+        "a regression is never demoted to an advisory warning"
+    );
+}
+
+#[test]
+fn a_high_or_critical_gap_fails_verification() {
+    // Critical + Very-High + unassessed (Unknown) → High severity → blocks.
+    let c = syn(
+        "TST-CRIT",
+        Applicability::Applicable,
+        Criticality::Critical,
+        need_at(ProtectionLevel::VeryHigh),
+        vec![],
+    );
+    let resolved = vec![c.resolve(None)];
+    assert_eq!(resolved[0].state, ControlState::Unknown);
+    assert!(resolved[0].severity.unwrap() >= GapSeverity::High);
+    let v = verify(&resolved);
+    assert!(!v.ok, "a High/Critical gap fails the gate");
+    assert_eq!(v.blocking.len(), 1);
+    assert!(
+        v.regressions.is_empty(),
+        "it is a first gap, not a regression"
+    );
+}
+
+#[test]
+fn a_low_or_medium_non_regressed_gap_is_a_warning_not_a_failure() {
+    // Routine + Normal + unassessed → Low severity: reported, but the gate holds.
+    let c = syn(
+        "TST-LOW",
+        Applicability::Applicable,
+        Criticality::Routine,
+        ProtectionNeed::default(),
+        vec![],
+    );
+    let resolved = vec![c.resolve(None)];
+    assert_eq!(resolved[0].severity.unwrap(), GapSeverity::Low);
+    let v = verify(&resolved);
+    assert!(v.ok, "a Low/Medium first gap must not fail the gate");
+    assert_eq!(v.warnings.len(), 1, "but it is still surfaced, not hidden");
+    assert!(v.blocking.is_empty() && v.regressions.is_empty());
+}
+
+#[test]
+fn not_applicable_controls_never_affect_the_verdict() {
+    // Even a Critical, Very-High control that is correctly scoped out produces
+    // NO finding and cannot fail the gate — NOT APPLICABLE ≠ FAILED.
+    let c = syn(
+        "TST-NA",
+        Applicability::NotApplicable,
+        Criticality::Critical,
+        need_at(ProtectionLevel::VeryHigh),
+        vec![],
+    );
+    let resolved = vec![c.resolve(None)];
+    assert_eq!(resolved[0].state, ControlState::NotApplicable);
+    let v = verify(&resolved);
+    assert!(v.ok);
+    assert!(v.regressions.is_empty() && v.blocking.is_empty() && v.warnings.is_empty());
+}

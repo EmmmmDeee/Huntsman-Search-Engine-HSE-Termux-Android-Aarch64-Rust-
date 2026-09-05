@@ -10,6 +10,7 @@
 
 mod assurance;
 mod batch;
+mod bsi;
 pub(crate) mod config;
 mod diagnostics;
 mod dorkus;
@@ -151,6 +152,7 @@ async fn run_command(command: Command) -> Result<()> {
         }
         Command::Modules { category, json } => modules::cmd_modules(category, json),
         Command::Assurance { profile, json } => assurance::cmd_assurance(profile, json),
+        Command::Bsi { action } => bsi::cmd_bsi(action),
         Command::BuildSha { json } => cmd_build_sha(json),
         Command::Engines { json } => engines::cmd_engines(json).await,
         Command::Query {

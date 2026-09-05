@@ -7,6 +7,7 @@
 
 use clap::{Parser, Subcommand};
 
+use super::bsi::BsiAction;
 use super::keys_cmd::KeysAction;
 
 /// Parse a `--min-confidence` argument, rejecting anything that is not a usable
@@ -300,6 +301,17 @@ pub enum Command {
         /// Output as JSON (the resolved controls + raw summary counts).
         #[arg(long)]
         json: bool,
+    },
+    /// BSI / IT-Grundschutz assurance command family: focused drill-downs over
+    /// the same evidence-derived model as `hse assurance`. Sub-verbs: `status`,
+    /// `controls`, `scope`, `protection`, `gaps`, `regressions`,
+    /// `profile <name>`, and `verify` (a real gate that exits non-zero on a
+    /// regression or a High/Critical gap).
+    Bsi {
+        /// The assurance sub-command to run (`status`, `scope`, `protection`,
+        /// `gaps`, `regressions`, `controls`, `profile`, `verify`).
+        #[command(subcommand)]
+        action: BsiAction,
     },
     /// Print the git commit this binary was built from (40-char hex), for
     /// scripting. Exits non-zero when the build carries no verifiable revision —

@@ -236,3 +236,23 @@ use super::*;
             "nothing may have been persisted for the rejected key"
         );
     }
+
+    // ── bsi profile aliasing (shared with `hse assurance --profile`) ─────────
+
+    #[test]
+    fn bsi_profile_railway_aliases_cloud() {
+        use crate::core::assurance::Profile;
+        // The directive names `hse bsi profile railway`; a Railway/container
+        // deployment is exactly the cloud-hosted profile under which C5 applies.
+        assert_eq!(super::assurance::parse_profile("railway").unwrap(), Profile::Cloud);
+        assert_eq!(super::assurance::parse_profile("RAILWAY").unwrap(), Profile::Cloud);
+        // Canonical names still resolve; a bare word matches its profile.
+        assert_eq!(super::assurance::parse_profile("cloud").unwrap(), Profile::Cloud);
+        assert_eq!(super::assurance::parse_profile("android").unwrap(), Profile::Android);
+        assert_eq!(
+            super::assurance::parse_profile("hse-bsi-web").unwrap(),
+            Profile::Web
+        );
+        // An unknown profile is a clean error, never a silent default.
+        assert!(super::assurance::parse_profile("nope").is_err());
+    }

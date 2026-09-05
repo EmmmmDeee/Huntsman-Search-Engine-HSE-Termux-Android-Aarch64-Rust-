@@ -198,5 +198,70 @@ pub fn summarise(resolved: &[ResolvedControl]) -> AssuranceSummary {
     s
 }
 
+/// The outcome of an evidence-derived verification pass — the authoritative
+/// PASS/FAIL policy that `hse bsi verify` renders and maps to a process exit
+/// code. It is deliberately stricter than [`summarise`]'s raw counts: it encodes
+/// *which* deficiencies block, so that policy has one home instead of being
+/// re-decided at each call site.
+///
+/// The gate **fails** ([`ok`](Self::ok) `== false`) when either holds:
+/// - any in-scope control has [`Regressed`](ControlState::Regressed) — a
+///   previously-earned rung current evidence no longer supports (this fails
+///   regardless of the control's graded severity: going backwards is never
+///   acceptable), or
+/// - any OPEN deficiency is graded [`High`](GapSeverity::High) or
+///   [`Critical`](GapSeverity::Critical).
+///
+/// Lower (`Low`/`Medium`) non-regressed gaps are reported as advisory
+/// [`warnings`](Self::warnings) and do **not** fail the gate: an unassessed
+/// routine, normal-need control should not block a build, while a regression or
+/// a high-impact gap must. The verdict is a pure function of the resolved
+/// states, so a regression or a newly high-impact gap flips `ok` with no manual
+/// bookkeeping — the same evidence-derivation guarantee the rest of the layer
+/// rests on.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct VerifyVerdict {
+    /// Whether the gate passes: no regressions and no High/Critical open findings.
+    pub ok: bool,
+    /// Controls that have REGRESSED — the strongest fail signal. May overlap
+    /// [`blocking`](Self::blocking) when the regression is also High/Critical.
+    pub regressions: Vec<GapFinding>,
+    /// OPEN deficiencies graded High or Critical — the blocking gaps.
+    pub blocking: Vec<GapFinding>,
+    /// OPEN deficiencies that neither block nor regress (Low/Medium, not
+    /// regressed) — advisory only, surfaced so they are not invisible.
+    pub warnings: Vec<GapFinding>,
+    /// The raw summary counts alongside the verdict, for context.
+    pub summary: AssuranceSummary,
+}
+
+/// Verify resolved controls against the assurance gate policy — see
+/// [`VerifyVerdict`] for the exact PASS/FAIL rule. Pure and evidence-derived: it
+/// recomputes entirely from the resolved states via [`findings`], so it can
+/// never report a pass the evidence does not support.
+#[must_use]
+pub fn verify(resolved: &[ResolvedControl]) -> VerifyVerdict {
+    let mut v = VerifyVerdict {
+        summary: summarise(resolved),
+        ..VerifyVerdict::default()
+    };
+    // `findings` yields open deficiencies most-severe-first, excluding met and
+    // not-applicable controls — exactly the set the gate reasons about.
+    for f in findings(resolved) {
+        let regressed = f.state == ControlState::Regressed;
+        let blocking = f.severity >= GapSeverity::High;
+        if regressed {
+            v.regressions.push(f.clone());
+        }
+        if blocking {
+            v.blocking.push(f);
+        } else if !regressed {
+            v.warnings.push(f);
+        }
+    }
+    v.ok = v.regressions.is_empty() && v.blocking.is_empty();
+    v
+}
+
 #[cfg(test)]
 mod tests;
