@@ -6125,3 +6125,113 @@ async fn a_source_document_url_is_recorded_but_never_pivoted() {
         "an untagged Url must not be recorded as a source-document skip: {reasons:?}"
     );
 }
+
+/// Emits one `.onion` `Url` exposure finding for the `seed` Username — the shape
+/// `ahmia` produces. Used to prove the engine never pivots (fetches) an onion
+/// service, honouring the exposure-sensor doctrine structurally.
+struct OnionExposureModule;
+
+#[async_trait::async_trait]
+impl Module for OnionExposureModule {
+    fn name(&self) -> &'static str {
+        "onion_exposure"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Username)
+    }
+    fn produces(&self) -> &'static [EntityKind] {
+        const K: &[EntityKind] = &[EntityKind::Url];
+        K
+    }
+    async fn process(
+        &self,
+        target: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        let mut r = crate::core::module::ModuleResult::new();
+        if target.value == "seed" {
+            let mut e = Entity::new(
+                EntityKind::Url,
+                "http://exampleleakindexabcdefghij234567.onion/dump",
+                0.9,
+                &ctx.scan_id,
+            );
+            e.tag("dark-web");
+            e.add_evidence(crate::core::entity::Evidence::new(
+                "onion_exposure",
+                "synthetic dark-web mention",
+            ));
+            r.push(e);
+        }
+        Ok(r)
+    }
+}
+
+#[tokio::test]
+async fn an_onion_exposure_url_is_recorded_but_never_fetched() {
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, mut rx) = tokio::sync::broadcast::channel(8192);
+    let engine = ScanEngine::new(
+        vec![Arc::new(OnionExposureModule), Arc::new(PageMinerModule)],
+        store_port,
+        bus.clone(),
+    );
+    // Every expansion gate opened (all identities, no floor, no ROI) so the ONLY
+    // thing that can stop the onion Url being pivoted is the onion gate itself.
+    let opts = ScanOptions {
+        depth: 2,
+        expand_all_identities: true,
+        max_roi: false,
+        min_expand_confidence: 0.0,
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Username, "seed");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("username", "seed"),
+        target.clone(),
+    )
+    .with_options(opts);
+    let scan_id = scan.id.clone();
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    engine.run(scan, target, ctx).await.expect("should succeed");
+
+    let values: Vec<String> = store
+        .entities_for_scan(&scan_id)
+        .expect("should succeed")
+        .into_iter()
+        .map(|e| e.value)
+        .collect();
+    assert!(
+        values.iter().any(|v| v.contains(".onion")),
+        "the onion exposure finding must still be recorded: {values:?}"
+    );
+    assert!(
+        !values.iter().any(|v| v == "mined-from-page"),
+        "the engine must never fetch (pivot on) an onion service: {values:?}"
+    );
+    let mut onion_skip = false;
+    while let Ok(ev) = rx.try_recv() {
+        if let EventKind::EntityExcluded { value, reason, .. } = ev.kind
+            && value.contains(".onion")
+            && reason == "onion_not_fetched"
+        {
+            onion_skip = true;
+        }
+    }
+    assert!(
+        onion_skip,
+        "the onion skip must be recorded under its own reason for the audit ledger"
+    );
+}

@@ -8,7 +8,7 @@
 **All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition —
 SpiderFoot-inspired breadth without the daemon or the footprint.**
 
-Pure-Rust OSINT / GEOINT platform with **188 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **189 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 dark-console Web UI, zero native dependencies, keyless-first.
 
@@ -195,7 +195,7 @@ single-instance constraint (local SQLite — do not scale replicas above 1).
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 188 modules
+hse modules                                                 # list all 189 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
 hse keys status                                             # multi-key pool: what's loaded, per source
@@ -245,18 +245,18 @@ the onion address itself.
 
 | Seed | Flag | Example | Modules |
 |------|------|---------|---------|
-| Email | `--kind email` | `user@example.com` | 42 |
-| Username | `--kind username` | `johndoe` | 50 |
+| Email | `--kind email` | `user@example.com` | 43 |
+| Username | `--kind username` | `johndoe` | 51 |
 | Phone | `--kind phone` | `+61400000000` | 18 |
-| Full Name | `--kind name` | `Jordan Leigh Meyers` | 25 |
+| Full Name | `--kind name` | `Jordan Leigh Meyers` | 26 |
 | IP Address | `--kind ip` | `1.1.1.1` | 42 |
-| Domain | `--kind domain` | `example.com` | 57 |
+| Domain | `--kind domain` | `example.com` | 58 |
 | ASN | `--kind asn` | `AS13335` | 4 |
 | CIDR | `--kind cidr` | `1.1.1.0/24` | 2 |
 | Coordinates | `--kind coords` | `-27.47,153.02` | 19 |
 | Address | `--kind address` | `Nundah, QLD 4012` | 5 |
 | URL | `--kind url` | `https://example.com/page` | 25 |
-| Organisation | `--kind org` | `ACME Pty Ltd` | 22 |
+| Organisation | `--kind org` | `ACME Pty Ltd` | 23 |
 | ABN/ACN | `--kind abn` | `51824753556` | 7 |
 | MAC Address | `--kind mac` | `AA:BB:CC:DD:EE:FF` | 9 |
 | Crypto Address | `--kind crypto` | `bc1q…` | 5 |
@@ -272,15 +272,15 @@ respectively.
 
 ---
 
-## Module Overview (188 modules — 142 free, 46 key-gated/paid)
+## Module Overview (189 modules — 143 free, 46 key-gated/paid)
 
 > A curated highlight of the modules below (not the full list). The complete, always-current catalogue
 > with target kinds and output entities lives in the running software — run
 > `hse modules` or open the web UI's module wizard — never a static doc that
 > can drift from the registry.
 
-**API-Free (no keys required) — 92:**
-- **Breach/identity**: `psbdmp`, `pwned_passwords`, `xposed_or_not`
+**API-Free (no keys required) — 93:**
+- **Breach/identity & dark-web exposure**: `ahmia`, `psbdmp`, `pwned_passwords`, `xposed_or_not`
 - **Social**: `crates_io`, `github_code_search`, `github_user`, `hacker_news`, `keybase`, `npm_author`, `reddit_user`, `social_probe`, `streaming_probe`, `username_search`, `username_variants`
 - **People**: `ahpra`, `au_electoral`, `au_people`, `au_property`, `contact_enrich`, `employer_pivot`, `gravatar`, `name_intel`, `payid`, `pgp`, `wikidata`
 - **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `domainsdb`, `hackertarget`, `mnemonic_pdns`, `rdap_domain`, `subdomain_center`, `subdomain_takeover`, `typosquat`, `whois`

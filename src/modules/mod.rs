@@ -9,6 +9,7 @@ pub mod abn_lookup;
 pub mod abuseipdb;
 pub mod acma_rrl;
 pub mod acnc_charities;
+pub mod ahmia;
 pub mod ahpra;
 pub mod anubis;
 pub mod api_key_probe;
@@ -387,6 +388,10 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(dehashed::DeHashed),
             Arc::new(breachdirectory::BreachDirectory),
             Arc::new(intelx::IntelX),
+            // Dark-web exposure over Ahmia's clearnet index (keyless), beside the
+            // other exposure sources — reports where a target is mentioned on a
+            // Tor hidden service; never fetches one.
+            Arc::new(ahmia::Ahmia),
             Arc::new(securitytrails::SecurityTrails),
             Arc::new(leakix::LeakIx),
             Arc::new(criminal_ip::CriminalIp),

@@ -34,6 +34,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **Pwned Passwords** | k-anonymity password-hash exposure | free | — (no key) | M D |
 | **Dehashed** | breached credentials (email/user/pass/IP/name) | search free, results paid | email + 32-alnum (basic auth) | M K D |
 | **Intelligence X (IntelX)** | leaks, darknet, paste, WHOIS history | 50 searches/day | UUID | M K D |
+| **Ahmia** | dark-web exposure: Tor hidden-service pages mentioning a target (clearnet index; no onion fetching) | free | — (no key) | M D |
 | **Snusbase** | breach + stealer credential search | paid | login-gated | D |
 | **LeakCheck** | breach lookups by email/user/domain | free public API + Pro | 40+ alnum | D |
 | **LeakPeek** | breach credential search | ltd | — | D |
