@@ -22,6 +22,14 @@
 //! - No unsafe, no std::sync::Mutex (use tokio::sync, in the native build)
 //! - Zero CGO / native deps
 
+// hse-core's docs are built with `--document-private-items` and read internally,
+// not consumed as a published API, so a public doc item linking to a private one
+// (e.g. `coords`'s reference to `LatLon::checked`) is intentional. This mirrors
+// the crate-root allow the parent crate already carries (see `src/lib.rs`); the
+// high-value `broken_intra_doc_links` lint stays denied in CI, and only this
+// stylistic, internal-reference lint is relaxed.
+#![allow(rustdoc::private_intra_doc_links)]
+
 pub mod coords;
 pub mod tags;
 
