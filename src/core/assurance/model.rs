@@ -71,6 +71,40 @@ impl Profile {
             Self::Intelligence,
         ]
     }
+
+    /// Parse a profile name as the CLI and API accept it — case-insensitively,
+    /// as the bare word (`android`), the full id (`HSE-BSI-ANDROID`), or the
+    /// `railway` alias for the cloud deployment (C5's profile). The ONE parser
+    /// both surfaces share, so the accepted vocabulary can never drift between
+    /// `hse assurance --profile` and `/api/v1/assurance?profile=`. `None` for
+    /// an unknown name; callers report [`Self::short_names`] as the valid set.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Profile> {
+        let want = s.trim().to_ascii_lowercase();
+        if want == "railway" {
+            return Some(Self::Cloud);
+        }
+        Self::all().iter().copied().find(|p| {
+            let id = p.id().to_ascii_lowercase();
+            id == want || id.strip_prefix("hse-bsi-") == Some(want.as_str())
+        })
+    }
+
+    /// The bare lower-case profile words [`Self::parse`] accepts (`core`,
+    /// `android`, …), for "valid values" messages — single-sourced from
+    /// [`Self::all`] so the list can never fall out of step with the enum.
+    #[must_use]
+    pub fn short_names() -> Vec<String> {
+        Self::all()
+            .iter()
+            .map(|p| {
+                p.id()
+                    .strip_prefix("HSE-BSI-")
+                    .unwrap_or(p.id())
+                    .to_ascii_lowercase()
+            })
+            .collect()
+    }
 }
 
 /// Whether a control is in scope for a given deployment.
@@ -350,5 +384,40 @@ impl ProtectionNeed {
     #[must_use]
     pub fn drives_high_assurance(&self) -> bool {
         self.max_level() >= ProtectionLevel::High
+    }
+}
+
+#[cfg(test)]
+mod profile_parse_tests {
+    use super::Profile;
+
+    #[test]
+    fn parse_accepts_bare_word_full_id_any_case_and_the_railway_alias() {
+        assert_eq!(Profile::parse("android"), Some(Profile::Android));
+        assert_eq!(Profile::parse("HSE-BSI-ANDROID"), Some(Profile::Android));
+        assert_eq!(Profile::parse("  Hse-Bsi-Web "), Some(Profile::Web));
+        // The cloud deployment's alias — C5's profile.
+        assert_eq!(Profile::parse("railway"), Some(Profile::Cloud));
+        assert_eq!(Profile::parse("RAILWAY"), Some(Profile::Cloud));
+    }
+
+    #[test]
+    fn parse_rejects_unknown_names_rather_than_guessing() {
+        assert_eq!(Profile::parse("bogus"), None);
+        assert_eq!(Profile::parse(""), None);
+        assert_eq!(Profile::parse("hse-bsi-"), None);
+    }
+
+    #[test]
+    fn every_profile_round_trips_and_short_names_is_complete() {
+        // `short_names` is the "valid values" list both the CLI error and the
+        // API 400 print — it must name every profile, and every name must parse
+        // back to its own variant (as must the full id).
+        let names = Profile::short_names();
+        assert_eq!(names.len(), Profile::all().len());
+        for (p, name) in Profile::all().iter().zip(&names) {
+            assert_eq!(Profile::parse(name), Some(*p), "{name} must parse to {p:?}");
+            assert_eq!(Profile::parse(p.id()), Some(*p));
+        }
     }
 }

@@ -7,6 +7,10 @@
 //! | GET    | `/api/v1/health`                         | `health`                       |
 //! | GET    | `/api/v1/version`                        | `version`                      |
 //! | GET    | `/api/v1/stats`                          | `stats`                        |
+//! | GET    | `/api/v1/assurance`                      | `assurance` (BSI posture)      |
+//! | GET    | `/api/v1/assurance/verify`               | `assurance_verify`             |
+//! | GET    | `/api/v1/attack`                         | `attack` (ATT&CK posture)      |
+//! | GET    | `/api/v1/attack/navigator`               | `attack_navigator` (download)  |
 //! | GET    | `/api/v1/modules`                        | `modules_list`                 |
 //! | GET    | `/api/v1/modules/graph`                  | `modules_graph` (v1.1+)        |
 //! | GET    | `/api/v1/modules/health`                 | `modules_health`               |
@@ -110,8 +114,8 @@ use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 
 use super::{
-    AppState, cells_handlers, handlers, key_harvest_handlers, scan_export, scan_handlers,
-    settings_handlers, update_handlers,
+    AppState, assurance_handlers, cells_handlers, handlers, key_harvest_handlers, scan_export,
+    scan_handlers, settings_handlers, update_handlers,
 };
 
 /// Embedded SPA — single self-contained HTML file with inline CSS + JS.
@@ -178,6 +182,16 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         "js/router.js",
         "application/javascript",
         include_bytes!("../../web/js/router.js"),
+    ),
+    (
+        "js/views/assurance.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/assurance.js"),
+    ),
+    (
+        "js/views/attack.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/attack.js"),
     ),
     (
         "js/scan_info/audit.js",
@@ -418,6 +432,19 @@ pub fn router(
         // stray GET can trigger.
         .route("/capabilities/probe", post(handlers::capabilities_probe))
         .route("/stats", get(handlers::stats))
+        // ── BSI-assurance + MITRE ATT&CK posture (read-only; the same
+        //    evidence-derived data `hse assurance` / `hse bsi` / `hse attack`
+        //    print — see `assurance_handlers`) ──
+        .route("/assurance", get(assurance_handlers::assurance))
+        .route(
+            "/assurance/verify",
+            get(assurance_handlers::assurance_verify),
+        )
+        .route("/attack", get(assurance_handlers::attack))
+        .route(
+            "/attack/navigator",
+            get(assurance_handlers::attack_navigator),
+        )
         // ── diagnostics: self-test + downloadable verbose logs ──
         .route("/selftest", get(handlers::selftest_run))
         .route("/logs", get(handlers::logs_download))

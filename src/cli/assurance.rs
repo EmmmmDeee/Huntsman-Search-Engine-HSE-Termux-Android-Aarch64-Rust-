@@ -18,34 +18,15 @@ use crate::core::error::{Error, Result};
 /// becomes applicable, and the directive names `hse bsi profile railway`
 /// explicitly.
 pub(super) fn parse_profile(s: &str) -> Result<Profile> {
-    let want = s.trim().to_ascii_lowercase();
-    if want == "railway" {
-        return Ok(Profile::Cloud);
-    }
-    Profile::all()
-        .iter()
-        .copied()
-        .find(|p| {
-            // Match either the bare word ("android") or the full id
-            // ("hse-bsi-android").
-            let id = p.id().to_ascii_lowercase();
-            id == want || id.strip_prefix("hse-bsi-") == Some(want.as_str())
-        })
-        .ok_or_else(|| {
-            let valid: Vec<String> = Profile::all()
-                .iter()
-                .map(|p| {
-                    p.id()
-                        .strip_prefix("HSE-BSI-")
-                        .unwrap_or(p.id())
-                        .to_lowercase()
-                })
-                .collect();
-            Error::Other(format!(
-                "unknown profile '{s}'; valid: {}",
-                valid.join(", ")
-            ))
-        })
+    // One parser for both surfaces: `Profile::parse` is what
+    // `/api/v1/assurance?profile=` uses too, so the CLI and the API can never
+    // come to accept different vocabularies (the `railway` alias included).
+    Profile::parse(s).ok_or_else(|| {
+        Error::Other(format!(
+            "unknown profile '{s}'; valid: {}",
+            Profile::short_names().join(", ")
+        ))
+    })
 }
 
 /// `hse assurance [--profile P] [--json]`.
