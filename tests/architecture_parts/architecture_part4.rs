@@ -368,6 +368,114 @@ fn no_production_read_pulls_a_stream_into_memory_without_a_size_cap() {
     );
 }
 
+/// Every production `curl` spawn bounds what it can pull into memory.
+///
+/// HSE's HTTP fetches shell out to `curl`, and `Command::output()` buffers the
+/// whole response into a `Vec` — so a hostile or misconfigured upstream that
+/// answers with a multi-GB body grows that buffer until the tool is OOM-killed
+/// on an 11 GB phone (`util::curl::FETCH_HARDENING_ARGS` documents the class).
+/// Every fetch path bounds this in one of a few canonical ways: the
+/// single-sourced `FETCH_HARDENING_ARGS` (`--max-filesize`, 32 MiB), an
+/// explicit tighter `--max-filesize`, `-o /dev/null` for a probe that discards
+/// the body, or `util::curl_client`'s `curl_args(…)` builder (which carries the
+/// same hardening) feeding a `read_capped` drain. `util::egress::fetch_feed`
+/// was the one content fetch that had escaped all of them — an unbounded read
+/// hidden inside `.output()`, invisible to
+/// `no_production_read_pulls_a_stream_into_memory_without_a_size_cap` because
+/// no `read_to_end` ever appears in the source. This guard turns that audit
+/// into a mechanical rule at the spawn site: inside the enclosing function of
+/// every `Command::new("curl")` in production source, one of those bound
+/// markers must appear on a code line (a comment merely naming the flag does
+/// not count). A spawn that only runs `curl --version` — the `hse doctor` and
+/// debug-bundle presence probes — transfers nothing and is exempt by that
+/// literal.
+#[test]
+fn every_curl_spawn_bounds_what_it_downloads() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs")
+                && !p
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().ends_with("tests.rs"))
+            {
+                out.push(p);
+            }
+        }
+    }
+    /// A function header (`fn`, `pub fn`, `pub(crate) async fn`, …): the
+    /// boundaries of the window a spawn's argument construction lives in.
+    fn is_fn_header(trimmed: &str) -> bool {
+        let mut s = trimmed;
+        for vis in ["pub(crate) ", "pub(super) ", "pub "] {
+            if let Some(rest) = s.strip_prefix(vis) {
+                s = rest;
+                break;
+            }
+        }
+        let s = s.strip_prefix("async ").unwrap_or(s);
+        s.starts_with("fn ")
+    }
+    const BOUND_MARKERS: &[&str] = &[
+        "FETCH_HARDENING_ARGS", // the single-sourced cap (util::curl)
+        "--max-filesize",       // an explicit, usually tighter, cap
+        "\"/dev/null\"",        // `-o /dev/null`: the body is discarded, never buffered
+        "curl_args(",           // util::curl_client's builder — carries FETCH_HARDENING_ARGS
+        "\"--version\"",        // a presence probe: nothing is transferred
+    ];
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    walk(&root, &mut files);
+    files.sort();
+
+    let mut spawns = 0usize;
+    let mut offenders = Vec::new();
+    for p in &files {
+        let text = fs::read_to_string(p).expect("source file readable");
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") || !line.contains("Command::new(\"curl\")") {
+                continue;
+            }
+            spawns += 1;
+            let start = (0..=i)
+                .rev()
+                .find(|&j| is_fn_header(lines[j].trim_start()))
+                .unwrap_or(0);
+            let end = (i + 1..lines.len())
+                .find(|&j| is_fn_header(lines[j].trim_start()))
+                .unwrap_or(lines.len());
+            let bounded = lines[start..end].iter().any(|l| {
+                let t = l.trim_start();
+                !t.starts_with("//") && BOUND_MARKERS.iter().any(|m| t.contains(m))
+            });
+            if !bounded {
+                offenders.push(format!("{}:{}", p.display(), i + 1));
+            }
+        }
+    }
+
+    // Floor: the codebase spawns curl from ~10 production sites. Seeing almost
+    // none means the spawn idiom changed (a `CURL` constant, a wrapper) and this
+    // guard stopped seeing them — fail loudly rather than pass vacuously.
+    assert!(
+        spawns >= 5,
+        "found only {spawns} `Command::new(\"curl\")` spawn(s) under src/ — the spawn idiom \
+         changed and this guard no longer sees curl invocations; fix the guard before trusting it"
+    );
+    assert!(
+        offenders.is_empty(),
+        "curl spawn(s) with no download bound in the enclosing function — a hostile or \
+         misconfigured upstream can grow `.output()`'s buffer without limit and OOM the tool \
+         on a low-RAM phone; pass `util::curl::FETCH_HARDENING_ARGS` (or an explicit \
+         `--max-filesize`, or `-o /dev/null` for a body-less probe): {offenders:?}"
+    );
+}
+
 /// The release profile stays size-optimized for the aarch64 Termux artifact.
 ///
 /// `opt-level="s"`, `lto=true`, `codegen-units=1` and `strip=true` are the knobs
