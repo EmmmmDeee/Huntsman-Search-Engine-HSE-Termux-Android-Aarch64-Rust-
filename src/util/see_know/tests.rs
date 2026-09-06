@@ -240,6 +240,12 @@ fn classify_status_still_latches_an_auth_or_quota_rejection_delivered_under_a_5x
 
 #[test]
 fn reset_budget_clears_the_cross_module_response_cache() {
+    // `reset_budget()` also resets the global scan-cap BUDGET (not just the
+    // namespaced cache), so this test must hold BUDGET_TEST_LOCK like every
+    // other budget-touching test — otherwise its reset races the scan-cap
+    // scaling assertions (e.g. `quota_probe_still_scales_when_operator_set_no_cap`)
+    // and flakes them under `--test-threads`.
+    let _guard = BUDGET_TEST_LOCK.lock();
     // Regression: RESPONSE_CACHE dedups identical endpoint queries WITHIN one
     // scan (its own doc comment), but reset_budget() previously only reset
     // the quota counters and the key-invalid/quota-probed latches -- a
@@ -1175,6 +1181,12 @@ fn credits_probe_reports_the_rejection_it_latched() {
 fn one_scans_cached_responses_are_never_served_to_another() {
     use crate::util::budget::with_scan_sync;
 
+    // Calls `reset_budget()` below, which mutates the global scan-cap BUDGET, so
+    // it must hold BUDGET_TEST_LOCK to avoid racing the scan-cap tests under
+    // `--test-threads` (the cache itself is per-scan-namespaced and needs no
+    // lock, but the budget reset does).
+    let _guard = BUDGET_TEST_LOCK.lock();
+
     // The cache dedups identical endpoint queries WITHIN one scan — that is its
     // stated purpose. Keyed globally it was a BETWEEN-scan cache, and under
     // `hse serve`'s concurrent scans that meant scan B was handed records scan A
@@ -1210,4 +1222,80 @@ fn one_scans_cached_responses_are_never_served_to_another() {
         );
         reset_budget();
     });
+}
+
+/// Regression lock for the flake fixed alongside it: every `#[test]` in THIS
+/// file that mutates the process-global scan-cap `BUDGET`
+/// (`reset_budget` / `scale_scan_cap_from_daily` / `set_scan_cap_override` /
+/// `refresh_round_budget`) must hold [`BUDGET_TEST_LOCK`], or it races the
+/// scan-cap assertions under `--test-threads` and flakes them. Two tests
+/// (`reset_budget_clears_the_cross_module_response_cache`,
+/// `one_scans_cached_responses_are_never_served_to_another`) once omitted the
+/// guard; this scan of the file's own source keeps that from recurring.
+#[test]
+fn every_budget_mutating_test_holds_the_budget_lock() {
+    // `file!()` tracks this source's own path, so the self-scan follows a move
+    // or rename instead of drifting from a hard-coded literal.
+    let src =
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file!()))
+            .expect("read this test file's own source");
+    // The mutators that touch the shared scan-cap state (not the pure reads).
+    const MUTATORS: &[&str] = &[
+        "reset_budget(",
+        "scale_scan_cap_from_daily(",
+        "set_scan_cap_override(",
+        "refresh_round_budget(",
+    ];
+    // Split into per-test chunks at real `#[test]` ATTRIBUTE lines — a line
+    // whose trimmed text is exactly `#[test]` — not at the raw substring. A
+    // `#[test]` inside a comment, doc string or code (this lock's own doc
+    // comment and body contain several) must not create a false boundary that
+    // could split a test and separate a mutator call from its lock acquisition.
+    // The prologue before the first attribute line is imports/helpers.
+    let mut chunks: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for line in src.lines() {
+        if line.trim() == "#[test]" && !current.is_empty() {
+            chunks.push(std::mem::take(&mut current));
+        }
+        current.push_str(line);
+        current.push('\n');
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    let mut offenders = Vec::new();
+    for chunk in chunks.iter().skip(1) {
+        // Scan the CODE only — truncate every line at its first `//`, dropping
+        // both comment-only lines and inline trailing comments — so a mention in
+        // a comment (`let x = 1; // reset_budget(...)`, or `// …BUDGET_TEST_LOCK
+        // .lock()`) can neither count as a mutator call nor stand in for a real
+        // guard acquisition. This also keeps the name off a comment that says
+        // "fn …". (String literals containing `//` are not present in these
+        // tests; the check errs toward under-scanning, never a false pass.)
+        let code: String = chunk
+            .lines()
+            .map(|l| l.split_once("//").map_or(l, |(before, _)| before))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let name = code
+            .split_once("fn ")
+            .and_then(|(_, rest)| rest.split(['(', '<', ' ']).next())
+            .unwrap_or("<unknown>");
+        // This lock itself names the mutators in its doc string; don't flag it.
+        if name == "every_budget_mutating_test_holds_the_budget_lock" {
+            continue;
+        }
+        let mutates = MUTATORS.iter().any(|m| code.contains(m));
+        // Look for the actual guard ACQUISITION, not a bare mention of the lock.
+        let holds_lock = code.contains("BUDGET_TEST_LOCK.lock(");
+        if mutates && !holds_lock {
+            offenders.push(name.to_string());
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these see_know tests mutate the global scan-cap BUDGET without holding \
+         BUDGET_TEST_LOCK, so they race the scan-cap tests under --test-threads: {offenders:?}"
+    );
 }
