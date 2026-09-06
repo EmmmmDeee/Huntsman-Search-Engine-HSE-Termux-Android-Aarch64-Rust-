@@ -192,7 +192,7 @@ fn recognise(target: &Target) -> Option<Recognised> {
             if !crate::util::abn::is_valid_abn(&target.value) {
                 return None;
             }
-            let digits: String = target.value.chars().filter(char::is_ascii_digit).collect();
+            let digits = crate::util::str_util::ascii_digits(&target.value);
             Some(Recognised {
                 kind: EntityKind::AbnAcn,
                 canonical: digits,

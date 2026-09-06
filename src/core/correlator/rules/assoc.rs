@@ -94,7 +94,7 @@ fn entity_residences(e: &Entity) -> Vec<String> {
 /// than 8 digits (short codes / fragments) or an all-same-digit placeholder
 /// (`+00000000`), neither of which identifies a real subscriber line.
 fn normalise_phone(raw: &str) -> Option<String> {
-    let digits: String = raw.chars().filter(char::is_ascii_digit).collect();
+    let digits = crate::util::str_util::ascii_digits(raw);
     if digits.len() < 8 {
         return None;
     }

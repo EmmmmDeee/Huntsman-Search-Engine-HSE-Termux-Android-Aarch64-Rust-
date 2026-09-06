@@ -423,7 +423,7 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
         // Guard on digit count (≥7) so a formatted number mints one Phone while
         // a stray fragment does not; Entity::new normalises the formatting.
         if let Some(phone) = nonempty(&entry.phone_number) {
-            let digits: String = phone.chars().filter(char::is_ascii_digit).collect();
+            let digits = crate::util::str_util::ascii_digits(&phone);
             if digits.len() >= 7 && seen.insert(format!("phone:{digits}")) {
                 let mut phe =
                     Entity::new(EntityKind::Phone, &phone, confidence::MEDIUM_PLUS, scan_id);

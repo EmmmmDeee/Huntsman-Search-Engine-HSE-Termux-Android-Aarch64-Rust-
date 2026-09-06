@@ -800,7 +800,7 @@ pub(in crate::core::correlator) fn rule_au_089_corporate_network(
     let mut companies: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for e in entities.iter().filter(|e| e.kind == EntityKind::AbnAcn) {
         let canonical = crate::util::abn::derive_acn(&e.value).or_else(|| {
-            let digits: String = e.value.chars().filter(char::is_ascii_digit).collect();
+            let digits = crate::util::str_util::ascii_digits(&e.value);
             (digits.len() == 9 && crate::util::abn::is_valid_acn(&digits)).then_some(digits)
         });
         if let Some(acn) = canonical {
@@ -878,7 +878,7 @@ pub(in crate::core::correlator) fn rule_au_094_sole_trader_abn(
     let mut abns: BTreeSet<String> = BTreeSet::new();
     let mut uids: BTreeSet<String> = BTreeSet::new();
     for e in entities.iter().filter(|e| e.kind == EntityKind::AbnAcn) {
-        let digits: String = e.value.chars().filter(char::is_ascii_digit).collect();
+        let digits = crate::util::str_util::ascii_digits(&e.value);
         if digits.len() == 11
             && crate::util::abn::is_valid_abn(&digits)
             && crate::util::abn::derive_acn(&digits).is_none()

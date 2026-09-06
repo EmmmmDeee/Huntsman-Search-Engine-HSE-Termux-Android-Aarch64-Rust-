@@ -2,6 +2,8 @@
 
 use serde_json::Value;
 
+use crate::util::json::val_str;
+
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
@@ -31,15 +33,15 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
         return;
     }
 
-    let abn = str_field(data, "Abn").unwrap_or_default();
-    let entity_name = str_field(data, "EntityName").unwrap_or_default();
-    let entity_type = str_field(data, "EntityTypeCode")
-        .or_else(|| str_field(data, "EntityTypeName"))
+    let abn = val_str(data, "Abn").unwrap_or_default();
+    let entity_name = val_str(data, "EntityName").unwrap_or_default();
+    let entity_type = val_str(data, "EntityTypeCode")
+        .or_else(|| val_str(data, "EntityTypeName"))
         .unwrap_or_default();
-    let status = str_field(data, "AbnStatus").unwrap_or_default();
-    let state = str_field(data, "AddressState").unwrap_or_default();
-    let postcode = str_field(data, "AddressPostcode").unwrap_or_default();
-    let gst = str_field(data, "Gst").unwrap_or_default();
+    let status = val_str(data, "AbnStatus").unwrap_or_default();
+    let state = val_str(data, "AddressState").unwrap_or_default();
+    let postcode = val_str(data, "AddressPostcode").unwrap_or_default();
+    let gst = val_str(data, "Gst").unwrap_or_default();
 
     if entity_name.is_empty() {
         return;
@@ -256,11 +258,11 @@ pub(super) fn parse_name_results(
     }
 
     for entry in names.iter().take(MAX_NAME_HITS) {
-        let abn = str_field(entry, "Abn").unwrap_or_default();
-        let name = str_field(entry, "Name").unwrap_or_default();
-        let name_type = str_field(entry, "NameType").unwrap_or_default();
-        let state = str_field(entry, "State").unwrap_or_default();
-        let postcode = str_field(entry, "Postcode").unwrap_or_default();
+        let abn = val_str(entry, "Abn").unwrap_or_default();
+        let name = val_str(entry, "Name").unwrap_or_default();
+        let name_type = val_str(entry, "NameType").unwrap_or_default();
+        let state = val_str(entry, "State").unwrap_or_default();
+        let postcode = val_str(entry, "Postcode").unwrap_or_default();
         let score = entry
             .get("Score")
             .and_then(serde_json::Value::as_u64)
@@ -356,15 +358,4 @@ pub(super) fn parse_name_results(
             }
         }
     }
-}
-
-/// Read `key` from a JSON object as an owned `String`, treating an empty
-/// string the same as a missing key (`None`). Centralises the "present and
-/// non-blank" check so every field extraction in this module shares one
-/// definition of "has a usable value".
-pub(super) fn str_field(v: &Value, key: &str) -> Option<String> {
-    v.get(key)
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(std::string::ToString::to_string)
 }

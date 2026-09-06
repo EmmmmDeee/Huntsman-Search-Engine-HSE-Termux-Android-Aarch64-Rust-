@@ -665,3 +665,70 @@ fn derived_confidence_goes_through_the_shared_step() {
          Delete them from BASELINE so the inventory stays truthful:\n{fixed:#?}"
     );
 }
+
+/// The digit-only normaliser has ONE authority — `util::str_util::ascii_digits`
+/// (`s.chars().filter(char::is_ascii_digit).collect()`). Fourteen production
+/// sites once open-coded that exact `String` expression and each was a place a
+/// fix could silently skip; they now delegate. This locks it in: no production
+/// source (outside the authority itself) may collect a `char::is_ascii_digit`
+/// filter straight into a `String` — neither the annotated `let x: String =
+/// …collect()` form nor the `…collect::<String>()` turbofish. A `Vec<char>`
+/// collect (e.g. `breach_pii`, which indexes the chars) is a different operation
+/// and is intentionally not flagged. Falsified: restoring any inline copy fails.
+#[test]
+fn no_production_reimplements_ascii_digits() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs")
+                && !p
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().ends_with("tests.rs"))
+            {
+                out.push(p);
+            }
+        }
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let authority = root.join("util/str_util/mod.rs");
+    let mut files = Vec::new();
+    walk(&root, &mut files);
+    files.sort();
+
+    let mut offenders = Vec::new();
+    for p in &files {
+        if *p == authority {
+            continue; // the one true home of the expression
+        }
+        let text = fs::read_to_string(p).expect("source file readable");
+        // Drop `#[cfg(test)]` items so a test assertion isn't taken for
+        // production logic (code survives; only strings/comments are blanked).
+        let prod = production_source(&text);
+        for (i, line) in prod.lines().enumerate() {
+            if !line.contains("filter(char::is_ascii_digit)") || !line.contains(".collect") {
+                continue;
+            }
+            let to_string = line.contains(": String =") || line.contains("collect::<String>()");
+            if to_string {
+                offenders.push(format!(
+                    "{}:{} — {}",
+                    p.strip_prefix(&root).unwrap_or(p).display(),
+                    i + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "digit-only String normaliser re-implemented inline — call \
+         `huntsman_search_engine::util::str_util::ascii_digits(s)` (the authority, \
+         and core-allowlisted) instead of `…filter(char::is_ascii_digit).collect()`:\n{}",
+        offenders.join("\n")
+    );
+}
