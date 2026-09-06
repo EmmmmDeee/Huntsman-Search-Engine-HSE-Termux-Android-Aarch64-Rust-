@@ -7,6 +7,13 @@
 > see [`INSTALL.md`](INSTALL.md)'s own Troubleshooting section instead —
 > that content lives there, not here.
 
+> ⚠️ **Not yet implemented.** This is a Phase 4.2 design spec, not a record of
+> shipped behaviour. Flags referenced below — `--cascade-depth`, `--no-cascade`,
+> `--fast-only`, `--retry`, `--no-cache` and the "Plan tier" detection — do not
+> exist in the current `hse` CLI and will be rejected as unrecognised
+> arguments. Run `hse scan --help` / `hse doctor` to see what is actually
+> implemented today; do not paste commands from this page verbatim.
+
 ## Common Issues & Solutions
 
 ### API Connectivity
