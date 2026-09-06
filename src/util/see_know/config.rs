@@ -58,10 +58,15 @@ pub fn results_dir_is_shared_storage() -> bool {
     })
 }
 
-/// SeekNow authentication email for the web-automation fallback login path
-/// (used only when the `see_know` module's API key — `HUNTSMAN_SEEKNOW_KEY`
-/// — is not configured), read from `HUNTSMAN_SEEKNOW_EMAIL`. Never hardcode
-/// a real address here: this file is committed to source control.
+/// SeekNow authentication email for the web-automation fallback login path,
+/// read from `HUNTSMAN_SEEKNOW_EMAIL`. Never hardcode a real address here:
+/// this file is committed to source control.
+///
+/// NOTE: the web-automation fallback is **not yet implemented** — see-know.ru's
+/// Cloudflare Turnstile blocks automated login and no maintained Rust Playwright
+/// crate exists, so [`crate::util::see_know::web_client_advanced::AdvancedWebClient::search_via_scraping`]
+/// returns a clear "not implemented" error rather than data. This slot exists
+/// for when that path lands; today configure `HUNTSMAN_SEEKNOW_KEY` instead.
 ///
 /// Filters an unedited provisioning-template placeholder the same way
 /// [`crate::util::keys::resolve_key`] does for every pooled API key, so an
