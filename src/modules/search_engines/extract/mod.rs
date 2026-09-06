@@ -181,7 +181,7 @@ pub(super) async fn recycle_entities(
                 let has_postcode = addr
                     .split_whitespace()
                     .last()
-                    .is_some_and(|t| t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit()));
+                    .is_some_and(crate::util::postcode_au::is_shaped);
                 let base_conf = if has_postcode {
                     confidence::MEDIUM_HIGH
                 } else {

@@ -54,7 +54,7 @@ pub(super) const FAMILY_POSTCODE_ADDR_CONF: f64 = 0.32;
 /// A 4-digit Australian postcode, else `None`.
 pub(super) fn postcode(rec: &Map<String, Value>) -> Option<String> {
     let p = field_str(rec, "PCode")?;
-    (p.len() == 4 && p.bytes().all(|b| b.is_ascii_digit())).then_some(p)
+    crate::util::postcode_au::is_shaped(&p).then_some(p)
 }
 
 /// The register's full-text search ANDs multi-word queries, so seeding a full

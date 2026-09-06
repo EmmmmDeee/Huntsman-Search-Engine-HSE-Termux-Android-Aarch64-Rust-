@@ -133,3 +133,15 @@ use super::*;
         );
         assert_eq!(locs[0].suburb, "Good");
     }
+
+    #[test]
+    fn is_shaped_matches_exactly_four_ascii_digits() {
+        // The shared shape authority the address/postcode extractors delegate to.
+        assert!(is_shaped("4552")); // a real postcode
+        assert!(is_shaped("0800")); // leading zero preserved (byte check, not parse)
+        assert!(!is_shaped("455")); // too short
+        assert!(!is_shaped("45525")); // too long
+        assert!(!is_shaped("45a2")); // a non-digit
+        assert!(!is_shaped("４５５２")); // full-width digits are multi-byte, not ASCII
+        assert!(!is_shaped("")); // empty
+    }
