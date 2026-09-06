@@ -10,20 +10,36 @@ run, a CI head, or a runtime check — `CLAIM ≠ EVIDENCE` applies to this file
 
 | Item | Value |
 |---|---|
-| `main` | `4b7ff547` — squash-merge of PR #594 (BSI 200-4 continuity model + self-update rollback proof + continuity-panel polish) on top of `a2b295da` |
+| `main` | `40fad7ee` — squash-merge of PR #598 (hse-core rustdoc policy aligned with the root crate + `wasm-ui/pkg` regenerated) on top of `aaf86c9a` (PR #596, ble_radar recovery proof) and `4b7ff547` (PR #594, continuity model + self-update rollback proof). Sibling-session merges `ff8e8509` (#595) and `1cccf3e0` (#597) sit between them; no file overlap |
 | Programme baseline (before) | `cab1f9b4` (HSE v1.41.0, MSRV 1.98, edition 2024) |
-| Working branch | `claude/response-accuracy-legal-u90ja3`, restarted at `4b7ff547` (`origin/main`) after the #594 merge (GitHub auto-deleted the merged head) |
-| In-flight unit | ble_radar interruption / partial-persistence recovery proof — two tests in `src/storage/signal_tests.rs`, cited by `core::assurance::continuity` to derive ble_radar UNTESTED → TESTED (all six capabilities then TESTED) |
-| Toolchain | rustc 1.98; `scripts/gate.sh --quick` = 16 executed checks (MSRV / aarch64 cross / wasm drift / audit are CI's authority) |
+| Working branch | `claude/response-accuracy-legal-u90ja3`, restarted at `40fad7ee` (`origin/main`) after the #598 merge (GitHub auto-deletes merged heads) |
+| In-flight unit | none — this checkpoint is docs-only. The last recompute found no remaining unit above the return threshold (§4) |
+| GitHub | 0 open issues; 0 open pull requests (the 16 stale programme PRs were closed with per-PR evidence — §5) |
+| Toolchain | rustc 1.98; `scripts/gate.sh --quick` = 16 executed checks (root crate fmt / check / clippy `-D warnings` / rustdoc lints / test / doctests / doc coverage; hse-core fmt / clippy / rustdoc / test; wasm-ui fmt / clippy / native test; `install.sh` syntax; shellcheck). MSRV, the aarch64 cross-build, the wasm-ui/pkg drift check and audit / deny / dep-cooldown are CI's authority under `--quick`; the drift check also runs locally through `scripts/wasm_ui_drift_check.sh` once the pinned chain is installed (§8) |
 
 ## 2. Verified facts (with evidence)
 
-- Every unit below passed `scripts/gate.sh --quick` (15/15) before its push, and
-  every pushed head went CI-green (Check & test, MSRV 1.98, aarch64-linux-android,
-  hse-core + wasm-ui, clippy ×2, gitleaks, install.sh).
+- Every unit below passed `scripts/gate.sh --quick` before its push, and every
+  merged head is CI-green (Check & test, MSRV 1.98, aarch64-linux-android,
+  hse-core + wasm-ui, clippy ×2, gitleaks, install.sh). One pushed head was not:
+  the first #598 head failed the wasm-ui/pkg drift check; that failure was
+  reproduced locally, root-caused and eliminated (§5, §9) before the merge.
+- Continuity (BSI 200-4): all six capabilities are TESTED. `hse bsi continuity`
+  built from `40fad7ee` reports 0 untested, 6 tested, 0 observed. Each recovery
+  test was falsified before landing: breaking the restore branch of
+  `hse_verify_or_rollback` fails the self-update tests; removing the RF batch
+  transaction fails the ble_radar atomicity test on the partial device list.
 - Assurance maturity is evidence-derived; the static catalogue claims no A5/A6;
   `hse bsi verify` is PASS (exit 0) on the honest catalogue; `HSE-200-4-BCM` is
   TESTED/A4 from real fault-injection tests (disk-full, crash mid-write).
+- `wasm-ui/pkg` is byte-reproducible from source with the CI-pinned chain
+  (binaryen `version_108`, sha256-verified download; wasm-bindgen-cli `0.2.127`;
+  fixed build root `/tmp/hse-wasm-ui-build-root`): the drift check FAILED on the
+  pre-regeneration tree, `--write` regenerated one file
+  (`hse_wasm_ui_bg.wasm`), the re-run PASSED, and CI's own drift job passed on
+  the merged head. Root cause: any hse-core crate-root change (here a crate
+  attribute) shifts the optimised wasm bytes, so the committed pkg must be
+  regenerated in the same commit.
 - ATT&CK Enterprise v17.1 is current; registry-derived TA0043 coverage is 33/44
   with 11 honest gaps (e.g. phishing-for-information, correctly not performed).
 - Live drift sweep (this sandbox, `SSL_CERT_FILE` honoured): 121 probed —
@@ -45,25 +61,39 @@ run, a CI head, or a runtime check — `CLAIM ≠ EVIDENCE` applies to this file
   (3600 s) is a *declared* objective, not a measured one, and is labelled so.
 - Sandbox-unreachable providers are treated as environment facts, not drift,
   because none is an *empty* canary and the failure classes are transport-level.
+- The deferrals in §4 rest on measured return, not difficulty: each would either
+  duplicate an existing authority or has no concrete requirement yet. They are
+  re-evaluated at every recompute, never carried forward silently.
 
 ## 4. Prioritised gaps (remaining)
 
-Closed since the last checkpoint: **self-update rollback** (PR #594 —
-`hse_verify_or_rollback` + four functional tests; self_update → TESTED) and
-**BLE radar interruption / partial-observation persistence** (this unit —
-two atomicity/restart tests; ble_radar → TESTED). With both closed, all six
-continuity capabilities are TESTED; 0 UNTESTED, 0 OBSERVED.
+Closed and merged since the previous checkpoint: **self-update rollback**
+(PR #594 → `4b7ff547`; `hse_verify_or_rollback` + four functional tests;
+self_update → TESTED), **BLE radar interruption / partial-observation
+persistence** (PR #596 → `aaf86c9a`; two atomicity/restart tests; ble_radar →
+TESTED), the **hse-core rustdoc policy split** and the resulting **wasm-ui/pkg
+drift** (PR #598 → `40fad7ee`), and **GitHub finalisation** (0 open issues; 16
+stale PRs closed with evidence; open PR list empty). All six continuity
+capabilities are TESTED; 0 UNTESTED, 0 OBSERVED.
 
-1. **Providers view** — `hse bsi providers` over existing descriptors, health and
-   the drift sweep (view over existing authorities; no new registry).
-2. **Detection view** — correlator rules carry `rule_id`/`rule_name` on their
-   findings but are plain functions (no per-rule descriptor); assess whether a
-   descriptor would duplicate the producer→consumer graph before building.
-3. **OBSERVED (A5) evidence** — no runtime recovery/incident record mechanism
-   exists; by design nothing claims A5 until one does. This is now the only
-   route to lift any continuity capability above TESTED.
-4. **External:** wasm-ui/pkg drift check needs the pinned wasm-opt (CI only);
-   on-device Termux end-to-end needs hardware not available here.
+Remaining — all below the return threshold at the last recompute, with the
+reason recorded so it is not re-derived:
+
+1. **OBSERVED (A5) evidence** — no runtime recovery/incident record mechanism
+   exists; by design nothing claims A5 until one does. It is the only route
+   above TESTED, but there is no recorded production recovery to capture, so a
+   recorder now would be a speculative abstraction with no consumer.
+2. **Providers view** — `hse bsi providers` over existing descriptors, health
+   and the drift sweep. Every fact it would show is already reachable through
+   the existing `hse bsi` views and the drift sweep; a new view would be a
+   second presentation authority over the same data.
+3. **Detection view** — correlator rules carry `rule_id`/`rule_name` on their
+   findings but are plain functions (no per-rule descriptor); a descriptor table
+   would duplicate the producer→consumer graph the architecture ratchets lock.
+4. **External:** on-device Termux aarch64 end-to-end needs hardware not
+   available here (CI's cross-build and cross-test-compile are the authority);
+   the sandbox proxy blocks crates.io, so MSRV / audit / dep-cooldown are CI's
+   authority too.
 
 ## 5. Changes and outcomes
 
@@ -82,7 +112,10 @@ continuity capabilities are TESTED; 0 UNTESTED, 0 OBSERVED.
 | Continuity model + CLI/API/UI | `4406905d` | integrated (PR #594) |
 | Self-update rollback proof (`hse_verify_or_rollback`) + continuity-panel `rpo_label` polish; self_update → TESTED | `6d98f646` | integrated (PR #594) |
 | Squash-merge of PR #594 into `main` | `4b7ff547` | merged, CI green (user-approved) |
-| ble_radar sweep-interruption recovery (2 tests); ble_radar → TESTED | this commit | gate + runtime verified |
+| ble_radar sweep-interruption recovery (2 tests; `SQLITE_FULL` matched by error code); ble_radar → TESTED | `aaf86c9a` | merged (PR #596), CI green; both Copilot review threads addressed and resolved |
+| hse-core `#![allow(rustdoc::private_intra_doc_links)]` (mirrors the root crate's policy) + `wasm-ui/pkg/hse_wasm_ui_bg.wasm` regenerated with the pinned chain | `40fad7ee` | merged (PR #598), CI green — drift reproduced locally (FAIL) → `--write` → re-verified (PASS) |
+| GitHub finalisation — 16 stale programme PRs closed, each with its evidence in the closing comment: 9 conflict with `main` (#395, #407, #449, #455, #456, #462, #472, #507, #542 — `git merge-tree` on the unshallowed clone; #395's `api::auth` already on `main`, #449 contradicted by the #583 Ollama removal, #455's baseline superseded), 4 already landed (#457, #466, #512, #541 — every distinctive function present on `main`), 1 functionally dead (#546 — retired `ubuntu-18.04` runner + missing secret), 1 reverse PR (#515), 1 cycle artefact (#467); 0 open issues | — | done; open PR list empty |
+| Ledger checkpoint at `40fad7ee` | this commit | docs-only |
 
 Void after evidence: "retire 27 production unwraps" (all test code);
 "dead-code audit" (all sites justified); "Termux hardening" (already clean).
@@ -90,35 +123,52 @@ Void after evidence: "retire 27 production unwraps" (all test code);
 ## 6. Validation evidence per layer
 
 static (fmt, clippy `-D warnings`, rustdoc lints, doc coverage) → unit (7 000+
-lib tests incl. 29 assurance/continuity, 7 endpoint, 3 storage fault, 4 trust,
-15 image-metadata) → architecture ratchets (registry, produced kinds, ATT&CK
-map, producer→consumer, env-knob reads, SPA endpoints, README count locks) →
-integration (`tests/api.rs`, `tests/architecture.rs`, `tests/smoke.rs`) →
-runtime (CLI verbs, API on loopback, served UI) → live network (drift sweep).
+lib tests incl. 29 assurance/continuity, 7 endpoint, 3 storage fault, 2 storage
+recovery, 4 trust, 15 image-metadata; 4 `install.sh` verify-or-rollback tests in
+`tests/install_invariants.rs`) → architecture ratchets (registry, produced
+kinds, ATT&CK map, producer→consumer, env-knob reads, SPA endpoints, README
+count locks, continuity recovery-test existence) → integration (`tests/api.rs`,
+`tests/architecture.rs`, `tests/smoke.rs`) → runtime (CLI verbs, API on
+loopback, served UI) → live network (drift sweep) → reproducibility
+(`wasm-ui/pkg` regenerated byte-identically from source with the pinned chain).
 
 ## 7. Rollback points
 
-- `git revert ab14593f` reverts the whole programme on `main` in one step
-  (squash); `cab1f9b4` is the pre-programme state.
+- `git revert ab14593f` reverts the whole first programme squash on `main`;
+  `cab1f9b4` is the pre-programme state.
+- Programme squashes on `main` after it: `4b7ff547` (#594), `aaf86c9a` (#596),
+  `40fad7ee` (#598) — each reverts independently with `git revert <sha>`. The
+  #598 revert restores the previous `wasm-ui/pkg` bytes together with the
+  hse-core attribute (same squash), so the drift check stays green either way.
 - Each unit is an independent commit on the merged branch history (see §5) for
   finer reverts via `git revert <sha>` on a branch built from those commits.
-- Continuity unit: revert its single commit; no schema or data migration.
+- Continuity units: revert the single commit; no schema or data migration.
 
 ## 8. Restart instructions (exact)
 
 ```bash
 git fetch origin main
 git checkout -B claude/response-accuracy-legal-u90ja3 origin/main   # or the branch's own head
-CARGO_INCREMENTAL=0 scripts/gate.sh --quick                          # 15 checks; ~10–15 min
+CARGO_INCREMENTAL=0 scripts/gate.sh --quick                          # 16 checks; ~10–15 min
 cargo build --bin hse && ./target/debug/hse bsi verify && ./target/debug/hse bsi continuity
 ./target/debug/hse serve --bind 127.0.0.1:8080   # then GET /api/v1/assurance, /assurance/verify,
                                                  #          /assurance/continuity, /attack, /attack/navigator
 cargo test --test live_drift -- --ignored --nocapture   # network; set SSL_CERT_FILE behind a TLS-inspecting proxy
+
+# wasm-ui/pkg drift check locally (otherwise CI is the authority). The chain is
+# pinned in one place each: wasm-bindgen-cli in wasm-ui/Cargo.toml, binaryen in
+# .github/workflows/ci.yml (download URL + sha256) and scripts/gate.sh.
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version "$(grep -m1 '^wasm-bindgen' wasm-ui/Cargo.toml | sed -E 's/.*"([0-9.]+)".*/\1/')" --locked
+# put binaryen version_108's bin/ on PATH exactly as ci.yml does (sha256-verified)
+scripts/wasm_ui_drift_check.sh            # `--write` regenerates wasm-ui/pkg after any hse-core / wasm-ui change; commit the result
 ```
 
 Operational notes: repeated gates accumulate the root crate's test binaries —
 `cargo clean -p huntsman-search-engine` reclaims ~17 GiB and keeps compiled
 deps; `CARGO_INCREMENTAL=0` avoids incremental churn in low-disk sandboxes.
+A fresh clone may be shallow here: run `git fetch --unshallow` before any
+`git merge-tree` / `merge-base` verdict, or every branch reads as unrelated.
 
 ## 9. Failure classification applied
 
@@ -126,6 +176,9 @@ deps; `CARGO_INCREMENTAL=0` avoids incremental churn in low-disk sandboxes.
 |---|---|
 | Resource exhaustion (ENOSPC mid-gate) | stop, `cargo clean -p`, relaunch; gate free space before launch |
 | Deterministic defect (ratchet/clippy failure) | reproduce, root-cause, fix, rerun the affected suite, then the full gate |
+| Deterministic defect (CI wasm-ui/pkg drift on #598) | installed the CI-pinned binaryen locally (sha256-verified), reproduced the FAIL, regenerated with `--write`, re-verified PASS, then CI confirmed on the merged head |
 | Dependency failure (TLS interception) | root-caused to trust config, fixed at the authority (`SSL_CERT_FILE`), re-measured |
 | Invariant violation (branch reset to a stale base) | halted, evidence kept, restored to the verified merge commit with gated checks |
-| External blocker (no device / no wasm-opt) | recorded precisely; CI named as authority |
+| Repository artefact (shallow clone made `merge-tree` report "unrelated histories" for 13 PRs) | verified before acting (`git rev-parse --is-shallow-repository`), `git fetch --unshallow`, re-ran for real verdicts before closing any PR |
+| Tooling artefact (a chained waiter's `pgrep -f` matched its own command line and never launched the gate) | detected by the absent log and idle rustc; killed, ran the gate directly |
+| External blocker (no device) | recorded precisely; CI named as authority |
