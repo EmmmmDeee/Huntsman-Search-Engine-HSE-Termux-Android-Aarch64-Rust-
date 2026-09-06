@@ -134,7 +134,21 @@ pub async fn attack_navigator() -> Response {
 pub async fn assurance_continuity() -> Json<Value> {
     let assessed = continuity::assess();
     let summary = continuity::summarise(&assessed);
-    Json(json!({ "capabilities": assessed, "summary": summary }))
+    // Surface the human-readable RPO label (the CLI's `rpo.label()` authority)
+    // alongside the machine enum, so the Web UI renders "previous binary" rather
+    // than the serialized `previous-binary`. One label source, three consumers
+    // (CLI, API, Web UI) — no per-surface transcription that could drift.
+    let capabilities: Vec<Value> = assessed
+        .iter()
+        .map(|a| {
+            let mut v = json!(a);
+            if let Some(obj) = v.get_mut("objective").and_then(Value::as_object_mut) {
+                obj.insert("rpo_label".into(), json!(a.objective.rpo.label()));
+            }
+            v
+        })
+        .collect();
+    Json(json!({ "capabilities": capabilities, "summary": summary }))
 }
 
 #[cfg(test)]
@@ -191,6 +205,16 @@ mod tests {
                 c["objective"]["faults"]
                     .as_array()
                     .is_some_and(|f| !f.is_empty())
+            );
+            // The human-readable RPO label is surfaced for the Web UI (the
+            // CLI's `rpo.label()` authority), so the panel never shows the raw
+            // `previous-binary` machine enum. Locked here so it can't regress.
+            assert!(
+                c["objective"]["rpo_label"]
+                    .as_str()
+                    .is_some_and(|s| !s.is_empty() && !s.contains('-')),
+                "each capability must carry a humanised rpo_label, got {:?}",
+                c["objective"]["rpo_label"]
             );
         }
     }

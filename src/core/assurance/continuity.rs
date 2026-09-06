@@ -267,8 +267,13 @@ pub fn objectives() -> Vec<ContinuityObjective> {
                        installed one fails verification; HSE_REQUIRE_SHA pins the \
                        exact commit so a stale prebuilt is refused.",
             recovery_procedure: "Re-run `hse update`; pin with HSE_REQUIRE_SHA.",
-            // Implemented in install.sh, but no test exercises the restore path.
-            recovery_tests: &[],
+            // Proven by the install.sh rollback tests (tests/install_invariants.rs):
+            // a failed post-install verification restores the previous binary,
+            // and a verified install is NOT spuriously rolled back.
+            recovery_tests: &[
+                "rollback_restores_the_previous_binary_when_verification_fails",
+                "a_verified_install_keeps_the_new_binary_and_drops_the_rollback_copy",
+            ],
             observed: None,
         },
         ContinuityObjective {

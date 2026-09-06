@@ -83,8 +83,8 @@ function continuityPanel(caps, s){
       <td><code>${esc(o.capability)}</code><div class="text-muted" style="font-size:10px">${esc(o.name)}</div></td>
       <td>${esc(o.criticality)}</td><td>${contState(c.state)}</td>
       <td>${o.rto_secs!=null ? esc(o.rto_secs)+' s' : '<span class="text-muted">unasserted</span>'}</td>
-      <td>${esc(o.rpo)}</td>
-      <td style="font-size:11px">${(o.recovery_tests||[]).length ? o.recovery_tests.map(t=>`<code>${esc(t)}</code>`).join('<br>') : '<span class="text-danger">none — implemented but unproven</span>'}</td>
+      <td>${esc(o.rpo_label || o.rpo)}</td>
+      <td style="font-size:11px">${(o.recovery_tests||[]).length ? o.recovery_tests.map(t=>`<code>${esc(t)}</code>`).join('<br>') : '<span class="text-danger">none — unproven by any test</span>'}</td>
       <td style="font-size:11px">${esc(o.degraded_mode)}</td>
     </tr>`; }).join('');
   return `<div class="panel panel-default">
