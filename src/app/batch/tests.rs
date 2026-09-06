@@ -1,4 +1,4 @@
-use super::sites::{self, LineSyntax, SITES, Site};
+use super::sites::{self, LineSyntax, SITES, Site, SiteClass};
 use super::*;
 use crate::core::confidence;
 use crate::core::entity::{Entity, EntityKind};
@@ -72,6 +72,7 @@ fn a_provider_only_gets_the_kinds_it_indexes_and_spells_lines_its_way() {
         accepts: &[SelectorKind::Email],
         syntax: LineSyntax::Bare,
         evidence: "https://t.example/docs",
+        class: SiteClass::Breach,
     };
     let prefixed = Site {
         syntax: LineSyntax::Prefixed(&[
@@ -117,6 +118,7 @@ fn a_prefixed_provider_quotes_a_field_value_that_has_whitespace() {
         accepts: &[SelectorKind::Name],
         syntax: LineSyntax::Prefixed(&[(SelectorKind::Name, "name")]),
         evidence: "https://t.example/docs",
+        class: SiteClass::Breach,
     };
     let leaked: &'static Site = Box::leak(Box::new(site));
     let spaced = Selector {
@@ -195,6 +197,67 @@ fn every_registered_provider_is_grounded_and_uniquely_named() {
             sites::find(&s.id.to_ascii_uppercase()).is_some(),
             "lookup is case-insensitive"
         );
+        // A genealogy contract is a name-search paste list: it indexes Name and
+        // never uses field-prefixed syntax (no genealogy site documents one).
+        if s.class == SiteClass::Genealogy {
+            assert!(
+                s.accepts.contains(&SelectorKind::Name),
+                "{}: a genealogy contract must index Name",
+                s.id
+            );
+            assert!(
+                matches!(s.syntax, LineSyntax::Bare),
+                "{}: a genealogy contract is a bare paste list",
+                s.id
+            );
+        }
     }
     assert!(sites::find("no-such-site").is_none());
+    // Both classes are populated — the registry is not silently all-breach or
+    // all-genealogy after a bad edit.
+    assert!(
+        SITES.iter().any(|s| s.class == SiteClass::Breach),
+        "at least one breach provider"
+    );
+    assert!(
+        SITES.iter().any(|s| s.class == SiteClass::Genealogy),
+        "at least one genealogy provider"
+    );
+}
+
+#[test]
+fn resolve_selects_by_class_and_named_sites_override_the_class() {
+    // The breach default and the genealogy filter partition the registry; `all`
+    // is their union; a named provider is included whatever its class; unknown
+    // ids and classes are operator-facing errors.
+    let breach = sites::resolve(&[], "breach").unwrap();
+    assert!(breach.iter().all(|s| s.class == SiteClass::Breach));
+    assert!(!breach.is_empty());
+    let empty_is_breach = sites::resolve(&[], "").unwrap();
+    assert_eq!(empty_is_breach.len(), breach.len(), "empty class == breach");
+    let gen_sites = sites::resolve(&[], "genealogy").unwrap();
+    assert!(gen_sites.iter().all(|s| s.class == SiteClass::Genealogy));
+    assert!(!gen_sites.is_empty());
+    assert_eq!(
+        sites::resolve(&[], "all").unwrap().len(),
+        breach.len() + gen_sites.len(),
+        "all is the union of breach and genealogy"
+    );
+    // A named genealogy provider resolves even under the breach default.
+    let named = sites::resolve(&["ancestry"], "breach").unwrap();
+    assert_eq!(
+        named.iter().map(|s| s.id).collect::<Vec<_>>(),
+        vec!["ancestry"]
+    );
+    // Mixed comma list across classes, de-duplicated, order preserved.
+    let mixed = sites::resolve(&["oathnet,ancestry,oathnet"], "genealogy").unwrap();
+    assert_eq!(
+        mixed.iter().map(|s| s.id).collect::<Vec<_>>(),
+        vec!["oathnet", "ancestry"],
+        "named sites win over --class, deduped, in order"
+    );
+    let bad_site = sites::resolve(&["nope"], "breach").unwrap_err();
+    assert!(bad_site.contains("nope") && bad_site.contains("known providers"));
+    let bad_class = sites::resolve(&[], "ancestor").unwrap_err();
+    assert!(bad_class.contains("ancestor") && bad_class.contains("genealogy"));
 }

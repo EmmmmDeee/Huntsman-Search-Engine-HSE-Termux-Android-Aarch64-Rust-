@@ -36,9 +36,11 @@ drift.
 | OpenCelliD | OpenCellID, Opencellid |
 | Termux | termux (in prose) |
 
-Breach and stealer-log services `hse batch` renders bulk queries for (the
-`--site` ids are the lower-cased left column; each is grounded in the
-provider's own docs — see `src/app/batch/sites.rs`):
+Services `hse batch` renders bulk queries for — breach and stealer-log sites by
+default, genealogy / vital-records / archive sites under `--class genealogy`
+(the `--site` ids are the lower-cased left column; each is grounded in the
+provider's own docs or search page — see `src/app/batch/sites.rs`). The breach
+providers whose spelling needs pinning:
 
 | Canonical (`--site` id) | Retired spellings |
 |---|---|
