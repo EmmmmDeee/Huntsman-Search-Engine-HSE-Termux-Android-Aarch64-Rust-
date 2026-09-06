@@ -9,6 +9,7 @@
 //! | GET    | `/api/v1/stats`                          | `stats`                        |
 //! | GET    | `/api/v1/assurance`                      | `assurance` (BSI posture)      |
 //! | GET    | `/api/v1/assurance/verify`               | `assurance_verify`             |
+//! | GET    | `/api/v1/assurance/continuity`           | `assurance_continuity` (200-4) |
 //! | GET    | `/api/v1/attack`                         | `attack` (ATT&CK posture)      |
 //! | GET    | `/api/v1/attack/navigator`               | `attack_navigator` (download)  |
 //! | GET    | `/api/v1/modules`                        | `modules_list`                 |
@@ -439,6 +440,10 @@ pub fn router(
         .route(
             "/assurance/verify",
             get(assurance_handlers::assurance_verify),
+        )
+        .route(
+            "/assurance/continuity",
+            get(assurance_handlers::assurance_continuity),
         )
         .route("/attack", get(assurance_handlers::attack))
         .route(

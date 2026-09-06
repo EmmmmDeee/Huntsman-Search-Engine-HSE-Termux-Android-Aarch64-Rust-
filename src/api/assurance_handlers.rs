@@ -21,7 +21,7 @@ use axum::{
 };
 use serde_json::{Value, json};
 
-use crate::core::assurance::{Profile, findings, resolve_catalog, summarise, verify};
+use crate::core::assurance::{Profile, continuity, findings, resolve_catalog, summarise, verify};
 use crate::modules::{reconnaissance_coverage, technique_module_index};
 
 /// `GET /api/v1/assurance[?profile=<name>]` — every catalogued control resolved
@@ -126,6 +126,17 @@ pub async fn attack_navigator() -> Response {
         .into_response()
 }
 
+/// `GET /api/v1/assurance/continuity` — BSI 200-4 continuity per capability:
+/// the faults in scope, the objectives (MTPD/RTO/RPO), degraded mode, fallback,
+/// recovery procedure, the recovery tests that prove it, and the derived state
+/// (`UNTESTED` / `TESTED` / `OBSERVED`), worst-first. Untested capabilities are
+/// named in the summary rather than folded into a number.
+pub async fn assurance_continuity() -> Json<Value> {
+    let assessed = continuity::assess();
+    let summary = continuity::summarise(&assessed);
+    Json(json!({ "capabilities": assessed, "summary": summary }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,6 +149,7 @@ mod tests {
         Router::new()
             .route("/assurance", get(assurance))
             .route("/assurance/verify", get(assurance_verify))
+            .route("/assurance/continuity", get(assurance_continuity))
             .route("/attack", get(attack))
             .route("/attack/navigator", get(attack_navigator))
     }
@@ -158,6 +170,29 @@ mod tests {
             .expect("readable body");
         let v: Value = serde_json::from_slice(&bytes).expect("JSON body");
         (status, v)
+    }
+
+    #[tokio::test]
+    async fn assurance_continuity_reports_per_capability_state_and_names_untested_gaps() {
+        let (st, v) = get_json("/assurance/continuity").await;
+        assert_eq!(st, StatusCode::OK);
+        let caps = v["capabilities"].as_array().expect("capabilities array");
+        assert!(!caps.is_empty());
+        let s = &v["summary"];
+        assert_eq!(s["total"].as_u64().unwrap() as usize, caps.len());
+        // Honest: no runtime recovery is recorded, so nothing is OBSERVED, and
+        // the untested capabilities are named — never hidden behind a count.
+        assert_eq!(s["observed"], 0);
+        let named = s["untested_capabilities"].as_array().unwrap();
+        assert_eq!(named.len() as u64, s["untested"].as_u64().unwrap());
+        for c in caps {
+            assert!(c["objective"]["recovery_tests"].is_array());
+            assert!(
+                c["objective"]["faults"]
+                    .as_array()
+                    .is_some_and(|f| !f.is_empty())
+            );
+        }
     }
 
     #[tokio::test]

@@ -32,6 +32,7 @@ export const API = {
   // nothing of its own). `profile` is optional and accepts the CLI's names.
   assurance: profile=>API._req('/api/v1/assurance'+(profile?'?profile='+encodeURIComponent(profile):'')),
   assuranceVerify: ()=>API._req('/api/v1/assurance/verify'),
+  assuranceContinuity: ()=>API._req('/api/v1/assurance/continuity'),
   attack:    ()=>API._req('/api/v1/attack'),
   scans:     ()=>API._req('/api/v1/scans'),
   scan:      id=>API._req('/api/v1/scans/'+encodeURIComponent(id)),
