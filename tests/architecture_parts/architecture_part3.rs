@@ -938,7 +938,7 @@ fn non_huntsman_env_reads_are_known() {
     // namespace — never project-specific tuning, so these never move into
     // KNOWN_HSE_KNOBS below no matter what else changes.
     const STANDARD_OS_ENV_VARS: &[&str] =
-        &["HOME", "HTTPS_PROXY", "https_proxy", "NO_COLOR", "TERMUX_VERSION"];
+        &["HOME", "HTTPS_PROXY", "https_proxy", "NO_COLOR", "SSL_CERT_FILE", "TERMUX_VERSION"];
 
     // Every other non-HUNTSMAN_ knob genuinely read anywhere in src/, each
     // annotated with whether it actually does anything today. Extend this
