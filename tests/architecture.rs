@@ -773,6 +773,16 @@ fn core_does_not_import_util_directly() {
                 // copies. Scoped to the single function so the guard stays
                 // precise if `util::timefmt` ever grows a non-pure item.
                 && !line.contains("util::timefmt::civil_from_days")
+                // Pure, offline, dependency-free const table of infra-provider
+                // registrable roots — the single authority
+                // `util::domains::is_infrastructure_email` (mailbox gating) and
+                // `core::scan::classify::is_infra_domain` (hostname expansion
+                // gating) both draw from, so the two can never again hold
+                // divergent hand-mirrored copies of the shared subset (they
+                // had). Same leaf category as `util::oui`; scoped to the one
+                // const so the guard stays precise if `util::domains` ever
+                // grows a non-pure item.
+                && !line.contains("util::domains::INFRA_PROVIDER_ROOTS")
                 // Pure, offline look-alike/typosquat comparison for domain
                 // labels (homoglyph skeleton fold + Levenshtein; no I/O, no
                 // deps, no Unicode tables) — same leaf category as

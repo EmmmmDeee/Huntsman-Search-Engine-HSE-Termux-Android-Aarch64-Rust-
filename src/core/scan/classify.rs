@@ -32,7 +32,8 @@ fn strip_www_ci(d: &str) -> &str {
 
 /// Registrable-suffix match: `d == m` or `d` ends with `.m` (www-stripped),
 /// matched ASCII-case-insensitively against the raw value — zero allocation
-/// (every `list` entry, MEGA_DOMAINS/INFRA_DOMAINS, is lowercase ASCII, so
+/// (every `list` entry — MEGA_DOMAINS, INFRA_PROVIDER_ROOTS, INFRA_HOST_ONLY —
+/// is lowercase ASCII, so
 /// this is equivalent to the old lowercase-then-compare approach). The
 /// suffix comparison runs on byte slices, not `&str`, so it never needs a
 /// char-boundary check regardless of where it cuts.
@@ -56,9 +57,10 @@ pub(crate) fn is_mega_domain(domain: &str) -> bool {
 /// but is incidental to any subject — `ns10.dnsmadeeasy.com`,
 /// `cns1.secureserver.net`, `u123.sendgrid.net`, `ns-664.awsdns-19.net`, … map
 /// the provider's estate, not the target, so they are never worth deep-expanding.
-/// ASCII-case-insensitive substring containment. `core` never imports `util`
-/// directly (see the `core_does_not_import_util_directly` architecture guard),
-/// so this doesn't reach for `util::str_util::find_ascii_ci`'s NEON scan —
+/// ASCII-case-insensitive substring containment. `core` reaches `util` only
+/// through the allow-list of pure leaf items in the
+/// `core_does_not_import_util_directly` architecture guard, so this doesn't
+/// reach for `util::str_util::find_ascii_ci`'s NEON scan —
 /// the domain strings here are a handful of bytes, never a scraped body, so a
 /// SIMD prefilter would buy nothing a plain scan doesn't already give.
 fn contains_ascii_ci(haystack: &[u8], needle: &[u8]) -> bool {
@@ -82,7 +84,10 @@ pub(crate) fn is_infra_domain(domain: &str) -> bool {
     {
         return true;
     }
-    matches_domain_suffix(domain, INFRA_DOMAINS)
+    // The shared provider roots (one authority with `is_infrastructure_email`)
+    // plus the hostname-only estate below.
+    matches_domain_suffix(domain, crate::util::domains::INFRA_PROVIDER_ROOTS)
+        || matches_domain_suffix(domain, INFRA_HOST_ONLY)
 }
 
 /// Either a mega/social platform or shared infrastructure — the haystack a lead
@@ -180,8 +185,14 @@ pub(super) fn domain_expansion_factor(domain: &str) -> f64 {
     }
 }
 
-/// Shared infrastructure providers (see [`is_infra_domain`]). Suffix-matched.
-const INFRA_DOMAINS: &[&str] = &[
+/// Hostname-only additions to `util::domains::INFRA_PROVIDER_ROOTS` (see
+/// [`is_infra_domain`]): managed-DNS and nameserver estates, CDN edge apexes,
+/// ESP sending domains, hosted-mail security gateways and the cloud hosts'
+/// platform domains — names that surface in NS/MX/SOA/reverse lookups and are
+/// applied by the hostname classifier only. Suffix-matched. A root that should
+/// ALSO gate role mailboxes (`abuse@…`) belongs in the shared roots instead;
+/// `core::scan::tests` locks the three tables pairwise disjoint.
+pub(crate) const INFRA_HOST_ONLY: &[&str] = &[
     // Managed DNS & nameserver infrastructure
     "dnsmadeeasy.com",
     "nsone.net",
@@ -198,26 +209,12 @@ const INFRA_DOMAINS: &[&str] = &[
     "googledomains.com", // Google Cloud DNS nameservers (ns-cloud-*.googledomains.com)
     "cloudns.net",       // ClouDNS managed DNS
     "dnsimple.com",      // DNSimple managed DNS
-    // VPS/cloud hosts' own default nameservers — as common in the wild as the
-    // managed-DNS providers above, and the same "provider's estate, not the
-    // subject" case. Mirrors `util::domains::INFRA_MAIL`, which already lists
-    // these (that list's own doc comment says it mirrors this one's intent —
-    // these six had drifted out of this one).
-    "digitalocean.com", // ns1-3.digitalocean.com
-    "linode.com",       // ns1-5.linode.com
-    "hetzner.com",      // hydrogen.ns.hetzner.com, oxygen.ns.hetzner.com
-    "hetzner.de",       // helium.ns.hetzner.de
-    "ovh.net",          // dns100.ovh.net, ns100.ovh.net
-    "ovh.com",
-    // Registrar / hosting control-plane
-    "secureserver.net",
-    "domaincontrol.com",
+    // Registrar / hosting control-plane hostnames (the registrars' corporate
+    // roots — secureserver.net, domaincontrol.com, name.com, namecheap.com,
+    // gandi.net — are shared roots, since their role mailboxes surface too)
     "registrar-servers.com",
     "jomax.net", // GoDaddy registrar/abuse mail domain (dns@jomax.net)
     "epik.com",  // Epik registrar / nameserver provider
-    "name.com",
-    "namecheap.com",
-    "gandi.net",
     // CDN apex roots (edge IPs are gated by validation::is_cdn_edge_ip)
     "cloudfront.net",
     "fastly.net",
@@ -225,35 +222,20 @@ const INFRA_DOMAINS: &[&str] = &[
     "azureedge.net",   // Azure CDN edge
     "edgecastcdn.net", // Edgecast / Verizon Media CDN
     "llnwd.net",       // Limelight Networks CDN
-    // CDN / cloud / DNS *provider corporate domains* — discovered incidentally
-    // via a WHOIS registrar/abuse/dns field, a nameserver, or a role mailbox
-    // (`dns@cloudflare.com`). Never the subject's own infrastructure, so
-    // expanding them floods the graph with the provider's estate (a real scan
-    // pulled Cloudflare's CDN IPs + role mailboxes to the top of the results).
-    "cloudflare.com",
+    // CDN / cloud provider platform domains — never the subject's own
+    // infrastructure, so expanding them floods the graph with the provider's
+    // estate (the providers' corporate roots are shared roots).
     "cloudflare.net",
     "cloudflare-dns.com",
-    "fastly.com",
-    "akamai.com",
-    "incapsula.com",
-    "imperva.com",
-    "sucuri.net",
-    "stackpath.com",
-    "google.com",
     "googleusercontent.com",
     "googleapis.com",
     "gstatic.com",
     "1e100.net",
-    "amazonaws.com",
     "azurewebsites.net",
     "windows.net",
-    "azure.com",
     "cloudapp.net",         // Azure cloud-service / VM endpoints
     "elasticbeanstalk.com", // AWS Elastic Beanstalk app hosting
-    // ESP / transactional mail
-    "sendgrid.net",
-    "sendgrid.com",
-    "mailgun.org",
+    // ESP / transactional mail sending domains
     "mandrillapp.com",
     "sparkpostmail.com",
     "amazonses.com",

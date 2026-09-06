@@ -1800,3 +1800,69 @@ fn stop_reason_survives_the_json_round_trip_the_store_uses() {
         );
     }
 }
+
+/// The infra-provider tables are one shared authority plus two disjoint,
+/// kind-specific extras — never two hand-mirrored copies again.
+///
+/// `util::domains::INFRA_PROVIDER_ROOTS` feeds BOTH classifiers
+/// (`is_infra_domain` for discovered hostnames, `is_infrastructure_email` for
+/// mailboxes); `INFRA_HOST_ONLY` and `INFRA_MAIL_ONLY` add what only one of
+/// them applies. Before the split the two lists mirrored a 24-root subset by
+/// hand and had drifted (six VPS hosts in one, not the other). What makes the
+/// split self-enforcing: no root appears in two tables (a root in both extras
+/// belongs in the shared roots; a root in the roots and an extra is a stale
+/// copy), no table repeats a root, every entry is a bare lowercase ASCII
+/// registrable root (both matchers compare raw bytes and assume it), and every
+/// shared root satisfies both classifiers, as a bare root, a host under it and
+/// a mailbox on it.
+#[test]
+fn infra_provider_tables_are_one_authority_plus_disjoint_extras() {
+    use super::classify::INFRA_HOST_ONLY;
+    use crate::util::domains::{INFRA_MAIL_ONLY, INFRA_PROVIDER_ROOTS, is_infrastructure_email};
+
+    let tables = [
+        ("INFRA_PROVIDER_ROOTS", INFRA_PROVIDER_ROOTS),
+        ("INFRA_HOST_ONLY", INFRA_HOST_ONLY),
+        ("INFRA_MAIL_ONLY", INFRA_MAIL_ONLY),
+    ];
+    for (name, table) in tables {
+        let mut seen = std::collections::HashSet::new();
+        for d in table {
+            assert!(
+                !d.is_empty()
+                    && d.bytes().all(|b| b.is_ascii_lowercase()
+                        || b.is_ascii_digit()
+                        || b == b'.'
+                        || b == b'-')
+                    && !d.starts_with('.')
+                    && !d.ends_with('.'),
+                "{name}: `{d}` is not a bare lowercase ASCII registrable root"
+            );
+            assert!(seen.insert(*d), "{name}: `{d}` is listed twice");
+        }
+    }
+    for (i, (a_name, a)) in tables.iter().enumerate() {
+        for (b_name, b) in &tables[i + 1..] {
+            let both: Vec<&&str> = a.iter().filter(|d| b.contains(*d)).collect();
+            assert!(
+                both.is_empty(),
+                "{a_name} and {b_name} both list {both:?} — a root in both extras belongs in \
+                 INFRA_PROVIDER_ROOTS; a root in the roots and an extra is a stale copy"
+            );
+        }
+    }
+    for d in INFRA_PROVIDER_ROOTS {
+        assert!(
+            is_infra_domain(d),
+            "shared root `{d}` must be infra for the hostname classifier"
+        );
+        assert!(
+            is_infra_domain(&format!("ns1.{d}")),
+            "a host under shared root `{d}` must be infra"
+        );
+        assert!(
+            is_infrastructure_email(&format!("jdoe@{d}")),
+            "a mailbox on shared root `{d}` must be infra for the mailbox classifier"
+        );
+    }
+}
