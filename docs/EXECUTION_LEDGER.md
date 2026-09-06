@@ -183,6 +183,7 @@ A fresh clone may be shallow here: run `git fetch --unshallow` before any
 | Deterministic defect (CI wasm-ui/pkg drift on #598) | installed the CI-pinned binaryen locally (sha256-verified), reproduced the FAIL, regenerated with `--write`, re-verified PASS, then CI confirmed on the merged head |
 | Dependency failure (TLS interception) | root-caused to trust config, fixed at the authority (`SSL_CERT_FILE`), re-measured |
 | Invariant violation (branch reset to a stale base) | halted, evidence kept, restored to the verified merge commit with gated checks |
+| Deterministic defect (CI: `no_llm_inference_integration_exists` flagged this ledger's history row naming a removed integration) | classified `docs/EXECUTION_LEDGER.md` as a historical record in the guard's own exemption (`is_historical_record`), the class its doctrine already grants to ledgers and audit records — docs under `docs/` are scanned by architecture ratchets, so a checkpoint is validated by the gate like code |
 | Repository artefact (shallow clone made `merge-tree` report "unrelated histories" for 13 PRs) | verified before acting (`git rev-parse --is-shallow-repository`), `git fetch --unshallow`, re-ran for real verdicts before closing any PR |
 | Tooling artefact (a chained waiter's `pgrep -f` matched its own command line and never launched the gate) | detected by the absent log and idle rustc; killed, ran the gate directly |
 | External blocker (no device) | recorded precisely; CI named as authority |
