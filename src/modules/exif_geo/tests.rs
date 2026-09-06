@@ -403,3 +403,54 @@ fn emit_xmp_is_a_noop_without_identity_metadata() {
     );
     assert!(r.entities.is_empty());
 }
+
+// ── IPTC-IIM by-line → Person leads (agency/legacy photos without XMP) ─────────
+
+#[test]
+fn emit_iptc_turns_the_byline_into_a_person_lead_with_caption_context() {
+    use crate::core::module::ModuleResult;
+    use crate::util::iptc::ImageIptc;
+
+    let iptc = ImageIptc {
+        by_lines: vec!["Press Photographer".to_string()],
+        keywords: vec!["summit".to_string()],
+        location: Some("Geneva, Switzerland".to_string()),
+        caption: Some("Leaders meet at the summit.".to_string()),
+    };
+    let mut r = ModuleResult::new();
+    super::emit_iptc(&mut r, "https://example.com/wire.jpg", &iptc, "scan-1");
+
+    // The by-line becomes one Person lead, tagged as IPTC-sourced.
+    assert_eq!(r.entities.len(), 1);
+    let e = &r.entities[0];
+    assert_eq!(e.kind, EntityKind::Person);
+    assert_eq!(e.value, "Press Photographer");
+    assert!(e.tags.iter().any(|t| t == "iptc"));
+    // The caption/place/keywords ride along as correlation context.
+    let ev = &e.evidence[0];
+    assert!(
+        ev.attributes
+            .get("image_caption")
+            .is_some_and(|v| v.contains("Leaders"))
+    );
+    assert!(
+        ev.attributes
+            .get("image_place")
+            .is_some_and(|v| v.contains("Geneva"))
+    );
+}
+
+#[test]
+fn emit_iptc_invents_no_person_from_a_caption_only_block() {
+    use crate::core::module::ModuleResult;
+    use crate::util::iptc::ImageIptc;
+
+    // Caption present but no by-line: no Person is fabricated from free text.
+    let iptc = ImageIptc {
+        caption: Some("An unattributed crowd scene.".to_string()),
+        ..Default::default()
+    };
+    let mut r = ModuleResult::new();
+    super::emit_iptc(&mut r, "https://example.com/p.jpg", &iptc, "s");
+    assert!(r.entities.is_empty());
+}

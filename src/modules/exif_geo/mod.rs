@@ -242,6 +242,19 @@ impl Module for ExifGeo {
             &ctx.scan_id,
         );
 
+        // Legacy IPTC-IIM identity metadata — the by-line (photographer), caption,
+        // keywords and place that press-agency, newsroom and older-camera images
+        // carry in the Photoshop APP13 block even when they hold no XMP. Same
+        // bytes, no second fetch; emitting the by-line as a Person corroborates an
+        // XMP creator of the same name rather than competing with it. See
+        // `crate::util::iptc`.
+        emit_iptc(
+            &mut result,
+            url,
+            &crate::util::iptc::parse(&body),
+            &ctx.scan_id,
+        );
+
         let mut cursor = std::io::Cursor::new(body.as_slice());
         let exif = match Reader::new().read_from_container(&mut cursor) {
             Ok(e) => e,
@@ -436,6 +449,46 @@ fn emit_xmp(result: &mut ModuleResult, url: &str, xmp: &crate::util::xmp::ImageX
         e.add_evidence(with_context(Evidence::new(
             SRC,
             format!("Image author/by-line in metadata (XMP dc:creator): {name}"),
+        )));
+        result.push(e);
+    }
+}
+
+/// Turn an image's legacy IPTC-IIM by-line into `Person` leads, carrying the
+/// caption / keywords / place embedded alongside as correlation context. A
+/// caption-only block (no by-line) yields nothing: a Person is never invented
+/// from free text. Mirrors [`emit_xmp`] so the two metadata sources fuse
+/// (a name found in both XMP and IPTC corroborates, it does not duplicate).
+fn emit_iptc(
+    result: &mut ModuleResult,
+    url: &str,
+    iptc: &crate::util::iptc::ImageIptc,
+    scan_id: &str,
+) {
+    if iptc.by_lines.is_empty() {
+        return;
+    }
+    let with_context = |mut ev: Evidence| {
+        ev = ev.with_attr("url", url).with_attr("source", "iptc");
+        if let Some(place) = &iptc.location {
+            ev = ev.with_attr("image_place", place.as_str());
+        }
+        if !iptc.keywords.is_empty() {
+            ev = ev.with_attr("image_keywords", iptc.keywords.join(", "));
+        }
+        if let Some(cap) = &iptc.caption {
+            ev = ev.with_attr("image_caption", cap.as_str());
+        }
+        ev
+    };
+    for name in &iptc.by_lines {
+        let mut e = Entity::new(EntityKind::Person, name, confidence::LOW_MEDIUM, scan_id);
+        e.tag("photo-derived");
+        e.tag("iptc");
+        e.tag("by-line");
+        e.add_evidence(with_context(Evidence::new(
+            SRC,
+            format!("Image by-line/author in IPTC metadata: {name}"),
         )));
         result.push(e);
     }

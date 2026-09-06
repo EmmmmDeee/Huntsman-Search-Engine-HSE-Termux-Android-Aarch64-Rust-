@@ -39,6 +39,7 @@ pub mod hashcat;
 pub mod html;
 pub mod http;
 pub mod identity;
+pub mod iptc;
 pub mod json;
 pub mod key_fingerprint;
 pub mod key_harvest;
