@@ -51,6 +51,7 @@ pub mod cert_intel;
 pub mod certspotter;
 pub mod chain_intel;
 pub mod chess_profile;
+pub mod chronicling_america;
 pub mod cloud_storage;
 pub mod codeberg_user;
 pub mod codewars_user;
@@ -86,6 +87,7 @@ pub mod email_parse;
 pub mod emailrep;
 pub mod employer_pivot;
 pub mod epieos;
+pub mod europeana;
 pub mod europepmc_search;
 pub mod exa_search;
 pub mod exif_geo;
@@ -147,6 +149,7 @@ pub mod numverify;
 pub mod oathnet_pro;
 pub mod onyphe;
 pub mod open_meteo_geo;
+pub mod openarch;
 pub mod opencellid;
 pub mod opencorporates;
 pub mod opensanctions;
@@ -163,6 +166,7 @@ pub mod plc_directory;
 pub mod portscan;
 pub mod wiki_geosearch;
 pub mod wikidata_geo;
+pub mod wikitree;
 // Shared entity-construction toolkit for developer-profile modules — a helper,
 // not a registered `Module`, so it is `pub(crate)` (the registry guard only
 // inspects `pub mod` declarations).
@@ -605,6 +609,11 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(hlr_cnam::HlrCnam),
             Arc::new(netlas::Netlas),
             Arc::new(trove_au::TroveAu),
+            // Genealogy / vital records / archives (live-verified wire formats).
+            Arc::new(wikitree::WikiTree),
+            Arc::new(openarch::OpenArch),
+            Arc::new(chronicling_america::ChroniclingAmerica),
+            Arc::new(europeana::Europeana),
             Arc::new(austlii::AustLii),
         ]
     });

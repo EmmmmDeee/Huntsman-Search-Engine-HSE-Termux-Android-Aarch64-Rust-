@@ -246,6 +246,30 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **Wayback Machine / archive.org** | historical snapshots | free | M |
 | **Blockchain OSINT** — Etherscan, BscScan, Blockchair, Bitquery, Chainalysis | wallet/tx intelligence | ltd/key | C |
 
+## 15. Genealogy / vital records / archives 🧬
+
+Automated only where a free API — or a keyless search whose terms and robots
+rules permit automation — exists **and** HSE has verified the wire format
+against the live provider; everything else is a **manual contract**:
+`hse batch --class genealogy` writes the name query for the operator to paste
+(`src/app/batch/sites.rs`, each contract citing the provider page it was read
+from). A site whose terms bar automation is never fetched by HSE.
+
+| Provider | What it gives | Free tier | HSE |
+|---|---|---|---|
+| **WikiTree** | collaborative single family tree: profiles with birth/death dates and places, parent links | free (keyless; `appId` caller id) | M |
+| **Open Archives** (openarchieven.nl) | civil, church and population registers from ~50 archives (NL/BE above all, FR INSEE deaths, US "Reclaim The Records") | free (keyless) | M |
+| **Chronicling America** (Library of Congress) | digitised US newspapers 1756–1963, full-text, via the loc.gov JSON API | free (keyless) | M |
+| **Europeana** | EU cultural-heritage index (~50 M records: registers, newspapers, photographs, war records) | free key (`wskey`) | M K |
+| **Trove** (NLA) | Australian newspaper archive — see §13 | free key | M K |
+| **Ancestry / FamilySearch / MyHeritage / Geneanet / Geni / RootsWeb WorldConnect / FamilyTreeNow** | trees and record collections; terms bar automated access | account | batch (manual) |
+| **Find a Grave / Australian Cemeteries Index / Deceased Online** | burials, memorials, cemetery indexes | free / registration | batch (manual) |
+| **Ryerson Index / Obituaries Australia / Australian Dictionary of Biography / Legacy.com** | death and funeral notices, obituaries, biographies | free | batch (manual) |
+| **NSW / VIC / QLD BDM, NZ BDM, FreeBMD / FreeCEN / FreeREG, Irish Genealogy, ScotlandsPeople** | civil registration and census indexes | free (some registration) | batch (manual) |
+| **NAA RecordSearch / AWM people / CWGC / TNA Discovery / NARA catalog** | service, immigration, war-dead and archival records | free | batch (manual) |
+| **Papers Past / Forebears / GEDBAS** | NZ newspapers; surname origin and distribution; GEDCOM database | free | batch (manual) |
+| **BillionGraves / Irish census (1901/1911)** | memorials; census returns | free | C — connection reset by the provider to HSE's checks; not wired until verifiable |
+
 ---
 
 ## Lighting up BYO keys
@@ -258,7 +282,7 @@ FULLCONTACT, SEON, OPENSANCTIONS, OSINTCAT, SHODAN, CENSYS (ID+SECRET),
 ZOOMEYE, BINARYEDGE, FOFA, NETLAS, ONYPHE, FULLHUNT, CRIMINALIP, LEAKIX, GREYNOISE,
 VIRUSTOTAL, ABUSEIPDB, ABUSECH, THREATFOX, ALIENVAULT, URLSCAN, PULSEDIVE,
 PASSIVETOTAL, SECTRAILS, WHOISXML, DOMAINSDB, BUILTWITH, C99, BREACHDIR, NUMVERIFY,
-HLR, OPENCNAM, IPQS, OPENCELLID, WIGLE (USER+TOKEN), OPENCORP, TROVE, EXA, ABR_GUID`.
+HLR, OPENCNAM, IPQS, OPENCELLID, WIGLE (USER+TOKEN), OPENCORP, TROVE, EUROPEANA, EXA, ABR_GUID`.
 
 Most are optional — ~75% of HSE modules need **no** key. Add a key only to escalate
 a specific source; HSE never marks up provider pricing (pay the provider directly,

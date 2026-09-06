@@ -8,7 +8,7 @@
 **All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition —
 SpiderFoot-inspired breadth without the daemon or the footprint.**
 
-Pure-Rust OSINT / GEOINT platform with **194 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **198 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 dark-console Web UI, zero native dependencies, keyless-first.
 
@@ -195,7 +195,7 @@ single-instance constraint (local SQLite — do not scale replicas above 1).
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 194 modules
+hse modules                                                 # list all 198 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
 hse keys status                                             # multi-key pool: what's loaded, per source
@@ -345,7 +345,7 @@ HSE's engine.
 | Email | `--kind email` | `user@example.com` | 45 |
 | Username | `--kind username` | `johndoe` | 51 |
 | Phone | `--kind phone` | `+61400000000` | 18 |
-| Full Name | `--kind name` | `Jordan Leigh Meyers` | 26 |
+| Full Name | `--kind name` | `Jordan Leigh Meyers` | 30 |
 | IP Address | `--kind ip` | `1.1.1.1` | 42 |
 | Domain | `--kind domain` | `example.com` | 60 |
 | ASN | `--kind asn` | `AS13335` | 4 |
@@ -353,7 +353,7 @@ HSE's engine.
 | Coordinates | `--kind coords` | `-27.47,153.02` | 19 |
 | Address | `--kind address` | `Nundah, QLD 4012` | 5 |
 | URL | `--kind url` | `https://example.com/page` | 25 |
-| Organisation | `--kind org` | `ACME Pty Ltd` | 25 |
+| Organisation | `--kind org` | `ACME Pty Ltd` | 27 |
 | ABN/ACN | `--kind abn` | `51824753556` | 7 |
 | MAC Address | `--kind mac` | `AA:BB:CC:DD:EE:FF` | 10 |
 | Crypto Address | `--kind crypto` | `bc1q…` | 5 |
@@ -369,17 +369,17 @@ respectively.
 
 ---
 
-## Module Overview (194 modules — 148 free, 46 key-gated/paid)
+## Module Overview (198 modules — 151 free, 47 key-gated/paid)
 
 > A curated highlight of the modules below (not the full list). The complete, always-current catalogue
 > with target kinds and output entities lives in the running software — run
 > `hse modules` or open the web UI's module wizard — never a static doc that
 > can drift from the registry.
 
-**API-Free (no keys required) — 96:**
+**API-Free (no keys required) — 99:**
 - **Breach/identity & dark-web exposure**: `ahmia`, `psbdmp`, `pwned_passwords`, `xposed_or_not`
 - **Social**: `crates_io`, `github_code_search`, `github_user`, `hacker_news`, `keybase`, `npm_author`, `reddit_user`, `social_probe`, `streaming_probe`, `username_search`, `username_variants`
-- **People**: `ahpra`, `au_electoral`, `au_people`, `au_property`, `contact_enrich`, `employer_pivot`, `gravatar`, `name_intel`, `payid`, `pgp`, `wikidata`
+- **People**: `ahpra`, `au_electoral`, `au_people`, `au_property`, `contact_enrich`, `employer_pivot`, `gravatar`, `name_intel`, `openarch`, `payid`, `pgp`, `wikidata`, `wikitree`
 - **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `hackertarget`, `mnemonic_pdns`, `rdap_domain`, `subdomain_center`, `subdomain_takeover`, `typosquat`, `whois`
 - **IP/infrastructure**: `bgpview`, `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipinfo`, `ipquery`, `netblock`, `portscan`, `ripestat`, `shodan`, `urlscan`
 - **Geolocation**: `beacondb`, `breach_timezone`, `cell_local`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mylnikov`, `open_meteo_geo`, `overpass`, `phone_geo`, `photon`, `qld_cadastre`, `social_location`, `sunrise_sunset`
@@ -387,14 +387,14 @@ respectively.
 - **Email**: `disposable_check`, `email_canonical`, `email_parse`, `smtp_vrfy`
 - **Phone**: `phone_au`, `phone_intl`
 - **Corporate**: `acma_rrl`, `acnc_charities`, `asic_director`, `au_unclaimed`, `austlii`, `gleif_lei`
-- **Search**: `search_engines`
+- **Search**: `chronicling_america`, `search_engines`
 - **Web analysis**: `cloud_storage`, `sitemap`, `waf_detect`, `wayback`, `web_crawler`, `webserver_banner`
 - **Termux sensors**: `cell_intel`, `device_sensors`, `local_net`, `signal_radar`
 - **Other**: `api_key_probe`, `chain_intel`
 
-**Key-gated / Paid — 35:**
+**Key-gated / Paid — 36:**
 - `abn_lookup`, `abuseipdb`, `censys`, `criminal_ip`, `dehashed`, `domainsdb`, `emailrep`
-- `epieos`, `exa_search`, `fullcontact`, `hibp`, `hlr_cnam`, `hunter_io`, `intelx`, `ipqs`
+- `epieos`, `europeana`, `exa_search`, `fullcontact`, `hibp`, `hlr_cnam`, `hunter_io`, `intelx`, `ipqs`
 - `leakix`, `netlas`, `niamonx`, `numverify`, `oathnet_pro`, `onyphe`, `opencellid`, `opencorporates`, `osintcat`
 - `securitytrails`, `see_know`, `seon`, `threatfox`, `trove_au`, `virustotal`, `whoisxml`
 - `wifi_intel`, `wigle`, `zoomeye`

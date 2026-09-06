@@ -22,7 +22,9 @@
 //! Priority 97 so derived identifiers exist during the seed round. Pure string
 //! transformation + one MD5 — no C deps, ideal for Termux/aarch64.
 
-mod permute;
+// `pub(crate)`: the `wikitree` genealogy module splits its full-name seed with
+// this parser too, so first/last-name splitting has exactly one implementation.
+pub(crate) mod permute;
 
 use async_trait::async_trait;
 

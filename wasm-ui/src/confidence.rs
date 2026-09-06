@@ -1,5 +1,5 @@
 //! Confidence-tier math — the `effC`/`classify` exports that replaced the
-//! `ENRICHMENT_SOURCES`/`sourceCount`/`effC`/`classify` cluster
+//! `ENRICHMENT_SOURCES`/`sourceCount`/`effC`/`classify` cluster that
 //! `src/web/js/helpers.js` used to hand-maintain.
 //!
 //! This is the concrete reason this whole port exists (see `lib.rs`'s doc

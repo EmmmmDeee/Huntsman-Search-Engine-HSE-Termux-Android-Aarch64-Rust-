@@ -753,6 +753,17 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         probe_parser: None,
     },
     ServiceDef {
+        name: "europeana",
+        env_var: "HUNTSMAN_EUROPEANA_KEY",
+        category: "identity",
+        // The module's own real endpoint (Europeana Search API), minimised to
+        // `rows=0` — a genuine, cheap live query that still validates the key.
+        test_url: "https://api.europeana.eu/record/v2/search.json?query=test&rows=0",
+        key_header: KeyPlacement::QueryParam("wskey"),
+        rate_limit_reset_secs: 60,
+        probe_parser: None,
+    },
+    ServiceDef {
         name: "dehashed",
         env_var: "HUNTSMAN_DEHASHED_KEY",
         category: "breach",

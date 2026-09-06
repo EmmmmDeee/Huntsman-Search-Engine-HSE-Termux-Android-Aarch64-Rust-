@@ -56,6 +56,8 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_OPENCELLID_KEY",
     // Australian archives
     "HUNTSMAN_TROVE_KEY",
+    // European cultural-heritage archives
+    "HUNTSMAN_EUROPEANA_KEY",
     // OSINT orchestration APIs
     "HUNTSMAN_SEON_KEY",
     "HUNTSMAN_OPENSANCTIONS_KEY",
@@ -127,6 +129,9 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
         "HUNTSMAN_OPENCNAM_KEY" => "OpenCNAM — free tier at https://www.opencnam.com/register",
         "HUNTSMAN_TROVE_KEY" => {
             "National Library of Australia Trove — free key at https://trove.nla.gov.au/about/create-something/using-our-apis/api-technical-guide"
+        }
+        "HUNTSMAN_EUROPEANA_KEY" => {
+            "Europeana — free key (wskey); docs: https://europeana.atlassian.net/wiki/spaces/EF/pages/2385739812/Search+API+Documentation"
         }
         "HUNTSMAN_OPENCELLID_KEY" => "OpenCelliD — free key at https://opencellid.org/register.php",
         "HUNTSMAN_EXA_KEY" => "Exa AI — free tier at https://dashboard.exa.ai/api-keys",

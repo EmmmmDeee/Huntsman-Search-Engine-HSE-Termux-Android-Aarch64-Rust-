@@ -77,6 +77,8 @@ HUNTSMAN_OPENCORP_KEY="insert_opencorporates_key_here"
 HUNTSMAN_GITHUB_TOKEN="insert_github_personal_access_token_here"
 # Australian archives:
 HUNTSMAN_TROVE_KEY="insert_nla_trove_key_here"
+# European cultural-heritage archives (Europeana Search API key — the `wskey`):
+HUNTSMAN_EUROPEANA_KEY="insert_europeana_wskey_here"
 HUNTSMAN_BREACHDIR_KEY="insert_breachdirectory_key_here"
 HUNTSMAN_HUNTER_KEY="insert_hunter_io_key_here"
 # [RESERVED] the vendor (nubela.co) permanently sunset the Proxycurl API on
