@@ -36,8 +36,11 @@ export function classify(eff) {
 
 /**
  * Effective confidence for an entity — mirrors
- * [`hse_core::Entity::c_effective`] exactly, for the same reason
- * [`source_count`] does.
+ * [`hse_core::Entity::c_effective`] exactly, because it *is*
+ * `Entity::c_effective`. `entity_js` is the entity object as the browser
+ * received it from the API (the same JSON `hse_core::Entity` serializes to
+ * server-side); deserialization failing indicates a real shape mismatch
+ * worth surfacing as a thrown JS error, not silently guessing a value.
  * @param {any} entity_js
  * @returns {number}
  */
@@ -55,24 +58,6 @@ export function effC(entity_js) {
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
     }
-}
-
-/**
- * True if `source` must not count toward cross-source corroboration —
- * mirrors [`hse_core::is_non_corroborating_source`] exactly. This is the
- * predicate `scan_info/browse.js`'s evidence-detail rows use to mark a
- * non-corroborating source (the same "(non-corroborating: …)" annotation
- * the CLI dossier prints); the JS side used to hold its own `ENRICHMENT_SOURCES`
- * set for this before that set moved into `hse_core` under this module's
- * migration, leaving `browse.js`'s call site referencing an undefined global.
- * @param {string} source
- * @returns {boolean}
- */
-export function isNonCorroboratingSource(source) {
-    const ptr0 = passStringToWasm0(source, wasm.__wbindgen_export, wasm.__wbindgen_export2);
-    const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.isNonCorroboratingSource(ptr0, len0);
-    return ret !== 0;
 }
 
 /**
@@ -899,32 +884,6 @@ export function renderTrustHtml(data, entities_js) {
         wasm.__wbindgen_export5(deferred2_0, deferred2_1, 1);
     }
 }
-
-/**
- * Distinct corroborating sources for an entity — mirrors
- * [`hse_core::Entity::source_count`] exactly, because it *is*
- * `Entity::source_count`. `entity_js` is the entity object as the browser
- * received it from the API (the same JSON `hse_core::Entity` serializes to
- * server-side); deserialization failing indicates a real shape mismatch
- * worth surfacing as a thrown JS error, not silently guessing a value.
- * @param {any} entity_js
- * @returns {number}
- */
-export function sourceCount(entity_js) {
-    try {
-        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        wasm.sourceCount(retptr, addHeapObject(entity_js));
-        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
-        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
-        if (r2) {
-            throw takeObject(r1);
-        }
-        return r0 >>> 0;
-    } finally {
-        wasm.__wbindgen_add_to_stack_pointer(16);
-    }
-}
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
@@ -1209,7 +1168,7 @@ function __wbg_get_imports() {
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 16, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
-            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_315);
+            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_312);
             return addHeapObject(ret);
         },
         __wbindgen_cast_0000000000000002: function(arg0) {
@@ -1241,8 +1200,8 @@ function __wbg_get_imports() {
     };
 }
 
-function __wasm_bindgen_func_elem_315(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_315(arg0, arg1, addHeapObject(arg2));
+function __wasm_bindgen_func_elem_312(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_312(arg0, arg1, addHeapObject(arg2));
 }
 
 function addHeapObject(obj) {

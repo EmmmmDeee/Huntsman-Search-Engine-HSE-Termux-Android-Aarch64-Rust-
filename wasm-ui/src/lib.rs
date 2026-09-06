@@ -4,8 +4,9 @@
 //!
 //! Modules ported so far:
 //! - [`theme`] — `src/web/js/theme.js`
-//! - [`confidence`] — the `ENRICHMENT_SOURCES`/`sourceCount`/`effC`/`classify`
-//!   cluster in `src/web/js/helpers.js`
+//! - [`confidence`] — the `effC`/`classify` exports that replaced the
+//!   `ENRICHMENT_SOURCES`/`sourceCount`/`effC`/`classify` cluster in
+//!   `src/web/js/helpers.js`
 //! - [`scan_info`] — `src/web/js/scan_info/*.js`, one submodule per file
 //! - [`views`] — `src/web/js/views/*.js`'s pure, DOM-free rendering helpers
 //!   (dash.js's module-health panel; scans.js's budget panel and scan table;
