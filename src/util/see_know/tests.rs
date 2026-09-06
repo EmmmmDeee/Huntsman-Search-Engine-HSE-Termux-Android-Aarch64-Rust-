@@ -1234,10 +1234,11 @@ fn one_scans_cached_responses_are_never_served_to_another() {
 /// guard; this scan of the file's own source keeps that from recurring.
 #[test]
 fn every_budget_mutating_test_holds_the_budget_lock() {
-    let src = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/util/see_know/tests.rs"),
-    )
-    .expect("read this test file's own source");
+    // `file!()` tracks this source's own path, so the self-scan follows a move
+    // or rename instead of drifting from a hard-coded literal.
+    let src =
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file!()))
+            .expect("read this test file's own source");
     // The mutators that touch the shared scan-cap state (not the pure reads).
     const MUTATORS: &[&str] = &[
         "reset_budget(",
@@ -1265,7 +1266,16 @@ fn every_budget_mutating_test_holds_the_budget_lock() {
     }
     let mut offenders = Vec::new();
     for chunk in chunks.iter().skip(1) {
-        let name = chunk
+        // Scan the CODE only — drop `//`/`///` comment-only lines — so a mention
+        // in a comment (`// reset_budget(...)`, or `// …BUDGET_TEST_LOCK.lock()`)
+        // can neither count as a mutator call nor stand in for a real guard
+        // acquisition. This also keeps the name off a comment that says "fn …".
+        let code: String = chunk
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let name = code
             .split_once("fn ")
             .and_then(|(_, rest)| rest.split(['(', '<', ' ']).next())
             .unwrap_or("<unknown>");
@@ -1273,10 +1283,9 @@ fn every_budget_mutating_test_holds_the_budget_lock() {
         if name == "every_budget_mutating_test_holds_the_budget_lock" {
             continue;
         }
-        let mutates = MUTATORS.iter().any(|m| chunk.contains(m));
-        // Look for the actual guard ACQUISITION, not a bare mention of the lock
-        // — a doc comment naming `BUDGET_TEST_LOCK` must not satisfy the check.
-        let holds_lock = chunk.contains("BUDGET_TEST_LOCK.lock(");
+        let mutates = MUTATORS.iter().any(|m| code.contains(m));
+        // Look for the actual guard ACQUISITION, not a bare mention of the lock.
+        let holds_lock = code.contains("BUDGET_TEST_LOCK.lock(");
         if mutates && !holds_lock {
             offenders.push(name.to_string());
         }
