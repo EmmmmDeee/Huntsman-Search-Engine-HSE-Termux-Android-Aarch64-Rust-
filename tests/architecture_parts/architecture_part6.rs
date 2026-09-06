@@ -682,6 +682,14 @@ fn no_production_reimplements_ascii_digits() {
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
+                // Skip `tests/` fragment dirs (e.g. `core/correlator/tests/partNN.rs`):
+                // they are `#[cfg(test)] mod tests { include!(…) }` fragments that
+                // carry no `#[cfg(test)]` marker of their own, so `production_source`
+                // cannot strip them — scanning them would make this "production only"
+                // ratchet false-fail on a test's own digit assertion.
+                if p.file_name().is_some_and(|n| n == "tests") {
+                    continue;
+                }
                 walk(&p, out);
             } else if p.extension().is_some_and(|x| x == "rs")
                 && !p
