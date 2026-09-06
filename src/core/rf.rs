@@ -355,7 +355,7 @@ pub fn parse_iso8601_epoch(s: &str) -> Option<i64> {
             b'-' => 1,
             _ => return None,
         };
-        let digits: String = tz[1..].chars().filter(char::is_ascii_digit).collect();
+        let digits = crate::util::str_util::ascii_digits(&tz[1..]);
         if digits.len() != 4 {
             return None;
         }

@@ -134,7 +134,7 @@ fn build_director_entities(
 
     // ACN entity → feeds abn_lookup for full address/coords.
     if !acn.is_empty() {
-        let acn_clean: String = acn.chars().filter(char::is_ascii_digit).collect();
+        let acn_clean = crate::util::str_util::ascii_digits(acn);
         // Checksum-validate before trusting it, exactly like every other
         // caller in this codebase that mints an ACN-shaped value
         // (au_business_id, the search_engines extractor,
@@ -228,7 +228,7 @@ fn parse_asic_html(html: &str, full_name: &str) -> Vec<(String, String, Option<S
 
 /// Extract the first 9-digit ACN-like sequence from text. Pure.
 fn extract_acn(text: &str) -> Option<String> {
-    let digits_only: String = text.chars().filter(char::is_ascii_digit).collect();
+    let digits_only = crate::util::str_util::ascii_digits(text);
     (digits_only.len() >= 9).then(|| digits_only[..9].to_string())
 }
 

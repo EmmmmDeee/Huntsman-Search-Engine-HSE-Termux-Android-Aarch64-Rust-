@@ -335,11 +335,11 @@ fn is_cnam_placeholder(name: &str, number: &str) -> bool {
     // The queried number echoed back as the "name" is not an identity: a value
     // with no alphabetic character (all digits / punctuation), or one whose
     // digits equal the looked-up number's digits.
-    let name_digits: String = n.chars().filter(char::is_ascii_digit).collect();
+    let name_digits = crate::util::str_util::ascii_digits(n);
     if !n.chars().any(char::is_alphabetic) && !name_digits.is_empty() {
         return true;
     }
-    let num_digits: String = number.chars().filter(char::is_ascii_digit).collect();
+    let num_digits = crate::util::str_util::ascii_digits(number);
     if name_digits.len() >= 7 && name_digits == num_digits {
         return true;
     }

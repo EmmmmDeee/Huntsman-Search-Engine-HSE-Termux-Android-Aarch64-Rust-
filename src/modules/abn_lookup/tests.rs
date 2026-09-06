@@ -490,14 +490,18 @@ fn split_curl_headers_falls_back_to_whole_input_as_body_when_no_header_block() {
 }
 
 #[test]
-fn str_field_returns_nonempty_string_else_none() {
-    use super::parse::str_field;
+fn field_extraction_uses_nonempty_string_else_none() {
+    // `abn_lookup::parse` reads every field through the shared
+    // `util::json::val_str` authority (it used to keep a byte-identical private
+    // `str_field` copy); this pins the "present and non-blank, else None"
+    // semantics the parser relies on.
+    use crate::util::json::val_str;
     let v = serde_json::json!({"Abn": "123", "Empty": "", "Num": 7, "Null": null});
-    assert_eq!(str_field(&v, "Abn"), Some("123".to_string()));
-    assert_eq!(str_field(&v, "Empty"), None);
-    assert_eq!(str_field(&v, "Num"), None);
-    assert_eq!(str_field(&v, "Null"), None);
-    assert_eq!(str_field(&v, "Absent"), None);
+    assert_eq!(val_str(&v, "Abn"), Some("123".to_string()));
+    assert_eq!(val_str(&v, "Empty"), None);
+    assert_eq!(val_str(&v, "Num"), None);
+    assert_eq!(val_str(&v, "Null"), None);
+    assert_eq!(val_str(&v, "Absent"), None);
 }
 
 #[test]

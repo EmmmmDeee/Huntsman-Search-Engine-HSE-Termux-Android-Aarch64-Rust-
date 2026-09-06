@@ -106,7 +106,7 @@ impl Module for PhoneGeo {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
 
-        let digits: String = target.value.chars().filter(char::is_ascii_digit).collect();
+        let digits = crate::util::str_util::ascii_digits(&target.value);
 
         // Pass 1: area-code → city/region (former `phone_area_geo`).
         area_code_pass(&digits, ctx, &mut result);

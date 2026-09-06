@@ -23,7 +23,7 @@ pub(in crate::modules::search_engines) fn result_mentions_phone(
     hay: &str,
     seed_phone: &str,
 ) -> bool {
-    let seed_digits: String = seed_phone.chars().filter(char::is_ascii_digit).collect();
+    let seed_digits = crate::util::str_util::ascii_digits(seed_phone);
     // 9 trailing digits cover AU / UK / US subscriber numbers; a shorter seed
     // uses all of its digits. Below 7 the run is too short to anchor on.
     let sig_len = seed_digits.len().min(9);
@@ -31,7 +31,7 @@ pub(in crate::modules::search_engines) fn result_mentions_phone(
         return false;
     }
     let significant = &seed_digits[seed_digits.len() - sig_len..];
-    let hay_digits: String = hay.chars().filter(char::is_ascii_digit).collect();
+    let hay_digits = crate::util::str_util::ascii_digits(hay);
     hay_digits.contains(significant)
 }
 

@@ -94,7 +94,7 @@ pub(super) fn extract_abn_from_html(html: &str) -> Option<String> {
     let after = &html[pos + marker.len()..];
     let td_end = after.find("</td>")?;
     let raw = &after[..td_end];
-    let abn: String = raw.chars().filter(char::is_ascii_digit).collect();
+    let abn = crate::util::str_util::ascii_digits(raw);
     if abn.len() == 11 { Some(abn) } else { None }
 }
 
