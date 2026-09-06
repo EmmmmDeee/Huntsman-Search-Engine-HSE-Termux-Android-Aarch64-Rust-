@@ -10,11 +10,11 @@ run, a CI head, or a runtime check — `CLAIM ≠ EVIDENCE` applies to this file
 
 | Item | Value |
 |---|---|
-| `main` | `a2b295da` — user docs commit (#592, TROUBLESHOOTING.md) on top of `ab14593f`, the squash-merge of PR #591 (14 gate-verified, CI-green commits) |
+| `main` | `4b7ff547` — squash-merge of PR #594 (BSI 200-4 continuity model + self-update rollback proof + continuity-panel polish) on top of `a2b295da` |
 | Programme baseline (before) | `cab1f9b4` (HSE v1.41.0, MSRV 1.98, edition 2024) |
-| Working branch | `claude/response-accuracy-legal-u90ja3`, restarted at `ab14593f` after the merge (GitHub auto-deleted the merged head; recreated), rebased onto `a2b295da` before the continuity PR |
-| In-flight unit | BSI 200-4 continuity model (`core::assurance::continuity`, `hse bsi continuity`, `GET /api/v1/assurance/continuity`, `#/assurance` panel) — this commit |
-| Toolchain | rustc 1.98; `scripts/gate.sh --quick` = 15 executed checks (MSRV / aarch64 cross / wasm drift / audit are CI's authority) |
+| Working branch | `claude/response-accuracy-legal-u90ja3`, restarted at `4b7ff547` (`origin/main`) after the #594 merge (GitHub auto-deleted the merged head) |
+| In-flight unit | ble_radar interruption / partial-persistence recovery proof — two tests in `src/storage/signal_tests.rs`, cited by `core::assurance::continuity` to derive ble_radar UNTESTED → TESTED (all six capabilities then TESTED) |
+| Toolchain | rustc 1.98; `scripts/gate.sh --quick` = 16 executed checks (MSRV / aarch64 cross / wasm drift / audit are CI's authority) |
 
 ## 2. Verified facts (with evidence)
 
@@ -48,17 +48,21 @@ run, a CI head, or a runtime check — `CLAIM ≠ EVIDENCE` applies to this file
 
 ## 4. Prioritised gaps (remaining)
 
-1. **self-update rollback untested** — `install.sh` restores the previous binary
-   on a failed verification, but no test exercises that path (Important).
-2. **BLE radar interruption / partial-observation persistence untested** (Routine).
-3. **Providers view** — `hse bsi providers` over existing descriptors, health and
+Closed since the last checkpoint: **self-update rollback** (PR #594 —
+`hse_verify_or_rollback` + four functional tests; self_update → TESTED) and
+**BLE radar interruption / partial-observation persistence** (this unit —
+two atomicity/restart tests; ble_radar → TESTED). With both closed, all six
+continuity capabilities are TESTED; 0 UNTESTED, 0 OBSERVED.
+
+1. **Providers view** — `hse bsi providers` over existing descriptors, health and
    the drift sweep (view over existing authorities; no new registry).
-4. **Detection view** — correlator rules carry `rule_id`/`rule_name` on their
+2. **Detection view** — correlator rules carry `rule_id`/`rule_name` on their
    findings but are plain functions (no per-rule descriptor); assess whether a
    descriptor would duplicate the producer→consumer graph before building.
-5. **OBSERVED (A5) evidence** — no runtime recovery/incident record mechanism
-   exists; by design nothing claims A5 until one does.
-6. **External:** wasm-ui/pkg drift check needs the pinned wasm-opt (CI only);
+3. **OBSERVED (A5) evidence** — no runtime recovery/incident record mechanism
+   exists; by design nothing claims A5 until one does. This is now the only
+   route to lift any continuity capability above TESTED.
+4. **External:** wasm-ui/pkg drift check needs the pinned wasm-opt (CI only);
    on-device Termux end-to-end needs hardware not available here.
 
 ## 5. Changes and outcomes
@@ -75,7 +79,10 @@ run, a CI head, or a runtime check — `CLAIM ≠ EVIDENCE` applies to this file
 | BCM 200-4 fault-injection + `HSE_SQLITE_MAX_PAGES` | `28959146` | integrated, CI green |
 | `SSL_CERT_FILE` additive TLS trust (fail-loud) | `8b80588b` | integrated, CI green |
 | Squash-merge of the above into `main` | `ab14593f` | merged (user-approved) |
-| Continuity model + CLI/API/UI | this commit | gate + runtime verified |
+| Continuity model + CLI/API/UI | `4406905d` | integrated (PR #594) |
+| Self-update rollback proof (`hse_verify_or_rollback`) + continuity-panel `rpo_label` polish; self_update → TESTED | `6d98f646` | integrated (PR #594) |
+| Squash-merge of PR #594 into `main` | `4b7ff547` | merged, CI green (user-approved) |
+| ble_radar sweep-interruption recovery (2 tests); ble_radar → TESTED | this commit | gate + runtime verified |
 
 Void after evidence: "retire 27 production unwraps" (all test code);
 "dead-code audit" (all sites justified); "Termux hardening" (already clean).
