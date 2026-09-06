@@ -315,13 +315,22 @@ pub fn objectives() -> Vec<ContinuityObjective> {
             ],
             mtpd_secs: None,
             rto_secs: None,
-            rpo: RecoveryPoint::NotApplicable,
+            // A sweep is persisted as one transaction, so an interrupted sweep
+            // recovers to the last COMMITTED sweep: everything committed before
+            // the fault survives; only the in-flight sweep is lost, and lost
+            // whole.
+            rpo: RecoveryPoint::LastCommit,
             degraded_mode: "A missing or broken sensor tool is reported as such, not \
                             as an empty sky.",
-            fallback: "Re-run the sweep.",
-            recovery_procedure: "Re-run `hse radar`.",
-            // No interruption / partial-persistence test exists yet.
-            recovery_tests: &[],
+            fallback: "A sweep is atomic: an interrupted one is discarded whole and \
+                       every committed sweep survives, so re-running it cannot \
+                       double-count or corrupt the sighting history.",
+            recovery_procedure: "Re-run `hse radar`; committed sightings persist \
+                                 across restart.",
+            recovery_tests: &[
+                "an_interrupted_radar_sweep_is_atomic_and_earlier_sweeps_survive",
+                "committed_sightings_survive_a_store_restart",
+            ],
             observed: None,
         },
     ]

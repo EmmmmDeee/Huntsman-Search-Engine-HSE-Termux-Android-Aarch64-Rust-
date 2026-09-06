@@ -469,3 +469,153 @@ fn reopening_replaces_a_stale_view_definition() {
         .expect("sqlite_master");
     assert_eq!(stale_views, 0, "a retired view must be dropped on open, not carried forever");
 }
+
+// ─── ble_radar continuity: interruption / partial-persistence recovery ───────
+//
+// A radar sweep is persisted as ONE transaction (`insert_rf_sightings_batch`),
+// so the recovery property for an interrupted sweep is atomicity: the sweep
+// commits whole or leaves nothing. These two tests prove the ble_radar
+// continuity objective — that an interruption never leaves a half-written,
+// misleading device list, that every sweep committed before the fault survives
+// (RPO = the last committed sweep), and that the sightings persist across a
+// restart. They are cited by `core::assurance::continuity`'s ble_radar objective.
+
+/// FAULT: a sweep is interrupted mid-write because the device ran out of storage
+/// partway through persisting it — the Termux low-storage reality the
+/// `HSE_SQLITE_MAX_PAGES` cap models, injected exactly as SQLite reports it
+/// (SQLITE_FULL). EXPECTED: the failing sweep returns Err (never a silent
+/// partial device list); every sweep committed before it stays readable; the
+/// store is not corrupted; and freeing the space lets the sweep persist.
+#[test]
+fn an_interrupted_radar_sweep_is_atomic_and_earlier_sweeps_survive() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("radar.db");
+    let path = path.to_str().expect("utf-8 path");
+    let store = Store::open(path).expect("open");
+
+    // A completed earlier sweep — committed, must survive the later fault.
+    store
+        .insert_rf_sightings_batch(
+            "sweep-1",
+            &[
+                sighting("00:1a:2b:00:00:01", RadioKind::Ble, Some("Watch"), -60.0, Some((-26.81, 153.08)), 1),
+                sighting("00:1a:2b:00:00:02", RadioKind::Wifi, Some("AP"), -70.0, None, 2),
+            ],
+        )
+        .expect("the earlier sweep commits");
+
+    // Cap the database one page above its current size — the disk is now "full".
+    {
+        let conn = store.conn.lock();
+        let pages: i64 = conn
+            .query_row("PRAGMA page_count", [], |r| r.get(0))
+            .expect("page_count");
+        Store::apply_page_cap(&conn, pages + 1).expect("cap just above current size");
+    }
+
+    // A large second sweep cannot fit. It is one transaction, so it must fail
+    // WHOLE — never persist the rows that fit and silently drop the rest.
+    let big: Vec<RfSighting> = (0..3000u32)
+        .map(|i| {
+            sighting(
+                &format!("00:1a:2b:{:02x}:{:02x}:{:02x}", (i >> 16) & 0xff, (i >> 8) & 0xff, i & 0xff),
+                RadioKind::Ble,
+                Some("Sweep"),
+                -50.0,
+                Some((-26.8, 153.0)),
+                i64::from(i),
+            )
+        })
+        .collect();
+    let err = store
+        .insert_rf_sightings_batch("sweep-2", &big)
+        .expect_err("OBSERVED: an out-of-space sweep must fail loudly, never half-persist");
+    // Match the underlying SQLite error CODE, not its Display text: the code
+    // (`DatabaseFull`) is stable across SQLite/rusqlite versions and platforms
+    // where the wording is not. Fall back to a text check defensively in case a
+    // future error path wraps the failure without preserving the ffi code.
+    let is_full = matches!(
+        &err,
+        crate::core::error::Error::Storage(rusqlite::Error::SqliteFailure(ffi, _))
+            if ffi.code == rusqlite::ErrorCode::DiskFull
+    ) || err.to_string().to_lowercase().contains("full");
+    assert!(
+        is_full,
+        "the fault must be a database-full (SQLITE_FULL) error, got: {err:?}"
+    );
+
+    // ATOMICITY: the interrupted sweep left nothing behind.
+    assert!(
+        store.rf_devices_for_scan("sweep-2").expect("read").is_empty(),
+        "an interrupted sweep must leave NO partial device list"
+    );
+    assert_eq!(
+        store.rf_summary("sweep-2").expect("summary").sightings,
+        0,
+        "not one sighting from the failed sweep may persist"
+    );
+    // RPO: the earlier committed sweep is intact, and the store is healthy.
+    assert_eq!(store.rf_summary("sweep-1").expect("summary").sightings, 2);
+    assert_eq!(store.rf_devices_for_scan("sweep-1").expect("read").len(), 2);
+    assert_eq!(
+        store.integrity_check().expect("integrity"),
+        vec!["ok".to_string()],
+        "a full disk mid-sweep must not corrupt the sighting store"
+    );
+
+    // RECOVERY: free the space → the sweep persists on the next attempt.
+    {
+        let conn = store.conn.lock();
+        Store::apply_page_cap(&conn, 1_000_000).expect("raise the cap");
+    }
+    assert_eq!(
+        store
+            .insert_rf_sightings_batch(
+                "sweep-2",
+                &[sighting("00:1a:2b:00:00:03", RadioKind::Ble, Some("Retry"), -55.0, None, 9)],
+            )
+            .expect("the sweep resumes once space is freed"),
+        1
+    );
+    assert_eq!(store.rf_summary("sweep-2").expect("summary").sightings, 1);
+}
+
+/// A radar sweep persisted to disk must survive the store being closed and
+/// reopened — the on-disk state a real app restart relies on. This exercises
+/// that reopen within one process (it does not spawn a new one): dropping the
+/// `Store` closes its SQLite connection, and reopening the same database file
+/// must read back every committed sighting unchanged (RPO across a reopen).
+#[test]
+fn committed_sightings_survive_a_store_restart() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("restart.db");
+    let path = path.to_str().expect("utf-8 path");
+    {
+        let store = Store::open(path).expect("first open");
+        store
+            .insert_rf_sightings_batch(
+                "sweep",
+                &[
+                    sighting("00:1a:2b:00:00:07", RadioKind::Ble, Some("Watch"), -60.0, Some((-26.81, 153.08)), 100),
+                    sighting("00:1a:2b:00:00:07", RadioKind::Ble, Some("Watch"), -50.0, Some((-26.82, 153.09)), 200),
+                ],
+            )
+            .expect("the sweep commits");
+    } // the store is dropped here: its SQLite connection is closed and any WAL
+    // is checkpointed, exactly the on-disk state a restart would leave behind.
+
+    // Reopen the same on-disk database — the state a fresh process would read.
+    let store = Store::open(path).expect("reopen the persisted store");
+    let devices = store.rf_devices_for_scan("sweep").expect("read");
+    assert_eq!(devices.len(), 1, "the committed device survives the restart");
+    let d = &devices[0];
+    assert_eq!(d.network_id, "00:1a:2b:00:00:07");
+    assert_eq!(d.sightings, 2, "both committed sightings survive the restart");
+    assert_eq!(d.first_epoch, Some(100));
+    assert_eq!(d.last_epoch, Some(200));
+    assert_eq!(
+        store.rf_latest_scan_id().expect("latest").as_deref(),
+        Some("sweep"),
+        "the persisted sweep is still the latest after a restart"
+    );
+}
