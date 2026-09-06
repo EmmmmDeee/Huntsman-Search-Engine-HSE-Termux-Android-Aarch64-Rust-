@@ -68,6 +68,19 @@ fn build_rotating_resolvers() -> Option<Vec<hickory_resolver::TokioResolver>> {
         net::runtime::TokioRuntimeProvider,
     };
     let raw = std::env::var("HUNTSMAN_DNS_RESOLVERS").ok()?;
+    // Surface misspelled/unknown provider names instead of silently dropping
+    // them — a typo (`clouflare`) would otherwise leave the operator believing
+    // egress DNS is pinned to a public resolver when it has fallen back to the
+    // system resolver (a security-relevant misconfiguration).
+    let unknown = crate::util::netrotate::unknown_dns_providers(&raw);
+    if !unknown.is_empty() {
+        tracing::warn!(
+            unknown = ?unknown,
+            valid = "cloudflare, google, quad9",
+            "HUNTSMAN_DNS_RESOLVERS names unrecognised provider(s); they are ignored — \
+             check spelling or egress DNS silently falls back to the system resolver"
+        );
+    }
     let providers = crate::util::netrotate::parse_dns_providers(&raw);
     if providers.is_empty() {
         return None;

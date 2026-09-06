@@ -20,6 +20,22 @@ use super::*;
     }
 
     #[test]
+    fn unknown_dns_providers_reports_the_silently_dropped_typos() {
+        // The exact tokens parse_dns_providers drops must be recoverable so the
+        // resolver builder can warn instead of leaving a misspelled provider to
+        // silently fall back to the system resolver. Original spelling and order
+        // are preserved; blanks are not "unknown"; every valid provider (any
+        // case) is recognised so a correct config produces no false warning.
+        assert_eq!(
+            unknown_dns_providers("cloudflare, clouflare, GOOGLE, nope, quad9"),
+            vec!["clouflare".to_string(), "nope".to_string()]
+        );
+        assert!(unknown_dns_providers("cloudflare, google, quad9").is_empty());
+        assert!(unknown_dns_providers("CloudFlare,  QUAD9 ,Google").is_empty());
+        assert!(unknown_dns_providers("  ,  ,").is_empty());
+    }
+
+    #[test]
     fn proxy_host_extracts_bare_host() {
         assert_eq!(
             proxy_host("socks5://127.0.0.1:9050").as_deref(),

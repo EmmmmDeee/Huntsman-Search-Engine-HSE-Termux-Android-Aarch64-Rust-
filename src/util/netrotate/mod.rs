@@ -75,6 +75,27 @@ pub fn parse_dns_providers(raw: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// The non-blank `HUNTSMAN_DNS_RESOLVERS` entries that name no recognised
+/// provider — i.e. what [`parse_dns_providers`] silently dropped. Pure.
+///
+/// A misspelled provider (`clouflare`) would otherwise be discarded without a
+/// trace, so the operator believes egress DNS is pinned to a public resolver
+/// when it has silently fallen back to the system resolver — a security-relevant
+/// misconfiguration. The resolver builder warns on a non-empty result so the
+/// mistake is observable instead of silent. Order-preserving, original spelling.
+#[must_use]
+pub fn unknown_dns_providers(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter(|s| {
+            let lower = s.to_ascii_lowercase();
+            !DNS_PROVIDER_IPS.iter().any(|(name, _)| *name == lower)
+        })
+        .map(str::to_string)
+        .collect()
+}
+
 /// Extract the bare host (no scheme, userinfo, or port) from a proxy spec such
 /// as `socks5://user:pass@host:1080`, `http://host:3128`, or `host:1080`. Pure.
 #[must_use]
