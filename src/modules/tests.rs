@@ -160,3 +160,47 @@ use super::{registry, technique_module_index};
         assert!(!super::is_known_toggle_key("shodan", &modules));
         assert!(!super::is_known_toggle_key("", &modules));
     }
+
+    #[test]
+    fn reconnaissance_coverage_is_substantive_and_honest() {
+        use crate::core::attack;
+        let cov = super::reconnaissance_coverage();
+
+        // Scoped to the one tactic HSE honestly performs collection for.
+        assert_eq!(cov.tactic_id, attack::TACTIC_ID);
+
+        // Substantive: the registry covers a real slice of TA0043, not zero and
+        // not a fabricated 100% — the fraction is derived from real modules.
+        assert!(
+            !cov.covered.is_empty(),
+            "the registry must cover at least one Reconnaissance technique"
+        );
+        assert!(
+            cov.coverage_fraction > 0.0 && cov.coverage_fraction <= 1.0,
+            "coverage fraction {} out of range",
+            cov.coverage_fraction
+        );
+
+        // Honest partition: covered ∩ gaps = ∅, and covered ∪ gaps == the full
+        // Reconnaissance slice. A technique is covered or a gap — never both,
+        // never neither (MISSING DATA ≠ NEGATIVE FINDING has a definite home).
+        let covered_ids: std::collections::BTreeSet<&str> =
+            cov.covered.iter().map(|c| c.technique.id).collect();
+        for u in &cov.uncovered {
+            assert!(
+                !covered_ids.contains(u.id),
+                "{} is reported both covered and a gap",
+                u.id
+            );
+            assert!(
+                attack::technique(u.id).is_some(),
+                "gap {} is not a catalogued technique",
+                u.id
+            );
+        }
+        assert_eq!(
+            cov.covered.len() + cov.uncovered.len(),
+            attack::reconnaissance().len(),
+            "covered + gaps must equal the whole Reconnaissance slice"
+        );
+    }

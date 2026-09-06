@@ -610,6 +610,27 @@ impl Evidence {
         self
     }
 
+    /// Attach several **optional** attributes in one call: each pair whose value
+    /// is `Some` and trims to a non-empty string is added via
+    /// [`with_attr`](Self::with_attr) (so its accumulate-on-collision semantics
+    /// are unchanged); `None` or blank values are skipped. The single authority
+    /// for the "conditionally add each trimmed non-empty attribute" idiom the
+    /// leak-site / BSSID collector modules build multi-attribute evidence with,
+    /// replacing the hand-rolled `for (k, v) in [...] { if let Some(v) =
+    /// v.map(str::trim).filter(...) { ev = ev.with_attr(k, v); } }` loop each had
+    /// copied verbatim.
+    pub fn with_optional_attrs<'a>(
+        mut self,
+        attrs: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
+    ) -> Self {
+        for (k, v) in attrs {
+            if let Some(v) = v.map(str::trim).filter(|s| !s.is_empty()) {
+                self = self.with_attr(k, v);
+            }
+        }
+        self
+    }
+
     /// The individual values behind `key` — the **inverse of
     /// [`with_attr`](Self::with_attr)'s accumulation**, and the only correct way
     /// to read an attribute that can hold more than one.
@@ -803,7 +824,7 @@ impl Entity {
         // sources before promotion counts. If the generator is itself
         // non-corroborating (e.g. `name_intel`), it does not contribute to
         // `real`, so external confirmation is needed regardless.
-        let derived = self.has_tag("derived");
+        let derived = self.has_tag(tags::DERIVED);
         let mut real: u32 = 0;
         let mut promo: u32 = 0;
         for (i, ev) in self.evidence.iter().enumerate() {
@@ -1026,7 +1047,7 @@ impl Entity {
     /// the engine's expansion loop.
     #[inline]
     pub fn is_uncorroborated_recycled(&self) -> bool {
-        self.has_tag("recycled") && self.source_count() < 2
+        self.has_tag(tags::RECYCLED) && self.source_count() < 2
     }
 
     /// True for a speculative identifier *permuted from the subject's name*
@@ -1057,7 +1078,7 @@ impl Entity {
     /// the exhaustive sweep.) Cheap: short-circuits on the first reliable source,
     /// no allocation.
     pub fn is_uncorroborated_name_permutation(&self) -> bool {
-        self.has_tag("name-derived")
+        self.has_tag(tags::NAME_DERIVED)
             && !self.evidence.iter().any(|ev| {
                 let s = ev.source.as_str();
                 !is_non_corroborating_source(s) && s != "search_engines"
@@ -1090,7 +1111,7 @@ impl Entity {
         // here, ~20 correlator/engine gates keyed on this set counted a
         // promotion pass as an independent observation while `source_count`
         // (correctly) did not.
-        let derived = self.has_tag("derived");
+        let derived = self.has_tag(tags::DERIVED);
         let mut real: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let mut promo: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for ev in &self.evidence {
@@ -1371,9 +1392,9 @@ impl Entity {
         // genuinely-independent (non-derived) side graduates the merged
         // entity out of the stricter gate for good — symmetric with a single
         // non-candidate side clearing quarantine.
-        let other_is_derived = other.tags.iter().any(|t| t == "derived");
+        let other_is_derived = other.tags.iter().any(|t| t == tags::DERIVED);
         for t in other.tags {
-            if t != tags::CANDIDATE && t != "derived" {
+            if t != tags::CANDIDATE && t != tags::DERIVED {
                 self.tag(t);
             }
         }
@@ -1381,7 +1402,7 @@ impl Entity {
             self.tags.retain(|t| t != tags::CANDIDATE);
         }
         if !other_is_derived {
-            self.tags.retain(|t| t != "derived");
+            self.tags.retain(|t| t != tags::DERIVED);
         }
     }
 
@@ -1789,6 +1810,21 @@ fn strip_format_noise(s: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// Round `lat`/`lon` to 6 dp and format as the canonical `"lat,lon"` string that
+/// decides a `Coordinates` entity's UID, collapsing IEEE negative zero (`+ 0.0`)
+/// so a point on the equator/meridian can't fragment onto two UIDs by the sign of
+/// zero. The SINGLE authority for the geo-UID precision + negative-zero-collapse
+/// rule: both `Coordinates` normalisation paths below (the bare-decimal fast path
+/// and the `coords::parse` richer-notation path) call it, so a change to the
+/// rounding rule can never edit only one and silently fork one physical point
+/// onto two UIDs. (Scope: this is the UID round+collapse, not the many `{:.6}`
+/// display formatters elsewhere.)
+fn fmt_coord_6dp(lat: f64, lon: f64) -> String {
+    let lat = (lat * 1e6).round() / 1e6 + 0.0;
+    let lon = (lon * 1e6).round() / 1e6 + 0.0;
+    format!("{lat:.6},{lon:.6}")
+}
+
 /// Normalise a value for a given kind.
 ///
 /// - Email → lowercase, trim, strip surrounding quotes
@@ -2015,16 +2051,11 @@ pub fn normalise(kind: &EntityKind, value: &str) -> String {
                 && lat.is_finite()
                 && lon.is_finite()
             {
-                // Round to 6 dp first, then `+ 0.0` to collapse IEEE negative
-                // zero: formatting `-0.0000001` directly yields "-0.000000",
-                // which is the same point as "0.000000" but a different UID —
-                // coordinates straddling the equator/meridian must not
-                // fragment on the sign of zero. Non-finite values (NaN/inf)
-                // fall through to the raw string instead of a formatted
-                // pseudo-coordinate.
-                let lat = (lat * 1e6).round() / 1e6 + 0.0;
-                let lon = (lon * 1e6).round() / 1e6 + 0.0;
-                return format!("{lat:.6},{lon:.6}");
+                // The 6-dp round + negative-zero collapse lives in the single
+                // `fmt_coord_6dp` authority. Non-finite values (NaN/inf) fall
+                // through to the raw string instead of a formatted
+                // pseudo-coordinate (guarded by the `is_finite` checks above).
+                return fmt_coord_6dp(lat, lon);
             }
             // Richer notations the bare decimal fast-path above doesn't catch —
             // DMS/DDM, `geo:` URIs, Plus Codes, Maidenhead locators, space-
@@ -2033,9 +2064,7 @@ pub fn normalise(kind: &EntityKind, value: &str) -> String {
             // decimal shape. Non-finite / unparseable input still falls through
             // untouched.
             if let Some(p) = coords::parse(trimmed) {
-                let lat = (p.lat * 1e6).round() / 1e6 + 0.0;
-                let lon = (p.lon * 1e6).round() / 1e6 + 0.0;
-                return format!("{lat:.6},{lon:.6}");
+                return fmt_coord_6dp(p.lat, p.lon);
             }
             trimmed.to_string()
         }

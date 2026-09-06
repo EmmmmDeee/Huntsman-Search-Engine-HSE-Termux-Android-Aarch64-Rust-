@@ -24,6 +24,7 @@ mod redact;
 mod ssrf;
 #[cfg(test)]
 mod tests;
+mod trust;
 mod url;
 
 pub use client::{build_client, build_client_with_trace};

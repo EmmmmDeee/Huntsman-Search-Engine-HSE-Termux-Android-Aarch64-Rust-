@@ -100,7 +100,8 @@ impl Module for CellLocal {
 
         let mut result = ModuleResult::new();
         for cell in &cells {
-            let tower_id = format!("{}-{}-{}-{}", cell.mcc, cell.mnc, cell.lac, cell.cid);
+            // Single-sourced DeviceId tower-id key (see `util::cell`).
+            let tower_id = crate::util::cell::tower_id(cell.mcc, cell.mnc, cell.lac, cell.cid);
 
             // ── DeviceId entity ──────────────────────────────────────────────
             let mut device = Entity::new(

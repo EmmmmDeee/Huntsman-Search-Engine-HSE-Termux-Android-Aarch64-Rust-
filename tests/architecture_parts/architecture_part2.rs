@@ -167,6 +167,24 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         !techniques("opencellid").contains(&"T1596.001"),
         "opencellid queries a cell-tower database, not DNS"
     );
+    // wifidb and mylnikov are keyless BSSID->Coordinates lookups over a
+    // crowdsourced open technical database — the same "named open DB" mechanism
+    // as opencellid/wigle. Each overrides the Geo default (T1591.001 only) to add
+    // T1596 (Search Open Technical Databases), stopping at the parent: there is
+    // no WiFi-database sub-technique, and neither issues a DNS query, so neither
+    // may claim T1596.001 (Passive DNS). Pin both so deleting the override — a
+    // silent fall-back to the bare Geo default that drops the T1596 claim — fails.
+    for name in ["wifidb", "mylnikov"] {
+        assert_eq!(
+            techniques(name),
+            vec!["T1591.001", "T1596"],
+            "{name} → Physical Locations + Open Technical Databases (named open DB, no DNS)"
+        );
+        assert!(
+            !techniques(name).contains(&"T1596.001"),
+            "{name} queries a WiFi geolocation database, not DNS"
+        );
+    }
     // Active vulnerability probe (dangling-CNAME takeover) → Active Scanning:
     // Vulnerability Scanning (T1595.002), NOT the passive Domain Properties the
     // DnsRecon default would inherit. It touches the target to prove an

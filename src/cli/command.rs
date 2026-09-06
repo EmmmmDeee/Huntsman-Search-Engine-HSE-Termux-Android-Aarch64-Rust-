@@ -7,6 +7,8 @@
 
 use clap::{Parser, Subcommand};
 
+use super::attack::AttackAction;
+use super::bsi::BsiAction;
 use super::keys_cmd::KeysAction;
 
 /// Parse a `--min-confidence` argument, rejecting anything that is not a usable
@@ -286,6 +288,41 @@ pub enum Command {
         /// Output as JSON (same shape as `/api/v1/modules`).
         #[arg(long)]
         json: bool,
+    },
+    /// BSI / IT-Grundschutz assurance status: every catalogued control with its
+    /// EVIDENCE-DERIVED state (NOT_APPLICABLE / GAP / DEFINED / … / ASSURED /
+    /// REGRESSED) and maturity level (A0–A6). Nothing is a claim — a control is
+    /// green only where recorded evidence earns it. `--profile` filters to one
+    /// `HSE-BSI-*` profile; `--json` emits the machine-readable shape.
+    Assurance {
+        /// Restrict to one profile (`core`, `android`, `termux`, `web`,
+        /// `storage`, `cloud`, `development`, `ble`, `intelligence`).
+        #[arg(short, long)]
+        profile: Option<String>,
+        /// Output as JSON (the resolved controls + raw summary counts).
+        #[arg(long)]
+        json: bool,
+    },
+    /// BSI / IT-Grundschutz assurance command family: focused drill-downs over
+    /// the same evidence-derived model as `hse assurance`. Sub-verbs: `status`,
+    /// `controls`, `scope`, `protection`, `gaps`, `regressions`,
+    /// `profile <name>`, and `verify` (a real gate that exits non-zero on a
+    /// regression or a High/Critical gap).
+    Bsi {
+        /// The assurance sub-command to run (`status`, `scope`, `protection`,
+        /// `gaps`, `regressions`, `controls`, `profile`, `verify`).
+        #[command(subcommand)]
+        action: BsiAction,
+    },
+    /// MITRE ATT&CK views over HSE's versioned `core::attack` layer (Enterprise
+    /// v17.1). HSE honestly claims coverage of one tactic — Reconnaissance
+    /// (TA0043) — and every covered technique resolves to the modules that are
+    /// its evidence. Sub-verbs: `status`, `coverage`, `gaps`, `navigator`.
+    Attack {
+        /// The ATT&CK sub-command to run (`status`, `coverage`, `gaps`,
+        /// `navigator`).
+        #[command(subcommand)]
+        action: AttackAction,
     },
     /// Print the git commit this binary was built from (40-char hex), for
     /// scripting. Exits non-zero when the build carries no verifiable revision —

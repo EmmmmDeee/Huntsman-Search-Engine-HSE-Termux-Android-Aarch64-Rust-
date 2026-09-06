@@ -219,6 +219,24 @@ pub const BREACH_DERIVED: &str = "breach-derived";
 /// knowledge recalled so the local database acts as a source, not just a sink.
 pub const RECALLED: &str = "recalled";
 
+// Lifecycle gates — the spelling of each of the three below silently gates a
+// grounding/expansion decision in `Entity`, so a reader typo would disable a
+// gate with no compiler error. They are constants for the same anti-drift reason
+// every other tag here is.
+/// A **deterministic transform** of data already in the graph (a parse,
+/// canonicalisation, permutation), carrying no independent observation. Gates the
+/// source-count grounding rule: a derivation's own evidence must not count as an
+/// independent corroborating source.
+pub const DERIVED: &str = "derived";
+/// A value **recycled** from a prior scan / the store rather than freshly
+/// observed this scan. Read alongside `source_count` to gate expansion of a
+/// still-uncorroborated recalled value.
+pub const RECYCLED: &str = "recycled";
+/// A username/handle **derived from a name permutation** rather than observed on
+/// a platform. Gates expansion so an unconfirmed name-permutation guess does not
+/// fan out as though it were a sighting.
+pub const NAME_DERIVED: &str = "name-derived";
+
 // Document references
 /// A **document in a public corpus** the subject was searched in — a court
 /// judgment or piece of legislation (`austlii`), an archived newspaper article

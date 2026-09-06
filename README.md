@@ -8,7 +8,7 @@
 **All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition —
 SpiderFoot-inspired breadth without the daemon or the footprint.**
 
-Pure-Rust OSINT / GEOINT platform with **189 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **194 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 dark-console Web UI, zero native dependencies, keyless-first.
 
@@ -195,7 +195,7 @@ single-instance constraint (local SQLite — do not scale replicas above 1).
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 189 modules
+hse modules                                                 # list all 194 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
 hse keys status                                             # multi-key pool: what's loaded, per source
@@ -342,20 +342,20 @@ HSE's engine.
 
 | Seed | Flag | Example | Modules |
 |------|------|---------|---------|
-| Email | `--kind email` | `user@example.com` | 43 |
+| Email | `--kind email` | `user@example.com` | 45 |
 | Username | `--kind username` | `johndoe` | 51 |
 | Phone | `--kind phone` | `+61400000000` | 18 |
 | Full Name | `--kind name` | `Jordan Leigh Meyers` | 26 |
 | IP Address | `--kind ip` | `1.1.1.1` | 42 |
-| Domain | `--kind domain` | `example.com` | 58 |
+| Domain | `--kind domain` | `example.com` | 60 |
 | ASN | `--kind asn` | `AS13335` | 4 |
 | CIDR | `--kind cidr` | `1.1.1.0/24` | 2 |
 | Coordinates | `--kind coords` | `-27.47,153.02` | 19 |
 | Address | `--kind address` | `Nundah, QLD 4012` | 5 |
 | URL | `--kind url` | `https://example.com/page` | 25 |
-| Organisation | `--kind org` | `ACME Pty Ltd` | 23 |
+| Organisation | `--kind org` | `ACME Pty Ltd` | 25 |
 | ABN/ACN | `--kind abn` | `51824753556` | 7 |
-| MAC Address | `--kind mac` | `AA:BB:CC:DD:EE:FF` | 9 |
+| MAC Address | `--kind mac` | `AA:BB:CC:DD:EE:FF` | 10 |
 | Crypto Address | `--kind crypto` | `bc1q…` | 5 |
 | API Key | `--kind apikey` | `AKIA…` | 1 |
 
@@ -369,7 +369,7 @@ respectively.
 
 ---
 
-## Module Overview (189 modules — 143 free, 46 key-gated/paid)
+## Module Overview (194 modules — 148 free, 46 key-gated/paid)
 
 > A curated highlight of the modules below (not the full list). The complete, always-current catalogue
 > with target kinds and output entities lives in the running software — run
@@ -573,7 +573,7 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 - rustls + bundled-sqlite only — no OpenSSL, no native TLS, no C deps
 - `StoragePort` trait — engine/API decoupled from SQLite via Strangler Fig
 - 4,300+ tests (unit + API integration + architecture boundary enforcement)
-- Deterministic correlator: 121 rules (107 entity + 14 graph-aware relation), no LLM/fuzzy matching
+- Deterministic correlator: 122 rules (108 entity + 14 graph-aware relation), no LLM/fuzzy matching
 - Typed relation graph — 20 edge kinds across five families, every one derived by
   pure, reproducible math (no LLM, no free inference) from normalised entity
   values and recorded evidence:
@@ -587,7 +587,7 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
     child → controller), `operated_by` (who runs a wallet or a published business
     contact point)
   - **lineage** — `derived_from`
-- 121 correlator rules (AU-001 through AU-123, with some IDs reserved for engine-emitted cross-scan findings such as AU-065/AU-066), incl. graph-aware edge, transitive, multi-pathway corroboration, gap-analysis, jurisdiction cross-check (coordinate / address / phone-region), prediction-confirmed identity bridges (name-derived username AU-077 / email AU-086), sanctions/debarment/PEP screening (AU-114), personal-WiFi geolocation (AU-115), pathway-template, resolved-identity-cluster, anonymous-SIM, high-integrity-connection (max-bottleneck route), connection-broker (identity articulation-point), robustly-corroborated-identity-cluster (no-single-point-of-failure k-redundant cluster), transitive-infrastructure-closure (AU-116 — a multi-server hosting footprint chained across IPs no single-hop rule sees), paired-hardware-constellation (AU-117 — the operator's own bonded Bluetooth kit as a self-carried tracking fingerprint), look-alike-domain-impersonation (AU-118 — homoglyph/typo phishing domains flagged across every discovered domain, dnstwist at the correlation layer), dating-platform-exposure (AU-119 — a subject's confirmed dating-app profiles surfaced as a location-bearing personal-exposure surface), monetized-creator-exposure (AU-120 — confirmed subscription-creator/webcam/adult profiles as an identity-linked payment/KYC surface), transitive credential-reuse blast-radius (AU-121 — the reuse-chain closure no single secret spans), trackable-RF-device (AU-122 — persistent hardware MACs separated from randomized privacy addresses in a radar/WiGLE sweep), and numeric-variant-handle-persona (AU-123 — links base-handle-plus-number username variants like `jdiegmann`/`jdiegmann92` across ≥2 sources into one persona, the digit-suffix reuse the exact-match handle rules never join) rules — deterministic, no LLM/fuzzy matching
+- 122 correlator rules (AU-001 through AU-124, with some IDs reserved for engine-emitted cross-scan findings such as AU-065/AU-066), incl. graph-aware edge, transitive, multi-pathway corroboration, gap-analysis, jurisdiction cross-check (coordinate / address / phone-region), prediction-confirmed identity bridges (name-derived username AU-077 / email AU-086), sanctions/debarment/PEP screening (AU-114), personal-WiFi geolocation (AU-115), pathway-template, resolved-identity-cluster, anonymous-SIM, high-integrity-connection (max-bottleneck route), connection-broker (identity articulation-point), robustly-corroborated-identity-cluster (no-single-point-of-failure k-redundant cluster), transitive-infrastructure-closure (AU-116 — a multi-server hosting footprint chained across IPs no single-hop rule sees), paired-hardware-constellation (AU-117 — the operator's own bonded Bluetooth kit as a self-carried tracking fingerprint), look-alike-domain-impersonation (AU-118 — homoglyph/typo phishing domains flagged across every discovered domain, dnstwist at the correlation layer), dating-platform-exposure (AU-119 — a subject's confirmed dating-app profiles surfaced as a location-bearing personal-exposure surface), monetized-creator-exposure (AU-120 — confirmed subscription-creator/webcam/adult profiles as an identity-linked payment/KYC surface), transitive credential-reuse blast-radius (AU-121 — the reuse-chain closure no single secret spans), trackable-RF-device (AU-122 — persistent hardware MACs separated from randomized privacy addresses in a radar/WiGLE sweep), and numeric-variant-handle-persona (AU-123 — links base-handle-plus-number username variants like `jdiegmann`/`jdiegmann92` across ≥2 sources into one persona, the digit-suffix reuse the exact-match handle rules never join), and ransomware-victim-exposure (AU-124 — a domain/org confirmed on a ransomware/extortion leak index by `ransomware_live`/`ransomlook`, elevated to a graded High finding naming the claiming group, the sole consumer of the `ransomware-victim` tag) rules — deterministic, no LLM/fuzzy matching
 - 2 tokio worker threads (tuned for Termux low-power devices)
 - Release binary ~5 MB stripped (opt-level="s", LTO, codegen-units=1)
 

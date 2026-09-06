@@ -566,6 +566,10 @@ const RULES: &[RuleFn] = &[
     // number pattern one operator reuses across platforms, which the exact-match
     // handle rules (canonical_handle keeps digits) never join. A Medium lead.
     rule_au_123_numeric_variant_handle_persona,
+    // AU-124: elevates the `ransomware-victim` tag + `group:` attribution
+    // (emitted by ransomware_live/ransomlook) to one grouped High finding — the
+    // sole consumer of both, which no other rule reads.
+    rule_au_124_ransomware_victim_exposure,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

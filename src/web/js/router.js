@@ -25,6 +25,8 @@ export function parseHash(){
   if (segs[0]==='live')                     return {name:'live', params:{}, query};
   if (segs[0]==='engines')                  return {name:'engines', params:{}, query};
   if (segs[0]==='harvest')                  return {name:'harvest', params:{}, query};
+  if (segs[0]==='assurance'||segs[0]==='bsi') return {name:'assurance', params:{}, query};
+  if (segs[0]==='attack')                   return {name:'attack', params:{}, query};
   if (segs[0]==='debuglog')                 return {name:'debuglog', params:{}, query};
   if (segs[0]==='diff')                     return {name:'diff', params:{a:query.a||'', b:query.b||''}, query};
   if (segs[0]==='scaninfo' && query.id)     return {name:'scaninfo', params:{id:query.id, tab:query.tab||'summary'}, query};

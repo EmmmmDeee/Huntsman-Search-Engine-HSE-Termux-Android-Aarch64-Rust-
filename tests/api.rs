@@ -3320,6 +3320,14 @@ async fn spa_references_only_registered_api_endpoints() {
             // returns 403/500 (never the fallback 404), confirming the route is
             // registered.
             "debug" => "/api/v1/debug/bundle".to_string(),
+            // BSI-assurance posture (`/assurance`, `/assurance/verify`) — an
+            // ungated, side-effect-free GET over the evidence-derived catalogue;
+            // the bare base returns 200, never the fallback 404.
+            "assurance" => "/api/v1/assurance".to_string(),
+            // MITRE ATT&CK posture (`/attack`, `/attack/navigator`) — an ungated,
+            // side-effect-free GET over the registry-derived coverage; 200, never
+            // the fallback 404.
+            "attack" => "/api/v1/attack".to_string(),
             other => panic!(
                 "SPA references /api/v1/{other} but this test has no probe for it — \
                  add one and confirm the route is registered in src/api/routes.rs"

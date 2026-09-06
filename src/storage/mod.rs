@@ -452,6 +452,26 @@ fn deserialize_rows<T: serde::de::DeserializeOwned>(raw: Vec<String>, context: &
 }
 
 impl Store {
+    /// Cap the database's on-disk growth at `max_pages` pages (`PRAGMA
+    /// max_page_count`; 4 KiB pages, so 25 600 ≈ 100 MiB). `max_pages <= 0`
+    /// is a no-op that leaves SQLite's default (effectively unbounded) cap.
+    ///
+    /// This is a BSI 200-4 continuity control for a low-storage Termux/Android
+    /// device: once the cap is reached SQLite refuses the write with
+    /// `SQLITE_FULL`, which surfaces as an explicit error from the store —
+    /// **fail loud** — instead of HSE quietly filling the device's storage
+    /// and taking every other app down with it. A cap below the database's
+    /// current size is clamped up by SQLite, so a misconfigured cap can never
+    /// brick `open`; it only stops further growth. Applied on every open from
+    /// `HSE_SQLITE_MAX_PAGES` and exercised by the store's fault-injection
+    /// tests, which force `SQLITE_FULL` through this same function.
+    fn apply_page_cap(conn: &Connection, max_pages: i64) -> rusqlite::Result<()> {
+        if max_pages <= 0 {
+            return Ok(());
+        }
+        conn.pragma_update(None, "max_page_count", max_pages)
+    }
+
     /// Open (creating if absent) the database at `path`, applying the pragmas
     /// and the `CREATE … IF NOT EXISTS` schema, then stamping `SCHEMA_VERSION`.
     pub fn open(path: &str) -> Result<Self> {
@@ -459,6 +479,8 @@ impl Store {
         // smaller page cache / mmap); the schema itself is static (SCHEMA_DDL).
         let cache_kb = env_i64("HSE_SQLITE_CACHE_KB", 2000);
         let mmap = env_i64("HSE_SQLITE_MMAP", 67_108_864);
+        // Continuity: an optional hard cap on on-disk growth (see apply_page_cap).
+        let max_pages = env_i64("HSE_SQLITE_MAX_PAGES", 0);
 
         let conn = Connection::open(path)?;
         conn.execute_batch(&format!(
@@ -477,6 +499,9 @@ impl Store {
             PRAGMA mmap_size={mmap};
             {SCHEMA_DDL}"
         ))?;
+        // After the schema exists, so a cap below the current size clamps up
+        // rather than failing the DDL: growth stops, `open` never bricks.
+        Self::apply_page_cap(&conn, max_pages)?;
 
         // Schema versioning: stamp on first open; warn on forward-compatibility break.
         {

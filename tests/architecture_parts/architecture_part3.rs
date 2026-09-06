@@ -938,7 +938,7 @@ fn non_huntsman_env_reads_are_known() {
     // namespace — never project-specific tuning, so these never move into
     // KNOWN_HSE_KNOBS below no matter what else changes.
     const STANDARD_OS_ENV_VARS: &[&str] =
-        &["HOME", "HTTPS_PROXY", "https_proxy", "NO_COLOR", "TERMUX_VERSION"];
+        &["HOME", "HTTPS_PROXY", "https_proxy", "NO_COLOR", "SSL_CERT_FILE", "TERMUX_VERSION"];
 
     // Every other non-HUNTSMAN_ knob genuinely read anywhere in src/, each
     // annotated with whether it actually does anything today. Extend this
@@ -958,6 +958,7 @@ fn non_huntsman_env_reads_are_known() {
         "HSE_AUTH_TOKEN",              // cli/command.rs clap `env` — LIVE (`hse serve --auth-token`, REQ-ENV-006)
         "HSE_SQLITE_CACHE_KB",         // storage/mod.rs `env_i64` — LIVE (PRAGMA cache_size)
         "HSE_SQLITE_MMAP",             // storage/mod.rs `env_i64` — LIVE (PRAGMA mmap_size)
+        "HSE_SQLITE_MAX_PAGES",        // storage/mod.rs `env_i64` — LIVE (PRAGMA max_page_count: BSI 200-4 on-disk growth cap, Store::apply_page_cap)
         "HSE_RESOURCE_PROFILE",        // core/platform/mod.rs const — LIVE (resource-profile override)
         "HSE_PROVIDER_COST_",          // core/module/provider.rs const prefix — LIVE family, `HSE_PROVIDER_COST_<PROVIDER_ID>`
     ];

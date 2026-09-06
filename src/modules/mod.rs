@@ -129,7 +129,9 @@ pub mod ipqs;
 pub mod ipquery;
 pub mod keybase;
 pub mod launchpad_user;
+pub mod leakcheck_public;
 pub mod leakix;
+pub mod libravatar;
 pub mod lobsters;
 pub mod local_net;
 pub mod mastodon_user;
@@ -171,6 +173,8 @@ pub mod pulsedive;
 pub mod pwned_passwords;
 pub mod pypi_user;
 pub mod qld_cadastre;
+pub mod ransomlook;
+pub mod ransomware_live;
 pub mod rdap_domain;
 pub mod reddit_user;
 pub mod ripestat;
@@ -218,6 +222,7 @@ pub mod webserver_banner;
 pub mod whois;
 pub mod whoisxml;
 pub mod wifi_intel;
+pub mod wifidb;
 pub mod wigle;
 pub mod wikidata;
 pub mod xposed_or_not;
@@ -387,6 +392,10 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(greynoise::GreyNoise),
             Arc::new(dehashed::DeHashed),
             Arc::new(breachdirectory::BreachDirectory),
+            // Keyless public breach index (email → named breaches + exposed data
+            // classes), an independent corpus beside hudsonrock/xposed_or_not
+            // that feeds the AU-001 multi-source-breach correlator.
+            Arc::new(leakcheck_public::LeakCheckPublic),
             Arc::new(intelx::IntelX),
             // Dark-web exposure over Ahmia's clearnet index (keyless), beside the
             // other exposure sources — reports where a target is mentioned on a
@@ -489,6 +498,9 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(crates_io::CratesIo),
             Arc::new(reddit_user::RedditUser),
             Arc::new(gravatar::Gravatar),
+            // Federated open-source Gravatar alternative — an independent avatar
+            // corpus beside `gravatar`, keyless email → public avatar presence.
+            Arc::new(libravatar::Libravatar),
             Arc::new(fediverse::Fediverse),
             Arc::new(nostr::Nostr),
             Arc::new(payid::PayId),
@@ -529,6 +541,10 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             // free corpora answering the same question, so an outage or a miss
             // in one still leaves the radar a way to locate an observed AP.
             Arc::new(beacondb::BeaconDb),
+            // The first keyless wardriving corpus — a free WiGLE alternative
+            // (BSSID → coordinates) beside keyed `wigle` and the other free
+            // corpora above, so a WiGLE-quota miss still leaves a way to locate.
+            Arc::new(wifidb::WifiDb),
             Arc::new(exif_geo::ExifGeo),
             Arc::new(overpass::Overpass),
             Arc::new(wiki_geosearch::WikiGeoSearch),
@@ -546,6 +562,12 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(breach_timezone::BreachTimezone),
             // Threat intel & infrastructure
             Arc::new(virustotal::VirusTotal),
+            // Keyless ransomware/extortion victim index (domain/org → claiming
+            // group, dates, reference) — a net-new org-exposure threat signal.
+            Arc::new(ransomware_live::RansomwareLive),
+            // Independent second ransomware/market leak-site corpus beside
+            // `ransomware_live` — additive: it also indexes markets/forums.
+            Arc::new(ransomlook::RansomLook),
             Arc::new(abuseipdb::AbuseIpDb),
             Arc::new(subdomain_takeover::SubdomainTakeover),
             Arc::new(waf_detect::WafDetect),
@@ -717,6 +739,25 @@ static TECHNIQUE_MODULES: std::sync::LazyLock<
 pub fn technique_module_index()
 -> &'static std::collections::BTreeMap<&'static str, Vec<&'static str>> {
     &TECHNIQUE_MODULES
+}
+
+/// HSE's registry-wide MITRE ATT&CK **Reconnaissance** (TA0043) coverage — the
+/// single authority for HSE's *static* ATT&CK posture, independent of any one
+/// scan.
+///
+/// It composes every registered module's [`Module::attack_techniques`] with
+/// [`crate::core::attack::static_reconnaissance_coverage`] (which folds in the
+/// entity- and relation-kind mappings too), so the covered set, the honest gaps
+/// and the coverage fraction are all **derived from real collection capability**,
+/// never asserted. `hse attack {status,coverage,gaps,navigator}` render views of
+/// exactly this value, and [`technique_module_index`] resolves each covered
+/// technique to the modules that are its evidence.
+#[must_use]
+pub fn reconnaissance_coverage() -> crate::core::attack::Coverage {
+    let ids = MODULE_TECHNIQUES
+        .values()
+        .flat_map(|techniques| techniques.iter().copied());
+    crate::core::attack::static_reconnaissance_coverage(ids)
 }
 
 #[cfg(test)]

@@ -340,11 +340,12 @@ pub fn derive_name_lineage(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
 }
 
 /// Upper bound on distinct registrable domains sharing a single dedicated IP for
-/// `derive_co_ownership` to emit a `SameOperator` edge — mirrors the AU-062
-/// correlator cap (`MAX_CO_HOSTED_REGISTRABLE`). Both must stay in sync: the
-/// correlator fires when ≤N sites share an IP; the builder emits the structural
-/// edge for the same membership set.
-const MAX_CO_HOSTED_REGISTRABLE: usize = 5;
+/// `derive_co_ownership` to emit a `SameOperator` edge — the SAME cap the AU-110
+/// co-hosting correlator reads. The `SameOperator` builder edge and the AU-110
+/// finding cover the identical membership set, so this is the single authority
+/// both consume (re-exported from [`crate::core::relation`]); they are now
+/// structurally unable to disagree rather than relying on a "keep in sync" note.
+pub const MAX_CO_HOSTED_REGISTRABLE: usize = 5;
 
 /// Derive `SameOperator` edges between domain/site entities that share an operator
 /// — inferred from three complementary evidence classes, each with appropriate

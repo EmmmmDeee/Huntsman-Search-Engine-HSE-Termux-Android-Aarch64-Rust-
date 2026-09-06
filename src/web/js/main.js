@@ -22,6 +22,8 @@ import initWasmUi, { applyTheme } from '/static/hse_wasm_ui.js';
 import { renderDash } from '/static/js/views/dash.js';
 import { renderScans } from '/static/js/views/scans.js';
 import { renderDiff } from '/static/js/views/diff.js';
+import { renderAssurance } from '/static/js/views/assurance.js';
+import { renderAttack } from '/static/js/views/attack.js';
 import {
   renderNewScan, previewPlan, uploadDossier, autoInvestigate, autoQueuePreview,
   autoSweepGo, submitWizard, submitBatch,
@@ -74,7 +76,7 @@ export async function render(){
   clearDebugLogTimer();
   S.route = parseHash();
   $$('#mainnav .navlink').forEach(a=>a.classList.remove('active'));
-  const navMap = {dash:'nav-dash', scans:'nav-scans', live:'nav-live', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans', engines:'nav-engines', harvest:'nav-harvest', debuglog:'nav-debuglog'};
+  const navMap = {dash:'nav-dash', scans:'nav-scans', live:'nav-live', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans', engines:'nav-engines', harvest:'nav-harvest', debuglog:'nav-debuglog', assurance:'nav-assurance', attack:'nav-attack'};
   const navEl = $('#'+navMap[S.route.name]); if (navEl) navEl.classList.add('active');
 
   const v = $('#view');
@@ -91,6 +93,8 @@ export async function render(){
     if (S.route.name==='harvest')  return await renderHarvest(v);
     if (S.route.name==='debuglog') return await renderDebugLog(v);
     if (S.route.name==='diff')     return await renderDiff(v);
+    if (S.route.name==='assurance') return await renderAssurance(v);
+    if (S.route.name==='attack')   return await renderAttack(v);
   } catch(e){
     v.innerHTML = `<div class="alert alert-danger"><strong>Error.</strong> ${esc(e.message)}
                    <button class="btn btn-default btn-sm" style="margin-left:12px" onclick="render()">Retry</button></div>`;

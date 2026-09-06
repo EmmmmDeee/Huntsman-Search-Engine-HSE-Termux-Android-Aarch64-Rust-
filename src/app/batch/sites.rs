@@ -154,6 +154,48 @@ pub static SITES: &[Site] = &[
         syntax: LineSyntax::Bare,
         evidence: "https://support.haveibeenpwned.com/hc/en-au/articles/15599376840207-Is-there-a-way-to-query-email-addresses-in-bulk",
     },
+    Site {
+        id: "hackcheck",
+        name: "HackCheck",
+        url: "https://hackcheck.io/",
+        how: "One value per search in the search box (pick the field); the free web tier \
+              returns breach counts and data-source references. The REST API and full records \
+              are paid and IP-allowlisted, so paste one line at a time by hand.",
+        accepts: &[Email, Username, Domain, Ip, Phone, Name],
+        syntax: LineSyntax::Bare,
+        evidence: "https://github.com/hackcheckio/hackcheck-ts",
+    },
+    Site {
+        id: "leakpeek",
+        name: "LeakPeek",
+        url: "https://leakpeek.com/",
+        how: "One value per search; pick the type. Registration is required and full results \
+              sit behind a paid tier, so paste one line at a time.",
+        accepts: &[Email, Username, Domain, Ip, Name, Phone],
+        syntax: LineSyntax::Bare,
+        evidence: "https://leakpeek.com/",
+    },
+    Site {
+        id: "osintleak",
+        name: "OSINTLeak",
+        url: "https://osintleak.com/",
+        how: "One value per search in the Community web UI (free 20 searches/day, account \
+              required; the API is a paid tier). Paste one line at a time.",
+        accepts: &[Email, Username, Phone],
+        syntax: LineSyntax::Bare,
+        evidence: "https://docs.osintleak.com/api/search",
+    },
+    Site {
+        id: "pentester",
+        name: "Pentester.com Data Breach Check",
+        url: "https://pentester.com/checker/",
+        how: "One email in the free, no-registration form; it checks ~16B infostealer records \
+              and returns which breaches and which categories of data were exposed. Paste one \
+              at a time (the keyed api.pentester.com API is paid and blocks automation).",
+        accepts: &[Email],
+        syntax: LineSyntax::Bare,
+        evidence: "https://pentester.com/checker/",
+    },
 ];
 
 /// Look a provider up by its `--site` id (case-insensitive).

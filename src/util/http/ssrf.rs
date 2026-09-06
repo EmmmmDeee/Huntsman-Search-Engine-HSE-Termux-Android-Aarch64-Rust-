@@ -150,7 +150,7 @@ impl reqwest::dns::Resolve for SsrfResolver {
 /// Shared reqwest configuration (SSRF-guarded DNS, redirect policy, timeouts,
 /// pool, UA) used by both the plain and the trace-stamped client builders.
 pub(super) fn client_builder() -> reqwest::ClientBuilder {
-    reqwest::Client::builder()
+    let builder = reqwest::Client::builder()
         .dns_resolver(std::sync::Arc::new(SsrfResolver))
         // Never honor an ambient `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`: reqwest's
         // default would route through it and let the PROXY perform DNS resolution,
@@ -194,5 +194,12 @@ pub(super) fn client_builder() -> reqwest::ClientBuilder {
             "huntsman-search-engine/",
             env!("CARGO_PKG_VERSION"),
             " (+https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-)"
-        ))
+        ));
+    // Extra trust roots from `SSL_CERT_FILE` — additive to the built-in webpki
+    // roots; empty unless the operator set it, loud if set but unusable. Lets
+    // this guarded client work behind a TLS-inspecting proxy (see `super::trust`).
+    super::trust::extra_root_certs()
+        .iter()
+        .cloned()
+        .fold(builder, reqwest::ClientBuilder::add_root_certificate)
 }

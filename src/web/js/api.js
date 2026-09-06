@@ -27,6 +27,12 @@ export const API = {
   // the HTTP twin of `hse doctor --live`. Network-bound, so it is button-
   // triggered (never in the 30 s auto-refresh) and can take a few seconds.
   capabilitiesProbe: ()=>API._req('/api/v1/capabilities/probe',{method:'POST'}),
+  // BSI-assurance + MITRE ATT&CK posture — read-only, the same evidence-derived
+  // data `hse assurance` / `hse bsi` / `hse attack` print (the API computes
+  // nothing of its own). `profile` is optional and accepts the CLI's names.
+  assurance: profile=>API._req('/api/v1/assurance'+(profile?'?profile='+encodeURIComponent(profile):'')),
+  assuranceVerify: ()=>API._req('/api/v1/assurance/verify'),
+  attack:    ()=>API._req('/api/v1/attack'),
   scans:     ()=>API._req('/api/v1/scans'),
   scan:      id=>API._req('/api/v1/scans/'+encodeURIComponent(id)),
   entities:  id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/entities'),

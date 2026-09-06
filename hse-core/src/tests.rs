@@ -1008,6 +1008,26 @@ fn normalise_coordinates_rejects_non_finite() {
 }
 
 #[test]
+fn normalise_coordinates_same_point_same_uid_across_notations() {
+    // The bare-decimal fast path and the `coords::parse` richer-notation path
+    // (here a `geo:` URI) both round through the single `fmt_coord_6dp`
+    // authority, so the SAME physical point in either notation must yield the
+    // identical normalised UID string — one point can never fork onto two UIDs
+    // by which notation surfaced it.
+    let bare = normalise(&EntityKind::Coordinates, "-27.5,153.0");
+    let geo = normalise(&EntityKind::Coordinates, "geo:-27.5,153.0");
+    assert_eq!(bare, "-27.500000,153.000000");
+    assert_eq!(geo, bare);
+
+    // The negative-zero collapse must also hold on the coords::parse path
+    // (previously exercised only on the bare-decimal fast path).
+    assert_eq!(
+        normalise(&EntityKind::Coordinates, "geo:-0.0000001,0.0"),
+        "0.000000,0.000000"
+    );
+}
+
+#[test]
 fn normalise_domain_strips_trailing_dot() {
     assert_eq!(
         normalise(&EntityKind::Domain, "example.com."),

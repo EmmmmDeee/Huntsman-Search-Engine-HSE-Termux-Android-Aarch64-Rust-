@@ -345,6 +345,58 @@ pub(in crate::core::correlator) fn rule_au_029_cloud_storage_exposure(
     )]
 }
 
+/// AU-124 — Ransomware victim exposure. The sole consumer of the
+/// `ransomware-victim` tag (emitted only by the `ransomware_live` and
+/// `ransomlook` modules) and the `group:<name>` claiming-crew attribution that
+/// rides beside it — elevates them to ONE grouped, High finding so a domain/org
+/// confirmed on a ransomware/extortion leak index surfaces as a graded result
+/// rather than an unread tag on a buried entity.
+///
+/// A single victim record mints an Organisation + Domain + a `reference`
+/// leak-site URL, all `ransomware-victim`-tagged, so the headline count excludes
+/// the `reference` leads: it reports flagged SUBJECT entities (the org/domain),
+/// never triple-counting one victim or labelling a reference URL as a victim.
+pub(in crate::core::correlator) fn rule_au_124_ransomware_victim_exposure(
+    context: &RuleContext,
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let tagged: Vec<&Entity> = context
+        .entities()
+        .iter()
+        .filter(|e| e.has_tag("ransomware-victim"))
+        .collect();
+    if tagged.is_empty() {
+        return Vec::new();
+    }
+    // Count the subject entities (org/domain), not the reference-URL leads.
+    let flagged = tagged.iter().filter(|e| !e.has_tag("reference")).count();
+    let groups: std::collections::BTreeSet<&str> = tagged
+        .iter()
+        .flat_map(|e| e.tags.iter().filter_map(|t| t.strip_prefix("group:")))
+        .collect();
+    let attribution = if groups.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " claimed by {}",
+            groups.into_iter().collect::<Vec<_>>().join(", ")
+        )
+    };
+    let uids: Vec<String> = tagged.iter().map(|e| e.uid.clone()).collect();
+    vec![Correlation::new(
+        "AU-124",
+        "Ransomware victim exposure",
+        Severity::High,
+        format!(
+            "{flagged} subject entity(ies) named on a ransomware/extortion leak index{attribution}"
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
 /// AU-031 — Malicious adjacency (graph-aware). Surfaces a *benign* entity that
 /// is one relation-edge away from a known-bad entity (tagged malicious /
 /// threat-intel / vulnerable): a subdomain of a malicious apex, an entity
