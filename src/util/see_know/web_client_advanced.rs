@@ -334,7 +334,7 @@ impl AdvancedWebClient {
         );
 
         Err(Error::module(
-            "see_know_web",
+            super::SRC,
             "SeekNow web-automation scraping is not implemented: see-know.ru's Cloudflare \
              Turnstile blocks automated login and no maintained Rust Playwright crate exists \
              to drive a real browser. Configure HUNTSMAN_SEEKNOW_KEY to use the API path, or \
