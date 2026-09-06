@@ -49,6 +49,8 @@ const SRC: &str = "openarch";
 /// entries; ten is a reviewable sample, and the total is reported alongside.
 const ROWS: usize = 10;
 
+/// Open Archives genealogy collector — see the module docs for the wire format
+/// and the identity-verification confidence policy.
 pub struct OpenArch;
 
 #[derive(Deserialize, Default)]

@@ -51,14 +51,17 @@ use crate::core::{
 use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "wikitree";
-/// The caller identifier WikiTree's API asks every client to send.
-const APP_ID: &str = "HuntsmanSearchEngine";
+/// The caller identifier WikiTree's API asks every client to send (a public
+/// app tag, not a credential — the API returns 429 without it).
+const CALLER_APP: &str = "HuntsmanSearchEngine";
 /// Profiles requested per search — a name with hundreds of namesakes still
 /// yields a bounded, reviewable set; the total is reported alongside.
 const LIMIT: usize = 10;
 /// The profile fields requested — exactly the ones the parser reads.
 const FIELDS: &str = "Id,Name,FirstName,MiddleName,LastNameAtBirth,LastNameCurrent,BirthDate,DeathDate,BirthLocation,DeathLocation,Gender,Father,Mother";
 
+/// WikiTree genealogy collector — see the module docs for the wire format and
+/// the identity-verification confidence policy.
 pub struct WikiTree;
 
 #[derive(Deserialize, Default)]
@@ -202,7 +205,7 @@ impl Module for WikiTree {
             return Ok(ModuleResult::new());
         }
         let url = format!(
-            "https://api.wikitree.com/api.php?action=searchPerson&FirstName={}&LastName={}&fields={FIELDS}&format=json&limit={LIMIT}&appId={APP_ID}",
+            "https://api.wikitree.com/api.php?action=searchPerson&FirstName={}&LastName={}&fields={FIELDS}&format=json&limit={LIMIT}&appId={CALLER_APP}",
             crate::util::http::urlencode(first),
             crate::util::http::urlencode(last)
         );

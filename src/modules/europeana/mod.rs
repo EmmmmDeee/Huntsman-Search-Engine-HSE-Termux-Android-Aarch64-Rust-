@@ -43,6 +43,8 @@ const KEY_ENV: &str = "HUNTSMAN_EUROPEANA_KEY";
 /// Records requested per search.
 const ROWS: usize = 10;
 
+/// Europeana cultural-heritage collector — see the module docs for the Search
+/// API wire format and the confidence policy.
 pub struct Europeana;
 
 #[derive(Deserialize, Default)]

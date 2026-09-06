@@ -47,6 +47,8 @@ const SRC: &str = "chronicling_america";
 /// ten keeps the read well inside the body cap while giving a reviewable set.
 const ROWS: usize = 10;
 
+/// Chronicling America newspaper-archive collector — see the module docs for
+/// the loc.gov wire format and the confidence policy.
 pub struct ChroniclingAmerica;
 
 #[derive(Deserialize, Default)]
