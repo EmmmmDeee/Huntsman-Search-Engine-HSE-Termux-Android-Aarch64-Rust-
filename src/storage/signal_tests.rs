@@ -530,9 +530,18 @@ fn an_interrupted_radar_sweep_is_atomic_and_earlier_sweeps_survive() {
     let err = store
         .insert_rf_sightings_batch("sweep-2", &big)
         .expect_err("OBSERVED: an out-of-space sweep must fail loudly, never half-persist");
+    // Match the underlying SQLite error CODE, not its Display text: the code
+    // (`DatabaseFull`) is stable across SQLite/rusqlite versions and platforms
+    // where the wording is not. Fall back to a text check defensively in case a
+    // future error path wraps the failure without preserving the ffi code.
+    let is_full = matches!(
+        &err,
+        crate::core::error::Error::Storage(rusqlite::Error::SqliteFailure(ffi, _))
+            if ffi.code == rusqlite::ErrorCode::DiskFull
+    ) || err.to_string().to_lowercase().contains("full");
     assert!(
-        err.to_string().to_lowercase().contains("full"),
-        "the error must name the fault (database/disk full), got: {err}"
+        is_full,
+        "the fault must be a database-full (SQLITE_FULL) error, got: {err:?}"
     );
 
     // ATOMICITY: the interrupted sweep left nothing behind.
@@ -571,9 +580,11 @@ fn an_interrupted_radar_sweep_is_atomic_and_earlier_sweeps_survive() {
     assert_eq!(store.rf_summary("sweep-2").expect("summary").sightings, 1);
 }
 
-/// A radar sweep persisted to disk must survive the app being killed and
-/// relaunched — the Termux "swipe it away" case. A fresh process reopening the
-/// store must read back every committed sighting unchanged (RPO across restart).
+/// A radar sweep persisted to disk must survive the store being closed and
+/// reopened — the on-disk state a real app restart relies on. This exercises
+/// that reopen within one process (it does not spawn a new one): dropping the
+/// `Store` closes its SQLite connection, and reopening the same database file
+/// must read back every committed sighting unchanged (RPO across a reopen).
 #[test]
 fn committed_sightings_survive_a_store_restart() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -590,10 +601,11 @@ fn committed_sightings_survive_a_store_restart() {
                 ],
             )
             .expect("the sweep commits");
-    } // the process "exits": the store is dropped and its connection closed.
+    } // the store is dropped here: its SQLite connection is closed and any WAL
+    // is checkpointed, exactly the on-disk state a restart would leave behind.
 
-    // A fresh process reopens the same database file.
-    let store = Store::open(path).expect("reopen after restart");
+    // Reopen the same on-disk database — the state a fresh process would read.
+    let store = Store::open(path).expect("reopen the persisted store");
     let devices = store.rf_devices_for_scan("sweep").expect("read");
     assert_eq!(devices.len(), 1, "the committed device survives the restart");
     let d = &devices[0];
