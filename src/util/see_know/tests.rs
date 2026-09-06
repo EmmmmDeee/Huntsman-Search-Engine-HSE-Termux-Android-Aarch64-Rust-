@@ -1245,11 +1245,26 @@ fn every_budget_mutating_test_holds_the_budget_lock() {
         "set_scan_cap_override(",
         "refresh_round_budget(",
     ];
-    // Chunk the file at `#[test]` boundaries: each chunk is one test's body
-    // (plus any trailing helper before the next `#[test]`). The prologue before
-    // the first `#[test]` is imports/helpers — skip it.
+    // Split into per-test chunks at real `#[test]` ATTRIBUTE lines — a line
+    // whose trimmed text is exactly `#[test]` — not at the raw substring. A
+    // `#[test]` inside a comment, doc string or code (this lock's own doc
+    // comment and body contain several) must not create a false boundary that
+    // could split a test and separate a mutator call from its lock acquisition.
+    // The prologue before the first attribute line is imports/helpers.
+    let mut chunks: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for line in src.lines() {
+        if line.trim() == "#[test]" && !current.is_empty() {
+            chunks.push(std::mem::take(&mut current));
+        }
+        current.push_str(line);
+        current.push('\n');
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
     let mut offenders = Vec::new();
-    for chunk in src.split("#[test]").skip(1) {
+    for chunk in chunks.iter().skip(1) {
         let name = chunk
             .split_once("fn ")
             .and_then(|(_, rest)| rest.split(['(', '<', ' ']).next())
