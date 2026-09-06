@@ -148,6 +148,18 @@ pub const CANARY_PROBES: &[(&str, TargetKind, &str)] = &[
     ("bgpview", TargetKind::Asn, "AS15169"),
     // RIPEstat network info for a public IP — always resolves a holder/prefix.
     ("ripestat", TargetKind::IpAddress, "8.8.8.8"),
+    // WikiTree profile search for a name the single family tree certainly
+    // holds (51 profiles on 2026-09-06).
+    ("wikitree", TargetKind::FullName, "Abraham Lincoln"),
+    // Chronicling America: 261 886 digitised newspaper pages name him.
+    (
+        "chronicling_america",
+        TargetKind::FullName,
+        "Abraham Lincoln",
+    ),
+    // Open Archives: the commonest name in two centuries of Dutch registers
+    // (126 802 entries on 2026-09-06).
+    ("openarch", TargetKind::FullName, "Jan Jansen"),
 ];
 
 /// Whether `module` is a curated must-yield canary (see [`CANARY_PROBES`]).
