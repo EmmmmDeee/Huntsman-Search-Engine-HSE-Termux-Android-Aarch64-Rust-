@@ -447,7 +447,7 @@ fn dmarc_txt_extracts_rua_and_ruf_reporting_addresses() {
 fn dmarc_suppresses_role_local_part_reporting_address() {
     // Regression test for the audit finding (role-mailbox-as-pii): a DMARC
     // rua/ruf reporting address on a role local-part (`hostmaster@`) or an
-    // INFRA_MAIL-listed domain (google.com) is infrastructure contact, not
+    // INFRA_PROVIDER_ROOTS-listed domain (google.com) is infrastructure contact, not
     // the subject's own mail — the same gate dns_intel's parallel (non-DoH)
     // DMARC parser already applies via `dmarc.report_addresses()`.
     let txt =
@@ -518,7 +518,7 @@ fn caa_entities_aggregate_policy_and_surface_iodef_security_contact() {
     // Mixed set across both wire forms — issue, issuewild, and an iodef mailto.
     // "tls-abuse@cloudflare.com" is a REAL, verbatim live capture from
     // Cloudflare's own CAA record — and a role/infrastructure address (the
-    // "abuse" role segment, and cloudflare.com is itself in INFRA_MAIL), so
+    // "abuse" role segment, and cloudflare.com is itself in INFRA_PROVIDER_ROOTS), so
     // it must be recorded as raw policy evidence but NOT emitted as a
     // pivotable Email entity (see the dedicated suppression test below).
     let records = vec![

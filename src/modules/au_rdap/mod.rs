@@ -277,7 +277,7 @@ pub(super) fn build_entities(resp: &RdapResponse, domain: &str, scan_id: &str) -
             // ip_registry/doh_resolver (and this file's own sibling
             // `whois::find_ip_entity` already gates the identical RIR-abuse
             // shape). Several real AU registrar domains are even already in
-            // `is_infrastructure_email`'s own INFRA_MAIL list.
+            // `is_infrastructure_email`'s own tables (INFRA_PROVIDER_ROOTS + INFRA_MAIL_ONLY).
             if let Some(email) = crate::modules::whois::vcard_field(child_vcard, "email")
                 && !crate::util::domains::is_infrastructure_email(&email)
             {

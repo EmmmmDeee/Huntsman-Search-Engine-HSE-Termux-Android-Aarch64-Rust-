@@ -434,10 +434,11 @@ pub fn is_infrastructure_email(email: &str) -> bool {
         return false;
     }
     // Provider/infra mail domains: any registrable-domain match against the
-    // curated infra set. Kept here (util) so both whois and ripestat can gate
-    // emission without depending on `core`.
-    INFRA_MAIL
+    // shared provider roots plus the mail-only extras. Kept here (util) so both
+    // whois and ripestat can gate emission without depending on `core`.
+    INFRA_PROVIDER_ROOTS
         .iter()
+        .chain(INFRA_MAIL_ONLY)
         .any(|d| registrable == *d || is_or_subdomain_of(domain, d))
 }
 
@@ -460,40 +461,71 @@ pub fn is_noreply_email_domain(email: &str) -> bool {
     })
 }
 
-/// Registrable domains of CDN / cloud / registrar / DNS / ESP providers whose
-/// role mailboxes (`abuse@`, `noc@`, …) surface from WHOIS/RDAP/RIPE lookups.
-/// Mirrors the `INFRA_DOMAINS` intent in `core::scan` but lives in util so the
-/// module layer can gate email emission without importing core.
-const INFRA_MAIL: &[&str] = &[
+/// Registrable roots of the CDN / cloud / DNS / registrar / ESP *providers*
+/// whose estate surfaces incidentally in a scan — as a nameserver, MX, CDN host
+/// or a WHOIS/RDAP/RIPE role mailbox — and is never the subject's own. The ONE
+/// authority both infrastructure classifiers draw from:
+/// [`is_infrastructure_email`] here (registrable-domain match on a mailbox's
+/// domain) and `core::scan::classify::is_infra_domain` (suffix match on a
+/// discovered hostname), each adding its own kind-specific extras
+/// ([`INFRA_MAIL_ONLY`] / `INFRA_HOST_ONLY`). A root that belongs in BOTH
+/// classifiers lives here and nowhere else: the two lists used to mirror this
+/// subset by hand and had drifted (six VPS hosts sat in one and not the other).
+/// `core::scan::tests::infra_provider_tables_are_one_authority_plus_disjoint_extras`
+/// locks that no root is listed in two of the three tables. Lowercase ASCII, no
+/// leading dot: both matchers compare bytes against the raw value and assume it.
+pub const INFRA_PROVIDER_ROOTS: &[&str] = &[
+    // CDN / cloud / DNS provider corporate domains — discovered incidentally via
+    // a WHOIS registrar/abuse/dns field, a nameserver, or a role mailbox
+    // (`dns@cloudflare.com`). Never the subject's own infrastructure, so
+    // expanding them floods the graph with the provider's estate (a real scan
+    // pulled Cloudflare's CDN IPs + role mailboxes to the top of the results).
     "cloudflare.com",
     "amazonaws.com",
-    "amazon.com",
     // NB: googlemail.com is NOT here — it is consumer freemail (Gmail's alias),
-    // handled by the is_freemail short-circuit above. google.com stays: it is
-    // Google's corporate/infra domain (noc@, dns-admin@, …), not a user mailbox.
+    // handled by `is_infrastructure_email`'s is_freemail short-circuit.
+    // google.com stays: it is Google's corporate/infra domain (noc@,
+    // dns-admin@, ns-cloud-*), not a user mailbox.
     "google.com",
     "azure.com",
-    "microsoft.com",
     "fastly.com",
     "akamai.com",
     "incapsula.com",
     "imperva.com",
     "sucuri.net",
     "stackpath.com",
-    "godaddy.com",
+    // Registrar / hosting control-plane
+    "secureserver.net",
+    "domaincontrol.com",
+    "name.com",
     "namecheap.com",
     "gandi.net",
-    "ovh.net",
+    // VPS/cloud hosts' own default nameservers and role mailboxes — as common
+    // in the wild as the managed-DNS providers, and the same "provider's
+    // estate, not the subject" case.
+    "digitalocean.com", // ns1-3.digitalocean.com
+    "linode.com",       // ns1-5.linode.com
+    "hetzner.com",      // hydrogen.ns.hetzner.com, oxygen.ns.hetzner.com
+    "hetzner.de",       // helium.ns.hetzner.de
+    "ovh.net",          // dns100.ovh.net, ns100.ovh.net
     "ovh.com",
-    "digitalocean.com",
-    "linode.com",
-    "hetzner.com",
-    "hetzner.de",
+    // ESP / transactional mail
     "sendgrid.net",
     "sendgrid.com",
-    "mailgun.net",
     "mailgun.org",
-    "secureserver.net",
+];
+
+/// Mail-only additions to [`INFRA_PROVIDER_ROOTS`]: registrars, registries,
+/// RIRs and hosting companies whose role mailboxes (`abuse@`, `noc@`,
+/// `namehost@`, …) surface from WHOIS/RDAP/RIPE lookups. Applied by
+/// [`is_infrastructure_email`] only; promoting one to the shared roots also
+/// makes every hostname under it a non-central scan-expansion target, so that
+/// is a deliberate change, not a tidy-up.
+pub(crate) const INFRA_MAIL_ONLY: &[&str] = &[
+    "amazon.com",
+    "microsoft.com",
+    "godaddy.com",
+    "mailgun.net",
     "markmonitor.com",
     "csc.com",
     "cscglobal.com",
@@ -507,8 +539,6 @@ const INFRA_MAIL: &[&str] = &[
     "web.com",
     "tucows.com",
     "enom.com",
-    "name.com",
-    "domaincontrol.com",
     "wildwestdomains.com",
     "publicdomainregistry.com",
     "key-systems.net",

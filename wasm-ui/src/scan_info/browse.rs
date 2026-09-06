@@ -13,9 +13,9 @@
 //! struct, unlike most other ports): this row template is the one place
 //! that displays nearly every field an entity has, and calling
 //! `Entity::c_effective()`/`source_count()`/`Classification::from_c_eff()`
-//! directly — rather than round-tripping the same values through the
-//! `effC`/`sourceCount`/`classify` WASM exports once per row from JS, as
-//! the original JS did — closes the same "second implementation to
+//! directly — rather than round-tripping the same values through per-row
+//! WASM calls from JS (`effC`/`classify`, and a since-removed `sourceCount`),
+//! as the original JS did — closes the same "second implementation to
 //! disagree with the first" gap [`crate::confidence`] was built to close,
 //! for the one caller that was still doing it by hand per row.
 

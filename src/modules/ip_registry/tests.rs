@@ -133,7 +133,7 @@ fn rdap_no_contacts_yields_only_the_ip_entity() {
 
 // A trimmed ARIN-shaped record: a registrant (org kind) that itself nests an
 // abuse contact and a technical/administrative contact — the real RDAP shape.
-// Deliberately NOT google.com: that domain is in `INFRA_MAIL` by design (see
+// Deliberately NOT google.com: that domain is in `INFRA_PROVIDER_ROOTS` by design (see
 // `rdap_suppresses_infra_mail_domain_abuse_email`), which would suppress every
 // contact regardless of local-part and defeat the point of this fixture —
 // exercising the nested-entity walk itself.
@@ -211,7 +211,7 @@ fn rdap_suppresses_role_local_part_abuse_email() {
 
 #[test]
 fn rdap_suppresses_infra_mail_domain_abuse_email() {
-    // google.com is in `INFRA_MAIL` by design — its abuse desk is provider
+    // google.com is in `INFRA_PROVIDER_ROOTS` by design — its abuse desk is provider
     // infrastructure regardless of local-part. A non-role local-part
     // (`network-ops`, not `abuse`) confirms the domain match alone is
     // sufficient to gate it.
@@ -224,7 +224,7 @@ fn rdap_suppresses_infra_mail_domain_abuse_email() {
     let ents = build_rdap_entities(&body, "8.8.8.8", "s");
     assert!(
         !ents.iter().any(|e| e.kind == EntityKind::Email),
-        "a contact on an INFRA_MAIL-listed domain must not surface as an Email entity, \
+        "a contact on an INFRA_PROVIDER_ROOTS-listed domain must not surface as an Email entity, \
          regardless of local-part"
     );
 }
@@ -304,7 +304,7 @@ fn asn_resp(json: &str) -> AsnResp {
 
 #[test]
 fn asn_record_yields_registry_contacts_and_website() {
-    // Deliberately NOT google.com: that domain is in `INFRA_MAIL` by design
+    // Deliberately NOT google.com: that domain is in `INFRA_PROVIDER_ROOTS` by design
     // and would suppress every contact regardless of local-part (see
     // `asn_suppresses_infra_mail_domain_contacts`), defeating the point of
     // this fixture — exercising the ASN-contact parsing itself.
@@ -377,7 +377,7 @@ fn asn_suppresses_role_local_part_abuse_email() {
 
 #[test]
 fn asn_suppresses_infra_mail_domain_contacts() {
-    // google.com is in `INFRA_MAIL` by design — its NOC/abuse desks are
+    // google.com is in `INFRA_PROVIDER_ROOTS` by design — its NOC/abuse desks are
     // provider infrastructure regardless of local-part. Non-role local-parts
     // (`network-ops`, not `noc`/`abuse`) confirm the domain match alone is
     // sufficient to gate it.
@@ -389,7 +389,7 @@ fn asn_suppresses_infra_mail_domain_contacts() {
     let ents = build_asn_entities(&body, 15169, "s");
     assert!(
         !ents.iter().any(|e| e.kind == EntityKind::Email),
-        "contacts on an INFRA_MAIL-listed domain must not surface as Email entities, \
+        "contacts on an INFRA_PROVIDER_ROOTS-listed domain must not surface as Email entities, \
          regardless of local-part"
     );
 }

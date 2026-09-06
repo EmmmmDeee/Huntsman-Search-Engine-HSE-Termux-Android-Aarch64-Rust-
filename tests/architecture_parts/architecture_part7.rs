@@ -138,9 +138,74 @@ fn every_src_file_is_wired_into_the_module_tree() {
 #[test]
 fn every_wasm_ui_import_resolves_to_a_served_export() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let exports = served_wasm_ui_exports(root);
+    let mut missing: Vec<String> = spa_wasm_ui_imports(root)
+        .into_iter()
+        .filter(|(_, _, imported)| !exports.contains(imported))
+        .map(|(f, lineno, imported)| {
+            format!(
+                "{}:{lineno}  imports `{imported}` — not exported by wasm-ui/pkg/hse_wasm_ui.js",
+                f.strip_prefix(root).unwrap_or(&f).display(),
+            )
+        })
+        .collect();
+    missing.sort();
+    assert!(
+        missing.is_empty(),
+        "web-UI import(s) name a wasm-ui export the served bundle does not provide — \
+         the browser throws `does not provide an export named …` and the view renders \
+         blank. Rename the import to match, add the `#[wasm_bindgen(js_name = …)]` \
+         export and regenerate the pkg (scripts/wasm_ui_drift_check.sh), or drop the \
+         import:\n  {}",
+        missing.join("\n  ")
+    );
+}
 
-    // The exports the browser actually receives: parse the committed, embedded
-    // bundle rather than the Rust source, so this checks the served artifact.
+/// Every export the served wasm-ui bundle provides is imported by at least one
+/// SPA module — the converse of `every_wasm_ui_import_resolves_to_a_served_export`.
+///
+/// An exported `#[wasm_bindgen]` function no JS module imports is dead weight
+/// the phone still downloads and stores: wasm-bindgen emits it, `wasm-opt`
+/// cannot strip it (an export is a root of the reachability graph), and the
+/// pkg is `include_bytes!`'d into the single on-device binary. It is also a
+/// second entry point waiting to drift from the caller it no longer has — the
+/// exact class `wasm-ui/src/confidence.rs` was written to close. This guard
+/// caught two on its first run (`sourceCount`, `isNonCorroboratingSource`),
+/// left behind when the browse renderer moved into Rust and started calling
+/// `hse_core` directly per row; both were removed with it. Only the loader's
+/// own names are legitimately outside every import list: the two runtime
+/// exports wasm-bindgen emits (`default` — the async init — and `initSync`)
+/// and the `#[wasm_bindgen(start)]` hook (`main`), which the loader runs and
+/// JS never imports.
+#[test]
+fn every_wasm_ui_export_is_imported_by_a_spa_module() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let exports = served_wasm_ui_exports(root);
+    let imported: std::collections::HashSet<String> = spa_wasm_ui_imports(root)
+        .into_iter()
+        .map(|(_, _, imported)| imported)
+        .collect();
+    const LOADER_EXPORTS: &[&str] = &["default", "initSync", "main"];
+    let mut dead: Vec<&String> = exports
+        .iter()
+        .filter(|e| !LOADER_EXPORTS.contains(&e.as_str()) && !imported.contains(*e))
+        .collect();
+    dead.sort();
+    assert!(
+        dead.is_empty(),
+        "wasm-ui export(s) no SPA module imports — dead code shipped in every on-device \
+         binary: {dead:?}. Import each where it is needed, or drop its `#[wasm_bindgen]` \
+         export from wasm-ui/src and regenerate the pkg (scripts/wasm_ui_drift_check.sh --write)"
+    );
+}
+
+/// The named exports the browser actually receives from the served wasm-ui
+/// bundle, parsed from the committed, embedded `wasm-ui/pkg/hse_wasm_ui.js`
+/// rather than re-derived from the Rust `js_name` attributes — faithful to what
+/// the browser loads and free of any model of wasm-bindgen's name mangling.
+/// Shared by the two wiring guards above so they cannot disagree on what "the
+/// bundle exports" means.
+fn served_wasm_ui_exports(root: &Path) -> std::collections::HashSet<String> {
     let bundle = fs::read_to_string(root.join("wasm-ui/pkg/hse_wasm_ui.js"))
         .expect("wasm-ui/pkg/hse_wasm_ui.js must exist — it is committed and include_bytes!'d");
     let mut exports: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -174,16 +239,25 @@ fn every_wasm_ui_import_resolves_to_a_served_export() {
     }
     // Floor: the bundle exports ~30 render functions. A near-empty set means the
     // wasm-bindgen output changed shape and this parser silently stopped seeing
-    // exports — which would make the guard below pass vacuously. Fail loudly.
+    // exports — which would make both guards pass vacuously. Fail loudly.
     assert!(
         exports.len() >= 20,
         "parsed only {} export(s) from hse_wasm_ui.js — the wasm-bindgen output \
          shape changed and this parser no longer sees exports; fix the parser \
-         before trusting this guard",
+         before trusting the wasm-ui wiring guards",
         exports.len()
     );
+    exports
+}
 
-    // Every named import of the bundle across the SPA's JS modules.
+/// Every named import of the wasm-ui bundle across the SPA's JS modules, as
+/// `(file, 1-based line, imported name)`. Only the `{ … }` names count: a
+/// leading default binding (`import initWasmUi, { … }`) is the wasm-bindgen
+/// init default, not a named export, so it is correctly outside the braces and
+/// ignored. In an IMPORT clause the name that must exist on the bundle is the
+/// LEFT side of `as` (`imported as local_binding`) — the mirror of the export
+/// clause in `served_wasm_ui_exports`.
+fn spa_wasm_ui_imports(root: &Path) -> Vec<(std::path::PathBuf, usize, String)> {
     fn walk_js(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
         let Ok(rd) = fs::read_dir(dir) else { return };
         for e in rd.flatten() {
@@ -199,7 +273,7 @@ fn every_wasm_ui_import_resolves_to_a_served_export() {
     walk_js(&root.join("src/web/js"), &mut js_files);
     js_files.sort();
 
-    let mut missing: Vec<String> = Vec::new();
+    let mut imports = Vec::new();
     for f in &js_files {
         let text = fs::read_to_string(f).unwrap();
         for (lineno, line) in text.lines().enumerate() {
@@ -209,9 +283,6 @@ fn every_wasm_ui_import_resolves_to_a_served_export() {
             if !t.starts_with("import") || !t.contains("hse_wasm_ui.js") {
                 continue;
             }
-            // Only the `{ … }` names are checked. A leading default binding
-            // (`import initWasmUi, { … }`) is the wasm-bindgen init default, not a
-            // named export, so it is correctly outside the braces and ignored.
             let Some(open) = line.find('{') else { continue };
             let Some(rel_close) = line[open..].find('}') else { continue };
             for raw in line[open + 1..open + rel_close].split(',') {
@@ -219,30 +290,12 @@ fn every_wasm_ui_import_resolves_to_a_served_export() {
                 if raw.is_empty() {
                     continue;
                 }
-                // In an IMPORT clause the name that must EXIST is the LEFT side of
-                // `as` (`imported as local_binding`) — the mirror of the export
-                // clause above.
                 let imported = raw.split(" as ").next().unwrap_or(raw).trim();
-                if !exports.contains(imported) {
-                    missing.push(format!(
-                        "{}:{}  imports `{imported}` — not exported by wasm-ui/pkg/hse_wasm_ui.js",
-                        f.strip_prefix(root).unwrap_or(f).display(),
-                        lineno + 1,
-                    ));
-                }
+                imports.push((f.clone(), lineno + 1, imported.to_string()));
             }
         }
     }
-    missing.sort();
-    assert!(
-        missing.is_empty(),
-        "web-UI import(s) name a wasm-ui export the served bundle does not provide — \
-         the browser throws `does not provide an export named …` and the view renders \
-         blank. Rename the import to match, add the `#[wasm_bindgen(js_name = …)]` \
-         export and regenerate the pkg (scripts/wasm_ui_drift_check.sh), or drop the \
-         import:\n  {}",
-        missing.join("\n  ")
-    );
+    imports
 }
 
 /// Every `docs/*.md` path cited from Rust source must actually exist.

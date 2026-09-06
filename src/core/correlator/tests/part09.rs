@@ -197,7 +197,7 @@ fn au087_excludes_freemail_and_isp_webmail() {
     // legacy Yahoo brands) do not, and previously slipped through to fire a false
     // employer/institution affiliation between strangers. The canonical
     // `is_freemail` guard now closes that gap. Every domain below is in FREEMAIL
-    // yet absent from `MEGA_DOMAINS`/`INFRA_DOMAINS`.
+    // yet absent from `MEGA_DOMAINS`/`INFRA_PROVIDER_ROOTS`/`INFRA_HOST_ONLY`.
     for freemail in ["qq.com", "163.com", "rocketmail.com", "yahoo.co.uk"] {
         let pair = vec![
             org_email_ent(&format!("john.smith@{freemail}")),
