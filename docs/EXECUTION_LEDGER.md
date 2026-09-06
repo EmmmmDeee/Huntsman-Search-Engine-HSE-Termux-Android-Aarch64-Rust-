@@ -15,7 +15,7 @@ run, a CI head, or a runtime check — `CLAIM ≠ EVIDENCE` applies to this file
 | Working branch | `claude/response-accuracy-legal-u90ja3`, restarted at `40fad7ee` (`origin/main`) after the #598 merge (GitHub auto-deletes merged heads) |
 | In-flight unit | none — this checkpoint is docs-only. The last recompute found no remaining unit above the return threshold (§4) |
 | GitHub | 0 open issues; 0 open pull requests (the 16 stale programme PRs were closed with per-PR evidence — §5) |
-| Toolchain | rustc 1.98; `scripts/gate.sh --quick` = 16 executed checks (root crate fmt / check / clippy `-D warnings` / rustdoc lints / test / doctests / doc coverage; hse-core fmt / clippy / rustdoc / test; wasm-ui fmt / clippy / native test; `install.sh` syntax; shellcheck). MSRV, the aarch64 cross-build, the wasm-ui/pkg drift check and audit / deny / dep-cooldown are CI's authority under `--quick`; the drift check also runs locally through `scripts/wasm_ui_drift_check.sh` once the pinned chain is installed (§8) |
+| Toolchain | rustc 1.98. `scripts/gate.sh --quick` skips exactly three checks — MSRV, the aarch64 cross-build / cross-test-compile and the wasm-ui/pkg drift check — for which CI is the authority. Everything else runs as CI does, each under its own condition: root crate fmt / check / clippy `-D warnings` / rustdoc lints / test / doctests / doc coverage; hse-core fmt / clippy / rustdoc / test; wasm-ui fmt / clippy / native test; `install.sh` syntax; shellcheck when installed; the cargo-audit / deny / machete / dep-cooldown family only when a manifest changed (audit.yml's path filter) and the tools are present. In this sandbox that is 16 executed checks for a non-manifest change (shellcheck installed; the audit family correctly skipped). The drift check also runs locally through `scripts/wasm_ui_drift_check.sh` once the pinned chain is installed (§8) |
 
 ## 2. Verified facts (with evidence)
 
@@ -142,25 +142,29 @@ loopback, served UI) → live network (drift sweep) → reproducibility
   hse-core attribute (same squash), so the drift check stays green either way.
 - Each unit is an independent commit on the merged branch history (see §5) for
   finer reverts via `git revert <sha>` on a branch built from those commits.
-- Continuity units: revert the single commit; no schema or data migration.
+- The two continuity units (`4b7ff547` for #594, `aaf86c9a` for #596) each
+  revert independently as above; neither touches a schema or persisted data,
+  so no migration is involved.
 
 ## 8. Restart instructions (exact)
 
 ```bash
 git fetch origin main
 git checkout -B claude/response-accuracy-legal-u90ja3 origin/main   # or the branch's own head
-CARGO_INCREMENTAL=0 scripts/gate.sh --quick                          # 16 checks; ~10–15 min
+CARGO_INCREMENTAL=0 scripts/gate.sh --quick                          # 16 checks here for a non-manifest change; ~10–15 min
 cargo build --bin hse && ./target/debug/hse bsi verify && ./target/debug/hse bsi continuity
 ./target/debug/hse serve --bind 127.0.0.1:8080   # then GET /api/v1/assurance, /assurance/verify,
                                                  #          /assurance/continuity, /attack, /attack/navigator
 cargo test --test live_drift -- --ignored --nocapture   # network; set SSL_CERT_FILE behind a TLS-inspecting proxy
 
 # wasm-ui/pkg drift check locally (otherwise CI is the authority). The chain is
-# pinned in one place each: wasm-bindgen-cli in wasm-ui/Cargo.toml, binaryen in
-# .github/workflows/ci.yml (download URL + sha256) and scripts/gate.sh.
+# pinned in one place each: wasm-bindgen-cli in wasm-ui/Cargo.toml; the binaryen
+# build in scripts/wasm_ui_drift_check.sh (WASM_OPT_PIN — gate.sh reads it from
+# there); .github/workflows/ci.yml carries the matching download URL + sha256.
 rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version "$(grep -m1 '^wasm-bindgen' wasm-ui/Cargo.toml | sed -E 's/.*"([0-9.]+)".*/\1/')" --locked
-# put binaryen version_108's bin/ on PATH exactly as ci.yml does (sha256-verified)
+# put the binaryen build named by WASM_OPT_PIN (currently version_108) on PATH,
+# installed exactly as ci.yml's step does (sha256-verified)
 scripts/wasm_ui_drift_check.sh            # `--write` regenerates wasm-ui/pkg after any hse-core / wasm-ui change; commit the result
 ```
 
