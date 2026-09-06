@@ -68,20 +68,34 @@ fn build_rotating_resolvers() -> Option<Vec<hickory_resolver::TokioResolver>> {
         net::runtime::TokioRuntimeProvider,
     };
     let raw = std::env::var("HUNTSMAN_DNS_RESOLVERS").ok()?;
+    let providers = crate::util::netrotate::parse_dns_providers(&raw);
     // Surface misspelled/unknown provider names instead of silently dropping
     // them — a typo (`clouflare`) would otherwise leave the operator believing
-    // egress DNS is pinned to a public resolver when it has fallen back to the
-    // system resolver (a security-relevant misconfiguration).
+    // egress DNS is pinned to a public resolver. The valid set is derived from
+    // the same DNS_PROVIDER_IPS authority (never hard-coded), and the fallback
+    // clause fires only when NO recognised provider remains — if some do, they
+    // still rotate and no system-resolver fallback occurs.
     let unknown = crate::util::netrotate::unknown_dns_providers(&raw);
     if !unknown.is_empty() {
-        tracing::warn!(
-            unknown = ?unknown,
-            valid = "cloudflare, google, quad9",
-            "HUNTSMAN_DNS_RESOLVERS names unrecognised provider(s); they are ignored — \
-             check spelling or egress DNS silently falls back to the system resolver"
-        );
+        let valid = crate::util::netrotate::DNS_PROVIDER_IPS
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>()
+            .join(", ");
+        if providers.is_empty() {
+            tracing::warn!(
+                unknown = ?unknown, valid = %valid,
+                "HUNTSMAN_DNS_RESOLVERS names only unrecognised provider(s); none remain, so \
+                 egress DNS falls back to the system resolver — check spelling"
+            );
+        } else {
+            tracing::warn!(
+                unknown = ?unknown, valid = %valid,
+                "HUNTSMAN_DNS_RESOLVERS names unrecognised provider(s), which are ignored; the \
+                 recognised ones still rotate — check spelling"
+            );
+        }
     }
-    let providers = crate::util::netrotate::parse_dns_providers(&raw);
     if providers.is_empty() {
         return None;
     }

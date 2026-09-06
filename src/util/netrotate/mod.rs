@@ -89,8 +89,9 @@ pub fn unknown_dns_providers(raw: &str) -> Vec<String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .filter(|s| {
-            let lower = s.to_ascii_lowercase();
-            !DNS_PROVIDER_IPS.iter().any(|(name, _)| *name == lower)
+            !DNS_PROVIDER_IPS
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case(s))
         })
         .map(str::to_string)
         .collect()
