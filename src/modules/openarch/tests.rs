@@ -139,3 +139,27 @@ fn duplicate_record_urls_collapse_to_one_source() {
         1
     );
 }
+
+#[test]
+fn a_missing_number_found_still_yields_the_returned_docs() {
+    // number_found is optional; if it is absent the returned docs must not be
+    // dropped. index_total falls back to docs.len().
+    let doc = OaDoc {
+        personname: Some("John Smith".into()),
+        url: Some("https://www.openarchieven.nl/x:1/en".into()),
+        ..OaDoc::default()
+    };
+    let res = build_entities("John Smith", 0, &[doc], "scan");
+    let p = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .expect("a missing number_found must not suppress the returned docs");
+    assert_eq!(
+        p.evidence[0]
+            .attributes
+            .get("index_total")
+            .map(String::as_str),
+        Some("1")
+    );
+}

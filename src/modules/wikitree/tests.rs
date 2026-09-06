@@ -160,3 +160,30 @@ fn a_name_only_profile_is_demoted_and_flagged_and_a_married_name_is_kept() {
     assert_eq!(a.get("current_surname").map(String::as_str), Some("Smith"));
     assert!(!a.contains_key("private_profiles_matching"));
 }
+
+#[test]
+fn a_missing_total_still_yields_the_returned_matches() {
+    // `total` is optional; if the API omits it the returned matches must not be
+    // dropped. matches_total falls back to matches.len().
+    let m = WtMatch {
+        id: Some(1),
+        name: Some("Smith-1".into()),
+        first_name: Some("John".into()),
+        last_name_at_birth: Some("Smith".into()),
+        birth_date: Some("1880-01-01".into()),
+        ..WtMatch::default()
+    };
+    let res = build_entities("John Smith", 0, &[m], "scan");
+    let p = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .expect("a missing total must not suppress the returned matches");
+    assert_eq!(
+        p.evidence[0]
+            .attributes
+            .get("matches_total")
+            .map(String::as_str),
+        Some("1")
+    );
+}

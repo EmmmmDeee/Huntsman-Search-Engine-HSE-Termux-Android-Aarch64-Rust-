@@ -116,3 +116,28 @@ fn a_record_without_any_page_url_is_skipped_and_guid_is_the_fallback() {
             .any(|e| e.kind == EntityKind::Organisation)
     );
 }
+
+#[test]
+fn a_missing_total_still_yields_the_returned_records() {
+    // totalResults is optional; if the provider omits it the returned items
+    // must not be dropped. Count falls back to items.len().
+    let item = EuItem {
+        title: vec!["John Smith, portrait".into()],
+        guid: Some("https://www.europeana.eu/item/1/x".into()),
+        ..EuItem::default()
+    };
+    let res = build_entities(TargetKind::FullName, "John Smith", 0, &[item], "scan");
+    let headline = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .expect("a missing total must not suppress the returned records");
+    assert_eq!(
+        headline.evidence[0]
+            .attributes
+            .get("matching_records")
+            .map(String::as_str),
+        Some("1")
+    );
+    assert!(res.entities.iter().any(|e| e.kind == EntityKind::Url));
+}

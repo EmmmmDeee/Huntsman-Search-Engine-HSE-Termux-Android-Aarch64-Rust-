@@ -191,9 +191,17 @@ pub(super) fn build_entities(
     scan_id: &str,
 ) -> ModuleResult {
     let mut result = ModuleResult::new();
-    if number_found == 0 || docs.is_empty() {
+    if docs.is_empty() {
         return result;
     }
+    // `number_found` is optional: if it is ever absent/renamed, the returned
+    // docs are still valid and must not be dropped. Fall back to the count
+    // actually returned.
+    let number_found = if number_found > 0 {
+        number_found
+    } else {
+        docs.len() as u64
+    };
     let mut seen_urls = std::collections::HashSet::new();
     for doc in docs.iter().take(ROWS) {
         let Some(personname) = doc

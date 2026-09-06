@@ -250,9 +250,17 @@ pub(super) fn build_entities(
     scan_id: &str,
 ) -> ModuleResult {
     let mut result = ModuleResult::new();
-    if total == 0 || matches.is_empty() {
+    if matches.is_empty() {
         return result;
     }
+    // `total` is optional: if the API ever omits/renames it, `matches` are the
+    // authoritative payload and must not be dropped. Fall back to the count
+    // actually returned.
+    let total = if total > 0 {
+        total
+    } else {
+        matches.len() as u64
+    };
     let stubs = matches
         .iter()
         .filter(|m| m.display_name().is_none())

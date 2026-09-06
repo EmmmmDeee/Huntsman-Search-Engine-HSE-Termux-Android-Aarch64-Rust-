@@ -98,7 +98,7 @@ impl Module for Europeana {
     }
 
     fn category(&self) -> ModuleCategory {
-        ModuleCategory::People
+        ModuleCategory::Search
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
@@ -177,9 +177,13 @@ pub(super) fn build_entities(
     scan_id: &str,
 ) -> ModuleResult {
     let mut result = ModuleResult::new();
-    if total == 0 || items.is_empty() {
+    if items.is_empty() {
         return result;
     }
+    // `totalResults` is optional in the wire shape: if the provider ever omits
+    // or renames it, the returned `items` are still valid results and must not
+    // be dropped. Fall back to the count actually returned.
+    let total = if total > 0 { total } else { items.len() as u64 };
     let headline_kind = match kind {
         TargetKind::Organisation => EntityKind::Organisation,
         _ => EntityKind::Person,

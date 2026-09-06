@@ -146,3 +146,28 @@ fn a_page_whose_ocr_never_names_the_seed_is_kept_but_demoted_and_flagged() {
     assert!(n.evidence[0].attributes.contains_key("caution"));
     assert!(!c.evidence[0].attributes.contains_key("caution"));
 }
+
+#[test]
+fn a_missing_pagination_total_still_yields_the_returned_pages() {
+    // pagination.of is optional; if it is absent the returned pages must not be
+    // dropped. Count falls back to results.len().
+    let page = LocResult {
+        url: Some("https://www.loc.gov/resource/sn1/1900-01-01/ed-1/?sp=1".into()),
+        description: vec!["Mr John Smith of this town".into()],
+        ..LocResult::default()
+    };
+    let res = build_entities(TargetKind::FullName, "John Smith", 0, &[page], "scan");
+    let headline = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .expect("a missing pagination total must not suppress the returned pages");
+    assert_eq!(
+        headline.evidence[0]
+            .attributes
+            .get("matching_pages")
+            .map(String::as_str),
+        Some("1")
+    );
+    assert!(res.entities.iter().any(|e| e.kind == EntityKind::Url));
+}

@@ -97,7 +97,7 @@ impl Module for ChroniclingAmerica {
     }
 
     fn category(&self) -> ModuleCategory {
-        ModuleCategory::People
+        ModuleCategory::Search
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
@@ -167,9 +167,17 @@ pub(super) fn build_entities(
     scan_id: &str,
 ) -> ModuleResult {
     let mut result = ModuleResult::new();
-    if matching == 0 || results.is_empty() {
+    if results.is_empty() {
         return result;
     }
+    // `pagination.of` is optional: if it is ever absent/renamed, the returned
+    // pages are still valid and must not be dropped. Fall back to the count
+    // actually returned.
+    let matching = if matching > 0 {
+        matching
+    } else {
+        results.len() as u64
+    };
     let headline_kind = match kind {
         TargetKind::Organisation => EntityKind::Organisation,
         _ => EntityKind::Person,
