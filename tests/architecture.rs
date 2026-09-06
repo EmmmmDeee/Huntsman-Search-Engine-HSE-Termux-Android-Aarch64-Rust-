@@ -235,7 +235,14 @@ fn removed_integration_references(root: &Path) -> Vec<String> {
 }
 
 fn is_historical_record(rel: &str) -> bool {
-    rel == "docs/REQUIREMENTS_LEDGER.md" || rel.starts_with("docs/audit/") || rel.contains("_2026-")
+    rel == "docs/REQUIREMENTS_LEDGER.md"
+        // The programme's execution ledger is a dated checkpoint record: it
+        // names the PRs, commits and removals that happened — the integration's
+        // removal included — and must not launder that history to satisfy a
+        // guard whose own doctrine grants history that right.
+        || rel == "docs/EXECUTION_LEDGER.md"
+        || rel.starts_with("docs/audit/")
+        || rel.contains("_2026-")
 }
 
 fn walk_live_text(path: &Path, root: &Path, hits: &mut Vec<String>) {
