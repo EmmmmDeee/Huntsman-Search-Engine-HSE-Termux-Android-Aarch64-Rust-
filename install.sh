@@ -86,6 +86,60 @@ log_warn() { printf "  ${YELLOW}!${NC} %s\n" "$*"; }
 die()      { printf "  ${RED}✗${NC} %s\n" "$*" >&2; echo; echo "Full log: $LOG_FILE"; exit 1; }
 hint()     { printf "    ${DIM}%s${NC}\n" "$*"; }
 
+# ─── Post-install verification + rollback (defined here, invoked after install) ─
+# THE single authority for "did the binary we just installed actually become the
+# revision this run set out to install, and if it did not, put the previous one
+# back". Extracted into a function — rather than left inline at the call site —
+# so the rollback branch, which only ever fires on a botched upgrade and is
+# otherwise invisible on a healthy machine, is exercised directly by the test
+# suite (tests/install_invariants.rs) instead of only in a real failed upgrade
+# on a user's device.
+#
+#   $1  installed binary    the freshly-installed $HSE_BIN_DIR/hse to verify
+#   $2  rollback binary      preserved copy of the previous binary, or "" if none
+#   $3  target revision SHA  the 40-hex this run set out to land, or "" if none
+#
+# Returns 0 when the install is verified (or acceptably unverified when no
+# target revision was resolved); non-zero when verification FAILED — having
+# first restored $2 over $1 when a rollback copy exists, so the device is left
+# on the previous working binary rather than a wrong-but-newer-looking one.
+# Removes the rollback copy on every return. Never calls die/exit itself: the
+# caller decides how to abort, which is what makes it safe to invoke in a test.
+hse_verify_or_rollback() {
+    local installed="$1" rollback="$2" target="$3"
+    if [[ -n "$target" ]]; then
+        local got
+        got="$("$installed" build-sha 2>>"$LOG_FILE")" || got=""
+        got="$(printf '%s' "$got" | tr -d '[:space:]' | tr 'A-F' 'a-f')"
+        if [[ "$got" != "$target" ]]; then
+            if [[ -n "$rollback" && -e "$rollback" ]]; then
+                mv -f "$rollback" "$installed" 2>/dev/null \
+                    && log_warn "restored the previous binary"
+            fi
+            rm -f "$rollback" 2>/dev/null || true
+            log_warn "installed binary reports $([[ -n "$got" ]] && printf '%s' "${got:0:7}" || printf 'no verifiable revision'), expected ${target:0:7}"
+            return 1
+        fi
+        ok "Verified installed revision: ${target:0:7}"
+    elif [[ "${HSE_ALLOW_SHA_MISMATCH:-0}" != "1" ]]; then
+        log_warn "no target revision was resolved — the installed build's provenance is unverified"
+    fi
+    rm -f "$rollback" 2>/dev/null || true
+    return 0
+}
+
+# Test hook: exercise hse_verify_or_rollback in isolation, without running the
+# installer. A real install (curl | bash, or ./install.sh) never passes this
+# sentinel first argument, so this branch is inert in production. Placed before
+# `trap on_exit EXIT` is armed so the isolated run exits cleanly with the
+# function's own status and nothing else.
+if [[ "${1:-}" == "__verify_or_rollback" ]]; then
+    shift
+    __rc=0
+    hse_verify_or_rollback "$@" || __rc=$?
+    exit "$__rc"
+fi
+
 HB_PID=""
 on_exit() {
     local rc=$?
@@ -1047,23 +1101,13 @@ mv -f "$TMP_BIN" "$HSE_BIN_DIR/hse" \
 #
 # A verification failure restores the previous binary rather than leaving a
 # wrong-but-newer-looking one installed — `hse update` must never move a device
-# backwards or sideways and call it an upgrade.
-if [[ -n "$TARGET_SHA" ]]; then
-    INSTALLED_SHA="$("$HSE_BIN_DIR/hse" build-sha 2>>"$LOG_FILE")" || INSTALLED_SHA=""
-    INSTALLED_SHA="$(printf '%s' "$INSTALLED_SHA" | tr -d '[:space:]' | tr 'A-F' 'a-f')"
-    if [[ "$INSTALLED_SHA" != "$TARGET_SHA" ]]; then
-        if [[ -n "$ROLLBACK_BIN" ]]; then
-            mv -f "$ROLLBACK_BIN" "$HSE_BIN_DIR/hse" 2>/dev/null \
-                && log_warn "restored the previous binary"
-        fi
-        rm -f "$ROLLBACK_BIN" 2>/dev/null || true
-        die "installed binary reports $([[ -n "$INSTALLED_SHA" ]] && printf '%s' "${INSTALLED_SHA:0:7}" || printf 'no verifiable revision'), expected ${TARGET_SHA:0:7} — install NOT completed"
-    fi
-    ok "Verified installed revision: ${TARGET_SHA:0:7}"
-elif [[ "${HSE_ALLOW_SHA_MISMATCH:-0}" != "1" ]]; then
-    log_warn "no target revision was resolved — the installed build's provenance is unverified"
+# backwards or sideways and call it an upgrade. The verify-and-restore logic is
+# hse_verify_or_rollback (defined up top with the other helpers) so this exact
+# rollback path is covered by tests/install_invariants.rs, not just by a real
+# botched upgrade on a user's device.
+if ! hse_verify_or_rollback "$HSE_BIN_DIR/hse" "$ROLLBACK_BIN" "$TARGET_SHA"; then
+    die "post-install verification failed — install NOT completed"
 fi
-rm -f "$ROLLBACK_BIN" 2>/dev/null || true
 
 ok "Installed ($([[ "$PREBUILT" == "1" ]] && echo 'from prebuilt' || echo "built [$PROFILE]"))"
 

@@ -32,11 +32,16 @@
 //! each concept keeps a single authoritative home.
 
 mod catalog;
+pub mod continuity;
 mod derive;
 mod gap;
 mod model;
 
 pub use catalog::catalog;
+pub use continuity::{
+    ContinuityAssessment, ContinuityObjective, ContinuityState, ContinuitySummary,
+    ObservedRecovery, RecoveryPoint,
+};
 pub use derive::{derive_level, derive_state};
 pub use gap::{GapFinding, GapSeverity, findings, gap_severity};
 pub use model::{

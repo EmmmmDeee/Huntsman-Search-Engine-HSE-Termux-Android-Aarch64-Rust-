@@ -68,11 +68,40 @@ function verdictBanner(vd){
   </div>`;
 }
 
+/* BSI 200-4 continuity: one row per capability, worst-first, with the derived
+ * state (UNTESTED / TESTED / OBSERVED), the objectives a test actually asserts,
+ * and the recovery tests that are its evidence. Untested capabilities are
+ * named in the heading, never folded into a percentage. */
+function contState(s){
+  const cls = s==='UNTESTED' ? 'label-danger' : 'label-success';
+  return `<span class="label ${cls}">${esc(s)}</span>`;
+}
+function continuityPanel(caps, s){
+  const gaps = (s.untested_capabilities||[]);
+  const head = `Continuity (BSI 200-4) <small class="text-muted">— ${s.tested||0} tested · ${s.untested||0} untested · ${s.observed||0} observed${gaps.length ? ' · untested: ' + esc(gaps.join(', ')) : ''}</small>`;
+  const rows = caps.map(c=>{ const o=c.objective||{}; return `<tr>
+      <td><code>${esc(o.capability)}</code><div class="text-muted" style="font-size:10px">${esc(o.name)}</div></td>
+      <td>${esc(o.criticality)}</td><td>${contState(c.state)}</td>
+      <td>${o.rto_secs!=null ? esc(o.rto_secs)+' s' : '<span class="text-muted">unasserted</span>'}</td>
+      <td>${esc(o.rpo_label || o.rpo)}</td>
+      <td style="font-size:11px">${(o.recovery_tests||[]).length ? o.recovery_tests.map(t=>`<code>${esc(t)}</code>`).join('<br>') : '<span class="text-danger">none — unproven by any test</span>'}</td>
+      <td style="font-size:11px">${esc(o.degraded_mode)}</td>
+    </tr>`; }).join('');
+  return `<div class="panel panel-default">
+      <div class="panel-heading">${head}</div>
+      <table class="table table-condensed" style="margin:0">
+        <thead><tr><th>Capability</th><th>Criticality</th><th>State</th><th>RTO</th><th>RPO</th><th>Recovery tests (evidence)</th><th>Degraded mode</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
 export async function renderAssurance(v){
   const profile = (S.route && S.route.query && S.route.query.profile) || '';
-  const [data, vf] = await Promise.all([API.assurance(profile), API.assuranceVerify()]);
+  const [data, vf, ct] = await Promise.all([API.assurance(profile), API.assuranceVerify(), API.assuranceContinuity()]);
   const controls = data.controls || [], findings = data.findings || [], s = data.summary || {};
   const vd = vf.verdict || {};
+  const caps = ct.capabilities || [], cs = ct.summary || {};
 
   const opts = ['<option value="">All profiles</option>']
     .concat(PROFILES.map(p=>`<option value="${p}"${p===profile?' selected':''}>${esc(p)}</option>`)).join('');
@@ -105,6 +134,8 @@ export async function renderAssurance(v){
         <tbody>${findings.map(f=>`<tr><td><code>${esc(f.control_id)}</code></td><td>${esc(f.module)}</td><td>${stateCell(f.state)}</td><td>${sevCell(f.severity)}</td><td>${esc(f.criticality)}</td></tr>`).join('')}</tbody>
       </table>
     </div>` : ''}
+
+    ${continuityPanel(caps, cs)}
 
     <div class="panel panel-default">
       <div class="panel-heading">Controls <small class="text-muted">— click a row for the evidence that earned its state</small></div>

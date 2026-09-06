@@ -93,6 +93,15 @@ pub enum BsiAction {
         #[arg(long)]
         json: bool,
     },
+    /// BSI 200-4 continuity per capability: the faults in scope, the objectives
+    /// a test actually asserts (RTO/RPO), degraded mode, fallback, and the
+    /// recovery tests that prove it — derived state UNTESTED / TESTED /
+    /// OBSERVED, worst-first, with untested capabilities named.
+    Continuity {
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Verify the assurance gate: real, evidence-derived verification that exits
     /// non-zero if any control has REGRESSED or any open deficiency is graded
     /// High or Critical. Low/Medium gaps are reported but do not fail the gate.
@@ -117,6 +126,7 @@ pub(super) fn cmd_bsi(action: BsiAction) -> Result<()> {
         BsiAction::Protection { profile, json } => protection(profile.as_deref(), json),
         BsiAction::Gaps { profile, json } => gaps(profile.as_deref(), json),
         BsiAction::Regressions { profile, json } => regressions(profile.as_deref(), json),
+        BsiAction::Continuity { json } => continuity(json),
         BsiAction::Verify { profile, json } => run_verify(profile.as_deref(), json),
     }
 }
@@ -445,4 +455,66 @@ fn run_verify(profile: Option<&str>, json: bool) -> Result<()> {
             v.blocking.len()
         )))
     }
+}
+
+/// `hse bsi continuity` — BSI 200-4 per-capability recovery objectives and the
+/// state each has earned from recovery-test evidence (see
+/// `crate::core::assurance::continuity`). Prints nothing it cannot prove: an
+/// RTO appears only when a test asserts it, OBSERVED only with a recorded
+/// runtime recovery, and every untested capability is named.
+fn continuity(json: bool) -> Result<()> {
+    use crate::core::assurance::continuity::{assess, summarise};
+    let assessed = assess();
+    let summary = summarise(&assessed);
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "capabilities": assessed,
+                "summary": summary,
+            }))
+            .map_err(|e| Error::Other(format!("serialise continuity: {e}")))?
+        );
+        return Ok(());
+    }
+
+    println!("BSI 200-4 continuity — per-capability recovery objectives (evidence-derived)\n");
+    println!(
+        "{:<14}  {:<10}  {:<9}  {:<11}  {:<16}  TESTS",
+        "CAPABILITY", "CRIT", "STATE", "RTO", "RPO"
+    );
+    println!("{}", "─".repeat(78));
+    for a in &assessed {
+        let o = &a.objective;
+        let rto = o
+            .rto_secs
+            .map_or_else(|| "unasserted".to_string(), |s| format!("{s} s"));
+        println!(
+            "{:<14}  {:<10}  {:<9}  {:<11}  {:<16}  {}",
+            o.capability,
+            format!("{:?}", o.criticality).to_ascii_lowercase(),
+            a.state.id(),
+            rto,
+            o.rpo.label(),
+            o.recovery_tests.len(),
+        );
+    }
+    println!(
+        "\n{} capabilities: {} untested, {} tested, {} observed.",
+        summary.total, summary.untested, summary.tested, summary.observed
+    );
+    if summary.untested_capabilities.is_empty() {
+        println!("Every capability's recovery is proven by at least one executable test.");
+    } else {
+        println!(
+            "Untested (implemented or documented, but unproven by any test): {}.",
+            summary.untested_capabilities.join(", ")
+        );
+    }
+    println!(
+        "\nObjectives quote only bounds a test asserts. OBSERVED requires a recorded \
+         runtime recovery and is not claimed from tests."
+    );
+    Ok(())
 }

@@ -571,3 +571,160 @@ fn the_boot_script_is_regenerated_when_it_is_the_installers_own() {
         "the boot body starts both long-running wrappers"
     );
 }
+
+// ─── Functional coverage of the post-install verify-and-rollback path ────────
+//
+// Everything above reads install.sh as text. The rollback branch, though, only
+// fires on a *botched* upgrade — an install that reports the wrong revision —
+// and is therefore invisible on every healthy run, so a transcription-style
+// text assertion could never prove it actually restores anything. install.sh
+// exposes the logic as the function `hse_verify_or_rollback` plus a
+// `__verify_or_rollback` test hook that runs just that function in isolation
+// and exits with its status. These tests drive the REAL installer code (not a
+// copy of it) against fake binaries and assert the true filesystem outcome:
+// when verification fails, the previous binary is put back.
+
+#[cfg(unix)]
+fn write_exec(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::write(path, body).unwrap();
+    let mut perm = fs::metadata(path).unwrap().permissions();
+    perm.set_mode(0o755);
+    fs::set_permissions(path, perm).unwrap();
+}
+
+#[cfg(unix)]
+fn run_verify(home: &Path, installed: &Path, rollback: &str, target: &str) -> std::process::Output {
+    use std::process::Command;
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
+    Command::new("bash")
+        .arg(script)
+        .arg("__verify_or_rollback")
+        .arg(installed)
+        .arg(rollback)
+        .arg(target)
+        // Only HOME is required (install.sh's log dir lives under it); a fresh
+        // temp HOME keeps the run from touching the developer's real cache.
+        .env("HOME", home)
+        .env_remove("HSE_ALLOW_SHA_MISMATCH")
+        .output()
+        .expect("run install.sh __verify_or_rollback")
+}
+
+#[cfg(unix)]
+#[test]
+fn rollback_restores_the_previous_binary_when_verification_fails() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let home = tmp.path().join("home");
+    fs::create_dir_all(home.join(".cache")).unwrap();
+    let bin = tmp.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+
+    // The freshly-installed binary reports the WRONG revision …
+    let installed = bin.join("hse");
+    write_exec(
+        &installed,
+        "#!/bin/sh\n[ \"$1\" = build-sha ] && echo 0000000000000000000000000000000000000000\n",
+    );
+    // … and the previous binary was preserved before the atomic swap.
+    let rollback = bin.join(".hse.prev.test");
+    write_exec(&rollback, "#!/bin/sh\necho I-AM-THE-PREVIOUS-BINARY\n");
+
+    let target = "1111111111111111111111111111111111111111";
+    let out = run_verify(&home, &installed, rollback.to_str().unwrap(), target);
+
+    assert!(
+        !out.status.success(),
+        "a wrong-revision install must fail, not silently pass"
+    );
+    // The whole point of the rollback: the device is left on the previous
+    // WORKING binary, never a wrong-but-newer-looking one.
+    let restored = fs::read_to_string(&installed).unwrap();
+    assert!(
+        restored.contains("I-AM-THE-PREVIOUS-BINARY"),
+        "the previous binary must be restored over the failed install, got:\n{restored}"
+    );
+    assert!(
+        !rollback.exists(),
+        "the rollback copy must be cleaned up after it is used"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_verified_install_keeps_the_new_binary_and_drops_the_rollback_copy() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let home = tmp.path().join("home");
+    fs::create_dir_all(home.join(".cache")).unwrap();
+    let bin = tmp.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+
+    let target = "2222222222222222222222222222222222222222";
+    let installed = bin.join("hse");
+    write_exec(
+        &installed,
+        &format!("#!/bin/sh\n[ \"$1\" = build-sha ] && echo {target}\n"),
+    );
+    let rollback = bin.join(".hse.prev.test");
+    write_exec(&rollback, "#!/bin/sh\necho OLD\n");
+
+    let out = run_verify(&home, &installed, rollback.to_str().unwrap(), target);
+
+    assert!(
+        out.status.success(),
+        "a matching revision must verify clean"
+    );
+    let kept = fs::read_to_string(&installed).unwrap();
+    assert!(
+        kept.contains(target),
+        "the verified new binary must be kept in place"
+    );
+    assert!(
+        !rollback.exists(),
+        "the rollback copy must be discarded once verification passes"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unresolved_target_revision_is_accepted_without_a_rollback() {
+    // Mirrors the elif branch: the build produced no verifiable revision
+    // (TARGET_SHA empty). The standing contract is to WARN, not fail, and to
+    // leave the installed binary in place — pin it so a later edit can't
+    // silently turn an unverifiable-but-intended build into a hard failure.
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let home = tmp.path().join("home");
+    fs::create_dir_all(home.join(".cache")).unwrap();
+    let bin = tmp.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+
+    let installed = bin.join("hse");
+    write_exec(&installed, "#!/bin/sh\necho unused\n");
+
+    let out = run_verify(&home, &installed, "", "");
+    assert!(
+        out.status.success(),
+        "an unresolved target revision must be accepted (warn), not fail the install"
+    );
+    assert!(
+        installed.exists(),
+        "the installed binary must be left in place when no revision could be resolved"
+    );
+}
+
+#[test]
+fn the_installer_delegates_post_install_verification_to_the_tested_function() {
+    // The functional proofs above are only meaningful if the REAL install flow
+    // calls the same function they drive, rather than re-growing an inline copy
+    // the tests never touch. Pin the single authority: the flow delegates, and
+    // no inline transcription of the check survives alongside it.
+    let s = install_sh();
+    assert!(
+        s.contains("hse_verify_or_rollback \"$HSE_BIN_DIR/hse\" \"$ROLLBACK_BIN\" \"$TARGET_SHA\""),
+        "the install flow must delegate post-install verification to hse_verify_or_rollback"
+    );
+    assert!(
+        !s.contains("INSTALLED_SHA="),
+        "post-install verification must live only in hse_verify_or_rollback, not re-inlined"
+    );
+}
