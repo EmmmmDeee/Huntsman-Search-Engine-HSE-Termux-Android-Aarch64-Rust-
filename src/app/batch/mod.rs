@@ -136,6 +136,9 @@ pub struct Rendered {
     pub name: &'static str,
     pub url: &'static str,
     pub how: &'static str,
+    /// The provider's class — `breach` or `genealogy` — so a JSON consumer can
+    /// filter a mixed plan without re-deriving it from the id.
+    pub class: &'static str,
     pub lines: Vec<String>,
     /// Selectors the provider does not index and were left out.
     pub skipped: usize,
@@ -182,6 +185,7 @@ pub fn render(site: &'static Site, selectors: &[Selector]) -> Rendered {
         name: site.name,
         url: site.url,
         how: site.how,
+        class: site.class.as_str(),
         lines,
         skipped,
     }

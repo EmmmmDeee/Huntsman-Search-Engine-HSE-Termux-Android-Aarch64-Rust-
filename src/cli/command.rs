@@ -887,9 +887,14 @@ pub enum Command {
         /// Seed kind (same vocabulary as `scan --kind`); omit to auto-detect.
         #[arg(short, long)]
         kind: Option<String>,
-        /// Provider(s) to render, comma-separated; omit for every provider.
+        /// Provider(s) to render, comma-separated; a named provider is always
+        /// included whatever its class. Omit to render the `--class` selection.
         #[arg(long, value_delimiter = ',')]
         site: Vec<String>,
+        /// Provider class rendered when no `--site` is given: `breach` (the
+        /// default), `genealogy`, or `all`.
+        #[arg(long, default_value = "breach")]
+        class: String,
         /// Only the query lines — no `#` header comments.
         #[arg(long)]
         bare: bool,

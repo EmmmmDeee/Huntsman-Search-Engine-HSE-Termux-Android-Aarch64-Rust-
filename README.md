@@ -280,37 +280,55 @@ correlation only.
 
 ---
 
-### Bulk breach-site queries — `hse batch`
+### Bulk manual-provider queries — `hse batch`
 
-When you have a seed (or a finished scan) and want to run it past the
-high-yield breach and stealer-log sites **by hand** — because an API key is not
-always an option — `hse batch` writes the queries for you, one per line, in the
+When you have a seed (or a finished scan) and want to run it past sites that
+have to be searched **by hand** — breach and stealer-log sites whose API key
+is not an option, or genealogy and vital-records sites whose terms bar
+automation — `hse batch` writes the queries for you, one per line, in the
 exact syntax each site's search or bulk page accepts:
 
 ```bash
-hse batch --value jane.doe@example.com                 # every provider, from one seed
+hse batch --value jane.doe@example.com                 # every breach provider, from one seed
 hse batch --value "Jane Doe" --site dehashed,intelx    # just these two
+hse batch --value "Jane Doe" --class genealogy         # the genealogy / vital-records sites
 hse batch --scan-id latest --site dehashed --bare      # a whole scan's findings, no headers
 hse batch --value +61412345678 --format json           # structured plan
-hse batch --site help                                  # list the providers
+hse batch --site help                                  # list the providers, with their class
 ```
 
-It fans a seed out into the selectors a breach site indexes — email, username,
+It fans a seed out into the selectors a site indexes — email, username,
 phone, domain, IP, name — with the same generator `hse oathnet-batch` uses, then
 renders each provider's section: a `#` comment header naming the site and where
 to paste, then the query lines. `--bare` drops the headers for a clean paste;
-`--out FILE` writes a file. Nine services are covered, each grounded in its own
-documentation (`src/app/batch/sites.rs`): **OathNet, SeekNow, Stolen
-(stolen.tax), DeHashed, LeakCheck, Snusbase, Intelligence X, Leak-Lookup, Have I
-Been Pwned**. Most take one bare value per search and auto-detect its kind;
-DeHashed gets its `field:value` syntax (`name:"John Smith"` when a value has a
-space). A provider only gets the kinds it actually indexes — Intelligence X, for
-instance, rejects full-text names, so a name seed is skipped for it.
+`--out FILE` writes a file. Providers come in two classes, each grounded in its
+own documentation or search page (`src/app/batch/sites.rs`):
 
-The list names providers on purpose — it is an operator's working list, not a
-client deliverable. Over the API the same list is an operator-only download at
-`GET /api/v1/scans/{id}/batch.txt?site=a,b&bare=1`.
+- **breach** (the default): **OathNet, SeekNow, Stolen (stolen.tax), DeHashed,
+  LeakCheck, Snusbase, Intelligence X, Leak-Lookup, Have I Been Pwned,
+  HackCheck, LeakPeek, OSINTLeak, Pentester.com**. Most take one bare value per
+  search and auto-detect its kind; DeHashed gets its `field:value` syntax
+  (`name:"John Smith"` when a value has a space). A provider only gets the kinds
+  it actually indexes — Intelligence X, for instance, rejects full-text names,
+  so a name seed is skipped for it.
+- **genealogy** (`--class genealogy`): the family-tree, cemetery, obituary,
+  civil-registration and archive sites that forbid or block automated access —
+  Ancestry, FamilySearch, MyHeritage, Find a Grave, Geneanet, Ryerson Index,
+  Australian Cemeteries Index, the NSW / VIC / QLD / NZ registries, NAA
+  RecordSearch, the Australian War Memorial, CWGC, The National Archives (UK),
+  FreeBMD / FreeCEN / FreeREG, Irish Genealogy, Papers Past, Legacy.com, Geni,
+  GEDBAS, the US National Archives catalog, Forebears, Obituaries Australia, the
+  Australian Dictionary of Biography, ScotlandsPeople, Deceased Online, RootsWeb
+  and FamilyTreeNow. They index names, so a name seed (or a scan's Person
+  findings) is what they receive. The genealogy sites HSE *can* query lawfully
+  are modules instead: `wikitree`, `openarch`, `chronicling_america` and the
+  key-gated `europeana` (plus `trove_au`).
 
+`--class all` renders both classes; naming a provider with `--site` always
+includes it whatever its class. The list names providers on purpose — it is
+an operator's working list, not a client deliverable. Over the API the same
+list is an operator-only download at
+`GET /api/v1/scans/{id}/batch.txt?site=a,b&class=genealogy&bare=1`.
 ### SpiderFoot-compatible front end — `hse sf`
 
 `hse sf` is SpiderFoot 4.0's `sf.py` command line, on HSE's engine, so an

@@ -278,35 +278,17 @@ pub async fn scan_batch_txt(
         Ok(e) => e,
         Err(resp) => return resp,
     };
-    let sites: Vec<&'static crate::app::batch::sites::Site> =
-        match params.get("site").map(String::as_str) {
-            None | Some("") => crate::app::batch::sites::SITES.iter().collect(),
-            Some(list) => {
-                let mut chosen: Vec<&'static crate::app::batch::sites::Site> = Vec::new();
-                for id in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                    match crate::app::batch::sites::find(id) {
-                        // De-duplicate by id so `?site=oathnet,oathnet` renders
-                        // one section, matching `cli::batch::resolve_sites`.
-                        Some(site) if !chosen.iter().any(|c| c.id == site.id) => chosen.push(site),
-                        Some(_) => {}
-                        None => {
-                            return super::handlers::bad_request(format!(
-                                "unknown site {id:?}; known: {}",
-                                crate::app::batch::sites::ids().join(", ")
-                            ));
-                        }
-                    }
-                }
-                // A `site=` that is only separators (e.g. `?site=,`) names no
-                // provider; treat it as "all", like an omitted `site` and like
-                // `cli::batch::resolve_sites`, rather than returning an empty file.
-                if chosen.is_empty() {
-                    crate::app::batch::sites::SITES.iter().collect()
-                } else {
-                    chosen
-                }
-            }
-        };
+    // One authority for the CLI (`hse batch`) and this download: `sites::resolve`
+    // does the `--site` selection and the `--class` filter identically for both,
+    // so `?site=` / `?class=` can never drift from the command. A `site=` that is
+    // only separators falls through to the class filter (breach by default), the
+    // same as an omitted `site`, rather than yielding an empty file.
+    let site_param = params.get("site").map(String::as_str).unwrap_or_default();
+    let class_param = params.get("class").map(String::as_str).unwrap_or_default();
+    let sites = match crate::app::batch::sites::resolve(&[site_param], class_param) {
+        Ok(sites) => sites,
+        Err(msg) => return super::handlers::bad_request(msg),
+    };
     let bare = params.get("bare").is_some_and(|v| v == "1" || v == "true");
     let selectors = crate::app::batch::selectors_from_entities(&entities);
     let rendered: Vec<_> = sites

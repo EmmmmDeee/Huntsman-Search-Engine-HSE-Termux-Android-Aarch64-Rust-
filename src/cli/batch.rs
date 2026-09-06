@@ -14,6 +14,8 @@ pub struct BatchArgs {
     pub value: Option<String>,
     pub kind: Option<String>,
     pub site: Vec<String>,
+    /// Provider class when no `--site` narrows it: `breach`, `genealogy`, `all`.
+    pub class: String,
     pub bare: bool,
     pub out: Option<String>,
     pub format: String,
@@ -22,35 +24,13 @@ pub struct BatchArgs {
     pub max: usize,
 }
 
-/// The providers `--site` selected (all when empty), or an error naming the
-/// unknown ids and the known ones.
-pub fn resolve_sites(site: &[String]) -> Result<Vec<&'static sites::Site>> {
-    let wanted: Vec<&str> = site
-        .iter()
-        .flat_map(|s| s.split(','))
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect();
-    if wanted.is_empty() {
-        return Ok(sites::SITES.iter().collect());
-    }
-    let mut chosen = Vec::new();
-    let mut unknown = Vec::new();
-    for w in wanted {
-        match sites::find(w) {
-            Some(s) if !chosen.iter().any(|c: &&sites::Site| c.id == s.id) => chosen.push(s),
-            Some(_) => {}
-            None => unknown.push(w.to_string()),
-        }
-    }
-    if !unknown.is_empty() {
-        return Err(Error::Other(format!(
-            "batch: unknown --site {} — known providers: {}",
-            unknown.join(", "),
-            sites::ids().join(", ")
-        )));
-    }
-    Ok(chosen)
+/// The providers `--site` / `--class` selected, or an error naming the unknown
+/// ids/class and the known ones. A thin wrapper over [`sites::resolve`] — the
+/// one authority the CLI and the API `batch.txt` share so their provider
+/// selection can never drift — that adds the `batch:` command prefix.
+pub fn resolve_sites(site: &[String], class: &str) -> Result<Vec<&'static sites::Site>> {
+    let refs: Vec<&str> = site.iter().map(String::as_str).collect();
+    sites::resolve(&refs, class).map_err(|m| Error::Other(format!("batch: {m}")))
 }
 
 /// Render the chosen providers for the selectors, as text or JSON.
@@ -78,11 +58,17 @@ pub fn render_output(
 pub fn cmd_batch(args: BatchArgs) -> Result<()> {
     if args.site.iter().any(|s| s.eq_ignore_ascii_case("help")) {
         for s in sites::SITES {
-            println!("{:<12} {} — {}", s.id, s.name, s.url);
+            println!(
+                "{:<20} {:<10} {} — {}",
+                s.id,
+                s.class.as_str(),
+                s.name,
+                s.url
+            );
         }
         return Ok(());
     }
-    let sites = resolve_sites(&args.site)?;
+    let sites = resolve_sites(&args.site, &args.class)?;
 
     let (subject, selectors) = match (&args.scan_id, &args.value) {
         (Some(raw), _) => batch::from_scan(raw)?,
@@ -147,18 +133,54 @@ mod tests {
 
     #[test]
     fn site_selection_accepts_comma_lists_and_names_unknown_ids() {
-        assert_eq!(resolve_sites(&[]).unwrap().len(), sites::SITES.len());
-        let two = resolve_sites(&["oathnet,seeknow".to_string()]).unwrap();
+        // The default class is breach: no --site renders the breach providers,
+        // never the genealogy ones — the pre-class behaviour, preserved.
+        let breach: Vec<&str> = sites::SITES
+            .iter()
+            .filter(|s| s.class == sites::SiteClass::Breach)
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(resolve_sites(&[], "breach").unwrap().len(), breach.len());
+        assert_eq!(
+            resolve_sites(&[], "").unwrap().len(),
+            breach.len(),
+            "an empty --class is the breach default"
+        );
+        assert!(
+            resolve_sites(&[], "genealogy")
+                .unwrap()
+                .iter()
+                .all(|s| s.class == sites::SiteClass::Genealogy),
+            "--class genealogy renders only genealogy providers"
+        );
+        assert_eq!(
+            resolve_sites(&[], "all").unwrap().len(),
+            sites::SITES.len(),
+            "--class all renders every provider"
+        );
+        let two = resolve_sites(&["oathnet,seeknow".to_string()], "breach").unwrap();
         assert_eq!(
             two.iter().map(|s| s.id).collect::<Vec<_>>(),
             vec!["oathnet", "seeknow"]
         );
-        let dup = resolve_sites(&["oathnet".to_string(), "OATHNET".to_string()]).unwrap();
+        // Naming a provider includes it whatever its class — a genealogy id
+        // resolves even under the breach default.
+        let named = resolve_sites(&["ancestry".to_string()], "breach").unwrap();
+        assert_eq!(
+            named.iter().map(|s| s.id).collect::<Vec<_>>(),
+            vec!["ancestry"]
+        );
+        let dup = resolve_sites(&["oathnet".to_string(), "OATHNET".to_string()], "breach").unwrap();
         assert_eq!(dup.len(), 1, "a provider named twice renders once");
-        let err = resolve_sites(&["nowhere".to_string()])
+        let err = resolve_sites(&["nowhere".to_string()], "breach")
             .unwrap_err()
             .to_string();
         assert!(err.contains("nowhere") && err.contains("oathnet"), "{err}");
+        let bad_class = resolve_sites(&[], "nope").unwrap_err().to_string();
+        assert!(
+            bad_class.contains("nope") && bad_class.contains("genealogy"),
+            "{bad_class}"
+        );
     }
 
     #[test]
@@ -167,11 +189,12 @@ mod tests {
             kind: SelectorKind::Email,
             value: "a@b.c".into(),
         }];
-        let sites = resolve_sites(&["oathnet".to_string()]).unwrap();
+        let sites = resolve_sites(&["oathnet".to_string()], "breach").unwrap();
         let out = render_output(&sites, &sels, "a@b.c", "json", false).unwrap();
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["subject"], "a@b.c");
         assert_eq!(v["providers"][0]["site"], "oathnet");
+        assert_eq!(v["providers"][0]["class"], "breach");
         assert_eq!(v["providers"][0]["lines"][0], "a@b.c");
         assert!(render_output(&sites, &sels, "x", "yaml", false).is_err());
     }
