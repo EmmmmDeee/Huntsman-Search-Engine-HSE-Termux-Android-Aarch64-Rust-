@@ -30,6 +30,176 @@ fn insert_scan(store: &Store, id: &str) {
     store.upsert_scan(&scan).expect("should succeed");
 }
 
+// ── BSI 200-4 continuity: executable recovery proof (fault injection) ─────────
+//
+// Each test states FAULT / EXPECTED / OBSERVED / RECOVERY in its assertions so
+// the record the standard asks for is the test itself, not prose beside it.
+
+#[test]
+fn page_cap_is_a_noop_when_unset_and_applies_when_set() {
+    let conn = rusqlite::Connection::open_in_memory().expect("in-memory");
+    let read = |c: &rusqlite::Connection| -> i64 {
+        c.query_row("PRAGMA max_page_count", [], |r| r.get(0))
+            .expect("pragma readable")
+    };
+    let default = read(&conn);
+    // Unset (0) and nonsense (negative) leave SQLite's default cap untouched —
+    // the common Termux install must not be capped by accident.
+    Store::apply_page_cap(&conn, 0).expect("0 is a no-op");
+    Store::apply_page_cap(&conn, -5).expect("negative is a no-op");
+    assert_eq!(
+        read(&conn),
+        default,
+        "unset/negative must not change the cap"
+    );
+    // A real value applies verbatim.
+    Store::apply_page_cap(&conn, 4096).expect("apply");
+    assert_eq!(read(&conn), 4096);
+}
+
+#[test]
+fn writes_fail_loudly_at_the_page_cap_keep_committed_data_and_recover_when_raised() {
+    // FAULT: disk-full, injected exactly as SQLite reports it (SQLITE_FULL) by
+    // capping the page count one page above the current size through the
+    // production `apply_page_cap` path.
+    // EXPECTED: the failing write returns Err (never a silent partial row);
+    // everything committed before the fault stays readable; integrity is "ok";
+    // and raising the cap (the operator freeing space) lets writes resume.
+    let path = tmp_db();
+    let store = Store::open(&path).expect("open");
+    insert_scan(&store, "scan-full");
+    let before = Entity::new(EntityKind::Email, "before@example.com", 0.9, "scan-full");
+    store
+        .upsert_entity(&before)
+        .expect("pre-fault write commits");
+    {
+        let conn = store.conn.lock();
+        let pages: i64 = conn
+            .query_row("PRAGMA page_count", [], |r| r.get(0))
+            .expect("page_count");
+        Store::apply_page_cap(&conn, pages + 1).expect("cap just above current size");
+    }
+
+    // Grow until the cap bites.
+    let mut failed = None;
+    for i in 0..5000u32 {
+        let e = Entity::new(
+            EntityKind::Email,
+            format!("grow{i}@example.com"),
+            0.9,
+            "scan-full",
+        );
+        if let Err(err) = store.upsert_entity(&e) {
+            failed = Some((i, err));
+            break;
+        }
+    }
+    let (at, err) = failed.expect("OBSERVED: the cap must refuse a write, loudly");
+    assert!(
+        err.to_string().to_lowercase().contains("full"),
+        "the error must name the fault (disk/database full), got: {err}"
+    );
+
+    // Committed data intact, database healthy — a full disk lost nothing.
+    assert!(
+        store.get_scan("scan-full").expect("read").is_some(),
+        "the scan committed before the fault must survive"
+    );
+    assert_eq!(
+        store.integrity_check().expect("integrity"),
+        vec!["ok".to_string()],
+        "SQLITE_FULL must not corrupt the database"
+    );
+
+    // RECOVERY: raise the cap → the very next write succeeds.
+    {
+        let conn = store.conn.lock();
+        Store::apply_page_cap(&conn, 1_000_000).expect("raise the cap");
+    }
+    let after = Entity::new(
+        EntityKind::Email,
+        format!("after{at}@example.com"),
+        0.9,
+        "scan-full",
+    );
+    store
+        .upsert_entity(&after)
+        .expect("writes resume once space is available again");
+}
+
+#[test]
+fn a_crash_mid_write_recovers_to_the_last_commit_on_reopen() {
+    // FAULT: power loss / process death in the middle of a write transaction
+    // whose dirty pages have already spilled to the WAL — simulated by
+    // snapshotting the on-disk database + WAL while the transaction is open.
+    // EXPECTED (RPO): everything committed before the fault survives, and the
+    // uncommitted transaction is discarded WHOLE (no partial table), with
+    // integrity "ok". EXPECTED (RTO): reopen-with-recovery completes within 10 s.
+    let path = tmp_db();
+    {
+        let store = Store::open(&path).expect("open");
+        insert_scan(&store, "scan-committed");
+        let kept = Entity::new(EntityKind::Email, "kept@example.com", 0.9, "scan-committed");
+        store
+            .upsert_entity(&kept)
+            .expect("committed before the crash");
+    }
+
+    // An open write transaction large enough to spill to the WAL before commit.
+    let raw = rusqlite::Connection::open(&path).expect("raw connection");
+    raw.execute_batch("BEGIN; CREATE TABLE crash_scratch(x BLOB);")
+        .expect("begin + ddl inside the transaction");
+    for _ in 0..640 {
+        raw.execute("INSERT INTO crash_scratch VALUES (randomblob(4000))", [])
+            .expect("insert inside the open transaction");
+    }
+    let wal_len = std::fs::metadata(format!("{path}-wal")).map_or(0, |m| m.len());
+    assert!(
+        wal_len > 32 * 1024,
+        "the fault must be real: uncommitted frames must be on disk (wal = {wal_len} bytes)"
+    );
+
+    // Snapshot the crash instant: the bytes on disk with the transaction open.
+    let crash = format!("{path}.crash");
+    std::fs::copy(&path, &crash).expect("snapshot db");
+    std::fs::copy(format!("{path}-wal"), format!("{crash}-wal")).expect("snapshot wal");
+    drop(raw); // the original rolls back; the snapshot is what we recover from
+
+    // RECOVERY
+    let t0 = std::time::Instant::now();
+    let recovered = Store::open(&crash).expect("reopen after the crash must succeed");
+    let rto = t0.elapsed();
+    assert!(
+        rto < std::time::Duration::from_secs(10),
+        "RTO {rto:?} exceeds the 10 s bound"
+    );
+    assert!(
+        recovered
+            .get_scan("scan-committed")
+            .expect("read")
+            .is_some(),
+        "RPO: the scan committed before the crash must survive"
+    );
+    let scratch_tables: i64 = recovered
+        .conn
+        .lock()
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'crash_scratch'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("sqlite_master readable");
+    assert_eq!(
+        scratch_tables, 0,
+        "the uncommitted transaction must be discarded whole — no partial table"
+    );
+    assert_eq!(
+        recovered.integrity_check().expect("integrity"),
+        vec!["ok".to_string()],
+        "recovery must leave a healthy database"
+    );
+}
+
 #[test]
 #[cfg(unix)]
 fn open_restricts_the_db_file_to_owner_only() {

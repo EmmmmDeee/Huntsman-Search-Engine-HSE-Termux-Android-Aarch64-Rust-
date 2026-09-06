@@ -309,13 +309,43 @@ pub fn catalog() -> Vec<GermanControl> {
                 .to_string(),
             protection_need: need(&[(Dim::Availability, Lvl::High)]),
             criticality: Criticality::Critical,
-            // Defined only — executable recovery + fault-injection tests are a
-            // later unit; this stays A1 Defined rather than claim untested continuity.
-            evidence: vec![ev(
-                EvidenceKind::Definition,
-                "src/core/assurance/catalog.rs",
-                "BSI 200-4 continuity model mapped; recovery tests pending their own unit.",
-            )],
+            // A4 Tested: the store's recovery behaviour is implemented (WAL +
+            // atomic transactions + an on-disk growth cap), enforced (the
+            // fault-injection tests run in the gate and CI on every commit) and
+            // tested (SQLITE_FULL and crash-mid-write are injected and recovery
+            // time / recovery point are asserted). NOT A5: no production runtime
+            // observation of a real recovery is recorded, so Observed is not claimed.
+            evidence: vec![
+                ev(
+                    EvidenceKind::Definition,
+                    "src/core/assurance/catalog.rs",
+                    "BSI 200-4 continuity model mapped: process death, restart and \
+                     disk-full are the in-scope faults; RTO/RPO are the measures.",
+                ),
+                ev(
+                    EvidenceKind::Implementation,
+                    "src/storage/mod.rs",
+                    "SQLite WAL store (synchronous=NORMAL) with atomic multi-statement \
+                     transactions that roll back whole on SQLITE_FULL/BUSY, plus an \
+                     HSE_SQLITE_MAX_PAGES growth cap (Store::apply_page_cap) that fails \
+                     loud instead of filling the device.",
+                ),
+                ev(
+                    EvidenceKind::Enforcement,
+                    "scripts/gate.sh + .github/workflows/ci.yml",
+                    "The storage fault-injection tests run under `cargo test --all` in \
+                     the gate and in CI on every commit; a recovery regression is red.",
+                ),
+                ev(
+                    EvidenceKind::Test,
+                    "src/storage/tests.rs",
+                    "writes_fail_loudly_at_the_page_cap_keep_committed_data_and_recover_when_raised \
+                     (SQLITE_FULL: loud error, committed data intact, integrity ok, \
+                     writes resume once the cap is raised) and \
+                     a_crash_mid_write_recovers_to_the_last_commit_on_reopen (RPO = last \
+                     commit, uncommitted transaction discarded whole, RTO bounded).",
+                ),
+            ],
         },
         // ── C5 (cloud only) — demonstrates NOT_APPLICABLE on a local profile ──
         GermanControl {
