@@ -646,23 +646,29 @@ pub fn resolve(site: &[&str], class: &str) -> Result<Vec<&'static Site>, String>
             }
         }
         if !unknown.is_empty() {
+            // Name the concept, not a surface's spelling: the CLI prefixes
+            // `batch:` and the API returns this to a `?site=` caller, so a bare
+            // "site" reads correctly for both rather than leaking `--site`.
             return Err(format!(
-                "unknown --site {} — known providers: {}",
+                "unknown site {} — known providers: {}",
                 unknown.join(", "),
                 ids().join(", ")
             ));
         }
         return Ok(chosen);
     }
-    // No --site: the class filter decides. An omitted / empty value is breach,
-    // matching the CLI default and preserving the pre-class behaviour.
-    let want = match class.trim() {
+    // No site named: the class filter decides. An omitted / empty value is
+    // breach, matching the CLI default and preserving the pre-class behaviour.
+    // Matched case-insensitively, like `--site` id lookup (`find`) and the
+    // `--format` value, so `Genealogy` / `ALL` are not surprising errors.
+    let want = match class.trim().to_ascii_lowercase().as_str() {
         "" | "breach" => Some(SiteClass::Breach),
         "genealogy" => Some(SiteClass::Genealogy),
         "all" => None,
-        other => {
+        _ => {
             return Err(format!(
-                "unknown --class {other:?} — expected breach, genealogy or all"
+                "unknown class {:?} — expected breach, genealogy or all",
+                class.trim()
             ));
         }
     };

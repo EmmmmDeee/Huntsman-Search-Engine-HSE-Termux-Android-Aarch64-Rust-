@@ -243,6 +243,18 @@ fn resolve_selects_by_class_and_named_sites_override_the_class() {
         breach.len() + gen_sites.len(),
         "all is the union of breach and genealogy"
     );
+    // Class matching is case-insensitive, like `--site` id lookup and
+    // `--format` — `Genealogy` / `ALL` / ` BREACH ` are not surprising errors.
+    assert_eq!(
+        sites::resolve(&[], "Genealogy").unwrap().len(),
+        gen_sites.len(),
+        "class match is case-insensitive"
+    );
+    assert_eq!(
+        sites::resolve(&[], "ALL").unwrap().len(),
+        breach.len() + gen_sites.len()
+    );
+    assert_eq!(sites::resolve(&[], " BREACH ").unwrap().len(), breach.len());
     // A named genealogy provider resolves even under the breach default.
     let named = sites::resolve(&["ancestry"], "breach").unwrap();
     assert_eq!(
