@@ -1266,13 +1266,16 @@ fn every_budget_mutating_test_holds_the_budget_lock() {
     }
     let mut offenders = Vec::new();
     for chunk in chunks.iter().skip(1) {
-        // Scan the CODE only — drop `//`/`///` comment-only lines — so a mention
-        // in a comment (`// reset_budget(...)`, or `// …BUDGET_TEST_LOCK.lock()`)
-        // can neither count as a mutator call nor stand in for a real guard
-        // acquisition. This also keeps the name off a comment that says "fn …".
+        // Scan the CODE only — truncate every line at its first `//`, dropping
+        // both comment-only lines and inline trailing comments — so a mention in
+        // a comment (`let x = 1; // reset_budget(...)`, or `// …BUDGET_TEST_LOCK
+        // .lock()`) can neither count as a mutator call nor stand in for a real
+        // guard acquisition. This also keeps the name off a comment that says
+        // "fn …". (String literals containing `//` are not present in these
+        // tests; the check errs toward under-scanning, never a false pass.)
         let code: String = chunk
             .lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
+            .map(|l| l.split_once("//").map_or(l, |(before, _)| before))
             .collect::<Vec<_>>()
             .join("\n");
         let name = code
