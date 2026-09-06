@@ -316,18 +316,30 @@ impl AdvancedWebClient {
     }
 
     /// Perform a search via web scraping (Playwright automation).
+    ///
+    /// **Not implemented.** Automated browser login to see-know.ru is blocked
+    /// by its Cloudflare Turnstile challenge, and no maintained Rust Playwright
+    /// crate exists to drive a real browser (see `docs/SEEKNOW_WEB_AUTOMATION.md`).
+    /// Rather than silently returning `Ok(Vec::new())` — which is
+    /// indistinguishable from "searched, found nothing" and hides that no
+    /// search ran — this returns the clear, actionable error that document's
+    /// "Final fallback — Return clear error message with manual login
+    /// instructions" contract specifies, so the failure is observable at the
+    /// operator-facing sinks instead of masquerading as an empty hit.
     pub async fn search_via_scraping(&self, query: &str, query_type: &str) -> Result<Vec<Value>> {
-        tracing::debug!(query, query_type, "SeekNow search (web scraping)");
+        tracing::debug!(
+            query,
+            query_type,
+            "SeekNow web-scraping search — not implemented"
+        );
 
-        // Would use Playwright here to:
-        // 1. Log in via web UI
-        // 2. Navigate to search page
-        // 3. Fill in search form
-        // 4. Parse results table
-        // 5. Extract JSON from row elements
-
-        // Placeholder for now.
-        Ok(Vec::new())
+        Err(Error::module(
+            super::SRC,
+            "SeekNow web-automation scraping is not implemented: see-know.ru's Cloudflare \
+             Turnstile blocks automated login and no maintained Rust Playwright crate exists \
+             to drive a real browser. Configure HUNTSMAN_SEEKNOW_KEY to use the API path, or \
+             log in manually — see docs/SEEKNOW_WEB_AUTOMATION.md.",
+        ))
     }
 
     /// Public search method (tries all methods in order).
@@ -412,5 +424,33 @@ mod tests {
 
         let session = client.session.lock().await;
         assert!(session.auth_token.is_none());
+    }
+
+    /// The design contract in `docs/SEEKNOW_WEB_AUTOMATION.md` ("Final fallback
+    /// — Return clear error message with manual login instructions", and "Clear
+    /// error messages directing users to manual login") requires the
+    /// unimplemented scraping path to FAIL LOUDLY, never return `Ok(empty)`. A
+    /// silent empty is indistinguishable from a genuine no-hit and hides that
+    /// no search ran. Regression lock: reverting `search_via_scraping` to
+    /// `Ok(Vec::new())` trips this test.
+    #[tokio::test]
+    async fn scraping_fallback_returns_clear_error_not_silent_empty() {
+        let client = AdvancedWebClient::new(
+            "test@example.com".to_string(),
+            None,
+            "https://see-know.ru".to_string(),
+        );
+
+        let err = client
+            .search_via_scraping("target@example.com", "email")
+            .await
+            .expect_err("scraping is not implemented; it must fail loudly, never return Ok(empty)");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("HUNTSMAN_SEEKNOW_KEY") && msg.to_lowercase().contains("not implemented"),
+            "the error must name the API-key path and say it is not implemented, per the \
+             documented final-fallback contract; got: {msg}"
+        );
     }
 }
