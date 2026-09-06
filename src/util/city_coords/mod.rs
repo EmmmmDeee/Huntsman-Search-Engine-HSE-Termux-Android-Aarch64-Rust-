@@ -23,7 +23,7 @@ pub fn city_coords(addr: &str) -> Option<(f64, f64)> {
     // Last-resort: treat a bare 4-digit string as a postcode — the exact suburb
     // centroid when tabulated, else the region centroid by leading digits so the
     // whole AU postcode space resolves offline.
-    if trimmed.len() == 4 && trimmed.bytes().all(|b| b.is_ascii_digit()) {
+    if crate::util::postcode_au::is_shaped(trimmed) {
         return postcode_coords(trimmed).or_else(|| au_postcode_region(trimmed));
     }
     // Full address string with no tabulated suburb: pull the embedded AU
@@ -332,7 +332,7 @@ pub fn postcode_coords(postcode: &str) -> Option<(f64, f64)> {
 #[must_use]
 pub fn au_postcode_region(postcode: &str) -> Option<(f64, f64)> {
     let pc = postcode.trim();
-    if pc.len() != 4 || !pc.bytes().all(|b| b.is_ascii_digit()) {
+    if !crate::util::postcode_au::is_shaped(pc) {
         return None;
     }
     // (leading two digits) -> approximate region centroid.

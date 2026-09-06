@@ -226,12 +226,24 @@ pub fn offline_centroid(postcode: &str) -> Option<(f64, f64)> {
         .map(|loc| (loc.lat, loc.lon))
 }
 
+/// Whether `s` has the shape of an AU postcode: exactly four ASCII digits.
+///
+/// A shape check only — it does not range-check (a real AU postcode is
+/// `0800`–`7999`); callers that need the range narrow further. Centralises the
+/// `len() == 4 && all-ASCII-digit` test shared by the address/postcode
+/// extractors and the locality/centroid lookups, so "postcode-shaped" means one
+/// thing across the codebase.
+#[must_use]
+pub fn is_shaped(s: &str) -> bool {
+    s.len() == 4 && s.bytes().all(|b| b.is_ascii_digit())
+}
+
 /// Resolve an AU postcode to its localities. Best-effort: a network/parse
 /// failure falls back to the offline gazetteer ([`offline_fallback`]) and, for
 /// postcodes outside it, to an empty list (so callers degrade to the bare
 /// postcode). The online Zippopotam result is always preferred when present.
 pub async fn localities(http: &reqwest::Client, postcode: &str) -> Vec<Locality> {
-    if postcode.len() != 4 || !postcode.bytes().all(|b| b.is_ascii_digit()) {
+    if !is_shaped(postcode) {
         return Vec::new();
     }
     let url = format!("https://api.zippopotam.us/au/{postcode}");

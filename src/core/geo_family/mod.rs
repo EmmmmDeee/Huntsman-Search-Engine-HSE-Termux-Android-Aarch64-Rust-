@@ -56,6 +56,9 @@ const SUBJECT_FIX_MIN: f64 = 0.60;
 pub fn au_postcode(e: &Entity) -> Option<String> {
     let valid = |t: &str| -> Option<String> {
         let t = t.trim();
+        // NB: `core` must not import `util` (see the `core_does_not_import_util_directly`
+        // architecture ratchet), so this keeps its own 4-ASCII-digit shape check
+        // rather than delegating to `util::postcode_au::is_shaped`.
         (t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit()))
             .then(|| t.parse::<u32>().ok())
             .flatten()
