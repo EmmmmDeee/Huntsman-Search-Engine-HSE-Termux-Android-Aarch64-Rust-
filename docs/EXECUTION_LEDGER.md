@@ -10,10 +10,10 @@ run, a CI head, or a runtime check — `CLAIM ≠ EVIDENCE` applies to this file
 
 | Item | Value |
 |---|---|
-| `main` | `40fad7ee` — squash-merge of PR #598 (hse-core rustdoc policy aligned with the root crate + `wasm-ui/pkg` regenerated) on top of `aaf86c9a` (PR #596, ble_radar recovery proof) and `4b7ff547` (PR #594, continuity model + self-update rollback proof). Sibling-session merges `ff8e8509` (#595) and `1cccf3e0` (#597) sit between them; no file overlap |
+| `main` | `59a5ae01` — squash-merge of PR #601 (four genealogy collector modules) on `8e0348ae` (PR #600, three ratchet units) on `9d399c29` (PR #599, ledger checkpoint) on `40fad7ee` (PR #598). Full lineage of the earlier units in §5 |
 | Programme baseline (before) | `cab1f9b4` (HSE v1.41.0, MSRV 1.98, edition 2024) |
-| Working branch | `claude/response-accuracy-legal-u90ja3`, restarted at `40fad7ee` (`origin/main`) after the #598 merge (GitHub auto-deletes merged heads) |
-| In-flight unit | none — this checkpoint is docs-only. The last recompute found no remaining unit above the return threshold (§4) |
+| Working branch | `claude/response-accuracy-legal-u90ja3`, restarted at `59a5ae01` (`origin/main`) after the #601 merge (GitHub auto-deletes merged heads) |
+| In-flight unit | none — clean checkpoint. An **hourly ultracode routine** (`trig_016YyN7fiBCmHgRyx7bERGBr`, a fresh Fable 5.1 session per fire) autonomously carries the **breach-file-ingest** and **pseudo-recursion-optimisation** objective, one gate-green unit per run, holding when nothing material remains (§4) |
 | GitHub | 0 open issues; 0 open pull requests (the 16 stale programme PRs were closed with per-PR evidence — §5) |
 | Toolchain | rustc 1.98. `scripts/gate.sh --quick` skips exactly three checks — MSRV, the aarch64 cross-build / cross-test-compile and the wasm-ui/pkg drift check — for which CI is the authority. Everything else runs as CI does, each under its own condition: root crate fmt / check / clippy `-D warnings` / rustdoc lints / test / doctests / doc coverage; hse-core fmt / clippy / rustdoc / test; wasm-ui fmt / clippy / native test; `install.sh` syntax; shellcheck when installed; the cargo-audit / deny / machete / dep-cooldown family only when a manifest changed (audit.yml's path filter) and the tools are present. In this sandbox that is 16 executed checks for a non-manifest change (shellcheck installed; the audit family correctly skipped). The drift check also runs locally through `scripts/wasm_ui_drift_check.sh` once the pinned chain is installed (§8) |
 
@@ -76,8 +76,28 @@ drift** (PR #598 → `40fad7ee`), and **GitHub finalisation** (0 open issues; 16
 stale PRs closed with evidence; open PR list empty). All six continuity
 capabilities are TESTED; 0 UNTESTED, 0 OBSERVED.
 
-Remaining — all below the return threshold at the last recompute, with the
-reason recorded so it is not re-derived:
+Closed and merged this session, after that checkpoint: the **ledger checkpoint**
+(PR #599 → `9d399c29`), **three architecture-ratchet units** (PR #600 →
+`8e0348ae`: curl-download OOM guard, wasm-ui export↔import lock with two dead
+exports removed, one infra-provider-root authority), and **four genealogy
+collector modules** (PR #601 → `59a5ae01`: wikitree / openarch /
+chronicling_america keyless + europeana free-`wskey`), fulfilling the request to
+incorporate ancestry / vital-records / archive sources. The engine was proved
+end-to-end on the account holder's own email (self-lookup — §5). An hourly
+ultracode routine now drives the breach-file-ingest and pseudo-recursion work.
+
+In progress via the hourly routine (user-requested cadence): a robust
+**breach-file ingest** pipeline (streaming, size-capped, format-sniffed,
+malformed-line-quarantining; extends `hse ingest` / `comb_search` /
+`oathnet_pro::stealer`) and **pseudo-recursion optimisation** of the
+seeds→findings→re-seed expansion engine (`src/core/engine/expansion.rs`).
+Queued: **genealogy G2** — manual-provider contracts (`hse batch --class
+genealogy`) for the ancestry sites whose terms/robots forbid automation
+(Ancestry, FamilySearch, Find a Grave, the BDM registries, NAA, CWGC, FreeBMD,
+…); the site contracts are drafted and URL-verified.
+
+Below the return threshold at the last recompute, with the reason recorded so
+it is not re-derived:
 
 1. **OBSERVED (A5) evidence** — no runtime recovery/incident record mechanism
    exists; by design nothing claims A5 until one does. It is the only route
@@ -115,7 +135,11 @@ reason recorded so it is not re-derived:
 | ble_radar sweep-interruption recovery (2 tests; `SQLITE_FULL` matched by error code); ble_radar → TESTED | `aaf86c9a` | merged (PR #596), CI green; both Copilot review threads addressed and resolved |
 | hse-core `#![allow(rustdoc::private_intra_doc_links)]` (mirrors the root crate's policy) + `wasm-ui/pkg/hse_wasm_ui_bg.wasm` regenerated with the pinned chain | `40fad7ee` | merged (PR #598), CI green — drift reproduced locally (FAIL) → `--write` → re-verified (PASS) |
 | GitHub finalisation — 16 stale programme PRs closed, each with its evidence in the closing comment: 9 conflict with `main` (#395, #407, #449, #455, #456, #462, #472, #507, #542 — `git merge-tree` on the unshallowed clone; #395's `api::auth` already on `main`, #449 contradicted by the #583 Ollama removal, #455's baseline superseded), 4 already landed (#457, #466, #512, #541 — every distinctive function present on `main`), 1 functionally dead (#546 — retired `ubuntu-18.04` runner + missing secret), 1 reverse PR (#515), 1 cycle artefact (#467); 0 open issues | — | done; open PR list empty |
-| Ledger checkpoint at `40fad7ee` | this commit | docs-only |
+| Ledger checkpoint (`gate --quick` semantics, per-unit revert wording, binaryen pin authority — Copilot review addressed) | `9d399c29` | merged (PR #599), CI green |
+| Three ratchet units: `every_curl_spawn_bounds_what_it_downloads` (curl `.output()` OOM guard) + `every_wasm_ui_export_is_imported_by_a_spa_module` (2 dead exports removed, `wasm-ui/pkg` regenerated) + `INFRA_PROVIDER_ROOTS` (one authority both infra classifiers share) — each falsified before landing | `8e0348ae` | merged (PR #600), CI green |
+| Genealogy collectors: `wikitree` / `openarch` / `chronicling_america` (keyless) + `europeana` (free `wskey`); 198 modules (151 free, 47 key-gated); 3 live-verified drift canaries; Copilot review addressed (optional-count robustness + `Search` category for the two archive searches) | `59a5ae01` | merged (PR #601), CI green |
+| End-to-end proof on the account holder's own email (self-lookup): `hse scan matthewdiegmann@gmail.com` — 22 correlation rules fired, 31 findings, depth-1 recursion pivot (github.com → DNS modules → a live IP); key-gated providers correctly skipped, a transport error handled as WARN-and-continue | — | runtime-verified |
+| Hourly ultracode routine — breach-file ingest + pseudo-recursion optimisation, fresh Fable 5.1 session per fire, one gate-green unit per run, hold-on-clean (`trig_016YyN7fiBCmHgRyx7bERGBr`) | — | created, live |
 
 Void after evidence: "retire 27 production unwraps" (all test code);
 "dead-code audit" (all sites justified); "Termux hardening" (already clean).
