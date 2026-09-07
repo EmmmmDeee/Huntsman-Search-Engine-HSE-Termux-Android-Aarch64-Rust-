@@ -347,6 +347,91 @@ fn env_template_keys_are_all_consumed() {
     );
 }
 
+/// The repo-root `.env.example` is a SECOND, hand-maintained key reference — its
+/// own header tells an operator to copy it to `~/.huntsman.env` — separate from
+/// the `hse provision` template `env_template.txt` that
+/// [`env_template_keys_are_all_consumed`] guards. Nothing guarded `.env.example`,
+/// so a key could be renamed or dropped from the code while lingering in the
+/// example an operator copies, who then sets a variable that reaches nothing
+/// (REQ-ENV-004).
+///
+/// Every `HUNTSMAN_*` key `.env.example` presents as a settable variable (a
+/// `# KEY=...` / `KEY=...` line, not a bare prose mention) must appear as a
+/// quoted string literal `"HUNTSMAN_X"` somewhere in `src/` — the shape every
+/// real read uses, whether an `_ENV` const, an `env::var("…")` call, a
+/// `ctx.key("…")` lookup, or a literal in a cap/knob array (e.g. the
+/// `HUNTSMAN_WIGLE_*_SCAN_CAP` family in `src/modules/wigle`, which are literals
+/// in a slice rather than `env::var` sites, so the strict consumption collector
+/// [`env_template_keys_are_all_consumed`] uses would miss them). The literal
+/// must sit in CODE — each line's `//` comment tail is stripped before the
+/// scan — so a key surviving only in a doc/line comment after being removed
+/// from the code still fails, the exact "documented but gone from the code"
+/// case this guards.
+///
+/// Scope: this guards CORRECTNESS (no orphaned/misleading example key), not
+/// COMPLETENESS. `.env.example` and `env_template.txt` deliberately list
+/// different key SETS — `.env.example` documents tuning knobs the provisioning
+/// template omits; the template documents `[RESERVED]` provider placeholders
+/// `.env.example` omits — and reconciling those sets is a maintainer product
+/// decision, not a drift defect.
+#[test]
+fn env_example_keys_are_all_referenced_in_source() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    // Keys `.env.example` presents as settable variables (assignment lines,
+    // commented or not) — NOT bare `HUNTSMAN_*` mentions inside prose comments.
+    let example = fs::read_to_string(root.join(".env.example")).unwrap();
+    let declared: Vec<String> = example
+        .lines()
+        .map(|l| l.trim_start_matches(['#', ' ', '\t']))
+        .filter(|l| l.starts_with("HUNTSMAN_") && l.contains('='))
+        .filter_map(|l| l.split('=').next())
+        .map(|k| k.trim().to_string())
+        .collect();
+    assert!(
+        declared.len() >= 40,
+        "expected many settable keys parsed from .env.example, got {}",
+        declared.len()
+    );
+
+    // Collect every `"HUNTSMAN_…"` string literal that appears in actual CODE
+    // across `src/` — one pass into a set, then membership-test each declared
+    // key (avoids rebuilding one huge string and rescanning it per key). The
+    // `//`-comment tail of each line is dropped first, so a key that survives
+    // only in a doc/line comment after being removed from the code does NOT
+    // count — a bare `contains("\"KEY\"")` over raw text would let such a
+    // comment mention pass. (Stripping at the first `//` can also clip a `//`
+    // that sits inside a string literal, e.g. a `"https://…"`, but that can
+    // only DROP a following literal, never invent one — a false miss, the safe
+    // direction for a guard; the assertion below confirms none occurs today.)
+    let mut files = Vec::new();
+    collect_rs_files(&root.join("src"), &mut files);
+    let mut referenced: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for f in &files {
+        let text = fs::read_to_string(f).unwrap_or_default();
+        for line in text.lines() {
+            let code = line.split_once("//").map_or(line, |(before, _)| before);
+            let mut rest = code;
+            while let Some(p) = rest.find("\"HUNTSMAN_") {
+                let after = &rest[p + 1..]; // past the opening quote
+                let Some(end) = after.find('"') else { break };
+                referenced.insert(after[..end].to_string());
+                rest = &after[end + 1..];
+            }
+        }
+    }
+
+    let orphans: Vec<&String> = declared
+        .iter()
+        .filter(|k| !referenced.contains(k.as_str()))
+        .collect();
+    assert!(
+        orphans.is_empty(),
+        ".env.example documents keys with no quoted reference in `src/` CODE (an \
+         operator who copies it sets variables that reach nothing): {orphans:?}"
+    );
+}
+
 /// Inserts the `HUNTSMAN_*` string literal whose opening `"` sits at
 /// `open_quote`, if that is what the literal actually holds. Shared by both
 /// detection forms in [`collect_key_env_consts`] so they extract identically.
