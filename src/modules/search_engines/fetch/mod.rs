@@ -357,7 +357,7 @@ pub(super) fn add_result(
     // the two cleanly; the encoded form has no literal '&'/'=' so the decode is
     // lossless there.
     let decoded;
-    let url = if url.starts_with("http://") || url.starts_with("https://") {
+    let url = if crate::util::url_util::is_absolute_http_url(url) {
         url
     } else {
         decoded = url::form_urlencoded::parse(url.as_bytes())

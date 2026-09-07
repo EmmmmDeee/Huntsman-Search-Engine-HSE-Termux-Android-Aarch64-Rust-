@@ -442,7 +442,7 @@ fn normalise_links(raw: &str) -> Vec<String> {
         if tok.is_empty() {
             continue;
         }
-        let candidate = if tok.starts_with("http://") || tok.starts_with("https://") {
+        let candidate = if crate::util::url_util::is_absolute_http_url(tok) {
             tok.to_string()
         } else {
             format!("https://{tok}")

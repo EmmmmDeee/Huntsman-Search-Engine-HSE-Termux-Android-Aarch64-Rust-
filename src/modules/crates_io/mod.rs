@@ -116,7 +116,7 @@ fn build_entities(body: &UserResp, scan_id: &str) -> Vec<Entity> {
     if let Some(av) = user
         .avatar
         .as_deref()
-        .filter(|a| a.starts_with("http://") || a.starts_with("https://"))
+        .filter(|a| crate::util::url_util::is_absolute_http_url(a))
     {
         ev = ev.with_attr("avatar_url", av);
     }
@@ -145,7 +145,7 @@ fn build_entities(body: &UserResp, scan_id: &str) -> Vec<Entity> {
     // The linked profile URL (crates.io auths via GitHub, so this is usually
     // the owner's GitHub profile — a cross-platform confirmation).
     if let Some(link) = user.url.as_deref()
-        && (link.starts_with("http://") || link.starts_with("https://"))
+        && crate::util::url_util::is_absolute_http_url(link)
     {
         let mut url_e = Entity::new(EntityKind::Url, link, 0.74, scan_id);
         url_e.tag("crates-io");
@@ -251,7 +251,7 @@ const MAX_CRATE_URLS: usize = 60;
 /// and owner extraction are unit-tested off JSON. URLs are deduped and sorted
 /// (BTreeSet) so the output never leaks the API's array ordering, then capped.
 fn crate_url_entities(resp: &CratesResp, scan_id: &str) -> Vec<Entity> {
-    let is_http = |u: &&str| u.starts_with("http://") || u.starts_with("https://");
+    let is_http = |u: &&str| crate::util::url_util::is_absolute_http_url(u);
 
     // Distinct http(s) URLs across every crate's repo/homepage/doc fields.
     let mut urls: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();

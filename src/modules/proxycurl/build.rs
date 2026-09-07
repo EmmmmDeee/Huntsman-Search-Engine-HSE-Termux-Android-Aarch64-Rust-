@@ -355,7 +355,7 @@ pub(super) fn build_entities(
         .website_url
         .as_deref()
         .map(str::trim)
-        .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
+        .filter(|u| crate::util::url_util::is_absolute_http_url(u))
     {
         let mut ue = Entity::new(EntityKind::Url, url, confidence::ATTRIBUTED, scan_id);
         ue.tag("proxycurl");

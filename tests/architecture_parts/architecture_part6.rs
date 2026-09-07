@@ -871,3 +871,69 @@ fn no_production_reimplements_email_local() {
         offenders.join("\n")
     );
 }
+
+/// The "is this an absolute HTTP(S) URL?" predicate
+/// (`s.starts_with("http://") || s.starts_with("https://")`) has ONE
+/// authority — `util::url_util::is_absolute_http_url`. Twenty-four production
+/// sites once re-derived this exact pair of `starts_with` checks (some
+/// wrapped in `!(...)`, some as a closure) before consolidating onto the
+/// shared helper. This locks it in: no production source (outside the
+/// authority itself) may inline both the `starts_with("http://")` and
+/// `starts_with("https://")` checks joined by `||` on the same statement.
+/// Falsified: restoring any inline copy fails. A single-scheme
+/// `starts_with("https://")` check (with no paired `http://` check) is a
+/// different, narrower operation and is intentionally not flagged.
+#[test]
+fn no_production_reimplements_is_absolute_http_url() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n == "tests") {
+                    continue;
+                }
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs")
+                && !p
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().ends_with("tests.rs"))
+            {
+                out.push(p);
+            }
+        }
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let authority = root.join("util/url_util/mod.rs");
+    let mut files = Vec::new();
+    walk(&root, &mut files);
+    files.sort();
+
+    let mut offenders = Vec::new();
+    for p in &files {
+        if *p == authority {
+            continue; // the one true home of the expression
+        }
+        let text = fs::read_to_string(p).expect("source file readable");
+        let prod = production_source(&text);
+        for (i, line) in prod.lines().enumerate() {
+            if line.contains(r#"starts_with("http://")"#) && line.contains(r#"starts_with("https://")"#) {
+                offenders.push(format!(
+                    "{}:{} — {}",
+                    p.strip_prefix(&root).unwrap_or(p).display(),
+                    i + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "absolute-http(s)-URL predicate re-implemented inline — call \
+         `huntsman_search_engine::util::url_util::is_absolute_http_url(s)` (the \
+         authority) instead of `…starts_with(\"http://\") || …starts_with(\"https://\")`:\n{}",
+        offenders.join("\n")
+    );
+}

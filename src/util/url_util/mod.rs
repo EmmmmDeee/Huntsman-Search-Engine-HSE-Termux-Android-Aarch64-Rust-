@@ -1,3 +1,32 @@
+/// True when `s` begins with a case-sensitive `http://` or `https://` scheme
+/// prefix — the "is this already an absolute HTTP(S) URL, or do I need to
+/// resolve/fall back?" gate shared by every module that decides whether a
+/// scraped string (bio link, homepage field, bare token, relative href, …) is
+/// usable as-is. Twenty-plus call sites re-derived this exact
+/// `starts_with("http://") || starts_with("https://")` pair independently;
+/// this is the one definition.
+///
+/// Deliberately stricter than a bare `starts_with("http")` (which would wrongly
+/// accept a non-URL like `"httpfoo.com"`): the `://` must be present. Case-
+/// sensitive by design — unlike [`host_only`], callers of this predicate are
+/// classifying already-lowercase-normalised or machine-generated strings
+/// (API fields, extracted hrefs), not user-typed schemes, so no caller has
+/// ever needed `HTTP://` to pass.
+///
+/// ```
+/// use huntsman_search_engine::util::url_util::is_absolute_http_url;
+///
+/// assert!(is_absolute_http_url("https://example.com"));
+/// assert!(is_absolute_http_url("http://example.com/a"));
+/// assert!(!is_absolute_http_url("//example.com")); // protocol-relative, not absolute
+/// assert!(!is_absolute_http_url("httpfoo.com")); // bare prefix, no `://`
+/// assert!(!is_absolute_http_url("/relative/path"));
+/// ```
+#[must_use]
+pub fn is_absolute_http_url(s: &str) -> bool {
+    s.starts_with("http://") || s.starts_with("https://")
+}
+
 /// The bare host substring of a URL-ish string: strip a leading `http(s)://`
 /// scheme (case-insensitively — `HTTPS://` is valid per RFC 3986 §3.1), then
 /// everything from the first `/` (path), `?` (query), `#` (fragment), and `:`

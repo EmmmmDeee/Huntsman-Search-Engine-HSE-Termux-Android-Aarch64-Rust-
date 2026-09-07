@@ -804,6 +804,16 @@ fn core_does_not_import_util_directly() {
                 // silently drift from `modules::search_engines`'s SERP-dedup
                 // key, which strips the same params for the same reason.
                 && !line.contains("util::url_util::is_tracking_param_key")
+                // Pure, offline absolute-HTTP(S)-URL predicate (two
+                // `starts_with` checks, no I/O, no deps) — same leaf category
+                // as `util::url_util::is_tracking_param_key` immediately
+                // above. `core::scan`'s `TargetKind::Url` input validator
+                // calls this instead of keeping its own copy of the same
+                // `starts_with("http://") || starts_with("https://")` pair
+                // every scraper module already delegates to, so the seed
+                // gate and the scraped-link gate can never silently diverge
+                // on what counts as an absolute URL.
+                && !line.contains("util::url_util::is_absolute_http_url")
                 && !line.contains("util::preflight")
                 && !line.contains("util::keys::signup_hint")
                 // Pure task-local setter (no I/O): the foreign-key scan-scope

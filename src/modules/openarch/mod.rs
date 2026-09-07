@@ -281,7 +281,7 @@ pub(super) fn build_entities(
         // The register entry itself, as a source to read — not a page to mine
         // for the other people a register names.
         if let Some(u) = doc.url.as_deref()
-            && (u.starts_with("http://") || u.starts_with("https://"))
+            && crate::util::url_util::is_absolute_http_url(u)
             && seen_urls.insert(u.to_string())
         {
             let mut url_e = Entity::new(EntityKind::Url, u, conf, scan_id);

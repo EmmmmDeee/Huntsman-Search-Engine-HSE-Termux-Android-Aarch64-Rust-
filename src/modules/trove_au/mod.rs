@@ -247,9 +247,7 @@ fn build_entities(
         let Some(u) = article.url.as_deref() else {
             continue;
         };
-        if !(u.starts_with("http://") || u.starts_with("https://"))
-            || !seen_urls.insert(u.to_string())
-        {
+        if !crate::util::url_util::is_absolute_http_url(u) || !seen_urls.insert(u.to_string()) {
             continue;
         }
         let relevant = article_is_relevant(article, target_value);

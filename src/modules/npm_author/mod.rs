@@ -234,7 +234,7 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
                 push_email(&mut result, &mut seen_emails, email, pkg_name, role);
             }
             if let Some(u) = person.url.as_deref()
-                && (u.starts_with("http://") || u.starts_with("https://"))
+                && crate::util::url_util::is_absolute_http_url(u)
                 && seen_urls.insert(u.to_string())
             {
                 let mut url_e = Entity::new(EntityKind::Url, u, 0.66, scan_id);
@@ -290,7 +290,7 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
                 .into_iter()
                 .flatten()
             {
-                if (link.starts_with("http://") || link.starts_with("https://"))
+                if crate::util::url_util::is_absolute_http_url(link)
                     && seen_urls.insert(link.to_string())
                 {
                     let mut url_e =
