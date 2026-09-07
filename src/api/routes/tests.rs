@@ -1138,3 +1138,87 @@ use super::*;
         assert!(!tags.contains(&concat!("\"", env!("CARGO_PKG_VERSION"), "\"")));
         assert!(asset_etag("no/such/asset.js").is_none());
     }
+
+    #[test]
+    fn endpoint_surface_doc_table_lists_every_registered_route() {
+        // The module's `//!` "Endpoint surface" table at the top of this file
+        // claims to enumerate the whole route set — it is the first thing a
+        // reader consults to learn the API. Every `.route("<path>", …)` the
+        // router body registers must therefore appear in that table, or a new
+        // endpoint silently drifts out of the self-documenting surface. That had
+        // already happened three times (`/favicon.ico`, `/manifest.webmanifest`
+        // and `/scans/{id}/batch.txt` were each registered with no doc row)
+        // before this guard existed; without it, the next one is invisible too.
+        //
+        // Matched EXACTLY (not by substring): the router nests every versioned
+        // route under `/api/v1` (`.nest("/api", api)` over `.nest("/v1",
+        // api_v1)` — the only two nests in the file) and registers a handful of
+        // assets at the top level, so a registered literal `L` is documented iff
+        // the table carries its full external path verbatim — `/api/v1{L}` for a
+        // versioned route or `{L}` for a top-level one. A looser `contains` (or
+        // even `ends_with`) check would let a missing row slip through whenever
+        // the path is a trailing segment of another — a dropped `/api/v1/health`
+        // row would still look "covered" by `/api/v1/engines/health`. Reads the
+        // real on-disk source (same idiom as the EntityKind/EventKind drift
+        // guards above) so it tracks the file as edited, not a stale snapshot.
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/api/routes/mod.rs"
+        ))
+        .expect("router source readable");
+
+        // The doc-table path cells: the first backtick-quoted token on each
+        // `//!` row (the path column). Handler-column annotations like `(v1.5+)`
+        // and the `(unmatched)`/`(fallback)` notes sit outside these backticks.
+        let mut doc_paths = std::collections::BTreeSet::new();
+        for line in src.lines() {
+            let t = line.trim_start();
+            if !t.starts_with("//!") {
+                continue;
+            }
+            let Some(a) = t.find('`') else { continue };
+            let Some(rel) = t[a + 1..].find('`') else {
+                continue;
+            };
+            let cell = &t[a + 1..a + 1 + rel];
+            if cell.starts_with('/') {
+                doc_paths.insert(cell.to_string());
+            }
+        }
+
+        let mut missing = Vec::new();
+        let mut count = 0usize;
+        let mut rest = src.as_str();
+        while let Some(p) = rest.find(".route(\"") {
+            let after = &rest[p + ".route(\"".len()..];
+            let end = after.find('"').expect("a .route( path literal is closed");
+            let lit = &after[..end];
+            count += 1;
+            let nested = format!("/api/v1{lit}");
+            if !doc_paths.contains(lit) && !doc_paths.contains(&nested) {
+                missing.push(lit.to_string());
+            }
+            rest = &after[end..];
+        }
+
+        // Sanity floors: if either extractor silently stopped matching, an empty
+        // `missing` set would be a false pass. The router registers dozens of
+        // routes and the table enumerates at least as many rows.
+        assert!(
+            count >= 60,
+            "expected many `.route()` registrations, found {count} — the \
+             route extractor likely broke rather than the routes vanishing"
+        );
+        assert!(
+            doc_paths.len() >= 60,
+            "expected the doc table to enumerate many routes, found {} rows — \
+             the doc-cell extractor likely broke",
+            doc_paths.len()
+        );
+        assert!(
+            missing.is_empty(),
+            "these registered routes have no exact row in the `//!` \"Endpoint \
+             surface\" doc table — add one so the self-documenting API surface \
+             cannot drift from the code: {missing:?}"
+        );
+    }
