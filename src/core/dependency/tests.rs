@@ -222,6 +222,119 @@ use super::*;
         assert!(kinds.contains(&TargetKind::Url));
     }
 
+    /// A module that dispatches on `Domain` — but only for a VALUE SHAPE
+    /// (`.gov.au`), not a pure `matches!` on `t.kind`, and WITHOUT overriding
+    /// `consumes()`. Exactly the shape REQ-CORE-003 documents as a
+    /// dispatch-index mis-report risk.
+    struct ValueGatedNoOverride;
+    #[async_trait]
+    impl Module for ValueGatedNoOverride {
+        fn name(&self) -> &'static str {
+            "value_gated_no_override"
+        }
+        fn priority(&self) -> u8 {
+            50
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Domain) && t.value.ends_with(".gov.au")
+        }
+        async fn process(
+            &self,
+            _t: &Target,
+            _ctx: &ModuleContext,
+        ) -> crate::core::error::Result<ModuleResult> {
+            Ok(ModuleResult::new())
+        }
+    }
+
+    /// The same value-shape gate, WITH the documented remedy: `consumes()`
+    /// overridden to declare the true input set.
+    struct ValueGatedWithOverride;
+    #[async_trait]
+    impl Module for ValueGatedWithOverride {
+        fn name(&self) -> &'static str {
+            "value_gated_with_override"
+        }
+        fn priority(&self) -> u8 {
+            50
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Domain) && t.value.ends_with(".gov.au")
+        }
+        async fn process(
+            &self,
+            _t: &Target,
+            _ctx: &ModuleContext,
+        ) -> crate::core::error::Result<ModuleResult> {
+            Ok(ModuleResult::new())
+        }
+        fn consumes(&self) -> Vec<TargetKind> {
+            vec![TargetKind::Domain]
+        }
+    }
+
+    /// REQ-CORE-003 — pin the documented dispatch-index mis-report. `consumes()`
+    /// defaults to probing `accepts()` with a single fixed `PROBE_VALUE`, so a
+    /// module that gates on the target VALUE (not a pure kind `matches!`) is
+    /// mis-read: the probe value won't satisfy its value gate, so the default
+    /// `consumes()` omits a kind the module really does dispatch on. The trait
+    /// doc requires such modules to override `consumes()`. Pin BOTH halves — the
+    /// mis-report and the override remedy — so the contract can't drift silently
+    /// (a `PROBE_VALUE` that happened to satisfy a value gate would flip the
+    /// first assertion, which is exactly the signal we want).
+    #[test]
+    fn value_gated_accepts_misreports_consumes_unless_overridden() {
+        // The module genuinely dispatches on a real `.gov.au` domain…
+        let m = ValueGatedNoOverride;
+        assert!(
+            m.accepts(&Target::new(TargetKind::Domain, "ato.gov.au")),
+            "the module really does dispatch on .gov.au domains"
+        );
+        // …yet the default `consumes()` — probing with `PROBE_VALUE`, which is
+        // not a `.gov.au` domain — MIS-REPORTS: it finds the kind nowhere, so
+        // the reported input set is empty.
+        assert!(
+            consumes_via_probe(&m).is_empty(),
+            "the probe mis-reads a value-gated module (the documented risk)"
+        );
+        assert!(
+            m.consumes().is_empty(),
+            "the trait default `consumes()` inherits the same mis-report"
+        );
+
+        // The documented remedy: override `consumes()` to declare the true set.
+        assert_eq!(
+            ValueGatedWithOverride.consumes(),
+            vec![TargetKind::Domain],
+            "overriding consumes() restores the correct dispatch kind"
+        );
+    }
+
+    /// REQ-CORE-003, prevention half: no REGISTERED module may currently fall
+    /// into the mis-report above in its total form. Every module in the live
+    /// registry must report a non-empty `consumes()` — a module the probe reads
+    /// as consuming nothing would be invisible to the dependency graph and the
+    /// dispatch index for every target kind, the symptom of a value-gated
+    /// `accepts()` that forgot to override `consumes()` (as
+    /// `ValueGatedNoOverride` above demonstrates). This holds today: the
+    /// value-gated real modules either override `consumes()` (e.g.
+    /// `asic_director`) or their gate admits the probe value; this locks it so a
+    /// future value-gated module can't silently ship an empty dispatch index.
+    #[test]
+    fn every_registered_module_consumes_at_least_one_kind() {
+        let empties: Vec<&str> = crate::modules::registry()
+            .iter()
+            .filter(|m| m.consumes().is_empty())
+            .map(|m| m.name())
+            .collect();
+        assert!(
+            empties.is_empty(),
+            "these registered modules report an empty consumes() — a value-gated \
+             accepts() that must override consumes() (REQ-CORE-003), else they \
+             are absent from the dispatch index for every kind: {empties:?}"
+        );
+    }
+
     // ── Convex query-value dispatch order ────────────────────────────────────
 
     use crate::core::module::{ModuleCategory, ModuleCost};

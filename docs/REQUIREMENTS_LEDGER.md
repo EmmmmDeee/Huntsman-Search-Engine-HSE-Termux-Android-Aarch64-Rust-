@@ -299,7 +299,7 @@ covers.
 |---|---|---|---|---|---|---|---|---|---|
 | REQ-CORE-001 | `Module::name()` returns a stable snake_case identifier; every registered module's name is unique across the registry. | none | `&'static str` | none | Duplicate name would silently shadow dispatch/lookup by name. | `src/core/module/mod.rs:151`; enforced at `src/modules/mod.rs::registry()` | `module_names_are_unique` (`tests/architecture_parts/architecture_part*.rs`) | Ran `cargo test --test architecture` this pass — 55/55 passed, including this test. | VERIFIED |
 | REQ-CORE-002 | `Module::priority()` (0..=255, higher = earlier) determines dispatch ordering within a round. | none | `u8` | Engine sort order | No explicit validation; any `u8` value is accepted. | `src/core/module/mod.rs:154` | Exercised indirectly by engine dispatch-order tests (`src/core/engine/tests.rs`) — no test asserts the full-registry ordering itself. | Read-only, not executed for this specific claim. | IMPLEMENTED_UNVERIFIED |
-| REQ-CORE-003 | `Module::accepts(target)` gates whether `process()` runs for a given target; `consumes()` defaults to probing `accepts()` against every `TargetKind` when not overridden. | `&Target` | `bool` / `Vec<TargetKind>` | none | A module whose `accepts()` is not a pure `matches!` on kind but is not overridden for `consumes()` mis-reports its dispatch index (documented risk, not compiler-enforced). | `src/core/module/mod.rs:157,254-260` | `module_info_reflects_trait_defaults`, `override_category_and_produces_propagate_to_info` (`src/core/module/tests.rs`) | Ran `cargo test --lib core::module::tests` this pass — both cited tests passed, confirming the `consumes()` default-probe behavior (one with an `accepts()` that matches every kind, one restricted to `Domain` alone). Neither exercises `accepts()` for a module whose gate is not a pure `matches!` on kind (the documented edge case where an override is required), which stays unexercised. | PARTIAL |
+| REQ-CORE-003 | `Module::accepts(target)` gates whether `process()` runs for a given target; `consumes()` defaults to probing `accepts()` against every `TargetKind` when not overridden. | `&Target` | `bool` / `Vec<TargetKind>` | none | A module whose `accepts()` is not a pure `matches!` on kind but is not overridden for `consumes()` mis-reports its dispatch index (documented risk, not compiler-enforced). | `src/core/module/mod.rs:157,254-260` | `module_info_reflects_trait_defaults`, `override_category_and_produces_propagate_to_info` (`src/core/module/tests.rs`); **Pass 27** added `value_gated_accepts_misreports_consumes_unless_overridden` and `every_registered_module_consumes_at_least_one_kind` (`src/core/dependency/tests.rs`). | Ran `cargo test --lib core::module::tests` this pass — both cited tests passed, confirming the `consumes()` default-probe behavior (one with an `accepts()` that matches every kind, one restricted to `Domain` alone). Neither exercises `accepts()` for a module whose gate is not a pure `matches!` on kind (the documented edge case where an override is required), which stayed unexercised until now. **Fixed this pass (Pass 27):** two tests in `src/core/dependency/tests.rs` (where the `consumes()` default's probe `consumes_via_probe` and its fixed `PROBE_VALUE` live). (1) `value_gated_accepts_misreports_consumes_unless_overridden` pins the mechanism with a synthetic module whose `accepts()` gates on a value SHAPE (`.gov.au`) and does NOT override `consumes()`: it genuinely accepts a real `.gov.au` Domain, yet the default `consumes()` — probing with the non-`.gov.au` `PROBE_VALUE` — reports an EMPTY set (the documented mis-report), while an otherwise-identical module that overrides `consumes()` reports `[Domain]` (the documented remedy). (2) `every_registered_module_consumes_at_least_one_kind` locks the prevention half: empirically 0 registered modules currently fall into that total mis-report (the real value-gated ones — e.g. `asic_director`'s `FullName && value.contains(' ')` — either override `consumes()` or their gate admits `PROBE_VALUE`). Falsified: removing `asic_director`'s `consumes()` override and recompiling makes the registry guard FAIL listing exactly `["asic_director"]` (its space-gate rejects the space-less `PROBE_VALUE`) — proving the guard catches a real value-gated module that loses its override, and that `asic_director` genuinely needs the override the contract mandates; restored, it passes. Residual (recorded, not in scope): a PARTIAL per-kind mis-report — a module reporting one kind but omitting a second, value-gated kind — is not caught by the non-empty guard and would need a real-value fixture per `TargetKind`. | VERIFIED |
 | REQ-CORE-004 | `Module::process()` returns `Result<ModuleResult>`; a hard failure across independent concurrent sub-fetches must surface as `Err` only when NO evidence was collected at all (`ModuleResult::or_hard_failure`), never discarding partial evidence. | `&Target`, `&ModuleContext` | `Result<ModuleResult>` | none (module-specific network I/O aside) | Empty + hard failure ⇒ `Err`; empty + no failure ⇒ clean `Ok(empty)`; any evidence ⇒ always `Ok`, even alongside a sibling failure. | `src/core/module/mod.rs:159,482-489` | `or_hard_failure_errors_when_empty_and_a_hard_failure_occurred`, `or_hard_failure_stays_ok_when_empty_and_no_failure_occurred`, `or_hard_failure_preserves_evidence_despite_a_sibling_failure` (`src/core/module/tests.rs`) | Ran `cargo test --lib core::module::tests` this pass — all 3 passed (part of the broader `cargo test --lib` run below). | VERIFIED |
 | REQ-CORE-005 | `Module::cost()` defaults to `Free`; drives the `--free-only` CLI/API filter. | none | `ModuleCost` | Filters dispatch set | none | `src/core/module/mod.rs:162-165,19-42` | `module_cost_as_str_matches_serde`, `module_cost_serializes_to_snake_case`, `module_info_reflects_trait_defaults` (`src/core/module/tests.rs`) | Ran `cargo test --lib core::module::tests` this pass — passed. | VERIFIED |
 | REQ-CORE-006 | `Module::is_passive()` defaults to `false`; drives `--passive-only`. Modules with genuinely no network dependency (device sensors) must override `true`. | none | `bool` | Filters dispatch set | A module that is actually passive but doesn't override reports as active (under-inclusive `--passive-only`) — not compiler-checked. | `src/core/module/mod.rs:167-171` | No architecture test cross-checks `is_passive()` against actual network calls (would require dynamic analysis). `module_info_reflects_trait_defaults` covers only the default value. | Read-only. | IMPLEMENTED_UNVERIFIED |
@@ -2463,3 +2463,55 @@ $ cargo test --test api scan_entities_filter_rejects_overlong_kind_and_query_wit
 One `PARTIAL` → `VERIFIED` flip, no new rows (row total unchanged at 125).
 Baseline for this pass was `origin/main` at `f6ecc76` (the squash-merge of Pass
 25, #612); the branch was restarted from it before the work.
+
+## Pass 27 findings
+
+Closed the last long-standing core-dispatch `PARTIAL`: the documented
+`accepts()`/`consumes()` mis-report edge case (REQ-CORE-003).
+
+**Reproduction turned up a near-miss worth recording.** The concern is that a
+module whose `accepts()` gates on the target VALUE (not a pure `matches!` on
+kind) and does not override `consumes()` is mis-read, because the default
+`consumes()` probes `accepts()` with one fixed `PROBE_VALUE`
+(`"huntsman-graph-probe-1.2.3.4@example.com"`). A `grep` found several real
+registered modules that DO gate by value shape without overriding `consumes()`
+— `bitcoin` (`CryptoAddress && handles_value`), `auspost` (`Coordinates &&
+handles_value`), `au_unclaimed` (`value.trim().len() >= 3`) — which looked like
+live mis-reports. But an empirical sweep of the registry found **zero** modules
+with an empty `consumes()`: their value gates happen to admit `PROBE_VALUE`
+(the probe string carries an `@`, digits, a `.`-separated run and ample
+length), and the one whose gate genuinely rejects it — `asic_director`, which
+requires a space — already overrides `consumes()`. So there is no live defect,
+only a real latent hazard. That distinction (grep-level suspicion vs. an
+executed registry sweep) is exactly the CODE-PRESENT ≠ CORRECT-BEHAVIOUR gap
+the ledger method exists to catch.
+
+Added two tests in `src/core/dependency/tests.rs`:
+
+- `value_gated_accepts_misreports_consumes_unless_overridden` — a synthetic
+  module gating on `.gov.au` (a value shape) with no `consumes()` override:
+  it accepts a real `.gov.au` Domain, yet its default `consumes()` is empty
+  (the mis-report); an override-carrying twin reports `[Domain]` (the remedy).
+  Pins the mechanism and both its halves.
+- `every_registered_module_consumes_at_least_one_kind` — the prevention guard:
+  no live module may report an empty `consumes()`, which is the total-mis-report
+  symptom. Holds today; locks it so a future value-gated module can't silently
+  ship an empty dispatch index.
+
+Verification and falsification:
+
+```
+$ cargo test --lib value_gated_accepts_misreports_consumes_unless_overridden   # ok
+$ cargo test --lib every_registered_module_consumes_at_least_one_kind          # ok (0 empties)
+# remove asic_director's consumes() override and recompile (its space-gate
+# rejects the space-less PROBE_VALUE, so its default consumes() goes empty):
+$ cargo test --lib every_registered_module_consumes_at_least_one_kind
+    # FAILED: "...report an empty consumes() ...: [\"asic_director\"]"
+```
+
+One `PARTIAL` → `VERIFIED` flip, no new rows (row total unchanged at 125).
+Recorded residual: a PARTIAL per-kind mis-report (a module that reports one kind
+but omits a second, value-gated one) is not caught by the non-empty guard and
+would need a real-value fixture per `TargetKind` — out of scope here. Baseline
+for this pass was `origin/main` at `670cb2d` (the squash-merge of Pass 26,
+#613); the branch was restarted from it before the work.
