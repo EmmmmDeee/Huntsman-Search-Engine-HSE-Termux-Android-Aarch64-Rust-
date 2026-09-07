@@ -362,10 +362,11 @@ fn env_template_keys_are_all_consumed() {
 /// `ctx.key("…")` lookup, or a literal in a cap/knob array (e.g. the
 /// `HUNTSMAN_WIGLE_*_SCAN_CAP` family in `src/modules/wigle`, which are literals
 /// in a slice rather than `env::var` sites, so the strict consumption collector
-/// [`env_template_keys_are_all_consumed`] uses would miss them). Requiring the
-/// QUOTED literal, not a bare textual mention, means a key surviving only in a
-/// doc comment still fails — the exact "documented but gone from the code" case
-/// this guards.
+/// [`env_template_keys_are_all_consumed`] uses would miss them). The literal
+/// must sit in CODE — each line's `//` comment tail is stripped before the
+/// scan — so a key surviving only in a doc/line comment after being removed
+/// from the code still fails, the exact "documented but gone from the code"
+/// case this guards.
 ///
 /// Scope: this guards CORRECTNESS (no orphaned/misleading example key), not
 /// COMPLETENESS. `.env.example` and `env_template.txt` deliberately list
@@ -393,23 +394,40 @@ fn env_example_keys_are_all_referenced_in_source() {
         declared.len()
     );
 
-    // Concatenate every `src/` Rust source; the quoted literal `"KEY"` must
-    // appear in at least one (every real read form quotes the key).
+    // Collect every `"HUNTSMAN_…"` string literal that appears in actual CODE
+    // across `src/` — one pass into a set, then membership-test each declared
+    // key (avoids rebuilding one huge string and rescanning it per key). The
+    // `//`-comment tail of each line is dropped first, so a key that survives
+    // only in a doc/line comment after being removed from the code does NOT
+    // count — a bare `contains("\"KEY\"")` over raw text would let such a
+    // comment mention pass. (Stripping at the first `//` can also clip a `//`
+    // that sits inside a string literal, e.g. a `"https://…"`, but that can
+    // only DROP a following literal, never invent one — a false miss, the safe
+    // direction for a guard; the assertion below confirms none occurs today.)
     let mut files = Vec::new();
     collect_rs_files(&root.join("src"), &mut files);
-    let mut src = String::new();
+    let mut referenced: std::collections::HashSet<String> = std::collections::HashSet::new();
     for f in &files {
-        src.push_str(&fs::read_to_string(f).unwrap_or_default());
-        src.push('\n');
+        let text = fs::read_to_string(f).unwrap_or_default();
+        for line in text.lines() {
+            let code = line.split_once("//").map_or(line, |(before, _)| before);
+            let mut rest = code;
+            while let Some(p) = rest.find("\"HUNTSMAN_") {
+                let after = &rest[p + 1..]; // past the opening quote
+                let Some(end) = after.find('"') else { break };
+                referenced.insert(after[..end].to_string());
+                rest = &after[end + 1..];
+            }
+        }
     }
 
     let orphans: Vec<&String> = declared
         .iter()
-        .filter(|k| !src.contains(&format!("\"{k}\"")))
+        .filter(|k| !referenced.contains(k.as_str()))
         .collect();
     assert!(
         orphans.is_empty(),
-        ".env.example documents keys with no quoted reference in src/ (an \
+        ".env.example documents keys with no quoted reference in `src/` CODE (an \
          operator who copies it sets variables that reach nothing): {orphans:?}"
     );
 }
