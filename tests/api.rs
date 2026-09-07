@@ -1967,6 +1967,83 @@ async fn scan_entities_csv_returns_csv_content_type() {
     );
 }
 
+#[tokio::test]
+async fn scan_entities_csv_quarantines_candidate_rows_by_default() {
+    // Permanent regression for the candidate quarantine on the shareable CSV
+    // download (`scan_entities_csv`, src/api/scan_export/mod.rs). A speculative
+    // breach-victim entity tagged CANDIDATE must be excluded by default and
+    // returned only with `?include_candidates=1`, matching the same policy the
+    // `/entities` JSON endpoint, `report.json`, and the GEXF export enforce —
+    // otherwise a scan handed to a customer would silently ship a foreign
+    // breach-victim list. The sibling `scan_gexf_quarantines_candidate_nodes_by_default`
+    // covers the graph export; the CSV side was previously only checked with a
+    // throwaway probe, so a dropped `retain` here would have passed every test.
+    use huntsman_search_engine::core::tags::CANDIDATE;
+    let (app, store) = test_app_with_store("csv_candidate");
+    let sid = "s-csv-cand";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .unwrap();
+    // A confirmed subject entity plus a quarantined candidate breach-victim.
+    let subject = Entity::new(EntityKind::Email, "subject@real.example", 0.9, sid);
+    let mut candidate = Entity::new(EntityKind::Email, "stranger@breach.example", 0.5, sid);
+    candidate.tag(CANDIDATE);
+    store.upsert_entity(&subject).unwrap();
+    store.upsert_entity(&candidate).unwrap();
+
+    // Default: the confirmed subject row is present, the quarantined candidate
+    // must NOT leak into the downloaded CSV.
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/entities.csv")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        body.starts_with("kind,"),
+        "CSV should start with header row"
+    );
+    assert!(
+        body.contains("subject@real.example"),
+        "the confirmed subject row must be present: {body}"
+    );
+    assert!(
+        !body.contains("stranger@breach.example"),
+        "a quarantined candidate breach-victim must not leak into the CSV export: {body}"
+    );
+
+    // Opt-in: `?include_candidates=1` returns the full set (parity with GEXF),
+    // and the surfaced row carries `candidate` in its `tags` column — proving
+    // the gate keys on the CANDIDATE tag, not on incidental row content.
+    let resp2 = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/entities.csv?include_candidates=1"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp2.status(), 200);
+    let bytes2 = axum::body::to_bytes(resp2.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let body2 = String::from_utf8_lossy(&bytes2);
+    let candidate_row = body2
+        .lines()
+        .find(|l| l.contains("stranger@breach.example"))
+        .unwrap_or_else(|| panic!("include_candidates=1 must return the candidate row: {body2}"));
+    assert!(
+        candidate_row.contains(CANDIDATE),
+        "the opted-in candidate row must carry the `candidate` tag in its tags column: {candidate_row}"
+    );
+}
+
 // ── GEXF export ─────────────────────────────────────────────────────────
 
 #[tokio::test]
