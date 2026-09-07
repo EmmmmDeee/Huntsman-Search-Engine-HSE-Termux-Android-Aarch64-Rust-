@@ -652,7 +652,7 @@ this pass), 12 PARTIAL, 2 IMPLEMENTED_UNVERIFIED, 1 UNREACHABLE.
 
 | ID | Behavior | Runtime verification evidence | Status |
 |---|---|---|---|
-| REQ-API-MISC-001 | The 4 key-pool/env WRITE endpoints in settings_handlers (PUT /api/v1/settings/keys, POST /api/v1/keys/pool/add, /revoke, /rotate) gate on AppState.allow_key_write BEFORE inspecting the peer address — a non-loopback caller with writes disabled sees the 'key… | Ran `cargo test --test api keys_pool` this pass — 3 passed (keys_pool_add_is_write_gated, keys_pool_get_is_masked_and_revoke_is_write_gated, keys_pool_rotate_is_write_gated; 0.41s). Ran `cargo test --test api settings_keys` — 3 passed including settings_keys_put_forbidden_without_flag (0.49s). Then ran `grep -rn "allow_key_write" --include="*.rs" .` across the whole repo (excluding an unrelated build-staging mirror under run/deliverable/) and confirmed every non-definition hit is either the… | PARTIAL |
+| REQ-API-MISC-001 | The 4 key-pool/env WRITE endpoints in settings_handlers (PUT /api/v1/settings/keys, POST /api/v1/keys/pool/add, /revoke, /rotate) gate on AppState.allow_key_write BEFORE inspecting the peer address — a non-loopback caller with writes disabled sees the 'key… | Ran `cargo test --test api keys_pool` this pass — 3 passed (keys_pool_add_is_write_gated, keys_pool_get_is_masked_and_revoke_is_write_gated, keys_pool_rotate_is_write_gated; 0.41s). Ran `cargo test --test api settings_keys` — 3 passed including settings_keys_put_forbidden_without_flag (0.49s). Then ran `grep -rn "allow_key_write" --include="*.rs" .` across the whole repo (excluding an unrelated build-staging mirror under run/deliverable/) and confirmed every non-definition hit is either the… **Fixed this pass (Pass 30):** the existing `*_is_write_gated` tests all use a LOOPBACK peer, so they pass under either gate order and cannot prove the ordering — the whole content of this row. Confirmed the source order: `keys_pool_add` (mod.rs:280), `settings_keys_put` (:353), `keys_pool_revoke` (:427) and `keys_pool_rotate` (:464) each check `!s.allow_key_write` (→ `key_writes_disabled()`) BEFORE `reject_non_loopback`. Added `key_write_endpoints_check_the_write_gate_before_the_peer_address` (`tests/api.rs`): drives all four endpoints via `.oneshot()` with a NON-loopback peer (`192.168.1.50`) against the writes-disabled `test_app` default, asserting each 403 carries the key-write-disabled message (contains `disabled`, names `--no-key-write`) rather than `reject_non_loopback`'s `"key writes are loopback-only"` — a difference observable only when the write gate runs first. Ran `cargo test --test api key_write_endpoints_check_the_write_gate_before_the_peer_address` → 1 passed. Falsified per-handler: swapping `keys_pool_add`'s two gates (loopback first) and recompiling made the test FAIL (RC=101) at the keys/pool/add iteration — leaked `"key writes are loopback-only"` — while the settings/keys PUT iteration before it still passed; restoring the order turned it green. | VERIFIED |
 | REQ-API-MISC-002 | settings_handlers's read-only key/config endpoints (keys_status, keys_pool_get, keys_health, settings_keys_get) are loopback-gated and never serialise a plaintext key value — masking (mask_secret in keys_pool_get) and pure-count aggregation (summarize_pool,… | Ran `cargo test --lib api::` this pass (122 tests, 0 failed) which includes both settings_handlers::tests. Separately ran `cargo test --test api settings_keys` (3 passed), `cargo test --test api keys_status_endpoint` (2 passed), `cargo test --test api keys_health` (2 passed), and `cargo test --test api keys_pool` (3 passed) — all green, including the `!json.contains("SECRET")` assertion in summarize_pool_counts_by_status_and_never_leaks_values and every loopback-rejection test. | VERIFIED |
 | REQ-API-MISC-003 (**fixed in Pass 5**) | settings_toggles_put (PUT /api/v1/settings/toggles) is loopback-only but is the ONE write endpoint across these four files that does NOT require allow_key_write (no secret is involved in flipping a bool), and only persists when toggle_key_is_known() resolves the key to a real engine/module/feature toggle, via `crate::util::settings::set_bool` — the same primitive `hse config` writes through. | **Was PARTIAL**: only the two rejection paths (non-loopback 403, unknown-key 400) were tested; `set_bool` itself — the actual cache-mutate-then-atomic-persist primitive — had zero test coverage anywhere in the repo, and the handler's success path had never been driven end-to-end. **Fixed in Pass 5**: added `set_bool_persists_and_get_bool_reads_it_back` (`src/util/settings/tests.rs`) — a direct round-trip proving `set_bool` both flips the in-process cache immediately and persists to disk (read back independently via `read_map`, not just the cache), using a scratch key so it can't collide with any other test's toggle assertions despite the cache/file being process-global. Added `settings_toggles_put_succeeds_and_persists_the_flip` (`tests/api.rs`) — a loopback PUT with a real feature key (`feature.depth_decay`) asserts the 200 response body, then a fresh GET on `/api/v1/settings/toggles` confirms the flip is visible (not just echoed back), then restores the default. Ran `cargo test --lib set_bool_persists_and_get_bool_reads_it_back` and `cargo test --test api settings_toggles_put` this pass — both new tests plus the 2 pre-existing rejection-path tests all passed. | VERIFIED |
 | REQ-API-MISC-004 (**fixed this pass**) | cells_import (POST /api/v1/cells/import) treated `HUNTSMAN_OPENCELLID_KEY` as 'configured' whenever `std::env::var` returned `Ok(_)` at all — including an empty string or the exact, shipped-by-default template placeholder `insert_opencellid_key_here` — because the check was a raw env read rather than the codebase's one sanctioned resolution policy, `keys::resolve_key`, that every other credential check on this surface (e.g. `accounts_block`'s SeekNow/WiGLE lookups) already uses. **Was BROKEN**: a blank or un-edited-template key silently downgraded from the intended fast `400` to an async `202` that fired a real outbound request carrying the garbage credential, only failing later, visible solely by polling `GET /cells/status`. | Split the resolution into a pure `resolve_opencellid_key(&HashMap<String,String>) -> Option<String>` helper (routed through `keys::load()` + `keys::resolve_key`) so the placeholder-filtering behavior is unit-testable without mutating the process environment (`std::env::set_var` is `unsafe`, forbidden by this crate's `#![forbid(unsafe_code)]`). Added 4 regression tests: genuinely-unset, blank, the exact shipped placeholder, and a real-looking value — all pass. Ran `cargo test --lib api::cells_handlers` — 14/14 passed. Ran `cargo clippy --all-targets --features dep-cooldown -- -D warnings` — clean. | VERIFIED |
@@ -2627,3 +2627,65 @@ defensibly out of scope for an automated pass (REQ-API-AUTH-003 constant-time
 needs a hardware timing test; REQ-LIVE-001/002 need real Android memory
 eviction; REQ-GEO-005 is a maintainer product decision) — at which point the
 session should report the stop condition rather than force marginal changes.
+
+## Pass 30 findings
+
+Closed the last safely-completable row: the key-write gate ORDERING
+(REQ-API-MISC-001).
+
+**Reproduction corrected a wrong assumption.** The going-in expectation
+(carried in the check-in) was "loopback checked first"; the row and the source
+say the opposite — the four write handlers check `!s.allow_key_write` and return
+`key_writes_disabled()` BEFORE `reject_non_loopback`, so that when writes are
+off EVERY caller (loopback or not) gets the same "key writes are disabled"
+403 rather than a peer-dependent answer. Reading the four handlers
+(`src/api/settings_handlers/mod.rs`: `keys_pool_add` :280, `settings_keys_put`
+:353, `keys_pool_revoke` :427, `keys_pool_rotate` :464) confirmed the order.
+The existing `keys_pool_add_is_write_gated` / `settings_keys_put_forbidden_without_flag`
+/ revoke / rotate tests all inject a **loopback** peer, so they return 403 under
+either gate order and cannot distinguish the two — the exact evidence gap the
+row flagged.
+
+Added `key_write_endpoints_check_the_write_gate_before_the_peer_address`
+(`tests/api.rs`): a loop over all four endpoints driving each via `.oneshot()`
+with a NON-loopback peer (`192.168.1.50`) against the writes-disabled `test_app`
+default. Each 403 must carry the key-write-disabled message (contains `disabled`,
+names `--no-key-write`) — NOT `reject_non_loopback`'s `"key writes are
+loopback-only"`. The two are distinguishable only when the write gate runs first;
+if the loopback gate ran first, a non-loopback peer would get the loopback 403.
+(Both messages contain the token "loopback", so the discriminator is the word
+`disabled`, which only the write-gate message carries.)
+
+Verification and falsification:
+
+```
+$ cargo test --test api key_write_endpoints_check_the_write_gate_before_the_peer_address
+    # ok. 1 passed  (all four endpoints returned the "disabled" 403 to a non-loopback peer)
+# swap keys_pool_add's two gates (reject_non_loopback first) in settings_handlers/mod.rs, recompile:
+$ cargo test --test api key_write_endpoints_check_the_write_gate_before_the_peer_address
+    # FAILED (RC=101) at the keys/pool/add iteration — leaked "key writes are loopback-only"
+    # the settings/keys PUT iteration before it still passed → the loop covers each handler
+$ git checkout -- src/api/settings_handlers/mod.rs   # restore → green again
+```
+
+One `PARTIAL` → `VERIFIED` flip, no new rows (row total unchanged at 125).
+Baseline for this pass was `origin/main` at `6fa44c8` (the squash-merge of
+Pass 29, #616); the branch was restarted from it before the work.
+
+**STOP CONDITION REACHED.** With MISC-001 closed, the safely-completable set is
+exhausted. Every remaining open/PARTIAL row needs input this automated,
+CI-bound session cannot supply:
+
+- **REQ-API-AUTH-003** (constant-time credential comparison) — a genuine proof
+  needs a statistical hardware-timing harness; a functional test cannot
+  distinguish constant-time from early-return without a timing oracle, and CI
+  timing is too noisy to be a regression lock.
+- **REQ-LIVE-001 / REQ-LIVE-002** (live-session survival across real Android
+  memory eviction / process restart) — needs a physical device (or emulator)
+  put under real memory pressure; not reproducible in this x86-64 CI container.
+- **REQ-GEO-005** — a maintainer PRODUCT decision about desired behaviour, not a
+  verifiable code contract; closing it means deciding scope, which is the
+  maintainer's call, not an automated pass's.
+
+The session should now REPORT the stop condition to the user rather than force
+marginal changes past this point.
