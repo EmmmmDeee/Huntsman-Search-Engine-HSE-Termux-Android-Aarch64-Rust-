@@ -347,6 +347,73 @@ fn env_template_keys_are_all_consumed() {
     );
 }
 
+/// The repo-root `.env.example` is a SECOND, hand-maintained key reference — its
+/// own header tells an operator to copy it to `~/.huntsman.env` — separate from
+/// the `hse provision` template `env_template.txt` that
+/// [`env_template_keys_are_all_consumed`] guards. Nothing guarded `.env.example`,
+/// so a key could be renamed or dropped from the code while lingering in the
+/// example an operator copies, who then sets a variable that reaches nothing
+/// (REQ-ENV-004).
+///
+/// Every `HUNTSMAN_*` key `.env.example` presents as a settable variable (a
+/// `# KEY=...` / `KEY=...` line, not a bare prose mention) must appear as a
+/// quoted string literal `"HUNTSMAN_X"` somewhere in `src/` — the shape every
+/// real read uses, whether an `_ENV` const, an `env::var("…")` call, a
+/// `ctx.key("…")` lookup, or a literal in a cap/knob array (e.g. the
+/// `HUNTSMAN_WIGLE_*_SCAN_CAP` family in `src/modules/wigle`, which are literals
+/// in a slice rather than `env::var` sites, so the strict consumption collector
+/// [`env_template_keys_are_all_consumed`] uses would miss them). Requiring the
+/// QUOTED literal, not a bare textual mention, means a key surviving only in a
+/// doc comment still fails — the exact "documented but gone from the code" case
+/// this guards.
+///
+/// Scope: this guards CORRECTNESS (no orphaned/misleading example key), not
+/// COMPLETENESS. `.env.example` and `env_template.txt` deliberately list
+/// different key SETS — `.env.example` documents tuning knobs the provisioning
+/// template omits; the template documents `[RESERVED]` provider placeholders
+/// `.env.example` omits — and reconciling those sets is a maintainer product
+/// decision, not a drift defect.
+#[test]
+fn env_example_keys_are_all_referenced_in_source() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    // Keys `.env.example` presents as settable variables (assignment lines,
+    // commented or not) — NOT bare `HUNTSMAN_*` mentions inside prose comments.
+    let example = fs::read_to_string(root.join(".env.example")).unwrap();
+    let declared: Vec<String> = example
+        .lines()
+        .map(|l| l.trim_start_matches(['#', ' ', '\t']))
+        .filter(|l| l.starts_with("HUNTSMAN_") && l.contains('='))
+        .filter_map(|l| l.split('=').next())
+        .map(|k| k.trim().to_string())
+        .collect();
+    assert!(
+        declared.len() >= 40,
+        "expected many settable keys parsed from .env.example, got {}",
+        declared.len()
+    );
+
+    // Concatenate every `src/` Rust source; the quoted literal `"KEY"` must
+    // appear in at least one (every real read form quotes the key).
+    let mut files = Vec::new();
+    collect_rs_files(&root.join("src"), &mut files);
+    let mut src = String::new();
+    for f in &files {
+        src.push_str(&fs::read_to_string(f).unwrap_or_default());
+        src.push('\n');
+    }
+
+    let orphans: Vec<&String> = declared
+        .iter()
+        .filter(|k| !src.contains(&format!("\"{k}\"")))
+        .collect();
+    assert!(
+        orphans.is_empty(),
+        ".env.example documents keys with no quoted reference in src/ (an \
+         operator who copies it sets variables that reach nothing): {orphans:?}"
+    );
+}
+
 /// Inserts the `HUNTSMAN_*` string literal whose opening `"` sits at
 /// `open_quote`, if that is what the literal actually holds. Shared by both
 /// detection forms in [`collect_key_env_consts`] so they extract identically.
