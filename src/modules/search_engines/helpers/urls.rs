@@ -537,7 +537,7 @@ fn is_web_stopword(w: &str) -> bool {
 /// Used by every relevance gate.
 pub(in crate::modules::search_engines) fn target_terms(target: &Target) -> Vec<String> {
     let seed = match target.kind {
-        TargetKind::Email => target.value.split('@').next().unwrap_or(""),
+        TargetKind::Email => crate::core::validation::email_local(&target.value),
         _ => &target.value,
     };
     seed.to_lowercase()

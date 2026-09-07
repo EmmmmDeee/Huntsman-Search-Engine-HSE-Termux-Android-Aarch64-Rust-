@@ -68,7 +68,7 @@ fn domain_exposure(v: &str) -> Vec<String> {
 }
 
 fn email_exposure(v: &str) -> Vec<String> {
-    let local = v.split('@').next().unwrap_or("");
+    let local = crate::core::validation::email_local(v);
     let mut q = vec![
         // Code repos with this email
         format!("site:github.com \"{v}\""),

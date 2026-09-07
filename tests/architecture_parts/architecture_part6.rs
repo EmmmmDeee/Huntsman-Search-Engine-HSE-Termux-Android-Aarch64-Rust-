@@ -806,3 +806,68 @@ fn no_production_reimplements_ascii_digits_and_plus() {
         offenders.join("\n")
     );
 }
+
+/// The email local-part extractor (`s.split('@').next().unwrap_or(...)`) has
+/// ONE authority — `core::validation::email_local`. Eighteen production sites
+/// once re-derived this exact expression (with varying, always-unreachable
+/// fallbacks — a `split('@')` iterator's first `.next()` is never `None`) to
+/// fold an email down to its handle for correlation/dedup/query-building.
+/// This locks it in: no production source (outside the authority itself) may
+/// inline `split('@').next().unwrap_or(`. Falsified: restoring any inline copy
+/// fails. `rsplit('@')` (domain-part extraction) and the
+/// `.filter(|l| !l.is_empty())` combinator form are different operations and
+/// are intentionally not flagged.
+#[test]
+fn no_production_reimplements_email_local() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n == "tests") {
+                    continue;
+                }
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs")
+                && !p
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().ends_with("tests.rs"))
+            {
+                out.push(p);
+            }
+        }
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let authority = root.join("core/validation/email.rs");
+    let mut files = Vec::new();
+    walk(&root, &mut files);
+    files.sort();
+
+    let mut offenders = Vec::new();
+    for p in &files {
+        if *p == authority {
+            continue; // the one true home of the expression
+        }
+        let text = fs::read_to_string(p).expect("source file readable");
+        let prod = production_source(&text);
+        for (i, line) in prod.lines().enumerate() {
+            if line.contains("split('@').next().unwrap_or(") {
+                offenders.push(format!(
+                    "{}:{} — {}",
+                    p.strip_prefix(&root).unwrap_or(p).display(),
+                    i + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "email local-part extractor re-implemented inline — call \
+         `huntsman_search_engine::core::validation::email_local(s)` (the authority) \
+         instead of `…split('@').next().unwrap_or(…)`:\n{}",
+        offenders.join("\n")
+    );
+}

@@ -215,7 +215,7 @@ impl Module for UsernameVariants {
         // round dispatches `username_variants` on the derived Username entities.
         let (seed, source_key, source_val): (String, &'static str, String) = match target.kind {
             TargetKind::Email => {
-                let local_raw = target.value.split('@').next().unwrap_or("");
+                let local_raw = crate::core::validation::email_local(&target.value);
                 // Strip plus-addressing (e.g. `user+tag@example.com` → `user`).
                 let local = local_raw
                     .split('+')

@@ -516,7 +516,7 @@ pub fn alias_handles(entity: &Entity) -> Vec<String> {
         return Vec::new();
     }
     // Local-part minus any Gmail-style `+tag` suffix, matching AU-076.
-    let local = entity.value.split('@').next().unwrap_or_default();
+    let local = crate::core::validation::email_local(&entity.value);
     let base = local.split('+').next().unwrap_or_default();
     if !crate::core::correlator::is_anchorable_handle(base) {
         return Vec::new();

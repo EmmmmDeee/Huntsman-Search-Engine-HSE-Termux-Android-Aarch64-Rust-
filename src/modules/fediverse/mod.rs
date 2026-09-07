@@ -165,7 +165,7 @@ fn extract_webfinger(
         return;
     }
 
-    let local = email.split('@').next().unwrap_or(email);
+    let local = crate::core::validation::email_local(email);
     let ev = Evidence::new(SRC, format!("Fediverse account `{email}` (WebFinger)"))
         .with_attr("handle", email)
         .with_attr("instance", domain)

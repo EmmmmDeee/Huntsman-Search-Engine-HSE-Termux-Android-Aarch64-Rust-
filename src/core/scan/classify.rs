@@ -101,7 +101,7 @@ pub(crate) fn is_noncentral_domain(domain: &str) -> bool {
 /// alphanumerics only (an email's local part is taken before `@`). Used to tie a
 /// discovered alias back to the subject without a dictionary name-split.
 pub(crate) fn identity_norm(s: &str) -> String {
-    let local = s.split('@').next().unwrap_or(s);
+    let local = crate::core::validation::email_local(s);
     local
         .chars()
         .filter(char::is_ascii_alphanumeric)
