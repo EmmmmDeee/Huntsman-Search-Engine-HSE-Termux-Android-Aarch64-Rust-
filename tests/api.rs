@@ -4424,6 +4424,121 @@ async fn bodyless_mutating_post_requires_csrf_header() {
     );
 }
 
+// ── Update trigger (POST /api/v1/update/trigger) ────────────────────────────
+
+/// Build a POST request carrying a `ConnectInfo<SocketAddr>` peer and the
+/// `X-HSE-CSRF` header, so a loopback-gated mutating handler can be driven
+/// through `.oneshot()` without also tripping the separate, router-wide CSRF
+/// middleware — isolating whichever gate a given test actually means to probe.
+fn post_with_peer(uri: &str, peer: &str) -> Request<Body> {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("x-hse-csrf", "1")
+        .body(Body::empty())
+        .unwrap();
+    let addr: std::net::SocketAddr = peer.parse().expect("valid socket addr");
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(addr));
+    req
+}
+
+#[tokio::test]
+async fn update_trigger_is_loopback_gated_before_the_phase_is_ever_read() {
+    // `post_trigger`'s own doc comment promises `reject_non_loopback` runs
+    // FIRST, before `try_start_update` ever looks at (or claims) the phase —
+    // a non-loopback caller must be refused even while the update is genuinely
+    // idle, not merely once one happens to be in flight. Every existing test
+    // for this ordering (`trigger_rejects_non_loopback_peers`,
+    // `try_start_update_admits_after_error_or_idle`) calls the two free
+    // functions directly against a bare `Mutex`; neither drives the real
+    // `post_trigger` axum handler — wired through `State<Arc<AppState>>`,
+    // `ConnectInfo<SocketAddr>` and the router-wide CSRF middleware — over
+    // actual HTTP, so a mistake in how those pieces are wired together (a
+    // swapped check, a mismatched extractor) would pass every existing test
+    // in this file while still shipping a broken `/update/trigger` route.
+    let (app, state) = test_app_with_state("update-trigger-loopback-gate");
+    assert_eq!(
+        state.update_info.lock().unwrap().phase,
+        huntsman_search_engine::api::UpdatePhase::Idle,
+        "test setup: the update must start Idle so a bug that skipped the \
+         loopback gate would otherwise be free to claim it"
+    );
+
+    let resp = app
+        .oneshot(post_with_peer(
+            "/api/v1/update/trigger",
+            "192.168.1.50:5555",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        403,
+        "a non-loopback peer must be forbidden even while idle"
+    );
+    let body = body_text(resp).await;
+    assert!(
+        body.contains("loopback"),
+        "the 403 must be post_trigger's own loopback rejection, not a \
+         different 403 (e.g. a missing-CSRF one), got: {body}"
+    );
+    // The gate's whole point is ordering: `reject_non_loopback` must run
+    // BEFORE the phase is ever claimed. A mis-wire that called
+    // `try_start_update` first would still fall through to the loopback
+    // check and return this very same 403 + "loopback" body — while having
+    // already flipped the phase to `Applying`. Asserting the response alone
+    // therefore can't distinguish the correct order from that regression;
+    // the phase must be observed to have stayed `Idle` (mirrors the
+    // "phase untouched" assertion the 409-in-flight test makes).
+    assert_eq!(
+        state.update_info.lock().unwrap().phase,
+        huntsman_search_engine::api::UpdatePhase::Idle,
+        "a rejected non-loopback trigger must never have claimed the phase: \
+         the loopback gate must run before try_start_update, leaving it Idle"
+    );
+}
+
+#[tokio::test]
+async fn update_trigger_returns_409_while_an_update_is_already_in_flight() {
+    // Companion to
+    // `try_start_update_admits_exactly_one_of_two_concurrent_callers` (which
+    // proves the free function's own atomicity against a bare `Mutex`) — this
+    // drives the real HTTP route with the phase already claimed, proving
+    // `post_trigger` actually consults `state.update_info` and returns 409
+    // rather than, say, always claiming afresh or ignoring the shared state
+    // entirely. Pre-seeding `Applying`/`Restarting` (rather than racing two
+    // real triggers through the route) keeps this side-effect-free: a genuine
+    // 202 spawns a detached task that shells out to the real `install.sh` it
+    // would find by walking up from the test binary's own path (there is no
+    // test seam yet to fake `apply_update`/`self_restart`), which a unit test
+    // must never risk triggering — the concurrency guarantee itself is
+    // already covered directly against `try_start_update`.
+    for phase in [
+        huntsman_search_engine::api::UpdatePhase::Applying,
+        huntsman_search_engine::api::UpdatePhase::Restarting,
+    ] {
+        let (app, state) = test_app_with_state("update-trigger-409");
+        state.update_info.lock().unwrap().phase = phase.clone();
+
+        let resp = app
+            .oneshot(post_with_peer("/api/v1/update/trigger", "127.0.0.1:5555"))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            409,
+            "a loopback trigger while phase is {phase:?} must be refused, \
+             not re-claimed or ignored"
+        );
+        assert_eq!(
+            state.update_info.lock().unwrap().phase,
+            phase,
+            "a rejected trigger must leave the in-flight phase untouched"
+        );
+    }
+}
+
 // ── System self-diagnosis debug bundle ──────────────────────────────────────
 
 /// Build a GET request carrying a `ConnectInfo<SocketAddr>` peer, so the
