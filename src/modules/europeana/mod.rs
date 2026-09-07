@@ -225,7 +225,7 @@ pub(super) fn build_entities(
             .iter()
             .chain(it.guid.iter())
             .map(String::as_str)
-            .find(|u| u.starts_with("http://") || u.starts_with("https://"))
+            .find(|u| crate::util::url_util::is_absolute_http_url(u))
         else {
             continue;
         };

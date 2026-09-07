@@ -33,7 +33,7 @@ pub(super) async fn recycle_entities(
         }
         let q = match entity.kind {
             EntityKind::Email => {
-                let local = entity.value.split('@').next().unwrap_or("");
+                let local = crate::core::validation::email_local(&entity.value);
                 if local.len() >= 3 {
                     Some(format!("\"{local}\" address OR location OR suburb OR city"))
                 } else {
@@ -379,7 +379,7 @@ pub(super) fn extract_family_names(
             None => return Vec::new(),
         },
         TargetKind::Email => {
-            let local = target.value.split('@').next().unwrap_or("");
+            let local = crate::core::validation::email_local(&target.value);
             let email_domain_str = target.value.rsplit_once('@').map(|(_, d)| d.to_lowercase());
             if local.len() >= 5 {
                 // Drop the first CHARACTER (a likely first-initial), not the

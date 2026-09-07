@@ -176,7 +176,7 @@ pub(in crate::core::correlator) fn rule_au_034_handle_reuse_identity(
     let mut emails_by_handle: HashMap<String, Vec<&Entity>> = HashMap::new();
     for e in &emails {
         // local-part, minus any Gmail-style `+tag` suffix.
-        let local = e.value.split('@').next().unwrap_or_default();
+        let local = crate::core::validation::email_local(&e.value);
         let base = local.split('+').next().unwrap_or_default();
         if !base.is_empty() {
             emails_by_handle

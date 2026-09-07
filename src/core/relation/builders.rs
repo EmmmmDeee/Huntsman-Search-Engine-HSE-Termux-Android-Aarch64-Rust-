@@ -835,7 +835,7 @@ pub fn derive_reused_secret_link(entities: &[Entity], scan_id: &str) -> Vec<Rela
         // an email and its matching username from one record can't self-fire).
         let handles: BTreeSet<String> = emails
             .iter()
-            .map(|e| e.split('@').next().unwrap_or(e))
+            .map(|e| crate::core::validation::email_local(e))
             .chain(usernames.iter().map(String::as_str))
             .map(canonical_handle)
             .filter(|h| !h.is_empty())

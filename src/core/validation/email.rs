@@ -1,5 +1,26 @@
 use super::report::ValidationReport;
 
+/// The local-part of an email address, i.e. everything before the first `@`
+/// (or the whole string, unchanged, if there is no `@`). One definition of
+/// "the bit before the `@`" so callers that fold an email down to its handle
+/// for correlation/dedup purposes (breach-account keying, reuse detection,
+/// identity-fingerprint folding) share the exact same split instead of each
+/// re-deriving `s.split('@').next().unwrap_or(s)` inline.
+///
+/// Does not strip Gmail-style `+tag` suffixes — callers that need that do it
+/// as an explicit second step on the returned local-part.
+///
+/// ```
+/// use huntsman_search_engine::core::validation::email_local;
+///
+/// assert_eq!(email_local("erik.diegmann+news@example.com"), "erik.diegmann+news");
+/// assert_eq!(email_local("no-at-sign"), "no-at-sign");
+/// ```
+#[must_use]
+pub fn email_local(s: &str) -> &str {
+    s.split('@').next().unwrap_or(s)
+}
+
 const ROLE_MAILBOXES: &[&str] = &[
     "abuse",
     "admin",

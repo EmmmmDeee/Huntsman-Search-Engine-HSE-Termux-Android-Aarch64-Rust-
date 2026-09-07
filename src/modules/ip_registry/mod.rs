@@ -454,7 +454,7 @@ fn build_asn_entities(body: &AsnResp, asn: u64, scan_id: &str) -> Vec<Entity> {
     if let Some(w) = data
         .website
         .as_deref()
-        .filter(|w| w.starts_with("http://") || w.starts_with("https://"))
+        .filter(|w| crate::util::url_util::is_absolute_http_url(w))
     {
         let mut u = Entity::new(EntityKind::Url, w, confidence::VERY_HIGH, scan_id);
         u.tag("asn-website");

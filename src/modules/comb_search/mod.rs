@@ -308,7 +308,7 @@ fn line_matches_target(identity: &str, kind: TargetKind, target: &str) -> bool {
             .rsplit_once('@')
             .is_some_and(|(_, host)| host.eq_ignore_ascii_case(target)),
         TargetKind::Username => {
-            let local = identity.split('@').next().unwrap_or(identity);
+            let local = crate::core::validation::email_local(identity);
             local.eq_ignore_ascii_case(target)
         }
         _ => false,

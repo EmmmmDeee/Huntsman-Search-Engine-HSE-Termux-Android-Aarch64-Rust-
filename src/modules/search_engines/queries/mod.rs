@@ -385,7 +385,7 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
         ],
         TargetKind::Email => {
             let domain = v.rsplit_once('@').map_or("", |(_, d)| d);
-            let local = v.split('@').next().unwrap_or("");
+            let local = crate::core::validation::email_local(v);
             let mut q = vec![format!("\"{v}\""), format!("\"{local}\"")];
             // The canonical freemail list (also used by email_parse, disposable_check,
             // proxycurl, employer_pivot, org.rs — and this module's own build.rs a few

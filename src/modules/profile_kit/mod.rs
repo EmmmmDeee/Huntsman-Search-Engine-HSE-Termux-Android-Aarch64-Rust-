@@ -68,7 +68,7 @@ pub(crate) fn profile_url(api_link: Option<&str>, fallback: impl FnOnce() -> Str
     api_link
         .map(str::trim)
         .map(|u| u.trim_end_matches('/'))
-        .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
+        .filter(|u| crate::util::url_util::is_absolute_http_url(u))
         .map_or_else(fallback, str::to_string)
 }
 
@@ -102,7 +102,7 @@ pub(crate) fn website_url_and_domain(
     scan_id: &str,
 ) -> Vec<Entity> {
     let site = site.trim();
-    if !(site.starts_with("http://") || site.starts_with("https://")) {
+    if !crate::util::url_util::is_absolute_http_url(site) {
         return Vec::new();
     }
     let mut out = vec![Entity::new(EntityKind::Url, site, url_confidence, scan_id)];

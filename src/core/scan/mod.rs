@@ -545,7 +545,7 @@ impl Target {
                 }
             }
             TargetKind::Url => {
-                if !(v.starts_with("http://") || v.starts_with("https://")) {
+                if !crate::util::url_util::is_absolute_http_url(v) {
                     return Err("URL must start with http:// or https://");
                 }
                 if v.len() < 10 {

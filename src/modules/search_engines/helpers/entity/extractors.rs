@@ -704,7 +704,7 @@ pub(in crate::modules::search_engines) fn extract_urls_from_text(text: &str) -> 
     let mut rest = text;
     while let Some(pos) = rest.find("http") {
         let cand = &rest[pos..];
-        if cand.starts_with("http://") || cand.starts_with("https://") {
+        if crate::util::url_util::is_absolute_http_url(cand) {
             // Stop at whitespace or a delimiter that never appears mid-URL.
             let end = cand
                 .find(|c: char| {

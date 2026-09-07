@@ -719,7 +719,7 @@ pub(in crate::core::correlator) fn rule_au_087_shared_org_email_domain(
         }
         let mut matched: BTreeSet<usize> = BTreeSet::new();
         for addr in &addresses {
-            let local = addr.split('@').next().unwrap_or(addr);
+            let local = crate::core::validation::email_local(addr);
             let local_norm = crate::core::scan::identity_norm(local);
             if local_norm.is_empty() {
                 continue;

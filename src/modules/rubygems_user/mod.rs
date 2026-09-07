@@ -138,7 +138,7 @@ pub(super) fn build_entities(gems: Vec<RgGem>, handle: &str, scan_id: &str) -> V
 
         // Homepage URI — personal site; skip obvious code-hosting hosts.
         if let Some(hp) = gem.homepage_uri.as_deref()
-            && (hp.starts_with("http://") || hp.starts_with("https://"))
+            && crate::util::url_util::is_absolute_http_url(hp)
             && seen_urls.insert(hp.to_string())
         {
             for mut e in
@@ -161,7 +161,7 @@ pub(super) fn build_entities(gems: Vec<RgGem>, handle: &str, scan_id: &str) -> V
 
         // Source code URI — usually GitHub; extract the GitHub username.
         if let Some(src_url) = gem.source_code_uri.as_deref()
-            && (src_url.starts_with("http://") || src_url.starts_with("https://"))
+            && crate::util::url_util::is_absolute_http_url(src_url)
             && let Some(gh_user) = github_user_from_url(src_url)
             && seen_gh.insert(gh_user.to_ascii_lowercase())
         {

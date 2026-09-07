@@ -96,7 +96,7 @@ pub(in crate::core::correlator) fn rule_au_121_credential_reuse_blast_radius(
                 for email in ev.attr_values("email") {
                     let email = email.to_lowercase();
                     if email.contains('@') {
-                        let handle = canonical_handle(email.split('@').next().unwrap_or(&email));
+                        let handle = canonical_handle(crate::core::validation::email_local(&email));
                         if is_pivotable(&handle) && !handles.contains(&handle) {
                             handles.push(handle);
                             raw.push(email);
@@ -201,7 +201,7 @@ pub(in crate::core::correlator) fn rule_au_121_credential_reuse_blast_radius(
         .map(|e| {
             let raw = e.value.trim().to_lowercase();
             let base = if e.kind == EntityKind::Email {
-                raw.split('@').next().unwrap_or(&raw).to_string()
+                crate::core::validation::email_local(&raw).to_string()
             } else {
                 raw
             };

@@ -399,7 +399,7 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
         // ≥2-separate-accounts firing gate.
         let handles: BTreeSet<String> = emails
             .iter()
-            .map(|e| e.split('@').next().unwrap_or(e))
+            .map(|e| crate::core::validation::email_local(e))
             .chain(usernames.iter().map(String::as_str))
             .map(canonical_handle)
             .filter(|h| !h.is_empty())
@@ -568,7 +568,7 @@ pub(in crate::core::correlator) fn rule_au_106_shared_device_identity(
         // matching username from one record collapse to one and can't self-fire.
         let handles: BTreeSet<String> = emails
             .iter()
-            .map(|e| e.split('@').next().unwrap_or(e))
+            .map(|e| crate::core::validation::email_local(e))
             .chain(usernames.iter().map(String::as_str))
             .map(canonical_handle)
             .filter(|h| !h.is_empty())

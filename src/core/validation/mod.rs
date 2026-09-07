@@ -38,7 +38,7 @@ pub use confusable::{
 };
 pub use coordinates::validate_coordinates;
 pub use domain::{is_onion_url, validate_domain_shape};
-pub use email::{is_role_mailbox, validate_email_syntax};
+pub use email::{email_local, is_role_mailbox, validate_email_syntax};
 pub use ip::{is_bogus_ip, is_cdn_edge_ip, is_non_routable_ip, untrusted_ip_geo_reason};
 pub use phone::{to_e164_au, validate_phone_e164};
 pub use placeholder::{

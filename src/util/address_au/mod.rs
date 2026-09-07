@@ -334,10 +334,7 @@ pub fn normalise_phone(s: &str) -> Option<String> {
             .valid
             .then_some(e164)
     };
-    let digits: String = s
-        .chars()
-        .filter(|c| c.is_ascii_digit() || *c == '+')
-        .collect();
+    let digits: String = crate::util::str_util::ascii_digits_and_plus(s);
     if digits.starts_with("+61") {
         return validated(digits);
     }

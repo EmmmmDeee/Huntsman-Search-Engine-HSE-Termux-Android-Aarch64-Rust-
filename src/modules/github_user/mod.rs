@@ -257,7 +257,7 @@ fn build_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
         && !blog.trim().is_empty()
     {
         let blog = blog.trim();
-        if blog.starts_with("http://") || blog.starts_with("https://") {
+        if crate::util::url_util::is_absolute_http_url(blog) {
             let mut u = Entity::new(EntityKind::Url, blog, confidence::HIGH_PLUSPLUS, scan_id);
             u.tag("personal-site");
             u.add_evidence(

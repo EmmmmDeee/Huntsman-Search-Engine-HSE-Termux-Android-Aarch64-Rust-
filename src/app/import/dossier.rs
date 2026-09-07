@@ -213,9 +213,7 @@ pub(super) fn parse_dossier(
         }
 
         // A bare top-level URL (e.g. the LinkedIn profile heading the file).
-        if (line.starts_with("http://") || line.starts_with("https://"))
-            && seen.insert(format!("u:{line}"))
-        {
+        if crate::util::url_util::is_absolute_http_url(line) && seen.insert(format!("u:{line}")) {
             let mut e = crate::core::entity::Entity::new(
                 crate::core::entity::EntityKind::Url,
                 line,

@@ -321,7 +321,7 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
         let href = extract_href(&field.value);
         let url_candidate = href.as_deref().unwrap_or(plain.trim());
 
-        if url_candidate.starts_with("http://") || url_candidate.starts_with("https://") {
+        if crate::util::url_util::is_absolute_http_url(url_candidate) {
             // Host-based, not a raw substring search — see the identical
             // comment on the bio-link exclusion above.
             if crate::util::url_util::host_from_url(url_candidate).as_deref() == Some(instance) {

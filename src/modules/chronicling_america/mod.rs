@@ -210,9 +210,7 @@ pub(super) fn build_entities(
         let Some(u) = r.url.as_deref() else {
             continue;
         };
-        if !(u.starts_with("http://") || u.starts_with("https://"))
-            || !seen_urls.insert(u.to_string())
-        {
+        if !crate::util::url_util::is_absolute_http_url(u) || !seen_urls.insert(u.to_string()) {
             continue;
         }
         // The page's own OCR text naming the seed confirms the hit landed on

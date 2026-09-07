@@ -91,7 +91,7 @@ pub(in crate::core::correlator) fn rule_au_048_shared_public_key(
         }
         let email_locals: BTreeSet<String> = emails
             .iter()
-            .filter_map(|e| e.split('@').next())
+            .map(|e| crate::core::validation::email_local(e))
             .map(canonical_handle)
             .collect();
         let distinct_logins = logins.iter().filter(|l| !email_locals.contains(*l)).count();

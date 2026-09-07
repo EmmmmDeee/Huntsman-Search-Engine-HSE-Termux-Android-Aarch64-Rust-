@@ -280,7 +280,7 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
     {
         // GitLab stores either a bare username or a full linkedin.com URL.
         let li_val = li.trim();
-        let li_url = if li_val.starts_with("http://") || li_val.starts_with("https://") {
+        let li_url = if crate::util::url_util::is_absolute_http_url(li_val) {
             li_val.to_string()
         } else {
             format!(

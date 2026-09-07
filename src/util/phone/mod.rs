@@ -40,10 +40,7 @@ pub fn scan_phones(text: &str, cap: usize, mut collect: impl FnMut(String)) -> b
                 i += 1;
             }
             if (10..=15).contains(&digits) {
-                let cleaned: String = text[start..i]
-                    .chars()
-                    .filter(|c| c.is_ascii_digit() || *c == '+')
-                    .collect();
+                let cleaned: String = crate::util::str_util::ascii_digits_and_plus(&text[start..i]);
                 if crate::core::validation::validate_phone_e164(&cleaned).valid {
                     collect(cleaned);
                     count += 1;
