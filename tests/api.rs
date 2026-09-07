@@ -4071,6 +4071,82 @@ async fn keys_pool_rotate_is_write_gated() {
 }
 
 #[tokio::test]
+async fn key_write_endpoints_check_the_write_gate_before_the_peer_address() {
+    // REQ-API-MISC-001: the four key-writing endpoints (settings/keys PUT,
+    // keys/pool/{add,revoke,rotate}) check `AppState.allow_key_write` BEFORE
+    // `reject_non_loopback`, so when key writes are switched off EVERY caller —
+    // loopback or not — gets the uniform "key writes are disabled" 403, never a
+    // response that varies by peer address. This test pins that ordering by
+    // driving a NON-loopback peer against the writes-disabled default: the reply
+    // must be the key-write-disabled message, NOT the loopback rejection
+    // (`reject_non_loopback`'s "key writes are loopback-only"). The existing
+    // `*_is_write_gated` tests all use a loopback peer, so they pass under either
+    // gate order and cannot distinguish the two.
+    use std::net::SocketAddr;
+    // A routable, non-loopback peer: it would be rejected by `reject_non_loopback`
+    // if that gate ran first.
+    let remote: SocketAddr = "192.168.1.50:5555".parse().unwrap();
+    let app = test_app("misc001-gate-order");
+
+    // (method, path, valid JSON body) for each of the four write endpoints — the
+    // body must parse so the `Json` extractor yields to the handler body, where
+    // the gate ordering lives.
+    let cases: [(&str, &str, &str); 4] = [
+        (
+            "PUT",
+            "/api/v1/settings/keys",
+            r#"{"updates":{"HUNTSMAN_TEST":"val"},"deletes":[]}"#,
+        ),
+        (
+            "POST",
+            "/api/v1/keys/pool/add",
+            r#"{"service":"shodan","key":"NEW-KEY-VALUE"}"#,
+        ),
+        (
+            "POST",
+            "/api/v1/keys/pool/revoke",
+            r#"{"service":"shodan","id":"deadbeef"}"#,
+        ),
+        (
+            "POST",
+            "/api/v1/keys/pool/rotate",
+            r#"{"service":"shodan","id":"deadbeef","new":"NEW-VAL"}"#,
+        ),
+    ];
+
+    for (method, path, body) in cases {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("content-type", "application/json")
+            .header("x-hse-csrf", "1")
+            .body(Body::from(body))
+            .unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(remote));
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            http::StatusCode::FORBIDDEN,
+            "{method} {path}: a write with key writes disabled must be 403"
+        );
+        let error = body_json(resp).await["error"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        // The key-write-disabled message says "disabled" (and names `--no-key-write`);
+        // the loopback rejection ("key writes are loopback-only") does not. Seeing the
+        // former for a NON-loopback peer proves `allow_key_write` is checked first.
+        assert!(
+            error.contains("disabled"),
+            "{method} {path}: a non-loopback caller with key writes disabled must get \
+             the key-write-disabled 403 (proving allow_key_write is checked BEFORE the \
+             peer address), not the loopback rejection: {error:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn plan_preview_lists_engaged_modules_for_a_seed() {
     let app = test_app("plan");
     // A two-word name seed detects as a full name and engages real registry modules,
