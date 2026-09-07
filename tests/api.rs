@@ -36,6 +36,18 @@ async fn body_text(resp: axum::response::Response) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
+/// Like [`body_text`] but with a generous 16 MiB cap, for export/download tests
+/// that assert on the WHOLE body. A scan's GEXF or debug bundle can outgrow
+/// `body_text`'s 1 MiB cap, and a size-capped read would fail a behavioural test
+/// (e.g. a redaction check) for the wrong reason — a `body too large` panic
+/// instead of the assertion it exists to make.
+async fn download_body_text(resp: axum::response::Response) -> String {
+    let bytes = axum::body::to_bytes(resp.into_body(), 16 * 1024 * 1024)
+        .await
+        .unwrap();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
 /// Shorthand: build a GET request.
 fn get(uri: &str) -> Request<Body> {
     Request::builder().uri(uri).body(Body::empty()).unwrap()
@@ -2200,9 +2212,12 @@ async fn shareable_downloads_redact_the_provider_name_while_the_debug_bundle_kee
     ] {
         let resp = app.clone().oneshot(get(&path)).await.unwrap();
         assert_eq!(resp.status(), 200, "{fmt} download must be 200");
-        let body = body_text(resp).await;
+        // Generous cap + ASCII-only casing: the provider names are ASCII, and a
+        // 1 MiB read cap could fail this behavioural test for size on a large
+        // export rather than for redaction.
+        let body = download_body_text(resp).await;
         assert!(
-            !body.to_lowercase().contains(PROVIDER),
+            !body.to_ascii_lowercase().contains(PROVIDER),
             "{fmt} shareable download must not reveal the provider name \
              '{PROVIDER}'/'{BRAND}' (redaction choke point): {body}"
         );
@@ -2221,9 +2236,9 @@ async fn shareable_downloads_redact_the_provider_name_while_the_debug_bundle_kee
         .await
         .unwrap();
     assert_eq!(resp.status(), 200, "debug bundle must be 200");
-    let bundle = body_text(resp).await;
+    let bundle = download_body_text(resp).await;
     assert!(
-        bundle.to_lowercase().contains(PROVIDER),
+        bundle.to_ascii_lowercase().contains(PROVIDER),
         "the operator debug bundle must KEEP the real provider name (it opts out \
          of redaction via download_response_operator): {bundle}"
     );
