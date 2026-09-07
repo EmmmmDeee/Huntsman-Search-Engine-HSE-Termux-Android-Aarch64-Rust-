@@ -1331,17 +1331,56 @@ mod tests {
                 .into_iter()
                 .take_while(|t| !t.starts_with('#'))
                 .collect();
-            let Some(sub_tok) = toks.get(1) else { continue };
-            if sub_tok.starts_with('-') {
+            let Some(first) = toks.get(1) else { continue };
+            if first.starts_with('-') {
                 continue; // e.g. `hse --help`; no subcommand to resolve
             }
             checked += 1;
-            let Some(sc) = subs.get(sub_tok) else {
-                problems.push(format!("`{s}` names unknown subcommand `{sub_tok}`"));
+            let Some(&top) = subs.get(first) else {
+                problems.push(format!("`{s}` names unknown subcommand `{first}`"));
                 continue;
             };
 
-            // Valid flags for this subcommand: its own args (+ aliases), plus
+            // Descend through nested subcommands (e.g. `hse keys status`): while
+            // the resolved command still has subcommands and the next token is a
+            // non-flag, that token MUST name one of them — clap requires a
+            // subcommand there — so a renamed/removed nested verb is caught too,
+            // not silently skipped as an unchecked positional. Flags are then
+            // validated against the LEAF command reached here.
+            let mut sc: &clap::Command = top;
+            let mut idx = 2usize;
+            let mut drifted = false;
+            loop {
+                let mut children: BTreeMap<String, &clap::Command> = BTreeMap::new();
+                for child in sc.get_subcommands() {
+                    children.insert(child.get_name().to_owned(), child);
+                    for a in child.get_all_aliases() {
+                        children.insert(a.to_owned(), child);
+                    }
+                }
+                if children.is_empty() {
+                    break; // leaf reached — no nested verb to validate
+                }
+                let Some(tok) = toks.get(idx) else { break };
+                if tok.starts_with('-') {
+                    break; // a flag against this (sub)command, not a nested verb
+                }
+                let Some(&child) = children.get(tok) else {
+                    problems.push(format!(
+                        "`{s}` names unknown nested subcommand `{tok}` under `{}`",
+                        sc.get_name()
+                    ));
+                    drifted = true;
+                    break;
+                };
+                sc = child;
+                idx += 1;
+            }
+            if drifted {
+                continue;
+            }
+
+            // Valid flags for the leaf subcommand: its own args (+ aliases), plus
             // clap's always-present `--help`/`-h`.
             let mut longs: BTreeSet<String> = BTreeSet::new();
             let mut shorts: BTreeSet<char> = BTreeSet::new();
@@ -1366,7 +1405,7 @@ mod tests {
                 }
             }
 
-            for t in toks.iter().skip(2) {
+            for t in toks.iter().skip(idx) {
                 if let Some(rest) = t.strip_prefix("--") {
                     let name = rest.split_once('=').map_or(rest, |(a, _)| a);
                     if !name.is_empty() && !longs.contains(name) {
