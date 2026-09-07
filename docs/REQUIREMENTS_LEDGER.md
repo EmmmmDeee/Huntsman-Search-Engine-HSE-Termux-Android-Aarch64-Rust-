@@ -644,7 +644,7 @@ this pass), 12 PARTIAL, 2 IMPLEMENTED_UNVERIFIED, 1 UNREACHABLE.
 | REQ-API-SCAN-005 | Every state-changing request on this surface (POST /scans, /scans/batch, /scans/{id}/cancel, /scans/{id}/rerun, DELETE /scans/{id}, POST /scans/import, /scan/auto*, /radar*) is blocked with 403 unless it carries a custom X-HSE-CSRF header — closing the… | Ran `cargo test --test api dossier_upload` (6/6 passed, includes CSRF-adjacent import tests) and `cargo test --test api bodyless_mutating_post_requires_csrf_header` this pass — 1/1 passed, confirming POST /api/v1/scans/does-not-exist/cancel is 403'd without the header and not 403'd with it. Confirmed by reading routes/mod.rs that this same middleware, not per-handler code, is what protects scan_cancel/scan_create/scan_batch/etc. | VERIFIED |
 | REQ-API-SCAN-006 (**fixed in Pass 9**) | POST /api/v1/scans/import's own in-handler size backstop (`if body.len() > MAX_UPLOAD_BYTES { return bad_request(...) }`) rejects an oversized upload with this API's normal JSON `{"error": ...}` shape, for any body between `MAX_UPLOAD_BYTES` and the route's `DefaultBodyLimit` ceiling; only a body beyond that ceiling gets axum's own bare plain-text 413 (an intentional, bounded OOM backstop). | **Was UNREACHABLE**: the route's `DefaultBodyLimit` was set to exactly `MAX_UPLOAD_BYTES`, so any body large enough to trip the in-handler check had already been 413'd by axum one layer up — the handler's own check could never run. **Fixed in Pass 9**: added `scan_handlers::IMPORT_ROUTE_BODY_LIMIT_HEADROOM_BYTES` (1 MiB) and raised the route's `DefaultBodyLimit` to `MAX_UPLOAD_BYTES + IMPORT_ROUTE_BODY_LIMIT_HEADROOM_BYTES` (`src/api/routes/mod.rs`), so a body in that 1 MiB window now reaches the handler and gets the friendly JSON rejection instead; anything larger still hits axum's hard backstop, so the OOM-protection intent is unchanged. Added `dossier_upload_between_handler_cap_and_route_headroom_gets_friendly_json_rejection` (`tests/api.rs`), POSTing a 16 MB + 512 KB body and asserting `400` + JSON `error` containing "too large" (not axum's 413/plain-text). Mutation-tested: reverted the route-limit change locally, re-ran the new test — it failed (`left: 413, right: 400`) as expected, then restored the fix and re-confirmed the same test passes. Ran `cargo test --test api` — 127/127 passed (was 126; +1 new). Ran `cargo clippy --all-targets --features dep-cooldown -- -D warnings` — clean. `cargo build --locked` — clean. | VERIFIED |
 | REQ-API-SCAN-007 (**fixed in Pass 6**) | GET /api/v1/scans/{id}/entities paginates via ?offset=&?limit=, validating both at the boundary: a non-numeric offset/limit or a limit of 0 is rejected with 400 rather than silently defaulting or panicking; a valid limit above 10000 is clamped down rather… | **Was PARTIAL**: `scan_entities_pagination_works` (1/1 passing) confirmed count/total/offset/limit accounting across 5 valid scenarios including the 10000 cap, but every one of the handler's `bad_request` branches (`analysis.rs:27,34,36` — non-numeric offset, non-numeric limit, limit=0) was read-only-verified, never test-executed. **Fixed in Pass 6**: added `scan_entities_pagination_rejects_invalid_offset_and_limit` (`tests/api.rs`), which drives all 5 invalid-input cases (`limit=0`, `limit=abc`, `limit=-5`, `offset=abc`, `offset=-1`) through the real HTTP handler and asserts 400 for each. Ran `cargo test --test api scan_entities_pagination` this pass — both the pre-existing and new tests passed (2/2). | VERIFIED |
-| REQ-API-SCAN-008 | Several read endpoints validate free-form query params before use: scan_entities_filter caps ?kind (32 chars) and ?q (256 chars); scan_snake_svg's ?depth (positive integer, capped at 8), ?size (finite number, clamped 200-4000) and ?center (must name an entity… | Ran `cargo test --test api scan_snake_svg_renders_and_hides_candidate_nodes_by_default` and `cargo test --test api plan_preview_lists_engaged_modules_for_a_seed` this pass — both 1/1 passed (default-parameter rendering only). Grepped tests/api.rs for these handlers' malformed-input branches and found no coverage of any of the 400 paths listed. | PARTIAL |
+| REQ-API-SCAN-008 | Several read endpoints validate free-form query params before use: scan_entities_filter caps ?kind (32 chars) and ?q (256 chars); scan_snake_svg's ?depth (positive integer, capped at 8), ?size (finite number, clamped 200-4000) and ?center (must name an entity… | Ran `cargo test --test api scan_snake_svg_renders_and_hides_candidate_nodes_by_default` and `cargo test --test api plan_preview_lists_engaged_modules_for_a_seed` this pass — both 1/1 passed (default-parameter rendering only). Grepped tests/api.rs for these handlers' malformed-input branches and found no coverage of any of the 400 paths listed. **Fixed this pass (Pass 26):** the ONLY pre-existing coverage turned out to be a status-only loop (`depth=0`/`depth=abc`/`size=nope` → 400) inside `scan_snake_svg_renders_and_hides_candidate_nodes_by_default` — it checked the status but not the message (a coincidental 400, e.g. a missing scan, would pass) and never touched `?center` or `scan_entities_filter`'s caps. Added two `tests/api.rs` cases driving each malformed param against a real scan (`create_scan` + `.oneshot`) and asserting BOTH `400` AND the documented `{"error"}` message: `scan_entities_filter_rejects_overlong_kind_and_query_with_named_errors` (33-char `?kind` → "kind too long", 257-char `?q` → "query too long") and `scan_snake_svg_rejects_malformed_tuning_params_with_named_errors` (`depth=0`/`depth=abc` → "depth must be a positive integer", `size=nope`/`size=nan` → "size must be a number", `center=<absent uid>` → "center uid is not an entity"). Ran `cargo test --test api with_named_errors` → 2 passed, 0 failed. Falsified: relaxing the `?kind` cap in the handler (`k.len() > 32` → `> 9999`) and recompiling makes the filter test FAIL (the 33-char kind is no longer rejected); restored, it passes. | VERIFIED |
 | REQ-API-SCAN-009 | POST /api/v1/radar and POST /api/v1/radar/live are armed by default (a bare call with zero input queues the sensor sweep), but both refuse with 403 when the operator has explicitly switched the feature.live_radar toggle off — a client must be able to trust… | Ran `cargo test --lib api::scan_handlers` this pass, which includes radar_scan_spec_activates_only_the_live_sensors and every_live_sensor_accepts_the_radar_sentinel (both passed) — these confirm the SPEC the radar builds (sentinel target, allow_live_sensors, exact sensor module set), not the 403 kill-switch branch, which has zero automated coverage. | IMPLEMENTED_UNVERIFIED |
 | REQ-API-SCAN-010 | A scan dispatched by this surface (spawn_scan always calls engine.run_panic_safe, never the bare run) that panics anywhere in dispatch, or that persists zero entities due to a store error, is force-marked ScanStatus::Failed with the causing error message and… | Ran `cargo test --lib core::engine::tests::run_panic_safe_force_fails_a_scan_that_panics_outside_process` this pass — 1/1 passed, confirming a scan whose accepts() panics ends with persisted.status == ScanStatus::Failed and persisted.error containing the panic message "kaboom in accepts()", read directly back from the store (not just the in-memory Err returned to the caller). | VERIFIED |
 
@@ -2419,3 +2419,47 @@ $ ./target/debug/deps/architecture-<hash> env_example_keys_are_all_referenced_in
 One `PARTIAL` → `VERIFIED` flip, no new rows (row total unchanged at 125).
 Baseline for this pass was `origin/main` at `7780b68` (the squash-merge of Pass
 24, #611); the branch was restarted from it before the work.
+
+## Pass 26 findings
+
+Shifted from doc-drift guards (Passes 23–25) to **input-validation coverage** —
+the malformed-query-param `400` branches on the scan read endpoints, which the
+ledger flagged as tested only on their default-parameter happy path.
+
+**REQ-API-SCAN-008.** Reproduced the coverage first and found the ledger's "no
+coverage of any of the 400 paths" was itself slightly stale: a status-only loop
+(`depth=0`/`depth=abc`/`size=nope` → `400`) already sat inside
+`scan_snake_svg_renders_and_hides_candidate_nodes_by_default`. But it asserted
+only the status, never the message — so a `400` fired for an unrelated reason (a
+missing scan, a different validation) would satisfy it — and it never covered
+`scan_snake_svg`'s `?center` branch or `scan_entities_filter`'s `?kind`/`?q`
+caps at all. Read both handlers to enumerate the exact branches and their
+messages:
+
+- `scan_entities_filter`: `?kind` > 32 → "kind too long (max 32 chars)"; `?q` >
+  256 → "query too long (max 256 chars)".
+- `scan_snake_svg`: `?depth` non-positive/unparseable → "depth must be a
+  positive integer (capped at 8)"; `?size` non-finite/unparseable → "size must
+  be a number between 200 and 4000"; `?center` naming a uid absent from the
+  scan → "center uid is not an entity in this scan".
+
+Added two `tests/api.rs` cases that drive each malformed param against a real
+scan (`create_scan` + `.oneshot`) and assert the status AND the documented
+`{"error"}` message, so it is provably the intended branch — not a coincidental
+`400` — that rejects. Message-level assertions are the point: a bare
+status check is exactly what let the pre-existing loop miss that it never
+proved *which* `400` fired.
+
+Verification and falsification:
+
+```
+$ cargo test --test api with_named_errors    # 2 passed, 0 failed (REQ-API-SCAN-008)
+# deliberately relax the ?kind cap in the handler and recompile:
+#   src/api/scan_handlers/analysis.rs: `k.len() > 32` -> `k.len() > 9999`
+$ cargo test --test api scan_entities_filter_rejects_overlong_kind_and_query_with_named_errors
+    # FAILED — the 33-char ?kind is no longer rejected; restoring the cap, it passes.
+```
+
+One `PARTIAL` → `VERIFIED` flip, no new rows (row total unchanged at 125).
+Baseline for this pass was `origin/main` at `f6ecc76` (the squash-merge of Pass
+25, #612); the branch was restarted from it before the work.

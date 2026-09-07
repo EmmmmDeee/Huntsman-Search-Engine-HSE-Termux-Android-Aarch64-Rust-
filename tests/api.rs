@@ -5047,6 +5047,80 @@ async fn scan_snake_svg_renders_and_hides_candidate_nodes_by_default() {
     }
 }
 
+#[tokio::test]
+async fn scan_entities_filter_rejects_overlong_kind_and_query_with_named_errors() {
+    // `/entities/filter` caps `?kind` at 32 chars and `?q` at 256 before it
+    // touches the store. Only the happy path (`?kind=email` → 200) was tested,
+    // so a 400 that fired for a DIFFERENT reason — or a cap that silently
+    // stopped rejecting — would have gone unnoticed. Assert the status AND the
+    // documented message, so it's provably THIS branch that rejects.
+    let (app, sid) = create_scan("filter-caps").await;
+
+    let over_kind = "k".repeat(33);
+    let resp = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/entities/filter?kind={over_kind}"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "a 33-char ?kind must be rejected");
+    let err = body_json(resp).await;
+    assert!(
+        err["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("kind too long")),
+        "the 400 must name the kind cap, got: {err}"
+    );
+
+    let over_q = "q".repeat(257);
+    let resp = app
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/entities/filter?q={over_q}"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "a 257-char ?q must be rejected");
+    let err = body_json(resp).await;
+    assert!(
+        err["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("query too long")),
+        "the 400 must name the query cap, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn scan_snake_svg_rejects_malformed_tuning_params_with_named_errors() {
+    // Companion to the status-only rejection loop in
+    // `scan_snake_svg_renders_and_hides_candidate_nodes_by_default`: assert the
+    // documented MESSAGE for each 400 branch (a coincidental 400 — a missing
+    // scan, say — would satisfy a bare status check), and cover `?center`, which
+    // had no test at all. `?center` names a uid absent from the scan's entities,
+    // so it rejects whether or not the async dispatch has produced any yet.
+    let (app, sid) = create_scan("snake-bad-params").await;
+
+    for (q, needle) in [
+        ("depth=0", "depth must be a positive integer"),
+        ("depth=abc", "depth must be a positive integer"),
+        ("size=nope", "size must be a number"),
+        ("size=nan", "size must be a number"),
+        ("center=no-such-entity-uid", "center uid is not an entity"),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(get(&format!("/api/v1/scans/{sid}/snake.svg?{q}")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400, "`{q}` must be rejected");
+        let err = body_json(resp).await;
+        assert!(
+            err["error"].as_str().is_some_and(|e| e.contains(needle)),
+            "the 400 for `{q}` must name `{needle}`, got: {err}"
+        );
+    }
+}
+
 // ── non-loopback bind: the bearer-token gate ────────────────────────────────
 //
 // `test_app` builds the loopback router, where the gate is deliberately absent.
