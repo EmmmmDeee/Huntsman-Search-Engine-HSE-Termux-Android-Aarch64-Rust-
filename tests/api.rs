@@ -4483,6 +4483,20 @@ async fn update_trigger_is_loopback_gated_before_the_phase_is_ever_read() {
         "the 403 must be post_trigger's own loopback rejection, not a \
          different 403 (e.g. a missing-CSRF one), got: {body}"
     );
+    // The gate's whole point is ordering: `reject_non_loopback` must run
+    // BEFORE the phase is ever claimed. A mis-wire that called
+    // `try_start_update` first would still fall through to the loopback
+    // check and return this very same 403 + "loopback" body — while having
+    // already flipped the phase to `Applying`. Asserting the response alone
+    // therefore can't distinguish the correct order from that regression;
+    // the phase must be observed to have stayed `Idle` (mirrors the
+    // "phase untouched" assertion the 409-in-flight test makes).
+    assert_eq!(
+        state.update_info.lock().unwrap().phase,
+        huntsman_search_engine::api::UpdatePhase::Idle,
+        "a rejected non-loopback trigger must never have claimed the phase: \
+         the loopback gate must run before try_start_update, leaving it Idle"
+    );
 }
 
 #[tokio::test]
