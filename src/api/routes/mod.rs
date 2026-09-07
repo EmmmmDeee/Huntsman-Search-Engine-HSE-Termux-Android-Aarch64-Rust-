@@ -50,6 +50,7 @@
 //! | GET    | `/api/v1/scans/{id}/graph.gexf`          | `scan_export_gexf`             |
 //! | GET    | `/api/v1/scans/{id}/debug.txt`           | `scan_debug_bundle`            |
 //! | GET    | `/api/v1/scans/{id}/events.log`          | `scan_events_log` (download)   |
+//! | GET    | `/api/v1/scans/{id}/batch.txt`           | `scan_batch_txt` (bulk queries)|
 //! | GET    | `/api/v1/scans/{id}/correlations`        | `scan_correlations` (v0.4+)    |
 //! | GET    | `/api/v1/scans/{id}/relations`           | `scan_relations`               |
 //! | GET    | `/api/v1/scans/{id}/network`             | `scan_network`                 |
@@ -99,6 +100,8 @@
 //! | POST   | `/api/v1/cells/clear`                    | `cells_clear` (v1.13+)         |
 //! | *      | `/api/*` (unmatched)                     | `api_not_found` (JSON 404)     |
 //! | GET    | `/static/{*file}`                        | `vendor_handler`               |
+//! | GET    | `/favicon.ico`                           | `favicon_handler`              |
+//! | GET    | `/manifest.webmanifest`                  | `manifest_handler`             |
 //! | GET    | `/*` (fallback)                          | `spa_handler` (static)         |
 
 use std::sync::Arc;

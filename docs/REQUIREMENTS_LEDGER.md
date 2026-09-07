@@ -618,7 +618,7 @@ this pass), 12 PARTIAL, 2 IMPLEMENTED_UNVERIFIED, 1 UNREACHABLE.
 | ID | Behavior | Runtime verification evidence | Status |
 |---|---|---|---|
 | REQ-API-ROUTE-001 | The production `router()` wires every endpoint (~87 explicit path+method registrations plus `/static/{*file}`, `/favicon.ico`, `/manifest.webmanifest`, and the `/api` and `/` fallbacks) to its handler. Critically, this is the SAME function a live `hse serve`… | Ran a cross-section through the real router this pass, each individually: `cargo test --test api api_not_found_returns_json --exact` -> ok; `spa_fallback_returns_html` -> ok; `favicon_returns_svg_not_html` -> ok; `manifest_is_valid_installable_pwa` -> ok; `responses_carry_security_headers` -> ok; `loopback_bind_is_unchanged_by_the_auth_work` -> ok (6/6 passed, 0 failed each). Did not individually re-run all ~90 doc-table rows. | VERIFIED |
-| REQ-API-ROUTE-002 | The router()'s own doc-comment "Endpoint surface" table at the top of the file claims to enumerate the whole route set; every GET/POST/PUT/DELETE actually registered in the function body should appear as a row. | Ran `grep -cE '^//! \\| (GET\|POST\|PUT\|DELETE\|\*) ' src/api/routes/mod.rs` -> 90 doc rows; cross-referenced by hand against the code's `.route()` calls (lines 415-640) and confirmed `/favicon.ico` (line 636) and `/manifest.webmanifest` (line 640) are real, working, GET routes with no doc-table row. Both are independently tested and passing: `cargo test --test api favicon_returns_svg_not_html --exact` -> ok; `manifest_is_valid_installable_pwa --exact` -> ok. | PARTIAL |
+| REQ-API-ROUTE-002 | The router()'s own doc-comment "Endpoint surface" table at the top of the file claims to enumerate the whole route set; every GET/POST/PUT/DELETE actually registered in the function body should appear as a row. | Ran `grep -cE '^//! \\| (GET\|POST\|PUT\|DELETE\|\*) ' src/api/routes/mod.rs` -> 90 doc rows; cross-referenced by hand against the code's `.route()` calls (lines 415-640) and confirmed `/favicon.ico` (line 636) and `/manifest.webmanifest` (line 640) are real, working, GET routes with no doc-table row. Both are independently tested and passing: `cargo test --test api favicon_returns_svg_not_html --exact` -> ok; `manifest_is_valid_installable_pwa --exact` -> ok. **Fixed this pass (Pass 23):** added the three missing doc-table rows — `/favicon.ico`, `/manifest.webmanifest`, and `/scans/{id}/batch.txt` (the last surfaced by the new guard, NOT caught in the earlier hand cross-reference, which had found only the first two) — AND a self-enforcing regression test `endpoint_surface_doc_table_lists_every_registered_route` (`src/api/routes/tests.rs`) that reads the on-disk `mod.rs` at test time and, for every `.route("<path>", …)` registered in the body, asserts `<path>` appears in the `//!` doc block. Nesting-robust: each doc-table path is the nest-prefix + route path (a nested `.route("/health")` shows as `/api/v1/health`, a top-level `.route("/favicon.ico")` verbatim), so the registered literal is always a substring of some doc row; a `count >= 60` floor guards against the extractor silently matching nothing. Falsified against the baseline: with the fix `cargo test --lib endpoint_surface_doc_table_lists_every_registered_route` -> ok, while running the same compiled binary against a source with the three rows removed FAILs (RC=101) listing exactly those paths — baseline fails, fix passes. | VERIFIED |
 | REQ-API-ROUTE-003 | Any unmatched path/method under `/api` (typo'd endpoint, `/api/v2/...`) returns a JSON 404 naming the caller-typed path — not the embedded SPA's HTML 200 — via `.fallback(api_not_found)` nested at both the `/api/v1` and outer `/api` router levels, using… | Ran `cargo test --test api api_not_found_returns_json --exact --test-threads=4` this pass: `running 1 test / test api_not_found_returns_json ... ok / test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 122 filtered out`. | VERIFIED |
 | REQ-API-ROUTE-004 | `enforce_csrf` requires an `X-HSE-CSRF` header on every POST/PUT/DELETE/PATCH under `/api` (GET/HEAD/OPTIONS exempt), including a BODYLESS mutating POST — the CORS-simple-request vector a cross-site page can drive with no preflight. Applies uniformly to every… | Ran `cargo test --test api csrf -- --test-threads=4` this pass: `running 2 tests / test bodyless_mutating_post_requires_csrf_header ... ok / test scan_import_requires_csrf_header ... ok / test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 121 filtered out`. | VERIFIED |
 | REQ-API-ROUTE-005 | On a LOOPBACK bind only, `enforce_host_allowlist` rejects (403, before any handler) a request whose `Host` header is present AND not a loopback alias (the bind string itself, or localhost/127.0.0.1/[::1] with the bound port) — defeating DNS rebinding, where a… | Ran `cargo test --lib api::routes -- --test-threads=4` this pass: 33/33 passed (includes both routes/tests.rs cases: `host_allowlist_covers_loopback_aliases_and_rejects_rebind ... ok`, `host_allowlist_is_none_for_non_loopback_bind ... ok`). Ran `cargo test --test api dns_rebind_host_header_is_rejected --exact` separately: `test result: ok. 1 passed; 0 failed`. | VERIFIED |
@@ -2231,3 +2231,59 @@ need real Android eviction, unavailable from this container) and `REQ-GEO-005`
 (two coexisting geolocation precision models — resolving it needs a producer for
 `GeoAssertion` or a decision to retire it, a maintainer call, not one the
 evidence settles).
+
+## Pass 23 findings
+
+Shifted from the entry-point-wiring theme (Passes 21–22) to a **doc-vs-code
+drift with a self-enforcing fix** — the highest permanent return available,
+because it both eliminates a concrete defect and installs a structural
+mechanism that prevents its whole class from recurring.
+
+**REQ-API-ROUTE-002 — the router's "Endpoint surface" doc table.** The `//!`
+header table at the top of `src/api/routes/mod.rs` advertises itself as the
+enumeration of the whole route set, but three real GET routes had no row:
+`/favicon.ico`, `/manifest.webmanifest`, and `/scans/{id}/batch.txt`. The first
+two were recorded in the earlier PARTIAL evidence; the **third was new this
+pass**, surfaced by the regression test rather than by eye — precisely the value
+of structural prevention over repeated hand audits.
+
+Fix, in two halves:
+
+1. Added the three missing rows to the doc table (aligned to the existing
+   column layout, computed from a reference row rather than hand-spaced).
+2. Added `endpoint_surface_doc_table_lists_every_registered_route` to
+   `src/api/routes/tests.rs`, which reads the on-disk `mod.rs` at test time and
+   asserts every `.route("<path>", …)` literal appears somewhere in the `//!`
+   doc block. The check is nesting-robust — a doc path is always the
+   nest-prefix + the registered literal, so the literal is a substring of its
+   row — and floored at `count >= 60` so a broken extractor can't pass vacuously.
+   It joins the file's existing source-introspection guards (the EntityKind /
+   EventKind drift pins), reading the real source so it tracks edits.
+
+Falsification (the regression check must fail on the baseline):
+
+```
+# fix in place:
+$ cargo test --lib endpoint_surface_doc_table_lists_every_registered_route   # ok
+# same compiled binary, three doc rows stripped from mod.rs on disk (the test
+# reads the source at runtime, so no recompile needed to mutate the input):
+$ ./target/debug/deps/huntsman_search_engine-<hash> \
+    api::routes::tests::endpoint_surface_doc_table_lists_every_registered_route --exact
+    # FAILED (exit 101), listing /favicon.ico, /manifest.webmanifest,
+    # /scans/{id}/batch.txt as missing — baseline fails, fix passes.
+```
+
+Verification commands:
+
+```
+$ cargo test --lib endpoint_surface_doc_table    # 1 passed, 0 failed (REQ-API-ROUTE-002)
+$ cargo fmt --all -- --check                      # clean
+$ scripts/gate.sh --quick                         # all checks pass
+```
+
+One `PARTIAL` → `VERIFIED` flip, no new rows (row total unchanged at 125). This
+is the first pass whose fix is a *prevention mechanism* rather than a single
+proof: the guard will now fail CI the moment any future route is added without a
+doc row, so the class of defect — not just its three current instances — is
+closed. Baseline for this pass was `origin/main` at `b95e195` (the squash-merge
+of Pass 22, #609); the branch was restarted from it before the work.

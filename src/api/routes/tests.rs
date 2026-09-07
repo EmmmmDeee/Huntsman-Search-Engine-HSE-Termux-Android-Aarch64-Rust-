@@ -1138,3 +1138,63 @@ use super::*;
         assert!(!tags.contains(&concat!("\"", env!("CARGO_PKG_VERSION"), "\"")));
         assert!(asset_etag("no/such/asset.js").is_none());
     }
+
+    #[test]
+    fn endpoint_surface_doc_table_lists_every_registered_route() {
+        // The module's `//!` "Endpoint surface" table at the top of this file
+        // claims to enumerate the whole route set — it is the first thing a
+        // reader consults to learn the API. Every `.route("<path>", …)` the
+        // router body registers must therefore appear in that table, or a new
+        // endpoint silently drifts out of the self-documenting surface. That had
+        // already happened three times (`/favicon.ico`, `/manifest.webmanifest`
+        // and `/scans/{id}/batch.txt` were each registered with no doc row)
+        // before this guard existed; without it, the next one is invisible too.
+        //
+        // Nesting-robust by construction: a doc-table path is the full external
+        // path (nest prefix + route path), so a nested `.route("/health")` shows
+        // as `/api/v1/health` and a top-level `.route("/favicon.ico")` shows
+        // verbatim — in both cases the registered literal is a substring of some
+        // doc-table row, which is the exact invariant asserted here. Reads the
+        // real on-disk source (same idiom as the EntityKind/EventKind drift
+        // guards above), so it tracks the file as edited, not a stale snapshot.
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/api/routes/mod.rs"
+        ))
+        .expect("router source readable");
+        let doc: String = src
+            .lines()
+            .filter(|l| l.trim_start().starts_with("//!"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut missing = Vec::new();
+        let mut count = 0usize;
+        let mut rest = src.as_str();
+        while let Some(p) = rest.find(".route(\"") {
+            let after = &rest[p + ".route(\"".len()..];
+            let end = after.find('"').expect("a .route( path literal is closed");
+            let path = &after[..end];
+            count += 1;
+            if !doc.contains(path) {
+                missing.push(path.to_string());
+            }
+            rest = &after[end..];
+        }
+
+        // Sanity floor: if the extractor silently stopped matching, an empty
+        // `missing` set would be a false pass. The router registers dozens of
+        // routes, so a count far below that means the scan broke, not that the
+        // routes vanished.
+        assert!(
+            count >= 60,
+            "expected many `.route()` registrations, found {count} — the \
+             extractor likely broke rather than the routes vanishing"
+        );
+        assert!(
+            missing.is_empty(),
+            "these registered routes have no row in the `//!` \"Endpoint \
+             surface\" doc table — add one so the self-documenting API surface \
+             cannot drift from the code: {missing:?}"
+        );
+    }
