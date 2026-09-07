@@ -69,7 +69,7 @@ fn read_prompt_bounded<R: Read>(reader: R) -> Result<String> {
 /// `--min-confidence` value flows into `cmd_investigate`'s `min_confidence`
 /// parameter unmodified (see `cli::mod::run_command`) and straight into this
 /// function — without needing to capture the command's stdout/JSON output.
-/// This is the wiring [`REQ-CLI-012`] exists to keep proven: `hse scan`'s
+/// This is the wiring `REQ-CLI-012` exists to keep proven: `hse scan`'s
 /// `--min-confidence` regression (a NaN/out-of-range floor silently emptying
 /// the result set) is closed once at the shared [`confidence_floor`
 /// parser](super::command::confidence_floor), but a *separate* bug — this
