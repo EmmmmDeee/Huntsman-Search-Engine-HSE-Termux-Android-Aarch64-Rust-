@@ -118,6 +118,26 @@ pub fn ascii_digits(s: &str) -> String {
     s.chars().filter(char::is_ascii_digit).collect()
 }
 
+/// The ASCII digits of `s`, in order, plus any `+` sign, with every other
+/// character dropped. One definition of the "keep digits and a leading
+/// international-dial marker" scan shared by phone-number normalisation
+/// (was re-derived inline identically in `address_au::normalise_phone` and
+/// `phone::scan_phones`).
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::ascii_digits_and_plus;
+///
+/// assert_eq!(ascii_digits_and_plus("+61 (2) 9374-4000"), "+61293744000");
+/// assert_eq!(ascii_digits_and_plus("0410 959 140"), "0410959140");
+/// assert_eq!(ascii_digits_and_plus("no digits here"), "");
+/// ```
+#[must_use]
+pub fn ascii_digits_and_plus(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_digit() || *c == '+')
+        .collect()
+}
+
 /// Parse an autonomous-system identifier to its numeric form, accepting an
 /// optional case-insensitive `AS` prefix and surrounding whitespace:
 /// `"AS13335"`, `"as13335"`, `"13335"`, `" 13335 "` all yield `Some(13335)`.

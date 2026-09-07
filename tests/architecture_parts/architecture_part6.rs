@@ -740,3 +740,69 @@ fn no_production_reimplements_ascii_digits() {
         offenders.join("\n")
     );
 }
+
+/// The digit-and-leading-`+` normaliser used by phone-number handling has ONE
+/// authority — `util::str_util::ascii_digits_and_plus`
+/// (`s.chars().filter(|c| c.is_ascii_digit() || *c == '+').collect()`).
+/// `address_au::normalise_phone` and `phone::scan_phones` both open-coded this
+/// exact filter before consolidating onto the shared helper. This locks it in:
+/// no production source (outside the authority itself) may inline
+/// `is_ascii_digit() || *c == '+'` (or the `'+' == *c` mirror) followed by a
+/// `String` collect. Falsified: restoring either inline copy fails.
+#[test]
+fn no_production_reimplements_ascii_digits_and_plus() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n == "tests") {
+                    continue;
+                }
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs")
+                && !p
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().ends_with("tests.rs"))
+            {
+                out.push(p);
+            }
+        }
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let authority = root.join("util/str_util/mod.rs");
+    let mut files = Vec::new();
+    walk(&root, &mut files);
+    files.sort();
+
+    let mut offenders = Vec::new();
+    for p in &files {
+        if *p == authority {
+            continue; // the one true home of the expression
+        }
+        let text = fs::read_to_string(p).expect("source file readable");
+        let prod = production_source(&text);
+        for (i, line) in prod.lines().enumerate() {
+            let has_plus_filter = (line.contains("is_ascii_digit() || *c == '+'")
+                || line.contains("'+' == *c || c.is_ascii_digit()"))
+                && line.contains(".collect");
+            if has_plus_filter {
+                offenders.push(format!(
+                    "{}:{} — {}",
+                    p.strip_prefix(&root).unwrap_or(p).display(),
+                    i + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "digit-plus-leading-`+` normaliser re-implemented inline — call \
+         `huntsman_search_engine::util::str_util::ascii_digits_and_plus(s)` (the \
+         authority) instead of `…filter(|c| c.is_ascii_digit() || *c == '+').collect()`:\n{}",
+        offenders.join("\n")
+    );
+}
