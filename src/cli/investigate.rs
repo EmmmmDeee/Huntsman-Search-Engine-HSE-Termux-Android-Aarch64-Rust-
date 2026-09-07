@@ -61,6 +61,26 @@ fn read_prompt_bounded<R: Read>(reader: R) -> Result<String> {
     Ok(buf)
 }
 
+/// Build the extractor from the caller-supplied `min_confidence` floor and run
+/// it over `text`.
+///
+/// Split out of [`cmd_investigate`] so a unit test can call exactly the code
+/// path the CLI dispatch calls — `Command::Investigate`'s parsed
+/// `--min-confidence` value flows into `cmd_investigate`'s `min_confidence`
+/// parameter unmodified (see `cli::mod::run_command`) and straight into this
+/// function — without needing to capture the command's stdout/JSON output.
+/// This is the wiring [`REQ-CLI-012`] exists to keep proven: `hse scan`'s
+/// `--min-confidence` regression (a NaN/out-of-range floor silently emptying
+/// the result set) is closed once at the shared [`confidence_floor`
+/// parser](super::command::confidence_floor), but a *separate* bug — this
+/// function ignoring its `min_confidence` argument and using a hardcoded
+/// default instead — would not be caught by that parser-level guard alone.
+fn extract_entities(text: &str, min_confidence: f64) -> Result<Vec<ExtractedEntity>> {
+    let extractor =
+        EntityExtractor::new(min_confidence).map_err(|e| Error::Other(e.to_string()))?;
+    Ok(extractor.extract_from_text(text))
+}
+
 pub(super) async fn cmd_investigate(
     text: Option<String>,
     auto_scan: bool,
@@ -83,9 +103,7 @@ pub(super) async fn cmd_investigate(
         ));
     }
 
-    let extractor =
-        EntityExtractor::new(min_confidence).map_err(|e| Error::Other(e.to_string()))?;
-    let entities = extractor.extract_from_text(text);
+    let entities = extract_entities(text, min_confidence)?;
 
     // Best-effort, exactly like `hse ingest --auto-scan`: a persistence hiccup
     // must warn, never fail the command — the extracted entities are still
@@ -395,5 +413,52 @@ mod tests {
             .await
             .expect_err("blank text must be rejected, not silently scan nothing");
         assert!(matches!(err, Error::InvalidTarget(_)));
+    }
+
+    #[test]
+    fn min_confidence_reaches_the_extractor_filter_unmodified() {
+        // REQ-CLI-012 wiring guard. `confidence_floor` (the shared parser
+        // `scan`/`ingest`/`investigate` all use) is independently verified —
+        // see `cli::command`'s own tests — but that only proves clap rejects
+        // a NaN/out-of-range *string*. It says nothing about whether the
+        // parsed `f64` that clap hands `Command::Investigate::min_confidence`
+        // actually reaches `extract_entities` (and so `EntityExtractor`'s
+        // `confidence >= min_confidence` filter) unmodified, as opposed to
+        // being silently dropped in favour of a hardcoded default somewhere
+        // between the match arm in `cli::mod::run_command` and here. Prove it
+        // by calling `extract_entities` — the exact function `cmd_investigate`
+        // calls with its `min_confidence` parameter — at two different
+        // floors and observing the filtered set actually change.
+        //
+        // The prompt names two entities that straddle 0.70: a social handle
+        // (`patterns::extract_by_patterns` stamps confidence 0.60, "could be
+        // mention, not identity") and an email (0.85, RFC 5322).
+        let text = "Reach out to qa-fixture@hse-investigate-wiring-test.dev, also known as \
+             @wiringtestbot";
+
+        let permissive = extract_entities(text, 0.30).expect("0.30 is a valid floor");
+        assert!(
+            permissive
+                .iter()
+                .any(|e| e.value == "qa-fixture@hse-investigate-wiring-test.dev"),
+            "the email must survive a floor below its own 0.85 confidence: {permissive:?}"
+        );
+        assert!(
+            permissive.iter().any(|e| e.value == "wiringtestbot"),
+            "the social handle must survive a floor below its own 0.60 confidence: {permissive:?}"
+        );
+
+        let strict = extract_entities(text, 0.70).expect("0.70 is a valid floor");
+        assert!(
+            strict
+                .iter()
+                .any(|e| e.value == "qa-fixture@hse-investigate-wiring-test.dev"),
+            "the 0.85-confidence email must still survive a 0.70 floor: {strict:?}"
+        );
+        assert!(
+            !strict.iter().any(|e| e.value == "wiringtestbot"),
+            "the 0.60-confidence handle must be filtered by a 0.70 floor — if this \
+             fails, --min-confidence is not reaching the extractor: {strict:?}"
+        );
     }
 }

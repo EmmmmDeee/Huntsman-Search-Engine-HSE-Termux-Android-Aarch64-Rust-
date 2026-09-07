@@ -803,6 +803,75 @@ mod tests {
         assert!(format_output(&sample(), "yaml", "notes.txt").is_err());
     }
 
+    #[tokio::test]
+    async fn min_confidence_flag_reaches_the_extractor_filter_through_run() {
+        // REQ-CLI-012 wiring guard. `confidence_floor` (the shared parser
+        // `scan`/`ingest`/`investigate` all use) is independently verified —
+        // see `cli::command`'s own tests — but that only proves clap rejects
+        // a NaN/out-of-range *string* at the argument boundary. It says
+        // nothing about whether the parsed `f64` that clap hands
+        // `Command::Ingest::min_confidence` actually reaches `run()`'s
+        // `EntityExtractor::new(args.min_confidence)` call unmodified, as
+        // opposed to being silently dropped in favour of a hardcoded default
+        // somewhere between the match arm in `cli::mod::run_command` and
+        // here. Prove it by calling the real `run()` entry point — the exact
+        // function the CLI dispatches to — at two different floors, reading
+        // back its file output, and observing the filtered set actually
+        // change.
+        //
+        // The input document names two entities that straddle 0.70: a social
+        // handle (`patterns::extract_by_patterns` stamps confidence 0.60,
+        // "could be mention, not identity") and an email (0.85, RFC 5322).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let input_path = dir.path().join("wiring-test.txt");
+        fs::write(
+            &input_path,
+            "Reach out to qa-fixture@hse-ingest-wiring-test.dev, also known as \
+             @wiringtestbot",
+        )
+        .expect("write input fixture");
+
+        let run_at = |min_confidence: f64, out_name: &str| {
+            let out_path = dir.path().join(out_name);
+            let args = IngestArgs {
+                file: input_path.clone(),
+                output_format: "jsonl".to_string(),
+                min_confidence,
+                auto_scan: false,
+                output: Some(out_path.clone()),
+                extract_geolocation: false,
+                generate_reverse_search_variants: false,
+                image_variant_output_dir: None,
+            };
+            (args, out_path)
+        };
+
+        let (args, out_path) = run_at(0.30, "permissive.jsonl");
+        run(args).await.expect("ingest at 0.30 should succeed");
+        let permissive = fs::read_to_string(&out_path).expect("read permissive output");
+        assert!(
+            permissive.contains("qa-fixture@hse-ingest-wiring-test.dev"),
+            "the email must survive a floor below its own 0.85 confidence: {permissive}"
+        );
+        assert!(
+            permissive.contains("wiringtestbot"),
+            "the social handle must survive a floor below its own 0.60 confidence: {permissive}"
+        );
+
+        let (args, out_path) = run_at(0.70, "strict.jsonl");
+        run(args).await.expect("ingest at 0.70 should succeed");
+        let strict = fs::read_to_string(&out_path).expect("read strict output");
+        assert!(
+            strict.contains("qa-fixture@hse-ingest-wiring-test.dev"),
+            "the 0.85-confidence email must still survive a 0.70 floor: {strict}"
+        );
+        assert!(
+            !strict.contains("wiringtestbot"),
+            "the 0.60-confidence handle must be filtered by a 0.70 floor — if this \
+             fails, --min-confidence is not reaching the extractor through run(): {strict}"
+        );
+    }
+
     #[test]
     fn format_table_truncates_multibyte_values_without_panicking() {
         // Regression: the table renderer sliced `&value[..value.len().min(20)]`,

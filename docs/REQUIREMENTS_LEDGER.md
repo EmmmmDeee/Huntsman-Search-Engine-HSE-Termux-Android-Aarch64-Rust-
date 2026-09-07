@@ -331,7 +331,7 @@ covers.
 | REQ-CLI-009 | `hse build-sha` exits non-zero when the build carries no verifiable revision (dirty tree, or no `.git` and no `HSE_BUILD_SHA`); `install.sh`/`hse update` treat a non-zero exit as "cannot prove it" and rebuild. | none | SHA to stdout (or JSON with `--json`) | Process exit code | Non-zero exit + `Error::Other` message | `src/cli/mod.rs:447-471` | No dedicated test name found asserting the exit-code contract specifically (`build_sha_is_verifiable` itself likely has coverage in its own module, not checked this pass). | Ran `./target/debug/hse build-sha; echo exit=$?` this pass (Pass 2) — `sha=cc55f3858…, dirty=1`, `exit=1` (the on-disk binary predates the current HEAD, the same "cannot prove it" signal a genuinely dirty tree produces). Exit code confirmed non-zero as documented. | VERIFIED |
 | REQ-CLI-010 | `hse modules --category <cat> --json` filters the registry by category and emits the same JSON shape as `GET /api/v1/modules`. | `--category`, `--json` | stdout JSON or table | none | Unknown category presumably yields an empty filtered list (not explicitly checked this pass). | `src/cli/modules.rs`; `Command::Modules` in `src/cli/command.rs:276-283` | Not individually checked this pass. | Ran `./target/debug/hse modules --json` this pass — returned `{"count":188,"modules":[...]}` with per-module `consumes`/`category`/`cost` fields, confirming the JSON shape and that the registry currently holds 188 entries (used to derive REQ-README rows below). | VERIFIED |
 | REQ-CLI-011 | `hse tidy`'s `--help` text quotes the dossier-cache retention cap ("newest N files") as a literal number that must equal `DOSSIER_MAX_FILES`, since clap renders doc-comment intra-doc links as raw unresolved markup rather than resolving them. | none | Help text string | none | Test failure on drift (not a runtime failure — an operator would just see a stale number in `--help`). | `src/cli/command.rs:866-874` (doc comment), constant `src/app/tidy/mod.rs` | `tidy_help_quotes_the_real_dossier_cap` (`src/cli/command.rs:920`) | Ran `cargo test --lib cli::command::tests::tidy_help_quotes_the_real_dossier_cap` this pass — passed. | VERIFIED |
-| REQ-CLI-012 | `hse ingest`/`hse investigate --min-confidence` reuse the same `confidence_floor` parser as `hse scan`, so the "silent total data loss on NaN" regression is closed for every subcommand that takes a confidence floor, not just `scan`. | CLI string | `Result<f64, String>` | none | Same as REQ-CLI-004. | `src/cli/command.rs:508,545` | Same tests as REQ-CLI-004 (shared parser function) — no per-subcommand-wiring test confirms `ingest`/`investigate` actually pass the parsed value through unmodified to the extractor's filter. | Read-only for the wiring; the parser itself is VERIFIED (REQ-CLI-004). | PARTIAL |
+| REQ-CLI-012 | `hse ingest`/`hse investigate --min-confidence` reuse the same `confidence_floor` parser as `hse scan`, so the "silent total data loss on NaN" regression is closed for every subcommand that takes a confidence floor, not just `scan`. | CLI string | `Result<f64, String>` | none | Same as REQ-CLI-004. | `src/cli/command.rs:508,545`; wiring: `src/cli/investigate.rs` (`extract_entities`), `src/cli/ingest/mod.rs` (`run`) | **Fixed this pass (Pass 21).** `cmd_investigate`'s two inline extractor lines were extracted into a named, behavior-preserving `extract_entities(text, min_confidence)`; `cli::investigate::tests::min_confidence_reaches_the_extractor_filter_unmodified` calls it at 0.30 vs 0.70 and asserts a 0.60-confidence social handle survives the low floor but is filtered by the high one while a 0.85 email survives both. `cli::ingest::tests::min_confidence_flag_reaches_the_extractor_filter_through_run` drives the real `run(IngestArgs{..})` entry point at the same two floors, reads back its JSONL output file, and makes the same assertion — so a hardcoded-default regression would flip a specific assertion. Synthetic fixtures only (RULE.md's one permitted use). | Ran `cargo test --lib extractor_filter` — 2 passed, 0 failed (see Pass 21 findings). | VERIFIED |
 | REQ-CLI-013 (**new, Pass 14**) | `hse config <key> on|off` validates `<key>` with the same `modules::is_known_toggle_key` the HTTP `PUT /api/v1/settings/toggles` handler uses (a registered `feature.*` switch, an `engine.<name>` from the search-engine catalogue, or a `module.<name>` in the registry) and exits non-zero on an unknown key instead of persisting a silent no-op. | CLI strings | `Result<()>` | `settings.json` written only for a known key | `Error::Other("unknown toggle key '<k>' …")`, nothing persisted | `src/cli/config.rs` (`cmd_config`), `src/modules/mod.rs` (`is_known_toggle_key` — the one validator, in the layer that owns the engine catalogue and the registry; the API handler's private duplicate `toggle_key_is_known` is deleted and it now calls the same function) | `config_set_rejects_an_unknown_toggle_key_instead_of_persisting_it` (`src/cli/tests.rs`), `is_known_toggle_key_accepts_exactly_the_three_real_key_families` (`src/modules/tests.rs`), the pre-existing `settings_toggles_put_*` API tests | Ran `cargo test --lib modules::tests::is_known_toggle_key cli::tests::config api::settings_handlers` — all pass. Before the fix `hse config module.shodann off` printed `module.shodann = ○ off`, persisted a key nothing reads, and exited 0. | VERIFIED |
 
 ---
@@ -659,7 +659,7 @@ this pass), 12 PARTIAL, 2 IMPLEMENTED_UNVERIFIED, 1 UNREACHABLE.
 | REQ-API-MISC-005 | cells_import/cells_clear (the two mutating cell-DB endpoints) are loopback-only; cells_import additionally uses an atomic check-and-claim (try_start_import, one mutex acquisition) to refuse a second concurrent import while one is Running — mirroring… | Ran `cargo test --lib api::` this pass — all 10 cells_handlers tests passed, e.g. `test api::cells_handlers::tests::cells_clear_succeeds_with_confirm_true ... ok`, `test api::cells_handlers::tests::try_start_import_claims_atomically_and_refuses_a_concurrent_second_call ... ok` (full run: 122 passed; 0 failed). The clear-during-running-import race noted above was found by reading the two handlers side by side, not by a test. | VERIFIED |
 | REQ-API-MISC-006 | keys_harvest (GET /api/v1/keys/harvest) — the actual axum handler function, including its reject_non_loopback gate and its {vault,pool,accounts} envelope construction — has no test anywhere in the repository that invokes it directly. Every existing test… | Ran `cargo test --lib api::` this pass — all 3 key_harvest_handlers tests passed (part of the 122-test, 0-failed run). Ran `grep -rn "keys/harvest\\|keys_harvest" tests/*.rs src/api/**/*.rs` across the repo — the only hits are the handler's own doc comments, its route registration, and one prose mention in settings_handlers/mod.rs:186; no call site in any test file constructs an HTTP request against this route. | PARTIAL |
 | REQ-API-MISC-007 | accounts_block's SeekNow and WiGLE probes report a 3-state model rather than a plain boolean: configured:false (no credential present; reachable/verified reported as JSON null since nothing was probed) is kept strictly distinct from configured:true,… | Ran `cargo test --lib api::` this pass — `test api::key_harvest_handlers::tests::accounts_block_reports_all_three_providers ... ok`. This test performs the real, best-effort SeekNow/WiGLE network calls against whatever credentials happen to exist in this sandbox's environment (none), so both providers legitimately came back configured:false here, and the configured/reachable invariant assertion held under that real condition rather than a mock. | VERIFIED |
-| REQ-API-MISC-008 | post_trigger (POST /api/v1/update/trigger) gates on reject_non_loopback FIRST, then performs an atomic check-and-claim (try_start_update, one lock acquisition) that admits exactly one of two concurrent callers and returns 409 while phase is Applying OR… | Ran `cargo test --lib api::` this pass — all 6 update_handlers tests passed: `try_start_update_admits_exactly_one_of_two_concurrent_callers ... ok`, `try_start_update_rejects_while_restarting ... ok`, `try_start_update_admits_after_error_or_idle ... ok`, `set_phase_recovers_from_a_poisoned_mutex ... ok`, `trigger_rejects_non_loopback_peers ... ok`, `trigger_allows_loopback_peers ... ok` (full run: 122 passed; 0 failed; 0.29s). Read update_handlers.rs's test module in full (lines 141-259): it… | PARTIAL |
+| REQ-API-MISC-008 | post_trigger (POST /api/v1/update/trigger) gates on reject_non_loopback FIRST, then performs an atomic check-and-claim (try_start_update, one lock acquisition) that admits exactly one of two concurrent callers and returns 409 while phase is Applying OR… | Ran `cargo test --lib api::` this pass — all 6 update_handlers tests passed: `try_start_update_admits_exactly_one_of_two_concurrent_callers ... ok`, `try_start_update_rejects_while_restarting ... ok`, `try_start_update_admits_after_error_or_idle ... ok`, `set_phase_recovers_from_a_poisoned_mutex ... ok`, `trigger_rejects_non_loopback_peers ... ok`, `trigger_allows_loopback_peers ... ok` (full run: 122 passed; 0 failed; 0.29s). Read update_handlers.rs's test module in full (lines 141-259): it drives only the free functions against a bare `Mutex`, never the real `post_trigger` axum route wired through `State<Arc<AppState>>` + `ConnectInfo<SocketAddr>` + the router-wide CSRF middleware. **Fixed this pass (Pass 21):** two `tests/api.rs` cases drive the real HTTP route via `.oneshot()` — `update_trigger_is_loopback_gated_before_the_phase_is_ever_read` (a `192.168.1.50` peer gets `403` with "loopback" in the body while the phase is `Idle`, proving the loopback gate runs before `try_start_update` ever claims the phase) and `update_trigger_returns_409_while_an_update_is_already_in_flight` (a loopback peer against a pre-seeded `Applying`/`Restarting` phase gets `409` and leaves the phase untouched — pre-seeded rather than racing two real triggers, since a genuine `202` spawns a detached task shelling out to `install.sh`; the atomicity itself is already covered directly against `try_start_update`). Ran `cargo test --test api update_trigger` — 2 passed, 0 failed (see Pass 21 findings). | VERIFIED |
 | REQ-API-MISC-009 (**new, Pass 15**) | The 403 the four key-writing endpoints (`settings/keys` PUT, `keys/pool/add`, `revoke`, `rotate`) return when key writes are off names the switch that actually controls them: `hse serve --no-key-write` (writes are on by default, loopback-only). One body from one helper (`key_writes_disabled`); every `--flag` token in it must be an argument `hse serve` accepts. | The four handlers each carried their own copy of `"key writes disabled; restart with \`hse serve --allow-key-write\`"` — a flag that does not exist (the CLI's switch is `--no-key-write`, on by default), so the one operator-facing remedy was a dead end; the same phantom flag was in three doc comments, `util/keys/mod.rs`, `web/js/api.js` and four test comments. `keys_pool_add_is_write_gated` (`tests/api.rs`) now extracts every `--flag` from the 403 body and checks it against `Cli::command().find_subcommand("serve")`'s long arguments (clap, the CLI definition itself), so the message cannot drift from the CLI again; fails on the baseline. `cargo test --test api keys_` passes. | VERIFIED |
 
 ### Scan export + redaction
@@ -2123,3 +2123,66 @@ $ hse sf -s contoso.com -u passive -x -t INTERNET_NAME -o csv -q   # engine → 
 These three add one CLI-terminology lock, three batch requirements and three
 SpiderFoot-front-end requirements — 7 new rows — bringing the total from 118
 to 125.
+
+## Pass 21 findings
+
+Pass 21 re-baselined on the merged main head (`d907215`) and closed the two
+`PARTIAL` rows that share one shape: a value or gate proven only at the free
+function it is built on, never through the real entry point it is dispatched
+from. Both are test-only — REQ-CLI-012 adds one behavior-preserving extraction,
+no logic change — and each new test is written so a regression in the wiring
+flips a specific assertion.
+
+1. **REQ-CLI-012 — `--min-confidence` reaches the extractor filter, not just
+   the parser.** `confidence_floor` (the shared clap parser, VERIFIED under
+   REQ-CLI-004) only proves a NaN/out-of-range *string* is rejected at the
+   argument boundary; it says nothing about whether the parsed `f64` survives
+   from `Command::Ingest`/`Investigate` to `EntityExtractor`'s
+   `confidence >= min_confidence` filter unmodified, versus being dropped for a
+   hardcoded default somewhere in `cli::mod::run_command`'s dispatch.
+   `cmd_investigate`'s two inline extractor lines were extracted into a named
+   `extract_entities(text, min_confidence)` — the exact function the CLI
+   dispatch now calls — and `min_confidence_reaches_the_extractor_filter_unmodified`
+   calls it at 0.30 vs 0.70: a 0.60-confidence social handle survives the low
+   floor and is filtered by the high one, while a 0.85 email survives both.
+   `min_confidence_flag_reaches_the_extractor_filter_through_run` drives the
+   real `run(IngestArgs{..})` entry point at the same two floors, reads back
+   its JSONL output file, and makes the same assertion. Synthetic fixtures only
+   (a labelled email/handle in a temp file/string — RULE.md's one permitted use
+   of synthetic data, never emitted as a finding).
+
+2. **REQ-API-MISC-008 — the update-trigger gate proven through the real HTTP
+   route.** The six existing `update_handlers` tests exercise only the free
+   functions (`try_start_update`, `reject_non_loopback`) against a bare
+   `Mutex`; none drives `post_trigger` wired through `State<Arc<AppState>>` +
+   `ConnectInfo<SocketAddr>` + the router-wide CSRF middleware, so a mis-wire (a
+   swapped check, a mismatched extractor) would pass every existing test while
+   still shipping a broken `/api/v1/update/trigger`. Two `tests/api.rs` cases
+   drive the real route via `.oneshot()`, using the pre-existing
+   `test_app_with_state` harness to seed and read the phase:
+   `update_trigger_is_loopback_gated_before_the_phase_is_ever_read` (a
+   non-loopback peer gets `403` with "loopback" in the body while the phase is
+   `Idle`, proving the loopback gate runs before the phase is claimed) and
+   `update_trigger_returns_409_while_an_update_is_already_in_flight` (a loopback
+   peer against a pre-seeded `Applying`/`Restarting` phase gets `409` and leaves
+   the phase untouched). The 409 case pre-seeds the phase rather than racing two
+   real triggers, because a genuine `202` spawns a detached task that shells out
+   to the real `install.sh`; the atomicity itself is already covered directly
+   against `try_start_update`.
+
+### Verification commands run (Pass 21, in order)
+
+```
+$ cargo test --lib extractor_filter          # 2 passed, 0 failed (REQ-CLI-012)
+$ cargo test --test api update_trigger       # 2 passed, 0 failed (REQ-API-MISC-008)
+$ cargo fmt --all -- --check                 # clean
+$ cargo clippy --all-targets --features dep-cooldown -- -D warnings   # clean
+$ scripts/gate.sh --quick                    # all checks pass
+```
+
+Two `PARTIAL` → `VERIFIED` flips, no new rows: the row total is unchanged at
+125 and the open-`PARTIAL` set shrinks by two. (Provenance note: both fixes were
+drafted by an internal multi-agent analysis pass and were adopted only after
+every one of the four new tests was re-compiled and re-run here — 2 + 2 passed
+— and each diff read directly; the `tests/api.rs` addition was verified to use
+the real `test_app_with_state` harness, not an invented one.)
