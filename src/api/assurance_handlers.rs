@@ -16,13 +16,15 @@ use std::collections::HashMap;
 use axum::{
     Json,
     extract::Query,
-    http::{StatusCode, header},
+    http::header,
     response::{IntoResponse, Response},
 };
 use serde_json::{Value, json};
 
 use crate::core::assurance::{Profile, continuity, findings, resolve_catalog, summarise, verify};
 use crate::modules::{reconnaissance_coverage, technique_module_index};
+
+use super::handlers::bad_request;
 
 /// `GET /api/v1/assurance[?profile=<name>]` — every catalogued control resolved
 /// from its recorded evidence (state, A0–A6 level, graded severity), the open
@@ -40,16 +42,10 @@ pub async fn assurance(Query(q): Query<HashMap<String, String>>) -> Response {
                 profile_id = Some(p.id());
             }
             None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({
-                        "error": format!(
-                            "unknown profile {raw:?}; valid: {}",
-                            Profile::short_names().join(", ")
-                        ),
-                    })),
-                )
-                    .into_response();
+                return bad_request(format!(
+                    "unknown profile {raw:?}; valid: {}",
+                    Profile::short_names().join(", ")
+                ));
             }
         }
     }
@@ -154,7 +150,7 @@ pub async fn assurance_continuity() -> Json<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{Router, body::Body, routing::get};
+    use axum::{Router, body::Body, http::StatusCode, routing::get};
     use tower::ServiceExt as _;
 
     /// The four read-only posture routes, exactly as `routes/mod.rs` mounts

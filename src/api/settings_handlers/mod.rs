@@ -264,6 +264,17 @@ fn key_writes_disabled() -> axum::response::Response {
         .into_response()
 }
 
+/// The 404 both `keys/pool/revoke` and `keys/pool/rotate` return when the
+/// pooled key `id` named in the request doesn't exist in that service's pool.
+/// One body in one place so the two siblings can't drift in wording.
+fn key_not_found() -> axum::response::Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({ "error": "no key with that id in that service" })),
+    )
+        .into_response()
+}
+
 /// `POST /api/v1/keys/pool/add` — add a NEW key to a service's rotation pool.
 /// The web Settings page's key editor (`settings/keys` PUT) already lets an
 /// operator set the PRIMARY `HUNTSMAN_*_KEY` env var for any service; this is
@@ -443,11 +454,7 @@ pub async fn keys_pool_revoke(
         )
             .into_response()
     } else {
-        (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "no key with that id in that service" })),
-        )
-            .into_response()
+        key_not_found()
     }
 }
 
@@ -480,11 +487,7 @@ pub async fn keys_pool_rotate(
         )
             .into_response()
     } else {
-        (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "no key with that id in that service" })),
-        )
-            .into_response()
+        key_not_found()
     }
 }
 
