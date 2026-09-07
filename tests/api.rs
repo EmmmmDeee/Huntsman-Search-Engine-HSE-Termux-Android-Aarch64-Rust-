@@ -4539,6 +4539,105 @@ async fn update_trigger_returns_409_while_an_update_is_already_in_flight() {
     }
 }
 
+// ── Key Harvest dashboard feed (GET /api/v1/keys/harvest) ───────────────────
+
+#[tokio::test]
+async fn keys_harvest_is_loopback_gated() {
+    // The feed enumerates which OSINT services the operator holds keys for —
+    // sensitive infrastructure metadata (never plaintext, but still a map of
+    // the operator's paid tooling) — so `keys_harvest`'s own `reject_non_loopback`
+    // gate must forbid a non-loopback peer, the same discipline `/logs` and the
+    // debug bundle carry. The handler's three block-builders (`vault_block`,
+    // `pool_block`, `accounts_block`) are unit-tested directly, but nothing
+    // drove the real axum handler — wired through `ConnectInfo<SocketAddr>` and
+    // registered at `/api/v1/keys/harvest` — over actual HTTP, so a mis-wire
+    // (a dropped gate, a mismatched extractor, a wrong route path) would pass
+    // every existing test while shipping an unguarded or unreachable feed.
+    let app = test_app("keys-harvest-loopback-gate");
+    let resp = app
+        .oneshot(get_with_peer("/api/v1/keys/harvest", "192.168.1.42:5555"))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        403,
+        "a non-loopback peer must be forbidden the key-harvest feed"
+    );
+    let body = body_text(resp).await;
+    assert!(
+        body.contains("loopback"),
+        "the 403 must be keys_harvest's own loopback rejection, not a \
+         different 403, got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn keys_harvest_returns_the_vault_pool_accounts_envelope_to_a_loopback_peer() {
+    // Proves the real handler's envelope construction end-to-end: a loopback
+    // caller passes the gate and receives 200 with the documented top-level
+    // `{vault, pool, accounts}` shape assembled from the three block-builders.
+    // Shape-only (no vault/account values): this runs against whatever local
+    // `key_vault.db`/pool/credentials the box happens to have, and the live
+    // SeekNow/WiGLE probes inside `accounts_block` are best-effort — an
+    // unconfigured or unreachable provider is a reported state, not a failure,
+    // exactly as the `accounts_block_reports_all_three_providers` unit test and
+    // `hse doctor` treat it.
+    let app = test_app("keys-harvest-envelope");
+    let resp = app
+        .oneshot(get_with_peer("/api/v1/keys/harvest", "127.0.0.1:5555"))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "a loopback peer must receive the key-harvest feed"
+    );
+    let body = body_json(resp).await;
+
+    // `vault`: masked bank census — total/osint counts, the provider census,
+    // and a capped recent-activity list.
+    assert!(
+        body["vault"].is_object(),
+        "envelope must carry a vault block"
+    );
+    assert!(
+        body["vault"]["total_count"].is_u64(),
+        "vault.total_count must be a number"
+    );
+    assert!(
+        body["vault"]["osint_provider_census"].is_array(),
+        "vault.osint_provider_census must be an array"
+    );
+    assert!(
+        body["vault"]["recent"].is_array(),
+        "vault.recent must be an array"
+    );
+
+    // `pool`: per-service rotation status counts.
+    assert!(body["pool"].is_object(), "envelope must carry a pool block");
+    assert!(
+        body["pool"]["count"].is_u64(),
+        "pool.count must be a number"
+    );
+    assert!(
+        body["pool"]["services"].is_array(),
+        "pool.services must be an array"
+    );
+
+    // `accounts`: the three live-probed providers, each always present
+    // regardless of whether a credential is configured or reachable.
+    assert!(
+        body["accounts"].is_object(),
+        "envelope must carry an accounts block"
+    );
+    for provider in ["seeknow", "oathnet", "wigle"] {
+        assert!(
+            body["accounts"][provider].is_object(),
+            "accounts.{provider} must always be present"
+        );
+    }
+}
+
 // ── System self-diagnosis debug bundle ──────────────────────────────────────
 
 /// Build a GET request carrying a `ConnectInfo<SocketAddr>` peer, so the
