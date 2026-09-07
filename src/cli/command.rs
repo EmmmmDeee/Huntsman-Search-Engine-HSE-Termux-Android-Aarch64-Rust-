@@ -1248,4 +1248,203 @@ mod tests {
         let err = confidence_floor("high").expect_err("non-numeric must be rejected");
         assert!(err.contains("not a number"), "got: {err}");
     }
+
+    /// Minimal POSIX-ish tokeniser: split on unquoted whitespace, honouring
+    /// single and double quotes so a quoted phrase/dork stays one token (its
+    /// inner spaces and dashes must not be read as flags).
+    fn shell_tokens(s: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut cur = String::new();
+        let mut quote: Option<char> = None;
+        let mut started = false;
+        for c in s.chars() {
+            if let Some(q) = quote {
+                if c == q {
+                    quote = None;
+                } else {
+                    cur.push(c);
+                }
+            } else if c == '\'' || c == '"' {
+                quote = Some(c);
+                started = true;
+            } else if c.is_whitespace() {
+                if started {
+                    out.push(std::mem::take(&mut cur));
+                    started = false;
+                }
+            } else {
+                cur.push(c);
+                started = true;
+            }
+        }
+        if started {
+            out.push(cur);
+        }
+        out
+    }
+
+    /// Every `hse …` example in the README's fenced shell blocks must name a
+    /// real subcommand and only real flags for it.
+    ///
+    /// The README is the first thing a new operator copy-pastes; a renamed or
+    /// removed subcommand/flag turns an example into a silent lie (clap exits 2,
+    /// but only once the user has already run it). Nothing tied these examples
+    /// to the live command tree, so they could rot independently
+    /// (REQ-README-006). This walks the real `Cli::command()` — names, hidden
+    /// aliases, and each subcommand's long/short flags and their aliases — so
+    /// the examples stay honest by construction: the CLI-doc twin of the
+    /// `api::routes` `endpoint_surface_doc_table` guard on the HTTP side. Reads
+    /// the on-disk README at test time so it tracks edits, not a snapshot.
+    #[test]
+    fn readme_shell_examples_name_real_subcommands_and_flags() {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let cmd = Cli::command();
+        // token -> the subcommand it resolves to, for every registered name AND
+        // alias (hidden ones included, so `hse doctor` resolves like the CLI).
+        let mut subs: BTreeMap<String, &clap::Command> = BTreeMap::new();
+        for sc in cmd.get_subcommands() {
+            subs.insert(sc.get_name().to_owned(), sc);
+            for a in sc.get_all_aliases() {
+                subs.insert(a.to_owned(), sc);
+            }
+        }
+
+        let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+            .expect("README readable");
+
+        let mut problems: Vec<String> = Vec::new();
+        let mut checked = 0usize;
+        let mut in_fence = false;
+        for line in readme.lines() {
+            let s = line.trim();
+            if s.starts_with("```") {
+                in_fence = !in_fence;
+                continue;
+            }
+            if !in_fence || !s.starts_with("hse ") {
+                continue;
+            }
+            // Tokenise, then drop an aligned `# comment` (the first token that
+            // opens with `#`, and everything after it).
+            let toks: Vec<String> = shell_tokens(s)
+                .into_iter()
+                .take_while(|t| !t.starts_with('#'))
+                .collect();
+            let Some(first) = toks.get(1) else { continue };
+            if first.starts_with('-') {
+                continue; // e.g. `hse --help`; no subcommand to resolve
+            }
+            checked += 1;
+            let Some(&top) = subs.get(first) else {
+                problems.push(format!("`{s}` names unknown subcommand `{first}`"));
+                continue;
+            };
+
+            // Descend through nested subcommands (e.g. `hse keys status`): while
+            // the resolved command still has subcommands and the next token is a
+            // non-flag, that token MUST name one of them — clap requires a
+            // subcommand there — so a renamed/removed nested verb is caught too,
+            // not silently skipped as an unchecked positional. Flags are then
+            // validated against the LEAF command reached here.
+            let mut sc: &clap::Command = top;
+            let mut idx = 2usize;
+            let mut drifted = false;
+            loop {
+                let mut children: BTreeMap<String, &clap::Command> = BTreeMap::new();
+                for child in sc.get_subcommands() {
+                    children.insert(child.get_name().to_owned(), child);
+                    for a in child.get_all_aliases() {
+                        children.insert(a.to_owned(), child);
+                    }
+                }
+                if children.is_empty() {
+                    break; // leaf reached — no nested verb to validate
+                }
+                let Some(tok) = toks.get(idx) else { break };
+                if tok.starts_with('-') {
+                    break; // a flag against this (sub)command, not a nested verb
+                }
+                let Some(&child) = children.get(tok) else {
+                    problems.push(format!(
+                        "`{s}` names unknown nested subcommand `{tok}` under `{}`",
+                        sc.get_name()
+                    ));
+                    drifted = true;
+                    break;
+                };
+                sc = child;
+                idx += 1;
+            }
+            if drifted {
+                continue;
+            }
+
+            // Valid flags for the leaf subcommand: its own args (+ aliases), plus
+            // clap's always-present `--help`/`-h`.
+            let mut longs: BTreeSet<String> = BTreeSet::new();
+            let mut shorts: BTreeSet<char> = BTreeSet::new();
+            longs.insert("help".to_owned());
+            shorts.insert('h');
+            for arg in sc.get_arguments() {
+                if let Some(l) = arg.get_long() {
+                    longs.insert(l.to_owned());
+                }
+                if let Some(aliases) = arg.get_all_aliases() {
+                    for a in aliases {
+                        longs.insert(a.to_owned());
+                    }
+                }
+                if let Some(c) = arg.get_short() {
+                    shorts.insert(c);
+                }
+                if let Some(cs) = arg.get_all_short_aliases() {
+                    for c in cs {
+                        shorts.insert(c);
+                    }
+                }
+            }
+
+            for t in toks.iter().skip(idx) {
+                if let Some(rest) = t.strip_prefix("--") {
+                    let name = rest.split_once('=').map_or(rest, |(a, _)| a);
+                    if !name.is_empty() && !longs.contains(name) {
+                        problems.push(format!(
+                            "`{s}` uses unknown flag `--{name}` for `{}`",
+                            sc.get_name()
+                        ));
+                    }
+                } else if let Some(rest) = t.strip_prefix('-') {
+                    // Skip negative-number values (a coordinate seed like
+                    // `-33.86`): a real short flag opens with a letter.
+                    if !rest.starts_with(|c: char| c.is_ascii_alphabetic()) {
+                        continue;
+                    }
+                    for ch in rest.chars() {
+                        if ch == '=' {
+                            break;
+                        }
+                        if !shorts.contains(&ch) {
+                            problems.push(format!(
+                                "`{s}` uses unknown short flag `-{ch}` for `{}`",
+                                sc.get_name()
+                            ));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            checked >= 20,
+            "expected many README `hse` examples, found {checked} — the \
+             fenced-block extractor likely broke"
+        );
+        assert!(
+            problems.is_empty(),
+            "README shell examples drifted from the live CLI:\n{}",
+            problems.join("\n")
+        );
+    }
 }

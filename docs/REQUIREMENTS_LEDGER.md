@@ -383,7 +383,7 @@ covers.
 | REQ-README-003 (**fixed this pass**) | The "## Seed Types (16 supported)" table's per-seed-kind "Modules" column must equal the count of registered modules whose `consumes()` includes that `TargetKind`, for each of the 16 documented seed kinds. | `README.md`, `modules::registry()`, each module's `consumes()` | Pass/fail assertion | none | **Was BROKEN before this pass**: every row still cited an early (~90-module-era) snapshot against a registry that has since grown to 188 — e.g. README said "Full Name: 6" (live: 25), "Username: 14" (live: 50), "URL: 2" (live: 25), "Organisation: 2" (live: 22); 15 of 16 rows were wrong, understating real coverage by roughly 2-12×, with **zero test coverage** (unlike REQ-README-001/002 above, this table had no drift guard at all). | `README.md:258-273`; new guard `tests/architecture_parts/architecture_part4.rs` (`readme_seed_type_module_counts_match_registry`, appended this pass) | `readme_seed_type_module_counts_match_registry` (new, this pass) | **Fixed and verified this pass** — see "Fix applied" below for full command output. | VERIFIED |
 | REQ-README-004 (**fixed this pass, Pass 2**) | The README's "Seed Types (16 supported)" heading claims 16 supported seed kinds; the CLI's `parse_target_kind` (`src/cli/mod.rs:362-390`) in fact accepts 19 distinct `TargetKind`s including 3 not in the table (`device_id`/`tower`/`cell`, `ssid`/`wifi`, `tracking_id`/`ga`/`gtm`). | `src/cli/mod.rs`, README table | n/a | n/a | **Was AMBIGUOUS before this pass**: not a false claim (the 3 omitted kinds are pivot-only — an operator would essentially never type them as a starting `--kind`, confirmed by their very low consumption counts, 1/1/2 modules), but the README never stated that scoping rule explicitly, so a reader had no way to distinguish "deliberately curated" from "incomplete" without reading the CLI source — and the architecture guard's own comment (`tests/architecture_parts/architecture_part4.rs`) already documented the exclusion rule without the README ever saying so. | `src/cli/mod.rs:362-390` vs `README.md:254-280`; fix in `README.md` + guard extended in `tests/architecture_parts/architecture_part4.rs` | `readme_seed_type_module_counts_match_registry` (extended this pass to also pin the new note's 3 counts) | **Fixed and verified this pass** — added one clarifying paragraph directly under the Seed Types table explaining the 3 pivot-only kinds and their live module counts (1, 1, 2), then extended the existing drift-guard test to assert that paragraph's counts against the live registry too, so it can't silently go stale the way the table itself once did (REQ-README-003). Ran `cargo test --test architecture readme_seed_type_module_counts_match_registry` — passed. | VERIFIED |
 | REQ-README-005 | The "curated highlight" module list under "API-Free (no keys required) — 92" / "Key-gated / Paid — 32 (28 key-gated · 4 paid)" is explicitly disclaimed ("not the full list") and therefore is NOT expected to sum to the registry's 188/142/46 totals. | `README.md:283-303` | n/a | n/a | None — this is a documented exception, not a defect. | `README.md:283` (the disclaimer itself) | Deliberately excluded from `readme_module_overview_count_matches_registry`'s scope per that test's own doc comment. | Read-only; confirmed the disclaimer text is present and the curated counts (92 + 32 = 124) indeed don't match the registry total (188), consistent with "curated, not exhaustive." | OBSOLETE (n/a — by design, not a gap) |
-| REQ-README-006 | The Quick Start block's `hse` command examples (`hse doctor`, `hse modules`, `hse engines`, `hse config`, `hse keys status`, `hse query ... --dark`, `hse scan --kind ... --depth N`, `hse serve`, `hse live --kind ... --interval N`) all name real, currently-registered subcommands/flags. | `README.md:205-218`, `src/cli/command.rs` | n/a | n/a | A stale example naming a removed/renamed flag would silently mislead a new user copy-pasting it. | `README.md` Quick Start section | No test walks README code blocks against the live `Cli::command()` tree. | Ran 5 of the 9 named commands end-to-end this pass (Pass 2) — `hse doctor`, `hse modules`, `hse engines`, `hse config`, `hse keys status` all exited 0 and produced the documented shape of output. `hse query ... --dark`, `hse scan --kind ... --depth N`, `hse serve`, `hse live --kind ... --interval N` were not run (network calls / long-running processes, unsafe to smoke-test blindly) — their subcommand+flag names were still hand-confirmed against `src/cli/command.rs`'s `Command` enum as in the first pass. | PARTIAL |
+| REQ-README-006 | The Quick Start block's `hse` command examples (`hse doctor`, `hse modules`, `hse engines`, `hse config`, `hse keys status`, `hse query ... --dark`, `hse scan --kind ... --depth N`, `hse serve`, `hse live --kind ... --interval N`) all name real, currently-registered subcommands/flags. | `README.md:205-218`, `src/cli/command.rs` | n/a | n/a | A stale example naming a removed/renamed flag would silently mislead a new user copy-pasting it. | `README.md` Quick Start section | Now covered: `readme_shell_examples_name_real_subcommands_and_flags` (`src/cli/command.rs` tests) walks every fenced `hse …` README example against the live `Cli::command()` tree — resolving names + hidden aliases and each subcommand's long/short flags (+ aliases). | Ran 5 of the 9 named commands end-to-end this pass (Pass 2) — `hse doctor`, `hse modules`, `hse engines`, `hse config`, `hse keys status` all exited 0 and produced the documented shape of output. `hse query ... --dark`, `hse scan --kind ... --depth N`, `hse serve`, `hse live --kind ... --interval N` were not run (network calls / long-running processes, unsafe to smoke-test blindly) — their subcommand+flag names were still hand-confirmed against `src/cli/command.rs`'s `Command` enum as in the first pass. **Fixed this pass (Pass 24):** replaced the manual 5-of-9 spot-check with a source-introspection guard that walks ALL 40 fenced `hse …` examples in the README against `Cli::command()`, proving every subcommand (including the hidden `doctor`/`engines`/`selftest`/`audit`/`oathnet-batch`), every NESTED verb (a Copilot review noted the first cut skipped these — `hse keys status`'s `status` is now resolved against `keys`'s children, not passed over as an unchecked positional), and every long/short flag they use is real. Ran `cargo test --lib readme_shell_examples_name_real_subcommands_and_flags` → ok (0 drift on the current README). Falsified three ways (inject the drift, run the same compiled binary against the mutated README, restore): `hse enginez` → unknown subcommand; `hse scan --kynd` → unknown flag for `scan`; `hse keys statuz` → unknown nested subcommand under `keys` (the case the review surfaced) — each FAILs (RC=101), and the clean README passes. | VERIFIED |
 | REQ-README-007 | `install.sh`'s documented knobs (`HSE_PREBUILT`, `HSE_PREBUILT_TAG`, `HSE_NO_DOWNLOAD`, `HSE_PREFER_BUILD`, `HSE_KEEP_MIRROR`, `HSE_REF`, `HSE_INSTALL_DIR`, `HSE_WITH_AI`) named in the README's install section are all genuinely read by `install.sh` (cross-reference of REQ-INSTALL-004/README). | `README.md:26-90`, `install.sh` | n/a | n/a | A documented-but-unread knob would silently no-op for an operator setting it. | `README.md`, `install.sh` (multiple sites, see REQ-INSTALL-004) | None dedicated; `docs/INSTALL.md`'s own "Environment knobs" table duplicates the same claim. | Ran `grep -c` for each knob against `install.sh` this pass — all 8 present with ≥3 occurrences each (declaration + read + doc comment, typically). | VERIFIED |
 | REQ-README-008 | "Value-per-query is maximised by default (v1.14+)" / convex budget allocation claim: `--no-convex-budget` is the only way to disable it, and it is on by default in both `hse scan` and `hse live`. | `README.md:92-99`, `src/cli/mod.rs:120-122,266-267` | n/a | n/a | If the default were accidentally flipped, every scan would silently stop maximizing value-per-query with no operator-visible signal. | `src/cli/mod.rs:122` (`convex_budget: !no_convex_budget`) for `scan`; `:267` for `live` | `core::convex` module has its own unit tests (not enumerated/re-run this pass); no CLI-level test asserts the *default* (omitting the flag) resolves to `convex_budget: true`. | Read-only; traced the boolean literally (`!no_convex_budget` with `no_convex_budget` defaulting `false` via `SetTrue` action ⇒ default `true`) but did not find or run a test pinning this specific default. | IMPLEMENTED_UNVERIFIED |
 | REQ-README-009 | The MITRE ATT&CK claim ("all 14 tactics and every current technique/sub-technique (v17.1)... but HSE only claims coverage of Reconnaissance") is backed by `src/core/attack/`'s static data and the per-module technique mapping enforced by REQ-CORE-010. | `README.md:307-330`, `src/core/attack/` | n/a | n/a | An unmapped/invalid technique ID would be a false "coverage" claim. | `src/core/attack/mod.rs` (catalogue), `tests/architecture_parts/architecture_part2.rs` (enforcement) | `every_module_maps_to_valid_attack_reconnaissance_techniques` (same test as REQ-CORE-010) checks every declared ID resolves in the catalogue. | Ran `cargo test --test architecture` this pass — passed (same run as REQ-CORE-010). | VERIFIED |
@@ -2293,3 +2293,61 @@ proof: the guard will now fail CI the moment any future route is added without a
 doc row, so the class of defect — not just its three current instances — is
 closed. Baseline for this pass was `origin/main` at `b95e195` (the squash-merge
 of Pass 22, #609); the branch was restarted from it before the work.
+
+## Pass 24 findings
+
+Second prevention-mechanism pass, applying Pass 23's doc-drift-guard pattern to
+the **CLI documentation** — the README's shell examples, the first thing a new
+operator copy-pastes.
+
+**REQ-README-006 — README `hse` examples vs the live command tree.** The row had
+sat `PARTIAL` since Pass 2, when the evidence was downgraded to "ran 5 of the 9
+named commands by hand" — a manual spot-check that covered neither the other
+examples nor any flag, and rotted the moment the README grew. First reproduced
+the drift risk properly: extracted all **40** fenced `hse …` examples and checked
+each subcommand and flag against the live CLI — **no active drift** (every
+subcommand resolves, every flag is real; the five that `hse --help` omits —
+`doctor`, `engines`, `selftest`, `audit`, `oathnet-batch` — are real `hide = true`
+subcommands, which `Cli::command().get_subcommands()` still returns). So this is
+a pure regression-lock, not a defect fix.
+
+Added `readme_shell_examples_name_real_subcommands_and_flags` to
+`src/cli/command.rs`'s test module. It reads the on-disk README, pulls every
+fenced line beginning `hse `, tokenises it (a small quote-aware splitter, so a
+quoted dork/phrase is one token and a trailing `# comment` is dropped), and:
+
+- resolves the subcommand token against `Cli::command()` — every subcommand
+  **name and alias, hidden ones included** — and descends through nested
+  subcommands (`hse keys status`), so a renamed nested verb is caught too, not
+  skipped as a positional (a Copilot review on the PR surfaced this gap in the
+  first cut); failing on an unknown one at any level;
+- checks each `--long` / `-short` flag against that subcommand's own args
+  (long + short, plus their aliases) and clap's universal `--help`/`-h`, failing
+  on an unknown one;
+- skips negative-number values (a `-33.86` coordinate is a value, not a flag);
+- floors at `checked >= 20` so a broken extractor can't pass vacuously.
+
+It uses `clap`'s runtime introspection, not `--help` text scraping — the
+difference matters: an early shell-based reproduction false-flagged `hse sf -x`
+because bare short flags (`-x`, `-q`, …) don't match a help-text regex, whereas
+`Arg::get_short()` reports them exactly.
+
+Verification and falsification:
+
+```
+$ cargo test --lib readme_shell_examples_name_real_subcommands_and_flags   # ok, 0 drift
+# same compiled binary, README mutated on disk (read at runtime, no recompile):
+#   `hse engines` -> `hse enginez`, `hse scan --kind` -> `hse scan --kynd`
+$ ./target/debug/deps/huntsman_search_engine-<hash> \
+    cli::command::tests::readme_shell_examples_name_real_subcommands_and_flags --exact
+    # FAILED (exit 101): names unknown subcommand `enginez`;
+    #                    uses unknown flag `--kynd` for `scan`
+```
+
+One `PARTIAL` → `VERIFIED` flip, no new rows (row total unchanged at 125).
+Baseline for this pass was `origin/main` at `8601b68` (the squash-merge of Pass
+23, #610); the branch was restarted from it before the work. Defensibly still
+out of scope: `REQ-LIVE-001`/`REQ-LIVE-002` (durable radar session + wake-lock —
+real Android eviction), `REQ-GEO-005` (a maintainer product decision), and
+`REQ-API-AUTH-003` (constant-time `ct_eq` — needs a hardware timing test, not a
+functional one).
