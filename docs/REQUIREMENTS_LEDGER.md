@@ -670,7 +670,7 @@ this pass), 12 PARTIAL, 2 IMPLEMENTED_UNVERIFIED, 1 UNREACHABLE.
 | REQ-API-EXPORT-002 | The sensitive-name set is registry-derived: every module whose category() == ModuleCategory::Breach is swept automatically (so a newly added breach-category module needs no redact.rs edit); EXTRA_SENSITIVE is reserved for names the sweep structurally cannot… | Ran `cargo test --lib api::scan_export::redact::tests::every_breach_category_source_is_redacted` this pass (part of the 8/8 run above) — passed. Cross-checked categories by reading source directly: oathnet_pro::category() returns ModuleCategory::People (src/modules/oathnet_pro/mod.rs:109-110), see_know::category() and dehashed::category() both return ModuleCategory::Breach (src/modules/see_know/mod.rs:194-196, src/modules/dehashed/mod.rs:93-95) — confirming the comment's factual claims about… | VERIFIED |
 | REQ-API-EXPORT-003 | Redaction is enforced at one choke point: all four shareable download handlers (scan_entities_csv, scan_report_json, scan_export_gexf, scan_events_log) route their body through download_response(), which unconditionally calls redact_sensitive_sources(); only… | Ran `grep -n "download_response(\\|download_response_operator(" src/api/scan_export/mod.rs` this pass — output confirmed exactly 4 call sites (lines 49, 82, 120, 174) use download_response and exactly 1 (line 147, scan_debug_bundle) uses download_response_operator, matching the module doc comment's claim that the debug bundle is the sole conscious opt-out. | PARTIAL |
 | REQ-API-EXPORT-004 | End-to-end: a real Breach-category module's evidence (Evidence{source: module name(), summary: the module's own capitalised-brand text, e.g. "DeHashed record from Adobe"}) and its ModuleDone scan event, once persisted and downloaded through the live HTTP… | Ran `cargo test --test api temp_probe_end_to_end_redaction_across_all_four_download_formats -- --nocapture` this pass (test added then reverted). Real output: entities.csv `sources` column = `breach-source\|breach-source`, `evidence` column = `[breach-source] breach-source record from Adobe \|\| [breach-source] breach-source record from MyFitnessPal`; report.json `"source": "breach-source"`, `"summary": "breach-source record from Adobe"` / `"...MyFitnessPal"`; events.log both lines read… | VERIFIED |
-| REQ-API-EXPORT-005 | Candidate quarantine (speculative breach-victim entities tagged CANDIDATE) is excluded by default from both scan_entities_csv and scan_export_gexf, opt-in via `?include_candidates=1` — matching the same policy the `/entities` JSON endpoint and report.json… | Ran `cargo test --test api scan_gexf_quarantines_candidate_nodes_by_default -- --nocapture` this pass — `test result: ok. 1 passed`. Separately wrote and ran (then reverted via `git checkout -- tests/api.rs`) a temporary CSV-equivalent probe: default entities.csv response omitted `stranger@breach.example` entirely while including `subject@real.example`; `?include_candidates=1` response included the candidate row with `tags` column `candidate`. `test result: ok. 1 passed`. | PARTIAL |
+| REQ-API-EXPORT-005 | Candidate quarantine (speculative breach-victim entities tagged CANDIDATE) is excluded by default from both scan_entities_csv and scan_export_gexf, opt-in via `?include_candidates=1` — matching the same policy the `/entities` JSON endpoint and report.json… | Ran `cargo test --test api scan_gexf_quarantines_candidate_nodes_by_default -- --nocapture` this pass — `test result: ok. 1 passed`. **Fixed this pass (Pass 28):** that CSV side was previously only checked with a throwaway probe (written, run, then `git checkout -- tests/api.rs`-reverted), so a dropped `retain` in `scan_entities_csv` would have passed every committed test. Added the PERMANENT `scan_entities_csv_quarantines_candidate_rows_by_default` (`tests/api.rs`): seeds a confirmed `subject@real.example` plus a CANDIDATE-tagged `stranger@breach.example`, asserts the default `/scans/{id}/entities.csv` keeps the subject row but omits the candidate, and that `?include_candidates=1` surfaces the candidate row carrying `candidate` in its `tags` column (strictly stronger than the GEXF sibling — it pins the gate to the CANDIDATE tag, not incidental row text). Ran `cargo test --test api scan_entities_csv_quarantines_candidate_rows_by_default` → 1 passed. Falsified by neutralising the gate (`if false && !wants_candidates(...)` in `src/api/scan_export/mod.rs`) and recompiling the SAME test binary: it FAILED (RC=101) at the default-absence assertion — the candidate leaked into the CSV by default; `git checkout` of the source turned it green again. | VERIFIED |
 | REQ-API-EXPORT-006 | Every scan-scoped export (CSV/JSON/GEXF via download_response; the debug bundle via download_response_operator) names its download `hse-<stem>-<short_id>.<ext>` with the scan id truncated to 12 characters, and every download (scan-scoped or system-scoped)… | Ran `cargo test --lib api::scan_export -- --nocapture` this pass: `test api::scan_export::tests::download_response_sets_attachment_disposition_with_scan_scoped_filename ... ok` / `test api::scan_export::tests::attachment_response_uses_the_filename_verbatim_for_system_downloads ... ok` (part of the 8/8 passing run). | VERIFIED |
 | REQ-API-EXPORT-007 (**new, Pass 14**) | The shareable-export redactor (`redact_sensitive_sources`) matches every `Breach`-category module name (plus `EXTRA_SENSITIVE`) in its `snake_case`, spaced and hyphenated spellings, case-insensitively and whole-token, so the prose brand in an evidence summary ("HIBP Pwned Passwords: value seen in …") is hidden, not just the `pwned_passwords` token; `EXTRA_SENSITIVE` lists each provider once (the hyphenated duplicates are derived, not hand-listed). | Ran `cargo test --lib api::scan_export::redact` — all pass, including the new `every_breach_source_is_redacted_in_its_spaced_and_hyphenated_spellings_too` (every multi-word breach-category module, both spellings, title-cased as a summary prints them) and the pre-existing whole-token / idempotency / every-spelling tests. Before the fix `redact_sensitive_sources("HIBP Pwned Passwords: …")` returned `breach-source Pwned Passwords: …`. | VERIFIED |
 | REQ-API-EXPORT-008 (**new, Pass 15**) | Every error the SeekNow transport/parse layer raises is labelled with the provider's ONE registered name (`util::see_know::SRC` = `see_know`, re-exported as the module's `SRC`), never a second spelling, so the redactor — whose brand list is derived from the registry — masks it in the shareable events log like any other `see_know` mention. | Found by re-reading this pass's SeekNow change against REQ-API-EXPORT-002/007: `util::see_know::client` labelled both `CurlClient`s and five error sites `"seek_now"` (the module-level labels had been corrected earlier — `docs/PROBLEM_TREE.md` records that as done — but the util layer kept the phantom name: an incomplete migration). `scan_events_log` renders `ModuleError` text through `download_response` → `redact_sensitive_sources`, whose list holds `see_know` and its spellings but not `seek_now`, so `[seek_now] HTTP 503` reached the export unmasked. Fixed at the source (one constant, both layers); `see_know_errors_carry_the_registered_module_name_not_a_phantom_one` (`tests/architecture_parts/architecture_part7.rs`) scans production source for the phantom name and pins the constant to a registered module; reintroducing one literal fails it. `cargo test --lib -- util::see_know modules::see_know core::error` passes. | VERIFIED |
@@ -2515,3 +2515,54 @@ but omits a second, value-gated one) is not caught by the non-empty guard and
 would need a real-value fixture per `TargetKind` — out of scope here. Baseline
 for this pass was `origin/main` at `670cb2d` (the squash-merge of Pass 26,
 #613); the branch was restarted from it before the work.
+
+## Pass 28 findings
+
+Closed the CSV half of the candidate-quarantine export contract (REQ-API-EXPORT-005),
+the one row whose evidence rested on a **throwaway probe** rather than a
+committed test.
+
+**Reproduction confirmed the exact gap the row flagged.** The quarantine on the
+graph export has a permanent guard (`scan_gexf_quarantines_candidate_nodes_by_default`),
+but a `grep` of `tests/api.rs` for every candidate-quarantine test showed one
+for GEXF, `/relations`, `/network`, `/path`, `/communities`, `/gaps`,
+`/entities/filter`, `/search`, `/cross-scan` and `/snake.svg` — and **none** for
+`scan_entities_csv`. The only CSV test was `scan_entities_csv_returns_csv_content_type`
+(content-type + header prefix only). Reading `scan_entities_csv`
+(`src/api/scan_export/mod.rs:44-46`) confirmed the live gate
+(`if !wants_candidates(&params) { entities.retain(|e| !e.has_tag(CANDIDATE)); }`),
+so a future edit dropping that `retain` — the CSV is the artifact literally
+handed to a customer — would have leaked a foreign breach-victim list past a
+fully green test suite. TEST PASS ≠ FUNCTIONAL PROOF; a reverted probe is not
+a regression lock.
+
+Added the PERMANENT `scan_entities_csv_quarantines_candidate_rows_by_default`
+(`tests/api.rs`), a sibling of the GEXF guard but strictly stronger: it seeds a
+confirmed `subject@real.example` plus a CANDIDATE-tagged `stranger@breach.example`,
+asserts the default `/scans/{id}/entities.csv` keeps the subject row and drops
+the candidate, and that `?include_candidates=1` surfaces the candidate row **with
+`candidate` in its `tags` column** — pinning the gate to the CANDIDATE tag rather
+than to incidental row text (the GEXF sibling only checks value presence/absence).
+
+Verification and falsification:
+
+```
+$ cargo test --test api scan_entities_csv_quarantines_candidate_rows_by_default   # ok. 1 passed
+# neutralise the gate (if false && !wants_candidates(...)) in src/api/scan_export/mod.rs
+# and recompile the SAME test binary:
+$ cargo test --test api scan_entities_csv_quarantines_candidate_rows_by_default
+    # FAILED (RC=101) at the default-absence assertion — the candidate leaked
+    # into the CSV by default
+$ git checkout -- src/api/scan_export/mod.rs   # restore the gate → green again
+```
+
+One `PARTIAL` → `VERIFIED` flip, no new rows (row total unchanged at 125).
+Baseline for this pass was `origin/main` at `664f909` (the squash-merge of
+Pass 27, #614); the branch was restarted from it before the work.
+
+With EXPORT-005 closed, the safely-completable set is nearly exhausted: the
+remaining open rows are REQ-API-EXPORT-003 (redaction choke point) and
+REQ-API-MISC-001 (allow_key_write gate ordering); after those, the residual
+rows are defensibly out of scope for an automated pass (REQ-API-AUTH-003
+constant-time needs hardware timing, REQ-LIVE-001/002 need real Android
+eviction, REQ-GEO-005 is a maintainer product decision).
