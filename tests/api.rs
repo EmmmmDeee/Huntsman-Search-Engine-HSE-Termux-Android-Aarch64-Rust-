@@ -2034,13 +2034,34 @@ async fn scan_entities_csv_quarantines_candidate_rows_by_default() {
         .await
         .unwrap();
     let body2 = String::from_utf8_lossy(&bytes2);
+    // Locate the `tags` column by header name (robust to future appended
+    // columns) and assert the candidate's OWN tags cell carries the `candidate`
+    // token. A whole-row substring check would false-pass on the word appearing
+    // in any other column (e.g. evidence text) — exactly the "incidental row
+    // content" this test claims to rule out — so the assertion is scoped to the
+    // tags cell and requires an exact `|`-delimited token match, not a substring.
+    let header = body2
+        .lines()
+        .next()
+        .expect("CSV export must have a header row");
+    let tags_col = header
+        .split(',')
+        .position(|c| c == "tags")
+        .expect("CSV header must declare a `tags` column");
     let candidate_row = body2
         .lines()
+        .skip(1)
         .find(|l| l.contains("stranger@breach.example"))
         .unwrap_or_else(|| panic!("include_candidates=1 must return the candidate row: {body2}"));
+    let tags_cell = candidate_row
+        .split(',')
+        .nth(tags_col)
+        .unwrap_or_else(|| panic!("candidate row has no `tags` column: {candidate_row}"));
     assert!(
-        candidate_row.contains(CANDIDATE),
-        "the opted-in candidate row must carry the `candidate` tag in its tags column: {candidate_row}"
+        tags_cell.split('|').any(|t| t == CANDIDATE),
+        "the opted-in candidate row's `tags` column ({tags_cell:?}) must carry the \
+         `candidate` token — proving the gate keys on the CANDIDATE tag, not on \
+         incidental row content: {candidate_row}"
     );
 }
 
