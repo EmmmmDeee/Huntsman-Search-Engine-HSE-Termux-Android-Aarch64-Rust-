@@ -4083,9 +4083,10 @@ async fn key_write_endpoints_check_the_write_gate_before_the_peer_address() {
     // `*_is_write_gated` tests all use a loopback peer, so they pass under either
     // gate order and cannot distinguish the two.
     use std::net::SocketAddr;
-    // A routable, non-loopback peer: it would be rejected by `reject_non_loopback`
-    // if that gate ran first.
-    let remote: SocketAddr = "192.168.1.50:5555".parse().unwrap();
+    // A non-loopback peer — RFC 5737 TEST-NET-1 documentation range, so it can't be
+    // mistaken for a real LAN host: it would be rejected by `reject_non_loopback` if
+    // that gate ran first.
+    let remote: SocketAddr = "192.0.2.1:5555".parse().unwrap();
     let app = test_app("misc001-gate-order");
 
     // (method, path, valid JSON body) for each of the four write endpoints — the
@@ -4138,10 +4139,11 @@ async fn key_write_endpoints_check_the_write_gate_before_the_peer_address() {
         // the loopback rejection ("key writes are loopback-only") does not. Seeing the
         // former for a NON-loopback peer proves `allow_key_write` is checked first.
         assert!(
-            error.contains("disabled"),
+            error.contains("disabled") && error.contains("--no-key-write"),
             "{method} {path}: a non-loopback caller with key writes disabled must get \
-             the key-write-disabled 403 (proving allow_key_write is checked BEFORE the \
-             peer address), not the loopback rejection: {error:?}"
+             the key-write-disabled 403 (which says `disabled` and names `--no-key-write`), \
+             proving allow_key_write is checked BEFORE the peer address — not the loopback \
+             rejection: {error:?}"
         );
     }
 }
