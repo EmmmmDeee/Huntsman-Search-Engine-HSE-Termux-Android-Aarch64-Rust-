@@ -36,6 +36,18 @@ async fn body_text(resp: axum::response::Response) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
+/// Like [`body_text`] but with a generous 16 MiB cap, for export/download tests
+/// that assert on the WHOLE body. A scan's GEXF or debug bundle can outgrow
+/// `body_text`'s 1 MiB cap, and a size-capped read would fail a behavioural test
+/// (e.g. a redaction check) for the wrong reason — a `body too large` panic
+/// instead of the assertion it exists to make.
+async fn download_body_text(resp: axum::response::Response) -> String {
+    let bytes = axum::body::to_bytes(resp.into_body(), 16 * 1024 * 1024)
+        .await
+        .unwrap();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
 /// Shorthand: build a GET request.
 fn get(uri: &str) -> Request<Body> {
     Request::builder().uri(uri).body(Body::empty()).unwrap()
@@ -2122,6 +2134,113 @@ async fn scan_gexf_quarantines_candidate_nodes_by_default() {
     assert!(
         body2.contains("stranger@breach.example"),
         "include_candidates=1 must return the candidate node: {body2}"
+    );
+}
+
+// ── Shareable-export redaction choke point ───────────────────────────────
+
+#[tokio::test]
+async fn shareable_downloads_redact_the_provider_name_while_the_debug_bundle_keeps_it() {
+    // Permanent regression for the redaction CHOKE POINT (REQ-API-EXPORT-003):
+    // the four shareable scan downloads (entities.csv, report.json, graph.gexf,
+    // events.log) route their body through `download_response`, which
+    // unconditionally calls `redact_sensitive_sources`, so a proprietary
+    // breach-provider identity never reaches a customer copy — while the operator
+    // debug bundle (debug.txt) is the one conscious opt-out, going through the
+    // non-redacting `download_response_operator` and KEEPING the real names.
+    // Until now this contract was evidenced only by a grep of call sites
+    // (structural, not runtime) and a since-reverted probe: a handler newly wired
+    // to `download_response_operator`, or a dropped redact call, would have passed
+    // every committed test.
+    use huntsman_search_engine::core::entity::Evidence;
+    use huntsman_search_engine::core::event::{Event, EventKind};
+
+    // `dehashed` is a real `Breach`-category provider, so redact's registry sweep
+    // covers it; "breach-source" is the fixed label it is replaced with. The check
+    // is case-insensitive, so it also catches the capitalised brand "DeHashed"
+    // that lands in evidence summaries.
+    const PROVIDER: &str = "dehashed";
+    const BRAND: &str = "DeHashed";
+    const REDACTED: &str = "breach-source";
+
+    let (app, store) = test_app_with_store("redact_choke");
+    let sid = "s-redact-choke";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .unwrap();
+
+    // Two confirmed entities that SHARE one breach evidence record. The shared
+    // (source, summary) pair is what carries the provider name into the GEXF (a
+    // co-occurrence edge labelled by the source) as well as the CSV
+    // `sources`/`evidence` columns and the report.json entity `evidence`.
+    let mut a = Entity::new(EntityKind::Email, "subject@real.example", 0.9, sid);
+    let mut b = Entity::new(EntityKind::Email, "linked@real.example", 0.8, sid);
+    a.add_evidence(Evidence::new(
+        PROVIDER,
+        format!("{BRAND} record from Adobe"),
+    ));
+    b.add_evidence(Evidence::new(
+        PROVIDER,
+        format!("{BRAND} record from Adobe"),
+    ));
+    store.upsert_entity(&a).unwrap();
+    store.upsert_entity(&b).unwrap();
+
+    // A scan event naming the same provider, so events.log carries it too.
+    store
+        .insert_event(&Event::new(
+            sid,
+            EventKind::ModuleError {
+                module: PROVIDER.to_string(),
+                error: format!("provider {BRAND} returned HTTP 503"),
+            },
+        ))
+        .unwrap();
+
+    // Every shareable download must hide the provider identity AND carry the
+    // redaction label in its place — the label's presence proves the redactor
+    // actually ran on a body that contained the name (not that the name was
+    // simply absent).
+    for (path, fmt) in [
+        (format!("/api/v1/scans/{sid}/entities.csv"), "entities.csv"),
+        (format!("/api/v1/scans/{sid}/report.json"), "report.json"),
+        (format!("/api/v1/scans/{sid}/graph.gexf"), "graph.gexf"),
+        (format!("/api/v1/scans/{sid}/events.log"), "events.log"),
+    ] {
+        let resp = app.clone().oneshot(get(&path)).await.unwrap();
+        assert_eq!(resp.status(), 200, "{fmt} download must be 200");
+        // Generous cap + ASCII-only casing: the provider names are ASCII, and a
+        // 1 MiB read cap could fail this behavioural test for size on a large
+        // export rather than for redaction.
+        let body = download_body_text(resp).await;
+        assert!(
+            !body.to_ascii_lowercase().contains(PROVIDER),
+            "{fmt} shareable download must not reveal the provider name \
+             '{PROVIDER}'/'{BRAND}' (redaction choke point): {body}"
+        );
+        assert!(
+            body.contains(REDACTED),
+            "{fmt} shareable download must carry the '{REDACTED}' label in place \
+             of the provider (proves redaction ran): {body}"
+        );
+    }
+
+    // The operator debug bundle is the sole conscious opt-out: it KEEPS the real
+    // provider name (via the non-redacting download_response_operator path).
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/debug.txt")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "debug bundle must be 200");
+    let bundle = download_body_text(resp).await;
+    assert!(
+        bundle.to_ascii_lowercase().contains(PROVIDER),
+        "the operator debug bundle must KEEP the real provider name (it opts out \
+         of redaction via download_response_operator): {bundle}"
     );
 }
 

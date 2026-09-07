@@ -668,8 +668,8 @@ this pass), 12 PARTIAL, 2 IMPLEMENTED_UNVERIFIED, 1 UNREACHABLE.
 |---|---|---|---|
 | REQ-API-EXPORT-001 | redact_sensitive_sources() replaces every proprietary breach/intel provider name appearing anywhere in an export body with the fixed label "breach-source", via one whole-token (\b...\b), case-insensitive regex alternation built once from the sensitive-name… | Ran `cargo test --lib api::scan_export -- --nocapture` this pass: `running 8 tests ... test api::scan_export::redact::tests::covers_every_spelling_of_the_named_providers ... ok / idempotent ... ok / redacts_named_paid_provider_but_keeps_public_sources ... ok / redacts_capitalised_brand_in_evidence_summaries ... ok / every_breach_category_source_is_redacted ... ok / whole_token_match_leaves_longer_tokens_intact ... ok ... test result: ok. 8 passed; 0 failed`. | VERIFIED |
 | REQ-API-EXPORT-002 | The sensitive-name set is registry-derived: every module whose category() == ModuleCategory::Breach is swept automatically (so a newly added breach-category module needs no redact.rs edit); EXTRA_SENSITIVE is reserved for names the sweep structurally cannot… | Ran `cargo test --lib api::scan_export::redact::tests::every_breach_category_source_is_redacted` this pass (part of the 8/8 run above) — passed. Cross-checked categories by reading source directly: oathnet_pro::category() returns ModuleCategory::People (src/modules/oathnet_pro/mod.rs:109-110), see_know::category() and dehashed::category() both return ModuleCategory::Breach (src/modules/see_know/mod.rs:194-196, src/modules/dehashed/mod.rs:93-95) — confirming the comment's factual claims about… | VERIFIED |
-| REQ-API-EXPORT-003 | Redaction is enforced at one choke point: all four shareable download handlers (scan_entities_csv, scan_report_json, scan_export_gexf, scan_events_log) route their body through download_response(), which unconditionally calls redact_sensitive_sources(); only… | Ran `grep -n "download_response(\\|download_response_operator(" src/api/scan_export/mod.rs` this pass — output confirmed exactly 4 call sites (lines 49, 82, 120, 174) use download_response and exactly 1 (line 147, scan_debug_bundle) uses download_response_operator, matching the module doc comment's claim that the debug bundle is the sole conscious opt-out. | PARTIAL |
-| REQ-API-EXPORT-004 | End-to-end: a real Breach-category module's evidence (Evidence{source: module name(), summary: the module's own capitalised-brand text, e.g. "DeHashed record from Adobe"}) and its ModuleDone scan event, once persisted and downloaded through the live HTTP… | Ran `cargo test --test api temp_probe_end_to_end_redaction_across_all_four_download_formats -- --nocapture` this pass (test added then reverted). Real output: entities.csv `sources` column = `breach-source\|breach-source`, `evidence` column = `[breach-source] breach-source record from Adobe \|\| [breach-source] breach-source record from MyFitnessPal`; report.json `"source": "breach-source"`, `"summary": "breach-source record from Adobe"` / `"...MyFitnessPal"`; events.log both lines read… | VERIFIED |
+| REQ-API-EXPORT-003 | Redaction is enforced at one choke point: all four shareable download handlers (scan_entities_csv, scan_report_json, scan_export_gexf, scan_events_log) route their body through download_response(), which unconditionally calls redact_sensitive_sources(); only… | Ran `grep -n "download_response(\\|download_response_operator(" src/api/scan_export/mod.rs` this pass — output confirmed exactly 4 call sites (lines 49, 82, 120, 174) use download_response and exactly 1 (line 147, scan_debug_bundle) uses download_response_operator, matching the module doc comment's claim that the debug bundle is the sole conscious opt-out. **Fixed this pass (Pass 29):** that was structural (a grep of call sites), never a runtime proof the choke point actually masks a provider identity in each format — and the sibling REQ-API-EXPORT-004's end-to-end evidence rested on a since-reverted probe. Added the permanent HTTP-level `shareable_downloads_redact_the_provider_name_while_the_debug_bundle_keeps_it` (`tests/api.rs`): seeds two confirmed entities sharing one `dehashed` breach evidence record (so the provider name reaches the CSV `sources`/`evidence` columns, the report.json entity `evidence`, AND the GEXF via a co-occurrence edge labelled by the source) plus a `ModuleError{module:"dehashed"}` event (events.log); asserts each of entities.csv / report.json / graph.gexf / events.log hides `dehashed`/`DeHashed` (case-insensitive) AND carries the `breach-source` label — the label's presence proving the redactor ran on a body that held the name, not that the name was merely absent — while debug.txt KEEPS the real name. Ran `cargo test --test api shareable_downloads_redact_the_provider_name_while_the_debug_bundle_keeps_it` → 1 passed (all four formats redacted, bundle kept). Falsified per-handler: rewiring `scan_events_log` from `download_response` to `download_response_operator` and recompiling made the test FAIL (RC=101) at the events.log iteration only — leaked body `{…"module":"dehashed"…"provider DeHashed returned HTTP 503"}` — while CSV/report.json/GEXF still passed, proving the loop covers each of the four handlers and detects a per-handler bypass; restoring the call turned it green. | VERIFIED |
+| REQ-API-EXPORT-004 | End-to-end: a real Breach-category module's evidence (Evidence{source: module name(), summary: the module's own capitalised-brand text, e.g. "DeHashed record from Adobe"}) and its ModuleDone scan event, once persisted and downloaded through the live HTTP… | Ran `cargo test --test api temp_probe_end_to_end_redaction_across_all_four_download_formats -- --nocapture` this pass (test added then reverted). Real output: entities.csv `sources` column = `breach-source\|breach-source`, `evidence` column = `[breach-source] breach-source record from Adobe \|\| [breach-source] breach-source record from MyFitnessPal`; report.json `"source": "breach-source"`, `"summary": "breach-source record from Adobe"` / `"...MyFitnessPal"`; events.log both lines read… **Re-grounded in Pass 29:** that reverted probe is superseded by the permanent `shareable_downloads_redact_the_provider_name_while_the_debug_bundle_keeps_it` (`tests/api.rs`, see REQ-API-EXPORT-003) — it drives the same end-to-end redaction across all four download formats over live HTTP and is falsified per-handler, so this end-to-end contract is now locked by a committed test rather than a throwaway one. | VERIFIED |
 | REQ-API-EXPORT-005 | Candidate quarantine (speculative breach-victim entities tagged CANDIDATE) is excluded by default from both scan_entities_csv and scan_export_gexf, opt-in via `?include_candidates=1` — matching the same policy the `/entities` JSON endpoint and report.json… | Ran `cargo test --test api scan_gexf_quarantines_candidate_nodes_by_default -- --nocapture` this pass — `test result: ok. 1 passed`. **Fixed this pass (Pass 28):** that CSV side was previously only checked with a throwaway probe (written, run, then `git checkout -- tests/api.rs`-reverted), so a dropped `retain` in `scan_entities_csv` would have passed every committed test. Added the PERMANENT `scan_entities_csv_quarantines_candidate_rows_by_default` (`tests/api.rs`): seeds a confirmed `subject@real.example` plus a CANDIDATE-tagged `stranger@breach.example`, asserts the default `/scans/{id}/entities.csv` keeps the subject row but omits the candidate, and that `?include_candidates=1` surfaces the candidate row carrying `candidate` in its `tags` column (strictly stronger than the GEXF sibling — it pins the gate to the CANDIDATE tag, not incidental row text). Ran `cargo test --test api scan_entities_csv_quarantines_candidate_rows_by_default` → 1 passed. Falsified by neutralising the gate (`if false && !wants_candidates(...)` in `src/api/scan_export/mod.rs`) and recompiling the SAME test binary: it FAILED (RC=101) at the default-absence assertion — the candidate leaked into the CSV by default; `git checkout` of the source turned it green again. | VERIFIED |
 | REQ-API-EXPORT-006 | Every scan-scoped export (CSV/JSON/GEXF via download_response; the debug bundle via download_response_operator) names its download `hse-<stem>-<short_id>.<ext>` with the scan id truncated to 12 characters, and every download (scan-scoped or system-scoped)… | Ran `cargo test --lib api::scan_export -- --nocapture` this pass: `test api::scan_export::tests::download_response_sets_attachment_disposition_with_scan_scoped_filename ... ok` / `test api::scan_export::tests::attachment_response_uses_the_filename_verbatim_for_system_downloads ... ok` (part of the 8/8 passing run). | VERIFIED |
 | REQ-API-EXPORT-007 (**new, Pass 14**) | The shareable-export redactor (`redact_sensitive_sources`) matches every `Breach`-category module name (plus `EXTRA_SENSITIVE`) in its `snake_case`, spaced and hyphenated spellings, case-insensitively and whole-token, so the prose brand in an evidence summary ("HIBP Pwned Passwords: value seen in …") is hidden, not just the `pwned_passwords` token; `EXTRA_SENSITIVE` lists each provider once (the hyphenated duplicates are derived, not hand-listed). | Ran `cargo test --lib api::scan_export::redact` — all pass, including the new `every_breach_source_is_redacted_in_its_spaced_and_hyphenated_spellings_too` (every multi-word breach-category module, both spellings, title-cased as a summary prints them) and the pre-existing whole-token / idempotency / every-spelling tests. Before the fix `redact_sensitive_sources("HIBP Pwned Passwords: …")` returned `breach-source Pwned Passwords: …`. | VERIFIED |
@@ -2566,3 +2566,64 @@ REQ-API-MISC-001 (allow_key_write gate ordering); after those, the residual
 rows are defensibly out of scope for an automated pass (REQ-API-AUTH-003
 constant-time needs hardware timing, REQ-LIVE-001/002 need real Android
 eviction, REQ-GEO-005 is a maintainer product decision).
+
+## Pass 29 findings
+
+Closed the redaction CHOKE POINT (REQ-API-EXPORT-003) at the HTTP boundary and
+**re-grounded its sibling REQ-API-EXPORT-004** — the pair whose only end-to-end
+evidence was a structural grep and a since-reverted probe. Same throwaway-probe
+gap Pass 28 closed for the CSV quarantine, now closed for provider-name redaction.
+
+**Reproduction confirmed both gaps.** A `grep` of `tests/api.rs` for every
+redaction term (`redact`, `breach-source`, `download_response`, `redaction`, …)
+returned a single hit — a doc comment on line 46 — so no committed test drove
+the four download endpoints over HTTP and checked that a Breach-category
+provider name is masked. Reading the handlers (`src/api/scan_export/mod.rs`)
+reconfirmed the wiring: `download_response` (lines 196-218) unconditionally
+calls `redact::redact_sensitive_sources` then delegates to
+`download_response_operator`; the four shareable formats route through
+`download_response`, and only `scan_debug_bundle` (line 147) opts out via the
+non-redacting `download_response_operator`. EXPORT-003's evidence was that grep
+(structural); EXPORT-004's was `temp_probe_end_to_end_redaction_across_all_four_download_formats`,
+written then reverted.
+
+**The GEXF path is the subtle one.** GEXF *nodes* carry no source names (only
+kind/confidence/…/tags/diamond_vertex/generation) — a provider name reaches the
+graph export only through a `write_shared_evidence_edges` co-occurrence edge,
+whose label is the shared source name, and which fires only when two entities
+share one `(source, summary)` evidence record. The test seeds exactly that.
+
+Added the PERMANENT `shareable_downloads_redact_the_provider_name_while_the_debug_bundle_keeps_it`
+(`tests/api.rs`): two confirmed entities sharing one `dehashed` breach evidence
+record (carrying the name into CSV `sources`/`evidence`, report.json entity
+`evidence`, and the GEXF co-occurrence edge) plus a `ModuleError{module:"dehashed"}`
+event (events.log). For each of the four shareable downloads it asserts the name
+`dehashed`/`DeHashed` is absent (case-insensitive) AND the `breach-source` label
+is present — the label proving the redactor ran on a body that held the name,
+not that the name was merely absent — and that `debug.txt` KEEPS the real name.
+
+Verification and falsification:
+
+```
+$ cargo test --test api shareable_downloads_redact_the_provider_name_while_the_debug_bundle_keeps_it
+    # ok. 1 passed  (all four formats redacted dehashed→breach-source; debug bundle kept it)
+# rewire ONE handler off the choke point: scan_events_log download_response → download_response_operator, recompile:
+$ cargo test --test api shareable_downloads_redact_the_provider_name_while_the_debug_bundle_keeps_it
+    # FAILED (RC=101) at the events.log iteration ONLY — leaked
+    # {"kind":"module_error","module":"dehashed","error":"provider DeHashed returned HTTP 503"}
+    # CSV/report.json/GEXF still passed → the loop covers each of the four handlers
+$ git checkout -- src/api/scan_export/mod.rs   # restore → green again
+```
+
+One `PARTIAL` → `VERIFIED` flip (EXPORT-003), one VERIFIED row re-grounded on a
+permanent test (EXPORT-004), no new rows (row total unchanged at 125). Baseline
+for this pass was `origin/main` at `5384cc0` (the squash-merge of Pass 28, #615);
+the branch was restarted from it before the work.
+
+**Stop-condition approaching.** EXPORT-003 was the last export-redaction gap.
+The only remaining safely-completable candidate is REQ-API-MISC-001
+(allow_key_write gate ordering). After it, the residual open rows are
+defensibly out of scope for an automated pass (REQ-API-AUTH-003 constant-time
+needs a hardware timing test; REQ-LIVE-001/002 need real Android memory
+eviction; REQ-GEO-005 is a maintainer product decision) — at which point the
+session should report the stop condition rather than force marginal changes.
