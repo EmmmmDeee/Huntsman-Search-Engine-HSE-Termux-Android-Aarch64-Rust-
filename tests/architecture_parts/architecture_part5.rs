@@ -754,11 +754,17 @@ fn blank_comments(src: &str) -> String {
                 }
                 out.push('"');
                 i = j + 1;
-                let close: String = std::iter::once('"')
+                // `Vec<char>` terminator: `len()` and `take(len())` are then both
+                // char-counted (a `String` would mix byte len with a char take —
+                // sound only while the terminator is ASCII), and the comparison
+                // reuses the slice instead of re-parsing `close.chars()` each loop.
+                let close: Vec<char> = std::iter::once('"')
                     .chain(std::iter::repeat_n('#', hashes))
                     .collect();
                 while i < c.len() {
-                    if c[i] == '"' && c[i..].iter().take(close.len()).copied().eq(close.chars()) {
+                    if c[i] == '"'
+                        && c[i..].iter().take(close.len()).copied().eq(close.iter().copied())
+                    {
                         break;
                     }
                     out.push(c[i]);

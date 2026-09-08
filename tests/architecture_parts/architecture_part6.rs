@@ -957,10 +957,10 @@ fn no_production_reimplements_is_absolute_http_url() {
 /// the `app::audit` re-audit and the `app::import::csv` importer both walked
 /// those fields with this exact split/trim/skip-empty policy before delegating
 /// to the shared helper. This locks it in: no production source (outside the
-/// authority itself) may inline a `split('|')` paired with `str::trim` on one
-/// statement — the split/trim signature of the consolidated parser. Falsified:
-/// restoring either inline copy fails. A bare `split('|')` with no trim (a
-/// different, raw split) is intentionally not flagged.
+/// authority itself) may inline the contiguous `.split('|').map(str::trim)` head
+/// of the consolidated parser. Falsified: restoring either inline copy fails. A
+/// bare `.split('|')` with no `.map(str::trim)` (a different, raw split) is
+/// intentionally not flagged.
 #[test]
 fn no_production_reimplements_pipe_delimited() {
     fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -999,7 +999,10 @@ fn no_production_reimplements_pipe_delimited() {
         // guards, which used `production_source` and so never fired).
         let prod = production_source_keep_literals(&text);
         for (i, line) in prod.lines().enumerate() {
-            if line.contains(".split('|')") && line.contains("str::trim") {
+            // The contiguous `.split('|').map(str::trim)` head of the consolidated
+            // expression — tight enough that a raw `.split('|')` and an unrelated
+            // `str::trim` elsewhere on the line can't jointly false-positive.
+            if line.contains(".split('|').map(str::trim)") {
                 offenders.push(format!(
                     "{}:{} — {}",
                     p.strip_prefix(&root).unwrap_or(p).display(),
@@ -1039,9 +1042,9 @@ fn gated() {
 }
 "#;
     let kept = production_source_keep_literals(src);
-    // The literal in real code survives → a scanner can match it.
+    // The literal in real code survives → a scanner can match the tight signature.
     assert!(
-        kept.contains(".split('|')") && kept.contains("str::trim"),
+        kept.contains(".split('|').map(str::trim)"),
         "the `'|'` literal in real code must survive preprocessing:\n{kept}"
     );
     // The comment mention is blanked → no false positive from prose.
