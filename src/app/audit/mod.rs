@@ -15,6 +15,7 @@
 
 use crate::audit::{AuditEntity, AuditReport, LogSignals, Severity, audit};
 use crate::core::error::{Error, Result};
+use crate::util::str_util::pipe_delimited;
 
 pub async fn cmd_audit(
     csv: Option<String>,
@@ -145,20 +146,11 @@ fn parse_csv(text: &str) -> Result<Vec<AuditEntity>> {
             value,
             c_effective: ceff,
             corroboration: get(ci_corr).parse().unwrap_or(0),
-            sources: split_pipe(get(ci_src)),
-            tags: split_pipe(get(ci_tags)),
+            sources: pipe_delimited(get(ci_src)).map(str::to_owned).collect(),
+            tags: pipe_delimited(get(ci_tags)).map(str::to_owned).collect(),
         });
     }
     Ok(out)
-}
-
-/// `sources` / `tags` columns are `|`-joined in our exports.
-fn split_pipe(s: &str) -> Vec<String> {
-    s.split('|')
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .map(str::to_string)
-        .collect()
 }
 
 // ── Store loader ──────────────────────────────────────────────────────────────

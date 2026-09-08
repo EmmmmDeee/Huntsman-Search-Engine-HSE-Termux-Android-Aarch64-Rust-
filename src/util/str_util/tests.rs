@@ -1,8 +1,8 @@
 
 use super::{
     ascii_digits, char_window, find_ascii_ci, fold_ascii_lower, is_handle, mask_secret, nonempty,
-    parse_asn, rfind_word_ascii_ci, shares_whole_word_token, slugify, truncate_safe,
-    whole_word_token_match,
+    parse_asn, pipe_delimited, rfind_word_ascii_ci, shares_whole_word_token, slugify,
+    truncate_safe, whole_word_token_match,
 };
 
     #[test]
@@ -79,6 +79,14 @@ use super::{
         assert_eq!(nonempty(&Some("   ".to_string())), None);
         assert_eq!(nonempty(&Some(String::new())), None);
         assert_eq!(nonempty(&None), None);
+    }
+
+    #[test]
+    fn pipe_delimited_trims_and_skips_empty_fields() {
+        assert_eq!(
+            pipe_delimited(" alpha | |beta|| ").collect::<Vec<_>>(),
+            ["alpha", "beta"]
+        );
     }
 
     #[test]
