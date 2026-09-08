@@ -331,6 +331,105 @@ fn promote_breach_candidate_geo_corroborated_lifts_same_place_same_name_records(
     assert_eq!(promote_breach_candidate_geo_corroborated(&mut lone), 0);
 }
 
+/// `TrackedEntityMap::version()` is the signal `should_reconsider` gates on —
+/// it must bump on every mutating operation the engine actually performs
+/// (`insert`, a successful `get_mut`) and MUST NOT bump on read-only access,
+/// or reconsideration would either skip a round it should have run (a real
+/// promotion missed) or never skip at all (no saving at all). Both failure
+/// directions matter, so both are asserted here.
+#[test]
+fn tracked_entity_map_version_bumps_only_on_mutation() {
+    use crate::core::entity::{Entity, EntityKind};
+
+    let mut map = TrackedEntityMap::new();
+    assert_eq!(map.version(), 0);
+
+    let e = Entity::new(EntityKind::Email, "a@b.com", 0.5, "s");
+    let uid = e.uid.clone();
+    map.insert(uid.clone(), e);
+    assert_eq!(map.version(), 1, "insert must bump the version");
+
+    // Read-only access must never bump it: `Deref` (`.values()`/`.len()`/
+    // `.get()`/`.contains_key()`) is the engine's entire read surface.
+    let _ = map.len();
+    let _ = map.get(&uid);
+    let _ = map.values().count();
+    let _ = map.contains_key(&uid);
+    assert_eq!(
+        map.version(),
+        1,
+        "read-only access must not bump the version"
+    );
+
+    let got = map.get_mut(&uid);
+    assert!(got.is_some());
+    assert_eq!(
+        map.version(),
+        2,
+        "a successful get_mut must bump the version"
+    );
+
+    // A miss touches nothing — no entity to have mutated.
+    assert!(map.get_mut("no-such-uid").is_none());
+    assert_eq!(map.version(), 2, "a get_mut miss must not bump the version");
+
+    // Inserting a SECOND, distinct entity bumps again — the version tracks
+    // every mutation, not just whether the map has ever changed.
+    let e2 = Entity::new(EntityKind::Email, "c@d.com", 0.5, "s");
+    map.insert(e2.uid.clone(), e2);
+    assert_eq!(map.version(), 3);
+}
+
+/// Manual measurement, not a CI assertion (real wall-clock timing on shared
+/// CI hardware is not a stable pass/fail signal) — run by hand with
+/// `cargo test --lib -- --ignored --nocapture tracked_entity_map_reconsideration_skip_avoids_the_clone_cost`
+/// to see the real numbers behind the `should_reconsider` skip-cache. Builds a
+/// working set at the [`RECONSIDER_MAX_ENTITIES`] bound (the worst case the
+/// per-round reconsideration pass actually runs against) with realistic
+/// per-entity evidence/tags, then times `reconsider_working_set` directly
+/// (the full clone-the-working-set-and-rescan cost a round pays when
+/// something changed) against 1000 `should_reconsider` calls on an unchanged
+/// version (the cost every round pays once the graph has stabilised, under
+/// the fix in this commit).
+#[test]
+#[ignore = "manual timing measurement, not a CI assertion — see doc comment"]
+fn tracked_entity_map_reconsideration_skip_avoids_the_clone_cost() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use std::time::Instant;
+
+    let mut map = TrackedEntityMap::new();
+    for i in 0..RECONSIDER_MAX_ENTITIES {
+        let mut e = Entity::new(EntityKind::Username, format!("user{i}"), 0.6, "s");
+        for j in 0..3 {
+            e.add_evidence(
+                Evidence::new("bench_source", format!("evidence {j}"))
+                    .with_attr("k1", "v1")
+                    .with_attr("k2", "v2"),
+            );
+        }
+        e.tag("import");
+        e.tag("breach");
+        e.tag("bench");
+        map.insert(e.uid.clone(), e);
+    }
+
+    let relations: Vec<Relation> = Vec::new();
+    let started = Instant::now();
+    let promoted = reconsider_working_set(&mut map, &relations);
+    let full_call = started.elapsed();
+
+    let version = map.version();
+    let started = Instant::now();
+    for _ in 0..1000 {
+        std::hint::black_box(should_reconsider(map.version(), Some(version)));
+    }
+    let thousand_skips = started.elapsed();
+
+    eprintln!(
+        "reconsideration @ {RECONSIDER_MAX_ENTITIES} entities: one full reconsider_working_set call = {full_call:?} (promoted {promoted}); 1000 should_reconsider skip-checks = {thousand_skips:?}"
+    );
+}
+
 /// Reconsideration must keep running on a LARGE working set — the case where
 /// coming back to a set-aside lead matters most. Before this was split from the
 /// live-correlation bound, a working set over 400 entities skipped the whole
