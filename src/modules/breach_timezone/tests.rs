@@ -24,9 +24,52 @@ use super::*;
 
     #[test]
     fn offset_to_region_coverage() {
-        assert!(offset_to_region(10).contains("Australia"));
-        assert!(offset_to_region(0).contains("UK"));
-        assert!(offset_to_region(-5).contains("Eastern"));
+        assert!(offset_to_region(10).unwrap().contains("Australia"));
+        assert!(offset_to_region(0).unwrap().contains("UK"));
+        assert!(offset_to_region(-5).unwrap().contains("Eastern"));
+    }
+
+    #[test]
+    fn a_mapped_offset_wins_a_count_tie_over_an_unmapped_first_wins_offset() {
+        // Activity in UTC hours 0..=4 ties the in-window count across offsets
+        // -12..-7 and 8..12. Plain first-wins picks -12 (unmapped), and the
+        // region gate would then drop the whole inference — even though -8
+        // (US/Pacific) ties exactly. The mapped-offset tie-break must recover
+        // it. Regression lock: reverting to a plain first-wins fold makes
+        // `infer_timezone` return None here and this `expect` panics.
+        let hours = vec![0, 1, 2, 3, 4];
+        let tz =
+            infer_timezone(&hours).expect("a mapped offset ties, so an inference must be emitted");
+        assert_eq!(tz.utc_offset, -8, "the first mapped offset in the tie must win");
+        assert!(tz.region.contains("Pacific"));
+    }
+
+    #[test]
+    fn unmapped_offset_yields_no_region_never_a_placeholder() {
+        // `infer_timezone` searches `best_offset` over the full -12..=12 range
+        // and emits the region as the VALUE of a geoint Address entity. An
+        // offset with no mapped region must return None so the module emits
+        // nothing — never a fabricated placeholder string as a finding value.
+        // Regression lock: restoring the old `_ => "Unknown timezone region"`
+        // (a Some placeholder) trips both halves below.
+        for offset in [-12, -11, -10, -9, -4, -2, -1, 4, 6, 7] {
+            assert_eq!(
+                offset_to_region(offset),
+                None,
+                "unmapped offset {offset} must yield no region, not a placeholder"
+            );
+        }
+        // Every offset the search can select is either a real region or None —
+        // no mapped label is empty or a placeholder.
+        for offset in -12..=12 {
+            if let Some(region) = offset_to_region(offset) {
+                assert!(!region.is_empty());
+                assert!(
+                    !region.to_ascii_lowercase().contains("unknown"),
+                    "offset {offset} maps to a placeholder region {region:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -38,8 +81,8 @@ use super::*;
         // for +11, so an AEDT-clustered subject got tagged country:AU with an
         // unreadable Address value AND no Coordinates entity at all, since
         // city_coords can't resolve "Unknown timezone region" to any city.
-        assert_eq!(offset_to_region(11), offset_to_region(10));
-        assert!(offset_to_region(11).contains("Australia"));
+        assert_eq!(offset_to_region(11).unwrap(), offset_to_region(10).unwrap());
+        assert!(offset_to_region(11).unwrap().contains("Australia"));
     }
 
     #[test]
@@ -67,10 +110,10 @@ use super::*;
 
     #[test]
     fn offset_to_region_europe_and_asia_pacific() {
-        assert!(offset_to_region(1).contains("Europe"));
-        assert!(offset_to_region(10).contains("Australia"));
-        assert!(offset_to_region(9).contains("Japan"));
-        assert!(offset_to_region(8).contains("China"));
+        assert!(offset_to_region(1).unwrap().contains("Europe"));
+        assert!(offset_to_region(10).unwrap().contains("Australia"));
+        assert!(offset_to_region(9).unwrap().contains("Japan"));
+        assert!(offset_to_region(8).unwrap().contains("China"));
     }
 
     #[test]
@@ -80,8 +123,8 @@ use super::*;
         // `8 if region.contains("Perth")` guard was a tautology (the region
         // string ALWAYS contains "Perth"), so every UTC+8 subject was falsely
         // stamped country:AU / au-state:WA. It must not be.
-        let mut e = Entity::new(EntityKind::Address, offset_to_region(8), 0.5, "scan");
-        tag_timezone_jurisdiction(&mut e, 8, offset_to_region(8));
+        let mut e = Entity::new(EntityKind::Address, offset_to_region(8).unwrap(), 0.5, "scan");
+        tag_timezone_jurisdiction(&mut e, 8, offset_to_region(8).unwrap());
         assert!(!e.has_tag("country:AU"), "UTC+8 must not be tagged country:AU");
         assert!(!e.has_tag("au-state:WA"), "UTC+8 must not be tagged au-state:WA");
     }
@@ -90,23 +133,23 @@ use super::*;
     fn utc_plus_9_gets_no_australian_jurisdiction_tag() {
         // The old `9 if region.contains("Darwin")` arm was dead (region(9) is
         // Japan/Korea) AND wrong (Darwin is UTC+9:30). No AU claim for UTC+9.
-        let mut e = Entity::new(EntityKind::Address, offset_to_region(9), 0.5, "scan");
-        tag_timezone_jurisdiction(&mut e, 9, offset_to_region(9));
+        let mut e = Entity::new(EntityKind::Address, offset_to_region(9).unwrap(), 0.5, "scan");
+        tag_timezone_jurisdiction(&mut e, 9, offset_to_region(9).unwrap());
         assert!(!e.has_tag("country:AU"), "UTC+9 must not be tagged country:AU");
         assert!(!e.has_tag("au-state:NT"), "UTC+9 must not be tagged au-state:NT");
     }
 
     #[test]
     fn utc_plus_10_still_tags_australia_eastern() {
-        let mut e = Entity::new(EntityKind::Address, offset_to_region(10), 0.5, "scan");
-        tag_timezone_jurisdiction(&mut e, 10, offset_to_region(10));
+        let mut e = Entity::new(EntityKind::Address, offset_to_region(10).unwrap(), 0.5, "scan");
+        tag_timezone_jurisdiction(&mut e, 10, offset_to_region(10).unwrap());
         assert!(e.has_tag("country:AU"), "UTC+10 must remain country:AU");
     }
 
     #[test]
     fn utc_plus_11_still_tags_australia_eastern() {
-        let mut e = Entity::new(EntityKind::Address, offset_to_region(11), 0.5, "scan");
-        tag_timezone_jurisdiction(&mut e, 11, offset_to_region(11));
+        let mut e = Entity::new(EntityKind::Address, offset_to_region(11).unwrap(), 0.5, "scan");
+        tag_timezone_jurisdiction(&mut e, 11, offset_to_region(11).unwrap());
         assert!(
             e.has_tag("country:AU"),
             "UTC+11 (AEDT) must tag country:AU, same as UTC+10 (AEST)"
@@ -123,7 +166,7 @@ use super::*;
         // au-state:/country: tags off Coordinates entities specifically.
         let tz = TimezoneInference {
             utc_offset: 10,
-            region: offset_to_region(10),
+            region: offset_to_region(10).unwrap(),
             confidence: 0.5,
             concentration: 0.9,
         };
@@ -145,8 +188,8 @@ use super::*;
 
     #[test]
     fn utc_plus_12_still_tags_new_zealand() {
-        let mut e = Entity::new(EntityKind::Address, offset_to_region(12), 0.5, "scan");
-        tag_timezone_jurisdiction(&mut e, 12, offset_to_region(12));
+        let mut e = Entity::new(EntityKind::Address, offset_to_region(12).unwrap(), 0.5, "scan");
+        tag_timezone_jurisdiction(&mut e, 12, offset_to_region(12).unwrap());
         assert!(e.has_tag("country:NZ"), "UTC+12 must remain country:NZ");
     }
 

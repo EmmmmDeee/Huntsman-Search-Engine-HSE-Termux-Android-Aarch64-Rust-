@@ -205,7 +205,13 @@ fn infer_timezone(hours: &[u32]) -> Option<TimezoneInference> {
     }
     let total = hours.len() as f64;
 
-    // Slide a 14-hour window; first-wins on ties (equiv. to original `>`).
+    // Slide a 14-hour window; first-wins on ties, EXCEPT that a mapped offset
+    // beats an unmapped one on a count tie. The search range spans offsets with
+    // no region label (see `offset_to_region`), and the region gates emission
+    // below (`offset_to_region(best_offset)?`); without this preference a plain
+    // first-wins could land on an unmapped offset and drop an inference that a
+    // tied, mapped offset would have produced. Among equally-mapped ties the
+    // original first-wins order is preserved.
     let (best_offset, best_count) = (-12_i32..=12)
         .map(|offset| {
             let count: u32 = (8_i32..22)
@@ -214,7 +220,10 @@ fn infer_timezone(hours: &[u32]) -> Option<TimezoneInference> {
             (offset, count)
         })
         .fold((0_i32, 0_u32), |(best_off, best_cnt), (off, cnt)| {
-            if cnt > best_cnt {
+            let breaks_tie = cnt == best_cnt
+                && offset_to_region(off).is_some()
+                && offset_to_region(best_off).is_none();
+            if cnt > best_cnt || breaks_tie {
                 (off, cnt)
             } else {
                 (best_off, best_cnt)
@@ -231,7 +240,10 @@ fn infer_timezone(hours: &[u32]) -> Option<TimezoneInference> {
     // = 0.50 — well under confidence::MEDIUM_PLUS, so no further clamp is
     // needed (a `.min(confidence::MEDIUM_PLUS)` here would be dead code).
     let confidence = confidence::TENTATIVE + (concentration - MIN_CONCENTRATION) * 0.5;
-    let region = offset_to_region(best_offset);
+    // No inference at all for an offset with no known region: the region is
+    // emitted as the VALUE of a geoint Address entity, so a placeholder string
+    // would surface as a fabricated finding. Yield nothing instead.
+    let region = offset_to_region(best_offset)?;
 
     Some(TimezoneInference {
         utc_offset: best_offset,
@@ -241,8 +253,16 @@ fn infer_timezone(hours: &[u32]) -> Option<TimezoneInference> {
     })
 }
 
-fn offset_to_region(offset: i32) -> &'static str {
-    match offset {
+/// Map a bare integer UTC offset to a representative region label, or `None`
+/// when no region is mapped for it.
+///
+/// `infer_timezone` searches `best_offset` over the full `-12..=12` range but
+/// only a subset has a label; the uncovered offsets (`-12,-11,-10,-9,-4,-2,-1,
+/// 4,6,7`) return `None` so the caller emits no entity, rather than a
+/// fabricated `"Unknown timezone region"` value — the same yield-nothing
+/// discipline the other extractors follow.
+fn offset_to_region(offset: i32) -> Option<&'static str> {
+    Some(match offset {
         -8 => "US/Pacific",
         -7 => "US/Mountain",
         -6 => "US/Central",
@@ -257,8 +277,8 @@ fn offset_to_region(offset: i32) -> &'static str {
         9 => "East Asia (Japan/Korea)",
         10 | 11 => "Australia Eastern (Sydney/Melbourne)",
         12 => "Pacific (New Zealand)",
-        _ => "Unknown timezone region",
-    }
+        _ => return None,
+    })
 }
 
 /// Attach an AU/NZ jurisdiction tag for a timezone inference, but only where a
