@@ -30,6 +30,21 @@ use super::*;
     }
 
     #[test]
+    fn a_mapped_offset_wins_a_count_tie_over_an_unmapped_first_wins_offset() {
+        // Activity in UTC hours 0..=4 ties the in-window count across offsets
+        // -12..-7 and 8..12. Plain first-wins picks -12 (unmapped), and the
+        // region gate would then drop the whole inference — even though -8
+        // (US/Pacific) ties exactly. The mapped-offset tie-break must recover
+        // it. Regression lock: reverting to a plain first-wins fold makes
+        // `infer_timezone` return None here and this `expect` panics.
+        let hours = vec![0, 1, 2, 3, 4];
+        let tz =
+            infer_timezone(&hours).expect("a mapped offset ties, so an inference must be emitted");
+        assert_eq!(tz.utc_offset, -8, "the first mapped offset in the tie must win");
+        assert!(tz.region.contains("Pacific"));
+    }
+
+    #[test]
     fn unmapped_offset_yields_no_region_never_a_placeholder() {
         // `infer_timezone` searches `best_offset` over the full -12..=12 range
         // and emits the region as the VALUE of a geoint Address entity. An

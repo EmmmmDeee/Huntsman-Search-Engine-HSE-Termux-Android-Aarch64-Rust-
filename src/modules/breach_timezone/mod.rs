@@ -205,7 +205,13 @@ fn infer_timezone(hours: &[u32]) -> Option<TimezoneInference> {
     }
     let total = hours.len() as f64;
 
-    // Slide a 14-hour window; first-wins on ties (equiv. to original `>`).
+    // Slide a 14-hour window; first-wins on ties, EXCEPT that a mapped offset
+    // beats an unmapped one on a count tie. The search range spans offsets with
+    // no region label (see `offset_to_region`), and the region gates emission
+    // below (`offset_to_region(best_offset)?`); without this preference a plain
+    // first-wins could land on an unmapped offset and drop an inference that a
+    // tied, mapped offset would have produced. Among equally-mapped ties the
+    // original first-wins order is preserved.
     let (best_offset, best_count) = (-12_i32..=12)
         .map(|offset| {
             let count: u32 = (8_i32..22)
@@ -214,7 +220,10 @@ fn infer_timezone(hours: &[u32]) -> Option<TimezoneInference> {
             (offset, count)
         })
         .fold((0_i32, 0_u32), |(best_off, best_cnt), (off, cnt)| {
-            if cnt > best_cnt {
+            let breaks_tie = cnt == best_cnt
+                && offset_to_region(off).is_some()
+                && offset_to_region(best_off).is_none();
+            if cnt > best_cnt || breaks_tie {
                 (off, cnt)
             } else {
                 (best_off, best_cnt)
