@@ -673,3 +673,157 @@ fn blank_strings_and_comments(src: &str) -> String {
     }
     out
 }
+
+/// `src` with **comments blanked** (line + nested block) but string and char
+/// **literal content preserved** — the complement to
+/// [`blank_strings_and_comments`], which blanks both.
+///
+/// A scanner that matches a literal-bearing code pattern — `split('|')`,
+/// `*c == '+'`, `starts_with("http://")` — MUST run on this, not on
+/// `production_source` (which routes through `blank_strings_and_comments`).
+/// Blanking the literals turns `'|'` into `' '` and `"http://"` into `"      "`,
+/// so the very substring the scanner looks for is gone before it looks: a guard
+/// that certifies an invariant it cannot see. (Observed for real: four
+/// `no_production_reimplements_*` guards matched blanked literals and so never
+/// fired — a re-inlined copy passed them untouched.)
+///
+/// The string/char/raw-string arms still *skip over* their content exactly like
+/// [`blank_strings_and_comments`] — so a `//` or `/*` inside a literal is never
+/// mistaken for a comment — they merely copy it through instead of blanking it.
+/// Newlines and byte widths survive, so line and offset structure are intact.
+fn blank_comments(src: &str) -> String {
+    let c: Vec<char> = src.chars().collect();
+    let mut out = String::with_capacity(src.len());
+    let blank = |out: &mut String, ch: char| {
+        if ch == '\n' {
+            out.push('\n');
+        } else {
+            for _ in 0..ch.len_utf8() {
+                out.push(' ');
+            }
+        }
+    };
+    let mut i = 0;
+    while i < c.len() {
+        let cur = c[i];
+        let next = c.get(i + 1).copied();
+        match cur {
+            '/' if next == Some('/') => {
+                while i < c.len() && c[i] != '\n' {
+                    blank(&mut out, c[i]);
+                    i += 1;
+                }
+            }
+            '/' if next == Some('*') => {
+                let mut depth = 1usize;
+                out.push_str("  ");
+                i += 2;
+                while i < c.len() && depth > 0 {
+                    if c[i] == '/' && c.get(i + 1) == Some(&'*') {
+                        depth += 1;
+                        out.push_str("  ");
+                        i += 2;
+                    } else if c[i] == '*' && c.get(i + 1) == Some(&'/') {
+                        depth -= 1;
+                        out.push_str("  ");
+                        i += 2;
+                    } else {
+                        blank(&mut out, c[i]);
+                        i += 1;
+                    }
+                }
+            }
+            'r' if matches!(next, Some('"' | '#')) => {
+                // Raw string: PRESERVE the content, but still walk to its
+                // matched terminator so an embedded `//`/`/*` is not read as a
+                // comment.
+                let mut j = i + 1;
+                let mut hashes = 0usize;
+                while c.get(j) == Some(&'#') {
+                    hashes += 1;
+                    j += 1;
+                }
+                if c.get(j) != Some(&'"') {
+                    out.push(cur); // just an identifier starting with `r`.
+                    i += 1;
+                    continue;
+                }
+                out.push('r');
+                for _ in 0..hashes {
+                    out.push('#');
+                }
+                out.push('"');
+                i = j + 1;
+                let close: String = std::iter::once('"')
+                    .chain(std::iter::repeat_n('#', hashes))
+                    .collect();
+                while i < c.len() {
+                    if c[i] == '"' && c[i..].iter().take(close.len()).copied().eq(close.chars()) {
+                        break;
+                    }
+                    out.push(c[i]);
+                    i += 1;
+                }
+                for _ in 0..close.len().min(c.len().saturating_sub(i)) {
+                    out.push(c[i]);
+                    i += 1;
+                }
+            }
+            '"' => {
+                out.push('"');
+                i += 1;
+                while i < c.len() {
+                    if c[i] == '\\' {
+                        out.push(c[i]);
+                        i += 1;
+                        if i < c.len() {
+                            out.push(c[i]);
+                            i += 1;
+                        }
+                        continue;
+                    }
+                    if c[i] == '"' {
+                        out.push('"');
+                        i += 1;
+                        break;
+                    }
+                    out.push(c[i]);
+                    i += 1;
+                }
+            }
+            '\'' => {
+                let is_char_lit = next == Some('\\') || c.get(i + 2) == Some(&'\'');
+                if !is_char_lit {
+                    out.push(cur); // a lifetime (`'static`), not a char literal.
+                    i += 1;
+                    continue;
+                }
+                out.push('\'');
+                i += 1;
+                while i < c.len() {
+                    if c[i] == '\\' {
+                        out.push(c[i]);
+                        i += 1;
+                        if i < c.len() {
+                            out.push(c[i]);
+                            i += 1;
+                        }
+                        continue;
+                    }
+                    if c[i] == '\'' {
+                        out.push('\'');
+                        i += 1;
+                        break;
+                    }
+                    out.push(c[i]);
+                    i += 1;
+                }
+            }
+            _ => {
+                out.push(cur);
+                i += 1;
+            }
+        }
+    }
+    out
+}

@@ -56,6 +56,19 @@ fn production_source(content: &str) -> String {
     blank_strings_and_comments(&strip_cfg_test_items(content))
 }
 
+/// The production slice of a file — `#[cfg(test)]` items removed and comments
+/// blanked — with string/char **literal content preserved**.
+///
+/// Use this (NOT [`production_source`]) for a scanner that matches a
+/// literal-bearing pattern like `split('|')` or `starts_with("http://")`:
+/// `production_source` blanks literals, so such a scanner would look for a
+/// substring its own preprocessing already erased and never fire. See
+/// [`blank_comments`] for the full rationale, and
+/// `literal_bearing_scanners_see_literals_but_not_comments` for the lock.
+fn production_source_keep_literals(content: &str) -> String {
+    blank_comments(&strip_cfg_test_items(content))
+}
+
 /// Byte ranges of every `#[cfg(test)]`-attributed item in `content`, attribute
 /// included.
 ///
@@ -935,5 +948,117 @@ fn no_production_reimplements_is_absolute_http_url() {
          `huntsman_search_engine::util::url_util::is_absolute_http_url(s)` (the \
          authority) instead of `…starts_with(\"http://\") || …starts_with(\"https://\")`:\n{}",
         offenders.join("\n")
+    );
+}
+
+/// The pipe-delimited-field parser (`s.split('|').map(str::trim).filter(|p|
+/// !p.is_empty())`) has ONE authority — `util::str_util::pipe_delimited`
+/// (#620). HSE's CSV exports use `|` for multi-value `sources`/`tags` fields;
+/// the `app::audit` re-audit and the `app::import::csv` importer both walked
+/// those fields with this exact split/trim/skip-empty policy before delegating
+/// to the shared helper. This locks it in: no production source (outside the
+/// authority itself) may inline a `split('|')` paired with `str::trim` on one
+/// statement — the split/trim signature of the consolidated parser. Falsified:
+/// restoring either inline copy fails. A bare `split('|')` with no trim (a
+/// different, raw split) is intentionally not flagged.
+#[test]
+fn no_production_reimplements_pipe_delimited() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n == "tests") {
+                    continue;
+                }
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs")
+                && !p
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().ends_with("tests.rs"))
+            {
+                out.push(p);
+            }
+        }
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let authority = root.join("util/str_util/mod.rs");
+    let mut files = Vec::new();
+    walk(&root, &mut files);
+    files.sort();
+
+    let mut offenders = Vec::new();
+    for p in &files {
+        if *p == authority {
+            continue; // the one true home of the expression
+        }
+        let text = fs::read_to_string(p).expect("source file readable");
+        // Literal-preserving: the `'|'` char must survive preprocessing, or this
+        // scanner looks for a pattern its own blanking erased (see the sibling
+        // guards, which used `production_source` and so never fired).
+        let prod = production_source_keep_literals(&text);
+        for (i, line) in prod.lines().enumerate() {
+            if line.contains(".split('|')") && line.contains("str::trim") {
+                offenders.push(format!(
+                    "{}:{} — {}",
+                    p.strip_prefix(&root).unwrap_or(p).display(),
+                    i + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "pipe-delimited field parser re-implemented inline — call \
+         `huntsman_search_engine::util::str_util::pipe_delimited(s)` (the authority) \
+         instead of `…split('|').map(str::trim).filter(|p| !p.is_empty())`:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A literal-bearing `no_production_reimplements_*` guard must scan
+/// [`production_source_keep_literals`], never [`production_source`]: the latter
+/// blanks string/char literals, so a scanner matching `split('|')` / `'@'` /
+/// `"http://"` looks for a substring its own preprocessing has already erased —
+/// a guard that can never fire. That was not hypothetical: four such guards
+/// passed a re-inlined copy untouched before this. This pins the preprocessing
+/// so the blind spot cannot silently return.
+#[test]
+fn literal_bearing_scanners_see_literals_but_not_comments() {
+    let src = r#"
+pub fn real() -> Vec<String> {
+    "a|b".split('|').map(str::trim).filter(|p| !p.is_empty()).map(str::to_owned).collect()
+}
+// comment: split('|').map(str::trim) mentioned here must NOT be seen by a scanner
+#[cfg(test)]
+fn gated() {
+    let _ = "x".split('|').map(str::trim);
+}
+"#;
+    let kept = production_source_keep_literals(src);
+    // The literal in real code survives → a scanner can match it.
+    assert!(
+        kept.contains(".split('|')") && kept.contains("str::trim"),
+        "the `'|'` literal in real code must survive preprocessing:\n{kept}"
+    );
+    // The comment mention is blanked → no false positive from prose.
+    assert!(
+        !kept.contains("must NOT be seen"),
+        "comment content must be blanked:\n{kept}"
+    );
+    // The `#[cfg(test)]` item is dropped → no false positive from test code.
+    assert!(
+        !kept.contains("fn gated"),
+        "test-gated code must be dropped:\n{kept}"
+    );
+    // Contrast: `production_source` blanks the `'|'` char literal — exactly why a
+    // literal-matching guard built on it can never fire.
+    assert!(
+        !production_source(src).contains(".split('|')"),
+        "production_source is expected to blank the `'|'` literal; if it no longer \
+         does, re-audit which preprocessing the literal-bearing guards use"
     );
 }
