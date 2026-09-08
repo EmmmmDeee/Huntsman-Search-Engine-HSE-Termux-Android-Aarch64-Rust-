@@ -186,13 +186,7 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
     // source that was never asked (see `modules::keyed_tests`).
     let key = ctx.key(NUMVERIFY_KEY_ENV)?;
 
-    let mut phone = String::with_capacity(target.value.len());
-    phone.extend(
-        target
-            .value
-            .chars()
-            .filter(|c| c.is_ascii_digit() || *c == '+'),
-    );
+    let phone = crate::util::str_util::ascii_digits_and_plus(&target.value);
     if phone.is_empty() {
         return Ok(ModuleResult::new());
     }

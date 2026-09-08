@@ -86,9 +86,7 @@ fn is_real_phone(s: &str) -> bool {
 
 /// Normalise a WHOIS phone value to `+<digits>` (stripping separators).
 fn normalise_phone(s: &str) -> String {
-    s.chars()
-        .filter(|c| c.is_ascii_digit() || *c == '+')
-        .collect()
+    crate::util::str_util::ascii_digits_and_plus(s)
 }
 
 /// Parse a raw WHOIS response body into the [`WhoisFields`] we surface. Pure

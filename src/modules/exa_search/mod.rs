@@ -319,10 +319,7 @@ fn mine_snippet(text: &str, scan_id: &str, source_url: &str, result: &mut Module
     // International phone — at least 7 digits with optional + prefix.
     for cap in PHONE_RE.find_iter(text) {
         let raw = cap.as_str();
-        let digits: String = raw
-            .chars()
-            .filter(|c| c.is_ascii_digit() || *c == '+')
-            .collect();
+        let digits = crate::util::str_util::ascii_digits_and_plus(raw);
         if digits.chars().filter(char::is_ascii_digit).count() < 7 {
             continue;
         }

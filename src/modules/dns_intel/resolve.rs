@@ -653,7 +653,7 @@ pub(crate) fn iodef_entities(value: &str, domain: &str, scan_id: &str) -> Vec<En
         );
         return vec![e];
     }
-    if (value.starts_with("https://") || value.starts_with("http://"))
+    if crate::util::url_util::is_absolute_http_url(value)
         && let Some(host) = crate::util::url_util::host_from_url(value)
         && host.contains('.')
         && host != domain
