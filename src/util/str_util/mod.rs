@@ -20,7 +20,6 @@ pub fn nonempty(o: &Option<String>) -> Option<&str> {
 /// HSE's CSV exports use `|` for multi-value `sources` and `tags` fields.
 /// Keeping the split/trim/empty policy here prevents import and audit paths
 /// from drifting while preserving a borrowing, allocation-free iteration path.
-#[must_use]
 pub fn pipe_delimited(s: &str) -> impl Iterator<Item = &str> {
     s.split('|').map(str::trim).filter(|part| !part.is_empty())
 }
