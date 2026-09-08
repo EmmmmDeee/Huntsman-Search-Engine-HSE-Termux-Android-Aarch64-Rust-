@@ -29,7 +29,9 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::extract::{CredentialField, classify_credential_field};
+use crate::util::extract::{
+    CredentialField, classify_credential_field, split_identity_secret as split_line,
+};
 use crate::util::http::{fetch_json_or_404, urlencode};
 
 const SRC: &str = "comb_search";
@@ -284,17 +286,10 @@ fn accepts_value(kind: TargetKind, v: &str) -> bool {
     }
 }
 
-/// Split a COMB `identity:secret` line on the FIRST colon (a secret may itself
-/// contain colons). Returns `None` for a line with no separator or empty
-/// identity.
-fn split_line(line: &str) -> Option<(&str, &str)> {
-    let (identity, secret) = line.split_once(':')?;
-    let identity = identity.trim();
-    if identity.is_empty() {
-        return None;
-    }
-    Some((identity, secret.trim()))
-}
+// `split_line` (identity:secret on the FIRST colon) is `util::extract::split_identity_secret`,
+// imported above — the single authority for this shape, also backing the
+// raw-combolist file importer (`app::import::combolist`), so COMB's live
+// fetch and an uploaded combolist parse identity:secret lines identically.
 
 /// EXACT target-identity match guarding against COMB's substring matching.
 /// - Email: the whole identity equals the target email.

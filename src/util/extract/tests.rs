@@ -195,6 +195,31 @@ use super::*;
     }
 
     #[test]
+    fn split_identity_secret_splits_on_first_colon_only() {
+        // A secret may itself contain a colon — split on the FIRST one only,
+        // so the password survives whole.
+        assert_eq!(
+            split_identity_secret("user@x.com:pass:word"),
+            Some(("user@x.com", "pass:word"))
+        );
+        assert_eq!(
+            split_identity_secret("alice:hunter2"),
+            Some(("alice", "hunter2"))
+        );
+        // Whitespace around either half is trimmed.
+        assert_eq!(
+            split_identity_secret("  alice@x.com  :  hunter2  "),
+            Some(("alice@x.com", "hunter2"))
+        );
+        // No delimiter, or an empty identity, is not a valid split.
+        assert_eq!(split_identity_secret("noseparator"), None);
+        assert_eq!(split_identity_secret(":orphan"), None);
+        // A delimiter with nothing after it is still a valid split — the
+        // caller decides whether an empty secret is worth quarantining.
+        assert_eq!(split_identity_secret("alice:"), Some(("alice", "")));
+    }
+
+    #[test]
     fn macs_extracts_normalises_and_filters() {
         let text = "BSSID: A4-B1-C2-00-11-22 connected; adapter aa:bb:cc:dd:ee:ff\n\
                     broadcast ff:ff:ff:ff:ff:ff and null 00:00:00:00:00:00";

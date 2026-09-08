@@ -7,6 +7,7 @@
 use crate::core::error::{Error, Result};
 
 mod combined;
+mod combolist;
 mod csv;
 mod dossier;
 mod html;
@@ -23,6 +24,7 @@ mod txt;
 // into scope for the dispatcher, the web-upload router and the tests.
 use crate::core::confidence;
 use combined::{cmd_import_combined, looks_like_combined_search, parse_combined_search};
+use combolist::{cmd_import_combolist, looks_like_combolist, parse_combolist};
 use csv::{
     cmd_import_csv, cmd_import_hse_csv, looks_like_dehashed_csv, looks_like_hse_csv,
     parse_dehashed_csv, parse_hse_csv,
@@ -107,6 +109,7 @@ pub async fn cmd_import(path: &str, output: &str) -> Result<()> {
         ImportFormat::HseCsv => cmd_import_hse_csv(&body, output).await,
         ImportFormat::DehashedCsv => cmd_import_csv(&body, output).await,
         ImportFormat::Kml => kml::cmd_import_kml(&body, output).await,
+        ImportFormat::Combolist => cmd_import_combolist(&body, output).await,
         ImportFormat::OathnetTxt => cmd_import_txt(&body, output).await,
     }
 }
@@ -128,6 +131,10 @@ pub(crate) enum ImportFormat {
     /// device, previously unrecognised and therefore swallowed by the TXT
     /// catch-all, which extracted nothing from it.
     Kml,
+    /// A raw `identity:secret` combolist — no header, no envelope, one leaked
+    /// login per line. The most common real-world breach-data shape; without
+    /// this variant it fell through to `OathnetTxt` and parsed as nothing.
+    Combolist,
     /// Catch-all: an OathNet stealer-log TXT (and any unrecognised plain text).
     OathnetTxt,
 }
@@ -176,6 +183,12 @@ pub(crate) fn detect_import_format(path: &str, body: &str) -> ImportFormat {
     }
     if path.ends_with(".csv") || looks_like_dehashed_csv(body) {
         return ImportFormat::DehashedCsv;
+    }
+    // Fallback, checked last: only claims what every more specific format
+    // above already declined, and only when it is overwhelmingly
+    // combolist-shaped (see `looks_like_combolist`'s doc comment).
+    if looks_like_combolist(body) {
+        return ImportFormat::Combolist;
     }
     ImportFormat::OathnetTxt
 }
@@ -256,6 +269,7 @@ pub(crate) async fn entities_from_upload(
         ImportFormat::HseCsv => (parse_hse_csv(body, sid).0, "hse-csv"),
         ImportFormat::DehashedCsv => (parse_dehashed_csv(body, sid).0, "dehashed-csv"),
         ImportFormat::Kml => (kml::parse_kml(body, sid).0, "kml"),
+        ImportFormat::Combolist => (parse_combolist(body, sid).0, "combolist"),
         ImportFormat::OathnetTxt => (parse_oathnet_txt(body, sid).0, "oathnet-txt"),
     };
     deduplicate_by_uid(&mut entities);
@@ -293,6 +307,12 @@ struct ImportStats {
     persons: usize,
     organisations: usize,
     credentials: usize,
+    /// Lines that failed to parse as `identity:secret` (no delimiter, an empty
+    /// identity, or an empty secret) — quarantined and skipped rather than
+    /// aborting the whole import. Only the combolist importer populates this;
+    /// every other format either has no line-oriented shape to malform, or
+    /// already drops unparseable rows silently (unchanged behaviour).
+    malformed_lines: usize,
     date_range: String,
 }
 
@@ -928,6 +948,12 @@ fn print_import_stats(stats: &ImportStats, entity_count: usize, output: &str) {
     );
     if !stats.date_range.is_empty() {
         row!("  Timeline:  {}", stats.date_range);
+    }
+    if stats.malformed_lines > 0 {
+        row!(
+            "  Quarantine:{} malformed lines skipped (parsing continued)",
+            stats.malformed_lines
+        );
     }
     if stats.api_keys > 0 {
         row!(

@@ -1920,6 +1920,176 @@ async fn upload_dispatcher_routes_oathnet_report() {
     assert!(ents.iter().any(|e| e.kind == EntityKind::Coordinates));
 }
 
+// ── Raw combolist import ───────────────────────────────────────────────────
+//
+// SYNTHETIC fixtures only — fabricated names at real free-mail providers
+// (the same convention `DOSSIER`/`COMBINED` above use), no real person or
+// account. NOT `@example.*`: `is_placeholder_domain` deliberately drops every
+// RFC 2606 `example.com`/`.org`/`.net` address as a documentation placeholder
+// (see `core::validation::placeholder`), so a fixture built on one would be
+// silently dropped by `deduplicate_by_uid` — not a suitable stand-in for a
+// real leaked address. A raw `identity:secret` combolist (no header, no
+// envelope — the single most common real-world breach-data shape) previously
+// matched no `looks_like_*` check and fell through to the OathNet
+// stealer-log TXT catch-all, which only recognises its own
+// `"URL: "`/`"Username: "`-labelled lines and therefore extracted ZERO
+// entities from a bare combolist: a real breach file silently imported as
+// nothing. This was reproduced against the pre-fix code (label
+// `"oathnet-txt"`, no Email/Password entities) before the fix landed.
+
+use super::combolist::{looks_like_combolist, parse_combolist};
+
+// A clean combolist — one entry per line, one delimiter variant each — used
+// wherever the test also needs FORMAT DETECTION to fire (`looks_like_combolist`
+// requires an overwhelming majority of sampled lines to parse cleanly, so a
+// detection-path fixture must not itself carry the malformed lines under test
+// below).
+const COMBOLIST: &str = "alice.tester@gmail.com:Sup3rSecret!\n\
+    bob.tester@outlook.com:hunter2000\n\
+    carol.tester@yahoo.com;anotherPass9\n\
+    dave.tester@protonmail.com\thunter2000\n";
+
+// The same shape plus three structurally bad lines, for the parser's own
+// quarantine behaviour. Deliberately NOT run through `looks_like_combolist` —
+// that heuristic is a format-detection threshold, not a parse-tolerance limit,
+// and a file this corrupted (3 of 7 lines) is exactly what quarantining exists
+// to survive once the format is already known (e.g. the CLI's explicit
+// `hse import` on a file already named/known to be a combolist).
+const COMBOLIST_WITH_MALFORMED_LINES: &str = "alice.tester@gmail.com:Sup3rSecret!\n\
+    bob.tester@outlook.com:hunter2000\n\
+    carol.tester@yahoo.com;anotherPass9\n\
+    dave.tester@protonmail.com\thunter2000\n\
+    not-a-combolist-line-with-no-delimiter-at-all\n\
+    :orphan-secret-no-identity\n\
+    eve.tester@gmail.com:\n";
+
+#[test]
+fn combolist_is_detected_and_oathnet_txt_is_not() {
+    assert!(looks_like_combolist(COMBOLIST));
+    // A handful of incidental colons in prose must not misfire.
+    assert!(!looks_like_combolist(
+        "Report: see section 2.\nAuthor: Jane Doe.\nStatus: draft.\n"
+    ));
+    // Below the 3-line sample floor — too little signal to classify.
+    assert!(!looks_like_combolist("alice.tester@gmail.com:hunter2\n"));
+}
+
+#[test]
+fn parse_combolist_extracts_email_password_pairs_across_delimiters() {
+    let (entities, stats) = parse_combolist(COMBOLIST_WITH_MALFORMED_LINES, "s");
+
+    let emails: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(emails.contains(&"alice.tester@gmail.com"));
+    assert!(emails.contains(&"bob.tester@outlook.com"));
+    assert!(
+        emails.contains(&"carol.tester@yahoo.com"),
+        "semicolon delimiter"
+    );
+    assert!(
+        emails.contains(&"dave.tester@protonmail.com"),
+        "tab delimiter"
+    );
+
+    let passwords: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Password)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(passwords.contains(&"Sup3rSecret!"));
+    assert!(passwords.contains(&"hunter2000"));
+    assert!(passwords.contains(&"anotherPass9"));
+    // eve's line has a delimiter but nothing after it — the whole line is
+    // quarantined rather than minting a hallucinated empty-string secret (or
+    // an unpaired identity the file never actually asserted a password for).
+    assert!(!entities.iter().any(|e| e.value.is_empty()));
+    assert!(!emails.contains(&"eve.tester@gmail.com"));
+
+    // 3 structurally bad lines: no delimiter, empty identity, empty secret.
+    assert_eq!(stats.malformed_lines, 3);
+}
+
+#[test]
+fn parse_combolist_quarantines_sentinels_and_recovers_a_mis_stored_email() {
+    let body = "frank.tester@gmail.com:[fail]\n\
+                grace.tester@gmail.com:REDACTED\n\
+                henry.tester@gmail.com:otherperson@outlook.com\n\
+                ivan.tester@gmail.com:ivan.tester@gmail.com\n";
+    let (entities, _stats) = parse_combolist(body, "s");
+    // Every identity is still admitted...
+    for id in [
+        "frank.tester@gmail.com",
+        "grace.tester@gmail.com",
+        "henry.tester@gmail.com",
+        "ivan.tester@gmail.com",
+    ] {
+        assert!(
+            entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Email && e.value == id),
+            "{id} missing"
+        );
+    }
+    // ...but no Password entity is minted from a sentinel or a self-echo,
+    assert!(!entities.iter().any(|e| e.kind == EntityKind::Password));
+    // and a password field that is itself an email is recovered as its own lead.
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "otherperson@outlook.com")
+    );
+}
+
+#[test]
+fn parse_combolist_admits_a_bare_username_identity() {
+    let body = "judy_tester_99:hunter2000\n";
+    let (entities, stats) = parse_combolist(body, "s");
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Username && e.value == "judy_tester_99")
+    );
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Password && e.value == "hunter2000")
+    );
+    assert_eq!(stats.malformed_lines, 0);
+}
+
+#[test]
+fn parse_combolist_never_admits_an_identity_that_normalises_to_empty() {
+    // A username normalises by stripping surrounding quotes; a bare `'` (and
+    // nothing else) therefore normalises to the EMPTY string. This must never
+    // reach the graph as an empty-value entity — the identity is quarantined
+    // instead, exactly as a structurally malformed line would be.
+    let (entities, stats) = parse_combolist("':secretvalue123\n", "s");
+    assert!(!entities.iter().any(|e| e.value.is_empty()));
+    assert!(!entities.iter().any(|e| e.kind == EntityKind::Username));
+    assert_eq!(stats.malformed_lines, 1);
+}
+
+#[tokio::test]
+async fn upload_dispatcher_routes_raw_combolist() {
+    let (entities, label) = entities_from_upload(COMBOLIST, "s")
+        .await
+        .expect("should succeed");
+    assert_eq!(label, "combolist");
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "alice.tester@gmail.com")
+    );
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Password && e.value == "Sup3rSecret!")
+    );
+}
+
 // ── Property tests (proptest) — no-panic contract for untrusted import ────────
 //
 // These parsers consume untrusted bytes supplied by the operator or uploaded via
@@ -1932,6 +2102,7 @@ async fn upload_dispatcher_routes_oathnet_report() {
 mod prop {
     use proptest::prelude::*;
 
+    use super::super::combolist::parse_combolist;
     use super::super::{
         parse_dossier, parse_oathnet_html, parse_oathnet_report, parse_oathnet_txt,
         parse_stealerlogs,
@@ -1984,6 +2155,16 @@ mod prop {
         #[test]
         fn parse_oathnet_html_never_panics(s in ".{0,512}") {
             let ents = parse_oathnet_html(&s, "s");
+            for e in &ents {
+                prop_assert!(!e.value.is_empty(), "empty value in entity: {e:?}");
+            }
+        }
+
+        /// `parse_combolist` must never panic on any input string and must only
+        /// emit non-empty entity values, however many malformed lines it quarantines.
+        #[test]
+        fn parse_combolist_never_panics(s in ".{0,512}") {
+            let (ents, _stats) = parse_combolist(&s, "s");
             for e in &ents {
                 prop_assert!(!e.value.is_empty(), "empty value in entity: {e:?}");
             }
