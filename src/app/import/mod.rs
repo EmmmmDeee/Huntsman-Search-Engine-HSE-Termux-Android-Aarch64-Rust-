@@ -15,6 +15,7 @@ mod json;
 mod kml;
 mod local;
 mod oathnet_report;
+mod sql_dump;
 mod stealer;
 #[cfg(test)]
 mod tests;
@@ -34,6 +35,7 @@ use html::{cmd_import_html, parse_oathnet_html};
 use json::{import_json_output, parse_oathnet_json};
 use local::cmd_import_local_dir;
 use oathnet_report::{cmd_import_oathnet_report, looks_like_oathnet_report, parse_oathnet_report};
+use sql_dump::{cmd_import_sql_dump, looks_like_sql_dump, parse_sql_dump};
 use stealer::{cmd_import_stealerlogs, looks_like_stealerlogs, parse_stealerlogs};
 use txt::{cmd_import_txt, parse_oathnet_txt};
 
@@ -110,6 +112,7 @@ pub async fn cmd_import(path: &str, output: &str) -> Result<()> {
         ImportFormat::DehashedCsv => cmd_import_csv(&body, output).await,
         ImportFormat::Kml => kml::cmd_import_kml(&body, output).await,
         ImportFormat::Combolist => cmd_import_combolist(&body, output).await,
+        ImportFormat::SqlDump => cmd_import_sql_dump(&body, output).await,
         ImportFormat::OathnetTxt => cmd_import_txt(&body, output).await,
     }
 }
@@ -135,6 +138,11 @@ pub(crate) enum ImportFormat {
     /// login per line. The most common real-world breach-data shape; without
     /// this variant it fell through to `OathnetTxt` and parsed as nothing.
     Combolist,
+    /// A leaked breach SQL dump — `INSERT INTO ... (cols) VALUES (...);`
+    /// statements, the shape a `mysqldump`-style export of a compromised
+    /// user table takes. Without this variant it fell through to
+    /// `OathnetTxt` and parsed as nothing.
+    SqlDump,
     /// Catch-all: an OathNet stealer-log TXT (and any unrecognised plain text).
     OathnetTxt,
 }
@@ -183,6 +191,12 @@ pub(crate) fn detect_import_format(path: &str, body: &str) -> ImportFormat {
     }
     if path.ends_with(".csv") || looks_like_dehashed_csv(body) {
         return ImportFormat::DehashedCsv;
+    }
+    // A SQL dump's `INSERT INTO ... VALUES` structure is distinctive enough
+    // to check ahead of the combolist fallback (which needs a majority-line
+    // heuristic — a single real match here is already unambiguous).
+    if looks_like_sql_dump(body) {
+        return ImportFormat::SqlDump;
     }
     // Fallback, checked last: only claims what every more specific format
     // above already declined, and only when it is overwhelmingly
@@ -270,6 +284,7 @@ pub(crate) async fn entities_from_upload(
         ImportFormat::DehashedCsv => (parse_dehashed_csv(body, sid).0, "dehashed-csv"),
         ImportFormat::Kml => (kml::parse_kml(body, sid).0, "kml"),
         ImportFormat::Combolist => (parse_combolist(body, sid).0, "combolist"),
+        ImportFormat::SqlDump => (parse_sql_dump(body, sid).0, "sql-dump"),
         ImportFormat::OathnetTxt => (parse_oathnet_txt(body, sid).0, "oathnet-txt"),
     };
     deduplicate_by_uid(&mut entities);

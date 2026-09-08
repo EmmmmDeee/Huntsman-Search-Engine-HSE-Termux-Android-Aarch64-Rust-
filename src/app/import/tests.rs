@@ -2090,6 +2090,129 @@ async fn upload_dispatcher_routes_raw_combolist() {
     );
 }
 
+// ── SQL-dump import ─────────────────────────────────────────────────────────
+//
+// SYNTHETIC fixtures only — fabricated names at real free-mail providers (the
+// same convention `COMBOLIST` above uses, for the same reason: `@example.*`
+// is dropped by `is_placeholder_domain` before it could prove the full
+// upload-dispatcher path). A leaked SQL dump (`INSERT INTO ... VALUES (...)`,
+// the shape a `mysqldump` export of a compromised user table takes) matched
+// no `looks_like_*` check and fell through to the OathNet TXT catch-all,
+// which extracts nothing from it — a real breach dump silently imported as
+// nothing, the same class of defect the combolist fix above addressed.
+
+use super::sql_dump::{looks_like_sql_dump, parse_sql_dump};
+
+const SQL_DUMP: &str = "INSERT INTO `users` (`id`, `email`, `username`, `password`, `full_name`) VALUES\n\
+    (1, 'sql.tester.alpha@gmail.com', 'sqltesteralpha', 'SynthPassword1!', 'Sql TesterAlpha'),\n\
+    (2, 'sql.tester.beta@outlook.com', 'sqltesterbeta', 'SynthPassword2!', 'Sql TesterBeta');\n";
+
+#[test]
+fn sql_dump_is_detected_and_oathnet_txt_is_not() {
+    assert!(looks_like_sql_dump(SQL_DUMP));
+    assert!(!looks_like_sql_dump(
+        "just some prose that happens to mention insert and values in passing\n"
+    ));
+}
+
+#[test]
+fn parse_sql_dump_extracts_rows_with_escaped_and_multi_row_values() {
+    let (entities, stats) = parse_sql_dump(SQL_DUMP, "s");
+
+    let emails: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(emails.contains(&"sql.tester.alpha@gmail.com"));
+    assert!(emails.contains(&"sql.tester.beta@outlook.com"));
+
+    let passwords: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Credential)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(passwords.contains(&"SynthPassword1!"));
+    assert!(passwords.contains(&"SynthPassword2!"));
+
+    let names: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(names.contains(&"Sql TesterAlpha"));
+    assert!(names.contains(&"Sql TesterBeta"));
+
+    assert_eq!(stats.breach_records, 2);
+    assert_eq!(stats.malformed_lines, 0);
+}
+
+#[test]
+fn parse_sql_dump_unescapes_backslash_and_doubled_quote_dialects() {
+    // mysqldump-style backslash escaping AND standard-SQL doubled-quote
+    // escaping must both work, since a real dump could use either — the
+    // parser never needs to guess which dialect produced it.
+    let body = "INSERT INTO `users` (`email`, `full_name`) VALUES ('escape.tester@gmail.com', 'Conor O\\'Brien'), ('escape.tester2@gmail.com', 'Aoife O''Malley');\n";
+    let (entities, _stats) = parse_sql_dump(body, "s");
+    let names: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        names.contains(&"Conor O'Brien"),
+        "backslash-escaped quote: {names:?}"
+    );
+    assert!(
+        names.contains(&"Aoife O'Malley"),
+        "doubled-quote escape: {names:?}"
+    );
+}
+
+#[test]
+fn parse_sql_dump_quarantines_a_row_whose_value_count_does_not_match_columns() {
+    let body = "INSERT INTO `users` (`email`, `password`) VALUES \
+                ('quarantine.tester@gmail.com', 'SynthPassword3!', 'unexpected-extra-value');\n";
+    let (entities, stats) = parse_sql_dump(body, "s");
+    assert!(
+        !entities.iter().any(|e| e.kind == EntityKind::Email),
+        "a row whose value count doesn't match its column list is not a record HSE can trust — quarantined whole, not partially guessed"
+    );
+    assert_eq!(stats.malformed_lines, 1);
+    assert_eq!(stats.breach_records, 0);
+}
+
+#[test]
+fn parse_sql_dump_never_guesses_columns_when_the_insert_has_no_explicit_list() {
+    // No column list on the INSERT — HSE never recovers it from a separate
+    // CREATE TABLE, since the two could disagree on order (RULE.md: no
+    // fabricated findings). `looks_like_sql_dump` also correctly declines
+    // this shape, since the detector's own regex requires the column list.
+    let body = "CREATE TABLE users (email TEXT, password TEXT);\n\
+                INSERT INTO users VALUES ('noguess.tester@gmail.com', 'SynthPassword4!');\n";
+    assert!(!looks_like_sql_dump(body));
+    let (entities, _stats) = parse_sql_dump(body, "s");
+    assert!(entities.is_empty());
+}
+
+#[tokio::test]
+async fn upload_dispatcher_routes_sql_dump() {
+    let (entities, label) = entities_from_upload(SQL_DUMP, "s")
+        .await
+        .expect("should succeed");
+    assert_eq!(label, "sql-dump");
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "sql.tester.alpha@gmail.com")
+    );
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Credential && e.value == "SynthPassword1!")
+    );
+}
+
 // ── Property tests (proptest) — no-panic contract for untrusted import ────────
 //
 // These parsers consume untrusted bytes supplied by the operator or uploaded via
@@ -2103,6 +2226,7 @@ mod prop {
     use proptest::prelude::*;
 
     use super::super::combolist::parse_combolist;
+    use super::super::sql_dump::parse_sql_dump;
     use super::super::{
         parse_dossier, parse_oathnet_html, parse_oathnet_report, parse_oathnet_txt,
         parse_stealerlogs,
@@ -2165,6 +2289,16 @@ mod prop {
         #[test]
         fn parse_combolist_never_panics(s in ".{0,512}") {
             let (ents, _stats) = parse_combolist(&s, "s");
+            for e in &ents {
+                prop_assert!(!e.value.is_empty(), "empty value in entity: {e:?}");
+            }
+        }
+
+        /// `parse_sql_dump` must never panic on any input string and must only
+        /// emit non-empty entity values, however many malformed rows it quarantines.
+        #[test]
+        fn parse_sql_dump_never_panics(s in ".{0,512}") {
+            let (ents, _stats) = parse_sql_dump(&s, "s");
             for e in &ents {
                 prop_assert!(!e.value.is_empty(), "empty value in entity: {e:?}");
             }
