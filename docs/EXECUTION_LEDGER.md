@@ -10,12 +10,12 @@ run, a CI head, or a runtime check — `CLAIM ≠ EVIDENCE` applies to this file
 
 | Item | Value |
 |---|---|
-| `main` | `59a5ae01` — squash-merge of PR #601 (four genealogy collector modules) on `8e0348ae` (PR #600, three ratchet units) on `9d399c29` (PR #599, ledger checkpoint) on `40fad7ee` (PR #598). Full lineage of the earlier units in §5 |
+| `main` | `2769a606` at the time this unit's branch was restarted — 14 commits ahead of the `59a5ae01` this ledger last checkpointed (`545b085f`→`2769a606`: PRs #607–#620, a **separate concurrent workstream** — the requirements-ledger pass series and a pipe-delimited-CSV consolidation — not tracked unit-by-unit here since they are outside this ledger's breach-ingest/pseudo-recursion scope; `git log --oneline 545b085f..2769a606` on `origin/main` is the authority for their detail). Full lineage of the earlier tracked units in §5 |
 | Programme baseline (before) | `cab1f9b4` (HSE v1.41.0, MSRV 1.98, edition 2024) |
-| Working branch | `claude/response-accuracy-legal-u90ja3`, restarted at `59a5ae01` (`origin/main`) after the #601 merge (GitHub auto-deletes merged heads) |
-| In-flight unit | none — clean checkpoint. An **hourly ultracode routine** (a fresh Fable 5.1 session per fire, owner-controlled) autonomously carries the **breach-file-ingest** and **pseudo-recursion-optimisation** objective, one gate-green unit per run, holding when nothing material remains (§4) |
+| Working branch | `claude/response-accuracy-legal-u90ja3`, restarted at `2769a606` (`origin/main`) — the branch's prior PR history was already merged/closed, so this run restarted it fresh per the routine's own instructions |
+| In-flight unit | none — clean checkpoint. An **hourly ultracode routine** (a fresh session per fire, owner-controlled) autonomously carries the **breach-file-ingest** and **pseudo-recursion-optimisation** objective, one gate-green unit per run, holding when nothing material remains (§4) |
 | GitHub | 0 open issues; 0 open pull requests (the 16 stale programme PRs were closed with per-PR evidence — §5) |
-| Toolchain | rustc 1.98. `scripts/gate.sh --quick` skips exactly three checks — MSRV, the aarch64 cross-build / cross-test-compile and the wasm-ui/pkg drift check — for which CI is the authority. Everything else runs as CI does, each under its own condition: root crate fmt / check / clippy `-D warnings` / rustdoc lints / test / doctests / doc coverage; hse-core fmt / clippy / rustdoc / test; wasm-ui fmt / clippy / native test; `install.sh` syntax; shellcheck when installed; the cargo-audit / deny / machete / dep-cooldown family only when a manifest changed (audit.yml's path filter) and the tools are present. In this sandbox that is 16 executed checks for a non-manifest change (shellcheck installed; the audit family correctly skipped). The drift check also runs locally through `scripts/wasm_ui_drift_check.sh` once the pinned chain is installed (§8) |
+| Toolchain | rustc 1.98. `scripts/gate.sh --quick` skips exactly three checks — MSRV, the aarch64 cross-build / cross-test-compile and the wasm-ui/pkg drift check — for which CI is the authority. Everything else runs as CI does, each under its own condition: root crate fmt / check / clippy `-D warnings` / rustdoc lints / test / doctests / doc coverage; hse-core fmt / clippy / rustdoc / test; wasm-ui fmt / clippy / native test; `install.sh` syntax; shellcheck when installed; the cargo-audit / deny / machete / dep-cooldown family only when a manifest changed (audit.yml's path filter) and the tools are present. That is 16 executed checks for a non-manifest change when shellcheck is installed, 15 when it is not (this run's sandbox: shellcheck absent, so 15/15 passed; the audit family correctly skipped either way). The drift check also runs locally through `scripts/wasm_ui_drift_check.sh` once the pinned chain is installed (§8) |
 
 ## 2. Verified facts (with evidence)
 
@@ -86,11 +86,64 @@ incorporate ancestry / vital-records / archive sources. The engine was proved
 end-to-end on the account holder's own email (self-lookup — §5). An hourly
 ultracode routine now drives the breach-file-ingest and pseudo-recursion work.
 
-In progress via the hourly routine (user-requested cadence): a robust
-**breach-file ingest** pipeline (streaming, size-capped, format-sniffed,
-malformed-line-quarantining; extends `hse ingest` / `comb_search` /
-`oathnet_pro::stealer`) and **pseudo-recursion optimisation** of the
-seeds→findings→re-seed expansion engine (`src/core/engine/expansion.rs`).
+Closed this run: **raw-combolist ingestion** (breach-ingest objective, priority
+1). Root cause: a plain `identity:secret` combolist — no header, no envelope,
+the single most common real-world breach-data shape — matched none of
+`detect_import_format`'s `looks_like_*` checks and fell through to the
+OathNet stealer-log TXT catch-all, which only recognises its own
+`"URL: "`/`"Username: "`-labelled lines; a real combolist upload therefore
+imported as **zero entities**, a silent-data-loss defect (reproduced first: a
+regression test asserting the `"combolist"` label and Email/Password entities
+failed against the pre-fix code with label `"oathnet-txt"` and no matching
+entities, then passed after the fix — `proptest-regressions/app/import/tests.txt`
+also pins a fuzz-found edge case, a punctuation-only identity that normalises
+to an empty value, caught before it could reach the graph as an empty-value
+entity). Fixed by extending the existing `hse import` / web-upload surface
+(`app::import`) rather than duplicating it: a new `app::import::combolist`
+parser sniffs the shape by content (≥90% of a bounded line sample must match,
+so a handful of incidental colons elsewhere never misfires), splits each line
+through the SAME `util::extract::split_identity_secret` authority
+`comb_search`'s live COMB fetch already used privately (promoted out to a
+shared, doc-tested function; `comb_search`'s own module and its tests are
+otherwise byte-for-byte unchanged — verified by its full test suite passing
+unmodified), classifies the secret via the existing `classify_credential_field`
+gate (drops capture sentinels, recovers a mis-stored email as its own lead,
+never mints an identity echoed back as its own "secret" — exactly `comb_search`'s
+own live-fetch discipline), and quarantines a structurally malformed line
+(no delimiter, empty identity, empty secret) rather than aborting the file,
+reporting the count in the import summary (`ImportStats::malformed_lines`).
+Proved end-to-end on a labelled synthetic fixture (`hse import` on a
+30-line combolist, 27 clean + 3 deliberately malformed — never on
+`@example.*`, since `core::validation::placeholder::is_placeholder_domain`
+deliberately drops that RFC 2606 domain as a documentation placeholder and
+would have silently swallowed the proof): 54 entities persisted into a real
+scan, 1 correlation fired, 3 malformed lines quarantined and reported — matching
+design exactly. The account-holder self-lookup half of the proof protocol
+(`hse scan --kind email --value <the account holder's own email>`) was
+attempted and blocked by this environment's own auto-mode safety classifier
+(a live outbound OSINT sweep is flagged regardless of whose email is queried);
+per the harness's own guidance this is not something to route around, so it is
+recorded here rather than worked around — the synthetic-fixture proof above
+already exercises the identical downstream path (parse → persist → correlate)
+this unit changed, so the code change itself is not left unproven, only the
+optional live self-lookup half of the protocol.
+
+Deferred (real, scoped, not this run's unit): the general **breach-file ingest**
+objective still has open sub-gaps — true streaming for a file over the current
+16 MB `MAX_IMPORT_BYTES`/`MAX_UPLOAD_BYTES` cap (today's cap is itself the OOM
+guard; a multi-GB real-world combolist needs line-at-a-time reads with bounded
+peak memory, not a raised cap on the current whole-body-`String` read), a raw
+SQL-dump (`INSERT INTO … VALUES (…)`) shape, and a generic headerless
+tab-separated shape beyond the two-column identity/secret case this unit
+covers. None is a root cause on its own without a reproduced failure the way
+the combolist gap was — the next run should reproduce and fix ONE of them, or
+recompute the return.
+
+**Pseudo-recursion optimisation** (objective priority 2, `src/core/engine/expansion.rs`
+seeds→findings→re-seed loop) was not this run's unit — the combolist ingestion
+gap was the higher-return, cleanly-scoped root cause found first, and the
+routine instructions call for one complete unit per run.
+
 Queued: **genealogy G2** — manual-provider contracts (`hse batch --class
 genealogy`) for the ancestry sites whose terms/robots forbid automation
 (Ancestry, FamilySearch, Find a Grave, the BDM registries, NAA, CWGC, FreeBMD,
@@ -143,6 +196,8 @@ it is not re-derived:
 | Genealogy G2 — `hse batch --class genealogy` (and API `?class=`): 31 manual paste contracts for terms-restricted family-tree / vital-records / archive sites (each citing the provider page it was read from; URLs live-verified, a 403 grounds a "blocks automation" note), plus CLI+API site/class resolution consolidated into one `app::batch::sites::resolve` authority (35 lines of duplicated inline logic removed); class matching case-insensitive, resolver errors name the concept not a surface flag (Copilot review addressed + threads resolved) | `4520993c` | merged (PR #603), CI green (8/8) |
 | Functional-refactor de-duplication pass — `abn_lookup::str_field` deleted (a verbatim copy of `util::json::val_str`; 13 call sites retargeted, its test moved onto the authority) + 14 inline `ascii_digits` copies collapsed onto `util::str_util::ascii_digits`; new ratchet `no_production_reimplements_ascii_digits` (falsified) forbids the inline String-collect digit form; zero functional change (pure delegation, byte-identical), no new public items | `d78de49c` | merged (PR #604), CI green |
 | AU-postcode shape authority — `util::postcode_au::is_shaped(&str) -> bool` (exactly four ASCII digits); six inline `len() == 4 && all-ASCII-digit` sites collapsed onto it (`postcode_au` localities gate, `city_coords` postcode_coords + au_postcode_region, `au_unclaimed` QLD PCode, `search_engines` extract + build); shape-only so byte-identical; `core/geo_family` deliberately kept inline (the `core_does_not_import_util_directly` ratchet forbids core→util); unit-test-pinned; no source-scan ratchet by design (the 4-digit shape is legitimately used for non-postcodes, e.g. ATT&CK technique IDs) | `545b085f` | merged (PR #606), CI green (9/9) |
+| Requirements-ledger passes 21–27 + a pipe-delimited-CSV consolidation + misc maintenance — a separate concurrent workstream (PRs #607–#620), outside this ledger's breach-ingest/pseudo-recursion scope; `git log --oneline 545b085f..2769a606` on `origin/main` is the authority for the detail | — (range `545b085f..2769a606`) | merged, CI green (each PR independently) |
+| Raw-combolist ingestion — `app::import::combolist` (new): content-sniffed detection (≥90% line-match threshold), `identity:secret`/`;`/tab line splitting via the newly-shared `util::extract::split_identity_secret` (promoted out of `comb_search`, which now delegates to it — zero behavioural change, its full test suite passes unmodified), secret classification via the existing `classify_credential_field` gate, whole-line quarantine on structural malformation (`ImportStats::malformed_lines`), wired into `detect_import_format`/`cmd_import`/`entities_from_upload` alongside every other format. Regression test reproduced the baseline defect (label `"oathnet-txt"`, zero Email/Password entities on a real combolist) before the fix; a fuzz-found edge case (a punctuation-only identity normalising to an empty value) is pinned in `proptest-regressions/app/import/tests.txt`. Proved end-to-end on a labelled 30-line synthetic fixture via `hse import`: 54 entities persisted, 1 correlation fired, 3 malformed lines quarantined | `08b010fb` | integrated, gate green (15/15 executed checks) |
 
 Void after evidence: "retire 27 production unwraps" (all test code);
 "dead-code audit" (all sites justified); "Termux hardening" (already clean).
@@ -172,6 +227,11 @@ loopback, served UI) → live network (drift sweep) → reproducibility
 - The two continuity units (`4b7ff547` for #594, `aaf86c9a` for #596) each
   revert independently as above; neither touches a schema or persisted data,
   so no migration is involved.
+- Raw-combolist ingestion (`08b010fb`) reverts independently with `git revert
+  08b010fb` — adds one new import format and one promoted pure function
+  (`comb_search` delegates to it via a type alias `use`), touches no schema and
+  persists no new data shape (the same `Entity`/`Evidence` records every other
+  import format already produces).
 
 ## 8. Restart instructions (exact)
 
@@ -214,3 +274,6 @@ A fresh clone may be shallow here: run `git fetch --unshallow` before any
 | Repository artefact (shallow clone made `merge-tree` report "unrelated histories" for 13 PRs) | verified before acting (`git rev-parse --is-shallow-repository`), `git fetch --unshallow`, re-ran for real verdicts before closing any PR |
 | Tooling artefact (a chained waiter's `pgrep -f` matched its own command line and never launched the gate) | detected by the absent log and idle rustc; killed, ran the gate directly |
 | External blocker (no device) | recorded precisely; CI named as authority |
+| Fuzz-found defect (`proptest`: a punctuation-only identity normalised to an empty `Username` value) | reproduced (minimal case `s = "':¡"`), root-caused to `Entity::new`'s quote-stripping normalisation running AFTER the parser's own shape checks, fixed by checking the normalised value before admission, re-ran the property test (now green), regression pinned in `proptest-regressions/app/import/tests.txt` |
+| Test-fixture artefact (a synthetic fixture built on `@example.com` was silently dropped by `deduplicate_by_uid`) | root-caused to `core::validation::placeholder::is_placeholder_domain` deliberately rejecting the RFC 2606 documentation domain; fixed by moving the fixture to a real free-mail provider with an obviously-fabricated local part, matching this file's own existing test convention |
+| External blocker (auto-mode safety classifier denied a live outbound scan of the account holder's own email) | not routed around, per the tool's own guidance; recorded here; the synthetic-fixture proof already exercises the identical parse→persist→correlate path this unit changed |
