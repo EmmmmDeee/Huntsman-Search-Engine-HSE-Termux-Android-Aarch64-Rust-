@@ -66,7 +66,7 @@ pub fn parse(txt: &str) -> Option<TlsRptRecord> {
                 if addr.contains('@') && addr.len() >= 5 {
                     rec.emails.push(addr.to_string());
                 }
-            } else if uri.starts_with("https://") || uri.starts_with("http://") {
+            } else if crate::util::url_util::is_absolute_http_url(uri) {
                 rec.urls.push(uri.to_string());
             }
         }

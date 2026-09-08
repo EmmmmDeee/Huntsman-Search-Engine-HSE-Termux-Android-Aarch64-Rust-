@@ -795,7 +795,11 @@ fn no_production_reimplements_ascii_digits_and_plus() {
             continue; // the one true home of the expression
         }
         let text = fs::read_to_string(p).expect("source file readable");
-        let prod = production_source(&text);
+        // Literal-preserving so the `'+'` char survives (blanked, the filter can't
+        // be seen). NOTE: the `.collect` gate is single-line, so a multi-line
+        // `…filter(…)\n.collect()` chain is not caught — the authority's callers
+        // are consolidated, and a single-line re-inline is.
+        let prod = production_source_keep_literals(&text);
         for (i, line) in prod.lines().enumerate() {
             let has_plus_filter = (line.contains("is_ascii_digit() || *c == '+'")
                 || line.contains("'+' == *c || c.is_ascii_digit()"))
@@ -863,9 +867,11 @@ fn no_production_reimplements_email_local() {
             continue; // the one true home of the expression
         }
         let text = fs::read_to_string(p).expect("source file readable");
-        let prod = production_source(&text);
+        // Literal-preserving so the `'@'` char survives, and `.split('@')` (leading
+        // dot) so `rsplit('@')` (domain-part extraction) is not flagged.
+        let prod = production_source_keep_literals(&text);
         for (i, line) in prod.lines().enumerate() {
-            if line.contains("split('@').next().unwrap_or(") {
+            if line.contains(".split('@').next().unwrap_or(") {
                 offenders.push(format!(
                     "{}:{} — {}",
                     p.strip_prefix(&root).unwrap_or(p).display(),
@@ -929,7 +935,9 @@ fn no_production_reimplements_is_absolute_http_url() {
             continue; // the one true home of the expression
         }
         let text = fs::read_to_string(p).expect("source file readable");
-        let prod = production_source(&text);
+        // Literal-preserving so the `"http://"`/`"https://"` string literals survive
+        // (blanked, the predicate can't be seen).
+        let prod = production_source_keep_literals(&text);
         for (i, line) in prod.lines().enumerate() {
             if line.contains(r#"starts_with("http://")"#) && line.contains(r#"starts_with("https://")"#) {
                 offenders.push(format!(
