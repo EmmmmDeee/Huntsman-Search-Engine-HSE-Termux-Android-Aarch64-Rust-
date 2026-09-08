@@ -13,7 +13,7 @@ run, a CI head, or a runtime check — `CLAIM ≠ EVIDENCE` applies to this file
 | `main` | `2769a606` at the time this unit's branch was restarted — 14 commits ahead of the `59a5ae01` this ledger last checkpointed (`545b085f`→`2769a606`: PRs #607–#620, a **separate concurrent workstream** — the requirements-ledger pass series and a pipe-delimited-CSV consolidation — not tracked unit-by-unit here since they are outside this ledger's breach-ingest/pseudo-recursion scope; `git log --oneline 545b085f..2769a606` on `origin/main` is the authority for their detail). Full lineage of the earlier tracked units in §5 |
 | Programme baseline (before) | `cab1f9b4` (HSE v1.41.0, MSRV 1.98, edition 2024) |
 | Working branch | `claude/response-accuracy-legal-u90ja3`, restarted at `2769a606` (`origin/main`) — the branch's prior PR history was already merged/closed, so this run restarted it fresh per the routine's own instructions |
-| In-flight unit | none in the sense of unfinished work — both objective units for this run are complete, gate-green, and committed locally (`08b010fb` combolist ingestion, `879ee2fe` reconsideration skip-cache — §5). **Blocked on push**: this session's git credential proxy denies write access to this repo ("not in this session's authorized repository set"; no `add_repo`-equivalent tool was available to fix it) — see §7 for the exact recovery path (a git bundle + patch files were also handed to the operator directly, since a session's local commits do not survive its container being reclaimed) |
+| In-flight unit | none in the sense of unfinished work — three objective units this run are complete, gate-green, and committed locally (`08b010fb` combolist ingestion, `879ee2fe` reconsideration skip-cache, `62c8cb0a` SQL-dump ingestion — §5). **Blocked on push**: this session's git credential proxy denies write access to this repo ("not in this session's authorized repository set"; no `add_repo`-equivalent tool was available to fix it, and it recurred identically on every retry across all three units) — see §7 for the exact recovery path (a git bundle + patch files covering every commit were also handed to the operator directly, since a session's local commits do not survive its container being reclaimed) |
 | GitHub | 0 open issues; 0 open pull requests — nothing has reached GitHub yet, blocked on the push-access gap above, not because nothing was done |
 | Toolchain | rustc 1.98. `scripts/gate.sh --quick` skips exactly three checks — MSRV, the aarch64 cross-build / cross-test-compile and the wasm-ui/pkg drift check — for which CI is the authority. Everything else runs as CI does, each under its own condition: root crate fmt / check / clippy `-D warnings` / rustdoc lints / test / doctests / doc coverage; hse-core fmt / clippy / rustdoc / test; wasm-ui fmt / clippy / native test; `install.sh` syntax; shellcheck when installed; the cargo-audit / deny / machete / dep-cooldown family only when a manifest changed (audit.yml's path filter) and the tools are present. That is 16 executed checks for a non-manifest change when shellcheck is installed, 15 when it is not (this run's sandbox: shellcheck absent, so 15/15 passed; the audit family correctly skipped either way). The drift check also runs locally through `scripts/wasm_ui_drift_check.sh` once the pinned chain is installed (§8) |
 
@@ -128,16 +128,41 @@ already exercises the identical downstream path (parse → persist → correlate
 this unit changed, so the code change itself is not left unproven, only the
 optional live self-lookup half of the protocol.
 
-Deferred (real, scoped, not this run's unit): the general **breach-file ingest**
-objective still has open sub-gaps — true streaming for a file over the current
-16 MB `MAX_IMPORT_BYTES`/`MAX_UPLOAD_BYTES` cap (today's cap is itself the OOM
-guard; a multi-GB real-world combolist needs line-at-a-time reads with bounded
-peak memory, not a raised cap on the current whole-body-`String` read), a raw
-SQL-dump (`INSERT INTO … VALUES (…)`) shape, and a generic headerless
-tab-separated shape beyond the two-column identity/secret case this unit
-covers. None is a root cause on its own without a reproduced failure the way
-the combolist gap was — the next run should reproduce and fix ONE of them, or
-recompute the return.
+Closed this run (third unit, same branch): **SQL-dump ingestion** — the
+explicitly-named `INSERT INTO … VALUES (…)` shape deferred at the checkpoint
+above. Root cause: same class as the combolist gap — no `looks_like_*` check
+recognised it, so it fell through to `OathnetTxt` and imported as zero
+entities. Fixed by `app::import::sql_dump`: a regex locates each statement's
+`table (col1, col2, …) VALUES` header (case-insensitive; a single match is
+sufficient evidence — the shape is too distinctive for the combolist
+fallback's majority-line heuristic to be needed), then a hand-rolled
+char-by-char scanner parses the `(v1, v2, …), (v3, v4, …)` tuples, unescaping
+both the `mysqldump` backslash dialect and the standard-SQL doubled-quote
+dialect unconditionally (proved by a test asserting both dialects decode to
+the correct, distinct value). Column semantics are read ONLY from the
+`INSERT`'s own explicit column list — never guessed from position, never
+recovered from a separate `CREATE TABLE` (whose order could disagree and
+silently mis-attribute a value to the wrong field; RULE.md: no fabricated
+findings) — proved by a test asserting a column-list-free `INSERT` is neither
+detected nor parsed. A row whose value count doesn't match its column list is
+quarantined (`ImportStats::malformed_lines`) rather than guessed at. Maps
+columns to entities using the identical field-name conventions, confidence
+levels and evidence shape as `csv::parse_dehashed_csv` (the same structural
+"one row = one leaked record" breach table, SQL-encoded, so the design
+authority is shared rather than reinvented). 94/94 import-module tests green
+(including 7 new + all pre-existing unchanged), fuzz-tested for panics.
+
+Deferred (real, scoped, not this run's unit): the general **breach-file
+ingest** objective still has open sub-gaps — true streaming for a file over
+the current 16 MB `MAX_IMPORT_BYTES`/`MAX_UPLOAD_BYTES` cap (today's cap is
+itself the OOM guard; a multi-GB real-world combolist/SQL-dump needs
+line-at-a-time reads with bounded peak memory, not a raised cap on the current
+whole-body-`String` read), and a generic headerless tab-separated shape beyond
+the two-column identity/secret case the combolist parser covers. Neither is a
+root cause on its own without a reproduced failure the way the combolist and
+SQL-dump gaps were — the next run should reproduce and fix ONE of them
+(streaming is the higher-return of the two: it is the one true remaining gap
+in the original objective's explicit scope), or recompute the return.
 
 Closed this run (second unit, same branch): **pseudo-recursion optimisation**
 (objective priority 2). Root cause: `reconsider_working_set` — the per-round
@@ -227,6 +252,7 @@ it is not re-derived:
 | Requirements-ledger passes 21–27 + a pipe-delimited-CSV consolidation + misc maintenance — a separate concurrent workstream (PRs #607–#620), outside this ledger's breach-ingest/pseudo-recursion scope; `git log --oneline 545b085f..2769a606` on `origin/main` is the authority for the detail | — (range `545b085f..2769a606`) | merged, CI green (each PR independently) |
 | Raw-combolist ingestion — `app::import::combolist` (new): content-sniffed detection (≥90% line-match threshold), `identity:secret`/`;`/tab line splitting via the newly-shared `util::extract::split_identity_secret` (promoted out of `comb_search`, which now delegates to it — zero behavioural change, its full test suite passes unmodified), secret classification via the existing `classify_credential_field` gate, whole-line quarantine on structural malformation (`ImportStats::malformed_lines`), wired into `detect_import_format`/`cmd_import`/`entities_from_upload` alongside every other format. Regression test reproduced the baseline defect (label `"oathnet-txt"`, zero Email/Password entities on a real combolist) before the fix; a fuzz-found edge case (a punctuation-only identity normalising to an empty value) is pinned in `proptest-regressions/app/import/tests.txt`. Proved end-to-end on a labelled 30-line synthetic fixture via `hse import`: 54 entities persisted, 1 correlation fired, 3 malformed lines quarantined | `08b010fb` | integrated, gate green (15/15 executed checks) |
 | Pseudo-recursion optimisation — `TrackedEntityMap::version()` (monotonic, bumped on `insert`/`get_mut` only) + `expansion::should_reconsider` (pure, unit-tested predicate) let the round loop skip `reconsider_working_set`'s full working-set clone-and-rescan on any round where nothing changed since the last call — provably safe (referential transparency), not a heuristic. Measured before: ~161ms per call at the pass's 20,000-entity bound; measured after: ~21ns per skip-check (~7,700x). Zero behavioural drift: round 1 always still runs it, the existing large-working-set promotion test passes unchanged | `879ee2fe` | integrated, gate green (15/15 executed checks) |
+| SQL-dump ingestion — `app::import::sql_dump` (new): regex-anchored `INSERT INTO table (cols) VALUES` header detection/parsing, hand-rolled char-scanner for the `(...)`-tuple values unescaping both the `mysqldump` backslash and standard-SQL doubled-quote dialects, column semantics read only from the `INSERT`'s own explicit list (never a separate `CREATE TABLE`), malformed-row quarantine on a column/value-count mismatch, same field-mapping/confidence/evidence conventions as `csv::parse_dehashed_csv`. 94/94 import tests green (7 new), fuzz-tested | `62c8cb0a` | integrated, gate green (15/15 executed checks) |
 
 Void after evidence: "retire 27 production unwraps" (all test code);
 "dead-code audit" (all sites justified); "Termux hardening" (already clean).
@@ -266,6 +292,10 @@ loopback, served UI) → live network (drift sweep) → reproducibility
   one pure predicate function; touches no schema, no persisted data, and no
   round-loop behaviour on any round where reconsideration would actually have
   found something (only the "provably nothing changed" rounds are skipped).
+- SQL-dump ingestion (`62c8cb0a`) reverts independently with `git revert
+  62c8cb0a` — adds one new import format and one new module; touches no
+  schema and persists no new data shape (the same `Entity`/`Evidence` records
+  every other import format already produces).
 
 ## 8. Restart instructions (exact)
 
