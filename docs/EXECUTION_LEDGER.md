@@ -13,8 +13,8 @@ run, a CI head, or a runtime check — `CLAIM ≠ EVIDENCE` applies to this file
 | `main` | `2769a606` at the time this unit's branch was restarted — 14 commits ahead of the `59a5ae01` this ledger last checkpointed (`545b085f`→`2769a606`: PRs #607–#620, a **separate concurrent workstream** — the requirements-ledger pass series and a pipe-delimited-CSV consolidation — not tracked unit-by-unit here since they are outside this ledger's breach-ingest/pseudo-recursion scope; `git log --oneline 545b085f..2769a606` on `origin/main` is the authority for their detail). Full lineage of the earlier tracked units in §5 |
 | Programme baseline (before) | `cab1f9b4` (HSE v1.41.0, MSRV 1.98, edition 2024) |
 | Working branch | `claude/response-accuracy-legal-u90ja3`, restarted at `2769a606` (`origin/main`) — the branch's prior PR history was already merged/closed, so this run restarted it fresh per the routine's own instructions |
-| In-flight unit | none — clean checkpoint. An **hourly ultracode routine** (a fresh session per fire, owner-controlled) autonomously carries the **breach-file-ingest** and **pseudo-recursion-optimisation** objective, one gate-green unit per run, holding when nothing material remains (§4) |
-| GitHub | 0 open issues; 0 open pull requests (the 16 stale programme PRs were closed with per-PR evidence — §5) |
+| In-flight unit | none in the sense of unfinished work — both objective units for this run are complete, gate-green, and committed locally (`08b010fb` combolist ingestion, `879ee2fe` reconsideration skip-cache — §5). **Blocked on push**: this session's git credential proxy denies write access to this repo ("not in this session's authorized repository set"; no `add_repo`-equivalent tool was available to fix it) — see §7 for the exact recovery path (a git bundle + patch files were also handed to the operator directly, since a session's local commits do not survive its container being reclaimed) |
+| GitHub | 0 open issues; 0 open pull requests — nothing has reached GitHub yet, blocked on the push-access gap above, not because nothing was done |
 | Toolchain | rustc 1.98. `scripts/gate.sh --quick` skips exactly three checks — MSRV, the aarch64 cross-build / cross-test-compile and the wasm-ui/pkg drift check — for which CI is the authority. Everything else runs as CI does, each under its own condition: root crate fmt / check / clippy `-D warnings` / rustdoc lints / test / doctests / doc coverage; hse-core fmt / clippy / rustdoc / test; wasm-ui fmt / clippy / native test; `install.sh` syntax; shellcheck when installed; the cargo-audit / deny / machete / dep-cooldown family only when a manifest changed (audit.yml's path filter) and the tools are present. That is 16 executed checks for a non-manifest change when shellcheck is installed, 15 when it is not (this run's sandbox: shellcheck absent, so 15/15 passed; the audit family correctly skipped either way). The drift check also runs locally through `scripts/wasm_ui_drift_check.sh` once the pinned chain is installed (§8) |
 
 ## 2. Verified facts (with evidence)
@@ -139,10 +139,38 @@ covers. None is a root cause on its own without a reproduced failure the way
 the combolist gap was — the next run should reproduce and fix ONE of them, or
 recompute the return.
 
-**Pseudo-recursion optimisation** (objective priority 2, `src/core/engine/expansion.rs`
-seeds→findings→re-seed loop) was not this run's unit — the combolist ingestion
-gap was the higher-return, cleanly-scoped root cause found first, and the
-routine instructions call for one complete unit per run.
+Closed this run (second unit, same branch): **pseudo-recursion optimisation**
+(objective priority 2). Root cause: `reconsider_working_set` — the per-round
+free/offline re-promotion pass that lets downstream corroboration lift a
+set-aside candidate back into play — unconditionally cloned the ENTIRE working
+set (`entity_map.values().cloned().collect()`, deep-cloning every entity's
+evidence/tags) and re-ran three promotion passes over it on every single
+expansion round, even rounds where nothing had changed since the previous
+check. Measured before changing anything (`tracked_entity_map_reconsideration_
+skip_avoids_the_clone_cost`, `#[ignore]`d — a manual timing measurement, not a
+CI assertion, since wall-clock timing on shared CI hardware is not a stable
+pass/fail signal): one full call over a working set at the pass's own bound
+(`RECONSIDER_MAX_ENTITIES` = 20,000 entities) costs **~161ms**. Fixed with a
+monotonic `version: u64` counter added to `TrackedEntityMap`, bumped on its
+only two mutating operations (`insert`, a successful `get_mut` — verified by a
+new test, `tracked_entity_map_version_bumps_only_on_mutation`, that read-only
+access via every `Deref` method never bumps it); the round loop
+(`run_expansion`) remembers the version as of its last reconsideration call
+and skips the next one when unchanged, via a new pure, unit-tested predicate
+(`expansion::should_reconsider`). This is provably safe, not a heuristic:
+`reconsider_working_set` is a pure function of exactly the state the version
+counter tracks (entity mutations; every `relations.push` reachable from the
+expansion loop is co-located with an `entity_map` mutation at the same call
+site, verified by reading the three call sites directly), so an unchanged
+version guarantees an unchanged result. Re-measured after the fix: 1,000
+`should_reconsider` skip-checks cost **~21µs total** (~21ns each) — roughly a
+**7,700x** reduction for every round after a scan's graph has stabilised but
+its depth budget has not yet run out. Zero behavioural drift: the existing
+`reconsider_working_set_still_promotes_above_the_live_correlation_bound` test
+(which exercises promotion on a working set past the old live-correlation
+bound) passes unchanged, and round 1 always still runs reconsideration
+(`last_reconsidered_version` starts `None`), matching today's behaviour
+exactly on every round where something actually changed.
 
 Queued: **genealogy G2** — manual-provider contracts (`hse batch --class
 genealogy`) for the ancestry sites whose terms/robots forbid automation
@@ -198,6 +226,7 @@ it is not re-derived:
 | AU-postcode shape authority — `util::postcode_au::is_shaped(&str) -> bool` (exactly four ASCII digits); six inline `len() == 4 && all-ASCII-digit` sites collapsed onto it (`postcode_au` localities gate, `city_coords` postcode_coords + au_postcode_region, `au_unclaimed` QLD PCode, `search_engines` extract + build); shape-only so byte-identical; `core/geo_family` deliberately kept inline (the `core_does_not_import_util_directly` ratchet forbids core→util); unit-test-pinned; no source-scan ratchet by design (the 4-digit shape is legitimately used for non-postcodes, e.g. ATT&CK technique IDs) | `545b085f` | merged (PR #606), CI green (9/9) |
 | Requirements-ledger passes 21–27 + a pipe-delimited-CSV consolidation + misc maintenance — a separate concurrent workstream (PRs #607–#620), outside this ledger's breach-ingest/pseudo-recursion scope; `git log --oneline 545b085f..2769a606` on `origin/main` is the authority for the detail | — (range `545b085f..2769a606`) | merged, CI green (each PR independently) |
 | Raw-combolist ingestion — `app::import::combolist` (new): content-sniffed detection (≥90% line-match threshold), `identity:secret`/`;`/tab line splitting via the newly-shared `util::extract::split_identity_secret` (promoted out of `comb_search`, which now delegates to it — zero behavioural change, its full test suite passes unmodified), secret classification via the existing `classify_credential_field` gate, whole-line quarantine on structural malformation (`ImportStats::malformed_lines`), wired into `detect_import_format`/`cmd_import`/`entities_from_upload` alongside every other format. Regression test reproduced the baseline defect (label `"oathnet-txt"`, zero Email/Password entities on a real combolist) before the fix; a fuzz-found edge case (a punctuation-only identity normalising to an empty value) is pinned in `proptest-regressions/app/import/tests.txt`. Proved end-to-end on a labelled 30-line synthetic fixture via `hse import`: 54 entities persisted, 1 correlation fired, 3 malformed lines quarantined | `08b010fb` | integrated, gate green (15/15 executed checks) |
+| Pseudo-recursion optimisation — `TrackedEntityMap::version()` (monotonic, bumped on `insert`/`get_mut` only) + `expansion::should_reconsider` (pure, unit-tested predicate) let the round loop skip `reconsider_working_set`'s full working-set clone-and-rescan on any round where nothing changed since the last call — provably safe (referential transparency), not a heuristic. Measured before: ~161ms per call at the pass's 20,000-entity bound; measured after: ~21ns per skip-check (~7,700x). Zero behavioural drift: round 1 always still runs it, the existing large-working-set promotion test passes unchanged | `879ee2fe` | integrated, gate green (15/15 executed checks) |
 
 Void after evidence: "retire 27 production unwraps" (all test code);
 "dead-code audit" (all sites justified); "Termux hardening" (already clean).
@@ -232,6 +261,11 @@ loopback, served UI) → live network (drift sweep) → reproducibility
   (`comb_search` delegates to it via a type alias `use`), touches no schema and
   persists no new data shape (the same `Entity`/`Evidence` records every other
   import format already produces).
+- Pseudo-recursion optimisation (`879ee2fe`) reverts independently with `git
+  revert 879ee2fe` — adds one struct field (`TrackedEntityMap::version`) and
+  one pure predicate function; touches no schema, no persisted data, and no
+  round-loop behaviour on any round where reconsideration would actually have
+  found something (only the "provably nothing changed" rounds are skipped).
 
 ## 8. Restart instructions (exact)
 
@@ -277,3 +311,7 @@ A fresh clone may be shallow here: run `git fetch --unshallow` before any
 | Fuzz-found defect (`proptest`: a punctuation-only identity normalised to an empty `Username` value) | reproduced (minimal case `s = "':¡"`), root-caused to `Entity::new`'s quote-stripping normalisation running AFTER the parser's own shape checks, fixed by checking the normalised value before admission, re-ran the property test (now green), regression pinned in `proptest-regressions/app/import/tests.txt` |
 | Test-fixture artefact (a synthetic fixture built on `@example.com` was silently dropped by `deduplicate_by_uid`) | root-caused to `core::validation::placeholder::is_placeholder_domain` deliberately rejecting the RFC 2606 documentation domain; fixed by moving the fixture to a real free-mail provider with an obviously-fabricated local part, matching this file's own existing test convention |
 | External blocker (auto-mode safety classifier denied a live outbound scan of the account holder's own email) | not routed around, per the tool's own guidance; recorded here; the synthetic-fixture proof already exercises the identical parse→persist→correlate path this unit changed |
+| Deterministic defect (broken rustdoc intra-doc link: `[\`super::expansion::should_reconsider\`]` written from within `core::engine` itself, where `expansion` is a direct child module, not a sibling reached via `super::`) | reproduced (`rustdoc lints` FAILED, "no item named `expansion` in module `core`"), root-caused to the wrong relative path, fixed to `[\`expansion::should_reconsider\`]`, re-verified with a standalone `cargo doc` pass before re-running the full gate |
+| Deterministic defect (bad format string: a bare positional `{}` in `eprintln!` with no corresponding argument) | reproduced (`clippy`/`test` FAILED, "1 positional argument in format string, but no arguments were given"), root-caused to a copy-paste placeholder never filled in, fixed to the named capture `{RECONSIDER_MAX_ENTITIES}`, re-verified locally before re-running the full gate |
+| Process artefact (editing a test file while `scripts/gate.sh` was already mid-run: fmt/check/rustdoc ran against the pre-edit tree, clippy/test against the post-edit one, so the two format-string-bug FAILs surfaced only in the later steps) | root-caused after the fact; the fix itself was correct, but the lesson is recorded: do not edit tracked files while a gate run this session started is still in flight — wait for it, then edit, then rerun clean |
+| External blocker (git credential proxy denies push access to this repo for this session; no `add_repo`-equivalent tool available) | not routed around; recurred identically on a second attempt after this run's second unit; both units' commits are safe locally and were also handed to the operator as a git bundle + patch files (§1, §8) so nothing is lost if this container is reclaimed before push access is fixed |
