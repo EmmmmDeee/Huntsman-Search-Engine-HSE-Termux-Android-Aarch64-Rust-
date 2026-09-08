@@ -18,6 +18,7 @@ use super::*;
 
 use crate::core::confidence;
 use crate::core::entity::{Entity, EntityKind, Evidence};
+use crate::util::str_util::pipe_delimited;
 
 /// Detect a DeHashed-style breach CSV from its header row: an identity column
 /// plus the DeHashed hallmark (`database_name` or `hashed_password*`). Strict
@@ -373,7 +374,7 @@ pub(super) fn parse_hse_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportStats)
         e.tag("import");
         e.tag("hse-csv");
         if let Some(tags) = get(tags_i) {
-            for t in tags.split('|').map(str::trim).filter(|t| !t.is_empty()) {
+            for t in pipe_delimited(tags) {
                 e.tag(t);
             }
         }
