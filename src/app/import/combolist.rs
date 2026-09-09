@@ -215,12 +215,9 @@ pub(super) fn parse_combolist(body: &str, sid: &str) -> (Vec<Entity>, ImportStat
 }
 
 pub(super) async fn cmd_import_combolist(body: &str, output: &str) -> Result<()> {
-    note(output, "Importing raw combolist...");
-    let sid = format!("import-combolist-{}", crate::core::entity::unix_now());
-    let (mut entities, stats) = parse_combolist(body, &sid);
-    deduplicate_by_uid(&mut entities);
-    print_import_stats(&stats, entities.len(), output);
-    persist_and_report(&sid, &entities, output).await;
-    render_import_entities(&entities, output);
-    Ok(())
+    run_import("Importing raw combolist...", "combolist", output, |sid| {
+        let (entities, stats) = parse_combolist(body, sid);
+        ParsedImport::new(entities, stats)
+    })
+    .await
 }

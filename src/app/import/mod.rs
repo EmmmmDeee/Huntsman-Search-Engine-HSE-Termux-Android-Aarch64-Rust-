@@ -1013,6 +1013,109 @@ fn parse_osint_enrichment(
     }
 }
 
+/// Everything a per-format parser hands the shared CLI import runner
+/// ([`run_import`]) to persist and report: the entities and their stats, plus
+/// the extras only some formats carry — a key pool to save (stealer-log /
+/// OathNet exports leak API keys), the paired stealer-credential rows or the RF
+/// sightings that live in their own side tables. Built by the per-format
+/// `cmd_import_*` adapters and consumed once by [`run_import`], so the
+/// dedupe → stats → persist → render lifecycle exists in exactly one place
+/// instead of once per format.
+struct ParsedImport {
+    entities: Vec<crate::core::entity::Entity>,
+    stats: ImportStats,
+    /// Save the global API-key pool afterwards (gated on keys actually found).
+    save_key_pool: bool,
+    /// Also print the `Pool: N keys stored` line — the TXT importer alone does.
+    note_pool: bool,
+    stealer_rows: Vec<crate::core::stealer_row::StealerRow>,
+    rf_sightings: Vec<crate::core::rf::RfSighting>,
+}
+
+impl ParsedImport {
+    fn new(entities: Vec<crate::core::entity::Entity>, stats: ImportStats) -> Self {
+        Self {
+            entities,
+            stats,
+            save_key_pool: false,
+            note_pool: false,
+            stealer_rows: Vec::new(),
+            rf_sightings: Vec::new(),
+        }
+    }
+
+    /// Save the discovered API-key pool after import (stealer / OathNet report).
+    fn saving_key_pool(mut self) -> Self {
+        self.save_key_pool = true;
+        self
+    }
+
+    /// Save the pool AND print the `Pool: N keys` summary line (TXT importer).
+    fn noting_key_pool(mut self) -> Self {
+        self.save_key_pool = true;
+        self.note_pool = true;
+        self
+    }
+
+    fn with_stealer_rows(mut self, rows: Vec<crate::core::stealer_row::StealerRow>) -> Self {
+        self.stealer_rows = rows;
+        self
+    }
+
+    fn with_rf_sightings(mut self, rows: Vec<crate::core::rf::RfSighting>) -> Self {
+        self.rf_sightings = rows;
+        self
+    }
+}
+
+/// The one CLI import lifecycle every simple per-format runner shares: announce
+/// the format, mint the scan id, parse (the `parse` closure receives that freshly
+/// minted sid), then dedupe → print stats → optionally save/announce the key
+/// pool → persist → persist any side table (stealer rows / RF sightings, each a
+/// no-op when empty) → render. `cmd_import_html` (a custom summary, no stats) and
+/// the OathNet-JSON arm of [`cmd_import`] (an async parse plus a JSON output tail)
+/// keep their own bodies; every other `cmd_import_*` is a one-line adapter over
+/// this. Behaviour is identical to the hand-written runners it replaced, pinned
+/// by a golden before/after CLI diff across every format.
+async fn run_import(
+    banner: &str,
+    tag: &str,
+    output: &str,
+    parse: impl FnOnce(&str) -> ParsedImport,
+) -> Result<()> {
+    note(output, banner);
+    let sid = format!("import-{tag}-{}", crate::core::entity::unix_now());
+    let ParsedImport {
+        mut entities,
+        stats,
+        save_key_pool,
+        note_pool,
+        stealer_rows,
+        rf_sightings,
+    } = parse(&sid);
+    deduplicate_by_uid(&mut entities);
+    print_import_stats(&stats, entities.len(), output);
+    if stats.api_keys > 0 {
+        if note_pool {
+            note(
+                output,
+                format!(
+                    "  Pool:      {} keys stored for automatic use",
+                    stats.api_keys
+                ),
+            );
+        }
+        if save_key_pool {
+            crate::util::key_pool::save_pool_best_effort(&crate::util::key_pool::global_pool());
+        }
+    }
+    persist_and_report(&sid, &entities, output).await;
+    persist_stealer_rows_best_effort(&sid, &stealer_rows, output).await;
+    persist_rf_sightings_best_effort(&sid, &rf_sightings, output).await;
+    render_import_entities(&entities, output);
+    Ok(())
+}
+
 /// Emit a human-readable progress/summary line on the stream appropriate to the
 /// output mode: stderr under `--output json` (so stdout stays pure JSON for
 /// `| jq`), stdout otherwise (where the summary IS the operator-facing output).

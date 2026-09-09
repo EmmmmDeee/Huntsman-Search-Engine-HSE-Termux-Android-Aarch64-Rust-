@@ -381,12 +381,14 @@ pub(super) fn parse_sql_dump(body: &str, sid: &str) -> (Vec<Entity>, ImportStats
 }
 
 pub(super) async fn cmd_import_sql_dump(body: &str, output: &str) -> Result<()> {
-    note(output, "Importing SQL-dump breach export...");
-    let sid = format!("import-sql-dump-{}", crate::core::entity::unix_now());
-    let (mut entities, stats) = parse_sql_dump(body, &sid);
-    deduplicate_by_uid(&mut entities);
-    print_import_stats(&stats, entities.len(), output);
-    persist_and_report(&sid, &entities, output).await;
-    render_import_entities(&entities, output);
-    Ok(())
+    run_import(
+        "Importing SQL-dump breach export...",
+        "sql-dump",
+        output,
+        |sid| {
+            let (entities, stats) = parse_sql_dump(body, sid);
+            ParsedImport::new(entities, stats)
+        },
+    )
+    .await
 }

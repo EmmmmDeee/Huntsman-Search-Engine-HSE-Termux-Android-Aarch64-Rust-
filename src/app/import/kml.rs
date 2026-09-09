@@ -443,21 +443,19 @@ pub(super) fn looks_like_kml(head: &str) -> bool {
 
 /// CLI entry: parse a WiGLE KML export and persist it as a completed scan.
 pub(super) async fn cmd_import_kml(body: &str, output: &str) -> crate::core::error::Result<()> {
-    use super::{
-        deduplicate_by_uid, note, persist_and_report, print_import_stats, render_import_entities,
-    };
-    note(output, "Importing WiGLE KML wardriving export...");
-    let sid = format!("import-kml-{}", crate::core::entity::unix_now());
-    let (mut entities, stats) = parse_kml(body, &sid);
-    deduplicate_by_uid(&mut entities);
-    print_import_stats(&stats, entities.len(), output);
-
-    persist_and_report(&sid, &entities, output).await;
-    // Alongside the graph, not instead of it: the entities keep which devices
-    // exist, these keep every time each was heard, from where and how loudly.
-    super::persist_rf_sightings_best_effort(&sid, &rf_sightings(body), output).await;
-    render_import_entities(&entities, output);
-    Ok(())
+    // The RF sightings ride alongside the graph, not instead of it: the entities
+    // keep which devices exist, `with_rf_sightings` keeps every time each was
+    // heard, from where and how loudly (persisted by `run_import`).
+    super::run_import(
+        "Importing WiGLE KML wardriving export...",
+        "kml",
+        output,
+        |sid| {
+            let (entities, stats) = parse_kml(body, sid);
+            super::ParsedImport::new(entities, stats).with_rf_sightings(rf_sightings(body))
+        },
+    )
+    .await
 }
 
 #[cfg(test)]

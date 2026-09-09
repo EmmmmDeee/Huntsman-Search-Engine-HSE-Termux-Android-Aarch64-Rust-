@@ -263,14 +263,16 @@ fn parse_csv(body: &str) -> Vec<Vec<String>> {
 /// CLI entry: parse a DeHashed CSV and persist it as a completed scan, mirroring
 /// the other import formats.
 pub(super) async fn cmd_import_csv(body: &str, output: &str) -> Result<()> {
-    note(output, "Importing DeHashed CSV export...");
-    let sid = format!("import-dehashed-{}", crate::core::entity::unix_now());
-    let (mut entities, stats) = parse_dehashed_csv(body, &sid);
-    deduplicate_by_uid(&mut entities);
-    print_import_stats(&stats, entities.len(), output);
-    persist_and_report(&sid, &entities, output).await;
-    render_import_entities(&entities, output);
-    Ok(())
+    run_import(
+        "Importing DeHashed CSV export...",
+        "dehashed",
+        output,
+        |sid| {
+            let (entities, stats) = parse_dehashed_csv(body, sid);
+            ParsedImport::new(entities, stats)
+        },
+    )
+    .await
 }
 
 // ─── HSE's own CSV export (round-trip) ────────────────────────────────────────
@@ -428,14 +430,11 @@ fn tally(kind: &EntityKind, stats: &mut ImportStats) {
 
 /// CLI entry: re-ingest an HSE CSV export as a completed scan.
 pub(super) async fn cmd_import_hse_csv(body: &str, output: &str) -> Result<()> {
-    note(output, "Re-importing HSE CSV export...");
-    let sid = format!("import-hsecsv-{}", crate::core::entity::unix_now());
-    let (mut entities, stats) = parse_hse_csv(body, &sid);
-    deduplicate_by_uid(&mut entities);
-    print_import_stats(&stats, entities.len(), output);
-    persist_and_report(&sid, &entities, output).await;
-    render_import_entities(&entities, output);
-    Ok(())
+    run_import("Re-importing HSE CSV export...", "hsecsv", output, |sid| {
+        let (entities, stats) = parse_hse_csv(body, sid);
+        ParsedImport::new(entities, stats)
+    })
+    .await
 }
 
 #[cfg(test)]
