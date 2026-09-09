@@ -135,6 +135,11 @@ struct AutoScanSummary {
     entities: usize,
     relations: usize,
     correlations: usize,
+    /// `false` when relations/correlations were skipped for size (see
+    /// `app::persist::PERSIST_ENRICH_MAX_ENTITIES`) — every entity is still
+    /// stored either way; this disambiguates a size-skipped pass from a batch
+    /// that genuinely yielded zero relations/correlations.
+    enriched: bool,
 }
 
 /// Persist the extracted `entities` as a completed, correlated scan — the
@@ -169,7 +174,7 @@ async fn run_auto_scan(entities: &[ExtractedEntity], text: &str) -> Result<AutoS
     crate::app::import::deduplicate_by_uid(&mut converted);
     let scan_label =
         crate::app::persist::strongest_identity_label(&converted, format!("investigate: {label}"));
-    let (relations, correlations) = crate::app::persist::persist_entities_as_scan(
+    let (relations, correlations, enriched) = crate::app::persist::persist_entities_as_scan(
         &sid,
         scan_label,
         crate::core::scan::TargetKind::FullName,
@@ -181,6 +186,7 @@ async fn run_auto_scan(entities: &[ExtractedEntity], text: &str) -> Result<AutoS
         entities: converted.len(),
         relations,
         correlations,
+        enriched,
     })
 }
 
@@ -215,6 +221,14 @@ fn print_table(text: &str, entities: &[ExtractedEntity], scan: Option<&AutoScanS
              view with `hse list`",
             s.sid, s.entities, s.relations, s.correlations
         );
+        if !s.enriched {
+            println!(
+                "  note: relations/correlations skipped — {} entities exceeds the \
+                 {}-entity enrichment cap; every entity is still stored",
+                s.entities,
+                crate::app::persist::PERSIST_ENRICH_MAX_ENTITIES
+            );
+        }
     }
 }
 
@@ -241,6 +255,7 @@ fn print_json(text: &str, entities: &[ExtractedEntity], scan: Option<&AutoScanSu
             "entities": s.entities,
             "relations": s.relations,
             "correlations": s.correlations,
+            "enrichment_skipped": !s.enriched,
         });
     }
     println!(

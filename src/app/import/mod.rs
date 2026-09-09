@@ -544,7 +544,7 @@ pub(crate) fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>
 async fn persist_import(
     sid: &str,
     entities: &[crate::core::entity::Entity],
-) -> Result<(usize, usize)> {
+) -> Result<(usize, usize, bool)> {
     use crate::core::scan::TargetKind;
 
     // A readable scan label: the strongest identity in the file, else generic —
@@ -559,13 +559,27 @@ async fn persist_import(
 /// fatal — the entities were already rendered to the operator.
 async fn persist_and_report(sid: &str, entities: &[crate::core::entity::Entity], output: &str) {
     match persist_import(sid, entities).await {
-        Ok((relations, correlations)) => note(
-            output,
-            format!(
-                "  Stored:    scan {sid} ({} entities, {relations} relations, {correlations} correlations) — view with `hse list`",
-                entities.len()
-            ),
-        ),
+        Ok((relations, correlations, enriched)) => {
+            note(
+                output,
+                format!(
+                    "  Stored:    scan {sid} ({} entities, {relations} relations, {correlations} correlations) — view with `hse list`",
+                    entities.len()
+                ),
+            );
+            if !enriched {
+                note(
+                    output,
+                    format!(
+                        "  Note:      relations/correlations skipped — {} entities exceeds the \
+                         {}-entity enrichment cap (device-safety bound on the pairwise \
+                         correlator pass); every entity is still stored",
+                        entities.len(),
+                        crate::app::persist::PERSIST_ENRICH_MAX_ENTITIES
+                    ),
+                );
+            }
+        }
         Err(e) => note(
             output,
             format!("  Warning:   could not persist import: {e}"),

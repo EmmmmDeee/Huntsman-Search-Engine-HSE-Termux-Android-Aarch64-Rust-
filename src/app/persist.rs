@@ -68,12 +68,35 @@ fn confidence_rank(entities: &mut [Entity]) {
 /// Best-effort on relations and correlations: the entities are already
 /// persisted, so a hiccup deriving the graph must not fail the whole operation.
 /// Returns `(relations, correlations)` persisted, for the caller's summary.
+/// Device-safety bound shared by every caller of [`persist_entities_as_scan`]
+/// (`hse import`, `hse investigate --auto-scan`, `hse ingest --auto-scan`).
+///
+/// Cross-entry enrichment (relation derivation + the correlator) is pairwise
+/// WITHIN same-key buckets, so a pathological single-key batch — e.g. tens of
+/// thousands of `*@one-domain.tld` rows, exactly the shape a real leaked
+/// database table takes — degrades to a multi-minute O(n²) pass that would
+/// lock a 2-core Termux phone. Reproduced live: a synthetic 4,000-row
+/// same-domain SQL-dump import already took 36+ seconds with NO cap in place
+/// (this function had none prior to this guard; the web upload handler
+/// (`api::scan_handlers::core::scan_import`) already carries an identical
+/// `IMPORT_ENRICH_MAX_ENTITIES` cap — the two are intentionally kept as
+/// separate constants rather than unified here, since the web handler inlines
+/// its own persistence body around `insert_stealer_rows_batch` in the same
+/// blocking closure and merging the two risks regressing that already-shipped
+/// path for a cosmetic DRY gain).
+///
+/// The import's PRIMARY contract — persist every parsed entity — is met
+/// unconditionally by [`persist_entities_as_scan`]; only this best-effort
+/// enrichment is bounded, so a huge batch always COMPLETES. A realistic batch
+/// (well under the cap) still gets full relations + correlations.
+pub(crate) const PERSIST_ENRICH_MAX_ENTITIES: usize = 5_000;
+
 pub(crate) async fn persist_entities_as_scan(
     sid: &str,
     label: String,
     kind: TargetKind,
     entities: &[Entity],
-) -> Result<(usize, usize)> {
+) -> Result<(usize, usize, bool)> {
     use crate::core::StoragePort;
     use crate::core::entity::unix_now;
     use crate::core::scan::{Scan, ScanStatus, Target};
@@ -100,6 +123,13 @@ pub(crate) async fn persist_entities_as_scan(
     scan.entity_count = entities.len();
     store.upsert_scan(&scan)?;
     store.upsert_entities_batch(entities)?;
+
+    // Device-safety bound: skip the O(n²) enrichment on a pathologically
+    // large batch (entities are already persisted above; nothing lost) — see
+    // `PERSIST_ENRICH_MAX_ENTITIES`'s own doc for why and the reproduction.
+    if entities.len() > PERSIST_ENRICH_MAX_ENTITIES {
+        return Ok((0, 0, false));
+    }
 
     let mut relations = 0usize;
     // Bound derivation by wall-clock, identically to a live scan
@@ -131,7 +161,7 @@ pub(crate) async fn persist_entities_as_scan(
         }
     }
 
-    Ok((relations, correlations))
+    Ok((relations, correlations, true))
 }
 
 #[cfg(test)]
@@ -227,10 +257,11 @@ mod tests {
         let label = strongest_identity_label(&entities, "batch");
         assert_eq!(label, "Test Subject", "label should be the person");
 
-        let (_relations, _correlations) =
+        let (_relations, _correlations, enriched) =
             persist_entities_as_scan(sid, label, TargetKind::FullName, &entities)
                 .await
                 .expect("persist should succeed against the temp store");
+        assert!(enriched, "a small batch must not be size-capped");
 
         let store =
             crate::storage::Store::open(&crate::default_db_path()).expect("reopen the temp store");
@@ -252,6 +283,64 @@ mod tests {
         assert!(
             stored.iter().any(|e| e.value == "Test Subject"),
             "every entity in the batch must be persisted, not just the label"
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_entities_as_scan_caps_enrichment_above_the_threshold() {
+        // Regression: `persist_entities_as_scan` used to carry NO entity-count
+        // cap on its O(n^2)-pairwise-within-same-key-bucket enrichment pass
+        // (relation derivation + correlator), unlike the web upload handler's
+        // pre-existing `IMPORT_ENRICH_MAX_ENTITIES` cap — a same-domain batch
+        // above the cap hung for 60+ real seconds (see
+        // `PERSIST_ENRICH_MAX_ENTITIES`'s own doc for the live reproduction).
+        // The primary contract — every entity persisted — must hold regardless;
+        // only the best-effort enrichment may be skipped. Same-domain values
+        // mirror the exact adversarial shape (all rows sharing one email-domain
+        // key bucket) that produced the original hang, so this test would time
+        // out rather than merely fail if the cap regressed.
+        let sid = format!(
+            "test-persist-cap-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
+        let sid = sid.as_str();
+
+        let count = PERSIST_ENRICH_MAX_ENTITIES + 1;
+        let entities: Vec<Entity> = (0..count)
+            .map(|i| {
+                Entity::new(
+                    EntityKind::Email,
+                    format!("user{i}@one-domain.tld"),
+                    0.9,
+                    sid,
+                )
+            })
+            .collect();
+
+        let (relations, correlations, enriched) =
+            persist_entities_as_scan(sid, "batch".to_string(), TargetKind::FullName, &entities)
+                .await
+                .expect("persist should succeed even when enrichment is capped");
+        assert!(
+            !enriched,
+            "a batch above PERSIST_ENRICH_MAX_ENTITIES must skip enrichment"
+        );
+        assert_eq!(relations, 0, "capped enrichment reports zero relations");
+        assert_eq!(
+            correlations, 0,
+            "capped enrichment reports zero correlations"
+        );
+
+        let store =
+            crate::storage::Store::open(&crate::default_db_path()).expect("reopen the temp store");
+        let stored = store.entities_for_scan(sid).expect("read entities back");
+        assert_eq!(
+            stored.len(),
+            count,
+            "every entity must still be persisted even when enrichment is skipped"
         );
     }
 }
