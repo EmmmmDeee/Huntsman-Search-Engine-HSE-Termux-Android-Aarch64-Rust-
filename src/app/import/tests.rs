@@ -2618,6 +2618,60 @@ fn parse_sql_dump_ignores_insert_substrings_inside_string_values() {
     );
 }
 
+/// `string_literal_spans` must track escape PARITY correctly across a run of
+/// consecutive backslashes (each `\\` is one escaped backslash; a following
+/// lone `\'` is a separate escaped quote — the two must not be conflated),
+/// and a body truncated mid-string (a realistic partial/corrupted upload)
+/// must neither panic/hang nor corrupt an earlier, complete statement's row.
+#[test]
+fn parse_sql_dump_string_scanning_handles_escape_parity_and_truncation() {
+    // Three backslashes then a quote = one escaped-backslash pair (`\\`) plus
+    // one escaped-quote pair (`\'`) in sequence. The string must stay OPEN
+    // through both, so the embedded `INSERT INTO` text is never mistaken for
+    // a real statement boundary and the row is not quarantined. A regression
+    // that mishandles chained escapes would falsely close the string early,
+    // truncate this statement, and drop the email entirely.
+    let odd_backslash_run = "INSERT INTO u (email, bio) VALUES \
+        ('a@example.org', 'a \\\\\\' still open INSERT INTO z (x) VALUES (9)');";
+    let (entities, stats) = parse_sql_dump(odd_backslash_run, "s");
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "a@example.org"),
+        "a chained backslash-then-quote escape run must not falsely close the string: {entities:?}"
+    );
+    assert_eq!(
+        stats.malformed_lines, 0,
+        "the escape-parity case is well-formed, not malformed"
+    );
+
+    // A body truncated mid-string (a partial/corrupted upload, e.g. a network
+    // cut-off) must not panic or hang, and must not corrupt an EARLIER,
+    // complete statement's row — only the truncated statement's own tuple is
+    // quarantined whole (`parse_value_tuple` never emits a partial row).
+    let truncated = "INSERT INTO u (email) VALUES ('good@example.org');\n\
+        INSERT INTO u (email, bio) VALUES ('trunc@example.org', 'this bio never closes";
+    let (entities, stats) = parse_sql_dump(truncated, "s");
+    let emails: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        emails.contains(&"good@example.org"),
+        "the earlier, complete statement must survive a later truncation: {emails:?}"
+    );
+    assert!(
+        !emails.contains(&"trunc@example.org"),
+        "the truncated statement's own row must be quarantined whole, not \
+         partially emitted: {emails:?}"
+    );
+    assert!(
+        stats.malformed_lines >= 1,
+        "the truncated tuple must be counted as malformed"
+    );
+}
+
 /// A DeHashed-style breach CSV whose header uses a plausible synonym instead
 /// of DeHashed's own canonical column name (`email_address` not `email`,
 /// `user_name`/`pass`/`mobile`/`street_address` not `username`/`password`/
