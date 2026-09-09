@@ -13,8 +13,8 @@ run, a CI head, or a runtime check — `CLAIM ≠ EVIDENCE` applies to this file
 | `main` | `c2f27b9b` — the base the delivered units were re-integrated onto (PRs #621–#623 landed on `main` after the `2769a606` this ledger previously checkpointed; the only textual overlap with the delivery was `CHANGELOG.md`, which merged cleanly). Full lineage in §5 |
 | Programme baseline (before) | `cab1f9b4` (HSE v1.41.0, MSRV 1.98, edition 2024) |
 | Working branch | `claude/pensive-heisenberg-q7lbp3` → **PR #624** (open, `main` ← this branch). The earlier `claude/response-accuracy-legal-u90ja3` branch was never pushed (see the push-blocker below); its six commits were carried forward as a git bundle + patch files and cherry-picked, unmodified and with original authorship, onto `c2f27b9b` by a later session with repository access |
-| In-flight unit | none — the three objective units (`08b010fb` combolist ingestion, `879ee2fe` reconsideration skip-cache, `62c8cb0a` SQL-dump ingestion — §5) are integrated on PR #624 together with three follow-on commits from the integrating session (an architecture ratchet locking the skip-cache's round-loop wiring, a review-found self-echo correctness fix, and a regression test locking the combolist detector against header/config-shaped false positives — §5). The earlier **push blocker is resolved**: the integrating session had repository access and pushed; nothing remains local-only |
-| GitHub | 0 open issues; **1 open pull request — #624**, head `80c62133`, `mergeable_state: clean`, CI green on every pushed head (8/8 checks: clippy, gitleaks, MSRV 1.98, hse-core + wasm-ui, `install.sh` syntax, rust-clippy, Check & test Linux x86_64, aarch64-linux-android Termux build — i.e. the three checks `gate.sh --quick` skips locally are confirmed by CI). All three automated-review threads resolved. Awaiting the repository owner's merge decision — not something the integrating session takes unilaterally |
+| In-flight unit | none — the three objective units (`08b010fb` combolist ingestion, `879ee2fe` reconsideration skip-cache, `62c8cb0a` SQL-dump ingestion — §5) are integrated on PR #624 together with four follow-on commits from the integrating session (an architecture ratchet locking the skip-cache's round-loop wiring, a review-found self-echo correctness fix, a regression test locking the combolist detector against header/config-shaped false positives, and an explicit input-format override — `71bfd13c` — that closes the residual bare-username-only combolist gap by making the already-working parser reachable rather than by broadening the unsafe heuristic — §5). The earlier **push blocker is resolved**: the integrating session had repository access and pushed; nothing remains local-only |
+| GitHub | 0 open issues; **1 open pull request — #624**, head `71bfd13c` (11 commits), CI green on every prior pushed head (8/8 checks: clippy, gitleaks, MSRV 1.98, hse-core + wasm-ui, `install.sh` syntax, rust-clippy, Check & test Linux x86_64, aarch64-linux-android Termux build — i.e. the three checks `gate.sh --quick` skips locally are confirmed by CI); CI re-triggered on `71bfd13c` and being watched to green. All three automated-review threads resolved. Awaiting the repository owner's merge decision — not something the integrating session takes unilaterally |
 | Toolchain | rustc 1.98. `scripts/gate.sh --quick` skips exactly three checks — MSRV, the aarch64 cross-build / cross-test-compile and the wasm-ui/pkg drift check — for which CI is the authority. Everything else runs as CI does, each under its own condition: root crate fmt / check / clippy `-D warnings` / rustdoc lints / test / doctests / doc coverage; hse-core fmt / clippy / rustdoc / test; wasm-ui fmt / clippy / native test; `install.sh` syntax; shellcheck when installed; the cargo-audit / deny / machete / dep-cooldown family only when a manifest changed (audit.yml's path filter) and the tools are present. That is 16 executed checks for a non-manifest change when shellcheck is installed, 15 when it is not (this run's sandbox: shellcheck absent, so 15/15 passed; the audit family correctly skipped either way). The drift check also runs locally through `scripts/wasm_ui_drift_check.sh` once the pinned chain is installed (§8) |
 
 ## 2. Verified facts (with evidence)
@@ -202,37 +202,51 @@ genealogy`) for the ancestry sites whose terms/robots forbid automation
 (Ancestry, FamilySearch, Find a Grave, the BDM registries, NAA, CWGC, FreeBMD,
 …); the site contracts are drafted and URL-verified.
 
-Open, above the return threshold, **needs design before code** — recorded by
-the integrating session (PR #624) so the next session starts from evidence,
-not from the tempting wrong fix:
+Closed this run (fourth follow-on unit on PR #624): **bare-username-only
+combolist now reachable via an explicit input-format override** (`71bfd13c`).
 
 - **Bare-username-only combolist not detected** (residual, pre-existing in
   `08b010fb`, unchanged by the integration). A combolist whose identities are
-  ALL bare usernames — zero email-shaped lines anywhere in the file — is never
+  ALL bare usernames — zero email-shaped lines anywhere in the file — was never
   format-detected: `looks_like_combolist` counts a line toward its ≥90%
   threshold only when the identity `looks_like_email`, so an all-username file
-  scores 0%, falls through to the `OathnetTxt` catch-all, and imports as zero
+  scored 0%, fell through to the `OathnetTxt` catch-all, and imported as zero
   entities — the same silent-data-loss class the combolist unit exists to
-  close, for this one shape. The PARSER (`parse_combolist`) already handles a
-  bare username correctly once invoked; only detection is missing. Two
-  candidate fixes were **checked with a standalone executable** (six synthetic
-  samples, current heuristic vs candidate) and both are unsafe as stated:
-  (1) admit any whitespace-free identity → the existing prose negative-control
-  test scores 3/3 and misfires; (2) additionally require the secret half to
-  have no internal whitespace → avoids (1) but scores 3/3 on HTTP response
-  headers, email headers, and a YAML config snippet, because "a single
-  unspaced token after a colon" is exactly as common there as in a credential
-  dump. `80c62133` locks today's correct rejection of those three shapes so
-  the trap fails a test rather than shipping. A safe fix needs POSITIVE
-  evidence of a credential, not the absence of a negative pattern, plus a
-  broad negative corpus (headers, config formats, key-value logs) run before
-  any threshold change — and a naive "password-shaped secret" entropy
-  signal is not free either: it would reject the weak passwords (`password`,
-  `123456`) that dominate real dumps. Alternative that sidesteps the
-  heuristic entirely and is worth weighing first: an explicit input-format
-  override on `hse import` (its `--format` today is OUTPUT-only), which makes
-  the already-working parser reachable for an operator who knows what the
-  file is, with zero false-positive risk.
+  close, for this one shape. The PARSER (`parse_combolist`) already handled a
+  bare username correctly once invoked; only detection was missing.
+  **Reproduced with the built binary** before changing anything: a 10-line
+  all-bare-username fixture stored an *empty* scan (`Imported 0 entities`,
+  exit 0) on the CLI and was rejected as "no verifiable entities" (400) by the
+  upload. Two candidate fixes to the DETECTION HEURISTIC were **checked with a
+  standalone executable** (six synthetic samples, current heuristic vs
+  candidate) and both are unsafe as stated: (1) admit any whitespace-free
+  identity → the existing prose negative-control test scores 3/3 and misfires;
+  (2) additionally require the secret half to have no internal whitespace →
+  avoids (1) but scores 3/3 on HTTP response headers, email headers, and a
+  YAML config snippet, because "a single unspaced token after a colon" is
+  exactly as common there as in a credential dump. `80c62133` locks today's
+  correct rejection of those three shapes so the trap fails a test rather than
+  shipping. **Closed the other way — by reachability, not heuristic** (the
+  alternative this bullet previously flagged as worth weighing first, now
+  built): `71bfd13c` adds an explicit input-format override — `hse import
+  --input-format <FORMAT>` and the web upload's `?format=<name>` (plus a
+  selector on the Import form) — that bypasses `detect_import_format` and
+  dispatches straight to the named parser, with ZERO false-positive risk (the
+  operator, not a heuristic, asserts the format). Verified end-to-end: the same
+  fixture that stored 0 entities now imports 20 under `--input-format
+  combolist`; auto-detection is untouched (still 0). One name authority
+  (`ImportFormat` derives `clap::ValueEnum`), an unknown name is an actionable
+  error naming every accepted spelling (never a silent fall back to detection),
+  a forced format on a directory scrape is refused explicitly, and both
+  hand-offs are locked in production source by `import_format_override_reaches_
+  both_dispatchers` (falsified: forced value ignored + CLI dispatch passing
+  `None` → the two unit tests, the API test and the ratchet all fail; restored
+  byte-identical → gate green 15/15). Residual, now BELOW threshold and noted so
+  it is not re-derived: *automatic* detection of an all-bare-username file
+  (with no operator hint) still needs the positive-credential-evidence signal
+  plus a broad negative corpus described above — genuine heuristic design work,
+  no longer a silent-data-loss defect now that the override gives the operator
+  a safe, documented path to the working parser.
 
 Below the return threshold at the last recompute, with the reason recorded so
 it is not re-derived:
@@ -289,6 +303,7 @@ it is not re-derived:
 | Architecture ratchet `reconsideration_is_gated_by_the_working_set_version` (`tests/architecture_parts/architecture_part7.rs`) — no test drove `run_expansion`'s round loop behaviourally, so an edit that dropped the skip-cache's gate (or forgot the version re-capture, which would make the cache never hit) left every existing test green while restoring the full clone-and-rescan cost every round. Locks the gate / call / re-capture wiring in production source. **Falsified before landing**: gate reverted in place, ratchet failed with an actionable message naming the missing gate, restored (byte-identical, `git diff` empty), reconfirmed green. The `hse` binary that a concurrent `cargo build` had produced mid-falsification was detected as tainted by its `dead_code` warnings and discarded; all runtime evidence above came from a clean rebuild | `acf4b681` | on PR #624, CI green (8/8) |
 | Self-echo correctness fix in `app::import::combolist` (found by the PR's automated Copilot review, verified as a real bug, not accepted on trust) — the guard compared the SECRET against the RAW identity text, but `Entity::new` strips surrounding quotes and a leading `@` sigil and case-folds, so `'alice':alice` or `@bob:BOB` slipped past a raw-vs-raw comparison and minted a fabricated Password entity for a value that was just the identity's own normalised form (RULE.md: no fabricated findings). Now compares against the normalised value captured before the entity is moved. New regression test `parse_combolist_self_echo_guard_compares_the_normalised_identity` covers a quote-stripping case and a sigil-stripping + case-folding case. **Falsified before landing**: fix reverted, test failed and reproduced both fabricated Password entities exactly as predicted, restored, 95/95 import tests + clippy 0 warnings. Same commit: `malformed_lines` doc updated to name both populating importers; `Quarantine:` summary row gained a space. The identical raw-vs-raw pattern in `comb_search`'s live COMB fetch was examined and left alone on the merits — its upstream exact-identity-match guard rejects a quoted/sigil'd identity before the self-echo check is ever reached, so it is not live there; also outside this PR's diff | `08d2e1fc` | on PR #624, CI green (8/8) |
 | Regression test `combolist_detection_never_misfires_on_header_or_config_shaped_text` — locks the combolist detector's correct rejection of HTTP-response-header, email-header, and YAML-config-shaped text (three fixtures) against a future broadening of the identity-shape check; see the §4 residual-gap entry below for the executable falsification that motivated it | `80c62133` | on PR #624, CI green (8/8) |
+| Explicit input-format override — `hse import --input-format <FORMAT>` + the web upload's `?format=<name>` query parameter (matching selector on the Import form), forcing the input format instead of detecting it from content. Closes the §4 bare-username-only combolist gap by REACHABILITY (the already-working `parse_combolist` made reachable), not by broadening the unsafe heuristic. Root cause reproduced with the built binary first (all-bare-username fixture → empty scan, exit 0 on CLI / 400 on upload). One name authority: `ImportFormat` derives `clap::ValueEnum`, so the flag values, the `?format=` values and the label both surfaces report are the same twelve kebab-case spellings; `label()` locked to the derived names and the web selector's `<option>` list locked to the enum. Unknown name → actionable error listing every spelling (never a silent fall back to detection); forced format on a directory scrape → explicit refusal; the Import form's file picker widened to admit `.csv`/`.kml`/`.sql`/`.log`. Tests at every boundary (import layer: forced wins over detection, bare-username fixture reaches the parser, forced JSON on non-JSON is an explicit error, `label()`↔`ValueEnum`, selector↔enum; CLI parse: case-insensitive, unknown rejected at parse time; API: `?format=combolist`→200/6 entities, `?format=bogus`→400; architecture ratchet `import_format_override_reaches_both_dispatchers` locking both hand-offs). **Falsified before landing**: forced value ignored in the import layer + CLI dispatch passing `None` → the two unit tests, the API test (400 not 200) and the ratchet all failed with actionable messages; restored byte-identical (`cmp` against snapshots) → `scripts/gate.sh --quick` green 15/15. Runtime, rebuilt binary: the 0-entity fixture now imports 20 entities under `--input-format combolist`; auto-detection unchanged | `71bfd13c` | on PR #624, CI re-triggered on this head (being watched to green) |
 
 Void after evidence: "retire 27 production unwraps" (all test code);
 "dead-code audit" (all sites justified); "Termux hardening" (already clean).
@@ -340,6 +355,14 @@ loopback, served UI) → live network (drift sweep) → reproducibility
   it together with that test if the fix itself proves wrong), `git revert
   80c62133` (header/config regression test — test-only). None touches a
   schema or persisted data.
+- Explicit input-format override (`71bfd13c`) reverts independently with `git
+  revert 71bfd13c` — adds the `--input-format` flag, the upload's `?format=`
+  parameter, a `clap::ValueEnum` derive + `label`/`parse_name` on the existing
+  `ImportFormat` enum, the web selector, and an architecture ratchet; changes
+  no parser, no schema, no persisted data. Reverting it removes the operator's
+  path to force a format (auto-detection is unaffected) and re-opens the
+  bare-username-only reachability gap, so revert it only if the override itself
+  proves wrong.
 
 ## 8. Restart instructions (exact)
 
@@ -392,4 +415,5 @@ A fresh clone may be shallow here: run `git fetch --unshallow` before any
 | External blocker — RESOLVED (the push-blocker above) | a later session with repository access imported the handed-over git bundle, verified it against the repo (`git bundle verify`), cherry-picked all six commits onto the then-current `main` with original authorship preserved, re-verified everything independently on the new base (§5), pushed, and opened PR #624; the bundle/patch hand-off worked exactly as intended — no commit was lost to container reclamation |
 | Process artefact (a `cargo build --bin hse` launched BEFORE an in-place falsification edit to `src/core/engine/mod.rs` picked the edit up mid-compile, silently producing a binary built from the deliberately-broken code) | detected from the build's own output — `dead_code` warnings for `version()` / `should_reconsider` that only exist once the gate is removed — before the binary was used for anything; deleted it, restored the file (byte-identical), rebuilt clean (0 warnings) and only then ran the CLI smoke tests. Lesson recorded alongside the earlier gate-mid-edit note: never mutate a tracked source file while ANY cargo invocation that may read it is still in flight, and treat an unexpected warning in a build you expected to be clean as evidence about the inputs, not noise |
 | Deterministic defect (review-found: combolist self-echo guard compared raw identity vs secret, minting a fabricated Password entity for a quoted / `@`-sigil'd / case-differing identity echoed back as its own secret) | treated the bot finding as a bug report, not a verdict: hand-traced `Entity::new`'s normalisation to confirm it, wrote a regression test, falsified (reverted the fix → test failed and reproduced BOTH fabricated entities → restored → green), clippy 0 warnings, pushed `08d2e1fc`, replied on and resolved the review threads |
+| Verified upgrade sensitivity (the input-format override, `71bfd13c`) | proved the change — not incidental state — causes the improvement, at every boundary: reproduced the baseline (all-bare-username fixture → 0 entities stored / 400 on upload) with the b67146da binary; broke the wiring deliberately (forced value ignored in `entities_from_upload`, CLI dispatch passing `None`) and confirmed the two forced-format unit tests, the API `?format=` test (400 not 200) and the `import_format_override_reaches_both_dispatchers` ratchet ALL failed with their intended actionable messages; restored both files byte-identical to pre-falsification snapshots (`cmp`), re-ran `scripts/gate.sh --quick` green (15/15) and re-exercised the rebuilt binary (20 entities under `--input-format combolist`, auto-detection still 0) |
 | Falsified candidate design (the follow-up fix this ledger's §4 had sketched for the bare-username-only combolist gap — admit a non-email identity when neither half has internal whitespace) | before leaving it as advice for the next session, checked it with a standalone executable (six synthetic samples, current heuristic vs candidate): the candidate correctly detects the target case but ALSO scores 100% on HTTP response headers, email headers, and a YAML config snippet — a new false-positive class, because "single unspaced token after a colon" is exactly as common in headers/config as in credentials. Corrected the sketch (PR #624 description + §4 below) and locked today's correct rejection of all three shapes into `80c62133` so the trap fails a test instead of shipping silently. A safe fix needs positive evidence of a credential plus a broad negative corpus (headers, config, key-value logs) — and note that a naive "password-shaped secret" entropy signal would itself reject the weak passwords (`password`, `123456`) that dominate real dumps, so it is not a free improvement either |
