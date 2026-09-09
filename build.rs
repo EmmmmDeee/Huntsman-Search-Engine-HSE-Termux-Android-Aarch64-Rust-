@@ -67,10 +67,32 @@ fn main() {
 ///    and fall back to building from source rather than trusting the binary.
 fn emit_build_provenance() {
     println!("cargo:rerun-if-env-changed=HSE_BUILD_SHA");
-    // A commit/checkout changes HEAD (or, on a branch, the ref it points at).
-    for p in [".git/HEAD", ".git/ORIG_HEAD"] {
+    // A checkout rewrites `.git/HEAD`; a COMMIT on a branch does not — HEAD is
+    // then the symbolic `ref: refs/heads/<branch>`, byte-identical before and
+    // after, and only the ref file it points at changes. Watching HEAD alone
+    // therefore left this stamp stale across commits: a binary rebuilt after a
+    // commit kept reporting the previous SHA, and `install.sh` — which compares
+    // `hse build-sha` against the revision it installed — would misjudge it.
+    // So resolve the symbolic ref and watch its target too, plus the target's
+    // directory (a loose ref file APPEARS there on the first commit after
+    // `git pack-refs`, and a directory watch sees its direct children change)
+    // and `packed-refs` (where the ref lives until then).
+    for p in [".git/HEAD", ".git/ORIG_HEAD", ".git/packed-refs"] {
         if Path::new(p).exists() {
             println!("cargo:rerun-if-changed={p}");
+        }
+    }
+    if let Some(target) = std::fs::read_to_string(".git/HEAD")
+        .ok()
+        .and_then(|h| h.trim().strip_prefix("ref: ").map(str::to_string))
+    {
+        let target = format!(".git/{target}");
+        let target = Path::new(&target);
+        if target.exists() {
+            println!("cargo:rerun-if-changed={}", target.display());
+        }
+        if let Some(dir) = target.parent().filter(|d| d.exists()) {
+            println!("cargo:rerun-if-changed={}", dir.display());
         }
     }
 

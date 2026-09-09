@@ -1052,3 +1052,29 @@ fn import_format_override_reaches_both_dispatchers() {
          upload parameter a silent no-op"
     );
 }
+
+/// The build-provenance stamp (`HSE_GIT_SHA`, surfaced as `hse --version` and
+/// `hse build-sha`) must follow a COMMIT, not just a checkout.
+///
+/// On a branch `.git/HEAD` is a symbolic `ref: refs/heads/<branch>` that does
+/// not change when a commit is made — only the ref file it points at does. A
+/// build script that watches HEAD alone re-runs on checkout but not on commit,
+/// so a binary rebuilt after a commit kept reporting the previous SHA: exactly
+/// the "stale install passes for up-to-date" failure the stamp exists to end,
+/// and `install.sh` compares `hse build-sha` against the revision it installed.
+/// Reproduced on a clean tree at one commit whose fresh build reported the prior
+/// commit. This locks the resolution of the symbolic ref and the watch on its
+/// target and on `packed-refs`.
+#[test]
+fn build_provenance_follows_commits_not_just_checkouts() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let build = fs::read_to_string(root.join("build.rs")).expect("build.rs");
+    for needle in [r#"strip_prefix("ref: ")"#, ".git/packed-refs"] {
+        assert!(
+            build.contains(needle),
+            "build.rs must resolve the symbolic `.git/HEAD` and watch the ref it points at \
+             (missing `{needle}`): watching `.git/HEAD` alone leaves HSE_GIT_SHA stale after a \
+             commit on a branch, so `hse build-sha` reports the previous revision"
+        );
+    }
+}
