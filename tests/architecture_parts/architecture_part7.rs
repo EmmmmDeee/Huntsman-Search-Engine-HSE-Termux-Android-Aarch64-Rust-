@@ -950,3 +950,67 @@ fn no_module_maps_an_unreadable_body_to_an_empty_result() {
          `util::http::read_body_capped_or_fail`: {offenders:?}"
     );
 }
+
+/// The reconsideration skip-cache is only worth anything if the round loop
+/// actually consults it. `expansion::should_reconsider` and
+/// `TrackedEntityMap::version` are each unit-tested as pure functions, but no
+/// behavioural test drives `run_expansion` round-by-round, so an edit that
+/// dropped the gate — calling `reconsider_working_set` unconditionally again,
+/// or forgetting to re-capture the version after it runs (which would make the
+/// cache never hit) — would leave every existing test green while silently
+/// restoring the clone-the-whole-working-set-and-rescan cost on every round.
+/// This locks the wiring in production source: the working set is
+/// reconsidered at exactly ONE call site, that call is guarded by
+/// `should_reconsider(entity_map.version(), last_reconsidered_version)`, and
+/// the version is re-captured from the map immediately after the call, in that
+/// order and within one `if` block. Whitespace is stripped before matching so
+/// rustfmt's line breaking (including a trailing-comma argument split) cannot
+/// produce a false failure.
+#[test]
+fn reconsideration_is_gated_by_the_working_set_version() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let src = fs::read_to_string(root.join("src/core/engine/mod.rs")).unwrap();
+    let code: String = production_source(&src)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+
+    let gate = "should_reconsider(entity_map.version(),last_reconsidered_version";
+    let call = "reconsider_working_set(entity_map,relations.as_slice()";
+    let recapture = "last_reconsidered_version=Some(entity_map.version())";
+
+    assert_eq!(
+        code.matches(call).count(),
+        1,
+        "the working set must be reconsidered at exactly one call site in the \
+         round loop (`{call}`), so the version gate below cannot be bypassed by \
+         a second, ungated call"
+    );
+    let gate_at = code.find(gate).unwrap_or_else(|| {
+        panic!(
+            "the round loop no longer gates reconsideration on the working set's \
+             mutation version — `{gate}` was not found. Without this gate every \
+             round pays the full clone-and-rescan cost even when nothing changed \
+             (see `expansion::should_reconsider`)"
+        )
+    });
+    let call_at = code.find(call).unwrap();
+    let recapture_at = code.find(recapture).unwrap_or_else(|| {
+        panic!(
+            "after reconsideration runs, the round loop must re-capture the \
+             working set's version (`{recapture}`) or the cache can never hit"
+        )
+    });
+    assert!(
+        gate_at < call_at && call_at < recapture_at,
+        "the gate, the reconsideration call, and the version re-capture must \
+         appear in that order (gate@{gate_at}, call@{call_at}, recapture@{recapture_at})"
+    );
+    assert!(
+        recapture_at - gate_at < 300,
+        "the gate, call, and re-capture must sit together in one `if` block \
+         (span {} chars) — a re-capture far from the gate is not the cache's \
+         invalidation point",
+        recapture_at - gate_at
+    );
+}
