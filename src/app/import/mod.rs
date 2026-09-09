@@ -322,11 +322,14 @@ struct ImportStats {
     persons: usize,
     organisations: usize,
     credentials: usize,
-    /// Lines that failed to parse as `identity:secret` (no delimiter, an empty
-    /// identity, or an empty secret) — quarantined and skipped rather than
-    /// aborting the whole import. Only the combolist importer populates this;
-    /// every other format either has no line-oriented shape to malform, or
-    /// already drops unparseable rows silently (unchanged behaviour).
+    /// Structurally malformed input units quarantined and skipped rather than
+    /// aborting the whole import: for the combolist importer, a line that
+    /// failed to parse as `identity:secret` (no delimiter, an empty identity,
+    /// or an empty secret); for the SQL-dump importer, a value tuple that
+    /// failed to close cleanly or whose value count didn't match its column
+    /// list. Every other format either has no line/row-oriented shape to
+    /// malform, or already drops unparseable rows silently (unchanged
+    /// behaviour).
     malformed_lines: usize,
     date_range: String,
 }
@@ -966,7 +969,7 @@ fn print_import_stats(stats: &ImportStats, entity_count: usize, output: &str) {
     }
     if stats.malformed_lines > 0 {
         row!(
-            "  Quarantine:{} malformed lines skipped (parsing continued)",
+            "  Quarantine: {} malformed lines skipped (parsing continued)",
             stats.malformed_lines
         );
     }

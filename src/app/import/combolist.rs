@@ -127,6 +127,15 @@ pub(super) fn parse_combolist(body: &str, sid: &str) -> (Vec<Entity>, ImportStat
             stats.malformed_lines += 1;
             continue;
         }
+        // Captured before `identity_entity` is moved into `entities` below.
+        // The self-echo guard further down must compare against this
+        // NORMALISED value, not the raw `identity` text: `Entity::new`
+        // strips surrounding quotes/`@` (see the comment above), so a line
+        // like `'alice':alice` has raw identity `'alice'` but secret `alice`
+        // — a raw-vs-raw comparison misses the echo entirely and mints a
+        // spurious Password entity for a value that is just the identity's
+        // own normalised form.
+        let identity_normalised = identity_entity.value.clone();
 
         let ev = Evidence::new(
             "import:combolist",
@@ -182,7 +191,7 @@ pub(super) fn parse_combolist(body: &str, sid: &str) -> (Vec<Entity>, ImportStat
             }
             CredentialField::Secret => {}
         }
-        if secret.eq_ignore_ascii_case(identity) {
+        if secret.eq_ignore_ascii_case(&identity_normalised) {
             continue;
         }
         if !seen.insert(format!("pw:{secret}")) {

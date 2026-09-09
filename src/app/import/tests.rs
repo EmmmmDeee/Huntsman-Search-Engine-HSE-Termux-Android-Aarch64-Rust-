@@ -2043,6 +2043,44 @@ fn parse_combolist_quarantines_sentinels_and_recovers_a_mis_stored_email() {
     );
 }
 
+// Regression: the self-echo guard used to compare the secret against the RAW
+// identity text, not the normalised value `Entity::new` actually stores. A
+// quoted or `@`-prefixed identity whose secret echoes the NORMALISED form
+// (not the raw form) slipped past the guard and minted a spurious Password
+// entity for a value that was really just the identity's own normalised
+// self — exactly the class of fabricated finding RULE.md forbids. Found by
+// automated review on the PR that introduced `parse_combolist`; reproduced
+// against the pre-fix code (a Password entity for `alice` was minted
+// alongside the Username entity for the exact same value) before the fix
+// landed.
+#[test]
+fn parse_combolist_self_echo_guard_compares_the_normalised_identity() {
+    let body = "'alice.tester':alice.tester\n\
+                @bob.tester:BOB.TESTER\n";
+    let (entities, _stats) = parse_combolist(body, "s");
+    // Both identities are still admitted, normalised (quote/sigil stripped,
+    // case-folded) exactly as `Entity::new` would produce on its own.
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Username && e.value == "alice.tester")
+    );
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Username && e.value == "bob.tester")
+    );
+    // ...but neither line mints a Password entity: the secret in each case
+    // is just the identity's own normalised form echoed back, not a real
+    // credential — a raw-vs-raw comparison would have missed this and
+    // fabricated one.
+    assert!(
+        !entities.iter().any(|e| e.kind == EntityKind::Password),
+        "self-echo (quoted/sigil'd/case-differing identity) must never mint a \
+         Password entity: {entities:?}"
+    );
+}
+
 #[test]
 fn parse_combolist_admits_a_bare_username_identity() {
     let body = "judy_tester_99:hunter2000\n";
