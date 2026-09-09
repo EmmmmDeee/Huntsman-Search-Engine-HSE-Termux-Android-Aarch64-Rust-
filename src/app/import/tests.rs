@@ -1974,6 +1974,35 @@ fn combolist_is_detected_and_oathnet_txt_is_not() {
     assert!(!looks_like_combolist("alice.tester@gmail.com:hunter2\n"));
 }
 
+/// Guards against a specific, real, previously-considered "fix" for a known
+/// detection gap (a bare-username-only combolist, with no email-shaped
+/// identity anywhere in the file, is currently never detected — see PR #624's
+/// description). The tempting broadened heuristic — drop the email-shape
+/// requirement on the identity, and/or require only that the SECRET half has
+/// no internal whitespace — was checked and found unsafe: "a single
+/// whitespace-free token after a colon" is exactly as common in HTTP
+/// headers, email headers, and key-value config files as it is in a real
+/// credential dump, so that broadened heuristic misdetects all three as a
+/// combolist. Each fixture below is 100%-matched by that broadened
+/// heuristic (verified with a standalone check before this test was
+/// written) while every line here is legitimate non-combolist text a real
+/// operator could plausibly import. If `looks_like_combolist` is ever
+/// changed to admit a non-email-shaped identity, these must still resolve
+/// to `false` — a change that makes any of them `true` has reintroduced
+/// exactly the false-positive class this test exists to catch.
+#[test]
+fn combolist_detection_never_misfires_on_header_or_config_shaped_text() {
+    assert!(!looks_like_combolist(
+        "Content-Type: application/json\nContent-Length: 348\nConnection: keep-alive\n"
+    ));
+    assert!(!looks_like_combolist(
+        "From: alice@example.com\nTo: bob@example.com\nDate: 2026-09-09T10:00:00Z\n"
+    ));
+    assert!(!looks_like_combolist(
+        "host: localhost\nport: 8080\ntimeout: 30s\n"
+    ));
+}
+
 #[test]
 fn parse_combolist_extracts_email_password_pairs_across_delimiters() {
     let (entities, stats) = parse_combolist(COMBOLIST_WITH_MALFORMED_LINES, "s");
