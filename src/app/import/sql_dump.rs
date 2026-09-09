@@ -27,6 +27,54 @@ use crate::core::entity::{Entity, EntityKind, Evidence};
 use regex::Regex;
 use std::sync::OnceLock;
 
+/// The byte spans of `body` that lie inside a single-quoted SQL string literal.
+///
+/// A statement-header regex match whose start falls inside one of these spans is
+/// NOT a real statement: it is `INSERT INTO ... VALUES` text sitting in a column
+/// VALUE — a leaked bio, a stored message, a logged query — and using it as a
+/// statement boundary truncates the enclosing statement mid-string, so the tuple
+/// parser hits an unterminated string and quarantines the rest of the table.
+/// That is silent breach-data loss on the exact path this parser exists to fix
+/// (reproduced: an `INSERT INTO t (c) VALUES (1)` substring in one `bio` value
+/// dropped every row in a `mysqldump --extended-insert` table).
+///
+/// Scans the whole body once, tracking string state with the SAME two escape
+/// dialects [`parse_value_tuple`] honours — mysqldump's `\'` backslash and
+/// standard SQL's `''` doubled quote — so detection and parsing agree on where
+/// strings are.
+fn string_literal_spans(body: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut chars = body.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if c != '\'' {
+            continue;
+        }
+        let mut end = body.len();
+        while let Some((j, d)) = chars.next() {
+            match d {
+                // A backslash escapes the next char (mysqldump dialect): skip it,
+                // so an escaped quote never closes the string.
+                '\\' => {
+                    chars.next();
+                }
+                // A doubled quote is an escaped quote (standard-SQL dialect): the
+                // pair stays inside the string.
+                '\'' if chars.peek().is_some_and(|&(_, e)| e == '\'') => {
+                    chars.next();
+                }
+                // A lone quote closes the string (end is the byte AFTER it).
+                '\'' => {
+                    end = j + 1;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        spans.push((i, end));
+    }
+    spans
+}
+
 /// The `INSERT INTO <table> (<columns>) VALUES` header, case-insensitive.
 /// Captures the table name (group 1, informational only — used as the
 /// provenance/database-name label, never for column semantics) and the raw
@@ -188,7 +236,23 @@ pub(super) fn parse_sql_dump(body: &str, sid: &str) -> (Vec<Entity>, ImportStats
     let mut seen = std::collections::HashSet::new();
 
     let header_re = insert_header_re();
-    let matches: Vec<_> = header_re.captures_iter(body).collect();
+    // Only headers OUTSIDE a string literal are real statement boundaries; a
+    // match inside a quoted value must never split a statement (see
+    // `string_literal_spans`). Filtering here means the region below spans the
+    // whole real statement, and the string-aware tuple parser handles any
+    // `INSERT ... VALUES` text that lives inside a value.
+    let string_spans = string_literal_spans(body);
+    let in_string = |off: usize| string_spans.iter().any(|&(s, e)| s <= off && off < e);
+    let matches: Vec<_> = header_re
+        .captures_iter(body)
+        .filter(|caps| {
+            !in_string(
+                caps.get(0)
+                    .expect("capture 0 is always the whole match")
+                    .start(),
+            )
+        })
+        .collect();
     for (i, caps) in matches.iter().enumerate() {
         let whole = caps.get(0).expect("capture 0 is always the whole match");
         let table = caps.get(1).map_or("sql-dump", |m| m.as_str());

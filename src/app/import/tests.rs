@@ -2557,3 +2557,63 @@ Username:\n          jordanavery@gmail.com\n        Password:\n          Hunter2
         "a body forced away from stealerlogs must not emit stealer rows"
     );
 }
+
+/// An `INSERT ... VALUES` substring inside a text column VALUE must not be
+/// mistaken for a statement boundary. It used to be: the header regex matched
+/// inside the quoted `bio`, truncated the real statement mid-string, and the
+/// tuple parser then quarantined every remaining row — so a `mysqldump
+/// --extended-insert` table (one statement, all rows) silently imported as
+/// **zero** entities, the exact silent breach-data loss this parser exists to
+/// prevent. `string_literal_spans` now excludes in-string header matches.
+#[test]
+fn parse_sql_dump_ignores_insert_substrings_inside_string_values() {
+    // Row 1's bio contains a full `INSERT INTO t (c) VALUES (1)`; both rows
+    // (and their emails) must still be extracted, in one extended-insert
+    // statement.
+    let body = "INSERT INTO users (email, bio) VALUES \
+        ('victim@example.org', 'I ran INSERT INTO t (c) VALUES (1) yesterday'), \
+        ('second@example.org', 'ok');";
+    let (entities, stats) = parse_sql_dump(body, "s");
+    let emails: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        emails.contains(&"victim@example.org") && emails.contains(&"second@example.org"),
+        "both rows must survive an inner INSERT substring: {emails:?} ({} malformed)",
+        stats.malformed_lines
+    );
+    assert_eq!(stats.breach_records, 2, "two real rows, one statement");
+    assert_eq!(stats.malformed_lines, 0, "nothing is malformed here");
+
+    // The doubled-quote dialect (`''`) and the backslash dialect (`\'`) both
+    // keep the inner INSERT inside the string.
+    for one in [
+        "INSERT INTO u (email, q) VALUES ('a@example.org', 'it''s an INSERT INTO z (x) VALUES (2)');",
+        "INSERT INTO u (email, q) VALUES ('a@example.org', 'a \\' and INSERT INTO z (x) VALUES (3)');",
+    ] {
+        let (ents, st) = parse_sql_dump(one, "s");
+        assert!(
+            ents.iter()
+                .any(|e| e.kind == EntityKind::Email && e.value == "a@example.org"),
+            "dialect case must extract the email: {one}"
+        );
+        assert_eq!(st.malformed_lines, 0, "no quarantine for: {one}");
+    }
+
+    // Guard the fix does not OVER-filter: two genuinely separate statements
+    // still split into two rows.
+    let two = "INSERT INTO u (email) VALUES ('x@example.org');\n\
+               INSERT INTO u (email) VALUES ('y@example.org');";
+    let (ents, _) = parse_sql_dump(two, "s");
+    let two_emails: Vec<&str> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        two_emails.contains(&"x@example.org") && two_emails.contains(&"y@example.org"),
+        "real multi-statement dumps must still split: {two_emails:?}"
+    );
+}
