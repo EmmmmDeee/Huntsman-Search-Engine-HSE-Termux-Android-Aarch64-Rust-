@@ -388,6 +388,32 @@ pub(crate) async fn entities_from_upload(
     Ok((entities, label))
 }
 
+/// Case-insensitive exact match of a header `column` against one of
+/// `candidates` — the shared column-name authority for a breach export whose
+/// schema is NOT fixed (an arbitrary compromised database's own naming, unlike
+/// DeHashed's own fixed CSV header): a real column named `email_address`,
+/// `user_name` or `mobile` is exactly as likely as `email`/`username`/`phone`,
+/// and matching only the single canonical name silently drops a present field
+/// with no warning — the same silent-breach-data-loss class this whole import
+/// surface exists to close. Originally private to the SQL-dump parser; promoted
+/// here (mirroring `util::extract::split_identity_secret`'s promotion out of
+/// `comb_search` earlier in this same effort) once the DeHashed CSV parser was
+/// found to need the identical tolerance for the identical reason — reproduced
+/// live: a CSV row identical but for using `email_address`/`user_name`/`pass`/
+/// `mobile`/`street_address` instead of DeHashed's own names silently dropped
+/// every one of those fields while still reporting "Imported 2 entities", no
+/// quarantine, no warning.
+fn column_matches(column: &str, candidates: &[&str]) -> bool {
+    let lower = column.to_ascii_lowercase();
+    candidates.iter().any(|c| lower == *c)
+}
+
+/// Find the first header column matching one of `candidates` (see
+/// [`column_matches`]).
+fn find_column(columns: &[String], candidates: &[&str]) -> Option<usize> {
+    columns.iter().position(|c| column_matches(c, candidates))
+}
+
 #[derive(Default)]
 struct ImportStats {
     breach_records: usize,

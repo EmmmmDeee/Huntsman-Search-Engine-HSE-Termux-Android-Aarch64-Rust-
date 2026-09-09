@@ -23,6 +23,20 @@ use crate::util::str_util::pipe_delimited;
 /// Detect a DeHashed-style breach CSV from its header row: an identity column
 /// plus the DeHashed hallmark (`database_name` or `hashed_password*`). Strict
 /// enough not to swallow an arbitrary CSV.
+///
+/// The identity check uses the SAME synonym-tolerant `find_column` the parser
+/// uses (a compromised database's own column naming, not only DeHashed's own
+/// fixed export header — "a DeHashed-STYLE breach CSV"), so detection and
+/// parsing never disagree on whether a file has an identity column. They used
+/// to: an `email_address`/`user_name`-headed row satisfied neither `email` nor
+/// `username` here, so the file was never even routed to the (already
+/// synonym-tolerant) parser — reproduced live as TOTAL loss on both surfaces
+/// that matter: a real HTTP upload (`path` is always `""`, so the CLI's
+/// `.csv`-extension shortcut never applies) got `400 no verifiable entities`,
+/// and a CLI import of a same-content file not literally named `.csv` fell
+/// through to the OathNet-TXT catch-all and imported zero entities. The
+/// hallmark check stays exact/prefix: it is DeHashed's own fixed field name,
+/// not a compromised database's schema, so there is no proven synonym to add.
 pub(crate) fn looks_like_dehashed_csv(body: &str) -> bool {
     let Some(first) = body.lines().next() else {
         return false;
@@ -34,11 +48,13 @@ pub(crate) fn looks_like_dehashed_csv(body: &str) -> bool {
         .into_iter()
         .map(|c| c.trim().to_ascii_lowercase())
         .collect();
-    let has = |name: &str| {
+    let has_hallmark = |name: &str| {
         cols.iter()
             .any(|c| c == name || c.starts_with(&format!("{name}.")))
     };
-    (has("email") || has("username")) && (has("database_name") || has("hashed_password"))
+    let has_identity = find_column(&cols, &["email", "e_mail", "email_address", "mail"]).is_some()
+        || find_column(&cols, &["username", "user", "login", "user_name", "handle"]).is_some();
+    has_identity && (has_hallmark("database_name") || has_hallmark("hashed_password"))
 }
 
 /// Parse a DeHashed CSV into individualised, correlated breach entities. Every
@@ -68,8 +84,28 @@ pub(super) fn parse_dehashed_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportS
         .filter(|(_, c)| c.starts_with("hashed_password"))
         .map(|(i, _)| i)
         .collect();
-    let (email_i, user_i, name_i) = (idx("email"), idx("username"), idx("name"));
-    let (pass_i, addr_i, phone_i) = (idx("password"), idx("address"), idx("phone"));
+    // Real-world breach CSVs (this format is detected by SHAPE — an identity
+    // column plus a provenance/hash hallmark, "a DeHashed-STYLE breach CSV" —
+    // not only genuine DeHashed exports) vary these five column names exactly
+    // as the SQL-dump parser's own compromised-database sources do, so they use
+    // the SAME candidate lists (`find_column`, promoted to the shared authority
+    // in `super`) rather than DeHashed's single canonical name: matching only
+    // `"email"` silently dropped a present `email_address` column with no
+    // warning, reported as a normal, full-looking import — reproduced live.
+    // `url_i` / `db_i` keep exact matching: DeHashed's own fixed header names
+    // them `url`/`database_name` with no proven real-world synonym to add.
+    let email_i = find_column(&cols, &["email", "e_mail", "email_address", "mail"]);
+    let user_i = find_column(&cols, &["username", "user", "login", "user_name", "handle"]);
+    let name_i = find_column(
+        &cols,
+        &["name", "full_name", "fullname", "display_name", "realname"],
+    );
+    let pass_i = find_column(&cols, &["password", "pass", "passwd", "pwd"]);
+    let addr_i = find_column(&cols, &["address", "street_address", "home_address"]);
+    let phone_i = find_column(
+        &cols,
+        &["phone", "mobile", "telephone", "phone_number", "tel"],
+    );
     let (url_i, db_i) = (idx("url"), idx("database_name"));
 
     for row in data {

@@ -2617,3 +2617,89 @@ fn parse_sql_dump_ignores_insert_substrings_inside_string_values() {
         "real multi-statement dumps must still split: {two_emails:?}"
     );
 }
+
+/// A DeHashed-style breach CSV whose header uses a plausible synonym instead
+/// of DeHashed's own canonical column name (`email_address` not `email`,
+/// `user_name`/`pass`/`mobile`/`street_address` not `username`/`password`/
+/// `phone`/`address`) must not silently drop that field. It used to: the
+/// detector fires on shape (an identity column plus a `database_name`/
+/// `hashed_password` hallmark), independent of exactly which identity-column
+/// name is present, but the parser matched only the single canonical name —
+/// so a real row with every field present reported a normal-looking import
+/// with entities quietly missing and no warning, no quarantine count. The
+/// SQL-dump parser (`sql_dump.rs`, same PR) already tolerated these exact
+/// synonyms for the identical PII categories; `find_column` (promoted to the
+/// shared `super` authority) now backs both.
+#[test]
+fn parse_dehashed_csv_tolerates_synonym_column_names() {
+    let body = "id,email_address,user_name,database_name,pass,mobile,street_address\n\
+                1,jane@example.org,jdoe,BreachCo,hunter2,0400000000,12 Main St\n";
+    assert!(
+        looks_like_dehashed_csv(body),
+        "precondition: this shape is detected as DeHashed-style"
+    );
+    let (entities, _stats) = parse_dehashed_csv(body, "s");
+    let has = |kind: EntityKind, value: &str| {
+        entities
+            .iter()
+            .any(|e| e.kind == kind && e.value.eq_ignore_ascii_case(value))
+    };
+    assert!(
+        has(EntityKind::Email, "jane@example.org"),
+        "email_address column"
+    );
+    assert!(has(EntityKind::Username, "jdoe"), "user_name column");
+    assert!(has(EntityKind::Credential, "hunter2"), "pass column");
+    // `to_e164_au` normalises the raw AU mobile format to E.164.
+    assert!(has(EntityKind::Phone, "+61400000000"), "mobile column");
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Address && e.value.contains("12 Main St")),
+        "street_address column: {entities:#?}"
+    );
+
+    // Guard: DeHashed's own canonical header (the common real case) is
+    // unaffected by widening the matcher.
+    let canonical = "id,email,username,name,database_name,password,phone\n\
+                      1,jordanavery@gmail.com,javery,Jordan Avery,ExampleBreach,Hunter2pass,+61412345678\n";
+    let (canon_entities, _) = parse_dehashed_csv(canonical, "s");
+    assert!(
+        canon_entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "jordanavery@gmail.com")
+    );
+    assert!(
+        canon_entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Phone && e.value == "+61412345678")
+    );
+}
+
+/// The detector alone, independent of the parser: a row whose IDENTITY column
+/// also uses a synonym (`email_address` + `user_name` together, neither
+/// canonical name present) must still be recognised as DeHashed-shaped. This
+/// is the more severe half of the synonym gap — it used to be TOTAL loss, not
+/// partial: the file was never even routed to the (already synonym-tolerant)
+/// parser, so it fell through the whole detection chain. Reproduced live on
+/// both surfaces that reach content-only detection (`path == ""`): a real
+/// `POST /scans/import` upload got a flat `400 no verifiable entities`, and a
+/// CLI import of the same content under a non-`.csv` filename (bypassing the
+/// `path.ends_with(".csv")` shortcut `detect_import_format` also has) fell
+/// through to the OathNet-TXT catch-all and imported zero entities.
+#[test]
+fn dehashed_csv_detector_recognises_synonym_identity_columns() {
+    let body = "id,email_address,user_name,database_name,pass\n\
+                1,jane@example.org,jdoe,BreachCo,hunter2\n";
+    assert!(
+        looks_like_dehashed_csv(body),
+        "an email_address + user_name header with a database_name hallmark \
+         must still be detected as DeHashed-shaped"
+    );
+
+    // The hallmark requirement is unrelaxed: an identity-shaped CSV with
+    // neither hallmark column must still be rejected (unchanged strictness).
+    assert!(!looks_like_dehashed_csv(
+        "id,email_address,notes\n1,jane@example.org,hello\n"
+    ));
+}

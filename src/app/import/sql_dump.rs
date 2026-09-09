@@ -215,16 +215,6 @@ fn parse_column_list(raw: &str) -> Vec<String> {
         .collect()
 }
 
-/// Case-insensitive exact match of `column` against one of `candidates`.
-fn column_matches(column: &str, candidates: &[&str]) -> bool {
-    let lower = column.to_ascii_lowercase();
-    candidates.iter().any(|c| lower == *c)
-}
-
-fn find_column(columns: &[String], candidates: &[&str]) -> Option<usize> {
-    columns.iter().position(|c| column_matches(c, candidates))
-}
-
 /// Parse a SQL-dump export into entities + stats, following the exact same
 /// column-name-based field mapping, confidence levels and evidence shape as
 /// the DeHashed CSV parser (`csv::parse_dehashed_csv`) — this is structurally
