@@ -1076,9 +1076,14 @@ fn build_provenance_follows_commits_not_just_checkouts() {
     // live on 6d969442 before the walk was added.
     for needle in [
         r#"strip_prefix("ref: ")"#,
-        ".git/packed-refs",
-        ".git/logs/HEAD",
+        "packed-refs",
+        "logs/HEAD",
         ".ancestors().skip(1).find(|a| a.exists())",
+        // In a `git worktree` checkout `.git` is a file: hardcoded `.git/…`
+        // paths exist nowhere and every watch silently registers nothing, so
+        // the dirs must come from git itself.
+        r#"rev-parse", "--git-dir"#,
+        r#"rev-parse", "--git-common-dir"#,
     ] {
         assert!(
             build.contains(needle),

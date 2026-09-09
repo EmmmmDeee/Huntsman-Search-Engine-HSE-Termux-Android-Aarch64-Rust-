@@ -77,25 +77,50 @@ fn emit_build_provenance() {
     // directory (a loose ref file APPEARS there on the first commit after
     // `git pack-refs`, and a directory watch sees its direct children change)
     // and `packed-refs` (where the ref lives until then).
-    // `.git/logs/HEAD` is the reflog every movement of HEAD appends to —
-    // commit, checkout, reset, merge — whatever the ref layout (loose, packed,
+    // `Some("")` is a meaningful result here (a clean `git status --porcelain`),
+    // so success-with-empty-output must be distinguishable from failure.
+    let git = |args: &[&str]| -> Option<String> {
+        let out = Command::new("git").args(args).output().ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+
+    // Where git keeps HEAD and the refs. In a `git worktree` checkout `.git` is
+    // a FILE (a `gitdir:` pointer), so hardcoded `.git/…` paths exist nowhere,
+    // every guard below skipped, and the stamp never refreshed on a commit made
+    // there. `--git-dir` is the per-checkout directory (HEAD, ORIG_HEAD,
+    // logs/HEAD); `--git-common-dir` the shared one (refs/, packed-refs). In an
+    // ordinary checkout both are `.git`, so this changes nothing there; when
+    // git is absent, `.git` is assumed, which is exactly the previous behaviour.
+    let git_dir = git(&["rev-parse", "--git-dir"])
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| ".git".to_string());
+    let common_dir = git(&["rev-parse", "--git-common-dir"])
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| git_dir.clone());
+
+    // `logs/HEAD` is the reflog every movement of HEAD appends to — commit,
+    // checkout, reset, merge — whatever the ref layout (loose, packed,
     // detached), so it is the most direct signal that the stamped revision may
     // have changed. Guarded like the rest: absent when reflogs are disabled.
     for p in [
-        ".git/HEAD",
-        ".git/ORIG_HEAD",
-        ".git/packed-refs",
-        ".git/logs/HEAD",
+        format!("{git_dir}/HEAD"),
+        format!("{git_dir}/ORIG_HEAD"),
+        format!("{git_dir}/logs/HEAD"),
+        format!("{common_dir}/packed-refs"),
     ] {
-        if Path::new(p).exists() {
+        if Path::new(&p).exists() {
             println!("cargo:rerun-if-changed={p}");
         }
     }
-    if let Some(target) = std::fs::read_to_string(".git/HEAD")
+    if let Some(target) = std::fs::read_to_string(format!("{git_dir}/HEAD"))
         .ok()
         .and_then(|h| h.trim().strip_prefix("ref: ").map(str::to_string))
     {
-        let target = format!(".git/{target}");
+        // A branch ref lives in the SHARED dir (a worktree's own dir has only
+        // its HEAD and logs), which in an ordinary checkout is `.git` as well.
+        let target = format!("{common_dir}/{target}");
         let target = Path::new(&target);
         if target.exists() {
             println!("cargo:rerun-if-changed={}", target.display());
@@ -110,15 +135,6 @@ fn emit_build_provenance() {
             println!("cargo:rerun-if-changed={}", anc.display());
         }
     }
-
-    // `Some("")` is a meaningful result here (a clean `git status --porcelain`),
-    // so success-with-empty-output must be distinguishable from failure.
-    let git = |args: &[&str]| -> Option<String> {
-        let out = Command::new("git").args(args).output().ok()?;
-        out.status
-            .success()
-            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-    };
 
     let head = git(&["rev-parse", "HEAD"]).filter(|s| s.len() == 40);
     let override_sha = std::env::var("HSE_BUILD_SHA")
