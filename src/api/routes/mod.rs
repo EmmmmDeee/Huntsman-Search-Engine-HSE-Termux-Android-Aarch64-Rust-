@@ -33,7 +33,7 @@
 //! | POST   | `/api/v1/scans`                          | `scan_create`                  |
 //! | GET    | `/api/v1/scans`                          | `scan_list`                    |
 //! | POST   | `/api/v1/scans/batch`                    | `scan_batch`                   |
-//! | POST   | `/api/v1/scans/import`                   | `scan_import` (16 MB body cap) |
+//! | POST   | `/api/v1/scans/import`                   | `scan_import` (16 MB body cap; `?format=` forces the input format) |
 //! | GET    | `/api/v1/scans/{id}`                     | `scan_get`                     |
 //! | DELETE | `/api/v1/scans/{id}`                     | `scan_delete`                  |
 //! | POST   | `/api/v1/scans/{id}/rerun`               | `scan_rerun`                   |

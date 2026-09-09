@@ -167,7 +167,7 @@ pub(super) async fn import_local_dir_entities(
         let Ok(body) = tokio::fs::read_to_string(&path).await else {
             continue; // binary / non-UTF-8 — skip
         };
-        if let Ok((ents, label)) = entities_from_upload(&body, sid).await
+        if let Ok((ents, label)) = entities_from_upload(&body, sid, None).await
             && !ents.is_empty()
         {
             imported += 1;

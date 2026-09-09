@@ -110,7 +110,7 @@ async fn upload_dispatcher_never_panics_on_adversarial_input() {
     for (i, input) in cases.iter().enumerate() {
         // The await completing at all is the assertion — a panic would unwind
         // through here and fail the test.
-        let r = entities_from_upload(input, "fuzz").await;
+        let r = entities_from_upload(input, "fuzz", None).await;
         // Whatever the outcome, entities (if any) must be well-formed.
         if let Ok((ents, _)) = r {
             for e in &ents {
@@ -134,6 +134,7 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
     let (html, label) = entities_from_upload(
         "<html><body>contact me at jo@acme-corp.com on acme-corp.com</body></html>",
         "s",
+        None,
     )
     .await
     .expect("should succeed");
@@ -144,6 +145,7 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
     let (dos, label) = entities_from_upload(
         "Entry #1:\n   \u{2022} email: isaacfrost@gmail.com\n   \u{2022} name: Isaac Frost\n",
         "s",
+        None,
     )
     .await
     .expect("should succeed");
@@ -155,6 +157,7 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
     let (txt, label) = entities_from_upload(
         "URL: https://admin.target.io/login\nUsername: victim\n",
         "s",
+        None,
     )
     .await
     .expect("should succeed");
@@ -166,6 +169,7 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
         "id,email,username,name,database_name,password,phone\n\
          1,jordanavery@gmail.com,javery,Jordan Avery,ExampleBreach,Hunter2pass,+61412345678\n",
         "s",
+        None,
     )
     .await
     .expect("should succeed");
@@ -174,7 +178,7 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
     assert!(has(&csvents, EntityKind::Person, "Jordan Avery"));
 
     // Combined Search aggregator export → the breach-aggregator branch.
-    let (comb, label) = entities_from_upload(COMBINED, "s")
+    let (comb, label) = entities_from_upload(COMBINED, "s", None)
         .await
         .expect("should succeed");
     assert_eq!(label, "combined-search");
@@ -184,21 +188,28 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
     // HSE's own CSV export → round-trip branch (not the DeHashed table).
     let hse = "kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,evidence_urls,evidence,tags\n\
         person,Jordan Avery,Jordan Avery,0.850,1.000,3,VERIFIED,1,name_intel,,[name_intel] x,au\n";
-    let (hents, label) = entities_from_upload(hse, "s")
+    let (hents, label) = entities_from_upload(hse, "s", None)
         .await
         .expect("should succeed");
     assert_eq!(label, "hse-csv");
     assert!(has(&hents, EntityKind::Person, "Jordan Avery"));
 
     // JSON API export → parsed (and the label proves the branch).
-    let (_json, label) =
-        entities_from_upload(r#"{"exportInfo":{"query":"x"},"searchResults":{}}"#, "s")
-            .await
-            .expect("should succeed");
+    let (_json, label) = entities_from_upload(
+        r#"{"exportInfo":{"query":"x"},"searchResults":{}}"#,
+        "s",
+        None,
+    )
+    .await
+    .expect("should succeed");
     assert_eq!(label, "oathnet-json");
 
     // Malformed JSON is a clean error, not a panic.
-    assert!(entities_from_upload("{ not valid json", "s").await.is_err());
+    assert!(
+        entities_from_upload("{ not valid json", "s", None)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -226,7 +237,7 @@ async fn oathnet_json_stealer_victim_emits_every_distinct_field_uncapped() {
         }
     })
     .to_string();
-    let (ents, label) = entities_from_upload(&body, "s")
+    let (ents, label) = entities_from_upload(&body, "s", None)
         .await
         .expect("should succeed");
     assert_eq!(label, "oathnet-json");
@@ -289,7 +300,7 @@ async fn oathnet_json_ip_admission_recovers_ipv6_and_rejects_bogus() {
         }
     })
     .to_string();
-    let (ents, _label) = entities_from_upload(&body, "s")
+    let (ents, _label) = entities_from_upload(&body, "s", None)
         .await
         .expect("should succeed");
     let ips: std::collections::HashSet<&str> = ents
@@ -322,6 +333,7 @@ async fn import_extracts_wifi_bssid_as_geolocation_seed() {
     let (ents, label) = entities_from_upload(
         "URL: https://x.com/login\nUsername: victim\nRouter BSSID: A4:B1:C2:00:11:22\n",
         "s",
+        None,
     )
     .await
     .expect("should succeed");
@@ -345,7 +357,7 @@ async fn import_extracts_every_distinct_mac_address_uncapped() {
     for i in 0..60u32 {
         body.push_str(&format!("Router BSSID: A4:B1:C2:00:11:{i:02X}\n"));
     }
-    let (ents, _label) = entities_from_upload(&body, "s")
+    let (ents, _label) = entities_from_upload(&body, "s", None)
         .await
         .expect("should succeed");
     let mac_count = ents
@@ -365,6 +377,7 @@ async fn import_extracts_crypto_wallet_as_chain_seed() {
     let (ents, label) = entities_from_upload(
         "URL: https://x.com\nWallet: 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa\n",
         "s",
+        None,
     )
     .await
     .expect("should succeed");
@@ -385,6 +398,7 @@ async fn import_extracts_leaked_api_key_from_body() {
     let (ents, label) = entities_from_upload(
         "URL: https://x.com\nleftover config had AKIAZ3XK7P2QWERT5YBN in it\n",
         "s",
+        None,
     )
     .await
     .expect("should succeed");
@@ -404,6 +418,7 @@ async fn dehashed_csv_also_mines_wallets_from_any_field() {
         "id,email,username,database_name,password\n\
          1,a@b.com,x,Breach,1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa\n",
         "s",
+        None,
     )
     .await
     .expect("should succeed");
@@ -421,6 +436,7 @@ async fn import_extracts_iban_as_financial_finding() {
     let (ents, label) = entities_from_upload(
         "URL: https://x.com\nBank account: GB82WEST12345698765432\n",
         "s",
+        None,
     )
     .await
     .expect("should succeed");
@@ -440,6 +456,7 @@ async fn import_extracts_labeled_ssid_for_wigle_geolocation() {
     let (ents, label) = entities_from_upload(
         "URL: https://x.com\nUsername: victim\nSSID: Smith Home 5G\n",
         "s",
+        None,
     )
     .await
     .expect("should succeed");
@@ -842,7 +859,7 @@ async fn upload_dispatcher_imports_combined_search_json_not_zero_entities() {
     // entities, silently discarding every result of a paid multi-source breach
     // search uploaded through the Termux web UI. The upload must now yield the
     // breach entities and label the branch it actually parsed.
-    let (ents, label) = entities_from_upload(COMBINED_JSON, "s")
+    let (ents, label) = entities_from_upload(COMBINED_JSON, "s", None)
         .await
         .expect("should succeed");
     assert_eq!(label, "combined-search-json");
@@ -1251,7 +1268,7 @@ fn dossier_entry_fields_survive_without_a_contact_summary() {
 
 #[tokio::test]
 async fn upload_dispatcher_routes_seeknow_summary_to_dossier() {
-    let (ents, label) = entities_from_upload(SEEKNOW, "s")
+    let (ents, label) = entities_from_upload(SEEKNOW, "s", None)
         .await
         .expect("should succeed");
     assert_eq!(label, "dossier");
@@ -1763,7 +1780,7 @@ fn stealerlogs_credential_pwned_at_survives_onto_its_own_entities() {
 
 #[tokio::test]
 async fn upload_dispatcher_routes_stealerlogs() {
-    let (ents, label) = entities_from_upload(STEALER, "s")
+    let (ents, label) = entities_from_upload(STEALER, "s", None)
         .await
         .expect("should succeed");
     assert_eq!(label, "stealerlogs");
@@ -1908,7 +1925,7 @@ fn oathnet_report_parses_entries_and_osint_geolocation() {
 
 #[tokio::test]
 async fn upload_dispatcher_routes_oathnet_report() {
-    let (ents, label) = entities_from_upload(OATHNET_REPORT, "s")
+    let (ents, label) = entities_from_upload(OATHNET_REPORT, "s", None)
         .await
         .expect("should succeed");
     assert_eq!(label, "oathnet-report");
@@ -2141,7 +2158,7 @@ fn parse_combolist_never_admits_an_identity_that_normalises_to_empty() {
 
 #[tokio::test]
 async fn upload_dispatcher_routes_raw_combolist() {
-    let (entities, label) = entities_from_upload(COMBOLIST, "s")
+    let (entities, label) = entities_from_upload(COMBOLIST, "s", None)
         .await
         .expect("should succeed");
     assert_eq!(label, "combolist");
@@ -2264,7 +2281,7 @@ fn parse_sql_dump_never_guesses_columns_when_the_insert_has_no_explicit_list() {
 
 #[tokio::test]
 async fn upload_dispatcher_routes_sql_dump() {
-    let (entities, label) = entities_from_upload(SQL_DUMP, "s")
+    let (entities, label) = entities_from_upload(SQL_DUMP, "s", None)
         .await
         .expect("should succeed");
     assert_eq!(label, "sql-dump");
@@ -2371,4 +2388,122 @@ mod prop {
             }
         }
     }
+}
+
+// ── input-format override (`hse import --input-format`, upload `?format=`) ──
+
+/// The format enum is the ONE spelling authority: `label()` must equal the
+/// clap `ValueEnum` name for every variant, and `parse_name` must round-trip
+/// each label (case- and whitespace-insensitively), so the CLI flag, the
+/// upload parameter and the label both surfaces report can never drift.
+#[test]
+fn import_format_names_are_one_authority() {
+    use clap::ValueEnum;
+    for f in ImportFormat::value_variants() {
+        let derived = f.to_possible_value().expect("no variant is skipped");
+        assert_eq!(
+            f.label(),
+            derived.get_name(),
+            "label() drifted from the clap spelling for {f:?}"
+        );
+        assert_eq!(ImportFormat::parse_name(f.label()), Ok(*f));
+        assert_eq!(
+            ImportFormat::parse_name(&format!("  {}  ", f.label().to_ascii_uppercase())),
+            Ok(*f),
+            "case- and whitespace-insensitive"
+        );
+    }
+    let err = ImportFormat::parse_name("bogus").expect_err("unknown names are rejected");
+    assert!(
+        err.contains("`bogus`") && err.contains("combolist") && err.contains("oathnet-txt"),
+        "the rejection must name the typo and every accepted spelling: {err}"
+    );
+}
+
+/// The motivating case for the override: a combolist whose identities are ALL
+/// bare usernames has no email-shaped line for the content detector to count,
+/// so it cannot be sniffed as a combolist — yet `parse_combolist` handles it
+/// fine once reached. Forcing the format reaches it, and the entities come
+/// back under the forced label.
+#[tokio::test]
+async fn forced_input_format_reaches_the_combolist_parser_for_bare_usernames() {
+    const USERNAMES_ONLY: &str =
+        "alice.tester:Passw0rd!2026\nbob_tester:hunter2-synthetic\ncarol-tester:S3cret#fixture\n";
+    let (ents, label) = entities_from_upload(USERNAMES_ONLY, "s", Some(ImportFormat::Combolist))
+        .await
+        .expect("a forced combolist parses");
+    assert_eq!(label, "combolist");
+    let mut usernames: Vec<&str> = ents
+        .iter()
+        .filter(|e| e.kind == crate::core::entity::EntityKind::Username)
+        .map(|e| e.value.as_str())
+        .collect();
+    usernames.sort_unstable();
+    assert_eq!(usernames, ["alice.tester", "bob_tester", "carol-tester"]);
+    let passwords = ents
+        .iter()
+        .filter(|e| e.kind == crate::core::entity::EntityKind::Password)
+        .count();
+    assert_eq!(passwords, 3, "one Password per line: {ents:#?}");
+}
+
+/// The override is authoritative even where detection would have chosen
+/// differently — and it fails loudly, never silently, when the forced parser
+/// cannot read the body. Both halves use bodies whose detection result is
+/// stable by design (a dossier's `Entry #` marker; non-JSON text).
+#[tokio::test]
+async fn forced_input_format_overrides_content_detection() {
+    const DOSSIER: &str =
+        "Entry #1:\n   \u{2022} username: isaacfrost\n   \u{2022} email: isaacfrost@gmail.com\n";
+    let (_, detected) = entities_from_upload(DOSSIER, "s", None)
+        .await
+        .expect("detected");
+    assert_eq!(
+        detected, "dossier",
+        "precondition: detection picks the dossier parser"
+    );
+    let (_, forced) = entities_from_upload(DOSSIER, "s", Some(ImportFormat::OathnetTxt))
+        .await
+        .expect("forced");
+    assert_eq!(
+        forced, "oathnet-txt",
+        "the forced format must win over detection"
+    );
+    // A forced JSON parse of non-JSON text is an explicit error, not an
+    // empty success.
+    assert!(
+        entities_from_upload("not json at all", "s", Some(ImportFormat::OathnetJson))
+            .await
+            .is_err()
+    );
+}
+
+/// The web UI's format selector (`#dossier-format` in
+/// `src/web/js/views/new_scan.js`) must offer exactly the import formats, in
+/// declaration order — it is the one place the names are spelled outside this
+/// enum, and a stale option would send the server a name it rejects.
+#[test]
+fn web_upload_format_selector_lists_exactly_the_import_formats() {
+    use clap::ValueEnum;
+    const NEW_SCAN_JS: &str = include_str!("../../web/js/views/new_scan.js");
+    let start = NEW_SCAN_JS
+        .find("id=\"dossier-format\"")
+        .expect("the upload form has a #dossier-format selector");
+    let rest = &NEW_SCAN_JS[start..];
+    let block = &rest[..rest.find("</select>").expect("the selector closes")];
+    let listed: Vec<&str> = block
+        .split("<option value=\"")
+        .skip(1)
+        .filter_map(|s| s.split('"').next())
+        .filter(|v| !v.is_empty())
+        .collect();
+    let expected: Vec<&str> = ImportFormat::value_variants()
+        .iter()
+        .copied()
+        .map(ImportFormat::label)
+        .collect();
+    assert_eq!(
+        listed, expected,
+        "#dossier-format must offer every ImportFormat name, in declaration order, and nothing else"
+    );
 }

@@ -5642,3 +5642,52 @@ async fn static_assets_carry_a_content_derived_etag_not_the_crate_version() {
     );
     assert!(!body_text(resp).await.is_empty());
 }
+
+#[tokio::test]
+async fn dossier_upload_honours_an_explicit_format_override() {
+    // A combolist of bare usernames has no email-shaped line for the content
+    // detector to count, so without an override it falls to the TXT catch-all
+    // and parses as nothing. `?format=combolist` reaches the combolist parser
+    // — the same names `hse import --input-format` accepts.
+    let app = test_app("import-forced");
+    let body =
+        "alice.tester:Passw0rd!2026\nbob_tester:hunter2-synthetic\ncarol-tester:S3cret#fixture\n";
+    let post = |uri: &str| {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "text/plain")
+            .header("x-hse-csrf", "1")
+            .body(Body::from(body))
+            .unwrap()
+    };
+    let resp = app
+        .clone()
+        .oneshot(post("/api/v1/scans/import?format=combolist"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["format"], "combolist");
+    assert_eq!(
+        json["entity_count"], 6,
+        "three Username + three Password entities: {json}"
+    );
+
+    // An unknown name is an actionable 400 naming the accepted spellings —
+    // never a silent fall back to the detection the caller asked to bypass.
+    let resp = app
+        .clone()
+        .oneshot(post("/api/v1/scans/import?format=bogus"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let err = body_json(resp).await["error"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        err.contains("bogus") && err.contains("combolist") && err.contains("sql-dump"),
+        "{err}"
+    );
+}

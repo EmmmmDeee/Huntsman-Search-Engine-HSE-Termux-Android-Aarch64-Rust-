@@ -207,7 +207,11 @@ async fn run_command(command: Command) -> Result<()> {
         } => provision::cmd_provision(env_only, verify_only, dry_run, discover).await,
         Command::SetKey { name, value } => keys_cmd::cmd_set_key(name, value),
         Command::Keys { action } => keys_cmd::cmd_keys(action).await,
-        Command::Import { file, output } => cmd_import(&file, &output).await,
+        Command::Import {
+            file,
+            output,
+            input_format,
+        } => cmd_import(&file, &output, input_format).await,
         Command::Ingest {
             file,
             output_format,

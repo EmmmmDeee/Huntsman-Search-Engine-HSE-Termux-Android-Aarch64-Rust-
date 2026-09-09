@@ -59,5 +59,6 @@ providers whose spelling needs pinning:
 | Output file | `--out` (`-o`) | `export`, `ingest`, `batch`. `--output` still works on `ingest` as a hidden alias. |
 | A stored scan | `--scan-id`, `latest` allowed (short `-s` on `export` and `batch`) | `report`, `export`, `signal`, `batch`, and the hidden `audit` / `benchmark` / `gaps`. |
 | A seed | `--kind` (`-k`) + `--value` (`-v`) | `scan`, `live`, `batch`, `oathnet-batch`. |
+| Input format (bypass content detection) | `--input-format` | `import` (single files). The web upload's `?format=` query parameter — and the Import form's selector — take the same names, which are the labels the upload reports: `combolist`, `sql-dump`, `oathnet-txt`, … (one authority: the `ImportFormat` enum). |
 | Module selection | `--modules` (`-m`) / `--exclude` | `scan`, `live`. |
 | Machine output | `--json` | Commands whose only formats are human and JSON. |

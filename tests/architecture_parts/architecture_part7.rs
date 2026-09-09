@@ -1014,3 +1014,41 @@ fn reconsideration_is_gated_by_the_working_set_version() {
         recapture_at - gate_at
     );
 }
+
+/// `hse import --input-format` and the upload's `?format=` are only useful if
+/// the parsed value actually reaches the dispatcher — and nothing behavioural
+/// can prove that without side effects: the CLI path persists a scan into the
+/// operator's store, so no test drives `cmd_import` end-to-end, and the flag's
+/// parse test (`cli::tests::import_input_format_flag_parses_into_the_shared_enum`)
+/// stops at the `Command` value. A refactor that dropped the argument from
+/// either hand-off (`cmd_import(&file, &output, None)`; the handler parsing
+/// `?format=` and then not passing it on) would leave every test green while
+/// the flag silently did nothing — the exact "silent fall back to detection"
+/// the override exists to rule out. This locks both hand-offs in production
+/// source. Whitespace is stripped before matching so rustfmt cannot produce a
+/// false failure.
+#[test]
+fn import_format_override_reaches_both_dispatchers() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let strip = |s: String| -> String { s.chars().filter(|c| !c.is_whitespace()).collect() };
+    let cli = strip(production_source(
+        &fs::read_to_string(root.join("src/cli/mod.rs")).unwrap(),
+    ));
+    assert!(
+        cli.contains("cmd_import(&file,&output,input_format)"),
+        "src/cli/mod.rs must hand the parsed `--input-format` value to `cmd_import` \
+         (`cmd_import(&file, &output, input_format)`); passing anything else makes \
+         the flag a silent no-op"
+    );
+    let api = strip(production_source(
+        &fs::read_to_string(root.join("src/api/scan_handlers/core.rs")).unwrap(),
+    ));
+    assert!(
+        api.contains("ImportFormat::parse_name(name)")
+            && api.contains("entities_from_upload(&body,&sid,forced)"),
+        "src/api/scan_handlers/core.rs must parse `?format=` through \
+         `ImportFormat::parse_name` and hand the result to \
+         `entities_from_upload(&body, &sid, forced)`; anything else makes the \
+         upload parameter a silent no-op"
+    );
+}

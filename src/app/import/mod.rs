@@ -39,7 +39,17 @@ use sql_dump::{cmd_import_sql_dump, looks_like_sql_dump, parse_sql_dump};
 use stealer::{cmd_import_stealerlogs, looks_like_stealerlogs, parse_stealerlogs};
 use txt::{cmd_import_txt, parse_oathnet_txt};
 
-pub async fn cmd_import(path: &str, output: &str) -> Result<()> {
+/// `hse import`: parse one file (or scrape a directory) into a new scan.
+///
+/// `forced` is the operator's `--input-format`: `Some` bypasses content
+/// detection and dispatches straight to that format's parser — for a file the
+/// detector cannot classify (a combolist of bare usernames with no
+/// email-shaped line scores 0% on the combolist heuristic and would fall to
+/// the TXT catch-all as zero entities) or classifies wrongly. It applies to a
+/// single file only: a directory scrape detects each file's format from its
+/// content by design, so forcing one format across a tree is refused
+/// explicitly rather than silently ignored.
+pub async fn cmd_import(path: &str, output: &str, forced: Option<ImportFormat>) -> Result<()> {
     // File-size cap before read_to_string — mirrors MAX_UPLOAD_BYTES in the API
     // upload handler (16 MB) so both paths enforce the same memory bound.
     const MAX_IMPORT_BYTES: u64 = 16 * 1024 * 1024;
@@ -52,6 +62,13 @@ pub async fn cmd_import(path: &str, output: &str) -> Result<()> {
     // Offline — reads local files only — so it works on a Termux install with no
     // connectivity. Bounded by depth/count/size in `cmd_import_local_dir`.
     if meta.is_dir() {
+        if let Some(f) = forced {
+            return Err(Error::Other(format!(
+                "--input-format {} applies to a single file, but {path} is a directory \
+                 (a directory scrape detects each file's format from its content)",
+                f.label()
+            )));
+        }
         return cmd_import_local_dir(path, output).await;
     }
     if meta.len() > MAX_IMPORT_BYTES {
@@ -79,7 +96,20 @@ pub async fn cmd_import(path: &str, output: &str) -> Result<()> {
         .strip_prefix('\u{feff}')
         .map(str::to_string)
         .unwrap_or(body);
-    match detect_import_format(path, &body) {
+    let format = match forced {
+        Some(f) => {
+            note(
+                output,
+                format!(
+                    "Input format forced to `{}` by --input-format (content detection bypassed)",
+                    f.label()
+                ),
+            );
+            f
+        }
+        None => detect_import_format(path, &body),
+    };
+    match format {
         ImportFormat::OathnetHtml => cmd_import_html(&body, output).await,
         ImportFormat::OathnetJson => {
             let doc: serde_json::Value = serde_json::from_str(&body)
@@ -120,31 +150,91 @@ pub async fn cmd_import(path: &str, output: &str) -> Result<()> {
 /// The detected import format — one variant per parser. The single source of
 /// truth both the CLI ([`cmd_import`]) and the web upload ([`entities_from_upload`])
 /// dispatch on, so the two can never drift on which format a file is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ImportFormat {
+///
+/// Also the operator-facing spelling of every format: the clap `ValueEnum`
+/// derive names each variant in kebab-case (`sql-dump`, `oathnet-txt`, …) —
+/// what `hse import --input-format` accepts, what the web upload's `?format=`
+/// query parameter accepts, and (via [`Self::label`]) what both report back.
+/// One enum, one spelling; a test locks `label` to the derived names, and the
+/// web UI's selector to this list, so no second copy can drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ImportFormat {
+    /// An OathNet HTML export.
     OathnetHtml,
+    /// An OathNet JSON export (a Combined Search JSON is recognised by its shape).
     OathnetJson,
+    /// A Combined Search text export (numbered records with a source/db field and identity fields).
     CombinedSearch,
+    /// A breach/dossier compilation (`Entry #N:` blocks and `EMAILS:`/`PASSWORDS:` lists).
     Dossier,
+    /// A `Module: Stealerlogs` victim export (`Victims:` blocks with `Log Id:` and `Credentials:`).
     Stealerlogs,
+    /// An OathNet SEARCH REPORT (`=== DATABASE LOGS ===` sections).
     OathnetReport,
+    /// HSE's own `hse export --format csv` entity CSV, re-ingested.
     HseCsv,
+    /// A DeHashed-style breach CSV (an identity column plus `database_name` / `hashed_password*`).
     DehashedCsv,
-    /// A WiGLE-style KML wardriving export — the native output of the capture
-    /// device, previously unrecognised and therefore swallowed by the TXT
-    /// catch-all, which extracted nothing from it.
+    /// A WiGLE-style KML wardriving export.
+    ///
+    /// The native output of the capture device, previously unrecognised and
+    /// therefore swallowed by the TXT catch-all, which extracted nothing from it.
     Kml,
-    /// A raw `identity:secret` combolist — no header, no envelope, one leaked
-    /// login per line. The most common real-world breach-data shape; without
-    /// this variant it fell through to `OathnetTxt` and parsed as nothing.
+    /// A raw `identity:secret` combolist — one leaked login per line, no header, no envelope.
+    ///
+    /// The most common real-world breach-data shape; without this variant it
+    /// fell through to `OathnetTxt` and parsed as nothing.
     Combolist,
-    /// A leaked breach SQL dump — `INSERT INTO ... (cols) VALUES (...);`
-    /// statements, the shape a `mysqldump`-style export of a compromised
-    /// user table takes. Without this variant it fell through to
-    /// `OathnetTxt` and parsed as nothing.
+    /// A leaked breach SQL dump — `INSERT INTO ... (cols) VALUES (...);` statements.
+    ///
+    /// The shape a `mysqldump`-style export of a compromised user table takes.
+    /// Without this variant it fell through to `OathnetTxt` and parsed as nothing.
     SqlDump,
-    /// Catch-all: an OathNet stealer-log TXT (and any unrecognised plain text).
+    /// An OathNet stealer-log TXT export — also the catch-all for any unrecognised plain text.
     OathnetTxt,
+}
+
+impl ImportFormat {
+    /// The operator-facing name of this format: the label the web upload and
+    /// the CLI report, and the spelling `--input-format` / `?format=` accept.
+    /// Hand-written so it is `'static`; a test locks every arm to the clap
+    /// `ValueEnum` spelling, so the two can never disagree.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::OathnetHtml => "oathnet-html",
+            Self::OathnetJson => "oathnet-json",
+            Self::CombinedSearch => "combined-search",
+            Self::Dossier => "dossier",
+            Self::Stealerlogs => "stealerlogs",
+            Self::OathnetReport => "oathnet-report",
+            Self::HseCsv => "hse-csv",
+            Self::DehashedCsv => "dehashed-csv",
+            Self::Kml => "kml",
+            Self::Combolist => "combolist",
+            Self::SqlDump => "sql-dump",
+            Self::OathnetTxt => "oathnet-txt",
+        }
+    }
+
+    /// Parse an operator-supplied format name — the `--input-format` /
+    /// `?format=` spelling, case-insensitive, surrounding whitespace ignored.
+    /// The error names every accepted spelling, so a typo is actionable
+    /// rather than a bare rejection (and never a silent fall back to
+    /// detection, which is exactly what the operator asked to bypass).
+    pub(crate) fn parse_name(name: &str) -> std::result::Result<Self, String> {
+        <Self as clap::ValueEnum>::from_str(name.trim(), true).map_err(|_| {
+            let accepted: Vec<&'static str> = <Self as clap::ValueEnum>::value_variants()
+                .iter()
+                .copied()
+                .map(Self::label)
+                .collect();
+            format!(
+                "unknown import format `{}`; expected one of: {}",
+                name.trim(),
+                accepted.join(", ")
+            )
+        })
+    }
 }
 
 /// Classify an import body by CONTENT (never by extension alone), so a breach
@@ -250,18 +340,25 @@ pub(crate) fn looks_like_dossier(body: &str) -> bool {
 /// the breach/dossier compilation — is reachable from the Termux UI, parsed by
 /// the exact same `parse_*` functions the CLI calls (they can never drift).
 /// `async` because the JSON path opportunistically validates discovered keys.
+/// `forced` (the upload's `?format=`, the CLI's `--input-format`) bypasses
+/// detection and dispatches straight to that format's parser.
 pub(crate) async fn entities_from_upload(
     body: &str,
     sid: &str,
+    forced: Option<ImportFormat>,
 ) -> Result<(Vec<crate::core::entity::Entity>, &'static str)> {
     // Same content-based detector the CLI dispatches on (no path → content only),
-    // so the browser upload and `hse import` can never disagree on a file's format.
+    // so the browser upload and `hse import` can never disagree on a file's format
+    // — unless the operator forces one, which bypasses detection identically on
+    // both surfaces.
     // Strip a leading UTF-8 BOM (U+FEFF) — not whitespace, so the detector's
     // trim_start misses it — before both detection and parsing, or a BOM-prefixed
     // upload misroutes and silently drops every entity.
     let body = body.strip_prefix('\u{feff}').unwrap_or(body);
-    let (mut entities, label) = match detect_import_format("", body) {
-        ImportFormat::OathnetHtml => (parse_oathnet_html(body, sid), "oathnet-html"),
+    let format = forced.unwrap_or_else(|| detect_import_format("", body));
+    let label = format.label();
+    let (mut entities, label) = match format {
+        ImportFormat::OathnetHtml => (parse_oathnet_html(body, sid), label),
         ImportFormat::OathnetJson => {
             let doc: serde_json::Value = serde_json::from_str(body)
                 .map_err(|e| Error::Other(format!("invalid JSON: {e}")))?;
@@ -272,20 +369,20 @@ pub(crate) async fn entities_from_upload(
             let label = if doc.get("modules").and_then(|v| v.as_array()).is_some() {
                 "combined-search-json"
             } else {
-                "oathnet-json"
+                label
             };
             (parse_oathnet_json(&doc, sid).await.0, label)
         }
-        ImportFormat::CombinedSearch => (parse_combined_search(body, sid).0, "combined-search"),
-        ImportFormat::Dossier => (parse_dossier(body, sid).0, "dossier"),
-        ImportFormat::Stealerlogs => (parse_stealerlogs(body, sid).0, "stealerlogs"),
-        ImportFormat::OathnetReport => (parse_oathnet_report(body, sid).0, "oathnet-report"),
-        ImportFormat::HseCsv => (parse_hse_csv(body, sid).0, "hse-csv"),
-        ImportFormat::DehashedCsv => (parse_dehashed_csv(body, sid).0, "dehashed-csv"),
-        ImportFormat::Kml => (kml::parse_kml(body, sid).0, "kml"),
-        ImportFormat::Combolist => (parse_combolist(body, sid).0, "combolist"),
-        ImportFormat::SqlDump => (parse_sql_dump(body, sid).0, "sql-dump"),
-        ImportFormat::OathnetTxt => (parse_oathnet_txt(body, sid).0, "oathnet-txt"),
+        ImportFormat::CombinedSearch => (parse_combined_search(body, sid).0, label),
+        ImportFormat::Dossier => (parse_dossier(body, sid).0, label),
+        ImportFormat::Stealerlogs => (parse_stealerlogs(body, sid).0, label),
+        ImportFormat::OathnetReport => (parse_oathnet_report(body, sid).0, label),
+        ImportFormat::HseCsv => (parse_hse_csv(body, sid).0, label),
+        ImportFormat::DehashedCsv => (parse_dehashed_csv(body, sid).0, label),
+        ImportFormat::Kml => (kml::parse_kml(body, sid).0, label),
+        ImportFormat::Combolist => (parse_combolist(body, sid).0, label),
+        ImportFormat::SqlDump => (parse_sql_dump(body, sid).0, label),
+        ImportFormat::OathnetTxt => (parse_oathnet_txt(body, sid).0, label),
     };
     deduplicate_by_uid(&mut entities);
     Ok((entities, label))

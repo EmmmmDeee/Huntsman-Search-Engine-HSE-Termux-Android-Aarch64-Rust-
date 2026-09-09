@@ -591,11 +591,17 @@ pub enum Command {
         /// Raw value to store. Quote in the shell to avoid mis-parsing.
         value: String,
     },
-    /// Import an OathNet JSON export file. Extracts breach results,
-    /// stealer metadata, IP geolocation, and Holehe platform checks
-    /// into a new scan record with full entity extraction.
+    /// Import a breach / OSINT export file (or scrape a directory of them) into a
+    /// new scan record with full entity extraction: OathNet JSON / HTML / TXT,
+    /// breach and dossier compilations, Combined Search and Stealerlogs exports,
+    /// DeHashed and HSE CSVs, WiGLE KML, raw combolists and SQL dumps. The format
+    /// is detected from the content; `--input-format` forces it.
     Import {
-        /// Path to the OathNet export JSON file.
+        /// Path to the file to import — an OathNet export (JSON / HTML / TXT), a
+        /// breach or dossier compilation, a Combined Search or Stealerlogs export,
+        /// a DeHashed or HSE CSV, a WiGLE KML, a raw combolist or a SQL dump — or a
+        /// directory to scrape for all of those. The format is detected from the
+        /// content, never the extension.
         file: String,
         /// Output format: json, table, dossier.
         #[arg(
@@ -606,6 +612,18 @@ pub enum Command {
             default_value = "table"
         )]
         output: String,
+        /// Force the input format instead of detecting it from the content — for a
+        /// file the detector cannot classify (a combolist of bare usernames with no
+        /// email-shaped line) or classifies wrongly. Single files only. The names
+        /// are the labels the web upload reports; its `?format=` query parameter
+        /// takes the same names.
+        #[arg(
+            long = "input-format",
+            value_name = "FORMAT",
+            value_enum,
+            ignore_case = true
+        )]
+        input_format: Option<crate::app::import::ImportFormat>,
     },
     /// Parse documents (image/PDF/CSV/JSON/JSONL/text), extract entities (email, IPv4, IPv6, domain, URL, social handle, MD5/SHA hashes),
     /// classify by kind, assign confidence scores, and output as HSE-ready batch queries (JSONL/JSON/CSV/table).

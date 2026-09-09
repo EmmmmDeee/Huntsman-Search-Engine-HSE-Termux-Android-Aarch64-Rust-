@@ -96,7 +96,9 @@ export const API = {
   // The X-HSE-CSRF header makes this a non-simple request: same-origin (here) it
   // sends straight through, but a cross-site caller must preflight, which CORS
   // rejects — so a hostile page can't POST a forged dossier into the local DB.
-  importDossier: text=>fetch('/api/v1/scans/import',{method:'POST',headers:{'Content-Type':'text/plain','X-HSE-CSRF':'1'},body:text}).then(async r=>{ if(!r.ok){ let e='HTTP '+r.status; try{ e=(await r.json()).error||e; }catch{} throw new Error(e); } return r.json(); }),
+  // An optional `format` forces the input format (`?format=<name>`, the same
+  // names as `hse import --input-format`) instead of auto-detecting it.
+  importDossier: (text, format)=>fetch('/api/v1/scans/import'+(format?'?format='+encodeURIComponent(format):''),{method:'POST',headers:{'Content-Type':'text/plain','X-HSE-CSRF':'1'},body:text}).then(async r=>{ if(!r.ok){ let e='HTTP '+r.status; try{ e=(await r.json()).error||e; }catch{} throw new Error(e); } return r.json(); }),
   rerun:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/rerun',{method:'POST'}),
   cancel:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/cancel',{method:'POST'}),
   remove:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id),{method:'DELETE'}),

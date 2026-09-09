@@ -557,6 +557,7 @@ pub async fn scan_rerun(
 pub async fn scan_import(
     State(s): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
     body: String,
 ) -> impl IntoResponse {
     use super::super::handlers::forbidden;
@@ -575,6 +576,20 @@ pub async fn scan_import(
     if !headers.contains_key("x-hse-csrf") {
         return forbidden("missing X-HSE-CSRF header (cross-site request blocked)");
     }
+
+    // An explicit `?format=<name>` bypasses content detection — for a file the
+    // detector cannot classify (a combolist of bare usernames with no
+    // email-shaped line) or classifies wrongly. The names and the parser are
+    // the same authority `hse import --input-format` uses; an unknown name is
+    // an actionable 400 naming the accepted spellings, never a silent fall
+    // back to the detection the operator asked to bypass.
+    let forced = match params.get("format").map(String::as_str) {
+        None | Some("") => None,
+        Some(name) => match crate::app::import::ImportFormat::parse_name(name) {
+            Ok(f) => Some(f),
+            Err(e) => return bad_request(e),
+        },
+    };
 
     // Bound the upload so a hostile/huge paste can't exhaust phone memory.
     // The route's `DefaultBodyLimit` (see api::routes) is set to
@@ -601,12 +616,13 @@ pub async fn scan_import(
     // `scan_id` is collision-free per call, so the value just needs to be
     // descriptive — the upload size, not a redundant timestamp.
     let sid = scan_id("import-upload", &body.len().to_string());
-    // Detect the format from content and parse via the SAME `app::import` path
-    // the CLI uses — OathNet JSON/HTML/stealer-TXT and breach/dossier all work.
-    let (entities, format) = match crate::app::import::entities_from_upload(&body, &sid).await {
-        Ok(pair) => pair,
-        Err(e) => return bad_request(format!("could not parse upload: {e}")),
-    };
+    // Detect the format from content (unless forced above) and parse via the
+    // SAME `app::import` path the CLI uses, so every format it supports works.
+    let (entities, format) =
+        match crate::app::import::entities_from_upload(&body, &sid, forced).await {
+            Ok(pair) => pair,
+            Err(e) => return bad_request(format!("could not parse upload: {e}")),
+        };
     if entities.is_empty() {
         return bad_request("no verifiable entities were parsed from the upload");
     }
