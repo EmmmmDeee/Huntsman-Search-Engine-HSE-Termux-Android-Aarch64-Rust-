@@ -630,7 +630,7 @@ pub async fn scan_import(
     // together) for the Stealer Logs Viewer — empty for every non-stealer
     // upload format. See `stealer_rows_from_upload`'s own doc for why this
     // is a second, separate parse rather than a widened `entities_from_upload`.
-    let stealer_rows = crate::app::import::stealer_rows_from_upload(&body);
+    let stealer_rows = crate::app::import::stealer_rows_from_upload(&body, forced);
 
     // A readable scan label: the strongest identity in the file, else a generic.
     let label = entities

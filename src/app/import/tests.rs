@@ -2507,3 +2507,53 @@ fn web_upload_format_selector_lists_exactly_the_import_formats() {
         "#dossier-format must offer every ImportFormat name, in declaration order, and nothing else"
     );
 }
+
+/// A stealer-log export with a `Credentials:` list but no `Log Id:` line fails
+/// `looks_like_stealerlogs` (which requires all three markers) yet
+/// `parse_stealerlogs` reads it fine — so on a forced `?format=stealerlogs`
+/// upload, `stealer_rows_from_upload` must honour the forced format instead of
+/// re-running the detection the operator deliberately bypassed, or the paired
+/// rows are silently lost while the entities import.
+#[test]
+fn stealer_rows_from_upload_honours_the_forced_format() {
+    // Detection-missing (no `Module: Stealerlogs` banner, no `Log Id:`) but
+    // parseable: one victim, one credential.
+    const NO_LOG_ID: &str = "Victims:\n  [1]\n    Credentials:\n      [1]\n        \
+Username:\n          jordanavery@gmail.com\n        Password:\n          Hunter2pass\n";
+
+    // Precondition — the data-loss trap: content detection rejects it, but the
+    // parser still recovers the paired row, so anything gated on detection
+    // alone drops that row.
+    assert!(
+        !looks_like_stealerlogs(NO_LOG_ID),
+        "precondition: an export with no `Log Id:` is not detected as stealerlogs"
+    );
+    assert_eq!(
+        parse_stealerlogs(NO_LOG_ID, "s").2.len(),
+        1,
+        "precondition: the parser still recovers the paired row"
+    );
+
+    // Auto-detect (no operator hint): consistent with detection — no rows, the
+    // unchanged pre-override behaviour.
+    assert!(super::stealer_rows_from_upload(NO_LOG_ID, None).is_empty());
+
+    // Forced stealerlogs (the override used to reach the parser): the paired
+    // rows are recovered, not silently dropped.
+    let rows = super::stealer_rows_from_upload(NO_LOG_ID, Some(ImportFormat::Stealerlogs));
+    assert_eq!(
+        rows.len(),
+        1,
+        "forced stealerlogs must recover the paired row"
+    );
+    assert_eq!(rows[0].login.as_deref(), Some("jordanavery@gmail.com"));
+    assert_eq!(rows[0].password.as_deref(), Some("Hunter2pass"));
+
+    // Forced to a DIFFERENT format on a genuinely stealer-shaped body: the rows
+    // the operator overrode are not emitted, so the two parses of one upload
+    // agree on the format.
+    assert!(
+        super::stealer_rows_from_upload(STEALER, Some(ImportFormat::Combolist)).is_empty(),
+        "a body forced away from stealerlogs must not emit stealer rows"
+    );
+}

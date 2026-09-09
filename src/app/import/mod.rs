@@ -625,9 +625,27 @@ async fn persist_stealer_rows_best_effort(
 /// this web-only need). Returns empty for any non-stealer body from a cheap
 /// format check alone; re-parses the body a second time only in the stealer
 /// case, an accepted, bounded, one-time-per-upload cost.
-pub(crate) fn stealer_rows_from_upload(body: &str) -> Vec<crate::core::stealer_row::StealerRow> {
+///
+/// `forced` (the upload's `?format=`) governs the format decision here exactly
+/// as it does in `entities_from_upload`, so the two parses of one upload never
+/// disagree about what the file is. Without this, a `?format=stealerlogs`
+/// upload whose body content-detection would MISS — an export with a
+/// `Credentials:` list but no `Log Id:` line, which `looks_like_stealerlogs`
+/// rejects yet `parse_stealerlogs` reads fine — kept its entities but silently
+/// lost its paired rows (the same silent-data-loss class the override exists to
+/// close); and a body forced to a NON-stealer format would still have emitted
+/// stealer rows the operator overrode. When `forced` is `None` (auto-detect,
+/// the CLI/no-hint path) this is exactly the previous content check.
+pub(crate) fn stealer_rows_from_upload(
+    body: &str,
+    forced: Option<ImportFormat>,
+) -> Vec<crate::core::stealer_row::StealerRow> {
     let body = body.strip_prefix('\u{feff}').unwrap_or(body);
-    if !looks_like_stealerlogs(body) {
+    let is_stealer = match forced {
+        Some(f) => f == ImportFormat::Stealerlogs,
+        None => looks_like_stealerlogs(body),
+    };
+    if !is_stealer {
         return Vec::new();
     }
     parse_stealerlogs(body, "").2

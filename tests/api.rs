@@ -5691,3 +5691,45 @@ async fn dossier_upload_honours_an_explicit_format_override() {
         "{err}"
     );
 }
+
+#[tokio::test]
+async fn forced_stealerlogs_upload_persists_paired_rows_detection_would_lose() {
+    // A stealer-log export with credentials but no `Log Id:` line fails content
+    // detection (looks_like_stealerlogs needs all three markers) yet parses
+    // fine. Forcing `?format=stealerlogs` reaches the parser for the entities;
+    // the paired rows must come with them, not be dropped by a second parse
+    // that re-runs the bypassed detection.
+    let app = test_app("forced-stealer-rows");
+    let body = "Victims:\n  [1]\n    Credentials:\n      [1]\n        Username:\n          jordanavery@gmail.com\n        Password:\n          Hunter2pass\n        Pwned At:\n          2026-05-20T21:00:00Z\n";
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/scans/import?format=stealerlogs")
+        .header("content-type", "text/plain")
+        .header("x-hse-csrf", "1")
+        .body(Body::from(body))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["format"], "stealerlogs");
+    let sid = json["scan_id"].as_str().expect("scan_id").to_string();
+
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{sid}/stealer-rows")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let out = body_json(resp).await;
+    let rows = out["rows"].as_array().expect("rows array");
+    assert_eq!(
+        rows.len(),
+        1,
+        "the forced import must persist the paired row: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|r| r["login"] == "jordanavery@gmail.com"
+            && r["password"] == "Hunter2pass"
+            && r["pwned_at"] == "2026-05-20T21:00:00Z"),
+        "login+password+pwned_at must survive paired: {rows:?}"
+    );
+}
