@@ -197,10 +197,23 @@ bound) passes unchanged, and round 1 always still runs reconsideration
 (`last_reconsidered_version` starts `None`), matching today's behaviour
 exactly on every round where something actually changed.
 
-Queued: **genealogy G2** — manual-provider contracts (`hse batch --class
-genealogy`) for the ancestry sites whose terms/robots forbid automation
-(Ancestry, FamilySearch, Find a Grave, the BDM registries, NAA, CWGC, FreeBMD,
-…); the site contracts are drafted and URL-verified.
+Delivered (was "queued" at the prior checkpoint — corrected here against
+observed reality, so the next session and the parallel hourly routine do not
+re-implement shipped work): **genealogy G2** — the manual-provider contracts
+for `hse batch --class genealogy` are on `origin/main`, merged as `4520993c`
+(#603, "batch: genealogy provider class + one shared site-resolution
+authority"), not merely drafted. Verified this run with the built binary on the
+current head: `hse batch --class genealogy` renders **31 provider contracts**,
+each a by-hand name-search paste list with its evidence URL and a note on why it
+cannot be auto-queried (terms/robots/bot-protection). Every site the prior
+checkpoint named is present — Ancestry, FamilySearch, Find a Grave, the NSW /
+VIC / QLD BDM registries, NAA (RecordSearch), CWGC, FreeBMD — alongside 24
+more (MyHeritage, Geneanet, Ryerson Index, FreeCEN, FreeREG, Irish Genealogy,
+NZ BDM, Papers Past, ScotlandsPeople, the two ANU biographical corpora, …).
+`src/app/batch/tests.rs` locks the class invariant: every `SiteClass::Genealogy`
+contract must index `Name` and render as a bare paste list, at least one
+genealogy provider must exist, and the breach/genealogy/all partitions are
+exhaustive. Nothing remains to build for G2.
 
 Closed this run (fourth follow-on unit on PR #624): **bare-username-only
 combolist now reachable via an explicit input-format override** (`71bfd13c`).
