@@ -77,7 +77,16 @@ fn emit_build_provenance() {
     // directory (a loose ref file APPEARS there on the first commit after
     // `git pack-refs`, and a directory watch sees its direct children change)
     // and `packed-refs` (where the ref lives until then).
-    for p in [".git/HEAD", ".git/ORIG_HEAD", ".git/packed-refs"] {
+    // `.git/logs/HEAD` is the reflog every movement of HEAD appends to —
+    // commit, checkout, reset, merge — whatever the ref layout (loose, packed,
+    // detached), so it is the most direct signal that the stamped revision may
+    // have changed. Guarded like the rest: absent when reflogs are disabled.
+    for p in [
+        ".git/HEAD",
+        ".git/ORIG_HEAD",
+        ".git/packed-refs",
+        ".git/logs/HEAD",
+    ] {
         if Path::new(p).exists() {
             println!("cargo:rerun-if-changed={p}");
         }
@@ -91,8 +100,14 @@ fn emit_build_provenance() {
         if target.exists() {
             println!("cargo:rerun-if-changed={}", target.display());
         }
-        if let Some(dir) = target.parent().filter(|d| d.exists()) {
-            println!("cargo:rerun-if-changed={}", dir.display());
+        // The loose ref file may not exist at build time: after `git pack-refs`
+        // (which `git gc --auto` runs) git deletes it AND prunes its now-empty
+        // directory, then the next commit recreates both. A watch on a path
+        // that is missing registers nothing, so watch the nearest ancestor that
+        // DOES exist (`.git/refs/heads` at worst) — a directory watch sees its
+        // direct children appear, which is exactly the recreating step.
+        if let Some(anc) = target.ancestors().skip(1).find(|a| a.exists()) {
+            println!("cargo:rerun-if-changed={}", anc.display());
         }
     }
 

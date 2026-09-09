@@ -1069,7 +1069,17 @@ fn import_format_override_reaches_both_dispatchers() {
 fn build_provenance_follows_commits_not_just_checkouts() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let build = fs::read_to_string(root.join("build.rs")).expect("build.rs");
-    for needle in [r#"strip_prefix("ref: ")"#, ".git/packed-refs"] {
+    // The ancestor walk and the reflog are what survive `git pack-refs` /
+    // `git gc --auto`, which delete the loose ref AND prune its emptied
+    // directory: a watch on the (then-missing) file or parent registers
+    // nothing, and the next commit's rebuild keeps the old SHA. Reproduced
+    // live on 6d969442 before the walk was added.
+    for needle in [
+        r#"strip_prefix("ref: ")"#,
+        ".git/packed-refs",
+        ".git/logs/HEAD",
+        ".ancestors().skip(1).find(|a| a.exists())",
+    ] {
         assert!(
             build.contains(needle),
             "build.rs must resolve the symbolic `.git/HEAD` and watch the ref it points at \
