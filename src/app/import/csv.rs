@@ -179,14 +179,14 @@ pub(super) fn parse_dehashed_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportS
                     stats.emails += 1;
                 }
             }
-            Some((un, Some(EntityKind::Username))) => {
-                if seen.insert(format!("un:{}", un.to_lowercase())) {
-                    push(
-                        Entity::new(EntityKind::Username, un, confidence::MEDIUM_PLUS, sid),
-                        "breach",
-                    );
-                    stats.usernames += 1;
-                }
+            Some((un, Some(EntityKind::Username)))
+                if seen.insert(format!("un:{}", un.to_lowercase())) =>
+            {
+                push(
+                    Entity::new(EntityKind::Username, un, confidence::MEDIUM_PLUS, sid),
+                    "breach",
+                );
+                stats.usernames += 1;
             }
             _ => {}
         }

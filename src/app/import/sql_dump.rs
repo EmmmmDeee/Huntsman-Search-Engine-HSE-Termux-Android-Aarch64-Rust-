@@ -362,14 +362,14 @@ pub(super) fn parse_sql_dump(body: &str, sid: &str) -> (Vec<Entity>, ImportStats
                         stats.emails += 1;
                     }
                 }
-                Some((un, Some(EntityKind::Username))) => {
-                    if seen.insert(format!("un:{}", un.to_lowercase())) {
-                        push(
-                            Entity::new(EntityKind::Username, un, confidence::MEDIUM_PLUS, sid),
-                            "breach",
-                        );
-                        stats.usernames += 1;
-                    }
+                Some((un, Some(EntityKind::Username)))
+                    if seen.insert(format!("un:{}", un.to_lowercase())) =>
+                {
+                    push(
+                        Entity::new(EntityKind::Username, un, confidence::MEDIUM_PLUS, sid),
+                        "breach",
+                    );
+                    stats.usernames += 1;
                 }
                 _ => {}
             }
