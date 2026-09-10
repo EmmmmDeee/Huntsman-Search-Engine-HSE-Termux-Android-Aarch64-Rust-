@@ -4,7 +4,7 @@
 //! `use super::*` (each parser is re-exported into the parent's scope).
 
 use super::{
-    ImportFormat, deduplicate_by_uid, detect_import_format, entities_from_upload,
+    ImportFormat, cmd_import, deduplicate_by_uid, detect_import_format, entities_from_upload,
     looks_like_dossier, parse_dossier, parse_oathnet_html,
 };
 
@@ -2322,6 +2322,77 @@ fn parse_sql_dump_recovers_an_email_held_in_the_username_column() {
     assert!(
         ents.iter()
             .any(|e| e.kind == EntityKind::Username && e.value == "dtester")
+    );
+}
+
+/// A real `mysqldump` breach table routinely carries phone / address / IP /
+/// password-hash columns alongside the identity columns — but every other
+/// SQL-dump fixture in this suite declares only id/email/username/password/
+/// full_name, so `phone_i`/`addr_i`/`ip_i`/`hashed_idxs` and their
+/// entity-emission arms had never executed in CI. This exercises each of them
+/// on one row, so a regression in exactly the fields most breach dumps carry
+/// per row is caught. Synthetic placeholders only; the shapes mirror the
+/// DeHashed CSV coverage above.
+#[test]
+fn parse_sql_dump_extracts_phone_address_ip_and_password_hash_columns() {
+    let body = "INSERT INTO `users` \
+        (`id`, `email`, `phone`, `address`, `ip`, `password_hash`) VALUES\n\
+        (1, 'gamma.tester@gmail.com', '0412 345 678', \
+         '12 Smith Street, Carlton VIC 3053', '24.32.96.71', \
+         '$2a$10$abcdefghijklmnopqrstuv');\n";
+    let (entities, stats) = parse_sql_dump(body, "s");
+    let has = |kind: EntityKind, pred: &dyn Fn(&str) -> bool| {
+        entities.iter().any(|e| e.kind == kind && pred(&e.value))
+    };
+    // The AU local phone is recovered and canonicalised to E.164.
+    assert!(
+        has(EntityKind::Phone, &|v| v == "+61412345678"),
+        "phone column → E.164 Phone: {entities:#?}"
+    );
+    assert!(
+        has(EntityKind::Address, &|v| v
+            .to_ascii_lowercase()
+            .contains("carlton")),
+        "address column → Address"
+    );
+    assert!(
+        has(EntityKind::IpAddress, &|v| v == "24.32.96.71"),
+        "ip column → IpAddress"
+    );
+    assert!(
+        has(EntityKind::Credential, &|v| v.starts_with("$2a$")),
+        "password_hash column → Credential (hash)"
+    );
+    assert_eq!(stats.phones, 1);
+    assert_eq!(stats.addresses, 1);
+    assert_eq!(stats.ips, 1);
+    assert_eq!(stats.breach_records, 1);
+}
+
+/// `cmd_import`'s directory + forced-format guard (the `if meta.is_dir()` block
+/// in mod.rs) is a pure filesystem check that returns BEFORE any store access,
+/// so it is drivable end-to-end with only a temp directory — yet no test
+/// exercised it. It must REFUSE `--input-format` against a directory (a scrape
+/// detects each file's format from its content), naming the forced format,
+/// rather than silently ignoring the operator's override.
+#[tokio::test]
+async fn cmd_import_refuses_a_forced_format_against_a_directory() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().to_str().expect("utf-8 temp path");
+    let err = cmd_import(path, "table", Some(ImportFormat::SqlDump))
+        .await
+        .expect_err("a forced format on a directory must be refused, not ignored");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("--input-format") && msg.contains("sql-dump") && msg.contains("directory"),
+        "the refusal must name the forced format and the reason: {msg}"
+    );
+    // Control: the SAME directory with no forced format is a scrape, not an
+    // error (an empty dir scrapes to an empty result, but must not error on
+    // the guard path).
+    assert!(
+        cmd_import(path, "table", None).await.is_ok(),
+        "a directory scrape without a forced format must not hit the guard"
     );
 }
 
