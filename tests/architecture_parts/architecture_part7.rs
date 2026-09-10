@@ -1093,3 +1093,45 @@ fn build_provenance_follows_commits_not_just_checkouts() {
         );
     }
 }
+
+/// Ratchet: every caller of the ~16-pass, mostly-pairwise relation derivation
+/// chain that runs on a live scan must run it under `DERIVE_BUDGET`, not the
+/// unbounded `derive_all`.
+///
+/// The finalise-time caller (`derive_and_persist_relations`) has always passed
+/// the deadline, for the documented reason that a pathological graph (an
+/// operator-raised `--max-entities`) can otherwise run the chain for minutes
+/// and be SIGKILLed with nothing written. Its mid-scan sibling
+/// `run_gap_fill` — which runs the same chain over a snapshot of the whole
+/// working set BEFORE finalise, on every round the gap-fill feature (default
+/// on) fires — called the unbounded variant, guarded only by "already
+/// cancelled", which is no guard for a scan that simply hasn't been cancelled
+/// yet. Same O(n²)-pass-missing-its-cap class as the `persist_entities_as_scan`
+/// enrichment cap; found by sweeping for siblings of that fix.
+#[test]
+fn run_gap_fill_derivation_is_budgeted_like_finalise() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let engine = fs::read_to_string(root.join("src/core/engine/mod.rs")).expect("engine/mod.rs");
+    let start = engine
+        .find("fn run_gap_fill")
+        .expect("engine must still define run_gap_fill");
+    let rest = &engine[start..];
+    // The method body ends where the next method of the impl begins.
+    let end = ["\n    fn ", "\n    async fn ", "\n    pub "]
+        .iter()
+        .filter_map(|m| rest[1..].find(m).map(|i| i + 1))
+        .min()
+        .unwrap_or(rest.len());
+    let body = &rest[..end];
+    assert!(
+        body.contains("derive_all_within(") && body.contains("DERIVE_BUDGET"),
+        "run_gap_fill must derive relations via `derive_all_within` under `DERIVE_BUDGET`, \
+         exactly as `derive_and_persist_relations` does: the unbounded chain stalls a large \
+         live scan mid-round for minutes"
+    );
+    assert!(
+        !body.contains("relation::derive_all("),
+        "run_gap_fill must not call the unbounded `derive_all` — that reintroduces the \
+         mid-scan stall `DERIVE_BUDGET` exists to prevent"
+    );
+}

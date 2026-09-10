@@ -1603,10 +1603,22 @@ impl ScanEngine {
 
         // The gap analysis needs the full relation graph the finaliser will build:
         // the in-flight lineage edges plus the structural edges derivable from the
-        // current entity set. Derive once, off a snapshot.
+        // current entity set. Derive once, off a snapshot — under the SAME
+        // `DERIVE_BUDGET` the finalise-time derivation
+        // (`derive_and_persist_relations`) runs under. This mid-scan call used to
+        // be the unbounded `derive_all`, so a large, still-running scan (an
+        // operator-raised `--max-entities`) paid the full super-linear pass chain
+        // synchronously here, before finalise ever got to its own budgeted pass:
+        // the exact stall `DERIVE_BUDGET` exists to prevent, one caller over.
+        // A budget cut keeps the foundational edges the probes need and drops
+        // only the softer inference edges — strictly better than stalling.
         let ents: Vec<Entity> = entity_map.snapshot();
         let mut rels = relations.clone();
-        rels.extend(crate::core::relation::derive_all(&ents, scan_id));
+        rels.extend(crate::core::relation::derive_all_within(
+            &ents,
+            scan_id,
+            Some(Instant::now() + crate::core::relation::DERIVE_BUDGET),
+        ));
 
         let context = crate::core::correlator::RuleContext::new(&ents);
         let probes = crate::core::correlator::gap_fill_probes(&context, &rels);
