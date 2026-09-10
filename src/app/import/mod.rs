@@ -7,6 +7,7 @@
 use crate::core::error::{Error, Result};
 
 mod combined;
+mod combolist;
 mod csv;
 mod dossier;
 mod html;
@@ -14,6 +15,7 @@ mod json;
 mod kml;
 mod local;
 mod oathnet_report;
+mod sql_dump;
 mod stealer;
 #[cfg(test)]
 mod tests;
@@ -23,6 +25,7 @@ mod txt;
 // into scope for the dispatcher, the web-upload router and the tests.
 use crate::core::confidence;
 use combined::{cmd_import_combined, looks_like_combined_search, parse_combined_search};
+use combolist::{cmd_import_combolist, looks_like_combolist, parse_combolist};
 use csv::{
     cmd_import_csv, cmd_import_hse_csv, looks_like_dehashed_csv, looks_like_hse_csv,
     parse_dehashed_csv, parse_hse_csv,
@@ -32,10 +35,21 @@ use html::{cmd_import_html, parse_oathnet_html};
 use json::{import_json_output, parse_oathnet_json};
 use local::cmd_import_local_dir;
 use oathnet_report::{cmd_import_oathnet_report, looks_like_oathnet_report, parse_oathnet_report};
+use sql_dump::{cmd_import_sql_dump, looks_like_sql_dump, parse_sql_dump};
 use stealer::{cmd_import_stealerlogs, looks_like_stealerlogs, parse_stealerlogs};
 use txt::{cmd_import_txt, parse_oathnet_txt};
 
-pub async fn cmd_import(path: &str, output: &str) -> Result<()> {
+/// `hse import`: parse one file (or scrape a directory) into a new scan.
+///
+/// `forced` is the operator's `--input-format`: `Some` bypasses content
+/// detection and dispatches straight to that format's parser — for a file the
+/// detector cannot classify (a combolist of bare usernames with no
+/// email-shaped line scores 0% on the combolist heuristic and would fall to
+/// the TXT catch-all as zero entities) or classifies wrongly. It applies to a
+/// single file only: a directory scrape detects each file's format from its
+/// content by design, so forcing one format across a tree is refused
+/// explicitly rather than silently ignored.
+pub async fn cmd_import(path: &str, output: &str, forced: Option<ImportFormat>) -> Result<()> {
     // File-size cap before read_to_string — mirrors MAX_UPLOAD_BYTES in the API
     // upload handler (16 MB) so both paths enforce the same memory bound.
     const MAX_IMPORT_BYTES: u64 = 16 * 1024 * 1024;
@@ -48,6 +62,13 @@ pub async fn cmd_import(path: &str, output: &str) -> Result<()> {
     // Offline — reads local files only — so it works on a Termux install with no
     // connectivity. Bounded by depth/count/size in `cmd_import_local_dir`.
     if meta.is_dir() {
+        if let Some(f) = forced {
+            return Err(Error::Other(format!(
+                "--input-format {} applies to a single file, but {path} is a directory \
+                 (a directory scrape detects each file's format from its content)",
+                f.label()
+            )));
+        }
         return cmd_import_local_dir(path, output).await;
     }
     if meta.len() > MAX_IMPORT_BYTES {
@@ -75,7 +96,20 @@ pub async fn cmd_import(path: &str, output: &str) -> Result<()> {
         .strip_prefix('\u{feff}')
         .map(str::to_string)
         .unwrap_or(body);
-    match detect_import_format(path, &body) {
+    let format = match forced {
+        Some(f) => {
+            note(
+                output,
+                format!(
+                    "Input format forced to `{}` by --input-format (content detection bypassed)",
+                    f.label()
+                ),
+            );
+            f
+        }
+        None => detect_import_format(path, &body),
+    };
+    match format {
         ImportFormat::OathnetHtml => cmd_import_html(&body, output).await,
         ImportFormat::OathnetJson => {
             let doc: serde_json::Value = serde_json::from_str(&body)
@@ -107,6 +141,8 @@ pub async fn cmd_import(path: &str, output: &str) -> Result<()> {
         ImportFormat::HseCsv => cmd_import_hse_csv(&body, output).await,
         ImportFormat::DehashedCsv => cmd_import_csv(&body, output).await,
         ImportFormat::Kml => kml::cmd_import_kml(&body, output).await,
+        ImportFormat::Combolist => cmd_import_combolist(&body, output).await,
+        ImportFormat::SqlDump => cmd_import_sql_dump(&body, output).await,
         ImportFormat::OathnetTxt => cmd_import_txt(&body, output).await,
     }
 }
@@ -114,22 +150,91 @@ pub async fn cmd_import(path: &str, output: &str) -> Result<()> {
 /// The detected import format — one variant per parser. The single source of
 /// truth both the CLI ([`cmd_import`]) and the web upload ([`entities_from_upload`])
 /// dispatch on, so the two can never drift on which format a file is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ImportFormat {
+///
+/// Also the operator-facing spelling of every format: the clap `ValueEnum`
+/// derive names each variant in kebab-case (`sql-dump`, `oathnet-txt`, …) —
+/// what `hse import --input-format` accepts, what the web upload's `?format=`
+/// query parameter accepts, and (via [`Self::label`]) what both report back.
+/// One enum, one spelling; a test locks `label` to the derived names, and the
+/// web UI's selector to this list, so no second copy can drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ImportFormat {
+    /// An OathNet HTML export.
     OathnetHtml,
+    /// An OathNet JSON export (a Combined Search JSON is recognised by its shape).
     OathnetJson,
+    /// A Combined Search text export (numbered records with a source/db field and identity fields).
     CombinedSearch,
+    /// A breach/dossier compilation (`Entry #N:` blocks and `EMAILS:`/`PASSWORDS:` lists).
     Dossier,
+    /// A `Module: Stealerlogs` victim export (`Victims:` blocks with `Log Id:` and `Credentials:`).
     Stealerlogs,
+    /// An OathNet SEARCH REPORT (`=== DATABASE LOGS ===` sections).
     OathnetReport,
+    /// HSE's own `hse export --format csv` entity CSV, re-ingested.
     HseCsv,
+    /// A DeHashed-style breach CSV (an identity column plus `database_name` / `hashed_password*`).
     DehashedCsv,
-    /// A WiGLE-style KML wardriving export — the native output of the capture
-    /// device, previously unrecognised and therefore swallowed by the TXT
-    /// catch-all, which extracted nothing from it.
+    /// A WiGLE-style KML wardriving export.
+    ///
+    /// The native output of the capture device, previously unrecognised and
+    /// therefore swallowed by the TXT catch-all, which extracted nothing from it.
     Kml,
-    /// Catch-all: an OathNet stealer-log TXT (and any unrecognised plain text).
+    /// A raw `identity:secret` combolist — one leaked login per line, no header, no envelope.
+    ///
+    /// The most common real-world breach-data shape; without this variant it
+    /// fell through to `OathnetTxt` and parsed as nothing.
+    Combolist,
+    /// A leaked breach SQL dump — `INSERT INTO ... (cols) VALUES (...);` statements.
+    ///
+    /// The shape a `mysqldump`-style export of a compromised user table takes.
+    /// Without this variant it fell through to `OathnetTxt` and parsed as nothing.
+    SqlDump,
+    /// An OathNet stealer-log TXT export — also the catch-all for any unrecognised plain text.
     OathnetTxt,
+}
+
+impl ImportFormat {
+    /// The operator-facing name of this format: the label the web upload and
+    /// the CLI report, and the spelling `--input-format` / `?format=` accept.
+    /// Hand-written so it is `'static`; a test locks every arm to the clap
+    /// `ValueEnum` spelling, so the two can never disagree.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::OathnetHtml => "oathnet-html",
+            Self::OathnetJson => "oathnet-json",
+            Self::CombinedSearch => "combined-search",
+            Self::Dossier => "dossier",
+            Self::Stealerlogs => "stealerlogs",
+            Self::OathnetReport => "oathnet-report",
+            Self::HseCsv => "hse-csv",
+            Self::DehashedCsv => "dehashed-csv",
+            Self::Kml => "kml",
+            Self::Combolist => "combolist",
+            Self::SqlDump => "sql-dump",
+            Self::OathnetTxt => "oathnet-txt",
+        }
+    }
+
+    /// Parse an operator-supplied format name — the `--input-format` /
+    /// `?format=` spelling, case-insensitive, surrounding whitespace ignored.
+    /// The error names every accepted spelling, so a typo is actionable
+    /// rather than a bare rejection (and never a silent fall back to
+    /// detection, which is exactly what the operator asked to bypass).
+    pub(crate) fn parse_name(name: &str) -> std::result::Result<Self, String> {
+        <Self as clap::ValueEnum>::from_str(name.trim(), true).map_err(|_| {
+            let accepted: Vec<&'static str> = <Self as clap::ValueEnum>::value_variants()
+                .iter()
+                .copied()
+                .map(Self::label)
+                .collect();
+            format!(
+                "unknown import format `{}`; expected one of: {}",
+                name.trim(),
+                accepted.join(", ")
+            )
+        })
+    }
 }
 
 /// Classify an import body by CONTENT (never by extension alone), so a breach
@@ -177,6 +282,18 @@ pub(crate) fn detect_import_format(path: &str, body: &str) -> ImportFormat {
     if path.ends_with(".csv") || looks_like_dehashed_csv(body) {
         return ImportFormat::DehashedCsv;
     }
+    // A SQL dump's `INSERT INTO ... VALUES` structure is distinctive enough
+    // to check ahead of the combolist fallback (which needs a majority-line
+    // heuristic — a single real match here is already unambiguous).
+    if looks_like_sql_dump(body) {
+        return ImportFormat::SqlDump;
+    }
+    // Fallback, checked last: only claims what every more specific format
+    // above already declined, and only when it is overwhelmingly
+    // combolist-shaped (see `looks_like_combolist`'s doc comment).
+    if looks_like_combolist(body) {
+        return ImportFormat::Combolist;
+    }
     ImportFormat::OathnetTxt
 }
 
@@ -223,18 +340,25 @@ pub(crate) fn looks_like_dossier(body: &str) -> bool {
 /// the breach/dossier compilation — is reachable from the Termux UI, parsed by
 /// the exact same `parse_*` functions the CLI calls (they can never drift).
 /// `async` because the JSON path opportunistically validates discovered keys.
+/// `forced` (the upload's `?format=`, the CLI's `--input-format`) bypasses
+/// detection and dispatches straight to that format's parser.
 pub(crate) async fn entities_from_upload(
     body: &str,
     sid: &str,
+    forced: Option<ImportFormat>,
 ) -> Result<(Vec<crate::core::entity::Entity>, &'static str)> {
     // Same content-based detector the CLI dispatches on (no path → content only),
-    // so the browser upload and `hse import` can never disagree on a file's format.
+    // so the browser upload and `hse import` can never disagree on a file's format
+    // — unless the operator forces one, which bypasses detection identically on
+    // both surfaces.
     // Strip a leading UTF-8 BOM (U+FEFF) — not whitespace, so the detector's
     // trim_start misses it — before both detection and parsing, or a BOM-prefixed
     // upload misroutes and silently drops every entity.
     let body = body.strip_prefix('\u{feff}').unwrap_or(body);
-    let (mut entities, label) = match detect_import_format("", body) {
-        ImportFormat::OathnetHtml => (parse_oathnet_html(body, sid), "oathnet-html"),
+    let format = forced.unwrap_or_else(|| detect_import_format("", body));
+    let label = format.label();
+    let (mut entities, label) = match format {
+        ImportFormat::OathnetHtml => (parse_oathnet_html(body, sid), label),
         ImportFormat::OathnetJson => {
             let doc: serde_json::Value = serde_json::from_str(body)
                 .map_err(|e| Error::Other(format!("invalid JSON: {e}")))?;
@@ -245,21 +369,75 @@ pub(crate) async fn entities_from_upload(
             let label = if doc.get("modules").and_then(|v| v.as_array()).is_some() {
                 "combined-search-json"
             } else {
-                "oathnet-json"
+                label
             };
             (parse_oathnet_json(&doc, sid).await.0, label)
         }
-        ImportFormat::CombinedSearch => (parse_combined_search(body, sid).0, "combined-search"),
-        ImportFormat::Dossier => (parse_dossier(body, sid).0, "dossier"),
-        ImportFormat::Stealerlogs => (parse_stealerlogs(body, sid).0, "stealerlogs"),
-        ImportFormat::OathnetReport => (parse_oathnet_report(body, sid).0, "oathnet-report"),
-        ImportFormat::HseCsv => (parse_hse_csv(body, sid).0, "hse-csv"),
-        ImportFormat::DehashedCsv => (parse_dehashed_csv(body, sid).0, "dehashed-csv"),
-        ImportFormat::Kml => (kml::parse_kml(body, sid).0, "kml"),
-        ImportFormat::OathnetTxt => (parse_oathnet_txt(body, sid).0, "oathnet-txt"),
+        ImportFormat::CombinedSearch => (parse_combined_search(body, sid).0, label),
+        ImportFormat::Dossier => (parse_dossier(body, sid).0, label),
+        ImportFormat::Stealerlogs => (parse_stealerlogs(body, sid).0, label),
+        ImportFormat::OathnetReport => (parse_oathnet_report(body, sid).0, label),
+        ImportFormat::HseCsv => (parse_hse_csv(body, sid).0, label),
+        ImportFormat::DehashedCsv => (parse_dehashed_csv(body, sid).0, label),
+        ImportFormat::Kml => (kml::parse_kml(body, sid).0, label),
+        ImportFormat::Combolist => (parse_combolist(body, sid).0, label),
+        ImportFormat::SqlDump => (parse_sql_dump(body, sid).0, label),
+        ImportFormat::OathnetTxt => (parse_oathnet_txt(body, sid).0, label),
     };
     deduplicate_by_uid(&mut entities);
     Ok((entities, label))
+}
+
+/// Case-insensitive exact match of a header `column` against one of
+/// `candidates` — the shared column-name authority for a breach export whose
+/// schema is NOT fixed (an arbitrary compromised database's own naming, unlike
+/// DeHashed's own fixed CSV header): a real column named `email_address`,
+/// `user_name` or `mobile` is exactly as likely as `email`/`username`/`phone`,
+/// and matching only the single canonical name silently drops a present field
+/// with no warning — the same silent-breach-data-loss class this whole import
+/// surface exists to close. Originally private to the SQL-dump parser; promoted
+/// here (mirroring `util::extract::split_identity_secret`'s promotion out of
+/// `comb_search` earlier in this same effort) once the DeHashed CSV parser was
+/// found to need the identical tolerance for the identical reason — reproduced
+/// live: a CSV row identical but for using `email_address`/`user_name`/`pass`/
+/// `mobile`/`street_address` instead of DeHashed's own names silently dropped
+/// every one of those fields while still reporting "Imported 2 entities", no
+/// quarantine, no warning.
+fn column_matches(column: &str, candidates: &[&str]) -> bool {
+    let lower = column.to_ascii_lowercase();
+    candidates.iter().any(|c| lower == *c)
+}
+
+/// Find the first header column matching one of `candidates` (see
+/// [`column_matches`]).
+fn find_column(columns: &[String], candidates: &[&str]) -> Option<usize> {
+    columns.iter().position(|c| column_matches(c, candidates))
+}
+
+/// The entity kind an identity-column value (`username` / `login` / `user` /
+/// `user_name` / `handle`, per [`find_column`]) is stored as — the shared rule
+/// for both breach-table parsers (SQL dump, DeHashed-style CSV).
+///
+/// A compromised database's login column routinely holds the account's EMAIL
+/// ADDRESS — `INSERT INTO users (id, username, password)` with `username =
+/// 'alice@…'` and no separate email column is one of the most common real
+/// leaked-table shapes. Both parsers used to gate the Username entity on
+/// `!contains('@')` with NO email fallback, so that identity was silently
+/// dropped from the graph (kept only as an unindexed evidence attribute) while
+/// the import still reported success. Reproduced live on the CLI and the HTTP
+/// upload before this existed: a two-row table imported as two bare
+/// credentials and zero identities. Email-shaped → `Email`; a plain handle →
+/// `Username`; anything else (an `@handle`, a lone character) → `None`, exactly
+/// what the old gate already rejected.
+fn identity_column_kind(value: &str) -> Option<crate::core::entity::EntityKind> {
+    use crate::core::entity::EntityKind;
+    if crate::util::extract::looks_like_email(value) {
+        Some(EntityKind::Email)
+    } else if value.len() >= 2 && !value.contains('@') {
+        Some(EntityKind::Username)
+    } else {
+        None
+    }
 }
 
 #[derive(Default)]
@@ -293,6 +471,15 @@ struct ImportStats {
     persons: usize,
     organisations: usize,
     credentials: usize,
+    /// Structurally malformed input units quarantined and skipped rather than
+    /// aborting the whole import: for the combolist importer, a line that
+    /// failed to parse as `identity:secret` (no delimiter, an empty identity,
+    /// or an empty secret); for the SQL-dump importer, a value tuple that
+    /// failed to close cleanly or whose value count didn't match its column
+    /// list. Every other format either has no line/row-oriented shape to
+    /// malform, or already drops unparseable rows silently (unchanged
+    /// behaviour).
+    malformed_lines: usize,
     date_range: String,
 }
 
@@ -383,7 +570,7 @@ pub(crate) fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>
 async fn persist_import(
     sid: &str,
     entities: &[crate::core::entity::Entity],
-) -> Result<(usize, usize)> {
+) -> Result<(usize, usize, bool)> {
     use crate::core::scan::TargetKind;
 
     // A readable scan label: the strongest identity in the file, else generic —
@@ -398,13 +585,27 @@ async fn persist_import(
 /// fatal — the entities were already rendered to the operator.
 async fn persist_and_report(sid: &str, entities: &[crate::core::entity::Entity], output: &str) {
     match persist_import(sid, entities).await {
-        Ok((relations, correlations)) => note(
-            output,
-            format!(
-                "  Stored:    scan {sid} ({} entities, {relations} relations, {correlations} correlations) — view with `hse list`",
-                entities.len()
-            ),
-        ),
+        Ok((relations, correlations, enriched)) => {
+            note(
+                output,
+                format!(
+                    "  Stored:    scan {sid} ({} entities, {relations} relations, {correlations} correlations) — view with `hse list`",
+                    entities.len()
+                ),
+            );
+            if !enriched {
+                note(
+                    output,
+                    format!(
+                        "  Note:      relations/correlations skipped — {} entities exceeds the \
+                         {}-entity enrichment cap (device-safety bound on the pairwise \
+                         correlator pass); every entity is still stored",
+                        entities.len(),
+                        crate::app::persist::PERSIST_ENRICH_MAX_ENTITIES
+                    ),
+                );
+            }
+        }
         Err(e) => note(
             output,
             format!("  Warning:   could not persist import: {e}"),
@@ -490,9 +691,27 @@ async fn persist_stealer_rows_best_effort(
 /// this web-only need). Returns empty for any non-stealer body from a cheap
 /// format check alone; re-parses the body a second time only in the stealer
 /// case, an accepted, bounded, one-time-per-upload cost.
-pub(crate) fn stealer_rows_from_upload(body: &str) -> Vec<crate::core::stealer_row::StealerRow> {
+///
+/// `forced` (the upload's `?format=`) governs the format decision here exactly
+/// as it does in `entities_from_upload`, so the two parses of one upload never
+/// disagree about what the file is. Without this, a `?format=stealerlogs`
+/// upload whose body content-detection would MISS — an export with a
+/// `Credentials:` list but no `Log Id:` line, which `looks_like_stealerlogs`
+/// rejects yet `parse_stealerlogs` reads fine — kept its entities but silently
+/// lost its paired rows (the same silent-data-loss class the override exists to
+/// close); and a body forced to a NON-stealer format would still have emitted
+/// stealer rows the operator overrode. When `forced` is `None` (auto-detect,
+/// the CLI/no-hint path) this is exactly the previous content check.
+pub(crate) fn stealer_rows_from_upload(
+    body: &str,
+    forced: Option<ImportFormat>,
+) -> Vec<crate::core::stealer_row::StealerRow> {
     let body = body.strip_prefix('\u{feff}').unwrap_or(body);
-    if !looks_like_stealerlogs(body) {
+    let is_stealer = match forced {
+        Some(f) => f == ImportFormat::Stealerlogs,
+        None => looks_like_stealerlogs(body),
+    };
+    if !is_stealer {
         return Vec::new();
     }
     parse_stealerlogs(body, "").2
@@ -860,6 +1079,109 @@ fn parse_osint_enrichment(
     }
 }
 
+/// Everything a per-format parser hands the shared CLI import runner
+/// ([`run_import`]) to persist and report: the entities and their stats, plus
+/// the extras only some formats carry — a key pool to save (stealer-log /
+/// OathNet exports leak API keys), the paired stealer-credential rows or the RF
+/// sightings that live in their own side tables. Built by the per-format
+/// `cmd_import_*` adapters and consumed once by [`run_import`], so the
+/// dedupe → stats → persist → render lifecycle exists in exactly one place
+/// instead of once per format.
+struct ParsedImport {
+    entities: Vec<crate::core::entity::Entity>,
+    stats: ImportStats,
+    /// Save the global API-key pool afterwards (gated on keys actually found).
+    save_key_pool: bool,
+    /// Also print the `Pool: N keys stored` line — the TXT importer alone does.
+    note_pool: bool,
+    stealer_rows: Vec<crate::core::stealer_row::StealerRow>,
+    rf_sightings: Vec<crate::core::rf::RfSighting>,
+}
+
+impl ParsedImport {
+    fn new(entities: Vec<crate::core::entity::Entity>, stats: ImportStats) -> Self {
+        Self {
+            entities,
+            stats,
+            save_key_pool: false,
+            note_pool: false,
+            stealer_rows: Vec::new(),
+            rf_sightings: Vec::new(),
+        }
+    }
+
+    /// Save the discovered API-key pool after import (stealer / OathNet report).
+    fn saving_key_pool(mut self) -> Self {
+        self.save_key_pool = true;
+        self
+    }
+
+    /// Save the pool AND print the `Pool: N keys` summary line (TXT importer).
+    fn noting_key_pool(mut self) -> Self {
+        self.save_key_pool = true;
+        self.note_pool = true;
+        self
+    }
+
+    fn with_stealer_rows(mut self, rows: Vec<crate::core::stealer_row::StealerRow>) -> Self {
+        self.stealer_rows = rows;
+        self
+    }
+
+    fn with_rf_sightings(mut self, rows: Vec<crate::core::rf::RfSighting>) -> Self {
+        self.rf_sightings = rows;
+        self
+    }
+}
+
+/// The one CLI import lifecycle every simple per-format runner shares: announce
+/// the format, mint the scan id, parse (the `parse` closure receives that freshly
+/// minted sid), then dedupe → print stats → optionally save/announce the key
+/// pool → persist → persist any side table (stealer rows / RF sightings, each a
+/// no-op when empty) → render. `cmd_import_html` (a custom summary, no stats) and
+/// the OathNet-JSON arm of [`cmd_import`] (an async parse plus a JSON output tail)
+/// keep their own bodies; every other `cmd_import_*` is a one-line adapter over
+/// this. Behaviour is identical to the hand-written runners it replaced, pinned
+/// by a golden before/after CLI diff across every format.
+async fn run_import(
+    banner: &str,
+    tag: &str,
+    output: &str,
+    parse: impl FnOnce(&str) -> ParsedImport,
+) -> Result<()> {
+    note(output, banner);
+    let sid = format!("import-{tag}-{}", crate::core::entity::unix_now());
+    let ParsedImport {
+        mut entities,
+        stats,
+        save_key_pool,
+        note_pool,
+        stealer_rows,
+        rf_sightings,
+    } = parse(&sid);
+    deduplicate_by_uid(&mut entities);
+    print_import_stats(&stats, entities.len(), output);
+    if stats.api_keys > 0 {
+        if note_pool {
+            note(
+                output,
+                format!(
+                    "  Pool:      {} keys stored for automatic use",
+                    stats.api_keys
+                ),
+            );
+        }
+        if save_key_pool {
+            crate::util::key_pool::save_pool_best_effort(&crate::util::key_pool::global_pool());
+        }
+    }
+    persist_and_report(&sid, &entities, output).await;
+    persist_stealer_rows_best_effort(&sid, &stealer_rows, output).await;
+    persist_rf_sightings_best_effort(&sid, &rf_sightings, output).await;
+    render_import_entities(&entities, output);
+    Ok(())
+}
+
 /// Emit a human-readable progress/summary line on the stream appropriate to the
 /// output mode: stderr under `--output json` (so stdout stays pure JSON for
 /// `| jq`), stdout otherwise (where the summary IS the operator-facing output).
@@ -928,6 +1250,12 @@ fn print_import_stats(stats: &ImportStats, entity_count: usize, output: &str) {
     );
     if !stats.date_range.is_empty() {
         row!("  Timeline:  {}", stats.date_range);
+    }
+    if stats.malformed_lines > 0 {
+        row!(
+            "  Quarantine: {} malformed lines skipped (parsing continued)",
+            stats.malformed_lines
+        );
     }
     if stats.api_keys > 0 {
         row!(

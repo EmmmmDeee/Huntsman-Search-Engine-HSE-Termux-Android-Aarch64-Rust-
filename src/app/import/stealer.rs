@@ -444,16 +444,16 @@ pub(super) fn parse_stealerlogs(
 
 /// CLI entry: parse a Stealerlogs export and persist it as a completed scan.
 pub(super) async fn cmd_import_stealerlogs(body: &str, output: &str) -> Result<()> {
-    note(output, "Importing Stealerlogs export...");
-    let sid = format!("import-stealer-{}", crate::core::entity::unix_now());
-    let (mut entities, stats, stealer_rows) = parse_stealerlogs(body, &sid);
-    deduplicate_by_uid(&mut entities);
-    print_import_stats(&stats, entities.len(), output);
-    if stats.api_keys > 0 {
-        crate::util::key_pool::save_pool_best_effort(&crate::util::key_pool::global_pool());
-    }
-    persist_and_report(&sid, &entities, output).await;
-    persist_stealer_rows_best_effort(&sid, &stealer_rows, output).await;
-    render_import_entities(&entities, output);
-    Ok(())
+    run_import(
+        "Importing Stealerlogs export...",
+        "stealer",
+        output,
+        |sid| {
+            let (entities, stats, stealer_rows) = parse_stealerlogs(body, sid);
+            ParsedImport::new(entities, stats)
+                .saving_key_pool()
+                .with_stealer_rows(stealer_rows)
+        },
+    )
+    .await
 }

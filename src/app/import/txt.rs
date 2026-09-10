@@ -211,24 +211,9 @@ pub(super) fn parse_oathnet_txt(
 }
 
 pub(super) async fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
-    note(output, "Importing OathNet TXT export...");
-    let sid = format!("import-txt-{}", crate::core::entity::unix_now());
-    let (mut entities, stats) = parse_oathnet_txt(body, &sid);
-
-    deduplicate_by_uid(&mut entities);
-    print_import_stats(&stats, entities.len(), output);
-    if stats.api_keys > 0 {
-        note(
-            output,
-            format!(
-                "  Pool:      {} keys stored for automatic use",
-                stats.api_keys
-            ),
-        );
-        crate::util::key_pool::save_pool_best_effort(&crate::util::key_pool::global_pool());
-    }
-
-    persist_and_report(&sid, &entities, output).await;
-    render_import_entities(&entities, output);
-    Ok(())
+    run_import("Importing OathNet TXT export...", "txt", output, |sid| {
+        let (entities, stats) = parse_oathnet_txt(body, sid);
+        ParsedImport::new(entities, stats).noting_key_pool()
+    })
+    .await
 }

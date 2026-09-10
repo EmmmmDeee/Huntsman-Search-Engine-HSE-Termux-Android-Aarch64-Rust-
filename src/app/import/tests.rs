@@ -4,7 +4,7 @@
 //! `use super::*` (each parser is re-exported into the parent's scope).
 
 use super::{
-    ImportFormat, deduplicate_by_uid, detect_import_format, entities_from_upload,
+    ImportFormat, cmd_import, deduplicate_by_uid, detect_import_format, entities_from_upload,
     looks_like_dossier, parse_dossier, parse_oathnet_html,
 };
 
@@ -110,7 +110,7 @@ async fn upload_dispatcher_never_panics_on_adversarial_input() {
     for (i, input) in cases.iter().enumerate() {
         // The await completing at all is the assertion — a panic would unwind
         // through here and fail the test.
-        let r = entities_from_upload(input, "fuzz").await;
+        let r = entities_from_upload(input, "fuzz", None).await;
         // Whatever the outcome, entities (if any) must be well-formed.
         if let Ok((ents, _)) = r {
             for e in &ents {
@@ -134,6 +134,7 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
     let (html, label) = entities_from_upload(
         "<html><body>contact me at jo@acme-corp.com on acme-corp.com</body></html>",
         "s",
+        None,
     )
     .await
     .expect("should succeed");
@@ -144,6 +145,7 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
     let (dos, label) = entities_from_upload(
         "Entry #1:\n   \u{2022} email: isaacfrost@gmail.com\n   \u{2022} name: Isaac Frost\n",
         "s",
+        None,
     )
     .await
     .expect("should succeed");
@@ -155,6 +157,7 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
     let (txt, label) = entities_from_upload(
         "URL: https://admin.target.io/login\nUsername: victim\n",
         "s",
+        None,
     )
     .await
     .expect("should succeed");
@@ -166,6 +169,7 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
         "id,email,username,name,database_name,password,phone\n\
          1,jordanavery@gmail.com,javery,Jordan Avery,ExampleBreach,Hunter2pass,+61412345678\n",
         "s",
+        None,
     )
     .await
     .expect("should succeed");
@@ -174,7 +178,7 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
     assert!(has(&csvents, EntityKind::Person, "Jordan Avery"));
 
     // Combined Search aggregator export → the breach-aggregator branch.
-    let (comb, label) = entities_from_upload(COMBINED, "s")
+    let (comb, label) = entities_from_upload(COMBINED, "s", None)
         .await
         .expect("should succeed");
     assert_eq!(label, "combined-search");
@@ -184,21 +188,28 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
     // HSE's own CSV export → round-trip branch (not the DeHashed table).
     let hse = "kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,evidence_urls,evidence,tags\n\
         person,Jordan Avery,Jordan Avery,0.850,1.000,3,VERIFIED,1,name_intel,,[name_intel] x,au\n";
-    let (hents, label) = entities_from_upload(hse, "s")
+    let (hents, label) = entities_from_upload(hse, "s", None)
         .await
         .expect("should succeed");
     assert_eq!(label, "hse-csv");
     assert!(has(&hents, EntityKind::Person, "Jordan Avery"));
 
     // JSON API export → parsed (and the label proves the branch).
-    let (_json, label) =
-        entities_from_upload(r#"{"exportInfo":{"query":"x"},"searchResults":{}}"#, "s")
-            .await
-            .expect("should succeed");
+    let (_json, label) = entities_from_upload(
+        r#"{"exportInfo":{"query":"x"},"searchResults":{}}"#,
+        "s",
+        None,
+    )
+    .await
+    .expect("should succeed");
     assert_eq!(label, "oathnet-json");
 
     // Malformed JSON is a clean error, not a panic.
-    assert!(entities_from_upload("{ not valid json", "s").await.is_err());
+    assert!(
+        entities_from_upload("{ not valid json", "s", None)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -226,7 +237,7 @@ async fn oathnet_json_stealer_victim_emits_every_distinct_field_uncapped() {
         }
     })
     .to_string();
-    let (ents, label) = entities_from_upload(&body, "s")
+    let (ents, label) = entities_from_upload(&body, "s", None)
         .await
         .expect("should succeed");
     assert_eq!(label, "oathnet-json");
@@ -289,7 +300,7 @@ async fn oathnet_json_ip_admission_recovers_ipv6_and_rejects_bogus() {
         }
     })
     .to_string();
-    let (ents, _label) = entities_from_upload(&body, "s")
+    let (ents, _label) = entities_from_upload(&body, "s", None)
         .await
         .expect("should succeed");
     let ips: std::collections::HashSet<&str> = ents
@@ -322,6 +333,7 @@ async fn import_extracts_wifi_bssid_as_geolocation_seed() {
     let (ents, label) = entities_from_upload(
         "URL: https://x.com/login\nUsername: victim\nRouter BSSID: A4:B1:C2:00:11:22\n",
         "s",
+        None,
     )
     .await
     .expect("should succeed");
@@ -345,7 +357,7 @@ async fn import_extracts_every_distinct_mac_address_uncapped() {
     for i in 0..60u32 {
         body.push_str(&format!("Router BSSID: A4:B1:C2:00:11:{i:02X}\n"));
     }
-    let (ents, _label) = entities_from_upload(&body, "s")
+    let (ents, _label) = entities_from_upload(&body, "s", None)
         .await
         .expect("should succeed");
     let mac_count = ents
@@ -365,6 +377,7 @@ async fn import_extracts_crypto_wallet_as_chain_seed() {
     let (ents, label) = entities_from_upload(
         "URL: https://x.com\nWallet: 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa\n",
         "s",
+        None,
     )
     .await
     .expect("should succeed");
@@ -385,6 +398,7 @@ async fn import_extracts_leaked_api_key_from_body() {
     let (ents, label) = entities_from_upload(
         "URL: https://x.com\nleftover config had AKIAZ3XK7P2QWERT5YBN in it\n",
         "s",
+        None,
     )
     .await
     .expect("should succeed");
@@ -404,6 +418,7 @@ async fn dehashed_csv_also_mines_wallets_from_any_field() {
         "id,email,username,database_name,password\n\
          1,a@b.com,x,Breach,1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa\n",
         "s",
+        None,
     )
     .await
     .expect("should succeed");
@@ -421,6 +436,7 @@ async fn import_extracts_iban_as_financial_finding() {
     let (ents, label) = entities_from_upload(
         "URL: https://x.com\nBank account: GB82WEST12345698765432\n",
         "s",
+        None,
     )
     .await
     .expect("should succeed");
@@ -440,6 +456,7 @@ async fn import_extracts_labeled_ssid_for_wigle_geolocation() {
     let (ents, label) = entities_from_upload(
         "URL: https://x.com\nUsername: victim\nSSID: Smith Home 5G\n",
         "s",
+        None,
     )
     .await
     .expect("should succeed");
@@ -842,7 +859,7 @@ async fn upload_dispatcher_imports_combined_search_json_not_zero_entities() {
     // entities, silently discarding every result of a paid multi-source breach
     // search uploaded through the Termux web UI. The upload must now yield the
     // breach entities and label the branch it actually parsed.
-    let (ents, label) = entities_from_upload(COMBINED_JSON, "s")
+    let (ents, label) = entities_from_upload(COMBINED_JSON, "s", None)
         .await
         .expect("should succeed");
     assert_eq!(label, "combined-search-json");
@@ -1251,7 +1268,7 @@ fn dossier_entry_fields_survive_without_a_contact_summary() {
 
 #[tokio::test]
 async fn upload_dispatcher_routes_seeknow_summary_to_dossier() {
-    let (ents, label) = entities_from_upload(SEEKNOW, "s")
+    let (ents, label) = entities_from_upload(SEEKNOW, "s", None)
         .await
         .expect("should succeed");
     assert_eq!(label, "dossier");
@@ -1763,7 +1780,7 @@ fn stealerlogs_credential_pwned_at_survives_onto_its_own_entities() {
 
 #[tokio::test]
 async fn upload_dispatcher_routes_stealerlogs() {
-    let (ents, label) = entities_from_upload(STEALER, "s")
+    let (ents, label) = entities_from_upload(STEALER, "s", None)
         .await
         .expect("should succeed");
     assert_eq!(label, "stealerlogs");
@@ -1908,7 +1925,7 @@ fn oathnet_report_parses_entries_and_osint_geolocation() {
 
 #[tokio::test]
 async fn upload_dispatcher_routes_oathnet_report() {
-    let (ents, label) = entities_from_upload(OATHNET_REPORT, "s")
+    let (ents, label) = entities_from_upload(OATHNET_REPORT, "s", None)
         .await
         .expect("should succeed");
     assert_eq!(label, "oathnet-report");
@@ -1918,6 +1935,531 @@ async fn upload_dispatcher_routes_oathnet_report() {
     );
     // The shared OSINT helper ran on the report path too.
     assert!(ents.iter().any(|e| e.kind == EntityKind::Coordinates));
+}
+
+// ── Raw combolist import ───────────────────────────────────────────────────
+//
+// SYNTHETIC fixtures only — fabricated names at real free-mail providers
+// (the same convention `DOSSIER`/`COMBINED` above use), no real person or
+// account. NOT `@example.*`: `is_placeholder_domain` deliberately drops every
+// RFC 2606 `example.com`/`.org`/`.net` address as a documentation placeholder
+// (see `core::validation::placeholder`), so a fixture built on one would be
+// silently dropped by `deduplicate_by_uid` — not a suitable stand-in for a
+// real leaked address. A raw `identity:secret` combolist (no header, no
+// envelope — the single most common real-world breach-data shape) previously
+// matched no `looks_like_*` check and fell through to the OathNet
+// stealer-log TXT catch-all, which only recognises its own
+// `"URL: "`/`"Username: "`-labelled lines and therefore extracted ZERO
+// entities from a bare combolist: a real breach file silently imported as
+// nothing. This was reproduced against the pre-fix code (label
+// `"oathnet-txt"`, no Email/Password entities) before the fix landed.
+
+use super::combolist::{looks_like_combolist, parse_combolist};
+
+// A clean combolist — one entry per line, one delimiter variant each — used
+// wherever the test also needs FORMAT DETECTION to fire (`looks_like_combolist`
+// requires an overwhelming majority of sampled lines to parse cleanly, so a
+// detection-path fixture must not itself carry the malformed lines under test
+// below).
+const COMBOLIST: &str = "alice.tester@gmail.com:Sup3rSecret!\n\
+    bob.tester@outlook.com:hunter2000\n\
+    carol.tester@yahoo.com;anotherPass9\n\
+    dave.tester@protonmail.com\thunter2000\n";
+
+// The same shape plus three structurally bad lines, for the parser's own
+// quarantine behaviour. Deliberately NOT run through `looks_like_combolist` —
+// that heuristic is a format-detection threshold, not a parse-tolerance limit,
+// and a file this corrupted (3 of 7 lines) is exactly what quarantining exists
+// to survive once the format is already known (e.g. the CLI's explicit
+// `hse import` on a file already named/known to be a combolist).
+const COMBOLIST_WITH_MALFORMED_LINES: &str = "alice.tester@gmail.com:Sup3rSecret!\n\
+    bob.tester@outlook.com:hunter2000\n\
+    carol.tester@yahoo.com;anotherPass9\n\
+    dave.tester@protonmail.com\thunter2000\n\
+    not-a-combolist-line-with-no-delimiter-at-all\n\
+    :orphan-secret-no-identity\n\
+    eve.tester@gmail.com:\n";
+
+#[test]
+fn combolist_is_detected_and_oathnet_txt_is_not() {
+    assert!(looks_like_combolist(COMBOLIST));
+    // A handful of incidental colons in prose must not misfire.
+    assert!(!looks_like_combolist(
+        "Report: see section 2.\nAuthor: Jane Doe.\nStatus: draft.\n"
+    ));
+    // Below the 3-line sample floor — too little signal to classify.
+    assert!(!looks_like_combolist("alice.tester@gmail.com:hunter2\n"));
+}
+
+/// Guards against a specific, real, previously-considered "fix" for a known
+/// detection gap (a bare-username-only combolist, with no email-shaped
+/// identity anywhere in the file, is currently never detected — see PR #624's
+/// description). The tempting broadened heuristic — drop the email-shape
+/// requirement on the identity, and/or require only that the SECRET half has
+/// no internal whitespace — was checked and found unsafe: "a single
+/// whitespace-free token after a colon" is exactly as common in HTTP
+/// headers, email headers, and key-value config files as it is in a real
+/// credential dump, so that broadened heuristic misdetects all three as a
+/// combolist. Each fixture below is 100%-matched by that broadened
+/// heuristic (verified with a standalone check before this test was
+/// written) while every line here is legitimate non-combolist text a real
+/// operator could plausibly import. If `looks_like_combolist` is ever
+/// changed to admit a non-email-shaped identity, these must still resolve
+/// to `false` — a change that makes any of them `true` has reintroduced
+/// exactly the false-positive class this test exists to catch.
+#[test]
+fn combolist_detection_never_misfires_on_header_or_config_shaped_text() {
+    assert!(!looks_like_combolist(
+        "Content-Type: application/json\nContent-Length: 348\nConnection: keep-alive\n"
+    ));
+    assert!(!looks_like_combolist(
+        "From: alice@example.com\nTo: bob@example.com\nDate: 2026-09-09T10:00:00Z\n"
+    ));
+    assert!(!looks_like_combolist(
+        "host: localhost\nport: 8080\ntimeout: 30s\n"
+    ));
+}
+
+#[test]
+fn parse_combolist_extracts_email_password_pairs_across_delimiters() {
+    let (entities, stats) = parse_combolist(COMBOLIST_WITH_MALFORMED_LINES, "s");
+
+    let emails: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(emails.contains(&"alice.tester@gmail.com"));
+    assert!(emails.contains(&"bob.tester@outlook.com"));
+    assert!(
+        emails.contains(&"carol.tester@yahoo.com"),
+        "semicolon delimiter"
+    );
+    assert!(
+        emails.contains(&"dave.tester@protonmail.com"),
+        "tab delimiter"
+    );
+
+    let passwords: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Password)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(passwords.contains(&"Sup3rSecret!"));
+    assert!(passwords.contains(&"hunter2000"));
+    assert!(passwords.contains(&"anotherPass9"));
+    // eve's line has a delimiter but nothing after it — the whole line is
+    // quarantined rather than minting a hallucinated empty-string secret (or
+    // an unpaired identity the file never actually asserted a password for).
+    assert!(!entities.iter().any(|e| e.value.is_empty()));
+    assert!(!emails.contains(&"eve.tester@gmail.com"));
+
+    // 3 structurally bad lines: no delimiter, empty identity, empty secret.
+    assert_eq!(stats.malformed_lines, 3);
+}
+
+/// A `;`- or tab-delimited line whose PASSWORD contains a colon must split on
+/// the real (earlier) delimiter. `split_combo_line` used to try the colon
+/// authority unconditionally first, so `victim@x;Sept:2026!` became identity
+/// `victim@x;Sept` — minted as a Username, not even the real Email — and
+/// secret `2026!`, a truncated credential: a fabricated identity fed into the
+/// graph silently, with no quarantine and no warning. Found by the workflow
+/// correctness review, reproduced by running the parser on this exact line.
+#[test]
+fn parse_combolist_splits_on_the_earliest_delimiter_not_the_colon_first() {
+    let body = "victim.tester@gmail.com;Sept:2026!\n\
+                second.tester@outlook.com\tpa:ss:word\n\
+                third.tester@yahoo.com:pa;ss\n";
+    let (entities, stats) = parse_combolist(body, "s");
+    let has =
+        |kind: EntityKind, value: &str| entities.iter().any(|e| e.kind == kind && e.value == value);
+
+    assert!(
+        has(EntityKind::Email, "victim.tester@gmail.com"),
+        "`;` line: the real email must survive: {entities:#?}"
+    );
+    assert!(
+        has(EntityKind::Password, "Sept:2026!"),
+        "`;` line: the whole password, embedded colon included"
+    );
+    assert!(
+        has(EntityKind::Email, "second.tester@outlook.com"),
+        "tab line"
+    );
+    assert!(
+        has(EntityKind::Password, "pa:ss:word"),
+        "tab line: the password keeps every later colon"
+    );
+    // The colon-dominant case is unchanged: a `;` INSIDE the password stays in it.
+    assert!(has(EntityKind::Email, "third.tester@yahoo.com"));
+    assert!(has(EntityKind::Password, "pa;ss"));
+    assert!(
+        !entities.iter().any(|e| e.kind == EntityKind::Username),
+        "no fabricated identity (email fused with a password prefix): {entities:#?}"
+    );
+    assert_eq!(stats.malformed_lines, 0, "every line here is well-formed");
+    assert_eq!(stats.emails, 3);
+}
+
+#[test]
+fn parse_combolist_quarantines_sentinels_and_recovers_a_mis_stored_email() {
+    let body = "frank.tester@gmail.com:[fail]\n\
+                grace.tester@gmail.com:REDACTED\n\
+                henry.tester@gmail.com:otherperson@outlook.com\n\
+                ivan.tester@gmail.com:ivan.tester@gmail.com\n";
+    let (entities, _stats) = parse_combolist(body, "s");
+    // Every identity is still admitted...
+    for id in [
+        "frank.tester@gmail.com",
+        "grace.tester@gmail.com",
+        "henry.tester@gmail.com",
+        "ivan.tester@gmail.com",
+    ] {
+        assert!(
+            entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Email && e.value == id),
+            "{id} missing"
+        );
+    }
+    // ...but no Password entity is minted from a sentinel or a self-echo,
+    assert!(!entities.iter().any(|e| e.kind == EntityKind::Password));
+    // and a password field that is itself an email is recovered as its own lead.
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "otherperson@outlook.com")
+    );
+}
+
+// Regression: the self-echo guard used to compare the secret against the RAW
+// identity text, not the normalised value `Entity::new` actually stores. A
+// quoted or `@`-prefixed identity whose secret echoes the NORMALISED form
+// (not the raw form) slipped past the guard and minted a spurious Password
+// entity for a value that was really just the identity's own normalised
+// self — exactly the class of fabricated finding RULE.md forbids. Found by
+// automated review on the PR that introduced `parse_combolist`; reproduced
+// against the pre-fix code (a Password entity for `alice` was minted
+// alongside the Username entity for the exact same value) before the fix
+// landed.
+#[test]
+fn parse_combolist_self_echo_guard_compares_the_normalised_identity() {
+    let body = "'alice.tester':alice.tester\n\
+                @bob.tester:BOB.TESTER\n";
+    let (entities, _stats) = parse_combolist(body, "s");
+    // Both identities are still admitted, normalised (quote/sigil stripped,
+    // case-folded) exactly as `Entity::new` would produce on its own.
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Username && e.value == "alice.tester")
+    );
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Username && e.value == "bob.tester")
+    );
+    // ...but neither line mints a Password entity: the secret in each case
+    // is just the identity's own normalised form echoed back, not a real
+    // credential — a raw-vs-raw comparison would have missed this and
+    // fabricated one.
+    assert!(
+        !entities.iter().any(|e| e.kind == EntityKind::Password),
+        "self-echo (quoted/sigil'd/case-differing identity) must never mint a \
+         Password entity: {entities:?}"
+    );
+}
+
+#[test]
+fn parse_combolist_admits_a_bare_username_identity() {
+    let body = "judy_tester_99:hunter2000\n";
+    let (entities, stats) = parse_combolist(body, "s");
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Username && e.value == "judy_tester_99")
+    );
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Password && e.value == "hunter2000")
+    );
+    assert_eq!(stats.malformed_lines, 0);
+}
+
+#[test]
+fn parse_combolist_never_admits_an_identity_that_normalises_to_empty() {
+    // A username normalises by stripping surrounding quotes; a bare `'` (and
+    // nothing else) therefore normalises to the EMPTY string. This must never
+    // reach the graph as an empty-value entity — the identity is quarantined
+    // instead, exactly as a structurally malformed line would be.
+    let (entities, stats) = parse_combolist("':secretvalue123\n", "s");
+    assert!(!entities.iter().any(|e| e.value.is_empty()));
+    assert!(!entities.iter().any(|e| e.kind == EntityKind::Username));
+    assert_eq!(stats.malformed_lines, 1);
+}
+
+#[tokio::test]
+async fn upload_dispatcher_routes_raw_combolist() {
+    let (entities, label) = entities_from_upload(COMBOLIST, "s", None)
+        .await
+        .expect("should succeed");
+    assert_eq!(label, "combolist");
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "alice.tester@gmail.com")
+    );
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Password && e.value == "Sup3rSecret!")
+    );
+}
+
+// ── SQL-dump import ─────────────────────────────────────────────────────────
+//
+// SYNTHETIC fixtures only — fabricated names at real free-mail providers (the
+// same convention `COMBOLIST` above uses, for the same reason: `@example.*`
+// is dropped by `is_placeholder_domain` before it could prove the full
+// upload-dispatcher path). A leaked SQL dump (`INSERT INTO ... VALUES (...)`,
+// the shape a `mysqldump` export of a compromised user table takes) matched
+// no `looks_like_*` check and fell through to the OathNet TXT catch-all,
+// which extracts nothing from it — a real breach dump silently imported as
+// nothing, the same class of defect the combolist fix above addressed.
+
+use super::sql_dump::{looks_like_sql_dump, parse_sql_dump};
+
+const SQL_DUMP: &str = "INSERT INTO `users` (`id`, `email`, `username`, `password`, `full_name`) VALUES\n\
+    (1, 'sql.tester.alpha@gmail.com', 'sqltesteralpha', 'SynthPassword1!', 'Sql TesterAlpha'),\n\
+    (2, 'sql.tester.beta@outlook.com', 'sqltesterbeta', 'SynthPassword2!', 'Sql TesterBeta');\n";
+
+#[test]
+fn sql_dump_is_detected_and_oathnet_txt_is_not() {
+    assert!(looks_like_sql_dump(SQL_DUMP));
+    assert!(!looks_like_sql_dump(
+        "just some prose that happens to mention insert and values in passing\n"
+    ));
+}
+
+#[test]
+fn parse_sql_dump_extracts_rows_with_escaped_and_multi_row_values() {
+    let (entities, stats) = parse_sql_dump(SQL_DUMP, "s");
+
+    let emails: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(emails.contains(&"sql.tester.alpha@gmail.com"));
+    assert!(emails.contains(&"sql.tester.beta@outlook.com"));
+
+    let passwords: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Credential)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(passwords.contains(&"SynthPassword1!"));
+    assert!(passwords.contains(&"SynthPassword2!"));
+
+    let names: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(names.contains(&"Sql TesterAlpha"));
+    assert!(names.contains(&"Sql TesterBeta"));
+
+    assert_eq!(stats.breach_records, 2);
+    assert_eq!(stats.malformed_lines, 0);
+}
+
+/// A leaked table whose ONLY identity column is the login column, holding
+/// email addresses — `(id, username, password)` with `username = 'alice@…'`,
+/// one of the most common real schemas — must put those emails into the
+/// graph. Both breach-table parsers gated the Username entity on
+/// `!contains('@')` with no email fallback, so the identity was silently
+/// dropped: reproduced live through the CLI and the HTTP upload as two bare
+/// credentials and zero identities from this exact two-row table. Real
+/// provider domains, as every fixture here (an `@example.*` placeholder is
+/// filtered upstream).
+#[test]
+fn parse_sql_dump_recovers_an_email_held_in_the_username_column() {
+    let body = "INSERT INTO `users` (`id`, `username`, `password`) VALUES\n\
+        (1, 'alice.tester@gmail.com', 'Hunter2pass'),\n\
+        (2, 'bob.tester@outlook.com', 'Sw0rdfish!');\n";
+    let (entities, stats) = parse_sql_dump(body, "s");
+    let emails: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        emails.contains(&"alice.tester@gmail.com") && emails.contains(&"bob.tester@outlook.com"),
+        "the login column's emails must become Email entities: {entities:#?}"
+    );
+    assert!(
+        !entities.iter().any(|e| e.kind == EntityKind::Username),
+        "an email-shaped login is never minted as a Username"
+    );
+    assert_eq!(stats.emails, 2);
+    assert_eq!(stats.breach_records, 2);
+
+    // A separate email column carrying the SAME address must not double-emit.
+    let both = "INSERT INTO `users` (`email`, `username`) VALUES \
+        ('carol.tester@yahoo.com', 'carol.tester@yahoo.com');\n";
+    let (ents, st) = parse_sql_dump(both, "s");
+    assert_eq!(
+        ents.iter().filter(|e| e.kind == EntityKind::Email).count(),
+        1,
+        "{ents:#?}"
+    );
+    assert_eq!(st.emails, 1);
+
+    // A plain handle in the login column is still a Username (unchanged).
+    let handle = "INSERT INTO `users` (`username`, `password`) VALUES ('dtester', 'pw12345');\n";
+    let (ents, _) = parse_sql_dump(handle, "s");
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Username && e.value == "dtester")
+    );
+}
+
+/// A real `mysqldump` breach table routinely carries phone / address / IP /
+/// password-hash columns alongside the identity columns — but every other
+/// SQL-dump fixture in this suite declares only id/email/username/password/
+/// full_name, so `phone_i`/`addr_i`/`ip_i`/`hashed_idxs` and their
+/// entity-emission arms had never executed in CI. This exercises each of them
+/// on one row, so a regression in exactly the fields most breach dumps carry
+/// per row is caught. Synthetic placeholders only; the shapes mirror the
+/// DeHashed CSV coverage above.
+#[test]
+fn parse_sql_dump_extracts_phone_address_ip_and_password_hash_columns() {
+    let body = "INSERT INTO `users` \
+        (`id`, `email`, `phone`, `address`, `ip`, `password_hash`) VALUES\n\
+        (1, 'gamma.tester@gmail.com', '0412 345 678', \
+         '12 Smith Street, Carlton VIC 3053', '24.32.96.71', \
+         '$2a$10$abcdefghijklmnopqrstuv');\n";
+    let (entities, stats) = parse_sql_dump(body, "s");
+    let has = |kind: EntityKind, pred: &dyn Fn(&str) -> bool| {
+        entities.iter().any(|e| e.kind == kind && pred(&e.value))
+    };
+    // The AU local phone is recovered and canonicalised to E.164.
+    assert!(
+        has(EntityKind::Phone, &|v| v == "+61412345678"),
+        "phone column → E.164 Phone: {entities:#?}"
+    );
+    assert!(
+        has(EntityKind::Address, &|v| v
+            .to_ascii_lowercase()
+            .contains("carlton")),
+        "address column → Address"
+    );
+    assert!(
+        has(EntityKind::IpAddress, &|v| v == "24.32.96.71"),
+        "ip column → IpAddress"
+    );
+    assert!(
+        has(EntityKind::Credential, &|v| v.starts_with("$2a$")),
+        "password_hash column → Credential (hash)"
+    );
+    assert_eq!(stats.phones, 1);
+    assert_eq!(stats.addresses, 1);
+    assert_eq!(stats.ips, 1);
+    assert_eq!(stats.breach_records, 1);
+}
+
+/// `cmd_import`'s directory + forced-format guard (the `if meta.is_dir()` block
+/// in mod.rs) is a pure filesystem check that returns BEFORE any store access,
+/// so it is drivable end-to-end with only a temp directory — yet no test
+/// exercised it. It must REFUSE `--input-format` against a directory (a scrape
+/// detects each file's format from its content), naming the forced format,
+/// rather than silently ignoring the operator's override.
+#[tokio::test]
+async fn cmd_import_refuses_a_forced_format_against_a_directory() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().to_str().expect("utf-8 temp path");
+    let err = cmd_import(path, "table", Some(ImportFormat::SqlDump))
+        .await
+        .expect_err("a forced format on a directory must be refused, not ignored");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("--input-format") && msg.contains("sql-dump") && msg.contains("directory"),
+        "the refusal must name the forced format and the reason: {msg}"
+    );
+    // Control: the SAME directory with no forced format is a scrape, not an
+    // error (an empty dir scrapes to an empty result, but must not error on
+    // the guard path).
+    assert!(
+        cmd_import(path, "table", None).await.is_ok(),
+        "a directory scrape without a forced format must not hit the guard"
+    );
+}
+
+#[test]
+fn parse_sql_dump_unescapes_backslash_and_doubled_quote_dialects() {
+    // mysqldump-style backslash escaping AND standard-SQL doubled-quote
+    // escaping must both work, since a real dump could use either — the
+    // parser never needs to guess which dialect produced it.
+    let body = "INSERT INTO `users` (`email`, `full_name`) VALUES ('escape.tester@gmail.com', 'Conor O\\'Brien'), ('escape.tester2@gmail.com', 'Aoife O''Malley');\n";
+    let (entities, _stats) = parse_sql_dump(body, "s");
+    let names: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        names.contains(&"Conor O'Brien"),
+        "backslash-escaped quote: {names:?}"
+    );
+    assert!(
+        names.contains(&"Aoife O'Malley"),
+        "doubled-quote escape: {names:?}"
+    );
+}
+
+#[test]
+fn parse_sql_dump_quarantines_a_row_whose_value_count_does_not_match_columns() {
+    let body = "INSERT INTO `users` (`email`, `password`) VALUES \
+                ('quarantine.tester@gmail.com', 'SynthPassword3!', 'unexpected-extra-value');\n";
+    let (entities, stats) = parse_sql_dump(body, "s");
+    assert!(
+        !entities.iter().any(|e| e.kind == EntityKind::Email),
+        "a row whose value count doesn't match its column list is not a record HSE can trust — quarantined whole, not partially guessed"
+    );
+    assert_eq!(stats.malformed_lines, 1);
+    assert_eq!(stats.breach_records, 0);
+}
+
+#[test]
+fn parse_sql_dump_never_guesses_columns_when_the_insert_has_no_explicit_list() {
+    // No column list on the INSERT — HSE never recovers it from a separate
+    // CREATE TABLE, since the two could disagree on order (RULE.md: no
+    // fabricated findings). `looks_like_sql_dump` also correctly declines
+    // this shape, since the detector's own regex requires the column list.
+    let body = "CREATE TABLE users (email TEXT, password TEXT);\n\
+                INSERT INTO users VALUES ('noguess.tester@gmail.com', 'SynthPassword4!');\n";
+    assert!(!looks_like_sql_dump(body));
+    let (entities, _stats) = parse_sql_dump(body, "s");
+    assert!(entities.is_empty());
+}
+
+#[tokio::test]
+async fn upload_dispatcher_routes_sql_dump() {
+    let (entities, label) = entities_from_upload(SQL_DUMP, "s", None)
+        .await
+        .expect("should succeed");
+    assert_eq!(label, "sql-dump");
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "sql.tester.alpha@gmail.com")
+    );
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Credential && e.value == "SynthPassword1!")
+    );
 }
 
 // ── Property tests (proptest) — no-panic contract for untrusted import ────────
@@ -1932,6 +2474,8 @@ async fn upload_dispatcher_routes_oathnet_report() {
 mod prop {
     use proptest::prelude::*;
 
+    use super::super::combolist::parse_combolist;
+    use super::super::sql_dump::parse_sql_dump;
     use super::super::{
         parse_dossier, parse_oathnet_html, parse_oathnet_report, parse_oathnet_txt,
         parse_stealerlogs,
@@ -1988,5 +2532,422 @@ mod prop {
                 prop_assert!(!e.value.is_empty(), "empty value in entity: {e:?}");
             }
         }
+
+        /// `parse_combolist` must never panic on any input string and must only
+        /// emit non-empty entity values, however many malformed lines it quarantines.
+        #[test]
+        fn parse_combolist_never_panics(s in ".{0,512}") {
+            let (ents, _stats) = parse_combolist(&s, "s");
+            for e in &ents {
+                prop_assert!(!e.value.is_empty(), "empty value in entity: {e:?}");
+            }
+        }
+
+        /// `parse_sql_dump` must never panic on any input string and must only
+        /// emit non-empty entity values, however many malformed rows it quarantines.
+        #[test]
+        fn parse_sql_dump_never_panics(s in ".{0,512}") {
+            let (ents, _stats) = parse_sql_dump(&s, "s");
+            for e in &ents {
+                prop_assert!(!e.value.is_empty(), "empty value in entity: {e:?}");
+            }
+        }
     }
+}
+
+// ── input-format override (`hse import --input-format`, upload `?format=`) ──
+
+/// The format enum is the ONE spelling authority: `label()` must equal the
+/// clap `ValueEnum` name for every variant, and `parse_name` must round-trip
+/// each label (case- and whitespace-insensitively), so the CLI flag, the
+/// upload parameter and the label both surfaces report can never drift.
+#[test]
+fn import_format_names_are_one_authority() {
+    use clap::ValueEnum;
+    for f in ImportFormat::value_variants() {
+        let derived = f.to_possible_value().expect("no variant is skipped");
+        assert_eq!(
+            f.label(),
+            derived.get_name(),
+            "label() drifted from the clap spelling for {f:?}"
+        );
+        assert_eq!(ImportFormat::parse_name(f.label()), Ok(*f));
+        assert_eq!(
+            ImportFormat::parse_name(&format!("  {}  ", f.label().to_ascii_uppercase())),
+            Ok(*f),
+            "case- and whitespace-insensitive"
+        );
+    }
+    let err = ImportFormat::parse_name("bogus").expect_err("unknown names are rejected");
+    assert!(
+        err.contains("`bogus`") && err.contains("combolist") && err.contains("oathnet-txt"),
+        "the rejection must name the typo and every accepted spelling: {err}"
+    );
+}
+
+/// The motivating case for the override: a combolist whose identities are ALL
+/// bare usernames has no email-shaped line for the content detector to count,
+/// so it cannot be sniffed as a combolist — yet `parse_combolist` handles it
+/// fine once reached. Forcing the format reaches it, and the entities come
+/// back under the forced label.
+#[tokio::test]
+async fn forced_input_format_reaches_the_combolist_parser_for_bare_usernames() {
+    const USERNAMES_ONLY: &str =
+        "alice.tester:Passw0rd!2026\nbob_tester:hunter2-synthetic\ncarol-tester:S3cret#fixture\n";
+    let (ents, label) = entities_from_upload(USERNAMES_ONLY, "s", Some(ImportFormat::Combolist))
+        .await
+        .expect("a forced combolist parses");
+    assert_eq!(label, "combolist");
+    let mut usernames: Vec<&str> = ents
+        .iter()
+        .filter(|e| e.kind == crate::core::entity::EntityKind::Username)
+        .map(|e| e.value.as_str())
+        .collect();
+    usernames.sort_unstable();
+    assert_eq!(usernames, ["alice.tester", "bob_tester", "carol-tester"]);
+    let passwords = ents
+        .iter()
+        .filter(|e| e.kind == crate::core::entity::EntityKind::Password)
+        .count();
+    assert_eq!(passwords, 3, "one Password per line: {ents:#?}");
+}
+
+/// The override is authoritative even where detection would have chosen
+/// differently — and it fails loudly, never silently, when the forced parser
+/// cannot read the body. Both halves use bodies whose detection result is
+/// stable by design (a dossier's `Entry #` marker; non-JSON text).
+#[tokio::test]
+async fn forced_input_format_overrides_content_detection() {
+    const DOSSIER: &str =
+        "Entry #1:\n   \u{2022} username: isaacfrost\n   \u{2022} email: isaacfrost@gmail.com\n";
+    let (_, detected) = entities_from_upload(DOSSIER, "s", None)
+        .await
+        .expect("detected");
+    assert_eq!(
+        detected, "dossier",
+        "precondition: detection picks the dossier parser"
+    );
+    let (_, forced) = entities_from_upload(DOSSIER, "s", Some(ImportFormat::OathnetTxt))
+        .await
+        .expect("forced");
+    assert_eq!(
+        forced, "oathnet-txt",
+        "the forced format must win over detection"
+    );
+    // A forced JSON parse of non-JSON text is an explicit error, not an
+    // empty success.
+    assert!(
+        entities_from_upload("not json at all", "s", Some(ImportFormat::OathnetJson))
+            .await
+            .is_err()
+    );
+}
+
+/// The web UI's format selector (`#dossier-format` in
+/// `src/web/js/views/new_scan.js`) must offer exactly the import formats, in
+/// declaration order — it is the one place the names are spelled outside this
+/// enum, and a stale option would send the server a name it rejects.
+#[test]
+fn web_upload_format_selector_lists_exactly_the_import_formats() {
+    use clap::ValueEnum;
+    const NEW_SCAN_JS: &str = include_str!("../../web/js/views/new_scan.js");
+    let start = NEW_SCAN_JS
+        .find("id=\"dossier-format\"")
+        .expect("the upload form has a #dossier-format selector");
+    let rest = &NEW_SCAN_JS[start..];
+    let block = &rest[..rest.find("</select>").expect("the selector closes")];
+    let listed: Vec<&str> = block
+        .split("<option value=\"")
+        .skip(1)
+        .filter_map(|s| s.split('"').next())
+        .filter(|v| !v.is_empty())
+        .collect();
+    let expected: Vec<&str> = ImportFormat::value_variants()
+        .iter()
+        .copied()
+        .map(ImportFormat::label)
+        .collect();
+    assert_eq!(
+        listed, expected,
+        "#dossier-format must offer every ImportFormat name, in declaration order, and nothing else"
+    );
+}
+
+/// A stealer-log export with a `Credentials:` list but no `Log Id:` line fails
+/// `looks_like_stealerlogs` (which requires all three markers) yet
+/// `parse_stealerlogs` reads it fine — so on a forced `?format=stealerlogs`
+/// upload, `stealer_rows_from_upload` must honour the forced format instead of
+/// re-running the detection the operator deliberately bypassed, or the paired
+/// rows are silently lost while the entities import.
+#[test]
+fn stealer_rows_from_upload_honours_the_forced_format() {
+    // Detection-missing (no `Module: Stealerlogs` banner, no `Log Id:`) but
+    // parseable: one victim, one credential.
+    const NO_LOG_ID: &str = "Victims:\n  [1]\n    Credentials:\n      [1]\n        \
+Username:\n          jordanavery@gmail.com\n        Password:\n          Hunter2pass\n";
+
+    // Precondition — the data-loss trap: content detection rejects it, but the
+    // parser still recovers the paired row, so anything gated on detection
+    // alone drops that row.
+    assert!(
+        !looks_like_stealerlogs(NO_LOG_ID),
+        "precondition: an export with no `Log Id:` is not detected as stealerlogs"
+    );
+    assert_eq!(
+        parse_stealerlogs(NO_LOG_ID, "s").2.len(),
+        1,
+        "precondition: the parser still recovers the paired row"
+    );
+
+    // Auto-detect (no operator hint): consistent with detection — no rows, the
+    // unchanged pre-override behaviour.
+    assert!(super::stealer_rows_from_upload(NO_LOG_ID, None).is_empty());
+
+    // Forced stealerlogs (the override used to reach the parser): the paired
+    // rows are recovered, not silently dropped.
+    let rows = super::stealer_rows_from_upload(NO_LOG_ID, Some(ImportFormat::Stealerlogs));
+    assert_eq!(
+        rows.len(),
+        1,
+        "forced stealerlogs must recover the paired row"
+    );
+    assert_eq!(rows[0].login.as_deref(), Some("jordanavery@gmail.com"));
+    assert_eq!(rows[0].password.as_deref(), Some("Hunter2pass"));
+
+    // Forced to a DIFFERENT format on a genuinely stealer-shaped body: the rows
+    // the operator overrode are not emitted, so the two parses of one upload
+    // agree on the format.
+    assert!(
+        super::stealer_rows_from_upload(STEALER, Some(ImportFormat::Combolist)).is_empty(),
+        "a body forced away from stealerlogs must not emit stealer rows"
+    );
+}
+
+/// An `INSERT ... VALUES` substring inside a text column VALUE must not be
+/// mistaken for a statement boundary. It used to be: the header regex matched
+/// inside the quoted `bio`, truncated the real statement mid-string, and the
+/// tuple parser then quarantined every remaining row — so a `mysqldump
+/// --extended-insert` table (one statement, all rows) silently imported as
+/// **zero** entities, the exact silent breach-data loss this parser exists to
+/// prevent. `string_literal_spans` now excludes in-string header matches.
+#[test]
+fn parse_sql_dump_ignores_insert_substrings_inside_string_values() {
+    // Row 1's bio contains a full `INSERT INTO t (c) VALUES (1)`; both rows
+    // (and their emails) must still be extracted, in one extended-insert
+    // statement.
+    let body = "INSERT INTO users (email, bio) VALUES \
+        ('victim@example.org', 'I ran INSERT INTO t (c) VALUES (1) yesterday'), \
+        ('second@example.org', 'ok');";
+    let (entities, stats) = parse_sql_dump(body, "s");
+    let emails: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        emails.contains(&"victim@example.org") && emails.contains(&"second@example.org"),
+        "both rows must survive an inner INSERT substring: {emails:?} ({} malformed)",
+        stats.malformed_lines
+    );
+    assert_eq!(stats.breach_records, 2, "two real rows, one statement");
+    assert_eq!(stats.malformed_lines, 0, "nothing is malformed here");
+
+    // The doubled-quote dialect (`''`) and the backslash dialect (`\'`) both
+    // keep the inner INSERT inside the string.
+    for one in [
+        "INSERT INTO u (email, q) VALUES ('a@example.org', 'it''s an INSERT INTO z (x) VALUES (2)');",
+        "INSERT INTO u (email, q) VALUES ('a@example.org', 'a \\' and INSERT INTO z (x) VALUES (3)');",
+    ] {
+        let (ents, st) = parse_sql_dump(one, "s");
+        assert!(
+            ents.iter()
+                .any(|e| e.kind == EntityKind::Email && e.value == "a@example.org"),
+            "dialect case must extract the email: {one}"
+        );
+        assert_eq!(st.malformed_lines, 0, "no quarantine for: {one}");
+    }
+
+    // Guard the fix does not OVER-filter: two genuinely separate statements
+    // still split into two rows.
+    let two = "INSERT INTO u (email) VALUES ('x@example.org');\n\
+               INSERT INTO u (email) VALUES ('y@example.org');";
+    let (ents, _) = parse_sql_dump(two, "s");
+    let two_emails: Vec<&str> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        two_emails.contains(&"x@example.org") && two_emails.contains(&"y@example.org"),
+        "real multi-statement dumps must still split: {two_emails:?}"
+    );
+}
+
+/// `string_literal_spans` must track escape PARITY correctly across a run of
+/// consecutive backslashes (each `\\` is one escaped backslash; a following
+/// lone `\'` is a separate escaped quote — the two must not be conflated),
+/// and a body truncated mid-string (a realistic partial/corrupted upload)
+/// must neither panic/hang nor corrupt an earlier, complete statement's row.
+#[test]
+fn parse_sql_dump_string_scanning_handles_escape_parity_and_truncation() {
+    // Three backslashes then a quote = one escaped-backslash pair (`\\`) plus
+    // one escaped-quote pair (`\'`) in sequence. The string must stay OPEN
+    // through both, so the embedded `INSERT INTO` text is never mistaken for
+    // a real statement boundary and the row is not quarantined. A regression
+    // that mishandles chained escapes would falsely close the string early,
+    // truncate this statement, and drop the email entirely.
+    let odd_backslash_run = "INSERT INTO u (email, bio) VALUES \
+        ('a@example.org', 'a \\\\\\' still open INSERT INTO z (x) VALUES (9)');";
+    let (entities, stats) = parse_sql_dump(odd_backslash_run, "s");
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "a@example.org"),
+        "a chained backslash-then-quote escape run must not falsely close the string: {entities:?}"
+    );
+    assert_eq!(
+        stats.malformed_lines, 0,
+        "the escape-parity case is well-formed, not malformed"
+    );
+
+    // A body truncated mid-string (a partial/corrupted upload, e.g. a network
+    // cut-off) must not panic or hang, and must not corrupt an EARLIER,
+    // complete statement's row — only the truncated statement's own tuple is
+    // quarantined whole (`parse_value_tuple` never emits a partial row).
+    let truncated = "INSERT INTO u (email) VALUES ('good@example.org');\n\
+        INSERT INTO u (email, bio) VALUES ('trunc@example.org', 'this bio never closes";
+    let (entities, stats) = parse_sql_dump(truncated, "s");
+    let emails: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        emails.contains(&"good@example.org"),
+        "the earlier, complete statement must survive a later truncation: {emails:?}"
+    );
+    assert!(
+        !emails.contains(&"trunc@example.org"),
+        "the truncated statement's own row must be quarantined whole, not \
+         partially emitted: {emails:?}"
+    );
+    assert!(
+        stats.malformed_lines >= 1,
+        "the truncated tuple must be counted as malformed"
+    );
+}
+
+/// A DeHashed-style breach CSV whose header uses a plausible synonym instead
+/// of DeHashed's own canonical column name (`email_address` not `email`,
+/// `user_name`/`pass`/`mobile`/`street_address` not `username`/`password`/
+/// `phone`/`address`) must not silently drop that field. It used to: the
+/// detector fires on shape (an identity column plus a `database_name`/
+/// `hashed_password` hallmark), independent of exactly which identity-column
+/// name is present, but the parser matched only the single canonical name —
+/// so a real row with every field present reported a normal-looking import
+/// with entities quietly missing and no warning, no quarantine count. The
+/// SQL-dump parser (`sql_dump.rs`, same PR) already tolerated these exact
+/// synonyms for the identical PII categories; `find_column` (promoted to the
+/// shared `super` authority) now backs both.
+/// The DeHashed-style CSV parser shares the SQL-dump parser's identity-column
+/// rule (`identity_column_kind`), so the same `username`-holds-an-email shape
+/// must recover the Email here too — reproduced live as the identical silent
+/// drop through both the CLI and the HTTP upload.
+#[test]
+fn parse_dehashed_csv_recovers_an_email_held_in_the_username_column() {
+    let body = "id,username,password,database_name\n\
+                1,carol.tester@yahoo.com,Tr0ub4dor&3,BreachCo\n\
+                2,dave.tester@protonmail.com,correcthorse,BreachCo\n";
+    assert!(
+        looks_like_dehashed_csv(body),
+        "precondition: this shape is detected as DeHashed-style"
+    );
+    let (entities, stats) = parse_dehashed_csv(body, "s");
+    let has =
+        |kind: EntityKind, value: &str| entities.iter().any(|e| e.kind == kind && e.value == value);
+    assert!(
+        has(EntityKind::Email, "carol.tester@yahoo.com")
+            && has(EntityKind::Email, "dave.tester@protonmail.com"),
+        "the login column's emails must become Email entities: {entities:#?}"
+    );
+    assert!(
+        !entities.iter().any(|e| e.kind == EntityKind::Username),
+        "an email-shaped login is never minted as a Username"
+    );
+    assert_eq!(stats.emails, 2);
+    assert!(has(EntityKind::Credential, "Tr0ub4dor&3"));
+}
+
+#[test]
+fn parse_dehashed_csv_tolerates_synonym_column_names() {
+    let body = "id,email_address,user_name,database_name,pass,mobile,street_address\n\
+                1,jane@example.org,jdoe,BreachCo,hunter2,0400000000,12 Main St\n";
+    assert!(
+        looks_like_dehashed_csv(body),
+        "precondition: this shape is detected as DeHashed-style"
+    );
+    let (entities, _stats) = parse_dehashed_csv(body, "s");
+    let has = |kind: EntityKind, value: &str| {
+        entities
+            .iter()
+            .any(|e| e.kind == kind && e.value.eq_ignore_ascii_case(value))
+    };
+    assert!(
+        has(EntityKind::Email, "jane@example.org"),
+        "email_address column"
+    );
+    assert!(has(EntityKind::Username, "jdoe"), "user_name column");
+    assert!(has(EntityKind::Credential, "hunter2"), "pass column");
+    // `to_e164_au` normalises the raw AU mobile format to E.164.
+    assert!(has(EntityKind::Phone, "+61400000000"), "mobile column");
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Address && e.value.contains("12 Main St")),
+        "street_address column: {entities:#?}"
+    );
+
+    // Guard: DeHashed's own canonical header (the common real case) is
+    // unaffected by widening the matcher.
+    let canonical = "id,email,username,name,database_name,password,phone\n\
+                      1,jordanavery@gmail.com,javery,Jordan Avery,ExampleBreach,Hunter2pass,+61412345678\n";
+    let (canon_entities, _) = parse_dehashed_csv(canonical, "s");
+    assert!(
+        canon_entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "jordanavery@gmail.com")
+    );
+    assert!(
+        canon_entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Phone && e.value == "+61412345678")
+    );
+}
+
+/// The detector alone, independent of the parser: a row whose IDENTITY column
+/// also uses a synonym (`email_address` + `user_name` together, neither
+/// canonical name present) must still be recognised as DeHashed-shaped. This
+/// is the more severe half of the synonym gap — it used to be TOTAL loss, not
+/// partial: the file was never even routed to the (already synonym-tolerant)
+/// parser, so it fell through the whole detection chain. Reproduced live on
+/// both surfaces that reach content-only detection (`path == ""`): a real
+/// `POST /scans/import` upload got a flat `400 no verifiable entities`, and a
+/// CLI import of the same content under a non-`.csv` filename (bypassing the
+/// `path.ends_with(".csv")` shortcut `detect_import_format` also has) fell
+/// through to the OathNet-TXT catch-all and imported zero entities.
+#[test]
+fn dehashed_csv_detector_recognises_synonym_identity_columns() {
+    let body = "id,email_address,user_name,database_name,pass\n\
+                1,jane@example.org,jdoe,BreachCo,hunter2\n";
+    assert!(
+        looks_like_dehashed_csv(body),
+        "an email_address + user_name header with a database_name hallmark \
+         must still be detected as DeHashed-shaped"
+    );
+
+    // The hallmark requirement is unrelaxed: an identity-shaped CSV with
+    // neither hallmark column must still be rejected (unchanged strictness).
+    assert!(!looks_like_dehashed_csv(
+        "id,email_address,notes\n1,jane@example.org,hello\n"
+    ));
 }

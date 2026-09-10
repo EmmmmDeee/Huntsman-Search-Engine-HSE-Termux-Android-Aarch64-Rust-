@@ -256,3 +256,42 @@ use super::*;
         // An unknown profile is a clean error, never a silent default.
         assert!(super::assurance::parse_profile("nope").is_err());
     }
+
+    // ── `hse import --input-format` ─────────────────────────────────────────
+
+    /// The flag parses straight into the shared `app::import::ImportFormat`
+    /// (a clap `ValueEnum`), case-insensitively, and rejects an unknown name at
+    /// parse time — so `cmd_import` can never receive a spelling the web
+    /// upload's `?format=` would not also accept.
+    #[test]
+    fn import_input_format_flag_parses_into_the_shared_enum() {
+        use super::command::{Cli, Command};
+        use crate::app::import::ImportFormat;
+        use clap::Parser;
+        let parsed = |extra: &[&str]| {
+            let mut argv = vec!["hse", "import", "dump.txt"];
+            argv.extend_from_slice(extra);
+            Cli::try_parse_from(argv)
+        };
+        match parsed(&[]).expect("no flag").command {
+            Command::Import { input_format, .. } => assert_eq!(input_format, None),
+            _ => panic!("parsed a different subcommand"),
+        }
+        match parsed(&["--input-format", "Combolist"])
+            .expect("case-insensitive")
+            .command
+        {
+            Command::Import { input_format, .. } => {
+                assert_eq!(input_format, Some(ImportFormat::Combolist));
+            }
+            _ => panic!("parsed a different subcommand"),
+        }
+        let msg = match parsed(&["--input-format", "bogus"]) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("unknown names must fail at parse time"),
+        };
+        assert!(
+            msg.contains("bogus") && msg.contains("sql-dump"),
+            "clap must name the typo and the accepted values: {msg}"
+        );
+    }

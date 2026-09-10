@@ -461,6 +461,34 @@ pub fn is_placeholder_secret(s: &str) -> bool {
         )
 }
 
+/// Split one `identity:secret` combolist/credential-dump line on its FIRST
+/// colon — the shape a leaked-credential line always takes (`comb_search`'s
+/// live COMB fetch, an uploaded raw combolist file). Trims both sides; `None`
+/// when there is no colon or the identity half is empty (`:orphan-secret`).
+/// The secret half is returned even if empty, so a caller can distinguish
+/// "no delimiter" from "delimiter present but nothing after it" (a line worth
+/// quarantining rather than silently dropping). Splitting on the FIRST colon
+/// only means a password that itself contains a colon survives whole
+/// (`user@x.com:pass:word` → `("user@x.com", "pass:word")`). **Pure.**
+///
+/// ```
+/// use huntsman_search_engine::util::extract::split_identity_secret;
+///
+/// assert_eq!(split_identity_secret("alice@example.com:hunter2"), Some(("alice@example.com", "hunter2")));
+/// assert_eq!(split_identity_secret("user@x.com:pass:word"), Some(("user@x.com", "pass:word")));
+/// assert_eq!(split_identity_secret(":orphan"), None);
+/// assert_eq!(split_identity_secret("noseparator"), None);
+/// ```
+#[must_use]
+pub fn split_identity_secret(line: &str) -> Option<(&str, &str)> {
+    let (identity, secret) = line.split_once(':')?;
+    let identity = identity.trim();
+    if identity.is_empty() {
+        return None;
+    }
+    Some((identity, secret.trim()))
+}
+
 /// Every plausibly-international phone number in `text`, normalised to `+<digits>`,
 /// de-duplicated with first-occurrence order preserved.
 ///

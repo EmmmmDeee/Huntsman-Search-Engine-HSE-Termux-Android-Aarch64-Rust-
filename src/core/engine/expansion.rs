@@ -95,6 +95,28 @@ pub(super) fn apply_roi_cutoff(
     }
 }
 
+/// Whether the round loop should call `reconsider_working_set` this round, given
+/// the working set's current mutation version and the version it had the last
+/// time reconsideration ran (`None` before it has ever run this scan).
+///
+/// `reconsider_working_set` is a pure function of the entity map's contents and
+/// `relations` — every corroboration it looks for (geo-family, multipath,
+/// breach-candidate) can only newly qualify because SOME entity gained evidence
+/// or a new entity/relation appeared, and every such change bumps the map's
+/// version (`TrackedEntityMap::insert`/`get_mut`, the only two mutating
+/// operations the engine performs on it — see its doc). So an unchanged version
+/// guarantees an unchanged result: skipping is a cache invalidated on the exact
+/// condition that could make a difference, not a heuristic approximation that
+/// could miss a real promotion. This is what lets a long scan whose graph has
+/// stabilised skip the full clone-the-working-set-and-rescan cost on every
+/// remaining round instead of just the first one after nothing changed.
+pub(super) fn should_reconsider(
+    current_version: u64,
+    last_reconsidered_version: Option<u64>,
+) -> bool {
+    last_reconsidered_version != Some(current_version)
+}
+
 /// Stop the expansion when an entity- or wall-time budget is hit. Pure over
 /// `ScanOptions` + the round's start instant and current entity count.
 pub(super) fn budget_check(
@@ -169,5 +191,26 @@ mod tests {
         let mut seed = Entity::new(EntityKind::Email, "z@y.com", confidence::HIGH_PLUSPLUS, "s");
         seed.generation = 0;
         assert!((expansion_confidence(&seed, Some(0.75)) - seed.c_effective()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn should_reconsider_runs_once_per_version_and_always_on_the_first_call() {
+        // Never run yet this scan (`None`) ⇒ always run, whatever the current
+        // version — including the all-zeroes starting state.
+        assert!(should_reconsider(0, None));
+        assert!(should_reconsider(7, None));
+
+        // Same version as the last successful run ⇒ nothing could have changed
+        // (every mutation bumps the version), so skip.
+        assert!(!should_reconsider(3, Some(3)));
+
+        // Version advanced since the last run (an insert or get_mut happened)
+        // ⇒ there is new information to reconsider.
+        assert!(should_reconsider(4, Some(3)));
+
+        // A version that somehow went backwards (never happens in practice —
+        // the counter only increments) is still just "different from last
+        // time" ⇒ run rather than silently trusting stale state.
+        assert!(should_reconsider(2, Some(3)));
     }
 }

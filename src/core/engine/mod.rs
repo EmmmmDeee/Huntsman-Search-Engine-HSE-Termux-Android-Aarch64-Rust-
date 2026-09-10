@@ -72,7 +72,7 @@ use enrich::{
 };
 use expansion::{
     apply_roi_cutoff, budget_check, cmp_expansion_candidates, correlation_key,
-    expansion_confidence, visit_key,
+    expansion_confidence, should_reconsider, visit_key,
 };
 use timeout::resolve_timeout;
 // Used only by the dispatch-related tests retained in this file.
@@ -206,6 +206,14 @@ impl Drop for AbortOnDrop {
 struct TrackedEntityMap {
     map: HashMap<String, Entity>,
     dirty: HashSet<String>,
+    /// Monotonic counter bumped on every mutation (`insert`, a successful
+    /// `get_mut`), never reset. Unlike `dirty` — drained every round for
+    /// checkpointing, so it can't answer "did anything change since round
+    /// N?" once round N's checkpoint has already run — this survives across
+    /// rounds, giving [`reconsider_working_set`]'s caller a cheap way to skip
+    /// a call that is guaranteed to reproduce the same result as its last one
+    /// (see [`expansion::should_reconsider`]).
+    version: u64,
 }
 
 impl TrackedEntityMap {
@@ -214,6 +222,7 @@ impl TrackedEntityMap {
         Self {
             map: HashMap::new(),
             dirty: HashSet::new(),
+            version: 0,
         }
     }
 
@@ -221,11 +230,13 @@ impl TrackedEntityMap {
         Self {
             map: HashMap::with_capacity(capacity),
             dirty: HashSet::new(),
+            version: 0,
         }
     }
 
     fn insert(&mut self, uid: String, entity: Entity) -> Option<Entity> {
         self.dirty.insert(uid.clone());
+        self.version += 1;
         self.map.insert(uid, entity)
     }
 
@@ -234,7 +245,13 @@ impl TrackedEntityMap {
         // key twice on this hot path): only mark dirty on an actual hit.
         let entity = self.map.get_mut(uid)?;
         self.dirty.insert(uid.to_string());
+        self.version += 1;
         Some(entity)
+    }
+
+    /// Current mutation version — see the field doc for what it's for.
+    fn version(&self) -> u64 {
+        self.version
     }
 
     /// Snapshot every entity inserted or mutated since the last call (or
@@ -1586,10 +1603,22 @@ impl ScanEngine {
 
         // The gap analysis needs the full relation graph the finaliser will build:
         // the in-flight lineage edges plus the structural edges derivable from the
-        // current entity set. Derive once, off a snapshot.
+        // current entity set. Derive once, off a snapshot — under the SAME
+        // `DERIVE_BUDGET` the finalise-time derivation
+        // (`derive_and_persist_relations`) runs under. This mid-scan call used to
+        // be the unbounded `derive_all`, so a large, still-running scan (an
+        // operator-raised `--max-entities`) paid the full super-linear pass chain
+        // synchronously here, before finalise ever got to its own budgeted pass:
+        // the exact stall `DERIVE_BUDGET` exists to prevent, one caller over.
+        // A budget cut keeps the foundational edges the probes need and drops
+        // only the softer inference edges — strictly better than stalling.
         let ents: Vec<Entity> = entity_map.snapshot();
         let mut rels = relations.clone();
-        rels.extend(crate::core::relation::derive_all(&ents, scan_id));
+        rels.extend(crate::core::relation::derive_all_within(
+            &ents,
+            scan_id,
+            Some(Instant::now() + crate::core::relation::DERIVE_BUDGET),
+        ));
 
         let context = crate::core::correlator::RuleContext::new(&ents);
         let probes = crate::core::correlator::gap_fill_probes(&context, &rels);
@@ -1999,6 +2028,10 @@ impl ScanEngine {
         let decay_base: Option<f64> =
             crate::util::settings::get_bool(crate::util::settings::DEPTH_DECAY_FEATURE, false)
                 .then_some(Self::DEPTH_DECAY_BASE);
+        // Version the working set had as of the last `reconsider_working_set`
+        // call (`None` ⇒ never run this scan, so round 1 always runs it) — see
+        // `should_reconsider`'s doc for why this is a cache, not a heuristic.
+        let mut last_reconsidered_version: Option<u64> = None;
         for depth in 1..=opts.depth {
             // Refresh keys from the pool at the start of each round. Keys
             // discovered during the previous round (oathnet_pro breach data,
@@ -2027,8 +2060,19 @@ impl ScanEngine {
             // promotion passes over the WHOLE accumulated working set so any
             // prior lead that later evidence now corroborates is lifted in place
             // and picked up as a candidate THIS round (see
-            // [`reconsider_working_set`]).
-            let promoted = reconsider_working_set(entity_map, relations.as_slice());
+            // [`reconsider_working_set`]). Skipped when nothing has changed
+            // since the last time it ran — see [`should_reconsider`] for why
+            // that is provably safe, not an approximation. On a long scan whose
+            // graph has stabilised (no new entities/evidence for several
+            // rounds), this is the difference between cloning and re-scanning
+            // the whole working set every remaining round and doing neither.
+            let promoted = if should_reconsider(entity_map.version(), last_reconsidered_version) {
+                let p = reconsider_working_set(entity_map, relations.as_slice());
+                last_reconsidered_version = Some(entity_map.version());
+                p
+            } else {
+                0
+            };
             if promoted > 0 {
                 debug!(
                     scan_id,

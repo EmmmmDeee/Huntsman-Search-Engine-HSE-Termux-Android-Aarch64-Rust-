@@ -427,12 +427,14 @@ fn normalize_combined_label(key: &str) -> String {
 
 /// CLI entry: parse a Combined Search export and persist it as a completed scan.
 pub(super) async fn cmd_import_combined(body: &str, output: &str) -> Result<()> {
-    note(output, "Importing Combined Search export...");
-    let sid = format!("import-combined-{}", crate::core::entity::unix_now());
-    let (mut entities, stats) = parse_combined_search(body, &sid);
-    deduplicate_by_uid(&mut entities);
-    print_import_stats(&stats, entities.len(), output);
-    persist_and_report(&sid, &entities, output).await;
-    render_import_entities(&entities, output);
-    Ok(())
+    run_import(
+        "Importing Combined Search export...",
+        "combined",
+        output,
+        |sid| {
+            let (entities, stats) = parse_combined_search(body, sid);
+            ParsedImport::new(entities, stats)
+        },
+    )
+    .await
 }

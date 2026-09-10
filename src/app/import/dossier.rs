@@ -601,13 +601,14 @@ fn emit_dossier_list_item(
 }
 
 pub(super) async fn cmd_import_dossier(body: &str, output: &str) -> Result<()> {
-    note(output, "Importing breach/dossier compilation...");
-    let sid = format!("import-dossier-{}", crate::core::entity::unix_now());
-    let (mut entities, stats) = parse_dossier(body, &sid);
-    deduplicate_by_uid(&mut entities);
-    print_import_stats(&stats, entities.len(), output);
-
-    persist_and_report(&sid, &entities, output).await;
-    render_import_entities(&entities, output);
-    Ok(())
+    run_import(
+        "Importing breach/dossier compilation...",
+        "dossier",
+        output,
+        |sid| {
+            let (entities, stats) = parse_dossier(body, sid);
+            ParsedImport::new(entities, stats)
+        },
+    )
+    .await
 }

@@ -950,3 +950,188 @@ fn no_module_maps_an_unreadable_body_to_an_empty_result() {
          `util::http::read_body_capped_or_fail`: {offenders:?}"
     );
 }
+
+/// The reconsideration skip-cache is only worth anything if the round loop
+/// actually consults it. `expansion::should_reconsider` and
+/// `TrackedEntityMap::version` are each unit-tested as pure functions, but no
+/// behavioural test drives `run_expansion` round-by-round, so an edit that
+/// dropped the gate — calling `reconsider_working_set` unconditionally again,
+/// or forgetting to re-capture the version after it runs (which would make the
+/// cache never hit) — would leave every existing test green while silently
+/// restoring the clone-the-whole-working-set-and-rescan cost on every round.
+/// This locks the wiring in production source: the working set is
+/// reconsidered at exactly ONE call site, that call is guarded by
+/// `should_reconsider(entity_map.version(), last_reconsidered_version)`, and
+/// the version is re-captured from the map immediately after the call, in that
+/// order and within one `if` block. Whitespace is stripped before matching so
+/// rustfmt's line breaking (including a trailing-comma argument split) cannot
+/// produce a false failure.
+#[test]
+fn reconsideration_is_gated_by_the_working_set_version() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let src = fs::read_to_string(root.join("src/core/engine/mod.rs")).unwrap();
+    let code: String = production_source(&src)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+
+    let gate = "should_reconsider(entity_map.version(),last_reconsidered_version";
+    let call = "reconsider_working_set(entity_map,relations.as_slice()";
+    let recapture = "last_reconsidered_version=Some(entity_map.version())";
+
+    assert_eq!(
+        code.matches(call).count(),
+        1,
+        "the working set must be reconsidered at exactly one call site in the \
+         round loop (`{call}`), so the version gate below cannot be bypassed by \
+         a second, ungated call"
+    );
+    let gate_at = code.find(gate).unwrap_or_else(|| {
+        panic!(
+            "the round loop no longer gates reconsideration on the working set's \
+             mutation version — `{gate}` was not found. Without this gate every \
+             round pays the full clone-and-rescan cost even when nothing changed \
+             (see `expansion::should_reconsider`)"
+        )
+    });
+    let call_at = code.find(call).unwrap();
+    let recapture_at = code.find(recapture).unwrap_or_else(|| {
+        panic!(
+            "after reconsideration runs, the round loop must re-capture the \
+             working set's version (`{recapture}`) or the cache can never hit"
+        )
+    });
+    assert!(
+        gate_at < call_at && call_at < recapture_at,
+        "the gate, the reconsideration call, and the version re-capture must \
+         appear in that order (gate@{gate_at}, call@{call_at}, recapture@{recapture_at})"
+    );
+    assert!(
+        recapture_at - gate_at < 300,
+        "the gate, call, and re-capture must sit together in one `if` block \
+         (span {} chars) — a re-capture far from the gate is not the cache's \
+         invalidation point",
+        recapture_at - gate_at
+    );
+}
+
+/// `hse import --input-format` and the upload's `?format=` are only useful if
+/// the parsed value actually reaches the dispatcher — and nothing behavioural
+/// can prove that without side effects: the CLI path persists a scan into the
+/// operator's store, so no test drives `cmd_import` end-to-end, and the flag's
+/// parse test (`cli::tests::import_input_format_flag_parses_into_the_shared_enum`)
+/// stops at the `Command` value. A refactor that dropped the argument from
+/// either hand-off (`cmd_import(&file, &output, None)`; the handler parsing
+/// `?format=` and then not passing it on) would leave every test green while
+/// the flag silently did nothing — the exact "silent fall back to detection"
+/// the override exists to rule out. This locks both hand-offs in production
+/// source. Whitespace is stripped before matching so rustfmt cannot produce a
+/// false failure.
+#[test]
+fn import_format_override_reaches_both_dispatchers() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let strip = |s: String| -> String { s.chars().filter(|c| !c.is_whitespace()).collect() };
+    let cli = strip(production_source(
+        &fs::read_to_string(root.join("src/cli/mod.rs")).unwrap(),
+    ));
+    assert!(
+        cli.contains("cmd_import(&file,&output,input_format)"),
+        "src/cli/mod.rs must hand the parsed `--input-format` value to `cmd_import` \
+         (`cmd_import(&file, &output, input_format)`); passing anything else makes \
+         the flag a silent no-op"
+    );
+    let api = strip(production_source(
+        &fs::read_to_string(root.join("src/api/scan_handlers/core.rs")).unwrap(),
+    ));
+    assert!(
+        api.contains("ImportFormat::parse_name(name)")
+            && api.contains("entities_from_upload(&body,&sid,forced)"),
+        "src/api/scan_handlers/core.rs must parse `?format=` through \
+         `ImportFormat::parse_name` and hand the result to \
+         `entities_from_upload(&body, &sid, forced)`; anything else makes the \
+         upload parameter a silent no-op"
+    );
+}
+
+/// The build-provenance stamp (`HSE_GIT_SHA`, surfaced as `hse --version` and
+/// `hse build-sha`) must follow a COMMIT, not just a checkout.
+///
+/// On a branch `.git/HEAD` is a symbolic `ref: refs/heads/<branch>` that does
+/// not change when a commit is made — only the ref file it points at does. A
+/// build script that watches HEAD alone re-runs on checkout but not on commit,
+/// so a binary rebuilt after a commit kept reporting the previous SHA: exactly
+/// the "stale install passes for up-to-date" failure the stamp exists to end,
+/// and `install.sh` compares `hse build-sha` against the revision it installed.
+/// Reproduced on a clean tree at one commit whose fresh build reported the prior
+/// commit. This locks the resolution of the symbolic ref and the watch on its
+/// target and on `packed-refs`.
+#[test]
+fn build_provenance_follows_commits_not_just_checkouts() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let build = fs::read_to_string(root.join("build.rs")).expect("build.rs");
+    // The ancestor walk and the reflog are what survive `git pack-refs` /
+    // `git gc --auto`, which delete the loose ref AND prune its emptied
+    // directory: a watch on the (then-missing) file or parent registers
+    // nothing, and the next commit's rebuild keeps the old SHA. Reproduced
+    // live on 6d969442 before the walk was added.
+    for needle in [
+        r#"strip_prefix("ref: ")"#,
+        "packed-refs",
+        "logs/HEAD",
+        ".ancestors().skip(1).find(|a| a.exists())",
+        // In a `git worktree` checkout `.git` is a file: hardcoded `.git/…`
+        // paths exist nowhere and every watch silently registers nothing, so
+        // the dirs must come from git itself.
+        r#"rev-parse", "--git-dir"#,
+        r#"rev-parse", "--git-common-dir"#,
+    ] {
+        assert!(
+            build.contains(needle),
+            "build.rs must resolve the symbolic `.git/HEAD` and watch the ref it points at \
+             (missing `{needle}`): watching `.git/HEAD` alone leaves HSE_GIT_SHA stale after a \
+             commit on a branch, so `hse build-sha` reports the previous revision"
+        );
+    }
+}
+
+/// Ratchet: every caller of the ~16-pass, mostly-pairwise relation derivation
+/// chain that runs on a live scan must run it under `DERIVE_BUDGET`, not the
+/// unbounded `derive_all`.
+///
+/// The finalise-time caller (`derive_and_persist_relations`) has always passed
+/// the deadline, for the documented reason that a pathological graph (an
+/// operator-raised `--max-entities`) can otherwise run the chain for minutes
+/// and be SIGKILLed with nothing written. Its mid-scan sibling
+/// `run_gap_fill` — which runs the same chain over a snapshot of the whole
+/// working set BEFORE finalise, on every round the gap-fill feature (default
+/// on) fires — called the unbounded variant, guarded only by "already
+/// cancelled", which is no guard for a scan that simply hasn't been cancelled
+/// yet. Same O(n²)-pass-missing-its-cap class as the `persist_entities_as_scan`
+/// enrichment cap; found by sweeping for siblings of that fix.
+#[test]
+fn run_gap_fill_derivation_is_budgeted_like_finalise() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let engine = fs::read_to_string(root.join("src/core/engine/mod.rs")).expect("engine/mod.rs");
+    let start = engine
+        .find("fn run_gap_fill")
+        .expect("engine must still define run_gap_fill");
+    let rest = &engine[start..];
+    // The method body ends where the next method of the impl begins.
+    let end = ["\n    fn ", "\n    async fn ", "\n    pub "]
+        .iter()
+        .filter_map(|m| rest[1..].find(m).map(|i| i + 1))
+        .min()
+        .unwrap_or(rest.len());
+    let body = &rest[..end];
+    assert!(
+        body.contains("derive_all_within(") && body.contains("DERIVE_BUDGET"),
+        "run_gap_fill must derive relations via `derive_all_within` under `DERIVE_BUDGET`, \
+         exactly as `derive_and_persist_relations` does: the unbounded chain stalls a large \
+         live scan mid-round for minutes"
+    );
+    assert!(
+        !body.contains("relation::derive_all("),
+        "run_gap_fill must not call the unbounded `derive_all` — that reintroduces the \
+         mid-scan stall `DERIVE_BUDGET` exists to prevent"
+    );
+}

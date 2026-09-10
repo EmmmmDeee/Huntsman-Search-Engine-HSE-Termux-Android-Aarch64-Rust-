@@ -83,11 +83,29 @@ export async function renderNewScan(v){
       <code>PHONE&nbsp;NUMBERS:</code>/<code>ADDRESSES:</code>/… lists, as SeekNow
       exports), a Combined&nbsp;Search or DeHashed CSV, a
       <code>Module:&nbsp;Stealerlogs</code> victim export, an OathNet
-      SEARCH&nbsp;REPORT (<code>Entry&nbsp;N:</code> blocks), or an OathNet
-      JSON/HTML/stealer-log export. The format is auto-detected, parsed and
-      ingested as a scan you can browse, correlate and export.
+      SEARCH&nbsp;REPORT (<code>Entry&nbsp;N:</code> blocks), an OathNet
+      JSON/HTML/stealer-log export, a raw <code>identity:secret</code>
+      combolist, a leaked SQL dump or a WiGLE KML. The format is auto-detected
+      — or forced with the selector, for a file the detector cannot classify
+      (a combolist of bare usernames, say) — then parsed and ingested as a
+      scan you can browse, correlate and export.
       <div style="margin-top:8px">
-        <input type="file" id="dossier-file" accept=".txt,.json,.html,text/plain,application/json,text/html" style="display:inline-block;max-width:60%">
+        <input type="file" id="dossier-file" accept=".txt,.json,.html,.csv,.kml,.sql,.log,text/plain,application/json,text/html,text/csv" style="display:inline-block;max-width:60%">
+        <select id="dossier-format" class="form-control input-sm" style="display:inline-block;width:auto;margin-left:6px;vertical-align:middle" title="Force the input format instead of auto-detecting it (the same names as hse import --input-format)">
+          <option value="">Format: auto-detect</option>
+          <option value="oathnet-html">oathnet-html</option>
+          <option value="oathnet-json">oathnet-json</option>
+          <option value="combined-search">combined-search</option>
+          <option value="dossier">dossier</option>
+          <option value="stealerlogs">stealerlogs</option>
+          <option value="oathnet-report">oathnet-report</option>
+          <option value="hse-csv">hse-csv</option>
+          <option value="dehashed-csv">dehashed-csv</option>
+          <option value="kml">kml</option>
+          <option value="combolist">combolist</option>
+          <option value="sql-dump">sql-dump</option>
+          <option value="oathnet-txt">oathnet-txt</option>
+        </select>
         <button class="btn btn-primary btn-sm" type="button" onclick="uploadDossier()">Import</button>
         <span id="import-status" class="text-muted" style="margin-left:8px"></span>
       </div>
@@ -454,8 +472,12 @@ export async function uploadDossier(){
   st.textContent = 'Reading…';
   try {
     const text = await f.text();
-    st.textContent = 'Importing…';
-    const r = await API.importDossier(text);
+    // A forced format (the selector) bypasses the server's content detection —
+    // same names, same parser authority as `hse import --input-format`.
+    const sel = $('#dossier-format');
+    const format = sel && sel.value ? sel.value : '';
+    st.textContent = format ? `Importing as ${format}…` : 'Importing…';
+    const r = await API.importDossier(text, format);
     st.textContent = `Imported ${r.entity_count} entities` + (r.correlation_count ? `, ${r.correlation_count} correlations.` : '.');
     toast(`Imported ${r.entity_count} entities`);
     nav(`#/scaninfo?id=${encodeURIComponent(r.scan_id)}`);

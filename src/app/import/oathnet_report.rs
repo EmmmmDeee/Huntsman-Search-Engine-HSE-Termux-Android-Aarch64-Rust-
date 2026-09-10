@@ -311,15 +311,14 @@ fn emit_oathnet_entry(
 
 /// CLI entry: parse an OathNet SEARCH REPORT and persist it as a completed scan.
 pub(super) async fn cmd_import_oathnet_report(body: &str, output: &str) -> Result<()> {
-    note(output, "Importing OathNet SEARCH REPORT export...");
-    let sid = format!("import-oathnet-{}", crate::core::entity::unix_now());
-    let (mut entities, stats) = parse_oathnet_report(body, &sid);
-    deduplicate_by_uid(&mut entities);
-    print_import_stats(&stats, entities.len(), output);
-    if stats.api_keys > 0 {
-        crate::util::key_pool::save_pool_best_effort(&crate::util::key_pool::global_pool());
-    }
-    persist_and_report(&sid, &entities, output).await;
-    render_import_entities(&entities, output);
-    Ok(())
+    run_import(
+        "Importing OathNet SEARCH REPORT export...",
+        "oathnet",
+        output,
+        |sid| {
+            let (entities, stats) = parse_oathnet_report(body, sid);
+            ParsedImport::new(entities, stats).saving_key_pool()
+        },
+    )
+    .await
 }
