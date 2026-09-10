@@ -414,6 +414,32 @@ fn find_column(columns: &[String], candidates: &[&str]) -> Option<usize> {
     columns.iter().position(|c| column_matches(c, candidates))
 }
 
+/// The entity kind an identity-column value (`username` / `login` / `user` /
+/// `user_name` / `handle`, per [`find_column`]) is stored as — the shared rule
+/// for both breach-table parsers (SQL dump, DeHashed-style CSV).
+///
+/// A compromised database's login column routinely holds the account's EMAIL
+/// ADDRESS — `INSERT INTO users (id, username, password)` with `username =
+/// 'alice@…'` and no separate email column is one of the most common real
+/// leaked-table shapes. Both parsers used to gate the Username entity on
+/// `!contains('@')` with NO email fallback, so that identity was silently
+/// dropped from the graph (kept only as an unindexed evidence attribute) while
+/// the import still reported success. Reproduced live on the CLI and the HTTP
+/// upload before this existed: a two-row table imported as two bare
+/// credentials and zero identities. Email-shaped → `Email`; a plain handle →
+/// `Username`; anything else (an `@handle`, a lone character) → `None`, exactly
+/// what the old gate already rejected.
+fn identity_column_kind(value: &str) -> Option<crate::core::entity::EntityKind> {
+    use crate::core::entity::EntityKind;
+    if crate::util::extract::looks_like_email(value) {
+        Some(EntityKind::Email)
+    } else if value.len() >= 2 && !value.contains('@') {
+        Some(EntityKind::Username)
+    } else {
+        None
+    }
+}
+
 #[derive(Default)]
 struct ImportStats {
     breach_records: usize,

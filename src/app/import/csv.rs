@@ -163,16 +163,32 @@ pub(super) fn parse_dehashed_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportS
             );
             stats.emails += 1;
         }
-        if let Some(un) = get(user_i)
-            && un.len() >= 2
-            && !un.contains('@')
-            && seen.insert(format!("un:{}", un.to_lowercase()))
-        {
-            push(
-                Entity::new(EntityKind::Username, un, confidence::MEDIUM_PLUS, sid),
-                "breach",
-            );
-            stats.usernames += 1;
+        match get(user_i).map(|un| (un, identity_column_kind(un))) {
+            // The login column holds the account's email (no separate email
+            // column, or an empty one): it must reach the graph as the Email it
+            // is, deduplicated against the email column via the same key.
+            Some((un, Some(EntityKind::Email))) => {
+                let em = un.to_ascii_lowercase();
+                if !crate::core::validation::is_fragment_value(&EntityKind::Email, &em)
+                    && seen.insert(format!("em:{em}"))
+                {
+                    push(
+                        Entity::new(EntityKind::Email, &em, confidence::ATTRIBUTED, sid),
+                        "breach",
+                    );
+                    stats.emails += 1;
+                }
+            }
+            Some((un, Some(EntityKind::Username))) => {
+                if seen.insert(format!("un:{}", un.to_lowercase())) {
+                    push(
+                        Entity::new(EntityKind::Username, un, confidence::MEDIUM_PLUS, sid),
+                        "breach",
+                    );
+                    stats.usernames += 1;
+                }
+            }
+            _ => {}
         }
         if let Some(nm) = get(name_i)
             && nm.split_whitespace().count() >= 2

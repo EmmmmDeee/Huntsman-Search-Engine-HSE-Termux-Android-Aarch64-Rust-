@@ -2274,6 +2274,57 @@ fn parse_sql_dump_extracts_rows_with_escaped_and_multi_row_values() {
     assert_eq!(stats.malformed_lines, 0);
 }
 
+/// A leaked table whose ONLY identity column is the login column, holding
+/// email addresses — `(id, username, password)` with `username = 'alice@…'`,
+/// one of the most common real schemas — must put those emails into the
+/// graph. Both breach-table parsers gated the Username entity on
+/// `!contains('@')` with no email fallback, so the identity was silently
+/// dropped: reproduced live through the CLI and the HTTP upload as two bare
+/// credentials and zero identities from this exact two-row table. Real
+/// provider domains, as every fixture here (an `@example.*` placeholder is
+/// filtered upstream).
+#[test]
+fn parse_sql_dump_recovers_an_email_held_in_the_username_column() {
+    let body = "INSERT INTO `users` (`id`, `username`, `password`) VALUES\n\
+        (1, 'alice.tester@gmail.com', 'Hunter2pass'),\n\
+        (2, 'bob.tester@outlook.com', 'Sw0rdfish!');\n";
+    let (entities, stats) = parse_sql_dump(body, "s");
+    let emails: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        emails.contains(&"alice.tester@gmail.com") && emails.contains(&"bob.tester@outlook.com"),
+        "the login column's emails must become Email entities: {entities:#?}"
+    );
+    assert!(
+        !entities.iter().any(|e| e.kind == EntityKind::Username),
+        "an email-shaped login is never minted as a Username"
+    );
+    assert_eq!(stats.emails, 2);
+    assert_eq!(stats.breach_records, 2);
+
+    // A separate email column carrying the SAME address must not double-emit.
+    let both = "INSERT INTO `users` (`email`, `username`) VALUES \
+        ('carol.tester@yahoo.com', 'carol.tester@yahoo.com');\n";
+    let (ents, st) = parse_sql_dump(both, "s");
+    assert_eq!(
+        ents.iter().filter(|e| e.kind == EntityKind::Email).count(),
+        1,
+        "{ents:#?}"
+    );
+    assert_eq!(st.emails, 1);
+
+    // A plain handle in the login column is still a Username (unchanged).
+    let handle = "INSERT INTO `users` (`username`, `password`) VALUES ('dtester', 'pw12345');\n";
+    let (ents, _) = parse_sql_dump(handle, "s");
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Username && e.value == "dtester")
+    );
+}
+
 #[test]
 fn parse_sql_dump_unescapes_backslash_and_doubled_quote_dialects() {
     // mysqldump-style backslash escaping AND standard-SQL doubled-quote
@@ -2727,6 +2778,35 @@ fn parse_sql_dump_string_scanning_handles_escape_parity_and_truncation() {
 /// SQL-dump parser (`sql_dump.rs`, same PR) already tolerated these exact
 /// synonyms for the identical PII categories; `find_column` (promoted to the
 /// shared `super` authority) now backs both.
+/// The DeHashed-style CSV parser shares the SQL-dump parser's identity-column
+/// rule (`identity_column_kind`), so the same `username`-holds-an-email shape
+/// must recover the Email here too — reproduced live as the identical silent
+/// drop through both the CLI and the HTTP upload.
+#[test]
+fn parse_dehashed_csv_recovers_an_email_held_in_the_username_column() {
+    let body = "id,username,password,database_name\n\
+                1,carol.tester@yahoo.com,Tr0ub4dor&3,BreachCo\n\
+                2,dave.tester@protonmail.com,correcthorse,BreachCo\n";
+    assert!(
+        looks_like_dehashed_csv(body),
+        "precondition: this shape is detected as DeHashed-style"
+    );
+    let (entities, stats) = parse_dehashed_csv(body, "s");
+    let has =
+        |kind: EntityKind, value: &str| entities.iter().any(|e| e.kind == kind && e.value == value);
+    assert!(
+        has(EntityKind::Email, "carol.tester@yahoo.com")
+            && has(EntityKind::Email, "dave.tester@protonmail.com"),
+        "the login column's emails must become Email entities: {entities:#?}"
+    );
+    assert!(
+        !entities.iter().any(|e| e.kind == EntityKind::Username),
+        "an email-shaped login is never minted as a Username"
+    );
+    assert_eq!(stats.emails, 2);
+    assert!(has(EntityKind::Credential, "Tr0ub4dor&3"));
+}
+
 #[test]
 fn parse_dehashed_csv_tolerates_synonym_column_names() {
     let body = "id,email_address,user_name,database_name,pass,mobile,street_address\n\
