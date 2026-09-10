@@ -12,8 +12,9 @@
 //! Line splitting delegates to [`crate::util::extract::split_identity_secret`]
 //! (colon — the dominant separator), the same authority `comb_search` uses for
 //! its live COMB fetch, so an uploaded combolist and a live COMB result parse
-//! identity:secret pairs identically. `;` and a literal tab are tried as
-//! fallback separators for the other common combolist export shapes.
+//! identity:secret pairs identically. `;` and a literal tab cover the other
+//! common export shapes; whichever of the three appears first on a line is
+//! its separator (an identity never contains one — see [`split_combo_line`]).
 //! Malformed lines (no recognised delimiter, an empty identity, or an empty
 //! secret) are quarantined — counted in `ImportStats::malformed_lines` and
 //! skipped — so one bad line never aborts the rest of the file.
@@ -60,23 +61,27 @@ pub(crate) fn looks_like_combolist(body: &str) -> bool {
     total >= 3 && matched * 10 >= total * 9
 }
 
-/// Split one combolist line into `(identity, secret)`, trying colon first (the
-/// dominant separator, via the shared [`split_identity_secret`] authority),
-/// then `;` and a literal tab for the other common export shapes. `None` when
-/// no recognised delimiter yields a non-empty identity.
+/// Split one combolist line into `(identity, secret)` on whichever of the three
+/// delimiters — `:` (the dominant one, via the shared [`split_identity_secret`]
+/// authority), `;`, or a literal tab — appears FIRST. An identity (an email or
+/// a login handle) never contains any of the three, so the earliest delimiter
+/// is the boundary and the secret keeps every later one whole
+/// (`user@x.com:pass:word` → `("user@x.com", "pass:word")`). Trying the colon
+/// unconditionally first used to mis-split a `;`/tab line whose PASSWORD
+/// contained a colon: `a@x.com;Sept:2026!` became identity `a@x.com;Sept` (a
+/// fabricated login, minted as a Username — not even the real Email) and
+/// secret `2026!` (a truncated credential), with no quarantine and no warning.
+/// `None` when the earliest delimiter leaves an empty identity.
 fn split_combo_line(line: &str) -> Option<(&str, &str)> {
-    if let Some(pair) = split_identity_secret(line) {
-        return Some(pair);
+    let first = line.find([':', ';', '\t'])?;
+    if line.as_bytes()[first] == b':' {
+        return split_identity_secret(line);
     }
-    for delim in [';', '\t'] {
-        if let Some((identity, secret)) = line.split_once(delim) {
-            let identity = identity.trim();
-            if !identity.is_empty() {
-                return Some((identity, secret.trim()));
-            }
-        }
+    let identity = line[..first].trim();
+    if identity.is_empty() {
+        return None;
     }
-    None
+    Some((identity, line[first + 1..].trim()))
 }
 
 /// Parse a raw combolist into entities + stats. Pure (no I/O), so the

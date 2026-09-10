@@ -2058,6 +2058,49 @@ fn parse_combolist_extracts_email_password_pairs_across_delimiters() {
     assert_eq!(stats.malformed_lines, 3);
 }
 
+/// A `;`- or tab-delimited line whose PASSWORD contains a colon must split on
+/// the real (earlier) delimiter. `split_combo_line` used to try the colon
+/// authority unconditionally first, so `victim@x;Sept:2026!` became identity
+/// `victim@x;Sept` — minted as a Username, not even the real Email — and
+/// secret `2026!`, a truncated credential: a fabricated identity fed into the
+/// graph silently, with no quarantine and no warning. Found by the workflow
+/// correctness review, reproduced by running the parser on this exact line.
+#[test]
+fn parse_combolist_splits_on_the_earliest_delimiter_not_the_colon_first() {
+    let body = "victim.tester@gmail.com;Sept:2026!\n\
+                second.tester@outlook.com\tpa:ss:word\n\
+                third.tester@yahoo.com:pa;ss\n";
+    let (entities, stats) = parse_combolist(body, "s");
+    let has =
+        |kind: EntityKind, value: &str| entities.iter().any(|e| e.kind == kind && e.value == value);
+
+    assert!(
+        has(EntityKind::Email, "victim.tester@gmail.com"),
+        "`;` line: the real email must survive: {entities:#?}"
+    );
+    assert!(
+        has(EntityKind::Password, "Sept:2026!"),
+        "`;` line: the whole password, embedded colon included"
+    );
+    assert!(
+        has(EntityKind::Email, "second.tester@outlook.com"),
+        "tab line"
+    );
+    assert!(
+        has(EntityKind::Password, "pa:ss:word"),
+        "tab line: the password keeps every later colon"
+    );
+    // The colon-dominant case is unchanged: a `;` INSIDE the password stays in it.
+    assert!(has(EntityKind::Email, "third.tester@yahoo.com"));
+    assert!(has(EntityKind::Password, "pa;ss"));
+    assert!(
+        !entities.iter().any(|e| e.kind == EntityKind::Username),
+        "no fabricated identity (email fused with a password prefix): {entities:#?}"
+    );
+    assert_eq!(stats.malformed_lines, 0, "every line here is well-formed");
+    assert_eq!(stats.emails, 3);
+}
+
 #[test]
 fn parse_combolist_quarantines_sentinels_and_recovers_a_mis_stored_email() {
     let body = "frank.tester@gmail.com:[fail]\n\
