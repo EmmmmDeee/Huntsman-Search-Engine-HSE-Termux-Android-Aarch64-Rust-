@@ -58,6 +58,27 @@ use super::*;
         assert!(!is_role_localpart("jordanavery") && !is_role_localpart("jane.doe"));
     }
 
+    /// Pass 23: `is_role_localpart` must be case-insensitive on its own, not
+    /// only when a caller happens to pre-lowercase. Both existing callers
+    /// (`email_parse`, `is_infrastructure_email`) already lowercase before
+    /// calling — for their own separate reasons, not as a documented contract
+    /// of this function — so this property was untested until
+    /// `core::validation::is_role_mailbox` was pointed at this function
+    /// without lowercasing first and silently went case-sensitive
+    /// (`"No-Reply"`, `"MAILER_DAEMON"` stopped matching).
+    #[test]
+    fn role_localpart_is_case_insensitive_independent_of_caller_lowering() {
+        assert!(is_role_localpart("No-Reply"));
+        assert!(is_role_localpart("MAILER_DAEMON"));
+        assert!(is_role_localpart("Admin"));
+        // The segment matcher too, not just the whole-string match.
+        assert!(is_role_localpart("AWSDNS-Hostmaster"));
+        assert!(is_role_localpart("CloudFlare-Abuse"));
+        // Must not become OVER-eager: mixed-case personal names still pass.
+        assert!(!is_role_localpart("JaneDoe"));
+        assert!(!is_role_localpart("Nic-Taylor"));
+    }
+
     #[test]
     fn role_localpart_matches_provider_prefixed_system_mailboxes() {
         // Regression (found by a live dns_intel scan of amazon.com, surfaced by

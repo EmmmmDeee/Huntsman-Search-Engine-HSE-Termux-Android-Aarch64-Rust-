@@ -277,6 +277,56 @@ fn role_mailbox_flags_infrastructure_desks() {
     assert!(is_role_mailbox("abuse+spam@x.com"));
 }
 
+/// Pass 23: `is_role_mailbox` and `util::domains::is_role_localpart` used to
+/// carry independent role lists that diverged in both directions — this
+/// function's alone had `noc`/`registry`/`soa`/`ssladmin` (pinned above by
+/// `role_mailbox_flags_infrastructure_desks`, which is exactly why those four
+/// stayed in the merged list rather than being dropped); `is_role_localpart`
+/// alone had `sales`, `billing`, `legal`, `system`, and ~30 more, plus its
+/// `awsdns-hostmaster`-style provider-prefixed segment match. A role mailbox
+/// like `sales@acme.com` was therefore admitted as a candidate subject email
+/// here while `email_parse` correctly skipped deriving a Username from it —
+/// now both agree, because both are the same function underneath.
+#[test]
+fn role_mailbox_now_matches_the_util_domains_authority_both_ways() {
+    // Previously invisible to THIS function (only util::domains had them).
+    for e in [
+        "sales@acme.com",
+        "billing@acme.com",
+        "legal@acme.com",
+        "system@acme.com",
+    ] {
+        assert!(
+            is_role_mailbox(e),
+            "{e} should be a role mailbox post-merge"
+        );
+    }
+    // Previously invisible to util::domains (only this function had them) —
+    // still correct after the merge, not silently dropped.
+    for e in [
+        "noc@isp.net",
+        "registry@verisign.com",
+        "soa@example.net",
+        "ssladmin@example.com",
+    ] {
+        assert!(
+            is_role_mailbox(e),
+            "{e} should remain a role mailbox post-merge"
+        );
+    }
+    // A provider-prefixed segment match (only util::domains ever had this).
+    assert!(is_role_mailbox("awsdns-hostmaster@example.com"));
+    // Every real subject address from the sibling "keeps personal addresses"
+    // test must still be admitted — the merge must not overreach.
+    for e in [
+        "haigen@gmail.com",
+        "haigen.bamford@goatlegal.com.au",
+        "jsmith2000@outlook.com",
+    ] {
+        assert!(!is_role_mailbox(e), "{e} must still not be a role mailbox");
+    }
+}
+
 #[test]
 fn role_mailbox_keeps_personal_addresses() {
     // A person's address — including freemail — must NOT be flagged: it is the
