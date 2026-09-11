@@ -88,7 +88,7 @@ impl Module for AsicBusinessNames {
             return Ok(result);
         }
 
-        let records = ckan_query(ctx, name).await?;
+        let (records, server_total) = ckan_query(ctx, name).await?;
         let mut seen = std::collections::HashSet::new();
         let mut matched_count = 0usize;
         for rec in records
@@ -104,14 +104,7 @@ impl Module for AsicBusinessNames {
             return Ok(result);
         }
 
-        // Signal if the matched set was truncated at the hard cap, so the
-        // operator knows whether these are ALL registrations for the name or
-        // just the first MAX_HITS (T2.140 — truncation-signaling pattern).
-        let total_matches = records
-            .iter()
-            .filter(|r| record_name_matches(r, name))
-            .count();
-        let matches_capped = total_matches > MAX_HITS;
+        let matches_capped = is_truncated(server_total, records.len());
 
         let mut seed = Entity::new(
             EntityKind::Organisation,
@@ -124,7 +117,7 @@ impl Module for AsicBusinessNames {
         seed.tag("search-result");
         let mut ev = Evidence::new(SRC, format!("ASIC Business Names search for `{name}`"))
             .with_attr("matched_count", matched_count.to_string())
-            .with_attr("total_matches", total_matches.to_string());
+            .with_attr("total_matches", server_total.to_string());
         if matches_capped {
             ev = ev.with_attr("matches_capped", "true");
             seed.tag("truncated");
@@ -144,12 +137,37 @@ impl Module for AsicBusinessNames {
 /// `success == Some(false)` envelope (returned by CKAN with HTTP 200 on a bad
 /// resource id / portal error) becomes an explicit `Error::module`. A genuine
 /// empty result set is still the honest clean miss.
-async fn ckan_query(ctx: &ModuleContext, name: &str) -> Result<Vec<Map<String, Value>>> {
+///
+/// Returns `(records, server_total)` — `server_total` is CKAN's own reported
+/// match count for the free-text query, BEFORE this module's stricter
+/// whole-word `record_name_matches` filter narrows it further. `records`
+/// itself is already capped at [`MAX_HITS`] by the request's own `limit=`, so
+/// comparing a further-filtered subset of `records` against `MAX_HITS` (the
+/// previous approach) could never detect real truncation; `server_total` is
+/// the only signal CKAN actually held more rows than this page fetched.
+async fn ckan_query(ctx: &ModuleContext, name: &str) -> Result<(Vec<Map<String, Value>>, u64)> {
     let url = datastore_search_url(CKAN_BASE, RES, name, MAX_HITS);
     Ok(crate::util::ckan::validated_result(&ctx.http, SRC, &url)
         .await?
-        .map(|r| r.records)
+        .map(|r| {
+            let total = r.total.unwrap_or(r.records.len() as u64);
+            (r.records, total)
+        })
         .unwrap_or_default())
+}
+
+/// True when CKAN itself held more rows for this free-text query than this
+/// page fetched. **Pure.** `records_len` is already capped at [`MAX_HITS`] by
+/// the request's own `limit=`, so this can only ever be answered against
+/// CKAN's own reported `server_total`, never against a further-filtered slice
+/// of the already-capped record set (which can never exceed `MAX_HITS` by
+/// construction — comparing `records_len > MAX_HITS` directly, the previous
+/// approach, was a tautological `false`, so `total_matches` silently
+/// ceilinged at `MAX_HITS` with no truncation warning even when CKAN's true
+/// total was higher).
+#[must_use]
+fn is_truncated(server_total: u64, records_len: usize) -> bool {
+    server_total > records_len as u64
 }
 
 /// Lower-cased alphanumeric name tokens (≥2 chars).
