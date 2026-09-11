@@ -202,6 +202,15 @@ fn a_malformed_stamp_is_none_rather_than_a_guess() {
         "2026-08-21T00:00:00~07:00",
         "2026-08-21T00:00:00-7:00",
         "2026-08-21T00:00:00-25:00",
+        // Implausible-for-this-domain years (Pass 26): the fixed 4-byte year
+        // slice already rules out an i64 overflow reaching days_from_civil,
+        // but nothing previously stopped a year no RF/WiFi observation could
+        // realistically carry from minting a nonsensical sighting timestamp.
+        // Bounded to match parse_date's own 1900..=2100.
+        "0001-01-01T00:00:00Z",
+        "1899-12-31T23:59:59Z",
+        "2101-01-01T00:00:00Z",
+        "9999-12-31T23:59:59Z",
     ] {
         assert_eq!(parse_iso8601_epoch(bad), None, "{bad:?} must not parse");
     }
