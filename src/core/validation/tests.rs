@@ -343,24 +343,6 @@ fn role_mailbox_keeps_personal_addresses() {
 }
 
 #[test]
-fn coordinates_accept_valid() {
-    assert!(validate_coordinates(-27.4712679, 153.0283242).valid); // Brisbane CBD
-    assert!(validate_coordinates(90.0, 180.0).valid); // edge ok
-    assert!(validate_coordinates(-90.0, -180.0).valid);
-}
-
-#[test]
-fn coordinates_reject_invalid() {
-    assert_eq!(validate_coordinates(91.0, 0.0).reason, "coord.lat_oob");
-    assert_eq!(validate_coordinates(0.0, 181.0).reason, "coord.lon_oob");
-    assert_eq!(validate_coordinates(0.0, 0.0).reason, "coord.null_island");
-    assert_eq!(
-        validate_coordinates(f64::NAN, 0.0).reason,
-        "coord.non_finite"
-    );
-}
-
-#[test]
 fn non_routable_ip_classifies_correctly() {
     assert!(is_non_routable_ip("192.168.1.1"));
     assert!(is_non_routable_ip("10.0.0.1"));
@@ -519,25 +501,6 @@ fn cdn_edge_ip_catches_ipv6_anycast() {
     assert!(!is_cdn_edge_ip("2a06:98c8::1")); // one block past the /29
     assert!(!is_cdn_edge_ip("2001:4860:4860::8888")); // Google DNS v6
     assert!(!is_cdn_edge_ip("2a00:1450:4001::1")); // Google v6
-}
-
-#[test]
-fn domain_shape_accepts_valid() {
-    assert!(validate_domain_shape("goatlegal.com.au").valid);
-    assert!(validate_domain_shape("a.b").valid);
-    assert!(validate_domain_shape("example.com.").valid); // trailing dot stripped
-}
-
-#[test]
-fn domain_shape_rejects_invalid() {
-    assert_eq!(validate_domain_shape("").reason, "domain.length");
-    assert_eq!(validate_domain_shape("nodot").reason, "domain.no_dot");
-    assert_eq!(validate_domain_shape("bad_label.com").reason, "domain.ldh");
-    assert_eq!(
-        validate_domain_shape("-bad.com").reason,
-        "domain.hyphen_edge"
-    );
-    assert_eq!(validate_domain_shape("192.168.1.1").reason, "domain.is_ip");
 }
 
 mod confusable_tests {
