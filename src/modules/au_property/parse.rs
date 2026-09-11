@@ -280,6 +280,26 @@ pub(super) fn state_capital_coords(state: &str) -> Option<(f64, f64)> {
 
 /// Remove duplicate entities by (kind, value) keeping the highest-confidence
 /// copy. Pure after the sort. Allocates one pass.
+///
+/// Investigated for a Pass 26 tiebreak fix (matching the confidence-sort
+/// convention used elsewhere in the tree) and deliberately left as-is:
+/// `derive_uid` computes `uid` from exactly `(kind, normalised value)` — the
+/// same two fields `dedup_by` below already groups on — so within any tied
+/// group every candidate necessarily shares one `uid` already; a `uid`
+/// tiebreak here would compare equal every time and change nothing. The
+/// caller (`AuProperty::search`) also only ever populates `entities` from a
+/// single leg's response — `for (url, ..) in &legs { if !all_entities.is_empty()
+/// { break; } .. }` stops trying further legs the moment one succeeds — so
+/// there is no concurrent/HashMap-order source of run-to-run variance for a
+/// tiebreak to guard against either: identical input HTML always parses to
+/// the same order, so an exact same-(kind, value, confidence) tie already
+/// resolves the same way on every run over the same response. What a
+/// same-tie DOES still do is drop the loser's evidence outright rather than
+/// merge it, unlike `au_people::dedup_by_kind_value`'s `Entity::merge`
+/// approach — a real but independent data-completeness question (which
+/// candidate's corroborating evidence is worth keeping, not which one is
+/// "first"), left for a dedicated follow-up rather than folded into a
+/// tiebreak that would not have addressed it anyway.
 pub(super) fn dedup_entities(entities: &mut Vec<Entity>) {
     entities.sort_by(|a, b| {
         format!("{}", a.kind)

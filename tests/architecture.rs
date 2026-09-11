@@ -798,6 +798,16 @@ fn core_does_not_import_util_directly() {
                 // again disagree with `email_parse`'s username-derivation
                 // gate on what counts as a role mailbox.
                 && !line.contains("util::domains::is_role_localpart")
+                // Pure, offline confidence-then-uid sort (no I/O, no deps) —
+                // same leaf category as `util::domains::is_role_localpart`
+                // immediately above, and for the identical reason (Pass 26):
+                // `core::engine`'s found-key-flatten and recall-cap passes
+                // each carried their own byte-for-byte copy of this exact
+                // comparator rather than reaching for the one two other
+                // modules (`anubis`/`certspotter`/`crtsh`) already share, so
+                // a future tie-break change could silently apply to only
+                // some of the sites that need it to match.
+                && !line.contains("util::recon::sort_by_confidence_desc")
                 // Pure, offline look-alike/typosquat comparison for domain
                 // labels (homoglyph skeleton fold + Levenshtein; no I/O, no
                 // deps, no Unicode tables) — same leaf category as

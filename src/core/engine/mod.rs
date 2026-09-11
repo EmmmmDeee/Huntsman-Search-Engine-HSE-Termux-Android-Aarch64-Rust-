@@ -2652,12 +2652,7 @@ fn merge_found_keys_and_flatten(
     // reason), and `/identities` passes display-ranked output — which is what made this path the
     // outlier rather than the rule.
     let mut out: Vec<Entity> = entity_map.into_values().collect();
-    out.sort_by(|a, b| {
-        b.confidence
-            .partial_cmp(&a.confidence)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.uid.cmp(&b.uid))
-    });
+    crate::util::recon::sort_by_confidence_desc(&mut out);
     out
 }
 
@@ -3042,15 +3037,13 @@ pub(crate) fn module_health_observed() -> usize {
 /// literal confidences (0.6, 0.7, 0.8, …), so exact ties at the cutoff are
 /// realistic, not contrived — without a tiebreak, two otherwise-identical
 /// recalls of the same target could truncate to a DIFFERENT set of surviving
-/// entities, not just a different display order. Mirrors the uid tiebreak
-/// `ranking::rank_enrichment_leverage`/`rank_autonomous_targets` also use.
+/// entities, not just a different display order. The same tiebreak shape
+/// `ranking::rank_enrichment_leverage`/`rank_autonomous_targets` also use,
+/// for their own struct types — this one sorts `Entity` directly, so it
+/// delegates to `util::recon::sort_by_confidence_desc` (Pass 26) rather than
+/// keeping its own copy of the identical comparator.
 fn rank_recalled_and_cap(mut out: Vec<Entity>, max: usize) -> Vec<Entity> {
-    out.sort_by(|a, b| {
-        b.confidence
-            .partial_cmp(&a.confidence)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.uid.cmp(&b.uid))
-    });
+    crate::util::recon::sort_by_confidence_desc(&mut out);
     out.truncate(max);
     out
 }
