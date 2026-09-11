@@ -264,7 +264,9 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
             );
             ce.tag("criminal_ip");
             ce.tag("geoint");
-            ce.add_evidence(Evidence::new(SRC, format!("Whois geolocation for {ip}")));
+            ce.add_evidence(
+                Evidence::new(SRC, format!("Whois geolocation for {ip}")).with_attr("ip", ip),
+            );
             out.push(ce);
         }
         let city = nonblank(w.city.as_deref()).unwrap_or("");

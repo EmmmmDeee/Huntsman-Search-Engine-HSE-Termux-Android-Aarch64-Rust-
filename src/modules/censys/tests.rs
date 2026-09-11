@@ -181,6 +181,35 @@ fn full_host_yields_ip_coords_and_address() {
 }
 
 #[test]
+fn coordinates_carry_the_originating_ip_for_login_ip_recognition() {
+    // Pass 31: the correlator's shared `person_login_ip_coords` (used by
+    // `best_au_location_estimate` and `au_location_corroboration`) only
+    // recognises a Coordinates fix as tied to a subject's breach/stealer
+    // login IP when its evidence carries an `ip` attribute equal to that
+    // IP — the same property `ipinfo`/`ip_whois_geo`/`ipquery`/`ip_geo`
+    // already pin.
+    let ents = build_entities(
+        &host(
+            r#"{ "result": {
+                "location": {
+                    "coordinates": { "latitude": -33.8688, "longitude": 151.2093 },
+                    "country": "Australia", "country_code": "au"
+                }
+            } }"#,
+        ),
+        "8.8.8.8",
+        "s",
+    );
+    let geo = of_kind(&ents, EntityKind::Coordinates).expect("coords");
+    assert_eq!(
+        geo.evidence[0].attributes.get("ip").map(String::as_str),
+        Some("8.8.8.8"),
+        "Coordinates evidence must carry the originating IP so \
+         person_login_ip_coords can recognise this as a login-IP fix"
+    );
+}
+
+#[test]
 fn autonomous_system_yields_asn_org_and_reverse_dns_domains() {
     let ents = build_entities(
         &host(

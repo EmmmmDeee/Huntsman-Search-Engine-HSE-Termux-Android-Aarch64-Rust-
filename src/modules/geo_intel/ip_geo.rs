@@ -176,6 +176,7 @@ pub(super) fn build_ipapico_entity(
             .filter_map(|(k, v)| v.map(|val| (k, val)))
             .fold(
                 Evidence::new(SRC, format!("IP geo for {ip} via ipapi.co"))
+                    .with_attr("ip", ip)
                     .with_attr("latitude", lat.to_string())
                     .with_attr("longitude", lon.to_string())
                     .with_attr("source", "ipapi.co"),
@@ -236,6 +237,7 @@ pub(super) fn build_freeipapi_entity(
     .filter_map(|(k, v)| v.map(|val| (k, val)))
     .fold(
         Evidence::new(SRC, format!("IP geo for {ip} via freeipapi.com"))
+            .with_attr("ip", ip)
             .with_attr("latitude", lat.to_string())
             .with_attr("longitude", lon.to_string())
             .with_attr("source", "freeipapi.com"),

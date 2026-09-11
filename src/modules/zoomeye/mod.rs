@@ -251,7 +251,7 @@ fn extract_entities(body: &ZoomResp, target: &Target, value: &str, scan_id: &str
             if let Some(cc) = geo_country_code(m) {
                 ce.tag(format!("country:{}", cc.to_uppercase()));
             }
-            ce.add_evidence(ev());
+            ce.add_evidence(ev().with_attr("ip", record_ip.as_deref().unwrap_or(value)));
             result.push(ce);
         }
 

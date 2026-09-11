@@ -59,6 +59,32 @@ fn error_body_deserialises_to_empty_matches() {
 }
 
 #[test]
+fn coordinates_carry_the_originating_ip_for_login_ip_recognition() {
+    // Pass 31: the correlator's shared `person_login_ip_coords` (used by
+    // `best_au_location_estimate` and `au_location_corroboration`) only
+    // recognises a Coordinates fix as tied to a subject's breach/stealer
+    // login IP when its evidence carries an `ip` attribute equal to that
+    // IP — the same property `ipinfo`/`ip_whois_geo`/`ipquery`/`ip_geo`
+    // already pin.
+    let body = ZoomResp {
+        matches: vec![sample_match()], // ip 8.8.8.8
+    };
+    let target = Target::new(TargetKind::IpAddress, "8.8.8.8");
+    let r = extract_entities(&body, &target, "8.8.8.8", "scan");
+    let coords = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Coordinates)
+        .expect("coords");
+    assert_eq!(
+        coords.evidence[0].attributes.get("ip").map(String::as_str),
+        Some("8.8.8.8"),
+        "Coordinates evidence must carry the originating IP so \
+         person_login_ip_coords can recognise this as a login-IP fix"
+    );
+}
+
+#[test]
 fn cdn_edge_ip_target_suppresses_coordinates_and_address() {
     // Regression: the old `skip_coords` gated Coordinates only — the Address
     // block built from the SAME untrusted match's city/country was emitted

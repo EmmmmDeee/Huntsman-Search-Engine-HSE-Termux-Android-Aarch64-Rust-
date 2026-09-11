@@ -209,6 +209,31 @@ fn ipapico_builder_emits_for_clean_ip_with_iso() {
 }
 
 #[test]
+fn ipapico_coordinates_carry_the_originating_ip_for_login_ip_recognition() {
+    // Pass 31: the correlator's shared `person_login_ip_coords` (used by
+    // `best_au_location_estimate` and `au_location_corroboration`) only
+    // recognises a Coordinates fix as tied to a subject's breach/stealer
+    // login IP when its evidence carries an `ip` attribute equal to that
+    // IP — the same property `ipinfo`/`ip_whois_geo`/`ipquery`/`ip_geo`
+    // already pin. This module (unconditionally dispatched, `ModuleCost::Free`,
+    // its own doc calling it "a third and fourth independent source") was
+    // missing it on both its builders.
+    let json = r#"{"latitude":-27.4766,"longitude":153.0166}"#;
+    let r: IpApiCoResp = serde_json::from_str(json).expect("should succeed");
+    let entities = build_ipapico_entity(&r, "1.2.3.4", false, "t");
+    let coords = entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Coordinates)
+        .expect("coords");
+    assert_eq!(
+        coords.evidence[0].attributes.get("ip").map(String::as_str),
+        Some("1.2.3.4"),
+        "Coordinates evidence must carry the originating IP so \
+         person_login_ip_coords can recognise this as a login-IP fix"
+    );
+}
+
+#[test]
 fn ipapico_builder_untrusted_suppresses_coords_but_keeps_asn() {
     // Regression: geo_untrusted used to early-return an empty Vec for the
     // whole record, silently dropping the ASN too — "AS13335 Cloudflare" is
@@ -258,4 +283,18 @@ fn freeipapi_builder_suppresses_proxy_and_untrusted() {
     )
     .expect("should succeed");
     assert!(build_freeipapi_entity(&proxy, "1.2.3.4", false, "t").is_none());
+}
+
+#[test]
+fn freeipapi_coordinates_carry_the_originating_ip_for_login_ip_recognition() {
+    // Pass 31: see `ipapico_coordinates_carry_the_originating_ip_for_login_ip_recognition`.
+    let clean = r#"{"latitude":-27.47,"longitude":153.02,"countryName":"Australia","countryCode":"AU","cityName":"South Brisbane","isProxy":false}"#;
+    let r: FreeIpApiResp = serde_json::from_str(clean).expect("should succeed");
+    let e = build_freeipapi_entity(&r, "1.2.3.4", false, "t").expect("coords");
+    assert_eq!(
+        e.evidence[0].attributes.get("ip").map(String::as_str),
+        Some("1.2.3.4"),
+        "Coordinates evidence must carry the originating IP so \
+         person_login_ip_coords can recognise this as a login-IP fix"
+    );
 }
