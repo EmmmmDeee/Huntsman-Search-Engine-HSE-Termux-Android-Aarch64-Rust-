@@ -295,3 +295,50 @@ use super::*;
             "clap must name the typo and the accepted values: {msg}"
         );
     }
+
+    // ── color_severity ───────────────────────────────────────────────────
+
+    /// Pins the exact ANSI sequence per [`Severity`] tier. A prior version
+    /// took the already `Display`-rendered (uppercase) label and matched it
+    /// against lowercase string literals ("critical", "high", "medium"), so
+    /// none of the three coloured arms ever fired — every row in `hse scan`'s
+    /// correlation table rendered dim regardless of actual severity. Falsified
+    /// by reverting `color_severity` to take `&str` and re-deriving the label
+    /// via `format!("{:<10}", severity)` before matching `.trim()` against
+    /// lowercase: this test fails on that shape (every arm below except `Low`
+    /// gets the dim `\x1b[2m` code instead of its own) and passes once the
+    /// match is driven directly off the `Severity` enum.
+    #[test]
+    fn color_severity_each_tier_gets_its_own_colour() {
+        let padded = |s: &str| format!("{s:<10}");
+        assert_eq!(
+            color_severity(Severity::Critical, true),
+            format!("\x1b[1;31m{}\x1b[0m", padded("CRITICAL"))
+        );
+        assert_eq!(
+            color_severity(Severity::High, true),
+            format!("\x1b[31m{}\x1b[0m", padded("HIGH"))
+        );
+        assert_eq!(
+            color_severity(Severity::Medium, true),
+            format!("\x1b[33m{}\x1b[0m", padded("MEDIUM"))
+        );
+        assert_eq!(
+            color_severity(Severity::Low, true),
+            format!("\x1b[2m{}\x1b[0m", padded("LOW"))
+        );
+    }
+
+    #[test]
+    fn color_severity_color_false_is_the_plain_padded_label_no_ansi() {
+        for (sev, label) in [
+            (Severity::Critical, "CRITICAL"),
+            (Severity::High, "HIGH"),
+            (Severity::Medium, "MEDIUM"),
+            (Severity::Low, "LOW"),
+        ] {
+            let out = color_severity(sev, false);
+            assert_eq!(out, format!("{label:<10}"));
+            assert!(!out.contains('\u{1b}'), "no ANSI escape when color is disabled: {out:?}");
+        }
+    }
