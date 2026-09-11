@@ -48,7 +48,7 @@ pub(super) fn build_opencellid_coordinate(
     let mut e = Entity::new(
         EntityKind::Coordinates,
         &coords,
-        crate::util::geo::cell_range_to_confidence(range),
+        accuracy_to_confidence(range),
         scan_id,
     );
     e.tag("geoint");
@@ -174,8 +174,13 @@ pub(super) async fn query_opencellid(
 }
 
 /// Map a cell fix's accuracy radius (metres) to a coordinate confidence.
-/// Delegates to the single authoritative implementation in `cell_db`.
-#[cfg(test)]
+/// Delegates to the single authoritative implementation in `cell_db`, the
+/// same one `cell_local` and `opencellid` use — a provider-local copy (this
+/// module carried one, `util::geo::cell_range_to_confidence`, until Pass 22)
+/// let an identically-precise OpenCelliD fix score differently by which
+/// module happened to report it, silently crossing the correlator's
+/// `>= 0.50` admissibility floor at some tiers. See
+/// [`crate::util::geo::confidence_for_accuracy_m`]'s doc for why.
 pub(super) use crate::util::cell_db::accuracy_to_confidence;
 
 /// `mcc`/`mnc` come as `"505"` on some Android versions and `505` on others.
