@@ -1546,6 +1546,20 @@ fn scan_request_defaults_to_comprehensive_options() {
     }
 }
 
+#[test]
+fn rule_md_comprehensive_defaults_match_product_constants() {
+    let rule = include_str!("../../../RULE.md");
+    let expected = format!("depth {DEFAULT_SCAN_DEPTH}, expansion floor 0.20, entity cap");
+    assert!(
+        rule.contains(&expected),
+        "RULE.md must track the comprehensive defaults line with the current depth"
+    );
+    assert!(
+        !rule.contains("depth 3, expansion floor 0.20"),
+        "RULE.md must not contain the stale comprehensive depth phrase"
+    );
+}
+
 /// Property tests for the pure target-model functions — this module eats
 /// untrusted, user-supplied text, so the doctrine (unit tests AND `proptest`
 /// no-panic / invariant properties) applies to every entry point.
