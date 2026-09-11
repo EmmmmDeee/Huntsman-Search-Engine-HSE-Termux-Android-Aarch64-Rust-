@@ -1031,6 +1031,64 @@ use crate::core::confidence;
     }
 
     #[test]
+    fn is_social_platform_still_matches_every_domain_the_old_standalone_list_had() {
+        // Pass 29 repointed this at the shared util::domains authority plus a
+        // small local INFRA residual instead of an independent 39-entry copy.
+        // Pin the full original set here so the refactor is provably a no-op
+        // for every domain the old list recognised (the 8 people-search +
+        // 5 platform entries now live in the shared list; the 5 INFRA ones
+        // stay local) — a silent regression would drop entries from either
+        // half without this.
+        for domain in [
+            "peekyou.com",
+            "spokeo.com",
+            "nuwber.com",
+            "pipl.com",
+            "facebook.com",
+            "instagram.com",
+            "twitter.com",
+            "x.com",
+            "linkedin.com",
+            "pinterest.com",
+            "tiktok.com",
+            "reddit.com",
+            "github.com",
+            "gitlab.com",
+            "bitbucket.org",
+            "youtube.com",
+            "twitch.tv",
+            "steamcommunity.com",
+            "mastodon.social",
+            "bsky.app",
+            "threads.net",
+            "tumblr.com",
+            "snapchat.com",
+            "telegram.org",
+            "discord.com",
+            "soundcloud.com",
+            "spotify.com",
+            "whatsapp.com",
+            "signal.org",
+            "vk.com",
+            "whitepages.com",
+            "whitepages.com.au",
+            "locatefamily.com",
+            "truecaller.com",
+            "cloudflare.com",
+            "google.com",
+            "microsoft.com",
+            "amazon.com",
+            "apple.com",
+        ] {
+            assert!(
+                is_social_platform(domain),
+                "'{domain}' regressed: was recognised by the old standalone list"
+            );
+        }
+        assert!(!is_social_platform("acme.io"));
+    }
+
+    #[test]
     fn field_validators_are_objective() {
         // IBAN mod-97 (ISO 7064): canonical valid accounts pass; a flipped check
         // digit and a redacted sentinel fail.

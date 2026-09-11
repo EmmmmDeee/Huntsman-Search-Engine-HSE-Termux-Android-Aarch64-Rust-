@@ -146,7 +146,28 @@ const SOCIAL: &[&str] = &[
     "meetup.com",
     "behance.net",
     "dribbble.com",
-    "deviantart.com",
+    // People-search / data-aggregator sites: never the subject's own domain,
+    // and scraping one's "contact" page attributes the aggregator's own
+    // corporate details to the scan subject (observed via employer_pivot: an
+    // Email/Domain target on `peekyou.com` fed its contact-page scrape, which
+    // would otherwise emit PeekYou's own corporate address as the subject's
+    // "employer"). Previously carried only in oathnet_pro's own independent
+    // copy of this list; merged in here (Pass 29) so every consumer of the
+    // canonical list benefits, not just OathNet's preflight-skip check.
+    "peekyou.com",
+    "spokeo.com",
+    "nuwber.com",
+    "pipl.com",
+    "whitepages.com",
+    "whitepages.com.au",
+    "locatefamily.com",
+    "truecaller.com",
+    // Additional dev / consumer platforms, same merge.
+    "bitbucket.org",
+    "steamcommunity.com",
+    "spotify.com",
+    "signal.org",
+    "vk.com",
 ];
 
 /// Common **multi-label public suffixes** under which the public registers a
@@ -399,6 +420,12 @@ pub fn is_role_localpart(local: &str) -> bool {
         "registry",
         "soa",
         "ssladmin",
+        // Merged in from the narrower employer_pivot::is_role_email_local
+        // list (Pass 29): a system-administrator desk and a generic tech
+        // contact, both seen in the same class of infra-attribution scrapes
+        // that list's own guard exists to stop.
+        "sysadmin",
+        "tech",
     ];
     if ROLE.contains(&base.as_str()) {
         return true;

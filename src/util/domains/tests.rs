@@ -58,6 +58,18 @@ use super::*;
         assert!(!is_role_localpart("jordanavery") && !is_role_localpart("jane.doe"));
     }
 
+    /// Pass 29: merged in from the narrower employer_pivot::is_role_email_local
+    /// list, which had these two but this list didn't — the same "one side of
+    /// a duplicate is missing what the other has" shape Pass 23 found for
+    /// noc/registry/soa/ssladmin. Without this, unifying employer_pivot onto
+    /// this authority would have silently DROPPED coverage for these two
+    /// tokens instead of only adding it.
+    #[test]
+    fn role_localpart_covers_sysadmin_and_tech_merged_from_employer_pivot() {
+        assert!(is_role_localpart("sysadmin"));
+        assert!(is_role_localpart("tech"));
+    }
+
     /// Pass 23: `is_role_localpart` must be case-insensitive on its own, not
     /// only when a caller happens to pre-lowercase. Both existing callers
     /// (`email_parse`, `is_infrastructure_email`) already lowercase before
@@ -275,6 +287,36 @@ use super::*;
         assert!(is_social_platform("au.linkedin.com"));
         assert!(is_social_platform("m.facebook.com"));
         assert!(!is_social_platform("acme.com"));
+    }
+
+    #[test]
+    fn social_reaches_people_search_sites_the_narrower_list_was_missing() {
+        // Pass 29: these 13 were previously carried only in oathnet_pro's own
+        // independent copy of this list — the canonical list (the one
+        // employer_pivot's misattribution guard actually consults) was
+        // missing them, so a `Domain`/`Email` target on e.g. `peekyou.com`
+        // slipped past the guard and let employer_pivot scrape the
+        // aggregator's own contact page as if it were the subject's.
+        for domain in [
+            "peekyou.com",
+            "spokeo.com",
+            "nuwber.com",
+            "pipl.com",
+            "whitepages.com",
+            "whitepages.com.au",
+            "locatefamily.com",
+            "truecaller.com",
+            "bitbucket.org",
+            "steamcommunity.com",
+            "spotify.com",
+            "signal.org",
+            "vk.com",
+        ] {
+            assert!(
+                is_social_platform(domain),
+                "'{domain}' must be recognised as a social/aggregator platform"
+            );
+        }
     }
 
     #[test]
