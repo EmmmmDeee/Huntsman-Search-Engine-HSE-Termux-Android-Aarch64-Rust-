@@ -120,6 +120,30 @@ fn rssi_confidence_tiers() {
     assert!((wifi::rssi_confidence(None) - confidence::LOW_MEDIUM).abs() < 0.01);
 }
 
+#[test]
+fn rssi_confidence_implausible_positive_reading_degrades_to_worst_tier() {
+    // Regression: `rssi` is deserialised directly from untrusted
+    // termux-wifi-scaninfo JSON. Wi-Fi RSSI in dBm is never positive in
+    // practice, but the old `Some(r) if r >= -50 => VERY_HIGH_PLUS` had no
+    // upper bound — a driver bug or corrupted scan line reporting a
+    // positive value (e.g. a raw percentage in place of dBm) scored the
+    // SAME best-possible confidence as a genuine, very-strong -40 dBm
+    // reading. Same "malformed input must never score better than a real
+    // worst-case reading" shape already fixed for
+    // util::geo::confidence_for_accuracy_m and device_fix::fix_confidence.
+    for bad in [1, 5, 100, 9999, i64::MAX] {
+        let c = wifi::rssi_confidence(Some(bad));
+        assert!(
+            (c - confidence::LOW_MEDIUM).abs() < 0.01,
+            "implausible positive RSSI {bad} must score the worst tier, got {c}"
+        );
+        assert!(
+            c < confidence::VERY_HIGH_PLUS,
+            "implausible positive RSSI {bad} must never reach the ceiling: {c}"
+        );
+    }
+}
+
 // ── bluetooth parser ───────────────────────────────────────────────────────
 
 #[test]
