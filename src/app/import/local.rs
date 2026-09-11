@@ -15,9 +15,6 @@ const MAX_DIR_DEPTH: usize = 8;
 /// Maximum number of candidate files a single scrape will import — a backstop so
 /// pointing at a huge tree can't exhaust memory.
 const MAX_FILES: usize = 2000;
-/// Per-file size cap, mirroring the single-file import limit (`MAX_IMPORT_BYTES`)
-/// so both paths enforce the same bound.
-const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// True for files that never carry importable OSINT text — build artifacts,
 /// media, archives and binary stores — so a scrape skips them without reading.
@@ -123,7 +120,7 @@ pub(super) fn collect_importable_files(root: &std::path::Path) -> Vec<std::path:
                 && !is_skippable_file(name)
                 && let Ok(meta) = entry.metadata()
                 && meta.len() > 0
-                && meta.len() <= MAX_FILE_BYTES
+                && meta.len() <= MAX_IMPORT_BYTES
             {
                 files.push(path);
             }

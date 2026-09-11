@@ -6,6 +6,16 @@
 
 use crate::core::error::{Error, Result};
 
+/// Maximum single-file import size, shared by the single-file `hse import`
+/// path (below), the local-storage directory scrape
+/// (`local::MAX_FILE_BYTES` used to be an independent copy of this — now
+/// deleted in favour of this one), and `api::scan_handlers::MAX_UPLOAD_BYTES`
+/// (now derived directly from this constant, Pass 30) so all three paths
+/// enforce the same bound and can't silently drift apart the way three
+/// separately-hardcoded `16 * 1024 * 1024` literals could. 16 MB comfortably
+/// fits a large multi-entry dossier on a low-RAM Termux device.
+pub(crate) const MAX_IMPORT_BYTES: u64 = 16 * 1024 * 1024;
+
 mod combined;
 mod combolist;
 mod csv;
@@ -50,9 +60,8 @@ use txt::{cmd_import_txt, parse_oathnet_txt};
 /// content by design, so forcing one format across a tree is refused
 /// explicitly rather than silently ignored.
 pub async fn cmd_import(path: &str, output: &str, forced: Option<ImportFormat>) -> Result<()> {
-    // File-size cap before read_to_string — mirrors MAX_UPLOAD_BYTES in the API
-    // upload handler (16 MB) so both paths enforce the same memory bound.
-    const MAX_IMPORT_BYTES: u64 = 16 * 1024 * 1024;
+    // File-size cap before read_to_string, shared with the API upload
+    // handler and the local-storage scrape — see MAX_IMPORT_BYTES above.
     let meta = tokio::fs::metadata(path)
         .await
         .map_err(|e| Error::Other(format!("cannot stat {path}: {e}")))?;
