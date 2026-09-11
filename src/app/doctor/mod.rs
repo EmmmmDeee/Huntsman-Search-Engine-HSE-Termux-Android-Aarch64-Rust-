@@ -23,7 +23,7 @@ use crate::{
     util::{cell_db, keys, scraper_health, timefmt},
 };
 
-use crate::app::export::cost_label;
+use crate::app::export::{WAL_RUNAWAY_BYTES, cost_label};
 
 pub async fn cmd_doctor(live: bool) -> Result<()> {
     let mods = registry();
@@ -87,7 +87,7 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
             if let Ok(meta) = tokio::fs::metadata(format!("{db_path}-wal")).await {
                 let kib = meta.len() / 1024;
                 println!("  WAL size:   {kib} KiB");
-                if meta.len() > 64 * 1024 * 1024 {
+                if meta.len() > WAL_RUNAWAY_BYTES {
                     println!(
                         "                (large — runs a TRUNCATE checkpoint at the next scan)"
                     );

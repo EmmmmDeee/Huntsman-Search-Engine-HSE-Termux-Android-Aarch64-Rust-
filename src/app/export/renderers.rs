@@ -987,6 +987,11 @@ pub(crate) struct IssueInputs<'a> {
 /// running away — checkpointing has stalled and the sidecar is eating device
 /// storage. 64 MiB: comfortably above a healthy transient WAL, well below a
 /// level that matters on a phone.
+///
+/// Re-exported from `app::export` (Pass 28) so `app::doctor`'s own WAL check
+/// shares this exact threshold instead of an independently-maintained inline
+/// copy — the two happened to still agree (both `64 * 1024 * 1024`) when
+/// this was found, but nothing had been keeping them that way.
 pub(crate) const WAL_RUNAWAY_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Join every health signal into one worst-first problem list. **Pure** (no
