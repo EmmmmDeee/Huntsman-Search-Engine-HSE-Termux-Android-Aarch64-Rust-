@@ -19,8 +19,16 @@
 //! version nibble; bare 24-hex ObjectID; 26-char Crockford-base32 ULID; 27-char
 //! base62 KSUID), so — unlike a bare decimal snowflake
 //! — there is no platform ambiguity. Every decoded time is range-validated to
-//! `[2000-01-01, now]` so a random hex/UUID-v4 string yields nothing rather than
-//! a fabricated timestamp. No mock: the data is read straight out of the ID.
+//! `[2000-01-01, now]`, but how STRONG a genuineness signal that window is
+//! varies by format's timestamp resolution, and confidence is scaled to
+//! match: UUIDv4's version nibble is a structural gate (a random hex/UUID-v4
+//! string yields nothing), and ULID's 48-bit millisecond timestamp makes a
+//! coincidental match against the window negligibly rare — but ObjectID's and
+//! KSUID's 32-bit SECOND-resolution timestamp is a much weaker filter
+//! (~20% / ~9% of random strings of the right shape land inside the window
+//! by chance), so those two are reported at a correspondingly lower
+//! confidence rather than claimed as certain. No mock: the data is read
+//! straight out of the ID.
 
 use async_trait::async_trait;
 
@@ -138,21 +146,57 @@ impl Module for StructuredId {
         }
 
         // Other timestamp-embedding IDs, each unambiguous by shape: MongoDB
-        // ObjectID, ULID, and KSUID all carry their own creation time.
-        for (decode, tag, attr, label) in [
+        // ObjectID, ULID, and KSUID all carry their own creation time. Each
+        // one's ONLY validation beyond shape/charset is the
+        // `[PLAUSIBLE_FLOOR_SECS, now]` window, so the per-format confidence
+        // must reflect how strong that window actually is as a genuineness
+        // signal — NOT a fixed constant across all three:
+        //   - ULID's 48-bit millisecond timestamp gives the window a ~0.3%
+        //     false-positive rate against a random 26-char base32 string —
+        //     negligible, so it keeps the same confidence UUIDv1 gets.
+        //   - ObjectID's and KSUID's 32-bit SECOND-resolution timestamp gives
+        //     the window a ~20% (ObjectID) / ~9% (KSUID) false-positive rate
+        //     against a random string of the right shape (computed directly
+        //     from PLAUSIBLE_FLOOR_SECS/unix_now() against each format's full
+        //     decodable range) — roughly 1-in-5 or 1-in-11 non-ID tokens (a
+        //     truncated hash, a session token, an unrelated breach-dump field)
+        //     would otherwise be reported as a confident, fabricated
+        //     "created DATE" finding. Demoted below MEDIUM_HIGH to reflect
+        //     that real uncertainty; there is no checksum in either format to
+        //     validate against instead, so this is the honest ceiling.
+        for (decode, fmt) in [
             (
                 decode_objectid as fn(&str) -> Option<i64>,
-                "mongodb-objectid",
-                "objectid_created_date",
-                "MongoDB ObjectID",
+                IdFormat {
+                    tag: "mongodb-objectid",
+                    date_attr: "objectid_created_date",
+                    label: "MongoDB ObjectID",
+                    confidence: confidence::LOW_MEDIUM,
+                },
             ),
-            (decode_ulid, "ulid", "ulid_created_date", "ULID"),
-            (decode_ksuid, "ksuid", "ksuid_created_date", "KSUID"),
+            (
+                decode_ulid,
+                IdFormat {
+                    tag: "ulid",
+                    date_attr: "ulid_created_date",
+                    label: "ULID",
+                    confidence: confidence::MEDIUM_HIGH,
+                },
+            ),
+            (
+                decode_ksuid,
+                IdFormat {
+                    tag: "ksuid",
+                    date_attr: "ksuid_created_date",
+                    label: "KSUID",
+                    confidence: confidence::LOW_MEDIUM,
+                },
+            ),
         ] {
             if let Some(secs) = decode(v)
                 && plausible(secs)
             {
-                emit_creation(target, &ctx.scan_id, tag, attr, label, secs, &mut result);
+                emit_creation(target, &ctx.scan_id, &fmt, secs, &mut result);
                 break;
             }
         }
@@ -268,26 +312,41 @@ fn decode_ksuid(s: &str) -> Option<i64> {
     Some(i64::from(ts) + KSUID_EPOCH_SECS)
 }
 
+/// One timestamp-only ID format's decode metadata: its tag, the evidence
+/// attribute its decoded date is reported under, its display label, and its
+/// confidence.
+///
+/// `confidence` is per-format, not a fixed constant: it must reflect how
+/// strong each format's ONLY validation — the `[PLAUSIBLE_FLOOR_SECS, now]`
+/// window — actually is. See the call site for the per-format rationale.
+struct IdFormat {
+    tag: &'static str,
+    date_attr: &'static str,
+    label: &'static str,
+    confidence: f64,
+}
+
 /// Enrich the seed ID with its decoded creation date — shared by the
 /// ObjectID / ULID / KSUID timestamp-only decoders.
 fn emit_creation(
     target: &Target,
     scan_id: &str,
-    tag: &str,
-    date_attr: &str,
-    label: &str,
+    fmt: &IdFormat,
     secs: i64,
     result: &mut ModuleResult,
 ) {
     let date = utc_date(secs);
-    let mut e = target.to_entity(confidence::MEDIUM_HIGH, scan_id);
-    e.tag(tag);
+    let mut e = target.to_entity(fmt.confidence, scan_id);
+    e.tag(fmt.tag);
     e.tag("derived");
     e.tag("account-age");
     e.add_evidence(
-        Evidence::new(SRC, format!("{label} created {date} (decoded offline)"))
-            .with_attr(date_attr, date.as_str())
-            .with_attr("decoder", tag),
+        Evidence::new(
+            SRC,
+            format!("{} created {date} (decoded offline)", fmt.label),
+        )
+        .with_attr(fmt.date_attr, date.as_str())
+        .with_attr("decoder", fmt.tag),
     );
     result.push(e);
 }
