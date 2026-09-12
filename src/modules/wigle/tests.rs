@@ -920,6 +920,45 @@ fn emit_bssid_entities_tags_cell_lookup_with_cell_located() {
     );
 }
 
+/// `emit_bssid_entities` (the BSSID/MAC-address detail lookup) and
+/// `wifi_intel`'s own BSSID-detail Address builder resolve the SAME WiGLE
+/// `/network/detail` record (see `BSSID_BUDGET`'s doc comment — the two
+/// modules share one quota specifically because they hit the identical
+/// endpoint on the identical credentials) and must therefore mint the
+/// identical Address string, exactly as `wifi_intel::mod.rs`'s own comment on
+/// its Address builder already claims ("`wigle` builds the identical
+/// `city, region, country postcode` string from the same fields"). A
+/// byte-different string here means a byte-different `Entity::uid`
+/// (`normalise` on `Address` is a bare `.trim()`, no postcode
+/// canonicalisation), so the two modules would silently mint two unmerged
+/// Address entities instead of one entity two independent sources corroborate
+/// — this codebase's `extract_cell_intel` and `emit_ssid_entities` (both in
+/// this same file) already append the postcode for exactly this reason;
+/// `emit_bssid_entities` was the one builder that didn't.
+#[test]
+fn emit_bssid_entities_includes_postcode_to_match_wifi_intels_address_string() {
+    let net = Network {
+        ssid: None,
+        netid: Some("AA:BB:CC:DD:EE:FF".into()),
+        encryption: None,
+        lastupdt: None,
+        trilat: Some(-27.4766),
+        trilong: Some(153.0166),
+        city: Some("Brisbane".into()),
+        region: Some("Queensland".into()),
+        country: Some("Australia".into()),
+        postalcode: Some("4000".into()),
+    };
+    let r = emit_bssid_entities("AA:BB:CC:DD:EE:FF", NetworkKind::Wifi, &[net], "test");
+    let addr = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .expect("should succeed");
+    assert_eq!(addr.value, "Brisbane, Queensland, Australia 4000");
+    assert!(addr.has_tag("postcode:4000"));
+}
+
 #[test]
 fn emit_bssid_entities_tags_bluetooth_lookup_with_bluetooth_located() {
     let net = Network {
