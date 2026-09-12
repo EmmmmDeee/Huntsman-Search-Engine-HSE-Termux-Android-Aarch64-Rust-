@@ -5,8 +5,67 @@ use super::client::find_referral;
 use super::is_usable_contact_email;
 use super::parse::{all_fields, field, parse_whois, starts_with_ascii_ci};
 use super::registrant_location_parts;
+use super::registrant_org_name;
 use super::vcard_field;
 use crate::core::module::Module;
+
+fn rdap_entities(json: &str) -> Vec<super::RdapIpEntity> {
+    serde_json::from_str(json).expect("valid RdapIpEntity fixture")
+}
+
+/// Mirrors `ip_registry::tests::rdap_individual_registrant_is_not_emitted_as_org`
+/// over the same RDAP shape — the whole point of this test existing is that
+/// the two RDAP-consuming modules must agree here, not just that each is
+/// internally consistent.
+#[test]
+fn registrant_org_name_skips_an_individual_kind_registrant() {
+    let entities = rdap_entities(
+        r#"[{
+            "roles":["registrant"],
+            "vcardArray":["vcard",[["fn",{},"text","Jane Q Public"],["kind",{},"text","individual"]]]
+        }]"#,
+    );
+    assert_eq!(
+        registrant_org_name(&entities),
+        None,
+        "individual-kind registrant must never surface as an Organisation"
+    );
+}
+
+#[test]
+fn registrant_org_name_prefers_fn_over_org() {
+    let entities = rdap_entities(
+        r#"[{
+            "roles":["registrant"],
+            "vcardArray":["vcard",[["fn",{},"text","Acme Networks"],["org",{},"text","Acme Holdings"]]]
+        }]"#,
+    );
+    assert_eq!(
+        registrant_org_name(&entities).as_deref(),
+        Some("Acme Networks")
+    );
+}
+
+/// Regression: this module used to fall back to the RDAP object's top-level
+/// network-block `name` (e.g. a handle like "NET-1-2-3-0-24") when `fn` was
+/// absent — a different concept from the registrant's own identity, and a
+/// value `ip_registry`'s sibling builder never produces for the same record.
+/// Falling back to vCard `org` instead (exactly what `ip_registry` does)
+/// keeps both modules capable of emitting the identical Organisation value
+/// for the identical registrant.
+#[test]
+fn registrant_org_name_falls_back_to_vcard_org_when_fn_is_absent() {
+    let entities = rdap_entities(
+        r#"[{
+            "roles":["registrant"],
+            "vcardArray":["vcard",[["org",{},"text","Acme Holdings"]]]
+        }]"#,
+    );
+    assert_eq!(
+        registrant_org_name(&entities).as_deref(),
+        Some("Acme Holdings")
+    );
+}
 
 #[test]
 fn accepts_domain_and_ip() {
