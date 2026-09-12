@@ -663,18 +663,35 @@ pub async fn scan_import(
     // The third element is `false` when enrichment was skipped for size — the
     // caller must be able to tell that apart from a genuinely relation-free
     // dossier, both of which otherwise report `relation_count: 0`.
-    let (relation_count, correlation_count, enriched) =
+    let stealer_rows_parsed = stealer_rows.len();
+    let (relation_count, correlation_count, enriched, stealer_rows_stored) =
         match super::offload_store(move || -> crate::core::error::Result<_> {
             store.upsert_scan(&scan)?;
             store.upsert_entities_batch(&entities)?;
             // Best-effort: a stealer-row persistence hiccup must not fail an
             // otherwise-successful import — the entity graph above already
-            // carries the same credentials, just unpaired.
-            let _ = store.insert_stealer_rows_batch(&sid2, &stealer_rows);
+            // carries the same credentials, just unpaired. Logged and
+            // surfaced in the response below (never silently dropped),
+            // mirroring the CLI import path's own
+            // `persist_stealer_rows_best_effort`.
+            let stealer_rows_stored = match store.insert_stealer_rows_batch(&sid2, &stealer_rows) {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::warn!(
+                        scan_id = %sid2,
+                        rows = stealer_rows.len(),
+                        error = %e,
+                        "web upload: could not persist stealer rows — the entity \
+                         graph was still stored, but the paired credential rows \
+                         (Stealer Logs Viewer) were not"
+                    );
+                    0
+                }
+            };
             // Device-safety bound: skip the O(n²) enrichment on a pathologically
             // large import (entities are already persisted above; nothing lost).
             if entities.len() > IMPORT_ENRICH_MAX_ENTITIES {
-                return Ok((0usize, 0usize, false));
+                return Ok((0usize, 0usize, false, stealer_rows_stored));
             }
             let mut relations = 0usize;
             // Wall-clock bound on the super-linear derivation chain, matching a
@@ -707,7 +724,7 @@ pub async fn scan_import(
                     }
                 }
             }
-            Ok((relations, correlations, true))
+            Ok((relations, correlations, true, stealer_rows_stored))
         })
         .await
         {
@@ -730,6 +747,14 @@ pub async fn scan_import(
             // still persisted either way; the scan can be enriched on demand
             // via `/scans/{id}/rerun`.
             "enrichment_skipped": !enriched,
+            // Together these disambiguate a stealer-log upload's paired
+            // credential rows the same way `enrichment_skipped` does for
+            // relations/correlations above: `parsed > 0 && stored == 0` is an
+            // unambiguous persistence failure (also `tracing::warn!`-logged
+            // server-side), never confusable with `parsed == 0` (a non-stealer
+            // upload, nothing to store) or `parsed == stored` (success).
+            "stealer_rows_parsed": stealer_rows_parsed,
+            "stealer_rows_stored": stealer_rows_stored,
             "status": "complete",
         })),
     )

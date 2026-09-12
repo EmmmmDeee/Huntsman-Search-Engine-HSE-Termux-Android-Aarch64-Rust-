@@ -1,6 +1,100 @@
 use super::*;
     use crate::core::scan::TargetKind;
 
+    fn scan_import_router() -> axum::Router {
+        let store: std::sync::Arc<dyn crate::core::StoragePort> =
+            std::sync::Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"));
+        let (bus, _rx) = tokio::sync::broadcast::channel(16);
+        let engine = std::sync::Arc::new(crate::core::engine::ScanEngine::new(
+            Vec::new(),
+            std::sync::Arc::clone(&store),
+            bus.clone(),
+        ));
+        let live = crate::core::live::LiveScanner::new(
+            std::sync::Arc::clone(&engine),
+            bus.clone(),
+            reqwest::Client::new(),
+            Default::default(),
+        );
+        let state = std::sync::Arc::new(AppState {
+            store,
+            engine,
+            bus,
+            live,
+            http: reqwest::Client::new(),
+            allow_key_write: false,
+            cancellations: std::sync::Arc::new(parking_lot::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
+            scan_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                crate::api::MAX_CONCURRENT_SCANS,
+            )),
+            update_info: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::api::UpdateInfo::default(),
+            )),
+            cells_import: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::api::CellsImportPhase::default(),
+            )),
+        });
+        axum::Router::new()
+            .route("/api/v1/scans/import", axum::routing::post(scan_import))
+            .with_state(state)
+    }
+
+    /// Regression for the web upload path silently dropping a stealer-row
+    /// persistence failure: proves the happy path wires `stealer_rows_parsed`
+    /// and `stealer_rows_stored` correctly (equal, matching the fixture's row
+    /// count) so a future edit that breaks the tuple threading through
+    /// `offload_store`'s closure fails this test rather than only showing up
+    /// as a silently wrong count in production. The failure branch itself
+    /// (`insert_stealer_rows_batch` returning `Err`) has no data-driven
+    /// trigger — `stealer_rows`' schema carries no constraint a well-formed
+    /// row can violate, only a genuine I/O fault — so it is covered by direct
+    /// code review (mirrors `run_module_guarded`'s already-proven
+    /// `tracing::warn!` + safe-default pattern) rather than a forced failure
+    /// here.
+    #[tokio::test]
+    async fn scan_import_reports_stealer_row_counts_on_success() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+
+        const STEALER: &str = "Module: Stealerlogs
+Victims:
+  [1]
+    Log Id:
+      abc123
+    Credentials:
+      [1]
+        Username:
+          alice
+        Password:
+          hunter2
+        Pwned At:
+          2026-05-20T21:00:00Z
+    Domains:
+      [1]
+        example.com
+    Credential Count:
+      1
+";
+        let app = scan_import_router();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/scans/import?format=stealerlogs")
+            .header("x-hse-csrf", "1")
+            .body(Body::from(STEALER))
+            .expect("should succeed");
+        let resp = app.oneshot(req).await.expect("should succeed");
+        assert_eq!(resp.status(), 200);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+            .await
+            .expect("should succeed");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("should succeed");
+        assert_eq!(json["stealer_rows_parsed"], 1);
+        assert_eq!(json["stealer_rows_stored"], 1);
+    }
+
     #[test]
     fn max_upload_bytes_stays_in_sync_with_the_app_import_authority() {
         // MAX_UPLOAD_BYTES is DEFINED as `app::import::MAX_IMPORT_BYTES as
