@@ -169,6 +169,33 @@ fn whois_geolocation_yields_coordinates_and_address() {
 }
 
 #[test]
+fn whois_geolocation_coordinates_carry_the_originating_ip_for_login_ip_recognition() {
+    // Pass 31: the correlator's shared `person_login_ip_coords` (used by
+    // `best_au_location_estimate` and `au_location_corroboration`) only
+    // recognises a Coordinates fix as tied to a subject's breach/stealer
+    // login IP when its evidence carries an `ip` attribute equal to that
+    // IP — the same property `ipinfo`/`ip_whois_geo`/`ipquery`/`ip_geo`
+    // already pin.
+    let body = report(
+        r#"{
+            "status": 200,
+            "whois": { "data": [
+                { "as_no": 4766, "org_name": "KT Corp", "org_country_code": "kr",
+                  "city": "Seoul", "region": "Seoul", "latitude": 37.5665, "longitude": 126.978 }
+            ] }
+        }"#,
+    );
+    let ents = build_entities(&body, &ip_target("1.2.3.4"), "s");
+    let coord = of_kind(&ents, EntityKind::Coordinates).expect("valid lat/lon → Coordinates");
+    assert_eq!(
+        coord.evidence[0].attributes.get("ip").map(String::as_str),
+        Some("1.2.3.4"),
+        "Coordinates evidence must carry the originating IP so \
+         person_login_ip_coords can recognise this as a login-IP fix"
+    );
+}
+
+#[test]
 fn null_island_whois_coords_are_rejected_but_city_still_maps() {
     // The API's `(0,0)` placeholder must never become an equatorial fix; a
     // present city still yields an Address (with no region → two-part join).

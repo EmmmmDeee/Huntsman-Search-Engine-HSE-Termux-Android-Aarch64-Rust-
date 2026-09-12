@@ -23,7 +23,7 @@ use crate::{
     util::{cell_db, keys, scraper_health, timefmt},
 };
 
-use crate::app::export::cost_label;
+use crate::app::export::{WAL_RUNAWAY_BYTES, cost_label};
 
 pub async fn cmd_doctor(live: bool) -> Result<()> {
     let mods = registry();
@@ -87,7 +87,7 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
             if let Ok(meta) = tokio::fs::metadata(format!("{db_path}-wal")).await {
                 let kib = meta.len() / 1024;
                 println!("  WAL size:   {kib} KiB");
-                if meta.len() > 64 * 1024 * 1024 {
+                if meta.len() > WAL_RUNAWAY_BYTES {
                     println!(
                         "                (large — runs a TRUNCATE checkpoint at the next scan)"
                     );
@@ -675,11 +675,12 @@ fn format_module_health(h: &crate::core::engine::ModuleHealth) -> String {
 }
 
 /// Run the live capability preflight and print a per-module alive/empty/
-/// unreachable table plus a one-line summary. Shares the exact probe
+/// unreachable/panicked table plus a one-line summary. Shares the exact probe
 /// implementation the weekly `live_drift` sweep uses
 /// ([`crate::selftest::capability_probe`]), so what the operator sees on-device and
 /// what CI asserts can never diverge. Confirmed drift (a curated canary that
-/// reached its provider yet parsed nothing) is called out explicitly.
+/// reached its provider yet parsed nothing, or any module that panicked on the
+/// live response) is called out explicitly.
 async fn print_live_capability_report() {
     use crate::selftest::capability_probe::{self, ProbeOutcome};
 
@@ -691,7 +692,8 @@ async fn print_live_capability_report() {
         return;
     }
 
-    let (mut alive, mut empty, mut unreachable, mut timed_out) = (0usize, 0usize, 0usize, 0usize);
+    let (mut alive, mut empty, mut unreachable, mut timed_out, mut panicked) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
     let mut drift: Vec<&str> = Vec::new();
     for r in &reports {
         let canary = if capability_probe::is_canary(r.module) {
@@ -729,11 +731,17 @@ async fn print_live_capability_report() {
                 timed_out += 1;
                 println!("  timed-out    {:<22}{canary}", r.module);
             }
+            ProbeOutcome::Panicked { message } => {
+                panicked += 1;
+                println!("  panicked     {:<22} {message}{canary}", r.module);
+                // Unconditional, canary or not — see the module doc comment.
+                drift.push(r.module);
+            }
         }
     }
     println!(
         "  summary: {} probed — {alive} alive, {empty} empty, {unreachable} unreachable, \
-         {timed_out} timed-out",
+         {timed_out} timed-out, {panicked} panicked",
         reports.len()
     );
     if !drift.is_empty() {

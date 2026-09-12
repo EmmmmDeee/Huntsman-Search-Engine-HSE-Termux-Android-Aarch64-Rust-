@@ -25,17 +25,33 @@ pub fn host_key(kind: TargetKind, value: &str) -> Option<String> {
     }
 }
 
+/// Confidence-descending, `uid`-ascending total order — the comparator behind
+/// [`sort_by_confidence_desc`], exposed separately for the handful of callers
+/// that hold `&Entity` references rather than owned `Entity` values (so they
+/// can't call the slice-of-owned-values version directly) but need the exact
+/// same tie-break to stay in agreement with it.
+///
+/// This one comparator now backs every plain confidence-then-uid sort in the
+/// tree (Pass 26 consolidation): `app::persist`, `core::engine`'s recall-cap
+/// and found-key-flatten passes, and the dossier's finding order all used to
+/// carry byte-for-byte independent copies of it — one of them with a doc
+/// comment explicitly noting it "mirrors" another's "identical ranking", the
+/// exact kind of acknowledged-but-never-closed duplication a future
+/// tie-break change (or bug fix) could silently apply to only some of them.
+#[must_use]
+pub fn confidence_desc_then_uid(a: &Entity, b: &Entity) -> std::cmp::Ordering {
+    b.confidence
+        .partial_cmp(&a.confidence)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| a.uid.cmp(&b.uid))
+}
+
 /// Sort discovered entities confidence-descending with a deterministic
 /// `uid`-ascending tie-break — the reproducible emission order every host-recon
 /// collector uses (Determinism Requirement: a `HashMap`/`HashSet`-seeded build
 /// order must not leak through). No truncation; ordering only.
 pub fn sort_by_confidence_desc(entities: &mut [Entity]) {
-    entities.sort_by(|a, b| {
-        b.confidence
-            .partial_cmp(&a.confidence)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.uid.cmp(&b.uid))
-    });
+    entities.sort_by(confidence_desc_then_uid);
 }
 
 #[cfg(test)]
@@ -95,5 +111,33 @@ mod tests {
         let second = build();
         let order = |v: &[Entity]| v.iter().map(|e| e.uid.clone()).collect::<Vec<_>>();
         assert_eq!(order(&first), order(&second));
+    }
+
+    /// A stronger check than mere run-to-run reproducibility: the tie-break
+    /// must come from `uid` itself, not from an accident of `sort_by`'s
+    /// stability preserving whatever order the caller happened to build the
+    /// input in. Feeding the exact same two equal-confidence entities in
+    /// forward and reversed order must produce the identical output order —
+    /// the property `app::persist`'s `confidence_rank` (now deleted; this
+    /// function replaced it, Pass 26) had its own copy of this exact test for.
+    #[test]
+    fn tie_break_is_uid_not_arrival_order() {
+        let a = Entity::new(EntityKind::Email, "a-tie@example.com", 0.5, "s");
+        let b = Entity::new(EntityKind::Email, "b-tie@example.com", 0.5, "s");
+        let mut expected_uid_order = vec![a.uid.clone(), b.uid.clone()];
+        expected_uid_order.sort();
+
+        let mut forward = vec![a.clone(), b.clone()];
+        sort_by_confidence_desc(&mut forward);
+        let mut reversed = vec![b, a];
+        sort_by_confidence_desc(&mut reversed);
+
+        let uids = |v: &[Entity]| v.iter().map(|e| e.uid.clone()).collect::<Vec<_>>();
+        assert_eq!(uids(&forward), expected_uid_order);
+        assert_eq!(
+            uids(&forward),
+            uids(&reversed),
+            "reversing the input must not change a confidence-tied output order"
+        );
     }
 }

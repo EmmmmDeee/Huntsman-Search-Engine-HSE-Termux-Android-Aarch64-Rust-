@@ -2,6 +2,20 @@ use super::*;
     use crate::core::scan::TargetKind;
 
     #[test]
+    fn max_upload_bytes_stays_in_sync_with_the_app_import_authority() {
+        // MAX_UPLOAD_BYTES is DEFINED as `app::import::MAX_IMPORT_BYTES as
+        // usize` (Pass 30), so the two can't currently diverge by
+        // construction — but that derivation is itself a future edit could
+        // silently undo (nothing stops reverting this back to its own
+        // literal the way it used to be). Pin the relationship so such an
+        // edit fails a test, not just loses the guarantee unnoticed.
+        assert_eq!(
+            u64::try_from(MAX_UPLOAD_BYTES).expect("16 MiB fits in u64"),
+            crate::app::import::MAX_IMPORT_BYTES
+        );
+    }
+
+    #[test]
     fn fold_expansion_signals_counts_exclusions_and_collects_stops() {
         use crate::core::event::{Event, EventKind};
         let evs = vec![

@@ -328,20 +328,28 @@ pub fn parse_iso8601_epoch(s: &str) -> Option<i64> {
     let num = |from: usize, to: usize| s.get(from..to)?.parse::<i64>().ok();
     let (y, mo, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
     let (h, mi, sec) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
-    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || sec > 60 {
+    // The fixed 4-byte year slice above already rules out the overflow class
+    // days_from_civil's own doc warns callers to guard against (max magnitude
+    // ~9999, nowhere near where `era * 146_097` could wrap) — but nothing
+    // stopped an implausible-for-this-domain year (0001, 9999) from minting a
+    // nonsensical RF-sighting timestamp. Bounded to match parse_date's own
+    // 1900..=2100, the realistic window for a device observation.
+    if !(1900..=2100).contains(&y)
+        || !(1..=12).contains(&mo)
+        || !(1..=31).contains(&d)
+        || h > 23
+        || mi > 59
+        || sec > 60
+    {
         return None;
     }
 
-    // Days from the civil epoch (1970-01-01), Howard Hinnant's algorithm: exact
-    // in integer arithmetic for the whole proleptic Gregorian calendar, so it
-    // needs no leap-year special cases and no lookup table.
-    let y_adj = if mo <= 2 { y - 1 } else { y };
-    let era = if y_adj >= 0 { y_adj } else { y_adj - 399 } / 400;
-    let yoe = y_adj - era * 400;
-    let mp = (mo + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
+    // Days from the civil epoch (1970-01-01) via the one Howard Hinnant
+    // implementation this crate keeps (core::timeline::days_from_civil) —
+    // this function used to carry its own independent re-derivation of the
+    // identical algorithm, exactly the "divergent copies of leap-year math"
+    // risk that function's own doc warns is a latent bug-farm.
+    let days = crate::core::timeline::days_from_civil(y, mo, d);
 
     let mut epoch = days * 86_400 + h * 3600 + mi * 60 + sec;
 

@@ -367,30 +367,20 @@ fn extract_profile_urls(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Delegates to the shared role-localpart authority (Pass 29) instead of an
+/// independent, hand-rolled 19-token list — that list was missing ~40 tokens
+/// `util::domains::ROLE` already carried, notably the DNS/registrar-infra
+/// class this guard's own motivating comment cites (`soa@`, `registrar@`,
+/// `whois@`, `nic@`, …): a real SOA-RNAME-derived address in that gap slipped
+/// past this guard the same way `dns@cloudflare.com` did before it was added.
+/// `util::domains::is_role_localpart` case-folds internally, which is a pure
+/// strengthening here, not a behaviour change on the real call path: the
+/// sole caller (`process`, above) only ever passes the local-part of an
+/// `Email`-kind `Target`, and `Target::new` always fully lowercases those
+/// (`hse_core::normalise`'s `EntityKind::Email` arm calls `.to_lowercase()`
+/// unconditionally), so this never actually receives mixed-case input.
 fn is_role_email_local(local: &str) -> bool {
-    matches!(
-        local,
-        "abuse"
-            | "admin"
-            | "administrator"
-            | "billing"
-            | "dns"
-            | "hostmaster"
-            | "info"
-            | "legal"
-            | "marketing"
-            | "noc"
-            | "noreply"
-            | "no-reply"
-            | "postmaster"
-            | "privacy"
-            | "sales"
-            | "security"
-            | "support"
-            | "sysadmin"
-            | "tech"
-            | "webmaster"
-    )
+    crate::util::domains::is_role_localpart(local)
 }
 
 fn canonical_address(a: &address_au::AuAddress) -> String {

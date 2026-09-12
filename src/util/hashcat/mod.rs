@@ -376,6 +376,12 @@ pub const COMMON_PASSWORDS: &[&str] = &[
     "purple",
     "orange",
     "rainbow",
+    // Merged in from core::correlator::rules::breach's independent denylist
+    // (Pass 37): four entries that list had but this one was missing.
+    "admin123",
+    "welcome1",
+    "hello123",
+    "changeme",
 ];
 
 #[cfg(test)]

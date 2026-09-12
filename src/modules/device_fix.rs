@@ -51,6 +51,15 @@ pub(crate) fn is_valid_fix(lat: f64, lon: f64) -> bool {
 ///
 /// Provider sets the ceiling (GPS `confidence::VERY_HIGH_PLUS`, network
 /// `confidence::HIGH`); the accuracy radius scales it down for imprecise fixes.
+///
+/// `accuracy_m` is deserialised directly from `termux-location`'s JSON
+/// (`Fix::accuracy`, untrusted device/tool output) — a negative, NaN, or
+/// infinite radius must score as the WORST tier, never the ceiling. Mirrors
+/// [`crate::util::geo::confidence_for_accuracy_m`]'s identical guard
+/// (`is_finite() && >= 0.0`) for the same externally-sourced failure mode.
+/// `None` ("no accuracy reported at all") is a genuinely different case and
+/// keeps the ceiling, same as `Some(0.0)` (a real, if suspiciously precise,
+/// zero-radius fix) keeps the ceiling via the ordinary `a <= 20.0` tier.
 pub(crate) fn fix_confidence(provider: &str, accuracy_m: Option<f64>) -> f64 {
     let ceiling: f64 = if provider == "gps" {
         confidence::VERY_HIGH_PLUS
@@ -58,7 +67,11 @@ pub(crate) fn fix_confidence(provider: &str, accuracy_m: Option<f64>) -> f64 {
         confidence::HIGH
     };
     match accuracy_m {
-        Some(a) if a > 0.0 => {
+        None => ceiling,
+        Some(a) if !a.is_finite() || a < 0.0 => {
+            (ceiling - 0.35).clamp(0.30, confidence::VERY_HIGH_PLUS)
+        }
+        Some(a) => {
             let scaled = if a <= 20.0 {
                 ceiling
             } else if a <= 100.0 {
@@ -72,7 +85,6 @@ pub(crate) fn fix_confidence(provider: &str, accuracy_m: Option<f64>) -> f64 {
             };
             scaled.clamp(0.30, confidence::VERY_HIGH_PLUS)
         }
-        _ => ceiling,
     }
 }
 
@@ -291,9 +303,48 @@ mod tests {
     }
 
     #[test]
-    fn fix_confidence_zero_accuracy_falls_through_to_ceiling() {
-        // a = 0.0 does not satisfy `a > 0.0`; falls through to the `_ =>` arm.
+    fn fix_confidence_zero_accuracy_is_the_tightest_tier_not_malformed() {
+        // Some(0.0) is a real (if suspiciously precise) zero-radius fix, not a
+        // malformed value: it goes through the ordinary `a <= 20.0` tier and
+        // lands on the ceiling, same as any accuracy <= 20 m would. Contrast
+        // with `fix_confidence_malformed_accuracy_degrades_to_the_worst_tier`
+        // below — a NEGATIVE or non-finite accuracy is the actual malformed
+        // case, and must NOT also land on the ceiling.
         assert!((fix_confidence("gps", Some(0.0)) - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fix_confidence_malformed_accuracy_degrades_to_the_worst_tier() {
+        // Regression: `accuracy_m` is deserialised directly from untrusted
+        // termux-location JSON. The old `Some(a) if a > 0.0 => {...} _ =>
+        // ceiling` match sent a negative/NaN/infinite radius to the SAME `_`
+        // arm as "no accuracy reported at all", scoring the worst possible
+        // input as the BEST possible confidence — backwards, and the opposite
+        // of the sibling `util::geo::confidence_for_accuracy_m`'s tested
+        // behaviour for the identical failure mode.
+        let worst_gps = (confidence::VERY_HIGH_PLUS - 0.35).clamp(0.30, confidence::VERY_HIGH_PLUS);
+        for bad in [-1.0, -0.0001, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let c = fix_confidence("gps", Some(bad));
+            assert!(
+                (c - worst_gps).abs() < 1e-9,
+                "accuracy {bad} must score the worst tier, got {c}"
+            );
+            assert!(
+                c < confidence::VERY_HIGH_PLUS,
+                "malformed accuracy {bad} must never reach the ceiling: {c}"
+            );
+            // Compared against a concrete *valid* poor reading, not the bare
+            // ceiling constant: a malformed accuracy collapses to exactly
+            // the ceiling under the old bug, so comparing against the
+            // ceiling constant itself would tie vacuously and never catch
+            // it. Comparing against another `fix_confidence` call keeps
+            // this a true metamorphic test (same function, two inputs).
+            confidence::assert_metamorphic_no_gain(
+                fix_confidence("gps", Some(5000.0)),
+                c,
+                "device_fix::fix_confidence: malformed accuracy vs a valid poor-but-real GPS fix",
+            );
+        }
     }
 
     /// A stage whose tool is absent is a clean empty answer, not an error —

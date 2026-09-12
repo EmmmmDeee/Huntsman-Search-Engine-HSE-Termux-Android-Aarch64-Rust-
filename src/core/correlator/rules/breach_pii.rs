@@ -1208,9 +1208,11 @@ pub(in crate::core::correlator) fn rule_au_098_residency_consensus(
     }
 
     // Spatial consistency check: if the coordinate class supports consensus, verify
-    // those coordinates are spatially clustered (within 300 km) — matching the
-    // audit's geo_consistency definition. Scattered coordinates (>300 km apart)
-    // shouldn't declare consensus even if other classes agree on the state.
+    // those coordinates are spatially clustered — matching the audit's
+    // geo_consistency definition via the same shared GEO_OUTLIER_KM radius.
+    // Scattered coordinates (e.g. two fixes at opposite ends of a large state,
+    // both nominally "agreeing" at state grain) shouldn't declare consensus even
+    // if other classes agree on the state.
     if agreeing.contains(&"coordinate") {
         let consensus_coords: Vec<(f64, f64)> = entities
             .iter()
@@ -1220,7 +1222,8 @@ pub(in crate::core::correlator) fn rule_au_098_residency_consensus(
             .filter_map(|e| crate::util::geohash::parse_coords(&e.value))
             .collect();
 
-        // Check pairwise distances: if any pair exceeds 300 km, coordinates are scattered.
+        // Check pairwise distances: if any pair exceeds the outlier radius,
+        // coordinates are scattered.
         if consensus_coords.len() > 1 {
             let mut max_distance: f64 = 0.0;
             for i in 0..consensus_coords.len() {
@@ -1232,7 +1235,7 @@ pub(in crate::core::correlator) fn rule_au_098_residency_consensus(
                         consensus_coords[j].1,
                     );
                     max_distance = max_distance.max(dist);
-                    if max_distance > 300.0 {
+                    if max_distance > crate::util::geohash::GEO_OUTLIER_KM {
                         return Vec::new(); // coordinates too scattered for consensus
                     }
                 }

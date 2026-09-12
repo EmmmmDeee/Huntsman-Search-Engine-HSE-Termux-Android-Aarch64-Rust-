@@ -102,61 +102,17 @@ impl CharProfile {
     }
 }
 
-/// The handful of ubiquitous passwords whose reuse links nobody — millions share
-/// them, so identity-linking on them is a false positive even when they clear
-/// the entropy floor. Compared lowercased. (Most are short enough to fail the
-/// length/entropy gate anyway; this catches the long, common ones — chiefly
-/// `password123`, which clears the entropy floor.)
-fn is_common_password(s: &str) -> bool {
-    const COMMON: &[&str] = &[
-        "password",
-        "password1",
-        "password123",
-        "passw0rd",
-        "123456",
-        "1234567",
-        "12345678",
-        "123456789",
-        "1234567890",
-        "qwerty",
-        "qwerty123",
-        "qwertyuiop",
-        "1q2w3e4r",
-        "abc123",
-        "111111",
-        "000000",
-        "123123",
-        "iloveyou",
-        "admin",
-        "admin123",
-        "letmein",
-        "welcome",
-        "welcome1",
-        "monkey",
-        "sunshine",
-        "princess",
-        "dragon",
-        "football",
-        "baseball",
-        "superman",
-        "trustno1",
-        "master",
-        "hello123",
-        "changeme",
-        "secret",
-        "starwars",
-    ];
-    COMMON.contains(&s.trim().to_ascii_lowercase().as_str())
-}
-
 /// A **reused plaintext password** rare enough that two accounts carrying the
 /// identical value share one controller. Excludes hex digests (unsalted hashes —
-/// possibly of a common password), the ubiquitous-password denylist, and
-/// low-variety strings (`aaaaaaaaaa`); requires ≥10 chars, ≥6 distinct chars and
-/// ≥50 bits of estimated entropy.
+/// possibly of a common password), the ubiquitous-password denylist
+/// ([`crate::util::hashcat::is_common_password`] — the same canonical list
+/// AU-105 gates on, below, so the two can't drift the way this used to carry
+/// its own independent 36-entry copy, Pass 37), and low-variety strings
+/// (`aaaaaaaaaa`); requires ≥10 chars, ≥6 distinct chars and ≥50 bits of
+/// estimated entropy.
 fn is_reusable_password(s: &str) -> bool {
     let t = s.trim();
-    if is_hex_digest(t) || is_common_password(t) {
+    if is_hex_digest(t) || crate::util::hashcat::is_common_password(t) {
         return false;
     }
     let p = CharProfile::of(t);
@@ -1292,16 +1248,6 @@ mod tests {
         assert!(!is_hex_digest("z5f4dcc3b5aa765d6")); // contains non-hex 'z'
     }
 
-    // ── is_common_password ────────────────────────────────────────────────────
-
-    #[test]
-    fn is_common_password_matches_denylist_case_insensitively() {
-        assert!(is_common_password("password123"));
-        assert!(is_common_password("PASSWORD123"));
-        assert!(is_common_password("  letmein  "));
-        assert!(!is_common_password("Xy7$kq2Lm9wz")); // not in the list
-    }
-
     // ── is_reusable_password ──────────────────────────────────────────────────
 
     #[test]
@@ -1316,6 +1262,31 @@ mod tests {
         assert!(!is_reusable_password("password123")); // common
         assert!(!is_reusable_password("aaaaaaaaaa")); // 10 chars, 1 distinct
         assert!(!is_reusable_password("short1")); // < 10 chars
+    }
+
+    #[test]
+    fn is_reusable_password_common_check_is_case_insensitive_and_trims() {
+        // Delegates to crate::util::hashcat::is_common_password (Pass 37) —
+        // pin the same case-insensitivity/trim behaviour the old local copy
+        // had, through the full is_reusable_password call.
+        assert!(!is_reusable_password("PASSWORD123"));
+        assert!(!is_reusable_password("  letmein  "));
+    }
+
+    #[test]
+    fn is_reusable_password_regression_rejects_canonical_common_passwords_the_old_local_list_missed()
+     {
+        // Regression: this used to carry an independent 36-entry common-
+        // password denylist that had DRIFTED from
+        // crate::util::hashcat::COMMON_PASSWORDS (the canonical list AU-105,
+        // in breach_pii.rs, already gated on) — in both directions. This
+        // pins the direction that was a live false positive: "chelsea123" is
+        // in the canonical list (a real top-100 breach password) and clears
+        // this function's own entropy/length/distinct-char floor, but the
+        // old local list never carried it, so two unrelated accounts sharing
+        // it would have wrongly fired a Critical/High "Reused-secret
+        // identity link" finding.
+        assert!(!is_reusable_password("chelsea123"));
     }
 
     // ── is_substantial_token ──────────────────────────────────────────────────

@@ -10,16 +10,20 @@
 
 mod dossier;
 mod environment;
+mod health_policy;
 mod renderers;
+mod system_debug;
 
 #[cfg(test)]
 mod tests;
 
 pub(crate) use dossier::{dossier_dir, dossier_dir_path, write_full_dossier};
+pub(crate) use health_policy::{KeyPoolSummary, WAL_RUNAWAY_BYTES};
 pub(crate) use renderers::{
-    KeyPoolSummary, SystemDebugInputs, build_scan_report, entities_to_csv, extract_au_location_fix,
-    formula_guard, render_debug_bundle, render_event_log, render_full, render_system_debug_bundle,
+    build_scan_report, entities_to_csv, extract_au_location_fix, formula_guard,
+    render_debug_bundle, render_event_log, render_full,
 };
+pub(crate) use system_debug::{SystemDebugInputs, render_system_debug_bundle};
 // `csv_escape` has no production caller outside `renderers.rs` itself (only
 // `formula_guard` is shared with `cli::ingest`'s CSV writer) — its cross-module
 // re-export exists solely so `api::handlers::tests` and `app::import::csv`'s

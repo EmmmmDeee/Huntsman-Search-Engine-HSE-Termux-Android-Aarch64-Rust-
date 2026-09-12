@@ -21,62 +21,28 @@ pub fn email_local(s: &str) -> &str {
     s.split('@').next().unwrap_or(s)
 }
 
-const ROLE_MAILBOXES: &[&str] = &[
-    "abuse",
-    "admin",
-    "administrator",
-    "contact",
-    "dns",
-    "donotreply",
-    "hostmaster",
-    "info",
-    "mailerdaemon",
-    "noc",
-    "noreply",
-    "postmaster",
-    "registrar",
-    "registry",
-    "root",
-    "security",
-    "soa",
-    "ssladmin",
-    "support",
-    "webmaster",
-];
-
-/// Compare `input`, reduced to its lowercase ASCII-alphanumeric skeleton, against
-/// an already-normalised `expected` token — streaming, so no intermediate
-/// `String` is allocated per candidate. `expected` MUST already be lowercase
-/// ASCII-alphanumeric (as every [`ROLE_MAILBOXES`] entry is), because it is
-/// compared verbatim against the normalised `input` stream.
-#[inline]
-fn normalized_ascii_alnum_eq(input: &str, expected: &str) -> bool {
-    input
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .map(|c| c.to_ascii_lowercase())
-        .eq(expected.chars())
-}
-
 /// True if `email`'s local-part is a generic ROLE / infrastructure mailbox
 /// (`abuse@`, `dns@`, `hostmaster@`, `noreply@`, …) rather than a person's
 /// address. These are registrar / DNS / CDN desks surfaced through WHOIS / RDAP /
 /// SOA fields and `email_parse`; on an identity scan they are never the subject,
-/// so the engine drops them at admission. The de-tagged, separator-stripped local
-/// part is compared, so `no-reply` / `no_reply` also match `noreply`.
+/// so the engine drops them at admission.
 ///
-/// Allocation-free on the hot path: role matching streams the local-part through
-/// the canonical ASCII normalisation ([`normalized_ascii_alnum_eq`]) instead of
-/// collecting an intermediate `String` for every candidate email.
+/// Delegates to [`crate::util::domains::is_role_localpart`] — until Pass 23
+/// this function carried its own, narrower 20-entry copy of the role list,
+/// which diverged from that one's ~60 entries in both directions (this copy
+/// alone had `noc`/`registry`/`soa`/`ssladmin`; the other alone had `sales`,
+/// `billing`, `legal`, `system`, `namehost`, `whois`, … and 30-odd more, plus
+/// its provider-prefixed segment match for tokens like `awsdns-hostmaster`).
+/// The same `sales@acme.com` was admitted here (not a role mailbox) while
+/// `email_parse` correctly skipped deriving a Username from it — an
+/// inconsistency the correlator's own comments warned against but couldn't
+/// prevent, since the two guards drew from different lists.
 #[must_use]
 pub fn is_role_mailbox(email: &str) -> bool {
     let Some((local, _)) = email.split_once('@') else {
         return false;
     };
-    let base = local.split('+').next().unwrap_or(local);
-    ROLE_MAILBOXES
-        .iter()
-        .any(|role| normalized_ascii_alnum_eq(base, role))
+    crate::util::domains::is_role_localpart(local)
 }
 
 /// Light syntactic email check. Enforces: exactly one '@', a non-empty

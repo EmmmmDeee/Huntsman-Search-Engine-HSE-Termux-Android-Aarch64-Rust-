@@ -60,6 +60,14 @@ pub enum ProbeOutcome {
     /// Exceeded the module's own timeout budget — provider slow/hung. **Never**
     /// treated as drift.
     TimedOut,
+    /// The module's `process()` panicked while handling the live response — a
+    /// hostile/malformed payload, or a bug the canned fixture tests never
+    /// exercised. **Always** [`ProbeReport::is_confirmed_drift`], independent of
+    /// [`CANARY_PROBES`] membership: unlike `Empty` (which needs the canary's
+    /// guaranteed-data heuristic to separate signal from "this sample simply has
+    /// no data"), a panic on a real provider response has no benign
+    /// explanation — the module is unconditionally broken.
+    Panicked { message: String },
 }
 
 impl ProbeOutcome {
@@ -70,6 +78,7 @@ impl ProbeOutcome {
             Self::Empty => "empty",
             Self::Unreachable { .. } => "unreachable",
             Self::TimedOut => "timed-out",
+            Self::Panicked { .. } => "panicked",
         }
     }
 }
@@ -84,12 +93,21 @@ pub struct ProbeReport {
 }
 
 impl ProbeReport {
-    /// True only when this module is a [`CANARY_PROBES`] entry that reached its
-    /// provider yet parsed zero entities — the one case a healthy system can
-    /// never produce, so it is real wire-format drift. A non-canary `Empty`, or
-    /// any transport/timeout outcome, is **not** confirmed drift.
+    /// True for a [`ProbeOutcome::Panicked`] outcome unconditionally, or for a
+    /// [`CANARY_PROBES`] entry that reached its provider yet parsed zero
+    /// entities — the two cases a healthy system can never produce, so both are
+    /// real wire-format drift. A non-canary `Empty`, or any transport/timeout
+    /// outcome, is **not** confirmed drift. Exhaustive over [`ProbeOutcome`] so
+    /// a future variant forces an explicit call here rather than silently
+    /// defaulting to "not drift".
     pub fn is_confirmed_drift(&self) -> bool {
-        self.outcome == ProbeOutcome::Empty && is_canary(self.module)
+        match &self.outcome {
+            ProbeOutcome::Panicked { .. } => true,
+            ProbeOutcome::Empty => is_canary(self.module),
+            ProbeOutcome::Alive { .. }
+            | ProbeOutcome::Unreachable { .. }
+            | ProbeOutcome::TimedOut => false,
+        }
     }
 }
 
@@ -219,6 +237,8 @@ async fn probe_arc(m: std::sync::Arc<dyn Module>, http: reqwest::Client) -> Opti
 }
 
 async fn probe_module_impl(m: &dyn Module, http: &reqwest::Client) -> Option<ProbeReport> {
+    use futures::FutureExt;
+
     if m.cost() != ModuleCost::Free || m.is_passive() {
         return None;
     }
@@ -226,7 +246,34 @@ async fn probe_module_impl(m: &dyn Module, http: &reqwest::Client) -> Option<Pro
     let target = Target::new(kind, value);
     let ctx = probe_ctx(http);
     let budget = Duration::from_millis(m.max_timeout_ms());
-    let outcome = match tokio::time::timeout(budget, m.process(&target, &ctx)).await {
+    let name = m.name();
+
+    // A module's parser panicking on a hostile/drifted live response must be
+    // reported, not silently dropped — this is precisely the "capability is
+    // gone and nothing says so" failure this whole module exists to catch (see
+    // the module doc comment), so losing it here would defeat the point.
+    // Mirrors `core::engine::dispatch::run_module_guarded`'s guard exactly
+    // (including its exact `AssertUnwindSafe` shape) and shares its
+    // message-extraction helper so the two sites can't drift apart. Below this
+    // point `timeout_result` is untouched from the pre-existing logic.
+    let timeout_result =
+        match std::panic::AssertUnwindSafe(tokio::time::timeout(budget, m.process(&target, &ctx)))
+            .catch_unwind()
+            .await
+        {
+            Ok(timeout_result) => timeout_result,
+            Err(payload) => {
+                let message = crate::core::engine::panic_payload_to_string(&payload);
+                tracing::warn!(module = name, %message, "capability probe: module panic contained");
+                return Some(ProbeReport {
+                    module: name,
+                    kind,
+                    value,
+                    outcome: ProbeOutcome::Panicked { message },
+                });
+            }
+        };
+    let outcome = match timeout_result {
         Ok(Ok(r)) if r.entities.is_empty() => ProbeOutcome::Empty,
         Ok(Ok(r)) => ProbeOutcome::Alive {
             found: r.entities.len(),
@@ -237,7 +284,7 @@ async fn probe_module_impl(m: &dyn Module, http: &reqwest::Client) -> Option<Pro
         Err(_) => ProbeOutcome::TimedOut,
     };
     Some(ProbeReport {
-        module: m.name(),
+        module: name,
         kind,
         value,
         outcome,
@@ -551,6 +598,94 @@ mod tests {
             },
         };
         assert!(!unreachable.is_confirmed_drift());
+    }
+
+    #[test]
+    fn panicked_is_confirmed_drift_regardless_of_canary_status() {
+        // Unlike `Empty`, a panic has no benign explanation, so it must be
+        // confirmed drift even for a module that isn't a curated canary.
+        let non_canary_panicked = ProbeReport {
+            module: "some_breach_module",
+            kind: TargetKind::Email,
+            value: "test@example.com",
+            outcome: ProbeOutcome::Panicked {
+                message: "index out of bounds".into(),
+            },
+        };
+        assert!(non_canary_panicked.is_confirmed_drift());
+
+        let canary_panicked = ProbeReport {
+            module: "ip_geo",
+            kind: TargetKind::IpAddress,
+            value: "8.8.8.8",
+            outcome: ProbeOutcome::Panicked {
+                message: "called `Option::unwrap()` on a `None` value".into(),
+            },
+        };
+        assert!(canary_panicked.is_confirmed_drift());
+    }
+
+    /// A module whose `process()` panics on a live response must not vanish
+    /// from the sweep — it must come back as a normal `Some(ProbeReport)`
+    /// carrying `ProbeOutcome::Panicked`, not `None` and not an unwound panic
+    /// that kills the caller. `probe_module` is the single function both the
+    /// public single-module probe AND `probe_keyless_fleet`'s per-module
+    /// `JoinSet` task funnel through (see `probe_arc`), so proving the guard
+    /// here transitively proves the fleet sweep can no longer silently drop a
+    /// panicking module via a swallowed `JoinError` — no separate fleet-level
+    /// test is needed to cover that path.
+    ///
+    /// Falsified: reverting `probe_module_impl`'s `catch_unwind` guard makes
+    /// this test itself panic (the unwind propagates straight through the
+    /// `#[tokio::test]` body) instead of observing `ProbeOutcome::Panicked` —
+    /// confirmed manually, then the guard was restored.
+    #[tokio::test]
+    async fn a_panicking_module_is_reported_not_dropped() {
+        use crate::core::{module::ModuleContext, scan::Target};
+
+        struct PanicsOnProcess;
+
+        #[async_trait::async_trait]
+        impl Module for PanicsOnProcess {
+            fn name(&self) -> &'static str {
+                "test_panics_on_process"
+            }
+            fn priority(&self) -> u8 {
+                50
+            }
+            fn accepts(&self, _: &Target) -> bool {
+                true
+            }
+            fn consumes(&self) -> Vec<TargetKind> {
+                vec![TargetKind::IpAddress]
+            }
+            async fn process(
+                &self,
+                _: &Target,
+                _: &ModuleContext,
+            ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+                panic!("kaboom: hostile upstream tripped a slice index")
+            }
+        }
+
+        let http = build_client();
+        let report = probe_module(&PanicsOnProcess, &http)
+            .await
+            .expect("a Free, non-passive module with a sampled kind must be probed, not skipped");
+
+        match report.outcome {
+            ProbeOutcome::Panicked { ref message } => {
+                assert!(
+                    message.contains("kaboom: hostile upstream tripped a slice index"),
+                    "message: {message}"
+                );
+            }
+            other => panic!("expected ProbeOutcome::Panicked, got {other:?}"),
+        }
+        assert!(
+            report.is_confirmed_drift(),
+            "a panicking module must be confirmed drift"
+        );
     }
 
     #[test]

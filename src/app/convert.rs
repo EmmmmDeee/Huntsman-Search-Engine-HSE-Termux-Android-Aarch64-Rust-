@@ -28,6 +28,10 @@ pub(crate) fn map_entity_kind(kind: &ExtractorEntityKind) -> CoreEntityKind {
         ExtractorEntityKind::Port => CoreEntityKind::Other("port".to_string()),
         ExtractorEntityKind::Identifier => CoreEntityKind::DeviceId,
         ExtractorEntityKind::Coordinates => CoreEntityKind::Coordinates,
+        ExtractorEntityKind::MacAddress => CoreEntityKind::MacAddress,
+        ExtractorEntityKind::Asn => CoreEntityKind::Asn,
+        ExtractorEntityKind::AbnAcn => CoreEntityKind::AbnAcn,
+        ExtractorEntityKind::CryptoAddress => CoreEntityKind::CryptoAddress,
         ExtractorEntityKind::Unknown(s) => CoreEntityKind::Other(s.clone()),
     }
 }

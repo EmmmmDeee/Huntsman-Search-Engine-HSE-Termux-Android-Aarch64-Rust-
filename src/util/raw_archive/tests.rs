@@ -230,7 +230,7 @@ fn records_filtered_dir_recovers_full_responses_and_filters_by_time() {
 /// filename (`slug_is_human_legible_and_filesystem_safe` above pins
 /// `slug("Jordan Avery", 80) == "Jordan_Avery"`) — but the dossier renderer
 /// builds its query set from `scan.target.value.to_lowercase()`
-/// (`cli::export::renderers`). Before this fix, the cheap filename
+/// (`app::export::renderers`). Before this fix, the cheap filename
 /// pre-filter compared the two without normalising case, so it silently
 /// dropped every archived file for any target with an uppercase letter —
 /// i.e. virtually every Person/FullName scan — before the correct,

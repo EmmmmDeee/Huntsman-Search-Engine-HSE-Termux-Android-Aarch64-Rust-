@@ -221,9 +221,13 @@ pub(crate) fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, t
     });
 }
 
-// ─── Scan CRUD handlers ──────────────────────────────────────────────────
-// Scan CRUD handlers: create, get, list, delete, rerun, cancel,
-// entities, correlations, events, CSV/JSON export.
+// ─── Core read/system handlers ──────────────────────────────────────────────
+// Health/version/stats, engine/module/scraper health, capability probing,
+// selftest, log access, the system debug bundle, the module registry, and
+// entity search — the surface `settings_handlers`'s own doc comment refers to
+// as what `handlers` "keeps" once every other concern is split out. Scan CRUD
+// itself already moved to `scan_handlers`; this banner used to say "Scan CRUD
+// handlers" long after that move, describing none of what's actually below it.
 
 pub async fn health() -> Json<Value> {
     Json(json!({ "status": "ok", "version": crate::VERSION }))
@@ -483,7 +487,8 @@ pub(crate) fn capability_probe_json(
 ) -> Value {
     use crate::selftest::capability_probe::{ProbeOutcome, is_canary};
 
-    let (mut alive, mut empty, mut unreachable, mut timed_out) = (0usize, 0usize, 0usize, 0usize);
+    let (mut alive, mut empty, mut unreachable, mut timed_out, mut panicked) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
     let modules: Vec<Value> = reports
         .iter()
         .map(|r| {
@@ -503,6 +508,10 @@ pub(crate) fn capability_probe_json(
                 ProbeOutcome::TimedOut => {
                     timed_out += 1;
                     ("timed-out", None, None)
+                }
+                ProbeOutcome::Panicked { message } => {
+                    panicked += 1;
+                    ("panicked", None, Some(message.clone()))
                 }
             };
             json!({
@@ -528,6 +537,7 @@ pub(crate) fn capability_probe_json(
         "empty": empty,
         "unreachable": unreachable,
         "timed_out": timed_out,
+        "panicked": panicked,
         "drift": drift,
         "modules": modules,
     })
@@ -535,8 +545,9 @@ pub(crate) fn capability_probe_json(
 
 /// `POST /api/v1/capabilities/probe` — the **proactive** capability preflight:
 /// probe every keyless module against its real provider right now and report
-/// alive / empty / unreachable / timed-out per module, flagging confirmed drift
-/// (a curated canary that reached its provider yet parsed nothing). This is the
+/// alive / empty / unreachable / timed-out / panicked per module, flagging
+/// confirmed drift (a curated canary that reached its provider yet parsed
+/// nothing, or any module that panicked on the live response). This is the
 /// on-demand, network-bound HTTP twin of `hse doctor --live`, sharing the exact
 /// probe implementation ([`crate::selftest::capability_probe`]) so the Web UI, the
 /// CLI, and the weekly CI drift sweep can never diverge.
@@ -921,7 +932,7 @@ const SSE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120
 ///
 /// On client disconnect axum drops this stream, dropping the broadcast receiver
 /// and unsubscribing it — so there is no per-connection resource to leak.
-fn sse_event_stream<F>(
+pub(crate) fn sse_event_stream<F>(
     bus: &EventBus,
     accept: F,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>> + use<F>>
@@ -948,72 +959,6 @@ pub async fn scan_events_sse(
     Path(target_sid): Path<String>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     sse_event_stream(&s.bus, move |event| event.scan_id == target_sid)
-}
-
-// ─── Settings handlers ─────────────────────────────────────────────────────
-
-// ─── Live-mode handlers ────────────────────────────────────────────────────
-
-pub async fn live_create(
-    State(s): State<Arc<AppState>>,
-    Json(req): Json<crate::core::live::LiveRequest>,
-) -> impl IntoResponse {
-    let kind = req.resolved_kind();
-    let target = match validated_target(kind, req.value) {
-        Ok(t) => t,
-        Err(msg) => return bad_request(msg),
-    };
-    let live_id = s.live.start(target, req.options, req.live);
-    (
-        StatusCode::ACCEPTED,
-        Json(json!({ "live_id": live_id, "status": "running" })),
-    )
-        .into_response()
-}
-
-pub async fn live_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
-    ok_list("sessions", s.live.list())
-}
-
-pub async fn live_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> impl IntoResponse {
-    match s.live.get(&id) {
-        Some(session) => (
-            StatusCode::OK,
-            Json(serde_json::to_value(&session).unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "failed to serialize live session");
-                json!({})
-            })),
-        )
-            .into_response(),
-        None => not_found(),
-    }
-}
-
-pub async fn live_stop(
-    State(s): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
-    if s.live.stop(&id) {
-        (
-            StatusCode::OK,
-            Json(json!({ "live_id": id, "status": "stopping" })),
-        )
-            .into_response()
-    } else {
-        not_found()
-    }
-}
-
-pub async fn live_events_sse(
-    State(s): State<Arc<AppState>>,
-    Path(target_lid): Path<String>,
-) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
-    // A live session's stream carries both its own lifecycle events (emitted
-    // under `scan_id == live_id`) and every per-iteration scan it spawned.
-    let live = s.live.clone();
-    sse_event_stream(&s.bus, move |event| {
-        event.scan_id == target_lid || live.session_owns_scan(&target_lid, &event.scan_id)
-    })
 }
 
 // ─── Tests (from scan.rs) ─────────────────────────────────────────────────

@@ -315,7 +315,7 @@ fn asn_record_yields_registry_contacts_and_website() {
         r#"{ "status":"ok", "data": {
             "name":"ACME", "description_short":"Acme Networks LLC", "country_code":"US",
             "rir_allocation": {"rir_name":"ARIN", "date_allocated":"2000-03-30"},
-            "email_contacts": ["noc@acmenet.example"],
+            "email_contacts": ["network-ops@acmenet.example"],
             "abuse_contacts": ["abuse@acmenet.example"],
             "website": "https://acmenet.example" } }"#,
     );
@@ -343,7 +343,7 @@ fn asn_record_yields_registry_contacts_and_website() {
         .filter(|e| e.kind == EntityKind::Email)
         .map(|e| e.value.as_str())
         .collect();
-    assert_eq!(emails, vec!["noc@acmenet.example"]);
+    assert_eq!(emails, vec!["network-ops@acmenet.example"]);
     assert!(
         !emails.contains(&"abuse@acmenet.example"),
         "role-local-part abuse contact must not surface as an Email entity"
@@ -358,12 +358,21 @@ fn asn_record_yields_registry_contacts_and_website() {
 fn asn_suppresses_role_local_part_abuse_email() {
     // Regression test for the audit finding (role-mailbox-as-pii) that ASN
     // abuse/admin contacts previously bypassed `is_infrastructure_email`
-    // entirely. `noc@` is not a role token and must still surface. Domain
-    // deliberately not google.com — see `asn_suppresses_infra_mail_domain_contacts`
-    // for the domain-match case.
+    // entirely. `network-ops@` is not a role token and must still surface.
+    // Domain deliberately not google.com — see
+    // `asn_suppresses_infra_mail_domain_contacts` for the domain-match case.
+    //
+    // `noc@` is itself now a role token too (Pass 23: merged into
+    // `util::domains`' role list from `core::validation::email`'s
+    // independent, already-correct one — a network operations desk is exactly
+    // as infrastructure-only as `abuse@`/`hostmaster@`). Before that merge
+    // this fixture used `noc@` as its "must still surface" example, which
+    // only ever passed because this function's role list was the one
+    // missing it — asserted explicitly below so that particular regression
+    // can't silently come back.
     let body = asn_resp(
         r#"{ "status":"ok", "data": {
-            "email_contacts": ["noc@acmenet.example"],
+            "email_contacts": ["network-ops@acmenet.example", "noc@acmenet.example"],
             "abuse_contacts": ["abuse@acmenet.example", "hostmaster@acmenet.example"] } }"#,
     );
     let ents = build_asn_entities(&body, 15169, "s");
@@ -372,7 +381,11 @@ fn asn_suppresses_role_local_part_abuse_email() {
         .filter(|e| e.kind == EntityKind::Email)
         .map(|e| e.value.as_str())
         .collect();
-    assert_eq!(emails, vec!["noc@acmenet.example"]);
+    assert_eq!(emails, vec!["network-ops@acmenet.example"]);
+    assert!(
+        !emails.contains(&"noc@acmenet.example"),
+        "noc@ is a role/infrastructure mailbox and must not surface as an Email entity"
+    );
 }
 
 #[test]

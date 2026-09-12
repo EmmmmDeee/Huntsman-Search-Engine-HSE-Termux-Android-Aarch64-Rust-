@@ -941,7 +941,8 @@ fi
 # larger binary and a negligible runtime cost (HSE is network/IO-bound). So
 # Termux defaults to `fast`; other hosts default to `release`. Override with
 # HSE_BUILD_PROFILE=<release|fast>, or the shortcut HSE_FULL_BUILD=1 for the
-# smallest/fastest `release` artifact.
+# smallest `release` artifact — release is the *slower* build of the two, so
+# don't suggest it as a fix for a slow build (see the hint below).
 if [[ -n "${HSE_BUILD_PROFILE:-}" ]]; then
     PROFILE="$HSE_BUILD_PROFILE"
 elif [[ "${HSE_FULL_BUILD:-0}" == "1" ]]; then
@@ -957,7 +958,16 @@ case "$PROFILE" in
     *)       BUILD_ETA="" ;;
 esac
 step "Building binary [profile: $PROFILE] ($BUILD_ETA; first run downloads crates)"
-hint "Slow? Re-run with HSE_BUILD_PROFILE=fast for a quicker build, or HSE_FULL_BUILD=1 for the smallest."
+# Conditional on which profile was actually picked above — a flat, unconditional
+# hint here previously told `fast` users (Termux's own default, so most of this
+# script's audience) to "re-run with HSE_BUILD_PROFILE=fast" for a quicker build
+# while already building fast (a no-op), and offered HSE_FULL_BUILD=1 as a
+# speed fix when it actually forces the *slower* `release` profile (~15-20 min
+# vs. `fast`'s ~4-6 min) — the opposite of what "Slow?" was asking for.
+case "$PROFILE" in
+    fast)    hint "This is already the fastest build profile (~4-6 min). HSE_FULL_BUILD=1 trades a much longer build for a smaller binary — it isn't a fix for slowness." ;;
+    release) hint "Slow? Re-run with HSE_BUILD_PROFILE=fast for a much quicker (~4-6 min), slightly larger build." ;;
+esac
 
 # Termux: keep build artefacts in $HOME, not /data, to avoid app-data pressure.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/hse-build}"

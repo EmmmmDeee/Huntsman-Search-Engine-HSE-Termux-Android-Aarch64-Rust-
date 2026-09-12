@@ -259,7 +259,7 @@ fn extract_entities(
             if let Some(cc) = vstr(r, "country") {
                 ce.tag(format!("country:{}", cc.to_uppercase()));
             }
-            ce.add_evidence(ev());
+            ce.add_evidence(ev().with_attr("ip", record_ip.as_deref().unwrap_or(value)));
             result.push(ce);
         }
 

@@ -783,6 +783,31 @@ fn core_does_not_import_util_directly() {
                 // const so the guard stays precise if `util::domains` ever
                 // grows a non-pure item.
                 && !line.contains("util::domains::INFRA_PROVIDER_ROOTS")
+                // Pure, offline role/automation-mailbox local-part classifier
+                // (a curated const table + a hyphen/dot/underscore segment
+                // match; no I/O, no deps) — same leaf category as
+                // `util::domains::INFRA_PROVIDER_ROOTS` immediately above, and
+                // for the identical reason: Pass 23 found `core::validation`
+                // held its own, independently-maintained 20-entry copy of this
+                // exact list that had silently diverged from this one in both
+                // directions (only the `core` copy had noc/registry/soa/
+                // ssladmin; only this one had sales/billing/legal/system/…).
+                // `core::validation::email::is_role_mailbox` now delegates
+                // here instead of keeping a second copy, so the engine's
+                // admission gate and identity-cluster anchoring can never
+                // again disagree with `email_parse`'s username-derivation
+                // gate on what counts as a role mailbox.
+                && !line.contains("util::domains::is_role_localpart")
+                // Pure, offline confidence-then-uid sort (no I/O, no deps) —
+                // same leaf category as `util::domains::is_role_localpart`
+                // immediately above, and for the identical reason (Pass 26):
+                // `core::engine`'s found-key-flatten and recall-cap passes
+                // each carried their own byte-for-byte copy of this exact
+                // comparator rather than reaching for the one two other
+                // modules (`anubis`/`certspotter`/`crtsh`) already share, so
+                // a future tie-break change could silently apply to only
+                // some of the sites that need it to match.
+                && !line.contains("util::recon::sort_by_confidence_desc")
                 // Pure, offline look-alike/typosquat comparison for domain
                 // labels (homoglyph skeleton fold + Levenshtein; no I/O, no
                 // deps, no Unicode tables) — same leaf category as

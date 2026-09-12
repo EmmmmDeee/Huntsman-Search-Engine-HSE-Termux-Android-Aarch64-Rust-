@@ -160,6 +160,73 @@ pub fn derived_from(parent: f64) -> f64 {
     (parent - DERIVATION_STEP).max(DERIVED_FLOOR)
 }
 
+/// Assert the metamorphic invariant behind three confirmed regressions in
+/// this crate: a confidence-scoring function must never rate a degraded,
+/// malformed, or less-validated reading *higher* than a more valid one it
+/// stands in for. A tie is fine — both readings can legitimately land on
+/// the same tier — only a *gain* under degradation is the defect.
+///
+/// Call this from a module's own tests with two confidence values the SAME
+/// scorer produced for a valid baseline input and a deliberately degraded
+/// one (out-of-range, non-finite, absent-but-treated-as-present). Always
+/// compare two calls to the scorer, never a call against a bare ladder
+/// constant: if the degraded input happens to collapse to exactly that
+/// constant under the bug being tested for, a constant comparison ties
+/// vacuously and never catches it (this bit the first draft of the
+/// `device_fix` and `signal_radar` call sites below — both compared
+/// against `confidence::VERY_HIGH_PLUS` directly, and neither one actually
+/// failed when the historical bug was reintroduced to check). `context`
+/// names the comparison in the panic message, since a bare float mismatch
+/// gives a future reader no idea which invariant broke.
+///
+/// The three real, independently-discovered occurrences this exists to
+/// keep from regressing:
+/// - `device_fix::fix_confidence`: a negative/NaN/infinite GPS accuracy
+///   radius scored the same as "no accuracy reported" (the ceiling).
+/// - `signal_radar::wifi::rssi_confidence`: a physically-impossible
+///   positive dBm reading scored the same as a genuine strong signal.
+/// - `hunter_io::confidence_from_hunter_score`: the absent-score floor
+///   outranked a genuinely low reported score.
+///
+/// See [`assert_metamorphic_strictly_worse`] for the stricter sibling
+/// invariant, used where a tie itself is the regression.
+///
+/// # Panics
+/// If `degraded > valid`, naming both values and `context`.
+#[cfg(test)]
+pub(crate) fn assert_metamorphic_no_gain(valid: f64, degraded: f64, context: &str) {
+    assert!(
+        degraded <= valid,
+        "metamorphic invariant violated ({context}): a degraded/less-valid \
+         reading scored {degraded}, which is HIGHER than the valid \
+         baseline's {valid} — a scoring function must never rate a worse \
+         input as good as or better than a better one"
+    );
+}
+
+/// Stricter sibling of [`assert_metamorphic_no_gain`], for the one confirmed
+/// regression where a *tie* is itself the defect: `structured_id` once
+/// reported ObjectID/KSUID (whose only validation beyond shape/charset is a
+/// 32-bit-second plausibility window, ~9-20% false-positive against a
+/// random token of the right shape) at the exact same confidence as ULID
+/// (whose 48-bit-millisecond window makes its false-positive rate
+/// negligible). Two decode paths with a categorically different validation
+/// strength must never land on the same tier — "not worse" is not enough,
+/// unlike [`assert_metamorphic_no_gain`]'s cases where a tie is legitimate.
+///
+/// # Panics
+/// If `degraded >= valid`, naming both values and `context`.
+#[cfg(test)]
+pub(crate) fn assert_metamorphic_strictly_worse(valid: f64, degraded: f64, context: &str) {
+    assert!(
+        degraded < valid,
+        "metamorphic invariant violated ({context}): a materially-less-valid \
+         reading scored {degraded}, which is NOT LOWER than the more-valid \
+         baseline's {valid} — these two must never tie, or the demotion \
+         this invariant protects has silently been lost"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,5 +420,42 @@ mod tests {
                 && value_of("VERY_HIGH") < value_of("HIGH_PLUSPLUS_PLUS"),
             "VERY_HIGH/HIGH_PLUSPLUS inversion documented in the module header no longer holds"
         );
+    }
+
+    /// A strictly-lower or equal degraded score passes silently — ties are
+    /// legitimate (e.g. `device_fix::fix_confidence` legitimately produces
+    /// the same worst-tier value for a malformed reading and for a valid but
+    /// very-poor-accuracy one).
+    #[test]
+    fn assert_metamorphic_no_gain_accepts_equal_or_lower_degraded_scores() {
+        assert_metamorphic_no_gain(HIGH, LOW, "sanity: strictly lower passes");
+        assert_metamorphic_no_gain(HIGH, HIGH, "sanity: equal passes");
+    }
+
+    /// The one shape this whole helper exists to catch: a "degraded" reading
+    /// that out-scores the valid baseline it stands in for.
+    #[test]
+    #[should_panic(expected = "metamorphic invariant violated")]
+    fn assert_metamorphic_no_gain_rejects_a_degraded_score_that_scores_higher() {
+        assert_metamorphic_no_gain(LOW, HIGH, "sanity: a degraded input outscoring valid");
+    }
+
+    /// Unlike its non-strict sibling, only a strictly lower degraded score
+    /// passes — a tie is exactly the shape `structured_id`'s regression took.
+    #[test]
+    fn assert_metamorphic_strictly_worse_accepts_only_a_strictly_lower_degraded_score() {
+        assert_metamorphic_strictly_worse(HIGH, LOW, "sanity: strictly lower passes");
+    }
+
+    #[test]
+    #[should_panic(expected = "metamorphic invariant violated")]
+    fn assert_metamorphic_strictly_worse_rejects_a_tie() {
+        assert_metamorphic_strictly_worse(HIGH, HIGH, "sanity: a tie must fail here");
+    }
+
+    #[test]
+    #[should_panic(expected = "metamorphic invariant violated")]
+    fn assert_metamorphic_strictly_worse_rejects_a_degraded_score_that_scores_higher() {
+        assert_metamorphic_strictly_worse(LOW, HIGH, "sanity: a degraded input outscoring valid");
     }
 }

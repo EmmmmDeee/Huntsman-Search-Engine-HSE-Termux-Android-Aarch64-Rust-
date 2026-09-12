@@ -59,6 +59,11 @@ use writer::DbWriter;
 // bundle (`DispatchState`) are constructed here — at the seed-round and
 // expansion call sites — and threaded into the loops that live in `dispatch`.
 use dispatch::{DispatchCx, DispatchState};
+// `dispatch` itself stays private; this one helper is re-exported crate-wide
+// so `selftest::capability_probe`'s own `catch_unwind` guard can share the
+// exact same panic-message extraction `run_module_guarded` uses, rather than
+// maintaining a second copy that could drift.
+pub(crate) use dispatch::panic_payload_to_string;
 // The dispatch loops now live in `dispatch`; these items are referenced only by
 // the tests that stayed in this file, so the bridge is test-only.
 #[cfg(test)]
@@ -959,12 +964,15 @@ impl ScanEngine {
                     &mut ctx,
                     &opts,
                     started,
-                    &mut entity_map,
-                    &mut visited,
-                    &mut stats,
-                    &mut *dispatched,
-                    &mut lineage,
-                    &quarantined,
+                    ExpansionState {
+                        entity_map: &mut entity_map,
+                        visited: &mut visited,
+                        stats: &mut stats,
+                        dispatched: &mut *dispatched,
+                        relations: &mut lineage,
+                        emitted_corr: &mut emitted_corr,
+                        quarantined: &quarantined,
+                    },
                 )
                 .await;
 
@@ -980,12 +988,15 @@ impl ScanEngine {
                     &mut ctx,
                     &opts,
                     started,
-                    &mut entity_map,
-                    &mut visited,
-                    &mut stats,
-                    &mut *dispatched,
-                    &mut lineage,
-                    &quarantined,
+                    ExpansionState {
+                        entity_map: &mut entity_map,
+                        visited: &mut visited,
+                        stats: &mut stats,
+                        dispatched: &mut *dispatched,
+                        relations: &mut lineage,
+                        emitted_corr: &mut emitted_corr,
+                        quarantined: &quarantined,
+                    },
                 )
                 .await;
         }
@@ -1570,7 +1581,6 @@ impl ScanEngine {
     /// cancel-gated) and honours passive/free/exclude exactly as expansion does.
     /// New entities flow into finalise normally. Toggle: `feature.gap_fill` (ON).
     /// Returns the number of endpoints probed.
-    #[allow(clippy::too_many_arguments)]
     async fn run_gap_fill(
         &self,
         scan_id: &str,
@@ -1578,13 +1588,17 @@ impl ScanEngine {
         ctx: &mut ModuleContext,
         opts: &ScanOptions,
         started: Instant,
-        entity_map: &mut TrackedEntityMap,
-        visited: &mut HashSet<(TargetKind, String)>,
-        stats: &mut ModuleStats,
-        dispatched: &mut DispatchLog,
-        relations: &mut Vec<Relation>,
-        quarantined: &HashSet<String>,
+        state: ExpansionState<'_>,
     ) -> usize {
+        let ExpansionState {
+            entity_map,
+            visited,
+            stats,
+            dispatched,
+            relations,
+            emitted_corr: _,
+            quarantined,
+        } = state;
         const MAX_PROBES: usize = 8;
 
         if !crate::util::settings::get_bool(crate::util::settings::GAP_FILL_FEATURE, true) {
@@ -1771,7 +1785,6 @@ impl ScanEngine {
     /// function is only the dispatch half.
     ///
     /// Returns the number of probes actually dispatched.
-    #[allow(clippy::too_many_arguments)]
     async fn run_breach_sweep(
         &self,
         scan_id: &str,
@@ -1779,13 +1792,17 @@ impl ScanEngine {
         ctx: &mut ModuleContext,
         opts: &ScanOptions,
         started: Instant,
-        entity_map: &mut TrackedEntityMap,
-        visited: &mut HashSet<(TargetKind, String)>,
-        stats: &mut ModuleStats,
-        dispatched: &mut DispatchLog,
-        relations: &mut Vec<Relation>,
-        quarantined: &HashSet<String>,
+        state: ExpansionState<'_>,
     ) -> usize {
+        let ExpansionState {
+            entity_map,
+            visited,
+            stats,
+            dispatched,
+            relations,
+            emitted_corr: _,
+            quarantined,
+        } = state;
         if !crate::util::settings::get_bool(crate::util::settings::BREACH_SWEEP_FEATURE, true) {
             return 0;
         }
@@ -2652,12 +2669,7 @@ fn merge_found_keys_and_flatten(
     // reason), and `/identities` passes display-ranked output — which is what made this path the
     // outlier rather than the rule.
     let mut out: Vec<Entity> = entity_map.into_values().collect();
-    out.sort_by(|a, b| {
-        b.confidence
-            .partial_cmp(&a.confidence)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.uid.cmp(&b.uid))
-    });
+    crate::util::recon::sort_by_confidence_desc(&mut out);
     out
 }
 
@@ -3042,15 +3054,13 @@ pub(crate) fn module_health_observed() -> usize {
 /// literal confidences (0.6, 0.7, 0.8, …), so exact ties at the cutoff are
 /// realistic, not contrived — without a tiebreak, two otherwise-identical
 /// recalls of the same target could truncate to a DIFFERENT set of surviving
-/// entities, not just a different display order. Mirrors the uid tiebreak
-/// `ranking::rank_enrichment_leverage`/`rank_autonomous_targets` also use.
+/// entities, not just a different display order. The same tiebreak shape
+/// `ranking::rank_enrichment_leverage`/`rank_autonomous_targets` also use,
+/// for their own struct types — this one sorts `Entity` directly, so it
+/// delegates to `util::recon::sort_by_confidence_desc` (Pass 26) rather than
+/// keeping its own copy of the identical comparator.
 fn rank_recalled_and_cap(mut out: Vec<Entity>, max: usize) -> Vec<Entity> {
-    out.sort_by(|a, b| {
-        b.confidence
-            .partial_cmp(&a.confidence)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.uid.cmp(&b.uid))
-    });
+    crate::util::recon::sort_by_confidence_desc(&mut out);
     out.truncate(max);
     out
 }

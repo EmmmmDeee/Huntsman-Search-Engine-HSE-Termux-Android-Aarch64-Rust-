@@ -219,9 +219,10 @@ pub(super) async fn run_module_guarded(
 /// Best-effort human-readable message from a caught panic payload — the
 /// `&str`/`String` cases `panic!`/`.expect("should succeed")`/`.expect()` produce, or a
 /// generic fallback for anything else (a custom payload type via
-/// `panic_any`). Shared by every `catch_unwind` site in the engine so the
-/// extraction logic can't drift between them.
-pub(super) fn panic_payload_to_string(payload: &Box<dyn std::any::Any + Send>) -> String {
+/// `panic_any`). Shared by every `catch_unwind` site in the codebase (the
+/// engine's own dispatch here, and `selftest::capability_probe`'s live probe)
+/// so the extraction logic can't drift between them.
+pub(crate) fn panic_payload_to_string(payload: &Box<dyn std::any::Any + Send>) -> String {
     payload
         .downcast_ref::<&str>()
         .map(|s| (*s).to_string())

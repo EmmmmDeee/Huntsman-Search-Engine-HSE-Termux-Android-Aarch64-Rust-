@@ -4,9 +4,18 @@
 //! `use super::*` (each parser is re-exported into the parent's scope).
 
 use super::{
-    ImportFormat, cmd_import, deduplicate_by_uid, detect_import_format, entities_from_upload,
-    looks_like_dossier, parse_dossier, parse_oathnet_html,
+    ImportFormat, MAX_IMPORT_BYTES, cmd_import, deduplicate_by_uid, detect_import_format,
+    entities_from_upload, looks_like_dossier, parse_dossier, parse_oathnet_html,
 };
+
+#[test]
+fn max_import_bytes_is_the_documented_16_mib() {
+    // The single source of truth (Pass 30) for the single-file import cap,
+    // the local-storage scrape's per-file cap, and (via an `as usize` cast)
+    // api::scan_handlers::MAX_UPLOAD_BYTES. Pin the literal value here so an
+    // accidental edit is caught where the authority actually lives.
+    assert_eq!(MAX_IMPORT_BYTES, 16 * 1024 * 1024);
+}
 
 #[test]
 fn detect_import_format_is_content_based_not_extension_gated() {
