@@ -1,7 +1,7 @@
 //! Subject-PII redaction for **shareable** scan exports.
 //!
 //! The default `json`/`csv`/`gexf` exports already drop quarantined `candidate`
-//! rows (see `cli::export::renderers::confirmed_entities`), but they still carry
+//! rows (see `app::export::renderers::confirmed_entities`), but they still carry
 //! the subject's confirmed footprint verbatim — including credential-class
 //! values (breach passwords, leaked credentials, harvested third-party API keys)
 //! and street-precise GPS coordinates. Handing such a file to a third party, or

@@ -1,9 +1,10 @@
 use super::dossier::join_or_dash;
+use super::health_policy::{IssueInputs, KeyPoolSummary, SEV_CRITICAL, SEV_WARNING, detect_issues};
 use super::renderers::{
-    IssueInputs, KeyPoolSummary, SEV_CRITICAL, SEV_WARNING, SystemDebugInputs, build_scan_report,
-    detect_issues, entities_to_csv, extract_au_location_fix, render_csv, render_debug_bundle,
-    render_full, render_gexf, render_json, render_report, render_system_debug_bundle,
+    build_scan_report, entities_to_csv, extract_au_location_fix, render_csv, render_debug_bundle,
+    render_full, render_gexf, render_json, render_report,
 };
+use super::system_debug::{SystemDebugInputs, render_system_debug_bundle};
 use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
 use crate::storage::Store;
 
