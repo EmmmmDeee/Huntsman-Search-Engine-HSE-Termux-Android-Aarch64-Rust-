@@ -959,12 +959,15 @@ impl ScanEngine {
                     &mut ctx,
                     &opts,
                     started,
-                    &mut entity_map,
-                    &mut visited,
-                    &mut stats,
-                    &mut *dispatched,
-                    &mut lineage,
-                    &quarantined,
+                    ExpansionState {
+                        entity_map: &mut entity_map,
+                        visited: &mut visited,
+                        stats: &mut stats,
+                        dispatched: &mut *dispatched,
+                        relations: &mut lineage,
+                        emitted_corr: &mut emitted_corr,
+                        quarantined: &quarantined,
+                    },
                 )
                 .await;
 
@@ -980,12 +983,15 @@ impl ScanEngine {
                     &mut ctx,
                     &opts,
                     started,
-                    &mut entity_map,
-                    &mut visited,
-                    &mut stats,
-                    &mut *dispatched,
-                    &mut lineage,
-                    &quarantined,
+                    ExpansionState {
+                        entity_map: &mut entity_map,
+                        visited: &mut visited,
+                        stats: &mut stats,
+                        dispatched: &mut *dispatched,
+                        relations: &mut lineage,
+                        emitted_corr: &mut emitted_corr,
+                        quarantined: &quarantined,
+                    },
                 )
                 .await;
         }
@@ -1570,7 +1576,6 @@ impl ScanEngine {
     /// cancel-gated) and honours passive/free/exclude exactly as expansion does.
     /// New entities flow into finalise normally. Toggle: `feature.gap_fill` (ON).
     /// Returns the number of endpoints probed.
-    #[allow(clippy::too_many_arguments)]
     async fn run_gap_fill(
         &self,
         scan_id: &str,
@@ -1578,13 +1583,17 @@ impl ScanEngine {
         ctx: &mut ModuleContext,
         opts: &ScanOptions,
         started: Instant,
-        entity_map: &mut TrackedEntityMap,
-        visited: &mut HashSet<(TargetKind, String)>,
-        stats: &mut ModuleStats,
-        dispatched: &mut DispatchLog,
-        relations: &mut Vec<Relation>,
-        quarantined: &HashSet<String>,
+        state: ExpansionState<'_>,
     ) -> usize {
+        let ExpansionState {
+            entity_map,
+            visited,
+            stats,
+            dispatched,
+            relations,
+            emitted_corr: _,
+            quarantined,
+        } = state;
         const MAX_PROBES: usize = 8;
 
         if !crate::util::settings::get_bool(crate::util::settings::GAP_FILL_FEATURE, true) {
@@ -1771,7 +1780,6 @@ impl ScanEngine {
     /// function is only the dispatch half.
     ///
     /// Returns the number of probes actually dispatched.
-    #[allow(clippy::too_many_arguments)]
     async fn run_breach_sweep(
         &self,
         scan_id: &str,
@@ -1779,13 +1787,17 @@ impl ScanEngine {
         ctx: &mut ModuleContext,
         opts: &ScanOptions,
         started: Instant,
-        entity_map: &mut TrackedEntityMap,
-        visited: &mut HashSet<(TargetKind, String)>,
-        stats: &mut ModuleStats,
-        dispatched: &mut DispatchLog,
-        relations: &mut Vec<Relation>,
-        quarantined: &HashSet<String>,
+        state: ExpansionState<'_>,
     ) -> usize {
+        let ExpansionState {
+            entity_map,
+            visited,
+            stats,
+            dispatched,
+            relations,
+            emitted_corr: _,
+            quarantined,
+        } = state;
         if !crate::util::settings::get_bool(crate::util::settings::BREACH_SWEEP_FEATURE, true) {
             return 0;
         }
