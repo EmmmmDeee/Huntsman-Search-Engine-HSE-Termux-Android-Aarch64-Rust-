@@ -283,7 +283,55 @@ jobs:
       # via Sigstore with the workflow's OIDC identity, so a substituted binary
       # cannot be made to verify — `gh attestation verify` ties the artifact to
       # this repository, this workflow, and this exact commit.
+      #
+      # Retried up to 3 times: the persist call is a network round-trip to
+      # GitHub's attestation/Sigstore backend, which occasionally answers a
+      # well-formed request with a transient "Server Error" (observed on the
+      # 2026-09-10 01:29 UTC main push, run 34425701536 — predicate generation
+      # succeeded in 246ms, then the persist step failed after 97s). Every
+      # later step, including publishing the already-built binary, SBOM and
+      # provenance record, was ORIGINALLY unconditional on this one succeeding
+      # — so that single transient error silently dropped an otherwise-fully-
+      # built, fully-valid release, and because this workflow only fires on
+      # a push, nothing re-attempted it; main sat unreleased for 2 days and
+      # several more commits before this was noticed. Retrying the exact same
+      # trusted, already-pinned action in place (rather than adding a new
+      # third-party retry-wrapper dependency to a job holding `id-token: write`
+      # and `attestations: write`) costs at most ~45s of extra wait on the rare
+      # path and closes the gap without widening this job's trust surface.
       - name: Attest build provenance
+        id: attest_1
+        continue-on-error: true
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: dist/hse-aarch64-linux-android
+
+      - name: Wait before attestation retry 1
+        if: steps.attest_1.outcome == 'failure'
+        run: |
+          echo "::warning::Attestation attempt 1 failed — retrying after a short wait (this backend has previously failed transiently on an otherwise-valid request)."
+          sleep 15
+
+      - name: Attest build provenance (retry 1)
+        id: attest_2
+        if: steps.attest_1.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: dist/hse-aarch64-linux-android
+
+      - name: Wait before attestation retry 2
+        if: steps.attest_1.outcome == 'failure' && steps.attest_2.outcome == 'failure'
+        run: |
+          echo "::warning::Attestation attempt 2 also failed — making one final attempt after a longer wait."
+          sleep 30
+
+      - name: Attest build provenance (retry 2, final)
+        # No continue-on-error here: if this one also fails, the job should
+        # fail loudly (same as before this change) rather than publish an
+        # unattested binary — three transient failures in a row on the same
+        # request is itself a signal worth a human looking at the run.
+        if: steps.attest_1.outcome == 'failure' && steps.attest_2.outcome == 'failure'
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: dist/hse-aarch64-linux-android
