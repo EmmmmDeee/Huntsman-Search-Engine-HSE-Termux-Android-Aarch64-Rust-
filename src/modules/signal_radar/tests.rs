@@ -141,6 +141,17 @@ fn rssi_confidence_implausible_positive_reading_degrades_to_worst_tier() {
             c < confidence::VERY_HIGH_PLUS,
             "implausible positive RSSI {bad} must never reach the ceiling: {c}"
         );
+        // Compared against a concrete valid weak-but-real reading, not the
+        // bare ceiling constant: under the old bug an implausible positive
+        // RSSI landed on EXACTLY the ceiling (the unbounded first arm), so
+        // comparing against the ceiling constant itself would tie vacuously
+        // and never catch it. Comparing two `rssi_confidence` calls keeps
+        // this a true metamorphic test (same function, two inputs).
+        confidence::assert_metamorphic_no_gain(
+            wifi::rssi_confidence(Some(-90)),
+            c,
+            "signal_radar::wifi::rssi_confidence: implausible positive RSSI vs a valid weak-but-real reading",
+        );
     }
 }
 

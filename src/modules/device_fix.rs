@@ -333,6 +333,17 @@ mod tests {
                 c < confidence::VERY_HIGH_PLUS,
                 "malformed accuracy {bad} must never reach the ceiling: {c}"
             );
+            // Compared against a concrete *valid* poor reading, not the bare
+            // ceiling constant: a malformed accuracy collapses to exactly
+            // the ceiling under the old bug, so comparing against the
+            // ceiling constant itself would tie vacuously and never catch
+            // it. Comparing against another `fix_confidence` call keeps
+            // this a true metamorphic test (same function, two inputs).
+            confidence::assert_metamorphic_no_gain(
+                fix_confidence("gps", Some(5000.0)),
+                c,
+                "device_fix::fix_confidence: malformed accuracy vs a valid poor-but-real GPS fix",
+            );
         }
     }
 

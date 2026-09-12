@@ -216,6 +216,13 @@ async fn objectid_and_ksuid_are_reported_below_ulid_confidence() {
          ULID's higher confidence tier: got {}",
         e.confidence
     );
+    // Strict, not the tie-tolerant sibling: this IS the shape the
+    // regression took (ObjectID silently sharing ULID's exact constant).
+    confidence::assert_metamorphic_strictly_worse(
+        confidence::MEDIUM_HIGH,
+        e.confidence,
+        "structured_id: ObjectID's higher false-positive decode window vs ULID's",
+    );
 
     let ksuid = "2KNu8EwGT2LWr6M7B7987uqR6mm";
     let target = Target::new(TargetKind::Username, ksuid);
@@ -232,6 +239,11 @@ async fn objectid_and_ksuid_are_reported_below_ulid_confidence() {
         (e.confidence - confidence::LOW_MEDIUM).abs() < 1e-9,
         "a KSUID decode must also be reported at the demoted tier: got {}",
         e.confidence
+    );
+    confidence::assert_metamorphic_strictly_worse(
+        confidence::MEDIUM_HIGH,
+        e.confidence,
+        "structured_id: KSUID's higher false-positive decode window vs ULID's",
     );
 }
 
