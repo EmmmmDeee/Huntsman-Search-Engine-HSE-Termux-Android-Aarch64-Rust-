@@ -285,6 +285,16 @@ fn bgp_ip_yields_announcing_asn() {
     assert_eq!(attr("handle"), Some("GOOGLE"));
     assert_eq!(attr("name"), Some("Google LLC"));
     assert_eq!(attr("country"), Some("US"));
+    // Regression: this evidence used to be stamped with this module's own
+    // `SRC` ("ip_registry") instead of `bgpview::SRC` — since both this
+    // module and the standalone `bgpview` module query the identical
+    // `api.bgpview.io/ip/{ip}` endpoint for the same fact, that made
+    // `Entity::source_count()` read one BGPView response as two independent
+    // corroborating sources. Also confirms the confidence tier matches
+    // `bgpview::ip_entities`'s own HIGH_PLUSPLUS for this identical
+    // inference, not an unexplained higher value.
+    assert_eq!(e.evidence[0].source, crate::modules::bgpview::SRC);
+    assert_eq!(e.confidence, crate::core::confidence::HIGH_PLUSPLUS);
 }
 
 #[test]
