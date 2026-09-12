@@ -166,6 +166,35 @@ use crate::app::export::csv_escape;
     }
 
     #[test]
+    fn capability_probe_json_reports_a_panicked_module_as_confirmed_drift() {
+        use super::capability_probe_json;
+        use crate::core::scan::TargetKind;
+        use crate::selftest::capability_probe::{ProbeOutcome, ProbeReport};
+        // A panicked module is confirmed drift unconditionally — not a canary,
+        // yet must still surface as drift (see `ProbeOutcome::Panicked`'s doc).
+        let reports = vec![ProbeReport {
+            module: "some_breach",
+            kind: TargetKind::Email,
+            value: "test@example.com",
+            outcome: ProbeOutcome::Panicked {
+                message: "index out of bounds: the len is 0 but the index is 0".into(),
+            },
+        }];
+        let v = capability_probe_json(&reports);
+        assert_eq!(v["probed"], 1);
+        assert_eq!(v["panicked"], 1);
+        assert_eq!(v["alive"], 0);
+        assert_eq!(v["empty"], 0);
+        assert_eq!(v["drift"].as_array().expect("should succeed").len(), 1);
+        assert_eq!(v["drift"][0], "some_breach");
+        let m = &v["modules"][0];
+        assert_eq!(m["outcome"], "panicked");
+        assert_eq!(m["reason"], "index out of bounds: the len is 0 but the index is 0");
+        assert_eq!(m["drift"], true);
+        assert_eq!(m["canary"], false);
+    }
+
+    #[test]
     fn csv_escape_plain() {
         assert_eq!(csv_escape("hello"), "hello");
     }

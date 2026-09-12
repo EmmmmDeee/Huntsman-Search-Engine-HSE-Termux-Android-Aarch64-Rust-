@@ -59,6 +59,11 @@ use writer::DbWriter;
 // bundle (`DispatchState`) are constructed here — at the seed-round and
 // expansion call sites — and threaded into the loops that live in `dispatch`.
 use dispatch::{DispatchCx, DispatchState};
+// `dispatch` itself stays private; this one helper is re-exported crate-wide
+// so `selftest::capability_probe`'s own `catch_unwind` guard can share the
+// exact same panic-message extraction `run_module_guarded` uses, rather than
+// maintaining a second copy that could drift.
+pub(crate) use dispatch::panic_payload_to_string;
 // The dispatch loops now live in `dispatch`; these items are referenced only by
 // the tests that stayed in this file, so the bridge is test-only.
 #[cfg(test)]

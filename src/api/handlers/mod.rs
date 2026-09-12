@@ -487,7 +487,8 @@ pub(crate) fn capability_probe_json(
 ) -> Value {
     use crate::selftest::capability_probe::{ProbeOutcome, is_canary};
 
-    let (mut alive, mut empty, mut unreachable, mut timed_out) = (0usize, 0usize, 0usize, 0usize);
+    let (mut alive, mut empty, mut unreachable, mut timed_out, mut panicked) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
     let modules: Vec<Value> = reports
         .iter()
         .map(|r| {
@@ -507,6 +508,10 @@ pub(crate) fn capability_probe_json(
                 ProbeOutcome::TimedOut => {
                     timed_out += 1;
                     ("timed-out", None, None)
+                }
+                ProbeOutcome::Panicked { message } => {
+                    panicked += 1;
+                    ("panicked", None, Some(message.clone()))
                 }
             };
             json!({
@@ -532,6 +537,7 @@ pub(crate) fn capability_probe_json(
         "empty": empty,
         "unreachable": unreachable,
         "timed_out": timed_out,
+        "panicked": panicked,
         "drift": drift,
         "modules": modules,
     })
@@ -539,8 +545,9 @@ pub(crate) fn capability_probe_json(
 
 /// `POST /api/v1/capabilities/probe` — the **proactive** capability preflight:
 /// probe every keyless module against its real provider right now and report
-/// alive / empty / unreachable / timed-out per module, flagging confirmed drift
-/// (a curated canary that reached its provider yet parsed nothing). This is the
+/// alive / empty / unreachable / timed-out / panicked per module, flagging
+/// confirmed drift (a curated canary that reached its provider yet parsed
+/// nothing, or any module that panicked on the live response). This is the
 /// on-demand, network-bound HTTP twin of `hse doctor --live`, sharing the exact
 /// probe implementation ([`crate::selftest::capability_probe`]) so the Web UI, the
 /// CLI, and the weekly CI drift sweep can never diverge.
