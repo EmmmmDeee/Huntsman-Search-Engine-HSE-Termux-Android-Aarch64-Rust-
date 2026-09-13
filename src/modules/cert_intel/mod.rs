@@ -259,6 +259,7 @@ fn ct_log_entities(
             )
             .with_attr("parent_domain", parent)
     };
+    let canonical_parent = crate::core::entity::normalise(&EntityKind::Domain, parent);
     entries
         .iter()
         .flat_map(|entry| entry.name_value.split('\n').map(move |name| (entry, name)))
@@ -273,11 +274,21 @@ fn ct_log_entities(
             // crt.sh actually returning that literal hostname. Skip it
             // instead, matching this module's own live-TLS-SAN path below
             // and the sibling `crtsh`/`anubis` modules.
-            if name.is_empty()
-                || name.starts_with('*')
-                || name == parent
-                || !seen_subs.insert(name.clone())
-            {
+            if name.is_empty() || name.starts_with('*') {
+                return None;
+            }
+            // Canonicalise before the apex-equality check and the dedup
+            // insert, not the raw `name` — a SAN of "www.<parent>" is a
+            // *different* raw string from `parent` but the identical entity
+            // once `Entity::new` strips the "www." label, so a raw compare
+            // lets it slip past `name == parent` and earn its own (wrongly
+            // affirmative) subdomain verdict below, which then survives onto
+            // the merged apex entity via `Entity::merge`'s tag-union. Shared
+            // `seen_subs` with the live-TLS-SAN path below, so both must
+            // canonicalise the same way or one path's raw spelling can still
+            // slip past the other's dedup.
+            let canonical = crate::core::entity::normalise(&EntityKind::Domain, &name);
+            if canonical == canonical_parent || !seen_subs.insert(canonical.clone()) {
                 return None;
             }
             // An rfc822Name SAN — crt.sh returns these inline in `name_value` — is
@@ -300,7 +311,8 @@ fn ct_log_entities(
             if !name.contains('.') {
                 return None;
             }
-            let is_sub = crate::util::domains::is_proper_subdomain_of(&name, parent);
+            let is_sub =
+                crate::util::domains::is_proper_subdomain_of(&canonical, &canonical_parent);
             let conf = if is_sub {
                 confidence::VERY_HIGH
             } else {
@@ -343,11 +355,22 @@ fn parse_certificate(
         ev.attributes.insert("sans".into(), san_display.join(", "));
 
         let target_lower = target_domain.to_lowercase();
+        // Canonicalised the same way `ct_log_entities` above canonicalises,
+        // not raw-lowercased — the two functions share `seen_subs`, and a SAN
+        // of "www.<target>" is a proper subdomain of the raw `target_lower`
+        // by string shape alone even though `Entity::new` strips the "www."
+        // label and collapses it onto the target's own apex uid, whose
+        // wrongly-earned SUBDOMAIN tag then survives via `Entity::merge`'s
+        // tag-union. A live TLS cert almost always SANs both the bare host
+        // and its "www." alias, so this is the routine case, not an edge one.
+        let target_canonical = crate::core::entity::normalise(&EntityKind::Domain, &target_lower);
         result.extend(sans.iter().filter_map(|san| {
             let san_lower = san.to_lowercase();
-            let is_sub = crate::util::domains::is_proper_subdomain_of(&san_lower, &target_lower)
-                && !san_lower.starts_with("*.");
-            if !is_sub || !seen_subs.insert(san_lower.clone()) {
+            let canonical = crate::core::entity::normalise(&EntityKind::Domain, &san_lower);
+            let is_sub =
+                crate::util::domains::is_proper_subdomain_of(&canonical, &target_canonical)
+                    && !san_lower.starts_with("*.");
+            if !is_sub || !seen_subs.insert(canonical.clone()) {
                 return None;
             }
             let mut sub = Entity::new(

@@ -48,7 +48,7 @@ fn realistic_response_yields_subdomains_and_resolved_ips() {
             "subdomains": [
                 {"subdomain": "autodiscover.example.com", "ip": "none", "cloudflare": false},
                 {"subdomain": "mail.example.com", "ip": "none", "cloudflare": false},
-                {"subdomain": "www.example.com", "ip": "23.77.197.7", "cloudflare": false}
+                {"subdomain": "cdn.example.com", "ip": "23.77.197.7", "cloudflare": false}
             ],
             "cached": true,
             "cache_time": "2025-06-18 03:54:11"
@@ -63,7 +63,7 @@ fn realistic_response_yields_subdomains_and_resolved_ips() {
 
     let www = domains
         .iter()
-        .find(|e| e.raw_value == "www.example.com")
+        .find(|e| e.raw_value == "cdn.example.com")
         .expect("should succeed");
     assert!((www.confidence - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
     assert_eq!(attr(www, "resolved_ip"), Some("23.77.197.7"));
@@ -83,6 +83,38 @@ fn realistic_response_yields_subdomains_and_resolved_ips() {
     assert_eq!(ips.len(), 1);
     assert_eq!(ips[0].value, "23.77.197.7");
     assert!(ips[0].has_tag("c99") && !ips[0].has_tag("cloudflare"));
+}
+
+#[test]
+fn a_www_alias_of_the_domain_is_kept_but_not_tagged_a_subdomain() {
+    // Regression: "www.example.com" is a DIFFERENT raw string from the
+    // queried "example.com" (so the pre-fix raw
+    // `is_proper_subdomain_of("www.example.com", "example.com")` returned
+    // true — a genuine proper subdomain by string shape), even though
+    // `Entity::new` strips the leading "www." label and collapses it onto
+    // the queried domain's own apex uid. Unlike some sibling modules, this
+    // entity is still constructed (real, useful evidence that C99 saw the
+    // host resolve) — it just must not carry the SUBDOMAIN tag or the
+    // higher subdomain-tier confidence, matching how an off-base/co-hosted
+    // name is already handled.
+    let b = body(
+        r#"{
+            "success": true,
+            "subdomains": [
+                {"subdomain": "www.example.com", "ip": "23.77.197.7", "cloudflare": false}
+            ]
+        }"#,
+    );
+    let ents = build_entities("example.com", &b, "s");
+    let www = of_kind(&ents, EntityKind::Domain)
+        .into_iter()
+        .find(|e| e.raw_value == "www.example.com")
+        .expect("still present, collapsed onto the apex value");
+    assert!(
+        !www.has_tag(tags::SUBDOMAIN),
+        "a www-alias of the domain must never tag the apex as its own subdomain"
+    );
+    assert!((www.confidence - confidence::MEDIUM_PLUS).abs() < 1e-9);
 }
 
 #[test]

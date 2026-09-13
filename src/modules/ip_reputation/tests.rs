@@ -228,6 +228,31 @@ fn passive_dns_emits_historical_ips_and_subdomains() {
 }
 
 #[test]
+fn a_www_alias_of_the_target_is_not_tagged_a_subdomain_of_itself() {
+    // Regression, mirroring the apex-itself case in the test above: a
+    // passively-observed "www.<target>" row is a proper subdomain of the raw
+    // target by string shape alone, even though `Entity::new` strips the
+    // leading "www." label and collapses it onto the scan's own apex/subject
+    // uid — before this was fixed, it was still tagged SUBDOMAIN via the raw
+    // `host != base` check, surviving onto the merged apex entity via
+    // `Entity::merge`'s tag-union.
+    let rows = passive_rows(
+        r#"{"passive_dns":[
+            {"hostname":"www.torproject.org","address":"116.202.120.181","record_type":"A"}
+        ]}"#,
+    );
+    let out = passive_dns_entities(&rows, "torproject.org", "s");
+    let www = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain && e.value == "torproject.org")
+        .expect("the www row still surfaces, collapsed onto the apex value");
+    assert!(
+        !www.has_tag(crate::core::tags::SUBDOMAIN),
+        "a www-alias of the target must never tag the apex as its own subdomain"
+    );
+}
+
+#[test]
 fn passive_dns_gates_unrelated_hosts_and_invalid_ips() {
     // A record whose hostname is NOT the target or a subdomain of it (shared-IP
     // noise) must be dropped; a non-parseable address must not mint an IP.

@@ -915,6 +915,53 @@ mod numeric_identifier_coercion_tests {
     }
 
     #[test]
+    fn domain_intel_never_tags_a_www_alias_of_the_target_as_its_own_subdomain() {
+        // Regression: "www.acme.com" is a DIFFERENT raw string from the
+        // target "acme.com", so it's an equal-or-subdomain of the raw target
+        // via `is_or_subdomain_of`'s inclusive check even at exact-canonical-
+        // equality — but `Entity::new` strips the leading "www." label and
+        // collapses it onto the target's own apex uid. Before this was
+        // fixed, it was unconditionally tagged "subdomain", permanently
+        // mislabeling the scan's own subject as a subdomain of itself once
+        // merged via `Entity::merge`'s tag-union.
+        use serde_json::json;
+        let item = json!({
+            "domain": "acme.com",
+            "subdomains": ["www.acme.com", "mail.acme.com"],
+        });
+        let (mut seen, mut result) = (HashSet::new(), ModuleResult::new());
+        extract_entities(
+            &item,
+            "acme.com",
+            "scan",
+            "domain_intel",
+            "k",
+            &mut seen,
+            &mut result,
+        );
+        // The `domain` field's own extraction (a separate code path, tagged
+        // only "see-know") still mints "acme.com" — the point is that the
+        // "www.acme.com" subdomains-array entry must not ALSO independently
+        // construct an "acme.com"-normalised entity carrying the "subdomain"
+        // tag, which would merge onto it via `Entity::merge`'s tag-union.
+        assert!(
+            !result
+                .entities
+                .iter()
+                .any(|e| e.value == "acme.com" && e.has_tag("subdomain")),
+            "a www-alias of the target must not tag the apex as its own subdomain: {:?}",
+            result.entities
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == "mail.acme.com"),
+            "genuine subdomain still minted"
+        );
+    }
+
+    #[test]
     fn discord_connected_accounts_mint_cross_platform_pivots() {
         use serde_json::json;
         let item = json!({

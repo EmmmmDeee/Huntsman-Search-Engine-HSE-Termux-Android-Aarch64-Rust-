@@ -80,6 +80,29 @@ fn build_entities_classifies_subdomains_and_skips_junk() {
 }
 
 #[test]
+fn the_apex_itself_is_never_tagged_as_its_own_subdomain() {
+    // Regression, mirroring the identical, already-fixed case in the sibling
+    // `crtsh`/`certspotter` modules: Anubis's passive-DNS corpus commonly
+    // surfaces both the bare apex and its "www." alias for one real host.
+    // `is_or_subdomain_of` (inclusive of equality) previously let a raw
+    // "www.example.com" entry — a proper subdomain of the raw base by
+    // string shape alone — earn the SUBDOMAIN tag, even though `Entity::new`
+    // strips the leading "www." label and collapses it onto the scan's own
+    // apex/subject uid, permanently mislabeling it as a subdomain of itself
+    // via `Entity::merge`'s tag-union.
+    let list = names(&["www.example.com", "example.com"]);
+    let es = build_entities(&list, "example.com", "scan1");
+    let apex = es
+        .iter()
+        .find(|e| e.value == "example.com")
+        .expect("apex itself present");
+    assert!(
+        !apex.tags.iter().any(|t| t == tags::SUBDOMAIN),
+        "the apex must never be tagged as its own subdomain"
+    );
+}
+
+#[test]
 fn build_entities_dedups_case_insensitively() {
     let list = names(&["API.example.com", "api.example.com", "api.example.com"]);
     let es = build_entities(&list, "example.com", "scan1");

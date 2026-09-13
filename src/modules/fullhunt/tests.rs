@@ -54,7 +54,7 @@ fn populated_response_builds_full_asset_graph() {
               "asn": 13335,
               "dns_ptr": ["edge1.cdnhost.example.net", "203.0.113.5"],
               "domain": "example.com",
-              "host": "www.example.com",
+              "host": "cdn.example.com",
               "ip_address": "203.0.113.5",
               "organization": "Example Hosting Inc"
             },
@@ -75,7 +75,7 @@ fn populated_response_builds_full_asset_graph() {
 
     let www = ents
         .iter()
-        .find(|e| e.kind == EntityKind::Domain && e.raw_value == "www.example.com")
+        .find(|e| e.kind == EntityKind::Domain && e.raw_value == "cdn.example.com")
         .expect("should succeed");
     assert!(www.has_tag("fullhunt") && www.has_tag(tags::SUBDOMAIN));
     assert!((www.confidence - confidence::EXPERT).abs() < 1e-9);
@@ -150,16 +150,16 @@ fn the_same_host_repeating_across_result_rows_is_not_duplicated() {
         r#"{
           "results": [
             {"asn": 1, "dns_ptr": null, "domain": "example.com",
-             "host": "www.example.com", "ip_address": "203.0.113.5", "organization": "Org"},
+             "host": "cdn.example.com", "ip_address": "203.0.113.5", "organization": "Org"},
             {"asn": 1, "dns_ptr": null, "domain": "example.com",
-             "host": "www.example.com", "ip_address": "203.0.113.9", "organization": "Org"}
+             "host": "cdn.example.com", "ip_address": "203.0.113.9", "organization": "Org"}
           ]
         }"#,
     );
     let ents = build_entities(&b, "example.com", "s");
     assert_eq!(
         ents.iter()
-            .filter(|e| e.kind == EntityKind::Domain && e.raw_value == "www.example.com")
+            .filter(|e| e.kind == EntityKind::Domain && e.raw_value == "cdn.example.com")
             .count(),
         1,
         "the same host repeating across rows must still be one Domain entity: {ents:?}"
@@ -180,6 +180,31 @@ fn apex_and_unrelated_hosts_are_skipped_entirely() {
     );
     let ents = build_entities(&b, "example.com", "s");
     assert!(ents.is_empty(), "apex + unrelated host must yield nothing: {ents:?}");
+}
+
+#[test]
+fn a_www_alias_of_the_apex_is_skipped_entirely_like_the_bare_apex() {
+    // Regression: a discovered asset of "www.<domain>" canonicalises to the
+    // EXACT SAME identity as the bare apex once `Entity::new` strips the
+    // leading "www." label — attack-surface scans routinely surface it
+    // alongside (or instead of) the bare apex. Before this was fixed, the raw
+    // `is_proper_subdomain_of("www.example.com", "example.com")` check
+    // returned true (it IS a proper subdomain by string shape), so this row
+    // survived the filter and was unconditionally tagged `tags::SUBDOMAIN` at
+    // `confidence::EXPERT` — permanently mislabeling the scan's own
+    // apex/subject entity as a subdomain of itself once merged. It must be
+    // skipped exactly like the bare-apex row in the test above, not treated
+    // as a newly-discovered asset.
+    let b = body(
+        r#"{
+          "results": [
+            {"asn": 1, "dns_ptr": null, "domain": "example.com",
+             "host": "www.example.com", "ip_address": "203.0.113.5", "organization": "Org"}
+          ]
+        }"#,
+    );
+    let ents = build_entities(&b, "example.com", "s");
+    assert!(ents.is_empty(), "a www-alias of the apex must yield nothing: {ents:?}");
 }
 
 #[test]

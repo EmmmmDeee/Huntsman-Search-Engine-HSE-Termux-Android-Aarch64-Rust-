@@ -445,7 +445,15 @@ fn passive_dns_entities(rows: &[PassiveDnsRow], domain: &str, scan_id: &str) -> 
     // point-in-time resolved address.
     const OBSERVED_SUBDOMAIN_CONFIDENCE: f64 = 0.68;
     let base = domain.trim().to_ascii_lowercase();
-    let dot_base = format!(".{base}");
+    // Canonicalised once, matching how each candidate `host` below is
+    // canonicalised before comparison — not the raw `base` a bare
+    // `.ends_with`/equality check would use. Otherwise a passively-observed
+    // "www.<base>" row is a proper subdomain of the raw base by string shape
+    // alone, even though `Entity::new` strips the "www." label and collapses
+    // it onto the domain's own apex uid; the wrongly-earned SUBDOMAIN tag
+    // then survives onto the merged apex via `Entity::merge`'s tag-union. A
+    // "www" A/CNAME record is near-universal, so this is the routine case.
+    let canonical_base = crate::core::entity::normalise(&EntityKind::Domain, &base);
     let mut out = Vec::new();
     let mut seen_ips: HashSet<String> = HashSet::new();
     let mut seen_hosts: HashSet<String> = HashSet::new();
@@ -463,7 +471,11 @@ fn passive_dns_entities(rows: &[PassiveDnsRow], domain: &str, scan_id: &str) -> 
         else {
             continue;
         };
-        if host != base && !host.ends_with(&dot_base) {
+        let canonical_host = crate::core::entity::normalise(&EntityKind::Domain, &host);
+        let is_apex = canonical_host == canonical_base;
+        if !is_apex
+            && !crate::util::domains::is_proper_subdomain_of(&canonical_host, &canonical_base)
+        {
             continue;
         }
 
@@ -471,7 +483,7 @@ fn passive_dns_entities(rows: &[PassiveDnsRow], domain: &str, scan_id: &str) -> 
         // that is itself an IP literal.
         if seen_hosts.len() < MAX_SUBDOMAINS
             && host.parse::<std::net::IpAddr>().is_err()
-            && seen_hosts.insert(host.clone())
+            && seen_hosts.insert(canonical_host.clone())
         {
             let mut d = Entity::new(
                 EntityKind::Domain,
@@ -482,7 +494,7 @@ fn passive_dns_entities(rows: &[PassiveDnsRow], domain: &str, scan_id: &str) -> 
             d.tag(SRC);
             d.tag("otx");
             d.tag("passive-dns");
-            if host != base {
+            if !is_apex {
                 d.tag(crate::core::tags::SUBDOMAIN);
             }
             d.add_evidence(

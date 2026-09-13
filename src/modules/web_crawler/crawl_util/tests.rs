@@ -472,6 +472,34 @@ use super::*;
     }
 
     #[test]
+    fn a_linked_www_alias_of_the_target_is_not_recorded_as_a_mislabeled_subdomain() {
+        // Regression: real sites are rarely internally consistent about the
+        // www/bare-apex spelling, so a page crawled via the bare apex commonly
+        // links to its own "www." alias. "www.example.com" is a DIFFERENT raw
+        // string from both `base_host` and `target_domain` ("example.com"),
+        // and is a proper subdomain of the raw target by string shape alone —
+        // but `Entity::new` strips the leading "www." label and collapses it
+        // onto the target's own apex uid. Before this was fixed, it was
+        // inserted into `state.subdomains` and later unconditionally tagged
+        // SUBDOMAIN, mislabeling the scan's own subject as a subdomain of
+        // itself once merged.
+        let mut state = empty_state();
+        let body = r#"<a href="https://www.example.com/">a</a>"#;
+        extract_links(
+            body,
+            "https://example.com/",
+            "example.com",
+            "example.com",
+            &mut state,
+        );
+        assert!(
+            state.subdomains.is_empty(),
+            "a www-alias of the target must never be recorded as a subdomain: {:?}",
+            state.subdomains
+        );
+    }
+
+    #[test]
     fn extract_links_refuses_private_ip_literal_links() {
         // Worst case for the SSRF guard: the seed host IS the cloud-metadata
         // literal, so the same-host filter would otherwise enqueue its links.

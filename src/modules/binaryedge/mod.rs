@@ -368,11 +368,24 @@ fn build_one_subdomain(
 ) -> Option<Entity> {
     let host = raw.trim().trim_end_matches('.').to_ascii_lowercase();
     if host.is_empty()
-        || host == domain_lc
         || !host.contains('.')
         || host.contains(char::is_whitespace)
         || host.parse::<std::net::IpAddr>().is_ok()
     {
+        return None;
+    }
+    // Canonicalise before both the apex-equality check and the subdomain
+    // classification, not the raw `host`/`domain_lc` — a returned host of
+    // "www.<domain>" is neither `== domain_lc` nor excluded by a raw
+    // subdomain check (it IS a proper subdomain of the raw base by string
+    // shape), even though `Entity::new` strips the "www." label and
+    // collapses it onto the domain's own apex uid, tagged "subdomain" below
+    // regardless. BinaryEdge's own subdomain-enumeration endpoint routinely
+    // returns both the bare host and its "www." alias for one real domain.
+    let canonical = crate::core::entity::normalise(&crate::core::entity::EntityKind::Domain, &host);
+    let canonical_base =
+        crate::core::entity::normalise(&crate::core::entity::EntityKind::Domain, domain_lc);
+    if canonical == canonical_base {
         return None;
     }
     // Defensive: BinaryEdge's subdomain-enumeration endpoint can echo back a
@@ -383,7 +396,7 @@ fn build_one_subdomain(
     // verified subdomain keeps the top confidence and the `subdomain` tag; an
     // unverified one is still reported, but at a lower confidence and without
     // the tag, rather than an unverified host outranking c99's own verified one.
-    let is_sub = crate::util::domains::is_proper_subdomain_of(&host, domain_lc);
+    let is_sub = crate::util::domains::is_proper_subdomain_of(&canonical, &canonical_base);
     let conf = if is_sub {
         confidence::EXPERT
     } else {

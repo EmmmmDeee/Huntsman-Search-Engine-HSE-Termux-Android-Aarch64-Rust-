@@ -218,6 +218,46 @@ use super::*;
     }
 
     #[test]
+    fn classify_domain_candidate_never_tags_a_www_alias_of_the_base_a_subdomain() {
+        // The exact bug class this helper exists to prevent: a raw candidate
+        // that ONLY differs from the base by a leading "www." label — which
+        // `Entity::new` strips internally — must classify as the (non-sub)
+        // apex, not as a subdomain, once canonicalised. A naive raw-string
+        // `is_proper_subdomain_of("www.example.com", "example.com")` would
+        // wrongly return true.
+        let (canonical, is_sub) = classify_domain_candidate("www.example.com", "example.com");
+        assert_eq!(canonical, "example.com");
+        assert!(!is_sub, "a www-alias of the base is the apex, not its subdomain");
+
+        // Symmetric: a www-prefixed BASE must not make the bare apex candidate
+        // look external, and must not make a genuine subdomain of the apex
+        // look like a subdomain of "www.<apex>" only by coincidence of string
+        // shape — both sides are canonicalised before comparing.
+        let (canonical, is_sub) = classify_domain_candidate("example.com", "www.example.com");
+        assert_eq!(canonical, "example.com");
+        assert!(!is_sub);
+
+        // A genuine subdomain is unaffected by this canonicalisation.
+        let (canonical, is_sub) = classify_domain_candidate("mail.example.com", "example.com");
+        assert_eq!(canonical, "mail.example.com");
+        assert!(is_sub);
+
+        // A genuine subdomain is still correctly classified even when ITSELF
+        // carries a "www." label ("www.mail.example.com" is a real, if
+        // unusual, alias some setups use) — canonicalising strips only the
+        // LEADING label, so it still ends up a subdomain of the base, not the
+        // base itself.
+        let (canonical, is_sub) = classify_domain_candidate("www.mail.example.com", "example.com");
+        assert_eq!(canonical, "mail.example.com");
+        assert!(is_sub);
+
+        // An unrelated domain stays unrelated regardless of a "www." label.
+        let (canonical, is_sub) = classify_domain_candidate("www.unrelated.org", "example.com");
+        assert_eq!(canonical, "unrelated.org");
+        assert!(!is_sub);
+    }
+
+    #[test]
     fn domain_helpers_cross_function_invariants() {
         // Generative invariant check over a constructed host corpus: example tests
         // pin individual cases, this pins the *relationships* between the helpers,

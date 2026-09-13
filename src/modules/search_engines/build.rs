@@ -96,16 +96,24 @@ pub(super) fn build_entities(
         }
 
         let domain = extract_registrable(&host);
-        let is_subdomain = target_domain
-            .as_ref()
-            .is_some_and(|td| crate::util::domains::is_proper_subdomain_of(&host, td));
+        // Canonicalise before classifying/deduping, not the raw `host` — a
+        // result host of "www.<target>" is a proper subdomain of the raw
+        // seed by string shape alone, but `Entity::new` strips the "www."
+        // label internally, so it collapses onto the seed's own apex uid.
+        // Tagging it SUBDOMAIN then survives onto the merged apex entity via
+        // `Entity::merge`'s tag-union — a real, common case: the site's own
+        // "www" homepage is exactly what search engines index.
+        let (host_canonical, is_subdomain) = match target_domain.as_ref() {
+            Some(td) => crate::util::domains::classify_domain_candidate(&host, td),
+            None => (host.clone(), false),
+        };
 
         let n_engines = url_engine_count
             .get(&canonicalize_url(&r.url))
             .copied()
             .unwrap_or(1);
 
-        if is_subdomain && seen_domains.insert(host.clone()) {
+        if is_subdomain && seen_domains.insert(host_canonical.clone()) {
             let mut e = Entity::new(EntityKind::Domain, &host, confidence::HIGH_PLUS, scan_id);
             e.corroboration = n_engines;
             e.tag(tags::SUBDOMAIN);

@@ -177,6 +177,33 @@ fn forward_maps_ip_answers_and_infra_domains_and_scopes_them() {
 }
 
 #[test]
+fn a_resolved_www_alias_of_the_target_is_not_emitted_as_a_mislabeled_domain() {
+    // Regression: "www.github.com" is a DIFFERENT raw string from the target
+    // "github.com" (so it's never caught by the record's own `value ==
+    // target` self-echo notion), and it's a proper subdomain of the raw
+    // target by string shape alone — but `Entity::new` strips the leading
+    // "www." label and collapses it onto the target's own apex uid. Before
+    // this was fixed, it was tagged SUBDOMAIN (true by raw shape) below,
+    // permanently mislabeling the scan's own subject as a subdomain of
+    // itself once merged via `Entity::merge`'s tag-union.
+    let recs = vec![rec(
+        "github.com",
+        "www.github.com",
+        "domain",
+        "CNAME",
+        "",
+        "",
+        "",
+        &[],
+    )];
+    let ents = build_entities(&recs, "github.com", false, "s");
+    assert!(
+        of_kind(&ents, EntityKind::Domain).is_empty(),
+        "a resolved www-alias of the target must not mint a mislabeled duplicate: {ents:?}"
+    );
+}
+
+#[test]
 fn forward_falls_back_to_shape_when_resolve_type_is_blank() {
     // No `resolveType` field at all — classification falls back to whether
     // `resolve` parses as an IP literal.

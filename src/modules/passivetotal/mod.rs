@@ -269,14 +269,28 @@ fn build_entities(
                 r,
             ));
             out.push(e);
-        } else if is_hostname(&resolve) && seen.insert(resolve.clone()) {
+        } else if is_hostname(&resolve) {
+            // Canonicalise before the apex-equality check, the dedup insert,
+            // and the classification — a resolved "www.<target>" is a proper
+            // (indeed, an exact-match-once-canonical) subdomain of the raw
+            // target by string shape alone, even though `Entity::new` strips
+            // the "www." label and collapses it onto the target's own apex
+            // uid, tagged SUBDOMAIN or EXTERNAL below regardless — either
+            // mislabels the subject's own entity. Skip it entirely, same as
+            // an exact raw match would have been implicitly excluded by
+            // `is_hostname`/scope checks elsewhere in this function.
+            let canonical = crate::core::entity::normalise(&EntityKind::Domain, &resolve);
+            let canonical_target = crate::core::entity::normalise(&EntityKind::Domain, &target_l);
+            if canonical == canonical_target || !seen.insert(canonical.clone()) {
+                continue;
+            }
             let mut e = Entity::new(EntityKind::Domain, &resolve, confidence::HIGH, scan_id);
             e.tag(SRC);
             e.tag(PASSIVE_DNS);
             if !record_type_l.is_empty() {
                 e.tag(record_type_l.clone());
             }
-            if crate::util::domains::is_or_subdomain_of(&resolve, &target_l) {
+            if crate::util::domains::is_proper_subdomain_of(&canonical, &canonical_target) {
                 e.tag(tags::SUBDOMAIN);
             } else {
                 e.tag(tags::EXTERNAL);

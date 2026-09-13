@@ -61,3 +61,25 @@ fn build_entities_keeps_real_subdomains_and_drops_noise() {
 fn build_entities_empty_yields_nothing() {
     assert!(build_entities(&[], "github.com", "s").is_empty());
 }
+
+#[test]
+fn a_www_alias_of_the_apex_is_skipped_like_the_bare_apex() {
+    // Regression, mirroring the "github.com the apex itself → skipped" case
+    // above: "www.github.com" is a DIFFERENT raw string from the queried
+    // "github.com", so the pre-fix raw `host == domain_l` check missed it —
+    // yet `Entity::new` strips the leading "www." label and collapses it
+    // onto the queried domain's own apex uid. This function's own doc
+    // comment says a real subdomain is kept "never the apex itself"; a
+    // www-alias IS the apex once canonicalised, so it must be skipped too.
+    let subs = vec![
+        "www.github.com".to_string(),
+        "mail.github.com".to_string(),
+    ];
+    let ents = build_entities(&subs, "github.com", "s");
+    let vals: Vec<&str> = ents.iter().map(|e| e.value.as_str()).collect();
+    assert_eq!(
+        vals,
+        vec!["mail.github.com"],
+        "the www-alias must be skipped exactly like the bare apex: {ents:?}"
+    );
+}

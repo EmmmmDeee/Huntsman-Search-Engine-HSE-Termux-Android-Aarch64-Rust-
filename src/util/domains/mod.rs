@@ -321,6 +321,49 @@ pub fn is_proper_subdomain_of(host: &str, domain: &str) -> bool {
         && host.as_bytes()[host.len() - domain.len() - 1] == b'.'
 }
 
+/// Classify a raw candidate hostname against a raw base/apex for
+/// `EntityKind::Domain` entity tagging, returning the CANONICAL (normalised)
+/// form of `candidate` — the identity `Entity::new` will actually construct
+/// it under — alongside whether that canonical form is a proper subdomain of
+/// `base` (itself normalised first, so a `www.`-prefixed seed classifies
+/// identically to its bare apex).
+///
+/// **Every** module that builds `Domain` entities from a list of raw
+/// candidate strings (CT-log SANs, DNS records, brute-force hits, passive-DNS
+/// answers, search-result hosts, …) MUST dedup and classify using the
+/// returned canonical string, never the raw candidate directly — this is the
+/// one authoritative choke point for that rule, not a pattern to re-implement
+/// per call site. `Entity::new` normalises every `Domain` value by (among
+/// other things) stripping leading `www.` labels, so two raw spellings that
+/// normalise identically — most commonly a candidate carrying a `www.` label
+/// that its bare counterpart lacks — can otherwise each earn their own dedup
+/// slot and their own, individually-correct-in-isolation subdomain verdict,
+/// yet both collapse to the SAME entity uid once actually constructed.
+/// Whichever survives first then carries its verdict's tag onto the merged
+/// entity via `Entity::merge`'s tag-union regardless of the other's correct
+/// verdict — e.g. permanently mislabeling a scan's own apex/subject entity as
+/// a subdomain of itself when a source's response includes both
+/// `"www.example.com"` and `"example.com"` for the one real host (routine:
+/// a single TLS certificate SAN list, a CNAME-to-apex DNS record, a crawled
+/// page's own canonical vs. non-canonical links, and a dictionary brute-force
+/// hit on the label `"www"` are all ordinary, non-adversarial ways this
+/// occurs). First found and fixed in the `crtsh`/`certspotter` CT-log
+/// modules; this generalises that fix into one shared, reusable mechanism.
+///
+/// Still pass the ORIGINAL raw candidate string to `Entity::new` itself (not
+/// the canonical form returned here) so `raw_value` keeps the as-supplied
+/// spelling for provenance — only the dedup key and the classification
+/// decision need the canonical identity.
+#[must_use]
+pub fn classify_domain_candidate(candidate: &str, base: &str) -> (String, bool) {
+    let canonical =
+        crate::core::entity::normalise(&crate::core::entity::EntityKind::Domain, candidate);
+    let canonical_base =
+        crate::core::entity::normalise(&crate::core::entity::EntityKind::Domain, base);
+    let is_sub = is_proper_subdomain_of(&canonical, &canonical_base);
+    (canonical, is_sub)
+}
+
 /// True if `domain` is a known consumer mailbox provider — modules that
 /// pivot on the assumption "domain == employer" should skip these.
 pub fn is_freemail(domain: &str) -> bool {

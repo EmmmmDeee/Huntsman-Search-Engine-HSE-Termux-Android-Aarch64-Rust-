@@ -576,9 +576,21 @@ pub(super) fn extract_entities(
         for sub in subs {
             let Some(raw) = sub.as_str() else { continue };
             let s = raw.trim().trim_end_matches('.').to_ascii_lowercase();
+            // Canonicalise before the dedup/classification, not the raw
+            // `s`/`target_value` — a returned name of "www.<target>" is an
+            // equal-or-subdomain of the raw target by string shape alone
+            // (via `is_or_subdomain_of`'s inclusive equality branch even
+            // when it's an exact canonical match), even though `Entity::new`
+            // strips the "www." label and collapses it onto the target's
+            // own apex uid, unconditionally tagged "subdomain" below
+            // regardless. `is_proper_subdomain_of`, not `is_or_subdomain_of`:
+            // the canonical apex must never tag itself as its own subdomain.
+            let canonical = crate::core::entity::normalise(&EntityKind::Domain, &s);
+            let canonical_target =
+                crate::core::entity::normalise(&EntityKind::Domain, target_value);
             if crate::util::domains::looks_like_domain(&s)
-                && crate::util::domains::is_or_subdomain_of(&s, target_value)
-                && seen.insert(format!("@subdomain:{s}"))
+                && crate::util::domains::is_proper_subdomain_of(&canonical, &canonical_target)
+                && seen.insert(format!("@subdomain:{canonical}"))
             {
                 let mut e = Entity::new(EntityKind::Domain, &s, confidence::MEDIUM_PLUS, scan_id);
                 e.tag("see-know");

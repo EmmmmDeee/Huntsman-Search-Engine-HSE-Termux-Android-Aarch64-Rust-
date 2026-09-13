@@ -25,6 +25,26 @@ fn extract_name_empty_returns_none() {
     assert!(extract_name(&buf, 0).is_none());
 }
 
+#[test]
+fn is_canonical_subdomain_of_zone_excludes_a_www_record_from_the_apex() {
+    // Regression: a zone transfer routinely includes a "www" A/CNAME record
+    // (near-universal DNS practice). It IS a proper subdomain of the raw
+    // zone by string shape alone, but `Entity::new` strips the leading
+    // "www." label and collapses it onto the exposed zone's own apex uid —
+    // the same entity `process()` tags `axfr-permitted`/`tags::VULNERABLE`.
+    // Before this was fixed, it was collected into `records` and later
+    // unconditionally tagged "subdomain", surviving onto that entity via
+    // `Entity::merge`'s tag-union.
+    assert!(!is_canonical_subdomain_of_zone("www.example.com", "example.com"));
+    // The literal apex is also excluded (pre-existing behaviour, preserved).
+    assert!(!is_canonical_subdomain_of_zone("example.com", "example.com"));
+    // A genuine subdomain is unaffected.
+    assert!(is_canonical_subdomain_of_zone("mail.example.com", "example.com"));
+    // An unrelated, mid-label-matching name is still rejected (the
+    // label-boundary guarantee this function exists to preserve).
+    assert!(!is_canonical_subdomain_of_zone("evilexample.com", "example.com"));
+}
+
 #[tokio::test]
 async fn module_metadata() {
     let m = DnsAxfr;

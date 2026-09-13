@@ -33,6 +33,23 @@ use super::*;
     }
 
     #[test]
+    fn a_www_sub_label_is_skipped_as_an_apex_echo() {
+        // Regression: SecurityTrails' subdomains list routinely includes
+        // "www" — a near-certain hit for any real domain, not an edge case.
+        // `Entity::new` strips a leading "www." label internally, so
+        // "www.example.com" collapses onto the scan's own apex/subject uid.
+        // Before this was fixed, EVERY sub-label was unconditionally tagged
+        // "subdomain" with no apex check at all, permanently mislabeling the
+        // subject's own entity as a subdomain of itself via
+        // `Entity::merge`'s tag-union.
+        assert!(build_subdomain_entity("example.com", "www", "1", "s").is_none());
+        // Case-insensitive, matching `Entity::new`'s own normalisation.
+        assert!(build_subdomain_entity("Example.COM", "WWW", "1", "s").is_none());
+        // A genuine sub-label is unaffected.
+        assert!(build_subdomain_entity("example.com", "mail", "1", "s").is_some());
+    }
+
+    #[test]
     fn associated_entity_accepts_real_hostname() {
         let e = build_associated_entity("1.2.3.4", Some("mail.acme.com."), "7", "s").expect("should succeed");
         assert_eq!(e.kind, EntityKind::Domain);

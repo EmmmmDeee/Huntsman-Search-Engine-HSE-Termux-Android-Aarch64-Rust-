@@ -167,6 +167,26 @@ fn forward_inbound_cname_alias_is_emitted() {
     );
 }
 
+#[test]
+fn a_www_cname_to_the_apex_is_not_emitted_as_a_mislabeled_subdomain_or_external() {
+    // Regression: "www" CNAMEing to the apex is one of the most common zone
+    // configurations there is — an inbound CNAME whose query is "www.<target>"
+    // canonicalises to the exact same identity as `target` once `Entity::new`
+    // strips the leading "www." label, even though it's a DIFFERENT raw
+    // string from "github.com" (so it isn't caught by the `query == target_l`
+    // forward-branch check). Before this was fixed, `forward_infra_domain`
+    // classified it against the raw target, found it a "proper subdomain" by
+    // string shape, and tagged it SUBDOMAIN — which then collapsed onto the
+    // scan's own apex/subject uid via `Entity::merge`'s tag-union, mislabeling
+    // the subject's own entity.
+    let recs = vec![rec("cname", "www.github.com", "github.com", 4, 1, 2)];
+    let ents = build_entities(&recs, "github.com", false, "s");
+    assert!(
+        of_kind(&ents, EntityKind::Domain).is_empty(),
+        "a www-CNAME-to-apex must not mint a mislabeled duplicate of the subject: {ents:?}"
+    );
+}
+
 // ── reverse (IP target) ───────────────────────────────────────────────────────
 
 #[test]
