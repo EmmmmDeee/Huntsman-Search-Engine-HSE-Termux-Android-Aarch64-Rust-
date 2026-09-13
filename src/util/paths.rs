@@ -119,11 +119,49 @@ static TEST_BASE_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 pub fn isolate_for_tests() -> PathBuf {
     TEST_BASE_DIR
         .get_or_init(|| {
-            std::env::temp_dir()
-                .join(format!("huntsman-test-home-{}", std::process::id()))
+            let base = std::env::temp_dir();
+            sweep_stale_test_homes(&base);
+            base.join(format!("huntsman-test-home-{}", std::process::id()))
                 .join(".huntsman")
         })
         .clone()
+}
+
+/// Removes every `huntsman-test-home-<pid>` directory under `base` left by a
+/// past, now-dead process. [`isolate_for_tests`] mints a fresh directory per
+/// process and nothing ever removes it — the test binary just exits — so
+/// across many `cargo test` invocations over a long-lived host these
+/// accumulate without bound: found 375 leftover directories spanning 8 days
+/// in one long session, the same never-reclaimed-across-runs shape
+/// `tests/common`'s `tmp_db`/`tmp_dir` had (see their doc comments).
+///
+/// A directory is swept only once its exact pid is confirmed dead via
+/// `/proc/<pid>` — never by name pattern alone, since several test binaries
+/// (lib, api, smoke, …) legitimately run concurrently under different,
+/// simultaneously-live pids, exactly as [`isolate_for_tests`]'s own doc
+/// comment describes; deleting one of those out from under its still-running
+/// process would corrupt that process's test run rather than merely reclaim
+/// disk. `/proc` is Linux-specific, matching every platform this crate
+/// targets (Termux/Android and Linux CI; see the crate's own platform scope).
+fn sweep_stale_test_homes(base: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(pid_str) = name.strip_prefix("huntsman-test-home-") else {
+            continue;
+        };
+        let Ok(pid) = pid_str.parse::<u32>() else {
+            continue;
+        };
+        if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 /// `$HOME/.huntsman/<name>` — a file directly under the base data directory,
@@ -209,5 +247,43 @@ mod tests {
     #[test]
     fn base_dir_ends_in_dot_huntsman() {
         assert!(huntsman_dir().ends_with(".huntsman"));
+    }
+
+    #[test]
+    fn sweep_stale_test_homes_removes_a_dead_pid_but_never_a_live_one() {
+        let base = std::env::temp_dir();
+        // A pid far past any real process's range: guaranteed dead, so its
+        // directory must be swept.
+        let dead = base.join("huntsman-test-home-999999999");
+        std::fs::create_dir_all(dead.join("nested")).expect("should succeed");
+        std::fs::write(dead.join("nested/file.txt"), b"stale").expect("should succeed");
+        // This test's OWN process is unquestionably alive, so a directory
+        // stamped with its real pid must survive the sweep untouched — the
+        // core safety property: never delete a concurrently-running test
+        // binary's own live directory.
+        let live = base.join(format!("huntsman-test-home-{}", std::process::id()));
+        std::fs::create_dir_all(&live).expect("should succeed");
+        // An unrelated file that merely shares the temp dir must never be
+        // touched by name-pattern matching alone.
+        let unrelated = base.join("huntsman-test-home-not-a-pid");
+        std::fs::create_dir_all(&unrelated).expect("should succeed");
+
+        sweep_stale_test_homes(&base);
+
+        assert!(
+            !dead.exists(),
+            "a directory whose pid is confirmed dead must be swept"
+        );
+        assert!(
+            live.exists(),
+            "a directory stamped with this (live) process's own pid must never be swept"
+        );
+        assert!(
+            unrelated.exists(),
+            "a non-numeric suffix must never be treated as a pid and swept"
+        );
+
+        let _ = std::fs::remove_dir_all(&live);
+        let _ = std::fs::remove_dir_all(&unrelated);
     }
 }
