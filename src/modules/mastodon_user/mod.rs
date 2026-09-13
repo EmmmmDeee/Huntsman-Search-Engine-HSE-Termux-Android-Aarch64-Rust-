@@ -388,6 +388,7 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
         }
     }
 
+    crate::core::entity::dedup_merge_entities(&mut result.entities);
     result.entities
 }
 
@@ -604,6 +605,35 @@ mod tests {
         assert!(
             !ents.iter().any(|e| e.kind == EntityKind::Address),
             "a field named 'Clock' must not be treated as a location"
+        );
+    }
+
+    #[test]
+    fn two_location_fields_geocoding_to_the_same_point_dedup_to_one_coordinates_entity() {
+        // Regression: `city_coords` is a many-to-one phrase lookup, so two
+        // differently-worded custom profile fields naming the same city
+        // (e.g. "Location" and "City", both legitimate location-field
+        // labels) each independently resolved to the identical centroid —
+        // this loop had no gate of any kind on the emitted Coordinates
+        // entity.
+        let acct = make_acct(
+            "alice",
+            None,
+            None,
+            None,
+            vec![
+                ("Location", "Sydney NSW 2000", false),
+                ("City", "Sydney, New South Wales", false),
+            ],
+        );
+        let ents = build_entities(acct, "mastodon.social", "scan-mst-coord");
+        let coords = ents
+            .iter()
+            .filter(|e| e.kind == EntityKind::Coordinates)
+            .count();
+        assert_eq!(
+            coords, 1,
+            "two location fields naming the same city must dedup to one Coordinates entity: {ents:?}"
         );
     }
 

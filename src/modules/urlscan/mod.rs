@@ -458,6 +458,12 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
             }),
     );
 
+    // `intel.countries` is a `BTreeSet<String>` deduped by exact text (no
+    // case-folding), while `city_coords` lowercases internally before
+    // matching — two country strings differing only by case are distinct set
+    // members that still resolve to the identical centroid. Catch that (and
+    // any other accidental (kind, value) collision below) with one pass.
+    crate::core::entity::dedup_merge_entities(&mut out);
     out
 }
 

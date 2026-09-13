@@ -63,6 +63,40 @@ fn name_match_is_whole_word_not_substring() {
 }
 
 #[test]
+fn two_records_geocoding_to_the_same_point_dedup_to_one_coordinates_entity() {
+    // Regression: `city_coords` is a many-to-one phrase lookup, so two exact
+    // matches with different-grain locality composition (one carrying a
+    // postcode, one not) for the same city both independently resolved to
+    // the identical centroid — `records_to_entities` has no gate of any kind
+    // on the emitted Coordinates entity.
+    let recs: Vec<Map<String, Value>> = serde_json::from_str(
+        r#"[
+            {"ABN":"28000030179","Charity_Legal_Name":"Smith Family Trust","Town_City":"Sydney","State":"NSW","Postcode":"2000","Country":"Australia"},
+            {"ABN":"42196844275","Charity_Legal_Name":"Smith Family Foundation","Town_City":"Sydney","State":"NSW","Country":"Australia"}
+        ]"#,
+    )
+    .expect("should succeed");
+    let mut ents = records_to_entities(&recs, 2, "Smith Family", "scan");
+    let raw_coords = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .count();
+    assert_eq!(
+        raw_coords, 2,
+        "sanity: two differently-composed Sydney localities must both resolve via city_coords, or this fixture doesn't exercise the bug"
+    );
+    crate::core::entity::dedup_merge_entities(&mut ents);
+    let coords = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .count();
+    assert_eq!(
+        coords, 1,
+        "two records resolving to the same point must dedup to one Coordinates entity: {ents:?}"
+    );
+}
+
+#[test]
 fn exact_match_fans_out_pivots_candidate_does_not() {
     let recs = sample();
     let ents = records_to_entities(&recs, 4, "The Smith Family", "scan-1");

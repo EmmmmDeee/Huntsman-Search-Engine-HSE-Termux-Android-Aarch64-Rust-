@@ -167,6 +167,7 @@ impl Module for AsicPersons {
             }
         }
 
+        crate::core::entity::dedup_merge_entities(&mut result.entities);
         result.or_hard_failure(hard_failure)
     }
 }

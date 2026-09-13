@@ -160,6 +160,7 @@ impl Module for AcncCharities {
             query,
             &ctx.scan_id,
         ));
+        crate::core::entity::dedup_merge_entities(&mut out.entities);
         Ok(out)
     }
 }

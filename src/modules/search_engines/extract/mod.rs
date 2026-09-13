@@ -197,7 +197,13 @@ pub(super) async fn recycle_entities(
                     e.tag(format!("au-state:{state}"));
                 }
                 e.add_evidence(recycled_evidence(r, "Address", &addr, &combined));
-                if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
+                // Gate on `seen_coords` (declared above, already wired for the
+                // snippet-literal-coordinate leg below) so a different recycled
+                // address resolving to the same city via `city_coords`'s
+                // many-to-one lookup doesn't double-emit the point.
+                if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr)
+                    && seen_coords.insert(format!("{lat:.4},{lon:.4}"))
+                {
                     let coord_val = format!("{lat:.4},{lon:.4}");
                     let mut c = Entity::new(
                         EntityKind::Coordinates,

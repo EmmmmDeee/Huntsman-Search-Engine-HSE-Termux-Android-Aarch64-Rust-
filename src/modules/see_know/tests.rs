@@ -139,6 +139,32 @@ fn an_expanded_and_a_compressed_spelling_of_the_same_ipv6_address_dedup_to_one_e
     );
 }
 
+#[test]
+fn a_differently_cased_spelling_of_the_same_country_dedups_to_one_coordinates_entity() {
+    // Regression: the `@country:` gate compares the raw string, but
+    // `city_coords` lowercases internally before matching — two records
+    // spelling `country` with different casing both passed the gate above
+    // (it's an exact-text compare) yet still resolved to the identical city
+    // centroid. Same root cause as `oathnet_pro::breach`'s equivalent leg.
+    let unrelated = "totally-unrelated-query";
+    let a = serde_json::json!({"country": "Sydney"});
+    let b = serde_json::json!({"country": "sydney"});
+    let mut seen = std::collections::HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_entities(&a, unrelated, "scan", "seeknow.io:test", "fp", &mut seen, &mut result);
+    extract_entities(&b, unrelated, "scan", "seeknow.io:test", "fp", &mut seen, &mut result);
+    let coords: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .collect();
+    assert_eq!(
+        coords.len(),
+        1,
+        "a differently-cased spelling of the same country must dedup to one Coordinates entity: {coords:?}"
+    );
+}
+
 /// Breach/stealer dumps routinely encode identifiers as JSON numbers rather
 /// than strings (`val_str_coerce`'s own doc comment) — SeekNow shares most
 /// field names with OathNet's V2 schema, and `oathnet_pro::breach` already

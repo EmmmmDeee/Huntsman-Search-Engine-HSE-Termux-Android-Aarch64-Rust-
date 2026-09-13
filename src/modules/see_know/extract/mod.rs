@@ -229,7 +229,15 @@ pub(super) fn extract_entities(
         && !crate::util::json::is_null_sentinel(&country)
         && seen.insert(format!("@country:{country}"))
     {
-        if let Some((lat, lon)) = crate::util::city_coords::city_coords(&country) {
+        // Second gate on the RESOLVED coordinate, not just the input text:
+        // `city_coords` lowercases internally before matching, so two records
+        // spelling `country` with different casing both pass the `@country:`
+        // gate above (it compares the raw string) yet still resolve to the
+        // identical city centroid — same root cause already fixed in the
+        // sibling `oathnet_pro::breach`.
+        if let Some((lat, lon)) = crate::util::city_coords::city_coords(&country)
+            && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
+        {
             let coord_val = format!("{lat:.4},{lon:.4}");
             let mut c = Entity::new(
                 EntityKind::Coordinates,

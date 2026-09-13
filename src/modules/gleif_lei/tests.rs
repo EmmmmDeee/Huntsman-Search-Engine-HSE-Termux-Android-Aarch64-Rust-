@@ -55,6 +55,49 @@ fn module_metadata() {
 }
 
 #[test]
+fn two_records_geocoding_to_the_same_point_dedup_to_one_coordinates_entity() {
+    // Regression: `city_coords` is a many-to-one phrase lookup, so two exact
+    // matches with different-grain HQ-address composition (one carrying a
+    // postal code, one not) for the same city both independently resolved to
+    // the identical centroid — `records_to_entities` has no gate of any kind
+    // on the emitted Coordinates entity.
+    let raw = r#"{
+        "meta": {"pagination": {"total": 2}},
+        "data": [
+            {"attributes": {"lei": "AAAAAAAAAAAAAAAAAAAA", "entity": {
+                "legalName": {"name": "Acme Holdings Pty Ltd"},
+                "jurisdiction": "AU", "status": "ACTIVE",
+                "headquartersAddress": {"city": "Sydney", "region": "AU-NSW", "postalCode": "2000", "country": "AU"}
+            }}},
+            {"attributes": {"lei": "BBBBBBBBBBBBBBBBBBBB", "entity": {
+                "legalName": {"name": "Acme Trading Co"},
+                "jurisdiction": "AU", "status": "ACTIVE",
+                "headquartersAddress": {"city": "Sydney", "country": "AU"}
+            }}}
+        ]
+    }"#;
+    let resp: GleifResp = serde_json::from_str(raw).expect("should succeed");
+    let mut ents = records_to_entities(&resp, "Acme", "scan");
+    let raw_coords = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .count();
+    assert_eq!(
+        raw_coords, 2,
+        "sanity: two differently-composed Sydney addresses must both resolve via city_coords, or this fixture doesn't exercise the bug"
+    );
+    crate::core::entity::dedup_merge_entities(&mut ents);
+    let coords = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .count();
+    assert_eq!(
+        coords, 1,
+        "two records resolving to the same point must dedup to one Coordinates entity: {ents:?}"
+    );
+}
+
+#[test]
 fn au_entity_emits_acn_but_foreign_does_not() {
     let resp = sample();
     // Seed "BHP" matches both rows on the token "BHP".
