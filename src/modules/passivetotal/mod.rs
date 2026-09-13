@@ -258,7 +258,18 @@ fn build_entities(
             resolve_type.eq_ignore_ascii_case("ip") || (resolve_type.is_empty() && is_ip(&resolve));
 
         if looks_ip {
-            if !is_ip(&resolve) || !seen.insert(format!("ip:{resolve}")) {
+            // `is_ip` only validates; the dedup key must still be the
+            // canonical form, or an expanded/mixed-case IPv6 spelling and a
+            // compressed one dedup separately despite colliding on the same
+            // uid `Entity::new` constructs — see mnemonic_pdns's identical
+            // fix (this module's own `ip_eq` shows the same IPv6-forms
+            // awareness was already applied to a DIFFERENT comparison here).
+            if !is_ip(&resolve)
+                || !seen.insert(format!(
+                    "ip:{}",
+                    crate::core::entity::normalise(&EntityKind::IpAddress, &resolve)
+                ))
+            {
                 continue;
             }
             let mut e = Entity::new(EntityKind::IpAddress, &resolve, confidence::HIGH, scan_id);

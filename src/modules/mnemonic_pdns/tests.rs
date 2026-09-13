@@ -23,6 +23,34 @@ fn of_kind(ents: &[Entity], kind: EntityKind) -> Vec<&Entity> {
 // ── trait metadata ──────────────────────────────────────────────────────────
 
 #[test]
+fn forward_aaaa_dedups_an_expanded_and_a_compressed_ipv6_spelling() {
+    // Regression: `is_ip` only validates; the dedup key must still be the
+    // canonical form, or an expanded/mixed-case IPv6 spelling and a
+    // compressed one dedup separately despite colliding on the same uid
+    // once `Entity::new` constructs them. A real public address (Google
+    // Public DNS) is used, not an RFC 3849 documentation one, purely for
+    // realism.
+    let records = vec![
+        rec(
+            "aaaa",
+            "github.com",
+            "2001:4860:4860:0000:0000:0000:0000:8888",
+            1,
+            0,
+            0,
+        ),
+        rec("aaaa", "github.com", "2001:4860:4860::8888", 1, 0, 0),
+    ];
+    let ents = build_entities(&records, "github.com", false, "s");
+    let ips = of_kind(&ents, EntityKind::IpAddress);
+    assert_eq!(
+        ips.len(),
+        1,
+        "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+    );
+}
+
+#[test]
 fn accepts_domain_ip_url_only() {
     let m = MnemonicPdns;
     assert!(m.accepts(&Target::new(TargetKind::Domain, "github.com")));

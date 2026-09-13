@@ -33,6 +33,32 @@ fn body(json: &str) -> DomainResp {
     serde_json::from_str(json).expect("should succeed")
 }
 
+#[test]
+fn resolved_ips_dedup_an_expanded_and_a_compressed_ipv6_spelling() {
+    // Regression: see ip_reputation's identical fix for the general shape.
+    // A real public address (Google Public DNS) is used, not an RFC 3849
+    // documentation one, so `ip.parse::<IpAddr>().is_ok()`'s validity check
+    // cannot mask the gap either way.
+    let b = body(
+        r#"{
+          "results": [
+            {"host": "a.example.com", "ip_address": "2001:4860:4860:0000:0000:0000:0000:8888"},
+            {"host": "b.example.com", "ip_address": "2001:4860:4860::8888"}
+          ]
+        }"#,
+    );
+    let ents = build_entities(&b, "example.com", "s");
+    let ips: Vec<&Entity> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .collect();
+    assert_eq!(
+        ips.len(),
+        1,
+        "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+    );
+}
+
 fn find<'a>(ents: &'a [Entity], kind: EntityKind, value: &str) -> Option<&'a Entity> {
     ents.iter().find(|e| e.kind == kind && e.value == value)
 }

@@ -393,7 +393,13 @@ fn emit_dossier_entry(
     if let Some(ip) = IP_FIELDS.iter().find_map(|k| get(k))
         && ip.parse::<std::net::IpAddr>().is_ok()
         && !crate::core::validation::is_bogus_ip(ip)
-        && seen.insert(format!("ip:{ip}"))
+        // `.is_ok()` validates but discards the parsed value, so the dedup
+        // key stays the raw, non-canonicalised string — see combined.rs's
+        // identical fix.
+        && seen.insert(format!(
+            "ip:{}",
+            crate::core::entity::normalise(&EntityKind::IpAddress, ip)
+        ))
     {
         push(
             Entity::new(EntityKind::IpAddress, ip, confidence::HIGH, sid),

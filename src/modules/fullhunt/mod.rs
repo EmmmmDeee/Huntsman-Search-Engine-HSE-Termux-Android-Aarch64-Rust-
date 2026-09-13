@@ -201,7 +201,9 @@ fn build_entities(body: &DomainResp, domain: &str, scan_id: &str) -> Vec<Entity>
         // ── Resolved IP as its own asset ──────────────────────────
         if let Some(ip) = ip
             && ip.parse::<std::net::IpAddr>().is_ok()
-            && seen_ips.insert(ip.to_string())
+            // See ip_reputation's identical fix: `ip.to_string()` clones the
+            // raw `&str` rather than reformatting the parsed value.
+            && seen_ips.insert(crate::core::entity::normalise(&EntityKind::IpAddress, ip))
         {
             let mut ie = Entity::new(EntityKind::IpAddress, ip, confidence::HIGH, scan_id);
             ie.tag(SRC);

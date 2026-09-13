@@ -512,7 +512,12 @@ fn passive_dns_entities(rows: &[PassiveDnsRow], domain: &str, scan_id: &str) -> 
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
             && addr.parse::<std::net::IpAddr>().is_ok()
-            && seen_ips.insert(addr.to_string())
+            // `addr.to_string()` clones the raw `&str` — it is NOT the same
+            // as `core::entity::normalise`'s parse-then-reformat, so two
+            // differently-formatted spellings of the same address (e.g. an
+            // expanded vs compressed IPv6 form) dedup separately despite
+            // colliding on the same uid `Entity::new` constructs.
+            && seen_ips.insert(crate::core::entity::normalise(&EntityKind::IpAddress, addr))
         {
             let mut e = Entity::new(EntityKind::IpAddress, addr, confidence::NOTABLE, scan_id);
             e.tag(SRC);

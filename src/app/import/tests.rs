@@ -643,6 +643,50 @@ fn combined_search_parses_records_and_skips_metadata() {
     }));
 }
 
+// Two result records under one module, spelling the SAME real public IPv6
+// address (Google Public DNS) two different ways — expanded vs compressed.
+// Not an RFC 3849 documentation address on purpose: `is_bogus_ip` rejects the
+// documentation range, which would mask the dedup gap behind a fixture the
+// gate rejects in both old and new code either way.
+const COMBINED_REPEATED_IP: &str = "Module: Combined Search
+Query: javery
+Search Type: Username
+Results: 2
+
+  [1]
+    Key:
+      snusbase
+    Results:
+      [1]
+        Username:
+          javery
+        Ip:
+          2001:4860:4860:0000:0000:0000:0000:8888
+      [2]
+        Username:
+          javery
+        Lastip:
+          2001:4860:4860::8888
+";
+
+#[test]
+fn combined_search_dedups_an_expanded_and_a_compressed_ipv6_spelling() {
+    // Regression: a bare clone of the raw string doesn't canonicalise the
+    // way `core::entity::normalise` does, so an expanded and a compressed
+    // spelling of the same IPv6 address each earned their own dedup slot
+    // despite colliding on the same uid once `Entity::new` constructs them.
+    let (ents, _stats) = parse_combined_search(COMBINED_REPEATED_IP, "s");
+    let ips: Vec<&Entity> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .collect();
+    assert_eq!(
+        ips.len(),
+        1,
+        "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+    );
+}
+
 // A real-world Combined Search aggregator export echoes each module's results
 // TWICE: once nested under a "Modules:" section, and again verbatim under a
 // separate top-level "Results:" section (both keyed off the same underlying
@@ -1220,6 +1264,37 @@ const SEEKNOW_ENTRY_ONLY: &str = "\
         \u{2022} lastip: 24.32.96.71
 ";
 
+const SEEKNOW_TWO_ENTRIES_SAME_IP: &str = "\
+================================================================================
+                          RAW DATA BY DATABASE
+================================================================================
+
+  [1] Probe \u{2022} INF0SEC Leaks — Intelligence Data
+      Entry #1:
+        \u{2022} username: probeuser
+        \u{2022} ip: 2001:4860:4860:0000:0000:0000:0000:8888
+      Entry #2:
+        \u{2022} username: probeuser2
+        \u{2022} lastip: 2001:4860:4860::8888
+";
+
+#[test]
+fn dossier_dedups_an_expanded_and_a_compressed_ipv6_spelling() {
+    // Regression: see combined_search's identical fix for the general shape.
+    // A real public address (Google Public DNS) is used, not an RFC 3849
+    // documentation one, so `is_bogus_ip` cannot mask the gap.
+    let (ents, _stats) = parse_dossier(SEEKNOW_TWO_ENTRIES_SAME_IP, "s");
+    let ips: Vec<&Entity> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .collect();
+    assert_eq!(
+        ips.len(),
+        1,
+        "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+    );
+}
+
 #[test]
 fn dossier_entry_fields_survive_without_a_contact_summary() {
     let (mut ents, stats) = parse_dossier(SEEKNOW_ENTRY_ONLY, "s");
@@ -1761,6 +1836,44 @@ fn stealerlogs_parses_victims_creds_and_domains() {
     );
 }
 
+const STEALER_IPV4_MAPPED_DOMAIN: &str = "Module: Stealerlogs
+Query: javery
+Search Type: Auto Detect
+Results: 0
+
+Victims:
+  [1]
+    Log Id:
+      ea0621568ccd7fee2bd78e16f637727612aca78d4b3d1f6bf8175cf2ca8de831
+    Domains:
+      [1]
+        ::ffff:8.8.8.8
+      [2]
+        8.8.8.8
+";
+
+#[test]
+fn stealerlogs_collapses_an_ipv4_mapped_and_a_plain_ipv4_domain_entry() {
+    // Regression: unlike the other IpAddress sites in this file, this one
+    // DID reformat via a parsed `IpAddr` — `IpAddr::to_string()` already
+    // canonicalises expanded/mixed-case IPv6 correctly — but Rust's
+    // `Ipv6Addr::to_string()` renders an IPv4-mapped address as
+    // "::ffff:a.b.c.d", NOT collapsed to plain IPv4 the way `core::entity::
+    // normalise`'s explicit `.to_ipv4_mapped()` step does. A genuinely
+    // public address (Google Public DNS) is used so `is_bogus_ip` cannot
+    // mask the gap.
+    let (entities, _stats, _rows) = parse_stealerlogs(STEALER_IPV4_MAPPED_DOMAIN, "s");
+    let ips: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .collect();
+    assert_eq!(
+        ips.len(),
+        1,
+        "an IPv4-mapped IPv6 spelling and its plain IPv4 equivalent must dedup to one entity: {ips:?}"
+    );
+}
+
 #[test]
 fn stealerlogs_credential_pwned_at_survives_onto_its_own_entities() {
     // Regression: `Cred::pwned_at` was parsed from the real `Pwned At:` field
@@ -1856,6 +1969,38 @@ lon: 144.9631
 isp: Telstra
 query: 1.128.0.50
 ";
+
+const OATHNET_REPORT_TWO_ENTRIES_SAME_IP: &str = "=== DATABASE LOGS ===
+
+[Breach Logs] (2 entries)
+
+Entry 1:
+dbname: examplebreach.com
+username: javery
+ip: 2001:4860:4860:0000:0000:0000:0000:8888
+
+Entry 2:
+dbname: noise.com
+username: javery2
+ip: 2001:4860:4860::8888
+";
+
+#[test]
+fn oathnet_report_dedups_an_expanded_and_a_compressed_ipv6_spelling() {
+    // Regression: see combined_search's identical fix for the general shape.
+    // A real public address (Google Public DNS) is used, not an RFC 3849
+    // documentation one, so `is_bogus_ip` cannot mask the gap.
+    let (ents, _stats) = parse_oathnet_report(OATHNET_REPORT_TWO_ENTRIES_SAME_IP, "s");
+    let ips: Vec<&Entity> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .collect();
+    assert_eq!(
+        ips.len(),
+        1,
+        "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+    );
+}
 
 #[test]
 fn oathnet_report_is_detected_and_others_are_not() {
@@ -2292,6 +2437,26 @@ fn parse_sql_dump_extracts_rows_with_escaped_and_multi_row_values() {
 /// credentials and zero identities from this exact two-row table. Real
 /// provider domains, as every fixture here (an `@example.*` placeholder is
 /// filtered upstream).
+#[test]
+fn parse_sql_dump_dedups_an_expanded_and_a_compressed_ipv6_spelling() {
+    // Regression: see combined_search's identical fix for the general shape.
+    // A real public address (Google Public DNS) is used, not an RFC 3849
+    // documentation one, so `is_bogus_ip` cannot mask the gap.
+    let body = "INSERT INTO `users` (`id`, `username`, `ip`) VALUES\n\
+        (1, 'user1', '2001:4860:4860:0000:0000:0000:0000:8888'),\n\
+        (2, 'user2', '2001:4860:4860::8888');\n";
+    let (entities, _stats) = parse_sql_dump(body, "s");
+    let ips: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .collect();
+    assert_eq!(
+        ips.len(),
+        1,
+        "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+    );
+}
+
 #[test]
 fn parse_sql_dump_recovers_an_email_held_in_the_username_column() {
     let body = "INSERT INTO `users` (`id`, `username`, `password`) VALUES\n\

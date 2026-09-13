@@ -600,6 +600,36 @@ use crate::core::confidence;
     }
 
     #[test]
+    fn an_expanded_and_a_compressed_spelling_of_the_same_ipv6_address_dedup_to_one_entity() {
+        use serde_json::json;
+        // Regression: a bare `.clone()` doesn't canonicalise the way
+        // `core::entity::normalise`'s IpAddress arm does (parses and
+        // reformats), so an expanded and a compressed spelling of the same
+        // IPv6 address each earned their own dedup slot despite colliding
+        // on the same uid once `Entity::new` constructs them. A real public
+        // address is used (Google Public DNS), not an RFC 3849 documentation
+        // one — `is_public_ip` admits it either way, but staying off the
+        // doc range keeps this test unaffected by any future tightening of
+        // that gate.
+        let expanded = json!({"ip": "2001:4860:4860:0000:0000:0000:0000:8888", "source": "DB1"});
+        let compressed = json!({"lastip": "2001:4860:4860::8888", "source": "DB2"});
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&expanded, "unrelated", "scan", "oathnet.org:test", &mut seen, &mut result);
+        extract_breach_entities(&compressed, "unrelated", "scan", "oathnet.org:test", &mut seen, &mut result);
+        let ips: Vec<&Entity> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::IpAddress)
+            .collect();
+        assert_eq!(
+            ips.len(),
+            1,
+            "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+        );
+    }
+
+    #[test]
     fn a_sigil_prefixed_and_a_bare_spelling_of_the_same_username_dedup_to_one_entity() {
         use serde_json::json;
         // Regression: a bare `.to_lowercase()` case-folds but does not strip a

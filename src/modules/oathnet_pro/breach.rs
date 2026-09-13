@@ -418,7 +418,13 @@ pub(super) fn extract_breach_entities_with(
     for ip_field in ["ip", "lastip", "last_ip"] {
         if let Some(ip) = val_str(item, ip_field)
             && is_public_ip(&ip)
-            && seen.insert(ip.clone())
+            // A bare clone of the raw string doesn't canonicalise the way
+            // `core::entity::normalise`'s IpAddress arm does (parses and
+            // reformats — collapsing expanded/mixed-case IPv6 and an
+            // IPv4-mapped spelling), so two differently-formatted spellings
+            // of the same address each earned their own dedup slot despite
+            // colliding on the same uid once `Entity::new` constructs them.
+            && seen.insert(crate::core::entity::normalise(&EntityKind::IpAddress, &ip))
         {
             push_oathnet_entity(
                 result,

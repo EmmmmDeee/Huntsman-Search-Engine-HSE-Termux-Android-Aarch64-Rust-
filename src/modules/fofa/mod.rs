@@ -225,8 +225,9 @@ fn build_entities(body: &FofaResp, scan_id: &str) -> ModuleResult {
     // singular) and the aggregate-once convention `zoomeye`/`shodan` use for
     // the identical per-port-row shape. Each hit still contributes its own
     // Evidence record (one per port), so no per-port detail is lost.
-    let mut ip_entities: std::collections::HashMap<&str, Entity> = std::collections::HashMap::new();
-    let mut ip_order: Vec<&str> = Vec::new();
+    let mut ip_entities: std::collections::HashMap<String, Entity> =
+        std::collections::HashMap::new();
+    let mut ip_order: Vec<String> = Vec::new();
     let mut seen_domains: std::collections::HashSet<&str> = std::collections::HashSet::new();
 
     for hit in &body.results {
@@ -235,10 +236,18 @@ fn build_entities(body: &FofaResp, scan_id: &str) -> ModuleResult {
             // observation of that host's infrastructure — the provider scanned
             // it — so it sits a rung above the domain below, which is derived
             // from the same record rather than observed on its own.
-            let ip_entity = match ip_entities.entry(hit.ip.as_str()) {
+            //
+            // Keyed on the CANONICAL form (`core::entity::normalise`), not
+            // the raw string: two hits for the same host can report the same
+            // IP in different textual forms (an expanded vs compressed IPv6
+            // spelling), and a raw-string key would mint two `Entity`
+            // objects — each accumulating only ITS OWN hits' evidence —
+            // for what collides on one uid once `Entity::new` constructs it.
+            let canonical_ip = crate::core::entity::normalise(&EntityKind::IpAddress, &hit.ip);
+            let ip_entity = match ip_entities.entry(canonical_ip.clone()) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => {
-                    ip_order.push(hit.ip.as_str());
+                    ip_order.push(canonical_ip);
                     let mut new_entity = Entity::new(
                         EntityKind::IpAddress,
                         &hit.ip,
@@ -287,7 +296,7 @@ fn build_entities(body: &FofaResp, scan_id: &str) -> ModuleResult {
     }
 
     for ip in ip_order {
-        if let Some(e) = ip_entities.remove(ip) {
+        if let Some(e) = ip_entities.remove(&ip) {
             result.push(e);
         }
     }

@@ -295,7 +295,12 @@ fn build_entities(domain: &str, body: &SubdomainFinderResp, scan_id: &str) -> Ve
         out.push(d);
 
         if let Some(ip) = ip
-            && seen_ips.insert(ip.to_string())
+            // See ip_reputation's identical fix: `ip.to_string()` clones the
+            // raw `&str` rather than parsing and reformatting it, so two
+            // differently-formatted spellings of the same address dedup
+            // separately despite colliding on the same uid `Entity::new`
+            // constructs.
+            && seen_ips.insert(crate::core::entity::normalise(&EntityKind::IpAddress, ip))
         {
             let mut ie = Entity::new(EntityKind::IpAddress, ip, confidence::HIGH, scan_id);
             ie.tag("c99");

@@ -226,6 +226,39 @@ use super::*;
     }
 
     #[test]
+    fn an_expanded_and_a_compressed_spelling_of_the_same_ipv6_address_dedup_to_one_entity() {
+        use crate::core::entity::EntityKind;
+
+        fn stealer_with_ip(ip: Option<&str>) -> Stealer {
+            Stealer {
+                computer_name: None,
+                operating_system: None,
+                date_compromised: None,
+                date_uploaded: None,
+                stealer_family: None,
+                ip: ip.map(String::from),
+                malware_path: None,
+                credentials: vec![],
+            }
+        }
+
+        // Regression: `ip.to_string()` clones the raw `&str` rather than
+        // the `core::entity::normalise` parse-then-reformat `is_public_ip`
+        // itself performs internally and discards. A real public address
+        // (Google Public DNS) is used, not an RFC 3849 documentation one.
+        let stealers = [
+            stealer_with_ip(Some("2001:4860:4860:0000:0000:0000:0000:8888")),
+            stealer_with_ip(Some("2001:4860:4860::8888")),
+        ];
+        let ips = victim_ip_entities(&stealers, "s");
+        assert_eq!(
+            ips.iter().filter(|e| e.kind == EntityKind::IpAddress).count(),
+            1,
+            "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+        );
+    }
+
+    #[test]
     fn victim_ips_only_admit_routable_public_addresses() {
         use crate::core::entity::EntityKind;
         use crate::core::tags;

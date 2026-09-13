@@ -234,7 +234,17 @@ fn build_entities(
         // emission itself — no nested `if`.
         if query == target_l {
             match rrtype.as_str() {
-                "a" | "aaaa" if is_ip(&answer) && seen.insert(format!("ip:{answer}")) => {
+                // `is_ip` only validates; the dedup key must still be the
+                // canonical form, or an expanded/mixed-case IPv6 spelling
+                // and a compressed one dedup separately despite colliding on
+                // the same uid `Entity::new` constructs.
+                "a" | "aaaa"
+                    if is_ip(&answer)
+                        && seen.insert(format!(
+                            "ip:{}",
+                            crate::core::entity::normalise(&EntityKind::IpAddress, &answer)
+                        )) =>
+                {
                     let mut e =
                         Entity::new(EntityKind::IpAddress, &answer, confidence::HIGH, scan_id);
                     e.tag(SRC);

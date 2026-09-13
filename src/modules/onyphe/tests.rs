@@ -102,6 +102,31 @@ fn vstr_trims_and_rejects_empty() {
 }
 
 #[test]
+fn resolved_ips_for_a_domain_target_dedup_an_expanded_and_compressed_ipv6_spelling() {
+    // Regression: a bare clone doesn't canonicalise the way `core::entity::
+    // normalise` does, so an expanded and a compressed spelling of the same
+    // resolved IPv6 address each earned their own dedup slot. A real public
+    // address (Google Public DNS) is used, not an RFC 3849 documentation
+    // one, purely for realism (no gate here to route around).
+    let docs = vec![
+        serde_json::json!({"@category": "resolver", "ip": "2001:4860:4860:0000:0000:0000:0000:8888"}),
+        serde_json::json!({"@category": "resolver", "ip": "2001:4860:4860::8888"}),
+    ];
+    let target = Target::new(TargetKind::Domain, "example.com");
+    let r = extract_entities(&docs, &target, "example.com", "domain", "scan");
+    let ips: Vec<&Entity> = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .collect();
+    assert_eq!(
+        ips.len(),
+        1,
+        "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+    );
+}
+
+#[test]
 fn coordinates_carry_the_originating_ip_for_login_ip_recognition() {
     // Pass 31: the correlator's shared `person_login_ip_coords` (used by
     // `best_au_location_estimate` and `au_location_corroboration`) only

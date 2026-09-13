@@ -211,7 +211,11 @@ pub(super) fn extract_entities(
     for ip_field in ["ip", "lastip", "last_ip"] {
         if let Some(ip) = val_str(item, ip_field)
             && crate::util::preflight::is_public_ip(&ip)
-            && seen.insert(ip.clone())
+            // See oathnet_pro::breach's identical fix: a bare clone doesn't
+            // canonicalise the way `core::entity::normalise` does, so two
+            // differently-formatted spellings of the same address dedup
+            // separately despite colliding on one uid.
+            && seen.insert(crate::core::entity::normalise(&EntityKind::IpAddress, &ip))
         {
             push_breach_entity(
                 result,

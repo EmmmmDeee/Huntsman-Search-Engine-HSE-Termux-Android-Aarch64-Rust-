@@ -114,6 +114,31 @@ fn extract_entities(
     );
 }
 
+#[test]
+fn an_expanded_and_a_compressed_spelling_of_the_same_ipv6_address_dedup_to_one_entity() {
+    // Regression: see oathnet_pro::breach's identical fix for the general
+    // shape. A real public address (Google Public DNS) is used, not an
+    // RFC 3849 documentation one, to stay clear of `is_public_ip`'s
+    // reserved-range gate regardless of how strictly it is tightened later.
+    let unrelated = "totally-unrelated-query";
+    let expanded = serde_json::json!({"ip": "2001:4860:4860:0000:0000:0000:0000:8888"});
+    let compressed = serde_json::json!({"lastip": "2001:4860:4860::8888"});
+    let mut seen = std::collections::HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_entities(&expanded, unrelated, "scan", "seeknow.io:test", "fp", &mut seen, &mut result);
+    extract_entities(&compressed, unrelated, "scan", "seeknow.io:test", "fp", &mut seen, &mut result);
+    let ips: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .collect();
+    assert_eq!(
+        ips.len(),
+        1,
+        "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+    );
+}
+
 /// Breach/stealer dumps routinely encode identifiers as JSON numbers rather
 /// than strings (`val_str_coerce`'s own doc comment) — SeekNow shares most
 /// field names with OathNet's V2 schema, and `oathnet_pro::breach` already

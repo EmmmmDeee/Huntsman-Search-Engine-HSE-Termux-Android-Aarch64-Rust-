@@ -519,6 +519,32 @@ fn a_formatted_and_a_bare_spelling_of_the_same_phone_number_dedup_to_one_entity(
 }
 
 #[test]
+fn an_expanded_and_a_compressed_spelling_of_the_same_ipv6_address_dedup_to_one_entity() {
+    // Regression: see oathnet_pro's identical fix for the general shape.
+    // A real public address (Google Public DNS) is used, not an RFC 3849
+    // documentation one, to stay clear of `is_public_ip`'s reserved-range
+    // gate regardless of how strictly it is tightened in future.
+    let entries = vec![
+        json!({"name": "Jane Doe", "ip_address": "2001:4860:4860:0000:0000:0000:0000:8888"}),
+        json!({"name": "Jane Doe", "ip": "2001:4860:4860::8888"}),
+    ];
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_records(&entries, "Jane Doe", "fp", "s", &mut seen, &mut result);
+
+    let ips: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .collect();
+    assert_eq!(
+        ips.len(),
+        1,
+        "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+    );
+}
+
+#[test]
 fn a_sigil_prefixed_and_a_bare_spelling_of_the_same_username_dedup_to_one_entity() {
     // Regression: a bare `.to_lowercase()` case-folds but does not strip a
     // leading `@` handle sigil the way `Entity::new` does internally via

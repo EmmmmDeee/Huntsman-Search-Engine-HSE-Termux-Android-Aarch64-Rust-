@@ -323,7 +323,9 @@ fn extract_entities(
         if matches!(target.kind, TargetKind::Domain)
             && let Some(ip) = vstr(r, "ip")
             && ip != value
-            && seen.insert(ip.clone())
+            // A bare clone doesn't canonicalise the way `core::entity::
+            // normalise` does — see ip_reputation's identical fix.
+            && seen.insert(crate::core::entity::normalise(&EntityKind::IpAddress, &ip))
         {
             let mut ie = Entity::new(EntityKind::IpAddress, &ip, confidence::HIGH_PLUS, scan_id);
             ie.add_evidence(ev());

@@ -303,7 +303,13 @@ fn extract_entities(body: &ZoomResp, target: &Target, value: &str, scan_id: &str
             && ips_emitted < MAX_IPS
             && let Some(ip) = vstr(m, "ip")
             && ip != value
-            && seen.insert(format!("@ip:{ip}"))
+            // Raw string in the dedup key doesn't canonicalise the way
+            // `core::entity::normalise` does — see ip_reputation's identical
+            // fix.
+            && seen.insert(format!(
+                "@ip:{}",
+                crate::core::entity::normalise(&EntityKind::IpAddress, &ip)
+            ))
         {
             let mut ie = Entity::new(EntityKind::IpAddress, &ip, confidence::HIGH_PLUS, scan_id);
             ie.tag(SRC);

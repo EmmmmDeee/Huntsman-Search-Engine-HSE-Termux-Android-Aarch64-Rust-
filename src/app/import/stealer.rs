@@ -401,8 +401,15 @@ pub(super) fn parse_stealerlogs(
             // account on. Classify by shape; gate freemail/mega/placeholder
             // domains out of the pivot set exactly as the engine's expansion does
             // (deep-expanding gmail.com maps a platform, not the subject).
-            if let Ok(ip) = dom.parse::<std::net::IpAddr>() {
-                let ip = ip.to_string();
+            if dom.parse::<std::net::IpAddr>().is_ok() {
+                // `core::entity::normalise` does its own parse-then-reformat
+                // AND collapses an IPv4-mapped IPv6 spelling (`::ffff:a.b.
+                // c.d`) to plain IPv4 — a step the previous `IpAddr::
+                // to_string()` did not perform (verified: it renders that
+                // form as `::ffff:a.b.c.d`, not `a.b.c.d`), so that spelling
+                // and its plain-IPv4 equivalent deduped separately despite
+                // colliding on the same uid `Entity::new` constructs.
+                let ip = crate::core::entity::normalise(&EntityKind::IpAddress, dom);
                 if !crate::core::validation::is_bogus_ip(&ip) && seen.insert(format!("ip:{ip}")) {
                     push(
                         Entity::new(EntityKind::IpAddress, &ip, confidence::MEDIUM_HIGH, sid),

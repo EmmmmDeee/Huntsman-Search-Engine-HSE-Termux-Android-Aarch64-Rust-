@@ -28,6 +28,31 @@ fn body(json: &str) -> SubdomainFinderResp {
     serde_json::from_str(json).expect("should succeed")
 }
 
+#[test]
+fn resolved_ips_dedup_an_expanded_and_a_compressed_ipv6_spelling() {
+    // Regression: `seen_ips.insert(ip.to_string())` had no parse/validity
+    // check at all — even weaker than the other sites this session's IP-
+    // dedup pass fixed — and still didn't canonicalise. A real public
+    // address (Google Public DNS) is used, not an RFC 3849 documentation
+    // one, purely for realism (no gate here to route around).
+    let b = body(
+        r#"{
+            "success": true,
+            "subdomains": [
+                {"subdomain": "a.example.com", "ip": "2001:4860:4860:0000:0000:0000:0000:8888", "cloudflare": false},
+                {"subdomain": "b.example.com", "ip": "2001:4860:4860::8888", "cloudflare": false}
+            ]
+        }"#,
+    );
+    let ents = build_entities("example.com", &b, "s");
+    let ips = of_kind(&ents, EntityKind::IpAddress);
+    assert_eq!(
+        ips.len(),
+        1,
+        "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+    );
+}
+
 fn of_kind(ents: &[Entity], kind: EntityKind) -> Vec<&Entity> {
     ents.iter().filter(|e| e.kind == kind).collect()
 }

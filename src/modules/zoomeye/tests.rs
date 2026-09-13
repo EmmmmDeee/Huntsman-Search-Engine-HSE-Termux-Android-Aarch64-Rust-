@@ -2,6 +2,33 @@ use super::*;
 use crate::core::scan::{Target, TargetKind};
 
 /// A representative ZoomEye `host/search` match: nested `portinfo` + `geoinfo`.
+#[test]
+fn resolved_ips_for_a_domain_target_dedup_an_expanded_and_compressed_ipv6_spelling() {
+    // Regression: a raw string in the dedup key doesn't canonicalise the
+    // way `core::entity::normalise` does, so an expanded and a compressed
+    // spelling of the same resolved IPv6 address each earned their own
+    // dedup slot. A real public address (Google Public DNS) is used, not
+    // an RFC 3849 documentation one, purely for realism.
+    let body = ZoomResp {
+        matches: vec![
+            serde_json::json!({"ip": "2001:4860:4860:0000:0000:0000:0000:8888"}),
+            serde_json::json!({"ip": "2001:4860:4860::8888"}),
+        ],
+    };
+    let target = Target::new(TargetKind::Domain, "example.com");
+    let r = extract_entities(&body, &target, "example.com", "scan");
+    let ips: Vec<&Entity> = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .collect();
+    assert_eq!(
+        ips.len(),
+        1,
+        "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+    );
+}
+
 fn sample_match() -> Value {
     serde_json::json!({
         "ip": "8.8.8.8",
