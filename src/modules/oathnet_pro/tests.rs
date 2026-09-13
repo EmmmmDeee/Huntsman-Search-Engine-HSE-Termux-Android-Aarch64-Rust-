@@ -600,6 +600,82 @@ use crate::core::confidence;
     }
 
     #[test]
+    fn a_sigil_prefixed_and_a_bare_spelling_of_the_same_username_dedup_to_one_entity() {
+        use serde_json::json;
+        // Regression: a bare `.to_lowercase()` case-folds but does not strip a
+        // leading `@` handle sigil the way `Entity::new` does internally via
+        // `core::entity::normalise`'s Username arm, so a row spelled "@jordan"
+        // and one spelled "jordan" each earned their own dedup slot despite
+        // colliding on the same uid once constructed.
+        let bare = json!({"username": "jordan_m", "source": "DB1"});
+        let sigil = json!({"username": "@jordan_m", "source": "DB2"});
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&bare, "unrelated", "scan", "oathnet.org:test", &mut seen, &mut result);
+        extract_breach_entities(&sigil, "unrelated", "scan", "oathnet.org:test", &mut seen, &mut result);
+        let unames: Vec<&Entity> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Username)
+            .collect();
+        assert_eq!(
+            unames.len(),
+            1,
+            "a sigil-prefixed and a bare spelling of the same handle must dedup to one entity: {unames:?}"
+        );
+    }
+
+    #[test]
+    fn a_sigil_prefixed_and_a_bare_instagram_handle_dedup_to_one_entity() {
+        use serde_json::json;
+        let bare = json!({"instagram": "jordan_m", "source": "DB1"});
+        let sigil = json!({"instagram": "@jordan_m", "source": "DB2"});
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&bare, "unrelated", "scan", "oathnet.org:test", &mut seen, &mut result);
+        extract_breach_entities(&sigil, "unrelated", "scan", "oathnet.org:test", &mut seen, &mut result);
+        let unames: Vec<&Entity> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Username)
+            .collect();
+        assert_eq!(
+            unames.len(),
+            1,
+            "a sigil-prefixed and a bare spelling of the same Instagram handle must dedup to one entity: {unames:?}"
+        );
+    }
+
+    #[test]
+    fn a_quote_wrapped_and_a_clean_spelling_of_the_same_telegram_handle_dedup_to_one_entity() {
+        use serde_json::json;
+        // Regression: `h.to_lowercase()` doesn't strip a wrapping quote (a
+        // CSV/SQL-dump export artifact) the way `core::entity::normalise`'s
+        // Username arm does, so a dirty and a clean spelling of the same
+        // handle each earned their own dedup slot despite colliding on the
+        // same uid once `Entity::new` constructs them. A trailing-quote-only
+        // fixture is used (not a fully quote-wrapped one): the length gate
+        // `(2..=64).contains(&h.len())` runs on the pre-canonicalisation `h`,
+        // so this must actually reach the dedup line in both old and new code.
+        let clean = json!({"telegram": "jordan_m", "source": "DB1"});
+        let dirty = json!({"telegram": "jordan_m\"", "source": "DB2"});
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&clean, "unrelated", "scan", "oathnet.org:test", &mut seen, &mut result);
+        extract_breach_entities(&dirty, "unrelated", "scan", "oathnet.org:test", &mut seen, &mut result);
+        let unames: Vec<&Entity> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Username)
+            .collect();
+        assert_eq!(
+            unames.len(),
+            1,
+            "a quote-wrapped and a clean spelling of the same handle must dedup to one entity: {unames:?}"
+        );
+    }
+
+    #[test]
     fn extract_breach_entities_non_target_row_tags_candidate() {
         use serde_json::json;
         // A row whose fields do NOT match the target: phone/person/country are

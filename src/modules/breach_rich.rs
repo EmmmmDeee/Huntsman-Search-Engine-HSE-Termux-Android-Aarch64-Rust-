@@ -444,20 +444,35 @@ pub fn extract_rich_detail(
         if let Some(h) = val_str(item, k)
             && h.len() >= 2
             && !is_absent_marker(&h)
-            && seen.insert(format!("@{plat}:{}", h.to_lowercase()))
         {
-            push_breach_entity(
-                result,
-                Entity::new(
-                    EntityKind::Username,
-                    format!("{plat}:{h}"),
-                    confidence::MEDIUM_HIGH,
-                    scan_id,
-                ),
-                ev,
-                source,
-                &[plat],
-            );
+            let value = format!("{plat}:{h}");
+            // The dedup key must match what `Entity::new` will actually
+            // construct below: `normalise`'s Username arm case-folds and
+            // strips a wrapping quote/whitespace from the value's own edges
+            // (it can never see a leading `@` here — the value always starts
+            // with the platform name, not `h` — but a TRAILING quote on `h`,
+            // a CSV/SQL-dump export artifact, sits at the value's own trailing
+            // edge and IS stripped there). A bare `h.to_lowercase()` missed
+            // that, letting a dirty and a clean spelling of the same handle
+            // each earn their own dedup slot despite colliding on the same
+            // uid once constructed.
+            if seen.insert(format!(
+                "@{plat}:{}",
+                crate::core::entity::normalise(&EntityKind::Username, &value)
+            )) {
+                push_breach_entity(
+                    result,
+                    Entity::new(
+                        EntityKind::Username,
+                        value,
+                        confidence::MEDIUM_HIGH,
+                        scan_id,
+                    ),
+                    ev,
+                    source,
+                    &[plat],
+                );
+            }
         }
     }
 

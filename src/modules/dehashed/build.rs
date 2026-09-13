@@ -347,8 +347,13 @@ pub(super) fn extract_records(
             }
         }
         for uname in field_strings(item, "username") {
-            let lower = uname.to_lowercase();
-            if lower.len() >= 3 && seen.insert(lower) {
+            // A bare `.to_lowercase()` case-folds but does not strip a leading
+            // `@` sigil or wrapping quote the way `Entity::new` does internally
+            // via `core::entity::normalise`'s Username arm, so a row spelled
+            // "@jordan" and one spelled "jordan" each earned their own dedup
+            // slot despite colliding on the same uid once constructed.
+            let canonical = crate::core::entity::normalise(&EntityKind::Username, &uname);
+            if canonical.len() >= 3 && seen.insert(canonical) {
                 push_breach_entity(
                     result,
                     Entity::new(EntityKind::Username, &uname, confidence::HIGH, scan_id),

@@ -519,6 +519,33 @@ fn a_formatted_and_a_bare_spelling_of_the_same_phone_number_dedup_to_one_entity(
 }
 
 #[test]
+fn a_sigil_prefixed_and_a_bare_spelling_of_the_same_username_dedup_to_one_entity() {
+    // Regression: a bare `.to_lowercase()` case-folds but does not strip a
+    // leading `@` handle sigil the way `Entity::new` does internally via
+    // `core::entity::normalise`'s Username arm, so a row spelled "@jordan"
+    // and one spelled "jordan" each earned their own dedup slot despite
+    // colliding on the same uid once constructed.
+    let entries = vec![
+        json!({"name": "Jane Doe", "username": "jordan_m"}),
+        json!({"name": "Jane Doe", "username": "@jordan_m"}),
+    ];
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_records(&entries, "Jane Doe", "fp", "s", &mut seen, &mut result);
+
+    let unames: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username)
+        .collect();
+    assert_eq!(
+        unames.len(),
+        1,
+        "a sigil-prefixed and a bare spelling of the same handle must dedup to one entity: {unames:?}"
+    );
+}
+
+#[test]
 fn record_evidence_stamps_canonical_dbname_for_au105() {
     // AU-105 (credential reuse across breaches) groups records by the `dbname`
     // evidence attribute, falling back to the Evidence `source` FIELD (the module

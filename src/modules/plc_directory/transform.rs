@@ -274,7 +274,16 @@ fn push_handle(
         return;
     }
 
-    if seen.insert(username.to_string()) {
+    // `bare_handle` preserves case verbatim (it only strips a known platform
+    // DNS suffix), so a dedup key taken from it directly misses a case-only
+    // respelling of the same handle across two log entries — a plausible
+    // real shape for a multi-year PLC operation history — even though both
+    // collapse onto the same uid once `Entity::new` case-folds them via
+    // `core::entity::normalise`'s Username arm.
+    if seen.insert(crate::core::entity::normalise(
+        &EntityKind::Username,
+        username,
+    )) {
         let conf = if current {
             CURRENT_HANDLE_CONF
         } else {

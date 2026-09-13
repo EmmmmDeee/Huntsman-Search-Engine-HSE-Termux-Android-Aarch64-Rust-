@@ -349,8 +349,13 @@ pub(super) fn extract_breach_entities_with(
     }
 
     if let Some(uname) = val_str(item, "username") {
-        let lower = uname.to_lowercase();
-        if lower.len() >= 3 && seen.insert(lower) {
+        // A bare `.to_lowercase()` case-folds but does not strip a leading `@`
+        // sigil or wrapping quote the way `Entity::new` does internally via
+        // `core::entity::normalise`'s Username arm, so a row spelled "@jordan"
+        // and one spelled "jordan" each earned their own dedup slot here even
+        // though both collapse onto the same uid once constructed.
+        let canonical = crate::core::entity::normalise(&EntityKind::Username, &uname);
+        if canonical.len() >= 3 && seen.insert(canonical) {
             push_oathnet_entity(
                 result,
                 Entity::new(EntityKind::Username, &uname, confidence::HIGH, scan_id),
@@ -594,7 +599,14 @@ pub(super) fn extract_breach_entities_with(
     }
 
     if let Some(ig) = val_str(item, "instagram")
-        && seen.insert(format!("@ig:{}", ig.to_lowercase()))
+        // A bare `.to_lowercase()` doesn't strip a leading `@` sigil or
+        // wrapping quote the way `Entity::new` does internally, so "@jordan"
+        // and "jordan" each earned their own dedup slot despite colliding on
+        // the same uid once constructed.
+        && seen.insert(format!(
+            "@ig:{}",
+            crate::core::entity::normalise(&EntityKind::Username, &ig)
+        ))
     {
         push_oathnet_entity(
             result,
@@ -848,9 +860,17 @@ pub(super) fn extract_breach_entities_with(
     ] {
         if let Some(handle) = val_str(item, field) {
             let h = handle.trim().trim_start_matches('@');
+            // `h.to_lowercase()` case-folds but does not strip a wrapping quote
+            // character (a CSV/SQL-dump export artifact) the way `Entity::new`
+            // does internally via `normalise`'s Username arm, so a dirty and a
+            // clean spelling of the same handle each earned their own dedup
+            // slot despite colliding on the same uid once constructed.
             if (2..=64).contains(&h.len())
                 && !is_redacted_sentinel(h)
-                && seen.insert(format!("@{platform}:{}", h.to_lowercase()))
+                && seen.insert(format!(
+                    "@{platform}:{}",
+                    crate::core::entity::normalise(&EntityKind::Username, h)
+                ))
             {
                 push_oathnet_entity(
                     result,

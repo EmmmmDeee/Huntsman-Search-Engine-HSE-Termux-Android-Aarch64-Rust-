@@ -754,7 +754,16 @@ fn emit_pbs_v2(
             .username
             .as_deref()
             .filter(|u| !u.eq_ignore_ascii_case(query))
-            && seen.insert(format!("{}:{}", EntityKind::Username, uname.to_lowercase()))
+            // A bare `.to_lowercase()` case-folds but does not strip a leading
+            // `@` sigil or wrapping quote the way `Entity::new` does internally
+            // via `core::entity::normalise`'s Username arm, so two records
+            // spelling the same handle differently each earned their own dedup
+            // slot despite colliding on the same uid once constructed.
+            && seen.insert(format!(
+                "{}:{}",
+                EntityKind::Username,
+                crate::core::entity::normalise(&EntityKind::Username, uname)
+            ))
         {
             let mut pivot =
                 Entity::new(EntityKind::Username, uname, confidence::HIGH_PLUS, scan_id);
@@ -864,7 +873,15 @@ fn emit_ulp(
             } else {
                 EntityKind::Username
             };
-            if seen.insert(format!("{kind}:{}", login.to_lowercase())) {
+            // A bare `.to_lowercase()` doesn't replicate `normalise`'s fuller
+            // per-kind cleanup (Email's quote/escape-tail strip, Username's
+            // sigil/quote strip), so a dirty and a clean spelling of the same
+            // ULP login each earned their own dedup slot despite colliding on
+            // the same uid once `Entity::new` constructs them.
+            if seen.insert(format!(
+                "{kind}:{}",
+                crate::core::entity::normalise(&kind, login)
+            )) {
                 let mut pivot = Entity::new(kind, login, confidence::HIGH_PLUS, scan_id);
                 pivot.tag(SRC);
                 pivot.tag("ulp-pivot");

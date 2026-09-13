@@ -405,6 +405,114 @@ fn a_formatted_and_a_bare_spelling_of_the_same_phone_dedup_to_one_entity() {
 }
 
 #[test]
+fn a_sigil_prefixed_and_a_bare_spelling_of_the_same_pbs_v2_username_dedup_to_one_entity() {
+    // Regression: a bare `.to_lowercase()` case-folds but does not strip a
+    // leading `@` handle sigil the way `Entity::new` does internally via
+    // `core::entity::normalise`'s Username arm, so two PBS v2 records spelling
+    // the same handle with/without the sigil each earned their own `seen`
+    // slot and minted a duplicate Username entity — even though both collapse
+    // onto the same uid once constructed.
+    let resp = PbsV2Response {
+        success: true,
+        data: Some(PbsV2Data {
+            niamonx_success: true,
+            error: None,
+            stats: Some(PbsV2Stats {
+                found: 2,
+                with_passwords: 0,
+                unique_sources: 1,
+            }),
+            records: Some(vec![
+                PbsV2Record {
+                    source: Some(PbsV2Source {
+                        name: Some("LeakSite".to_string()),
+                        breach_date: Some("2022-03-01".to_string()),
+                        compilation: Some(0),
+                    }),
+                    email: None,
+                    username: Some("jordan_m".to_string()),
+                    phone: None,
+                    fields: None,
+                },
+                PbsV2Record {
+                    source: Some(PbsV2Source {
+                        name: Some("LeakSite".to_string()),
+                        breach_date: Some("2022-03-01".to_string()),
+                        compilation: Some(0),
+                    }),
+                    email: None,
+                    username: Some("@jordan_m".to_string()),
+                    phone: None,
+                    fields: None,
+                },
+            ]),
+        }),
+    };
+    let target = Target::new(TargetKind::Email, "victim@example.com");
+    let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
+    let mut result = ModuleResult::new();
+    let mut seen = std::collections::HashSet::new();
+    emit_pbs_v2(resp, &mut entity, &mut result, "victim@example.com", "s", &mut seen);
+    let unames: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username)
+        .collect();
+    assert_eq!(
+        unames.len(),
+        1,
+        "a sigil-prefixed and a bare spelling of the same handle must dedup to one entity: {unames:?}"
+    );
+}
+
+#[test]
+fn a_quote_wrapped_and_a_clean_spelling_of_the_same_ulp_login_dedup_to_one_entity() {
+    // Regression: `login.to_lowercase()` doesn't strip a wrapping quote (a
+    // CSV/SQL-dump export artifact) the way `core::entity::normalise`'s
+    // Username arm does. A leading-quote fixture is used, not a leading `@`
+    // one: `login.contains('@')` decides Email vs Username kind, and `@` would
+    // flip this fixture to the Email branch instead of exercising Username.
+    let resp = UlpResponse {
+        success: true,
+        data: Some(UlpData {
+            error: None,
+            stats: Some(UlpStats {
+                total: 2,
+                unique_hosts: 1,
+                with_password: 0,
+            }),
+            records: Some(vec![
+                UlpRecord {
+                    url: Some("https://bank.example.com/login".to_string()),
+                    host: Some("bank.example.com".to_string()),
+                    login: Some("jordan_m".to_string()),
+                },
+                UlpRecord {
+                    url: Some("https://bank.example.com/login2".to_string()),
+                    host: Some("bank.example.com".to_string()),
+                    login: Some("\"jordan_m".to_string()),
+                },
+            ]),
+        }),
+    };
+    let target = Target::new(TargetKind::Email, "victim@example.com");
+    let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
+    let mut result = ModuleResult::new();
+    let mut seen = std::collections::HashSet::new();
+    emit_ulp(resp, &mut entity, &mut result, "victim@example.com", "s", &mut seen);
+    let unames: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username)
+        .collect();
+    assert_eq!(
+        unames.len(),
+        1,
+        "a quote-wrapped and a clean spelling of the same login must dedup to one entity: {unames:?}"
+    );
+}
+
+#[test]
 fn pbs_v2_zero_found_is_quiet() {
     let resp = PbsV2Response {
         success: true,

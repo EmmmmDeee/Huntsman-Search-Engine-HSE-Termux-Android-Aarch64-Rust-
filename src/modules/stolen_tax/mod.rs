@@ -198,7 +198,17 @@ fn build_entities(data: &StolenTaxData, query_value: &str, scan_id: &str) -> Vec
         data.emails
             .iter()
             .filter(|e| e.to_lowercase() != query_lower)
-            .filter(|e| seen.insert((EntityKind::Email, e.to_lowercase())))
+            // A bare `.to_lowercase()` doesn't replicate `core::entity::
+            // normalise`'s fuller Email cleanup (quote/escape-tail strip), so
+            // a dirty and a clean spelling of the same address each earned
+            // their own dedup slot despite colliding on the same uid once
+            // `Entity::new` constructs them.
+            .filter(|e| {
+                seen.insert((
+                    EntityKind::Email,
+                    crate::core::entity::normalise(&EntityKind::Email, e),
+                ))
+            })
             .map(|email| {
                 let mut entity = Entity::new(EntityKind::Email, email, confidence::MEDIUM, scan_id);
                 entity.add_evidence(Evidence::new(
@@ -213,7 +223,17 @@ fn build_entities(data: &StolenTaxData, query_value: &str, scan_id: &str) -> Vec
         data.usernames
             .iter()
             .filter(|u| u.to_lowercase() != query_lower)
-            .filter(|u| seen.insert((EntityKind::Username, u.to_lowercase())))
+            // A bare `.to_lowercase()` doesn't strip a leading `@` sigil or
+            // wrapping quote the way `core::entity::normalise`'s Username arm
+            // does, so a dirty and a clean spelling of the same handle each
+            // earned their own dedup slot despite colliding on the same uid
+            // once `Entity::new` constructs them.
+            .filter(|u| {
+                seen.insert((
+                    EntityKind::Username,
+                    crate::core::entity::normalise(&EntityKind::Username, u),
+                ))
+            })
             .map(|username| {
                 let mut entity =
                     Entity::new(EntityKind::Username, username, confidence::MEDIUM, scan_id);
@@ -239,7 +259,10 @@ fn build_entities(data: &StolenTaxData, query_value: &str, scan_id: &str) -> Vec
 
         if let Some(email) = &account.email
             && email.to_lowercase() != query_lower
-            && seen.insert((EntityKind::Email, email.to_lowercase()))
+            && seen.insert((
+                EntityKind::Email,
+                crate::core::entity::normalise(&EntityKind::Email, email),
+            ))
         {
             let mut entity = Entity::new(EntityKind::Email, email, confidence::MEDIUM, scan_id);
             entity.add_evidence(Evidence::new(SRC, evidence_text.clone()));
@@ -248,7 +271,10 @@ fn build_entities(data: &StolenTaxData, query_value: &str, scan_id: &str) -> Vec
 
         if let Some(username) = &account.username
             && username.to_lowercase() != query_lower
-            && seen.insert((EntityKind::Username, username.to_lowercase()))
+            && seen.insert((
+                EntityKind::Username,
+                crate::core::entity::normalise(&EntityKind::Username, username),
+            ))
         {
             let mut entity =
                 Entity::new(EntityKind::Username, username, confidence::MEDIUM, scan_id);
@@ -368,6 +394,65 @@ mod tests {
         assert_eq!(
             username_count, 1,
             "the same username restated in usernames[] and associated_accounts[] must not double-emit: {entities:?}"
+        );
+    }
+
+    #[test]
+    fn test_build_entities_dedups_a_dirty_and_a_clean_username_spelling() {
+        // Regression: a bare `.to_lowercase()` case-folds but does not strip a
+        // leading `@` handle sigil the way `core::entity::normalise`'s
+        // Username arm does, so a rollup spelling and an associated-account
+        // spelling of the same handle each earned their own dedup slot
+        // despite colliding on the same uid once `Entity::new` constructs
+        // them.
+        let data = StolenTaxData {
+            breaches: None,
+            emails: vec![],
+            usernames: vec!["jordan_m".to_string()],
+            associated_accounts: vec![AssociatedAccount {
+                username: Some("@jordan_m".to_string()),
+                email: None,
+                platform: Some("forum".to_string()),
+                first_seen: None,
+            }],
+        };
+        let entities = build_entities(&data, "user@example.com", "test-scan");
+        let unames: Vec<&Entity> = entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Username)
+            .collect();
+        assert_eq!(
+            unames.len(),
+            1,
+            "a sigil-prefixed and a bare spelling of the same handle must dedup to one entity: {unames:?}"
+        );
+    }
+
+    #[test]
+    fn test_build_entities_dedups_a_dirty_and_a_clean_email_spelling() {
+        // Same root cause, the Email arm: a bare `.to_lowercase()` doesn't
+        // strip a stray leading quote (a breach-dump export artifact) the way
+        // `core::entity::normalise`'s Email arm does.
+        let data = StolenTaxData {
+            breaches: None,
+            emails: vec!["alt@example.com".to_string()],
+            usernames: vec![],
+            associated_accounts: vec![AssociatedAccount {
+                username: None,
+                email: Some("\"alt@example.com".to_string()),
+                platform: Some("forum".to_string()),
+                first_seen: None,
+            }],
+        };
+        let entities = build_entities(&data, "user@example.com", "test-scan");
+        let emails: Vec<&Entity> = entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email)
+            .collect();
+        assert_eq!(
+            emails.len(),
+            1,
+            "a dirty and a clean spelling of the same address must dedup to one entity: {emails:?}"
         );
     }
 
