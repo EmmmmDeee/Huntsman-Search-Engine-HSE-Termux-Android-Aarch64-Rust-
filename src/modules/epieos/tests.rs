@@ -10,6 +10,34 @@ fn build(json: &str) -> Vec<Entity> {
     build_entities(&email_target(), &body, "s")
 }
 
+#[test]
+fn a_skype_location_and_a_reviewed_place_in_the_same_city_dedup_to_one_coordinates_entity() {
+    // Regression: `city_coords` is a many-to-one phrase lookup (it matches a
+    // tabulated city name ANYWHERE within the input text), so two textually
+    // DIFFERENT location strings for the same real-world city — here, a
+    // Skype "city, country" pair and an unrelated reviewed place name that
+    // merely CONTAINS the city name — each passed their own independent,
+    // gate-free construction and resolved to the identical Sydney centroid,
+    // minting two Coordinates entities for one place.
+    let ents = build(
+        r#"{
+            "skype": {"handle": "jsmith", "city": "Sydney", "country": "Australia"},
+            "maps_reviews": [
+                {"place_name": "Sydney Opera House"}
+            ]
+        }"#,
+    );
+    let coords: Vec<&Entity> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .collect();
+    assert_eq!(
+        coords.len(),
+        1,
+        "a Skype location and a reviewed place in the same city must dedup to one Coordinates entity: {coords:?}"
+    );
+}
+
 // ── Module surface ──────────────────────────────────────────────────
 #[test]
 fn accepts_email_only() {

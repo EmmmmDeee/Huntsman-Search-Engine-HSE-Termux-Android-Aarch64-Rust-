@@ -440,7 +440,16 @@ pub(super) fn extract_breach_entities_with(
         && !is_absent(&country)
         && seen.insert(format!("@country:{country}"))
     {
-        if let Some((lat, lon)) = crate::util::city_coords::city_coords(&country) {
+        if let Some((lat, lon)) = crate::util::city_coords::city_coords(&country)
+            // `city_coords` is a many-to-one phrase lookup: the country,
+            // composed-address, and free-text-location legs below each gate
+            // on their OWN input text, but two differently-worded strings
+            // (a country name that happens to double as a tabulated city, a
+            // street address vs. a free-text location) can resolve to the
+            // identical centroid — keyed on the RESOLVED coordinate, shared
+            // across all three legs via this same `seen` set, to catch that.
+            && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
+        {
             let coord_val = format!("{lat:.4},{lon:.4}");
             let mut c = Entity::new(
                 EntityKind::Coordinates,
@@ -501,7 +510,13 @@ pub(super) fn extract_breach_entities_with(
         .collect::<Vec<&str>>()
         .join(", ");
         if addr.len() >= 4 && seen.insert(format!("@addr:{}", addr.to_lowercase())) {
-            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr)
+                // See the `country` leg above: keyed on the resolved
+                // coordinate (shared `seen` set) so this doesn't mint a
+                // second Coordinates entity for a city the country or
+                // free-text-location leg already resolved.
+                && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
+            {
                 let coord_val = format!("{lat:.4},{lon:.4}");
                 let mut c = Entity::new(
                     EntityKind::Coordinates,
@@ -537,7 +552,13 @@ pub(super) fn extract_breach_entities_with(
         let loc = loc.trim();
         if loc.len() >= 4 && !is_absent(loc) && seen.insert(format!("@loc:{}", loc.to_lowercase()))
         {
-            if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc)
+                // See the `country` leg above: keyed on the resolved
+                // coordinate (shared `seen` set) so this doesn't mint a
+                // second Coordinates entity for a city the country or
+                // composed-address leg already resolved.
+                && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
+            {
                 let coord_val = format!("{lat:.4},{lon:.4}");
                 let mut c = Entity::new(
                     EntityKind::Coordinates,

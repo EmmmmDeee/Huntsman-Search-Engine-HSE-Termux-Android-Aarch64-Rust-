@@ -600,6 +600,37 @@ use crate::core::confidence;
     }
 
     #[test]
+    fn a_composed_address_and_a_free_text_location_in_the_same_city_dedup_to_one_coordinates_entity() {
+        use serde_json::json;
+        // Regression: `city_coords` is a many-to-one phrase lookup (it
+        // matches a tabulated city name ANYWHERE within the input text), so
+        // the composed-address leg and the free-text-`location` leg each
+        // gated only on THEIR OWN raw input text — two textually different
+        // strings for the same real city ("New York" vs "New York City,
+        // USA") each passed their own gate and independently resolved to
+        // the identical NYC centroid, minting two Coordinates entities for
+        // one city.
+        let item = json!({
+            "city": "New York",
+            "location": "New York City, USA",
+            "source": "TestDB"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&item, "unrelated", "scan", "oathnet.org:test", &mut seen, &mut result);
+        let coords: Vec<&Entity> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Coordinates)
+            .collect();
+        assert_eq!(
+            coords.len(),
+            1,
+            "a composed address and a free-text location in the same city must dedup to one Coordinates entity: {coords:?}"
+        );
+    }
+
+    #[test]
     fn an_expanded_and_a_compressed_spelling_of_the_same_ipv6_address_dedup_to_one_entity() {
         use serde_json::json;
         // Regression: a bare `.clone()` doesn't canonicalise the way
