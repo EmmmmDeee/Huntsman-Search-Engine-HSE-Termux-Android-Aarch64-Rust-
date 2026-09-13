@@ -43,18 +43,41 @@ pub fn isolate_home() -> std::path::PathBuf {
 }
 
 /// Fresh per-test SQLite path under the OS temp dir: `hse-<prefix>-<pid>-<suffix>.db`.
-/// Removes the main DB **and** its WAL/SHM sidecars — in WAL mode a stale
-/// `-wal`/`-shm` left from a prior run can resurrect old state or corrupt the
-/// fresh handle, making tests flaky.
+/// Sweeps away every stale `hse-<prefix>-*-<suffix>.db` (plus its `-wal`/`-shm`
+/// sidecars) left by a past process before minting a fresh one — not just a file
+/// matching this process's own pid, which can never exist yet: the pid is unique
+/// per run, so a self-only check is permanently a no-op and never reclaims a PRIOR
+/// run's file. Unbounded over a long session of repeated `cargo test` invocations:
+/// caught after 98 orphaned files (6+ GB) had accumulated under `/tmp`. Scoped to
+/// this exact `prefix` (never a wildcard across prefixes), matching the
+/// one-prefix-per-test-binary convention [`engine_setup`] already relies on to
+/// keep parallel test crates from colliding — so this can never delete a file a
+/// concurrently-running sibling binary still owns, only this binary's own past run.
 pub fn tmp_db(prefix: &str, suffix: &str) -> String {
     isolate_home();
-    let mut p = std::env::temp_dir();
+    let dir = std::env::temp_dir();
+    let stale_prefix = format!("hse-{prefix}-");
+    let stale_main = format!("-{suffix}.db");
+    let stale_wal = format!("{stale_main}-wal");
+    let stale_shm = format!("{stale_main}-shm");
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if name.starts_with(&stale_prefix)
+                && (name.ends_with(&stale_main)
+                    || name.ends_with(&stale_wal)
+                    || name.ends_with(&stale_shm))
+            {
+                let _ = std::fs::remove_file(dir.join(name));
+            }
+        }
+    }
+    let mut p = dir;
     p.push(format!("hse-{prefix}-{}-{suffix}.db", std::process::id()));
-    let s = p.to_string_lossy().into_owned();
-    let _ = std::fs::remove_file(&s);
-    let _ = std::fs::remove_file(format!("{s}-wal"));
-    let _ = std::fs::remove_file(format!("{s}-shm"));
-    s
+    p.to_string_lossy().into_owned()
 }
 
 /// Full engine harness over a fresh store: the (engine, store, scan_id,
@@ -100,10 +123,24 @@ pub fn engine_setup(
 
 /// Fresh per-test scratch DIRECTORY under the OS temp dir:
 /// `hse-<prefix>-<pid>/`. For tests that write output files (exports,
-/// dossiers) rather than a database; created if absent.
+/// dossiers) rather than a database; created if absent. Sweeps away every
+/// stale `hse-<prefix>-*` directory left by a past process first — the exact
+/// same never-reclaimed-across-runs shape [`tmp_db`] had (see its doc comment),
+/// just for a directory instead of a DB file; 90 leftover directories from this
+/// same helper were found alongside the 98 stale DB files that motivated that fix.
 pub fn tmp_dir(prefix: &str) -> std::path::PathBuf {
     isolate_home();
-    let dir = std::env::temp_dir().join(format!("hse-{prefix}-{}", std::process::id()));
+    let base = std::env::temp_dir();
+    let stale_prefix = format!("hse-{prefix}-");
+    if let Ok(entries) = std::fs::read_dir(&base) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name.to_str().is_some_and(|n| n.starts_with(&stale_prefix)) {
+                let _ = std::fs::remove_dir_all(base.join(&name));
+            }
+        }
+    }
+    let dir = base.join(format!("hse-{prefix}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -600,4 +637,69 @@ fn test_app_with_modules_and_state(
         store,
         state,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{tmp_db, tmp_dir};
+
+    #[test]
+    fn tmp_dir_sweeps_a_stale_same_prefix_directory_but_leaves_other_prefixes_alone() {
+        let base = std::env::temp_dir();
+        let stale = base.join("hse-tmpdirtest-999999999");
+        let unrelated = base.join("hse-othertmpdirtest-999999999");
+        std::fs::create_dir_all(stale.join("nested")).expect("should succeed");
+        std::fs::write(stale.join("nested/file.txt"), b"stale").expect("should succeed");
+        std::fs::create_dir_all(&unrelated).expect("should succeed");
+
+        let fresh = tmp_dir("tmpdirtest");
+
+        assert!(
+            !stale.exists(),
+            "a stale same-prefix directory (and its contents) from a past pid must be swept"
+        );
+        assert!(
+            unrelated.exists(),
+            "a different prefix's directory must never be touched"
+        );
+        assert!(fresh.exists(), "the freshly minted directory must exist");
+
+        let _ = std::fs::remove_dir_all(&unrelated);
+        let _ = std::fs::remove_dir_all(&fresh);
+    }
+
+    #[test]
+    fn tmp_db_sweeps_a_stale_same_prefix_file_but_leaves_other_prefixes_alone() {
+        let dir = std::env::temp_dir();
+        let stale = dir.join("hse-tmpdbtest-999999999-sweep.db");
+        let stale_wal = dir.join("hse-tmpdbtest-999999999-sweep.db-wal");
+        let stale_shm = dir.join("hse-tmpdbtest-999999999-sweep.db-shm");
+        let unrelated = dir.join("hse-othertest-999999999-sweep.db");
+        for f in [&stale, &stale_wal, &stale_shm, &unrelated] {
+            std::fs::write(f, b"stale").expect("should succeed");
+        }
+
+        let fresh = tmp_db("tmpdbtest", "sweep");
+
+        assert!(
+            !stale.exists(),
+            "a stale same-prefix main DB file from a past pid must be swept"
+        );
+        assert!(
+            !stale_wal.exists(),
+            "a stale same-prefix -wal sidecar must be swept"
+        );
+        assert!(
+            !stale_shm.exists(),
+            "a stale same-prefix -shm sidecar must be swept"
+        );
+        assert!(
+            unrelated.exists(),
+            "a different prefix's file must never be touched — that's what keeps \
+             parallel test binaries, each with their own prefix, from racing each other"
+        );
+
+        let _ = std::fs::remove_file(&unrelated);
+        let _ = std::fs::remove_file(&fresh);
+    }
 }
