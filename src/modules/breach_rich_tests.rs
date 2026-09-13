@@ -83,6 +83,17 @@ fn mines_github_tiktok_reddit_handles_as_username_pivots() {
     );
 }
 
+// Deliberately no dedicated dirty-vs-clean regression test for the bio-miner's
+// own `seen.insert` canonicalisation immediately below: `crate::util::extract::
+// emails` already lower-cases every match it returns, so no input reachable
+// through it can currently exercise a difference between the old (bare
+// `.to_lowercase()`-equivalent) and new (full `normalise`) dedup key — the
+// canonicalisation is real defense-in-depth (consistency with the OTHER call
+// site sharing this same `seen` set, `oathnet_pro::breach`, which reads a raw
+// JSON field with no such pre-cleaning — see its own regression test), not
+// something independently forceable from this file. Verified by code
+// inspection and the sibling site's test rather than a contrived one here.
+
 #[test]
 fn mines_bio_for_alternate_contacts() {
     let item = json!({

@@ -326,7 +326,18 @@ pub(super) fn extract_breach_entities_with(
 
     if let Some(email) = val_str(item, "email") {
         let lower = email.to_lowercase();
-        if looks_like_email(&lower) && seen.insert(lower) {
+        // Canonicalise before the dedup insert, not the bare lowercase —
+        // `.to_lowercase()` case-folds but does not strip a breach-dump
+        // escape tail or surrounding quote characters the way `Entity::new`
+        // does internally, and this `seen` set is shared with
+        // `breach_rich::extract_breach_entities_with`'s own bio-mined email
+        // dedup (its own doc comment: "the shared `seen` set dedups any
+        // overlap"), which must canonicalise the SAME way or a dirty
+        // spelling from one path and a clean one from the other fail to
+        // dedup against each other despite collapsing onto the identical uid.
+        if looks_like_email(&lower)
+            && seen.insert(crate::core::entity::normalise(&EntityKind::Email, &email))
+        {
             push_oathnet_entity(
                 result,
                 Entity::new(EntityKind::Email, &email, confidence::HIGH_PLUS, scan_id),

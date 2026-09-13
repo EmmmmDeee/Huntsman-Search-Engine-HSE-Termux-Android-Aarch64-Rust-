@@ -471,7 +471,20 @@ pub fn extract_rich_detail(
     // path mines bio separately, and the shared `seen` set dedups any overlap.
     if let Some(bio) = val_str(item, "bio") {
         for email in crate::util::extract::emails(&bio) {
-            if seen.insert(email.clone()) {
+            // `crate::util::extract::emails` already lower-cases every match
+            // it returns, so this canonicalisation is a no-op for THIS call
+            // site's own input today. It still matters: this `seen` set is
+            // shared with `oathnet_pro::breach`'s own structured-field email
+            // dedup (see this function's own doc comment above), which reads
+            // a raw JSON field verbatim — a dirty spelling there (a breach-
+            // dump escape tail, stray surrounding quotes) must canonicalise
+            // the SAME way this site's insert does, or the two fail to dedup
+            // against each other despite `Entity::new` collapsing both onto
+            // the identical uid. Consistent with both other call sites into
+            // this set rather than relying on one leg's extractor happening
+            // to pre-clean its own input.
+            let canonical = crate::core::entity::normalise(&EntityKind::Email, &email);
+            if seen.insert(canonical) {
                 push_breach_entity(
                     result,
                     Entity::new(EntityKind::Email, &email, confidence::MEDIUM, scan_id),

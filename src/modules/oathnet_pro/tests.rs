@@ -519,6 +519,52 @@ use crate::core::confidence;
     }
 
     #[test]
+    fn a_dirty_and_a_clean_spelling_of_the_same_email_dedup_to_one_entity() {
+        use serde_json::json;
+        // Regression: a bare `.to_lowercase()` case-folds but does not strip
+        // a stray leading quote character an exporter left on the value (a
+        // CSV artifact — see `core::entity::normalise`'s own Email-kind doc
+        // comment) the way `Entity::new` does internally, so a row whose
+        // `email` field carries this exporter artifact used to earn its OWN
+        // dedup slot here — distinct from an already-seen clean spelling of
+        // the identical address — even though both collapse onto the same
+        // uid once constructed. (A TRAILING quote is not usable as a fixture
+        // here: it would corrupt the host's TLD and get rejected by
+        // `looks_like_email` before ever reaching the dedup check, in both
+        // the old and new code — a leading-only quote does not.)
+        let clean = json!({"email": "jordan.meyer@example.com", "source": "DB1"});
+        let dirty = json!({"email": "\"jordan.meyer@example.com", "source": "DB2"});
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &clean,
+            "jordan.meyer@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        extract_breach_entities(
+            &dirty,
+            "jordan.meyer@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        let emails: Vec<&Entity> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email)
+            .collect();
+        assert_eq!(
+            emails.len(),
+            1,
+            "a dirty and a clean spelling of the same address must dedup to one entity: {emails:?}"
+        );
+    }
+
+    #[test]
     fn extract_breach_entities_non_target_row_tags_candidate() {
         use serde_json::json;
         // A row whose fields do NOT match the target: phone/person/country are

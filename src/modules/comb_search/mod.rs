@@ -180,7 +180,13 @@ fn build_entities_from_lines(lines: &[String], target: &Target, scan_id: &str) -
         // the domain (a third party), surfaced as its own breach-tagged Email.
         if target.kind == TargetKind::Domain
             && identity.contains('@')
-            && seen_email.insert(identity.to_ascii_lowercase())
+            // Canonicalise before the dedup insert, not the bare ASCII
+            // lowercase — it case-folds but does not strip a breach-dump
+            // escape tail or surrounding quote characters the way
+            // `Entity::new` does internally, so a dirty and a clean spelling
+            // of the same address would each earn their own dedup slot here
+            // despite collapsing onto the identical uid once constructed.
+            && seen_email.insert(crate::core::entity::normalise(&EntityKind::Email, identity))
         {
             let mut e = Entity::new(EntityKind::Email, identity, DOMAIN_ACCOUNT_CONF, scan_id);
             e.tag(tags::BREACH);
