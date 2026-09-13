@@ -768,7 +768,16 @@ fn emit_pbs_v2(
             result.push(pivot);
         }
         if let Some(phone) = &record.phone
-            && seen.insert(format!("{}:{}", EntityKind::Phone, phone.to_lowercase()))
+            // A bare `.to_lowercase()` is a no-op on digits/punctuation, so two
+            // records spelling the same number with different formatting each
+            // earned their own `seen` slot — dedup on the canonical form
+            // instead, same as `core::entity::normalise` will construct
+            // internally.
+            && seen.insert(format!(
+                "{}:{}",
+                EntityKind::Phone,
+                crate::core::entity::normalise(&EntityKind::Phone, phone)
+            ))
         {
             let mut pivot = Entity::new(EntityKind::Phone, phone, confidence::HIGH_PLUS, scan_id);
             pivot.tag(SRC);

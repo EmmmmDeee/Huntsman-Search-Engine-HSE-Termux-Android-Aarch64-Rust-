@@ -491,6 +491,34 @@ fn a_strangers_row_processed_first_does_not_permanently_pin_the_subjects_own_val
 }
 
 #[test]
+fn a_formatted_and_a_bare_spelling_of_the_same_phone_number_dedup_to_one_entity() {
+    // Regression: a bare `.to_lowercase()` case-folds but does not strip the
+    // punctuation formatting (`(555) 123-4567` vs `5551234567`) the way
+    // `Entity::new` does internally via `core::entity::normalise`'s Phone arm
+    // — so a row whose `phone` field carries different formatting from an
+    // already-seen row used to earn its OWN dedup slot here, even though both
+    // collapse onto the same uid once constructed.
+    let entries = vec![
+        json!({"name": "Jane Doe", "phone": "5551234567"}),
+        json!({"name": "Jane Doe", "phone": "(555) 123-4567"}),
+    ];
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_records(&entries, "Jane Doe", "fp", "s", &mut seen, &mut result);
+
+    let phones: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Phone)
+        .collect();
+    assert_eq!(
+        phones.len(),
+        1,
+        "a formatted and a bare spelling of the same number must dedup to one entity: {phones:?}"
+    );
+}
+
+#[test]
 fn record_evidence_stamps_canonical_dbname_for_au105() {
     // AU-105 (credential reuse across breaches) groups records by the `dbname`
     // evidence attribute, falling back to the Evidence `source` FIELD (the module

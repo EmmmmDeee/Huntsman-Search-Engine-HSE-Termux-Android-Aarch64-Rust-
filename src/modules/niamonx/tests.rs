@@ -344,6 +344,67 @@ fn pbs_v2_found_with_records_tags_breach() {
 }
 
 #[test]
+fn a_formatted_and_a_bare_spelling_of_the_same_phone_dedup_to_one_entity() {
+    // Regression: a bare `.to_lowercase()` case-folds but does not strip the
+    // punctuation formatting the way `Entity::new` does internally via
+    // `core::entity::normalise`'s Phone arm, so two PBS v2 records spelling
+    // the same number with different formatting each earned their own `seen`
+    // slot and minted a duplicate Phone entity — even though both collapse
+    // onto the same uid once constructed.
+    let resp = PbsV2Response {
+        success: true,
+        data: Some(PbsV2Data {
+            niamonx_success: true,
+            error: None,
+            stats: Some(PbsV2Stats {
+                found: 2,
+                with_passwords: 0,
+                unique_sources: 1,
+            }),
+            records: Some(vec![
+                PbsV2Record {
+                    source: Some(PbsV2Source {
+                        name: Some("LeakSite".to_string()),
+                        breach_date: Some("2022-03-01".to_string()),
+                        compilation: Some(0),
+                    }),
+                    email: None,
+                    username: None,
+                    phone: Some("5551234567".to_string()),
+                    fields: None,
+                },
+                PbsV2Record {
+                    source: Some(PbsV2Source {
+                        name: Some("LeakSite".to_string()),
+                        breach_date: Some("2022-03-01".to_string()),
+                        compilation: Some(0),
+                    }),
+                    email: None,
+                    username: None,
+                    phone: Some("(555) 123-4567".to_string()),
+                    fields: None,
+                },
+            ]),
+        }),
+    };
+    let target = Target::new(TargetKind::Email, "victim@example.com");
+    let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
+    let mut result = ModuleResult::new();
+    let mut seen = std::collections::HashSet::new();
+    emit_pbs_v2(resp, &mut entity, &mut result, "victim@example.com", "s", &mut seen);
+    let phones: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Phone)
+        .collect();
+    assert_eq!(
+        phones.len(),
+        1,
+        "a formatted and a bare spelling of the same number must dedup to one entity: {phones:?}"
+    );
+}
+
+#[test]
 fn pbs_v2_zero_found_is_quiet() {
     let resp = PbsV2Response {
         success: true,

@@ -363,7 +363,11 @@ pub(super) fn extract_breach_entities_with(
 
     if let Some(ph) = val_str_or_coerce(item, &["phone_number", "phone_national", "phone"])
         && has_min_digits(&ph, 7)
-        && seen.insert(ph.to_lowercase())
+        // A bare `.to_lowercase()` is a no-op on digits/punctuation, so two
+        // rows spelling the same number with different formatting each earned
+        // their own `seen` slot — dedup on the canonical form instead, same
+        // as `core::entity::normalise` will construct internally.
+        && seen.insert(crate::core::entity::normalise(&EntityKind::Phone, &ph))
     {
         push_oathnet_entity(
             result,

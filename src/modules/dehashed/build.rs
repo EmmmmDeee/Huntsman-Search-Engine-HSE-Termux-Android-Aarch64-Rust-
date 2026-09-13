@@ -361,7 +361,16 @@ pub(super) fn extract_records(
             .into_iter()
             .chain(field_strings(item, "phone_number"))
         {
-            if phone.len() >= 7 && seen.insert(phone.to_lowercase()) {
+            // A bare `.to_lowercase()` is a no-op on digits/punctuation, so two
+            // rows spelling the same number with different formatting
+            // ("5551234567" vs "(555) 123-4567") each earned their own `seen`
+            // slot and minted a duplicate Phone entity — the same raw-vs-
+            // canonical dedup-key gap fixed for Email elsewhere in this
+            // codebase, here for `core::entity::normalise`'s Phone arm (strips
+            // all non-digits, keeps a leading `+`).
+            if phone.len() >= 7
+                && seen.insert(crate::core::entity::normalise(&EntityKind::Phone, &phone))
+            {
                 push_breach_entity(
                     result,
                     Entity::new(EntityKind::Phone, &phone, confidence::MEDIUM_PLUS, scan_id),

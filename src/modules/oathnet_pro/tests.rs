@@ -565,6 +565,41 @@ use crate::core::confidence;
     }
 
     #[test]
+    fn a_formatted_and_a_bare_spelling_of_the_same_phone_dedup_to_one_entity() {
+        use serde_json::json;
+        // Regression: a bare `.to_lowercase()` case-folds but does not strip
+        // the punctuation formatting the way `Entity::new` does internally via
+        // `core::entity::normalise`'s Phone arm, so a row whose `phone` field
+        // carries different formatting from an already-seen row used to earn
+        // its OWN dedup slot here — distinct from an already-seen spelling of
+        // the identical number — even though both collapse onto the same uid
+        // once constructed.
+        let bare = json!({"phone": "5551234567", "source": "DB1"});
+        let formatted = json!({"phone": "(555) 123-4567", "source": "DB2"});
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&bare, "unrelated", "scan", "oathnet.org:test", &mut seen, &mut result);
+        extract_breach_entities(
+            &formatted,
+            "unrelated",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        let phones: Vec<&Entity> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Phone)
+            .collect();
+        assert_eq!(
+            phones.len(),
+            1,
+            "a formatted and a bare spelling of the same number must dedup to one entity: {phones:?}"
+        );
+    }
+
+    #[test]
     fn extract_breach_entities_non_target_row_tags_candidate() {
         use serde_json::json;
         // A row whose fields do NOT match the target: phone/person/country are
