@@ -22,6 +22,24 @@ pub fn build_client() -> reqwest::Client {
         .expect("reqwest client (rustls backend) failed to build")
 }
 
+/// Like [`build_client`] but overrides the (otherwise absent — see module
+/// docstring) total per-request timeout. For a long-lived transfer with a
+/// known bound (e.g. a multi-gigabyte bulk-data download) where the default
+/// `read_timeout` inactivity backstop alone isn't the caller's intended
+/// ceiling. Still the fully SSRF-guarded builder — DNS-rebinding resolver,
+/// private-IP redirect refusal, `no_proxy()` — so a caller with a bespoke
+/// timeout need never fall back to a bare unguarded `reqwest::Client`.
+pub fn build_client_with_timeout(timeout: std::time::Duration) -> reqwest::Client {
+    super::ssrf::client_builder()
+        .timeout(timeout)
+        .build()
+        // expect justification: identical static-config / rustls-init-only failure
+        // mode as `build_client` — the timeout is a plain `Duration`, not a new
+        // fallible build input. A failure here is a misbuilt binary, not a
+        // runtime condition.
+        .expect("reqwest client (rustls backend) failed to build")
+}
+
 /// Like [`build_client`] but stamps every outbound request with a default
 /// `x-huntsman-trace: <trace_id>` header. End-to-end traceability across external
 /// calls (item #3 of the operator program): the same id the NDJSON scan logs
