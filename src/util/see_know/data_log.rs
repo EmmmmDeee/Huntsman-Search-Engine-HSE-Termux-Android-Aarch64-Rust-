@@ -454,9 +454,9 @@ mod tests {
     // (`log_file_is_owner_only`, `log_directory_is_owner_only`) — so a stale
     // dir from a past, now-dead process is swept once per process before the
     // first fresh dir is minted, the same never-reclaimed-across-runs shape
-    // `util::paths::isolate_for_tests` had (see its own doc comment): 258
-    // leftover `hse_seek_log_<pid>_<n>` directories were found accumulated
-    // under `/tmp` before this fix.
+    // this crate's other per-process test-scratch helper (in `util::paths`)
+    // had before its own fix: 258 leftover `hse_seek_log_<pid>_<n>`
+    // directories were found accumulated under `/tmp` before this one.
     fn temp_dir() -> PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);
