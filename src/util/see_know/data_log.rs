@@ -449,14 +449,55 @@ mod tests {
 
     // Unique throwaway dir per test — no env mutation (the crate denies unsafe,
     // and std::env::set_var is unsafe), no clock/rand (unavailable in some
-    // sandboxes): derive from an atomic counter plus the process id.
+    // sandboxes): derive from an atomic counter plus the process id. Most
+    // tests below remove their own dir when they finish, but not all do
+    // (`log_file_is_owner_only`, `log_directory_is_owner_only`) — so a stale
+    // dir from a past, now-dead process is swept once per process before the
+    // first fresh dir is minted, the same never-reclaimed-across-runs shape
+    // `util::paths::isolate_for_tests` had (see its own doc comment): 258
+    // leftover `hse_seek_log_<pid>_<n>` directories were found accumulated
+    // under `/tmp` before this fix.
     fn temp_dir() -> PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);
+        static SWEPT: std::sync::Once = std::sync::Once::new();
+        SWEPT.call_once(sweep_stale_seek_log_dirs);
         let n = N.fetch_add(1, Ordering::Relaxed);
         let d = std::env::temp_dir().join(format!("hse_seek_log_{}_{}", std::process::id(), n));
         std::fs::create_dir_all(&d).expect("should succeed");
         d
+    }
+
+    /// Removes every `hse_seek_log_<pid>_<n>` directory left by a past,
+    /// now-dead process. A directory is swept only once its exact pid is
+    /// confirmed dead via `/proc/<pid>` — never by name pattern alone, since
+    /// this same helper can be called from concurrently-running test
+    /// binaries under different, simultaneously-live pids. `/proc` is
+    /// Linux-specific, matching every platform this crate targets
+    /// (Termux/Android and Linux CI).
+    fn sweep_stale_seek_log_dirs() {
+        let base = std::env::temp_dir();
+        let Ok(entries) = std::fs::read_dir(&base) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let Some(rest) = name.strip_prefix("hse_seek_log_") else {
+                continue;
+            };
+            let Some((pid_str, _n)) = rest.split_once('_') else {
+                continue;
+            };
+            let Ok(pid) = pid_str.parse::<u32>() else {
+                continue;
+            };
+            if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
     }
 
     #[test]
@@ -758,5 +799,40 @@ mod tests {
         append_record(&dir, &build_record("/search", "ok", "", &[json!({"y": 1})]));
         assert_eq!(read_all_from(&dir).len(), 1);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn sweep_stale_seek_log_dirs_removes_a_dead_pid_but_never_a_live_one() {
+        let base = std::env::temp_dir();
+        // A pid far past any real process's range: guaranteed dead, so its
+        // directory must be swept.
+        let dead = base.join("hse_seek_log_999999999_0");
+        std::fs::create_dir_all(&dead).expect("should succeed");
+        // This test's OWN process is unquestionably alive, so a directory
+        // stamped with its real pid must survive the sweep untouched.
+        let live = base.join(format!("hse_seek_log_{}_999999", std::process::id()));
+        std::fs::create_dir_all(&live).expect("should succeed");
+        // An unrelated directory that merely shares the temp dir must never
+        // be touched by name-pattern matching alone.
+        let unrelated = base.join("hse_seek_log_not_a_pid");
+        std::fs::create_dir_all(&unrelated).expect("should succeed");
+
+        sweep_stale_seek_log_dirs();
+
+        assert!(
+            !dead.exists(),
+            "a directory whose pid is confirmed dead must be swept"
+        );
+        assert!(
+            live.exists(),
+            "a directory stamped with this (live) process's own pid must never be swept"
+        );
+        assert!(
+            unrelated.exists(),
+            "a non-numeric suffix must never be treated as a pid and swept"
+        );
+
+        let _ = std::fs::remove_dir_all(&live);
+        let _ = std::fs::remove_dir_all(&unrelated);
     }
 }
