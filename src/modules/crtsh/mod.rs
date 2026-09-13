@@ -27,13 +27,13 @@ const SRC: &str = "crtsh";
 const MIN_EMAIL_LEN: usize = 5;
 
 /// The apex host that discovered Certificate-Transparency names are classified as
-/// subdomains OF (via [`crate::util::domains::is_or_subdomain_of`] in
+/// subdomains OF (via [`crate::util::domains::is_proper_subdomain_of`] in
 /// `build_entities`). For a `Domain` seed this is the value; for a `Url` it is the
 /// **host** (not the full URL); for an `Email` it is the **domain part** (after the
 /// final `@`). **Pure.**
 ///
 /// Passing the raw `target.value` for a `Url` (a full `https://…/path`) or an
-/// `Email` (a full address) made `is_or_subdomain_of` never match, so every
+/// `Email` (a full address) made the subdomain check never match, so every
 /// discovered subdomain was misclassified as an unrelated external (0.45, no
 /// `subdomain` tag) — dropping it below the engine's expansion floor and silently
 /// killing recursion for URL- and email-seeded scans. Keying on the true apex
@@ -156,7 +156,16 @@ pub(crate) fn is_public_ca(org: &str) -> bool {
 /// signal enterprise or custom PKI infrastructure and are a high-value
 /// attribution pivot.
 fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec<Entity> {
-    let base = domain_base.trim().to_lowercase();
+    // Normalised the same way `Entity::new` normalises every Domain value
+    // (canonically strips leading "www." labels — see its doc comment) so a
+    // SAN's dedup key and subdomain classification match the identity the
+    // entity actually gets constructed under. Without this, a raw seed value
+    // of "www.example.com" would classify against itself as base but never
+    // match a bare "example.com" SAN discovered in the same certificate.
+    let base = crate::core::entity::normalise(
+        &EntityKind::Domain,
+        domain_base.trim().to_lowercase().as_str(),
+    );
     let mut seen_domains: HashSet<String> = HashSet::new();
     let mut seen_emails: HashSet<String> = HashSet::new();
     let mut seen_issuers: HashSet<String> = HashSet::new();
@@ -188,12 +197,30 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
                 e.tag(tags::CT_LOG);
                 e.add_evidence(cert_evidence(entry, "Email in certificate SAN"));
                 Some(e)
-            } else if name.contains('.') && seen_domains.insert(name.clone()) {
-                // Canonical dot-boundary subdomain check (not a bare `ends_with`
-                // suffix match, which would also match `evilexample.com` against
-                // base `example.com`) — see `apex_base` above for why `base` is
+            } else if name.contains('.') {
+                // De-dup and classify against the SAME normalised identity
+                // `Entity::new` will construct below, not the raw SAN text —
+                // otherwise "www.example.com" and "example.com" from the same
+                // certificate are two distinct names here (each independently
+                // earning its own dedup slot and subdomain verdict) yet both
+                // collapse to one uid once constructed. `Entity::merge`'s
+                // tag-union then keeps whichever of the two was (correctly,
+                // in isolation) tagged SUBDOMAIN, mislabeling the apex
+                // regardless of this site's own classification being right
+                // for a name considered by itself. Canonical dot-boundary
+                // subdomain check (not a bare `ends_with` suffix match, which
+                // would also match `evilexample.com` against base
+                // `example.com`) — see `apex_base` above for why `base` is
                 // the true apex, not the raw seed value.
-                let is_sub = crate::util::domains::is_or_subdomain_of(&name, &base);
+                let canonical = crate::core::entity::normalise(&EntityKind::Domain, &name);
+                if !seen_domains.insert(canonical.clone()) {
+                    return None;
+                }
+                // Proper-subdomain, not `is_or_subdomain_of` — the (canonical)
+                // apex is not a subdomain of itself; using the inclusive check
+                // mislabeled it `tags::SUBDOMAIN`. Mirrors the identical,
+                // already-fixed gap in the sibling `certspotter` module.
+                let is_sub = crate::util::domains::is_proper_subdomain_of(&canonical, &base);
                 let conf = if is_sub {
                     confidence::VERY_HIGH
                 } else {

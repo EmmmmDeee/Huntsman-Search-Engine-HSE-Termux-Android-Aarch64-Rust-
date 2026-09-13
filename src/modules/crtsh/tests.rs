@@ -155,6 +155,31 @@ fn classifies_subdomains_dedups_and_skips_wildcards() {
 }
 
 #[test]
+fn the_apex_itself_is_never_tagged_as_its_own_subdomain() {
+    // Regression, mirroring the identical, already-fixed and already-tested
+    // case in the sibling `certspotter` module: a single certificate commonly
+    // SANs both the bare apex and "www." (`crt_entry_deser`'s own fixture
+    // above already encodes exactly this shape). The apex is not a subdomain
+    // of itself — tagging it SUBDOMAIN merges (tags are unioned on
+    // `Entity::merge`) directly onto the scan's own anchor/subject entity for
+    // a Domain-kind seed, since `EntityKind::Domain` + the apex is the
+    // identical uid — permanently mislabeling the operator's own search
+    // subject as a subdomain of itself.
+    let e = entries(r#"[{"name_value":"www.example.com\nexample.com","common_name":"www.example.com"}]"#);
+    let out = build_entities(&e, "example.com", "s");
+    let apex = out
+        .iter()
+        .find(|x| x.value == "example.com")
+        .expect("apex itself present");
+    assert!(
+        !apex.has_tag(tags::SUBDOMAIN),
+        "the apex must never be tagged as its own subdomain"
+    );
+    // Still real, useful evidence: kept, just not misclassified.
+    assert!((apex.confidence - confidence::LOW_MEDIUM).abs() < 1e-9);
+}
+
+#[test]
 fn subdomain_match_is_case_insensitive_against_base() {
     // Mixed-case target base must still classify the SAN as a subdomain.
     let e = entries(r#"[{"name_value":"api.example.com"}]"#);
