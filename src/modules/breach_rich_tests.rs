@@ -84,6 +84,32 @@ fn mines_github_tiktok_reddit_handles_as_username_pivots() {
 }
 
 #[test]
+fn a_colon_and_a_dash_separated_spelling_of_the_same_mac_dedup_to_one_entity() {
+    // Regression: a bare `.to_lowercase()` case-folds but does not reformat
+    // separators the way `core::entity::normalise`'s MacAddress arm does, so
+    // a MAC restated with different punctuation across two records sharing
+    // this `seen` set each earned its own dedup slot despite colliding on
+    // the same uid once `Entity::new` constructs them.
+    let colon = json!({"mac_address": "AA:BB:CC:DD:EE:FF"});
+    let dash = json!({"mac_address": "aa-bb-cc-dd-ee-ff"});
+    let ev = Evidence::new("test", "rec".to_string());
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_rich_detail(&colon, "scan", "oathnet-pro", &ev, &mut seen, &mut result);
+    extract_rich_detail(&dash, "scan", "oathnet-pro", &ev, &mut seen, &mut result);
+    let macs: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::MacAddress)
+        .collect();
+    assert_eq!(
+        macs.len(),
+        1,
+        "a colon- and a dash-separated spelling of the same MAC must dedup to one entity: {macs:?}"
+    );
+}
+
+#[test]
 fn a_quote_wrapped_and_a_clean_spelling_of_the_same_platform_handle_dedup_to_one_entity() {
     // Regression: the platform loop's dedup key was `h.to_lowercase()`, which
     // doesn't strip a wrapping quote (a CSV/SQL-dump export artifact) the way

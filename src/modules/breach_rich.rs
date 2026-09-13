@@ -340,7 +340,17 @@ pub fn extract_rich_detail(
             && m.len() >= 12
             && !is_absent_marker(&m)
             && !is_placeholder_fingerprint(&m)
-            && seen.insert(format!("@mac:{}", m.to_lowercase()))
+            // A bare `.to_lowercase()` case-folds but does not reformat
+            // separators the way `core::entity::normalise`'s MacAddress arm
+            // does, so the SAME address spelled with different punctuation
+            // across the `mac`/`mac_address`/`bssid` fields — or across two
+            // different records in this shared `seen` set — each earned its
+            // own dedup slot despite colliding on the same uid once
+            // `Entity::new` constructs them.
+            && seen.insert(format!(
+                "@mac:{}",
+                crate::core::entity::normalise(&EntityKind::MacAddress, &m)
+            ))
         {
             push_context_entity(
                 result,
