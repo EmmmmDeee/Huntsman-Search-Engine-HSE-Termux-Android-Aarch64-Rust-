@@ -573,7 +573,15 @@ pub fn extract_rich_detail(
         }
         let composed = addr_parts.join(", ");
         if seen.insert(format!("@addr:{}", composed.to_lowercase())) {
-            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&composed) {
+            // Second gate on the RESOLVED coordinate, not just the input text:
+            // `city_coords` is a many-to-one phrase lookup, so a composed
+            // address here and an unrelated location string elsewhere in this
+            // shared `seen` set can each pass their own text gate above yet
+            // still resolve to the identical city centroid (see epieos/
+            // oathnet_pro::breach's identical fix for this same root cause).
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&composed)
+                && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
+            {
                 let coord_val = format!("{lat:.4},{lon:.4}");
                 let mut c = Entity::new(
                     EntityKind::Coordinates,

@@ -183,6 +183,12 @@ impl Module for EmployerPivot {
 
         // ── Addresses ────────────────────────────────────────────────
         let mut seen_addr: HashSet<String> = HashSet::new();
+        // `seen_addr` above dedups by the full street-level canonical address,
+        // which does nothing to stop two DIFFERENT street addresses in the
+        // same city from each independently resolving to the same city
+        // centroid below — `city_coords` is a many-to-one phrase lookup, not
+        // a precise geocoder. Gate the resolved coordinate on its own set.
+        let mut seen_coord: HashSet<String> = HashSet::new();
         result.extend(
             address_au::extract_all(&all_text)
                 .into_iter()
@@ -218,24 +224,17 @@ impl Module for EmployerPivot {
                     ev = ev.with_attr("employer_domain", &domain);
                     ev = ev.with_attr("source_urls", visited.join(" | "));
                     e.add_evidence(ev);
-                    let coord = crate::util::city_coords::city_coords(&canon).map(|(lat, lon)| {
-                        let coord_val = format!("{lat:.4},{lon:.4}");
-                        let mut c = Entity::new(
-                            EntityKind::Coordinates,
-                            &coord_val,
-                            confidence::derived_from(addr.confidence()),
-                            &ctx.scan_id,
-                        );
-                        c.tag("addr-derived");
-                        c.tag("geoint");
-                        c.tag("country:AU");
-                        c.tag("employer-pivot");
-                        c.add_evidence(Evidence::new(
-                            SRC,
-                            format!("Geocode of business address from {domain}"),
-                        ));
-                        c
-                    });
+                    let coord =
+                        crate::util::city_coords::city_coords(&canon).and_then(|(lat, lon)| {
+                            coord_entity_if_new(
+                                lat,
+                                lon,
+                                &mut seen_coord,
+                                confidence::derived_from(addr.confidence()),
+                                &ctx.scan_id,
+                                &domain,
+                            )
+                        });
                     Some((e, coord))
                 })
                 .flat_map(|(e, coord)| {
@@ -403,6 +402,37 @@ fn canonical_address(a: &address_au::AuAddress) -> String {
     s.push(' ');
     s.push_str(&a.postcode);
     s
+}
+
+/// Builds a Coordinates entity for a geocoded `(lat, lon)`, gated on
+/// `seen_coord` so two different street addresses that both geocode to the
+/// same city (`city_coords` is a many-to-one phrase lookup, not a precise
+/// geocoder) don't each mint their own entity for the same point. Extracted
+/// as a pure function — its call site sits inside `process`'s async
+/// network-fetching loop, not practical to unit-test directly — so this
+/// piece of the logic is.
+fn coord_entity_if_new(
+    lat: f64,
+    lon: f64,
+    seen_coord: &mut HashSet<String>,
+    confidence: f64,
+    scan_id: &str,
+    domain: &str,
+) -> Option<Entity> {
+    let coord_val = format!("{lat:.4},{lon:.4}");
+    if !seen_coord.insert(coord_val.clone()) {
+        return None;
+    }
+    let mut c = Entity::new(EntityKind::Coordinates, &coord_val, confidence, scan_id);
+    c.tag("addr-derived");
+    c.tag("geoint");
+    c.tag("country:AU");
+    c.tag("employer-pivot");
+    c.add_evidence(Evidence::new(
+        SRC,
+        format!("Geocode of business address from {domain}"),
+    ));
+    Some(c)
 }
 
 #[cfg(test)]

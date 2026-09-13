@@ -379,7 +379,16 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
             e.tag("geo-hint");
             e.add_evidence(base_ev.clone().with_attr("contact_role", role));
             out.push(e);
-            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&loc) {
+            // Second gate on the RESOLVED coordinate: `seen`'s `addr:` key
+            // above only dedups by the exact location TEXT, but this loop
+            // runs once per WHOIS contact role (registrant/admin/tech/
+            // billing) sharing this same `seen` set — two roles with
+            // textually different locations naming the same city both pass
+            // the text gate, then `city_coords`'s many-to-one phrase lookup
+            // resolves both to the identical centroid.
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&loc)
+                && seen.insert(format!("coord:{lat:.4},{lon:.4}"))
+            {
                 let coord_val = format!("{lat:.4},{lon:.4}");
                 let mut c = Entity::new(
                     EntityKind::Coordinates,

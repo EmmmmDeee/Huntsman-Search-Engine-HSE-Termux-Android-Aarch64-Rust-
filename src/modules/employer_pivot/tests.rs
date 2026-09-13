@@ -27,6 +27,36 @@ fn email_without_at_returns_none() {
     assert!(domain_for_target(&t).is_none());
 }
 
+// ── coord_entity_if_new ──────────────────────────────────────────────────────
+
+#[test]
+fn two_addresses_geocoding_to_the_same_point_dedup_to_one_coordinates_entity() {
+    // Regression: `city_coords` is a many-to-one phrase lookup, so two
+    // different street addresses in the same city — `seen_addr` dedups by
+    // the full street-level canonical address, which does nothing here —
+    // both resolve to the identical rounded centroid and, pre-fix, each
+    // minted their own Coordinates entity for one real-world point.
+    let mut seen_coord = HashSet::new();
+    let first = coord_entity_if_new(-27.4698, 153.0251, &mut seen_coord, 0.7, "scan", "acme.com");
+    assert!(first.is_some(), "the first address at this point must emit");
+    let second = coord_entity_if_new(-27.4698, 153.0251, &mut seen_coord, 0.7, "scan", "acme.com");
+    assert!(
+        second.is_none(),
+        "a second address geocoding to the same point must not emit a duplicate: {second:?}"
+    );
+}
+
+#[test]
+fn addresses_geocoding_to_different_points_both_emit() {
+    let mut seen_coord = HashSet::new();
+    let sydney = coord_entity_if_new(-33.8688, 151.2093, &mut seen_coord, 0.7, "scan", "acme.com");
+    let brisbane =
+        coord_entity_if_new(-27.4698, 153.0251, &mut seen_coord, 0.7, "scan", "acme.com");
+    assert!(sydney.is_some());
+    assert!(brisbane.is_some());
+    assert_ne!(sydney.expect("should succeed").uid, brisbane.expect("should succeed").uid);
+}
+
 // ── extract_emails ───────────────────────────────────────────────────────────
 
 #[test]

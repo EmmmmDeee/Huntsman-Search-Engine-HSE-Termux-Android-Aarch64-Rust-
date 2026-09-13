@@ -18,6 +18,40 @@ fn has(result: &ModuleResult, kind: EntityKind, value: &str) -> bool {
 }
 
 #[test]
+fn two_composed_addresses_in_the_same_city_dedup_to_one_coordinates_entity() {
+    // Regression: `city_coords` is a many-to-one phrase lookup, so two
+    // textually different composed addresses naming the same real-world city
+    // each passed their own independent `@addr:` text gate on the shared
+    // `seen` set and resolved to the identical Sydney centroid, minting two
+    // Coordinates entities for one place — same root cause as `oathnet_pro::
+    // breach`'s and `epieos`'s geocoding legs (fix #34).
+    let ev = Evidence::new("test", "rec".to_string());
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    let item1 = json!({
+        "street": "1 Main St",
+        "city": "Sydney",
+        "state": "NSW",
+    });
+    let item2 = json!({
+        "city": "Sydney",
+        "region": "New South Wales",
+    });
+    extract_rich_detail(&item1, "scan", "oathnet-pro", &ev, &mut seen, &mut result);
+    extract_rich_detail(&item2, "scan", "oathnet-pro", &ev, &mut seen, &mut result);
+    let coords: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .collect();
+    assert_eq!(
+        coords.len(),
+        1,
+        "two composed addresses naming the same city must dedup to one Coordinates entity: {coords:?}"
+    );
+}
+
+#[test]
 fn surfaces_device_fingerprints_as_context_not_breach() {
     let item = json!({
         "hwid": "ABCDEF0123456789",

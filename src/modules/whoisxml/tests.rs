@@ -184,6 +184,35 @@ use super::*;
     }
 
     #[test]
+    fn two_contact_roles_in_the_same_city_dedup_to_one_coordinates_entity() {
+        // Regression: `city_coords` is a many-to-one phrase lookup. The
+        // registrant and administrative-contact locations below are
+        // textually different composed strings ("Brisbane, Queensland,
+        // Australia" vs. "Brisbane, Australia" — the latter simply omits
+        // `state`) naming the SAME city, sharing one `seen` set across both
+        // roles' loop iterations. Each independently passed its own `addr:`
+        // text gate and resolved to the identical Brisbane centroid, minting
+        // two Coordinates entities for one place (same root cause as fix
+        // #34's oathnet_pro/epieos geocoding legs).
+        let rec = record(
+            r#"{
+                "registrant": {"name": "Jordan Avery", "city": "Brisbane", "state": "Queensland", "country": "Australia"},
+                "administrativeContact": {"name": "Alex Fields", "city": "Brisbane", "country": "Australia"}
+            }"#,
+        );
+        let es = build_entities(&rec, "acme.com", "t");
+        let coords: Vec<&Entity> = es
+            .iter()
+            .filter(|e| e.kind == EntityKind::Coordinates)
+            .collect();
+        assert_eq!(
+            coords.len(),
+            1,
+            "two contact-role locations naming the same city must dedup to one Coordinates entity: {coords:?}"
+        );
+    }
+
+    #[test]
     fn build_entities_emits_nameservers_deduped() {
         let rec = record(
             r#"{ "nameServers": {"hostNames": ["ns1.acme.com", "NS1.ACME.COM.", "ns2.acme.com"]} }"#,
