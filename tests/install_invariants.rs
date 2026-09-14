@@ -609,7 +609,9 @@ fn hse_test_is_an_owned_path_wrapper_and_never_touches_operator_state() {
     assert!(
         script.contains("hse-autoupdate.stamp")
             && script.find("hse-autoupdate.stamp").unwrap()
-                < script.find("hse\" provision --env-only --discover").unwrap(),
+                < script
+                    .find("hse\" provision --env-only --discover")
+                    .unwrap(),
         "the auto-update throttle stamp must be written BEFORE `hse provision`, \
          which is the first CLI invocation and used to spawn a background rebuild"
     );
