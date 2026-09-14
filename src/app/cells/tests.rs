@@ -2,8 +2,54 @@
 
 use super::{
     import_from_file, import_from_file_off_runtime, mcc_for_country, mcc_header_line,
-    opencellid_download_url, opencellid_filename, parse_csv_line,
+    opencellid_download_url, opencellid_filename, parse_csv_line, resolve_opencellid_key,
 };
+
+// ── OpenCelliD key resolution ───────────────────────────────────────────────
+
+#[test]
+fn resolve_opencellid_key_rejects_placeholder_and_blank_env_slots() {
+    // `hse provision` writes an unedited `insert_opencellid_key_here`
+    // placeholder for every documented slot; a blank/whitespace value is just
+    // as unconfigured. Passing either as the download `token` would produce a
+    // rejected request instead of the actionable "pass --key" error, so the
+    // env fallback must read as "no key" for all of them.
+    for slot in ["insert_opencellid_key_here", "", "   "] {
+        assert_eq!(
+            resolve_opencellid_key(None, Some(slot.to_string())),
+            None,
+            "placeholder/blank env slot {slot:?} must not resolve to a key"
+        );
+    }
+    // An absent env slot resolves to no key.
+    assert_eq!(resolve_opencellid_key(None, None), None);
+}
+
+#[test]
+fn resolve_opencellid_key_accepts_a_real_env_value() {
+    assert_eq!(
+        resolve_opencellid_key(None, Some("real-ocid-token-123".to_string())),
+        Some("real-ocid-token-123".to_string()),
+        "a real env credential must resolve"
+    );
+}
+
+#[test]
+fn resolve_opencellid_key_prefers_an_explicit_override() {
+    // An explicit `--key` is the operator's direct choice and always wins over
+    // the env slot, even a real one.
+    assert_eq!(
+        resolve_opencellid_key(Some("cli-key".to_string()), Some("env-key".to_string())),
+        Some("cli-key".to_string())
+    );
+    assert_eq!(
+        resolve_opencellid_key(
+            Some("cli-key".to_string()),
+            Some("insert_opencellid_key_here".to_string())
+        ),
+        Some("cli-key".to_string())
+    );
+}
 
 // ── spawn_blocking boundary ─────────────────────────────────────────────────
 
