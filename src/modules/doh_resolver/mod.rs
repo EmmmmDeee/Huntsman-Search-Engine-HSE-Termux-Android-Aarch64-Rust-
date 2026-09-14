@@ -895,6 +895,30 @@ fn classify_status(status: i32, answer: Vec<DohRecord>) -> Option<Vec<DohRecord>
     }
 }
 
+/// Decode one DoH provider's HTTP response into DNS records, or `None` when the
+/// provider gave no usable answer and the caller should fail over.
+///
+/// A non-2xx (Cloudflare/Google 400/429/5xx) is a resolver FAILURE, not a DNS
+/// answer. Without the status gate `json_decode` parses the error body, and
+/// because `DohResp`'s fields are all `#[serde(default)]` it yields
+/// `{status:0, answer:[]}` → `classify_status` → `Some([])` — a FALSE
+/// authoritative "no such record" that would skip the failover and the
+/// `Unreachable` machinery, so a Cloudflare hiccup reads as "this domain has no
+/// A record." DoH signals a real miss as HTTP 200 + Status 3 (NXDOMAIN), never
+/// as a non-2xx, so gating on success loses no answer. Takes the raw send
+/// result so a transport error is also `None` (fail over). Testable against
+/// synthetic responses without a resolver.
+async fn answer_from_response(resp: reqwest::Result<reqwest::Response>) -> Option<Vec<DohRecord>> {
+    let r = resp.ok()?;
+    if !r.status().is_success() {
+        return None;
+    }
+    let data = crate::util::http::json_decode::<DohResp>(SRC, r)
+        .await
+        .ok()?;
+    classify_status(data.status, data.answer)
+}
+
 async fn query_doh(domain: &str, rtype: &str, http: &reqwest::Client) -> DohOutcome {
     let cf_url = format!("https://cloudflare-dns.com/dns-query?name={domain}&type={rtype}");
     let resp = http
@@ -903,10 +927,7 @@ async fn query_doh(domain: &str, rtype: &str, http: &reqwest::Client) -> DohOutc
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await;
-    if let Ok(r) = resp
-        && let Ok(data) = crate::util::http::json_decode::<DohResp>(SRC, r).await
-        && let Some(records) = classify_status(data.status, data.answer)
-    {
+    if let Some(records) = answer_from_response(resp).await {
         return DohOutcome::Answered(records);
     }
     let google_url = format!("https://dns.google/resolve?name={domain}&type={rtype}");
@@ -915,10 +936,7 @@ async fn query_doh(domain: &str, rtype: &str, http: &reqwest::Client) -> DohOutc
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await;
-    if let Ok(r) = resp
-        && let Ok(data) = crate::util::http::json_decode::<DohResp>(SRC, r).await
-        && let Some(records) = classify_status(data.status, data.answer)
-    {
+    if let Some(records) = answer_from_response(resp).await {
         return DohOutcome::Answered(records);
     }
     DohOutcome::Unreachable

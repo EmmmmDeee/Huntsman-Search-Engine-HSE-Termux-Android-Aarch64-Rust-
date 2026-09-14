@@ -179,13 +179,27 @@ impl Module for OsintCat {
         let mut entity = target.to_entity(confidence::VERY_HIGH, &ctx.scan_id);
         entity.tag(SRC);
 
+        // A hard failure (5xx / 429 / transport / breaker) on the data endpoints
+        // is NOT the same as their clean 404 "no data" miss: if every data
+        // endpoint fails and nothing is collected, this must surface an error via
+        // `or_hard_failure` rather than return the empty result that reads as a
+        // clean "no footprint, no breach" negative. The credits preflight already
+        // fails closed above; the endpoints that actually decide the finding must
+        // too. A partial outage (one endpoint yields evidence, another fails)
+        // still keeps the genuine finding — that is exactly what `or_hard_failure`
+        // guarantees.
+        let mut hard_failure: Option<Error> = None;
+
         // Footprint — free endpoint.
         let fp_url = format!("{BASE}/email-footprint?query={}", urlencode(email));
         match fetch_keyed_json::<OcFootprintResponse>(ctx, SRC, &fp_url, KEY_ENV, "x-api-key").await
         {
             Ok(Some(fp)) => emit_footprint(&fp, &mut entity, &mut result),
             Ok(None) => {} // 404 — no footprint data
-            Err(e) => warn!(error = %e, "osintcat footprint failed"),
+            Err(e) => {
+                warn!(error = %e, "osintcat footprint failed");
+                hard_failure = Some(e);
+            }
         }
 
         // Breach — free endpoint.
@@ -193,7 +207,10 @@ impl Module for OsintCat {
         match fetch_keyed_json::<OcBreachResponse>(ctx, SRC, &br_url, KEY_ENV, "x-api-key").await {
             Ok(Some(br)) => emit_breach(&br, &mut entity),
             Ok(None) => {} // 404 — no breach data
-            Err(e) => warn!(error = %e, "osintcat breach failed"),
+            Err(e) => {
+                warn!(error = %e, "osintcat breach failed");
+                hard_failure = Some(e);
+            }
         }
 
         // Deep email-osint — paid; needs an extra `x-purpose` header so we
@@ -201,7 +218,10 @@ impl Module for OsintCat {
         if credits.has_sufficient_credits {
             match fetch_email_osint(email, ctx).await {
                 Ok(raw) => emit_email_osint(&raw, &mut entity),
-                Err(e) => warn!(error = %e, "osintcat email-osint failed"),
+                Err(e) => {
+                    warn!(error = %e, "osintcat email-osint failed");
+                    hard_failure = Some(e);
+                }
             }
         } else {
             // `info!`, not `warn!`: skipping a paid lookup for insufficient
@@ -220,7 +240,10 @@ impl Module for OsintCat {
         if !entity.evidence.is_empty() {
             result.push(entity);
         }
-        Ok(result)
+        // Empty result + a data-endpoint hard failure -> surface the error, so a
+        // total outage is never reported as a clean negative. Any collected
+        // evidence is kept regardless.
+        result.or_hard_failure(hard_failure)
     }
 }
 
