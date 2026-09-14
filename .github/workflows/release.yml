@@ -283,10 +283,27 @@ jobs:
       # via Sigstore with the workflow's OIDC identity, so a substituted binary
       # cannot be made to verify — `gh attestation verify` ties the artifact to
       # this repository, this workflow, and this exact commit.
+      # The attestation API can sporadically return transient 5xx responses
+      # (e.g. "Failed to persist attestation: Server Error"). That is external
+      # to this repository and must not block publishing the already-built
+      # Termux binary; surface it as a warning instead.
       - name: Attest build provenance
+        id: attest_build_provenance
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        continue-on-error: true
         with:
           subject-path: dist/hse-aarch64-linux-android
+
+      - name: Warn when attestation upload is unavailable
+        if: steps.attest_build_provenance.outcome != 'success'
+        run: |
+          echo "::warning::Sigstore attestation upload failed (transient GitHub attestation service error). Release publish will continue."
+          {
+            echo "### Warning: attestation upload failed"
+            echo
+            echo "The artifact build and release publish completed, but attestation persistence failed due to an external GitHub attestation API error."
+            echo "Re-run this workflow to retry attestation upload."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish to the GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2 (v2.6.2)
