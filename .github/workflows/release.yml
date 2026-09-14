@@ -288,17 +288,19 @@ jobs:
       # GitHub's attestation/Sigstore backend, which occasionally answers a
       # well-formed request with a transient "Server Error" (observed on the
       # 2026-09-10 01:29 UTC main push, run 34425701536 — predicate generation
-      # succeeded in 246ms, then the persist step failed after 97s). Every
-      # later step, including publishing the already-built binary, SBOM and
-      # provenance record, was ORIGINALLY unconditional on this one succeeding
-      # — so that single transient error silently dropped an otherwise-fully-
-      # built, fully-valid release, and because this workflow only fires on
-      # a push, nothing re-attempted it; main sat unreleased for 2 days and
-      # several more commits before this was noticed. Retrying the exact same
-      # trusted, already-pinned action in place (rather than adding a new
-      # third-party retry-wrapper dependency to a job holding `id-token: write`
-      # and `attestations: write`) costs at most ~45s of extra wait on the rare
-      # path and closes the gap without widening this job's trust surface.
+      # succeeded in 246ms, then the persist step failed after 97s). Retrying
+      # the exact same trusted, already-pinned action in place (rather than
+      # adding a new third-party retry-wrapper dependency to a job holding
+      # `id-token: write` and `attestations: write`) costs at most ~45s of
+      # extra wait on the rare path and closes the gap without widening this
+      # job's trust surface — most transient failures resolve on the first or
+      # second retry, so the release still ships genuinely attested.
+      #
+      # If all 3 attempts fail, publishing is no longer blocked on it either
+      # (below): a persistent Sigstore-side outage must not indefinitely
+      # withhold an otherwise fully-built, fully-valid release — surfaced as
+      # a loud warning instead, so a human still notices and can re-run the
+      # workflow to retry attestation upload alone.
       - name: Attest build provenance
         id: attest_1
         continue-on-error: true
@@ -327,14 +329,27 @@ jobs:
           sleep 30
 
       - name: Attest build provenance (retry 2, final)
-        # No continue-on-error here: if this one also fails, the job should
-        # fail loudly (same as before this change) rather than publish an
-        # unattested binary — three transient failures in a row on the same
-        # request is itself a signal worth a human looking at the run.
+        id: attest_3
+        # continue-on-error here too: three transient failures in a row is
+        # itself a signal worth a human looking at the run, but it must not
+        # withhold an otherwise-valid release from publishing — the warning
+        # step below surfaces it loudly instead of failing the job.
         if: steps.attest_1.outcome == 'failure' && steps.attest_2.outcome == 'failure'
+        continue-on-error: true
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: dist/hse-aarch64-linux-android
+
+      - name: Warn when attestation upload is unavailable
+        if: steps.attest_1.outcome != 'success' && steps.attest_2.outcome != 'success' && steps.attest_3.outcome != 'success'
+        run: |
+          echo "::warning::Sigstore attestation upload failed after 3 attempts (transient GitHub attestation service error). Release publish will continue."
+          {
+            echo "### Warning: attestation upload failed"
+            echo
+            echo "The artifact build and release publish completed, but attestation persistence failed after 3 attempts due to an external GitHub attestation API error."
+            echo "Re-run this workflow to retry attestation upload."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish to the GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2 (v2.6.2)
