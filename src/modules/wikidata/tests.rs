@@ -12,7 +12,7 @@ use super::{
     builder::{candidate_entity, primary_entities},
     claims::{claim_entity_ids, claim_p625, claim_strings, en_text},
     classify::{classify, name_matches_query, seed_kind},
-    types::SearchHit,
+    types::{SearchHit, SearchResp},
     urls::{entities_url, search_url},
 };
 use crate::core::module::Module;
@@ -413,4 +413,32 @@ fn seed_kind_maps_every_target_kind() {
     assert_eq!(seed_kind(TargetKind::Domain), EntityKind::Person);
     assert_eq!(seed_kind(TargetKind::Username), EntityKind::Person);
     assert_eq!(seed_kind(TargetKind::IpAddress), EntityKind::Person);
+}
+
+#[test]
+fn a_mediawiki_error_envelope_on_search_is_a_hard_error_not_no_match() {
+    // wbsearchentities returns errors (maxlag, backend failure, bad params) as
+    // HTTP 200 with an `error` object and an empty `search`. Modelling `error`
+    // and gating on it stops that decoding as a clean "no matching item".
+    let body = r#"{"error":{"code":"maxlag","info":"Waiting for a replica DB server"}}"#;
+    let resp: SearchResp = serde_json::from_str(body).expect("envelope parses");
+    assert!(
+        resp.search.is_empty(),
+        "the error envelope carries no search hits"
+    );
+    assert!(
+        crate::util::mediawiki::MwError::check(&resp.error, "wikidata").is_err(),
+        "a wbsearchentities error envelope must surface as an error, not an empty match set"
+    );
+}
+
+#[test]
+fn a_normal_search_response_has_no_error_envelope() {
+    let body = r#"{"search":[{"id":"Q34253","label":"Linus Torvalds"}]}"#;
+    let resp: SearchResp = serde_json::from_str(body).expect("parses");
+    assert_eq!(resp.search.len(), 1);
+    assert!(
+        crate::util::mediawiki::MwError::check(&resp.error, "wikidata").is_ok(),
+        "a normal search response passes the gate"
+    );
 }
