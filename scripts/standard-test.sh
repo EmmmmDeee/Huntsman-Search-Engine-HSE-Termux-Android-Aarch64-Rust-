@@ -13,6 +13,7 @@
 #                              print the full results; touches no operator state.
 #
 # Usage:
+#   hse-test                                 # PATH wrapper installed by install.sh
 #   scripts/standard-test.sh                 # canonical seed: Kylo4kylo
 #   scripts/standard-test.sh "<seed>"        # any username/handle seed
 #
@@ -34,14 +35,16 @@ WALL="${HSE_WALL:-240}"
 # Locate the binary: explicit override, else release, else the `fast` profile
 # (Termux's default build profile — see install.sh's HSE_BUILD_PROFILE and
 # docs/INSTALL.md's "Manual build" section, both of which build --profile fast
-# on Termux by default, landing at target/fast/hse), else debug.
+# on Termux by default, landing at target/fast/hse), else debug, else a
+# PATH-installed `hse` (the curl-pipe prebuilt install has no target/ tree).
 BIN="${HSE_BIN:-}"
 if [ -z "$BIN" ]; then
     if [ -x ./target/release/hse ]; then BIN=./target/release/hse
     elif [ -x ./target/fast/hse ]; then BIN=./target/fast/hse
     elif [ -x ./target/debug/hse ]; then BIN=./target/debug/hse
+    elif command -v hse >/dev/null 2>&1; then BIN="$(command -v hse)"
     else
-        echo "error: no hse binary found — run 'cargo build --release' (or --profile fast) first" >&2
+        echo "error: no hse binary found — run 'cargo build --release' (or --profile fast) first, or re-run the curl installer and use \`hse-test\`" >&2
         exit 1
     fi
 fi

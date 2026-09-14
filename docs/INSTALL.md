@@ -56,6 +56,7 @@ curl -fsSL \
 ```bash
 hse --version        # confirm install
 hse doctor           # environment report
+hse-test             # standard acceptance run (canonical seed; isolated HOME)
 hse-bg start         # start web server with Android wake-lock
 # Open Chrome → http://127.0.0.1:8080
 ```

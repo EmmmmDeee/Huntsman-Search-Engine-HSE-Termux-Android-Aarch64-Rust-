@@ -217,8 +217,11 @@ URLs** (liveness + toggles + a scan dossier), against a throwaway `HOME` so it
 never touches your keys/config:
 
 ```bash
-scripts/standard-test.sh             # canonical seed (Kylo4kylo)
-scripts/standard-test.sh "<seed>"    # any handle/username
+hse-test                         # after install (PATH); canonical seed Kylo4kylo
+hse-test "<seed>"                # any handle/username
+# developers in a clone (same run, prefers ./target then PATH):
+scripts/standard-test.sh
+scripts/standard-test.sh "<seed>"
 ```
 
 ### General & dark-web-exposure search — `hse query`

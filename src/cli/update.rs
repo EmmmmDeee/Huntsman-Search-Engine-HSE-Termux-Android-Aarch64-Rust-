@@ -40,11 +40,11 @@ pub(super) async fn cmd_update(check: bool, ref_: Option<String>) -> Result<()> 
 pub(super) async fn maybe_auto_update(command: &Command) {
     // Read-only/hidden commands must never trigger a background reinstall:
     // install.sh itself invokes `hse build-sha` (prebuilt check + post-install
-    // verification), so gating on it would re-enter a SECOND detached
-    // install.sh into the same source dir — racing the foreground installer's
-    // git checkout, cargo build, binary swap, and rollback copy. Doctor /
-    // selftest are diagnostics: they must observe the current install, never
-    // mutate it.
+    // verification) and `hse provision` (env-file merge), so gating on either
+    // would re-enter a SECOND detached install.sh into the same source dir —
+    // racing the foreground installer's git checkout, cargo build, binary swap,
+    // and rollback copy. Doctor / selftest are diagnostics: they must observe
+    // the current install, never mutate it.
     if matches!(
         command,
         Command::Serve { .. }
@@ -52,6 +52,7 @@ pub(super) async fn maybe_auto_update(command: &Command) {
             | Command::BuildSha { .. }
             | Command::Doctor { .. }
             | Command::Selftest { .. }
+            | Command::Provision { .. }
     ) {
         return;
     }
@@ -84,6 +85,7 @@ mod tests {
                 | Command::BuildSha { .. }
                 | Command::Doctor { .. }
                 | Command::Selftest { .. }
+                | Command::Provision { .. }
         )
     }
 
@@ -103,11 +105,22 @@ mod tests {
 
     #[test]
     fn installer_invoked_readonly_commands_skip_opportunistic_check() {
-        // install.sh runs `hse build-sha` mid-install; gating on it would
-        // spawn a second, detached install.sh racing the foreground one.
+        // install.sh runs `hse build-sha` mid-install and `hse provision` at
+        // the end; gating on either would spawn a second, detached install.sh
+        // racing the foreground one. Observed on-device 2026-09-15: a prebuilt
+        // install of dcfbd9e (which WAS main) printed
+        // "4 commit(s) behind GitHub main — applying the update in the
+        // background" *during* `hse provision`, because an older source
+        // checkout was still on disk and Provision was not in the skip set.
         assert!(skips_auto_update(&Command::BuildSha { json: false }));
         assert!(skips_auto_update(&Command::Doctor { live: false }));
         assert!(skips_auto_update(&Command::Selftest { json: false }));
+        assert!(skips_auto_update(&Command::Provision {
+            env_only: true,
+            verify_only: false,
+            dry_run: false,
+            discover: true,
+        }));
         assert!(!skips_auto_update(&Command::Engines { json: false }));
     }
 }

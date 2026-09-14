@@ -177,7 +177,7 @@ HSE_MANAGED_MARKER="HSE-MANAGED: created by the HSE installer; safe for it to re
 # binary, so a stale copy is identified WITHOUT executing it.
 HSE_BINARY_SIGNATURE="Huntsman Search Engine (HSE)"
 # Every executable name this installer places in the bin dir.
-HSE_OWNED_NAMES=(hse hse-bg hse-watch hse-wakelock)
+HSE_OWNED_NAMES=(hse hse-bg hse-watch hse-wakelock hse-test)
 
 # True iff FILE is an HSE-owned artifact: a generated wrapper (carries the
 # marker) or a compiled `hse` (carries the embedded banner). `grep -a` scans
@@ -1056,6 +1056,32 @@ ok "Built: $BUILT ($(du -h "$BUILT" | awk '{print $1}'))"
 
 fi  # end PREBUILT guard — toolchain + clone + source build skipped when a prebuilt was used
 
+# ─── Keep an existing source checkout current on the prebuilt path ────────────
+# The prebuilt fast path skips `git fetch` (no toolchain, no compile). If a
+# previous install left a clone at $HSE_INSTALL_DIR, that checkout can be
+# several commits behind the binary we just installed. The next CLI command
+# then sees "N commit(s) behind GitHub main" and launches a background
+# source rebuild — undoing the prebuilt skip. Observed on-device 2026-09-15:
+# installing dcfbd9e from GitHub Releases (which WAS main) immediately fired
+# "4 commit(s) behind" because ~/.local/share/hse was stale. Best-effort:
+# never fail a working prebuilt install over a git hiccup; only runs when a
+# clone is already present (a fresh prebuilt install has no tree to drift).
+if [[ "$PREBUILT" == "1" && -d "$HSE_INSTALL_DIR/.git" ]] && command -v git >/dev/null 2>&1; then
+    step "Syncing source checkout to the installed revision"
+    export GIT_TERMINAL_PROMPT=0
+    FETCH_TARGET="$HSE_REF"
+    [[ -n "$TARGET_SHA" ]] && FETCH_TARGET="$TARGET_SHA"
+    git -C "$HSE_INSTALL_DIR" remote set-url origin "$HSE_REPO_URL" 2>/dev/null || true
+    if git -C "$HSE_INSTALL_DIR" fetch --depth 1 origin "$FETCH_TARGET" >>"$LOG_FILE" 2>&1 \
+        && git -C "$HSE_INSTALL_DIR" checkout -B "$HSE_REF" FETCH_HEAD >>"$LOG_FILE" 2>&1; then
+        SOURCE_SHA="$(git -C "$HSE_INSTALL_DIR" rev-parse HEAD 2>/dev/null || true)"
+        ok "Source checkout ${SOURCE_SHA:0:7} matches the prebuilt"
+    else
+        log_warn "could not sync $HSE_INSTALL_DIR — auto-update may rebuild from source next"
+        hint "See $LOG_FILE. Non-fatal: the prebuilt binary is already installed."
+    fi
+fi
+
 # ─── Install binary ──────────────────────────────────────────────────────────
 step "Installing binary to $HSE_BIN_DIR/hse"
 
@@ -1670,6 +1696,81 @@ BOOT
     fi
 fi
 
+# ─── Standard acceptance run (PATH wrapper; works after a prebuilt install) ─
+# README documents `scripts/standard-test.sh`, which only exists inside a
+# source checkout. The prebuilt path skips the clone, so that command 404s
+# from `~` — the cwd of a curl-pipe install. Observed on-device 2026-09-15:
+# `bash: scripts/standard-test.sh: No such file or directory` as the last
+# line of an otherwise-successful Termux install. `hse-test` is the same
+# acceptance run, installed next to `hse` so it works from any directory,
+# uses the just-installed binary, and isolates HOME so it never touches
+# operator keys/DB. Regenerated every install like hse-bg / hse-watch.
+TEST_WRAPPER="$HSE_BIN_DIR/hse-test"
+if [[ $IS_TERMUX -eq 1 ]]; then
+    printf '#!%s/bin/bash\n' "$PREFIX" > "$TEST_WRAPPER"
+else
+    printf '#!/usr/bin/env bash\n' > "$TEST_WRAPPER"
+fi
+printf '# %s\n' "$HSE_MANAGED_MARKER" >> "$TEST_WRAPPER"
+printf 'INSTALLED_HSE="%s/hse"\n' "$HSE_BIN_DIR" >> "$TEST_WRAPPER"
+cat >> "$TEST_WRAPPER" <<'TEST'
+# hse-test — standard acceptance run (canonical seed, isolated HOME).
+#
+# Exercises the free, keyless pipeline end-to-end and prints every result
+# in full with complete URLs. Never reads or writes the operator's
+# ~/.huntsman.env / ~/.huntsman/ database: HOME is a throwaway directory.
+#
+#   hse-test                 # canonical seed: Kylo4kylo
+#   hse-test "<seed>"        # any username/handle
+#
+# Environment overrides (all optional): HSE_BIN, HSE_KIND, HSE_DEPTH,
+# HSE_TIMEOUT_MS, HSE_WALL, HSE_JSON=1
+set -euo pipefail
+
+SEED="${1:-Kylo4kylo}"
+KIND="${HSE_KIND:-username}"
+DEPTH="${HSE_DEPTH:-1}"
+TIMEOUT_MS="${HSE_TIMEOUT_MS:-60000}"
+WALL="${HSE_WALL:-240}"
+BIN="${HSE_BIN:-$INSTALLED_HSE}"
+if [ ! -x "$BIN" ]; then
+    echo "error: hse not found at $BIN — re-run the installer" >&2
+    exit 1
+fi
+
+RUN_HOME="$(mktemp -d)"
+trap 'rm -rf "$RUN_HOME"' EXIT
+export HOME="$RUN_HOME"
+
+rule() { printf '\n\033[1;36m== %s ==\033[0m\n' "$1"; }
+
+rule "HSE standard acceptance run"
+"$BIN" --version
+echo "seed=$SEED kind=$KIND depth=$DEPTH per-module-timeout=${TIMEOUT_MS}ms wall=${WALL}s"
+
+rule "Search-engine liveness (free, keyless; disabled engines shown too)"
+"$BIN" engines || true
+
+rule "Capability toggles (features / engines / modules)"
+"$BIN" config || true
+
+rule "Scan dossier: $KIND=$SEED"
+"$BIN" scan --kind "$KIND" --value "$SEED" \
+    --depth "$DEPTH" --timeout "$TIMEOUT_MS" --max-wall-time "$WALL" \
+    --output dossier
+
+if [ "${HSE_JSON:-0}" = "1" ]; then
+    rule "Machine-readable scan (entities + complete URLs)"
+    "$BIN" scan --kind "$KIND" --value "$SEED" \
+        --depth "$DEPTH" --timeout "$TIMEOUT_MS" --max-wall-time "$WALL" \
+        --output json
+fi
+
+rule "Done"
+TEST
+chmod 0755 "$TEST_WRAPPER"
+ok "Installed hse-test wrapper (standard acceptance run; isolated HOME)"
+
 # ─── Purge stale / duplicate installs ────────────────────────────────────────
 # The fresh binary + wrappers are now in $HSE_BIN_DIR; remove any older copies
 # elsewhere on PATH so a bare `hse` can never resolve to a previous version.
@@ -1687,6 +1788,17 @@ purge_stale_installs || log_warn "stale-install cleanup skipped (non-fatal)"
 # step. Idempotent: the merge preserves every real value, adds only newly-shipped
 # template keys, and skips the write entirely when nothing changed.
 KEYS_PATH="$HOME/.huntsman.env"
+# Seed the auto-update throttle stamp BEFORE the first CLI invocation this
+# installer makes (`hse provision` below). The stamp used to be written
+# *after* provision+doctor, so `hse provision` — which was not in the
+# auto-update skip set — could launch a background source rebuild of a
+# stale checkout during an otherwise-finished prebuilt install.
+# (2026-09-15 on-device: "4 commit(s) behind GitHub main" printed in the
+# middle of the keys-provision step.) The CLI gate reads
+# ~/.cache/hse-autoupdate.stamp; the freshly-installed binary is, by
+# definition, current with the revision this run set out to land.
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+date +%s > "$LOG_DIR/hse-autoupdate.stamp" 2>/dev/null || true
 step "Configuring keys at $KEYS_PATH (canonical template + autonomous key discovery)"
 "$HSE_BIN_DIR/hse" provision --env-only --discover \
     || log_warn "hse provision failed — configure keys later: hse provision --env-only --discover"
@@ -1738,12 +1850,6 @@ purge_removed_integration || log_warn "retired-integration cleanup skipped (non-
     && chmod 0600 "$KEYS_PATH.tmp" \
     && mv -f "$KEYS_PATH.tmp" "$KEYS_PATH"
 
-# Seed the auto-update throttle stamp so the freshly-installed binary (which is,
-# by definition, current with main right now) doesn't immediately re-check on its
-# first CLI invocation. The CLI gate reads this file (~/.cache/hse-autoupdate.stamp).
-mkdir -p "$LOG_DIR" 2>/dev/null || true
-date +%s > "$LOG_DIR/hse-autoupdate.stamp" 2>/dev/null || true
-
 # ─── Verify ──────────────────────────────────────────────────────────────────
 step "Verifying installation"
 "$HSE_BIN_DIR/hse" --version
@@ -1778,6 +1884,7 @@ fi
 echo
 printf '%s%sInstallation complete!%s\n\n' "$GREEN" "$BOLD" "$NC"
 printf '%sCLI quick start:%s\n' "$CYAN" "$NC"
+printf '  hse-test                                            # standard acceptance run (canonical seed)\n'
 printf '  hse modules                                         # list available modules\n'
 printf '  hse scan --kind domain --value example.com -A       # auto-depth scan\n'
 printf '  hse scan --kind email --value foo@bar.com --depth 5 # max expansion\n'
