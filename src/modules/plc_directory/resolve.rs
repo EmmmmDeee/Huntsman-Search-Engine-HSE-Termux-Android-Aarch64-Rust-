@@ -110,19 +110,23 @@ pub(super) async fn resolve_did(
 
 /// Fetch the append-only operation log for a `did:plc:` identity.
 ///
-/// `Ok(None)` from a 404 is the clean "this DID was never registered" answer,
-/// not a failure. The DID is validated before it reaches the URL — it is
-/// interpolated into a path, so [`is_plc_did`] is a security gate, not a
+/// `Ok(None)` from a 404 is the clean "this DID was never registered" answer;
+/// a 5xx/429/transport/breaker failure is an `Err`, NOT `Ok(None)` — the
+/// directory being unreachable is not the same as the identity having no PLC
+/// history, and folding the two (the previous `.ok().flatten()`) let an outage
+/// masquerade as a clean "no history" negative. This now fails closed like its
+/// sibling [`resolve_did`]. The DID is validated before it reaches the URL — it
+/// is interpolated into a path, so [`is_plc_did`] is a security gate, not a
 /// nicety.
-pub(super) async fn audit_log(ctx: &ModuleContext, did: &str) -> Option<Vec<AuditEntry>> {
+pub(super) async fn audit_log(
+    ctx: &ModuleContext,
+    did: &str,
+) -> crate::core::error::Result<Option<Vec<AuditEntry>>> {
     if !is_plc_did(did) {
-        return None;
+        return Ok(None);
     }
     let url = format!("{PLC_BASE}/{did}/log/audit");
-    fetch_json_or_404::<Vec<AuditEntry>>(&ctx.http, SRC, &url)
-        .await
-        .ok()
-        .flatten()
+    fetch_json_or_404::<Vec<AuditEntry>>(&ctx.http, SRC, &url).await
 }
 
 /// Whether every candidate handle that was actually tried came back a failure.
