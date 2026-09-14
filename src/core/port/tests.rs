@@ -7,6 +7,8 @@ use super::*;
     fn tmp_store() -> Arc<dyn StoragePort> {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static CTR: AtomicUsize = AtomicUsize::new(0);
+        static SWEPT: std::sync::Once = std::sync::Once::new();
+        SWEPT.call_once(sweep_stale_test_dbs);
         let n = CTR.fetch_add(1, Ordering::SeqCst);
         let path = format!(
             "{}/.hse-port-test-{}-{}.db",
@@ -14,8 +16,114 @@ use super::*;
             std::process::id(),
             n
         );
-        let _ = std::fs::remove_file(&path);
         Arc::new(crate::storage::Store::open(&path).expect("should succeed"))
+    }
+
+    /// Removes every `.hse-port-test-<pid>-<n>.db` file (and its `-wal`/
+    /// `-shm` sidecars, on the off chance a crashed test left one behind —
+    /// SQLite's normal clean close already checkpoints them away, which is
+    /// why none were found in practice) left by a past, now-dead process.
+    /// The single `remove_file` this replaced inside `tmp_store` itself
+    /// could never match: it targeted a path built from THIS process's own
+    /// pid and a counter that starts fresh at 0 every process, so it names a
+    /// file that has never existed before the call that constructs it — a
+    /// permanent no-op, the same shape found in this session's sibling
+    /// `storage::tests::tmp_db`. Confirmed live: 665 leftover files (123MB)
+    /// spanning the same 133 distinct process ids as that sibling leak had
+    /// accumulated under `/tmp` before this fix. A file is swept only once
+    /// its exact pid is confirmed dead via `/proc/<pid>` — never by name
+    /// pattern alone, since several test binaries can legitimately run
+    /// concurrently under different, simultaneously-live pids.
+    fn sweep_stale_test_dbs() {
+        let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let Some(rest) = name.strip_prefix(".hse-port-test-") else {
+                continue;
+            };
+            // An exact suffix match, never a permissive fallback: a name
+            // this helper never generated (e.g. a hand-placed `…-0.db.bak`)
+            // must never be treated as a match just because it happens to
+            // start with a dead-pid-shaped prefix.
+            let Some(core) = rest
+                .strip_suffix(".db-wal")
+                .or_else(|| rest.strip_suffix(".db-shm"))
+                .or_else(|| rest.strip_suffix(".db"))
+            else {
+                continue;
+            };
+            let Some((pid_str, n_str)) = core.split_once('-') else {
+                continue;
+            };
+            let Ok(pid) = pid_str.parse::<u32>() else {
+                continue;
+            };
+            // The counter component must be numeric too — the exact shape
+            // `tmp_store` generates, nothing looser.
+            if n_str.parse::<u64>().is_err() {
+                continue;
+            }
+            if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    #[test]
+    fn sweep_stale_test_dbs_removes_a_dead_pid_but_never_a_live_one() {
+        let base = std::env::temp_dir();
+        // A pid far past any real process's range: guaranteed dead, so its
+        // file must be swept.
+        let dead = base.join(".hse-port-test-999999999-0.db");
+        std::fs::write(&dead, b"stale").expect("should succeed");
+        // This test's OWN process is unquestionably alive, so a file
+        // stamped with its real pid must survive the sweep untouched.
+        let live = base.join(format!(".hse-port-test-{}-999999.db", std::process::id()));
+        std::fs::write(&live, b"live").expect("should succeed");
+        // An unrelated file that merely shares the temp dir must never be
+        // touched by name-pattern matching alone.
+        let unrelated = base.join(".hse-port-test-not-a-pid.db");
+        std::fs::write(&unrelated, b"unrelated").expect("should succeed");
+        // A dead, numeric pid paired with a non-numeric counter (right
+        // suffix, wrong shape): must never be swept just because the pid
+        // component alone looks dead-and-numeric.
+        let bad_counter = base.join(".hse-port-test-999999999-not-a-counter.db");
+        std::fs::write(&bad_counter, b"bad-counter").expect("should succeed");
+        // A dead, numeric pid with an unrecognised suffix: must never be
+        // swept by a permissive fallback that accepts anything past the
+        // prefix.
+        let bad_suffix = base.join(".hse-port-test-999999999-0.db.bak");
+        std::fs::write(&bad_suffix, b"bad-suffix").expect("should succeed");
+
+        sweep_stale_test_dbs();
+
+        assert!(!dead.exists(), "a file whose pid is confirmed dead must be swept");
+        assert!(
+            live.exists(),
+            "a file stamped with this (live) process's own pid must never be swept"
+        );
+        assert!(
+            unrelated.exists(),
+            "a non-numeric suffix must never be treated as a pid and swept"
+        );
+        assert!(
+            bad_counter.exists(),
+            "a dead pid with a non-numeric counter must never be swept"
+        );
+        assert!(
+            bad_suffix.exists(),
+            "a dead pid with an unrecognised suffix must never be swept"
+        );
+
+        let _ = std::fs::remove_file(&live);
+        let _ = std::fs::remove_file(&unrelated);
+        let _ = std::fs::remove_file(&bad_counter);
+        let _ = std::fs::remove_file(&bad_suffix);
     }
 
     #[test]
