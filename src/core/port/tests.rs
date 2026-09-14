@@ -46,17 +46,28 @@ use super::*;
             let Some(rest) = name.strip_prefix(".hse-port-test-") else {
                 continue;
             };
-            let core = rest
+            // An exact suffix match, never a permissive fallback: a name
+            // this helper never generated (e.g. a hand-placed `…-0.db.bak`)
+            // must never be treated as a match just because it happens to
+            // start with a dead-pid-shaped prefix.
+            let Some(core) = rest
                 .strip_suffix(".db-wal")
                 .or_else(|| rest.strip_suffix(".db-shm"))
                 .or_else(|| rest.strip_suffix(".db"))
-                .unwrap_or(rest);
-            let Some((pid_str, _n)) = core.split_once('-') else {
+            else {
+                continue;
+            };
+            let Some((pid_str, n_str)) = core.split_once('-') else {
                 continue;
             };
             let Ok(pid) = pid_str.parse::<u32>() else {
                 continue;
             };
+            // The counter component must be numeric too — the exact shape
+            // `tmp_store` generates, nothing looser.
+            if n_str.parse::<u64>().is_err() {
+                continue;
+            }
             if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -78,6 +89,16 @@ use super::*;
         // touched by name-pattern matching alone.
         let unrelated = base.join(".hse-port-test-not-a-pid.db");
         std::fs::write(&unrelated, b"unrelated").expect("should succeed");
+        // A dead, numeric pid paired with a non-numeric counter (right
+        // suffix, wrong shape): must never be swept just because the pid
+        // component alone looks dead-and-numeric.
+        let bad_counter = base.join(".hse-port-test-999999999-not-a-counter.db");
+        std::fs::write(&bad_counter, b"bad-counter").expect("should succeed");
+        // A dead, numeric pid with an unrecognised suffix: must never be
+        // swept by a permissive fallback that accepts anything past the
+        // prefix.
+        let bad_suffix = base.join(".hse-port-test-999999999-0.db.bak");
+        std::fs::write(&bad_suffix, b"bad-suffix").expect("should succeed");
 
         sweep_stale_test_dbs();
 
@@ -90,9 +111,19 @@ use super::*;
             unrelated.exists(),
             "a non-numeric suffix must never be treated as a pid and swept"
         );
+        assert!(
+            bad_counter.exists(),
+            "a dead pid with a non-numeric counter must never be swept"
+        );
+        assert!(
+            bad_suffix.exists(),
+            "a dead pid with an unrecognised suffix must never be swept"
+        );
 
         let _ = std::fs::remove_file(&live);
         let _ = std::fs::remove_file(&unrelated);
+        let _ = std::fs::remove_file(&bad_counter);
+        let _ = std::fs::remove_file(&bad_suffix);
     }
 
     #[test]

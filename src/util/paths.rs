@@ -289,7 +289,22 @@ mod tests {
 
     #[test]
     fn sweep_stale_test_homes_removes_a_dead_pid_but_never_a_live_one() {
-        let base = std::env::temp_dir();
+        // A dedicated sandbox, NOT `std::env::temp_dir()` directly:
+        // `huntsman_dir_path()`'s own `cfg(test)` branch now mints
+        // `huntsman-test-home-<this process's pid>` as the REAL shared test
+        // home every other concurrently-running unit test in this same
+        // binary depends on. Building the `live` fixture below with that
+        // same real pid, directly under the real temp dir, would make it
+        // alias that actual shared directory — and this test's own
+        // `remove_dir_all` cleanup would then delete it out from under
+        // whichever other test happened to be using it at the time, under
+        // Rust's default parallel test execution. An isolated sandbox
+        // avoids that aliasing entirely rather than special-casing around
+        // it.
+        let base = std::env::temp_dir().join(format!("paths-sweep-fixture-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("should succeed");
+
         // A pid far past any real process's range: guaranteed dead, so its
         // directory must be swept.
         let dead = base.join("huntsman-test-home-999999999");
@@ -298,7 +313,8 @@ mod tests {
         // This test's OWN process is unquestionably alive, so a directory
         // stamped with its real pid must survive the sweep untouched — the
         // core safety property: never delete a concurrently-running test
-        // binary's own live directory.
+        // binary's own live directory. Safe to use the real pid here since
+        // it lives under the isolated sandbox, not the real shared home.
         let live = base.join(format!("huntsman-test-home-{}", std::process::id()));
         std::fs::create_dir_all(&live).expect("should succeed");
         // An unrelated file that merely shares the temp dir must never be
@@ -321,7 +337,6 @@ mod tests {
             "a non-numeric suffix must never be treated as a pid and swept"
         );
 
-        let _ = std::fs::remove_dir_all(&live);
-        let _ = std::fs::remove_dir_all(&unrelated);
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
