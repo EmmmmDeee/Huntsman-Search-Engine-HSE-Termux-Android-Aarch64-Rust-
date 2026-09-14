@@ -6,7 +6,7 @@
 #
 # Toolchain pinned to match rust-toolchain.toml exactly, so a container build
 # can never silently diverge from what CI/local dev compile against.
-FROM rust:1.97.1-bookworm AS builder
+FROM rust:1.98.0-bookworm AS builder
 WORKDIR /build
 
 # rusqlite is built with the `bundled` feature (compiles SQLite from C source
