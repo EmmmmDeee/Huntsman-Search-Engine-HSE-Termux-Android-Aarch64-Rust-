@@ -223,6 +223,7 @@ impl LiveScanner {
     }
 
     /// Maximum concurrent live sessions to prevent resource exhaustion.
+    /// Enforced atomically by [`claim_session_slot`] — see its doc comment.
     const MAX_SESSIONS: usize = 10;
 
     /// Spawn a new live session. Returns the new `live_id`. Sessions run
@@ -230,33 +231,6 @@ impl LiveScanner {
     pub fn start(&self, target: Target, scan_options: ScanOptions, live: LiveOptions) -> String {
         // Live sessions re-scan on a loop; cap depth at the operator boundary too.
         let scan_options = scan_options.clamp_depth();
-        {
-            let sessions = self.inner.sessions.read();
-            let active = sessions
-                .values()
-                .filter(|s| s.status == LiveStatus::Running)
-                .count();
-            if active >= Self::MAX_SESSIONS {
-                // Evict the oldest running session. `sessions` is a HashMap, so
-                // its `values()` order is randomised; break started_at ties by
-                // session id so that *which* of two same-second sessions is
-                // dropped is predictable (and logged-then-reproducible), not a
-                // coin flip on HashMap iteration order.
-                let oldest_id = sessions
-                    .values()
-                    .filter(|s| s.status == LiveStatus::Running)
-                    .min_by(|a, b| {
-                        a.started_at
-                            .cmp(&b.started_at)
-                            .then_with(|| a.id.cmp(&b.id))
-                    })
-                    .map(|s| s.id.clone());
-                if let Some(id) = oldest_id {
-                    drop(sessions);
-                    self.stop(&id);
-                }
-            }
-        }
         let live_id = new_live_id(&target);
         let session = LiveSession {
             id: live_id.clone(),
@@ -271,8 +245,15 @@ impl LiveScanner {
             scan_id_order: VecDeque::new(),
         };
 
+        // `claim_session_slot` does the cap check, eviction-candidate
+        // selection, AND the insert all under one lock acquisition — see its
+        // doc comment for why splitting them (as this used to) lets
+        // concurrent callers race past the cap.
+        if let Some(evicted_id) = claim_session_slot(&self.inner.sessions, session) {
+            self.stop(&evicted_id);
+        }
+
         let cancel = CancelHandle::new();
-        self.inner.sessions.write().insert(live_id.clone(), session);
         self.inner
             .cancels
             .write()
@@ -521,6 +502,56 @@ async fn session_loop(
     }
 
     mark_stopped(&inner, &live_id);
+}
+
+/// Atomically enforce [`LiveScanner::MAX_SESSIONS`] and claim a slot for
+/// `session`: count the currently-`Running` sessions, pick an eviction
+/// candidate if at the cap, and insert `session` — all under ONE lock
+/// acquisition. Returns the id of the session to evict (the caller stops it
+/// AFTER this returns, since [`LiveScanner::stop`] takes a different lock and
+/// doesn't need `sessions` held).
+///
+/// Regression: this check-then-insert used to be split across two separate
+/// lock acquisitions in `start` — a `read()` to count, then, after dropping
+/// it, a LATER separate `write()` to insert, with no re-check in between.
+/// `RwLock` permits multiple concurrent readers, so two (or more)
+/// near-simultaneous `start()` callers could each acquire their OWN read
+/// lock, each independently see the count safely under the cap, and each
+/// then insert — bypassing `MAX_SESSIONS` by however many callers raced, not
+/// just by one. Since each live session holds an HTTP client and drives the
+/// full engine, by default forever (`iterations: None`), a cap concurrent
+/// callers can walk straight through does not actually bound resource use.
+/// Takes the bare map (not `&LiveInner`) so it's testable without
+/// constructing an engine/bus/http client, mirroring [`prune_terminal_sessions`].
+fn claim_session_slot(
+    sessions: &RwLock<HashMap<String, LiveSession>>,
+    session: LiveSession,
+) -> Option<String> {
+    let mut sessions = sessions.write();
+    let active = sessions
+        .values()
+        .filter(|s| s.status == LiveStatus::Running)
+        .count();
+    // Evict the oldest running session. `sessions` is a HashMap, so its
+    // `values()` order is randomised; break started_at ties by session id so
+    // that *which* of two same-second sessions is dropped is predictable
+    // (and logged-then-reproducible), not a coin flip on HashMap iteration
+    // order.
+    let evicted_id = if active >= LiveScanner::MAX_SESSIONS {
+        sessions
+            .values()
+            .filter(|s| s.status == LiveStatus::Running)
+            .min_by(|a, b| {
+                a.started_at
+                    .cmp(&b.started_at)
+                    .then_with(|| a.id.cmp(&b.id))
+            })
+            .map(|s| s.id.clone())
+    } else {
+        None
+    };
+    sessions.insert(session.id.clone(), session);
+    evicted_id
 }
 
 /// Terminal (Completed/Stopped) sessions retained for `GET /api/v1/live/{id}`

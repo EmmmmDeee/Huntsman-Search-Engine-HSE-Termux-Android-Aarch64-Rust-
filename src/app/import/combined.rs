@@ -279,7 +279,15 @@ fn emit_combined_records(
             if let Some(ip) = get(ipl)
                 && ip.parse::<std::net::IpAddr>().is_ok()
                 && !crate::core::validation::is_bogus_ip(ip)
-                && seen.insert(format!("ip:{ip}"))
+                // `.is_ok()` validates but discards the parsed value, so the
+                // dedup key stays the raw, non-canonicalised string — two
+                // differently-formatted spellings of the same address (e.g.
+                // an expanded vs compressed IPv6 form) dedup separately
+                // despite colliding on the same uid `Entity::new` constructs.
+                && seen.insert(format!(
+                    "ip:{}",
+                    crate::core::entity::normalise(&EntityKind::IpAddress, ip)
+                ))
             {
                 push(
                     Entity::new(EntityKind::IpAddress, ip, confidence::NOTABLE, sid),

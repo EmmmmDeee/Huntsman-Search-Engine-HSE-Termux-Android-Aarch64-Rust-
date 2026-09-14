@@ -89,7 +89,19 @@ fn cert_evidence(entry: &Issuance, summary: &str) -> Evidence {
 /// cap, because each subdomain / enterprise-CA org is a real BFS pivot and the
 /// frontier budget is the engine's, not this leaf module's (mirrors `crtsh`).
 fn build_entities(entries: &[Issuance], domain_base: &str, scan_id: &str) -> Vec<Entity> {
-    let base = domain_base.trim().trim_end_matches('.').to_lowercase();
+    // Normalised the same way `Entity::new` normalises every Domain value
+    // (canonically strips leading "www." labels — see its doc comment) so a
+    // dns_names entry's dedup key and subdomain classification match the
+    // identity the entity actually gets constructed under. Mirrors the
+    // identical fix in the sibling `crtsh` module.
+    let base = crate::core::entity::normalise(
+        &EntityKind::Domain,
+        domain_base
+            .trim()
+            .trim_end_matches('.')
+            .to_lowercase()
+            .as_str(),
+    );
     let mut seen_domains: HashSet<String> = HashSet::new();
     let mut seen_issuers: HashSet<String> = HashSet::new();
 
@@ -103,7 +115,19 @@ fn build_entities(entries: &[Issuance], domain_base: &str, scan_id: &str) -> Vec
             if name.is_empty() || name.starts_with('*') || !name.contains('.') {
                 return None;
             }
-            if !seen_domains.insert(name.clone()) {
+            // De-dup and classify against the SAME normalised identity
+            // `Entity::new` will construct below, not the raw dns_names text —
+            // otherwise "www.example.com" and "example.com" from the same
+            // issuance are two distinct names here (each independently
+            // earning its own dedup slot and subdomain verdict) yet both
+            // collapse to one uid once constructed. `Entity::merge`'s
+            // tag-union then keeps whichever of the two was (correctly, in
+            // isolation) tagged SUBDOMAIN, mislabeling the apex regardless of
+            // this site's own classification being right for a name
+            // considered by itself. Mirrors the identical fix in the sibling
+            // `crtsh` module.
+            let canonical = crate::core::entity::normalise(&EntityKind::Domain, &name);
+            if !seen_domains.insert(canonical.clone()) {
                 return None;
             }
             // Proper-subdomain, not `is_or_subdomain_of` — the apex itself
@@ -111,7 +135,7 @@ fn build_entities(entries: &[Issuance], domain_base: &str, scan_id: &str) -> Vec
             // commonly SANs both "example.com" and "www.example.com"), and
             // the apex is not a subdomain of itself; using the inclusive
             // check mislabeled it `tags::SUBDOMAIN`.
-            let is_sub = crate::util::domains::is_proper_subdomain_of(&name, &base);
+            let is_sub = crate::util::domains::is_proper_subdomain_of(&canonical, &base);
             let conf = if is_sub {
                 confidence::VERY_HIGH
             } else {

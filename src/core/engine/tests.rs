@@ -4979,11 +4979,21 @@ fn admission_rejection_covers_every_drop_filter_and_order() {
 /// engine never fired the POST, so a configured webhook silently never arrived.
 /// Git-stash-proven: against the unfixed engine no connection is made and the
 /// `recv_timeout` below elapses, failing the test.
+///
+/// The webhook URL names a plausible external hostname (not an IP literal, and
+/// not one of `preflight::is_local_domain`'s reserved suffixes) so it clears the
+/// SSRF guard `notify_scan_complete` applies (see the sibling
+/// `scan_completion_never_dials_a_private_webhook_url` test below, which proves
+/// the guard itself); `ctx.http` carries a `.resolve()` override pinning that
+/// hostname to the local sink, so the request still lands on our loopback
+/// listener without a real DNS lookup.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scan_completion_fires_the_configured_webhook() {
     use crate::core::test_support::InMemoryStore;
     use std::io::{Read, Write};
     use std::sync::mpsc;
+
+    const WEBHOOK_HOST: &str = "hook-target.fixture-host.example-corp";
 
     // One-shot local HTTP sink on an ephemeral port: accept a single connection,
     // read the request, reply 200, and hand the raw request back over a channel.
@@ -5021,7 +5031,7 @@ async fn scan_completion_fires_the_configured_webhook() {
     let (bus, _rx) = tokio::sync::broadcast::channel(64);
     let engine = ScanEngine::new(vec![], store_port, bus.clone());
     let opts = ScanOptions {
-        webhook_url: Some(format!("http://127.0.0.1:{port}/hook/secret")),
+        webhook_url: Some(format!("http://{WEBHOOK_HOST}:{port}/hook/secret")),
         // Pin regional OFF so this test doesn't flip the process-global regional
         // search flag (`set_regional`, driven from `regional_search`) that the
         // `search_engines::build_queries` unit tests read — otherwise running a
@@ -5038,7 +5048,16 @@ async fn scan_completion_fires_the_configured_webhook() {
     let ctx = ModuleContext {
         scan_id: scan.id.clone(),
         bus,
-        http: crate::util::http::build_client(),
+        // `.resolve()` pins WEBHOOK_HOST to the local sink without a real DNS
+        // lookup — see the doc comment above for why the URL uses a hostname
+        // rather than the sink's actual 127.0.0.1 address.
+        http: reqwest::Client::builder()
+            .resolve(
+                WEBHOOK_HOST,
+                std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            )
+            .build()
+            .expect("should succeed"),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
     };
@@ -5059,6 +5078,63 @@ async fn scan_completion_fires_the_configured_webhook() {
     assert!(
         req.contains("\"target_value\":\"seed\""),
         "webhook body must carry the seed target:\n{req}"
+    );
+}
+
+/// SSRF regression at the full-engine level (complements the unit-level
+/// `core::webhook::tests::notify_scan_complete_never_dials_a_private_webhook_url`):
+/// a scan configured with a LOOPBACK `webhook_url` must never actually dial it,
+/// even though `finalise_scan` unconditionally fires the configured webhook on
+/// every terminal scan state. `ScanOptions.webhook_url` is API-caller-supplied
+/// (`POST /api/v1/scans`'s request body), so an unauthenticated or LAN-open
+/// server must not let a caller point it at an internal/loopback address.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scan_completion_never_dials_a_private_webhook_url() {
+    use crate::core::test_support::InMemoryStore;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
+    let port = listener.local_addr().expect("should succeed").port();
+    let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let connections_srv = connections.clone();
+    tokio::spawn(async move {
+        while let Ok((_sock, _)) = listener.accept().await {
+            connections_srv.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(vec![], store_port, bus.clone());
+    let opts = ScanOptions {
+        webhook_url: Some(format!("http://127.0.0.1:{port}/hook")),
+        regional_search: false,
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Username, "seed2");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("username", "seed2"),
+        target.clone(),
+    )
+    .with_options(opts);
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let _ = engine.run(scan, target, ctx).await;
+
+    // Give any (incorrect) connection attempt a moment to land.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        connections.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a loopback webhook_url must never be dialled, even through the full \
+         scan-completion path"
     );
 }
 

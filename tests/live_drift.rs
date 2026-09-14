@@ -14,6 +14,7 @@
 //!   * **empty**       — provider reached, parser produced 0 entities.
 //!   * **unreachable** — transport error (provider down / device offline).
 //!   * **timed-out**   — exceeded the module's own budget (provider slow/hung).
+//!   * **panicked**    — the module's parser crashed on the live response.
 //!
 //! Only a curated **canary** set (`capability_probe::CANARY_PROBES`, e.g.
 //! `ip_geo` / `crtsh` / `bgpview` / `ripestat`) asserts must-yield: an `empty`
@@ -22,6 +23,8 @@
 //! (e.g. a breach lookup for a clean address) — so it never fails. Transport
 //! and timeout outcomes are always **skips**, never failures: a third-party
 //! outage or a throttled CI network can't redden the sweep, only real drift can.
+//! A **panicked** outcome always **fails**, canary or not — unlike `empty`,
+//! there is no legitimate reason a live response should crash the parser.
 //! That keeps the scheduled `.github/workflows/live-drift.yml` run's contract
 //! intact — a red run is an actionable drift, never a flaky endpoint.
 //!
@@ -53,6 +56,7 @@ async fn fleet_capability_drift() {
     let mut empty = 0usize;
     let mut unreachable = 0usize;
     let mut timed_out = 0usize;
+    let mut panicked = 0usize;
     let mut drifted: Vec<String> = Vec::new();
 
     for r in &reports {
@@ -92,19 +96,31 @@ async fn fleet_capability_drift() {
                 timed_out += 1;
                 println!("  timed-out    {:<22}{canary}", r.module);
             }
+            ProbeOutcome::Panicked { message } => {
+                panicked += 1;
+                println!("  panicked     {:<22} {message}{canary}", r.module);
+                // Unconditional, canary or not — see the module doc comment.
+                drifted.push(format!(
+                    "{} — panicked while probing {} {}: {message}",
+                    r.module,
+                    r.kind.canonical_str(),
+                    r.value
+                ));
+            }
         }
     }
 
     println!(
         "\nlive-drift sweep: {} probed — {alive} alive, {empty} empty, \
-         {unreachable} unreachable, {timed_out} timed-out",
+         {unreachable} unreachable, {timed_out} timed-out, {panicked} panicked",
         reports.len()
     );
 
     assert!(
         drifted.is_empty(),
-        "DRIFT: {} canary module(s) reached their provider but parsed zero \
-         entities — the upstream wire shape likely changed:\n  {}",
+        "DRIFT: {} module(s) confirmed broken against their live provider — a \
+         canary that parsed zero entities, and/or a module that panicked — the \
+         upstream wire shape likely changed:\n  {}",
         drifted.len(),
         drifted.join("\n  ")
     );

@@ -36,6 +36,7 @@ pub(crate) mod update;
 
 use crate::{
     core::{
+        correlator::Severity,
         error::{Error, Result},
         scan::TargetKind,
     },
@@ -522,17 +523,28 @@ pub(super) fn color_confidence(c_eff: f64, text: &str, color: bool) -> String {
 }
 
 /// Colour a correlation severity label for the CLI (bold-red Critical, red High,
-/// yellow Medium, dim otherwise) — the severity sibling of [`color_confidence`].
-/// A no-op when `color` is false (piped output / `NO_COLOR`).
-pub(super) fn color_severity(severity: &str, color: bool) -> String {
+/// yellow Medium, dim Low) — the severity sibling of [`color_confidence`]. Takes
+/// [`Severity`] directly, rather than `color_confidence`'s separate `text: &str`,
+/// and formats the fixed-width label itself: a prior version took the already
+/// `Display`-rendered (uppercase) `&str` and matched it against lowercase
+/// literals — the two never agreed, so every row silently fell through to the
+/// dim `_` arm regardless of actual severity, and the same mismatch made the
+/// intended `{:<10}` padding a no-op (`Severity`'s `Display` impl writes the
+/// label with a bare `write!`, which does not itself honour a caller's width).
+/// Matching on the enum instead of a re-derived string makes both properties —
+/// the label text and its colour — fall out of one exhaustive match, so they
+/// cannot drift apart again. A no-op (colour-wise) when `color` is false
+/// (piped output / `NO_COLOR`); the label is still returned, padded.
+pub(super) fn color_severity(severity: Severity, color: bool) -> String {
+    let label = format!("{:<10}", severity.to_string());
     if !color {
-        return severity.to_string();
+        return label;
     }
-    match severity.trim() {
-        "critical" => format!("\x1b[1;31m{severity}\x1b[0m"),
-        "high" => format!("\x1b[31m{severity}\x1b[0m"),
-        "medium" => format!("\x1b[33m{severity}\x1b[0m"),
-        _ => format!("\x1b[2m{severity}\x1b[0m"),
+    match severity {
+        Severity::Critical => format!("\x1b[1;31m{label}\x1b[0m"),
+        Severity::High => format!("\x1b[31m{label}\x1b[0m"),
+        Severity::Medium => format!("\x1b[33m{label}\x1b[0m"),
+        Severity::Low => format!("\x1b[2m{label}\x1b[0m"),
     }
 }
 

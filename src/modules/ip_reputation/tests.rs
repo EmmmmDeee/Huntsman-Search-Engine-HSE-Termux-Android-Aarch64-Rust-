@@ -184,6 +184,30 @@ fn passive_rows(json: &str) -> Vec<PassiveDnsRow> {
 }
 
 #[test]
+fn passive_dns_dedups_an_expanded_and_a_compressed_ipv6_spelling() {
+    // Regression: see hudsonrock's identical fix for the general shape. A
+    // real public address (Google Public DNS) is used, not an RFC 3849
+    // documentation one, so `addr.parse::<IpAddr>().is_ok()`'s validity
+    // check cannot mask the gap either way.
+    let rows = passive_rows(
+        r#"{"passive_dns":[
+            {"hostname":"torproject.org","address":"2001:4860:4860:0000:0000:0000:0000:8888","record_type":"AAAA"},
+            {"hostname":"torproject.org","address":"2001:4860:4860::8888","record_type":"AAAA"}
+        ]}"#,
+    );
+    let out = passive_dns_entities(&rows, "torproject.org", "s");
+    let ips: Vec<_> = out
+        .iter()
+        .filter(|e| e.kind == crate::core::entity::EntityKind::IpAddress)
+        .collect();
+    assert_eq!(
+        ips.len(),
+        1,
+        "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+    );
+}
+
+#[test]
 fn passive_dns_emits_historical_ips_and_subdomains() {
     // Verbatim OTX passive_dns record shape (captured live): hostname/address/
     // record_type/first/last. A domain query returns the domain + its subdomains
@@ -225,6 +249,31 @@ fn passive_dns_emits_historical_ips_and_subdomains() {
         .find(|e| e.kind == EntityKind::Domain && e.value == "check.torproject.org")
         .expect("should succeed");
     assert!(sub.has_tag(crate::core::tags::SUBDOMAIN) && sub.has_tag("passive-dns"));
+}
+
+#[test]
+fn a_www_alias_of_the_target_is_not_tagged_a_subdomain_of_itself() {
+    // Regression, mirroring the apex-itself case in the test above: a
+    // passively-observed "www.<target>" row is a proper subdomain of the raw
+    // target by string shape alone, even though `Entity::new` strips the
+    // leading "www." label and collapses it onto the scan's own apex/subject
+    // uid — before this was fixed, it was still tagged SUBDOMAIN via the raw
+    // `host != base` check, surviving onto the merged apex entity via
+    // `Entity::merge`'s tag-union.
+    let rows = passive_rows(
+        r#"{"passive_dns":[
+            {"hostname":"www.torproject.org","address":"116.202.120.181","record_type":"A"}
+        ]}"#,
+    );
+    let out = passive_dns_entities(&rows, "torproject.org", "s");
+    let www = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain && e.value == "torproject.org")
+        .expect("the www row still surfaces, collapsed onto the apex value");
+    assert!(
+        !www.has_tag(crate::core::tags::SUBDOMAIN),
+        "a www-alias of the target must never tag the apex as its own subdomain"
+    );
 }
 
 #[test]

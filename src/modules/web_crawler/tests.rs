@@ -259,6 +259,56 @@ use super::*;
         assert_eq!(tracking_ids, vec!["UA-111", "UA-999"]);
     }
 
+    #[test]
+    fn a_colon_and_a_dash_separated_spelling_of_the_same_mac_dedup_to_one_entity() {
+        // Regression: the hydration dedup key case-folded but did not replicate
+        // `core::entity::normalise`'s MacAddress arm (reformats to
+        // colon-separated hex), so a MAC classified from one page's hydration
+        // JSON as "AA:BB:CC:DD:EE:FF" and another page's as "aa-bb-cc-dd-ee-ff"
+        // each earned their own dedup slot despite colliding on the same uid
+        // once `Entity::new` constructs them.
+        let mut state = empty_state();
+        state.hydration_findings = vec![
+            Classified {
+                kind: EntityKind::MacAddress,
+                value: "AA:BB:CC:DD:EE:FF".to_string(),
+                confidence: 0.85,
+                signal: "hex-octets",
+            },
+            Classified {
+                kind: EntityKind::MacAddress,
+                value: "aa-bb-cc-dd-ee-ff".to_string(),
+                confidence: 0.85,
+                signal: "hex-octets",
+            },
+        ];
+
+        build_entities(
+            "example.com",
+            "example.com",
+            "scan-1",
+            MAX_DEPTH,
+            SeedShape {
+                is_url_target: false,
+                shared_profile_host: false,
+            },
+            "https://example.com",
+            &mut state,
+        );
+
+        let macs: Vec<&Entity> = state
+            .result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::MacAddress)
+            .collect();
+        assert_eq!(
+            macs.len(),
+            1,
+            "a colon- and a dash-separated spelling of the same MAC must dedup to one entity: {macs:?}"
+        );
+    }
+
     /// A `CrawlState` with everything empty — for exercising one behaviour at a
     /// time without restating every field.
     fn empty_state() -> CrawlState {

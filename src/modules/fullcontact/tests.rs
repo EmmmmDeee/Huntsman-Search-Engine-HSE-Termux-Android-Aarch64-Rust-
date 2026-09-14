@@ -57,6 +57,29 @@ use super::*;
     }
 
     #[test]
+    fn two_locations_in_the_same_city_dedup_to_one_coordinates_entity() {
+        // Regression: `city_coords` is a many-to-one phrase lookup. This
+        // fixture's own shape — top-level `location: "Brisbane, Queensland,
+        // Australia"` vs. `details.locations[0].formatted: "Brisbane, QLD,
+        // AU"` — is textually different enough that both survive `seen_loc`'s
+        // raw-text dedup above the loop, then each independently resolved to
+        // the identical Brisbane centroid, minting two Coordinates entities
+        // for one place (same root cause as fix #34's oathnet_pro/epieos
+        // geocoding legs).
+        let r = fixture();
+        let es = build_entities(&r, "scan");
+        let coords: Vec<&Entity> = es
+            .iter()
+            .filter(|e| e.kind == EntityKind::Coordinates)
+            .collect();
+        assert_eq!(
+            coords.len(),
+            1,
+            "two location strings naming the same city must dedup to one Coordinates entity: {coords:?}"
+        );
+    }
+
+    #[test]
     fn build_entities_is_quiet_on_empty_response() {
         assert!(build_entities(&FcResp::default(), "scan").is_empty());
     }

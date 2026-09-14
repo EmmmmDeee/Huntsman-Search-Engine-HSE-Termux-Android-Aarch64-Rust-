@@ -34,12 +34,24 @@ fn core_kind_to_extractor(core: &CoreEntityKind, value: &str) -> EntityKind {
         CoreEntityKind::Organisation => EntityKind::Organization,
         CoreEntityKind::Cidr => EntityKind::IpRange,
         CoreEntityKind::Coordinates => EntityKind::Coordinates,
+        CoreEntityKind::MacAddress => EntityKind::MacAddress,
+        CoreEntityKind::Asn => EntityKind::Asn,
+        CoreEntityKind::AbnAcn => EntityKind::AbnAcn,
+        CoreEntityKind::CryptoAddress => EntityKind::CryptoAddress,
+        CoreEntityKind::DeviceId => EntityKind::Identifier,
         CoreEntityKind::Other(s) if s == "hash" => EntityKind::Hash,
         CoreEntityKind::Other(s) => EntityKind::Unknown(s.clone()),
-        // Core kinds not represented in the extractor taxonomy (Credential, ApiKey,
-        // Password, Asn, Address, MacAddress, DeviceId, Ssid, TrackingId, …) map to
-        // Unknown so the extractor never invents its own type decision. (Coordinates
-        // IS represented — see the explicit arm above.)
+        // Core kinds genuinely absent from the extractor taxonomy: Credential and
+        // Password aren't reached by `core_classifier::classify`'s single-string
+        // scorer at all (they need paired/contextual detection, not a bare-value
+        // classifier); Ssid (0.55) and Address (0.60) score too low/ambiguous from
+        // free text alone to mint with confidence (core/classifier.rs's own score
+        // table) — unlike AbnAcn/MacAddress/Asn/CryptoAddress above, all >=0.85 via
+        // checksum or structural detection. TrackingId is a correlation-only node
+        // (never dispatched further) and free-text occurrence is rare enough that
+        // it's left for a follow-up rather than bundled in here. These fall to
+        // Unknown so the extractor never invents a type decision core itself
+        // wasn't confident enough to make.
         _ => EntityKind::Unknown(UNCLASSIFIED.to_string()),
     }
 }
@@ -168,6 +180,40 @@ mod tests {
     fn classify_ipv4() {
         let classifier = EntityClassifier::new().expect("should succeed");
         assert_eq!(classifier.classify("192.168.1.1", None), EntityKind::Ipv4);
+    }
+
+    /// Values core's own classifier (`core_classifier::classify`, gated at
+    /// 0.85 or higher via checksum/structural detection — `src/core/classifier.rs`'s
+    /// score table) correctly identifies as one of these four kinds used to
+    /// come back through `core_kind_to_extractor` as `Unknown("unclassified")`
+    /// regardless, because the extractor's own taxonomy had no variant to
+    /// hold the answer — so `hse ingest`/`hse investigate` could never mint
+    /// a MacAddress/Asn/AbnAcn/CryptoAddress entity from free text, even
+    /// though core recognised every one of these values correctly. Fixture
+    /// values are the same LIVE-verified ones `core/classifier_tests.rs`
+    /// already pins (the Australian Taxation Office's real ABN, the
+    /// `AS15169`/Genesis-block wallet shapes) plus a MAC in the same
+    /// colon-hex-octet form used elsewhere in this crate
+    /// (`core::radar_track`'s test fixtures) — not fixtures invented for
+    /// this test alone.
+    #[test]
+    fn classify_reaches_every_high_confidence_core_only_kind() {
+        let classifier = EntityClassifier::new().expect("should succeed");
+        for (value, want) in [
+            ("3C:5A:B4:11:22:33", EntityKind::MacAddress),
+            ("AS15169", EntityKind::Asn),
+            ("51824753556", EntityKind::AbnAcn),
+            (
+                "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+                EntityKind::CryptoAddress,
+            ),
+        ] {
+            assert_eq!(
+                classifier.classify(value, None),
+                want,
+                "{value} must classify as {want:?}, not fall back to Unknown"
+            );
+        }
     }
 
     #[test]

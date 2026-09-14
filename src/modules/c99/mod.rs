@@ -255,7 +255,15 @@ fn build_entities(domain: &str, body: &SubdomainFinderResp, scan_id: &str) -> Ve
             continue;
         };
 
-        let is_sub = crate::util::domains::is_proper_subdomain_of(&host, &domain_lc);
+        // Canonicalise before classifying, not the raw `host`/`domain_lc` — a
+        // returned host of "www.<domain>" is a proper subdomain of the raw
+        // base by string shape alone, even though `Entity::new` strips the
+        // "www." label and collapses it onto the domain's own apex uid,
+        // tagged SUBDOMAIN at HIGH_PLUSPLUS confidence below regardless. The
+        // entity is still constructed either way (real, useful evidence that
+        // C99 saw this host) — only its confidence/tag depend on getting the
+        // classification right.
+        let (_, is_sub) = crate::util::domains::classify_domain_candidate(&host, &domain_lc);
         let conf = if is_sub {
             confidence::HIGH_PLUSPLUS
         } else {
@@ -287,7 +295,12 @@ fn build_entities(domain: &str, body: &SubdomainFinderResp, scan_id: &str) -> Ve
         out.push(d);
 
         if let Some(ip) = ip
-            && seen_ips.insert(ip.to_string())
+            // See ip_reputation's identical fix: `ip.to_string()` clones the
+            // raw `&str` rather than parsing and reformatting it, so two
+            // differently-formatted spellings of the same address dedup
+            // separately despite colliding on the same uid `Entity::new`
+            // constructs.
+            && seen_ips.insert(crate::core::entity::normalise(&EntityKind::IpAddress, ip))
         {
             let mut ie = Entity::new(EntityKind::IpAddress, ip, confidence::HIGH, scan_id);
             ie.tag("c99");

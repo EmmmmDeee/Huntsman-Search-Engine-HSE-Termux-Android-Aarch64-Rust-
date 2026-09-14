@@ -43,6 +43,48 @@ fn should_report_key_status_covers_401_403_429_but_not_404_or_success() {
 }
 
 #[test]
+fn two_companies_geocoding_to_the_same_point_dedup_to_one_coordinates_entity() {
+    // Regression: `city_coords` is a many-to-one phrase lookup, so two
+    // differently-worded registered addresses naming the same city each
+    // independently resolved to the identical centroid — `build_company_entities`
+    // has no gate of any kind, and `process()`'s `flat_map` over every search
+    // hit shares no dedup either. `process()`'s live OpenCorporates fetch
+    // isn't independently testable here, so this calls the same pure
+    // `build_company_entities` `process()`'s `flat_map` calls per company,
+    // followed by the same `dedup_merge_entities` call `process()` now makes
+    // before returning.
+    let a: OcCompany = serde_json::from_str(
+        r#"{"name":"Acme Pty Ltd","company_number":"123456789","jurisdiction_code":"au",
+            "registered_address_in_full":"1 Main St, Sydney NSW 2000"}"#,
+    )
+    .expect("should succeed");
+    let b: OcCompany = serde_json::from_str(
+        r#"{"name":"Beta Holdings Pty Ltd","company_number":"987654321","jurisdiction_code":"au",
+            "registered_address_in_full":"Sydney, New South Wales"}"#,
+    )
+    .expect("should succeed");
+    let mut ents = build_company_entities(&a, 2, "scan");
+    ents.extend(build_company_entities(&b, 2, "scan"));
+    let raw_coords = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .count();
+    assert_eq!(
+        raw_coords, 2,
+        "sanity: two differently-worded Sydney addresses must both resolve via city_coords, or this fixture doesn't exercise the bug"
+    );
+    crate::core::entity::dedup_merge_entities(&mut ents);
+    let coords = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .count();
+    assert_eq!(
+        coords, 1,
+        "two companies resolving to the same point must dedup to one Coordinates entity: {ents:?}"
+    );
+}
+
+#[test]
 fn module_metadata() {
     assert_eq!(OpenCorporates.name(), "opencorporates");
     // Government / public-records band (see priority() doc).

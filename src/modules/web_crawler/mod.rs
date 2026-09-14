@@ -742,7 +742,18 @@ fn build_entities(
     let mut seen_hydration: HashSet<String> = HashSet::new();
     let mut hydration: Vec<&Classified> = Vec::new();
     for c in &state.hydration_findings {
-        let key = format!("{}\u{1}{}", c.kind, c.value.to_ascii_lowercase());
+        // `.to_ascii_lowercase()` case-folds but does not replicate
+        // `core::entity::normalise`'s kind-specific canonicalisation (e.g. its
+        // MacAddress arm reformats to colon-separated hex), so two hydration
+        // leaves that classify to the same kind and normalise to the same
+        // value — e.g. a MAC printed "AA:BB:CC:DD:EE:FF" on one page and
+        // "aa-bb-cc-dd-ee-ff" on another — each earned their own dedup slot
+        // despite colliding on the same uid once `Entity::new` constructs them.
+        let key = format!(
+            "{}\u{1}{}",
+            c.kind,
+            crate::core::entity::normalise(&c.kind, &c.value)
+        );
         if seen_hydration.insert(key) {
             hydration.push(c);
         }

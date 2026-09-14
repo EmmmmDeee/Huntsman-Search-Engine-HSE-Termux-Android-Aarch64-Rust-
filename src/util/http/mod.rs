@@ -27,7 +27,7 @@ mod tests;
 mod trust;
 mod url;
 
-pub use client::{build_client, build_client_with_trace};
+pub use client::{build_client, build_client_with_timeout, build_client_with_trace};
 pub use fetch::{
     BodyVerdict, JSON_BODY_CAP, error_snippet, fetch_json, fetch_json_or_404,
     fetch_json_or_404_with_timeout, fetch_json_or_absent, fetch_json_probe, fetch_keyed_json,

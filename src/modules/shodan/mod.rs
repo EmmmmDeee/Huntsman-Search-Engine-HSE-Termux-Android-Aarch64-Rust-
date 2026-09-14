@@ -507,10 +507,9 @@ fn build_paid_entities(ip: &str, body: HostResp, scan_id: &str) -> Vec<Entity> {
         );
         c.tag("shodan");
         c.tag("geoint");
-        c.add_evidence(Evidence::new(
-            SRC,
-            format!("Shodan host coordinates for {ip}"),
-        ));
+        c.add_evidence(
+            Evidence::new(SRC, format!("Shodan host coordinates for {ip}")).with_attr("ip", ip),
+        );
         result.push(c);
     }
     if geo_trusted
@@ -532,7 +531,9 @@ fn build_paid_entities(ip: &str, body: HostResp, scan_id: &str) -> Vec<Entity> {
             c.tag("shodan");
             c.tag("addr-derived");
             c.tag("geoint");
-            c.add_evidence(Evidence::new(SRC, format!("Geocode of country for {ip}")));
+            c.add_evidence(
+                Evidence::new(SRC, format!("Geocode of country for {ip}")).with_attr("ip", ip),
+            );
             result.push(c);
         }
         // City sharpens the address when Shodan carries it ("City, Country");

@@ -281,6 +281,7 @@ fn build_entities(host: &HostResult, ip: &str, scan_id: &str) -> Vec<Entity> {
         }
 
         let mut ev = Evidence::new(SRC, format!("Censys geolocation for {ip}"))
+            .with_attr("ip", ip)
             .with_attr("latitude", lat.to_string())
             .with_attr("longitude", lon.to_string())
             .with_attr("source", "censys");

@@ -3,6 +3,7 @@ use crate::core::scan::{Target, TargetKind};
 
 use super::{
     DnsIntel,
+    brute::is_apex_echo,
     constants::SUBDOMAINS,
     helpers::{
         VERIFICATION_VENDORS, reverse_ip, soa_rname_to_email, unescape_dns_label,
@@ -297,6 +298,23 @@ fn dictionary_is_unique_and_lowercase() {
             "subdomains must be single label without dots: {s}"
         );
     }
+}
+
+#[test]
+fn apex_echo_excludes_a_www_hit_from_the_dictionary() {
+    // Regression: the dictionary always includes "www", which resolves for
+    // nearly every real domain. `Entity::new` strips a leading "www." label
+    // internally, so "www.<parent>" collapses onto the scan's own
+    // apex/subject uid — a hit here must never be tagged as a discovered
+    // subdomain via `Entity::merge`'s tag-union onto that entity.
+    assert!(is_apex_echo("www.example.com", "example.com"));
+    // Case-insensitive, matching `Entity::new`'s own normalisation.
+    assert!(is_apex_echo("WWW.Example.COM", "example.com"));
+    // The literal apex itself (should the dictionary ever produce it) is
+    // also an echo.
+    assert!(is_apex_echo("example.com", "example.com"));
+    // A genuine dictionary hit is not an echo.
+    assert!(!is_apex_echo("mail.example.com", "example.com"));
 }
 
 // -- from dns_blocklist ------------------------------------------------

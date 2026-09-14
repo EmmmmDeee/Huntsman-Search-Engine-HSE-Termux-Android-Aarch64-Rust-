@@ -643,6 +643,7 @@ impl Module for OpenCorporates {
             );
         }
 
+        crate::core::entity::dedup_merge_entities(&mut result.entities);
         Ok(result)
     }
 }

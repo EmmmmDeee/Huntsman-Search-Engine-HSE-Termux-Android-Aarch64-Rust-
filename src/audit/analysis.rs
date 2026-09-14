@@ -3,14 +3,11 @@
 use std::collections::BTreeMap;
 
 use super::types::{AuditEntity, AuditReport, Finding, GeoSummary, LogSignals, Severity};
+use crate::util::geohash::GEO_OUTLIER_KM;
 
 /// Coordinates within this radius (km) are treated as the same locality/metro —
 /// independent geocoders rarely agree tighter than a city.
 const GEO_CONSENSUS_KM: f64 = 50.0;
-/// A coordinate farther than this (km) from the consensus is a divergent fix —
-/// almost certainly a different place (a datacenter, a mis-geocode, a homograph
-/// city) rather than the subject's true location.
-const GEO_OUTLIER_KM: f64 = 150.0;
 
 const MAX_EXAMPLES: usize = 8;
 

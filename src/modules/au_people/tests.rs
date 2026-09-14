@@ -212,7 +212,7 @@ fn dedup_removes_same_kind_value() {
         Entity::new(EntityKind::Address, "Sydney NSW 2000", 0.6, "s"),
         Entity::new(EntityKind::Email, "a@b.com", 0.5, "s"),
     ];
-    dedup_by_kind_value(&mut ents);
+    crate::core::entity::dedup_merge_entities(&mut ents);
     assert_eq!(ents.len(), 2);
 }
 
@@ -233,7 +233,7 @@ fn dedup_greatest_merges_duplicates_preserving_both_sources() {
     );
 
     let mut ents = vec![wp, tps];
-    dedup_by_kind_value(&mut ents);
+    crate::core::entity::dedup_merge_entities(&mut ents);
 
     assert_eq!(ents.len(), 1, "same (kind, value) collapses to one entity");
     let merged = &ents[0];

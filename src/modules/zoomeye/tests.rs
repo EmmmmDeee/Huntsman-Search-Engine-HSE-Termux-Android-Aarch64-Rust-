@@ -2,6 +2,33 @@ use super::*;
 use crate::core::scan::{Target, TargetKind};
 
 /// A representative ZoomEye `host/search` match: nested `portinfo` + `geoinfo`.
+#[test]
+fn resolved_ips_for_a_domain_target_dedup_an_expanded_and_compressed_ipv6_spelling() {
+    // Regression: a raw string in the dedup key doesn't canonicalise the
+    // way `core::entity::normalise` does, so an expanded and a compressed
+    // spelling of the same resolved IPv6 address each earned their own
+    // dedup slot. A real public address (Google Public DNS) is used, not
+    // an RFC 3849 documentation one, purely for realism.
+    let body = ZoomResp {
+        matches: vec![
+            serde_json::json!({"ip": "2001:4860:4860:0000:0000:0000:0000:8888"}),
+            serde_json::json!({"ip": "2001:4860:4860::8888"}),
+        ],
+    };
+    let target = Target::new(TargetKind::Domain, "example.com");
+    let r = extract_entities(&body, &target, "example.com", "scan");
+    let ips: Vec<&Entity> = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .collect();
+    assert_eq!(
+        ips.len(),
+        1,
+        "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+    );
+}
+
 fn sample_match() -> Value {
     serde_json::json!({
         "ip": "8.8.8.8",
@@ -56,6 +83,32 @@ fn error_body_deserialises_to_empty_matches() {
     let resp: ZoomResp =
         serde_json::from_str(r#"{"error":"invalid key","status":401}"#).expect("should succeed");
     assert!(resp.matches.is_empty());
+}
+
+#[test]
+fn coordinates_carry_the_originating_ip_for_login_ip_recognition() {
+    // Pass 31: the correlator's shared `person_login_ip_coords` (used by
+    // `best_au_location_estimate` and `au_location_corroboration`) only
+    // recognises a Coordinates fix as tied to a subject's breach/stealer
+    // login IP when its evidence carries an `ip` attribute equal to that
+    // IP — the same property `ipinfo`/`ip_whois_geo`/`ipquery`/`ip_geo`
+    // already pin.
+    let body = ZoomResp {
+        matches: vec![sample_match()], // ip 8.8.8.8
+    };
+    let target = Target::new(TargetKind::IpAddress, "8.8.8.8");
+    let r = extract_entities(&body, &target, "8.8.8.8", "scan");
+    let coords = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Coordinates)
+        .expect("coords");
+    assert_eq!(
+        coords.evidence[0].attributes.get("ip").map(String::as_str),
+        Some("8.8.8.8"),
+        "Coordinates evidence must carry the originating IP so \
+         person_login_ip_coords can recognise this as a login-IP fix"
+    );
 }
 
 #[test]

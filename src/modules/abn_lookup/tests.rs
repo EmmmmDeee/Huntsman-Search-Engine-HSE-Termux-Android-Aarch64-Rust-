@@ -85,6 +85,54 @@ fn accepts_org_and_abn() {
 }
 
 #[test]
+fn two_name_matches_geocoding_to_the_same_point_dedup_to_one_coordinates_entity() {
+    // Regression: `city_coords` is a many-to-one phrase lookup, and
+    // `parse_name_results` has no gate at all on the emitted Coordinates
+    // entity — unlike the composed-address text gate its sibling
+    // `oathnet_pro::breach` already carries. Real ABR `State` values are
+    // always 2-3 letter codes ("NSW"), which `city_coords` doesn't resolve
+    // on their own (state abbreviations are disambiguation tokens in its
+    // table, not tabulated city names) — and the module's own address
+    // composition (`"{postcode}, {state}, Australia"`) puts the postcode
+    // first, so the embedded-postcode fallback (which requires a TRAILING
+    // digit run) never fires either. So today this leg is realistically
+    // unreachable for typical ABR output; this fixture uses `State` values
+    // that directly name a tabulated city to exercise the dedup mechanism
+    // itself (the same shape a future schema change, e.g. a real `Suburb`
+    // field, would reach) rather than leaving the missing gate unverified.
+    // `process()`'s live ABR fetch isn't independently testable here, so
+    // this exercises `parse_name_results` directly (the actual
+    // entity-construction logic) followed by the same `dedup_merge_entities`
+    // call `process()` now makes right before returning.
+    let data = serde_json::json!({"Names": [
+        {"Abn": "19415776361", "Name": "Acme Holdings Pty Ltd", "NameType": "Main name", "State": "Sydney", "Postcode": "", "Score": 95},
+        {"Abn": "51824753556", "Name": "Acme Trading Co", "NameType": "Main name", "State": "SYDNEY", "Postcode": "", "Score": 95}
+    ]});
+    let mut result = ModuleResult::new();
+    parse_name_results(&data, "Acme", "scan", &mut result);
+    let raw_coords = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .count();
+    assert_eq!(
+        raw_coords, 2,
+        "sanity: two differently-worded same-state addresses must both resolve via city_coords, or this fixture doesn't exercise the bug"
+    );
+    crate::core::entity::dedup_merge_entities(&mut result.entities);
+    let coords = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .count();
+    assert_eq!(
+        coords, 1,
+        "two name matches resolving to the same point must dedup to one Coordinates entity: {:?}",
+        result.entities
+    );
+}
+
+#[test]
 fn parse_abn_response() {
     let data = serde_json::json!({
         "Abn": "19415776361",

@@ -283,6 +283,62 @@ use super::*;
         assert_eq!(sessions.read().len(), 5, "under the cap, nothing is evicted");
     }
 
+    #[test]
+    fn claim_session_slot_admits_at_most_max_sessions_concurrently() {
+        // Regression: the running-session count check and the insert used to
+        // be split across two separate lock acquisitions in `LiveScanner::
+        // start` — a `read()` to count, then, after dropping it, a LATER
+        // separate `write()` to insert, with no re-check in between. `RwLock`
+        // permits multiple concurrent readers, so many near-simultaneous
+        // `start()` callers could each acquire their own read lock, each
+        // independently see the count safely under `MAX_SESSIONS`, and each
+        // then insert — bypassing the cap by however many callers raced.
+        //
+        // Fixed by doing the count, eviction-candidate selection, and insert
+        // all under ONE lock acquisition (`claim_session_slot`). Proof: with
+        // the map starting empty, exactly `MAX_SESSIONS` of many genuinely
+        // concurrent callers (real OS threads, released together via a
+        // `Barrier` to maximise the race window) must be admitted with no
+        // eviction (`None`) — no more, no fewer. That exact count is the only
+        // outcome consistent with SOME true serialization order existing
+        // (which the single lock acquisition guarantees), even though which
+        // specific callers win is still — correctly — nondeterministic.
+        let sessions: Arc<RwLock<HashMap<String, LiveSession>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        const CALLERS: usize = 40;
+        let barrier = Arc::new(std::sync::Barrier::new(CALLERS));
+        let handles: Vec<_> = (0..CALLERS)
+            .map(|i| {
+                let sessions = sessions.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let session = mk_session(&format!("live-{i}"), LiveStatus::Running, i as u64);
+                    barrier.wait();
+                    claim_session_slot(&sessions, session)
+                })
+            })
+            .collect();
+        let admitted_without_eviction = handles
+            .into_iter()
+            .map(|h| h.join().expect("should succeed"))
+            .filter(std::option::Option::is_none)
+            .count();
+        assert_eq!(
+            admitted_without_eviction,
+            LiveScanner::MAX_SESSIONS,
+            "exactly MAX_SESSIONS concurrent callers must be admitted with no \
+             eviction — more means the cap check raced past the cap, fewer \
+             means it evicted too eagerly"
+        );
+        assert_eq!(
+            sessions.read().len(),
+            CALLERS,
+            "every caller's session must still be recorded — eviction only \
+             flags the old session for `stop`, it does not remove it from the \
+             map here"
+        );
+    }
+
     #[tokio::test]
     async fn stop_forwarder_propagates_a_session_stop_to_the_iteration() {
         // The documented behaviour that per-iteration cancel isolation must not

@@ -277,6 +277,13 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
     // Collect into a Vec so we can iterate twice (once for Address, once for
     // Coordinates) without re-borrowing the chained iterator.
     let loc_list: Vec<&str> = locs.filter(|l| seen_loc.insert(l.to_lowercase())).collect();
+    // `seen_loc` above only dedups by raw location TEXT before this loop runs;
+    // it does nothing to stop two textually different location strings (the
+    // top-level convenience string vs. a structured formatted address) from
+    // each independently resolving to the same city centroid below, since
+    // `city_coords` is a many-to-one phrase lookup. Gate on the resolved
+    // coordinate too, or one real location mints two Coordinates entities.
+    let mut seen_coord: std::collections::HashSet<String> = std::collections::HashSet::new();
     for loc in &loc_list {
         let mut extra_tags: Vec<&str> = vec!["geo-hint", "geoint"];
         let mut au_state_tag = String::new();
@@ -300,7 +307,9 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
             last.tag(au_state_tag);
         }
         // Inline Coordinates via offline city lookup.
-        if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
+        if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc)
+            && seen_coord.insert(format!("{lat:.4},{lon:.4}"))
+        {
             let coord_val = format!("{lat:.4},{lon:.4}");
             let mut c = Entity::new(
                 EntityKind::Coordinates,

@@ -193,7 +193,16 @@ fn victim_ip_entities(stealers: &[Stealer], scan_id: &str) -> Vec<Entity> {
         .iter()
         .filter_map(|stealer| {
             let ip = stealer.ip.as_deref()?.trim();
-            if !crate::util::preflight::is_public_ip(ip) || !seen_ips.insert(ip.to_string()) {
+            // `ip.to_string()` clones the raw `&str` rather than the
+            // `core::entity::normalise` parse-then-reformat `is_public_ip`
+            // itself performs internally and discards — see
+            // ip_reputation's identical fix.
+            if !crate::util::preflight::is_public_ip(ip)
+                || !seen_ips.insert(crate::core::entity::normalise(
+                    &crate::core::entity::EntityKind::IpAddress,
+                    ip,
+                ))
+            {
                 return None;
             }
             let mut e = Entity::new(

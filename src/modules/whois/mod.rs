@@ -130,6 +130,25 @@ fn find_ip_entity<'a>(entities: &'a [RdapIpEntity], role: &str) -> Option<&'a Rd
     None
 }
 
+/// Registrant org name from the RDAP contact tree: vCard `fn`, falling back
+/// to vCard `org` — mirrors `ip_registry::build_registrant_org`'s exact
+/// chain over the identical RDAP shape, so the two RDAP-consuming modules
+/// can't drift back apart. Gated on vCard `kind`: IP blocks are allocated to
+/// network operators, but a rare `individual`-kind registrant is a natural
+/// person, and their name must never surface as an Organisation. **Pure** —
+/// unit-tested directly.
+fn registrant_org_name(entities: &[RdapIpEntity]) -> Option<String> {
+    let vc = find_ip_entity(entities, "registrant")?
+        .vcard_array
+        .as_ref()?;
+    if vcard_field(vc, "kind").is_some_and(|k| k.eq_ignore_ascii_case("individual")) {
+        return None;
+    }
+    vcard_field(vc, "fn")
+        .or_else(|| vcard_field(vc, "org"))
+        .filter(|s| !s.is_empty())
+}
+
 /// RDAP-over-HTTPS fallback for IP targets when TCP/43 is unavailable.
 ///
 /// `https://rdap.org/ip/{ip}` bootstraps to the authoritative RIR (ARIN /
@@ -162,12 +181,7 @@ async fn rdap_ip_fallback(target: &Target, ctx: &ModuleContext) -> Result<Module
     let net_name = body.name.as_deref().unwrap_or("").trim().to_string();
     let country = body.country.as_deref().unwrap_or("").trim().to_string();
 
-    // Registrant org name from vCard `fn` field, falling back to network block name.
-    let org_name = find_ip_entity(&body.entities, "registrant")
-        .and_then(|e| e.vcard_array.as_ref())
-        .and_then(|vc| vcard_field(vc, "fn"))
-        .filter(|s| !s.is_empty())
-        .or_else(|| (!net_name.is_empty()).then(|| net_name.clone()));
+    let org_name = registrant_org_name(&body.entities);
 
     if let Some(org) = &org_name {
         let org = org.trim();

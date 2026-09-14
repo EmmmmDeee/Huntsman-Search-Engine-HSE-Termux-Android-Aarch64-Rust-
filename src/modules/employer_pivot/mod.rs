@@ -183,6 +183,12 @@ impl Module for EmployerPivot {
 
         // ── Addresses ────────────────────────────────────────────────
         let mut seen_addr: HashSet<String> = HashSet::new();
+        // `seen_addr` above dedups by the full street-level canonical address,
+        // which does nothing to stop two DIFFERENT street addresses in the
+        // same city from each independently resolving to the same city
+        // centroid below — `city_coords` is a many-to-one phrase lookup, not
+        // a precise geocoder. Gate the resolved coordinate on its own set.
+        let mut seen_coord: HashSet<String> = HashSet::new();
         result.extend(
             address_au::extract_all(&all_text)
                 .into_iter()
@@ -218,24 +224,17 @@ impl Module for EmployerPivot {
                     ev = ev.with_attr("employer_domain", &domain);
                     ev = ev.with_attr("source_urls", visited.join(" | "));
                     e.add_evidence(ev);
-                    let coord = crate::util::city_coords::city_coords(&canon).map(|(lat, lon)| {
-                        let coord_val = format!("{lat:.4},{lon:.4}");
-                        let mut c = Entity::new(
-                            EntityKind::Coordinates,
-                            &coord_val,
-                            confidence::derived_from(addr.confidence()),
-                            &ctx.scan_id,
-                        );
-                        c.tag("addr-derived");
-                        c.tag("geoint");
-                        c.tag("country:AU");
-                        c.tag("employer-pivot");
-                        c.add_evidence(Evidence::new(
-                            SRC,
-                            format!("Geocode of business address from {domain}"),
-                        ));
-                        c
-                    });
+                    let coord =
+                        crate::util::city_coords::city_coords(&canon).and_then(|(lat, lon)| {
+                            coord_entity_if_new(
+                                lat,
+                                lon,
+                                &mut seen_coord,
+                                confidence::derived_from(addr.confidence()),
+                                &ctx.scan_id,
+                                &domain,
+                            )
+                        });
                     Some((e, coord))
                 })
                 .flat_map(|(e, coord)| {
@@ -367,30 +366,20 @@ fn extract_profile_urls(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Delegates to the shared role-localpart authority (Pass 29) instead of an
+/// independent, hand-rolled 19-token list — that list was missing ~40 tokens
+/// `util::domains::ROLE` already carried, notably the DNS/registrar-infra
+/// class this guard's own motivating comment cites (`soa@`, `registrar@`,
+/// `whois@`, `nic@`, …): a real SOA-RNAME-derived address in that gap slipped
+/// past this guard the same way `dns@cloudflare.com` did before it was added.
+/// `util::domains::is_role_localpart` case-folds internally, which is a pure
+/// strengthening here, not a behaviour change on the real call path: the
+/// sole caller (`process`, above) only ever passes the local-part of an
+/// `Email`-kind `Target`, and `Target::new` always fully lowercases those
+/// (`hse_core::normalise`'s `EntityKind::Email` arm calls `.to_lowercase()`
+/// unconditionally), so this never actually receives mixed-case input.
 fn is_role_email_local(local: &str) -> bool {
-    matches!(
-        local,
-        "abuse"
-            | "admin"
-            | "administrator"
-            | "billing"
-            | "dns"
-            | "hostmaster"
-            | "info"
-            | "legal"
-            | "marketing"
-            | "noc"
-            | "noreply"
-            | "no-reply"
-            | "postmaster"
-            | "privacy"
-            | "sales"
-            | "security"
-            | "support"
-            | "sysadmin"
-            | "tech"
-            | "webmaster"
-    )
+    crate::util::domains::is_role_localpart(local)
 }
 
 fn canonical_address(a: &address_au::AuAddress) -> String {
@@ -413,6 +402,37 @@ fn canonical_address(a: &address_au::AuAddress) -> String {
     s.push(' ');
     s.push_str(&a.postcode);
     s
+}
+
+/// Builds a Coordinates entity for a geocoded `(lat, lon)`, gated on
+/// `seen_coord` so two different street addresses that both geocode to the
+/// same city (`city_coords` is a many-to-one phrase lookup, not a precise
+/// geocoder) don't each mint their own entity for the same point. Extracted
+/// as a pure function — its call site sits inside `process`'s async
+/// network-fetching loop, not practical to unit-test directly — so this
+/// piece of the logic is.
+fn coord_entity_if_new(
+    lat: f64,
+    lon: f64,
+    seen_coord: &mut HashSet<String>,
+    confidence: f64,
+    scan_id: &str,
+    domain: &str,
+) -> Option<Entity> {
+    let coord_val = format!("{lat:.4},{lon:.4}");
+    if !seen_coord.insert(coord_val.clone()) {
+        return None;
+    }
+    let mut c = Entity::new(EntityKind::Coordinates, &coord_val, confidence, scan_id);
+    c.tag("addr-derived");
+    c.tag("geoint");
+    c.tag("country:AU");
+    c.tag("employer-pivot");
+    c.add_evidence(Evidence::new(
+        SRC,
+        format!("Geocode of business address from {domain}"),
+    ));
+    Some(c)
 }
 
 #[cfg(test)]

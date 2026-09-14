@@ -491,6 +491,87 @@ fn a_strangers_row_processed_first_does_not_permanently_pin_the_subjects_own_val
 }
 
 #[test]
+fn a_formatted_and_a_bare_spelling_of_the_same_phone_number_dedup_to_one_entity() {
+    // Regression: a bare `.to_lowercase()` case-folds but does not strip the
+    // punctuation formatting (`(555) 123-4567` vs `5551234567`) the way
+    // `Entity::new` does internally via `core::entity::normalise`'s Phone arm
+    // — so a row whose `phone` field carries different formatting from an
+    // already-seen row used to earn its OWN dedup slot here, even though both
+    // collapse onto the same uid once constructed.
+    let entries = vec![
+        json!({"name": "Jane Doe", "phone": "5551234567"}),
+        json!({"name": "Jane Doe", "phone": "(555) 123-4567"}),
+    ];
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_records(&entries, "Jane Doe", "fp", "s", &mut seen, &mut result);
+
+    let phones: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Phone)
+        .collect();
+    assert_eq!(
+        phones.len(),
+        1,
+        "a formatted and a bare spelling of the same number must dedup to one entity: {phones:?}"
+    );
+}
+
+#[test]
+fn an_expanded_and_a_compressed_spelling_of_the_same_ipv6_address_dedup_to_one_entity() {
+    // Regression: see oathnet_pro's identical fix for the general shape.
+    // A real public address (Google Public DNS) is used, not an RFC 3849
+    // documentation one, to stay clear of `is_public_ip`'s reserved-range
+    // gate regardless of how strictly it is tightened in future.
+    let entries = vec![
+        json!({"name": "Jane Doe", "ip_address": "2001:4860:4860:0000:0000:0000:0000:8888"}),
+        json!({"name": "Jane Doe", "ip": "2001:4860:4860::8888"}),
+    ];
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_records(&entries, "Jane Doe", "fp", "s", &mut seen, &mut result);
+
+    let ips: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .collect();
+    assert_eq!(
+        ips.len(),
+        1,
+        "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+    );
+}
+
+#[test]
+fn a_sigil_prefixed_and_a_bare_spelling_of_the_same_username_dedup_to_one_entity() {
+    // Regression: a bare `.to_lowercase()` case-folds but does not strip a
+    // leading `@` handle sigil the way `Entity::new` does internally via
+    // `core::entity::normalise`'s Username arm, so a row spelled "@jordan"
+    // and one spelled "jordan" each earned their own dedup slot despite
+    // colliding on the same uid once constructed.
+    let entries = vec![
+        json!({"name": "Jane Doe", "username": "jordan_m"}),
+        json!({"name": "Jane Doe", "username": "@jordan_m"}),
+    ];
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_records(&entries, "Jane Doe", "fp", "s", &mut seen, &mut result);
+
+    let unames: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username)
+        .collect();
+    assert_eq!(
+        unames.len(),
+        1,
+        "a sigil-prefixed and a bare spelling of the same handle must dedup to one entity: {unames:?}"
+    );
+}
+
+#[test]
 fn record_evidence_stamps_canonical_dbname_for_au105() {
     // AU-105 (credential reuse across breaches) groups records by the `dbname`
     // evidence attribute, falling back to the Evidence `source` FIELD (the module

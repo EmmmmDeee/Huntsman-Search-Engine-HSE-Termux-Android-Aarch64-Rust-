@@ -199,6 +199,7 @@ impl Module for GleifLei {
         for (lei, name) in seeds.into_iter().take(MAX_FAMILY_SEEDS) {
             out.extend(level2::walk_family(ctx, &lei, &name, &ctx.scan_id).await);
         }
+        crate::core::entity::dedup_merge_entities(&mut out.entities);
         Ok(out)
     }
 }

@@ -146,7 +146,28 @@ const SOCIAL: &[&str] = &[
     "meetup.com",
     "behance.net",
     "dribbble.com",
-    "deviantart.com",
+    // People-search / data-aggregator sites: never the subject's own domain,
+    // and scraping one's "contact" page attributes the aggregator's own
+    // corporate details to the scan subject (observed via employer_pivot: an
+    // Email/Domain target on `peekyou.com` fed its contact-page scrape, which
+    // would otherwise emit PeekYou's own corporate address as the subject's
+    // "employer"). Previously carried only in oathnet_pro's own independent
+    // copy of this list; merged in here (Pass 29) so every consumer of the
+    // canonical list benefits, not just OathNet's preflight-skip check.
+    "peekyou.com",
+    "spokeo.com",
+    "nuwber.com",
+    "pipl.com",
+    "whitepages.com",
+    "whitepages.com.au",
+    "locatefamily.com",
+    "truecaller.com",
+    // Additional dev / consumer platforms, same merge.
+    "bitbucket.org",
+    "steamcommunity.com",
+    "spotify.com",
+    "signal.org",
+    "vk.com",
 ];
 
 /// Common **multi-label public suffixes** under which the public registers a
@@ -300,6 +321,49 @@ pub fn is_proper_subdomain_of(host: &str, domain: &str) -> bool {
         && host.as_bytes()[host.len() - domain.len() - 1] == b'.'
 }
 
+/// Classify a raw candidate hostname against a raw base/apex for
+/// `EntityKind::Domain` entity tagging, returning the CANONICAL (normalised)
+/// form of `candidate` — the identity `Entity::new` will actually construct
+/// it under — alongside whether that canonical form is a proper subdomain of
+/// `base` (itself normalised first, so a `www.`-prefixed seed classifies
+/// identically to its bare apex).
+///
+/// **Every** module that builds `Domain` entities from a list of raw
+/// candidate strings (CT-log SANs, DNS records, brute-force hits, passive-DNS
+/// answers, search-result hosts, …) MUST dedup and classify using the
+/// returned canonical string, never the raw candidate directly — this is the
+/// one authoritative choke point for that rule, not a pattern to re-implement
+/// per call site. `Entity::new` normalises every `Domain` value by (among
+/// other things) stripping leading `www.` labels, so two raw spellings that
+/// normalise identically — most commonly a candidate carrying a `www.` label
+/// that its bare counterpart lacks — can otherwise each earn their own dedup
+/// slot and their own, individually-correct-in-isolation subdomain verdict,
+/// yet both collapse to the SAME entity uid once actually constructed.
+/// Whichever survives first then carries its verdict's tag onto the merged
+/// entity via `Entity::merge`'s tag-union regardless of the other's correct
+/// verdict — e.g. permanently mislabeling a scan's own apex/subject entity as
+/// a subdomain of itself when a source's response includes both
+/// `"www.example.com"` and `"example.com"` for the one real host (routine:
+/// a single TLS certificate SAN list, a CNAME-to-apex DNS record, a crawled
+/// page's own canonical vs. non-canonical links, and a dictionary brute-force
+/// hit on the label `"www"` are all ordinary, non-adversarial ways this
+/// occurs). First found and fixed in the `crtsh`/`certspotter` CT-log
+/// modules; this generalises that fix into one shared, reusable mechanism.
+///
+/// Still pass the ORIGINAL raw candidate string to `Entity::new` itself (not
+/// the canonical form returned here) so `raw_value` keeps the as-supplied
+/// spelling for provenance — only the dedup key and the classification
+/// decision need the canonical identity.
+#[must_use]
+pub fn classify_domain_candidate(candidate: &str, base: &str) -> (String, bool) {
+    let canonical =
+        crate::core::entity::normalise(&crate::core::entity::EntityKind::Domain, candidate);
+    let canonical_base =
+        crate::core::entity::normalise(&crate::core::entity::EntityKind::Domain, base);
+    let is_sub = is_proper_subdomain_of(&canonical, &canonical_base);
+    (canonical, is_sub)
+}
+
 /// True if `domain` is a known consumer mailbox provider — modules that
 /// pivot on the assumption "domain == employer" should skip these.
 pub fn is_freemail(domain: &str) -> bool {
@@ -310,14 +374,25 @@ pub fn is_freemail(domain: &str) -> bool {
 /// a person's handle (`info@`, `dns@`, `noreply@`, `abuse@`, …). Such local-parts
 /// are never individualised PII — they are registrar/provider/automation desks —
 /// so they must not seed Username/Person entities nor be expanded as the subject.
+///
+/// Case-insensitive on its own: both existing callers happen to pre-lowercase
+/// their input already, but that was never a documented contract of this
+/// function, only an accident of their own separate needs (`email_parse`
+/// lowercases to normalise the *username* it derives; `is_infrastructure_email`
+/// lowercases the whole address for its domain-suffix match). Folding case
+/// here too, rather than trusting every future caller to remember, is what
+/// caught `core::validation::is_role_mailbox` silently going case-sensitive
+/// (`"No-Reply"`, `"MAILER_DAEMON"`) when Pass 23 pointed it at this function
+/// without also lowercasing first.
 #[must_use]
 pub fn is_role_localpart(local: &str) -> bool {
-    // Compare the de-tagged, separator-stripped form so `no-reply`/`no_reply`
-    // also match `noreply`.
+    // Compare the de-tagged, separator-stripped, lowercased form so
+    // `no-reply`/`No-Reply`/`no_reply` all also match `noreply`.
     let detagged = local.split('+').next().unwrap_or(local);
     let base = detagged
         .chars()
         .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
         .collect::<String>();
     const ROLE: &[&str] = &[
         "admin",
@@ -379,6 +454,21 @@ pub fn is_role_localpart(local: &str) -> bool {
         "registrar",
         "whois",
         "nic",
+        // Merged in from the narrower core::validation::email::ROLE_MAILBOXES
+        // list (Pass 23): a network operations desk, a domain/zone registry
+        // contact, a DNS SOA mailbox, and an SSL-certificate admin desk — all
+        // infrastructure-only tokens, seen in live WHOIS/RDAP/SOA data, that
+        // this list was previously missing while the narrower one had them.
+        "noc",
+        "registry",
+        "soa",
+        "ssladmin",
+        // Merged in from the narrower employer_pivot::is_role_email_local
+        // list (Pass 29): a system-administrator desk and a generic tech
+        // contact, both seen in the same class of infra-attribution scrapes
+        // that list's own guard exists to stop.
+        "sysadmin",
+        "tech",
     ];
     if ROLE.contains(&base.as_str()) {
         return true;
@@ -403,7 +493,11 @@ pub fn is_role_localpart(local: &str) -> bool {
         "dns",
     ];
     detagged.split(['-', '.', '_']).any(|seg| {
-        let s: String = seg.chars().filter(char::is_ascii_alphanumeric).collect();
+        let s: String = seg
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .map(|c| c.to_ascii_lowercase())
+            .collect();
         SYSTEM_ROLE_SEGMENTS.contains(&s.as_str())
     })
 }

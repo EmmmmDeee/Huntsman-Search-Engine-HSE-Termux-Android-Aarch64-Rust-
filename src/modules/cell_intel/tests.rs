@@ -423,3 +423,41 @@ fn an_opencellid_position_is_attributed_to_opencellid_not_to_this_module() {
         "a hardware radio sighting is not an OpenCelliD record"
     );
 }
+
+// ---- confidence scoring: must match the one canonical accuracy ladder ----
+
+/// `build_opencellid_coordinate` — the actual production entity-building
+/// path, not a bare utility function — must score confidence on exactly the
+/// same ladder `cell_local` and `opencellid` use for an identically-precise
+/// fix (`util::geo::confidence_for_accuracy_m`, reached via
+/// `cell_db::accuracy_to_confidence`).
+///
+/// Until Pass 22 this module carried its own copy
+/// (`util::geo::cell_range_to_confidence`) that silently diverged from the
+/// canonical ladder at every tier: a 50 m fix scored 0.85 here vs 0.75 on the
+/// canonical scale, 300 m scored 0.75 vs 0.65, 1500 m scored 0.65 vs 0.50, and
+/// 7000 m scored 0.50 vs 0.35 — the last crossing the correlator's
+/// `>= 0.50` AU-052/AU-053 admissibility floor, so the *same* OpenCelliD row
+/// could clear or miss that floor purely by which module reported it. The
+/// existing `accuracy_to_confidence_tiers` test could not catch this: it
+/// compared `cell_db::accuracy_to_confidence` against its own delegation
+/// target, never the production call site this test drives.
+#[test]
+fn opencellid_coordinate_confidence_matches_the_canonical_ladder() {
+    use super::helpers::build_opencellid_coordinate;
+    use crate::util::geo::confidence_for_accuracy_m;
+
+    let cell = cell_from_json(r#"{"type":"lte","mcc":"505","mnc":"01","cid":1,"lac":1}"#);
+    let key = TowerKey::from_cell(&cell).expect("a well-formed tower");
+
+    for range in [
+        0, 50, 200, 201, 300, 1000, 1001, 1500, 5000, 5001, 7000, 50_000,
+    ] {
+        let e = build_opencellid_coordinate(&cell, &key, "lte", -33.8, 151.2, range, "s1");
+        assert_eq!(
+            e.confidence,
+            confidence_for_accuracy_m(Some(range as f64)),
+            "range {range} m: production entity confidence must match the canonical ladder"
+        );
+    }
+}

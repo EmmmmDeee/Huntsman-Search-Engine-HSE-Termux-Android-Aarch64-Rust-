@@ -400,7 +400,17 @@ fn records_for_type(
         match effective {
             "A" | "AAAA" => {
                 let ip = rec.data.trim().trim_matches('"');
-                if !ip.is_empty() && seen.insert(format!("ip:{ip}")) {
+                // A raw resolver-response string has no guaranteed canonical
+                // form; the dedup key must go through `core::entity::
+                // normalise` (parse-then-reformat) or a non-canonical
+                // spelling dedups separately despite colliding on the same
+                // uid `Entity::new` constructs.
+                if !ip.is_empty()
+                    && seen.insert(format!(
+                        "ip:{}",
+                        crate::core::entity::normalise(&EntityKind::IpAddress, ip)
+                    ))
+                {
                     let mut e = Entity::new(
                         EntityKind::IpAddress,
                         ip,
@@ -477,7 +487,17 @@ fn records_for_type(
                     for member in crate::util::spf::members(&txt) {
                         match member {
                             crate::util::spf::Member::Ip(ip) => {
-                                if seen.insert(format!("spf:{ip}")) {
+                                // A domain owner writes SPF `ip4:`/`ip6:`
+                                // terms by hand, in any valid textual form —
+                                // the dedup key must go through
+                                // `core::entity::normalise` or a
+                                // non-canonical spelling dedups separately
+                                // despite colliding on the same uid
+                                // `Entity::new` constructs.
+                                if seen.insert(format!(
+                                    "spf:{}",
+                                    crate::core::entity::normalise(&EntityKind::IpAddress, ip)
+                                )) {
                                     let mut e = Entity::new(
                                         EntityKind::IpAddress,
                                         ip,

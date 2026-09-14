@@ -114,6 +114,57 @@ fn extract_entities(
     );
 }
 
+#[test]
+fn an_expanded_and_a_compressed_spelling_of_the_same_ipv6_address_dedup_to_one_entity() {
+    // Regression: see oathnet_pro::breach's identical fix for the general
+    // shape. A real public address (Google Public DNS) is used, not an
+    // RFC 3849 documentation one, to stay clear of `is_public_ip`'s
+    // reserved-range gate regardless of how strictly it is tightened later.
+    let unrelated = "totally-unrelated-query";
+    let expanded = serde_json::json!({"ip": "2001:4860:4860:0000:0000:0000:0000:8888"});
+    let compressed = serde_json::json!({"lastip": "2001:4860:4860::8888"});
+    let mut seen = std::collections::HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_entities(&expanded, unrelated, "scan", "seeknow.io:test", "fp", &mut seen, &mut result);
+    extract_entities(&compressed, unrelated, "scan", "seeknow.io:test", "fp", &mut seen, &mut result);
+    let ips: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .collect();
+    assert_eq!(
+        ips.len(),
+        1,
+        "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+    );
+}
+
+#[test]
+fn a_differently_cased_spelling_of_the_same_country_dedups_to_one_coordinates_entity() {
+    // Regression: the `@country:` gate compares the raw string, but
+    // `city_coords` lowercases internally before matching — two records
+    // spelling `country` with different casing both passed the gate above
+    // (it's an exact-text compare) yet still resolved to the identical city
+    // centroid. Same root cause as `oathnet_pro::breach`'s equivalent leg.
+    let unrelated = "totally-unrelated-query";
+    let a = serde_json::json!({"country": "Sydney"});
+    let b = serde_json::json!({"country": "sydney"});
+    let mut seen = std::collections::HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_entities(&a, unrelated, "scan", "seeknow.io:test", "fp", &mut seen, &mut result);
+    extract_entities(&b, unrelated, "scan", "seeknow.io:test", "fp", &mut seen, &mut result);
+    let coords: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .collect();
+    assert_eq!(
+        coords.len(),
+        1,
+        "a differently-cased spelling of the same country must dedup to one Coordinates entity: {coords:?}"
+    );
+}
+
 /// Breach/stealer dumps routinely encode identifiers as JSON numbers rather
 /// than strings (`val_str_coerce`'s own doc comment) — SeekNow shares most
 /// field names with OathNet's V2 schema, and `oathnet_pro::breach` already
@@ -911,6 +962,53 @@ mod numeric_identifier_coercion_tests {
         assert!(
             !has_dom(&r2, "mail.acme.com"),
             "subdomains are only minted for the domain_intel endpoint"
+        );
+    }
+
+    #[test]
+    fn domain_intel_never_tags_a_www_alias_of_the_target_as_its_own_subdomain() {
+        // Regression: "www.acme.com" is a DIFFERENT raw string from the
+        // target "acme.com", so it's an equal-or-subdomain of the raw target
+        // via `is_or_subdomain_of`'s inclusive check even at exact-canonical-
+        // equality — but `Entity::new` strips the leading "www." label and
+        // collapses it onto the target's own apex uid. Before this was
+        // fixed, it was unconditionally tagged "subdomain", permanently
+        // mislabeling the scan's own subject as a subdomain of itself once
+        // merged via `Entity::merge`'s tag-union.
+        use serde_json::json;
+        let item = json!({
+            "domain": "acme.com",
+            "subdomains": ["www.acme.com", "mail.acme.com"],
+        });
+        let (mut seen, mut result) = (HashSet::new(), ModuleResult::new());
+        extract_entities(
+            &item,
+            "acme.com",
+            "scan",
+            "domain_intel",
+            "k",
+            &mut seen,
+            &mut result,
+        );
+        // The `domain` field's own extraction (a separate code path, tagged
+        // only "see-know") still mints "acme.com" — the point is that the
+        // "www.acme.com" subdomains-array entry must not ALSO independently
+        // construct an "acme.com"-normalised entity carrying the "subdomain"
+        // tag, which would merge onto it via `Entity::merge`'s tag-union.
+        assert!(
+            !result
+                .entities
+                .iter()
+                .any(|e| e.value == "acme.com" && e.has_tag("subdomain")),
+            "a www-alias of the target must not tag the apex as its own subdomain: {:?}",
+            result.entities
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == "mail.acme.com"),
+            "genuine subdomain still minted"
         );
     }
 

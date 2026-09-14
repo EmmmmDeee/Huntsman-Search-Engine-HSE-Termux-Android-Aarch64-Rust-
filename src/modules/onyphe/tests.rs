@@ -102,6 +102,60 @@ fn vstr_trims_and_rejects_empty() {
 }
 
 #[test]
+fn resolved_ips_for_a_domain_target_dedup_an_expanded_and_compressed_ipv6_spelling() {
+    // Regression: a bare clone doesn't canonicalise the way `core::entity::
+    // normalise` does, so an expanded and a compressed spelling of the same
+    // resolved IPv6 address each earned their own dedup slot. A real public
+    // address (Google Public DNS) is used, not an RFC 3849 documentation
+    // one, purely for realism (no gate here to route around).
+    let docs = vec![
+        serde_json::json!({"@category": "resolver", "ip": "2001:4860:4860:0000:0000:0000:0000:8888"}),
+        serde_json::json!({"@category": "resolver", "ip": "2001:4860:4860::8888"}),
+    ];
+    let target = Target::new(TargetKind::Domain, "example.com");
+    let r = extract_entities(&docs, &target, "example.com", "domain", "scan");
+    let ips: Vec<&Entity> = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .collect();
+    assert_eq!(
+        ips.len(),
+        1,
+        "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+    );
+}
+
+#[test]
+fn coordinates_carry_the_originating_ip_for_login_ip_recognition() {
+    // Pass 31: the correlator's shared `person_login_ip_coords` (used by
+    // `best_au_location_estimate` and `au_location_corroboration`) only
+    // recognises a Coordinates fix as tied to a subject's breach/stealer
+    // login IP when its evidence carries an `ip` attribute equal to that
+    // IP — the same property `ipinfo`/`ip_whois_geo`/`ipquery`/`ip_geo`
+    // already pin.
+    let doc = serde_json::json!({
+        "@category": "geoloc",
+        "ip": "8.8.8.8",
+        "country": "US",
+        "location": "37.4056,-122.0775",
+    });
+    let target = Target::new(TargetKind::IpAddress, "8.8.8.8");
+    let r = extract_entities(&[doc], &target, "8.8.8.8", "ip", "scan");
+    let coords = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Coordinates)
+        .expect("coords");
+    assert_eq!(
+        coords.evidence[0].attributes.get("ip").map(String::as_str),
+        Some("8.8.8.8"),
+        "Coordinates evidence must carry the originating IP so \
+         person_login_ip_coords can recognise this as a login-IP fix"
+    );
+}
+
+#[test]
 fn cdn_edge_ip_target_suppresses_coordinates_and_address() {
     // Regression: the CDN/anycast-edge suppression used to gate Coordinates
     // only — the Address block built from the SAME untrusted record's

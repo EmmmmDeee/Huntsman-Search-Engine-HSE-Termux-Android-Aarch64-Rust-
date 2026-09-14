@@ -322,6 +322,38 @@ fn au098_single_class_does_not_fire() {
     );
 }
 
+/// Regression: the coordinate-class scatter guard used to compare against a
+/// hardcoded `300.0` km literal that had drifted to 2x the audit's own
+/// `geo_consistency` `GEO_OUTLIER_KM` (150.0, now the single shared
+/// `crate::util::geohash::GEO_OUTLIER_KM` both sites consume). Two fixes ~211
+/// km apart (pure latitude difference at the same longitude: 1.9° *
+/// ~111.3 km/°) both tag `au-state:QLD`, so the coordinate class internally
+/// agrees with an address class at STATE grain — but the two fixes are too far
+/// apart to be the same actual locality. Under the old 300 km literal this
+/// scenario's ~211 km spread stayed under threshold and AU-098 wrongly fired a
+/// "consensus" verdict despite the coordinate class disagreeing on locality;
+/// the correct 150 km radius suppresses it.
+#[test]
+fn au098_suppresses_consensus_when_same_state_coordinates_are_scattered_past_the_outlier_radius() {
+    let mut coord_a = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");
+    coord_a.tag("au-state:QLD");
+    coord_a.add_evidence(Evidence::new("exif_geo", "photo GPS"));
+    let mut coord_b = Entity::new(EntityKind::Coordinates, "-25.5705,153.0260", 0.7, "s2");
+    coord_b.tag("au-state:QLD");
+    coord_b.add_evidence(Evidence::new("exif_geo", "photo GPS"));
+    let addr = Entity::new(EntityKind::Address, "Spring Hill QLD 4000", 0.7, "s");
+    assert!(
+        super::rules::rule_au_098_residency_consensus(
+            &RuleContext::new(&[coord_a, coord_b, addr]),
+            "s",
+            0,
+        )
+        .is_empty(),
+        "scattered same-state coordinate fixes (~211 km apart) must suppress \
+         the residency-consensus verdict, not corroborate it"
+    );
+}
+
 #[test]
 fn au098_appends_australian_isp_network_corroboration() {
     // Coordinate + address agree on QLD (2 classes); an IP on Telstra adds a

@@ -55,7 +55,7 @@ use super::*;
     }
 
     #[test]
-    fn rejects_malformed_time_but_tolerates_offset() {
+    fn rejects_malformed_time_but_accepts_partial() {
         // A present-but-unparseable time must be rejected, not coerced to
         // midnight (00:00:00) and silently accepted.
         assert!(parse_date("2019-03-15Tinvalid").is_none());
@@ -72,10 +72,58 @@ use super::*;
             parse_date("2019-03-15T08:30").expect("should succeed").1,
             "2019-03-15T08:30:00Z"
         );
-        // Seconds stay lenient so a timezone offset (split onto the seconds
-        // token by ':') doesn't reject an otherwise-valid timestamp.
-        let (_, iso) = parse_date("2019-03-15T08:30:00+05:00").expect("should succeed");
-        assert_eq!(iso, "2019-03-15T08:30:00Z");
+    }
+
+    /// A `±HH:MM` RFC 3339 offset must actually shift the returned epoch, not
+    /// be silently dropped. Before this fix, the offset's digits landed on
+    /// the seconds token when the time string was split on ':' (its own
+    /// internal separator), failed to parse as a plain integer once there,
+    /// and were discarded via a `.unwrap_or(0)` fallback — so
+    /// "T08:30:00+05:00" and "T08:30:00Z" produced the exact same instant,
+    /// five hours wrong. `core::rf::parse_iso8601_epoch` already applied the
+    /// offset correctly; this brings the two parsers back into agreement.
+    #[test]
+    fn timezone_offset_shifts_the_epoch_and_survives_in_the_iso_string() {
+        let (ts_offset, iso_offset) =
+            parse_date("2019-03-15T08:30:00+05:00").expect("should succeed");
+        let (ts_utc, iso_utc) = parse_date("2019-03-15T08:30:00Z").expect("should succeed");
+        assert_eq!(
+            ts_utc - ts_offset,
+            5 * 3600,
+            "+05:00 must land 5 hours earlier than the same wall-clock time read as UTC"
+        );
+        assert_eq!(
+            iso_offset, "2019-03-15T08:30:00+05:00",
+            "the literal offset must survive in the display string, not be silently replaced with Z"
+        );
+        assert_eq!(iso_utc, "2019-03-15T08:30:00Z");
+
+        // Cross-check directly against the other, already-correct parser:
+        // the two must now agree on the instant this string represents —
+        // the exact divergence this fix closes.
+        assert_eq!(
+            ts_offset,
+            crate::core::rf::parse_iso8601_epoch("2019-03-15T08:30:00+05:00")
+                .expect("should succeed"),
+            "parse_date and rf::parse_iso8601_epoch must agree on the same input"
+        );
+
+        // A negative offset shifts the other way.
+        let (ts_neg, iso_neg) = parse_date("2019-03-15T08:30:00-03:00").expect("should succeed");
+        assert_eq!(ts_neg - ts_utc, 3 * 3600);
+        assert_eq!(iso_neg, "2019-03-15T08:30:00-03:00");
+
+        // An offset on an exact-midnight time must still render the full
+        // datetime form (not collapse to civil_to_unix's normal date-only
+        // shorthand, which would silently lose the offset).
+        let (_, iso_midnight) =
+            parse_date("2019-03-15T00:00:00+05:00").expect("should succeed");
+        assert_eq!(iso_midnight, "2019-03-15T00:00:00+05:00");
+
+        // Malformed offsets still reject cleanly rather than being ignored.
+        assert!(parse_date("2019-03-15T08:30:00+05").is_none()); // missing minutes
+        assert!(parse_date("2019-03-15T08:30:00+25:00").is_none()); // hour out of range
+        assert!(parse_date("2019-03-15T08:30:00+05:99").is_none()); // minute out of range
     }
 
     #[test]

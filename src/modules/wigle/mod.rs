@@ -622,8 +622,20 @@ fn wifi_ap_entities(
     // duplicates, so deduplicating after a distance sort left a BSSID that
     // WiGLE reported twice at slightly different positions as two separate
     // entries — consuming two of the emitted slots with one access point.
-    macs.sort_by(|a, b| a.0.cmp(b.0));
-    macs.dedup_by_key(|m| m.0);
+    // Sort and dedup on the CANONICAL form (`core::entity::normalise`'s
+    // MacAddress arm: lowercase, colon-separated hex), not the raw string —
+    // WiGLE's crowdsourced dataset is submitted by many different client
+    // apps, so the same physical BSSID reported once as "AA:BB:CC:DD:EE:FF"
+    // and again as "aa-bb-cc-dd-ee-ff" (or merely a different case) sorted to
+    // different positions under a raw `cmp`, survived as non-adjacent
+    // "duplicates", and consumed two emitted slots for one access point —
+    // the same failure mode this dedup step was already written to prevent.
+    macs.sort_by(|a, b| {
+        crate::core::entity::normalise(&EntityKind::MacAddress, a.0).cmp(
+            &crate::core::entity::normalise(&EntityKind::MacAddress, b.0),
+        )
+    });
+    macs.dedup_by_key(|m| crate::core::entity::normalise(&EntityKind::MacAddress, m.0));
     let distinct_aps = macs.len();
     macs.sort_by(|a, b| {
         a.1.partial_cmp(&b.1)

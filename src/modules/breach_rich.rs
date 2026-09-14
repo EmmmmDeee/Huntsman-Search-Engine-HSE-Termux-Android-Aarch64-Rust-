@@ -340,7 +340,17 @@ pub fn extract_rich_detail(
             && m.len() >= 12
             && !is_absent_marker(&m)
             && !is_placeholder_fingerprint(&m)
-            && seen.insert(format!("@mac:{}", m.to_lowercase()))
+            // A bare `.to_lowercase()` case-folds but does not reformat
+            // separators the way `core::entity::normalise`'s MacAddress arm
+            // does, so the SAME address spelled with different punctuation
+            // across the `mac`/`mac_address`/`bssid` fields — or across two
+            // different records in this shared `seen` set — each earned its
+            // own dedup slot despite colliding on the same uid once
+            // `Entity::new` constructs them.
+            && seen.insert(format!(
+                "@mac:{}",
+                crate::core::entity::normalise(&EntityKind::MacAddress, &m)
+            ))
         {
             push_context_entity(
                 result,
@@ -444,20 +454,35 @@ pub fn extract_rich_detail(
         if let Some(h) = val_str(item, k)
             && h.len() >= 2
             && !is_absent_marker(&h)
-            && seen.insert(format!("@{plat}:{}", h.to_lowercase()))
         {
-            push_breach_entity(
-                result,
-                Entity::new(
-                    EntityKind::Username,
-                    format!("{plat}:{h}"),
-                    confidence::MEDIUM_HIGH,
-                    scan_id,
-                ),
-                ev,
-                source,
-                &[plat],
-            );
+            let value = format!("{plat}:{h}");
+            // The dedup key must match what `Entity::new` will actually
+            // construct below: `normalise`'s Username arm case-folds and
+            // strips a wrapping quote/whitespace from the value's own edges
+            // (it can never see a leading `@` here — the value always starts
+            // with the platform name, not `h` — but a TRAILING quote on `h`,
+            // a CSV/SQL-dump export artifact, sits at the value's own trailing
+            // edge and IS stripped there). A bare `h.to_lowercase()` missed
+            // that, letting a dirty and a clean spelling of the same handle
+            // each earn their own dedup slot despite colliding on the same
+            // uid once constructed.
+            if seen.insert(format!(
+                "@{plat}:{}",
+                crate::core::entity::normalise(&EntityKind::Username, &value)
+            )) {
+                push_breach_entity(
+                    result,
+                    Entity::new(
+                        EntityKind::Username,
+                        value,
+                        confidence::MEDIUM_HIGH,
+                        scan_id,
+                    ),
+                    ev,
+                    source,
+                    &[plat],
+                );
+            }
         }
     }
 
@@ -471,7 +496,20 @@ pub fn extract_rich_detail(
     // path mines bio separately, and the shared `seen` set dedups any overlap.
     if let Some(bio) = val_str(item, "bio") {
         for email in crate::util::extract::emails(&bio) {
-            if seen.insert(email.clone()) {
+            // `crate::util::extract::emails` already lower-cases every match
+            // it returns, so this canonicalisation is a no-op for THIS call
+            // site's own input today. It still matters: this `seen` set is
+            // shared with `oathnet_pro::breach`'s own structured-field email
+            // dedup (see this function's own doc comment above), which reads
+            // a raw JSON field verbatim — a dirty spelling there (a breach-
+            // dump escape tail, stray surrounding quotes) must canonicalise
+            // the SAME way this site's insert does, or the two fail to dedup
+            // against each other despite `Entity::new` collapsing both onto
+            // the identical uid. Consistent with both other call sites into
+            // this set rather than relying on one leg's extractor happening
+            // to pre-clean its own input.
+            let canonical = crate::core::entity::normalise(&EntityKind::Email, &email);
+            if seen.insert(canonical) {
                 push_breach_entity(
                     result,
                     Entity::new(EntityKind::Email, &email, confidence::MEDIUM, scan_id),
@@ -535,7 +573,15 @@ pub fn extract_rich_detail(
         }
         let composed = addr_parts.join(", ");
         if seen.insert(format!("@addr:{}", composed.to_lowercase())) {
-            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&composed) {
+            // Second gate on the RESOLVED coordinate, not just the input text:
+            // `city_coords` is a many-to-one phrase lookup, so a composed
+            // address here and an unrelated location string elsewhere in this
+            // shared `seen` set can each pass their own text gate above yet
+            // still resolve to the identical city centroid (see epieos/
+            // oathnet_pro::breach's identical fix for this same root cause).
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&composed)
+                && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
+            {
                 let coord_val = format!("{lat:.4},{lon:.4}");
                 let mut c = Entity::new(
                     EntityKind::Coordinates,

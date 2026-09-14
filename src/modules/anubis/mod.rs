@@ -35,7 +35,19 @@ const SRC: &str = "anubis";
 /// cap, because each subdomain is a real BFS pivot and the frontier budget is the
 /// engine's, not this leaf module's (mirrors `crtsh`/`certspotter`).
 fn build_entities(names: &[String], domain_base: &str, scan_id: &str) -> Vec<Entity> {
-    let base = domain_base.trim().trim_end_matches('.').to_lowercase();
+    // Normalised the same way `Entity::new` normalises every Domain value
+    // (strips leading "www." labels) so a name's dedup key and subdomain
+    // classification match the identity the entity actually gets constructed
+    // under — mirrors the identical fix in the sibling `crtsh`/`certspotter`
+    // modules.
+    let base = crate::core::entity::normalise(
+        &EntityKind::Domain,
+        domain_base
+            .trim()
+            .trim_end_matches('.')
+            .to_lowercase()
+            .as_str(),
+    );
     let mut seen: HashSet<String> = HashSet::new();
 
     let mut out: Vec<Entity> = names
@@ -45,10 +57,16 @@ fn build_entities(names: &[String], domain_base: &str, scan_id: &str) -> Vec<Ent
             if name.is_empty() || name.starts_with('*') || !name.contains('.') {
                 return None;
             }
-            if !seen.insert(name.clone()) {
+            // Canonicalise before dedup/classification, not the raw `name` —
+            // see the identical fix and rationale in the sibling `crtsh`
+            // module for why this matters and what it prevents.
+            let canonical = crate::core::entity::normalise(&EntityKind::Domain, &name);
+            if !seen.insert(canonical.clone()) {
                 return None;
             }
-            let is_sub = crate::util::domains::is_or_subdomain_of(&name, &base);
+            // Proper-subdomain, not `is_or_subdomain_of` — the (canonical)
+            // apex is not a subdomain of itself.
+            let is_sub = crate::util::domains::is_proper_subdomain_of(&canonical, &base);
             // Off-base names are rare here (Anubis is keyed on the apex) but a
             // corrupt entry is retained as a low-confidence lead rather than
             // asserted as the subject's subdomain.

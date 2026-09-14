@@ -920,6 +920,45 @@ fn emit_bssid_entities_tags_cell_lookup_with_cell_located() {
     );
 }
 
+/// `emit_bssid_entities` (the BSSID/MAC-address detail lookup) and
+/// `wifi_intel`'s own BSSID-detail Address builder resolve the SAME WiGLE
+/// `/network/detail` record (see `BSSID_BUDGET`'s doc comment — the two
+/// modules share one quota specifically because they hit the identical
+/// endpoint on the identical credentials) and must therefore mint the
+/// identical Address string, exactly as `wifi_intel::mod.rs`'s own comment on
+/// its Address builder already claims ("`wigle` builds the identical
+/// `city, region, country postcode` string from the same fields"). A
+/// byte-different string here means a byte-different `Entity::uid`
+/// (`normalise` on `Address` is a bare `.trim()`, no postcode
+/// canonicalisation), so the two modules would silently mint two unmerged
+/// Address entities instead of one entity two independent sources corroborate
+/// — this codebase's `extract_cell_intel` and `emit_ssid_entities` (both in
+/// this same file) already append the postcode for exactly this reason;
+/// `emit_bssid_entities` was the one builder that didn't.
+#[test]
+fn emit_bssid_entities_includes_postcode_to_match_wifi_intels_address_string() {
+    let net = Network {
+        ssid: None,
+        netid: Some("AA:BB:CC:DD:EE:FF".into()),
+        encryption: None,
+        lastupdt: None,
+        trilat: Some(-27.4766),
+        trilong: Some(153.0166),
+        city: Some("Brisbane".into()),
+        region: Some("Queensland".into()),
+        country: Some("Australia".into()),
+        postalcode: Some("4000".into()),
+    };
+    let r = emit_bssid_entities("AA:BB:CC:DD:EE:FF", NetworkKind::Wifi, &[net], "test");
+    let addr = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .expect("should succeed");
+    assert_eq!(addr.value, "Brisbane, Queensland, Australia 4000");
+    assert!(addr.has_tag("postcode:4000"));
+}
+
 #[test]
 fn emit_bssid_entities_tags_bluetooth_lookup_with_bluetooth_located() {
     let net = Network {
@@ -1182,6 +1221,46 @@ fn duplicate_bssids_collapse_before_ranking() {
         .and_then(|e| e.evidence[0].attributes.get("aps_observed"))
         .map(String::as_str);
     assert_eq!(observed, Some("6"));
+}
+
+#[test]
+fn a_colon_and_a_dash_separated_spelling_of_the_same_bssid_collapse_before_ranking() {
+    // Regression: the pre-ranking dedup sorted and deduped on the RAW BSSID
+    // string, which only collapses an EXACT repeat. WiGLE's crowdsourced
+    // dataset is submitted by many different client apps, so the same
+    // physical access point reported once as "AA:BB:CC:DD:EE:01" and again as
+    // "aa-bb-cc-dd-ee-01" sorted to different positions under a raw `cmp`,
+    // survived as non-adjacent "duplicates", and consumed two of the emitted
+    // slots for one access point — the exact failure mode this dedup step
+    // was already written to prevent for an identically-spelled repeat.
+    let net = |netid: &str, tri: (f64, f64)| Network {
+        ssid: None,
+        netid: Some(netid.into()),
+        encryption: None,
+        lastupdt: None,
+        trilat: Some(tri.0),
+        trilong: Some(tri.1),
+        city: None,
+        region: None,
+        country: None,
+        postalcode: None,
+    };
+    let results = vec![
+        net("AA:BB:CC:DD:EE:01", (-27.4700, 153.0251)),
+        net("aa-bb-cc-dd-ee-01", (-27.4701, 153.0252)),
+        net("AA:BB:CC:DD:EE:02", (-27.4702, 153.0253)),
+    ];
+    let ents = wifi_ap_entities(&results, -27.4698, 153.0251, "-27.4698,153.0251", "scan");
+    let macs: Vec<&str> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::MacAddress)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert_eq!(
+        macs.len(),
+        2,
+        "a colon- and a dash-separated spelling of the same BSSID must collapse to one AP: {macs:?}"
+    );
 }
 
 /// Every declared WiGLE budget must appear on the diagnostic surface, or an

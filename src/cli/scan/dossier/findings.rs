@@ -141,14 +141,15 @@ pub(super) fn print(by_kind: &BTreeMap<String, Vec<&Entity>>, hints_letter: Opti
 /// is the backend's row order rather than the dossier's own; two runs over the
 /// same data would then be free to disagree. A dossier an operator cannot diff
 /// against yesterday's is a dossier they cannot cite. Pure.
+///
+/// Delegates to `util::recon::confidence_desc_then_uid` (Pass 26) rather than
+/// keeping its own copy of that comparator — this function sorts `&Entity`
+/// references (built from a borrowed group, not an owned `Vec<Entity>`), so
+/// it uses the bare comparator rather than `sort_by_confidence_desc`, which
+/// takes owned values.
 pub(super) fn sort_findings<'a>(group: &[&'a Entity]) -> Vec<&'a Entity> {
     let mut sorted = group.to_vec();
-    sorted.sort_by(|a, b| {
-        b.confidence
-            .partial_cmp(&a.confidence)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.uid.cmp(&b.uid))
-    });
+    sorted.sort_by(|a, b| crate::util::recon::confidence_desc_then_uid(a, b));
     sorted
 }
 

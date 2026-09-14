@@ -251,7 +251,7 @@ fn extract_entities(body: &ZoomResp, target: &Target, value: &str, scan_id: &str
             if let Some(cc) = geo_country_code(m) {
                 ce.tag(format!("country:{}", cc.to_uppercase()));
             }
-            ce.add_evidence(ev());
+            ce.add_evidence(ev().with_attr("ip", record_ip.as_deref().unwrap_or(value)));
             result.push(ce);
         }
 
@@ -303,7 +303,13 @@ fn extract_entities(body: &ZoomResp, target: &Target, value: &str, scan_id: &str
             && ips_emitted < MAX_IPS
             && let Some(ip) = vstr(m, "ip")
             && ip != value
-            && seen.insert(format!("@ip:{ip}"))
+            // Raw string in the dedup key doesn't canonicalise the way
+            // `core::entity::normalise` does — see ip_reputation's identical
+            // fix.
+            && seen.insert(format!(
+                "@ip:{}",
+                crate::core::entity::normalise(&EntityKind::IpAddress, &ip)
+            ))
         {
             let mut ie = Entity::new(EntityKind::IpAddress, &ip, confidence::HIGH_PLUS, scan_id);
             ie.tag(SRC);

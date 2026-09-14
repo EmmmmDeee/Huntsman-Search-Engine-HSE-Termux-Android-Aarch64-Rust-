@@ -2678,3 +2678,64 @@ fn seed_and_url_extract_do_not_corroborate_the_operators_own_input() {
     ));
     assert_eq!(seed_only.source_count(), 1);
 }
+
+// ── dedup_merge_entities ───────────────────────────────────────────────────
+
+#[test]
+fn dedup_merge_entities_folds_same_kind_value_pairs() {
+    let mut a = Entity::new(EntityKind::Address, "1 Main St, Sydney", 0.4, "s");
+    a.add_evidence(Evidence::new("directory-a", "White Pages listing"));
+    let mut b = Entity::new(EntityKind::Address, "1 Main St, Sydney", 0.7, "s");
+    b.add_evidence(Evidence::new("directory-b", "True People Search listing"));
+
+    let mut entities = vec![a, b];
+    dedup_merge_entities(&mut entities);
+
+    assert_eq!(
+        entities.len(),
+        1,
+        "two entities sharing (kind, value) must fold into one: {entities:?}"
+    );
+    let merged = &entities[0];
+    assert_eq!(
+        merged.confidence, 0.7,
+        "merge keeps the greater confidence, not the first occurrence's"
+    );
+    assert_eq!(
+        merged.evidence.len(),
+        2,
+        "both sources' evidence must survive the fold, not just the survivor's own"
+    );
+}
+
+#[test]
+fn dedup_merge_entities_leaves_distinct_pairs_untouched() {
+    let mut entities = vec![
+        Entity::new(EntityKind::Address, "1 Main St, Sydney", 0.4, "s"),
+        Entity::new(EntityKind::Address, "2 High St, Brisbane", 0.4, "s"),
+        Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.5, "s"),
+    ];
+    dedup_merge_entities(&mut entities);
+    assert_eq!(
+        entities.len(),
+        3,
+        "distinct (kind, value) pairs must not be touched: {entities:?}"
+    );
+}
+
+#[test]
+fn dedup_merge_entities_is_order_independent() {
+    let addr = |conf: f64, src: &str| {
+        let mut e = Entity::new(EntityKind::Address, "1 Main St, Sydney", conf, "s");
+        e.add_evidence(Evidence::new(src, "listing"));
+        e
+    };
+    let mut forward = vec![addr(0.4, "a"), addr(0.7, "b")];
+    let mut backward = vec![addr(0.7, "b"), addr(0.4, "a")];
+    dedup_merge_entities(&mut forward);
+    dedup_merge_entities(&mut backward);
+    assert_eq!(forward.len(), 1);
+    assert_eq!(backward.len(), 1);
+    assert_eq!(forward[0].confidence, backward[0].confidence);
+    assert_eq!(forward[0].uid, backward[0].uid);
+}

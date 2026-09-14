@@ -39,6 +39,31 @@ fn username_target_password_carries_the_typed_username_key() {
 }
 
 #[test]
+fn a_dirty_and_a_clean_spelling_of_the_same_domain_account_dedup_to_one_entity() {
+    // Regression: `identity.to_ascii_lowercase()` case-folds but does not
+    // strip a leading quote character some breach-dump exports leave on the
+    // identity field — a realistic COMB artifact, not a contrived one (see
+    // `core::entity::normalise`'s own Email-kind doc comment: "a CSV
+    // `\"\"`-escaped quote that leaked into the seed"). A leading quote
+    // survives `rsplit_once('@')`'s host-match gate (the quote sits on the
+    // LOCAL side, not the host), so both spellings reach the dedup check —
+    // but only the canonical form collapses them to one entity the way
+    // `Entity::new` does internally.
+    let target = Target::new(TargetKind::Domain, "example.com");
+    let lines = vec![
+        "dirty@example.com:pass1".to_string(),
+        "\"dirty@example.com:pass2".to_string(),
+    ];
+    let ents = build_entities_from_lines(&lines, &target, "s");
+    let emails: Vec<&Entity> = ents.iter().filter(|e| e.kind == EntityKind::Email).collect();
+    assert_eq!(
+        emails.len(),
+        1,
+        "a dirty and a clean spelling of the same domain account must dedup to one entity: {emails:?}"
+    );
+}
+
+#[test]
 fn split_line_splits_on_first_colon_only() {
     assert_eq!(split_line("user@x.com:pass:word"), Some(("user@x.com", "pass:word")));
     assert_eq!(split_line("alice:hunter2"), Some(("alice", "hunter2")));

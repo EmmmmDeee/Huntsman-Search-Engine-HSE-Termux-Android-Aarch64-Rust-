@@ -23,6 +23,34 @@ fn of_kind(ents: &[Entity], kind: EntityKind) -> Vec<&Entity> {
 // ── trait metadata ──────────────────────────────────────────────────────────
 
 #[test]
+fn forward_aaaa_dedups_an_expanded_and_a_compressed_ipv6_spelling() {
+    // Regression: `is_ip` only validates; the dedup key must still be the
+    // canonical form, or an expanded/mixed-case IPv6 spelling and a
+    // compressed one dedup separately despite colliding on the same uid
+    // once `Entity::new` constructs them. A real public address (Google
+    // Public DNS) is used, not an RFC 3849 documentation one, purely for
+    // realism.
+    let records = vec![
+        rec(
+            "aaaa",
+            "github.com",
+            "2001:4860:4860:0000:0000:0000:0000:8888",
+            1,
+            0,
+            0,
+        ),
+        rec("aaaa", "github.com", "2001:4860:4860::8888", 1, 0, 0),
+    ];
+    let ents = build_entities(&records, "github.com", false, "s");
+    let ips = of_kind(&ents, EntityKind::IpAddress);
+    assert_eq!(
+        ips.len(),
+        1,
+        "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+    );
+}
+
+#[test]
 fn accepts_domain_ip_url_only() {
     let m = MnemonicPdns;
     assert!(m.accepts(&Target::new(TargetKind::Domain, "github.com")));
@@ -164,6 +192,26 @@ fn forward_inbound_cname_alias_is_emitted() {
     assert_eq!(
         domains[0].evidence[0].summary,
         "Passive DNS: pages.example.org cname → github.com"
+    );
+}
+
+#[test]
+fn a_www_cname_to_the_apex_is_not_emitted_as_a_mislabeled_subdomain_or_external() {
+    // Regression: "www" CNAMEing to the apex is one of the most common zone
+    // configurations there is — an inbound CNAME whose query is "www.<target>"
+    // canonicalises to the exact same identity as `target` once `Entity::new`
+    // strips the leading "www." label, even though it's a DIFFERENT raw
+    // string from "github.com" (so it isn't caught by the `query == target_l`
+    // forward-branch check). Before this was fixed, `forward_infra_domain`
+    // classified it against the raw target, found it a "proper subdomain" by
+    // string shape, and tagged it SUBDOMAIN — which then collapsed onto the
+    // scan's own apex/subject uid via `Entity::merge`'s tag-union, mislabeling
+    // the subject's own entity.
+    let recs = vec![rec("cname", "www.github.com", "github.com", 4, 1, 2)];
+    let ents = build_entities(&recs, "github.com", false, "s");
+    assert!(
+        of_kind(&ents, EntityKind::Domain).is_empty(),
+        "a www-CNAME-to-apex must not mint a mislabeled duplicate of the subject: {ents:?}"
     );
 }
 

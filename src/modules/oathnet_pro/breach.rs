@@ -326,7 +326,18 @@ pub(super) fn extract_breach_entities_with(
 
     if let Some(email) = val_str(item, "email") {
         let lower = email.to_lowercase();
-        if looks_like_email(&lower) && seen.insert(lower) {
+        // Canonicalise before the dedup insert, not the bare lowercase —
+        // `.to_lowercase()` case-folds but does not strip a breach-dump
+        // escape tail or surrounding quote characters the way `Entity::new`
+        // does internally, and this `seen` set is shared with
+        // `breach_rich::extract_breach_entities_with`'s own bio-mined email
+        // dedup (its own doc comment: "the shared `seen` set dedups any
+        // overlap"), which must canonicalise the SAME way or a dirty
+        // spelling from one path and a clean one from the other fail to
+        // dedup against each other despite collapsing onto the identical uid.
+        if looks_like_email(&lower)
+            && seen.insert(crate::core::entity::normalise(&EntityKind::Email, &email))
+        {
             push_oathnet_entity(
                 result,
                 Entity::new(EntityKind::Email, &email, confidence::HIGH_PLUS, scan_id),
@@ -338,8 +349,13 @@ pub(super) fn extract_breach_entities_with(
     }
 
     if let Some(uname) = val_str(item, "username") {
-        let lower = uname.to_lowercase();
-        if lower.len() >= 3 && seen.insert(lower) {
+        // A bare `.to_lowercase()` case-folds but does not strip a leading `@`
+        // sigil or wrapping quote the way `Entity::new` does internally via
+        // `core::entity::normalise`'s Username arm, so a row spelled "@jordan"
+        // and one spelled "jordan" each earned their own dedup slot here even
+        // though both collapse onto the same uid once constructed.
+        let canonical = crate::core::entity::normalise(&EntityKind::Username, &uname);
+        if canonical.len() >= 3 && seen.insert(canonical) {
             push_oathnet_entity(
                 result,
                 Entity::new(EntityKind::Username, &uname, confidence::HIGH, scan_id),
@@ -352,7 +368,11 @@ pub(super) fn extract_breach_entities_with(
 
     if let Some(ph) = val_str_or_coerce(item, &["phone_number", "phone_national", "phone"])
         && has_min_digits(&ph, 7)
-        && seen.insert(ph.to_lowercase())
+        // A bare `.to_lowercase()` is a no-op on digits/punctuation, so two
+        // rows spelling the same number with different formatting each earned
+        // their own `seen` slot — dedup on the canonical form instead, same
+        // as `core::entity::normalise` will construct internally.
+        && seen.insert(crate::core::entity::normalise(&EntityKind::Phone, &ph))
     {
         push_oathnet_entity(
             result,
@@ -398,7 +418,13 @@ pub(super) fn extract_breach_entities_with(
     for ip_field in ["ip", "lastip", "last_ip"] {
         if let Some(ip) = val_str(item, ip_field)
             && is_public_ip(&ip)
-            && seen.insert(ip.clone())
+            // A bare clone of the raw string doesn't canonicalise the way
+            // `core::entity::normalise`'s IpAddress arm does (parses and
+            // reformats — collapsing expanded/mixed-case IPv6 and an
+            // IPv4-mapped spelling), so two differently-formatted spellings
+            // of the same address each earned their own dedup slot despite
+            // colliding on the same uid once `Entity::new` constructs them.
+            && seen.insert(crate::core::entity::normalise(&EntityKind::IpAddress, &ip))
         {
             push_oathnet_entity(
                 result,
@@ -414,7 +440,16 @@ pub(super) fn extract_breach_entities_with(
         && !is_absent(&country)
         && seen.insert(format!("@country:{country}"))
     {
-        if let Some((lat, lon)) = crate::util::city_coords::city_coords(&country) {
+        if let Some((lat, lon)) = crate::util::city_coords::city_coords(&country)
+            // `city_coords` is a many-to-one phrase lookup: the country,
+            // composed-address, and free-text-location legs below each gate
+            // on their OWN input text, but two differently-worded strings
+            // (a country name that happens to double as a tabulated city, a
+            // street address vs. a free-text location) can resolve to the
+            // identical centroid — keyed on the RESOLVED coordinate, shared
+            // across all three legs via this same `seen` set, to catch that.
+            && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
+        {
             let coord_val = format!("{lat:.4},{lon:.4}");
             let mut c = Entity::new(
                 EntityKind::Coordinates,
@@ -475,7 +510,13 @@ pub(super) fn extract_breach_entities_with(
         .collect::<Vec<&str>>()
         .join(", ");
         if addr.len() >= 4 && seen.insert(format!("@addr:{}", addr.to_lowercase())) {
-            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr)
+                // See the `country` leg above: keyed on the resolved
+                // coordinate (shared `seen` set) so this doesn't mint a
+                // second Coordinates entity for a city the country or
+                // free-text-location leg already resolved.
+                && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
+            {
                 let coord_val = format!("{lat:.4},{lon:.4}");
                 let mut c = Entity::new(
                     EntityKind::Coordinates,
@@ -511,7 +552,13 @@ pub(super) fn extract_breach_entities_with(
         let loc = loc.trim();
         if loc.len() >= 4 && !is_absent(loc) && seen.insert(format!("@loc:{}", loc.to_lowercase()))
         {
-            if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc)
+                // See the `country` leg above: keyed on the resolved
+                // coordinate (shared `seen` set) so this doesn't mint a
+                // second Coordinates entity for a city the country or
+                // composed-address leg already resolved.
+                && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
+            {
                 let coord_val = format!("{lat:.4},{lon:.4}");
                 let mut c = Entity::new(
                     EntityKind::Coordinates,
@@ -579,7 +626,14 @@ pub(super) fn extract_breach_entities_with(
     }
 
     if let Some(ig) = val_str(item, "instagram")
-        && seen.insert(format!("@ig:{}", ig.to_lowercase()))
+        // A bare `.to_lowercase()` doesn't strip a leading `@` sigil or
+        // wrapping quote the way `Entity::new` does internally, so "@jordan"
+        // and "jordan" each earned their own dedup slot despite colliding on
+        // the same uid once constructed.
+        && seen.insert(format!(
+            "@ig:{}",
+            crate::core::entity::normalise(&EntityKind::Username, &ig)
+        ))
     {
         push_oathnet_entity(
             result,
@@ -833,9 +887,17 @@ pub(super) fn extract_breach_entities_with(
     ] {
         if let Some(handle) = val_str(item, field) {
             let h = handle.trim().trim_start_matches('@');
+            // `h.to_lowercase()` case-folds but does not strip a wrapping quote
+            // character (a CSV/SQL-dump export artifact) the way `Entity::new`
+            // does internally via `normalise`'s Username arm, so a dirty and a
+            // clean spelling of the same handle each earned their own dedup
+            // slot despite colliding on the same uid once constructed.
             if (2..=64).contains(&h.len())
                 && !is_redacted_sentinel(h)
-                && seen.insert(format!("@{platform}:{}", h.to_lowercase()))
+                && seen.insert(format!(
+                    "@{platform}:{}",
+                    crate::core::entity::normalise(&EntityKind::Username, h)
+                ))
             {
                 push_oathnet_entity(
                     result,

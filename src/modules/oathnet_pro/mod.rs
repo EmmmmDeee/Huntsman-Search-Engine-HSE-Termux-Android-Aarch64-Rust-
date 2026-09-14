@@ -406,42 +406,22 @@ fn should_skip_preflight(kind: TargetKind, v: &str) -> bool {
     }
 }
 
+/// True for social/consumer platforms and data-aggregator sites, PLUS a
+/// small residual set of mega infrastructure/tech providers that are
+/// equally pointless to query OathNet's breach/stealer corpora for even
+/// though they aren't "social platforms" in `util::domains::SOCIAL`'s
+/// narrower sense (whose callers skip a platform's own *contact page* —
+/// see [`crate::util::domains::is_social_platform`]). This used to carry
+/// its own full, independently-maintained copy of the social/aggregator
+/// half of this list (39 entries), which had quietly drifted from the
+/// canonical one: it alone had 13 entries (the people-search sites plus a
+/// handful of dev/consumer platforms) that the canonical list was missing.
+/// Delegating the shared half closes that drift risk (Pass 29) — the
+/// residual `INFRA` set stays local because it serves a narrower purpose
+/// specific to this preflight check, not a general "skip this domain's
+/// contact page" rule the other `is_social_platform` callers should widen to.
 fn is_social_platform(domain: &str) -> bool {
-    const PLATFORMS: &[&str] = &[
-        "peekyou.com",
-        "spokeo.com",
-        "nuwber.com",
-        "pipl.com",
-        "facebook.com",
-        "instagram.com",
-        "twitter.com",
-        "x.com",
-        "linkedin.com",
-        "pinterest.com",
-        "tiktok.com",
-        "reddit.com",
-        "github.com",
-        "gitlab.com",
-        "bitbucket.org",
-        "youtube.com",
-        "twitch.tv",
-        "steamcommunity.com",
-        "mastodon.social",
-        "bsky.app",
-        "threads.net",
-        "tumblr.com",
-        "snapchat.com",
-        "telegram.org",
-        "discord.com",
-        "soundcloud.com",
-        "spotify.com",
-        "whatsapp.com",
-        "signal.org",
-        "vk.com",
-        "whitepages.com",
-        "whitepages.com.au",
-        "locatefamily.com",
-        "truecaller.com",
+    const INFRA: &[&str] = &[
         "cloudflare.com",
         "google.com",
         "microsoft.com",
@@ -449,9 +429,10 @@ fn is_social_platform(domain: &str) -> bool {
         "apple.com",
     ];
     let lower = domain.to_lowercase();
-    PLATFORMS
-        .iter()
-        .any(|p| crate::util::domains::is_or_subdomain_of(&lower, p))
+    crate::util::domains::is_social_platform(&lower)
+        || INFRA
+            .iter()
+            .any(|p| crate::util::domains::is_or_subdomain_of(&lower, p))
 }
 
 #[cfg(test)]

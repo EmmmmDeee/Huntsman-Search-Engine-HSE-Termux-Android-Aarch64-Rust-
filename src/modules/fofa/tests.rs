@@ -126,6 +126,53 @@ fn build_entities_emits_ip_domain_from_results() {
 }
 
 #[test]
+fn build_entities_dedups_an_expanded_and_a_compressed_ipv6_spelling() {
+    // Regression: the `ip_entities` map was keyed on the raw `hit.ip`
+    // string, not the canonical form `core::entity::normalise` computes —
+    // two hits for the same host reporting the same IPv6 address in
+    // different textual forms minted two separate `Entity` objects, each
+    // accumulating only its own hit's evidence, for what collides on one
+    // uid once `Entity::new` constructs it. A real public address (Google
+    // Public DNS) is used, not an RFC 3849 documentation one, purely for
+    // realism.
+    let resp = FofaResp {
+        error: false,
+        errmsg: None,
+        results: vec![
+            FofaResult {
+                host: "[2001:4860:4860::8888]:80".to_string(),
+                ip: "2001:4860:4860:0000:0000:0000:0000:8888".to_string(),
+                port: 80,
+                protocol: "http".to_string(),
+                title: String::new(),
+                domain: String::new(),
+                os: String::new(),
+            },
+            FofaResult {
+                host: "[2001:4860:4860::8888]:443".to_string(),
+                ip: "2001:4860:4860::8888".to_string(),
+                port: 443,
+                protocol: "https".to_string(),
+                title: String::new(),
+                domain: String::new(),
+                os: String::new(),
+            },
+        ],
+    };
+    let result = build_entities(&resp, "test-scan");
+    let ips: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .collect();
+    assert_eq!(
+        ips.len(),
+        1,
+        "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+    );
+}
+
+#[test]
 fn build_entities_aggregates_multiple_ports_on_one_host_into_one_ip_entity() {
     // Regression: a host with several indexed open ports comes back as
     // multiple result rows sharing the same `ip` (one row per port) — the

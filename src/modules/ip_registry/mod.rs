@@ -333,15 +333,29 @@ fn build_bgp_ip_entities(body: &IpResp, ip: &str, scan_id: &str) -> Vec<Entity> 
     };
 
     let asn_num_str = asn_num.to_string();
+    // Confidence and evidence source both aligned to `bgpview`'s own
+    // treatment of this identical inference (see the Evidence::new below) —
+    // there was no documented reason for this module to claim a higher tier
+    // (EXPERT, 0.88) than the module that owns this data source's own
+    // emission of the same "covering prefix's ASN" fact (HIGH_PLUSPLUS, 0.80).
     let mut e = Entity::new(
         EntityKind::Asn,
         format!("AS{asn_num}"),
-        confidence::EXPERT,
+        confidence::HIGH_PLUSPLUS,
         scan_id,
     );
     e.tag("announcing");
-    let mut ev =
-        Evidence::new(SRC, format!("ASN announcing {ip}")).with_attr("asn_number", &asn_num_str);
+    let mut ev = Evidence::new(
+        // Same BGPView `/ip/{ip}` response the standalone `bgpview` module's
+        // own `ip_entities` reads for this exact fact — attributed to that
+        // corpus, not this module's own name, exactly as `build_asn_entities`'s
+        // operator-org evidence below already does for the `/asn/{n}`
+        // endpoint. Stamping this `SRC` ("ip_registry") made `source_count()`
+        // read one BGPView response as two independent corroborating sources.
+        crate::modules::bgpview::SRC,
+        format!("ASN announcing {ip}"),
+    )
+    .with_attr("asn_number", &asn_num_str);
     if let Some(p) = prefix.prefix.as_deref().filter(|p| !p.is_empty()) {
         ev = ev.with_attr("prefix", p);
     }

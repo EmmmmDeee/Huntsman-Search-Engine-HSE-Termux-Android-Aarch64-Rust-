@@ -149,7 +149,7 @@ export function renderCapabilityProbePanel(host){
         <button id="capprobe-run" class="btn btn-primary btn-sm pull-right" onclick="runCapabilityProbe()"><i class="glyphicon glyphicon-play"></i>&nbsp;Run live probe</button>
       </h3>
     </div>
-    <p class="text-muted">Actively verify every keyless module against its real provider, right now — <b>alive</b> (parsed data), <b>empty</b> (reached, nothing parsed), <b>unreachable</b> (provider down / offline), or <b>drift</b> (a canary source that reached its provider but parsed nothing — the upstream wire shape likely changed). Proactive, unlike the cross-scan scraper health above. One bounded request per module; a full sweep takes a few seconds.</p>
+    <p class="text-muted">Actively verify every keyless module against its real provider, right now — <b>alive</b> (parsed data), <b>empty</b> (reached, nothing parsed), <b>unreachable</b> (provider down / offline), or <b>drift</b> (a canary source that reached its provider but parsed nothing, or any module whose parser panicked on the live response — the upstream wire shape likely changed). Proactive, unlike the cross-scan scraper health above. One bounded request per module; a full sweep takes a few seconds.</p>
     <div id="capprobe-results"></div>`;
 }
 

@@ -78,6 +78,18 @@ pub enum EntityKind {
     /// A WGS84 `lat,lon` fix — e.g. an EXIF GPS coordinate recovered from an
     /// ingested image. Maps to core `EntityKind::Coordinates`.
     Coordinates,
+    /// A hardware MAC address (`aa:bb:cc:dd:ee:ff`). Maps to core
+    /// `EntityKind::MacAddress`.
+    MacAddress,
+    /// An Autonomous System Number (`AS15169` or bare `15169`). Maps to core
+    /// `EntityKind::Asn`.
+    Asn,
+    /// An Australian Business/Company Number, checksum-verified. Maps to
+    /// core `EntityKind::AbnAcn`.
+    AbnAcn,
+    /// A cryptocurrency wallet address (BTC/ETH/LTC/…). Maps to core
+    /// `EntityKind::CryptoAddress`.
+    CryptoAddress,
     Unknown(String),
 }
 
@@ -103,6 +115,10 @@ impl From<&str> for EntityKind {
             "port" => Self::Port,
             "id" | "identifier" => Self::Identifier,
             "coordinates" | "coords" | "coordinate" => Self::Coordinates,
+            "mac_address" | "mac" => Self::MacAddress,
+            "asn" => Self::Asn,
+            "abn_acn" => Self::AbnAcn,
+            "crypto_address" | "crypto" => Self::CryptoAddress,
             other => Self::Unknown(other.to_string()),
         }
     }
@@ -126,6 +142,10 @@ impl EntityKind {
             Self::Port => "port",
             Self::Identifier => "identifier",
             Self::Coordinates => "coordinates",
+            Self::MacAddress => "mac_address",
+            Self::Asn => "asn",
+            Self::AbnAcn => "abn_acn",
+            Self::CryptoAddress => "crypto_address",
             Self::Unknown(s) => s.as_str(),
         }
     }

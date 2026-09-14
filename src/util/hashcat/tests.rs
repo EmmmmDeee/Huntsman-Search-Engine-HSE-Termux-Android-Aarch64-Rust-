@@ -110,3 +110,27 @@ fn is_common_password_flags_membership_case_insensitively() {
     assert!(is_common_password("  qwerty "));
     assert!(!is_common_password("Tr0ub4dor&3xY-uncommon"));
 }
+
+#[test]
+fn is_common_password_covers_the_entries_merged_from_correlator_breach_rs() {
+    // Pass 37: core::correlator::rules::breach used to carry an
+    // independent 36-entry common-password denylist that had drifted from
+    // this canonical list — in both directions. These four entries were in
+    // that local list but missing here. They're all 8 chars, so they never
+    // actually reached breach.rs's own is_reusable_password (its `len >=
+    // 10` floor rejects them regardless of this list's content) — but
+    // AU-105, in breach_pii.rs, gates its plaintext check at `len >= 4`
+    // (core/correlator/rules/breach_pii.rs:1642) and calls this exact
+    // function (line 1652), so without this merge AU-105 would have
+    // treated "admin123" et al. as a RARE secret and bridged its digest as
+    // an identity-linking collision key — exactly the false-positive class
+    // AU-105's own doc comment says the common-password gate exists to
+    // prevent.
+    for common in ["admin123", "welcome1", "hello123", "changeme"] {
+        assert!(
+            is_common_password(common),
+            "'{common}' must be recognised as common (merged from the old \
+             correlator::rules::breach denylist)"
+        );
+    }
+}

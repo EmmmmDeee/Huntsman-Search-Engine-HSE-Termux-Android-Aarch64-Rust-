@@ -215,10 +215,14 @@ async fn cmd_import(
 /// --country` and `POST /api/v1/cells/import` (`api::cells_handlers`) — the
 /// one place this network+import sequence is implemented.
 pub(crate) async fn download_and_import(url: &str, filename: &str, mcc: Option<i64>) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .build()
-        .map_err(|e| Error::Other(e.to_string()))?;
+    // SSRF-guarded builder (DNS-rebinding-safe resolver, private-IP redirect
+    // refusal, `no_proxy()`) — not a bare `reqwest::Client`. `url`'s host is a
+    // hardcoded literal (`opencellid.org`, see `opencellid_download_url`), but
+    // this function's own doc comment above already treats "compromised host"
+    // as in-scope threat model (the byte cap exists for exactly that reason);
+    // an unguarded client would still follow a malicious/compromised
+    // `opencellid.org`'s redirect onto an internal address.
+    let client = crate::util::http::build_client_with_timeout(std::time::Duration::from_secs(300));
 
     let resp = client
         .get(url)

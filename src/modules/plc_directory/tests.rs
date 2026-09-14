@@ -182,6 +182,24 @@ fn a_released_handle_carries_the_window_it_was_held_in() {
     assert!(caveat.contains("NO LONGER"));
 }
 
+// Deliberately no dedicated regression test for `push_handle`'s own
+// `seen.insert` canonicalisation: `history::fold` already lowercases every
+// `alsoKnownAs` handle ("Handles are case-insensitive in AT Protocol;
+// normalise so a casing change is not reported as a rename" — its own
+// comment) before a `Spell` is ever created, and `op.handles()` strips the
+// `at://` URI scheme before that. No input reachable through this module's
+// own JSON parsing can currently exercise a difference between the old
+// (bare `.to_string()`) and new (full `core::entity::normalise`) dedup key —
+// see the existing `a_casing_change_is_not_reported_as_a_rename` test below,
+// which already pins `fold`'s own pre-lowercasing. The canonicalisation is
+// real defense-in-depth (consistency with every other Username-producing
+// call site in this codebase, and it additionally strips invisible format
+// noise `fold`'s bare lowercasing does not), not something independently
+// forceable from this file today. Verified by tracing `fold` and `note`
+// directly rather than a contrived test here — an initial version of this
+// comment's test used a case-differing `alsoKnownAs` pair and passed on both
+// the buggy and the fixed code, which is what surfaced this.
+
 #[test]
 fn a_platform_issued_handle_never_becomes_a_domain() {
     let ents = entities(&bnewbold());

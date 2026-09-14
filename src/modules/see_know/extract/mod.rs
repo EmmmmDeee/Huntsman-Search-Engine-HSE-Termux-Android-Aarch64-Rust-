@@ -211,7 +211,11 @@ pub(super) fn extract_entities(
     for ip_field in ["ip", "lastip", "last_ip"] {
         if let Some(ip) = val_str(item, ip_field)
             && crate::util::preflight::is_public_ip(&ip)
-            && seen.insert(ip.clone())
+            // See oathnet_pro::breach's identical fix: a bare clone doesn't
+            // canonicalise the way `core::entity::normalise` does, so two
+            // differently-formatted spellings of the same address dedup
+            // separately despite colliding on one uid.
+            && seen.insert(crate::core::entity::normalise(&EntityKind::IpAddress, &ip))
         {
             push_breach_entity(
                 result,
@@ -225,7 +229,15 @@ pub(super) fn extract_entities(
         && !crate::util::json::is_null_sentinel(&country)
         && seen.insert(format!("@country:{country}"))
     {
-        if let Some((lat, lon)) = crate::util::city_coords::city_coords(&country) {
+        // Second gate on the RESOLVED coordinate, not just the input text:
+        // `city_coords` lowercases internally before matching, so two records
+        // spelling `country` with different casing both pass the `@country:`
+        // gate above (it compares the raw string) yet still resolve to the
+        // identical city centroid — same root cause already fixed in the
+        // sibling `oathnet_pro::breach`.
+        if let Some((lat, lon)) = crate::util::city_coords::city_coords(&country)
+            && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
+        {
             let coord_val = format!("{lat:.4},{lon:.4}");
             let mut c = Entity::new(
                 EntityKind::Coordinates,
@@ -576,9 +588,21 @@ pub(super) fn extract_entities(
         for sub in subs {
             let Some(raw) = sub.as_str() else { continue };
             let s = raw.trim().trim_end_matches('.').to_ascii_lowercase();
+            // Canonicalise before the dedup/classification, not the raw
+            // `s`/`target_value` — a returned name of "www.<target>" is an
+            // equal-or-subdomain of the raw target by string shape alone
+            // (via `is_or_subdomain_of`'s inclusive equality branch even
+            // when it's an exact canonical match), even though `Entity::new`
+            // strips the "www." label and collapses it onto the target's
+            // own apex uid, unconditionally tagged "subdomain" below
+            // regardless. `is_proper_subdomain_of`, not `is_or_subdomain_of`:
+            // the canonical apex must never tag itself as its own subdomain.
+            let canonical = crate::core::entity::normalise(&EntityKind::Domain, &s);
+            let canonical_target =
+                crate::core::entity::normalise(&EntityKind::Domain, target_value);
             if crate::util::domains::looks_like_domain(&s)
-                && crate::util::domains::is_or_subdomain_of(&s, target_value)
-                && seen.insert(format!("@subdomain:{s}"))
+                && crate::util::domains::is_proper_subdomain_of(&canonical, &canonical_target)
+                && seen.insert(format!("@subdomain:{canonical}"))
             {
                 let mut e = Entity::new(EntityKind::Domain, &s, confidence::MEDIUM_PLUS, scan_id);
                 e.tag("see-know");

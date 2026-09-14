@@ -286,6 +286,24 @@ fn subdomains_are_emitted_and_filtered() {
 }
 
 #[test]
+fn a_www_alias_of_the_queried_domain_is_skipped_as_a_self_echo() {
+    // Regression, mirroring the exact-match self-echo case above ("EXAMPLE.COM"):
+    // "www.example.com" is a DIFFERENT raw string from "example.com" (so the
+    // pre-fix `host == domain_lc` self-echo check missed it), yet `Entity::new`
+    // strips the leading "www." label and collapses it onto the queried
+    // domain's own apex uid — before this was fixed, it was still classified
+    // as a proper subdomain (true by raw string shape) and tagged "subdomain"
+    // at EXPERT confidence, permanently mislabeling the scan's own subject as
+    // a subdomain of itself once merged.
+    let body = sub_body(r#"{"total": 1, "events": ["www.example.com"]}"#);
+    let ents = build_subdomain_entities("example.com", &body, "s");
+    assert!(
+        ents.is_empty(),
+        "a www-alias of the queried domain must be skipped like any other self-echo: {ents:?}"
+    );
+}
+
+#[test]
 fn a_host_not_actually_under_the_queried_domain_gets_lower_confidence_and_no_subdomain_tag() {
     // Regression: BinaryEdge's subdomain-enumeration endpoint can echo back a
     // host that passes the blank/self-echo/dotless/IP-literal filters yet

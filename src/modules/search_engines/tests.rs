@@ -1928,6 +1928,38 @@ fn build_entities_classifies_subdomain_vs_external_with_engine_corroboration() {
 }
 
 #[test]
+fn a_www_result_host_is_not_tagged_a_subdomain_of_the_apex_seed() {
+    // Regression: a search result's own "www.<target>" homepage — exactly
+    // what a search engine's index is most likely to surface for any real
+    // domain — is a proper subdomain of the raw target by string shape
+    // alone, even though `Entity::new` strips the "www." label and collapses
+    // it onto the target's own apex/subject uid. Before this was fixed, it
+    // was unconditionally tagged `tags::SUBDOMAIN` here, permanently
+    // mislabeling the scan's own subject as a subdomain of itself via
+    // `Entity::merge`'s tag-union.
+    let target = Target::new(TargetKind::Domain, "targetcorp.com.au");
+    let mk = |url: &str| SearchResult {
+        url: url.to_string(),
+        title: "result".to_string(),
+        snippet: "result body".to_string(),
+        engine: "duckduckgo",
+        query: "targetcorp.com.au".to_string(),
+    };
+    let results = vec![mk("https://www.targetcorp.com.au/")];
+    let url_engine_count = url_engine_counts(&results);
+    let results = dedup_results(results);
+    let res = build_entities(&target, "s", &results, &url_engine_count);
+
+    assert!(
+        !res.entities.iter().any(|e| e.kind == EntityKind::Domain
+            && e.value == "targetcorp.com.au"
+            && e.has_tag(tags::SUBDOMAIN)),
+        "a www-alias of the seed must never tag the apex as its own subdomain: {:?}",
+        res.entities
+    );
+}
+
+#[test]
 fn offtarget_repo_url_detects_project_named_after_a_term() {
     let terms = vec!["haigen".to_string(), "bamford".to_string()];
     // Repo named after the first-name term, owner is an unrelated org → off-target.

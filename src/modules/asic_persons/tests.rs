@@ -89,6 +89,46 @@ fn adviser_emits_person_licensee_abns_and_address() {
 }
 
 #[test]
+fn two_registers_geocoding_to_the_same_point_dedup_to_one_coordinates_entity() {
+    // Regression: `city_coords` is a many-to-one phrase lookup, so two
+    // differently-worded registered addresses (one banned-persons record, one
+    // financial-adviser record — the same shared `push_address` helper, no
+    // gate of any kind) both naming Sydney independently resolved to the
+    // identical centroid. `process()`'s live CKAN fetch isn't independently
+    // testable here, so this calls the same pure `emit_banned`/`emit_adviser`
+    // functions `process()` calls, into ONE shared `ModuleResult` (mirroring
+    // its 3 loops sharing one `result`), followed by the same
+    // `dedup_merge_entities` call `process()` now makes before returning.
+    let banned = rec(r#"{"BD_PER_NAME":"ABBOTT, BILL","BD_PER_TYPE":"Banned Securities",
+        "BD_PER_ADD_LOCAL":"SYDNEY","BD_PER_ADD_STATE":"NSW","BD_PER_ADD_PCODE":"2000"}"#);
+    let adviser = rec(r#"{"ADV_NAME":"CITIZEN, JANE","ADV_ROLE":"Authorised Representative",
+        "OVERALL_REGISTRATION_STATUS":"Current","ADV_ADD_LOCAL":"Sydney CBD","ADV_ADD_STATE":"NSW"}"#);
+    let mut r = ModuleResult::new();
+    emit_banned(&banned, "scan", &mut r);
+    emit_adviser(&adviser, "scan", &mut r);
+    let raw_coords = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .count();
+    assert_eq!(
+        raw_coords, 2,
+        "sanity: two differently-worded Sydney addresses must both resolve via city_coords, or this fixture doesn't exercise the bug"
+    );
+    crate::core::entity::dedup_merge_entities(&mut r.entities);
+    let coords = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .count();
+    assert_eq!(
+        coords, 1,
+        "two registers' addresses resolving to the same point must dedup to one Coordinates entity: {:?}",
+        r.entities
+    );
+}
+
+#[test]
 fn adviser_with_disciplinary_action_is_flagged() {
     let mut m = rec(ADVISER);
     m.insert("ADV_DA_TYPE".into(), Value::String("Banning Order".into()));

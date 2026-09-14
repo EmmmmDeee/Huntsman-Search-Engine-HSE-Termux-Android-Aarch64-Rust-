@@ -118,8 +118,8 @@ use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 
 use super::{
-    AppState, assurance_handlers, cells_handlers, handlers, key_harvest_handlers, scan_export,
-    scan_handlers, settings_handlers, update_handlers,
+    AppState, assurance_handlers, cells_handlers, handlers, key_harvest_handlers, live_handlers,
+    scan_export, scan_handlers, settings_handlers, update_handlers,
 };
 
 /// Embedded SPA — single self-contained HTML file with inline CSS + JS.
@@ -622,13 +622,13 @@ pub fn router(
         // ── live (v0.5+) ──
         .route(
             "/live",
-            post(handlers::live_create).get(handlers::live_list),
+            post(live_handlers::live_create).get(live_handlers::live_list),
         )
         .route(
             "/live/{id}",
-            get(handlers::live_get).delete(handlers::live_stop),
+            get(live_handlers::live_get).delete(live_handlers::live_stop),
         )
-        .route("/live/{id}/events", get(handlers::live_events_sse))
+        .route("/live/{id}/events", get(live_handlers::live_events_sse))
         // ── entities (cross-scan) ──
         .route("/entities/{uid}", get(handlers::entity_get))
         .route("/search", get(handlers::search_entities))

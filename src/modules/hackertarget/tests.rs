@@ -90,6 +90,39 @@ use super::*;
         assert!(build_hostsearch_entities("", "example.com", "s").is_empty());
     }
 
+    #[test]
+    fn the_apex_itself_is_never_tagged_its_own_subdomain() {
+        // hostsearch's own CSV routinely echoes the literal queried host as
+        // one of its rows. `is_or_subdomain_of` (inclusive of equality) used
+        // to tag this row SUBDOMAIN at VERY_HIGH; the apex is not a
+        // subdomain of itself.
+        let ents = build_hostsearch_entities("example.com,93.184.216.34", "example.com", "s");
+        let apex = of_kind(&ents, EntityKind::Domain)
+            .into_iter()
+            .find(|e| e.value == "example.com")
+            .expect("apex itself present");
+        assert!(!apex.has_tag(tags::SUBDOMAIN), "the apex must never be tagged its own subdomain");
+    }
+
+    #[test]
+    fn a_www_alias_of_the_domain_is_not_tagged_a_subdomain_of_the_apex() {
+        // Regression: "www.example.com" is a DIFFERENT raw string from the
+        // queried "example.com", so it was classified as a genuine subdomain
+        // by the raw `is_or_subdomain_of` check (VERY_HIGH + subdomain tag) —
+        // but `Entity::new` strips the leading "www." label and collapses it
+        // onto the queried domain's own apex uid, permanently mislabeling the
+        // scan's own subject as a subdomain of itself once merged.
+        let ents = build_hostsearch_entities("www.example.com,93.184.216.34", "example.com", "s");
+        let apex = of_kind(&ents, EntityKind::Domain)
+            .into_iter()
+            .find(|e| e.value == "example.com")
+            .expect("the www row still surfaces, collapsed onto the apex value");
+        assert!(
+            !apex.has_tag(tags::SUBDOMAIN),
+            "a www-alias of the domain must never tag the apex as its own subdomain"
+        );
+    }
+
     // ── build_reverse_ip_entities (pure) ────────────────────────────────
 
     #[test]

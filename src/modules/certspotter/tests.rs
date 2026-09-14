@@ -125,6 +125,38 @@ fn build_entities_classifies_subdomains_and_skips_wildcards() {
 }
 
 #[test]
+fn the_apex_is_never_tagged_a_subdomain_when_www_cooccurs_in_the_same_issuance() {
+    // Regression, mirroring the identical, already-fixed case in the sibling
+    // `crtsh` module: a single certificate's `dns_names` commonly SANs both
+    // the bare apex and "www." in the SAME issuance (unlike the fixture
+    // above, which never puts both spellings in one `dns_names` array). Prior
+    // to normalising `name`/`base` before dedup+classification, "www.example.com"
+    // independently earned `tags::SUBDOMAIN` (it IS a proper subdomain of the
+    // raw base) while "example.com" independently earned no tag — but
+    // `Entity::new` normalises both to the same uid ("example.com"), so
+    // whichever sorted first carried its tag onto the merged apex regardless
+    // of the other's (correct) verdict. The apex is not a subdomain of
+    // itself — tagging it SUBDOMAIN merges directly onto the scan's own
+    // anchor/subject entity for a Domain-kind seed, since `EntityKind::Domain`
+    // + the apex is the identical uid — permanently mislabeling the
+    // operator's own search subject as a subdomain of itself.
+    let entries = vec![issuance(&["www.example.com", "example.com"], None)];
+    let es = build_entities(&entries, "example.com", "scan1");
+    // Only one entity should survive for the apex — both raw SANs canonicalise
+    // to the same identity, so the second is a dedup, not a second pivot.
+    assert_eq!(es.iter().filter(|e| e.value == "example.com").count(), 1);
+    let apex = es
+        .iter()
+        .find(|e| e.value == "example.com")
+        .expect("apex itself present");
+    assert!(
+        !apex.tags.iter().any(|t| t == tags::SUBDOMAIN),
+        "the apex must never be tagged as its own subdomain"
+    );
+    assert!((apex.confidence - confidence::LOW_MEDIUM).abs() < 1e-9);
+}
+
+#[test]
 fn build_entities_dedups_names_across_certificates() {
     // The same hostname appearing on many certs yields exactly one entity.
     let entries = vec![

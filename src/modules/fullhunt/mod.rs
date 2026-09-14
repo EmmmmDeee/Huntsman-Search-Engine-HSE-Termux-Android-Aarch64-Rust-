@@ -65,7 +65,6 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::domains::is_proper_subdomain_of;
 use crate::util::http::{json_decode, keyed_cascade, urlencode};
 
 const KEY_ENV: &str = "HUNTSMAN_FULLHUNT_KEY";
@@ -147,10 +146,21 @@ fn build_entities(body: &DomainResp, domain: &str, scan_id: &str) -> Vec<Entity>
             .host
             .as_deref()
             .map(|h| h.trim().trim_end_matches('.').to_ascii_lowercase())
-            .filter(|h| is_proper_subdomain_of(h, &domain_lc))
         else {
             continue;
         };
+        // Canonicalise before the subdomain check, not the raw `host` — a
+        // discovered asset of "www.<domain>" is a proper subdomain of the raw
+        // `domain_lc` by string shape alone, even though `Entity::new` strips
+        // the "www." label and collapses it onto the domain's own apex uid,
+        // unconditionally tagged SUBDOMAIN at EXPERT confidence below with no
+        // further check. An attack-surface scan routinely surfaces the "www"
+        // host alongside the bare apex, so this is the common case.
+        let (host_canonical, is_sub) =
+            crate::util::domains::classify_domain_candidate(&host, &domain_lc);
+        if !is_sub {
+            continue;
+        }
 
         let ip = rec
             .ip_address
@@ -165,7 +175,7 @@ fn build_entities(body: &DomainResp, domain: &str, scan_id: &str) -> Vec<Entity>
             .filter(|s| s.len() >= 2);
 
         // ── Discovered subdomain/asset ───────────────────────────
-        if seen_domains.insert(host.clone()) {
+        if seen_domains.insert(host_canonical.clone()) {
             let mut e = Entity::new(EntityKind::Domain, &host, confidence::EXPERT, scan_id);
             e.tag(SRC);
             e.tag(tags::SUBDOMAIN);
@@ -191,7 +201,9 @@ fn build_entities(body: &DomainResp, domain: &str, scan_id: &str) -> Vec<Entity>
         // ── Resolved IP as its own asset ──────────────────────────
         if let Some(ip) = ip
             && ip.parse::<std::net::IpAddr>().is_ok()
-            && seen_ips.insert(ip.to_string())
+            // See ip_reputation's identical fix: `ip.to_string()` clones the
+            // raw `&str` rather than reformatting the parsed value.
+            && seen_ips.insert(crate::core::entity::normalise(&EntityKind::IpAddress, ip))
         {
             let mut ie = Entity::new(EntityKind::IpAddress, ip, confidence::HIGH, scan_id);
             ie.tag(SRC);

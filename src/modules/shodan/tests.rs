@@ -88,6 +88,55 @@ fn real_host_coordinates_are_preferred_over_the_country_centroid() {
 }
 
 #[test]
+fn real_fix_coordinates_carry_the_originating_ip_for_login_ip_recognition() {
+    // Pass 31: the correlator's shared `person_login_ip_coords` (used by
+    // `best_au_location_estimate` and `au_location_corroboration`) only
+    // recognises a Coordinates fix as tied to a subject's breach/stealer
+    // login IP when its evidence carries an `ip` attribute equal to that
+    // IP — the same property `ipinfo`/`ip_whois_geo`/`ipquery`/`ip_geo`
+    // already pin.
+    let body = host(
+        r#"{"ports":[443],"country_name":"Australia","latitude":-27.4679,"longitude":153.0281,"city":"Brisbane"}"#,
+    );
+    let ents = build_paid_entities("1.2.3.4", body, "s");
+    let coords = of_kind(&ents, EntityKind::Coordinates);
+    assert_eq!(
+        coords[0].evidence[0]
+            .attributes
+            .get("ip")
+            .map(String::as_str),
+        Some("1.2.3.4"),
+        "Coordinates evidence must carry the originating IP so \
+         person_login_ip_coords can recognise this as a login-IP fix"
+    );
+}
+
+#[test]
+fn country_centroid_fallback_coordinates_carry_the_originating_ip_too() {
+    // Same property as the real-fix test above, for the OTHER Coordinates
+    // call site: the country-centroid fallback used when Shodan carries no
+    // precise per-host lat/lon. "Brisbane" as `country_name` is an odd
+    // fixture for a "country" field, but it's what actually resolves
+    // through `city_coords` (a CITY table, not a country table) to
+    // exercise this fallback branch at all — no bare country name is
+    // tabulated, so this is the only way to reach it with a real fixture.
+    let body = host(r#"{"ports":[443],"country_name":"Brisbane"}"#);
+    let ents = build_paid_entities("1.2.3.4", body, "s");
+    let coords = of_kind(&ents, EntityKind::Coordinates);
+    assert_eq!(coords.len(), 1, "the fallback must have fired: {coords:?}");
+    assert!(coords[0].has_tag("addr-derived"));
+    assert_eq!(
+        coords[0].evidence[0]
+            .attributes
+            .get("ip")
+            .map(String::as_str),
+        Some("1.2.3.4"),
+        "Coordinates evidence must carry the originating IP so \
+         person_login_ip_coords can recognise this as a login-IP fix"
+    );
+}
+
+#[test]
 fn null_island_host_coords_are_rejected_not_emitted_as_a_real_fix() {
     // The `(0,0)` placeholder must be rejected by is_valid_coords — it must
     // never surface as a real per-host Coordinates fix. (The country centroid

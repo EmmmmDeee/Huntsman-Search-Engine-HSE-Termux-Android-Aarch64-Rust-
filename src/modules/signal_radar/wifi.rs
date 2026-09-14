@@ -24,8 +24,19 @@ pub(super) struct Ap {
 const SKIP_BSSIDS: &[&str] = &["00:00:00:00:00:00", "02:00:00:00:00:00"];
 
 /// Confidence from RSSI (dBm): stronger signal = more reliable observation.
+///
+/// `rssi` is deserialised directly from `termux-wifi-scaninfo`'s untrusted
+/// JSON. Wi-Fi RSSI in dBm is never positive in practice (0 dBm is already
+/// an unphysical theoretical ceiling); a positive reading is a driver bug or
+/// a corrupted scan line — e.g. a raw percentage reported in place of dBm —
+/// not a strong signal, and must not score as the tightest possible fix.
+/// Mirrors the same "malformed input degrades to the worst tier, never the
+/// best" guard already applied to `util::geo::confidence_for_accuracy_m` and
+/// `device_fix::fix_confidence` for the identical externally-sourced
+/// failure mode.
 pub(super) fn rssi_confidence(rssi: Option<i64>) -> f64 {
     match rssi {
+        Some(r) if r > 0 => confidence::LOW_MEDIUM,
         Some(r) if r >= -50 => confidence::VERY_HIGH_PLUS,
         Some(r) if r >= -71 => confidence::VERY_HIGH,
         Some(r) if r >= -86 => confidence::MEDIUM_PLUS,

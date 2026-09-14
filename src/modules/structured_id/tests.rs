@@ -175,6 +175,79 @@ async fn process_decodes_ksuid_through_target_new_without_case_corruption() {
 }
 
 #[tokio::test]
+async fn objectid_and_ksuid_are_reported_below_ulid_confidence() {
+    // Regression: ObjectID's and KSUID's ONLY validation beyond shape/charset
+    // is the `[PLAUSIBLE_FLOOR_SECS, now]` window — a 32-bit SECOND-resolution
+    // timestamp, which a random string of the right shape coincidentally
+    // lands inside ~20% (ObjectID) / ~9% (KSUID) of the time. Neither format
+    // has a checksum to validate against instead, so this false-positive
+    // pathway can't be eliminated — only honestly reflected in confidence.
+    // `507f1f77deadbeefcafebabe` is a contrived, obviously-not-a-real-ObjectID
+    // 24-hex string (the tail deliberately spells "deadbeefcafebabe") whose
+    // leading 4 bytes (507f1f77) still happen to decode to a plausible date —
+    // it still gets accepted (there is no way not to), but must be reported
+    // at the demoted LOW_MEDIUM tier, not ULID's MEDIUM_HIGH (ULID's 48-bit
+    // MILLISECOND timestamp makes its own false-positive rate negligible, so
+    // it keeps the higher tier).
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = ModuleContext {
+        scan_id: "t".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+
+    let fake_objectid = "507f1f77deadbeefcafebabe";
+    assert_eq!(decode_objectid(fake_objectid), Some(1_350_508_407));
+    let target = Target::new(TargetKind::Username, fake_objectid);
+    let r = StructuredId
+        .process(&target, &ctx)
+        .await
+        .expect("offline decode never errors");
+    let e = r
+        .entities
+        .iter()
+        .find(|e| e.has_tag("mongodb-objectid"))
+        .expect("a mongodb-objectid-tagged entity");
+    assert!(
+        (e.confidence - confidence::LOW_MEDIUM).abs() < 1e-9,
+        "a coincidentally-plausible non-ObjectID must not be reported at \
+         ULID's higher confidence tier: got {}",
+        e.confidence
+    );
+    // Strict, not the tie-tolerant sibling: this IS the shape the
+    // regression took (ObjectID silently sharing ULID's exact constant).
+    confidence::assert_metamorphic_strictly_worse(
+        confidence::MEDIUM_HIGH,
+        e.confidence,
+        "structured_id: ObjectID's higher false-positive decode window vs ULID's",
+    );
+
+    let ksuid = "2KNu8EwGT2LWr6M7B7987uqR6mm";
+    let target = Target::new(TargetKind::Username, ksuid);
+    let r = StructuredId
+        .process(&target, &ctx)
+        .await
+        .expect("offline decode never errors");
+    let e = r
+        .entities
+        .iter()
+        .find(|e| e.has_tag("ksuid"))
+        .expect("a ksuid-tagged entity");
+    assert!(
+        (e.confidence - confidence::LOW_MEDIUM).abs() < 1e-9,
+        "a KSUID decode must also be reported at the demoted tier: got {}",
+        e.confidence
+    );
+    confidence::assert_metamorphic_strictly_worse(
+        confidence::MEDIUM_HIGH,
+        e.confidence,
+        "structured_id: KSUID's higher false-positive decode window vs ULID's",
+    );
+}
+
+#[tokio::test]
 async fn process_decodes_uuid_v1_to_mac_and_time() {
     // Fully offline + deterministic — runs in CI.
     let u = build_uuid_v1(1_577_836_800, "00a0c91e6bf6");

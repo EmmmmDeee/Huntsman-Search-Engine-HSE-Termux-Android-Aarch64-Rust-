@@ -111,6 +111,13 @@ pub(super) fn is_person_name(s: &str) -> bool {
 pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) -> Vec<Entity> {
     let email = target.value.trim();
     let mut out = Vec::new();
+    // Shared across the Skype-location and Maps-review-place legs below:
+    // `city_coords` is a many-to-one phrase lookup, so two differently-worded
+    // location strings (a Skype city/country pair, a reviewed place name) can
+    // resolve to the identical tabulated city centroid — keyed on the
+    // RESOLVED coordinate, not the input text, so a same-city collision from
+    // either leg is caught regardless of which text produced it.
+    let mut seen_coords: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // ── Enriched email (the anchor) ──────────────────────────────────────
     let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS_PLUS, scan_id);
@@ -239,7 +246,9 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
                 ae.tag("country:AU");
             }
             ae.add_evidence(Evidence::new(SRC, format!("Skype location for {email}")));
-            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&location) {
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&location)
+                && seen_coords.insert(format!("{lat:.4},{lon:.4}"))
+            {
                 let coord_val = format!("{lat:.4},{lon:.4}");
                 let mut c = Entity::new(
                     EntityKind::Coordinates,
@@ -294,7 +303,9 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
                 rev_ev = rev_ev.with_attr("review_date", d);
             }
             ae.add_evidence(rev_ev);
-            if let Some((lat, lon)) = crate::util::city_coords::city_coords(place) {
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(place)
+                && seen_coords.insert(format!("{lat:.4},{lon:.4}"))
+            {
                 let coord_val = format!("{lat:.4},{lon:.4}");
                 let mut c = Entity::new(
                     EntityKind::Coordinates,

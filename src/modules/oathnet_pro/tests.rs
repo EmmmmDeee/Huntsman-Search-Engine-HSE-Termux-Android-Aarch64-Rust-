@@ -519,6 +519,224 @@ use crate::core::confidence;
     }
 
     #[test]
+    fn a_dirty_and_a_clean_spelling_of_the_same_email_dedup_to_one_entity() {
+        use serde_json::json;
+        // Regression: a bare `.to_lowercase()` case-folds but does not strip
+        // a stray leading quote character an exporter left on the value (a
+        // CSV artifact — see `core::entity::normalise`'s own Email-kind doc
+        // comment) the way `Entity::new` does internally, so a row whose
+        // `email` field carries this exporter artifact used to earn its OWN
+        // dedup slot here — distinct from an already-seen clean spelling of
+        // the identical address — even though both collapse onto the same
+        // uid once constructed. (A TRAILING quote is not usable as a fixture
+        // here: it would corrupt the host's TLD and get rejected by
+        // `looks_like_email` before ever reaching the dedup check, in both
+        // the old and new code — a leading-only quote does not.)
+        let clean = json!({"email": "jordan.meyer@example.com", "source": "DB1"});
+        let dirty = json!({"email": "\"jordan.meyer@example.com", "source": "DB2"});
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &clean,
+            "jordan.meyer@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        extract_breach_entities(
+            &dirty,
+            "jordan.meyer@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        let emails: Vec<&Entity> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email)
+            .collect();
+        assert_eq!(
+            emails.len(),
+            1,
+            "a dirty and a clean spelling of the same address must dedup to one entity: {emails:?}"
+        );
+    }
+
+    #[test]
+    fn a_formatted_and_a_bare_spelling_of_the_same_phone_dedup_to_one_entity() {
+        use serde_json::json;
+        // Regression: a bare `.to_lowercase()` case-folds but does not strip
+        // the punctuation formatting the way `Entity::new` does internally via
+        // `core::entity::normalise`'s Phone arm, so a row whose `phone` field
+        // carries different formatting from an already-seen row used to earn
+        // its OWN dedup slot here — distinct from an already-seen spelling of
+        // the identical number — even though both collapse onto the same uid
+        // once constructed.
+        let bare = json!({"phone": "5551234567", "source": "DB1"});
+        let formatted = json!({"phone": "(555) 123-4567", "source": "DB2"});
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&bare, "unrelated", "scan", "oathnet.org:test", &mut seen, &mut result);
+        extract_breach_entities(
+            &formatted,
+            "unrelated",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        let phones: Vec<&Entity> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Phone)
+            .collect();
+        assert_eq!(
+            phones.len(),
+            1,
+            "a formatted and a bare spelling of the same number must dedup to one entity: {phones:?}"
+        );
+    }
+
+    #[test]
+    fn a_composed_address_and_a_free_text_location_in_the_same_city_dedup_to_one_coordinates_entity() {
+        use serde_json::json;
+        // Regression: `city_coords` is a many-to-one phrase lookup (it
+        // matches a tabulated city name ANYWHERE within the input text), so
+        // the composed-address leg and the free-text-`location` leg each
+        // gated only on THEIR OWN raw input text — two textually different
+        // strings for the same real city ("New York" vs "New York City,
+        // USA") each passed their own gate and independently resolved to
+        // the identical NYC centroid, minting two Coordinates entities for
+        // one city.
+        let item = json!({
+            "city": "New York",
+            "location": "New York City, USA",
+            "source": "TestDB"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&item, "unrelated", "scan", "oathnet.org:test", &mut seen, &mut result);
+        let coords: Vec<&Entity> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Coordinates)
+            .collect();
+        assert_eq!(
+            coords.len(),
+            1,
+            "a composed address and a free-text location in the same city must dedup to one Coordinates entity: {coords:?}"
+        );
+    }
+
+    #[test]
+    fn an_expanded_and_a_compressed_spelling_of_the_same_ipv6_address_dedup_to_one_entity() {
+        use serde_json::json;
+        // Regression: a bare `.clone()` doesn't canonicalise the way
+        // `core::entity::normalise`'s IpAddress arm does (parses and
+        // reformats), so an expanded and a compressed spelling of the same
+        // IPv6 address each earned their own dedup slot despite colliding
+        // on the same uid once `Entity::new` constructs them. A real public
+        // address is used (Google Public DNS), not an RFC 3849 documentation
+        // one — `is_public_ip` admits it either way, but staying off the
+        // doc range keeps this test unaffected by any future tightening of
+        // that gate.
+        let expanded = json!({"ip": "2001:4860:4860:0000:0000:0000:0000:8888", "source": "DB1"});
+        let compressed = json!({"lastip": "2001:4860:4860::8888", "source": "DB2"});
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&expanded, "unrelated", "scan", "oathnet.org:test", &mut seen, &mut result);
+        extract_breach_entities(&compressed, "unrelated", "scan", "oathnet.org:test", &mut seen, &mut result);
+        let ips: Vec<&Entity> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::IpAddress)
+            .collect();
+        assert_eq!(
+            ips.len(),
+            1,
+            "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+        );
+    }
+
+    #[test]
+    fn a_sigil_prefixed_and_a_bare_spelling_of_the_same_username_dedup_to_one_entity() {
+        use serde_json::json;
+        // Regression: a bare `.to_lowercase()` case-folds but does not strip a
+        // leading `@` handle sigil the way `Entity::new` does internally via
+        // `core::entity::normalise`'s Username arm, so a row spelled "@jordan"
+        // and one spelled "jordan" each earned their own dedup slot despite
+        // colliding on the same uid once constructed.
+        let bare = json!({"username": "jordan_m", "source": "DB1"});
+        let sigil = json!({"username": "@jordan_m", "source": "DB2"});
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&bare, "unrelated", "scan", "oathnet.org:test", &mut seen, &mut result);
+        extract_breach_entities(&sigil, "unrelated", "scan", "oathnet.org:test", &mut seen, &mut result);
+        let unames: Vec<&Entity> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Username)
+            .collect();
+        assert_eq!(
+            unames.len(),
+            1,
+            "a sigil-prefixed and a bare spelling of the same handle must dedup to one entity: {unames:?}"
+        );
+    }
+
+    #[test]
+    fn a_sigil_prefixed_and_a_bare_instagram_handle_dedup_to_one_entity() {
+        use serde_json::json;
+        let bare = json!({"instagram": "jordan_m", "source": "DB1"});
+        let sigil = json!({"instagram": "@jordan_m", "source": "DB2"});
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&bare, "unrelated", "scan", "oathnet.org:test", &mut seen, &mut result);
+        extract_breach_entities(&sigil, "unrelated", "scan", "oathnet.org:test", &mut seen, &mut result);
+        let unames: Vec<&Entity> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Username)
+            .collect();
+        assert_eq!(
+            unames.len(),
+            1,
+            "a sigil-prefixed and a bare spelling of the same Instagram handle must dedup to one entity: {unames:?}"
+        );
+    }
+
+    #[test]
+    fn a_quote_wrapped_and_a_clean_spelling_of_the_same_telegram_handle_dedup_to_one_entity() {
+        use serde_json::json;
+        // Regression: `h.to_lowercase()` doesn't strip a wrapping quote (a
+        // CSV/SQL-dump export artifact) the way `core::entity::normalise`'s
+        // Username arm does, so a dirty and a clean spelling of the same
+        // handle each earned their own dedup slot despite colliding on the
+        // same uid once `Entity::new` constructs them. A trailing-quote-only
+        // fixture is used (not a fully quote-wrapped one): the length gate
+        // `(2..=64).contains(&h.len())` runs on the pre-canonicalisation `h`,
+        // so this must actually reach the dedup line in both old and new code.
+        let clean = json!({"telegram": "jordan_m", "source": "DB1"});
+        let dirty = json!({"telegram": "jordan_m\"", "source": "DB2"});
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&clean, "unrelated", "scan", "oathnet.org:test", &mut seen, &mut result);
+        extract_breach_entities(&dirty, "unrelated", "scan", "oathnet.org:test", &mut seen, &mut result);
+        let unames: Vec<&Entity> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Username)
+            .collect();
+        assert_eq!(
+            unames.len(),
+            1,
+            "a quote-wrapped and a clean spelling of the same handle must dedup to one entity: {unames:?}"
+        );
+    }
+
+    #[test]
     fn extract_breach_entities_non_target_row_tags_candidate() {
         use serde_json::json;
         // A row whose fields do NOT match the target: phone/person/country are
@@ -1028,6 +1246,64 @@ use crate::core::confidence;
         assert!(!should_skip_preflight(TargetKind::FullName, "John Doe"));
         assert!(!should_skip_preflight(TargetKind::IpAddress, "8.8.8.8"));
         assert!(!should_skip_preflight(TargetKind::Domain, "acme.io"));
+    }
+
+    #[test]
+    fn is_social_platform_still_matches_every_domain_the_old_standalone_list_had() {
+        // Pass 29 repointed this at the shared util::domains authority plus a
+        // small local INFRA residual instead of an independent 39-entry copy.
+        // Pin the full original set here so the refactor is provably a no-op
+        // for every domain the old list recognised (the 8 people-search +
+        // 5 platform entries now live in the shared list; the 5 INFRA ones
+        // stay local) — a silent regression would drop entries from either
+        // half without this.
+        for domain in [
+            "peekyou.com",
+            "spokeo.com",
+            "nuwber.com",
+            "pipl.com",
+            "facebook.com",
+            "instagram.com",
+            "twitter.com",
+            "x.com",
+            "linkedin.com",
+            "pinterest.com",
+            "tiktok.com",
+            "reddit.com",
+            "github.com",
+            "gitlab.com",
+            "bitbucket.org",
+            "youtube.com",
+            "twitch.tv",
+            "steamcommunity.com",
+            "mastodon.social",
+            "bsky.app",
+            "threads.net",
+            "tumblr.com",
+            "snapchat.com",
+            "telegram.org",
+            "discord.com",
+            "soundcloud.com",
+            "spotify.com",
+            "whatsapp.com",
+            "signal.org",
+            "vk.com",
+            "whitepages.com",
+            "whitepages.com.au",
+            "locatefamily.com",
+            "truecaller.com",
+            "cloudflare.com",
+            "google.com",
+            "microsoft.com",
+            "amazon.com",
+            "apple.com",
+        ] {
+            assert!(
+                is_social_platform(domain),
+                "'{domain}' regressed: was recognised by the old standalone list"
+            );
+        }
+        assert!(!is_social_platform("acme.io"));
     }
 
     #[test]

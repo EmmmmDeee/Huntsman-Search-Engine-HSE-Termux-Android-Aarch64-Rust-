@@ -325,8 +325,20 @@ use super::*;
         // confidence::MEDIUM (0.50), which sits ABOVE the 1-39 bucket's
         // confidence::LOW_MEDIUM (0.45) — a real, if weak, reported score
         // ranked as LESS confident than Hunter reporting no signal at all.
-        assert!(confidence_from_hunter_score(None) <= confidence_from_hunter_score(Some(1)));
-        assert!(confidence_from_hunter_score(Some(0)) <= confidence_from_hunter_score(Some(1)));
+        // Same "degraded/absent signal must never outscore a valid one"
+        // shape as device_fix::fix_confidence, signal_radar::rssi_confidence,
+        // and structured_id's ObjectID/KSUID demotion — see
+        // `confidence::assert_metamorphic_no_gain`.
+        confidence::assert_metamorphic_no_gain(
+            confidence_from_hunter_score(Some(1)),
+            confidence_from_hunter_score(None),
+            "hunter_io: absent score vs a genuinely low reported score",
+        );
+        confidence::assert_metamorphic_no_gain(
+            confidence_from_hunter_score(Some(1)),
+            confidence_from_hunter_score(Some(0)),
+            "hunter_io: explicit zero score vs a genuinely low reported score",
+        );
     }
 
     #[test]

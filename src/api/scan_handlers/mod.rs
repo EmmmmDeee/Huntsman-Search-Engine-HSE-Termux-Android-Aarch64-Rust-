@@ -46,9 +46,13 @@ pub(crate) use diagnostics::snapshot_still_relevant_to;
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 /// Maximum upload body size for `POST /scans/import` that the handler will
-/// actually accept and parse. 16 MB comfortably fits a large multi-entry
-/// dossier on a low-RAM Termux device.
-pub const MAX_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
+/// actually accept and parse. Derived directly from `app::import`'s
+/// single-file cap (Pass 30) — previously an independent `16 * 1024 * 1024`
+/// literal that could silently drift from it — so both paths enforce the
+/// same bound. `usize` (not `app::import::MAX_IMPORT_BYTES`'s `u64`) because
+/// this compares against an in-memory `body.len()`, not a filesystem
+/// `Metadata::len()`.
+pub const MAX_UPLOAD_BYTES: usize = crate::app::import::MAX_IMPORT_BYTES as usize;
 
 /// Extra headroom (over [`MAX_UPLOAD_BYTES`]) given to the route's
 /// `DefaultBodyLimit` layer so a body that exceeds the handler's real cap by

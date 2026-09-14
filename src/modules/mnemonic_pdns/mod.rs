@@ -132,7 +132,12 @@ fn pdns_evidence(summary: String, rrtype: &str, r: &PdnsRecord) -> Evidence {
 /// A domain from the forward CNAME/MX/NS graph (or an inbound CNAME alias),
 /// tagged with its record type and scoped `subdomain` vs `external` relative to
 /// the queried domain so the report can keep third-party infra out of the
-/// subject's own footprint.
+/// subject's own footprint. Returns `None` when `host` canonicalises to the
+/// exact same identity as `target` — routine DNS practice ("www" CNAMEs to
+/// the apex is one of the most common zone configurations there is) — since
+/// `Entity::new` then collapses `host` onto the scan's own apex/subject uid
+/// regardless of whether this function chose `subdomain` or `external`,
+/// permanently mislabeling the subject's own entity with whichever tag won.
 fn forward_infra_domain(
     host: &str,
     target: &str,
@@ -140,12 +145,17 @@ fn forward_infra_domain(
     r: &PdnsRecord,
     scan_id: &str,
     inbound: bool,
-) -> Entity {
+) -> Option<Entity> {
+    let (_, is_sub) = crate::util::domains::classify_domain_candidate(host, target);
+    let canonical_target = crate::core::entity::normalise(&EntityKind::Domain, target);
+    if crate::core::entity::normalise(&EntityKind::Domain, host) == canonical_target {
+        return None;
+    }
     let mut e = Entity::new(EntityKind::Domain, host, confidence::HIGH, scan_id);
     e.tag(SRC);
     e.tag(PASSIVE_DNS);
     e.tag(rrtype);
-    if crate::util::domains::is_or_subdomain_of(host, target) {
+    if is_sub {
         e.tag(tags::SUBDOMAIN);
     } else {
         e.tag(tags::EXTERNAL);
@@ -163,7 +173,7 @@ fn forward_infra_domain(
         format!("Passive DNS: {target} {rrtype} → {host}")
     };
     e.add_evidence(pdns_evidence(summary, rrtype, r));
-    e
+    Some(e)
 }
 
 /// Map a passive-DNS response to entities, given the queried `target` and whether
@@ -224,7 +234,17 @@ fn build_entities(
         // emission itself — no nested `if`.
         if query == target_l {
             match rrtype.as_str() {
-                "a" | "aaaa" if is_ip(&answer) && seen.insert(format!("ip:{answer}")) => {
+                // `is_ip` only validates; the dedup key must still be the
+                // canonical form, or an expanded/mixed-case IPv6 spelling
+                // and a compressed one dedup separately despite colliding on
+                // the same uid `Entity::new` constructs.
+                "a" | "aaaa"
+                    if is_ip(&answer)
+                        && seen.insert(format!(
+                            "ip:{}",
+                            crate::core::entity::normalise(&EntityKind::IpAddress, &answer)
+                        )) =>
+                {
                     let mut e =
                         Entity::new(EntityKind::IpAddress, &answer, confidence::HIGH, scan_id);
                     e.tag(SRC);
@@ -237,7 +257,7 @@ fn build_entities(
                     out.push(e);
                 }
                 "cname" | "mx" | "ns" if is_hostname(&answer) && seen.insert(answer.clone()) => {
-                    out.push(forward_infra_domain(
+                    out.extend(forward_infra_domain(
                         &answer, &target_l, &rrtype, r, scan_id, false,
                     ));
                 }
@@ -251,7 +271,7 @@ fn build_entities(
             // A name that CNAMEs *into* our domain — an inbound alias. The
             // record's own subject is `query` (it CNAMEs to `target_l`), the
             // reverse of the forward branch above.
-            out.push(forward_infra_domain(
+            out.extend(forward_infra_domain(
                 &query, &target_l, &rrtype, r, scan_id, true,
             ));
         }

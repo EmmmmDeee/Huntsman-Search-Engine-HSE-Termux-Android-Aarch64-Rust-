@@ -14,6 +14,7 @@ pub mod auth;
 pub mod cells_handlers;
 pub mod handlers;
 pub mod key_harvest_handlers;
+pub mod live_handlers;
 pub mod routes;
 pub mod scan_export;
 pub mod scan_handlers;

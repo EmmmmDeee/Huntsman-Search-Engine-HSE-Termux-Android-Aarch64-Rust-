@@ -430,7 +430,13 @@ pub(super) fn parse_sql_dump(body: &str, sid: &str) -> (Vec<Entity>, ImportStats
             if let Some(ip) = get(ip_i)
                 && !crate::core::validation::is_bogus_ip(ip)
                 && ip.parse::<std::net::IpAddr>().is_ok()
-                && seen.insert(format!("ip:{ip}"))
+                // `.is_ok()` validates but discards the parsed value, so the
+                // dedup key stays the raw, non-canonicalised string — see
+                // combined.rs's identical fix.
+                && seen.insert(format!(
+                    "ip:{}",
+                    crate::core::entity::normalise(&EntityKind::IpAddress, ip)
+                ))
             {
                 push(
                     Entity::new(EntityKind::IpAddress, ip, confidence::MEDIUM, sid),

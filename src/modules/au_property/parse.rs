@@ -276,24 +276,6 @@ pub(super) fn state_capital_coords(state: &str) -> Option<(f64, f64)> {
     }
 }
 
-// ─── Dedup ────────────────────────────────────────────────────────────────
-
-/// Remove duplicate entities by (kind, value) keeping the highest-confidence
-/// copy. Pure after the sort. Allocates one pass.
-pub(super) fn dedup_entities(entities: &mut Vec<Entity>) {
-    entities.sort_by(|a, b| {
-        format!("{}", a.kind)
-            .cmp(&format!("{}", b.kind))
-            .then(a.value.cmp(&b.value))
-            .then(
-                b.confidence
-                    .partial_cmp(&a.confidence)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-            )
-    });
-    entities.dedup_by(|a, b| a.kind == b.kind && a.value == b.value);
-}
-
 #[cfg(test)]
 mod suburb_line_tests {
     use super::extract_suburb_from_line;

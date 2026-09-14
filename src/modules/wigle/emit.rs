@@ -269,7 +269,11 @@ pub(super) fn emit_bssid_entities(
     .filter(|p| !p.is_empty())
     .collect();
     if parts.len() >= 2 {
-        let addr_str = parts.join(", ");
+        let mut addr_str = parts.join(", ");
+        let postcode = net.postalcode.as_deref().unwrap_or("");
+        if !postcode.is_empty() {
+            addr_str = format!("{addr_str} {postcode}");
+        }
         let mut addr = Entity::new(
             EntityKind::Address,
             &addr_str,
@@ -283,6 +287,9 @@ pub(super) fn emit_bssid_entities(
                 .with_attr("bssid", bssid)
                 .with_attr("observation_type", kind_label),
         );
+        if !postcode.is_empty() {
+            addr.tag(format!("postcode:{postcode}"));
+        }
         result.push(addr);
     }
     if crate::util::geo::is_plausible_provider_coord(lat, lon) {

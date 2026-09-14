@@ -58,6 +58,39 @@ use super::*;
         assert!(!is_role_localpart("jordanavery") && !is_role_localpart("jane.doe"));
     }
 
+    /// Pass 29: merged in from the narrower employer_pivot::is_role_email_local
+    /// list, which had these two but this list didn't — the same "one side of
+    /// a duplicate is missing what the other has" shape Pass 23 found for
+    /// noc/registry/soa/ssladmin. Without this, unifying employer_pivot onto
+    /// this authority would have silently DROPPED coverage for these two
+    /// tokens instead of only adding it.
+    #[test]
+    fn role_localpart_covers_sysadmin_and_tech_merged_from_employer_pivot() {
+        assert!(is_role_localpart("sysadmin"));
+        assert!(is_role_localpart("tech"));
+    }
+
+    /// Pass 23: `is_role_localpart` must be case-insensitive on its own, not
+    /// only when a caller happens to pre-lowercase. Both existing callers
+    /// (`email_parse`, `is_infrastructure_email`) already lowercase before
+    /// calling — for their own separate reasons, not as a documented contract
+    /// of this function — so this property was untested until
+    /// `core::validation::is_role_mailbox` was pointed at this function
+    /// without lowercasing first and silently went case-sensitive
+    /// (`"No-Reply"`, `"MAILER_DAEMON"` stopped matching).
+    #[test]
+    fn role_localpart_is_case_insensitive_independent_of_caller_lowering() {
+        assert!(is_role_localpart("No-Reply"));
+        assert!(is_role_localpart("MAILER_DAEMON"));
+        assert!(is_role_localpart("Admin"));
+        // The segment matcher too, not just the whole-string match.
+        assert!(is_role_localpart("AWSDNS-Hostmaster"));
+        assert!(is_role_localpart("CloudFlare-Abuse"));
+        // Must not become OVER-eager: mixed-case personal names still pass.
+        assert!(!is_role_localpart("JaneDoe"));
+        assert!(!is_role_localpart("Nic-Taylor"));
+    }
+
     #[test]
     fn role_localpart_matches_provider_prefixed_system_mailboxes() {
         // Regression (found by a live dns_intel scan of amazon.com, surfaced by
@@ -185,6 +218,46 @@ use super::*;
     }
 
     #[test]
+    fn classify_domain_candidate_never_tags_a_www_alias_of_the_base_a_subdomain() {
+        // The exact bug class this helper exists to prevent: a raw candidate
+        // that ONLY differs from the base by a leading "www." label — which
+        // `Entity::new` strips internally — must classify as the (non-sub)
+        // apex, not as a subdomain, once canonicalised. A naive raw-string
+        // `is_proper_subdomain_of("www.example.com", "example.com")` would
+        // wrongly return true.
+        let (canonical, is_sub) = classify_domain_candidate("www.example.com", "example.com");
+        assert_eq!(canonical, "example.com");
+        assert!(!is_sub, "a www-alias of the base is the apex, not its subdomain");
+
+        // Symmetric: a www-prefixed BASE must not make the bare apex candidate
+        // look external, and must not make a genuine subdomain of the apex
+        // look like a subdomain of "www.<apex>" only by coincidence of string
+        // shape — both sides are canonicalised before comparing.
+        let (canonical, is_sub) = classify_domain_candidate("example.com", "www.example.com");
+        assert_eq!(canonical, "example.com");
+        assert!(!is_sub);
+
+        // A genuine subdomain is unaffected by this canonicalisation.
+        let (canonical, is_sub) = classify_domain_candidate("mail.example.com", "example.com");
+        assert_eq!(canonical, "mail.example.com");
+        assert!(is_sub);
+
+        // A genuine subdomain is still correctly classified even when ITSELF
+        // carries a "www." label ("www.mail.example.com" is a real, if
+        // unusual, alias some setups use) — canonicalising strips only the
+        // LEADING label, so it still ends up a subdomain of the base, not the
+        // base itself.
+        let (canonical, is_sub) = classify_domain_candidate("www.mail.example.com", "example.com");
+        assert_eq!(canonical, "mail.example.com");
+        assert!(is_sub);
+
+        // An unrelated domain stays unrelated regardless of a "www." label.
+        let (canonical, is_sub) = classify_domain_candidate("www.unrelated.org", "example.com");
+        assert_eq!(canonical, "unrelated.org");
+        assert!(!is_sub);
+    }
+
+    #[test]
     fn domain_helpers_cross_function_invariants() {
         // Generative invariant check over a constructed host corpus: example tests
         // pin individual cases, this pins the *relationships* between the helpers,
@@ -254,6 +327,36 @@ use super::*;
         assert!(is_social_platform("au.linkedin.com"));
         assert!(is_social_platform("m.facebook.com"));
         assert!(!is_social_platform("acme.com"));
+    }
+
+    #[test]
+    fn social_reaches_people_search_sites_the_narrower_list_was_missing() {
+        // Pass 29: these 13 were previously carried only in oathnet_pro's own
+        // independent copy of this list — the canonical list (the one
+        // employer_pivot's misattribution guard actually consults) was
+        // missing them, so a `Domain`/`Email` target on e.g. `peekyou.com`
+        // slipped past the guard and let employer_pivot scrape the
+        // aggregator's own contact page as if it were the subject's.
+        for domain in [
+            "peekyou.com",
+            "spokeo.com",
+            "nuwber.com",
+            "pipl.com",
+            "whitepages.com",
+            "whitepages.com.au",
+            "locatefamily.com",
+            "truecaller.com",
+            "bitbucket.org",
+            "steamcommunity.com",
+            "spotify.com",
+            "signal.org",
+            "vk.com",
+        ] {
+            assert!(
+                is_social_platform(domain),
+                "'{domain}' must be recognised as a social/aggregator platform"
+            );
+        }
     }
 
     #[test]

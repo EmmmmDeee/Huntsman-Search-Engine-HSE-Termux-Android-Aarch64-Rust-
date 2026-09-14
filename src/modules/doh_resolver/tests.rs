@@ -68,6 +68,51 @@ fn a_and_aaaa_become_tagged_ip_entities() {
 }
 
 #[test]
+fn aaaa_dedups_an_expanded_and_a_compressed_ipv6_spelling() {
+    // Regression: the raw resolver-response string has no guaranteed
+    // canonical form; the dedup key must go through `core::entity::
+    // normalise` (parse-then-reformat) or a non-canonical spelling dedups
+    // separately despite colliding on the same uid `Entity::new`
+    // constructs. A real public address (Google Public DNS) is used.
+    let aaaa = run(
+        "AAAA",
+        &[
+            "2001:4860:4860:0000:0000:0000:0000:8888",
+            "2001:4860:4860::8888",
+        ],
+    );
+    assert_eq!(
+        aaaa.len(),
+        1,
+        "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {aaaa:?}"
+    );
+}
+
+#[test]
+fn spf_ip6_dedups_an_expanded_and_a_compressed_ipv6_spelling() {
+    // Regression: a domain owner writes SPF `ip6:` terms by hand, in any
+    // valid textual form — the dedup key must go through `core::entity::
+    // normalise` or a non-canonical spelling dedups separately despite
+    // colliding on the same uid `Entity::new` constructs.
+    let out = run(
+        "TXT",
+        &[
+            "v=spf1 ip6:2001:4860:4860:0000:0000:0000:0000:8888 -all",
+            "v=spf1 ip6:2001:4860:4860::8888 -all",
+        ],
+    );
+    let ips: Vec<&Entity> = out
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .collect();
+    assert_eq!(
+        ips.len(),
+        1,
+        "an expanded and a compressed spelling of the same IPv6 address must dedup to one entity: {ips:?}"
+    );
+}
+
+#[test]
 fn mx_takes_last_field_and_requires_a_dot() {
     // Priority + host; only the host is kept, trailing dot stripped.
     let mx = run("MX", &["10 mail.example.com."]);

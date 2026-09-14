@@ -2144,6 +2144,37 @@ pub fn expansion_timeline(entities: &[Entity]) -> std::collections::BTreeMap<u32
     hist
 }
 
+/// Deduplicate `entities` by `(kind, value)`, folding duplicates into the first
+/// occurrence via [`Entity::merge`] rather than discarding them.
+///
+/// Any module that accumulates entities across more than one record, loop
+/// iteration, or independent pass — two directories confirming the same
+/// address, two search results resolving the same geocoded point, two
+/// register rows restating the same organisation — can produce two entities
+/// sharing a UID before the engine's own global merge ever sees them.
+/// `merge`'s GREATEST semantics (max confidence, summed corroboration,
+/// unioned tags/evidence) mean two independent observations of the same fact
+/// read as corroborated, rather than one arbitrarily surviving and the
+/// other's evidence being silently dropped at the module boundary.
+/// Commutative in the folded signal, so the result does not depend on input
+/// order — only the surviving slot's position follows first-occurrence
+/// order. Pure.
+pub fn dedup_merge_entities(entities: &mut Vec<Entity>) {
+    let mut index: HashMap<(EntityKind, String), usize> = HashMap::new();
+    let mut deduped: Vec<Entity> = Vec::with_capacity(entities.len());
+    for e in entities.drain(..) {
+        let key = (e.kind.clone(), e.value.clone());
+        match index.get(&key) {
+            Some(&i) => deduped[i].merge(e),
+            None => {
+                index.insert(key, deduped.len());
+                deduped.push(e);
+            }
+        }
+    }
+    *entities = deduped;
+}
+
 /// Current Unix timestamp in seconds.
 ///
 /// `std::time::SystemTime::now()` panics at runtime on `wasm32-unknown-unknown`

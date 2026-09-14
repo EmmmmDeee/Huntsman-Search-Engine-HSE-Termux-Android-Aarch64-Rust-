@@ -427,8 +427,23 @@ pub(super) fn extract_links(
             {
                 state.queue.push_back((clean, child_depth));
             }
+            // Canonicalise before the subdomain classification, not the raw
+            // `host`/`target_domain` — a crawled page linking to its own
+            // "www.<target>" alias (routine: real sites are rarely
+            // internally consistent about the www/bare-apex spelling) is a
+            // proper subdomain of the raw target by string shape alone, even
+            // though `Entity::new` strips the "www." label and collapses it
+            // onto the target's own apex uid, unconditionally tagged
+            // SUBDOMAIN by `build_entities` below regardless.
+            let canonical_host =
+                crate::core::entity::normalise(&crate::core::entity::EntityKind::Domain, &host);
+            let canonical_target = crate::core::entity::normalise(
+                &crate::core::entity::EntityKind::Domain,
+                target_domain,
+            );
             if host != base_host
-                && crate::util::domains::is_proper_subdomain_of(&host, target_domain)
+                && canonical_host != canonical_target
+                && crate::util::domains::is_proper_subdomain_of(&canonical_host, &canonical_target)
             {
                 // `host` is not used again on this branch, so move it into the
                 // set instead of cloning.

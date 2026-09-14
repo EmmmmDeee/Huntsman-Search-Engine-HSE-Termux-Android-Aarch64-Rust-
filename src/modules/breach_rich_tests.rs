@@ -18,6 +18,40 @@ fn has(result: &ModuleResult, kind: EntityKind, value: &str) -> bool {
 }
 
 #[test]
+fn two_composed_addresses_in_the_same_city_dedup_to_one_coordinates_entity() {
+    // Regression: `city_coords` is a many-to-one phrase lookup, so two
+    // textually different composed addresses naming the same real-world city
+    // each passed their own independent `@addr:` text gate on the shared
+    // `seen` set and resolved to the identical Sydney centroid, minting two
+    // Coordinates entities for one place — same root cause as `oathnet_pro::
+    // breach`'s and `epieos`'s geocoding legs (fix #34).
+    let ev = Evidence::new("test", "rec".to_string());
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    let item1 = json!({
+        "street": "1 Main St",
+        "city": "Sydney",
+        "state": "NSW",
+    });
+    let item2 = json!({
+        "city": "Sydney",
+        "region": "New South Wales",
+    });
+    extract_rich_detail(&item1, "scan", "oathnet-pro", &ev, &mut seen, &mut result);
+    extract_rich_detail(&item2, "scan", "oathnet-pro", &ev, &mut seen, &mut result);
+    let coords: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .collect();
+    assert_eq!(
+        coords.len(),
+        1,
+        "two composed addresses naming the same city must dedup to one Coordinates entity: {coords:?}"
+    );
+}
+
+#[test]
 fn surfaces_device_fingerprints_as_context_not_breach() {
     let item = json!({
         "hwid": "ABCDEF0123456789",
@@ -82,6 +116,74 @@ fn mines_github_tiktok_reddit_handles_as_username_pivots() {
         "github must be a Username pivot, not a catch-all Other node"
     );
 }
+
+#[test]
+fn a_colon_and_a_dash_separated_spelling_of_the_same_mac_dedup_to_one_entity() {
+    // Regression: a bare `.to_lowercase()` case-folds but does not reformat
+    // separators the way `core::entity::normalise`'s MacAddress arm does, so
+    // a MAC restated with different punctuation across two records sharing
+    // this `seen` set each earned its own dedup slot despite colliding on
+    // the same uid once `Entity::new` constructs them.
+    let colon = json!({"mac_address": "AA:BB:CC:DD:EE:FF"});
+    let dash = json!({"mac_address": "aa-bb-cc-dd-ee-ff"});
+    let ev = Evidence::new("test", "rec".to_string());
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_rich_detail(&colon, "scan", "oathnet-pro", &ev, &mut seen, &mut result);
+    extract_rich_detail(&dash, "scan", "oathnet-pro", &ev, &mut seen, &mut result);
+    let macs: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::MacAddress)
+        .collect();
+    assert_eq!(
+        macs.len(),
+        1,
+        "a colon- and a dash-separated spelling of the same MAC must dedup to one entity: {macs:?}"
+    );
+}
+
+#[test]
+fn a_quote_wrapped_and_a_clean_spelling_of_the_same_platform_handle_dedup_to_one_entity() {
+    // Regression: the platform loop's dedup key was `h.to_lowercase()`, which
+    // doesn't strip a wrapping quote (a CSV/SQL-dump export artifact) the way
+    // `core::entity::normalise`'s Username arm does when it cleans the FULL
+    // constructed value (`"{plat}:{h}"`). A trailing-quote-only fixture is
+    // used: the value never starts with `h` (it starts with the platform
+    // name), so a LEADING quote/sigil on `h` sits mid-string and isn't
+    // stripped by `normalise` either — not a collision, just a consistently
+    // literal quote in both the key and the value. Only a TRAILING quote on
+    // `h`, at the whole value's own trailing edge, is asymmetric: normalise
+    // strips it from the constructed entity value but the old key didn't.
+    let clean = json!({"telegram": "jordan_m"});
+    let dirty = json!({"telegram": "jordan_m\""});
+    let ev = Evidence::new("test", "rec".to_string());
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_rich_detail(&clean, "scan", "oathnet-pro", &ev, &mut seen, &mut result);
+    extract_rich_detail(&dirty, "scan", "oathnet-pro", &ev, &mut seen, &mut result);
+    let unames: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username)
+        .collect();
+    assert_eq!(
+        unames.len(),
+        1,
+        "a quote-wrapped and a clean spelling of the same handle must dedup to one entity: {unames:?}"
+    );
+}
+
+// Deliberately no dedicated dirty-vs-clean regression test for the bio-miner's
+// own `seen.insert` canonicalisation immediately below: `crate::util::extract::
+// emails` already lower-cases every match it returns, so no input reachable
+// through it can currently exercise a difference between the old (bare
+// `.to_lowercase()`-equivalent) and new (full `normalise`) dedup key — the
+// canonicalisation is real defense-in-depth (consistency with the OTHER call
+// site sharing this same `seen` set, `oathnet_pro::breach`, which reads a raw
+// JSON field with no such pre-cleaning — see its own regression test), not
+// something independently forceable from this file. Verified by code
+// inspection and the sibling site's test rather than a contrived one here.
 
 #[test]
 fn mines_bio_for_alternate_contacts() {

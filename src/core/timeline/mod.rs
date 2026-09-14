@@ -529,33 +529,85 @@ pub fn parse_date(raw: &str) -> Option<(i64, String)> {
     }
 
     let (mut hh, mut mm, mut ss) = (0i64, 0i64, 0i64);
+    // `Some((offset_secs, literal_suffix))` when the input carried an explicit
+    // RFC 3339 offset: the signed seconds to shift the wall-clock instant to
+    // true UTC, and the exact suffix to render in place of civil_to_unix's
+    // default `Z` (preserving what the source actually said instead of
+    // relabelling an offset instant as UTC).
+    let mut offset: Option<(i64, String)> = None;
     if let Some(t) = time_part {
-        let t = t.trim_end_matches('Z');
-        let mut tit = t.split(':');
+        // Split off a trailing `Z`/`z` or `±HH:MM`/`±HHMM` offset BEFORE
+        // splitting on ':' — the offset has its own internal ':' (and its
+        // digits, with no separator, in the `±HHMM` form), which a naive
+        // `t.split(':')` over the whole string glues onto the seconds token.
+        // A prior version did exactly that ("00+05" from "...:00+05:00"),
+        // failed to parse the corrupted token as a plain integer, and
+        // silently defaulted it to 0 — dropping the offset entirely (and,
+        // for a nonzero-seconds timestamp, corrupting the real seconds too)
+        // rather than applying it. core::rf::parse_iso8601_epoch already
+        // applied `±HH:MM` offsets correctly; this brings the two back into
+        // agreement on what a given RFC 3339 string means as an instant.
+        let body = if let Some(z) = t.strip_suffix(['Z', 'z']) {
+            z
+        } else if let Some(sign_pos) = t.rfind(['+', '-'])
+            && sign_pos > 0
+        // sign_pos == 0 would be a malformed negative hour, not an offset.
+        {
+            let (body, off_str) = t.split_at(sign_pos);
+            let sign_negative = off_str.starts_with('-');
+            let digits = crate::util::str_util::ascii_digits(&off_str[1..]);
+            if digits.len() != 4 {
+                return None;
+            }
+            let oh: i64 = digits.get(..2)?.parse().ok()?;
+            let om: i64 = digits.get(2..4)?.parse().ok()?;
+            if oh > 23 || om > 59 {
+                return None;
+            }
+            // A `+HH:MM` local time is AHEAD of UTC, so the UTC instant is
+            // EARLIER: subtract. `-HH:MM` is the reverse — add. Same
+            // convention as core::rf::parse_iso8601_epoch.
+            let secs = if sign_negative { 1 } else { -1 } * (oh * 3600 + om * 60);
+            offset = Some((
+                secs,
+                format!("{}{oh:02}:{om:02}", if sign_negative { "-" } else { "+" }),
+            ));
+            body
+        } else {
+            t
+        };
+        let mut tit = body.split(':');
         // A present time component must actually parse — otherwise a malformed
         // time (e.g. "2019-03-15Tinvalid") would silently coerce to 00:00:00
         // and be accepted as midnight. The hour is mandatory once a time part
-        // exists; the minute is mandatory when present (no standard format
-        // glues a timezone offset onto it).
+        // exists; the minute is mandatory when present.
         hh = tit.next()?.parse().ok()?;
         mm = match tit.next() {
             Some(v) => v.parse().ok()?,
             None => 0,
         };
-        // Seconds may carry a fractional part / timezone offset, which split(':')
-        // glues onto this token (e.g. "00+05" from "+05:00"); take the leading
-        // integer and tolerate the rest rather than rejecting offset timestamps.
-        ss = tit
-            .next()
-            .map(|v| v.trim_matches(|c: char| !c.is_ascii_digit() && c != '-'))
-            .and_then(|v| v.split('.').next())
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
+        // Seconds may still carry a fractional part (e.g. "00.123") now that
+        // the offset is already split off above.
+        ss = match tit.next() {
+            Some(v) => v.split('.').next().unwrap_or(v).parse().ok()?,
+            None => 0,
+        };
         if !(0..24).contains(&hh) || !(0..60).contains(&mm) || !(0..60).contains(&ss) {
             return None;
         }
     }
-    Some(civil_to_unix(y, mo, d, hh, mm, ss))
+    let (ts, iso) = civil_to_unix(y, mo, d, hh, mm, ss);
+    Some(match offset {
+        None => (ts, iso),
+        Some((secs, suffix)) => (
+            ts + secs,
+            // civil_to_unix renders date-only when hh/mm/ss are all zero —
+            // but an explicit offset always means the source specified a
+            // time (midnight-with-an-offset is still a time), so force the
+            // full datetime form rather than losing the offset to a bare date.
+            format!("{y:04}-{mo:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}{suffix}"),
+        ),
+    })
 }
 
 fn civil_to_unix(y: i64, m: i64, d: i64, hh: i64, mm: i64, ss: i64) -> (i64, String) {

@@ -113,6 +113,34 @@ fn name_matching_is_whole_word_not_substring() {
 }
 
 #[test]
+fn is_truncated_compares_the_page_against_ckans_own_total_not_max_hits() {
+    // Regression: the old computation counted `total_matches` over `records`,
+    // which the query's own `limit=MAX_HITS` already caps — so comparing that
+    // count against MAX_HITS was a tautological `false` no matter how many
+    // rows CKAN actually held. `is_truncated` must be driven by CKAN's own
+    // reported total instead.
+    assert!(
+        !is_truncated(50, 50),
+        "a server total equal to the page size is not truncated"
+    );
+    assert!(
+        !is_truncated(MAX_HITS as u64, MAX_HITS),
+        "a full page exactly matching MAX_HITS, with no more rows on the \
+         server, is not truncated"
+    );
+    assert!(
+        is_truncated(300, MAX_HITS),
+        "a server total of 300 against a MAX_HITS=100 page must be \
+         reported truncated — this is the exact case the old \
+         records.len()-bounded comparison could never detect"
+    );
+    assert!(
+        is_truncated(51, 50),
+        "even one extra row beyond the fetched page counts as truncated"
+    );
+}
+
+#[test]
 fn is_free_keyless_corporate_module() {
     let m = AsicBusinessNames;
     assert!(matches!(m.cost(), crate::core::module::ModuleCost::Free));

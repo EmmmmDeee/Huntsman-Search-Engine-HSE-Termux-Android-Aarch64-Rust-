@@ -39,6 +39,36 @@ fn ct_log_discriminates_subdomain_from_co_hosted_confidence() {
 }
 
 #[test]
+fn ct_log_never_tags_a_www_alias_of_the_apex_as_its_own_subdomain() {
+    // Regression: a single certificate's SAN list commonly carries BOTH the
+    // bare apex and its "www." alias. Before this was fixed, `ct_log_entities`
+    // deduped/classified against the RAW SAN text, so "www.example.com" (a
+    // proper subdomain of "example.com" by string shape) earned its own dedup
+    // slot and its own subdomain verdict distinct from the raw apex — yet
+    // `Entity::new` strips the leading "www." label and collapses both onto
+    // the identical uid, so the wrongly-earned SUBDOMAIN tag survived onto
+    // the merged apex entity via `Entity::merge`'s tag-union.
+    let entries = vec![CrtEntry {
+        name_value: "www.example.com\nexample.com".to_string(),
+        issuer_name: Some("Let's Encrypt".to_string()),
+        not_before: None,
+        not_after: None,
+        serial_number: None,
+    }];
+    let mut seen = std::collections::HashSet::new();
+    let out = ct_log_entities(&entries, "example.com", "s", &mut seen);
+
+    // Neither SAN spelling is emitted: both canonicalise to the target
+    // itself, which `process()` already represents via its own live-TLS
+    // entity — re-emitting it here would be a redundant, wrongly-tagged
+    // duplicate of the scan's own subject.
+    assert!(
+        out.is_empty(),
+        "a www-alias and the bare apex must not mint a mislabeled duplicate: {out:?}"
+    );
+}
+
+#[test]
 fn ct_log_skips_wildcard_sans_instead_of_emitting_the_stripped_name() {
     // Regression: `*.dev.example.com` used to have its `*.` prefix stripped
     // and the remainder ("dev.example.com") emitted as a literal, confirmed

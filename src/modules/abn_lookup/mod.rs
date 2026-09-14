@@ -147,6 +147,7 @@ impl Module for AbnLookup {
             _ => {}
         }
 
+        crate::core::entity::dedup_merge_entities(&mut result.entities);
         Ok(result)
     }
 }

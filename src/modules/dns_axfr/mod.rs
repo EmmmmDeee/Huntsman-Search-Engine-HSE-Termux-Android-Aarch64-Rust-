@@ -209,6 +209,26 @@ impl Module for DnsAxfr {
     }
 }
 
+/// True when `name` is a genuine subdomain of `zone` under the SAME identity
+/// `Entity::new` will actually construct it under — i.e. canonicalised (not
+/// just lower-cased) before the label-boundary check. **Pure**, so this
+/// classification is unit-testable without a live zone transfer.
+///
+/// A zone transfer that includes a "www" A/CNAME record (near-universal DNS
+/// practice) is a proper subdomain of the raw zone by string shape alone,
+/// even though `Entity::new` strips the "www." label and collapses it onto
+/// the exposed zone's own apex uid — the SAME entity `process()` separately
+/// tags `axfr-permitted`/`tags::VULNERABLE` at
+/// `confidence::VERY_HIGH_PLUSPLUS`. An unrelated `subdomain` tag surviving
+/// onto that entity via `Entity::merge`'s tag-union would muddy what should
+/// be an unambiguous exposed-zone-apex finding.
+fn is_canonical_subdomain_of_zone(name: &str, zone: &str) -> bool {
+    let canonical = crate::core::entity::normalise(&crate::core::entity::EntityKind::Domain, name);
+    let canonical_zone =
+        crate::core::entity::normalise(&crate::core::entity::EntityKind::Domain, zone);
+    crate::util::domains::is_proper_subdomain_of(&canonical, &canonical_zone)
+}
+
 /// Attempt a zone transfer. Returns the parsed in-zone subdomains AND the
 /// server-advertised `ANCOUNT` (the true number of answer records in this
 /// message) so the caller can detect when `ANCOUNT` exceeds
@@ -276,7 +296,8 @@ async fn attempt_axfr(ns_ip: &str, domain: &str) -> std::io::Result<(Vec<String>
     // shared label-boundary helper), so a hostile or buggy server can't slip an
     // out-of-zone name (`evilexample.com`) past a bare `ends_with(domain)`, and
     // case differences between the queried name and the returned record don't
-    // drop legitimate records.
+    // drop legitimate records. See [`is_canonical_subdomain_of_zone`] for why
+    // this must canonicalise, not just lower-case.
     let zone = domain.to_lowercase();
     for _ in 0..ancount.min(MAX_ANSWER_RECORDS) {
         if pos + 12 > read {
@@ -304,9 +325,7 @@ async fn attempt_axfr(ns_ip: &str, domain: &str) -> std::io::Result<(Vec<String>
 
         if let Some(name) = name {
             let lower = name.to_lowercase();
-            if crate::util::domains::is_proper_subdomain_of(&lower, &zone)
-                && !records.contains(&lower)
-            {
+            if is_canonical_subdomain_of_zone(&lower, &zone) && !records.contains(&lower) {
                 records.push(lower);
             }
         }

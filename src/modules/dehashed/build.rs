@@ -347,8 +347,13 @@ pub(super) fn extract_records(
             }
         }
         for uname in field_strings(item, "username") {
-            let lower = uname.to_lowercase();
-            if lower.len() >= 3 && seen.insert(lower) {
+            // A bare `.to_lowercase()` case-folds but does not strip a leading
+            // `@` sigil or wrapping quote the way `Entity::new` does internally
+            // via `core::entity::normalise`'s Username arm, so a row spelled
+            // "@jordan" and one spelled "jordan" each earned their own dedup
+            // slot despite colliding on the same uid once constructed.
+            let canonical = crate::core::entity::normalise(&EntityKind::Username, &uname);
+            if canonical.len() >= 3 && seen.insert(canonical) {
                 push_breach_entity(
                     result,
                     Entity::new(EntityKind::Username, &uname, confidence::HIGH, scan_id),
@@ -361,7 +366,16 @@ pub(super) fn extract_records(
             .into_iter()
             .chain(field_strings(item, "phone_number"))
         {
-            if phone.len() >= 7 && seen.insert(phone.to_lowercase()) {
+            // A bare `.to_lowercase()` is a no-op on digits/punctuation, so two
+            // rows spelling the same number with different formatting
+            // ("5551234567" vs "(555) 123-4567") each earned their own `seen`
+            // slot and minted a duplicate Phone entity — the same raw-vs-
+            // canonical dedup-key gap fixed for Email elsewhere in this
+            // codebase, here for `core::entity::normalise`'s Phone arm (strips
+            // all non-digits, keeps a leading `+`).
+            if phone.len() >= 7
+                && seen.insert(crate::core::entity::normalise(&EntityKind::Phone, &phone))
+            {
                 push_breach_entity(
                     result,
                     Entity::new(EntityKind::Phone, &phone, confidence::MEDIUM_PLUS, scan_id),
@@ -392,7 +406,13 @@ pub(super) fn extract_records(
         }
         for ip_field in ["ip_address", "ip", "last_ip"] {
             for ip in field_strings(item, ip_field) {
-                if crate::util::preflight::is_public_ip(&ip) && seen.insert(ip.clone()) {
+                // See oathnet_pro::breach's identical fix: a bare clone
+                // doesn't canonicalise the way `core::entity::normalise`
+                // does, so two differently-formatted spellings of the same
+                // address dedup separately despite colliding on one uid.
+                if crate::util::preflight::is_public_ip(&ip)
+                    && seen.insert(crate::core::entity::normalise(&EntityKind::IpAddress, &ip))
+                {
                     push_breach_entity(
                         result,
                         Entity::new(EntityKind::IpAddress, &ip, confidence::MEDIUM_PLUS, scan_id),

@@ -38,6 +38,50 @@ fn extract_au_address_finds_state_postcode() {
 }
 
 #[test]
+fn two_director_rows_geocoding_to_the_same_point_dedup_to_one_coordinates_entity() {
+    // Regression: `city_coords` is a many-to-one phrase lookup, so two
+    // differently-worded registered-office addresses naming the same city
+    // each independently resolved to the identical centroid — this function
+    // has no gate of any kind, and `process()`'s `flat_map` over every parsed
+    // director row shares no dedup either. `process()`'s live ASIC scrape
+    // isn't independently testable here, so this calls the same pure
+    // `build_director_entities` `process()`'s `flat_map` calls per row,
+    // followed by the same `dedup_merge_entities` call `process()` now makes
+    // before returning.
+    let mut ents = build_director_entities(
+        "Acme Pty Ltd",
+        "123456789",
+        "Jane Citizen",
+        Some("1 Main St, Sydney NSW 2000"),
+        "scan",
+    );
+    ents.extend(build_director_entities(
+        "Beta Holdings Pty Ltd",
+        "987654321",
+        "Jane Citizen",
+        Some("Sydney, New South Wales"),
+        "scan",
+    ));
+    let raw_coords = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .count();
+    assert_eq!(
+        raw_coords, 2,
+        "sanity: two differently-worded Sydney addresses must both resolve via city_coords, or this fixture doesn't exercise the bug"
+    );
+    crate::core::entity::dedup_merge_entities(&mut ents);
+    let coords = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .count();
+    assert_eq!(
+        coords, 1,
+        "two director rows resolving to the same point must dedup to one Coordinates entity: {ents:?}"
+    );
+}
+
+#[test]
 fn build_director_entities_rejects_a_checksum_invalid_acn() {
     // Regression (critical audit): extract_acn() (called by parse_asic_html,
     // not exercised directly here) collects every ASCII digit anywhere in the

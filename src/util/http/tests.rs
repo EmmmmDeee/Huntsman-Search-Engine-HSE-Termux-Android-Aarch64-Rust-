@@ -1,4 +1,4 @@
-use super::client::{build_client, build_client_with_trace};
+use super::client::{build_client, build_client_with_timeout, build_client_with_trace};
 use super::fetch::{
     JSON_BODY_CAP, fetch_json, fetch_json_or_404, fetch_json_or_absent, fetch_json_probe,
     is_keyed_error_status, key_tail, keyed_cascade, keyed_cascade_json, keyed_ok_or_404,
@@ -608,6 +608,72 @@ fn redirect_to_private_ip_blocks_metadata_and_internal() {
 #[test]
 fn build_client_succeeds() {
     let _c = build_client();
+}
+
+/// `app::cells::download_and_import` (the OpenCelliD bulk downloader) used to
+/// build a bare `reqwest::Client`, bypassing every guard in `client_builder()`
+/// — including this redirect policy. Its own doc comments already treat a
+/// compromised/malicious upstream as in-scope threat model (hence the
+/// download's byte cap), so a redirect onto a private address is exactly the
+/// vector `build_client_with_timeout` must close now that the call site uses
+/// it. Proven directly here since `download_and_import` itself has no mock
+/// server harness to exercise this behaviour at its own call site.
+#[tokio::test]
+async fn build_client_with_timeout_refuses_a_redirect_to_a_private_ip() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let internal = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
+    let internal_addr = internal.local_addr().expect("should succeed");
+    let internal_hits = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let internal_hits_srv = internal_hits.clone();
+    tokio::spawn(async move {
+        if let Ok((mut sock, _)) = internal.accept().await {
+            internal_hits_srv.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut buf = vec![0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let body = b"internal secret";
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(body).await;
+            let _ = sock.flush().await;
+        }
+    });
+
+    let evil = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
+    let evil_addr = evil.local_addr().expect("should succeed");
+    tokio::spawn(async move {
+        if let Ok((mut sock, _)) = evil.accept().await {
+            let mut buf = vec![0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let head = format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://{internal_addr}/\r\nContent-Length: 0\r\n\r\n"
+            );
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.flush().await;
+        }
+    });
+
+    let client = build_client_with_timeout(std::time::Duration::from_secs(5));
+    let resp = client
+        .get(format!("http://{evil_addr}/"))
+        .send()
+        .await
+        .expect("the guard surfaces the un-followed redirect response, not a request error");
+
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::FOUND,
+        "the guard must return the un-followed 3xx itself rather than continuing to follow it"
+    );
+    assert_eq!(
+        internal_hits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the private-IP redirect target must never be reached"
+    );
 }
 
 #[test]

@@ -248,6 +248,31 @@ use super::*;
     }
 
     #[test]
+    fn two_differently_cased_countries_geocoding_to_the_same_point_dedup_to_one_coordinates_entity()
+     {
+        // Regression: `intel.countries` is a `BTreeSet<String>` deduped by
+        // exact text (no case-folding), while `city_coords` lowercases
+        // internally before matching — two country strings differing only by
+        // case are distinct set members that still resolve to the identical
+        // centroid.
+        let r = results(
+            r#"{"results":[
+              {"page":{"domain":"example.com","country":"Sydney"}},
+              {"page":{"domain":"example.com","country":"sydney"}}
+            ]}"#,
+        );
+        let es = child_entities(&summarize(&r), "example.com", "s");
+        let coords = es
+            .iter()
+            .filter(|e| e.kind == EntityKind::Coordinates)
+            .count();
+        assert_eq!(
+            coords, 1,
+            "two differently-cased spellings of the same country must dedup to one Coordinates entity: {es:?}"
+        );
+    }
+
+    #[test]
     fn malformed_asn_is_never_a_pivot() {
         // A blank/garbage ASN field must not become an `AS`-junk entity.
         let r = results(

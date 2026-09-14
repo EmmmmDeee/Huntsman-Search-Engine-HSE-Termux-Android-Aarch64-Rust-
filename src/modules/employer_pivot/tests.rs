@@ -27,6 +27,36 @@ fn email_without_at_returns_none() {
     assert!(domain_for_target(&t).is_none());
 }
 
+// ── coord_entity_if_new ──────────────────────────────────────────────────────
+
+#[test]
+fn two_addresses_geocoding_to_the_same_point_dedup_to_one_coordinates_entity() {
+    // Regression: `city_coords` is a many-to-one phrase lookup, so two
+    // different street addresses in the same city — `seen_addr` dedups by
+    // the full street-level canonical address, which does nothing here —
+    // both resolve to the identical rounded centroid and, pre-fix, each
+    // minted their own Coordinates entity for one real-world point.
+    let mut seen_coord = HashSet::new();
+    let first = coord_entity_if_new(-27.4698, 153.0251, &mut seen_coord, 0.7, "scan", "acme.com");
+    assert!(first.is_some(), "the first address at this point must emit");
+    let second = coord_entity_if_new(-27.4698, 153.0251, &mut seen_coord, 0.7, "scan", "acme.com");
+    assert!(
+        second.is_none(),
+        "a second address geocoding to the same point must not emit a duplicate: {second:?}"
+    );
+}
+
+#[test]
+fn addresses_geocoding_to_different_points_both_emit() {
+    let mut seen_coord = HashSet::new();
+    let sydney = coord_entity_if_new(-33.8688, 151.2093, &mut seen_coord, 0.7, "scan", "acme.com");
+    let brisbane =
+        coord_entity_if_new(-27.4698, 153.0251, &mut seen_coord, 0.7, "scan", "acme.com");
+    assert!(sydney.is_some());
+    assert!(brisbane.is_some());
+    assert_ne!(sydney.expect("should succeed").uid, brisbane.expect("should succeed").uid);
+}
+
 // ── extract_emails ───────────────────────────────────────────────────────────
 
 #[test]
@@ -231,13 +261,55 @@ fn real_user_local_parts_not_blocked() {
 }
 
 #[test]
-fn role_email_check_is_case_sensitive() {
-    // The guard receives the raw local-part from target.value; callers that
-    // lowercase must do so before invoking. We do NOT lowercase inside the
-    // helper so RFC 5321 case-sensitive locals (rare but valid) are unaffected.
-    assert!(!is_role_email_local("Admin"));
-    assert!(!is_role_email_local("DNS"));
-    assert!(!is_role_email_local("Hostmaster"));
+fn role_email_check_is_case_insensitive_matching_the_shared_authority() {
+    // Pass 29: delegates to util::domains::is_role_localpart, which folds
+    // case before comparing. This used to assert the opposite (case
+    // sensitive) on the theory that a caller must lowercase first — but
+    // that was never actually a caller obligation: target.value for an
+    // Email-kind Target is always fully lowercased by Target::new
+    // (hse_core::normalise's EntityKind::Email arm calls `.to_lowercase()`
+    // unconditionally), so the guard's sole call site never received
+    // mixed-case input either way. Folding case here is a pure
+    // strengthening (defensive against any future caller not routed
+    // through Target::new), not a behaviour change on the real path.
+    assert!(is_role_email_local("Admin"));
+    assert!(is_role_email_local("DNS"));
+    assert!(is_role_email_local("Hostmaster"));
+}
+
+#[test]
+fn role_email_check_now_reaches_infra_tokens_the_narrower_list_was_missing() {
+    // The pre-Pass-29 hand-rolled list here had only 19 entries and was
+    // missing ~40 tokens util::domains::ROLE already carried — notably the
+    // DNS/registrar-infrastructure class this guard's own doc comment
+    // (mod.rs, above `process`) cites as its motivating case: a
+    // SOA-RNAME-derived address like `soa@<registrar>` previously slipped
+    // past this guard and scraped the registrar's own contact page,
+    // attributing it to the scan subject.
+    for local in [
+        "soa",
+        "registrar",
+        "whois",
+        "nic",
+        "registry",
+        "root",
+        "mail",
+        "mailer",
+        "mailerdaemon",
+        "contact",
+        "help",
+        "helpdesk",
+        "namehost",
+        "dmca",
+        "domains",
+        "domain",
+        "donotreply",
+    ] {
+        assert!(
+            is_role_email_local(local),
+            "'{local}' is in util::domains::ROLE but wasn't recognised here"
+        );
+    }
 }
 
 // ── fetch_failed ─────────────────────────────────────────────────────────────

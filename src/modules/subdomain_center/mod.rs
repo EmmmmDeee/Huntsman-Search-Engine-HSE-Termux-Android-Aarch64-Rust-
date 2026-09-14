@@ -50,6 +50,12 @@ struct SubdomainList(Vec<String>);
 /// [`confidence::VERY_HIGH`] — an observed, corroboratable CT/passive name.
 fn build_entities(subs: &[String], domain: &str, scan_id: &str) -> Vec<Entity> {
     let domain_l = domain.trim().trim_end_matches('.').to_ascii_lowercase();
+    // Canonicalised once, matching how each candidate `host` below is
+    // canonicalised before comparison — a raw `host == domain_l` check
+    // misses a "www.<domain>" entry (a different raw string) even though
+    // `Entity::new` strips the "www." label and collapses it onto the exact
+    // apex uid this function's own doc comment says must never be emitted.
+    let canonical_base = crate::core::entity::normalise(&EntityKind::Domain, &domain_l);
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
 
@@ -59,15 +65,19 @@ fn build_entities(subs: &[String], domain: &str, scan_id: &str) -> Vec<Entity> {
             .trim_end_matches('.')
             .trim_start_matches("*.")
             .to_ascii_lowercase();
-        if host.is_empty() || !host.contains('.') || host == domain_l {
+        if host.is_empty() || !host.contains('.') {
+            continue;
+        }
+        let canonical = crate::core::entity::normalise(&EntityKind::Domain, &host);
+        if canonical == canonical_base {
             continue;
         }
         // Drop anything the aggregator returned that is not actually under the
         // queried domain — never emit an unrelated host as a "subdomain".
-        if !crate::util::domains::is_or_subdomain_of(&host, &domain_l) {
+        if !crate::util::domains::is_or_subdomain_of(&canonical, &canonical_base) {
             continue;
         }
-        if !seen.insert(host.clone()) {
+        if !seen.insert(canonical) {
             continue;
         }
         let mut e = Entity::new(EntityKind::Domain, &host, confidence::VERY_HIGH, scan_id);

@@ -29,14 +29,15 @@ pub(crate) fn strongest_identity_label(entities: &[Entity], fallback: impl Into<
         .map_or_else(|| fallback.into(), |e| e.value.clone())
 }
 
-/// Confidence-rank `entities` in place — descending, ties broken on `uid` for
-/// a total order — before deriving relations. Mirrors
-/// `core::engine::merge_found_keys_and_flatten`'s identical ranking on the
-/// live-scan path, and for the identical reason: `derive_all_within` →
-/// `derive_coreferences` → `resolve_coreferences`'s `.take(MAX_COREF_NODES)`
-/// documents the precondition it relies on — "`entities` arrives
-/// confidence-ranked, so `.take` keeps the strongest identities — a
-/// deterministic prefix".
+/// Confidence-rank `entities` in place before deriving relations — the
+/// precondition `derive_all_within` → `derive_coreferences` →
+/// `resolve_coreferences`'s `.take(MAX_COREF_NODES)` documents it relies on:
+/// "`entities` arrives confidence-ranked, so `.take` keeps the strongest
+/// identities — a deterministic prefix". Delegates to
+/// [`crate::util::recon::sort_by_confidence_desc`] (Pass 26: this used to
+/// carry its own byte-for-byte independent copy of that exact comparator,
+/// the identical duplication `core::engine::merge_found_keys_and_flatten`'s
+/// own copy — still separate — is documented as "mirroring").
 ///
 /// [`persist_entities_as_scan`] (the shared tail of `hse import` and
 /// `hse ingest --auto-scan`) used to hand entities through in raw
@@ -50,12 +51,7 @@ pub(crate) fn strongest_identity_label(entities: &[Entity], fallback: impl Into<
 /// CLI-facing path shares the same `derive_all_within` call but had neither
 /// that ceiling nor this sort.
 fn confidence_rank(entities: &mut [Entity]) {
-    entities.sort_by(|a, b| {
-        b.confidence
-            .partial_cmp(&a.confidence)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.uid.cmp(&b.uid))
-    });
+    crate::util::recon::sort_by_confidence_desc(entities);
 }
 
 /// Persist `entities` as a `Complete` scan `sid` (labelled `label`, target kind
@@ -190,14 +186,16 @@ mod tests {
     }
 
     #[test]
-    fn confidence_rank_sorts_descending_with_uid_tiebreak() {
+    fn confidence_rank_delegates_to_the_shared_comparator() {
         // Regression: `persist_entities_as_scan` used to hand entities to
         // `derive_all_within` in raw arrival order, so `resolve_coreferences`'s
         // `.take(MAX_COREF_NODES)` truncation (above the 5,000 identity-entity
         // ceiling) kept an arbitrary subset rather than the strongest one.
-        // `confidence_rank` must sort strongest-first, and break an exact
-        // confidence tie deterministically on `uid` (never on arrival order,
-        // which a re-import with re-sorted source rows can change).
+        // `confidence_rank` must sort strongest-first. The full tie-break
+        // algorithm (uid order, not arrival order, on an exact confidence tie)
+        // is `util::recon::sort_by_confidence_desc`'s own contract, pinned by
+        // that function's tests — this just confirms the wrapper here still
+        // forwards to it rather than drifting back into its own copy.
         let weak = Entity::new(EntityKind::Email, "weak@example.com", 0.3, "s");
         let strong = Entity::new(EntityKind::Email, "strong@example.com", 0.9, "s");
         let mid = Entity::new(EntityKind::Email, "mid@example.com", 0.6, "s");
@@ -207,27 +205,6 @@ mod tests {
             entities.iter().map(|e| e.value.clone()).collect::<Vec<_>>(),
             vec!["strong@example.com", "mid@example.com", "weak@example.com"],
             "must be strongest-first regardless of arrival order"
-        );
-
-        // Equal confidence: uid order, not arrival order, decides the tie —
-        // reversing the input must not change the output.
-        let a = Entity::new(EntityKind::Email, "a-tie@example.com", 0.5, "s");
-        let b = Entity::new(EntityKind::Email, "b-tie@example.com", 0.5, "s");
-        let expected_uid_order = {
-            let mut uids = vec![a.uid.clone(), b.uid.clone()];
-            uids.sort();
-            uids
-        };
-        let mut forward = vec![a.clone(), b.clone()];
-        confidence_rank(&mut forward);
-        let mut reversed = vec![b, a];
-        confidence_rank(&mut reversed);
-        let forward_uids: Vec<String> = forward.iter().map(|e| e.uid.clone()).collect();
-        let reversed_uids: Vec<String> = reversed.iter().map(|e| e.uid.clone()).collect();
-        assert_eq!(forward_uids, expected_uid_order);
-        assert_eq!(
-            forward_uids, reversed_uids,
-            "a confidence tie must resolve identically regardless of input order"
         );
     }
 

@@ -28,11 +28,30 @@ pub struct WebhookPayload<'a> {
 /// external endpoint can't stall or fail the scan. On error only the webhook
 /// **host** is logged, never the full URL: a Slack/Discord-style webhook carries
 /// its secret in the path, which must not leak into the `/api/v1/logs` ring buffer.
+///
+/// SSRF-guarded: `webhook_url` is API-caller-supplied (`ScanOptions.webhook_url`,
+/// threaded straight from the `POST /api/v1/scans` request body), so it is
+/// exactly the kind of "fetch a caller/discovered URL" sink that
+/// [`crate::util::preflight::url_host_is_private`]'s doc comment says must apply
+/// this guard — the same one `util::endpoint_override::classify`, the web
+/// crawler, and the engine's own `Url`-target dispatch already apply. Without
+/// it, an unauthenticated request on the default loopback bind (or any peer on
+/// a `--allow-unauthenticated` LAN bind) could set `webhook_url` to a loopback
+/// or cloud-metadata address and have the server POST scan data to it on every
+/// scan completion.
 pub async fn notify_scan_complete(
     http: &reqwest::Client,
     webhook_url: &str,
     payload: &WebhookPayload<'_>,
 ) {
+    if crate::util::preflight::url_host_is_private(webhook_url) {
+        tracing::warn!(
+            scan_id = payload.scan_id,
+            "webhook notification skipped: URL host is a private/reserved address \
+             or a local domain"
+        );
+        return;
+    }
     let body = json!({
         "event": "scan_complete",
         "scan_id": payload.scan_id,

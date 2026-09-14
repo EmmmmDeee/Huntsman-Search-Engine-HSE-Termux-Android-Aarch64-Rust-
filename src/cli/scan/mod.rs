@@ -488,8 +488,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             );
             println!("{}", "-".repeat(86));
             for c in &correlations {
-                let sev_padded = format!("{:<10}", c.severity);
-                let sev_colored = color_severity(&sev_padded, color);
+                let sev_colored = color_severity(c.severity, color);
                 println!(
                     "{:<10} {} {:<40} {}",
                     c.rule_id,

@@ -72,6 +72,19 @@ fn build_subdomain_entity(
         return None;
     }
     let host = format!("{sub}.{domain}");
+    // Skip a sub-label that canonicalises to the domain itself.
+    // SecurityTrails' subdomains list routinely includes "www" — a
+    // near-certain, non-adversarial entry for any real domain, not an edge
+    // case — and `Entity::new` strips its leading "www." label internally,
+    // collapsing it onto the scan's own apex/subject uid. Unconditionally
+    // tagging every entry "subdomain" (below) would then survive onto that
+    // merged entity via `Entity::merge`'s tag-union, permanently mislabeling
+    // the subject's own entity as a subdomain of itself.
+    let canonical = crate::core::entity::normalise(&EntityKind::Domain, &host);
+    let canonical_domain = crate::core::entity::normalise(&EntityKind::Domain, domain);
+    if canonical == canonical_domain {
+        return None;
+    }
     let mut e = Entity::new(EntityKind::Domain, &host, confidence::EXPERT, scan_id);
     e.tag("subdomain");
     e.tag("securitytrails");

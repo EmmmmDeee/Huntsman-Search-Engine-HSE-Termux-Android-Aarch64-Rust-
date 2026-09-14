@@ -82,8 +82,8 @@ use crate::core::{
 use crate::util::http::{RequestBuilderExt, read_body_capped};
 
 use parse::{
-    SRC, dedup_entities, parse_nsw_response, parse_qld_response, parse_vic_response,
-    record_to_entities, split_name, surname,
+    SRC, parse_nsw_response, parse_qld_response, parse_vic_response, record_to_entities,
+    split_name, surname,
 };
 
 pub struct AuProperty;
@@ -188,7 +188,7 @@ impl Module for AuProperty {
         }
 
         // Dedup by (kind, value) — different portals may agree on the same suburb.
-        dedup_entities(&mut all_entities);
+        crate::core::entity::dedup_merge_entities(&mut all_entities);
 
         if let Some(msg) = leg_failure(tally) {
             return Err(Error::module(SRC, msg));

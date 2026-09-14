@@ -1,7 +1,6 @@
 use super::parse::{
-    PropertyRecord, dedup_entities, extract_postcode, extract_state, name_matches,
-    parse_nsw_response, parse_qld_response, parse_vic_response, record_to_entities,
-    state_capital_coords, strip_html,
+    PropertyRecord, extract_postcode, extract_state, name_matches, parse_nsw_response,
+    parse_qld_response, parse_vic_response, record_to_entities, state_capital_coords, strip_html,
 };
 use super::{AuProperty, LegOutcome, LegTally, leg_failure};
 use crate::core::entity::{Entity, EntityKind};
@@ -332,7 +331,7 @@ fn dedup_entities_removes_exact_duplicates() {
         Entity::new(EntityKind::Address, "Sydney, NSW", 0.62, "s"),
         Entity::new(EntityKind::Address, "Melbourne, VIC", 0.74, "s"),
     ];
-    dedup_entities(&mut ents);
+    crate::core::entity::dedup_merge_entities(&mut ents);
     assert_eq!(
         ents.len(),
         2,

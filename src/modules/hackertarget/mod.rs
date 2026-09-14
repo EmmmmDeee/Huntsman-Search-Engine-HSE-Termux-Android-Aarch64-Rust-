@@ -47,8 +47,18 @@ fn build_hostsearch_entities(body: &str, domain: &str, scan_id: &str) -> Vec<Ent
         let host = parts[0].trim().to_lowercase();
         let ip = parts[1].trim();
 
-        if !host.is_empty() && host.contains('.') && seen.insert(host.clone()) {
-            let is_sub = crate::util::domains::is_or_subdomain_of(&host, domain);
+        // Canonicalise before deduping/classifying, not the raw `host`/
+        // `domain` — hostsearch's own CSV routinely echoes both the bare
+        // apex and its "www." alias as separate lines for the one real
+        // host, which are two distinct raw strings but the SAME entity once
+        // `Entity::new` strips the "www." label; a raw compare lets both
+        // through, each independently earning its own dedup slot and its
+        // own subdomain verdict, colliding at the merged apex regardless.
+        // `is_proper_subdomain_of`, not `is_or_subdomain_of`: once canonical,
+        // the apex itself must not tag itself as its own subdomain either
+        // (mirrors the identical, already-fixed gap in `crtsh`/`certspotter`).
+        let (canonical, is_sub) = crate::util::domains::classify_domain_candidate(&host, domain);
+        if !host.is_empty() && host.contains('.') && seen.insert(canonical) {
             let conf = if is_sub {
                 confidence::VERY_HIGH
             } else {
