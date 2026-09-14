@@ -229,7 +229,7 @@ straight from the browser (loopback-only, keys never leave the device).
 
 **Web & API scans are as thorough as the CLI.** A scan launched from the Chrome
 SPA's **New Scan** wizard, or via `POST /api/v1/scans`, uses the same
-comprehensive defaults as `hse scan` — depth 3, expansion floor 0.20, entity cap
+comprehensive defaults as `hse scan` — depth 5, expansion floor 0.20, entity cap
 2500 — so you get the full seed → identifiers → pivots → infrastructure sweep
 without tuning anything.
 
