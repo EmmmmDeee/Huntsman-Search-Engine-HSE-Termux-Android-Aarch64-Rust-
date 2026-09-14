@@ -72,9 +72,9 @@ jobs:
           cp src/modules/cert_intel/testdata/selfsigned.der fuzz/corpus/cert_der/seed_selfsigned.der
           cd fuzz
           # `+nightly` is REQUIRED: the repo-root rust-toolchain.toml pins stable
-          # 1.97.1, and rustup resolves that file ABOVE the `rustup default
+          # 1.98.0, and rustup resolves that file ABOVE the `rustup default
           # nightly` the install step sets — so a bare `cargo fuzz run` builds on
-          # 1.97.1 and dies with "error: the option `Z` is only accepted on the
+          # 1.98.0 and dies with "error: the option `Z` is only accepted on the
           # nightly compiler" (cargo-fuzz's ASAN build passes `-Zsanitizer`). The
           # explicit `+nightly` is rustup's highest-precedence selector (above
           # rust-toolchain.toml) and propagates via RUSTUP_TOOLCHAIN to the inner
@@ -106,7 +106,7 @@ jobs:
           sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
           follow @some_handle and @a
           not-an-address std::vector<int> 12:34:56 de:ad:be:ef:00:01
-          multibyte: café → naïve ☃ 日本語 a@b.com 𝔘𝔫𝔦𝔠𝔬𝔡𝔢
+          multibyte: café → naïve ☃ 日本語 a@b.com 𝓤𝓷𝓲𝓬𝓸𝓮𝓮
           SEED
           cd fuzz
           # `+nightly` for the same rust-toolchain.toml precedence reason as above.
