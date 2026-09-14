@@ -36,10 +36,15 @@ use std::path::PathBuf;
 /// same constraint elsewhere) — `cfg(test)` is a compile-time switch, not a
 /// runtime env mutation, so it needs no unsafe code and can't race a
 /// fire-and-forget `spawn_blocking` persist that outlives the test function.
-/// Shared across the whole test process (not a fresh directory per call), so
-/// every call site agrees on one location, matching a real `$HOME`'s
-/// single-location semantics — and still ends in `.huntsman`, so this is
-/// invisible to callers and to this module's own path-shape tests below.
+/// Pid-scoped, matching [`isolate_for_tests`]'s own naming (not literally
+/// calling it — a dedicated architecture test pins that this file never
+/// calls it, see that test's own doc comment): every call site within one
+/// process still agrees on the one location a real `$HOME` would give them,
+/// but a leftover from a past, now-dead process no longer accumulates
+/// forever the way a single fixed literal path could not help but do — see
+/// [`sweep_stale_test_homes`]'s own doc comment. Still ends in `.huntsman`,
+/// so this is invisible to callers and to this module's own path-shape tests
+/// below.
 ///
 /// That `cfg(test)` switch covers the library's OWN unit tests only. An
 /// integration crate under `tests/` links the ordinary non-test build of the
@@ -72,8 +77,15 @@ pub fn huntsman_dir() -> PathBuf {
 #[must_use]
 pub fn huntsman_dir_path() -> PathBuf {
     if cfg!(test) {
-        return std::env::temp_dir()
-            .join("huntsman-test-home")
+        let base = std::env::temp_dir();
+        // Once per process, not once per call: `huntsman_dir_path` underlies
+        // `data_file`/`subdir`, so a lib test run can reach this thousands of
+        // times — an unconditional sweep would re-scan the temp dir on every
+        // one of them.
+        static SWEPT: std::sync::Once = std::sync::Once::new();
+        SWEPT.call_once(|| sweep_stale_test_homes(&base));
+        return base
+            .join(format!("huntsman-test-home-{}", std::process::id()))
             .join(".huntsman");
     }
     if let Some(dir) = TEST_BASE_DIR.get() {
@@ -128,12 +140,18 @@ pub fn isolate_for_tests() -> PathBuf {
 }
 
 /// Removes every `huntsman-test-home-<pid>` directory under `base` left by a
-/// past, now-dead process. [`isolate_for_tests`] mints a fresh directory per
-/// process and nothing ever removes it — the test binary just exits — so
-/// across many `cargo test` invocations over a long-lived host these
-/// accumulate without bound: found 375 leftover directories spanning 8 days
-/// in one long session, the same never-reclaimed-across-runs shape
-/// `tests/common`'s `tmp_db`/`tmp_dir` had (see their doc comments).
+/// past, now-dead process. Both [`isolate_for_tests`] (the integration-test
+/// harness path) and [`huntsman_dir_path`]'s own `cfg(test)` branch (the
+/// library's own unit tests) mint a directory in this same
+/// `huntsman-test-home-<pid>` shape and never remove it themselves — the test
+/// binary just exits — so across many `cargo test` invocations over a
+/// long-lived host these accumulate without bound: found 375 leftover
+/// directories spanning 8 days in one long session, the same
+/// never-reclaimed-across-runs shape `tests/common`'s `tmp_db`/`tmp_dir` had
+/// (see their doc comments). [`huntsman_dir_path`]'s own leftovers were
+/// invisible to this sweep before it adopted the identical naming: its prior
+/// fixed, unnumbered `huntsman-test-home` directory (no per-process suffix)
+/// never matched the `-<pid>` prefix this function parses for.
 ///
 /// A directory is swept only once its exact pid is confirmed dead via
 /// `/proc/<pid>` — never by name pattern alone, since several test binaries
@@ -247,6 +265,26 @@ mod tests {
     #[test]
     fn base_dir_ends_in_dot_huntsman() {
         assert!(huntsman_dir().ends_with(".huntsman"));
+    }
+
+    #[test]
+    fn huntsman_dir_path_under_test_is_pid_scoped() {
+        // Before this, every lib-test process shared one literal
+        // `huntsman-test-home` directory forever — never reclaimed across
+        // separate `cargo test` invocations, and invisible to
+        // `sweep_stale_test_homes` (which only recognises the `-<pid>`
+        // shape). Pinning the pid-scoped shape here is what makes that sweep
+        // actually reach this call site.
+        let dir = huntsman_dir_path();
+        let expected_parent_name = format!("huntsman-test-home-{}", std::process::id());
+        assert_eq!(
+            dir.parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str()),
+            Some(expected_parent_name.as_str()),
+            "huntsman_dir_path() under cfg(test) must be scoped under \
+             huntsman-test-home-<this process's pid>, not a fixed shared name: {dir:?}"
+        );
     }
 
     #[test]
