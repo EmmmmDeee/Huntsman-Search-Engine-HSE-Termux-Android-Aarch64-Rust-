@@ -26,6 +26,37 @@ pub struct Overpass;
 struct OverpassResp {
     #[serde(default)]
     elements: Vec<OsmElement>,
+    /// Overpass reports a runtime error (query timed out, out of memory) as
+    /// HTTP 200 with a `remark` and empty `elements` — see
+    /// [`infrastructure_or_error`]. Modelled so that failure is not read as
+    /// "no infrastructure within range."
+    #[serde(default)]
+    remark: Option<String>,
+}
+
+/// The OSM elements from an Overpass response, or a hard error when Overpass
+/// returned a runtime-error `remark` instead of results. **Pure**, so the
+/// fail-closed handling is unit-tested without a network.
+///
+/// Overpass signals a query timeout / memory-limit failure as HTTP 200 with a
+/// `remark` and NO elements (documented behaviour: a `remark` on an otherwise
+/// empty result is an error, not an answer). Without this gate that collapses to
+/// the `elements.is_empty()` "no infrastructure within 500m" negative. A `remark`
+/// alongside real elements is not treated as fatal — the data is kept.
+fn infrastructure_or_error(resp: OverpassResp) -> Result<Vec<OsmElement>> {
+    if resp.elements.is_empty()
+        && let Some(remark) = resp
+            .remark
+            .as_deref()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+    {
+        return Err(Error::module(
+            SRC,
+            format!("Overpass returned a runtime error, not an empty area: {remark}"),
+        ));
+    }
+    Ok(resp.elements)
 }
 
 #[derive(Deserialize)]
@@ -303,12 +334,13 @@ out center;"#
             .await
             .map_err(|e| Error::module(SRC, e))?;
 
-        if body.elements.is_empty() {
+        let elements = infrastructure_or_error(body)?;
+        if elements.is_empty() {
             return Ok(ModuleResult::new());
         }
 
         let mut result = ModuleResult::new();
-        result.entities = build_entities(&target.value, &body.elements, &ctx.scan_id);
+        result.entities = build_entities(&target.value, &elements, &ctx.scan_id);
         Ok(result)
     }
 }
