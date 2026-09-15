@@ -4108,6 +4108,58 @@ the next step if a 200 wall is observed on one. The remaining
 `ip_reputation`) read JSON or crawl content and mint no negative claim from
 an empty parse.
 
+### Pass 31 recomputation (2026-09-15 19:10 UTC) — stop condition for the observable defect classes
+
+**Window.** `4431f23` (cycle K) → `faa3bc8` on `claude/charming-meitner-85h3aj`,
+base `main` `53705f6`; seven upgrade commits (REQ-DRIFT-004, REQ-RETIRE-003,
+REQ-DRIFT-005, REQ-UI-001, REQ-DRIFT-006, REQ-HTTP-002) and one refutation
+(REQ-ARCHIVE-001), each falsified, each behind the CI-exact gate, each verified
+on the remote where the runner can observe it. CI on every pushed head is
+green (eight checks); the live-drift dispatch is red only on the `wifidb` dead
+canary, by design.
+
+**Recomputation.** After REQ-DRIFT-005 the sweep's every non-alive row is a
+typed, honest outcome: 4 blocked (`ahpra`, `anubis`, `asic_director`,
+`austlii` — walls per client), 2 rate-limited (`reddit_user`, `steam_profile`),
+1 timed-out (`wayback`, provider-side, REQ-ARCHIVE-001), 1 skipped
+(`cell_local`, a named local prerequisite), 1 unreachable (`wifidb`, the dead
+canary awaiting its retirement criterion), and 18 `empty` rows each verified a
+true negative (synthetic samples, a documented 404 miss, or a register that
+holds nothing for the sample). Static censuses, verified negatives:
+
+- every remaining `.await.ok()?` / `unwrap_or_default()` on a fetch sits in an
+  `Option`-returning best-effort enrichment whose primary result is kept, or a
+  per-record lookup inside a batch; every `else { return Ok(empty) }` sits
+  behind a typed 404-or-error helper;
+- configuration versus consumption: no `HUNTSMAN_*` name in `.env.example` is
+  unread by the code; every name the code reads outside tests is documented
+  (`HUNTSMAN_DEFAULT_SEED` in the README and REQ-ENV-005);
+- no compatibility shim without an exit condition; the one legacy-path notice
+  (`see_know`'s old log directory, warned once) is operational, not dormant;
+- the retirements leave no reference in the installer, the scripts or the
+  workflows; the README pins, the nine-class pin and the ATT&CK envelope hold.
+
+**Residuals, time-gated or out of reach from here.**
+
+- `wifidb`: retire after two consecutive dead *weekly* sweeps (the first was
+  2026-09-14; the next is 2026-09-21) — dispatches are not counted.
+- `wayback`: a moderate-archive canary (`sqlite.org` answered the pass-1 shape
+  in 1.8 s) after two calm weekly sweeps; the query-shape hypothesis reopens
+  only if a calm day refuses collapsed queries alone.
+- `asic_director`: whether the register page still exists for a browser-class
+  client is unobservable from any datacenter address; a Termux / mobile client
+  meeting a 404 or a redirect retires it.
+- `username_search` / `streaming_probe` status-only (`HEAD`) sites: a wall
+  served as `200` to a HEAD still reads as an unverified, status-only hit; the
+  module already grades it below every body-verified hit and counts it under
+  `hits_status_only`. No 200-to-HEAD wall has been observed; not changed on
+  that evidence.
+
+**Stop.** No reproduced root cause, temporary workaround, duplicated authority,
+unreachable capability or incomplete lifecycle pathway remains among what this
+vantage can observe; the next material observation is the 2026-09-21 weekly
+sweep.
+
 ### REQ-HTTP-002 (**new, Pass 31 — VERIFIED FROM SOURCE, CONSOLIDATED, FIXED, FALSIFIED**): `json_scanned` fails the way `json_decode` fails
 
 **Lead.** ONE CAPABILITY, ONE AUTHORITY. Two shared JSON decode helpers judged
