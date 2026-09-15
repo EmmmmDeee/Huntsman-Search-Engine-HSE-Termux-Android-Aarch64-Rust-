@@ -21,7 +21,6 @@ pub mod asic_persons;
 pub mod au_business_id;
 pub mod au_electoral;
 pub mod au_geo;
-pub mod au_people;
 pub mod au_property;
 pub mod au_rdap;
 pub mod au_unclaimed;
@@ -171,7 +170,6 @@ pub mod wikitree;
 // inspects `pub mod` declarations).
 pub(crate) mod profile_kit;
 pub mod proxycurl;
-pub mod psbdmp;
 pub mod pulsedive;
 pub mod pwned_passwords;
 pub mod pypi_user;
@@ -508,7 +506,6 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(nostr::Nostr),
             Arc::new(payid::PayId),
             Arc::new(pgp::Pgp),
-            Arc::new(psbdmp::Psbdmp),
             Arc::new(phone_intl::PhoneIntl),
             Arc::new(phone_au::PhoneAu),
             Arc::new(wayback::Wayback),
@@ -590,7 +587,6 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(opencorporates::OpenCorporates),
             Arc::new(data_gov_au::DataGovAu),
             Arc::new(au_unclaimed::AuUnclaimed),
-            Arc::new(au_people::AuPeople),
             Arc::new(asic_director::AsicDirector),
             Arc::new(asic_persons::AsicPersons),
             Arc::new(asic_business_names::AsicBusinessNames),

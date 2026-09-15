@@ -65,10 +65,32 @@ pub(super) fn build_opencellid_coordinate(
         .with_attr("mcc", key.mcc.as_ref())
         .with_attr("mnc", key.mnc.as_ref())
         .with_attr("range_m", range.to_string())
-        .with_attr("source", "OpenCelliD")
-        .with_attr("dbm", cell.dbm.unwrap_or(0).to_string())
-        .with_attr("registered", cell.registered.unwrap_or(false).to_string()),
+        .with_attr("source", "OpenCelliD"),
     );
+    signal_readings(e, cell)
+}
+
+/// Append the per-cell readings the tool actually reported. A reading it
+/// omitted stays absent — `dbm=0` is an unphysically strong signal, `level=0`
+/// / `asu=0` / `pci=0` real values, `registered=false` a statement about the
+/// handset's attachment — so a missing field is never asserted as an
+/// observation (the class fixed for the Wi-Fi sensors in backlog #16). Both
+/// tower builders route their evidence through here.
+fn signal_readings(mut e: Entity, cell: &Cell) -> Entity {
+    let Some(ev) = e.evidence.pop() else {
+        return e;
+    };
+    let ev = [
+        ("pci", cell.pci.map(|v| v.to_string())),
+        ("dbm", cell.dbm.map(|v| v.to_string())),
+        ("asu", cell.asu.map(|v| v.to_string())),
+        ("level", cell.level.map(|v| v.to_string())),
+        ("registered", cell.registered.map(|v| v.to_string())),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| value.map(|v| (key, v)))
+    .fold(ev, |ev, (key, value)| ev.with_attr(key, value));
+    e.add_evidence(ev);
     e
 }
 
@@ -91,14 +113,9 @@ pub(super) fn build_tower_device(cell: &Cell, key: &TowerKey, scan_id: &str) -> 
             .with_attr("mcc", key.mcc.as_ref())
             .with_attr("mnc", key.mnc.as_ref())
             .with_attr("lac_tac", key.lac.to_string())
-            .with_attr("cid", key.cid.to_string())
-            .with_attr("pci", cell.pci.unwrap_or(0).to_string())
-            .with_attr("dbm", cell.dbm.unwrap_or(0).to_string())
-            .with_attr("asu", cell.asu.unwrap_or(0).to_string())
-            .with_attr("level", cell.level.unwrap_or(0).to_string())
-            .with_attr("registered", cell.registered.unwrap_or(false).to_string()),
+            .with_attr("cid", key.cid.to_string()),
     );
-    e
+    signal_readings(e, cell)
 }
 
 pub(super) async fn query_opencellid(

@@ -66,7 +66,7 @@ pub fn classify(service: &str) -> KeyRoi {
         // quota pools. Finding a see-know.eu or snusbase key means we
         // get their daily quota for free.
         | "see_know" | "snusbase" | "leakcheck" | "leakpeek" | "leak_lookup"
-        | "hashes" | "psbdmp" | "ghostproject" | "scylla" | "weleakinfo"
+        | "hashes" | "ghostproject" | "scylla" | "weleakinfo"
         | "hackcheck" | "scrubd" | "nuclearleaks" | "breachforums"
         | "inteltechniques" | "breachdirectory"
         // Infrastructure → hostnames → web_crawler → leaked keys

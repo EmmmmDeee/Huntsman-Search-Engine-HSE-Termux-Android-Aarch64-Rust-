@@ -336,7 +336,6 @@ const EMAIL_CONFIRMATION_SOURCES: &[&str] = &[
     "fullcontact",
     "see_know",
     "intelx",
-    "psbdmp",
     "leakix",
 ];
 
@@ -442,7 +441,6 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         // invisible to the gap analysis's missing-family search. Exact module
         // names; `source_family_covers_every_breach_category_module` pins them.
         "comb_search", // COMB combo-list corpus
-        "psbdmp",      // Pastebin dump archive (paste exposure)
         "niamonx",     // Niamonx breach-lookup API
         "osintcat",    // OSINTCat breach-lookup API
     ]) {
@@ -539,7 +537,6 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "gleif_lei",
         "asic_director",
         "au_electoral",
-        "au_people",
         "ahpra",
         "acnc",
     ]) {

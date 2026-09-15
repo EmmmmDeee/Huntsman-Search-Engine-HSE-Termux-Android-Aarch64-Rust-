@@ -27,7 +27,7 @@ pub struct StolenTax;
 /// accepted; a key/quota-shaped `error` burns the key and rotates; any other
 /// `success: false` is ALSO accepted — and then failed by [`accepted`] — so
 /// that a backend error, a degraded service or a rejected selector is never
-/// [`BodyVerdict::Absent`]'s "genuine miss" (backlog #40: on a key-gated paid
+/// [`BodyVerdict::Absent`](crate::util::http::BodyVerdict::Absent)'s "genuine miss" (backlog #40: on a key-gated paid
 /// breach lookup that read as "this identity appears in no breach", and was
 /// cached for a day). **Pure.**
 fn body_verdict(parsed: &StolenTaxResponse) -> crate::util::http::BodyVerdict {

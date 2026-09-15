@@ -81,8 +81,8 @@ export async function renderEngines(v){
   S.enginesTimer = setInterval(()=>{ if (!pageHidden()) refreshEngines(); }, 30000);
 }
 
-/* Per-source scraper health (T2.7 / SOL-HEALTH-SIGNAL): the au_people /
-   au_electoral / username_search / search_engines family parse churning
+/* Per-source scraper health (T2.7 / SOL-HEALTH-SIGNAL): the au_electoral /
+   username_search / search_engines family parse churning
    third-party HTML, so a source can silently break (layout change, endpoint
    retirement) with no operator-visible signal beyond re-reading verbose
    per-scan logs. GET /api/v1/health/scrapers surfaces the same cross-scan
@@ -118,7 +118,7 @@ export function renderScraperHealth(host, data){
       <h3 style="margin:0"><i class="glyphicon glyphicon-flash"></i>&nbsp;Scraper health
         <small class="text-muted">${data.tracked||0} source(s) tracked over ${data.events_checked||0} recent outcome event(s)</small></h3>
     </div>
-    <p class="text-muted">Cross-scan failure streaks for the HTML-parsing modules (au_people, au_electoral, username_search, search_engines, …) — a source flagged here has failed on its last ${esc(String(data.drifted_threshold||3))}+ dispatches with no success in between, across ALL recent scans, not just this one.</p>
+    <p class="text-muted">Cross-scan failure streaks for the HTML-parsing modules (au_electoral, username_search, search_engines, …) — a source flagged here has failed on its last ${esc(String(data.drifted_threshold||3))}+ dispatches with no success in between, across ALL recent scans, not just this one.</p>
     ${drifted.length
       ? `<div class="table-responsive"><table class="table table-striped table-condensed">
            <thead><tr><th>Module</th><th class="text-right">Streak</th><th>Last success</th><th>Last error</th></tr></thead>

@@ -81,7 +81,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **GreyNoise** | internet-scan noise / RIOT benign | community free | UUID / 32 alnum | M K D |
 | **Pulsedive** | indicator/threat enrichment | free | alnum | M K D |
 | **ThreatFox (abuse.ch)** | IOCs (malware, C2) | free | abuse.ch key | M K D |
-| **URLhaus (abuse.ch)** | malicious URL feed | free | — | M D |
+| **URLhaus (abuse.ch)** | malicious URL feed | free key (Auth-Key) | — | M D |
 | **PhishTank** | phishing-URL verification feed/lookup | free | app key | D C |
 | **MalwareBazaar (abuse.ch)** | malware-sample intel | free | abuse.ch key | D |
 | **MalShare** | malware-sample repository (hash/source/filename search + download) | free (2k/day key) | alnum | D C |

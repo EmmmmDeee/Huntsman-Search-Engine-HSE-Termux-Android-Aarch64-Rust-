@@ -1686,11 +1686,11 @@ fn platform_static_attack_envelope_is_pinned() {
     //     itself is not directly claimed (T1590), plus specific sub-techniques
     //     out of scope (network trust deps, business tempo, device firmware /
     //     client configs).
-    // T1593 (Search Open Websites/Domains) closed as a directly-claimed gap when
-    // `psbdmp` was audited: it queries psbdmp.ws, an index over the open website
-    // Pastebin, which is T1593 itself rather than any of its named sub-techniques
-    // (Social Media / Search Engines / Code Repositories) — so the parent ID is
-    // the honest claim, not a sub-technique.
+    // The parent T1593 (Search Open Websites/Domains) was reached only by
+    // `psbdmp`, an index over the open website Pastebin — T1593 itself rather
+    // than any named sub-technique (Social Media / Search Engines / Code
+    // Repositories). psbdmp.ws is gone (retired 2026-09-15, REQ-RETIRE-001), so
+    // the parent is an honest gap again while its three subs stay mapped.
     // (Catalogue-sorted, as `uncovered` returns.)
     let gaps: Vec<&str> = cov.uncovered.iter().map(|t| t.id).collect();
     let expected_gaps = [
@@ -1699,8 +1699,9 @@ fn platform_static_attack_envelope_is_pinned() {
         "T1591.003", // Identify Business Tempo
         "T1592.003", // Firmware
         "T1592.004", // Client Configurations
-        "T1597",     // Acquire Victim Org Information (closed-source vendor intel)
-        "T1598",     // Phishing for Information
+        "T1593", // Search Open Websites/Domains (parent; subs are mapped — the paste index that reached it is retired)
+        "T1597", // Acquire Victim Org Information (closed-source vendor intel)
+        "T1598", // Phishing for Information
         "T1598.001", // Spearphishing Service
         "T1598.002", // Spearphishing Attachment
         "T1598.003", // Spearphishing Link

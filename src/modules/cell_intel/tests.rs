@@ -311,16 +311,28 @@ fn build_tower_device_carries_radio_tags_and_evidence_attrs() {
 }
 
 #[test]
-fn build_tower_device_defaults_absent_signal_fields_to_zero() {
+fn build_tower_device_omits_absent_readings_never_asserting_zero_or_false() {
+    // This test used to pin the defect: a tower record without `dbm` / `asu`
+    // / `level` / `pci` / `registered` gained all five as `0` / `false` —
+    // `dbm=0` an unphysically strong signal, `registered=false` a statement
+    // about the handset — asserted as observations (the class fixed for the
+    // Wi-Fi sensors in backlog #16). Absent stays absent.
     let cell = cell_from_json(r#"{"type":"gsm","mcc":"505","mnc":"1","cid":99,"lac":42}"#);
     let key = TowerKey::from_cell(&cell).expect("should succeed");
     let e = build_tower_device(&cell, &key, "s");
     let attrs = &e.evidence[0].attributes;
-    assert_eq!(attrs.get("pci").map(String::as_str), Some("0"));
-    assert_eq!(attrs.get("dbm").map(String::as_str), Some("0"));
-    assert_eq!(attrs.get("asu").map(String::as_str), Some("0"));
-    assert_eq!(attrs.get("level").map(String::as_str), Some("0"));
-    assert_eq!(attrs.get("registered").map(String::as_str), Some("false"));
+    for k in ["pci", "dbm", "asu", "level", "registered"] {
+        assert!(!attrs.contains_key(k), "{k} must be absent: {attrs:?}");
+    }
+    assert_eq!(attrs.get("cid").map(String::as_str), Some("99"));
+    // Readings the tool DID report are recorded verbatim.
+    let cell = cell_from_json(
+        r#"{"type":"gsm","mcc":"505","mnc":"1","cid":99,"lac":42,"dbm":-97,"registered":true}"#,
+    );
+    let key = TowerKey::from_cell(&cell).expect("should succeed");
+    let attrs = &build_tower_device(&cell, &key, "s").evidence[0].attributes;
+    assert_eq!(attrs.get("dbm").map(String::as_str), Some("-97"));
+    assert_eq!(attrs.get("registered").map(String::as_str), Some("true"));
 }
 
 // ---- OpenCellidResp bad-key error shape ----

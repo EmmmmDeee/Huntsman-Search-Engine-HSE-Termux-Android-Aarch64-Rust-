@@ -3791,3 +3791,84 @@ question; `recognised` turns either answer into a visible outcome.
 `dns_axfr` will now error from any host where TCP/53 is filtered — an honest
 "not performed" where it used to be a clean negative.
 
+### REQ-RETIRE-001 (**new, Pass 31 — OBSERVED from two vantage points, RETIRED; urlhaus KEY-GATED; cell readings**)
+
+**Requirement.** A capability whose only endpoint is gone is retired
+honestly (REQ-BGP-001's rule): never left to hard-error on every scan and
+read "unreachable" on every sweep. A key-required module declares itself so,
+and a missing key is a typed skip, never an empty result.
+
+**Observations** (2026-09-15).
+
+- `www.truepeoplesearch.com.au` (the sole source of `au_people` after the
+  White Pages leg was retired in 2026-07): NXDOMAIN from this sandbox
+  (`getent hosts` fails) and from GitHub's runner — the live-drift sweep on
+  `9057132` (run 34970838278) recorded `unreachable au_people … dns error:
+  failed to lookup address information: Name or service not known`; the
+  same line stood on the earlier sweeps. The Wayback availability API was
+  rate-limited (429) when asked for the last capture.
+- `psbdmp.ws`: NXDOMAIN here; the sweep recorded `transport error … curl
+  fallback also failed`; the module's own header already recorded the
+  endpoint "averaging 0/152 ok". `psbdmp.cc` resolves but serves a
+  136-byte HTML stub and answers 404 on `/api/v3/search/…`,
+  `/api/search/…`, `/api/v3/dump/search/…` and `/api/v2/search/…`;
+  `psbdmp.it` and `www.psbdmp.ws` have no DNS.
+- `urlhaus` appeared in the sweep's FREE-module table as `empty urlhaus
+  (ip_address 8.8.8.8)`: the module has no `cost()` (so `Free`) and returned
+  `Ok(empty)` without an Auth-Key — the claim "not in the URLhaus corpus"
+  about a host it never checked, on every keyless scan.
+- `cell_intel` / `signal_radar` tower evidence asserted `dbm=0`, `pci=0`,
+  `asu=0`, `level=0`, `registered=false` for fields the tool omitted (found
+  by the grep that followed backlog #16; a test pinned the zero defaults).
+
+**Repair.** `au_people` and `psbdmp` deleted: registry, README (195 modules,
+146 free / 49 key-gated; seed-type rows Email 44, Username 50, Full Name 29,
+Domain 59), the correlator's breach and identity-registry family lists and
+their pinning tests, the provider catalogues (`osint_providers`,
+`key_harvest` service domains, `key_roi`), the scraper-health text and the
+comments that named them. AU-043 stays: `intelx` and `xposed_or_not` still
+tag `paste-exposed`. `urlhaus`: `cost() = KeyGated`, keyless →
+`Error::MissingKey`, README and API reference say "free key". Cell readings:
+one `signal_readings` helper behind both `cell_intel` builders and the
+`signal_radar` cell parser records only the fields present.
+
+**Evidence.** The registry / README guards (`readme_module_overview_count_
+matches_registry`, `readme_seed_type_module_counts_match_registry`) named
+the exact new counts; `urlhaus_is_key_gated`; `build_tower_device_omits_
+absent_readings_never_asserting_zero_or_false` (the inverted pin);
+`signal_radar::cell_absent_dbm_is_omitted_never_zero`; the correlator's
+source-family tests re-pinned without the retired names.
+
+**Falsification.** Each repair reverted in turn with only its lock run. The
+first `urlhaus` lock (`urlhaus_is_key_gated`, `cost()` only) was INSENSITIVE
+to the keyless path — reverting `Err(MissingKey)` to `Ok(empty)` left it
+green — so `without_an_auth_key_the_lookup_is_the_typed_missing_key_skip…`
+(a keyless `ModuleContext` through `process`) was added and falsified:
+
+```
+# first run (the cost()-only lock)
+[urlhaus key-gate] reverted -> LOCK STILL PASSES (BAD)
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7383 filtered out; finished in 0.00s
+[urlhaus cost()] reverted -> LOCK FAILS (expected)
+    modules::urlhaus::tests::urlhaus_is_key_gated --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7383 filtered out; finished in 0.21s
+[cell_intel readings] reverted -> LOCK FAILS (expected)
+    modules::cell_intel::tests::build_tower_device_omits_absent_readings_never_asserting_zero_or_false --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7383 filtered out; finished in 0.21s
+[signal_radar cell dbm] reverted -> LOCK FAILS (expected)
+    modules::signal_radar::tests::cell_absent_dbm_is_omitted_never_zero --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7383 filtered out; finished in 0.21s
+SOME LOCK INSENSITIVE
+# second run (the keyless-path lock added)
+[urlhaus keyless path] reverted -> LOCK FAILS (expected)
+    modules::urlhaus::tests::without_an_auth_key_the_lookup_is_the_typed_missing_key_skip_never_an_empty_result --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7384 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
+**Residual.** No replacement source exists for an Australian residential
+people-finder; the capability is gone, not migrated. Paste exposure keeps
+two producers. The cell-reading change widens the OpenCellID coordinate
+evidence to every reading present (pci / asu / level were previously not
+emitted there) — more, never fabricated, information.
+

@@ -149,3 +149,31 @@ fn only_no_results_is_the_clean_negative_and_any_other_status_is_a_failure() {
     assert!(err.to_string().contains("invalid_host"), "{err}");
     assert!(has_results("").is_err());
 }
+
+#[test]
+fn urlhaus_is_key_gated() {
+    // The 2026-09-15 live sweep listed `empty urlhaus (ip_address 8.8.8.8)`
+    // among the free modules: declared Free, it returned an empty result
+    // without a key — "not in the URLhaus corpus" about a host never checked.
+    assert!(matches!(UrlHaus.cost(), crate::core::module::ModuleCost::KeyGated));
+}
+
+#[tokio::test]
+async fn without_an_auth_key_the_lookup_is_the_typed_missing_key_skip_never_an_empty_result() {
+    // The 2026-09-15 live sweep listed `empty urlhaus (ip_address 8.8.8.8)`:
+    // keyless, the module returned `Ok(empty)` — "not in the URLhaus corpus"
+    // about a host it never checked. A missing key is the typed skip.
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = ModuleContext {
+        scan_id: "t".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let err = UrlHaus
+        .process(&Target::new(TargetKind::IpAddress, "8.8.8.8"), &ctx)
+        .await
+        .expect_err("no key: a typed skip, never an empty result");
+    assert!(matches!(err, Error::MissingKey(ref k) if k == KEY_ENV), "{err}");
+}

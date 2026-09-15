@@ -337,3 +337,20 @@ fn wifi_absent_readings_are_omitted_never_zero_or_hidden() {
         "no Ssid entity without a reported name"
     );
 }
+
+#[test]
+fn cell_absent_dbm_is_omitted_never_zero() {
+    let json =
+        br#"[{"type":"LTE","registered":true,"cid":12345,"tac":678,"mcc":"505","mnc":"01"}]"#;
+    let r = super::cell::parse_cells(json, "s").expect("parses");
+    let e = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::DeviceId)
+        .expect("the tower");
+    assert!(
+        !e.evidence[0].attributes.contains_key("dbm"),
+        "{:?}",
+        e.evidence[0].attributes
+    );
+}

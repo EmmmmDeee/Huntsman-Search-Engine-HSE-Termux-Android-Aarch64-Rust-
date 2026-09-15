@@ -81,10 +81,11 @@ set -euo pipefail
 # LOCAL gate having been run, so the ratchet was already broken before this
 # change touched a line. Locking in main's accurate current figure, as the
 # notes above did. NOT a permission slip for new undocumented items.
-# Lowered 1043 -> 1042 (2026-09-15): the tree measures 1042 with the command
-# this script runs, so the ceiling follows it down — the ratchet may fall but
-# not rise.
-BASELINE=1042
+# Lowered 1043 -> 1042 -> 1040 (2026-09-15): the tree measures 1040 with the
+# command this script runs (two undocumented public items left with the retired
+# au_people / psbdmp modules), so the ceiling follows it down — the ratchet may
+# fall but not rise.
+BASELINE=1040
 
 cd "$(dirname "$0")/.."
 

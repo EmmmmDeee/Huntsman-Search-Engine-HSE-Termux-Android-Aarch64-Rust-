@@ -20,7 +20,7 @@ use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::http::RequestBuilderExt;
@@ -227,6 +227,12 @@ impl Module for UrlHaus {
         matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress)
     }
 
+    fn cost(&self) -> ModuleCost {
+        // abuse.ch requires an Auth-Key (free at auth.abuse.ch) on every
+        // URLhaus API call; without one the module cannot answer.
+        ModuleCost::KeyGated
+    }
+
     fn category(&self) -> ModuleCategory {
         // POSTs a host/IP to the gated (Auth-Key-required) abuse.ch URLhaus API and
         // surfaces the malicious-URL count, threat families, and blocklist verdicts —
@@ -254,14 +260,16 @@ impl Module for UrlHaus {
 
         // abuse.ch requires a free Auth-Key on every request since 2024. Without
         // one, skip cleanly instead of erroring on every host with a 401.
+        // No key is the typed MissingKey skip, never an empty result: the
+        // module declared itself Free and returned `Ok(empty)` keyless, which
+        // coverage read as "this host is not in the URLhaus corpus" on every
+        // keyless scan (the 2026-09-15 live sweep's `empty urlhaus
+        // (ip_address 8.8.8.8)`) — the class REQ-GITHUB-001 closed for
+        // `github_code_search`.
         let Some((key, key_service)) =
             resolve_key(ctx.key_opt(KEY_ENV), ctx.key_opt(KEY_ENV_FALLBACK))
         else {
-            tracing::debug!(
-                target: "huntsman::urlhaus",
-                "skipped — set HUNTSMAN_ABUSECH_KEY (free at auth.abuse.ch) to enable"
-            );
-            return Ok(ModuleResult::new());
+            return Err(Error::MissingKey(KEY_ENV.into()));
         };
 
         let resp = ctx

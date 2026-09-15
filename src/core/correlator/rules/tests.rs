@@ -81,7 +81,6 @@ use crate::core::entity::Evidence;
             "leakix",
             "niamonx",
             "osintcat",
-            "psbdmp",
             "pwned_passwords",
             "xposed_or_not",
         ] {
@@ -154,7 +153,6 @@ use crate::core::entity::Evidence;
             "gleif_lei",
             "asic_director",
             "au_electoral",
-            "au_people",
             "ahpra",
             "acnc_charities",
         ] {

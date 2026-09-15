@@ -38,7 +38,6 @@ pub(super) const API_SERVICE_DOMAINS: &[(&str, &str)] = &[
     ("leak-lookup.com", "leak_lookup"),
     ("api.leak-lookup.com", "leak_lookup"),
     ("hashes.com", "hashes"),
-    ("psbdmp.ws", "psbdmp"),
     ("ghostproject.fr", "ghostproject"),
     ("scylla.so", "scylla"),
     ("scylla.sh", "scylla"),
