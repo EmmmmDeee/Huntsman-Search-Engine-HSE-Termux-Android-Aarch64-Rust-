@@ -2689,3 +2689,189 @@ CI-bound session cannot supply:
 
 The session should now REPORT the stop condition to the user rather than force
 marginal changes past this point.
+
+## Pass 31 findings
+
+Baseline `origin/main` at `c439970` (#633); branch `claude/charming-meitner-85h3aj`
+restarted from it. Discovery was driven by OBSERVED PRODUCTION BEHAVIOUR rather
+than by reading: the two most recent scheduled `live-drift` runs on `main`
+(2026-09-07, run 34100825380; 2026-09-14, run 34822949388) were pulled and
+diffed. Both are green, and both carry the same persistent non-yields:
+`whois 8.8.8.8 → empty`, `bgpview` (canary) unreachable, `chronicling_america`
+(canary) timed-out, `au_people` DNS-dead, `au_property` "retired/migrated legacy
+URLs", `github_code_search` HTTP 401 on a module declared `Free`. Ranked by the
+method's precedence (false evidence and silent failure before retired endpoints
+and observability), `whois` was traced first.
+
+### REQ-WHOIS-001 (**new, Pass 31 — REPRODUCED, FIXED, FALSIFIED**)
+
+**IANA's bootstrap answer was parsed as the target's own WHOIS record.**
+`process()` asked `whois.iana.org`, followed the referral with
+`query(addr, q).await.unwrap_or(raw)` — so any failed hop (timeout, refused,
+unresolvable) handed IANA's **TLD** record to the parser — and when
+`find_referral` found nothing (IANA's `whois:` line is blank for a registry
+that publishes no WHOIS server; `.vn`, HSE's primary operating jurisdiction, is
+one) the same text was parsed on **every** lookup. Captured over HTTPS from
+`https://www.iana.org/whois?q=…` on 2026-09-15 (port 43 is blocked from this
+sandbox), the `COM` record carries `created: 1985-01-01`, `status: ACTIVE` and
+thirteen `nserver:` lines with glue; `VN` carries `created: 1994-04-14`,
+`status: ACTIVE`, seven `nserver:` lines and an empty `whois:`. Both satisfy
+the module's "actionable data" gate (`registrar || created || nameservers ||
+statuses`), so the target Domain was emitted at `HIGH_PLUSPLUS_PLUS` with the
+TLD's creation date (→ a `Registered` timeline event via
+`core::timeline::classify`), the TLD's status, and each root server — glue
+included, e.g. `a.gtld-servers.net 192.5.6.30 2001:503:a83e:0:0:0:2:30` — as a
+`whois-ns` Domain entity at `CORROBORATED`, which admission accepts
+(`is_fragment_value` only asks for a dot) and the expansion loop pivots on.
+This was `docs/PROVIDER_SWEEP_BACKLOG.md` #47, an UNVERIFIED lead; it is now
+re-derived, reproduced and closed — and worse than the lead said (the no-server
+case is deterministic, not a failed-hop edge).
+
+**Three siblings in the address path, same file.** (a) ARIN's answer for an
+address carries no registrar / creation date / nameservers / `status:`, so the
+domain-shaped gate discarded every ARIN allocation whole — the live sweep's
+persistent `whois 8.8.8.8 → empty` — while the HTTPS RDAP fallback for the same
+address yields operator, country and abuse contact. (b) ARIN lists every
+enclosing allocation least-specific first; a first-match read attributed the
+parent carrier's operator and abuse desk to the address. (c) An RPSL `org:`
+line is an organisation HANDLE (`ORG-RIEN1-RIPE`) — minted as an Organisation
+entity in place of `org-name:` — and the `person:` objects an RIR returns are
+the network's contacts, minted as the address's "registrant" Person.
+
+**Fix.** `src/modules/whois/{mod,parse,client}.rs`: the lookup is
+bootstrap → referral → authoritative → `build_result` over an injected
+`client::Transport` (`client::Tcp` in production). IANA's text is consumed by
+`bootstrap_referral` alone and is never bound to a name the parser could be
+handed; a failed/unresolvable hop is `Error::Module` naming the server (`not
+"no registration record"`); no WHOIS server for the registry is a typed
+`NotApplicable` skip pointing at `rdap_domain`; a load refusal (`WHOIS LIMIT
+EXCEEDED`, DENIC's `access control limit reached`) is `Error::RateLimited`; a
+"No match" reply is the one genuine clean negative. RIR fields
+(`NetRange`/`inetnum`/`inet6num`, `NetName`, `CIDR`, `NetType`,
+`OrgName`/`org-name`/`owner`, `descr`, `RegDate`/`Updated`/`last-modified`) are
+parsed; an address answer is judged on them, anchored on the most specific
+block (`parse::most_specific_network_record`); `org:` handles are never names;
+no Person is minted from an address record; nameserver values are host-only
+and shape-checked (`parse::clean_nameserver`); `whois_server` is stamped on
+the evidence.
+
+**Regression tests** (`src/modules/whois/tests.rs`, on the authentic IANA /
+ARIN / RIPE wire text): `iana_bootstrap_yields_only_the_referral_for_com`,
+`a_registry_without_a_whois_server_is_a_typed_not_applicable_skip`,
+`a_failed_referral_hop_is_a_lookup_failure_never_the_tld_record`,
+`a_vn_domain_is_skipped_without_fabricating_registration_data`,
+`a_url_without_a_host_is_a_typed_skip`,
+`an_arin_address_record_yields_operator_country_and_abuse_contact`,
+`a_url_with_an_ip_host_reads_the_rir_record_as_an_address_record`,
+`arin_nested_allocations_attribute_the_most_specific_block`,
+`an_address_record_without_dates_or_status_is_still_a_record` (the control
+that isolates the address gate — see falsification C below),
+`most_specific_network_record_anchors_on_the_last_netrange_or_first_inetnum`,
+`a_ripe_record_names_the_organisation_not_its_handle_and_mints_no_person`,
+`is_rpsl_org_handle_matches_rir_handles_only`,
+`a_ru_style_org_line_with_a_real_name_still_surfaces_as_the_registrant_org`,
+`a_load_refusal_is_a_typed_rate_limit_not_a_clean_negative`,
+`a_no_match_reply_is_a_clean_negative`,
+`a_record_mentioning_a_quota_in_its_remarks_is_still_a_record`,
+`nameserver_glue_is_stripped_and_non_hosts_dropped`.
+
+### REQ-CORE-013 (**new, Pass 31**)
+
+**A module can say "not attempted" in-band.** `core::error::Error::Skipped
+{ class: SkipClass, reason }` (constructor `Error::skipped`). Dispatch
+(`finalise_module_result`) records it as `ModuleSkipped { class, reason }`,
+tallies it under `modules_skipped`, and touches neither the circuit breaker nor
+module health — never a `ModuleError` (a decision is not a fault) and never
+`ModuleDone { found: 0 }` (which `core::coverage` aggregates to
+`CleanNegative`). Until now a module's only in-band outcomes were a failure or
+a clean negative, so a structural "this provider cannot speak about this
+target" was misreported as one or the other — REQ-COV-001 closed that class
+for the missing-credential case only. Locked at the engine boundary by
+`tests/smoke.rs::a_typed_module_skip_is_a_module_skipped_event_not_an_error_or_a_clean_negative`
+(event shape, `modules_skipped == 1`, `modules_errored == 0`, no coverage row
+for a `NotApplicable` skip) and by the `Error` Display drift guard
+(`every_variant_display_is_pinned`, now exhaustive over the new variant).
+The `whois` behind-HTTPS-proxy domain path is its `Unavailable` user (was a
+silent empty result); the no-WHOIS-server registry is its `NotApplicable` user.
+
+### Baseline reproduction (origin/main `c439970`, worktree, same fixtures)
+
+Three temporary tests appended to the module's test file in a detached
+worktree at `c439970` (never committed), driving the UNMODIFIED baseline
+parser and its gate with the same authentic fixtures the fix's tests use:
+
+```
+$ git -C baseline-wt log --oneline -1
+c439970 Fix rustfmt drift in `query-pack` match arm (#633)
+$ cargo test --lib -- modules::whois::tests::baseline_
+test modules::whois::tests::baseline_iana_tld_record_passes_the_actionable_gate ... ok
+    # IANA's COM record satisfies registrar||created||nameservers||statuses:
+    # created = "1985-01-01", statuses = ["ACTIVE"], nameservers keep their glue
+test modules::whois::tests::baseline_arin_record_is_dropped_by_the_domain_shaped_gate ... ok
+    # ARIN's 8.8.8.8 record fails the same gate while country "US" and
+    # abuse_email "network-abuse@google.com" were parsed — then discarded;
+    # OrgName: was not read at all
+test modules::whois::tests::baseline_ripe_org_handle_is_taken_as_the_organisation ... ok
+    # registrant_org == "ORG-RIEN1-RIPE"
+test result: ok. 3 passed; 0 failed
+```
+
+Each of the three is the defect asserted AS IT STOOD; on this branch the
+corresponding regression tests assert the opposite and pass.
+
+### Verification and falsification (this branch)
+
+```
+$ cargo fmt --all -- --check                                              # clean
+$ cargo clippy --all-targets --locked --features dep-cooldown -- -D warnings   # EXIT 0
+$ RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::bare_urls -D rustdoc::invalid_html_tags" \
+    cargo doc --no-deps --document-private-items --locked --features dep-cooldown   # EXIT 0
+$ cargo test --all --lib --bins --tests --locked --features dep-cooldown
+    # lib: ok. 7317 passed; 0 failed; 23 ignored — every integration binary ok (0 failed)
+$ cargo test --doc --locked                    # ok. 77 passed; 0 failed; 3 ignored
+$ scripts/doc_coverage.sh                      # EXIT 0
+$ cargo test --lib -- modules::whois           # ok. 52 passed (after the control test was added)
+$ cargo test --test smoke -- a_typed_module_skip missing_key_releases   # ok. 2 passed
+
+# FALSIFICATION — each root cause reintroduced in turn, tested, then restored
+# from a byte-identical copy (`cmp` verified) and re-tested:
+# A. `transport.authoritative(..).await.unwrap_or(iana)` — the original fallback
+$ cargo test --lib -- modules::whois
+test modules::whois::tests::a_failed_referral_hop_is_a_lookup_failure_never_the_tld_record ... FAILED
+test result: FAILED. 50 passed; 1 failed
+# B. `let record = response;` — first-match over the whole ARIN answer
+test modules::whois::tests::arin_nested_allocations_attribute_the_most_specific_block ... FAILED
+test result: FAILED. 50 passed; 1 failed
+# C. the domain-shaped gate (registrar||created||nameservers||statuses) for addresses
+#    First attempt: 51 passed, 0 failed — the ARIN/RIPE fixtures carry RegDate/created,
+#    so the gate change was NOT locked by any test (the regression tests passed for
+#    the wrong reason). Added the date-less/status-less control record, re-ran:
+test modules::whois::tests::an_address_record_without_dates_or_status_is_still_a_record ... FAILED
+test result: FAILED. 51 passed; 1 failed
+# restored after each: ok. 52 passed; 0 failed
+```
+
+**Not verifiable here.** Raw TCP/43 is blocked from this sandbox (and behind
+`HTTPS_PROXY` the module takes its RDAP path), so the live port-43 hop is
+proven through the offline transport seam against byte-faithful captures of
+the live wire dialects, not by a live dial. The next scheduled `live-drift` run
+(Mondays, GitHub-hosted runners with port 43 open) exercises `whois 8.8.8.8`
+end-to-end: the expected transition is `empty → alive`.
+
+### Re-ranked, not taken this pass (recorded for the next)
+
+From the same two live sweeps, all honest failures (lower precedence than the
+false-evidence class above): `bgpview` canary unreachable both weeks and
+`api.bgpview.io` has NO DNS record from this sandbox either (ENDPOINT_RETIRED
+probable — `ip_registry` also calls it); `chronicling_america` canary timed-out
+both weeks; `au_people` DNS-dead both weeks; `au_property` self-documented
+retired endpoints; `github_code_search` declared `Free` but `/search/code`
+requires authentication (401 both weeks — CONFIGURATION_FAILURE); and the
+drift harness itself: a canary that is unreachable or timed-out stays green
+indefinitely, with no cross-run memory, contrary to the canary policy that
+repeated non-yield must degrade the source. `rdap_domain` maps rdap.org's 404
+to a clean negative for both "no such domain" and "no RDAP server for this
+TLD" — the sibling of the `.vn` case, now expressible with `Error::skipped`.
+`docs/PROVIDER_SWEEP_BACKLOG.md` still lists 42 unverified leads of the
+"failure read as clean negative" class (#46 `trove_au` v2-shape-on-v3-endpoint
+is the highest-value of them).

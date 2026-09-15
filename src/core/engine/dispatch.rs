@@ -623,6 +623,33 @@ impl super::ScanEngine {
                     },
                 );
             }
+            Ok(Err(Error::Skipped { class, reason })) => {
+                // The module decided not to query the provider for this target
+                // and said so in-band (`Error::skipped`). A decision, not a
+                // fault: it is tallied under `skipped` (never `errored`), feeds
+                // neither the circuit breaker nor module health, and is emitted
+                // as a typed `ModuleSkipped` so `core::coverage` reads it as
+                // "not attempted" — a `NotApplicable` skip vanishes from the
+                // coverage verdict, an `Unavailable` one is an actionable gap.
+                // Before this arm existed the module's only in-band options
+                // were `Err` (a false failure) or `Ok(empty)` (recorded as
+                // `ModuleDone { found: 0 }` → a false clean negative).
+                //
+                // The dedup-ledger entry is deliberately kept, unlike the
+                // `MissingKey` arm above: nothing discovered later in the scan
+                // (a hot-injected key) can turn a structural "not applicable"
+                // or a host-level "unavailable" into an answer.
+                state.stats.skipped += 1;
+                debug!(module = name, class = class.as_str(), %reason, "skipped — module opted out");
+                self.emit(
+                    cx.scan_id,
+                    EventKind::ModuleSkipped {
+                        module: name.into(),
+                        reason,
+                        class: Some(class),
+                    },
+                );
+            }
             Ok(Err(e)) => {
                 state.stats.errored += 1;
                 // Feed the breaker: a rate-limit/quota error trips immediately; any

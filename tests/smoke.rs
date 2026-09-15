@@ -2622,6 +2622,93 @@ impl Module for KeyGatedNeedsKey {
     }
 }
 
+/// A module that decides NOT to query its provider for this target and says so
+/// in-band with the typed `Error::Skipped` — the whois module's "IANA lists no
+/// WHOIS server for this registry" case.
+struct OptsOutNotApplicable;
+
+#[async_trait]
+impl Module for OptsOutNotApplicable {
+    fn name(&self) -> &'static str {
+        "opts_out_not_applicable"
+    }
+    fn priority(&self) -> u8 {
+        90
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Domain)
+    }
+    async fn process(&self, _t: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
+        Err(huntsman_search_engine::core::error::Error::skipped(
+            huntsman_search_engine::core::event::SkipClass::NotApplicable,
+            "registry publishes no WHOIS server for this namespace",
+        ))
+    }
+}
+
+/// A typed in-band skip is recorded as exactly that: a `ModuleSkipped` event
+/// carrying the module's class and reason, tallied under `modules_skipped`,
+/// never a `ModuleError` (which would trip the breaker and degrade health for
+/// a decision, not a fault) and never a `ModuleDone { found: 0 }` (which
+/// `core::coverage` reads as a CLEAN NEGATIVE — the false "searched, found
+/// nothing" this variant exists to make impossible). A `NotApplicable` skip
+/// then vanishes from the coverage verdict: the provider had nothing to say,
+/// so its silence is not a gap and not a negative.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_typed_module_skip_is_a_module_skipped_event_not_an_error_or_a_clean_negative() {
+    use huntsman_search_engine::core::coverage::provider_coverage_from_events;
+    use huntsman_search_engine::core::event::{EventKind, SkipClass};
+
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(OptsOutNotApplicable)],
+        "typed-skip",
+        TargetKind::Domain,
+        "example-subject.vn",
+    );
+    let scan = Scan::new(sid.clone(), target.clone());
+    engine.run(scan, target, ctx).await.unwrap();
+
+    let events = store.events_for_scan(&sid).unwrap();
+    let mine: Vec<&EventKind> = events
+        .iter()
+        .map(|e| &e.kind)
+        .filter(|k| {
+            matches!(
+                k,
+                EventKind::ModuleSkipped { module, .. }
+                | EventKind::ModuleError { module, .. }
+                | EventKind::ModuleDone { module, .. }
+                    if module == "opts_out_not_applicable"
+            )
+        })
+        .collect();
+    assert_eq!(mine.len(), 1, "exactly one outcome event: {mine:?}");
+    let EventKind::ModuleSkipped { reason, class, .. } = mine[0] else {
+        panic!(
+            "a typed skip must surface as ModuleSkipped, got {:?}",
+            mine[0]
+        );
+    };
+    assert_eq!(*class, Some(SkipClass::NotApplicable));
+    assert_eq!(
+        reason,
+        "registry publishes no WHOIS server for this namespace"
+    );
+
+    let scan = store.get_scan(&sid).unwrap().expect("scan persisted");
+    assert_eq!(scan.modules_skipped, 1, "tallied as skipped");
+    assert_eq!(scan.modules_errored, 0, "a decision is not a fault");
+
+    // Coverage: a NotApplicable skip is neither a gap nor a negative, so the
+    // module has no row at all — it can never vouch for a "clean" sweep.
+    let rows = provider_coverage_from_events(&events);
+    assert!(
+        rows.iter()
+            .all(|r| r.provider_id != "opts_out_not_applicable"),
+        "a not-applicable skip must not produce a coverage row: {rows:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn missing_key_releases_the_dispatch_ledger_entry() {
     use huntsman_search_engine::core::engine::DispatchLog;
