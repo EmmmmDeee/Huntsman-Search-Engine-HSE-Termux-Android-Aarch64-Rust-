@@ -270,7 +270,7 @@ fn build_asns(ni: &NetworkInfo, scan_id: &str) -> Vec<Entity> {
         ce.tag(SRC);
         ce.tag("network-prefix");
         let mut ev = Evidence::new(SRC, "Covering prefix (RIPEstat network-info)");
-        // Stamp the announcing ASN — matching `bgpview`'s Cidr evidence, which
+        // Stamp the announcing ASN on the prefix's evidence, which
         // already carries `asn`/`name` — so the prefix's origin network is on
         // record even without a consuming attribution rule. Only when the
         // origin is unambiguous (a single announcing ASN); a multi-origin

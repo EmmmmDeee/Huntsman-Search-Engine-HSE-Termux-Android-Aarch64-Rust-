@@ -309,7 +309,7 @@ fn extract_entities(
         // ── Subnet (geoloc CIDR) ─────────────────────────────────────────
         // ONYPHE's `geoloc` category also carries the covering `subnet` for
         // the resolved IP. It's a secondary field on a geoloc document, not
-        // an authoritative BGP-sourced prefix (cf. bgpview/ripestat's confidence::HIGH_PLUS-
+        // an authoritative BGP-sourced prefix (cf. ripestat's confidence::HIGH_PLUS-
         // confidence::HIGH_PLUSPLUS), so confidence is pinned lower in the unverified range.
         if let Some(subnet) = vstr(r, "subnet").filter(|s| s.contains('/'))
             && seen.insert(format!("@cidr:{subnet}"))

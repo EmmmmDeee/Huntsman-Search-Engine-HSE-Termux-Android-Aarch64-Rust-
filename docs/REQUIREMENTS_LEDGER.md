@@ -3407,3 +3407,71 @@ which is now expected to go **red on `bgpview`** (and on `crtsh` /
 `chronicling_america` if they time out on all three attempts) — the truthful
 signal, not a regression: the endpoint must be migrated or the capability
 retired (the next unit of work, `docs/PROVIDER_SWEEP_BACKLOG.md` #25).
+
+### REQ-BGP-001 (**new, Pass 31 — OBSERVED, RETIRED / REPLACED, VERIFIED with live RDAP captures**)
+
+**Requirement.** A retired endpoint is migrated or its capability retired
+honestly — never left to hard-error on every scan and to read "unreachable" on
+every sweep.
+
+**Observation** (class ENDPOINT_RETIRED). `api.bgpview.io` no longer resolves:
+`getent hosts api.bgpview.io` fails here, the proxy's CONNECT returns 502, the
+2026-09-14 sweep recorded the `bgpview` canary "transport error … curl fallback
+also failed", and `docs/PROVIDER_SWEEP_BACKLOG.md` #25 recorded the NXDOMAIN
+(`bgpview.io` itself has no DNS either). Consequences on every scan: the
+`bgpview` module errored on every ASN and IP target (breaker and health
+penalties for a provider that cannot answer); `ip_registry`'s ASN path — BGPView
+only — hard-errored on every ASN target; its IP path silently lost the
+announcing-ASN half (a debug line). After REQ-DRIFT-001 the weekly sweep would
+have gone red on it every Monday.
+
+**Repair.** The endpoint's two capabilities already have an authority elsewhere:
+
+- IP → announcing ASN + covering prefix (+ abuse contact): `ripestat`
+  (`network-info`, a live canary) — `bgpview`'s IP path and `ip_registry`'s
+  BGPView IP half duplicated it. Both are removed; `ripestat` is the one
+  authority.
+- ASN → registry record: RDAP `autnum` (RFC 9083 §5.5) —
+  `https://rdap.arin.net/registry/autnum/{asn}`, ARIN's root redirecting to the
+  authoritative RIR (observed: `AS3320` → `rdap.db.ripe.net`, 200). This is the
+  same corpus `ip_registry`'s IP path already reads, so the module now speaks
+  one protocol to one registry system. `build_autnum_entities` emits the
+  registered `Asn` (handle, name, status, the RIR that answered via `port43`,
+  every dated event, a number range when the object covers one), the operator
+  `Organisation` (a registrant whose vCard says `kind: org` — RIPE's
+  `individual`-kind maintainer and routing-registry handles such as `DTAG-RR`
+  are never minted as organisations) and role-tagged, deduplicated contact
+  `Email`s through the crate's role-local-part / provider-domain gate. RDAP
+  carries no website, so the BGPView-era `asn-website` `Url` is gone rather
+  than fabricated. `bgpview`'s ASN → announced-prefixes pivot is `ripestat`'s
+  `announced-prefixes`.
+- The `bgpview` module is deleted (registry, README list and counts — 197
+  modules, 149 free — the API reference row, the correlator's infra-family
+  name list, the ASN search dork's `site:bgpview.io`, and every comment that
+  described behaviour through it). The ASN canary is now
+  `("ip_registry", Asn, "AS15169")`.
+
+**Evidence.** Fixtures in `ip_registry/tests.rs` are the live RIR answers
+captured 2026-09-15 (`rdap.arin.net` for AS15169; RIPE's for AS3320 via ARIN's
+redirect), trimmed to the fields read with structure and values verbatim; a
+synthetic contact tree in the RIR's shape covers the emitted-contact path the
+authentic captures cannot (their only mailboxes are role local-parts, which the
+gate drops by design). The transport path is driven against a loopback RDAP
+(record → entities; 404 → clean negative; 503 → the module's error).
+
+**Falsification.** The builder's two judgement rules reverted (any registrant
+minted as the organisation; contacts not deduplicated across roles):
+
+```
+test modules::ip_registry::tests::autnum_contacts_are_role_tagged_deduplicated_and_gated ... FAILED
+test modules::ip_registry::tests::ripe_autnum_picks_the_org_kind_registrant_never_a_maintainer_handle ... FAILED
+test result: FAILED. 15 passed; 2 failed
+```
+
+Restored: 17 passed.
+
+**Residual.** The live `autnum` fetch was observed with `curl` from this
+sandbox, not through the module's own client (raw port-43 is irrelevant here —
+this is HTTPS — but the module was not run end to end against the RIR from the
+sandbox); the next scheduled sweep exercises the new `ip_registry` ASN canary on
+GitHub's runners. Backlog #25 is closed.

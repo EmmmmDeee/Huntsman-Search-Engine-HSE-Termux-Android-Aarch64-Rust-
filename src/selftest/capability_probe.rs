@@ -44,7 +44,7 @@
 //! ([`ProbeReport::is_dead_canary`]): the provider is down for the whole run or
 //! its endpoint is retired, and the capability is gone as surely as under drift.
 //! Before this the sweep tolerated it forever — `api.bgpview.io` lost its DNS
-//! and the `bgpview` canary read "unreachable" on every weekly run while the
+//! and the (since retired) `bgpview` canary read "unreachable" on every weekly run while the
 //! workflow stayed green.
 
 use std::collections::HashMap;
@@ -218,7 +218,7 @@ pub const CANARY_PROBES: &[(&str, TargetKind, &str)] = &[
     // crt.sh Certificate Transparency logs for a domain that has issued certs.
     ("crtsh", TargetKind::Domain, "example.com"),
     // BGPView ASN → prefix enumeration for Google's well-known ASN.
-    ("bgpview", TargetKind::Asn, "AS15169"),
+    ("ip_registry", TargetKind::Asn, "AS15169"),
     // RIPEstat network info for a public IP — always resolves a holder/prefix.
     ("ripestat", TargetKind::IpAddress, "8.8.8.8"),
     // WikiTree profile search for a name the single family tree certainly
@@ -809,7 +809,7 @@ mod tests {
 
     #[test]
     fn attempts_for_gives_a_canary_three_and_any_other_module_one() {
-        assert_eq!(attempts_for("bgpview"), CANARY_ATTEMPTS);
+        assert_eq!(attempts_for("ip_registry"), CANARY_ATTEMPTS);
         assert_eq!(attempts_for("ip_geo"), 3);
         assert_eq!(attempts_for("gravatar"), 1);
         assert_eq!(attempts_for("not_a_module"), 1);
@@ -826,20 +826,20 @@ mod tests {
         let dns = || ProbeOutcome::Unreachable {
             reason: "dns error: Name or service not known".into(),
         };
-        assert!(report("bgpview", dns()).is_dead_canary());
-        assert!(report("bgpview", ProbeOutcome::TimedOut).is_dead_canary());
+        assert!(report("ip_registry", dns()).is_dead_canary());
+        assert!(report("ip_registry", ProbeOutcome::TimedOut).is_dead_canary());
         assert!(
-            !report("bgpview", ProbeOutcome::Empty).is_dead_canary(),
+            !report("ip_registry", ProbeOutcome::Empty).is_dead_canary(),
             "an answer that parsed to nothing is drift, not a dead provider"
         );
-        assert!(!report("bgpview", ProbeOutcome::Alive { found: 1 }).is_dead_canary());
+        assert!(!report("ip_registry", ProbeOutcome::Alive { found: 1 }).is_dead_canary());
         assert!(
             !report("gravatar", dns()).is_dead_canary(),
             "a non-canary's transport failure stays tolerated"
         );
         assert!(!report("gravatar", ProbeOutcome::TimedOut).is_dead_canary());
         // Drift and death are disjoint verdicts.
-        assert!(!report("bgpview", dns()).is_confirmed_drift());
+        assert!(!report("ip_registry", dns()).is_confirmed_drift());
     }
 
     /// A module that fails its first `fail_first` calls at the transport level

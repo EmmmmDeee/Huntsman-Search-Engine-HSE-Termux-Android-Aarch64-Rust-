@@ -8,7 +8,7 @@
 **All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition —
 SpiderFoot-inspired breadth without the daemon or the footprint.**
 
-Pure-Rust OSINT / GEOINT platform with **198 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **197 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 dark-console Web UI, zero native dependencies, keyless-first.
 
@@ -195,7 +195,7 @@ single-instance constraint (local SQLite — do not scale replicas above 1).
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 198 modules
+hse modules                                                 # list all 197 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
 hse keys status                                             # multi-key pool: what's loaded, per source
@@ -367,9 +367,9 @@ HSE's engine.
 | Username | `--kind username` | `johndoe` | 51 |
 | Phone | `--kind phone` | `+61400000000` | 18 |
 | Full Name | `--kind name` | `Jordan Leigh Meyers` | 30 |
-| IP Address | `--kind ip` | `1.1.1.1` | 42 |
+| IP Address | `--kind ip` | `1.1.1.1` | 41 |
 | Domain | `--kind domain` | `example.com` | 60 |
-| ASN | `--kind asn` | `AS13335` | 4 |
+| ASN | `--kind asn` | `AS13335` | 3 |
 | CIDR | `--kind cidr` | `1.1.1.0/24` | 2 |
 | Coordinates | `--kind coords` | `-27.47,153.02` | 19 |
 | Address | `--kind address` | `Nundah, QLD 4012` | 5 |
@@ -390,7 +390,7 @@ respectively.
 
 ---
 
-## Module Overview (198 modules — 150 free, 48 key-gated/paid)
+## Module Overview (197 modules — 149 free, 48 key-gated/paid)
 
 > A curated highlight of the modules below (not the full list). The complete, always-current catalogue
 > with target kinds and output entities lives in the running software — run
@@ -402,7 +402,7 @@ respectively.
 - **Social**: `crates_io`, `github_code_search`, `github_user`, `hacker_news`, `keybase`, `npm_author`, `reddit_user`, `social_probe`, `streaming_probe`, `username_search`, `username_variants`
 - **People**: `ahpra`, `au_electoral`, `au_people`, `au_property`, `contact_enrich`, `employer_pivot`, `gravatar`, `name_intel`, `openarch`, `payid`, `pgp`, `wikidata`, `wikitree`
 - **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `hackertarget`, `mnemonic_pdns`, `rdap_domain`, `subdomain_center`, `subdomain_takeover`, `typosquat`, `whois`
-- **IP/infrastructure**: `bgpview`, `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipinfo`, `ipquery`, `netblock`, `portscan`, `ripestat`, `shodan`, `urlscan`
+- **IP/infrastructure**: `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipinfo`, `ipquery`, `netblock`, `portscan`, `ripestat`, `shodan`, `urlscan`
 - **Geolocation**: `beacondb`, `breach_timezone`, `cell_local`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mylnikov`, `open_meteo_geo`, `overpass`, `phone_geo`, `photon`, `qld_cadastre`, `social_location`, `sunrise_sunset`
 - **Threat intel**: `urlhaus`
 - **Email**: `disposable_check`, `email_canonical`, `email_parse`, `smtp_vrfy`

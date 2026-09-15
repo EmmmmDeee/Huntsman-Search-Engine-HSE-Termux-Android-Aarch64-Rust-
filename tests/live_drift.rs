@@ -17,7 +17,7 @@
 //!   * **panicked**    — the module's parser crashed on the live response.
 //!
 //! Only a curated **canary** set (`capability_probe::CANARY_PROBES`, e.g.
-//! `ip_geo` / `crtsh` / `bgpview` / `ripestat`) asserts must-yield: an `empty`
+//! `ip_geo` / `crtsh` / `ip_registry` / `ripestat`) asserts must-yield: an `empty`
 //! there is confirmed wire-format drift and **fails** the run. A non-canary
 //! `empty` is only informational — its sample may legitimately have no data
 //! (e.g. a breach lookup for a clean address) — so it never fails. Transport
@@ -149,7 +149,7 @@ async fn fleet_capability_drift() {
     // retried): the provider is down for the whole run or its endpoint is
     // retired, and the capability is gone as surely as under drift. This used
     // to be tolerated indefinitely — `api.bgpview.io` lost its DNS and the
-    // `bgpview` canary read "unreachable" on every weekly run while this test
+    // (since retired) `bgpview` canary read "unreachable" on every weekly run while this test
     // stayed green.
     let dead_msg = if dead.is_empty() {
         String::new()

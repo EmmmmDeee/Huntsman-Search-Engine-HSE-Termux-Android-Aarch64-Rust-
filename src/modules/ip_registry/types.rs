@@ -59,54 +59,30 @@ pub(super) struct RdapEvent {
     pub(super) date: Option<String>,
 }
 
-// BGPView ASN types
+// RDAP autnum types
 
+/// An RDAP `autnum` object (RFC 9083 §5.5) — the registry record of an ASN,
+/// served by ARIN's RDAP root and redirected to the authoritative RIR. Only the
+/// fields the ASN extraction reads are modelled; the contact tree reuses
+/// [`RdapContact`] exactly as the IP allocation record does.
 #[derive(Deserialize)]
-pub(super) struct AsnResp {
-    pub(super) data: Option<AsnData>,
-    pub(super) status: String,
-}
-
-#[derive(Deserialize)]
-pub(super) struct AsnData {
+pub(super) struct AutnumResp {
+    #[serde(default)]
+    pub(super) handle: Option<String>,
+    #[serde(default)]
     pub(super) name: Option<String>,
-    pub(super) description_short: Option<String>,
-    pub(super) country_code: Option<String>,
-    pub(super) rir_allocation: Option<RirInfo>,
-    pub(super) email_contacts: Option<Vec<String>>,
-    pub(super) abuse_contacts: Option<Vec<String>>,
-    pub(super) website: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub(super) struct RirInfo {
-    pub(super) rir_name: Option<String>,
-    pub(super) date_allocated: Option<String>,
-}
-
-// BGPView IP types
-
-#[derive(Deserialize)]
-pub(super) struct IpResp {
-    pub(super) data: Option<IpData>,
-    pub(super) status: String,
-}
-
-#[derive(Deserialize)]
-pub(super) struct IpData {
-    pub(super) prefixes: Option<Vec<PrefixInfo>>,
-}
-
-#[derive(Deserialize)]
-pub(super) struct PrefixInfo {
-    pub(super) prefix: Option<String>,
-    pub(super) asn: Option<AsnRef>,
-}
-
-#[derive(Deserialize)]
-pub(super) struct AsnRef {
-    pub(super) asn: Option<u64>,
-    pub(super) name: Option<String>,
-    pub(super) description: Option<String>,
-    pub(super) country_code: Option<String>,
+    #[serde(default, rename = "startAutnum")]
+    pub(super) start_autnum: Option<u64>,
+    #[serde(default, rename = "endAutnum")]
+    pub(super) end_autnum: Option<u64>,
+    #[serde(default)]
+    pub(super) status: Vec<String>,
+    /// The registry's WHOIS host (`whois.arin.net`, `whois.ripe.net`) — names
+    /// which RIR answered after the bootstrap redirect.
+    #[serde(default)]
+    pub(super) port43: Option<String>,
+    #[serde(default)]
+    pub(super) events: Vec<RdapEvent>,
+    #[serde(default)]
+    pub(super) entities: Vec<RdapContact>,
 }

@@ -2,10 +2,8 @@ use crate::core::entity::{Entity, EntityKind};
 use crate::core::module::Module;
 use crate::core::scan::{Target, TargetKind};
 
-use super::types::{AsnResp, IpResp, RdapResp};
-use super::{
-    IpRegistry, build_asn_entities, build_bgp_ip_entities, build_rdap_entities, contact_emails,
-};
+use super::types::{AutnumResp, RdapResp};
+use super::{IpRegistry, build_autnum_entities, build_rdap_entities, rdap_lookup_asn};
 
 fn of_kind(ents: &[Entity], kind: EntityKind) -> Option<&Entity> {
     ents.iter().find(|e| e.kind == kind)
@@ -47,27 +45,6 @@ fn parse_arin_rdap_response() {
     assert_eq!(r.country.as_deref(), Some("US"));
     assert_eq!(r.cidr0_cidrs.len(), 1);
     assert_eq!(r.events.len(), 2);
-}
-
-#[test]
-fn parse_bgpview_asn_response() {
-    let raw = r#"{
-      "status": "ok",
-      "data": {
-        "name": "GOOGLE",
-        "description_short": "Google LLC",
-        "country_code": "US",
-        "rir_allocation": {"rir_name": "ARIN", "date_allocated": "2000-03-30"},
-        "email_contacts": ["noc@google.com"],
-        "abuse_contacts": ["abuse@google.com"],
-        "website": "https://about.google"
-      }
-    }"#;
-    let r: AsnResp = serde_json::from_str(raw).expect("should succeed");
-    assert_eq!(r.status, "ok");
-    let data = r.data.expect("should succeed");
-    assert_eq!(data.name.as_deref(), Some("GOOGLE"));
-    assert_eq!(data.country_code.as_deref(), Some("US"));
 }
 
 // ── build_rdap_entities (pure) ──────────────────────────────────────
@@ -260,195 +237,204 @@ fn rdap_abuse_contact_with_non_email_vcard_yields_no_email() {
     assert!(of_kind(&ents, EntityKind::Email).is_none());
 }
 
-// ── build_bgp_ip_entities (pure) ────────────────────────────────────
+// ── build_autnum_entities (pure) — fixtures captured from the live RIRs on
+//    2026-09-15 via https://rdap.arin.net/registry/autnum/{n}, trimmed to the
+//    fields this module reads (structure and values verbatim) ────────────────
 
-fn ip_resp(json: &str) -> IpResp {
-    serde_json::from_str(json).expect("valid IpResp fixture")
+/// ARIN's own answer for AS15169 (Google): one `org`-kind registrant with the
+/// abuse and technical desks nested beneath it.
+const ARIN_AS15169: &str = r#"{"objectClassName":"autnum","handle":"AS15169","name":"GOOGLE","startAutnum":15169,"endAutnum":15169,"status":["active"],"port43":"whois.arin.net","events":[{"eventAction":"last changed","eventDate":"2012-02-24T09:44:34-05:00"},{"eventAction":"registration","eventDate":"2000-03-30T00:00:00-05:00"}],"entities":[{"handle":"GOGL","roles":["registrant"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Google LLC"],["kind",{},"text","org"]]],"entities":[{"handle":"ABUSE5250-ARIN","roles":["abuse"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Abuse"],["org",{},"text","Google Inc."],["kind",{},"text","group"],["email",{},"text","network-abuse@google.com"]]]},{"handle":"ZG39-ARIN","roles":["administrative","technical"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Google LLC"],["org",{},"text","Google LLC"],["kind",{},"text","group"],["email",{},"text","arin-contact@google.com"]]]}]},{"handle":"ZG39-ARIN","roles":["technical"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Google LLC"],["org",{},"text","Google LLC"],["kind",{},"text","group"],["email",{},"text","arin-contact@google.com"]]]}]}"#;
+
+/// RIPE's answer for AS3320 (Deutsche Telekom), reached through ARIN's
+/// redirect: several `registrant`-role entities — the organisation plus the
+/// maintainer / routing-registry handles marked `kind: individual`.
+const RIPE_AS3320: &str = r#"{"objectClassName":"autnum","handle":"AS3320","name":"DTAG","startAutnum":3320,"endAutnum":3320,"status":["active"],"port43":"whois.ripe.net","events":[{"eventAction":"registration","eventDate":"1970-01-01T00:00:00Z"},{"eventAction":"last changed","eventDate":"2020-12-11T15:33:02Z"}],"entities":[{"handle":"DTAG-RR","roles":["registrant"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","DTAG-RR"],["kind",{},"text","individual"]]]},{"handle":"ORG-DTA2-RIPE","roles":["registrant"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Deutsche Telekom AG"],["kind",{},"text","org"]]]},{"handle":"RIPE-NCC-END-MNT","roles":["registrant"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","RIPE-NCC-END-MNT"],["kind",{},"text","individual"],["org",{},"text","ORG-NCC1-RIPE"]]]},{"handle":"SB15220-RIPE","roles":["administrative","technical"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Sebastian Becker"],["kind",{},"text","individual"]]]},{"handle":"DTAG3-RIPE","roles":["abuse"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Deutsche Telekom LIR Abuse Contact"],["kind",{},"text","group"],["email",{"type":"abuse"},"text","abuse@telekom.de"]]],"entities":[{"handle":"DTAG-NIC","roles":["registrant"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","DTAG-NIC"],["kind",{},"text","individual"]]]},{"handle":"DTAG1-RIPE","roles":["administrative","technical"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","DTAG Internet Routing Registry"],["kind",{},"text","group"]]]}]}]}"#;
+
+fn autnum(json: &str) -> AutnumResp {
+    serde_json::from_str(json).expect("valid autnum fixture")
 }
 
 #[test]
-fn bgp_ip_yields_announcing_asn() {
-    let body = ip_resp(
-        r#"{ "status":"ok", "data": { "prefixes": [
-            { "prefix":"8.8.8.0/24", "asn": {
-                "asn":15169, "name":"GOOGLE", "description":"Google LLC", "country_code":"US" } }
-        ] } }"#,
-    );
-    let ents = build_bgp_ip_entities(&body, "8.8.8.8", "s");
-    assert_eq!(ents.len(), 1);
-    let e = &ents[0];
-    assert_eq!(e.value, "AS15169");
-    assert!(e.has_tag("announcing"));
-    let attr = |k: &str| e.evidence[0].attributes.get(k).map(String::as_str);
-    assert_eq!(attr("asn_number"), Some("15169"));
-    assert_eq!(attr("prefix"), Some("8.8.8.0/24"));
-    assert_eq!(attr("handle"), Some("GOOGLE"));
-    assert_eq!(attr("name"), Some("Google LLC"));
-    assert_eq!(attr("country"), Some("US"));
-    // Regression: this evidence used to be stamped with this module's own
-    // `SRC` ("ip_registry") instead of `bgpview::SRC` — since both this
-    // module and the standalone `bgpview` module query the identical
-    // `api.bgpview.io/ip/{ip}` endpoint for the same fact, that made
-    // `Entity::source_count()` read one BGPView response as two independent
-    // corroborating sources. Also confirms the confidence tier matches
-    // `bgpview::ip_entities`'s own HIGH_PLUSPLUS for this identical
-    // inference, not an unexplained higher value.
-    assert_eq!(e.evidence[0].source, crate::modules::bgpview::SRC);
-    assert_eq!(e.confidence, crate::core::confidence::HIGH_PLUSPLUS);
-}
-
-#[test]
-fn bgp_ip_not_ok_or_asnless_yields_nothing() {
-    assert!(build_bgp_ip_entities(&ip_resp(r#"{"status":"error"}"#), "8.8.8.8", "s").is_empty());
-    // A leading prefix with no ASN reference produces nothing.
-    let no_asn =
-        ip_resp(r#"{ "status":"ok", "data": { "prefixes": [ { "prefix":"8.8.8.0/24" } ] } }"#);
-    assert!(build_bgp_ip_entities(&no_asn, "8.8.8.8", "s").is_empty());
-}
-
-// ── build_asn_entities + contact_emails (pure) ──────────────────────
-
-fn asn_resp(json: &str) -> AsnResp {
-    serde_json::from_str(json).expect("valid AsnResp fixture")
-}
-
-#[test]
-fn asn_record_yields_registry_contacts_and_website() {
-    // Deliberately NOT google.com: that domain is in `INFRA_PROVIDER_ROOTS` by design
-    // and would suppress every contact regardless of local-part (see
-    // `asn_suppresses_infra_mail_domain_contacts`), defeating the point of
-    // this fixture — exercising the ASN-contact parsing itself.
-    // "abuse@acmenet.example" is deliberately excluded from this fixture's
-    // survival assertions — a role-local-part contact is infrastructure, not
-    // the subject's own mail; see `asn_suppresses_role_local_part_abuse_email`.
-    let body = asn_resp(
-        r#"{ "status":"ok", "data": {
-            "name":"ACME", "description_short":"Acme Networks LLC", "country_code":"US",
-            "rir_allocation": {"rir_name":"ARIN", "date_allocated":"2000-03-30"},
-            "email_contacts": ["network-ops@acmenet.example"],
-            "abuse_contacts": ["abuse@acmenet.example"],
-            "website": "https://acmenet.example" } }"#,
-    );
-    let ents = build_asn_entities(&body, 15169, "s");
-    // registry ASN + operator org + admin email + website URL (the role-local
-    // -part abuse contact is suppressed at the source).
-    assert_eq!(ents.len(), 4);
-
-    let asn = of_kind(&ents, EntityKind::Asn).expect("should succeed");
+fn arin_autnum_yields_the_registered_asn_and_its_operator() {
+    let ents = build_autnum_entities(&autnum(ARIN_AS15169), 15169, "s");
+    let asn = of_kind(&ents, EntityKind::Asn).expect("the ASN registry entity");
     assert_eq!(asn.value, "AS15169");
-    assert!(asn.has_tag("registered"));
-    let attr = |k: &str| asn.evidence[0].attributes.get(k).map(String::as_str);
-    assert_eq!(attr("handle"), Some("ACME"));
-    assert_eq!(attr("name"), Some("Acme Networks LLC"));
-    assert_eq!(attr("rir"), Some("ARIN"));
-    assert_eq!(attr("allocated"), Some("2000-03-30"));
-
-    let org = of_kind(&ents, EntityKind::Organisation).expect("should succeed");
-    assert_eq!(org.value, "Acme Networks LLC");
-    assert!(org.has_tag("bgpview"));
-    assert!(org.has_tag("asn-operator"));
-
-    let emails: Vec<&str> = ents
-        .iter()
-        .filter(|e| e.kind == EntityKind::Email)
-        .map(|e| e.value.as_str())
-        .collect();
-    assert_eq!(emails, vec!["network-ops@acmenet.example"]);
+    assert!(asn.has_tag("registered") && asn.has_tag("rdap"));
+    let ev = &asn.evidence[0];
+    assert_eq!(
+        ev.attributes.get("handle").map(String::as_str),
+        Some("AS15169")
+    );
+    assert_eq!(
+        ev.attributes.get("name").map(String::as_str),
+        Some("GOOGLE")
+    );
+    assert_eq!(
+        ev.attributes.get("status").map(String::as_str),
+        Some("active")
+    );
+    assert_eq!(
+        ev.attributes.get("registry").map(String::as_str),
+        Some("whois.arin.net")
+    );
+    assert_eq!(
+        ev.attributes.get("event:registration").map(String::as_str),
+        Some("2000-03-30T00:00:00-05:00")
+    );
     assert!(
-        !emails.contains(&"abuse@acmenet.example"),
-        "role-local-part abuse contact must not surface as an Email entity"
+        !ev.attributes.contains_key("range"),
+        "a single-number autnum has no range"
     );
 
-    let url = of_kind(&ents, EntityKind::Url).expect("should succeed");
-    assert_eq!(url.value, "https://acmenet.example");
-    assert!(url.has_tag("asn-website"));
-}
-
-#[test]
-fn asn_suppresses_role_local_part_abuse_email() {
-    // Regression test for the audit finding (role-mailbox-as-pii) that ASN
-    // abuse/admin contacts previously bypassed `is_infrastructure_email`
-    // entirely. `network-ops@` is not a role token and must still surface.
-    // Domain deliberately not google.com — see
-    // `asn_suppresses_infra_mail_domain_contacts` for the domain-match case.
-    //
-    // `noc@` is itself now a role token too (Pass 23: merged into
-    // `util::domains`' role list from `core::validation::email`'s
-    // independent, already-correct one — a network operations desk is exactly
-    // as infrastructure-only as `abuse@`/`hostmaster@`). Before that merge
-    // this fixture used `noc@` as its "must still surface" example, which
-    // only ever passed because this function's role list was the one
-    // missing it — asserted explicitly below so that particular regression
-    // can't silently come back.
-    let body = asn_resp(
-        r#"{ "status":"ok", "data": {
-            "email_contacts": ["network-ops@acmenet.example", "noc@acmenet.example"],
-            "abuse_contacts": ["abuse@acmenet.example", "hostmaster@acmenet.example"] } }"#,
-    );
-    let ents = build_asn_entities(&body, 15169, "s");
-    let emails: Vec<&str> = ents
-        .iter()
-        .filter(|e| e.kind == EntityKind::Email)
-        .map(|e| e.value.as_str())
-        .collect();
-    assert_eq!(emails, vec!["network-ops@acmenet.example"]);
+    let org = of_kind(&ents, EntityKind::Organisation).expect("the operator organisation");
+    assert_eq!(org.value, "Google LLC");
+    assert!(org.has_tag("asn-operator") && org.has_tag("rdap"));
+    assert_eq!(org.evidence[0].source, "ip_registry");
+    // Nothing this module no longer has a source for is fabricated.
     assert!(
-        !emails.contains(&"noc@acmenet.example"),
-        "noc@ is a role/infrastructure mailbox and must not surface as an Email entity"
+        ents.iter().all(|e| e.kind != EntityKind::Url),
+        "RDAP carries no website"
     );
 }
 
 #[test]
-fn asn_suppresses_infra_mail_domain_contacts() {
-    // google.com is in `INFRA_PROVIDER_ROOTS` by design — its NOC/abuse desks are
-    // provider infrastructure regardless of local-part. Non-role local-parts
-    // (`network-ops`, not `noc`/`abuse`) confirm the domain match alone is
-    // sufficient to gate it.
-    let body = asn_resp(
-        r#"{ "status":"ok", "data": {
-            "email_contacts": ["network-ops@google.com"],
-            "abuse_contacts": ["security-desk@google.com"] } }"#,
-    );
-    let ents = build_asn_entities(&body, 15169, "s");
-    assert!(
-        !ents.iter().any(|e| e.kind == EntityKind::Email),
-        "contacts on an INFRA_PROVIDER_ROOTS-listed domain must not surface as Email entities, \
-         regardless of local-part"
-    );
-}
-
-#[test]
-fn asn_not_ok_or_dataless_yields_nothing() {
-    assert!(build_asn_entities(&asn_resp(r#"{"status":"error"}"#), 1, "s").is_empty());
-    assert!(build_asn_entities(&asn_resp(r#"{"status":"ok"}"#), 1, "s").is_empty());
-}
-
-#[test]
-fn asn_non_http_website_yields_no_url_entity() {
-    let body = asn_resp(r#"{ "status":"ok", "data": { "website": "ftp://files.example" } }"#);
-    let ents = build_asn_entities(&body, 1, "s");
-    assert!(
-        of_kind(&ents, EntityKind::Url).is_none(),
-        "a non-http(s) website must not become a Url entity"
-    );
-    // ...but it is still recorded as an attribute on the ASN evidence.
-    let asn = of_kind(&ents, EntityKind::Asn).expect("should succeed");
+fn ripe_autnum_picks_the_org_kind_registrant_never_a_maintainer_handle() {
+    let ents = build_autnum_entities(&autnum(RIPE_AS3320), 3320, "s");
+    let asn = of_kind(&ents, EntityKind::Asn).expect("the ASN registry entity");
+    assert_eq!(asn.value, "AS3320");
     assert_eq!(
         asn.evidence[0]
             .attributes
-            .get("website")
+            .get("registry")
             .map(String::as_str),
-        Some("ftp://files.example")
+        Some("whois.ripe.net"),
+        "the RIR that answered after ARIN's redirect is named"
+    );
+    let orgs: Vec<&str> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Organisation)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert_eq!(
+        orgs,
+        vec!["Deutsche Telekom AG"],
+        "DTAG-RR / RIPE-NCC-END-MNT are individual-kind maintainer handles, not organisations"
+    );
+    // `abuse@telekom.de` is a role local-part — infrastructure contact, gated
+    // out exactly as the allocation path gates its abuse desk.
+    assert!(
+        ents.iter().all(|e| e.kind != EntityKind::Email),
+        "no Email may be minted from a role mailbox: {ents:?}"
     );
 }
 
 #[test]
-fn contact_emails_skips_non_addresses_and_tags_role() {
-    let list = vec!["good@example.com".to_string(), "not-an-email".to_string()];
-    let ents = contact_emails(Some(&list), "abuse", "AS1", "1", "s");
-    assert_eq!(ents.len(), 1, "the non-email string is dropped");
-    assert_eq!(ents[0].value, "good@example.com");
-    assert!(ents[0].has_tag("asn-contact") && ents[0].has_tag("role:abuse"));
-    // None input is treated as an empty list.
-    assert!(contact_emails(None, "admin", "AS1", "1", "s").is_empty());
+fn autnum_contacts_are_role_tagged_deduplicated_and_gated() {
+    // SYNTHETIC contact tree in the RIR's shape (the authentic fixtures' only
+    // contact mailboxes are role local-parts, which the gate drops): a named
+    // person on a non-provider domain is emitted with the role they hold, a
+    // mailbox listed under two roles is emitted once, and the role/provider gate
+    // still holds — `network-abuse@` carries the system-role segment `abuse`
+    // and `hostmaster@` is a role local-part, so neither is minted.
+    let raw = r#"{"objectClassName":"autnum","handle":"AS64500","name":"EXAMPLE-NET","startAutnum":64500,"endAutnum":64501,"status":["active"],"port43":"whois.example.net",
+      "entities":[
+        {"handle":"EX-ORG","roles":["registrant"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Example Networks Pty Ltd"],["kind",{},"text","org"]]],
+         "entities":[
+           {"handle":"EX-ABUSE","roles":["abuse"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Network Abuse Desk"],["kind",{},"text","group"],["email",{},"text","network-abuse@example-networks.net"]]]},
+           {"handle":"EX-ABUSE-P","roles":["abuse"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","J. Citizen"],["kind",{},"text","individual"],["email",{},"text","J.Citizen@example-networks.net"]]]},
+           {"handle":"EX-OPS","roles":["administrative","technical"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Ops"],["kind",{},"text","group"],["email",{},"text","Ops-Team@example-networks.net"]]]},
+           {"handle":"EX-HM","roles":["technical"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Hostmaster"],["kind",{},"text","group"],["email",{},"text","hostmaster@example-networks.net"]]]}
+         ]}
+      ]}"#;
+    let ents = build_autnum_entities(&autnum(raw), 64500, "s");
+    let asn = of_kind(&ents, EntityKind::Asn).expect("asn");
+    assert_eq!(
+        asn.evidence[0].attributes.get("range").map(String::as_str),
+        Some("AS64500-AS64501"),
+        "a block of numbers is recorded as its range"
+    );
+    let mut emails: Vec<(String, Vec<String>)> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .map(|e| {
+            let mut roles: Vec<String> = e
+                .tags
+                .iter()
+                .filter(|t| t.starts_with("role:"))
+                .cloned()
+                .collect();
+            roles.sort();
+            (e.value.clone(), roles)
+        })
+        .collect();
+    emails.sort();
+    assert_eq!(
+        emails,
+        vec![
+            (
+                "j.citizen@example-networks.net".to_string(),
+                vec!["role:abuse".to_string()]
+            ),
+            (
+                "ops-team@example-networks.net".to_string(),
+                vec!["role:admin".to_string()]
+            ),
+        ],
+        "the named abuse contact carries its role; the ops mailbox is emitted once (admin, its \
+         first role) and lowercased; network-abuse@ and hostmaster@ are gated out"
+    );
+    assert!(emails.iter().all(|(_, roles)| roles.len() == 1));
+    let org = of_kind(&ents, EntityKind::Organisation).expect("operator");
+    assert_eq!(org.value, "Example Networks Pty Ltd");
+}
+
+#[test]
+fn autnum_with_no_contacts_yields_only_the_asn_entity() {
+    let ents = build_autnum_entities(
+        &autnum(
+            r#"{"objectClassName":"autnum","handle":"AS64496","startAutnum":64496,"endAutnum":64496}"#,
+        ),
+        64496,
+        "s",
+    );
+    assert_eq!(ents.len(), 1);
+    assert_eq!(ents[0].kind, EntityKind::Asn);
+    assert!(!ents[0].evidence[0].attributes.contains_key("status"));
+}
+
+/// The transport half against a loopback RDAP: a genuine record parses, a 404
+/// is the clean "no such autnum", and any other failure is the module's error.
+#[tokio::test]
+async fn rdap_lookup_asn_parses_a_record_and_classifies_404_and_failures() {
+    use crate::util::http::test_server::{Canned, serve};
+    let client = reqwest::Client::new();
+    let base = serve(vec![
+        Canned::json(200, ARIN_AS15169),
+        Canned::json(404, r#"{"errorCode":404,"title":"Not Found"}"#),
+        Canned::text(503, "Service Unavailable"),
+    ])
+    .await;
+    let r = rdap_lookup_asn(&client, &base, 15169, "s")
+        .await
+        .expect("a genuine autnum record");
+    assert!(
+        r.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Asn && e.value == "AS15169")
+    );
+    assert!(
+        r.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Organisation && e.value == "Google LLC")
+    );
+
+    let r = rdap_lookup_asn(&client, &base, 64496, "s")
+        .await
+        .expect("RDAP's 404 is the clean negative");
+    assert!(r.is_empty());
+
+    let err = rdap_lookup_asn(&client, &base, 15169, "s")
+        .await
+        .expect_err("an outage is the module's error, not an empty registry");
+    assert!(err.to_string().contains("503"), "{err}");
 }

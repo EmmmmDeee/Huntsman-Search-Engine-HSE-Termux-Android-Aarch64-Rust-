@@ -135,7 +135,6 @@ use crate::core::entity::Evidence;
         // diversity. Each is now classified to its genuine family.
         for m in [
             "abuseipdb",
-            "bgpview",
             "criminal_ip",
             "ipqs",
             "netblock",

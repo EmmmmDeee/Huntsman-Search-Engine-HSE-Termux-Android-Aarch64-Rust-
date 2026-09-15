@@ -28,7 +28,6 @@ pub mod au_unclaimed;
 pub mod auspost;
 pub mod austlii;
 pub mod beacondb;
-pub mod bgpview;
 pub mod binaryedge;
 pub mod bitbucket_user;
 pub mod bitcoin;
@@ -576,7 +575,6 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(subdomain_takeover::SubdomainTakeover),
             Arc::new(waf_detect::WafDetect),
             Arc::new(cloud_storage::CloudStorage),
-            Arc::new(bgpview::BgpView),
             Arc::new(netblock::Netblock),
             Arc::new(portscan::PortScan),
             Arc::new(typosquat::Typosquat),

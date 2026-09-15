@@ -141,7 +141,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **ipregistry** | IP geo + threat | ltd | `ira_`/alnum | M(ip_registry) D |
 | **MaxMind GeoIP2** | IP geo (API + GeoLite2 free DB) | GeoLite free | account id + license | D C |
 | **ipquery / ipapi / ip-api** | IP geo (keyless tiers) | free | — / key | M(ipquery) D |
-| *(keyless infra)* **bgpview / ripestat / hackertarget / ip_whois_geo** | ASN/prefix/WHOIS-geo, no key | free | — | M |
+| *(keyless infra)* **ip_registry / ripestat / hackertarget / ip_whois_geo** | RDAP allocation+autnum / ASN-prefix / WHOIS-geo, no key | free | — | M |
 
 ## 7. Domain / WHOIS / DNS / certificate
 

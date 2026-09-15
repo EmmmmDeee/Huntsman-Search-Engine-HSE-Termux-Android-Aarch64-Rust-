@@ -247,7 +247,7 @@ fn geoloc_subnet_emits_cidr_entity() {
     // organization/country/city. Before this fix `subnet` was deserialised
     // into the raw `Value` but never read back out, so the CIDR was silently
     // dropped despite `EntityKind::Cidr` existing and sibling infra modules
-    // (bgpview/ripestat/netblock) already emitting it.
+    // (ripestat/netblock) already emitting it.
     let doc = serde_json::json!({
         "@category": "geoloc",
         "ip": "8.8.8.8",

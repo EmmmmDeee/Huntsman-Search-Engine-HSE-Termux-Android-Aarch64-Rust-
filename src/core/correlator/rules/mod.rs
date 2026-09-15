@@ -584,7 +584,6 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         // orthogonality (AU-062/063) and let `source_family`'s "covers the registry"
         // contract drift.
         "abuseipdb",
-        "bgpview",
         "criminal_ip",
         "ipqs",
         "netblock",
