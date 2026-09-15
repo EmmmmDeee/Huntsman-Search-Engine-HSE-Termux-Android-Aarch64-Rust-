@@ -155,31 +155,12 @@ impl Module for GithubCodeSearch {
                     ),
                 ));
             }
-            let remaining = resp
-                .headers()
-                .get("x-ratelimit-remaining")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_owned);
-            let snippet = crate::util::http::error_snippet(resp).await;
-            // A throttle is the typed RateLimited: the breaker backs the module
-            // off and the scan records a throttled provider — before this a
+            // One judgement for every GitHub caller: a throttle is the typed
+            // RateLimited (the breaker backs the module off; before this a
             // 403/429 was an empty result, "no code matched", on every throttled
-            // scan.
-            if crate::modules::github_api::throttled(
-                status.as_u16(),
-                remaining.as_deref(),
-                &snippet,
-            ) {
-                return Err(crate::core::error::Error::RateLimited(format!(
-                    "{SRC}: GitHub code search throttled (HTTP {status}): {snippet}"
-                )));
-            }
-            // Any other non-2xx (a 401 on a revoked token, a 5xx outage) is a
-            // real failure of the search, not "no code matched".
-            return Err(crate::core::error::Error::module(
-                SRC,
-                format!("HTTP {status}: {snippet}"),
-            ));
+            // scan), and any other non-2xx (a 401 on a revoked token, a 5xx
+            // outage) is a real failure of the search, not "no code matched".
+            return Err(crate::modules::github_api::status_error(SRC, resp).await);
         }
 
         // Status is a validated 2xx here, so a parse failure is a malformed body

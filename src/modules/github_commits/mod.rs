@@ -24,7 +24,7 @@ use serde::Deserialize;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -133,7 +133,7 @@ impl Module for GithubCommits {
 /// One commit-author search. A non-2xx is never "no commits by this author":
 /// GitHub signals an empty search as a `200` with `total_count: 0`. A throttle
 /// (`429`, or a `403` that names the rate limit — `github_api::throttled`) is
-/// the typed [`Error::RateLimited`], so the breaker backs the module off and
+/// the typed [`crate::core::error::Error::RateLimited`], so the breaker backs the module off and
 /// the scan records a throttled provider; any other non-2xx (a `401` on a
 /// revoked token, a `422` on a query GitHub cannot index, a 5xx) is the
 /// module's error. A configured token is reported to the key pool on every
@@ -174,18 +174,9 @@ async fn search_commits(
         if let Some(token) = token {
             crate::util::http::note_keyed_error(status.as_u16(), "github", token, ctx);
         }
-        let remaining = resp
-            .headers()
-            .get("x-ratelimit-remaining")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
-        let snippet = crate::util::http::error_snippet(resp).await;
-        if crate::modules::github_api::throttled(status.as_u16(), remaining.as_deref(), &snippet) {
-            return Err(Error::RateLimited(format!(
-                "{SRC}: GitHub commit search throttled (HTTP {status}): {snippet}"
-            )));
-        }
-        return Err(Error::module(SRC, format!("HTTP {status}: {snippet}")));
+        // One judgement for every GitHub caller: a throttle is the typed
+        // RateLimited, anything else the module's error.
+        return Err(crate::modules::github_api::status_error(SRC, resp).await);
     }
     // json_scanned: commit messages are free-form text that can carry leaked
     // API keys — route the body through the key scanner.

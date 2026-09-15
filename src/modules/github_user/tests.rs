@@ -439,3 +439,56 @@ async fn ssh_key_side_call_sends_the_configured_token_and_survives_a_rejection()
         "the configured token must ride on the side-call: {req}"
     );
 }
+
+/// The primary profile request against a loopback: GitHub's `403` naming the
+/// rate limit is the typed `RateLimited` (observed live from the sandbox on
+/// 2026-09-15 as a module fault: `HTTP 403 Forbidden: {"message":"API rate
+/// limit exceeded for …"}`), a `403` refusal stays the module's error, a `404`
+/// is the one clean negative, and a `200` profile is decoded.
+#[tokio::test]
+async fn the_profile_fetch_types_githubs_throttle_and_keeps_a_refusal_a_fault() {
+    use crate::core::error::Error;
+    use crate::util::http::test_server::{Canned, serve};
+    let base = serve(vec![
+        Canned::json(
+            403,
+            r#"{"message":"API rate limit exceeded for 203.0.113.9."}"#,
+        ),
+        Canned::json(
+            403,
+            r#"{"message":"Resource not accessible by personal access token"}"#,
+        ),
+        Canned::json(404, r#"{"message":"Not Found"}"#),
+        Canned::json(
+            200,
+            r#"{"login":"octocat","id":583231,"name":"The Octocat"}"#,
+        ),
+    ])
+    .await;
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = crate::core::module::ModuleContext {
+        scan_id: "s".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+
+    let Err(err) = super::fetch_profile(&ctx, &base, "octocat", None).await else {
+        panic!("a 403 naming the rate limit is a throttle, never a profile");
+    };
+    assert!(matches!(err, Error::RateLimited(_)), "{err}");
+    let Err(err) = super::fetch_profile(&ctx, &base, "octocat", None).await else {
+        panic!("a 403 refusal is a failure, never a profile");
+    };
+    assert!(matches!(err, Error::Module { .. }), "{err}");
+    let none = super::fetch_profile(&ctx, &base, "octocat", None)
+        .await
+        .expect("a 404 is the clean negative");
+    assert!(none.is_none());
+    let user = super::fetch_profile(&ctx, &base, "octocat", None)
+        .await
+        .expect("a 200 profile is decoded")
+        .expect("present");
+    assert_eq!(user.login, "octocat");
+}

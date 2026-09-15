@@ -4108,6 +4108,63 @@ the next step if a 200 wall is observed on one. The remaining
 `ip_reputation`) read JSON or crawl content and mint no negative claim from
 an empty parse.
 
+### REQ-DRIFT-007 (**new, Pass 31 — OBSERVED live from the sandbox, CONSOLIDATED, FIXED, FALSIFIED**): GitHub's throttle is judged once, for every GitHub caller
+
+**Observation (this sandbox, 2026-09-15 19:11 UTC, the binary built from
+`faa3bc8`, during the second-vantage reproduction of REQ-HTTP-002).**
+`hse scan -k username -v torvalds -m github_user` logged `module error …
+[github_user] HTTP 403 Forbidden: {"message":"API rate limit exceeded for
+35.226.34.3. (But here's the good news: Authenticated requests get a higher
+rate limit. …)"}` — GitHub's anonymous 60-requests-per-hour throttle for this
+sandbox's egress address, filed as `Error::Module`: `circuit::record_error`, a
+fault against the module's health, where a throttle is `record_rate_limit`, a
+cooldown; `unreachable` in the sweep and `hse doctor --live` were a runner's
+address ever throttled the same way.
+
+**Verified from source.** `github_api::throttled` (REQ-SWEEP-001) already
+knew GitHub's shape — a `429`, or a `403` whose body names the rate limit or
+that carries `X-RateLimit-Remaining: 0` — and `github_commits` and
+`github_code_search` each inlined the same remaining-header / snippet /
+`throttled` / `RateLimited`-or-`Module` block. `github_user::process`'s
+primary profile request, the one every other request in that module depends
+on, went through the generic `http_status_error`, which types a `429` and a
+challenge page but not GitHub's `403`. Three GitHub callers, two copies of
+the judgement, one caller with none.
+
+**Fix.** `github_api::status_error(module, resp)` is the one judgement; the
+two copies are removed and `github_user`'s profile request is
+`fetch_profile(ctx, users_base, login, token)` — `None` for GitHub's `404`,
+the typed error otherwise, its endpoint a parameter. The key-pool note for a
+present token stays at each call site.
+
+**Locks.** `github_api::tests::status_error_types_githubs_403_throttle_and_keeps_a_plain_403_a_fault`
+(a `403` naming the limit and a `403` with `X-RateLimit-Remaining: 0` →
+`RateLimited`; a `403` refusal with remaining quota and a `500` → `Module`);
+`github_user::tests::the_profile_fetch_types_githubs_throttle_and_keeps_a_refusal_a_fault`
+drives the real request path against a loopback (throttle → `RateLimited`,
+refusal → `Module`, `404` → `None`, `200` → the profile).
+`github_commits`' existing loopback lock covers its call site.
+
+**Falsification.** Each repair reverted with only its lock run. (Process
+note: a first run of this script was killed mid-mutation while the tree was
+still being repaired, which left the second anchor's "broken" variant in
+place — the gate that followed failed the profile-fetch lock on exactly that
+line, the tree was restored from the diff, and the run below is the clean
+one. A falsification script is never stopped between its mutate and its
+restore.)
+
+```
+[the shared judgement no longer types the throttle] reverted -> LOCK FAILS (expected)
+    test modules::github_api::tests::status_error_types_githubs_403_throttle_and_keeps_a_plain_403_a_fault ... FAILED
+    thread 'modules::github_api::tests::status_error_types_githubs_403_throttle_and_keeps_a_plain_403_a_fault' (26776) panicked at src/modules/github_api.rs:159:9:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7329 filtered out; finished in 0.21s
+[github_user's profile fetch back on the generic status error] reverted -> LOCK FAILS (expected)
+    test modules::github_user::tests::the_profile_fetch_types_githubs_throttle_and_keeps_a_refusal_a_fault ... FAILED
+    thread 'modules::github_user::tests::the_profile_fetch_types_githubs_throttle_and_keeps_a_refusal_a_fault' (27074) panicked at src/modules/github_user/tests.rs:480:5:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7329 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
 ### Pass 31 recomputation (2026-09-15 19:10 UTC) — stop condition for the observable defect classes
 
 **Window.** `4431f23` (cycle K) → `faa3bc8` on `claude/charming-meitner-85h3aj`,
@@ -4155,10 +4212,41 @@ holds nothing for the sample). Static censuses, verified negatives:
   `hits_status_only`. No 200-to-HEAD wall has been observed; not changed on
   that evidence.
 
-**Stop.** No reproduced root cause, temporary workaround, duplicated authority,
-unreachable capability or incomplete lifecycle pathway remains among what this
-vantage can observe; the next material observation is the 2026-09-21 weekly
-sweep.
+**Attack on the stop decision (REQ-HTTP-002 was its least-observed assumption:
+31 live JSON paths rewired with only local proof).** Rivals recorded before
+reading: a rewired module now errors or panics where it parsed; CI red on the
+final head; a sweep row that changed class. Prediction: the final sweep on
+`faa3bc8` matches the 18:13 table row for row apart from provider noise, with
+zero `panicked` rows and no new `unreachable`; any JSON module flipping class
+reverses the stop and R is repaired or reverted. **Observed (live-drift run
+35011571827, 2026-09-15 19:08 UTC):** 116 probed — 89 alive, 18 empty, 1
+unreachable (`wifidb`), 1 timed-out (`wayback`), 1 rate-limited
+(`steam_profile`), 5 blocked (`ahpra`, `anubis`, `asic_director`, `austlii`,
+`reddit_user` — the wall served again), 1 skipped, **0 panicked**; every
+keyless module R rewired reads alive with its earlier count (`github_user 9`,
+`github_commits 1`, `geocode 1`, `overpass 21`, `qld_cadastre 6`, `shodan 3`;
+`contact_enrich` empty as before). The prediction held; the runner is one
+vantage, the sandbox reproduction below the second.
+
+**Second vantage (this sandbox, 2026-09-15 19:11 UTC, the binary rebuilt from
+`faa3bc8`).** The keyless modules R rewired, driven against their real
+providers with the built binary: `github_commits` 1 (runner 1), `overpass` 21
+(21), `shodan` 3 (3), `qld_cadastre` 6 at the module (dispatch `done … found:
+6`; the runner 6 — the CLI's JSON shows 2 after the engine's post-processing,
+so the like-for-like count is the dispatch one), `geocode` alive on an address
+sample. `github_user` was throttled by GitHub for this sandbox's egress address
+— `HTTP 403 Forbidden: {"message":"API rate limit exceeded for 35.226.34.3 …"}`
+— an environmental cause on this vantage, not a regression, and the capture
+shows that throttle typed as `Error::Module`: a reproduced lead
+(REQ-DRIFT-007, below). R holds on both vantages.
+
+**Stop — revised.** The attack on this decision found one more reproduced
+root cause on the second vantage (REQ-DRIFT-007, above: GitHub's throttle a
+module fault on `github_user`, and two copies of the judgement elsewhere) and
+it is repaired in the same pass. Beyond it, no reproduced root cause, temporary
+workaround, duplicated authority, unreachable capability or incomplete
+lifecycle pathway remains among what either vantage can observe; the next
+material observation is the 2026-09-21 weekly sweep.
 
 ### REQ-HTTP-002 (**new, Pass 31 — VERIFIED FROM SOURCE, CONSOLIDATED, FIXED, FALSIFIED**): `json_scanned` fails the way `json_decode` fails
 

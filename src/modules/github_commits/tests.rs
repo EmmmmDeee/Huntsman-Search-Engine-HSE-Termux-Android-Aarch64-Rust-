@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::error::Error;
 
 const FIXTURE: &str = r#"{
   "items": [
