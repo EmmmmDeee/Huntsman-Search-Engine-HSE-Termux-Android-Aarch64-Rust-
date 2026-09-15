@@ -4108,6 +4108,67 @@ the next step if a 200 wall is observed on one. The remaining
 `ip_reputation`) read JSON or crawl content and mint no negative claim from
 an empty parse.
 
+### REQ-ARCHIVE-001 (**refuted lead, Pass 31 — MEASURED twice, ATTACKED, NO CHANGE**): `wayback`'s every-run timeout is not its query shape
+
+**Lead.** Every live-drift run reads `timed-out wayback` (the module's 30 s
+budget) for the sample `example.com`, and `commoncrawl` read `timed-out` at
+17:03. A first sandbox round (2026-09-15 17:40–17:50 UTC) contrasted the
+module's pass-1 query with and without `collapse=urlkey`: collapsed, the
+query hung for 40 s and 35 s and was reset at 11 s in every shape tried
+(`limit=50`, `from=2024`); uncollapsed, the same query returned 1,001 rows in
+2.6 s and later 12.1 s. Common Crawl's `*.example.com&limit=100` died (`504`
+at 10.5 s; a reset at 6 s) while `limit=25` / `limit=50` answered in under a
+second. The leading reading was a structural cost of `collapse=urlkey`, with
+client-side de-duplication as the fix.
+
+**Attack.** Rival mechanisms recorded before the second round: (a) a
+measurement artefact — the first round fired several CDX requests
+concurrently from one address; (b) the sample's archive (example.com is among
+the most-captured hosts) rather than the shape; (c) provider load.
+Predictions: structural → collapsed queries slow on medium archives while
+plain ones answer; sample-size → a medium archive answers every module-shaped
+query in seconds; load/artefact → results vary with concurrency and time, not
+shape.
+
+**Observed (serial, one request at a time, 5 s apart, 60 s ceiling, 18:16
+UTC):**
+
+| query | answer |
+|---|---|
+| `sqlite.org/*` pass-1 shape, collapsed | `200`, 1,001 rows, 1.8 s |
+| `sqlite.org/*` pass-2 shape (`filter=statuscode:200`, collapsed) | reset at 11.1 s |
+| `*.sqlite.org` pass-3 shape (collapsed) | `503`, Wayback's own error page, 5.5 s |
+| `example.com/*` pass-1, collapsed | no answer in 30.8 s |
+| `example.com/*` pass-1, **plain** | reset at 11.2 s |
+| `iana.org/*` pass-1, collapsed | reset at 11.3 s |
+
+An eight-way concurrent round minutes earlier had answered a collapsed
+`sqlite.org` query in 3.7 s and reset the plain one — the opposite ordering.
+
+**Decision.** The shape is not the cause: plain queries reset where collapsed
+ones did, a collapsed query on a medium archive answered in under 2 s, and a
+`503` arrived at no query cost at all. What the rounds do establish is
+provider-side: Wayback's CDX front end answers nothing within ~11 s under
+load and 503s outright, and the cost scales with the archive scanned. A
+client-side change supported by the first round alone would have been a
+change supported by assumption — none is made. `commoncrawl` read `alive
+commoncrawl 5 found` at 17:20 and 18:03 on the same query, so its earlier
+`timed-out` was the same class of transient. Both modules already type the
+outcome honestly: a query that outruns the budget is `TimedOut` ("provider
+slow/hung"), a `503` is `Error::Module` naming the status, and neither is a
+dead canary (neither is a canary).
+
+**Residual, preserved.** Whether the module completes for a typical target
+from the runner is not observed — the sweep's per-kind sample is
+`example.com`. A known-positive canary with a moderate archive (`sqlite.org`
+answered the pass-1 shape in 1.8 s here) would give the sweep that
+observation; it is not added from one afternoon of a visibly unstable
+provider, because a canary that dies on provider load fails the whole sweep
+as a DEAD CANARY. Reversal: two consecutive weekly sweeps reading `alive
+wayback` for such a sample make it a canary; a Wayback that answers plain
+queries and refuses only collapsed ones on a calm day reopens the shape
+hypothesis.
+
 ### REQ-DRIFT-005 (**new, Pass 31 — OBSERVED on the runner and from the sandbox, FIXED, FALSIFIED**): `asic_director` names the outcome it met; the register's Cloudflare block is `blocked`, not `unreachable`
 
 **Observation (runner).** Every live-drift run reads `unreachable asic_director
