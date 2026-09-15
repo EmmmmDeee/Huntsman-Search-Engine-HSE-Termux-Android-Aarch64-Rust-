@@ -164,3 +164,26 @@ use super::*;
             Some(&Value::String("12RP123456".into()))
         );
     }
+
+    #[test]
+    fn an_arcgis_error_envelope_is_a_hard_error_not_no_parcel() {
+        // ArcGIS returns logical errors as HTTP 200 with an `{"error":{…}}`
+        // object and no `features`. Because `features` is `#[serde(default)]`
+        // that decodes to an empty list; the gate must surface it as an error,
+        // not "no cadastral parcel at this point."
+        let body = r#"{"error":{"code":400,"message":"Unable to complete operation."}}"#;
+        let resp: QueryResp = serde_json::from_str(body).expect("envelope parses");
+        assert!(resp.features.is_empty(), "the error envelope carries no features");
+        assert!(
+            features_or_error(resp).is_err(),
+            "an ArcGIS error envelope must surface as an error"
+        );
+    }
+
+    #[test]
+    fn an_empty_feature_set_with_no_error_is_a_clean_negative() {
+        // A real "point not in any parcel" answer: 200, no error, no features.
+        let resp: QueryResp = serde_json::from_str(r#"{"features":[]}"#).expect("parses");
+        let features = features_or_error(resp).expect("an empty result is not an error");
+        assert!(features.is_empty());
+    }

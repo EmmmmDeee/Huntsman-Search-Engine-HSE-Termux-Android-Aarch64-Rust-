@@ -24,6 +24,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::mediawiki::MwError;
 
 const SRC: &str = "wiki_geosearch";
 /// Search radius (metres). The MediaWiki GeoSearch max is 10 000 m; 1 km keeps
@@ -39,6 +40,21 @@ pub struct WikiGeoSearch;
 struct GeoResp {
     #[serde(default)]
     query: Option<GeoQuery>,
+    /// MediaWiki's HTTP-200 error envelope (query timeout, maxlag, bad params).
+    /// Modelled so an API failure is not decoded as `query: None` and read as a
+    /// clean "no nearby places" — see [`geosearch_places`].
+    #[serde(default)]
+    error: Option<MwError>,
+}
+
+/// The places from a GeoSearch response, or a hard error when MediaWiki returned
+/// its HTTP-200 error envelope. **Pure**, so the fail-closed handling is
+/// unit-tested without a network. Without the [`MwError::check`] gate an error
+/// envelope decodes to `query: None` and yields an empty list indistinguishable
+/// from a genuine "nothing nearby" — the RULE 1 false negative this guards.
+fn geosearch_places(resp: GeoResp) -> Result<Vec<GeoPlace>> {
+    MwError::check(&resp.error, SRC)?;
+    Ok(resp.query.map(|q| q.geosearch).unwrap_or_default())
 }
 
 #[derive(Deserialize)]
@@ -165,7 +181,7 @@ impl Module for WikiGeoSearch {
         // Shared `fetch_json` (curl/OpenSSL fallback + circuit breaker + the
         // client's descriptive User-Agent Wikimedia's API policy expects).
         let resp: GeoResp = crate::util::http::fetch_json(&ctx.http, SRC, &url).await?;
-        let places = resp.query.map(|q| q.geosearch).unwrap_or_default();
+        let places = geosearch_places(resp)?;
 
         let mut result = ModuleResult::new();
         for e in build_entities(&target.value, &places, &ctx.scan_id) {

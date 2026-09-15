@@ -178,7 +178,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     // the floor above the operator's value, so with the comprehensive default it
     // stays at the 0.20 expansion floor.
     let (depth, min_expand_confidence, max_concurrent) = if cmd.auto && cmd.depth.is_none() {
-        let has_paid = keys::load().contains_key("HUNTSMAN_OATHNET_KEY");
+        let has_paid = has_paid_oathnet_key(&keys::load());
         let (auto_depth, auto_conf) = crate::core::scan::optimal_depth(target_kind, has_paid);
         eprintln!("auto: depth={auto_depth} min_conf={auto_conf:.2} (paid_keys={has_paid})");
         (auto_depth, auto_conf, cmd.max_concurrent.max(2))
@@ -560,6 +560,26 @@ fn filter_infra_entities(entities: &mut Vec<crate::core::entity::Entity>, includ
     }
 }
 
+/// Whether a usable OathNet key is configured — the sole "paid tier available"
+/// signal that `--auto` depth selection ([`crate::core::scan::optimal_depth`])
+/// reads. **Pure** over the already-loaded key map so it is unit-testable
+/// without touching the real environment.
+///
+/// Routed through [`keys::is_configured_value`], NOT a bare
+/// `HashMap::contains_key`: `hse provision` writes an `insert_oathnet_key_here`
+/// template placeholder into `HUNTSMAN_OATHNET_KEY` for every documented slot,
+/// so on a freshly provisioned keyless install the NAME is present while no
+/// CREDENTIAL is. A `contains_key` check therefore selected the paid, deeper
+/// auto-scan depth/confidence profile — and printed `paid_keys=true` — for an
+/// operator who had set no key, contradicting the same
+/// placeholder-is-unconfigured rule `hse doctor` and the key pool already
+/// enforce through this one predicate.
+fn has_paid_oathnet_key(loaded: &std::collections::HashMap<String, String>) -> bool {
+    loaded
+        .get("HUNTSMAN_OATHNET_KEY")
+        .is_some_and(|v| keys::is_configured_value(v))
+}
+
 /// Resolve the effective `(depth, min_expand_confidence, max_concurrent)` from
 /// the scan-mode flags. **Pure**: the `--auto` tuning is supplied lazily through
 /// `optimal`, so no key/file IO (nor its `eprintln`) happens off the auto path.
@@ -643,6 +663,42 @@ mod tests {
     use crate::core::confidence;
     use crate::core::entity::{Entity, EntityKind, Evidence};
     use std::cell::Cell;
+    use std::collections::HashMap;
+
+    #[test]
+    fn paid_oathnet_key_requires_a_real_credential_not_a_placeholder() {
+        // The `--auto` depth profile treats an OathNet key as the paid tier. A
+        // freshly `hse provision`-ed install carries the unedited
+        // `insert_oathnet_key_here` placeholder (and a blank/whitespace slot is
+        // just as unconfigured), so presence of the NAME must NOT read as a
+        // paid credential — otherwise a keyless install silently runs the
+        // deeper, paid auto-scan profile. A bare `contains_key` returned `true`
+        // for every one of these; this locks that it does not.
+        for placeholder in ["insert_oathnet_key_here", "", "   "] {
+            let loaded =
+                HashMap::from([("HUNTSMAN_OATHNET_KEY".to_string(), placeholder.to_string())]);
+            assert!(
+                !has_paid_oathnet_key(&loaded),
+                "placeholder/blank slot {placeholder:?} must not count as a paid key"
+            );
+        }
+
+        // Absent slot → no paid key.
+        assert!(
+            !has_paid_oathnet_key(&HashMap::new()),
+            "an absent OathNet slot must not count as a paid key"
+        );
+
+        // A real, operator-set value → paid tier available.
+        let real = HashMap::from([(
+            "HUNTSMAN_OATHNET_KEY".to_string(),
+            "on_live_9f3c2ab7de".to_string(),
+        )]);
+        assert!(
+            has_paid_oathnet_key(&real),
+            "a real OathNet credential must count as a paid key"
+        );
+    }
 
     #[test]
     fn scan_output_format_is_validated_up_front() {

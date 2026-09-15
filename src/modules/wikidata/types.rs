@@ -1,10 +1,18 @@
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::util::mediawiki::MwError;
+
 #[derive(Deserialize)]
 pub(super) struct SearchResp {
     #[serde(default)]
     pub(super) search: Vec<SearchHit>,
+    /// MediaWiki's HTTP-200 error envelope. Modelled so an API failure
+    /// (maxlag, bad params, backend error) is not decoded as an empty `search`
+    /// list and read as a clean "no matching item" — the search call gates on
+    /// [`MwError::check`] before reading `search`.
+    #[serde(default)]
+    pub(super) error: Option<MwError>,
 }
 
 #[derive(Deserialize)]

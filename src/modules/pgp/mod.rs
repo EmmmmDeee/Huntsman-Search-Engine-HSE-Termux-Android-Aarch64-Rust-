@@ -21,7 +21,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{RequestBuilderExt, read_body_capped, urldecode, urlencode};
+use crate::util::http::{RequestBuilderExt, read_body_capped_or_fail, urldecode, urlencode};
 
 const SRC: &str = "pgp";
 
@@ -100,9 +100,13 @@ impl Module for Pgp {
         if !resp.status().is_success() {
             return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
-        let Some(body) = read_body_capped(resp, BODY_CAP).await else {
-            return Ok(result);
-        };
+        // A transport failure while streaming the body is a keyserver failure,
+        // not an absence of keys: fail closed (as the status handling above
+        // already does) rather than let a mid-stream reset masquerade as "this
+        // email has no PGP key." `read_body_capped` (which mapped that failure
+        // to a silent empty result here) is exactly what its own doc warns
+        // against.
+        let body = read_body_capped_or_fail(SRC, resp, BODY_CAP).await?;
 
         extract(&body, email, &ctx.scan_id, &mut result);
         Ok(result)

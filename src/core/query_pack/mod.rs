@@ -26,6 +26,14 @@
 //! this credential"*. It contains no account-takeover, credential-stuffing,
 //! session-replay, or authentication-bypass workflow: every entry is a lookup
 //! of the operator's own authorised target value against an exposure index.
+//!
+//! ## Packs
+//!
+//! [`generate`] emits the original exposure six (IntelX … HIBP).
+//! [`generate_edd`] emits the Australian enhanced-due-diligence table
+//! (ABR, ASIC, OpenSanctions, Trove, auDA RDAP, WHOIS, Shodan, URLScan,
+//! VirusTotal, OpenCelliD). [`generate_pack`] selects one or concatenates
+//! both. Exposure ranks stay 1..=6 so existing tests do not move.
 
 #[cfg(test)]
 mod tests;
@@ -66,6 +74,30 @@ pub struct ManualQuery {
     pub generated_at: u64,
 }
 
+/// Which operator table to emit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pack {
+    /// IntelX / OathNet / Stolen.tax / DeHashed / XposedOrNot / HIBP.
+    Exposure,
+    /// Australian EDD surfaces already wired as HSE modules.
+    Edd,
+    /// Exposure rows, then EDD rows that accept the same kind.
+    All,
+}
+
+impl Pack {
+    /// Parse the CLI `--pack` token. Unknown values are `None` (caller errors).
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "exposure" | "expose" | "breach" => Some(Self::Exposure),
+            "edd" | "dd" | "diligence" => Some(Self::Edd),
+            "all" | "both" => Some(Self::All),
+            _ => None,
+        }
+    }
+}
+
 /// A manual-provider entry: its stable rank, canonical surface (a domain this
 /// codebase already reaches), the result class an operator should expect, and
 /// the target kinds it can be queried for.
@@ -98,8 +130,6 @@ const PROVIDERS: &[Provider] = &[
         rank: 1,
         entrypoint: "intelx.io",
         expected_result_class: "historical / archive / dark-web / document exposure (IntelX auto-classifies the selector)",
-        // IntelX's structured-selector set plus its text fallback — the same
-        // kinds `modules::intelx` forwards.
         accepts: &[
             TargetKind::Email,
             TargetKind::Domain,
@@ -150,6 +180,96 @@ const PROVIDERS: &[Provider] = &[
     },
 ];
 
+/// Australian EDD surfaces. Every `entrypoint` is a host an existing HSE
+/// module already calls. PPSR / AFSA / DFAT are absent — no module yet.
+const EDD_PROVIDERS: &[Provider] = &[
+    Provider {
+        name: "ABR",
+        rank: 1,
+        entrypoint: "abr.business.gov.au",
+        expected_result_class: "ABN/ACN identity, entity type, GST — not beneficial ownership",
+        accepts: &[TargetKind::AbnAcn, TargetKind::Organisation],
+    },
+    Provider {
+        name: "ASIC Connect",
+        rank: 2,
+        entrypoint: "connectonline.asic.gov.au",
+        expected_result_class: "company / officer register search — confirm live; this endpoint has drifted before",
+        accepts: &[
+            TargetKind::AbnAcn,
+            TargetKind::Organisation,
+            TargetKind::FullName,
+        ],
+    },
+    Provider {
+        name: "ASIC open data",
+        rank: 3,
+        entrypoint: "data.gov.au",
+        expected_result_class: "banned orgs / business names / persons dumps (CKAN) — bulk, not a current extract",
+        accepts: &[TargetKind::Organisation, TargetKind::FullName],
+    },
+    Provider {
+        name: "OpenSanctions",
+        rank: 4,
+        entrypoint: "opensanctions.org",
+        expected_result_class: "sanctions / PEP / watchlist match — a miss is not clearance",
+        accepts: &[
+            TargetKind::Organisation,
+            TargetKind::FullName,
+            TargetKind::AbnAcn,
+        ],
+    },
+    Provider {
+        name: "Trove",
+        rank: 5,
+        entrypoint: "api.trove.nla.gov.au",
+        expected_result_class: "historical Australian press lead — quote URL+date; not a finding until the underlying record is in the file",
+        accepts: &[TargetKind::Organisation, TargetKind::FullName],
+    },
+    Provider {
+        name: "auDA RDAP",
+        rank: 6,
+        entrypoint: "rdap.cctld.au",
+        expected_result_class: ".au domain registration record",
+        accepts: &[TargetKind::Domain],
+    },
+    Provider {
+        name: "WHOIS",
+        rank: 7,
+        entrypoint: "whois.iana.org",
+        expected_result_class: "registrar / registrant / RDAP-IP — privacy-proxy is not an identity",
+        accepts: &[TargetKind::Domain, TargetKind::IpAddress],
+    },
+    Provider {
+        name: "Shodan",
+        rank: 8,
+        entrypoint: "internetdb.shodan.io",
+        expected_result_class: "open ports / CVE / hosting — shared CDN is not company-owned infra",
+        accepts: &[TargetKind::IpAddress, TargetKind::Domain],
+    },
+    Provider {
+        name: "URLScan",
+        rank: 9,
+        entrypoint: "urlscan.io",
+        expected_result_class: "public site render + DOM / cert / contacted hosts",
+        accepts: &[TargetKind::Url, TargetKind::Domain],
+    },
+    Provider {
+        name: "VirusTotal",
+        rank: 10,
+        entrypoint: "virustotal.com",
+        expected_result_class: "domain/IP/URL reputation — a clean VT is not a clean company",
+        accepts: &[TargetKind::Domain, TargetKind::IpAddress, TargetKind::Url],
+    },
+    Provider {
+        name: "OpenCelliD",
+        rank: 11,
+        entrypoint: "opencellid.org",
+        expected_result_class: "tower context for a scoped site — not a person-locate",
+        accepts: &[TargetKind::Address, TargetKind::Coordinates],
+    },
+];
+
 /// Build the manual query pack for `target`, stamped `generated_at` (Unix
 /// seconds). **Pure**: no I/O, deterministic for a given `(target, generated_at)`.
 ///
@@ -161,12 +281,37 @@ const PROVIDERS: &[Provider] = &[
 /// entry.
 #[must_use]
 pub fn generate(target: &Target, generated_at: u64) -> Vec<ManualQuery> {
+    emit(PROVIDERS, target, generated_at)
+}
+
+/// Australian EDD table. Same purity contract as [`generate`]. Empty when the
+/// kind is not an EDD seed (email, username, device id, …).
+#[must_use]
+pub fn generate_edd(target: &Target, generated_at: u64) -> Vec<ManualQuery> {
+    emit(EDD_PROVIDERS, target, generated_at)
+}
+
+/// Select the exposure table, the EDD table, or both (exposure first).
+#[must_use]
+pub fn generate_pack(pack: Pack, target: &Target, generated_at: u64) -> Vec<ManualQuery> {
+    match pack {
+        Pack::Exposure => generate(target, generated_at),
+        Pack::Edd => generate_edd(target, generated_at),
+        Pack::All => {
+            let mut out = generate(target, generated_at);
+            out.extend(generate_edd(target, generated_at));
+            out
+        }
+    }
+}
+
+fn emit(table: &[Provider], target: &Target, generated_at: u64) -> Vec<ManualQuery> {
     let value = target.value.trim();
     if value.is_empty() {
         return Vec::new();
     }
     let parent_query_id = parent_id(target.kind.canonical_str(), value);
-    PROVIDERS
+    table
         .iter()
         .filter(|p| p.accepts.contains(&target.kind))
         .map(|p| ManualQuery {

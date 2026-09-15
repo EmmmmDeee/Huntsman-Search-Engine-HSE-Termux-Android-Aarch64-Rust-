@@ -805,3 +805,69 @@ fn a_resolver_failure_is_not_a_negative_and_must_fail_over() {
         );
     }
 }
+
+// ── answer_from_response: a non-2xx is a resolver failure, never an answer ────
+// A DoH provider signals a real miss as HTTP 200 + Status 3 (NXDOMAIN); a
+// non-2xx is an outage/throttle. Because DohResp's fields are all
+// #[serde(default)], a decoded error body collapses to {Status:0, Answer:[]},
+// which without the status gate reads as a FALSE authoritative "no such record".
+
+fn doh_response(status: u16, body: &str) -> reqwest::Response {
+    reqwest::Response::from(
+        http::Response::builder()
+            .status(status)
+            .body(body.to_string())
+            .expect("response builds"),
+    )
+}
+
+#[tokio::test]
+async fn a_non_2xx_doh_response_is_never_read_as_an_answer() {
+    for code in [400u16, 429, 500, 502, 503] {
+        let resp = doh_response(code, r#"{"error":"upstream failure"}"#);
+        assert!(
+            answer_from_response(Ok(resp)).await.is_none(),
+            "HTTP {code} must fail over (None), not become a clean 'no record' answer"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_transport_failure_is_never_read_as_an_answer() {
+    let err = reqwest::Client::new()
+        .get("ftp://doh.invalid/")
+        .send()
+        .await;
+    assert!(
+        err.is_err(),
+        "the scheme error sets up the transport-failure case"
+    );
+    assert!(
+        answer_from_response(err).await.is_none(),
+        "a transport failure must fail over (None), not become an answer"
+    );
+}
+
+#[tokio::test]
+async fn a_200_nxdomain_is_an_authoritative_empty_answer() {
+    // The one case that legitimately resolves with zero records — a 200 body
+    // carrying NXDOMAIN — must stay an answer, not a failover.
+    let resp = doh_response(200, r#"{"Status":3,"Answer":[]}"#);
+    let ans = answer_from_response(Ok(resp)).await;
+    assert!(
+        matches!(ans, Some(ref v) if v.is_empty()),
+        "NXDOMAIN over HTTP 200 must be an authoritative empty answer, not a failover"
+    );
+}
+
+#[tokio::test]
+async fn a_200_noerror_carries_its_records() {
+    let resp = doh_response(
+        200,
+        r#"{"Status":0,"Answer":[{"name":"x.com.","type":1,"data":"1.2.3.4"}]}"#,
+    );
+    let ans = answer_from_response(Ok(resp))
+        .await
+        .expect("a 200 NOERROR with records resolves");
+    assert_eq!(ans.len(), 1, "the answer record is carried through");
+}

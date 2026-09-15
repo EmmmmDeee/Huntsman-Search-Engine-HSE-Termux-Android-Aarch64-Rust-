@@ -224,3 +224,33 @@ fn accepts_coordinates_only() {
             Some("1")
         );
     }
+
+#[test]
+fn a_runtime_error_remark_is_a_hard_error_not_no_infrastructure() {
+    // Overpass reports a query timeout / out-of-memory as HTTP 200 with a
+    // `remark` and empty `elements`. That must fail closed, not read as "no
+    // infrastructure within range."
+    let body = r#"{"elements":[],"remark":"runtime error: Query timed out in \"query\" at line 1"}"#;
+    let resp: OverpassResp = serde_json::from_str(body).expect("body parses");
+    assert!(
+        infrastructure_or_error(resp).is_err(),
+        "a runtime-error remark must surface as an error"
+    );
+}
+
+#[test]
+fn a_genuinely_empty_area_is_a_clean_negative() {
+    // No remark + no elements is a real "nothing within range" — must stay Ok.
+    let resp: OverpassResp = serde_json::from_str(r#"{"elements":[]}"#).expect("parses");
+    let els = infrastructure_or_error(resp).expect("an empty area is not an error");
+    assert!(els.is_empty());
+}
+
+#[test]
+fn results_survive_even_alongside_a_remark() {
+    // A remark accompanying real elements is informational — the data is kept.
+    let body = r#"{"elements":[{"type":"node","id":1,"lat":1.0,"lon":2.0,"tags":{"amenity":"cafe"}}],"remark":"considered heuristic"}"#;
+    let resp: OverpassResp = serde_json::from_str(body).expect("parses");
+    let els = infrastructure_or_error(resp).expect("elements present is not an error");
+    assert_eq!(els.len(), 1);
+}

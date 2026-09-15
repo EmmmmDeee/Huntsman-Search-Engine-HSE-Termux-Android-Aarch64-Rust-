@@ -43,6 +43,7 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::http::fetch_json;
+use crate::util::mediawiki::MwError;
 
 use self::builder::{candidate_entity, primary_entities};
 use self::classify::{name_matches_query, seed_kind};
@@ -152,6 +153,12 @@ impl Module for Wikidata {
         }
 
         let search: SearchResp = fetch_json(&ctx.http, SRC, &search_url(query)).await?;
+        // A MediaWiki HTTP-200 error envelope (maxlag, backend error, bad
+        // params) decodes to an empty `search` list; without this gate that
+        // reads as a clean "no matching item" negative. Fail closed instead.
+        // (The later `wbgetentities` claims call stays intentionally non-fatal —
+        // the candidate items already found still surface.)
+        MwError::check(&search.error, SRC)?;
 
         // Eligible = items whose label matches every seed token (precision gate).
         // The filter is split from the cap so `total_name_matches` recovers the
