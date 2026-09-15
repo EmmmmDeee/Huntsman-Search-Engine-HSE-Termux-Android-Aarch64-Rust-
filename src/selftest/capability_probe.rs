@@ -352,6 +352,31 @@ pub const CANARY_PROBES: &[(&str, TargetKind, &str)] = &[
     ("wikidata", TargetKind::FullName, "Abraham Lincoln"),
     // GitHub's published `assetlinks.json` — 7.
     ("app_links", TargetKind::Domain, "github.com"),
+    // ── Third batch, verified live from the sandbox on 2026-09-15 21:5x UTC
+    // (the per-kind samples `Fletcher Moreau`, `Google LLC` and `example.com`
+    // hold nothing in these corpora, so none was observable before). Not
+    // canaries, and why: `dns_axfr` / `zonetransfer.me` (TCP/53 is closed
+    // from the sandbox and unreliable from mobile vantages, so a dead
+    // reading would say nothing about the module), `subdomain_takeover` (a
+    // dangling record is nobody's stable sample), the email modules and
+    // `asic_persons` (a real person's identifier as a checked-in sample),
+    // `greynoise` / `ip_reputation` (scanner addresses and Tor exits move),
+    // `ransomlook` (a real victim's domain), `beacondb` (a real BSSID).
+    // OFAC's SDN entry for a DPRK trading corporation (program NPWMD): the
+    // subject re-emitted tagged `ofac-sdn` — 1.
+    (
+        "sanctions_ofac",
+        TargetKind::Organisation,
+        "KOREA HYOKSIN TRADING CORPORATION",
+    ),
+    // data.gov.au's own organisation entry for the ATO and its datasets — 11.
+    (
+        "data_gov_au",
+        TargetKind::Organisation,
+        "Australian Taxation Office",
+    ),
+    // The Python documentation's sitemap: one URL per documented version — 8.
+    ("sitemap", TargetKind::Domain, "docs.python.org"),
 ];
 
 /// Whether `module` is a curated must-yield canary (see [`CANARY_PROBES`]).

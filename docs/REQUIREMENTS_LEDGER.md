@@ -4172,9 +4172,19 @@ clippy `-D warnings`, CI's rustdoc lints, `cargo test --all` (7336 lib tests
 green; `tests/smoke.rs::key_chaining_concurrent_dispatch` failed once in the
 suite and passed alone — recorded in the Pass 31 stop revision as an
 observed intermittent with its candidate cause), doc coverage held at
-1029. Remote: the live-drift dispatch on the pushed head (`hackertarget`
-reads `alive … 501 found` for `example.com` on every sweep; a runner cannot
-exercise the no-DNS shape).
+1029. **Remote (live-drift run 35027612197 on `19c8651`, 2026-09-15 21:48–21:50
+UTC):** `alive hackertarget 501 found` as on every sweep (a runner's sample
+resolves, so the no-DNS shape is the sandbox's and the lock's to prove);
+116 probed — 89 alive, 17 empty, 2 unreachable (`wifidb`; `overpass` 504
+again), 1 timed-out (`wayback`), **2 rate-limited**, 4 blocked, 1 skipped, 0
+panicked; `username_search 58`, `social_probe 17`, `streaming_probe 4`
+(REQ-PROBE-001 holding). One of the two rate-limited rows is the first
+runner reading of REQ-DRIFT-007's shape: **`rate-limited github_user —
+GitHub throttled this client (HTTP 403 Forbidden): {"message":"API rate
+limit exceeded for 52.161.201.86 …"}`** — the day's dispatches spent the
+runner address's anonymous quota, and the throttle reads as the cooldown the
+cycle built, not as `unreachable` (the S entry had recorded that the runner
+"cannot exercise the throttle branch"; it can, and did).
 
 ### REQ-PROBE-001 (**new, Pass 31 — MEASURED live from the sandbox, VERIFIED FROM SOURCE, FIXED at the shared layer, FALSIFIED**): a presence probe minted profiles for handles nobody holds; every presence is judged against a control handle
 
@@ -4652,7 +4662,11 @@ panicked**. `github_user` reads `alive … 9 found` and `github_commits`
 nothing for a client GitHub is not throttling, and the runner cannot exercise
 the throttle branch (GitHub's anonymous limit is per address and the runner's
 is fresh), which is why that branch is proven on the sandbox's live capture
-and the loopback locks, not here. The two rows that moved since 19:08 are
+and the loopback locks, not here. (Superseded at 21:50 UTC: after the day's
+dispatches the runner's address was throttled too, and run 35027612197 on
+`19c8651` reads `rate-limited github_user — GitHub throttled this client
+(HTTP 403 Forbidden) …` — the branch exercised on the production vantage;
+recorded under REQ-HACKERTARGET-001's remote paragraph.) The two rows that moved since 19:08 are
 provider noise on this vantage, neither a GitHub caller: `wayback`
 `unreachable — HTTP 503 Service Unavailable: Internet Archive: Temporarily
 Offline` (the outage page REQ-DRIFT-003's table met; 19:08 had read it
@@ -5370,6 +5384,9 @@ count):**
 | `au_geo` | `-33.8688,151.2093` (Sydney CBD) | 10 |
 | `qld_cadastre` | `-27.4698,153.0251` (Brisbane CBD) | 6 |
 | `bitbucket_user` | `atlassian` | 0 — **not** a canary (the 0 was REQ-BITBUCKET-001's removed resource, not an absent account; `zzzeek` is the canary now) |
+| `sanctions_ofac` (batch 3) | `KOREA HYOKSIN TRADING CORPORATION` (Organisation) | 1 — the subject re-emitted tagged `ofac-sdn`, program NPWMD |
+| `data_gov_au` (batch 3) | `Australian Taxation Office` (Organisation) | 11 |
+| `sitemap` (batch 3) | `docs.python.org` | 8 — one URL per documented version |
 
 Every listed account or anchor is long-lived and prominent (a platform's
 founder or administrator, a maintainer with hundreds of packages, a national
@@ -5457,6 +5474,30 @@ count the sandbox saw: `acnc_charities 5`, `app_links 7`,
 `asic_business_names 143`, `crossref_search 5`, `wikidata 8` (`[canary]`
 on each row); 88 alive against 83 on the 17:03 run, 18 empty against 24.
 
+
+**Batch 3 (2026-09-15 21:5x UTC, the binary built from `19c8651`).** The
+steady `empty` rows the stop revision (4) had left "untested against a held
+sample" were driven against one each: `sanctions_ofac` re-emits `KOREA
+HYOKSIN TRADING CORPORATION` tagged `ofac`, `ofac-sdn`, `sanctions`,
+`regulatory-action`, `needs-identity-verification` (program NPWMD; 1 entity —
+for a `FullName` the module's all-tokens-of-three-letters match makes `Kim
+Jong Un` five 0.5 candidates with the identity caution, `un` being two
+letters, so the organisation form is the deterministic sample); `data_gov_au`
+resolves `Australian Taxation Office` to the ATO's own organisation entry and
+ten datasets (11); `sitemap` reads docs.python.org's sitemap (8, one URL per
+documented version; www.gov.uk and wordpress.org answer 200 at the cap and are
+not the sample for that reason; www.python.org publishes none). The three
+join `CANARY_PROBES`; `every_canary_has_a_sample_and_is_flagged` admits them
+(19 probe tests green). Not canaries, with the reason recorded in the table's
+comment: `dns_axfr` / `zonetransfer.me` — the module times out from this
+sandbox (TCP/53 is closed here) and AXFR is unreliable from mobile vantages,
+so a dead reading would say nothing about the module; `subdomain_takeover`
+(a dangling record is nobody's stable sample); the six email modules and
+`asic_persons` (a real person's identifier as a checked-in sample);
+`greynoise` / `ip_reputation` (scanner addresses and Tor exits move);
+`ransomlook` (a real victim's domain); `beacondb` (a real BSSID). Remote: the
+live-drift dispatch on the pushed head (three new `[canary]` rows expected
+`alive` with those counts).
 
 ### REQ-SCOPE-001 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): an out-of-jurisdiction target is a typed skip, never a clean negative
 
