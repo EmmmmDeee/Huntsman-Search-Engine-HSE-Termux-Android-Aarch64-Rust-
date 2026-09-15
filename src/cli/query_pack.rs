@@ -4,6 +4,12 @@
 //! value (kind auto-detected, or `--kind`), stamps the current time, and prints
 //! the ranked manual queries as a table or JSON. All generation is offline and
 //! deterministic; nothing is fetched.
+//!
+//! Pack selection is by target kind so this file stays signature-compatible
+//! with `Command::QueryPack { value, kind, output }`:
+//! - ABN / org / address / coordinates → EDD table
+//! - domain / url / IP / full name → exposure then EDD
+//! - email / username / phone / other → exposure six
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,12 +19,7 @@ use crate::core::scan::{Target, TargetKind};
 
 use super::{parse_target_kind, truncate};
 
-pub(super) async fn cmd_query_pack(
-    value: String,
-    kind: String,
-    pack: String,
-    output: String,
-) -> Result<()> {
+pub(super) async fn cmd_query_pack(value: String, kind: String, output: String) -> Result<()> {
     let v = value.trim();
     if v.is_empty() {
         return Err(Error::InvalidTarget(
@@ -27,12 +28,6 @@ pub(super) async fn cmd_query_pack(
                 .to_string(),
         ));
     }
-
-    let selected = Pack::parse(&pack).ok_or_else(|| {
-        Error::Other(format!(
-            "unknown --pack {pack:?} (expected `exposure`, `edd`, or `all`)"
-        ))
-    })?;
 
     let json = match output.as_str() {
         "json" => true,
@@ -50,6 +45,7 @@ pub(super) async fn cmd_query_pack(
         parse_target_kind(&kind)?
     };
     let target = Target::new(target_kind, v.to_string());
+    let selected = pack_for_kind(target_kind);
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -62,6 +58,20 @@ pub(super) async fn cmd_query_pack(
         print_table(&target, selected, &rows);
     }
     Ok(())
+}
+
+fn pack_for_kind(kind: TargetKind) -> Pack {
+    match kind {
+        TargetKind::AbnAcn
+        | TargetKind::Organisation
+        | TargetKind::Address
+        | TargetKind::Coordinates => Pack::Edd,
+        TargetKind::Domain
+        | TargetKind::Url
+        | TargetKind::IpAddress
+        | TargetKind::FullName => Pack::All,
+        _ => Pack::Exposure,
+    }
 }
 
 fn pack_label(pack: Pack) -> &'static str {
