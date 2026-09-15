@@ -78,20 +78,81 @@ const ENV_AUSPOST_KEY: &str = "HUNTSMAN_AUSPOST_KEY";
 /// source module's calibration (`ADDRESS_CONFIDENCE = 0.85`).
 const ADDRESS_CONFIDENCE: f64 = confidence::HIGH_PLUSPLUS_PLUS;
 
+/// One locality as the PAC Postcode Search API returns it, at
+/// `localities.locality[]`: the documented fields are `location` (the suburb /
+/// town name), `postcode` (a JSON **number**), `state`, plus `category`, `id`,
+/// `latitude`, `longitude`, which this module does not model. Before this the
+/// struct expected a `locality` field and a string postcode at the top-level
+/// `localities` array — a shape the API never sends — so every real answer
+/// failed to decode (`docs/PROVIDER_SWEEP_BACKLOG.md` #5). `locality` is kept as
+/// an alias so a captured answer in that spelling still reads.
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct AusPostAddress {
-    #[serde(default)]
-    pub(super) locality: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "locality")]
+    pub(super) location: Option<String>,
+    #[serde(default, deserialize_with = "number_or_string")]
     pub(super) postcode: Option<String>,
     #[serde(default)]
     pub(super) state: Option<String>,
 }
 
+/// The documented envelope: `{"localities": {"locality": [ … ]}}`. The API is
+/// XML-derived, so a single match arrives as `"locality": { … }` (an object,
+/// not a one-element array) and no match at all as `"localities": ""` — a
+/// string. [`localities`] folds every one of those into the same `Vec`, and
+/// still accepts a bare top-level array so a fixture in the pre-fix spelling
+/// keeps decoding.
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct AusPostResponse {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "localities")]
     pub(super) localities: Vec<AusPostAddress>,
+}
+
+/// `postcode` is a JSON number on the wire (`2000`), but a string in the entity
+/// text; accept either spelling and reject anything else as absent.
+fn number_or_string<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(match v {
+        Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+        Some(serde_json::Value::String(s)) => Some(s),
+        _ => None,
+    })
+}
+
+/// See [`AusPostResponse`]: the wrapper object, a lone locality object, the
+/// empty-string "no match", or a bare array — all to one list.
+fn localities<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Vec<AusPostAddress>, D::Error> {
+    use serde::de::Error as _;
+    fn one_or_many<E: serde::de::Error>(
+        v: serde_json::Value,
+    ) -> std::result::Result<Vec<AusPostAddress>, E> {
+        match v {
+            serde_json::Value::Array(items) => items
+                .into_iter()
+                .map(|i| serde_json::from_value(i).map_err(E::custom))
+                .collect(),
+            serde_json::Value::Object(_) => Ok(vec![serde_json::from_value(v).map_err(E::custom)?]),
+            _ => Ok(Vec::new()),
+        }
+    }
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    match v {
+        None | Some(serde_json::Value::Null | serde_json::Value::String(_)) => Ok(Vec::new()),
+        Some(serde_json::Value::Array(items)) => one_or_many(serde_json::Value::Array(items)),
+        Some(serde_json::Value::Object(mut wrapper)) => match wrapper.remove("locality") {
+            Some(inner) => one_or_many(inner),
+            None => Err(D::Error::custom(
+                "`localities` object carries no `locality` member — not the PAC Postcode Search shape",
+            )),
+        },
+        Some(other) => Err(D::Error::custom(format!(
+            "`localities` is neither the PAC wrapper, a list, nor the empty-string no-match: {other}"
+        ))),
+    }
 }
 
 /// Project the postcode-search response onto entities.
@@ -100,7 +161,7 @@ pub(super) struct AusPostResponse {
 /// lives here so it is tested directly against captured responses rather
 /// than through `process`.
 ///
-/// For each locality, `locality`/`state`/`postcode` are trimmed, filtered for
+/// For each locality, `location`/`state`/`postcode` are trimmed, filtered for
 /// emptiness, and joined with a space into one combined marker (e.g.
 /// `"Melbourne VIC 3000"`); a locality contributing no non-empty component is
 /// skipped entirely rather than emitting a blank/partial entity. Dedup is
@@ -115,7 +176,7 @@ pub(super) fn build_entities(resp: &AusPostResponse, scan_id: &str) -> Vec<Entit
 
     for address in &resp.localities {
         let parts: Vec<&str> = [
-            address.locality.as_deref(),
+            address.location.as_deref(),
             address.state.as_deref(),
             address.postcode.as_deref(),
         ]
@@ -150,7 +211,7 @@ pub(super) fn build_entities(resp: &AusPostResponse, scan_id: &str) -> Vec<Entit
         fn non_empty(v: Option<&str>) -> Option<&str> {
             v.map(str::trim).filter(|s| !s.is_empty())
         }
-        if let Some(loc) = non_empty(address.locality.as_deref()) {
+        if let Some(loc) = non_empty(address.location.as_deref()) {
             ev = ev.with_attr("locality", loc);
         }
         if let Some(st) = non_empty(address.state.as_deref()) {

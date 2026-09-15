@@ -2,7 +2,7 @@ use super::parse::{
     PropertyRecord, extract_postcode, extract_state, name_matches, parse_nsw_response,
     parse_qld_response, parse_vic_response, record_to_entities, state_capital_coords, strip_html,
 };
-use super::{AuProperty, LegOutcome, LegTally, leg_failure};
+use super::{AuProperty, LegOutcome, LegTally, landed_off_host, leg_failure, run_leg};
 use crate::core::entity::{Entity, EntityKind};
 use crate::core::module::Module;
 use crate::core::scan::{Target, TargetKind};
@@ -396,6 +396,7 @@ fn leg_failure_reports_dead_endpoints_when_statuses_were_observed() {
     let msg = leg_failure(LegTally {
         ok: 0,
         http_error: 3,
+        migrated: 0,
         unreachable: 0,
     })
     .expect("three error statuses and no success is a hard failure");
@@ -415,6 +416,7 @@ fn leg_failure_does_not_claim_a_status_it_never_saw() {
     let msg = leg_failure(LegTally {
         ok: 0,
         http_error: 0,
+        migrated: 0,
         unreachable: 3,
     })
     .expect("three unreachable legs and no success is a hard failure");
@@ -441,6 +443,7 @@ fn leg_failure_reports_mixed_causes_honestly() {
     let msg = leg_failure(LegTally {
         ok: 0,
         http_error: 1,
+        migrated: 0,
         unreachable: 2,
     })
     .expect("no success is a hard failure");
@@ -458,11 +461,13 @@ fn leg_failure_is_none_once_any_leg_answered() {
         LegTally {
             ok: 1,
             http_error: 0,
+            migrated: 0,
             unreachable: 0,
         },
         LegTally {
             ok: 1,
             http_error: 1,
+            migrated: 0,
             unreachable: 1,
         },
     ] {
@@ -493,4 +498,186 @@ fn leg_tally_saturates() {
         leg_failure(t).is_some(),
         "a saturated tally is still a failure"
     );
+}
+
+// ── Backlog #3 / #4: a redirect off the portal is not the register answering;
+//    a body that cannot be read to the end is not an empty register page ─────
+
+#[test]
+fn a_leg_that_landed_on_another_host_is_a_dead_endpoint_in_the_verdict() {
+    // NSW's legacy domain 308-redirects wholesale to the SDT Explorer SPA on
+    // portal.spatial.nsw.gov.au; that page parses to nothing for anyone, which
+    // used to read as "register consulted, no records for this name".
+    let msg = leg_failure(LegTally {
+        ok: 0,
+        http_error: 2,
+        migrated: 1,
+        unreachable: 0,
+    })
+    .expect("two error statuses plus a migrated leg and no success is a hard failure");
+    assert!(msg.contains("all 3 property-register endpoints"), "{msg}");
+    assert!(msg.contains("redirected away to another host"), "{msg}");
+    assert!(msg.contains("retired/migrated"), "{msg}");
+
+    // A migrated leg alone is still a failure, never a consulted register.
+    assert!(
+        leg_failure(LegTally {
+            ok: 0,
+            http_error: 0,
+            migrated: 1,
+            unreachable: 0,
+        })
+        .is_some(),
+        "a redirect to some other site is not an answer from the register"
+    );
+    // Mixed with unreachable legs, both causes are named.
+    let mixed = leg_failure(LegTally {
+        ok: 0,
+        http_error: 0,
+        migrated: 1,
+        unreachable: 2,
+    })
+    .expect("mixed causes are a hard failure");
+    assert!(
+        mixed.contains("1 returned a non-success HTTP status or redirected away"),
+        "{mixed}"
+    );
+    assert!(mixed.contains("2 could not be reached"), "{mixed}");
+}
+
+#[test]
+fn landed_off_host_compares_hosts_only() {
+    let landed = |u: &str| url::Url::parse(u).expect("url");
+    assert!(landed_off_host(
+        "https://maps.six.nsw.gov.au/services/public/Property_Name_Address?surname=x",
+        &landed("https://portal.spatial.nsw.gov.au/explorer/index.html"),
+    ));
+    // Same host: scheme, path and query changes are the portal's own business.
+    assert!(!landed_off_host(
+        "http://mapshare.vic.gov.au/mapsharevic/ows?service=WFS",
+        &landed("https://mapshare.vic.gov.au/mapsharevic/ows/?service=WFS"),
+    ));
+    assert!(!landed_off_host(
+        "https://WWW.qld.gov.au/x",
+        &landed("https://www.qld.gov.au/x/"),
+    ));
+    // Unparseable request URL: never invent a migration.
+    assert!(!landed_off_host(
+        "not a url",
+        &landed("https://example.com/")
+    ));
+}
+
+/// The transport half, against loopback listeners with a plain client: a
+/// cross-host redirect lands as `Migrated`, a body cut short mid-transfer as
+/// `Unreachable`, and a genuine 2xx read to the end as `Ok`.
+#[tokio::test]
+async fn run_leg_classifies_a_cross_host_redirect_and_a_cut_body_honestly() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = crate::core::module::ModuleContext {
+        scan_id: "s".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let parse = parse_nsw_response as fn(&str, &str) -> Vec<super::parse::PropertyRecord>;
+
+    // The "SPA" host: answers 200 with a shell page. Reached as `localhost`, a
+    // different host string from the `127.0.0.1` the leg is asked for.
+    let spa =
+        crate::util::http::test_server::serve(vec![crate::util::http::test_server::Canned::text(
+            200,
+            "<html><body><div id=app></div></body></html>",
+        )])
+        .await;
+    let spa_port = spa.rsplit(':').next().expect("port");
+    // The "legacy portal": redirects wholesale to the SPA on another host.
+    let legacy = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let legacy_addr = legacy.local_addr().expect("addr");
+    let redirect_to = format!("http://localhost:{spa_port}/explorer/index.html");
+    tokio::spawn(async move {
+        let Ok((mut sock, _)) = legacy.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 4096];
+        let _ = sock.read(&mut buf).await;
+        let head = format!(
+            "HTTP/1.1 308 Permanent Redirect\r\nLocation: {redirect_to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        let _ = sock.write_all(head.as_bytes()).await;
+        let _ = sock.shutdown().await;
+    });
+    let mut out = Vec::new();
+    let outcome = run_leg(
+        &ctx,
+        &format!("http://{legacy_addr}/services/public/Property_Name_Address?surname=Moreau"),
+        "application/json,text/html",
+        "Fletcher Moreau",
+        parse,
+        &mut out,
+    )
+    .await;
+    assert_eq!(
+        outcome,
+        LegOutcome::Migrated,
+        "a 2xx from another host is not the register answering"
+    );
+    assert!(out.is_empty());
+
+    // A body cut short: Content-Length promises more than arrives.
+    let cut = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let cut_addr = cut.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let Ok((mut sock, _)) = cut.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 4096];
+        let _ = sock.read(&mut buf).await;
+        let _ = sock
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 500000\r\nConnection: close\r\n\r\n<html>Fletcher Moreau, Sydney NSW 2000")
+            .await;
+        let _ = sock.shutdown().await;
+    });
+    let outcome = run_leg(
+        &ctx,
+        &format!("http://{cut_addr}/services/public/Property_Name_Address?surname=Moreau"),
+        "application/json,text/html",
+        "Fletcher Moreau",
+        parse,
+        &mut out,
+    )
+    .await;
+    assert_eq!(
+        outcome,
+        LegOutcome::Unreachable,
+        "a body that could not be read to the end is a transport failure, not an empty page"
+    );
+    assert!(
+        out.is_empty(),
+        "nothing parsed from a partial body may be kept"
+    );
+
+    // A genuine answer, read whole.
+    let whole =
+        crate::util::http::test_server::serve(vec![crate::util::http::test_server::Canned::text(
+            200,
+            "<html><body><tr><td>Fletcher Moreau</td><td>Sydney NSW 2000</td></tr></body></html>",
+        )])
+        .await;
+    let outcome = run_leg(
+        &ctx,
+        &format!("{whole}/services/public/Property_Name_Address?surname=Moreau"),
+        "application/json,text/html",
+        "Fletcher Moreau",
+        parse,
+        &mut out,
+    )
+    .await;
+    assert_eq!(outcome, LegOutcome::Ok);
 }

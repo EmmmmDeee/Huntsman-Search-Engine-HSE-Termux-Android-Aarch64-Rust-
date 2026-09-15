@@ -20,21 +20,21 @@ is the type that makes the first class impossible to express once modules adopt 
 
 | # | Module | Finding |
 |---|---|---|
-| 0 | `src/modules/asic_business_names/mod.rs` | asic_business_names: truncation signal can never fire and total_matches under-reports (CKAN r.total discarded) |
-| 1 | `src/modules/acma_rrl/mod.rs` | acma_rrl: mid-body transport failure collapses into an empty result (false 'no licence' negative) |
-| 2 | `src/modules/ahpra/mod.rs` | ahpra: mid-body transport failure collapses into an empty result (false 'not a registered practitioner' negative) |
-| 4 | `src/modules/au_property/mod.rs` | au_property: a body-read failure after a 2xx is still tallied as LegOutcome::Ok |
-| 5 | `src/modules/auspost/mod.rs` | auspost: response struct contradicts the live Postcode Search JSON shape — every real response fails to decode |
-| 6 | `src/modules/bitcoin/mod.rs` | bitcoin: /txs failure discards the already-fetched ledger reading, contrary to the module's own comment and the or_hard_failure rule |
-| 7 | `src/modules/austlii/mod.rs` | austlii: 404 on the fixed sinosrch.cgi path is treated as a clean "no legal records" miss |
-| 8 | `src/modules/austlii/mod.rs` | austlii: body-read transport failure after a 2xx collapses to an empty result |
+| 0 | `src/modules/asic_business_names/mod.rs` | **Already fixed on `main` (verified from source 2026-09-15).** `ckan_query` returns CKAN's own `r.total` as `server_total`, and `is_truncated(server_total, records.len())` drives the `truncated` tag and `total_matches`. |
+| 1 | `src/modules/acma_rrl/mod.rs` | **Already fixed on `main` (verified from source 2026-09-15).** The body is read with `read_body_capped_or_fail`: a mid-body transport failure is the module's error, never an empty page parsed to "no licence". |
+| 2 | `src/modules/ahpra/mod.rs` | **Already fixed on `main` (verified from source 2026-09-15).** The body is read with `read_body_capped_or_fail`: a mid-body transport failure is the module's error, never "not a registered practitioner". |
+| 4 | `src/modules/au_property/mod.rs` | **VERIFIED AND FIXED (2026-09-15).** au_property: `run_leg` returned `LegOutcome::Ok` after `read_body_capped` yielded `None`. The body is read with `read_body_capped_or_fail`; a failure is `LegOutcome::Unreachable` and nothing parsed from a partial body is kept. Loopback test: a body whose Content-Length promises more than arrives → `Unreachable`. See REQ-AUPROP-001. |
+| 5 | `src/modules/auspost/mod.rs` | **FIXED against the published contract (2026-09-15); live decode UNVERIFIED (no key here).** auspost: the struct expected a bare `localities` list with a `locality` string and a string postcode; Australia Post documents `localities.locality[]` with `location` and a numeric postcode (a lone object for one match, `""` for none). A tolerant deserializer now accepts every documented variant and the pre-fix spelling, and rejects any other shape as a decode failure. See REQ-AUSPOST-001. |
+| 6 | `src/modules/bitcoin/mod.rs` | **VERIFIED AND FIXED (2026-09-15).** bitcoin: the `?` on the `/txs` call errored the module after `/address` had answered, discarding the ledger reading. `lookup` keeps the reading and stamps the anchor's evidence with the failed co-spend lookup (never a silent "no co-spends"); a failed ledger call is the error, Esplora's 404 the clean negative. Loopback tests. See REQ-BITCOIN-001. |
+| 7 | `src/modules/austlii/mod.rs` | **Already fixed on `main` (verified from source 2026-09-15).** `ok_or_absent(SRC, resp, &[])` on the fixed `sinosrch.cgi` path: a 404 is the endpoint gone, not a clean miss (the module's own comment records the reasoning). |
+| 8 | `src/modules/austlii/mod.rs` | **Already fixed on `main` (verified from source 2026-09-15).** The body is read with `read_body_capped_or_fail`; a mid-body transport failure is the module's error. |
 | 9 | `src/modules/chess_profile/mod.rs` | chess_profile: every upstream failure (429/5xx/transport/breaker short-circuit) on BOTH platforms collapses to an empty ModuleResult |
 
 ## Refuted by verification — do not act
 
 | # | Module | Claim |
 |---|---|---|
-| 3 | `src/modules/au_property/mod.rs` | au_property: NSW leg's 308→SPA redirect lands as a 200 and reads as "register consulted, no records" |
+| 3 | `src/modules/au_property/mod.rs` | **VERIFIED AND FIXED (2026-09-15).** au_property: NSW's retired `maps.six.nsw.gov.au` 308-redirects to the SDT Explorer SPA on another host; reqwest followed it, the SPA shell parsed to nothing and the leg was tallied `Ok` — "register consulted, no records". A 2xx whose final host differs from the requested host is now `LegOutcome::Migrated` (`landed_off_host`), a dead endpoint in `leg_failure`'s verdict. Loopback test: a 308 to another host → `Migrated`. See REQ-AUPROP-001. |
 
 ## Unverified leads (43) — re-derive before believing
 

@@ -3208,3 +3208,120 @@ for `github_user` / `github_commits`.
 **Regression locks.** `github_code_search::tests::{module_metadata,
 without_a_token_the_module_is_a_missing_key_skip_before_any_request}`,
 `github_api::tests::throttled_reads_429_always_and_403_only_when_github_names_the_limit`.
+
+### REQ-BITCOIN-001 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**)
+
+**Requirement.** A partial provider failure never discards evidence already
+acquired, and never passes for a negative: the ledger reading of an address
+survives a failed transaction-list call, and the anchor says the co-spend
+cluster was not read.
+
+**Finding** (`docs/PROVIDER_SWEEP_BACKLOG.md` #6; classes PARTIAL_RESPONSE →
+SILENT_FAILURE). `process` fetched `/address/{a}` (the ledger reading), then
+`fetch_json_or_404(../txs).await?` — the `?` propagated any transport / 5xx
+failure of the *second* call and the whole module errored, discarding the
+stats already in hand, contrary to the comment beside it ("a failure here must
+not discard the ledger reading"). The obvious alternative — swallowing the
+failure — would have turned an unread cluster into "no co-spent addresses".
+
+**Fix.** `lookup(client, api_base, addr, scan_id)`: the ledger call's failure
+is the module's error and Esplora's 404 the one clean negative; a failed
+`/txs` call keeps the anchor and stamps its evidence `cospend_lookup: failed`,
+`cospend_error: <reason>` and the tag `cospend-unavailable`, so a wallet
+cluster that was never read is not mistaken for one that is empty
+(`build_entities(stats, Result<&[Transaction], &str>, ..)`).
+
+**Regression locks.** `bitcoin::tests::{a_failed_transaction_lookup_keeps_the_ledger_reading_and_says_so,
+lookup_keeps_the_ledger_on_a_txs_failure_and_errors_on_a_ledger_failure}` (the
+latter drives the real request path against a loopback Esplora: stats 200 +
+txs 503 → anchor kept with the failure on its evidence; stats 500 → error;
+stats 404 → empty).
+
+### REQ-AUPROP-001 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**)
+
+**Requirement.** `au_property` reports "register consulted, no records" only
+when a register answered: a 2xx that arrived from a different host than the
+portal asked, or a body that could not be read to the end, is not an answer.
+
+**Findings** (`docs/PROVIDER_SWEEP_BACKLOG.md` #3 and #4; class
+FALSE_NEGATIVE_RISK). `run_leg` tallied `LegOutcome::Ok` (a) after
+`read_body_capped` returned `None` on a mid-body transport failure — an empty
+page parsed to nothing, "no records for this name" — and (b) for any 2xx,
+including NSW's legacy `maps.six.nsw.gov.au` 308-redirecting wholesale to the
+SDT Explorer SPA on `portal.spatial.nsw.gov.au` (observed 2026-08-04, recorded
+in the module's own header), whose shell page says nothing about anyone. With
+all three portals retired, that is a clean negative on every AU property
+lookup whenever NSW forwards instead of 404-ing.
+
+**Fix.** A new `LegOutcome::Migrated` — the response's final host differs from
+the requested host (`landed_off_host`, pure) — counted with `HttpError` as a
+dead endpoint in `leg_failure` (the verdict names it: "returned a non-success
+HTTP status or redirected away to another host"); the body is read with
+`read_body_capped_or_fail`, a failure being `LegOutcome::Unreachable`.
+
+**Regression locks.** `au_property::tests::{a_leg_that_landed_on_another_host_is_a_dead_endpoint_in_the_verdict,
+landed_off_host_compares_hosts_only,
+run_leg_classifies_a_cross_host_redirect_and_a_cut_body_honestly}` (the last
+drives `run_leg` against loopback listeners: a 308 to another host → `Migrated`;
+a body whose `Content-Length` promises more than arrives → `Unreachable`, nothing
+kept; a whole 2xx → `Ok`).
+
+**Residual.** The three portals remain retired (the 2026-09-14 sweep:
+"all 3 property-register endpoints … returned a non-success HTTP status");
+no replacement endpoint is identified. The module now fails closed on every
+way those retirements can present; it does not regain the capability.
+
+### REQ-AUSPOST-001 (**new, Pass 31 — FIXED against the published contract; live decode UNVERIFIED**)
+
+**Requirement.** `auspost` decodes what the PAC Postcode Search API sends.
+
+**Finding** (`docs/PROVIDER_SWEEP_BACKLOG.md` #5, confirmed 3/3 in Pass 17;
+class SCHEMA_DRIFT). The struct expected `{"localities": [ {"locality", "state",
+"postcode": "…"} ]}`. Australia Post documents `{"localities": {"locality": [
+{"category", "id", "latitude", "location", "longitude", "postcode": 2000,
+"state"} ]}}` — a wrapper object, the name under `location`, a *numeric*
+postcode — plus the XML-derived quirks that a single match is a lone object
+under `locality` and no match is `"localities": ""`. Every real answer
+therefore failed to decode (a decode error is at least a visible failure, not
+a clean negative — but the capability was dead for every keyed operator).
+
+**Fix.** `AusPostAddress { location (alias locality), postcode: number or
+string, state }`; `AusPostResponse.localities` via a deserializer that accepts
+the wrapper (array or lone object), the empty-string no-match, and the pre-fix
+bare list; an object wrapper without `locality`, or any other type, is a decode
+failure (shape drift must surface, never read as "no localities").
+
+**Evidence level.** No `HUNTSMAN_AUSPOST_KEY` exists in this environment, so
+the live answer was not observed; the shape is taken from Australia Post's
+published PAC documentation and the lead's 3/3 verification. Tests:
+`auspost::tests::{the_documented_multi_match_envelope_decodes,
+a_single_match_arrives_as_an_object_and_decodes,
+no_match_is_an_empty_string_and_reads_as_empty,
+an_unrecognised_wrapper_is_a_decode_failure_not_an_empty_answer,
+the_pre_fix_bare_list_spelling_still_decodes}`. Status: FIXED against the
+documented contract; live decode remains UNVERIFIED until a keyed run.
+
+**Batch falsification (2026-09-15).** The three pre-fix behaviours
+reintroduced at once (`/txs` failure propagating and the anchor silent about
+it; no host comparison, a body-read failure tolerated, migrated legs not
+counted; the bare-list AusPost struct):
+
+```
+test modules::au_property::tests::a_leg_that_landed_on_another_host_is_a_dead_endpoint_in_the_verdict ... FAILED
+test modules::au_property::tests::landed_off_host_compares_hosts_only ... FAILED
+test modules::au_property::tests::run_leg_classifies_a_cross_host_redirect_and_a_cut_body_honestly ... FAILED
+test modules::auspost::tests::a_single_match_arrives_as_an_object_and_decodes ... FAILED
+test modules::auspost::tests::no_match_is_an_empty_string_and_reads_as_empty ... FAILED
+test modules::auspost::tests::the_documented_multi_match_envelope_decodes ... FAILED
+test modules::bitcoin::tests::a_failed_transaction_lookup_keeps_the_ledger_reading_and_says_so ... FAILED
+test modules::bitcoin::tests::lookup_keeps_the_ledger_on_a_txs_failure_and_errors_on_a_ledger_failure ... FAILED
+test result: FAILED. 70 passed; 8 failed
+```
+
+Exactly the eight new tests; restored: 78 passed.
+
+**Backlog housekeeping.** Rows #0 (`asic_business_names` truncation), #1
+(`acma_rrl`), #2 (`ahpra`), #7 and #8 (`austlii`) of the same "confirmed"
+table were re-derived from source and found already fixed on `main`
+(`server_total`-based truncation; `read_body_capped_or_fail`; `ok_or_absent(..,
+&[])` on the fixed AustLII path); the rows now say so.

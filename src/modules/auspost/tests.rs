@@ -4,7 +4,7 @@ const SCAN: &str = "scan-auspost";
 
 fn locality(loc: Option<&str>, state: Option<&str>, postcode: Option<&str>) -> AusPostAddress {
     AusPostAddress {
-        locality: loc.map(str::to_string),
+        location: loc.map(str::to_string),
         state: state.map(str::to_string),
         postcode: postcode.map(str::to_string),
     }
@@ -211,4 +211,69 @@ fn empty_value_is_declined() {
     assert!(!AusPost::handles_value(""));
     assert!(!AusPost::handles_value("   "));
     assert!(AusPost::handles_value("3000"));
+}
+
+// ── Backlog #5: the wire shape is the PAC envelope, not a bare list ──────────
+
+/// The shape Australia Post documents for `postcode/search.json` (multiple
+/// matches): the `localities.locality` array, `location` for the name, a
+/// numeric postcode. Before this fix the struct wanted a top-level array with a
+/// `locality` string field and a string postcode — so this, the ordinary
+/// answer, failed to decode and the module never produced anything.
+#[test]
+fn the_documented_multi_match_envelope_decodes() {
+    let raw = r#"{"localities":{"locality":[
+        {"category":"Delivery Area","id":8367,"latitude":-33.86,"location":"SYDNEY","longitude":151.2,"postcode":2000,"state":"NSW"},
+        {"category":"Post Office Boxes","id":8368,"latitude":-33.86,"location":"SYDNEY SOUTH","longitude":151.2,"postcode":1235,"state":"NSW"}
+    ]}}"#;
+    let resp: AusPostResponse = serde_json::from_str(raw).expect("the documented envelope decodes");
+    assert_eq!(resp.localities.len(), 2);
+    assert_eq!(resp.localities[0].location.as_deref(), Some("SYDNEY"));
+    assert_eq!(
+        resp.localities[0].postcode.as_deref(),
+        Some("2000"),
+        "a numeric postcode reads as text"
+    );
+    let out = build_entities(&resp, SCAN);
+    assert_eq!(out.len(), 2);
+    assert_eq!(out[0].value, "SYDNEY NSW 2000");
+}
+
+/// XML-derived quirk: exactly one match arrives as an object, not a
+/// one-element array.
+#[test]
+fn a_single_match_arrives_as_an_object_and_decodes() {
+    let raw = r#"{"localities":{"locality":{"category":"Delivery Area","id":8367,"latitude":-33.86,"location":"SYDNEY","longitude":151.2,"postcode":2000,"state":"NSW"}}}"#;
+    let resp: AusPostResponse = serde_json::from_str(raw).expect("a lone locality object decodes");
+    assert_eq!(resp.localities.len(), 1);
+    assert_eq!(build_entities(&resp, SCAN)[0].value, "SYDNEY NSW 2000");
+}
+
+/// No match at all is `"localities": ""` — a string, which must read as an
+/// empty list (the clean negative), not as a decode failure.
+#[test]
+fn no_match_is_an_empty_string_and_reads_as_empty() {
+    let resp: AusPostResponse =
+        serde_json::from_str(r#"{"localities":""}"#).expect("the empty-string no-match decodes");
+    assert!(resp.localities.is_empty());
+    assert!(build_entities(&resp, SCAN).is_empty());
+}
+
+/// A wrapper that is an object but not the PAC shape is a decode failure — a
+/// shape drift must surface, not read as "no localities".
+#[test]
+fn an_unrecognised_wrapper_is_a_decode_failure_not_an_empty_answer() {
+    assert!(serde_json::from_str::<AusPostResponse>(r#"{"localities":{"results":[]}}"#).is_err());
+    assert!(serde_json::from_str::<AusPostResponse>(r#"{"localities":42}"#).is_err());
+}
+
+/// The pre-fix spelling (a bare list with `locality` / string postcode) still
+/// decodes, so any captured fixture in that form keeps reading.
+#[test]
+fn the_pre_fix_bare_list_spelling_still_decodes() {
+    let resp: AusPostResponse = serde_json::from_str(
+        r#"{"localities":[{"locality":"Melbourne","state":"VIC","postcode":"3000"}]}"#,
+    )
+    .expect("bare list decodes");
+    assert_eq!(build_entities(&resp, SCAN)[0].value, "Melbourne VIC 3000");
 }

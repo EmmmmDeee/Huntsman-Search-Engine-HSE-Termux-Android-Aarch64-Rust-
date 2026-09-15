@@ -79,7 +79,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{RequestBuilderExt, read_body_capped};
+use crate::util::http::{RequestBuilderExt, read_body_capped_or_fail};
 
 use parse::{
     SRC, parse_nsw_response, parse_qld_response, parse_vic_response, record_to_entities,
@@ -209,11 +209,23 @@ impl Module for AuProperty {
 /// loses mobile data, sits behind a captive portal, or drops a VPN mid-scan.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum LegOutcome {
-    /// A response arrived with a 2xx status.
+    /// The portal itself answered 2xx and the whole body was read: the
+    /// register was consulted, and whatever the parser found (or did not) is
+    /// its answer.
     Ok,
     /// A response arrived, carrying a non-success status.
     HttpError,
-    /// No response arrived: DNS, connect, TLS, or timeout failure.
+    /// The request was redirected off the portal's host and a *different* site
+    /// answered 2xx — the retired legacy domain forwarding wholesale to a
+    /// client-rendered app (NSW's `maps.six.nsw.gov.au` → `portal.spatial.nsw.gov.au`
+    /// SPA, observed 2026-08-04). That page is not the register: parsing it
+    /// yields nothing for anyone, which before this read as "register
+    /// consulted, no records for this name" (`docs/PROVIDER_SWEEP_BACKLOG.md`
+    /// #3). Counted as a dead endpoint, like `HttpError`.
+    Migrated,
+    /// No response arrived, or the body could not be read to the end: DNS,
+    /// connect, TLS, timeout, or a mid-body transport failure. The last used to
+    /// be tallied `Ok` with an empty body (`docs/PROVIDER_SWEEP_BACKLOG.md` #4).
     Unreachable,
 }
 
@@ -222,6 +234,7 @@ enum LegOutcome {
 struct LegTally {
     ok: u8,
     http_error: u8,
+    migrated: u8,
     unreachable: u8,
 }
 
@@ -230,6 +243,7 @@ impl LegTally {
         let slot = match outcome {
             LegOutcome::Ok => &mut self.ok,
             LegOutcome::HttpError => &mut self.http_error,
+            LegOutcome::Migrated => &mut self.migrated,
             LegOutcome::Unreachable => &mut self.unreachable,
         };
         *slot = slot.saturating_add(1);
@@ -260,12 +274,15 @@ fn leg_failure(tally: LegTally) -> Option<String> {
     if tally.ok > 0 {
         return None;
     }
-    let attempted = u16::from(tally.http_error) + u16::from(tally.unreachable);
+    // A leg that redirected off the portal's host is a dead endpoint like a
+    // non-success status: the register never answered, something else did.
+    let dead = tally.http_error.saturating_add(tally.migrated);
+    let attempted = u16::from(dead) + u16::from(tally.unreachable);
     if attempted == 0 {
         // No leg ran at all (the caller short-circuited); nothing to report on.
         return None;
     }
-    Some(match (tally.http_error, tally.unreachable) {
+    Some(match (dead, tally.unreachable) {
         (0, _) => format!(
             "none of the {attempted} property-register endpoints (NSW ELVIS, VIC MapShare WFS, \
              QLD titles search) could be reached — the requests failed before any reply \
@@ -274,15 +291,16 @@ fn leg_failure(tally: LegTally) -> Option<String> {
         ),
         (_, 0) => format!(
             "all {attempted} property-register endpoints (NSW ELVIS, VIC MapShare WFS, QLD \
-             titles search) returned a non-success HTTP status — likely retired/migrated \
-             legacy URLs (see this module's doc comment), not \"no property records for \
-             this name\""
+             titles search) returned a non-success HTTP status or redirected away to another \
+             host — likely retired/migrated legacy URLs (see this module's doc comment), not \
+             \"no property records for this name\""
         ),
-        (http_error, unreachable) => format!(
-            "no property-register endpoint answered: {http_error} returned a non-success HTTP \
-             status (likely retired/migrated legacy URLs — see this module's doc comment) and \
-             {unreachable} could not be reached at all (DNS, connect, TLS, or timeout). Mixed \
-             causes, so this is not evidence of \"no property records for this name\"."
+        (dead, unreachable) => format!(
+            "no property-register endpoint answered: {dead} returned a non-success HTTP \
+             status or redirected away to another host (likely retired/migrated legacy URLs \
+             — see this module's doc comment) and {unreachable} could not be reached at all \
+             (DNS, connect, TLS, or timeout). Mixed causes, so this is not evidence of \"no \
+             property records for this name\"."
         ),
     })
 }
@@ -315,12 +333,43 @@ async fn run_leg(
     if !resp.status().is_success() {
         return LegOutcome::HttpError;
     }
-    if let Some(body) = read_body_capped(resp, 1_000_000).await {
-        out.extend(
-            parse(&body, full_name)
-                .iter()
-                .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
+    // A 2xx that arrived from a different host than the one asked is not the
+    // register answering: the legacy domain forwarded the request wholesale to
+    // some other app (NSW's SPA), whose page says nothing about this name.
+    if landed_off_host(url, resp.url()) {
+        tracing::debug!(
+            source = SRC,
+            requested = %crate::util::http::redact_credentials(url),
+            landed = %resp.url(),
+            "au_property: leg redirected off the portal's host — retired endpoint, not an answer"
         );
+        return LegOutcome::Migrated;
     }
+    // Fail closed on a body that cannot be read to the end: a mid-body
+    // transport failure is a transport failure, not an empty register page.
+    let Ok(body) = read_body_capped_or_fail(SRC, resp, 1_000_000).await else {
+        return LegOutcome::Unreachable;
+    };
+    out.extend(
+        parse(&body, full_name)
+            .iter()
+            .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
+    );
     LegOutcome::Ok
+}
+
+/// True when the response's final URL (after redirects) sits on a different
+/// host than the URL that was requested. A same-host redirect (http → https,
+/// a trailing-slash canonicalisation) is the portal answering; a cross-host one
+/// is the portal handing the request to some other site. Pure.
+fn landed_off_host(requested: &str, landed: &url::Url) -> bool {
+    let requested_host = url::Url::parse(requested)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase));
+    let landed_host = landed.host_str().map(str::to_ascii_lowercase);
+    match (requested_host, landed_host) {
+        (Some(r), Some(l)) => r != l,
+        // Cannot tell — do not invent a migration.
+        _ => false,
+    }
 }
