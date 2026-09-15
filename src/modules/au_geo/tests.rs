@@ -130,9 +130,11 @@ fn assemble_skips_absent_layers_and_empty_resolution() {
 }
 
 #[tokio::test]
-async fn non_au_or_malformed_coordinate_makes_no_request() {
+async fn non_au_coordinate_is_a_typed_skip_and_a_malformed_one_an_error_neither_a_clean_negative() {
     // London is outside the AU bbox → the module returns before any network I/O,
-    // so this runs offline in CI.
+    // so this runs offline in CI. Both used to be `Ok(empty)`, recorded as
+    // `ModuleDone { found: 0 }` — "no Australian geography here" for a point
+    // never looked up (the 2026-09-15 sweep's `empty au_geo`).
     let (bus, _rx) = tokio::sync::broadcast::channel(1);
     let ctx = ModuleContext {
         scan_id: "t".into(),
@@ -144,14 +146,24 @@ async fn non_au_or_malformed_coordinate_makes_no_request() {
     let london = AuGeo
         .process(&Target::new(TargetKind::Coordinates, "51.5074,-0.1276"), &ctx)
         .await
-        .expect("non-AU coordinate is a clean miss");
-    assert!(london.entities.is_empty());
+        .expect_err("a non-AU coordinate is a typed not-applicable skip");
+    match london {
+        crate::core::error::Error::Skipped { class, reason } => {
+            assert_eq!(class, crate::core::event::SkipClass::NotApplicable);
+            assert!(reason.contains("outside Australia"), "{reason}");
+        }
+        other => panic!("expected a NotApplicable skip, got {other}"),
+    }
 
     let junk = AuGeo
         .process(&Target::new(TargetKind::Coordinates, "not-a-coord"), &ctx)
         .await
-        .expect("malformed coordinate is a clean miss");
-    assert!(junk.entities.is_empty());
+        .expect_err("a malformed coordinate is the target's fault, never a clean miss");
+    assert!(
+        matches!(junk, crate::core::error::Error::Module { .. })
+            && junk.to_string().contains("coordinates must be"),
+        "{junk}"
+    );
 }
 
 #[test]

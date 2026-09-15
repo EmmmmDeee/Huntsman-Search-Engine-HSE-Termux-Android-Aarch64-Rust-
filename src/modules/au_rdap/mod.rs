@@ -385,14 +385,27 @@ impl Module for AuRdap {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let Some(domain) = query_domain(target) else {
-            return Ok(ModuleResult::new());
+            return Err(crate::core::error::Error::InvalidTarget(format!(
+                "{SRC}: {:?} carries no domain to look up",
+                target.value
+            )));
         };
 
-        // .au-scoped: any other TLD 404s against this registry's RDAP server,
-        // so skip the wasted request rather than let it silently contribute
-        // nothing (matches the source module's short-circuit).
+        // .au-scoped: auDA's RDAP publishes nothing about any other namespace
+        // (a non-.au name 404s against it), so the module says so in-band as a
+        // typed `NotApplicable` skip — never `Ok(empty)`, which dispatch records
+        // as `ModuleDone { found: 0 }` and coverage reads as "no .au
+        // registration for this domain": a clean negative about a domain the
+        // registry was never asked about (the 2026-09-15 sweep's
+        // `empty au_rdap (domain example.com)`).
         if !domain.to_ascii_lowercase().ends_with(".au") {
-            return Ok(ModuleResult::new());
+            return Err(crate::core::error::Error::skipped(
+                crate::core::event::SkipClass::NotApplicable,
+                format!(
+                    "{domain} is not in the .au namespace; auDA's RDAP publishes nothing about \
+                     it — rdap_domain covers the other registries"
+                ),
+            ));
         }
 
         let url = format!("https://rdap.cctld.au/rdap/domain/{}", urlencode(&domain));

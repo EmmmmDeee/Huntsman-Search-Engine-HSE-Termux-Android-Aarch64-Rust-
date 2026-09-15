@@ -156,13 +156,11 @@ impl Module for AcmaRrl {
         let param = match target.kind {
             TargetKind::AbnAcn => format!("clientAbn={}", crate::util::http::urlencode(value)),
             TargetKind::Coordinates => {
-                // Expect "lat,lon" format
-                let parts: Vec<&str> = value.splitn(2, ',').collect();
-                if parts.len() != 2 {
-                    return Ok(ModuleResult::new());
-                }
-                let lat = parts[0].trim();
-                let lon = parts[1].trim();
+                // A malformed coordinate is the target's fault and is reported
+                // as such (`util::geo::parse_coords`, as qld_cadastre and au_geo
+                // do) — never `Ok(empty)`, which read as "no licences within
+                // 10 km" of a point that was never looked up.
+                let (lat, lon) = crate::util::geo::parse_coords(value)?;
                 format!("latitude={lat}&longitude={lon}&radius=10&submit=Search")
             }
             _ => format!("clientName={}", crate::util::http::urlencode(value)),

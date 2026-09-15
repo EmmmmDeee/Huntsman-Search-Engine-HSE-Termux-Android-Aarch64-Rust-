@@ -494,8 +494,11 @@ pub(crate) fn capability_probe_json(
         mut timed_out,
         mut rate_limited,
         mut blocked,
+        mut skipped,
         mut panicked,
-    ) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    ) = (
+        0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize,
+    );
     let modules: Vec<Value> = reports
         .iter()
         .map(|r| {
@@ -523,6 +526,14 @@ pub(crate) fn capability_probe_json(
                 ProbeOutcome::Blocked { reason } => {
                     blocked += 1;
                     ("blocked", None, Some(reason.clone()))
+                }
+                ProbeOutcome::Skipped { class, reason } => {
+                    skipped += 1;
+                    (
+                        "skipped",
+                        None,
+                        Some(format!("{}: {reason}", class.as_str())),
+                    )
                 }
                 ProbeOutcome::Panicked { message } => {
                     panicked += 1;
@@ -564,6 +575,7 @@ pub(crate) fn capability_probe_json(
         "timed_out": timed_out,
         "rate_limited": rate_limited,
         "blocked": blocked,
+        "skipped": skipped,
         "panicked": panicked,
         "drift": drift,
         "dead_canaries": dead_canaries,

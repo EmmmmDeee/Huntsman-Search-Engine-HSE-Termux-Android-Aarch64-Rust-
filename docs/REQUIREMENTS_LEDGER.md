@@ -3956,6 +3956,91 @@ private-host preflight refuses 127.0.0.1 by design), so its classification is
 covered by inspection and the pure verdict; the `process` path of
 `cell_intel` is covered by the seam, not end to end.
 
+### REQ-SCOPE-001 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): an out-of-jurisdiction target is a typed skip, never a clean negative
+
+**Lead.** The 2026-09-15 live-drift table (run 34985449332) reads
+`empty au_rdap (domain example.com)`, `empty qld_cadastre (coordinates
+40.7128,-74.0060)` and `empty au_geo (coordinates 40.7128,-74.0060)` — three
+Australia-scoped modules "reached, parsed nothing" for samples they can never
+answer.
+
+**Verified from source.** `au_rdap::process`: `!domain.ends_with(".au")` →
+`Ok(ModuleResult::new())`; `qld_cadastre::process`: `au_state_for_coords(lat,
+lon) != Some("QLD")` → `Ok(empty)`; `au_geo::process`: a `parse_coords`
+failure → `Ok(empty)`, and a point outside the Australian bounding box →
+`Ok(empty)`; `acma_rrl::process`: a Coordinates value without a comma →
+`Ok(empty)`. Dispatch records each as `ModuleDone { found: 0 }` and
+`core::coverage` aggregates that to `CleanNegative` — "no .au registration for
+example.com", "no cadastral parcel at 40.7128,-74.0060", "no licences within
+10 km of not-a-coord" — negatives about subjects the register was never asked
+about. The typed in-band skip (`Error::skipped(SkipClass::NotApplicable, …)`,
+introduced by this PR for `whois`) is exactly the vocabulary for "the provider
+structurally has nothing to say about this target"; `core::coverage` drops a
+`NotApplicable` skip from the verdict rather than counting it as a negative or
+a gap.
+
+The capability probe carried the same gap one level up: `probe_once` mapped
+every `Err` other than the two typed ones to `ProbeOutcome::Unreachable`, so a
+typed skip — from these modules once fixed, or from `whois` behind an HTTPS
+proxy today — would have read "provider down"; for a canary, three attempts
+and a false DEAD CANARY.
+
+**Fix.** `au_rdap`: a non-`.au` name is `Error::skipped(NotApplicable, "… is
+not in the .au namespace; auDA's RDAP publishes nothing about it —
+rdap_domain covers the other registries")`, an empty value
+`Error::InvalidTarget`. `qld_cadastre`: outside Queensland is the typed skip
+naming the state (or "outside Australia"). `au_geo`: outside the bounding box
+is the typed skip; a malformed coordinate is `parse_coords`'s own error via
+`?`, as `qld_cadastre` already did. `acma_rrl`: the Coordinates branch parses
+through `util::geo::parse_coords` (`?`) instead of splitting on a comma.
+`capability_probe::ProbeOutcome::Skipped { class, reason }` (label `skipped`):
+mapped from `Error::Skipped`, never drift, never a dead canary, final on the
+first attempt; `hse doctor --live` prints `skipped <module> (<class>) <reason>`,
+`capability_probe_json` counts `skipped` and reports the outcome with
+`<class>: <reason>`, `tests/live_drift.rs` prints and counts it.
+
+**Evidence.** `au_rdap::tests::non_au_domain_is_a_typed_not_applicable_skip_never_a_clean_negative`
+(inverted from the test that pinned the empty result),
+`qld_cadastre::tests::a_point_outside_queensland_is_a_typed_not_applicable_skip_never_a_clean_negative`
+(New York → "outside Australia", Sydney → "in NSW"),
+`au_geo::tests::non_au_coordinate_is_a_typed_skip_and_a_malformed_one_an_error_neither_a_clean_negative`
+(inverted), `acma_rrl::tests::a_malformed_coordinate_is_an_error_before_any_request_never_no_licences`,
+`selftest::capability_probe::tests::a_typed_skip_is_its_own_outcome_never_retried_never_dead_never_drift`
+(one call under a three-attempt policy; a `crtsh` report carrying an
+`Unavailable` skip is neither dead nor drift), and the API projection test's
+skipped `au_geo` row.
+
+**Falsification.** Each short-circuit restored (and the probe's arm removed)
+in turn with only its lock run:
+
+```
+[au_rdap non-.au short-circuit] reverted -> LOCK FAILS (expected)
+    modules::au_rdap::tests::non_au_domain_is_a_typed_not_applicable_skip_never_a_clean_negative --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7400 filtered out; finished in 0.21s
+[qld_cadastre outside-QLD short-circuit] reverted -> LOCK FAILS (expected)
+    modules::qld_cadastre::tests::a_point_outside_queensland_is_a_typed_not_applicable_skip_never_a_clean_negative --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7400 filtered out; finished in 0.22s
+[au_geo outside-AU short-circuit] reverted -> LOCK FAILS (expected)
+    modules::au_geo::tests::non_au_coordinate_is_a_typed_skip_and_a_malformed_one_an_error_neither_a_clean_negative --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7400 filtered out; finished in 0.21s
+[acma_rrl malformed-coordinate short-circuit] reverted -> LOCK FAILS (expected)
+    modules::acma_rrl::tests::a_malformed_coordinate_is_an_error_before_any_request_never_no_licences --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7400 filtered out; finished in 0.21s
+[probe_once Skipped mapping] reverted -> LOCK FAILS (expected)
+    selftest::capability_probe::tests::a_typed_skip_is_its_own_outcome_never_retried_never_dead_never_drift --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7400 filtered out; finished in 0.20s
+ALL LOCKS SENSITIVE
+```
+
+**Residual.** The sweep's Coordinates sample is New York, so the three
+Australia-only modules will now read `skipped (not_applicable)` on every run
+rather than `empty`; a per-module sample (an Australian point for the AU
+registers) would let the sweep observe their wire shapes — a
+`CANARY_PROBES`-style override table is the next step if their drift is
+worth watching. `acma_rrl` has no jurisdiction gate for names (ACMA is
+Australian, names are global): an overseas organisation's empty result there
+is a genuine "no Australian radiocommunications licence".
+
 ### REQ-SCRAPE-001 (**new, Pass 31 — VERIFIED FROM SOURCE, REPRODUCED against the real capture, FIXED, FALSIFIED**): a 2xx anti-bot page is never the document
 
 **Lead.** REQ-DRIFT-003's residual: the shared HTTP layer now types a

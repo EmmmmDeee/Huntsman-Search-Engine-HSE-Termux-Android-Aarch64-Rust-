@@ -699,8 +699,11 @@ async fn print_live_capability_report() {
         mut timed_out,
         mut rate_limited,
         mut blocked,
+        mut skipped,
         mut panicked,
-    ) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    ) = (
+        0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize,
+    );
     let mut drift: Vec<&str> = Vec::new();
     let mut dead: Vec<&str> = Vec::new();
     for r in &reports {
@@ -759,6 +762,16 @@ async fn print_live_capability_report() {
                 blocked += 1;
                 println!("  blocked      {:<22} {reason}{canary}", r.module);
             }
+            ProbeOutcome::Skipped { class, reason } => {
+                // Declined the sample in-band: not asked, so neither dead nor
+                // drift (an AU-only register with the fleet's New York point).
+                skipped += 1;
+                println!(
+                    "  skipped      {:<22} ({}) {reason}{canary}",
+                    r.module,
+                    class.as_str()
+                );
+            }
             ProbeOutcome::Panicked { message } => {
                 panicked += 1;
                 println!("  panicked     {:<22} {message}{canary}", r.module);
@@ -770,7 +783,7 @@ async fn print_live_capability_report() {
     println!(
         "  summary: {} probed — {alive} alive, {empty} empty, {unreachable} unreachable, \
          {timed_out} timed-out, {rate_limited} rate-limited, {blocked} blocked, \
-         {panicked} panicked",
+         {skipped} skipped, {panicked} panicked",
         reports.len()
     );
     if !drift.is_empty() {

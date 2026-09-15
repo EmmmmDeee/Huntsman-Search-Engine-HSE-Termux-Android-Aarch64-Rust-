@@ -164,14 +164,26 @@ use crate::app::export::csv_escape;
                     reason: "crtsh: HTTP 403 Forbidden: Attention Required! | Cloudflare".into(),
                 },
             },
+            // An Australia-only module declining the fleet's New York sample
+            // in-band: not asked, so neither dead nor drift, its own outcome.
+            ProbeReport {
+                module: "au_geo",
+                kind: TargetKind::Coordinates,
+                value: "40.7128,-74.0060",
+                outcome: ProbeOutcome::Skipped {
+                    class: crate::core::event::SkipClass::NotApplicable,
+                    reason: "40.7128,-74.006 is outside Australia; the ABS ASGS layers cover Australia only".into(),
+                },
+            },
         ];
         let v = capability_probe_json(&reports);
-        assert_eq!(v["probed"], 6);
+        assert_eq!(v["probed"], 7);
         assert_eq!(v["alive"], 1);
         assert_eq!(v["empty"], 2);
         assert_eq!(v["unreachable"], 1);
         assert_eq!(v["rate_limited"], 1);
         assert_eq!(v["blocked"], 1);
+        assert_eq!(v["skipped"], 1);
         // Only the ip_geo canary's empty is confirmed drift.
         assert_eq!(v["drift"].as_array().expect("should succeed").len(), 1);
         assert_eq!(v["drift"][0], "ip_geo");
@@ -196,6 +208,16 @@ use crate::app::export::csv_escape;
         assert_eq!(throttled["outcome"], "rate-limited");
         assert_eq!(throttled["dead_canary"], false, "a throttled canary answered");
         assert_eq!(throttled["drift"], false);
+        let declined = mods.iter().find(|m| m["module"] == "au_geo").expect("should succeed");
+        assert_eq!(declined["outcome"], "skipped");
+        assert_eq!(declined["dead_canary"], false);
+        assert_eq!(declined["drift"], false);
+        assert!(
+            declined["reason"]
+                .as_str()
+                .expect("reason")
+                .starts_with("not_applicable: ")
+        );
         let refused = mods.iter().find(|m| m["module"] == "crtsh").expect("should succeed");
         assert_eq!(refused["outcome"], "blocked");
         assert_eq!(refused["canary"], true);

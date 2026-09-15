@@ -102,6 +102,20 @@ pub enum ProbeOutcome {
         /// The refusal as the module reported it (status line and page title).
         reason: String,
     },
+    /// The module declined the sample target in-band (the typed
+    /// [`crate::core::error::Error::Skipped`]): the provider structurally has
+    /// nothing to say about it (`NotApplicable` — an Australia-only register
+    /// probed with the fleet's New York coordinate, auDA's RDAP with a `.com`)
+    /// or could not be used from this host (`Unavailable`). Not a probe of the
+    /// wire shape at all: **never** drift, **never** a dead canary, never
+    /// retried. Before this variant a skip was `Unreachable` — "provider down"
+    /// for a provider that was never asked.
+    Skipped {
+        /// What the silence means for coverage.
+        class: crate::core::event::SkipClass,
+        /// The module's own reason: what was not asked and why.
+        reason: String,
+    },
     /// The module's `process()` panicked while handling the live response — a
     /// hostile/malformed payload, or a bug the canned fixture tests never
     /// exercised. **Always** [`ProbeReport::is_confirmed_drift`], independent of
@@ -125,6 +139,7 @@ impl ProbeOutcome {
             Self::TimedOut => "timed-out",
             Self::RateLimited { .. } => "rate-limited",
             Self::Blocked { .. } => "blocked",
+            Self::Skipped { .. } => "skipped",
             Self::Panicked { .. } => "panicked",
         }
     }
@@ -185,7 +200,8 @@ impl ProbeReport {
             | ProbeOutcome::Unreachable { .. }
             | ProbeOutcome::TimedOut
             | ProbeOutcome::RateLimited { .. }
-            | ProbeOutcome::Blocked { .. } => false,
+            | ProbeOutcome::Blocked { .. }
+            | ProbeOutcome::Skipped { .. } => false,
         }
     }
 
@@ -431,6 +447,9 @@ async fn probe_once(
         }
         Ok(Err(crate::core::error::Error::BotChallenge(reason))) => {
             ProbeOutcome::Blocked { reason }
+        }
+        Ok(Err(crate::core::error::Error::Skipped { class, reason })) => {
+            ProbeOutcome::Skipped { class, reason }
         }
         Ok(Err(e)) => ProbeOutcome::Unreachable {
             reason: e.to_string(),
@@ -991,6 +1010,81 @@ mod tests {
             r.outcome
         );
         assert_eq!(m.calls.load(Ordering::SeqCst), 3);
+    }
+
+    /// Declines every call with a typed not-applicable skip.
+    struct OutOfScope {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl Module for OutOfScope {
+        fn name(&self) -> &'static str {
+            "out_of_scope_probe_fixture"
+        }
+        fn priority(&self) -> u8 {
+            50
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Domain)
+        }
+        async fn process(
+            &self,
+            _t: &Target,
+            _ctx: &ModuleContext,
+        ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(crate::core::error::Error::skipped(
+                crate::core::event::SkipClass::NotApplicable,
+                "example.com is not in the .au namespace; auDA's RDAP publishes nothing about it",
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_typed_skip_is_its_own_outcome_never_retried_never_dead_never_drift() {
+        // An Australia-only register probed with the fleet's New York sample,
+        // or auDA's RDAP with a `.com`, declines in-band. That used to map to
+        // `Unreachable` — "provider down" for a provider never asked — and
+        // would have been re-read three times and reported as a dead canary.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let http = reqwest::Client::new();
+        let m = OutOfScope {
+            calls: AtomicUsize::new(0),
+        };
+        let r = probe_with_policy(&m, &http, 3, Duration::ZERO)
+            .await
+            .expect("probeable");
+        assert!(
+            matches!(
+                &r.outcome,
+                ProbeOutcome::Skipped { class: crate::core::event::SkipClass::NotApplicable, reason }
+                    if reason.contains(".au")
+            ),
+            "{:?}",
+            r.outcome
+        );
+        assert_eq!(r.outcome.label(), "skipped");
+        assert_eq!(
+            m.calls.load(Ordering::SeqCst),
+            1,
+            "a skip is final on the first attempt"
+        );
+        let canary = ProbeReport {
+            module: "crtsh",
+            kind: TargetKind::Domain,
+            value: "example.com",
+            outcome: ProbeOutcome::Skipped {
+                class: crate::core::event::SkipClass::Unavailable,
+                reason: "TCP/43 not routable here".into(),
+            },
+        };
+        assert!(is_canary(canary.module));
+        assert!(
+            !canary.is_dead_canary(),
+            "a canary that declined was never asked"
+        );
+        assert!(!canary.is_confirmed_drift(), "no wire shape was seen");
     }
 
     /// Answers every call with the typed anti-bot refusal.

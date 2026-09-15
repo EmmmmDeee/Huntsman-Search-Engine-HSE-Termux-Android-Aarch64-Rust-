@@ -67,3 +67,27 @@ fn parse_acma_html_extracts_rows() {
 fn extract_abn_returns_none_for_missing() {
     assert!(extract_abn_from_html("<html>no abn here</html>").is_none());
 }
+
+/// A Coordinates target that is not `lat,lon` used to short-circuit to
+/// `Ok(empty)` — "no licences within 10 km" of a point that was never looked
+/// up. It is the target's fault and is reported as such, before any request.
+#[tokio::test]
+async fn a_malformed_coordinate_is_an_error_before_any_request_never_no_licences() {
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = crate::core::module::ModuleContext {
+        scan_id: "t".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let err = AcmaRrl
+        .process(&Target::new(TargetKind::Coordinates, "not-a-coord"), &ctx)
+        .await
+        .expect_err("a malformed coordinate never reads as a clean negative");
+    assert!(
+        matches!(err, crate::core::error::Error::Module { .. })
+            && err.to_string().contains("coordinates must be"),
+        "{err}"
+    );
+}

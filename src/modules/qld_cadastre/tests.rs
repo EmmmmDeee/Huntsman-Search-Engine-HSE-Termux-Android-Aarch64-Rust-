@@ -187,3 +187,43 @@ use super::*;
         let features = features_or_error(resp).expect("an empty result is not an error");
         assert!(features.is_empty());
     }
+
+    /// `Ok(empty)` for a point outside Queensland was recorded as
+    /// `ModuleDone { found: 0 }` — "no cadastral parcel here" for New York or
+    /// Sydney, points the DCDB was never asked about (the 2026-09-15 sweep's
+    /// `empty qld_cadastre (coordinates 40.7128,-74.0060)`). A typed
+    /// not-applicable skip says what was not asked and why, before any request.
+    #[tokio::test]
+    async fn a_point_outside_queensland_is_a_typed_not_applicable_skip_never_a_clean_negative() {
+        use crate::core::error::Error;
+        use crate::core::event::SkipClass;
+        use crate::core::module::{Module as _, ModuleContext};
+        use crate::core::scan::{Target, TargetKind};
+        let (bus, _rx) = tokio::sync::broadcast::channel(1);
+        let ctx = ModuleContext {
+            scan_id: "t".into(),
+            bus,
+            http: reqwest::Client::new(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+        for (value, expect) in [
+            ("40.7128,-74.0060", "outside Australia"),
+            ("-33.8688,151.2093", "in NSW"),
+        ] {
+            let err = QldCadastre
+                .process(&Target::new(TargetKind::Coordinates, value), &ctx)
+                .await
+                .expect_err("no request is made for a point the cadastre cannot cover");
+            match err {
+                Error::Skipped { class, reason } => {
+                    assert_eq!(class, SkipClass::NotApplicable);
+                    assert!(
+                        reason.contains(expect) && reason.contains("Queensland"),
+                        "{reason}"
+                    );
+                }
+                other => panic!("expected a NotApplicable skip, got {other}"),
+            }
+        }
+    }

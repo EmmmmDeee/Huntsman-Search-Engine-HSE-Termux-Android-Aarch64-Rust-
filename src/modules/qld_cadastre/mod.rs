@@ -225,9 +225,21 @@ impl Module for QldCadastre {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let (lat, lon) = crate::util::geo::parse_coords(&target.value)?;
 
-        // QLD-only: skip (no network) when the point isn't in Queensland.
-        if crate::util::geo::au_state_for_coords(lat, lon) != Some("QLD") {
-            return Ok(ModuleResult::new());
+        // QLD-only: the DCDB covers Queensland alone, so a point anywhere else
+        // is a typed `NotApplicable` skip before any request — never
+        // `Ok(empty)`, which coverage reads as "no cadastral parcel at this
+        // point" for a point the cadastre was never asked about (the
+        // 2026-09-15 sweep's `empty qld_cadastre (coordinates 40.7128,-74.0060)`).
+        let state = crate::util::geo::au_state_for_coords(lat, lon);
+        if state != Some("QLD") {
+            let location =
+                state.map_or_else(|| "outside Australia".to_string(), |s| format!("in {s}"));
+            return Err(Error::skipped(
+                crate::core::event::SkipClass::NotApplicable,
+                format!(
+                    "{lat},{lon} is {location}; the Queensland DCDB cadastre covers Queensland only"
+                ),
+            ));
         }
 
         let mut resp = ctx

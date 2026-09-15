@@ -19,6 +19,9 @@
 //!   * **blocked**     — the provider's edge refused this client with an
 //!     anti-bot challenge / WAF block page (alive, refusing): never drift,
 //!     never a dead canary, never retried within a run — a wall is per client.
+//!   * **skipped**     — the module declined the sample target in-band (a typed
+//!     skip: an Australia-only register with the fleet's New York point, auDA's
+//!     RDAP with a `.com`): never asked, so never drift, never a dead canary.
 //!   * **panicked**    — the module's parser crashed on the live response.
 //!
 //! Only a curated **canary** set (`capability_probe::CANARY_PROBES`, e.g.
@@ -65,6 +68,7 @@ async fn fleet_capability_drift() {
     let mut timed_out = 0usize;
     let mut rate_limited = 0usize;
     let mut blocked = 0usize;
+    let mut skipped = 0usize;
     let mut panicked = 0usize;
     let mut drifted: Vec<String> = Vec::new();
     let mut dead: Vec<String> = Vec::new();
@@ -128,6 +132,14 @@ async fn fleet_capability_drift() {
                 blocked += 1;
                 println!("  blocked      {:<22} {reason}{canary}", r.module);
             }
+            ProbeOutcome::Skipped { class, reason } => {
+                skipped += 1;
+                println!(
+                    "  skipped      {:<22} ({}) {reason}{canary}",
+                    r.module,
+                    class.as_str()
+                );
+            }
             ProbeOutcome::Panicked { message } => {
                 panicked += 1;
                 println!("  panicked     {:<22} {message}{canary}", r.module);
@@ -145,7 +157,7 @@ async fn fleet_capability_drift() {
     println!(
         "\nlive-drift sweep: {} probed — {alive} alive, {empty} empty, \
          {unreachable} unreachable, {timed_out} timed-out, {rate_limited} rate-limited, \
-         {blocked} blocked, {panicked} panicked",
+         {blocked} blocked, {skipped} skipped, {panicked} panicked",
         reports.len()
     );
 
