@@ -192,3 +192,54 @@ use super::*;
         let ents = build_reverse_dns_entities("1.2.3.4\n", "1.2.3.4", "s");
         assert!(ents.is_empty());
     }
+
+    /// HackerTarget says everything in a `200` body. The three sentences
+    /// observed live on 2026-09-15 are typed: no DNS record and a declined
+    /// input are not-applicable skips (the corpus was never searched), the
+    /// spent daily quota is the rate limit, any other `error …` is the fault
+    /// it was, and a CSV is records.
+    #[test]
+    fn the_providers_own_sentences_are_typed_never_all_faults() {
+        use crate::core::error::Error;
+        use crate::core::event::SkipClass;
+        assert_eq!(classify_answer("error invalid host\n"), Answer::NoDns);
+        assert_eq!(
+            classify_answer("error check your search parameter"),
+            Answer::Declined
+        );
+        assert_eq!(
+            classify_answer("API count exceeded - Increase Quota with Membership"),
+            Answer::Quota
+        );
+        assert_eq!(
+            classify_answer("error input invalid"),
+            Answer::Fault("error input invalid")
+        );
+        assert_eq!(
+            classify_answer("www.example.com,104.20.23.154\n"),
+            Answer::Records("www.example.com,104.20.23.154\n")
+        );
+        assert_eq!(
+            classify_answer("No PTR records found"),
+            Answer::Records("No PTR records found")
+        );
+
+        assert!(failure_for(&Answer::Records("x,y")).is_none());
+        for answer in [Answer::NoDns, Answer::Declined] {
+            match failure_for(&answer) {
+                Some(Error::Skipped { class, reason }) => {
+                    assert_eq!(class, SkipClass::NotApplicable);
+                    assert!(reason.contains("HackerTarget declines"), "{reason}");
+                }
+                other => panic!("{answer:?} must be a typed skip, got {other:?}"),
+            }
+        }
+        assert!(
+            matches!(failure_for(&Answer::Quota), Some(Error::RateLimited(_))),
+            "the spent quota is the typed rate limit"
+        );
+        assert!(
+            matches!(failure_for(&Answer::Fault("error input invalid")), Some(Error::Module { .. })),
+            "any other error sentence stays the fault it is"
+        );
+    }

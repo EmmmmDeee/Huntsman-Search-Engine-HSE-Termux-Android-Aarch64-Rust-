@@ -4108,6 +4108,74 @@ the next step if a 200 wall is observed on one. The remaining
 `ip_reputation`) read JSON or crawl content and mint no negative claim from
 an empty parse.
 
+### REQ-HACKERTARGET-001 (**new, Pass 31 — OBSERVED live from the sandbox, FIXED, FALSIFIED**): HackerTarget's own sentences are typed, never all faults
+
+**Observation (this sandbox, 2026-09-15 21:3x UTC, the binary built from
+`aec6024`, while running nonce controls over the sweep's corpus-query
+counts).** `hse scan -k domain -v qzv8k2r7xw1p-nonce.com -m hackertarget`
+logged `module error … [hackertarget] error invalid host`: the API answers
+every request `200` and says the rest in the body, and the module's
+`fetch_text` filed every `error …` sentence and the quota notice as
+`Error::Module` — a fault against the module's health. Observed live for the
+three shapes: `hostsearch/?q=<no such host>` → `error invalid host`;
+`reverseiplookup/?q=203.0.113.5` → `error check your search parameter` (a
+reserved range the API declines); `reversedns/?q=203.0.113.5` → `No PTR
+records found` (not an error; the builders yield nothing); and the
+documented `API count exceeded - Increase Quota with Membership` once the
+anonymous 100-per-day quota is spent. The other corpus-query modules driven
+against the same nonce targets fabricated nothing (`typosquat`,
+`subdomain_center`, `comb_search`, `pgp`, `search_engines`: 0 each).
+
+**Why it matters.** A scan's pivots include hosts with no DNS record — a
+`typosquat` sweep's permutations, a retired domain from a breach line — and
+each one was a fault: five in a row trip the breaker and bench HackerTarget
+for the live hosts that follow; the spent daily quota read as an outage
+(`unreachable` in the sweep, `record_error` in the breaker) rather than the
+cooldown a throttle is (REQ-DRIFT-002's rule).
+
+**Fix.** `hackertarget::classify_answer(body) -> Answer` — `Records`,
+`NoDns` (`error invalid host`), `Declined` (`error check your search
+parameter`), `Quota` (`API count exceeded`), `Fault(other error sentence)` —
+and `failure_for(&Answer) -> Option<Error>`: `NoDns` and `Declined` are
+`Error::skipped(NotApplicable, …)` (the corpus was never searched; a property
+of the target, and coverage reads it as not asked rather than as a fault or a
+"no records"), `Quota` is `Error::RateLimited`, `Fault` stays `Error::Module`,
+`Records` is the body. `fetch_text` applies both.
+
+**Lock.** `modules::hackertarget::tests::the_providers_own_sentences_are_typed_never_all_faults`
+(the three live sentences and the quota notice classified; the skips'
+class and wording, the rate-limit variant, the fault variant, and a CSV and
+`No PTR records found` as records).
+
+**Falsification.** Each repair reverted with only its lock run:
+
+```
+[a host with no DNS record read as a fault again] reverted -> LOCK FAILS (expected)
+    test modules::hackertarget::tests::the_providers_own_sentences_are_typed_never_all_faults ... FAILED
+    thread '…' panicked at src/modules/hackertarget/tests.rs:205:9:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7344 filtered out; finished in 0.20s
+[the spent quota read as a fault again] reverted -> LOCK FAILS (expected)
+    test modules::hackertarget::tests::the_providers_own_sentences_are_typed_never_all_faults ... FAILED
+    thread '…' panicked at src/modules/hackertarget/tests.rs:237:9:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7344 filtered out; finished in 0.20s
+ALL LOCKS SENSITIVE
+```
+
+**Live verification (the rebuilt binary).** `hse scan -k domain -v
+qzv8k2r7xw1p-nonce.com -m hackertarget` → `skipped — module opted out …
+class: not_applicable, reason: HackerTarget declines a host with no DNS
+record ("error invalid host"); its DNS corpus was not searched` — a typed
+skip where the baseline had logged a module error; `github.com` → `done …
+found: 77` (the CLI rejects `example.com`, the sweep's reserved sample, before
+dispatch, so the positive control is a real domain). Gate on the tree: fmt,
+clippy `-D warnings`, CI's rustdoc lints, `cargo test --all` (7336 lib tests
+green; `tests/smoke.rs::key_chaining_concurrent_dispatch` failed once in the
+suite and passed alone — recorded in the Pass 31 stop revision as an
+observed intermittent with its candidate cause), doc coverage held at
+1029. Remote: the live-drift dispatch on the pushed head (`hackertarget`
+reads `alive … 501 found` for `example.com` on every sweep; a runner cannot
+exercise the no-DNS shape).
+
 ### REQ-PROBE-001 (**new, Pass 31 — MEASURED live from the sandbox, VERIFIED FROM SOURCE, FIXED at the shared layer, FALSIFIED**): a presence probe minted profiles for handles nobody holds; every presence is judged against a control handle
 
 **Observation (this sandbox, 2026-09-15 20:5x UTC, the binary built from
@@ -4245,7 +4313,17 @@ indiscriminate and loses a real presence for this client (a `4xx` for it
 reads absent and the presence stands); none of the 61 real `torvalds`
 presences was lost to that. Reversed for any platform that starts answering
 `404` for unheld handles — the control then confirms it discriminates and
-nothing changes. Remote: the live-drift dispatch on the pushed head (recorded once read; `username_search` for `torvalds` is expected to fall from 132 toward 60, `social_probe` from 28 and `streaming_probe` from 22).
+nothing changes. Remote: **live-drift run 35026556734 on `aec6024` (2026-09-15
+21:36–21:38 UTC): `username_search 59 found` (132 at 20:43, 134 on the
+morning sweeps; the prediction recorded before the run was "toward 60"),
+`social_probe 14 found` (28), `streaming_probe 3 found` (22)** — the runner's
+vantage confirms the sandbox's: the counts every sweep had reported for
+`torvalds` were more than half fabricated. 116 probed — 91 alive, 17 empty,
+1 unreachable (`wifidb`, the by-design dead canary), 1 timed-out
+(`wayback`), 0 rate-limited, 5 blocked, 1 skipped, **0 panicked**;
+`chronicling_america` alive with 11; red on `wifidb` alone. (`search_engines`
+read 36 against 68 and 3 on the two sweeps before — the search providers'
+own variance, untouched by this change.)
 
 ### REQ-ATTR-002 (**new, Pass 31 — OBSERVED live from the sandbox, FIXED, FALSIFIED**): a pulse author's paragraph is not a threat actor
 
@@ -4717,8 +4795,19 @@ applies to the other aggregate counts the sweep reports (`hackertarget 501`,
 68`, `pgp 67`): each is a corpus query for a reserved sample (`example.com`,
 `test@example.com`) rather than a presence claim per site, and their
 modules' own locks (REQ-SWEEP-001/002, REQ-ATTR-001) cover the miss shapes;
-they are not re-tested here and remain the next candidates for a nonce
-control. Beyond that the previous statement stands.
+they were then driven against nonce targets from this sandbox (21:3x UTC,
+the binary built from `aec6024`): `typosquat`, `subdomain_center`,
+`comb_search`, `pgp` and `search_engines` fabricate nothing (0 each for a
+domain, an address or a handle nobody holds), and `hackertarget` answered
+the nonce domain with a module fault — the one lead of that round
+(REQ-HACKERTARGET-001, above; repaired in this pass). One intermittent
+observed while gating it: `tests/smoke.rs::key_chaining_concurrent_dispatch`
+failed once in the full suite (`consumer (KeyGated, Phase 2) must see the
+key via hot-inject`) and passed alone and in every other full run of this
+pass; the test resets a process-global key pool (`reset_chain_pool`) that
+its sibling chain tests share while the suite runs its tests in parallel
+threads — a candidate cause, not a diagnosed one, recorded rather than
+re-run into silence. Beyond that the previous statement stands.
 
 ### REQ-HTTP-002 (**new, Pass 31 — VERIFIED FROM SOURCE, CONSOLIDATED, FIXED, FALSIFIED**): `json_scanned` fails the way `json_decode` fails
 
