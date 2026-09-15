@@ -25,6 +25,13 @@ use crate::core::{
 };
 use crate::modules::termux_sensor;
 
+/// The `termux-location` executable — the one core sensor tool outside
+/// [`termux_sensor::Sensor`]'s remit (it is invoked as a parameterised ladder,
+/// not a fixed argv). Named here, next to that ladder, so the canonical
+/// core-tool list in [`termux_sensor::TERMUX_API_CORE_TOOLS`] and every
+/// invocation below spell it once.
+pub(crate) const LOCATION_TOOL: &str = "termux-location";
+
 /// A `termux-location` JSON fix — the on-device GPS/network position sample as
 /// emitted by `termux-location`, shared by every consumer that parses it.
 #[derive(Deserialize)]
@@ -123,7 +130,7 @@ async fn fetch_fix(
     src: &'static str,
 ) -> Result<ModuleResult> {
     match crate::util::termux::termux_cmd(
-        "termux-location",
+        LOCATION_TOOL,
         &["-p", provider, "-r", request],
         timeout_ms,
     )

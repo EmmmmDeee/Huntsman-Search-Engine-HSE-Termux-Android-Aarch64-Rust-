@@ -37,3 +37,26 @@ use super::*;
         assert!(report.summary().contains("OK"));
         assert!(report.render().contains("modules.registry"));
     }
+
+    /// The bridge check's zero-exit discrimination: JSON is an answer, the
+    /// API's own error object is not, and neither is anything unparseable.
+    #[test]
+    fn a_bridge_answer_is_parseable_json_that_is_not_an_api_error() {
+        assert!(bridge_answered(br#"{"percentage": 81, "status": "CHARGING"}"#));
+        assert!(bridge_answered(b" {\"health\": \"GOOD\"} \n"));
+        for not_an_answer in [
+            &b""[..],
+            b"   \n",
+            b"not json",
+            b"{percentage: 81}",
+            br#"{"API_ERROR": "Termux:API is not installed"}"#,
+            br#"{"error": "refused"}"#,
+        ] {
+            assert!(
+                !bridge_answered(not_an_answer),
+                "{:?} must not count as the bridge answering",
+                String::from_utf8_lossy(not_an_answer)
+            );
+        }
+    }
+

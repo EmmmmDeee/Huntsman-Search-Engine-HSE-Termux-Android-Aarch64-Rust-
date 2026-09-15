@@ -139,6 +139,68 @@ impl Sensor {
     }
 }
 
+/// The stock Termux:API sensor surface HSE's radar and sensor modules depend
+/// on: the `termux-api` PACKAGE's four core tools, in canonical order. This is
+/// the ONE definition on the Rust side. `install.sh`'s detection block and
+/// `scripts/reconcile.sh` each carry the same list as a shell array, and
+/// `shell_side_core_tool_lists_match_this_definition` below holds all three
+/// in lockstep so none can drift.
+///
+/// Bluetooth is deliberately absent. `termux-bluetooth-scaninfo` is not part of
+/// the stock `termux-api` package, so it is an independent optional provider
+/// ([`Sensor::BluetoothScan`]) and never a condition for declaring the GNSS /
+/// Wi-Fi / cell substrate ready.
+pub(crate) const TERMUX_API_CORE_TOOLS: [&str; 4] = [
+    crate::modules::device_fix::LOCATION_TOOL,
+    Sensor::WifiConnection.tool(),
+    Sensor::WifiScan.tool(),
+    Sensor::CellInfo.tool(),
+];
+
+/// The harmless, permission-free, bounded call that proves the Termux ↔ Android
+/// bridge is answering. A sensor tool cannot serve here: each needs a runtime
+/// permission, so its failure would not tell "bridge dead" from "permission
+/// withheld". Mirrored by `scripts/reconcile.sh` (held in lockstep by the same
+/// test as the tool list).
+pub(crate) const TERMUX_API_BRIDGE_PROBE: &str = "termux-battery-status";
+
+/// The core tools NOT executable on `PATH`: a `command -v` over
+/// [`TERMUX_API_CORE_TOOLS`] that runs nothing. Empty means the `termux-api`
+/// package's sensor surface is installed. It says nothing about whether the
+/// Android side answers; that is [`TERMUX_API_BRIDGE_PROBE`]'s question.
+///
+/// This is the probe `hse selftest` reports on. An earlier revision ran
+/// `termux-info -h` instead, and `termux-info` ships in `termux-tools` on
+/// EVERY Termux install, so the check said "termux-api CLI present" on devices
+/// that had no sensor tool at all.
+pub(crate) fn missing_core_tools() -> Vec<&'static str> {
+    missing_core_tools_on(&std::env::var_os("PATH").unwrap_or_default())
+}
+
+/// [`missing_core_tools`] against an explicit `PATH` value, so the lookup is
+/// testable without mutating the process environment.
+pub(crate) fn missing_core_tools_on(path: &std::ffi::OsStr) -> Vec<&'static str> {
+    let dirs: Vec<std::path::PathBuf> = std::env::split_paths(path).collect();
+    TERMUX_API_CORE_TOOLS
+        .into_iter()
+        .filter(|tool| !dirs.iter().any(|dir| is_executable(&dir.join(tool))))
+        .collect()
+}
+
+/// `command -v`'s notion of "found": a regular file with an execute bit.
+fn is_executable(p: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        p.metadata()
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        p.is_file()
+    }
+}
+
 /// Read `sensor` and hand its stdout to `parse`, applying the absent-tool row of
 /// this module's contract table: no output at all is an empty `Ok` — nothing was
 /// observed, and nothing malfunctioned that the caller can attest to.
@@ -270,6 +332,123 @@ mod tests {
     #[test]
     fn the_wifi_scan_budget_is_the_reconciled_longer_one() {
         assert_eq!(Sensor::WifiScan.timeout_ms(), 8_000);
+    }
+
+    /// The `NAME=(a b c)` shell array literal(s) defining `name` in `text`.
+    /// A line whose array holds an `@…@` token is the reconciler's render
+    /// template, not a definition, and is skipped.
+    fn shell_arrays<'a>(text: &'a str, name: &str) -> Vec<Vec<&'a str>> {
+        let open = format!("{name}=(");
+        text.lines()
+            .filter_map(|l| l.trim().strip_prefix(open.as_str()))
+            .filter_map(|rest| rest.strip_suffix(')'))
+            .map(|inner| inner.split_whitespace().collect::<Vec<_>>())
+            .filter(|items| !items.iter().any(|i| i.starts_with('@')))
+            .collect()
+    }
+
+    /// The one shell-side copy of a scalar `NAME=value` definition in `text`.
+    fn shell_scalar<'a>(text: &'a str, name: &str) -> &'a str {
+        let open = format!("{name}=");
+        let mut hits = text
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix(open.as_str()))
+            .map(|v| v.trim_matches(|c| c == '"' || c == '\''));
+        let first = hits
+            .next()
+            .unwrap_or_else(|| panic!("`{name}=` is not defined"));
+        assert!(
+            hits.next().is_none(),
+            "`{name}=` must be defined exactly once"
+        );
+        first
+    }
+
+    /// The core-tool list exists once per language, and the shell copies —
+    /// install.sh's detection block and scripts/reconcile.sh — must equal this
+    /// definition exactly, in order. Parsed from the real files so the lock
+    /// holds against what ships, not against a comment.
+    #[test]
+    fn shell_side_core_tool_lists_match_this_definition() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for rel in ["install.sh", "scripts/reconcile.sh"] {
+            let text =
+                std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
+            let arrays = shell_arrays(&text, "TERMUX_API_CORE_TOOLS");
+            assert_eq!(
+                arrays.len(),
+                1,
+                "{rel}: TERMUX_API_CORE_TOOLS must be defined exactly once, saw {arrays:?}"
+            );
+            assert_eq!(
+                arrays[0], TERMUX_API_CORE_TOOLS,
+                "{rel}: TERMUX_API_CORE_TOOLS drifted from the Rust definition"
+            );
+        }
+        let reconciler =
+            std::fs::read_to_string(root.join("scripts/reconcile.sh")).expect("reconciler");
+        assert_eq!(
+            shell_scalar(&reconciler, "TERMUX_API_BRIDGE_PROBE"),
+            TERMUX_API_BRIDGE_PROBE,
+            "scripts/reconcile.sh: the bridge probe drifted from the Rust definition"
+        );
+    }
+
+    /// Every core tool is a real `termux-api` executable name, distinct, and
+    /// the Bluetooth provider stays OUT of the readiness set.
+    #[test]
+    fn core_tools_are_distinct_termux_api_tools_without_bluetooth() {
+        let mut seen = std::collections::HashSet::new();
+        for tool in TERMUX_API_CORE_TOOLS {
+            assert!(tool.starts_with("termux-"), "{tool}: not a termux-api tool");
+            assert!(seen.insert(tool), "{tool}: listed twice");
+        }
+        assert!(
+            !TERMUX_API_CORE_TOOLS.contains(&Sensor::BluetoothScan.tool()),
+            "Bluetooth is an optional provider, never a readiness condition"
+        );
+        assert!(
+            !TERMUX_API_CORE_TOOLS.contains(&TERMUX_API_BRIDGE_PROBE),
+            "the bridge probe is not a sensor and must not be in the sensor set"
+        );
+    }
+
+    /// The lookup is `command -v`: a tool counts only as an executable file in
+    /// a `PATH` directory, and the report keeps canonical order.
+    #[test]
+    fn missing_core_tools_is_a_path_lookup_in_canonical_order() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let present = [TERMUX_API_CORE_TOOLS[1], TERMUX_API_CORE_TOOLS[3]];
+        for tool in present {
+            let p = dir.path().join(tool);
+            std::fs::write(&p, "#!/bin/sh\n").expect("stub");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755))
+                    .expect("chmod");
+            }
+        }
+        // A file without the execute bit is NOT found — `command -v` would not
+        // find it either. (Same name in a second directory, not executable.)
+        let shadow = tempfile::tempdir().expect("tempdir");
+        std::fs::write(shadow.path().join(TERMUX_API_CORE_TOOLS[0]), "").expect("stub");
+
+        let path = std::env::join_paths([dir.path(), shadow.path()]).expect("join");
+        let missing = missing_core_tools_on(&path);
+        #[cfg(unix)]
+        assert_eq!(
+            missing,
+            vec![TERMUX_API_CORE_TOOLS[0], TERMUX_API_CORE_TOOLS[2]]
+        );
+        #[cfg(not(unix))]
+        assert_eq!(missing, vec![TERMUX_API_CORE_TOOLS[2]]);
+
+        assert_eq!(
+            missing_core_tools_on(std::ffi::OsStr::new("")).len(),
+            TERMUX_API_CORE_TOOLS.len(),
+            "an empty PATH finds nothing"
+        );
     }
 
     #[test]
