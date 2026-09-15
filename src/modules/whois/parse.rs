@@ -312,3 +312,66 @@ pub(super) fn rate_limit_notice(response: &str) -> Option<&str> {
         MARKERS.iter().any(|m| lower.contains(m))
     })
 }
+
+/// The line on which a registry says it holds NO record for the query — the
+/// one reply that is a genuine clean negative. Verisign/PIR `No match for
+/// "X"`, DENIC `Status: free`, Nominet `No match for …`, `.ru` `No entries
+/// found for the selected source(s)`, RIPE `%ERROR:101: no entries found`,
+/// ARIN `No match found for …`, the generic `NOT FOUND` / `not found` /
+/// `Domain not found` / `No Data Found` / `No Object Found` / `Object does not
+/// exist` / `is available for registration` / `NOMATCH` families. An answer
+/// that parsed to nothing and carries none of these is NOT a negative — it is
+/// a reply the module could not read.
+pub(super) fn no_match_notice(response: &str) -> Option<&str> {
+    const MARKERS: &[&str] = &[
+        "no match for",
+        "no match found",
+        "no matching record",
+        "no entries found",
+        "no data found",
+        "no object found",
+        "object does not exist",
+        "not found",
+        "no such domain",
+        "not registered",
+        "nomatch",
+        "status: free",
+        "available for registration",
+        "no information available",
+    ];
+    response.lines().map(str::trim).find(|line| {
+        let lower = line.to_ascii_lowercase();
+        MARKERS.iter().any(|m| lower.contains(m))
+    })
+}
+
+/// What IANA's bootstrap answer contains when it carries no referral.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum IanaShape {
+    /// A registry object (`domain:` / `inetnum:` / `inet6num:`) — IANA knows
+    /// the namespace; a blank `whois:` on it means the registry publishes no
+    /// WHOIS server.
+    RegistryObject,
+    /// `This query returned 0 objects` — IANA knows no such namespace.
+    NoObject,
+    /// Anything else: an error banner, an empty body, a refusal the
+    /// rate-limit markers did not catch.
+    Unrecognised,
+}
+
+/// Classify an IANA bootstrap answer that carried no referral — see
+/// [`IanaShape`].
+pub(super) fn iana_bootstrap_shape(answer: &str) -> IanaShape {
+    let has_object = answer.lines().any(|l| {
+        starts_with_ascii_ci(l, "domain:")
+            || starts_with_ascii_ci(l, "inetnum:")
+            || starts_with_ascii_ci(l, "inet6num:")
+    });
+    if has_object {
+        IanaShape::RegistryObject
+    } else if answer.to_ascii_lowercase().contains("returned 0 objects") {
+        IanaShape::NoObject
+    } else {
+        IanaShape::Unrecognised
+    }
+}

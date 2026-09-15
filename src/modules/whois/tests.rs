@@ -9,8 +9,9 @@ use super::Whois;
 use super::client::{AuthoritativeError, Transport, find_referral};
 use super::is_usable_contact_email;
 use super::parse::{
-    all_fields, clean_nameserver, field, is_rpsl_org_handle, most_specific_network_record,
-    parse_whois, rate_limit_notice, starts_with_ascii_ci,
+    IanaShape, all_fields, clean_nameserver, field, iana_bootstrap_shape, is_rpsl_org_handle,
+    most_specific_network_record, no_match_notice, parse_whois, rate_limit_notice,
+    starts_with_ascii_ci,
 };
 use super::registrant_location_parts;
 use super::registrant_org_name;
@@ -620,7 +621,7 @@ source:         TEST
         &domain,
         "example-nope.test",
         "whois.example-registry.test",
-        "country:        AU\ndescr:          no such object\n",
+        "country:        AU\ndescr:          no such object\n% No entries found\n",
         "scan-1",
     )
     .expect("clean negative");
@@ -1071,4 +1072,232 @@ fn is_usable_contact_email_rejects_infra_and_privacy_proxy_but_keeps_real_addres
     assert!(!is_usable_contact_email("some.id@domainsbyproxy.com"));
     // A real, individually-addressed mailbox must survive both gates.
     assert!(is_usable_contact_email("jane.doe@example.com"));
+}
+
+// ── Review findings on the first cut of this change (PR #635) ───────────────
+
+/// `host_only` keeps an IPv6 literal's brackets; the WHOIS query value must
+/// not, or the address classifies (and is queried) as a domain and the RIR
+/// parsing and no-Person safeguards are bypassed.
+#[tokio::test]
+async fn a_url_with_a_bracketed_ipv6_host_is_looked_up_as_the_address() {
+    let transport = Canned::new(IANA_8888, Ok(ARIN_8888));
+    let target = Target::new(TargetKind::Url, "http://[2001:db8::1]/login");
+    let result = lookup(&transport, &target, "scan-1")
+        .await
+        .expect("address record");
+    assert_eq!(
+        transport.hops(),
+        vec![("whois.arin.net".to_string(), "2001:db8::1".to_string())],
+        "queried as the bare address, brackets stripped"
+    );
+    let urls = of_kind(&result.entities, EntityKind::Url);
+    assert_eq!(urls.len(), 1, "{:?}", result.entities);
+    assert_eq!(
+        attr(urls[0], "net_name"),
+        Some("GOGL"),
+        "read as an address record"
+    );
+    assert!(of_kind(&result.entities, EntityKind::Person).is_empty());
+}
+
+/// A skip reason or refusal message is persisted (`ModuleSkipped.reason`,
+/// `ModuleError.error`), so it names the looked-up host — never the raw URL,
+/// whose query string or userinfo is not the WHOIS subject.
+#[tokio::test]
+async fn skip_and_refusal_messages_never_carry_the_urls_query_or_userinfo() {
+    // No host at all: the reason is host-independent.
+    let transport = Canned::new(IANA_COM, Ok("never reached"));
+    let target = Target::new(TargetKind::Url, "https:///no-host?token=SECRET-TOKEN");
+    let err = lookup(&transport, &target, "scan-1")
+        .await
+        .expect_err("nothing to query");
+    assert!(
+        !err.to_string().contains("SECRET-TOKEN"),
+        "skip reason leaked the query string: {err}"
+    );
+    // A refusal names the host that was queried, not the URL it came from.
+    let transport = Canned::new(IANA_COM, Ok("WHOIS LIMIT EXCEEDED - SEE WWW.PIR.ORG\n"));
+    let target = Target::new(
+        TargetKind::Url,
+        "https://user:SECRET-PW@example.com/reset?token=SECRET-TOKEN",
+    );
+    let err = lookup(&transport, &target, "scan-1")
+        .await
+        .expect_err("refused");
+    let msg = err.to_string();
+    assert!(matches!(err, Error::RateLimited(_)), "{msg}");
+    assert!(msg.contains("example.com"), "{msg}");
+    assert!(
+        !msg.contains("SECRET-PW") && !msg.contains("SECRET-TOKEN") && !msg.contains("/reset"),
+        "refusal leaked the URL: {msg}"
+    );
+}
+
+/// IANA can refuse for load like any other WHOIS server. A referral-less
+/// answer is "no WHOIS server for this registry" ONLY when it is the
+/// registry's own object; a refusal is the typed rate-limit, an unrecognised
+/// body is a lookup failure, and IANA's "0 objects" (no such namespace) is a
+/// structural skip that says so.
+#[test]
+fn a_referral_less_bootstrap_answer_is_classified_before_it_is_called_no_whois_server() {
+    let refused = bootstrap_referral("WHOIS LIMIT EXCEEDED - SEE WWW.IANA.ORG\n", "example.vn")
+        .expect_err("refusal");
+    assert!(matches!(refused, Error::RateLimited(_)), "{refused}");
+    assert!(refused.to_string().contains("example.vn"), "{refused}");
+
+    for garbage in [
+        "",
+        "\n\n",
+        "% something went wrong\n",
+        "<html>502 Bad Gateway</html>",
+    ] {
+        let err = bootstrap_referral(garbage, "example.vn").expect_err("unrecognised");
+        assert!(
+            matches!(&err, Error::Module { module, .. } if module == "whois"),
+            "{garbage:?}: {err}"
+        );
+        assert!(
+            err.to_string().contains("unrecognised reply"),
+            "{garbage:?}: {err}"
+        );
+    }
+
+    let none = bootstrap_referral(
+        "% IANA WHOIS server\n% for more information on IANA, visit http://www.iana.org\n% This query returned 0 objects.\n",
+        "example.nosuchtld",
+    )
+    .expect_err("0 objects");
+    let Error::Skipped { class, reason } = none else {
+        panic!("0 objects must be a typed skip, got {none}");
+    };
+    assert_eq!(class, SkipClass::NotApplicable);
+    assert!(
+        reason.contains("0 objects") && reason.contains("example.nosuchtld"),
+        "{reason}"
+    );
+
+    // The registry object with a blank whois: line is still the structural skip.
+    assert!(matches!(
+        bootstrap_referral(IANA_VN, "vnnic.vn"),
+        Err(Error::Skipped {
+            class: SkipClass::NotApplicable,
+            ..
+        })
+    ));
+    assert_eq!(iana_bootstrap_shape(IANA_VN), IanaShape::RegistryObject);
+    assert_eq!(iana_bootstrap_shape(IANA_8888), IanaShape::RegistryObject);
+    assert_eq!(
+        iana_bootstrap_shape("% This query returned 0 objects.\n"),
+        IanaShape::NoObject
+    );
+    assert_eq!(
+        iana_bootstrap_shape("<html>oops</html>"),
+        IanaShape::Unrecognised
+    );
+}
+
+/// Only a reply that SAYS the registry holds nothing is a clean negative.
+/// An empty reply, a banner, a dialect the parser does not know, or an
+/// error with no marker is a reply the module could not read — a lookup
+/// failure, so coverage never records "checked, nothing there".
+#[test]
+fn an_unreadable_authoritative_reply_is_a_lookup_failure_not_a_clean_negative() {
+    let target = Target::new(TargetKind::Domain, "example.com");
+    for reply in [
+        "",
+        "\n",
+        "% Connection reset by peer\n",
+        "<html><body>Just a moment...</body></html>",
+        "[Network Number]  192.0.2.0/24\n[Network Name]    JPNIC-NET\n",
+    ] {
+        let err = build_result(
+            &target,
+            "example.com",
+            "whois.example-registry.test",
+            reply,
+            "scan-1",
+        )
+        .expect_err(&format!("{reply:?} must not be a clean negative"));
+        let msg = err.to_string();
+        assert!(
+            msg.starts_with("[whois]") && msg.contains("unrecognised reply"),
+            "{reply:?}: {msg}"
+        );
+        assert!(msg.contains("whois.example-registry.test"), "{msg}");
+        assert!(
+            !msg.contains("no registration record\"")
+                || msg.contains("not \"no registration record\"")
+        );
+    }
+}
+
+#[test]
+fn no_match_notice_recognises_the_registries_own_phrasings() {
+    for reply in [
+        "No match for \"EXAMPLE-NOPE.COM\".\n>>> Last update of whois database: 2026-09-15 <<<\n",
+        "Domain: example-nope.de\nStatus: free\n",
+        "No entries found for the selected source(s).\n",
+        "%ERROR:101: no entries found\n%\n% No entries found in source RIPE.\n",
+        "No match found for 203.0.113.9\n",
+        "NOT FOUND\n",
+        "Domain not found.\n",
+        "example-nope.au is available for registration\n",
+    ] {
+        assert!(no_match_notice(reply).is_some(), "{reply:?}");
+        let target = Target::new(TargetKind::Domain, "example-nope.test");
+        let result = build_result(
+            &target,
+            "example-nope.test",
+            "whois.example-registry.test",
+            reply,
+            "scan-1",
+        )
+        .expect("a no-match reply is the clean negative");
+        assert!(result.entities.is_empty());
+    }
+    assert!(no_match_notice("Registrar: X\nCreation Date: 2020-01-01\n").is_none());
+}
+
+/// A CDN/anycast edge address's registration describes the provider, not the
+/// subject. That suppression was keyed on the raw target value — for a URL
+/// target that string is the whole URL, which never parses as an address, so
+/// `http://104.16.0.1/…` emitted Cloudflare's registered country as the
+/// subject's geolocation. The check runs on the looked-up address.
+#[test]
+fn a_cdn_edge_url_host_gets_no_provider_country_as_geolocation() {
+    let record = "\
+NetRange:       104.16.0.0 - 104.31.255.255
+CIDR:           104.16.0.0/12
+NetName:        CLOUDFLARENET
+NetType:        Direct Allocation
+Organization:   Cloudflare, Inc. (CLOUD14)
+RegDate:        2014-03-28
+Updated:        2021-05-26
+
+OrgName:        Cloudflare, Inc.
+OrgId:          CLOUD14
+Country:        US
+";
+    let edge = Target::new(TargetKind::Url, "http://104.16.0.1/login");
+    let result =
+        build_result(&edge, "104.16.0.1", "whois.arin.net", record, "scan-1").expect("record");
+    assert!(
+        of_kind(&result.entities, EntityKind::Address).is_empty(),
+        "edge address must not geolocate the subject: {:?}",
+        result.entities
+    );
+    assert_eq!(
+        attr(
+            of_kind(&result.entities, EntityKind::Url)[0],
+            "registrant_country"
+        ),
+        Some("US"),
+        "the country stays on the evidence as the provider's registration"
+    );
+    // Control: a non-edge address still yields the country.
+    let plain = Target::new(TargetKind::Url, "http://8.8.8.8/x");
+    let result =
+        build_result(&plain, "8.8.8.8", "whois.arin.net", ARIN_8888, "scan-1").expect("record");
+    assert_eq!(of_kind(&result.entities, EntityKind::Address).len(), 1);
 }

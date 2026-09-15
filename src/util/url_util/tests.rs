@@ -10,6 +10,14 @@ use super::{host_from_url, host_only, is_tracking_param_key};
         assert_eq!(host_only(""), "");
         // Scheme match is case-insensitive (RFC 3986 §3.1)...
         assert_eq!(host_only("HTTPS://Up.Example.com/p"), "Up.Example.com");
+        // Userinfo is not the host: this returned "user" (cut at the first
+        // colon), so a credentialed URL's host was the username.
+        assert_eq!(
+            host_only("https://user:SECRET-PW@example.com/reset?token=x"),
+            "example.com"
+        );
+        assert_eq!(host_only("https://user@example.com:8443/"), "example.com");
+        assert_eq!(host_only("https://u:p%40ss@[2001:db8::1]:443/x"), "[2001:db8::1]");
         assert_eq!(host_only("HtTp://x.test"), "x.test");
         // ...but the host slice itself is returned verbatim (no case-folding).
         assert_eq!(host_only("https://MixedCase.Net"), "MixedCase.Net");

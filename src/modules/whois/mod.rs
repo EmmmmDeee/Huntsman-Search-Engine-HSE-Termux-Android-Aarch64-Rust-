@@ -205,11 +205,8 @@ fn registrant_org_name(entities: &[RdapIpEntity]) -> Option<String> {
 /// `https://rdap.org/ip/{ip}` bootstraps to the authoritative RIR (ARIN /
 /// RIPE / APNIC / LACNIC / AFRINIC) and returns the same org / country /
 /// abuse-contact data that raw WHOIS would have provided.
-async fn rdap_ip_fallback(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-    let url = format!(
-        "https://rdap.org/ip/{}",
-        crate::util::http::urlencode(&target.value)
-    );
+async fn rdap_ip_fallback(ip: &str, ctx: &ModuleContext) -> Result<ModuleResult> {
+    let url = format!("https://rdap.org/ip/{}", crate::util::http::urlencode(ip));
     let resp = ctx
         .http
         .get(&url)
@@ -237,10 +234,9 @@ async fn rdap_ip_fallback(target: &Target, ctx: &ModuleContext) -> Result<Module
     if let Some(org) = &org_name {
         let org = org.trim();
         if org.len() >= 3 {
-            let mut ev =
-                Evidence::new(SRC, format!("RDAP network registrant for {}", target.value))
-                    .with_attr("source", "rdap-fallback")
-                    .with_attr("ip", target.value.as_str());
+            let mut ev = Evidence::new(SRC, format!("RDAP network registrant for {ip}"))
+                .with_attr("source", "rdap-fallback")
+                .with_attr("ip", ip);
             if !net_name.is_empty() {
                 ev = ev.with_attr("net_name", net_name.as_str());
             }
@@ -265,9 +261,7 @@ async fn rdap_ip_fallback(target: &Target, ctx: &ModuleContext) -> Result<Module
     // PROVIDER's registered country, not the subject's — the same class
     // `untrusted_ip_geo_reason` exists to catch (the org/abuse-contact data
     // above is unaffected: an operator attribution, not a geo claim).
-    if !country.is_empty()
-        && crate::core::validation::untrusted_ip_geo_reason(&target.value).is_none()
-    {
+    if !country.is_empty() && crate::core::validation::untrusted_ip_geo_reason(ip).is_none() {
         let mut ae = Entity::new(
             EntityKind::Address,
             &country,
@@ -278,9 +272,9 @@ async fn rdap_ip_fallback(target: &Target, ctx: &ModuleContext) -> Result<Module
         ae.tag("rdap-fallback");
         ae.tag("geoint");
         ae.add_evidence(
-            Evidence::new(SRC, format!("RDAP country for {}", target.value))
+            Evidence::new(SRC, format!("RDAP country for {ip}"))
                 .with_attr("source", "rdap-fallback")
-                .with_attr("ip", target.value.as_str()),
+                .with_attr("ip", ip),
         );
         result.push(ae);
     }
@@ -301,9 +295,9 @@ async fn rdap_ip_fallback(target: &Target, ctx: &ModuleContext) -> Result<Module
         ee.tag("whois-abuse");
         ee.tag("rdap-fallback");
         ee.add_evidence(
-            Evidence::new(SRC, format!("RDAP abuse contact for {}", target.value))
+            Evidence::new(SRC, format!("RDAP abuse contact for {ip}"))
                 .with_attr("source", "rdap-fallback")
-                .with_attr("ip", target.value.as_str()),
+                .with_attr("ip", ip),
         );
         result.push(ee);
     }
@@ -377,30 +371,44 @@ impl Module for Whois {
         // carries the registry data over HTTPS), never the clean "no
         // registration data" an empty result would have recorded.
         if behind_proxy() {
-            return match target.kind {
-                TargetKind::IpAddress => rdap_ip_fallback(target, ctx).await,
-                _ => Err(Error::skipped(
+            // Decided on the looked-up value — a URL whose host is an address
+            // (`http://8.8.8.8/…`) takes the address path like a bare address.
+            let q = query_value(target)?;
+            return if q.parse::<std::net::IpAddr>().is_ok() {
+                rdap_ip_fallback(&q, ctx).await
+            } else {
+                Err(Error::skipped(
                     SkipClass::Unavailable,
                     "TCP/43 WHOIS is not routable through the configured HTTPS proxy — \
                      domain WHOIS was not attempted (rdap_domain carries the registry \
                      data over HTTPS)",
-                )),
+                ))
             };
         }
         lookup(&client::Tcp, target, &ctx.scan_id).await
     }
 }
 
-/// The value sent down the wire for `target`: a URL's host, otherwise the
-/// value itself. A URL with no host has nothing to look up.
+/// The value sent down the wire for `target`: a URL's host (an IPv6 literal
+/// without its `[…]` brackets, so it classifies and queries as an address),
+/// otherwise the value itself. A URL with no host has nothing to look up.
+///
+/// Every operator-facing message this module builds names THIS value, never
+/// the raw target: a URL's path, query or userinfo (`?token=…`, `user:pw@`)
+/// is not the WHOIS subject and must not reach a persisted skip reason or
+/// error string.
 fn query_value(target: &Target) -> Result<String> {
     match target.kind {
         TargetKind::Url => {
             let host = crate::util::url_util::host_only(&target.value);
+            let host = host
+                .strip_prefix('[')
+                .and_then(|h| h.strip_suffix(']'))
+                .unwrap_or(host);
             if host.is_empty() {
                 return Err(Error::skipped(
                     SkipClass::NotApplicable,
-                    format!("URL target {} has no host to look up", target.value),
+                    "URL target has no host to look up — nothing to send to a WHOIS server",
                 ));
             }
             Ok(host.to_string())
@@ -418,16 +426,44 @@ fn query_value(target: &Target) -> Result<String> {
 /// that namespace, which is not "no registration record". **Pure** — tested
 /// against the live IANA records for `COM`, `VN` and `8.8.8.8`.
 fn bootstrap_referral(iana_answer: &str, q: &str) -> Result<String> {
-    find_referral(iana_answer).ok_or_else(|| {
-        Error::skipped(
+    if let Some(server) = find_referral(iana_answer) {
+        return Ok(server);
+    }
+    // No referral. That is "the registry publishes no WHOIS server" ONLY when
+    // IANA actually answered with the registry's object; a refusal or an
+    // unrecognised body must not be laundered into a harmless structural skip.
+    if let Some(notice) = parse::rate_limit_notice(iana_answer) {
+        return Err(Error::RateLimited(format!(
+            "[{SRC}] IANA WHOIS bootstrap ({IANA_WHOIS}) refused the query for {q}: {notice}"
+        )));
+    }
+    match parse::iana_bootstrap_shape(iana_answer) {
+        parse::IanaShape::RegistryObject => Err(Error::skipped(
             SkipClass::NotApplicable,
             format!(
                 "IANA lists no WHOIS server for the registry of {q} — port-43 WHOIS \
                  cannot say anything about it (this is not \"no registration \
                  record\"); rdap_domain carries the registry data over HTTPS"
             ),
-        )
-    })
+        )),
+        parse::IanaShape::NoObject => Err(Error::skipped(
+            SkipClass::NotApplicable,
+            format!(
+                "IANA knows no registry for {q} (its bootstrap answer returned 0 \
+                 objects) — port-43 WHOIS cannot say anything about it (this is not \
+                 \"no registration record\")"
+            ),
+        )),
+        parse::IanaShape::Unrecognised => Err(Error::module(
+            SRC,
+            format!(
+                "IANA WHOIS bootstrap ({IANA_WHOIS}) answered {q} with neither a referral \
+                 nor a registry object ({} bytes) — unrecognised reply, not \"no \
+                 registration record\"",
+                iana_answer.len()
+            ),
+        )),
+    }
 }
 
 /// The whole lookup — bootstrap, referral, authoritative query, parse — over
@@ -525,6 +561,10 @@ fn build_result(
     // record carries an allocation (net name / range), its operator, country
     // or abuse contact. Judged per kind — the domain-only gate read every
     // ARIN allocation as "no data".
+    // A "no record" reply can itself carry a status line — DENIC answers an
+    // unregistered name with `Status: free` — so a status alone is a record
+    // only when the reply does not also say there is nothing there.
+    let no_match = parse::no_match_notice(response).is_some();
     let actionable = if is_ip {
         net_name.is_some()
             || net_range.is_some()
@@ -532,7 +572,10 @@ fn build_result(
             || registrant_country.is_some()
             || abuse_email.is_some()
     } else {
-        registrar.is_some() || created.is_some() || !nameservers.is_empty() || !statuses.is_empty()
+        registrar.is_some()
+            || created.is_some()
+            || !nameservers.is_empty()
+            || (!statuses.is_empty() && !no_match)
     };
     if !actionable {
         // A server that refused the query for load answered "not now", not
@@ -540,13 +583,28 @@ fn build_result(
         // backs off and coverage records a failure, never a clean negative.
         if let Some(notice) = parse::rate_limit_notice(response) {
             return Err(Error::RateLimited(format!(
-                "[{SRC}] {server} refused the query for {}: {notice}",
-                target.value
+                "[{SRC}] {server} refused the query for {q}: {notice}"
             )));
         }
-        // No record parsed — the registry answered and holds nothing for this
-        // target (a "No match" reply). The one genuine clean negative.
-        return Ok(ModuleResult::new());
+        // The registry answered and holds nothing for this target — a reply
+        // that SAYS so ("No match for …", "NOT FOUND", RIPE's ERROR:101 …).
+        // The one genuine clean negative.
+        if no_match {
+            return Ok(ModuleResult::new());
+        }
+        // Anything else — an empty reply, a banner, a dialect the parser does
+        // not know, an error we have no marker for — is a reply this module
+        // could not read, and coverage must record it as a failure, never as
+        // "checked, nothing there".
+        return Err(Error::module(
+            SRC,
+            format!(
+                "authoritative WHOIS server {server} answered {q} with neither a record \
+                 nor a \"no match\" reply ({} bytes) — unrecognised reply, not \"no \
+                 registration record\"",
+                response.len()
+            ),
+        ));
     }
 
     let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS_PLUS, scan_id);
@@ -743,8 +801,7 @@ fn build_result(
     // `ip_whois_geo`/`geo_intel`/`ipinfo`/`ip2location`/`ipquery`/`netlas`
     // already apply). A Domain target's registrant address is unaffected
     // — it has nothing to do with IP geolocation trust.
-    let geo_trusted =
-        !is_ip || crate::core::validation::untrusted_ip_geo_reason(&target.value).is_none();
+    let geo_trusted = !is_ip || crate::core::validation::untrusted_ip_geo_reason(q).is_none();
     if geo_trusted && let Some(country) = &registrant_country {
         let parts = registrant_location_parts(registrant_state.as_deref(), country);
         if !parts.is_empty() && parts.iter().any(|p| p.len() >= 2) {
