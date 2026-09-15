@@ -5070,6 +5070,22 @@ not recur in this cycle's two full-suite runs; it is diagnosed from source
 and closed in the harness as REQ-CI-003 (above). Beyond that the previous
 statement stands.
 
+**Stop — revised (6), 2026-09-15 23:3x UTC.** Recomputed after REQ-DRIFT-008
+and REQ-CI-003, with CI green on `7404500` on every check and the
+live-drift check green on both dispatched runs. Remaining candidates, each
+asked whether a feasible test today could change a decision: (a) the
+`wifidb` retirement — decided by a sweep at least 20 h after 23:00 UTC, so
+no test before 2026-09-16 19:00 UTC can change it (time-gated; the
+check-in reads it); (b) the Web UI panel showing the reading rather than
+the cross-sweep verdict — a presentation gap with a small, known follow-up
+(a `dead_since` field and the panel's boundary lock) on which no decision
+hinges; (c) the sweep's steady `timed-out wayback` and `rate-limited
+reddit_user` rows — typed honestly (REQ-ARCHIVE-001, REQ-DRIFT-002/004),
+the vantage's, not the code's; (d) the remaining `empty` rows — each
+excluded from the canary table with its reason (REQ-CANARY-001, batch 3).
+No feasible test today could materially change a decision; the unresolved,
+decision-reversing uncertainty is (a), explicit above. Stop.
+
 ### REQ-HTTP-002 (**new, Pass 31 — VERIFIED FROM SOURCE, CONSOLIDATED, FIXED, FALSIFIED**): `json_scanned` fails the way `json_decode` fails
 
 **Lead.** ONE CAPABILITY, ONE AUTHORITY. Two shared JSON decode helpers judged
