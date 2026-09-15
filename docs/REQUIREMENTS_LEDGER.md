@@ -4108,6 +4108,145 @@ the next step if a 200 wall is observed on one. The remaining
 `ip_reputation`) read JSON or crawl content and mint no negative claim from
 an empty parse.
 
+### REQ-DRIFT-008 (**new, Pass 31 — OBSERVED on the runner twice in one day, FIXED at the sweep's verdict, CARRIED between runs, FALSIFIED**): a dead canary is confirmed across sweeps, never by one run
+
+**Lead.** FAILURE ≠ NEGATIVE FINDING. The dead-canary verdict (REQ-DRIFT-001)
+was one sweep's reading — three attempts over six seconds (`CANARY_ATTEMPTS`,
+`CANARY_RETRY_PAUSE`) — and a canary that answered none of them failed the run
+with "down for the whole run, or the endpoint is retired … migrate the
+endpoint or retire the capability honestly". The retirement criterion this
+ledger states (two consecutive weekly readings; REQ-HTTP-001's `wifidb`
+paragraph) lived in prose only: the runner remembered nothing between runs,
+so the criterion was enforced by whoever read the logs, and the check itself
+could not tell a first reading from a second.
+
+**Observation (GitHub's runner, 2026-09-15).** Two live providers read
+"retired" in one day. `chronicling_america` timed out on all three attempts
+at 20:33 (run 35020085011; alive with 11 on the nine dispatches before and on
+every sweep since; it answers this sandbox in under half a second), and
+`crtsh` answered `HTTP 502 Bad Gateway` on all three attempts at 22:01 (run
+35028485965) while `https://crt.sh/?q=python.org&output=json` answered `200`
+from this sandbox three times at 22:05–22:06. Both runs were red with the
+instruction to retire a live capability; followed, the second would have
+removed the Certificate Transparency source. And while the run was red by
+design on `wifidb` until its second weekly reading, a new dead reading
+changed nothing visible in the check status: red is red.
+
+**Competing explanations.** (a) Both providers were briefly down — an outage
+class a six-second window cannot separate from retirement, and a longer
+in-run window (a second pass at the sweep's end, ~40 s later) would still
+miss crt.sh's minutes. (b) The runner's egress or DNS blipped — then several
+canaries would have read dead at once; both readings were single-canary among
+forty-odd canaries that answered. (c) Retired endpoints — refuted by the same
+providers answering minutes later and on every neighbouring sweep. The
+mechanism is (a), and the judgement it needs is temporal: a retired endpoint
+is dead on every sweep, an outage on one.
+
+**Fix (the authoritative layer: the sweep's verdict,
+`selftest::capability_probe`).** A dead reading (`ProbeReport::is_dead_canary`,
+unchanged: unreachable or timed out on every attempt) is judged by
+`judge_dead_canaries` against a memory of the earlier sweeps —
+`~/.huntsman/capability_dead_canaries.json`, module → `DeadSpan { first, last
+}`, the canary's unbroken run of dead readings — and carried forward:
+`Provisional` on the first reading and on any reading within
+`DEAD_CANARY_CONFIRMATION_SECS` (20 h) of it (a day's dispatches are one
+reading), `Confirmed` once the run began at least 20 h ago with no answer
+between (the weekly cadence confirms on the second Monday; a dispatch the
+next day confirms too). Any answer — `ProbeReport::answered`: alive, empty,
+throttled, walled, or a body that crashed the parser, exhaustive over
+`ProbeOutcome` — ends the run; a skip (never asked) and a canary not probed
+leave it untouched; a non-canary never enters it; a run last read dead more
+than thirty days ago is forgotten; and a sweep in which no canary answered at
+all is a reading of the vantage, not of the providers — every verdict
+provisional, nothing recorded. Only a memory that changed is written; one
+that cannot be read makes every dead reading a first reading (the side that
+never fails), the policy the drift cache already had. Consumers:
+`tests/live_drift.rs` fails on a confirmed verdict only, prints a provisional
+one (a `::warning` annotation on the runner's summary page), and fails a
+sweep that reached no provider at all as an offline vantage; `hse doctor
+--live` prints both verdicts with the memory's path, and the offline `hse
+doctor` lists the remembered runs (`remembered_dead_canaries`); the Web UI's
+probe records its reading (its panel keeps showing the reading — the verdict
+is the memory's). `util::timefmt::ymd_hm_utc` renders the instants. The
+workflow (`.github/workflows/live-drift.yml`) restores the memory from the
+most recent completed run of the workflow that uploaded one (`gh run
+download`, any branch — a dead canary is a fact about the provider;
+`actions: read` joins the least-privilege block) and uploads this run's
+memory whatever the outcome (`live-drift-memory`, 90 days), so the runner's
+readings accumulate as an operator's device's do; no memory at all is
+disclosed in the restore step's log, never assumed away.
+
+**Locks (`selftest::capability_probe::tests`, pure over an explicit memory and
+clock; `util::timefmt::tests`).**
+`a_first_dead_reading_is_provisional_and_one_a_day_later_confirms_it` (first
+reading provisional since now; an hour later still provisional, dated from
+the first; `DEAD_CANARY_CONFIRMATION_SECS` later confirmed since the first
+with the run's start kept; the `describe` line),
+`a_canary_that_answers_ends_its_run_and_a_skipped_one_keeps_it` (and a canary
+not probed keeps its run), `a_non_canary_transport_failure_never_enters_the_memory`,
+`a_sweep_in_which_no_canary_answered_is_a_reading_of_the_vantage_not_the_providers`
+(three canaries dead and a non-canary alive: every verdict provisional, a
+run old enough to confirm not confirmed, the memory unchanged),
+`a_run_of_readings_older_than_the_memory_ttl_is_forgotten`,
+`the_memory_is_carried_between_sweeps_through_the_store` (a clean sweep
+creates no file; the persisted JSON is `{"crtsh":{"first":1000,"last":1000}}`;
+the second sweep reads the first's memory from the store and confirms; an
+answer ends the run in the store; an unreadable memory makes the reading a
+first one), `ymd_hm_utc_renders_the_date_and_the_minute`.
+
+**Falsification (`cycle_y_falsify.py`, 22:36–22:52 UTC; each mutation runs
+only its lock with `--exact`, the source restored and sha-asserted after
+each).** The confirmation reverted (a reading a day after the first stays
+provisional) → `a_first_dead_reading_is_provisional_and_one_a_day_later_confirms_it`
+fails (`left: Provisional { since: 1000000 }`, `right: Confirmed { since:
+1000000 }`); the clearing reverted (an answer no longer ends the run) →
+`a_canary_that_answers_ends_its_run_and_a_skipped_one_keeps_it` fails; the
+offline-vantage guard reverted (a sweep no canary answered is judged and
+recorded) →
+`a_sweep_in_which_no_canary_answered_is_a_reading_of_the_vantage_not_the_providers`
+fails; the forgetting reverted (a run last read dead a month ago kept) →
+`a_run_of_readings_older_than_the_memory_ttl_is_forgotten` fails; the
+persistence reverted (the memory never written) →
+`the_memory_is_carried_between_sweeps_through_the_store` fails; the canary
+gate reverted (any module's transport failure a dead reading) →
+`a_non_canary_transport_failure_never_enters_the_memory` fails (`assertion
+failed: verdicts.is_empty()`). Six of six. The script's first run stopped
+before its fourth mutation because the TTL filter's text occurs twice (the
+offline reader shares it): the anchor was widened and the last three run
+again, the file's sha checked untouched between.
+
+**Local (this sandbox, the binary built from this tree, a fresh `HOME`).**
+Sweep 1 at 22:35 UTC: 116 probed, 87 alive, 0 panicked; `wifidb` the only
+dead reading — `provisional dead canary: wifidb — dead since 2026-09-15 22:35
+UTC, not yet confirmed: no answer on any of 3 attempts: …Error | Vistumbler
+WiFiDB…` — and the test **passed** where the same sweep had been red on that
+row since REQ-HTTP-001; `crtsh` alive with 15, `chronicling_america` with
+11; the memory written as `{"wifidb":{"first":1789511734,"last":1789511734}}`.
+Sweep 2 a minute later against the same `HOME`: 88 alive, `wifidb` still
+provisional and **dated from the first sweep** (`dead since 2026-09-15 22:35
+UTC`), the memory `{"first":1789511734,"last":1789511800}` — the run kept
+its start, its last reading advanced. The offline `hse doctor` against that
+`HOME` prints `⚠ Dead canaries remembered from previous live probes
+(confirmed once dead across probes 20 h apart): wifidb dead since 2026-09-15
+22:35 UTC, last read dead 2026-09-15 22:36 UTC`.
+
+**Remote.** The live-drift dispatch on the pushed head, twice: the first run
+without a memory, the second restoring the first's artifact.
+
+**Residual.** The confirmation needs a second sweep at least 20 h later: a
+canary whose provider is retired reads provisional on the day it dies and
+confirmed on the next sweep a day or more later — with the weekly cadence
+alone, one week — and a provider down for a day or more reads confirmed with
+the date in the verdict, which a human reads before retiring anything (the
+same human read every red run before this). The artifact carries 90 days; a
+longer gap starts the memory afresh, disclosed in the restore step's log.
+The Web UI panel shows the reading, not the verdict (the API's JSON is
+unchanged; a `dead_since` field there needs the panel and its boundary lock
+— a small follow-up). `wifidb` is first read dead by the runner's memory on
+the first run carrying it; the weekly sweep of 2026-09-21 confirms it and
+the retirement decision REQ-HTTP-001 deferred to that reading is then taken
+by the mechanism, not by memory of the logs.
+
 ### REQ-HACKERTARGET-001 (**new, Pass 31 — OBSERVED live from the sandbox, FIXED, FALSIFIED**): HackerTarget's own sentences are typed, never all faults
 
 **Observation (this sandbox, 2026-09-15 21:3x UTC, the binary built from

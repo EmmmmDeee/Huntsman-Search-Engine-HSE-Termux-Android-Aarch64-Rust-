@@ -606,6 +606,10 @@ pub async fn capabilities_probe() -> Json<Value> {
     // `capability_probe::recent_confirmed_drift`) without the operator having
     // to re-run the live probe.
     crate::selftest::capability_probe::record_confirmed_drift(&reports);
+    // The same for a dead canary: this sweep's reading joins the memory the
+    // next live sweep — here, `hse doctor --live` or the live-drift workflow —
+    // judges against. The panel shows the reading; the verdict is the memory's.
+    crate::selftest::capability_probe::judge_dead_canaries(&reports);
     Json(capability_probe_json(&reports))
 }
 

@@ -46,8 +46,21 @@
 //! Before this the sweep tolerated it forever — `api.bgpview.io` lost its DNS
 //! and the (since retired) `bgpview` canary read "unreachable" on every weekly run while the
 //! workflow stayed green.
+//!
+//! One sweep's dead reading is three attempts over six seconds, and a live
+//! provider can fail all three: on 2026-09-15 `crtsh` answered `502` on every
+//! attempt at 22:01 and `200` four minutes later, `chronicling_america` timed
+//! out three times at 20:33 and answered every other sweep of the day. So a
+//! dead reading is **provisional** until the memory of earlier sweeps
+//! ([`judge_dead_canaries`]) shows the same canary dead at least
+//! [`DEAD_CANARY_CONFIRMATION_SECS`] earlier with no answer between: only that
+//! **confirmed** verdict fails the sweep. Every live sweep records its readings
+//! (`~/.huntsman/capability_dead_canaries.json`; the live-drift workflow
+//! carries the file between runs as an artifact), any answer ends a canary's
+//! run of dead readings, and a sweep in which no canary answered at all is a
+//! reading of the vantage, not of the providers, and records nothing.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
 use crate::core::{
@@ -151,9 +164,10 @@ impl ProbeOutcome {
 /// so one failed connect or one timeout is not yet a verdict: the probe is
 /// repeated, this many times in all with [`CANARY_RETRY_PAUSE`] between, and
 /// only a provider that answers nothing for the whole run — down, or its
-/// endpoint retired — is the dead-canary verdict ([`ProbeReport::is_dead_canary`])
-/// the sweep fails on. Every other module keeps a single attempt: its transport
-/// failure is reported and tolerated, never escalated.
+/// endpoint retired — is a dead-canary reading ([`ProbeReport::is_dead_canary`]),
+/// which the sweep fails on once [`judge_dead_canaries`] confirms it across
+/// sweeps. Every other module keeps a single attempt: its transport failure is
+/// reported and tolerated, never escalated.
 pub const CANARY_ATTEMPTS: usize = 3;
 
 /// Pause between a canary's attempts — long enough for a transient blip to
@@ -215,12 +229,33 @@ impl ProbeReport {
     /// surely. A non-canary's transport failure is never a dead canary, and a
     /// throttle ([`ProbeOutcome::RateLimited`]) or a refusal
     /// ([`ProbeOutcome::Blocked`]) never is either: the provider answered.
+    ///
+    /// One sweep's reading. Whether it is an outage or a retired endpoint is
+    /// [`judge_dead_canaries`]'s call, over the memory of earlier sweeps.
     pub fn is_dead_canary(&self) -> bool {
         is_canary(self.module)
             && matches!(
                 self.outcome,
                 ProbeOutcome::Unreachable { .. } | ProbeOutcome::TimedOut
             )
+    }
+
+    /// True when the provider answered at all — data, nothing, a throttle, a
+    /// refusal, or a body that crashed the parser. False for a transport
+    /// failure or a timeout (no answer) and for a skip (never asked).
+    /// Exhaustive over [`ProbeOutcome`] so a new variant must say which side
+    /// it is on.
+    pub fn answered(&self) -> bool {
+        match &self.outcome {
+            ProbeOutcome::Alive { .. }
+            | ProbeOutcome::Empty
+            | ProbeOutcome::RateLimited { .. }
+            | ProbeOutcome::Blocked { .. }
+            | ProbeOutcome::Panicked { .. } => true,
+            ProbeOutcome::Unreachable { .. }
+            | ProbeOutcome::TimedOut
+            | ProbeOutcome::Skipped { .. } => false,
+        }
     }
 }
 
@@ -663,6 +698,266 @@ fn recent_confirmed_drift_pure(
 pub fn recent_confirmed_drift(ttl_secs: u64) -> Vec<(String, u64)> {
     let map = read_drift_map(&drift_path());
     recent_confirmed_drift_pure(&map, ttl_secs, crate::core::entity::unix_now())
+}
+
+// ── Dead-canary memory ─────────────────────────────────────────────────────
+//
+// A dead reading is one sweep's observation: three attempts over six seconds.
+// Observed 2026-09-15 on GitHub's runner: `crtsh` answered `502` on all three
+// attempts at 22:01 and `200` from the sandbox four minutes later;
+// `chronicling_america` timed out three times at 20:33 and answered every
+// other sweep of the day. Each reading failed the run with the instruction to
+// retire the capability. A retired endpoint is dead on every sweep; an outage
+// on one. The memory below tells them apart: every live sweep records which
+// canaries it read dead and since when, and a dead reading is confirmed only
+// when the same canary was dead on a sweep at least
+// `DEAD_CANARY_CONFIRMATION_SECS` earlier with no answer in between.
+
+/// How far apart two dead readings of one canary must be before the second
+/// confirms the first. A day's dispatches are one reading (sweeps minutes
+/// apart see the same outage); the weekly sweep's readings are seven days
+/// apart. Twenty hours rather than twenty-four so a dispatch the next day at
+/// roughly the same time counts.
+pub const DEAD_CANARY_CONFIRMATION_SECS: u64 = 20 * 60 * 60;
+
+/// A remembered run of dead readings whose last reading is older than this is
+/// forgotten: the canary was retired or renamed since, or the memory is from
+/// another life of this install.
+const DEAD_CANARY_MEMORY_TTL_SECS: u64 = 30 * 24 * 60 * 60;
+
+/// One canary's unbroken run of dead readings, unix seconds: the first sweep
+/// to read it dead and the most recent one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DeadSpan {
+    /// The first sweep of the run to read the canary dead.
+    pub first: u64,
+    /// The most recent sweep to read it dead.
+    pub last: u64,
+}
+
+/// Module name → its unbroken run of dead readings. A `BTreeMap` so the
+/// persisted JSON is byte-stable between sweeps that record the same state.
+pub type DeadCanaryMemory = BTreeMap<String, DeadSpan>;
+
+/// What the memory makes of a canary this sweep read dead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeadVerdict {
+    /// The first reading, or one within [`DEAD_CANARY_CONFIRMATION_SECS`] of
+    /// the first: an outage until a later sweep says otherwise. Reported,
+    /// never a failure.
+    Provisional {
+        /// When the canary was first read dead.
+        since: u64,
+    },
+    /// Dead on this sweep and on one at least
+    /// [`DEAD_CANARY_CONFIRMATION_SECS`] earlier, with no answer in between:
+    /// the provider is down across sweeps, or its endpoint is retired. The
+    /// verdict the sweep fails on.
+    Confirmed {
+        /// When the canary was first read dead.
+        since: u64,
+    },
+}
+
+/// A canary this sweep read dead, judged against the memory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeadCanary {
+    /// Registry name of the canary.
+    pub module: &'static str,
+    /// What the attempts met, as the last one reported it.
+    pub reason: String,
+    /// Not yet confirmed, or confirmed.
+    pub verdict: DeadVerdict,
+}
+
+impl DeadCanary {
+    /// True for [`DeadVerdict::Confirmed`].
+    #[must_use]
+    pub fn is_confirmed(&self) -> bool {
+        matches!(self.verdict, DeadVerdict::Confirmed { .. })
+    }
+
+    /// When the canary was first read dead, unix seconds.
+    #[must_use]
+    pub fn since(&self) -> u64 {
+        match self.verdict {
+            DeadVerdict::Provisional { since } | DeadVerdict::Confirmed { since } => since,
+        }
+    }
+
+    /// One line for a verdict table: the module, since when it has been read
+    /// dead, whether that is confirmed, and what the attempts met.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let since = crate::util::timefmt::ymd_hm_utc(self.since());
+        let standing = if self.is_confirmed() {
+            "confirmed"
+        } else {
+            "not yet confirmed"
+        };
+        format!(
+            "{} — dead since {since}, {standing}: {}",
+            self.module, self.reason
+        )
+    }
+}
+
+/// What a dead canary's attempts met, from its report.
+fn dead_reason(outcome: &ProbeOutcome) -> String {
+    match outcome {
+        ProbeOutcome::Unreachable { reason } => {
+            format!("no answer on any of {CANARY_ATTEMPTS} attempts: {reason}")
+        }
+        ProbeOutcome::TimedOut => format!("timed out on all {CANARY_ATTEMPTS} attempts"),
+        // `is_dead_canary` admits only the two shapes above.
+        _ => outcome.label().to_string(),
+    }
+}
+
+/// Judge this sweep's dead canaries against `memory` (the earlier sweeps'
+/// readings) at `now`, and return the verdicts with the memory to carry to
+/// the next sweep. Pure over explicit inputs so the arithmetic is
+/// unit-testable without the filesystem or the clock.
+///
+/// * A canary read dead now is [`DeadVerdict::Provisional`] on its first
+///   reading and [`DeadVerdict::Confirmed`] once its run of dead readings
+///   began at least [`DEAD_CANARY_CONFIRMATION_SECS`] ago.
+/// * A canary that [`ProbeReport::answered`] ends its run: the memory forgets
+///   it. A skipped canary (never asked) leaves its run untouched, as does one
+///   this sweep did not probe.
+/// * A non-canary never enters the memory: its transport failure is never a
+///   dead canary.
+/// * A sweep in which no canary answered is a reading of the vantage (no
+///   egress, no signal), not of the providers: every dead canary is
+///   provisional and the memory is returned unchanged.
+/// * A run whose last reading is older than `DEAD_CANARY_MEMORY_TTL_SECS` is
+///   forgotten.
+#[must_use]
+pub fn judge_dead_canaries_pure(
+    memory: &DeadCanaryMemory,
+    reports: &[ProbeReport],
+    now: u64,
+) -> (Vec<DeadCanary>, DeadCanaryMemory) {
+    let dead_now: Vec<&ProbeReport> = reports.iter().filter(|r| r.is_dead_canary()).collect();
+    let vantage_reached_a_canary = reports.iter().any(|r| is_canary(r.module) && r.answered());
+    if !vantage_reached_a_canary {
+        let verdicts = dead_now
+            .into_iter()
+            .map(|r| DeadCanary {
+                module: r.module,
+                reason: dead_reason(&r.outcome),
+                verdict: DeadVerdict::Provisional { since: now },
+            })
+            .collect();
+        return (verdicts, memory.clone());
+    }
+    let mut next: DeadCanaryMemory = memory
+        .iter()
+        .filter(|(_, span)| now.saturating_sub(span.last) <= DEAD_CANARY_MEMORY_TTL_SECS)
+        .map(|(module, span)| (module.clone(), *span))
+        .collect();
+    for r in reports
+        .iter()
+        .filter(|r| is_canary(r.module) && r.answered())
+    {
+        next.remove(r.module);
+    }
+    let mut verdicts: Vec<DeadCanary> = dead_now
+        .into_iter()
+        .map(|r| {
+            let first = next.get(r.module).map_or(now, |span| span.first.min(now));
+            next.insert(r.module.to_string(), DeadSpan { first, last: now });
+            let verdict = if now.saturating_sub(first) >= DEAD_CANARY_CONFIRMATION_SECS {
+                DeadVerdict::Confirmed { since: first }
+            } else {
+                DeadVerdict::Provisional { since: first }
+            };
+            DeadCanary {
+                module: r.module,
+                reason: dead_reason(&r.outcome),
+                verdict,
+            }
+        })
+        .collect();
+    verdicts.sort_by(|a, b| a.module.cmp(b.module));
+    (verdicts, next)
+}
+
+/// `~/.huntsman/capability_dead_canaries.json` — module name → its unbroken
+/// run of dead readings ([`DeadSpan`]), written by every live sweep. On GitHub's
+/// runner the live-drift workflow carries it between runs as an artifact.
+#[must_use]
+pub fn dead_canary_memory_path() -> std::path::PathBuf {
+    crate::util::paths::data_file("capability_dead_canaries.json")
+}
+
+/// Read the memory at `path`. Empty on missing or corrupt: a memory that
+/// cannot be read makes every dead reading a first reading, the verdict that
+/// never fails a sweep — the safe side, and the policy [`read_drift_map`]
+/// already applies to its cache.
+fn read_dead_canary_memory(path: &std::path::Path) -> DeadCanaryMemory {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn write_dead_canary_memory(
+    path: &std::path::Path,
+    memory: &DeadCanaryMemory,
+) -> std::io::Result<()> {
+    let json = serde_json::to_string_pretty(memory).map_err(std::io::Error::other)?;
+    crate::util::atomic_file::write(path, json.as_bytes())
+}
+
+/// Judge against the memory at `path` and carry the result forward. Only a
+/// memory that changed is written (a clean sweep with nothing remembered
+/// creates no file); a write failure is disclosed, never fatal — the verdicts
+/// stand for this sweep either way.
+fn judge_dead_canaries_at(
+    path: &std::path::Path,
+    reports: &[ProbeReport],
+    now: u64,
+) -> Vec<DeadCanary> {
+    let memory = read_dead_canary_memory(path);
+    let (verdicts, next) = judge_dead_canaries_pure(&memory, reports, now);
+    if next != memory
+        && let Err(e) = write_dead_canary_memory(path, &next)
+    {
+        tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "could not persist the dead-canary memory — the next live sweep will read \
+             every dead canary as a first reading"
+        );
+    }
+    verdicts
+}
+
+/// Judge this sweep's dead canaries against the on-device memory and carry it
+/// forward — called after every live sweep (the live-drift test, `hse doctor
+/// --live`, the Web UI's probe) so the readings accumulate wherever the sweep
+/// runs. Returns the verdicts; only a [`DeadVerdict::Confirmed`] one is the
+/// sweep's failure.
+pub fn judge_dead_canaries(reports: &[ProbeReport]) -> Vec<DeadCanary> {
+    judge_dead_canaries_at(
+        &dead_canary_memory_path(),
+        reports,
+        crate::core::entity::unix_now(),
+    )
+}
+
+/// The runs of dead readings the memory still holds, sorted by module, for an
+/// offline `hse doctor`: what earlier live sweeps read dead and since when,
+/// without touching the network. Runs older than `DEAD_CANARY_MEMORY_TTL_SECS`
+/// are left out, as [`judge_dead_canaries`] would forget them.
+#[must_use]
+pub fn remembered_dead_canaries() -> Vec<(String, DeadSpan)> {
+    let now = crate::core::entity::unix_now();
+    read_dead_canary_memory(&dead_canary_memory_path())
+        .into_iter()
+        .filter(|(_, span)| now.saturating_sub(span.last) <= DEAD_CANARY_MEMORY_TTL_SECS)
+        .collect()
 }
 
 #[cfg(test)]
@@ -1323,6 +1618,206 @@ mod tests {
         assert!(
             !throttled.is_confirmed_drift(),
             "the wire shape was not seen"
+        );
+    }
+
+    // ── Dead-canary memory ─────────────────────────────────────────────────
+
+    fn dead(module: &'static str) -> ProbeReport {
+        ProbeReport {
+            module,
+            kind: TargetKind::IpAddress,
+            value: "8.8.8.8",
+            outcome: ProbeOutcome::Unreachable {
+                reason: "HTTP 502 Bad Gateway".into(),
+            },
+        }
+    }
+
+    fn alive(module: &'static str) -> ProbeReport {
+        ProbeReport {
+            module,
+            kind: TargetKind::IpAddress,
+            value: "8.8.8.8",
+            outcome: ProbeOutcome::Alive { found: 1 },
+        }
+    }
+
+    fn span(first: u64, last: u64) -> DeadSpan {
+        DeadSpan { first, last }
+    }
+
+    #[test]
+    fn a_first_dead_reading_is_provisional_and_one_a_day_later_confirms_it() {
+        let now = 1_000_000;
+        let sweep = [dead("crtsh"), alive("ip_geo")];
+        let (verdicts, memory) = judge_dead_canaries_pure(&DeadCanaryMemory::new(), &sweep, now);
+        assert_eq!(
+            verdicts,
+            vec![DeadCanary {
+                module: "crtsh",
+                reason: "no answer on any of 3 attempts: HTTP 502 Bad Gateway".into(),
+                verdict: DeadVerdict::Provisional { since: now },
+            }],
+            "the first reading is an outage until a later sweep says otherwise"
+        );
+        assert_eq!(memory.get("crtsh"), Some(&span(now, now)));
+
+        // An hour later the reading is still provisional and the run still
+        // dates from its first reading.
+        let hour = now + 3_600;
+        let (verdicts, memory) = judge_dead_canaries_pure(&memory, &sweep, hour);
+        assert_eq!(verdicts[0].verdict, DeadVerdict::Provisional { since: now });
+        assert_eq!(memory.get("crtsh"), Some(&span(now, hour)));
+
+        // A sweep DEAD_CANARY_CONFIRMATION_SECS after the first reading
+        // confirms it; the run keeps its start.
+        let day = now + DEAD_CANARY_CONFIRMATION_SECS;
+        let (verdicts, memory) = judge_dead_canaries_pure(&memory, &sweep, day);
+        assert_eq!(verdicts[0].verdict, DeadVerdict::Confirmed { since: now });
+        assert!(verdicts[0].is_confirmed());
+        assert_eq!(memory.get("crtsh"), Some(&span(now, day)));
+        assert_eq!(
+            verdicts[0].describe(),
+            "crtsh — dead since 1970-01-12 13:46 UTC, confirmed: no answer on any of 3 \
+             attempts: HTTP 502 Bad Gateway"
+        );
+    }
+
+    #[test]
+    fn a_canary_that_answers_ends_its_run_and_a_skipped_one_keeps_it() {
+        let mut memory = DeadCanaryMemory::new();
+        memory.insert("crtsh".into(), span(1, 2));
+        memory.insert("wifidb".into(), span(1, 2));
+        memory.insert("ripestat".into(), span(1, 2));
+        let sweep = [
+            alive("crtsh"),
+            ProbeReport {
+                module: "wifidb",
+                kind: TargetKind::IpAddress,
+                value: "8.8.8.8",
+                outcome: ProbeOutcome::Skipped {
+                    class: crate::core::event::SkipClass::Unavailable,
+                    reason: "not asked".into(),
+                },
+            },
+        ];
+        let now = 2 + DEAD_CANARY_CONFIRMATION_SECS;
+        let (verdicts, next) = judge_dead_canaries_pure(&memory, &sweep, now);
+        assert!(verdicts.is_empty(), "nothing was read dead");
+        assert!(
+            !next.contains_key("crtsh"),
+            "an answer ends the run: the next dead reading is a first reading again"
+        );
+        assert_eq!(
+            next.get("wifidb"),
+            Some(&span(1, 2)),
+            "a skipped canary was never asked, so its run is neither ended nor extended"
+        );
+        assert_eq!(
+            next.get("ripestat"),
+            Some(&span(1, 2)),
+            "a canary this sweep did not probe keeps its run"
+        );
+    }
+
+    #[test]
+    fn a_non_canary_transport_failure_never_enters_the_memory() {
+        let sweep = [dead("gravatar"), alive("ip_geo")];
+        let (verdicts, memory) = judge_dead_canaries_pure(&DeadCanaryMemory::new(), &sweep, 10);
+        assert!(verdicts.is_empty());
+        assert!(memory.is_empty());
+    }
+
+    #[test]
+    fn a_sweep_in_which_no_canary_answered_is_a_reading_of_the_vantage_not_the_providers() {
+        let mut memory = DeadCanaryMemory::new();
+        memory.insert("wifidb".into(), span(1, 2));
+        let sweep = [
+            dead("crtsh"),
+            dead("wifidb"),
+            ProbeReport {
+                module: "ip_geo",
+                kind: TargetKind::IpAddress,
+                value: "8.8.8.8",
+                outcome: ProbeOutcome::TimedOut,
+            },
+            alive("gravatar"), // a non-canary answering is not the proof
+        ];
+        let now = 2 + DEAD_CANARY_CONFIRMATION_SECS;
+        let (verdicts, next) = judge_dead_canaries_pure(&memory, &sweep, now);
+        assert_eq!(verdicts.len(), 3);
+        assert!(
+            verdicts
+                .iter()
+                .all(|d| d.verdict == DeadVerdict::Provisional { since: now }),
+            "an offline vantage confirms nothing, not even a run old enough: {verdicts:?}"
+        );
+        assert_eq!(next, memory, "and records nothing");
+    }
+
+    #[test]
+    fn a_run_of_readings_older_than_the_memory_ttl_is_forgotten() {
+        let mut memory = DeadCanaryMemory::new();
+        memory.insert("wifidb".into(), span(0, 0));
+        let now = DEAD_CANARY_MEMORY_TTL_SECS + 1;
+        let (_, next) = judge_dead_canaries_pure(&memory, &[alive("ip_geo")], now);
+        assert!(
+            next.is_empty(),
+            "a run last read dead a month ago is forgotten"
+        );
+        let (_, kept) = judge_dead_canaries_pure(&memory, &[alive("ip_geo")], now - 1);
+        assert_eq!(
+            kept.get("wifidb"),
+            Some(&span(0, 0)),
+            "one still within the month is kept"
+        );
+    }
+
+    #[test]
+    fn the_memory_is_carried_between_sweeps_through_the_store() {
+        let dir = tempfile::tempdir().expect("should succeed");
+        let path = dir.path().join("capability_dead_canaries.json");
+
+        let clean = judge_dead_canaries_at(&path, &[alive("crtsh"), alive("ip_geo")], 1_000);
+        assert!(clean.is_empty());
+        assert!(
+            !path.exists(),
+            "a clean sweep with nothing remembered creates no file"
+        );
+
+        let first = judge_dead_canaries_at(&path, &[dead("crtsh"), alive("ip_geo")], 1_000);
+        assert_eq!(first[0].verdict, DeadVerdict::Provisional { since: 1_000 });
+        let stored = std::fs::read_to_string(&path).expect("should succeed");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&stored).expect("should succeed"),
+            serde_json::json!({ "crtsh": { "first": 1_000, "last": 1_000 } }),
+            "the memory is the persisted JSON the workflow carries between runs"
+        );
+
+        let later = 1_000 + DEAD_CANARY_CONFIRMATION_SECS;
+        let second = judge_dead_canaries_at(&path, &[dead("crtsh"), alive("ip_geo")], later);
+        assert_eq!(
+            second[0].verdict,
+            DeadVerdict::Confirmed { since: 1_000 },
+            "the second sweep reads the first sweep's memory from the store"
+        );
+
+        let recovered =
+            judge_dead_canaries_at(&path, &[alive("crtsh"), alive("ip_geo")], later + 1);
+        assert!(recovered.is_empty());
+        assert!(
+            !read_dead_canary_memory(&path).contains_key("crtsh"),
+            "an answer ends the run in the store too"
+        );
+
+        std::fs::write(&path, "not json").expect("should succeed");
+        let unreadable =
+            judge_dead_canaries_at(&path, &[dead("crtsh"), alive("ip_geo")], later + 2);
+        assert_eq!(
+            unreadable[0].verdict,
+            DeadVerdict::Provisional { since: later + 2 },
+            "a memory that cannot be read makes every dead reading a first reading"
         );
     }
 }

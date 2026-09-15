@@ -206,6 +206,29 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
         println!("  run `hse doctor --live` to re-check whether these have recovered");
     }
 
+    // ── Remembered dead canaries (offline, always shown) ───────────────
+    // What earlier live probes read dead and since when — the memory
+    // `capability_probe::judge_dead_canaries` confirms a dead canary against
+    // (a run of dead readings spanning a day or more). Shown offline so the
+    // operator sees a run in progress without re-probing; the verdict itself
+    // is a live probe's.
+    let remembered = crate::selftest::capability_probe::remembered_dead_canaries();
+    if !remembered.is_empty() {
+        println!(
+            "\n⚠ Dead canaries remembered from previous live probes (confirmed once dead across \
+             probes {} h apart):",
+            crate::selftest::capability_probe::DEAD_CANARY_CONFIRMATION_SECS / 3600
+        );
+        for (module, span) in &remembered {
+            println!(
+                "  {module:<22} dead since {}, last read dead {}",
+                timefmt::ymd_hm_utc(span.first),
+                timefmt::ymd_hm_utc(span.last)
+            );
+        }
+        println!("  run `hse doctor --live` to re-check");
+    }
+
     // ── Live capability preflight (opt-in, --live) ─────────────────────
     // The module-health section above is reactive — it only knows what real
     // scans in THIS process have already tried. `--live` is the proactive
@@ -705,21 +728,27 @@ async fn print_live_capability_report() {
         0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize,
     );
     let mut drift: Vec<&str> = Vec::new();
-    let mut dead: Vec<&str> = Vec::new();
+    // A canary that answered nothing on any of its retried attempts is judged
+    // against the memory of earlier live sweeps, and this sweep's reading
+    // joins that memory: a first reading is an outage until a sweep a day
+    // later reads the same, a confirmed one is a provider down across sweeps
+    // or a retired endpoint. Called out either way, never quietly tolerated
+    // the way a non-canary's transport failure is.
+    let dead = capability_probe::judge_dead_canaries(&reports);
     for r in &reports {
         let canary = if capability_probe::is_canary(r.module) {
             " [canary]"
         } else {
             ""
         };
-        // A canary that answered nothing on any of its retried attempts: the
-        // provider is down or its endpoint retired — called out, never quietly
-        // tolerated the way a non-canary's transport failure is.
-        let dead_tag = if r.is_dead_canary() {
-            dead.push(r.module);
-            " — DEAD CANARY (no answer on any attempt: provider down or endpoint retired)"
-        } else {
-            ""
+        let dead_tag = match dead.iter().find(|d| d.module == r.module) {
+            Some(d) if d.is_confirmed() => {
+                " — DEAD CANARY, confirmed across sweeps (down for a day or more, or endpoint retired)"
+            }
+            Some(_) => {
+                " — dead canary, first reading (an outage until a sweep a day later reads the same)"
+            }
+            None => "",
         };
         match &r.outcome {
             ProbeOutcome::Alive { found } => {
@@ -793,13 +822,29 @@ async fn print_live_capability_report() {
             drift.join(", ")
         );
     }
-    if !dead.is_empty() {
+    let (confirmed, provisional): (Vec<_>, Vec<_>) = dead.iter().partition(|d| d.is_confirmed());
+    if !confirmed.is_empty() {
         println!(
-            "  ⚠ dead canary: {} — no answer on any of {} attempts; the provider is down \
-             for now or its endpoint is retired (migrate it or retire the capability)",
-            dead.join(", "),
-            capability_probe::CANARY_ATTEMPTS
+            "  ⚠ DEAD CANARY, confirmed: no answer on any attempt in this sweep and in one at \
+             least {} h earlier — the provider is down across sweeps or its endpoint is \
+             retired (migrate it or retire the capability):",
+            capability_probe::DEAD_CANARY_CONFIRMATION_SECS / 3600
         );
+        for d in &confirmed {
+            println!("      {}", d.describe());
+        }
+    }
+    if !provisional.is_empty() {
+        println!(
+            "  ⚠ dead canary, first reading: no answer on any of {} attempts — an outage until \
+             a live probe at least {} h later reads the same (remembered in {}):",
+            capability_probe::CANARY_ATTEMPTS,
+            capability_probe::DEAD_CANARY_CONFIRMATION_SECS / 3600,
+            capability_probe::dead_canary_memory_path().display()
+        );
+        for d in &provisional {
+            println!("      {}", d.describe());
+        }
     }
     // Persist so this finding survives past this one printout — the next
     // (offline, free) `hse doctor` run can surface it without a live re-probe.

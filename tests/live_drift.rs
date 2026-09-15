@@ -28,13 +28,22 @@
 //! `ip_geo` / `crtsh` / `ip_registry` / `ripestat`) asserts must-yield: an `empty`
 //! there is confirmed wire-format drift and **fails** the run. A non-canary
 //! `empty` is only informational — its sample may legitimately have no data
-//! (e.g. a breach lookup for a clean address) — so it never fails. Transport
-//! and timeout outcomes are always **skips**, never failures: a third-party
-//! outage or a throttled CI network can't redden the sweep, only real drift can.
-//! A **panicked** outcome always **fails**, canary or not — unlike `empty`,
-//! there is no legitimate reason a live response should crash the parser.
-//! That keeps the scheduled `.github/workflows/live-drift.yml` run's contract
-//! intact — a red run is an actionable drift, never a flaky endpoint.
+//! (e.g. a breach lookup for a clean address) — so it never fails. A
+//! non-canary's transport or timeout outcome is always a **skip**, never a
+//! failure: a third-party outage or a throttled CI network can't redden the
+//! sweep. A canary that answers nothing on any of its retried attempts is a
+//! **dead canary** reading — an outage or a retired endpoint — and the run
+//! fails on it only once the memory of earlier sweeps
+//! (`capability_probe::judge_dead_canaries`; the workflow carries the memory
+//! between runs as an artifact) shows the same canary dead at least
+//! `DEAD_CANARY_CONFIRMATION_SECS` earlier with no answer between: a first
+//! reading is reported (a warning annotation on the runner) and tolerated,
+//! and a sweep that reached no provider at all fails as an offline vantage,
+//! never as dead providers. A **panicked** outcome always **fails**, canary or
+//! not — unlike `empty`, there is no legitimate reason a live response should
+//! crash the parser. That keeps the scheduled
+//! `.github/workflows/live-drift.yml` run's contract intact — a red run is an
+//! actionable drift or a confirmed dead canary, never a flaky endpoint.
 //!
 //! The tests are `#[ignore]`d so the hermetic default suite (`cargo test --all`,
 //! what PR CI runs) never touches the network. Run the live sweep with:
@@ -47,10 +56,12 @@ use huntsman_search_engine::selftest::capability_probe::{self, ProbeOutcome};
 
 /// Sweep the whole keyless module fleet against live providers. Fails on a
 /// **confirmed** drift (a canary that reached its provider yet parsed nothing,
-/// or any module that panicked) and on a **dead canary** (a canary whose
-/// provider gave no answer on any of its retried attempts — down or retired);
-/// everything else is reported and tolerated. `--nocapture` shows the full
-/// per-module table so a red run — or a healthy one — is triageable at a glance.
+/// or any module that panicked) and on a **confirmed dead canary** (a canary
+/// whose provider gave no answer on any of its retried attempts, in this sweep
+/// and in one at least a day earlier — down across sweeps, or retired); a first
+/// dead reading and everything else is reported and tolerated. `--nocapture`
+/// shows the full per-module table so a red run — or a healthy one — is
+/// triageable at a glance.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "live network — run via the live-drift workflow or `--ignored`"]
 async fn fleet_capability_drift() {
@@ -71,7 +82,6 @@ async fn fleet_capability_drift() {
     let mut skipped = 0usize;
     let mut panicked = 0usize;
     let mut drifted: Vec<String> = Vec::new();
-    let mut dead: Vec<String> = Vec::new();
 
     for r in &reports {
         let canary = if capability_probe::is_canary(r.module) {
@@ -105,24 +115,10 @@ async fn fleet_capability_drift() {
             ProbeOutcome::Unreachable { reason } => {
                 unreachable += 1;
                 println!("  unreachable  {:<22} {reason}{canary}", r.module);
-                if r.is_dead_canary() {
-                    dead.push(format!(
-                        "{} — no answer on any of {} attempts: {reason}",
-                        r.module,
-                        capability_probe::CANARY_ATTEMPTS
-                    ));
-                }
             }
             ProbeOutcome::TimedOut => {
                 timed_out += 1;
                 println!("  timed-out    {:<22}{canary}", r.module);
-                if r.is_dead_canary() {
-                    dead.push(format!(
-                        "{} — timed out on all {} attempts",
-                        r.module,
-                        capability_probe::CANARY_ATTEMPTS
-                    ));
-                }
             }
             ProbeOutcome::RateLimited { reason } => {
                 rate_limited += 1;
@@ -172,26 +168,60 @@ async fn fleet_capability_drift() {
             drifted.join("\n  ")
         )
     };
+    // A sweep that reached no provider at all is a reading of this vantage
+    // (no egress, no signal), not of the providers: it must never pass as
+    // "nothing confirmed dead", and it is not their verdict either.
+    assert!(
+        alive > 0,
+        "the sweep reached no provider at all — this vantage is offline, not the providers"
+    );
+
     // A canary that gave no answer on any attempt is not drift (its wire shape
     // was never seen) and not a flaky endpoint either (the probe already
-    // retried): the provider is down for the whole run or its endpoint is
-    // retired, and the capability is gone as surely as under drift. This used
-    // to be tolerated indefinitely — `api.bgpview.io` lost its DNS and the
-    // (since retired) `bgpview` canary read "unreachable" on every weekly run while this test
-    // stayed green.
-    let dead_msg = if dead.is_empty() {
+    // retried). But one sweep's reading — three attempts over six seconds —
+    // cannot tell an outage from a retired endpoint: `crtsh` answered `502`
+    // three times at 22:01 on 2026-09-15 and `200` four minutes later. The
+    // judgement is the memory's (`judge_dead_canaries`, carried between runs
+    // by the workflow as an artifact): a first reading is reported here and
+    // tolerated, and only a canary dead now and on a sweep at least
+    // `DEAD_CANARY_CONFIRMATION_SECS` earlier, with no answer between, is the
+    // confirmed verdict this test fails on. That verdict used to be one
+    // reading, and before REQ-DRIFT-001 there was none at all —
+    // `api.bgpview.io` lost its DNS and the (since retired) `bgpview` canary
+    // read "unreachable" on every weekly run while this test stayed green.
+    let verdicts = capability_probe::judge_dead_canaries(&reports);
+    let (confirmed, provisional): (Vec<_>, Vec<_>) =
+        verdicts.iter().partition(|d| d.is_confirmed());
+    for d in &provisional {
+        println!("  provisional dead canary: {}", d.describe());
+        // A warning annotation on the run's summary page, so a first reading
+        // is visible without opening the log; a plain line anywhere else.
+        if std::env::var_os("GITHUB_ACTIONS").is_some() {
+            println!(
+                "::warning title=Dead canary, first reading::{}",
+                d.describe()
+            );
+        }
+    }
+    let dead_msg = if confirmed.is_empty() {
         String::new()
     } else {
         format!(
             "DEAD CANARY: {} curated known-positive provider(s) gave no answer on any \
-             attempt — down for the whole run, or the endpoint is retired. Not drift, \
-             and not tolerable: migrate the endpoint or retire the capability honestly:\n  {}",
-            dead.len(),
-            dead.join("\n  ")
+             attempt, in this sweep and in one at least {} h earlier with no answer \
+             between — down across sweeps, or the endpoint is retired. Not drift, and \
+             not tolerable: migrate the endpoint or retire the capability honestly:\n  {}",
+            confirmed.len(),
+            capability_probe::DEAD_CANARY_CONFIRMATION_SECS / 3600,
+            confirmed
+                .iter()
+                .map(|d| d.describe())
+                .collect::<Vec<_>>()
+                .join("\n  ")
         )
     };
     assert!(
-        drifted.is_empty() && dead.is_empty(),
+        drifted.is_empty() && confirmed.is_empty(),
         "{drift_msg}{dead_msg}"
     );
 }
