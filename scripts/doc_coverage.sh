@@ -67,7 +67,17 @@ set -euo pipefail
 # documents the pre-existing `GeoDomainClassifier` struct, lowering the count by
 # one before this locks in main's accurate current figure. NOT a permission slip
 # for new undocumented items. Figure from the command this script runs.
-BASELINE=1041
+# Raised 1041 -> 1043 here: the Termux:API sentinel fix + capability reconciler
+# adds ZERO undocumented public items — its new Rust items (`termux_sensor::
+# TERMUX_API_CORE_TOOLS`, `TERMUX_API_BRIDGE_PROBE`, `missing_core_tools`,
+# `device_fix::LOCATION_TOOL`) are all `pub(crate)`, outside `missing_docs`'
+# scope, and documented anyway. Pristine main (c439970) measures 1043 with the
+# command this script runs, and the per-file warning sets of main and this tree
+# are identical: main had drifted 1041 -> 1043 through PRs merged without this
+# LOCAL gate having been run, so the ratchet was already broken before this
+# change touched a line. Locking in main's accurate current figure, as the
+# notes above did. NOT a permission slip for new undocumented items.
+BASELINE=1043
 
 cd "$(dirname "$0")/.."
 

@@ -258,11 +258,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # One script per `bash -n`: with two paths bash checks only the first
+      # and hands the second to it as `$1`, so a joint call covers less than
+      # it reads as covering.
       - run: bash -n install.sh
+      - run: bash -n scripts/reconcile.sh
       # shellcheck ships preinstalled on ubuntu-latest — call it directly
       # rather than via a third-party action so a master-pinned drift
       # can't break this job for reasons unrelated to install.sh
       # (saw `git exit 128 / terminal prompts disabled` after a
       # ludeeus/action-shellcheck@master revision in 2026-05).
+      # scripts/reconcile.sh rewrites install.sh's Termux:API block on a
+      # device and runs there unbuilt, so it is linted here to the same bar.
       - name: ShellCheck
-        run: shellcheck --severity=warning install.sh
+        run: shellcheck --severity=warning install.sh scripts/reconcile.sh

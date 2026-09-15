@@ -544,36 +544,86 @@ fn check_log_capture() -> Check {
 }
 
 /// Report the runtime environment (Termux + sensor-bridge availability).
+///
+/// Three separate facts, none implying the next, and the check says which it
+/// established: the `termux-api` PACKAGE puts the core sensor tools on `PATH`
+/// ([`crate::modules::termux_sensor::TERMUX_API_CORE_TOOLS`], probed without
+/// running them);
+/// the Termux:API app is the Android half; and only the bridge answering a
+/// harmless, permission-free call
+/// ([`crate::modules::termux_sensor::TERMUX_API_BRIDGE_PROBE`])
+/// proves the two are talking. Presence is not readiness: an earlier revision
+/// probed `termux-info -h`, which ships in `termux-tools` on EVERY Termux
+/// install, so this check reported "termux-api CLI present" on devices that
+/// had no sensor tool at all — the same defect `install.sh` carried, and the
+/// one `scripts/reconcile.sh` repairs.
+///
+/// The bridge call goes through the timeout-bounded, kill-on-drop `termux_cmd`
+/// chokepoint (never a raw blocking `Command::output()`, which could hang the
+/// suite on a wedged CLI); a timeout, spawn failure, non-zero exit or blank
+/// answer all count as "did not answer".
 async fn check_termux_env() -> Check {
-    if crate::is_termux() {
-        // Probe via the timeout-bounded, kill-on-drop `termux_cmd` helper (the
-        // single chokepoint every other termux-* call already uses) instead of a
-        // raw blocking `Command::output()`. The old probe could hang `selftest`
-        // forever on a wedged CLI, and its `.is_ok()` reported "present" even on a
-        // non-zero exit; `termux_cmd` enforces a hard 1.5s timeout and treats a
-        // timeout / spawn-failure / non-zero exit as unavailable.
-        let api = crate::util::termux::termux_cmd("termux-info", &["-h"], 1500)
-            .await
-            .is_some();
-        if api {
-            check(
-                "env.termux",
-                Status::Pass,
-                "Termux detected; termux-api CLI present",
-            )
-        } else {
-            check(
-                "env.termux",
-                Status::Warn,
-                "Termux detected but termux-api CLI missing — sensor modules will no-op",
-            )
-        }
-    } else {
-        check(
+    use crate::modules::termux_sensor::{TERMUX_API_BRIDGE_PROBE, missing_core_tools};
+
+    if !crate::is_termux() {
+        return check(
             "env.termux",
             Status::Pass,
             "non-Termux host (sensor modules inert)",
+        );
+    }
+    let missing = missing_core_tools();
+    if !missing.is_empty() {
+        return check(
+            "env.termux",
+            Status::Warn,
+            format!(
+                "Termux detected but termux-api sensor tools missing ({}) — sensor \
+                 modules will no-op; run: pkg install termux-api",
+                missing.join(", ")
+            ),
+        );
+    }
+    // Observe the present, not the cache: in a long-lived `hse serve` a bridge
+    // that failed minutes ago (and was cached as absent / backing off) may
+    // have been repaired since, and this check exists to say so.
+    crate::util::termux::forget(TERMUX_API_BRIDGE_PROBE);
+    let answered = crate::util::termux::termux_cmd(TERMUX_API_BRIDGE_PROBE, &[], 3_000)
+        .await
+        .is_some_and(|out| bridge_answered(&out));
+    if answered {
+        check(
+            "env.termux",
+            Status::Pass,
+            "Termux detected; termux-api sensor tools present and the Termux:API bridge answered",
         )
+    } else {
+        check(
+            "env.termux",
+            Status::Warn,
+            format!(
+                "Termux detected; termux-api sensor tools present but `{TERMUX_API_BRIDGE_PROBE}` \
+                 did not answer — install the Termux:API app (com.termux.api) from F-Droid \
+                 and make sure it is not battery-restricted; sensor modules will no-op until \
+                 the bridge answers"
+            ),
+        )
+    }
+}
+
+/// True when the bridge probe's stdout is a real answer: parseable JSON that
+/// is not Termux:API's own error object.
+///
+/// `termux_cmd` already excludes a timeout, a spawn failure and a non-zero
+/// exit. This excludes the two ways a zero-exit call can still not be an
+/// answer: output that is not JSON (blank included), and `{"API_ERROR": …}`,
+/// which the API prints with exit 0 when the Android side refused. The
+/// reconciler (`scripts/reconcile.sh`) classifies the same shapes the same
+/// way, so the two diagnostics cannot disagree about one response.
+fn bridge_answered(stdout: &[u8]) -> bool {
+    match serde_json::from_slice::<serde_json::Value>(stdout) {
+        Ok(v) => v.get("API_ERROR").is_none() && v.get("error").is_none(),
+        Err(_) => false,
     }
 }
 

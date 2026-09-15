@@ -1669,26 +1669,42 @@ BOOT
         hint "  https://f-droid.org/packages/com.termux.boot/"
     fi
 
-    # termux-api package + APK reminder. The package is the CLI tools;
-    # the APK from F-Droid is the actual sensor bridge. The single check here
-    # (moved from a now-removed, earlier duplicate in the package-install
-    # section above) always reports status, install-attempt or not — the old
-    # early copy only ever printed a warning and never installed anything,
-    # and both copies were gated on HSE_NO_PKG, so setting HSE_NO_PKG=1 left
-    # an operator with NO sensor-module warning at all when termux-api was
-    # missing. This one warns unconditionally when absent, and only attempts
-    # the actual install when package installs aren't suppressed.
-    if ! command -v termux-info >/dev/null 2>&1; then
-        if [[ "${HSE_NO_PKG:-0}" != "1" ]]; then
-            pkg install -y termux-api >>"$LOG_FILE" 2>&1 \
-                && ok "Installed termux-api package" \
-                || { log_warn "Could not install termux-api (sensor modules will no-op)"; hint "See $LOG_FILE"; }
-        else
-            log_warn "termux-api is not installed — sensor modules (v0.6+) will no-op"
-            hint "Install later: pkg install termux-api"
-        fi
+    # termux-api package. Three separate facts, none implying the next: the
+    # `termux-api` PACKAGE is the CLI tools; the Termux:API app from F-Droid is
+    # the Android half of the bridge; and only the bridge answering proves the
+    # two are talking. This step establishes the FIRST, by postcondition.
+    #
+    # Detection probes the stock sensor tools HSE's modules actually invoke —
+    # TERMUX_API_CORE_TOOLS, the one list scripts/reconcile.sh and the Rust
+    # `termux_sensor` module mirror (held in lockstep by the test suite). An
+    # earlier revision probed `termux-info`, which ships in `termux-tools` on
+    # EVERY Termux install, so `pkg install termux-api` never ran and
+    # "termux-api CLI present" was reported on devices with no sensor tool.
+    #
+    # `pkg` exiting 0 is not the postcondition either: after an install the
+    # command hash is refreshed and the same tool set re-probed, and only a
+    # re-probe that finds every tool counts. Warns unconditionally when a tool
+    # is still missing (HSE_NO_PKG=1 suppresses only the install attempt).
+    TERMUX_API_CORE_TOOLS=(termux-location termux-wifi-connectioninfo termux-wifi-scaninfo termux-telephony-cellinfo)
+    termux_api_missing_tools() {
+        local t
+        for t in "${TERMUX_API_CORE_TOOLS[@]}"; do
+            command -v "$t" >/dev/null 2>&1 || printf '%s ' "$t"
+        done
+    }
+    MISSING_API_TOOLS="$(termux_api_missing_tools)"
+    if [[ -n "$MISSING_API_TOOLS" && "${HSE_NO_PKG:-0}" != "1" ]]; then
+        pkg install -y termux-api >>"$LOG_FILE" 2>&1 \
+            || { log_warn "pkg install termux-api failed"; hint "See $LOG_FILE"; }
+        hash -r
+        MISSING_API_TOOLS="$(termux_api_missing_tools)"
+        [[ -n "$MISSING_API_TOOLS" ]] || ok "Installed termux-api package"
+    fi
+    if [[ -n "$MISSING_API_TOOLS" ]]; then
+        log_warn "termux-api sensor tools missing — sensor modules will no-op: ${MISSING_API_TOOLS% }"
+        hint "Install: pkg install termux-api"
     else
-        ok "termux-api CLI present"
+        ok "termux-api core sensor tools present (${#TERMUX_API_CORE_TOOLS[@]}/${#TERMUX_API_CORE_TOOLS[@]})"
     fi
     if ! pm list packages 2>/dev/null | grep -q com.termux.api; then
         hint "Install Termux:API APK from F-Droid for sensor access (GPS / WiFi / cell):"
