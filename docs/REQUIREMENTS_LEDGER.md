@@ -3956,6 +3956,77 @@ private-host preflight refuses 127.0.0.1 by design), so its classification is
 covered by inspection and the pure verdict; the `process` path of
 `cell_intel` is covered by the seam, not end to end.
 
+### REQ-SCRAPE-001 (**new, Pass 31 — VERIFIED FROM SOURCE, REPRODUCED against the real capture, FIXED, FALSIFIED**): a 2xx anti-bot page is never the document
+
+**Lead.** REQ-DRIFT-003's residual: the shared HTTP layer now types a
+challenge page on a non-2xx (`http_status_error`) and where JSON was
+expected (`json_body_error`), but a scraper that reads a 2xx HTML body
+itself parsed a wall as the page it asked for.
+
+**Verified from source.** `austlii::process` → `ok_or_absent(SRC, resp, &[])`
+→ `read_body_capped_or_fail` → `extract_case_links(&html)` → `links.is_empty()`
+→ `Ok(ModuleResult::new())`: a Cloudflare interstitial served with 200 yields
+no `/cgi-bin/viewdoc/` links, so the module answered "no AustLII legal records
+for this subject" — `ModuleDone { found: 0 }`, `core::coverage::CleanNegative`,
+the negative claim an analyst acts on. `ahpra` (`read_body_capped_or_fail` →
+practitioner rows), `acma_rrl` (→ licence rows), `steam_profile` /
+`reddit_user` / `pypi_user` (`read_text` → XML that is not XML → no profile),
+`commoncrawl`, `social_location` take the same shape. AustLII is exactly the
+host that answers GitHub's runner and this sandbox with Cloudflare's wall
+(REQ-DRIFT-003: 403 today; edges serve the same page with 200 to some clients,
+and Cloudflare's own managed challenge is documented as either).
+
+**Reproduction (baseline, the real capture).** With the guard absent (the
+falsification below), `austlii::search` against a loopback answering the
+scrubbed 2026-09-15 austlii capture with HTTP 200 returns `Ok(html)`,
+`extract_case_links` finds nothing, and the module reports the clean negative:
+`a_challenge_page_served_with_200_is_never_no_legal_records` panics at
+`expect_err("a wall served with 200 is not a results page")`.
+
+**Fix.** `util::http::fetch::document_or_challenge(module, status, body)`:
+an HTML *document* (`html::looks_like_document`) that `html::is_challenge_page`
+recognises is `Error::BotChallenge("{module}: HTTP {status} answered an anti-bot
+challenge / WAF block page, not the document: {title}")`; anything else is
+returned untouched. Applied inside `read_body_capped_or_fail` (5 callers) and
+`read_text` (10 callers) — the seams every scraper already reads through, so
+no module changes and no module can forget. Document-only on purpose: a text
+or JSON payload that mentions a vendor path — a Common Crawl index listing
+`/cdn-cgi/challenge-platform/…` URLs, a host list — is the data; the lock pins
+that a crawl-index line is returned verbatim. `austlii::search(client,
+search_url, query)` is the module's request path with the endpoint as a
+parameter (production passes `SEARCH_URL`); `process` is the parse alone.
+
+**Evidence.** `util::http::tests::a_2xx_anti_bot_page_read_through_the_text_seams_is_the_typed_bot_challenge_never_the_document`
+(loopback: the challenge page through `read_body_capped_or_fail` and the block
+page through `read_text` → `BotChallenge` naming `HTTP 200` and the title; a
+crawl-index line with a vendor path through `read_text` → returned verbatim;
+a register page → returned);
+`modules::austlii::tests::a_challenge_page_served_with_200_is_never_no_legal_records`
+(the real capture with 200 → `BotChallenge`; a genuine empty results page →
+`Ok` and no links — the one clean negative).
+
+**Falsification.** The guard removed (`document_or_challenge` returns the body
+unconditionally) with only the two locks run:
+
+```
+[2xx anti-bot guard removed] util::http::tests::a_2xx_anti_bot_page_read_through_the_text_seams_is_the_typed_bot_challenge_never_the_document -> LOCK FAILS (expected)
+    util::http::tests::a_2xx_anti_bot_page_read_through_the_text_seams_is_the_typed_bot_challenge_never_the_document --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7397 filtered out; finished in 0.22s
+[2xx anti-bot guard removed] modules::austlii::tests::a_challenge_page_served_with_200_is_never_no_legal_records -> LOCK FAILS (expected)
+    modules::austlii::tests::a_challenge_page_served_with_200_is_never_no_legal_records --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7397 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
+**Residual.** `read_body_capped` (`Option<String>`, 14 callers: `sitemap`,
+`wayback`, `username_search`, `ip_reputation`, `github_user`, `asic_director`,
+`web_crawler`, `cloud_storage`, `employer_pivot`, `streaming_probe`,
+`au_electoral`, `hacker_news`, `subdomain_takeover`) carries no module name and
+no error channel; its callers judge their bodies themselves (`username_search`
+and `streaming_probe` already detect WAF walls; `asic_director`'s host answers
+403 outright). Typing those is per-caller work, not a seam change, and is the
+next candidate if a 2xx wall is observed on any of them.
+
 ### REQ-CI-002 (**new, Pass 31 — OBSERVED on the runner, ROOT-CAUSED, FIXED, FALSIFIED**): the test harness never deletes a live sibling's database
 
 **Observation.** CI runs 34985312683 (`f41b49a`) and 34989423734

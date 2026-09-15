@@ -1615,3 +1615,64 @@ async fn a_challenge_page_served_with_200_where_json_was_expected_is_the_typed_b
     );
     assert!(err.to_string().contains("Attention Required!"), "{err}");
 }
+
+#[tokio::test]
+async fn a_2xx_anti_bot_page_read_through_the_text_seams_is_the_typed_bot_challenge_never_the_document()
+ {
+    // Scrapers read their 2xx bodies through `read_body_capped_or_fail` /
+    // `read_text`; a wall served with 200 used to be handed to their parsers
+    // as the page they asked for, and "no results" followed. Only an HTML
+    // document is classified: a crawl index or host list that merely mentions
+    // a vendor path is the data.
+    use super::test_server::{Canned, serve};
+    const INDEX_LINE: &str = "{\"url\": \"https://example.com/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1\", \"status\": \"200\"}\n{\"url\": \"https://example.com/about\", \"status\": \"200\"}\n";
+    let base = serve(vec![
+        Canned::html(200, CF_CHALLENGE_PAGE),
+        Canned::html(200, CF_BLOCK_PAGE),
+        Canned::text(200, INDEX_LINE),
+        Canned::html(
+            200,
+            "<!DOCTYPE html><html><head><title>Register search</title></head>\
+             <body><table><tr><td>no records</td></tr></table></body></html>",
+        ),
+    ])
+    .await;
+    let client = reqwest::Client::new();
+
+    let resp = client.get(&base).send().await.expect("loopback");
+    let err = super::read_body_capped_or_fail("m", resp, 64 * 1024)
+        .await
+        .expect_err("a wall is not the document");
+    assert!(
+        matches!(err, crate::core::error::Error::BotChallenge(_)),
+        "{err}"
+    );
+    assert!(
+        err.to_string().contains("HTTP 200") && err.to_string().contains("Just a moment"),
+        "{err}"
+    );
+
+    let resp = client.get(&base).send().await.expect("loopback");
+    let err = super::read_text("m", resp)
+        .await
+        .expect_err("a block page is not the text payload");
+    assert!(
+        matches!(err, crate::core::error::Error::BotChallenge(_)),
+        "{err}"
+    );
+    assert!(err.to_string().contains("Attention Required"), "{err}");
+
+    // A non-document payload that mentions a vendor path is returned verbatim.
+    let resp = client.get(&base).send().await.expect("loopback");
+    let body = super::read_text("m", resp)
+        .await
+        .expect("a crawl index is the data, not a wall");
+    assert_eq!(body, INDEX_LINE);
+
+    // A real HTML document that is not a wall is returned verbatim.
+    let resp = client.get(&base).send().await.expect("loopback");
+    let body = super::read_body_capped_or_fail("m", resp, 64 * 1024)
+        .await
+        .expect("a register page is the document");
+    assert!(body.contains("no records"));
+}

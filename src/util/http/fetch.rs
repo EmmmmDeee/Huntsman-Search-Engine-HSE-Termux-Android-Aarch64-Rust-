@@ -169,19 +169,23 @@ fn html_error_summary(body: &str) -> Option<String> {
 /// once a module has a claim to attach it to.
 ///
 /// # Errors
-/// Returns `Error::module(module, …)` when the body could not be read.
+/// Returns `Error::module(module, …)` when the body could not be read, and
+/// [`Error::BotChallenge`] when the 2xx body is an anti-bot challenge / WAF
+/// block page rather than the document (see [`document_or_challenge`]).
 pub async fn read_body_capped_or_fail(
     module: &'static str,
     resp: reqwest::Response,
     cap: usize,
 ) -> Result<String> {
-    read_body_capped(resp, cap).await.ok_or_else(|| {
+    let status = resp.status();
+    let body = read_body_capped(resp, cap).await.ok_or_else(|| {
         Error::module(
             module,
             "response body was unreadable (transport failure mid-stream) — \
              not a finding that the subject has no record",
         )
-    })
+    })?;
+    document_or_challenge(module, status, body)
 }
 
 /// Read at most `cap` bytes of a response body, or `None` if the transfer
@@ -263,7 +267,37 @@ pub(super) async fn read_json_text(resp: reqwest::Response, module: &str) -> Res
 /// retained as a source record. Replaces a hand-rolled, *unbounded*
 /// `resp.text().await` that could OOM a constrained device on a hostile body.
 pub async fn read_text(module: &str, resp: reqwest::Response) -> Result<String> {
-    read_capped_or_err(resp, module).await
+    let status = resp.status();
+    let body = read_capped_or_err(resp, module).await?;
+    document_or_challenge(module, status, body)
+}
+
+/// `body` unless it is an HTML document that is an anti-bot challenge / WAF
+/// block page ([`crate::util::html::is_challenge_page`]), which is
+/// [`Error::BotChallenge`]: some edges serve the wall with a 2xx, and a module
+/// that parsed it as the page it asked for found no case links, no
+/// practitioner rows, no profile — and reported a clean negative about the
+/// subject from a page that never held the answer (`austlii`, `ahpra`,
+/// `acma_rrl`, `steam_profile`, `reddit_user`, … read their 2xx bodies through
+/// [`read_body_capped_or_fail`] / [`read_text`]). Only an HTML *document* is
+/// classified: a text or JSON payload that merely mentions a vendor path — a
+/// crawl index listing `/cdn-cgi/challenge-platform/…` URLs, a host list — is
+/// the data and is returned untouched.
+fn document_or_challenge(
+    module: &str,
+    status: reqwest::StatusCode,
+    body: String,
+) -> Result<String> {
+    use crate::util::html;
+    if html::looks_like_document(&body) && html::is_challenge_page(&body) {
+        let title =
+            html_error_summary(&body).unwrap_or_else(|| "anti-bot challenge page".to_string());
+        return Err(Error::BotChallenge(format!(
+            "{module}: HTTP {status} answered an anti-bot challenge / WAF block page, not the \
+             document: {title}"
+        )));
+    }
+    Ok(body)
 }
 
 /// Last up-to-4 *characters* of a key for log lines — char-boundary-safe.

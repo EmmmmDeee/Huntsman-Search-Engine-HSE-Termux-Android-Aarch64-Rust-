@@ -122,27 +122,7 @@ impl Module for AustLii {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let query = crate::util::http::urlencode(target.value.trim());
-        let url = format!(
-            "{SEARCH_URL}?query={query}&method=auto&results={MAX_DOCS}&filter=results&format=html"
-        );
-
-        let resp = ctx.http.get(&url).send_tagged(SRC).await?;
-        // NOT `ok_or_absent(.., &[404])`: `SEARCH_URL` is a FIXED endpoint path,
-        // not a per-subject resource, so a 404 here means the endpoint moved or
-        // the CGI was withdrawn — never "this subject has no legal records".
-        // Treating it as a clean miss made an AustLII outage indistinguishable
-        // from a subject with a clean record, silently and on every scan.
-        // `&[]`, not `&[404]`: AustLII signals "no results" in the body of a
-        // 200 (an empty results table), so per `ok_or_absent`'s own contract
-        // every non-2xx here is a failure.
-        let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[]).await? else {
-            return Ok(ModuleResult::new());
-        };
-
-        // "No AustLII legal records for this subject" is a negative claim an
-        // analyst acts on; a connection reset mid-body must not manufacture one.
-        let html = crate::util::http::read_body_capped_or_fail(SRC, resp, 512 * 1024).await?;
+        let html = search(&ctx.http, SEARCH_URL, target.value.trim()).await?;
 
         let links = extract_case_links(&html);
         if links.is_empty() {
@@ -151,6 +131,45 @@ impl Module for AustLii {
 
         Ok(build_entities(&links, target, &ctx.scan_id))
     }
+}
+
+/// GET AustLII's search page for `query` from `search_url` and return its HTML.
+/// The endpoint is a parameter so the whole request path — status
+/// classification, the bounded body read, the anti-bot-page guard — runs
+/// against a loopback in tests; production passes [`SEARCH_URL`].
+///
+/// Every failure is an `Err`: "no AustLII legal records for this subject" is a
+/// negative claim an analyst acts on, so neither an outage, a connection reset
+/// mid-body, nor a Cloudflare wall served with a 2xx (observed for this host
+/// from GitHub's runner and from the sandbox, 2026-09-15) may manufacture one.
+pub(super) async fn search(
+    client: &reqwest::Client,
+    search_url: &str,
+    query: &str,
+) -> Result<String> {
+    let query = crate::util::http::urlencode(query);
+    let url = format!(
+        "{search_url}?query={query}&method=auto&results={MAX_DOCS}&filter=results&format=html"
+    );
+
+    let resp = client.get(&url).send_tagged(SRC).await?;
+    // NOT `ok_or_absent(.., &[404])`: `SEARCH_URL` is a FIXED endpoint path,
+    // not a per-subject resource, so a 404 here means the endpoint moved or
+    // the CGI was withdrawn — never "this subject has no legal records".
+    // Treating it as a clean miss made an AustLII outage indistinguishable
+    // from a subject with a clean record, silently and on every scan.
+    // `&[]`, not `&[404]`: AustLII signals "no results" in the body of a
+    // 200 (an empty results table), so per `ok_or_absent`'s own contract
+    // every non-2xx here is a failure.
+    let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[]).await? else {
+        // Unreachable with `&[]` (no status is declared absent); an empty page
+        // parses to no links, the same shape as an empty results table.
+        return Ok(String::new());
+    };
+
+    // A connection reset mid-body must not manufacture the negative, and a
+    // 2xx anti-bot page is the typed `BotChallenge`, never a results page.
+    crate::util::http::read_body_capped_or_fail(SRC, resp, 512 * 1024).await
 }
 
 /// Map the extracted AustLII document links to entities. **Pure** (no network):
