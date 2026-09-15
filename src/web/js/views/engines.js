@@ -81,8 +81,8 @@ export async function renderEngines(v){
   S.enginesTimer = setInterval(()=>{ if (!pageHidden()) refreshEngines(); }, 30000);
 }
 
-/* Per-source scraper health (T2.7 / SOL-HEALTH-SIGNAL): the au_people /
-   au_electoral / username_search / search_engines family parse churning
+/* Per-source scraper health (T2.7 / SOL-HEALTH-SIGNAL): the ahpra /
+   username_search / search_engines family parse churning
    third-party HTML, so a source can silently break (layout change, endpoint
    retirement) with no operator-visible signal beyond re-reading verbose
    per-scan logs. GET /api/v1/health/scrapers surfaces the same cross-scan
@@ -118,7 +118,7 @@ export function renderScraperHealth(host, data){
       <h3 style="margin:0"><i class="glyphicon glyphicon-flash"></i>&nbsp;Scraper health
         <small class="text-muted">${data.tracked||0} source(s) tracked over ${data.events_checked||0} recent outcome event(s)</small></h3>
     </div>
-    <p class="text-muted">Cross-scan failure streaks for the HTML-parsing modules (au_people, au_electoral, username_search, search_engines, …) — a source flagged here has failed on its last ${esc(String(data.drifted_threshold||3))}+ dispatches with no success in between, across ALL recent scans, not just this one.</p>
+    <p class="text-muted">Cross-scan failure streaks for the HTML-parsing modules (ahpra, username_search, search_engines, …) — a source flagged here has failed on its last ${esc(String(data.drifted_threshold||3))}+ dispatches with no success in between, across ALL recent scans, not just this one.</p>
     ${drifted.length
       ? `<div class="table-responsive"><table class="table table-striped table-condensed">
            <thead><tr><th>Module</th><th class="text-right">Streak</th><th>Last success</th><th>Last error</th></tr></thead>
@@ -149,7 +149,7 @@ export function renderCapabilityProbePanel(host){
         <button id="capprobe-run" class="btn btn-primary btn-sm pull-right" onclick="runCapabilityProbe()"><i class="glyphicon glyphicon-play"></i>&nbsp;Run live probe</button>
       </h3>
     </div>
-    <p class="text-muted">Actively verify every keyless module against its real provider, right now — <b>alive</b> (parsed data), <b>empty</b> (reached, nothing parsed), <b>unreachable</b> (provider down / offline), or <b>drift</b> (a canary source that reached its provider but parsed nothing, or any module whose parser panicked on the live response — the upstream wire shape likely changed). Proactive, unlike the cross-scan scraper health above. One bounded request per module; a full sweep takes a few seconds.</p>
+    <p class="text-muted">Actively verify every keyless module against its real provider, right now — <b>alive</b> (parsed data), <b>empty</b> (reached, nothing parsed), <b>unreachable</b> / <b>timed-out</b> (provider down, offline or hung), <b>rate-limited</b> (the provider throttled this client — a 429, not a fault), <b>blocked</b> (an anti-bot challenge or WAF wall refused this client), <b>skipped</b> (the module declined the sample in-band: out of its scope, or a local prerequisite is missing — the reason says which), <b>drift</b> (a canary source that reached its provider but parsed nothing, or any module whose parser panicked on the live response — the upstream wire shape likely changed), or <b>dead canary</b> (a curated known-positive provider that answered nothing on any attempt — down for the run, or its endpoint is retired). Proactive, unlike the cross-scan scraper health above. One bounded request per module; a full sweep takes a few seconds.</p>
     <div id="capprobe-results"></div>`;
 }
 
@@ -165,40 +165,64 @@ export async function runCapabilityProbe(){
   try { data = await API.capabilitiesProbe(); }
   catch(e){ out.innerHTML = `<div class="alert alert-danger">Capability probe failed: ${esc(e.message)}</div>`;
             if (btn){ btn.disabled = false; btn.innerHTML = '<i class="glyphicon glyphicon-play"></i>&nbsp;Run live probe'; } return; }
-  const stDot = (o, drift) => {
-    if (drift) return `<span style="color:#a94442;font-weight:700">&#9679;&nbsp;drift</span>`;
-    const c = o==='alive' ? '#3c763d' : (o==='empty' ? '#8a6d3b' : '#a94442');
+  const stDot = (m) => {
+    if (m.dead_canary) return `<span style="color:#a94442;font-weight:700">&#9679;&nbsp;dead canary</span>`;
+    if (m.drift) return `<span style="color:#a94442;font-weight:700">&#9679;&nbsp;drift</span>`;
+    const o = m.outcome;
+    // One colour per outcome class. A throttle, a wall and a declined sample
+    // are the provider's or the module's own decision about THIS client or
+    // sample — never painted the red of a provider that is down.
+    const c = o==='alive' ? '#3c763d'
+            : o==='empty' ? '#8a6d3b'
+            : o==='rate-limited' ? '#b26a00'
+            : o==='blocked' ? '#7a1fa2'
+            : o==='skipped' ? '#31708f'
+            : '#a94442'; // 'unreachable' / 'timed-out' / 'panicked'
     return `<span style="color:${c};font-weight:600">&#9679;&nbsp;${esc(o)}</span>`;
   };
   const mods = (data.modules||[]).slice().sort((a,b)=>{
-    // Drift first, then unreachable/empty, then alive — surface problems on top.
-    const rank = m => m.drift ? 0 : (m.outcome==='unreachable'||m.outcome==='timed-out') ? 1 : (m.outcome==='empty' ? 2 : 3);
+    // Problems on top: dead canaries, then drift, then a provider that is
+    // down, then the per-client refusals, then the quiet outcomes.
+    const rank = m => m.dead_canary ? 0 : m.drift ? 1
+      : (m.outcome==='unreachable'||m.outcome==='timed-out'||m.outcome==='panicked') ? 2
+      : m.outcome==='blocked' ? 3 : m.outcome==='rate-limited' ? 4
+      : m.outcome==='empty' ? 5 : m.outcome==='skipped' ? 6 : 7;
     return rank(a)-rank(b) || a.module.localeCompare(b.module);
   });
   const rows = mods.map(m=>{
     const detail = m.outcome==='alive' ? `${esc(String(m.found))} found`
                  : (m.reason ? esc(m.reason) : (m.outcome==='empty' ? '0 parsed' : ''));
     return `<tr>
-      <td><b>${esc(m.module)}</b>${m.canary?' <span class="tag" title="curated must-yield canary — an empty result here is confirmed drift">canary</span>':''}</td>
+      <td><b>${esc(m.module)}</b>${m.canary?' <span class="tag" title="curated must-yield canary — an empty result here is confirmed drift; no answer on any attempt is a dead canary">canary</span>':''}</td>
       <td>${kindPill(m.kind)}</td>
-      <td>${stDot(m.outcome, m.drift)}</td>
+      <td>${stDot(m)}</td>
       <td style="color:var(--text-dim);font-size:12px">${detail}</td>
     </tr>`;
   }).join('');
   const drift = data.drift||[];
+  const dead = data.dead_canaries||[];
+  const dim = 'var(--text-dim)';
+  const card = (lab, val, color) => `<div class="col-xs-3"><div class="stat-card"><div class="lab">${lab}</div><div class="val" style="color:${color}">${val}</div></div></div>`;
   out.innerHTML = `
     <div class="row" style="margin-bottom:6px">
-      <div class="col-xs-3"><div class="stat-card"><div class="lab">Alive</div><div class="val" style="color:var(--success)">${data.alive||0}</div></div></div>
-      <div class="col-xs-3"><div class="stat-card"><div class="lab">Empty</div><div class="val" style="color:var(--warning)">${data.empty||0}</div></div></div>
-      <div class="col-xs-3"><div class="stat-card"><div class="lab">Unreachable</div><div class="val" style="color:var(--danger)">${(data.unreachable||0)+(data.timed_out||0)}</div></div></div>
-      <div class="col-xs-3"><div class="stat-card"><div class="lab">Drift</div><div class="val" style="color:${drift.length?'var(--danger)':'var(--text-dim)'}">${drift.length}</div></div></div>
+      ${card('Alive', data.alive||0, 'var(--success)')}
+      ${card('Empty', data.empty||0, 'var(--warning)')}
+      ${card('Unreachable', (data.unreachable||0)+(data.timed_out||0), 'var(--danger)')}
+      ${card('Drift', `${drift.length}${(data.panicked||0) ? ` <small>(${data.panicked} panicked)</small>` : ''}`, drift.length?'var(--danger)':dim)}
     </div>
+    <div class="row" style="margin-bottom:6px">
+      ${card('Rate-limited', data.rate_limited||0, (data.rate_limited||0)?'#b26a00':dim)}
+      ${card('Blocked', data.blocked||0, (data.blocked||0)?'#7a1fa2':dim)}
+      ${card('Skipped', data.skipped||0, (data.skipped||0)?'#31708f':dim)}
+      ${card('Dead canaries', dead.length, dead.length?'var(--danger)':dim)}
+    </div>
+    ${dead.length ? `<div class="alert alert-danger"><b>Dead canary:</b> ${dead.map(esc).join(', ')} — a curated known-positive provider answered nothing on any attempt: down for the whole run, or its endpoint is retired. Migrate the endpoint or retire the capability honestly.</div>` : ''}
     ${drift.length ? `<div class="alert alert-danger"><b>Confirmed drift:</b> ${drift.map(esc).join(', ')} — a canary provider changed its wire shape. Update the module's parser.</div>` : ''}
     <div class="table-responsive"><table class="table table-striped table-condensed">
       <thead><tr><th>Module</th><th>Probed with</th><th>Status</th><th>Detail</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="4" class="text-center text-muted">No probeable keyless modules</td></tr>'}</tbody>
     </table></div>
-    <p class="text-muted" style="font-size:12px">${data.probed||0} module(s) probed. An <b>empty</b> non-canary result is not necessarily a fault — the canonical sample may simply have no data for that source.</p>`;
+    <p class="text-muted" style="font-size:12px">${data.probed||0} module(s) probed. An <b>empty</b> non-canary result is not necessarily a fault — the canonical sample may simply have no data for that source. A <b>rate-limited</b> or <b>blocked</b> row is the provider refusing this client (a throttle, or an anti-bot wall), not a fault in the module; a <b>skipped</b> row was never asked — its reason says why.</p>`;
   if (btn){ btn.disabled = false; btn.innerHTML = '<i class="glyphicon glyphicon-play"></i>&nbsp;Run live probe'; }
 }
 

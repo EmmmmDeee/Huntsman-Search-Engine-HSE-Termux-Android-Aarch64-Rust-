@@ -1414,6 +1414,80 @@ async fn cache_replay_does_not_feed_the_circuit_breaker_success_path() {
     );
 }
 
+#[tokio::test]
+async fn a_bot_challenge_error_benches_the_module_at_once_and_is_recorded_as_such() {
+    use crate::core::event::EventKind;
+    use crate::core::test_support::InMemoryStore;
+
+    // The 2026-09-15 sweep: anubis and austlii answered Cloudflare walls to the
+    // runner. In a scan the wall is per client: the first refusal must bench
+    // the module for the rest of the run (the soft path would re-dispatch it
+    // twice more, re-reading the wall each time), and the recorded error must
+    // say what it was. A unique module name keeps this independent of the
+    // process-global breaker state the other tests touch.
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, mut rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(vec![], store, bus);
+
+    let target = Target::new(TargetKind::Domain, "example.com");
+    let opts = ScanOptions::default();
+    let cx = DispatchCx {
+        scan_id: "challenge-scan",
+        target: &target,
+        opts: &opts,
+        is_expansion: false,
+        seed_kind: TargetKind::Domain,
+        quarantined: no_quarantine(),
+    };
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
+    };
+
+    let name = "test_bot_challenge_benches";
+    assert!(!super::circuit::is_open(name));
+    engine.finalise_module_result(
+        &cx,
+        name,
+        Ok(Err(Error::BotChallenge(
+            "test_bot_challenge_benches: HTTP 403 Forbidden: Attention Required! | Cloudflare"
+                .into(),
+        ))),
+        &mut state,
+        &[],
+        false,
+    );
+    assert!(
+        super::circuit::is_open(name),
+        "one refusal must bench the module — a wall is per client, not per request"
+    );
+    assert_eq!(
+        state.stats.errored, 1,
+        "a refusal is a failed dispatch, not a skip"
+    );
+
+    let mut recorded: Option<String> = None;
+    while let Ok(ev) = rx.try_recv() {
+        if let EventKind::ModuleError { module, error } = ev.kind
+            && module == name
+        {
+            recorded = Some(error);
+        }
+    }
+    let error = recorded.expect("a ModuleError event names the refusal");
+    assert!(
+        error.starts_with("bot challenge: ") && error.contains("Attention Required!"),
+        "{error}"
+    );
+    super::circuit::record_success(name);
+}
+
 fn free_active() -> StubModule {
     StubModule {
         name: "test_free",

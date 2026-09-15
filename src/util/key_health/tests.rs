@@ -39,7 +39,7 @@ fn does_not_flag_transport_or_empty_as_auth() {
         "[psbdmp] transport error (error sending request for url)"
     ));
     assert!(!looks_like_auth_failure(
-        "[au_property] all three property-register endpoints returned a non-success HTTP status"
+        "[cert_intel] all certificate-transparency endpoints returned a non-success HTTP status"
     ));
     assert!(!looks_like_auth_failure("HTTP 500 Internal Server Error"));
     assert!(!looks_like_auth_failure("HTTP 429 Too Many Requests"));

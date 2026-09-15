@@ -153,9 +153,7 @@ async fn query_ip(target: &Target, initial_key: &str, ctx: &ModuleContext) -> Re
     // json_scanned: per-port service results can carry arbitrary grabbed
     // text (banners) — scan the raw body for embedded API keys even though
     // this module never stores a banner verbatim.
-    let body: IpResp = json_scanned(resp, SRC)
-        .await
-        .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+    let body: IpResp = json_scanned(resp, SRC).await?;
 
     let mut result = ModuleResult::new();
     result.extend(build_ip_entities(&body, ip, &ctx.scan_id));

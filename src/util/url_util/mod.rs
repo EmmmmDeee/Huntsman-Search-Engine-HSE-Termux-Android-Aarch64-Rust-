@@ -61,6 +61,12 @@ pub fn host_only(s: &str) -> &str {
         })
         .unwrap_or(trimmed);
     let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    // Userinfo (`user:pw@host`) is not the host: without this strip the port
+    // split below cut `user:pw@example.com` at its first colon and returned
+    // `user` — and every caller then resolved, queried or matched a
+    // credential fragment as the host. `rsplit('@')` so an `@` inside the
+    // password cannot shift the boundary.
+    let authority = authority.rsplit('@').next().unwrap_or(authority);
     // Bracketed IPv6 literal: the host is the whole `[...]`; its inner colons
     // are not a port delimiter. Return it (brackets included) before the
     // port split below would cut it at the first colon.

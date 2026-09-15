@@ -325,3 +325,32 @@ fn build_entities_handles_error_response() {
         "error response should produce no entities"
     );
 }
+
+#[test]
+fn an_error_envelope_is_a_failure_and_a_key_shaped_one_is_flagged_for_the_pool() {
+    // Backlog #17: `{"error":true,"errmsg":…}` arrives with HTTP 200 for a
+    // dead key / unpaid plan / exhausted quota and used to collapse to a clean
+    // empty result while the key pool never learnt about it.
+    let dead_key = FofaResp {
+        error: true,
+        errmsg: Some(
+            "[820001] Insufficient credits: the account's F-coin balance is exhausted".to_string(),
+        ),
+        results: vec![],
+    };
+    let (msg, key_shaped) = envelope_failure(&dead_key).expect("an envelope");
+    assert!(msg.contains("Insufficient credits") && key_shaped);
+    let bad_query = FofaResp {
+        error: true,
+        errmsg: Some("[820004] query syntax error".to_string()),
+        results: vec![],
+    };
+    let (msg, key_shaped) = envelope_failure(&bad_query).expect("an envelope");
+    assert!(msg.contains("syntax") && !key_shaped);
+    let ok = FofaResp {
+        error: false,
+        errmsg: None,
+        results: vec![],
+    };
+    assert!(envelope_failure(&ok).is_none());
+}

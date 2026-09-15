@@ -212,9 +212,8 @@ fn all_sources_failed_msg(attempted: &[&str]) -> String {
 /// Whether cert_intel genuinely never got an answer, as opposed to getting a
 /// truthful empty one.
 ///
-/// The same shape as `see_know::seeknow_never_answered` and
-/// `au_property::all_legs_unreachable`, and deliberately so — this is the third
-/// module in the codebase to need it. Pure, so the policy is unit-testable
+/// The same shape as `see_know::seeknow_never_answered`, and deliberately so —
+/// more than one module in the codebase needs it. Pure, so the policy is unit-testable
 /// without a live crt.sh or a TLS handshake.
 ///
 /// An error only when EVERY attempted source failed and nothing was found:

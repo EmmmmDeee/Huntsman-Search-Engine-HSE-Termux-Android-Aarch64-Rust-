@@ -295,10 +295,10 @@ fn best_location_prefers_a_postcode_over_a_breach_login_ip() {
 #[test]
 fn location_corroboration_counts_independent_classes() {
     use super::au_location_corroboration;
-    // Two INDEPENDENT methods (electoral roll + unclaimed-money directory) place
+    // Two INDEPENDENT methods (company-director register + unclaimed-money directory) place
     // the subject's circle at the same postcode — corroboration, not a lone guess.
     let mut a = Entity::new(EntityKind::Person, "A Person", 0.6, "s");
-    a.add_evidence(Evidence::new("au_electoral", "roll").with_attr("postcode", "4000"));
+    a.add_evidence(Evidence::new("asic_director", "register").with_attr("postcode", "4000"));
     let mut b = Entity::new(EntityKind::Person, "B Person", 0.6, "s");
     b.add_evidence(Evidence::new("qld_unclaimed", "register").with_attr("postcode", "4000"));
 
@@ -341,11 +341,11 @@ fn location_corroboration_prefers_the_better_corroborated_locality() {
     // Two independent classes agree on Brisbane (4000); a lone Perth (6000) signal
     // ~3600 km away. The better-corroborated locality must win.
     let mut a = Entity::new(EntityKind::Person, "A Person", 0.6, "s");
-    a.add_evidence(Evidence::new("au_electoral", "roll").with_attr("postcode", "4000"));
+    a.add_evidence(Evidence::new("asic_director", "register").with_attr("postcode", "4000"));
     let mut b = Entity::new(EntityKind::Person, "B Person", 0.6, "s");
     b.add_evidence(Evidence::new("qld_unclaimed", "register").with_attr("postcode", "4000"));
     let mut perth = Entity::new(EntityKind::Person, "C Person", 0.6, "s");
-    perth.add_evidence(Evidence::new("au_people", "directory").with_attr("postcode", "6000"));
+    perth.add_evidence(Evidence::new("au_unclaimed", "register").with_attr("postcode", "6000"));
 
     let c = au_location_corroboration(&[a, b, perth]).expect("should succeed");
     assert_eq!(
@@ -381,18 +381,18 @@ fn location_corroboration_admits_person_breach_login_ip() {
 #[test]
 fn location_corroboration_breach_ip_corroborates_a_postcode() {
     use super::au_location_corroboration;
-    // An electoral-roll postcode (Brisbane 4000) AND the person's breach login IP
+    // A register postcode (Brisbane 4000) AND the person's breach login IP
     // (also Brisbane) are two INDEPENDENT methods converging on one locality.
     let mut person = Entity::new(EntityKind::Person, "A Person", 0.6, "s");
-    person.add_evidence(Evidence::new("au_electoral", "roll").with_attr("postcode", "4000"));
+    person.add_evidence(Evidence::new("asic_director", "register").with_attr("postcode", "4000"));
     let mut ip = Entity::new(EntityKind::IpAddress, "1.132.97.84", 0.6, "s");
     ip.tag("geolocation-lead");
     let mut coord = Entity::new(EntityKind::Coordinates, "-27.4683,153.0322", 0.6, "s");
     coord.add_evidence(Evidence::new("ip_geo", "g").with_attr("ip", "1.132.97.84"));
 
     let c = au_location_corroboration(&[person, ip, coord]).expect("should succeed");
-    assert_eq!(c.independent_classes, 2, "electoral + network-ip");
-    assert!(c.class_names.contains(&"electoral") && c.class_names.contains(&"network-ip"));
+    assert_eq!(c.independent_classes, 2, "registry + network-ip");
+    assert!(c.class_names.contains(&"registry") && c.class_names.contains(&"network-ip"));
     assert!(c.confidence > 0.65);
 }
 

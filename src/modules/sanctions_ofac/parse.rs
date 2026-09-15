@@ -21,9 +21,52 @@
 /// One parsed SDN record. Only the columns this module maps to entities are
 /// kept as owned fields; `Vess_type`/vessel-only columns are read only to
 /// classify [`SdnKind::Vessel`]/[`SdnKind::Aircraft`] and are then discarded.
+/// Which of OFAC's two lists a row came from. They carry the same CSV schema
+/// and are screened together, but they are not the same designation: an SDN
+/// entry is a full-blocking designation, a Consolidated (non-SDN) entry is a
+/// sectoral / FSE / NS-ISA / PLC / … sanction that is NOT full blocking. Every
+/// finding names its list, so a consolidated-list row can never be reported
+/// as an SDN match (which is what happened when the two lists were merged into
+/// one unlabelled set — `docs/PROVIDER_SWEEP_BACKLOG.md` #35).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OfacList {
+    /// `SDN.CSV` — the Specially Designated Nationals list (full blocking).
+    Sdn,
+    /// `CONS_PRIM.CSV` — the Consolidated (non-SDN) sanctions list.
+    Consolidated,
+}
+
+impl OfacList {
+    /// The register name stamped on every finding's evidence.
+    pub(super) fn register(self) -> &'static str {
+        match self {
+            Self::Sdn => "OFAC Specially Designated Nationals (SDN) List",
+            Self::Consolidated => "OFAC Consolidated (non-SDN) Sanctions List",
+        }
+    }
+
+    /// Short label for summaries (`OFAC SDN list match: …`).
+    pub(super) fn short(self) -> &'static str {
+        match self {
+            Self::Sdn => "SDN",
+            Self::Consolidated => "Consolidated (non-SDN)",
+        }
+    }
+
+    /// The per-list tag beside the shared `sanctions` / `ofac` tags.
+    pub(super) fn tag(self) -> &'static str {
+        match self {
+            Self::Sdn => "ofac-sdn",
+            Self::Consolidated => "ofac-consolidated",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct SdnRecord {
     pub(super) ent_num: u64,
+    /// The OFAC list this row was read from — see [`OfacList`].
+    pub(super) list: OfacList,
     pub(super) name: String,
     pub(super) kind: SdnKind,
     pub(super) program: String,
@@ -101,14 +144,14 @@ pub(super) fn split_csv_line(line: &str) -> Vec<String> {
 /// have the expected 12 fields or whose `ent_num`/name aren't usable — total,
 /// never panics: a truncated download or a format drift degrades to fewer
 /// records, never a crash.
-pub(super) fn parse_sdn_csv(body: &str) -> Vec<SdnRecord> {
+pub(super) fn parse_sdn_csv(body: &str, list: OfacList) -> Vec<SdnRecord> {
     body.lines()
         .filter(|l| !l.trim().is_empty())
-        .filter_map(parse_sdn_line)
+        .filter_map(|line| parse_sdn_line(line, list))
         .collect()
 }
 
-fn parse_sdn_line(line: &str) -> Option<SdnRecord> {
+fn parse_sdn_line(line: &str, list: OfacList) -> Option<SdnRecord> {
     let fields = split_csv_line(line);
     if fields.len() < 12 {
         return None;
@@ -124,6 +167,7 @@ fn parse_sdn_line(line: &str) -> Option<SdnRecord> {
     let remarks = fields[11].trim();
     Some(SdnRecord {
         ent_num,
+        list,
         name: name.to_string(),
         kind,
         program: if is_absent(program) {

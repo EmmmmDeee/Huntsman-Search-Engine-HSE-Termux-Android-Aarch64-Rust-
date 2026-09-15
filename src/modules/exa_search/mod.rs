@@ -64,8 +64,26 @@ struct ExaResult {
     score: Option<f64>,
     #[serde(default)]
     author: Option<String>,
-    #[serde(default)]
+    /// Exa's documented `publishedDate` (camelCase); the snake_case spelling
+    /// the module used to read never matched, so the `published` attribute was
+    /// dead on every result (backlog #20). The alias keeps either spelling.
+    #[serde(default, rename = "publishedDate", alias = "published_date")]
     published_date: Option<String>,
+}
+
+/// The `/search` request body in Exa's documented camelCase parameter names
+/// (`numResults`, `useAutoprompt`, `contents.text.maxCharacters`). The
+/// snake_case keys the module used to send were ignored by the API — Exa
+/// applied its defaults, so `NUM_RESULTS` and the 1000-character cap that the
+/// snippet miner assumes were never in effect (backlog #20). **Pure.**
+fn request_body(query: &str) -> serde_json::Value {
+    json!({
+        "query": query,
+        "numResults": NUM_RESULTS,
+        "type": "neural",
+        "useAutoprompt": true,
+        "contents": { "text": { "maxCharacters": 1000 } }
+    })
 }
 
 pub struct ExaSearch;
@@ -175,13 +193,7 @@ impl Module for ExaSearch {
             _ => return Ok(ModuleResult::new()),
         };
 
-        let body = json!({
-            "query": query,
-            "num_results": NUM_RESULTS,
-            "type": "neural",
-            "use_autoprompt": true,
-            "contents": { "text": { "max_characters": 1000 } }
-        });
+        let body = request_body(&query);
 
         // A transport failure to the Exa API is a real outage, not "no results
         // for this query" — propagate it instead of silently reporting an empty
@@ -208,9 +220,7 @@ impl Module for ExaSearch {
         // The status is already validated 2xx, so a JSON parse failure here is a
         // malformed body from a live endpoint (an error/HTML page behind a 200) —
         // a real outage, not an empty result set. Propagate it.
-        let parsed: ExaResponse = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+        let parsed: ExaResponse = crate::util::http::json_scanned(resp, SRC).await?;
 
         let mut result = ModuleResult::new();
         let mut seen_domains = std::collections::HashSet::new();

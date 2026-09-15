@@ -33,6 +33,19 @@
 //! keeps the CI sweep faithful to the workflow's contract — a red run is an
 //! actionable drift, never a flaky endpoint — while giving the operator a
 //! full-fleet view in `doctor --live`.
+//!
+//! ## Dead canaries (why unreachable ≠ always tolerated)
+//!
+//! A transport failure on an arbitrary module is tolerated: the provider may be
+//! down for an hour, the runner's egress may be blocked. A canary is different —
+//! it is chosen *because* its provider is expected to answer — so its probe is
+//! retried ([`CANARY_ATTEMPTS`] attempts, [`CANARY_RETRY_PAUSE`] apart), and a
+//! canary that answers nothing on any attempt is a **dead canary**
+//! ([`ProbeReport::is_dead_canary`]): the provider is down for the whole run or
+//! its endpoint is retired, and the capability is gone as surely as under drift.
+//! Before this the sweep tolerated it forever — `api.bgpview.io` lost its DNS
+//! and the (since retired) `bgpview` canary read "unreachable" on every weekly run while the
+//! workflow stayed green.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -48,7 +61,10 @@ use crate::util::http::build_client;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProbeOutcome {
     /// Provider reached; its parser produced ≥1 entity — capability healthy.
-    Alive { found: usize },
+    Alive {
+        /// How many entities the parser produced.
+        found: usize,
+    },
     /// Provider reached but the parse yielded **zero** entities. For a
     /// [`CANARY_PROBES`] module this is drift (the wire shape likely changed);
     /// for any other module it is only *suspected* — the sample may simply have
@@ -56,10 +72,50 @@ pub enum ProbeOutcome {
     Empty,
     /// Transport failure (DNS/TLS/connect/HTTP) — provider down or the device is
     /// offline. **Never** treated as drift.
-    Unreachable { reason: String },
+    Unreachable {
+        /// The module's error text (URL-stripped and credential-redacted).
+        reason: String,
+    },
     /// Exceeded the module's own timeout budget — provider slow/hung. **Never**
     /// treated as drift.
     TimedOut,
+    /// The provider answered with a throttle (the typed
+    /// [`crate::core::error::Error::RateLimited`]): alive, but asking for
+    /// less. **Never** drift (the wire shape was not seen), **never** a dead
+    /// canary (the provider plainly exists), and never retried within a run —
+    /// a retry would only deepen the throttle. Before this variant a throttle
+    /// was `Unreachable`, so a throttled canary read as a dead one.
+    RateLimited {
+        /// The throttle as the module reported it (status line and body snippet).
+        reason: String,
+    },
+    /// The provider's edge refused this client with an anti-bot challenge,
+    /// CAPTCHA or WAF block page (the typed
+    /// [`crate::core::error::Error::BotChallenge`]): up and answering, but not
+    /// to this client. **Never** drift (the wire shape was not seen), **never**
+    /// a dead canary (the provider plainly exists), and never retried within a
+    /// run — the wall is per client and a retry only re-reads it. Before this
+    /// variant a challenge was `Unreachable`: the 2026-09-15 sweep filed
+    /// `anubis`'s `HTTP 403 Forbidden: Attention Required! | Cloudflare` and
+    /// `austlii`'s `Just a moment...` as the providers being down.
+    Blocked {
+        /// The refusal as the module reported it (status line and page title).
+        reason: String,
+    },
+    /// The module declined the sample target in-band (the typed
+    /// [`crate::core::error::Error::Skipped`]): the provider structurally has
+    /// nothing to say about it (`NotApplicable` — an Australia-only register
+    /// probed with the fleet's New York coordinate, auDA's RDAP with a `.com`)
+    /// or could not be used from this host (`Unavailable`). Not a probe of the
+    /// wire shape at all: **never** drift, **never** a dead canary, never
+    /// retried. Before this variant a skip was `Unreachable` — "provider down"
+    /// for a provider that was never asked.
+    Skipped {
+        /// What the silence means for coverage.
+        class: crate::core::event::SkipClass,
+        /// The module's own reason: what was not asked and why.
+        reason: String,
+    },
     /// The module's `process()` panicked while handling the live response — a
     /// hostile/malformed payload, or a bug the canned fixture tests never
     /// exercised. **Always** [`ProbeReport::is_confirmed_drift`], independent of
@@ -67,7 +123,10 @@ pub enum ProbeOutcome {
     /// guaranteed-data heuristic to separate signal from "this sample simply has
     /// no data"), a panic on a real provider response has no benign
     /// explanation — the module is unconditionally broken.
-    Panicked { message: String },
+    Panicked {
+        /// The panic payload, rendered as text.
+        message: String,
+    },
 }
 
 impl ProbeOutcome {
@@ -78,17 +137,50 @@ impl ProbeOutcome {
             Self::Empty => "empty",
             Self::Unreachable { .. } => "unreachable",
             Self::TimedOut => "timed-out",
+            Self::RateLimited { .. } => "rate-limited",
+            Self::Blocked { .. } => "blocked",
+            Self::Skipped { .. } => "skipped",
             Self::Panicked { .. } => "panicked",
         }
+    }
+}
+
+/// Attempts a canary's probe gets before its transport outcome is final.
+///
+/// A canary is a curated known-positive whose provider is expected to answer,
+/// so one failed connect or one timeout is not yet a verdict: the probe is
+/// repeated, this many times in all with [`CANARY_RETRY_PAUSE`] between, and
+/// only a provider that answers nothing for the whole run — down, or its
+/// endpoint retired — is the dead-canary verdict ([`ProbeReport::is_dead_canary`])
+/// the sweep fails on. Every other module keeps a single attempt: its transport
+/// failure is reported and tolerated, never escalated.
+pub const CANARY_ATTEMPTS: usize = 3;
+
+/// Pause between a canary's attempts — long enough for a transient blip to
+/// pass, short enough that every canary retrying twice adds well under a
+/// minute to the sweep.
+const CANARY_RETRY_PAUSE: Duration = Duration::from_secs(3);
+
+/// How many attempts `module`'s probe gets — see [`CANARY_ATTEMPTS`].
+#[must_use]
+pub fn attempts_for(module: &str) -> usize {
+    if is_canary(module) {
+        CANARY_ATTEMPTS
+    } else {
+        1
     }
 }
 
 /// One module's probe result, with the target it was probed against.
 #[derive(Debug, Clone)]
 pub struct ProbeReport {
+    /// Registry name of the probed module.
     pub module: &'static str,
+    /// Seed kind of the sample target it was probed against.
     pub kind: TargetKind,
+    /// The sample target's value.
     pub value: &'static str,
+    /// What happened.
     pub outcome: ProbeOutcome,
 }
 
@@ -106,8 +198,29 @@ impl ProbeReport {
             ProbeOutcome::Empty => is_canary(self.module),
             ProbeOutcome::Alive { .. }
             | ProbeOutcome::Unreachable { .. }
-            | ProbeOutcome::TimedOut => false,
+            | ProbeOutcome::TimedOut
+            | ProbeOutcome::RateLimited { .. }
+            | ProbeOutcome::Blocked { .. }
+            | ProbeOutcome::Skipped { .. } => false,
         }
+    }
+
+    /// True for a [`CANARY_PROBES`] entry whose provider gave no answer at all
+    /// — unreachable or timed out on every one of its [`CANARY_ATTEMPTS`]
+    /// (the probe itself retries, so a report carrying either outcome for a
+    /// canary is already the persistent case). Not drift: the wire shape was
+    /// never seen. Not tolerable either: a canary is chosen because its
+    /// provider is expected to answer, so a provider that answers nothing for
+    /// a whole run is down or retired, and the capability is gone just as
+    /// surely. A non-canary's transport failure is never a dead canary, and a
+    /// throttle ([`ProbeOutcome::RateLimited`]) or a refusal
+    /// ([`ProbeOutcome::Blocked`]) never is either: the provider answered.
+    pub fn is_dead_canary(&self) -> bool {
+        is_canary(self.module)
+            && matches!(
+                self.outcome,
+                ProbeOutcome::Unreachable { .. } | ProbeOutcome::TimedOut
+            )
     }
 }
 
@@ -163,7 +276,7 @@ pub const CANARY_PROBES: &[(&str, TargetKind, &str)] = &[
     // crt.sh Certificate Transparency logs for a domain that has issued certs.
     ("crtsh", TargetKind::Domain, "example.com"),
     // BGPView ASN → prefix enumeration for Google's well-known ASN.
-    ("bgpview", TargetKind::Asn, "AS15169"),
+    ("ip_registry", TargetKind::Asn, "AS15169"),
     // RIPEstat network info for a public IP — always resolves a holder/prefix.
     ("ripestat", TargetKind::IpAddress, "8.8.8.8"),
     // WikiTree profile search for a name the single family tree certainly
@@ -178,6 +291,92 @@ pub const CANARY_PROBES: &[(&str, TargetKind, &str)] = &[
     // Open Archives: the commonest name in two centuries of Dutch registers
     // (126 802 entries on 2026-09-06).
     ("openarch", TargetKind::FullName, "Jan Jansen"),
+    // wifidb's own header records this BSSID as a live-verified hit
+    // (`cryptic24g`, 2026-09). On 2026-09-15 the provider answered every query
+    // with an HTTP-200 HTML error template (a server-side type error in its
+    // export code); a canary makes that a dead-canary verdict rather than a
+    // tolerated "unreachable" line until WiFiDB recovers or the module is
+    // retired.
+    ("wifidb", TargetKind::MacAddress, "00:13:10:69:EF:11"),
+    // ── Per-module known-positive samples ──────────────────────────────────
+    // The fleet's per-kind samples can never observe these providers: the
+    // username-family modules legitimately hold no `torvalds` account and read
+    // `empty` on every sweep, and the Australia-only registers decline the
+    // New York point in-band (`skipped`), so their drift was invisible. Each
+    // pair below was verified live from the project's sandbox on 2026-09-15
+    // (`hse scan -m <module> -d 0`; the entity count is noted) against a
+    // long-lived, prominent public account or a public-register anchor, so it
+    // yields deterministically while the provider is up.
+    // GitLab's founder — 2 entities.
+    ("gitlab_user", TargetKind::Username, "sytses"),
+    // Hacker News' founder — 13.
+    ("hacker_news", TargetKind::Username, "pg"),
+    // DEV's founder — 6.
+    ("devto", TargetKind::Username, "ben"),
+    // Lobsters' administrator — 20.
+    ("lobsters", TargetKind::Username, "pushcx"),
+    // Elixir's creator — 3.
+    ("hexpm_user", TargetKind::Username, "josevalim"),
+    // A PAUSE id with hundreds of distributions — 8.
+    ("cpan_user", TargetKind::Username, "RJBS"),
+    // Ubuntu's founder — 3.
+    ("launchpad_user", TargetKind::Username, "sabdfl"),
+    // A prolific PyPI maintainer — 5.
+    ("pypi_user", TargetKind::Username, "hugovk"),
+    // serde's maintainer — 68.
+    ("crates_io", TargetKind::Username, "dtolnay"),
+    // SQLAlchemy's author's workspace: Bitbucket resolves a handle as a
+    // workspace since its 2019 username deprecation (REQ-BITBUCKET-001) — 3.
+    ("bitbucket_user", TargetKind::Username, "zzzeek"),
+    // The ABC's own registration, auDA RDAP with eligibility data — 13.
+    ("au_rdap", TargetKind::Domain, "abc.net.au"),
+    // Sydney CBD: every ABS ASGS layer resolves — 10.
+    ("au_geo", TargetKind::Coordinates, "-33.8688,151.2093"),
+    // Brisbane CBD: a DCDB cadastral parcel — 6.
+    ("qld_cadastre", TargetKind::Coordinates, "-27.4698,153.0251"),
+    // ── Second batch, verified live from the sandbox on 2026-09-15 17:01 UTC
+    // (the AU registers' per-kind sample, `Google LLC`, holds nothing in
+    // them; `Fletcher Moreau` is a synthetic name). `data_gov_au` / `Telstra`
+    // and `asic_banned_orgs` / `Telstra` yielded nothing and are not canaries.
+    // The ACNC register's own entry for the Red Cross — 5.
+    (
+        "acnc_charities",
+        TargetKind::Organisation,
+        "Australian Red Cross Society",
+    ),
+    // ASIC business names registered by Telstra — 143.
+    ("asic_business_names", TargetKind::Organisation, "Telstra"),
+    // Works BY Einstein (`query.author=`, REQ-ATTR-001) — 5.
+    ("crossref_search", TargetKind::FullName, "Albert Einstein"),
+    // Wikidata's item for Lincoln — 8.
+    ("wikidata", TargetKind::FullName, "Abraham Lincoln"),
+    // GitHub's published `assetlinks.json` — 7.
+    ("app_links", TargetKind::Domain, "github.com"),
+    // ── Third batch, verified live from the sandbox on 2026-09-15 21:5x UTC
+    // (the per-kind samples `Fletcher Moreau`, `Google LLC` and `example.com`
+    // hold nothing in these corpora, so none was observable before). Not
+    // canaries, and why: `dns_axfr` / `zonetransfer.me` (TCP/53 is closed
+    // from the sandbox and unreliable from mobile vantages, so a dead
+    // reading would say nothing about the module), `subdomain_takeover` (a
+    // dangling record is nobody's stable sample), the email modules and
+    // `asic_persons` (a real person's identifier as a checked-in sample),
+    // `greynoise` / `ip_reputation` (scanner addresses and Tor exits move),
+    // `ransomlook` (a real victim's domain), `beacondb` (a real BSSID).
+    // OFAC's SDN entry for a DPRK trading corporation (program NPWMD): the
+    // subject re-emitted tagged `ofac-sdn` — 1.
+    (
+        "sanctions_ofac",
+        TargetKind::Organisation,
+        "KOREA HYOKSIN TRADING CORPORATION",
+    ),
+    // data.gov.au's own organisation entry for the ATO and its datasets — 11.
+    (
+        "data_gov_au",
+        TargetKind::Organisation,
+        "Australian Taxation Office",
+    ),
+    // The Python documentation's sitemap: one URL per documented version — 8.
+    ("sitemap", TargetKind::Domain, "docs.python.org"),
 ];
 
 /// Whether `module` is a curated must-yield canary (see [`CANARY_PROBES`]).
@@ -237,8 +436,20 @@ async fn probe_arc(m: std::sync::Arc<dyn Module>, http: reqwest::Client) -> Opti
 }
 
 async fn probe_module_impl(m: &dyn Module, http: &reqwest::Client) -> Option<ProbeReport> {
-    use futures::FutureExt;
+    probe_with_policy(m, http, attempts_for(m.name()), CANARY_RETRY_PAUSE).await
+}
 
+/// [`probe_module`] under an explicit retry policy: a transport outcome
+/// (`Unreachable` / `TimedOut`) is tried again until `attempts` are spent,
+/// `pause` apart; any other outcome is final at once. Bounded by construction —
+/// exactly `attempts` calls at most. Production callers go through
+/// [`attempts_for`]; the policy's own tests inject the counts.
+pub(crate) async fn probe_with_policy(
+    m: &dyn Module,
+    http: &reqwest::Client,
+    attempts: usize,
+    pause: Duration,
+) -> Option<ProbeReport> {
     if m.cost() != ModuleCost::Free || m.is_passive() {
         return None;
     }
@@ -247,6 +458,44 @@ async fn probe_module_impl(m: &dyn Module, http: &reqwest::Client) -> Option<Pro
     let ctx = probe_ctx(http);
     let budget = Duration::from_millis(m.max_timeout_ms());
     let name = m.name();
+    let attempts = attempts.max(1);
+
+    let mut outcome = probe_once(m, &target, &ctx, budget, name).await;
+    for attempt in 2..=attempts {
+        if !matches!(
+            outcome,
+            ProbeOutcome::Unreachable { .. } | ProbeOutcome::TimedOut
+        ) {
+            break;
+        }
+        tracing::debug!(
+            module = name,
+            attempt,
+            of = attempts,
+            outcome = outcome.label(),
+            "capability probe: no answer — trying again"
+        );
+        tokio::time::sleep(pause).await;
+        outcome = probe_once(m, &target, &ctx, budget, name).await;
+    }
+    Some(ProbeReport {
+        module: name,
+        kind,
+        value,
+        outcome,
+    })
+}
+
+/// One bounded attempt: run `process` under the module's own timeout budget
+/// and classify what came back.
+async fn probe_once(
+    m: &dyn Module,
+    target: &Target,
+    ctx: &ModuleContext,
+    budget: Duration,
+    name: &'static str,
+) -> ProbeOutcome {
+    use futures::FutureExt;
 
     // A module's parser panicking on a hostile/drifted live response must be
     // reported, not silently dropped — this is precisely the "capability is
@@ -254,10 +503,9 @@ async fn probe_module_impl(m: &dyn Module, http: &reqwest::Client) -> Option<Pro
     // the module doc comment), so losing it here would defeat the point.
     // Mirrors `core::engine::dispatch::run_module_guarded`'s guard exactly
     // (including its exact `AssertUnwindSafe` shape) and shares its
-    // message-extraction helper so the two sites can't drift apart. Below this
-    // point `timeout_result` is untouched from the pre-existing logic.
+    // message-extraction helper so the two sites can't drift apart.
     let timeout_result =
-        match std::panic::AssertUnwindSafe(tokio::time::timeout(budget, m.process(&target, &ctx)))
+        match std::panic::AssertUnwindSafe(tokio::time::timeout(budget, m.process(target, ctx)))
             .catch_unwind()
             .await
         {
@@ -265,30 +513,28 @@ async fn probe_module_impl(m: &dyn Module, http: &reqwest::Client) -> Option<Pro
             Err(payload) => {
                 let message = crate::core::engine::panic_payload_to_string(&payload);
                 tracing::warn!(module = name, %message, "capability probe: module panic contained");
-                return Some(ProbeReport {
-                    module: name,
-                    kind,
-                    value,
-                    outcome: ProbeOutcome::Panicked { message },
-                });
+                return ProbeOutcome::Panicked { message };
             }
         };
-    let outcome = match timeout_result {
+    match timeout_result {
         Ok(Ok(r)) if r.entities.is_empty() => ProbeOutcome::Empty,
         Ok(Ok(r)) => ProbeOutcome::Alive {
             found: r.entities.len(),
         },
+        Ok(Err(crate::core::error::Error::RateLimited(reason))) => {
+            ProbeOutcome::RateLimited { reason }
+        }
+        Ok(Err(crate::core::error::Error::BotChallenge(reason))) => {
+            ProbeOutcome::Blocked { reason }
+        }
+        Ok(Err(crate::core::error::Error::Skipped { class, reason })) => {
+            ProbeOutcome::Skipped { class, reason }
+        }
         Ok(Err(e)) => ProbeOutcome::Unreachable {
             reason: e.to_string(),
         },
         Err(_) => ProbeOutcome::TimedOut,
-    };
-    Some(ProbeReport {
-        module: name,
-        kind,
-        value,
-        outcome,
-    })
+    }
 }
 
 /// Probe every keyless, network module in the registry, `concurrency` at a time,
@@ -552,6 +798,7 @@ mod tests {
 
     #[test]
     fn every_canary_has_a_sample_and_is_flagged() {
+        let registry = crate::modules::registry();
         for (name, kind, value) in CANARY_PROBES {
             assert!(!name.is_empty(), "canary module name must be non-empty");
             assert!(!value.is_empty(), "canary {name} must have a probe value");
@@ -562,6 +809,28 @@ mod tests {
                 "canary {name} uses a kind with no canonical sample"
             );
             assert!(is_canary(name), "{name} must report as a canary");
+            // The sweep probes a canary with the canary's OWN value (that is
+            // what lets a per-module known-positive sample observe a provider
+            // the per-kind sample never could), so the value must be a target
+            // its module accepts, and the module must be one the keyless sweep
+            // runs at all — a canary that is never probed asserts nothing.
+            let m = registry
+                .iter()
+                .find(|m| m.name() == *name)
+                .unwrap_or_else(|| panic!("canary {name} is not a registered module"));
+            assert!(
+                m.accepts(&Target::new(*kind, *value)),
+                "canary {name} does not accept its own sample {value:?}"
+            );
+            assert_eq!(
+                probe_target(m.as_ref()),
+                Some((*kind, *value)),
+                "the sweep must probe canary {name} with its own value"
+            );
+            assert!(
+                matches!(m.cost(), crate::core::module::ModuleCost::Free) && !m.is_passive(),
+                "canary {name} must be a keyless network module, or the sweep never probes it"
+            );
         }
     }
 
@@ -712,5 +981,348 @@ mod tests {
         ] {
             assert!(canonical_sample(kind).is_some(), "{kind:?} needs a sample");
         }
+    }
+
+    #[test]
+    fn attempts_for_gives_a_canary_three_and_any_other_module_one() {
+        assert_eq!(attempts_for("ip_registry"), CANARY_ATTEMPTS);
+        assert_eq!(attempts_for("ip_geo"), 3);
+        assert_eq!(attempts_for("gravatar"), 1);
+        assert_eq!(attempts_for("not_a_module"), 1);
+    }
+
+    #[test]
+    fn a_dead_canary_is_a_canary_that_gave_no_answer() {
+        let report = |module, outcome| ProbeReport {
+            module,
+            kind: TargetKind::Asn,
+            value: "AS15169",
+            outcome,
+        };
+        let dns = || ProbeOutcome::Unreachable {
+            reason: "dns error: Name or service not known".into(),
+        };
+        assert!(report("ip_registry", dns()).is_dead_canary());
+        assert!(report("ip_registry", ProbeOutcome::TimedOut).is_dead_canary());
+        assert!(
+            !report("ip_registry", ProbeOutcome::Empty).is_dead_canary(),
+            "an answer that parsed to nothing is drift, not a dead provider"
+        );
+        assert!(!report("ip_registry", ProbeOutcome::Alive { found: 1 }).is_dead_canary());
+        assert!(
+            !report("gravatar", dns()).is_dead_canary(),
+            "a non-canary's transport failure stays tolerated"
+        );
+        assert!(!report("gravatar", ProbeOutcome::TimedOut).is_dead_canary());
+        // Drift and death are disjoint verdicts.
+        assert!(!report("ip_registry", dns()).is_confirmed_drift());
+    }
+
+    /// A module that fails its first `fail_first` calls at the transport level
+    /// and answers on the next — the shape of a transient blip (or, with
+    /// `usize::MAX`, of a provider that never answers).
+    struct Flaky {
+        fail_first: usize,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl Module for Flaky {
+        fn name(&self) -> &'static str {
+            "flaky_probe_fixture"
+        }
+        fn priority(&self) -> u8 {
+            50
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Domain)
+        }
+        async fn process(
+            &self,
+            t: &Target,
+            _ctx: &ModuleContext,
+        ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n < self.fail_first {
+                return Err(crate::core::error::Error::module(
+                    "flaky_probe_fixture",
+                    "error sending request: dns error",
+                ));
+            }
+            let mut r = crate::core::module::ModuleResult::new();
+            r.push(crate::core::entity::Entity::new(
+                crate::core::entity::EntityKind::Domain,
+                &t.value,
+                0.5,
+                "probe",
+            ));
+            Ok(r)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_transient_transport_failure_is_retried_and_a_persistent_one_is_final() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let http = reqwest::Client::new();
+
+        // Fails once, answers on the second attempt: under a three-attempt
+        // policy the blip is absorbed and the module is alive.
+        let m = Flaky {
+            fail_first: 1,
+            calls: AtomicUsize::new(0),
+        };
+        let r = probe_with_policy(&m, &http, 3, Duration::ZERO)
+            .await
+            .expect("probeable");
+        assert!(
+            matches!(r.outcome, ProbeOutcome::Alive { found: 1 }),
+            "{:?}",
+            r.outcome
+        );
+        assert_eq!(m.calls.load(Ordering::SeqCst), 2);
+
+        // The same blip under a single attempt (every non-canary's policy):
+        // unreachable, and no second call is ever made.
+        let m = Flaky {
+            fail_first: 1,
+            calls: AtomicUsize::new(0),
+        };
+        let r = probe_with_policy(&m, &http, 1, Duration::ZERO)
+            .await
+            .expect("probeable");
+        assert!(
+            matches!(r.outcome, ProbeOutcome::Unreachable { .. }),
+            "{:?}",
+            r.outcome
+        );
+        assert_eq!(m.calls.load(Ordering::SeqCst), 1);
+
+        // Never answers: every attempt is spent, then the verdict is final —
+        // bounded at exactly the attempts allowed, never more.
+        let m = Flaky {
+            fail_first: usize::MAX,
+            calls: AtomicUsize::new(0),
+        };
+        let r = probe_with_policy(&m, &http, 3, Duration::ZERO)
+            .await
+            .expect("probeable");
+        assert!(
+            matches!(r.outcome, ProbeOutcome::Unreachable { .. }),
+            "{:?}",
+            r.outcome
+        );
+        assert_eq!(m.calls.load(Ordering::SeqCst), 3);
+    }
+
+    /// Declines every call with a typed not-applicable skip.
+    struct OutOfScope {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl Module for OutOfScope {
+        fn name(&self) -> &'static str {
+            "out_of_scope_probe_fixture"
+        }
+        fn priority(&self) -> u8 {
+            50
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Domain)
+        }
+        async fn process(
+            &self,
+            _t: &Target,
+            _ctx: &ModuleContext,
+        ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(crate::core::error::Error::skipped(
+                crate::core::event::SkipClass::NotApplicable,
+                "example.com is not in the .au namespace; auDA's RDAP publishes nothing about it",
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_typed_skip_is_its_own_outcome_never_retried_never_dead_never_drift() {
+        // An Australia-only register probed with the fleet's New York sample,
+        // or auDA's RDAP with a `.com`, declines in-band. That used to map to
+        // `Unreachable` — "provider down" for a provider never asked — and
+        // would have been re-read three times and reported as a dead canary.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let http = reqwest::Client::new();
+        let m = OutOfScope {
+            calls: AtomicUsize::new(0),
+        };
+        let r = probe_with_policy(&m, &http, 3, Duration::ZERO)
+            .await
+            .expect("probeable");
+        assert!(
+            matches!(
+                &r.outcome,
+                ProbeOutcome::Skipped { class: crate::core::event::SkipClass::NotApplicable, reason }
+                    if reason.contains(".au")
+            ),
+            "{:?}",
+            r.outcome
+        );
+        assert_eq!(r.outcome.label(), "skipped");
+        assert_eq!(
+            m.calls.load(Ordering::SeqCst),
+            1,
+            "a skip is final on the first attempt"
+        );
+        let canary = ProbeReport {
+            module: "crtsh",
+            kind: TargetKind::Domain,
+            value: "example.com",
+            outcome: ProbeOutcome::Skipped {
+                class: crate::core::event::SkipClass::Unavailable,
+                reason: "TCP/43 not routable here".into(),
+            },
+        };
+        assert!(is_canary(canary.module));
+        assert!(
+            !canary.is_dead_canary(),
+            "a canary that declined was never asked"
+        );
+        assert!(!canary.is_confirmed_drift(), "no wire shape was seen");
+    }
+
+    /// Answers every call with the typed anti-bot refusal.
+    struct Challenged {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl Module for Challenged {
+        fn name(&self) -> &'static str {
+            "challenged_probe_fixture"
+        }
+        fn priority(&self) -> u8 {
+            50
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Domain)
+        }
+        async fn process(
+            &self,
+            _t: &Target,
+            _ctx: &ModuleContext,
+        ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(crate::core::error::Error::BotChallenge(
+                "challenged_probe_fixture: HTTP 403 Forbidden: Attention Required! | Cloudflare"
+                    .into(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_bot_challenge_is_its_own_outcome_never_retried_never_dead_never_drift() {
+        // The 2026-09-15 live sweep read anubis's and austlii's Cloudflare
+        // challenge pages as "unreachable" — the class of a provider that is
+        // down. A refused client is not a dead provider; a challenged canary
+        // must never be reported as one, and hammering the wall three times
+        // 3 s apart would only re-read it.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let http = reqwest::Client::new();
+        let m = Challenged {
+            calls: AtomicUsize::new(0),
+        };
+        let r = probe_with_policy(&m, &http, 3, Duration::ZERO)
+            .await
+            .expect("probeable");
+        assert!(
+            matches!(&r.outcome, ProbeOutcome::Blocked { reason } if reason.contains("Attention Required")),
+            "{:?}",
+            r.outcome
+        );
+        assert_eq!(r.outcome.label(), "blocked");
+        assert_eq!(
+            m.calls.load(Ordering::SeqCst),
+            1,
+            "a refusal is final on the first attempt"
+        );
+        // A canary carrying the refusal is neither dead nor drifted.
+        let canary = ProbeReport {
+            module: "crtsh",
+            kind: TargetKind::Domain,
+            value: "example.com",
+            outcome: ProbeOutcome::Blocked {
+                reason: "crtsh: HTTP 403 Forbidden: Just a moment...".into(),
+            },
+        };
+        assert!(is_canary(canary.module));
+        assert!(!canary.is_dead_canary(), "a refused canary answered");
+        assert!(!canary.is_confirmed_drift(), "no wire shape was seen");
+    }
+
+    /// Answers every call with a typed throttle.
+    struct Throttled {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl Module for Throttled {
+        fn name(&self) -> &'static str {
+            "throttled_probe_fixture"
+        }
+        fn priority(&self) -> u8 {
+            50
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Domain)
+        }
+        async fn process(
+            &self,
+            _t: &Target,
+            _ctx: &ModuleContext,
+        ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(crate::core::error::Error::RateLimited(
+                "throttled_probe_fixture: HTTP 429 Too Many Requests: slow down".into(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_throttle_is_its_own_outcome_never_retried_never_dead_never_drift() {
+        // The 2026-09-15 live sweep read reddit_user's and steam_profile's
+        // HTTP 429 as "unreachable" — the class of a provider that is down.
+        // A throttled provider answered; a throttled canary is alive.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let http = reqwest::Client::new();
+        let m = Throttled {
+            calls: AtomicUsize::new(0),
+        };
+        let r = probe_with_policy(&m, &http, 3, Duration::ZERO)
+            .await
+            .expect("probeable");
+        assert!(
+            matches!(&r.outcome, ProbeOutcome::RateLimited { reason } if reason.contains("429")),
+            "{:?}",
+            r.outcome
+        );
+        assert_eq!(
+            m.calls.load(Ordering::SeqCst),
+            1,
+            "a throttle is final at once — retrying would deepen it"
+        );
+        assert_eq!(r.outcome.label(), "rate-limited");
+
+        let throttled = ProbeReport {
+            module: "ip_registry",
+            kind: TargetKind::Asn,
+            value: "AS15169",
+            outcome: ProbeOutcome::RateLimited {
+                reason: "ip_registry: HTTP 429 Too Many Requests: <empty>".into(),
+            },
+        };
+        assert!(!throttled.is_dead_canary(), "a throttled canary answered");
+        assert!(
+            !throttled.is_confirmed_drift(),
+            "the wire shape was not seen"
+        );
     }
 }

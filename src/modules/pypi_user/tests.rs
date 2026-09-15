@@ -255,3 +255,26 @@ fn empty_packages_produces_no_entities() {
         "username always emitted"
     );
 }
+
+#[test]
+fn an_xmlrpc_fault_is_a_failed_lookup_never_no_packages() {
+    // Backlog #33. Captured live 2026-09-15 (an unknown method): HTTP 200,
+    // `text/xml`, one `<string>` — the faultString — which the pair parser
+    // zipped to nothing and reported as "owns no packages".
+    let fault = "<?xml version='1.0'?>\n<methodResponse>\n<fault>\n<value><struct>\n<member>\n<name>faultCode</name>\n<value><int>-32601</int></value>\n</member>\n<member>\n<name>faultString</name>\n<value><string>server error; requested method not found</string></value>\n</member>\n</struct></value>\n</fault>\n</methodResponse>\n";
+    assert_eq!(
+        xmlrpc_fault(fault).as_deref(),
+        Some("server error; requested method not found")
+    );
+    assert!(
+        parse_user_packages(fault).is_empty(),
+        "the old reading: an empty package list"
+    );
+    // A real `user_packages` answer (live shape) is not a fault.
+    let ok = "<?xml version='1.0'?>\n<methodResponse>\n<params>\n<param>\n<value><array><data>\n<value><array><data>\n<value><string>Owner</string></value>\n<value><string>apathy</string></value>\n</data></array></value>\n</data></array></value>\n</param>\n</params>\n</methodResponse>\n";
+    assert!(xmlrpc_fault(ok).is_none());
+    assert_eq!(
+        parse_user_packages(ok),
+        vec![("Owner".to_string(), "apathy".to_string())]
+    );
+}

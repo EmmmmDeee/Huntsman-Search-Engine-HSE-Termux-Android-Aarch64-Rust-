@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use super::helpers::*;
 use super::{EngineSpec, MAX_RESULTS_PER_ENGINE, SearchResult};
+use crate::util::html::is_challenge_page;
 use crate::util::key_harvest::identify_api_key;
 
 /// Per-request fetch ceiling (ms): the most any single SERP request may take.
@@ -145,109 +146,13 @@ pub(super) async fn try_fetch(
     // `Unreachable` below, so genuinely truncated/empty responses are unchanged.
     // Validated by a live 8-run sweep: mojeek returned HTTP 403 (332 bytes) in
     // 8/8 runs — reclassified down→blocked here.
-    if is_captcha_page(&body) {
+    if is_challenge_page(&body) {
         return FetchOutcome::Blocked;
     }
     if body.len() < 500 {
         return FetchOutcome::Unreachable;
     }
     FetchOutcome::Body(body)
-}
-
-/// High-confidence anti-bot / CAPTCHA *vendor* fingerprints. Each string is
-/// specific enough that it essentially only appears when the actual challenge
-/// widget or script is embedded, so a single match is decisive. Compared
-/// case-insensitively, so every entry MUST be lowercase.
-///
-/// Kept data-driven (rather than a chain of `||`) so a new interstitial
-/// vendor is a one-line addition with a matching test, and so the matcher
-/// stays a strict superset of the engines' real-world block pages.
-pub(super) const BLOCK_VENDOR_SIGNATURES: &[&str] = &[
-    // Cloudflare managed challenge / Turnstile / "Just a moment" interstitial
-    "challenges.cloudflare.com",
-    "/cdn-cgi/challenge-platform",
-    "cf-chl-", // cf-chl-opt / cf-chl-bypass challenge tokens
-    // Google reCAPTCHA + the classic "/sorry/" rate-limit interstitial
-    "/recaptcha/api",
-    "g-recaptcha",
-    "grecaptcha",
-    "/sorry/index",
-    // hCaptcha
-    "hcaptcha.com",
-    "h-captcha",
-    // DataDome
-    "captcha-delivery.com",
-    "datadome",
-    // PerimeterX / HUMAN
-    "perimeterx",
-    "px-captcha",
-    "_pxhd",
-    // FunCaptcha / Arkose Labs
-    "funcaptcha",
-    "arkoselabs",
-    // Yandex SmartCaptcha
-    "smartcaptcha",
-    "showcaptcha",
-    // DuckDuckGo anomaly interstitial / generic retry wall
-    "anomaly-modal",
-    "httpservice/retry",
-];
-
-/// Lower-confidence challenge *phrases*. Each entry is an AND-set: every
-/// token must be present for the page to count as a block. Requiring two
-/// independent tokens keeps a real results page that merely *mentions* one
-/// phrase (e.g. a SERP whose snippets discuss Cloudflare, or an article on
-/// "unusual traffic" in analytics) from being misread as a block — the
-/// previous single-substring detector flagged exactly those false positives.
-/// Multi-word phrases specific enough on their own are single-element sets.
-/// All tokens MUST be lowercase.
-pub(super) const BLOCK_PHRASE_SETS: &[&[&str]] = &[
-    &["just a moment", "cloudflare"],
-    &["attention required", "cloudflare"],
-    &["checking your browser", "cloudflare"],
-    &["unusual traffic", "network"], // Google: "...unusual traffic from your computer network"
-    &["before you continue", "consent"],
-    &["request unsuccessful", "incapsula"], // Imperva / Incapsula
-    &["are not a robot"],
-    &["verify you are human"],
-    // Mojeek 403 anti-bot page ("your network appears to be sending automated
-    // queries so we can't process your search"); also a historical Google block
-    // phrasing. Specific enough to stand alone — a real SERP does not announce
-    // that it is refusing automated queries.
-    &["sending automated queries"],
-    &["enable javascript and cookies to continue"],
-    &["access to this page has been denied"], // PerimeterX classic block page
-];
-
-/// Detect CAPTCHA / anti-bot interstitial pages that carry no real results.
-///
-/// Two-tier match: a single high-confidence [`BLOCK_VENDOR_SIGNATURES`]
-/// fingerprint is decisive; otherwise an entire AND-set in
-/// [`BLOCK_PHRASE_SETS`] must match. This is a strict superset of the old
-/// detector's coverage while cutting its false-positive surface.
-pub(super) fn is_captcha_page(body: &str) -> bool {
-    // First tier: any single high-confidence vendor signature, matched
-    // ASCII-case-insensitively against the RAW body in one cached aho-corasick
-    // (Teddy/SIMD) pass. Every signature is lowercase ASCII, so this is equivalent
-    // to the old `body.to_lowercase()` + case-sensitive match — but WITHOUT
-    // allocating a full Unicode-lowercased copy of every fetched body, the hottest
-    // allocation on the fetch path (this runs on every response, including the
-    // proxy path at :134 and the direct path at :156).
-    static VENDOR_AC: std::sync::LazyLock<crate::util::scan::MatchSet> =
-        std::sync::LazyLock::new(|| {
-            crate::util::scan::MatchSet::new_ascii_ci(BLOCK_VENDOR_SIGNATURES)
-        });
-    if VENDOR_AC.is_match(body) {
-        return true;
-    }
-    // Second tier: an entire AND-set of lowercase-ASCII phrase tokens must be
-    // present. `find_ascii_ci` (memchr/NEON, PR #220) matches each token
-    // case-insensitively over the raw body — equivalent to `lower.contains(tok)`
-    // with no allocation.
-    BLOCK_PHRASE_SETS.iter().any(|set| {
-        set.iter()
-            .all(|tok| crate::util::str_util::find_ascii_ci(body, tok).is_some())
-    })
 }
 
 pub(super) fn parse_results(html: &str, engine: &'static str, query: &str) -> Vec<SearchResult> {

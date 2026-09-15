@@ -302,3 +302,55 @@ fn arp_parse_empty() {
     let result = lan::parse_arp(content, "test-scan");
     assert!(result.is_empty());
 }
+
+#[test]
+fn wifi_absent_readings_are_omitted_never_zero_or_hidden() {
+    // Backlog #16 (the sibling of device_sensors/wifi.rs): a scan line with
+    // only a BSSID must not gain `rssi_dbm=0`, `frequency_mhz=0`,
+    // `timestamp=0` or a `<hidden>` network name.
+    let json = br#"[{"bssid":"AA:BB:CC:DD:EE:FF"}]"#;
+    let r = super::wifi::parse_scan(json, "s").expect("parses");
+    let mac = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::MacAddress)
+        .expect("the BSSID entity");
+    let attrs = &mac.evidence[0].attributes;
+    for key in [
+        "rssi_dbm",
+        "frequency_mhz",
+        "timestamp",
+        "ssid",
+        "channel",
+        "proximity",
+        "channel_width",
+    ] {
+        assert!(!attrs.contains_key(key), "{key} must be absent: {attrs:?}");
+    }
+    assert_eq!(
+        attrs.get("bssid").map(String::as_str),
+        Some("AA:BB:CC:DD:EE:FF")
+    );
+    assert_eq!(mac.evidence[0].summary, "Wi-Fi AP scan (SSID not reported)");
+    assert!(
+        r.entities.iter().all(|e| e.kind != EntityKind::Ssid),
+        "no Ssid entity without a reported name"
+    );
+}
+
+#[test]
+fn cell_absent_dbm_is_omitted_never_zero() {
+    let json =
+        br#"[{"type":"LTE","registered":true,"cid":12345,"tac":678,"mcc":"505","mnc":"01"}]"#;
+    let r = super::cell::parse_cells(json, "s").expect("parses");
+    let e = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::DeviceId)
+        .expect("the tower");
+    assert!(
+        !e.evidence[0].attributes.contains_key("dbm"),
+        "{:?}",
+        e.evidence[0].attributes
+    );
+}

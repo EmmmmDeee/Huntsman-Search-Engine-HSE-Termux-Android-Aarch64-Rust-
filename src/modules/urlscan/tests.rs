@@ -28,7 +28,7 @@ use super::*;
     }
 
     #[test]
-    fn deserialize_results_with_page_and_verdicts() {
+    fn deserialize_results_with_page() {
         let raw = r#"{
             "results": [
                 {
@@ -66,10 +66,12 @@ use super::*;
         assert_eq!(page.ip.as_deref(), Some("93.184.216.34"));
         assert_eq!(page.country.as_deref(), Some("US"));
         assert_eq!(page.server.as_deref(), Some("nginx"));
-        assert_eq!(first.verdicts.as_ref().expect("should succeed").malicious, Some(false));
 
         let second = &resp.results[1];
-        assert_eq!(second.verdicts.as_ref().expect("should succeed").malicious, Some(true));
+        assert_eq!(
+            second.page.as_ref().expect("should succeed").ip.as_deref(),
+            Some("104.21.5.100")
+        );
     }
 
     #[test]
@@ -93,12 +95,10 @@ use super::*;
         assert_eq!(page.url.as_deref(), Some("https://example.com/"));
         assert!(page.ip.is_none());
         assert!(page.country.is_none());
-        assert!(first.verdicts.is_none());
 
         // Completely empty result object still deserialises.
         let second = &resp.results[1];
         assert!(second.page.is_none());
-        assert!(second.verdicts.is_none());
     }
 
     fn results(raw: &str) -> Vec<ScanResult> {
@@ -177,7 +177,6 @@ use super::*;
         assert_eq!(i.unique_ips.len(), 2);
         assert_eq!(i.urls.len(), 2);
         assert_eq!(i.domains.len(), 2);
-        assert!(i.any_malicious);
     }
 
     #[test]
@@ -317,11 +316,49 @@ use super::*;
         // Page size is the keyless per-page maximum (100), verified live — a 10×
         // enumeration widening over the former size=10/5 at no extra request cost.
         let d = build_query(TargetKind::Domain, "github.com").expect("should succeed");
-        assert!(d.contains("q=domain:\"github.com\"") && d.contains("size=100"));
+        // `page.domain`, never the bare `domain` (backlog #48).
+        assert!(d.contains("q=page.domain:\"github.com\"") && d.contains("size=100"));
+        assert!(!d.contains("q=domain:"), "{d}");
         let u = build_query(TargetKind::Url, "https://x.com/a").expect("should succeed");
         assert!(u.contains("q=page.url:") && u.contains("size=100"));
         let i = build_query(TargetKind::IpAddress, "1.2.3.4").expect("should succeed");
         assert!(i.contains("q=page.ip:\"1.2.3.4\"") && i.contains("size=100"));
         // A kind URLScan can't be keyed on yields no query.
         assert!(build_query(TargetKind::Email, "a@b.com").is_none());
+    }
+
+    #[test]
+    fn only_scans_of_the_targets_own_page_are_kept() {
+        // Backlog #48, observed live 2026-09-15: `domain:"example.com"`
+        // returned `dodeliver.com.pk` pages (they loaded a resource from
+        // example.com), whose IP / country / ASN / PTR were then minted as
+        // example.com's infrastructure. The gate keeps the target's host and
+        // its subdomains, the URL's host, or the IP that answered.
+        let p = |domain: &str, ip: &str| PageInfo {
+            url: None,
+            domain: Some(domain.to_string()),
+            ip: Some(ip.to_string()),
+            country: None,
+            server: None,
+            asn: None,
+            ptr: None,
+        };
+        assert!(page_is_the_targets(TargetKind::Domain, "example.com", &p("www.example.com", "1.1.1.1")));
+        assert!(page_is_the_targets(TargetKind::Domain, "Example.com.", &p("example.com", "1.1.1.1")));
+        assert!(!page_is_the_targets(TargetKind::Domain, "example.com", &p("dodeliver.com.pk", "5.5.5.5")));
+        assert!(!page_is_the_targets(TargetKind::Domain, "example.com", &p("notexample.com", "5.5.5.5")));
+        assert!(page_is_the_targets(TargetKind::Url, "https://x.com/a", &p("x.com", "1.1.1.1")));
+        assert!(!page_is_the_targets(TargetKind::Url, "https://x.com/a", &p("cdn.x.com", "1.1.1.1")));
+        assert!(page_is_the_targets(TargetKind::IpAddress, "1.1.1.1", &p("anything.example", "1.1.1.1")));
+        assert!(!page_is_the_targets(TargetKind::IpAddress, "1.1.1.1", &p("anything.example", "1.1.1.2")));
+        let no_domain = PageInfo {
+            url: None,
+            domain: None,
+            ip: None,
+            country: None,
+            server: None,
+            asn: None,
+            ptr: None,
+        };
+        assert!(!page_is_the_targets(TargetKind::Domain, "example.com", &no_domain));
     }

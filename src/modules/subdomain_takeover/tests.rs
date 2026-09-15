@@ -236,3 +236,20 @@ use super::*;
             }
         }
     }
+
+    /// A CDN wall served in place of the provider's page carries no unclaimed
+    /// marker, so it used to read as `Claimed` — a real dangling CNAME hidden
+    /// as "in use". It establishes nothing.
+    #[test]
+    fn a_wall_in_place_of_the_provider_page_is_inconclusive_never_claimed() {
+        const WALL: &str =
+            include_str!("../../util/html/testdata/cloudflare_challenge_austlii_2026-09-15.html");
+        assert!(matches!(
+            classify_body(WALL, "NoSuchBucket", Marker::Distinctive),
+            Claim::Inconclusive
+        ));
+        assert!(matches!(
+            classify_body(WALL, "404", Marker::Generic),
+            Claim::Inconclusive
+        ));
+    }

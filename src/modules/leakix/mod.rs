@@ -212,9 +212,7 @@ impl Module for LeakIx {
         };
         // json_scanned: leakix responses contain exposure/credential data —
         // scan the raw body for embedded API keys.
-        let body: HostResp = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+        let body: HostResp = crate::util::http::json_scanned(resp, SRC).await?;
         if body.services.is_empty() && body.leaks.is_empty() {
             return Ok(ModuleResult::new());
         }

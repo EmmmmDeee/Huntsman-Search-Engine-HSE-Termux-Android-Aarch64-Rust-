@@ -12,7 +12,7 @@ use serde::Deserialize;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -22,6 +22,44 @@ const API_BASE: &str = "https://api.stolen.tax/api/v1/search";
 
 /// The Stolen.tax [`Module`] marker type — see the module-level docs above.
 pub struct StolenTax;
+
+/// What a 200 body means to the key cascade: a `success: true` answer is
+/// accepted; a key/quota-shaped `error` burns the key and rotates; any other
+/// `success: false` is ALSO accepted — and then failed by [`accepted`] — so
+/// that a backend error, a degraded service or a rejected selector is never
+/// [`BodyVerdict::Absent`](crate::util::http::BodyVerdict::Absent)'s "genuine miss" (backlog #40: on a key-gated paid
+/// breach lookup that read as "this identity appears in no breach", and was
+/// cached for a day). **Pure.**
+fn body_verdict(parsed: &StolenTaxResponse) -> crate::util::http::BodyVerdict {
+    if parsed.success {
+        return crate::util::http::BodyVerdict::Accept;
+    }
+    let msg = parsed.error.as_deref().unwrap_or_default();
+    if crate::util::http::is_key_or_quota_message(msg) {
+        return crate::util::http::BodyVerdict::KeyFailure {
+            code: 401,
+            detail: Some(msg.to_string()),
+        };
+    }
+    crate::util::http::BodyVerdict::Accept
+}
+
+/// A `success: false` envelope that reached this far is not key-shaped: the
+/// provider failed the query. Fail closed with the provider's own words —
+/// the module has no documented `success: false` "no results" shape, and a
+/// zero-hit search answers `success: true` with empty data. **Pure.**
+fn accepted(response: StolenTaxResponse) -> Result<StolenTaxResponse> {
+    if response.success {
+        return Ok(response);
+    }
+    Err(Error::module(
+        SRC,
+        format!(
+            "stolen.tax answered success=false: {}",
+            response.error.as_deref().unwrap_or("no error text")
+        ),
+    ))
+}
 
 #[derive(Debug, Deserialize)]
 struct StolenTaxResponse {
@@ -148,27 +186,13 @@ impl Module for StolenTax {
                 let url = format!("{API_BASE}/{endpoint}?query={query_param}");
                 ctx.http.get(url).header("Api-Key", key)
             },
-            |parsed: &StolenTaxResponse| {
-                if parsed.success {
-                    return crate::util::http::BodyVerdict::Accept;
-                }
-                let msg = parsed.error.as_deref().unwrap_or_default();
-                if crate::util::http::is_key_or_quota_message(msg) {
-                    return crate::util::http::BodyVerdict::KeyFailure {
-                        code: 401,
-                        detail: Some(msg.to_string()),
-                    };
-                }
-                if !msg.is_empty() {
-                    tracing::debug!("stolen_tax API error: {msg}");
-                }
-                crate::util::http::BodyVerdict::Absent
-            },
+            body_verdict,
         )
         .await?
         else {
             return Ok(result);
         };
+        let response = accepted(response)?;
 
         if let Some(data) = response.data {
             result.entities = build_entities(&data, &target.value, &ctx.scan_id);
@@ -481,5 +505,39 @@ mod tests {
             entities.is_empty(),
             "the queried identity restated with different casing must not be re-emitted as a pivot: {entities:?}"
         );
+    }
+
+    #[test]
+    fn a_non_key_error_envelope_fails_closed_instead_of_reading_as_no_breach() {
+        // Backlog #40.
+        let backend: StolenTaxResponse = serde_json::from_str(
+            r#"{"success":false,"data":null,"error":"database temporarily unavailable"}"#,
+        )
+        .expect("decodes");
+        assert!(matches!(
+            body_verdict(&backend),
+            crate::util::http::BodyVerdict::Accept
+        ));
+        let err = accepted(backend).expect_err("a failed query is not a clean negative");
+        assert!(
+            err.to_string().contains("database temporarily unavailable"),
+            "{err}"
+        );
+        let dead_key: StolenTaxResponse =
+            serde_json::from_str(r#"{"success":false,"data":null,"error":"Invalid API key"}"#)
+                .expect("decodes");
+        assert!(matches!(
+            body_verdict(&dead_key),
+            crate::util::http::BodyVerdict::KeyFailure { code: 401, .. }
+        ));
+        let hit: StolenTaxResponse = serde_json::from_str(
+            r#"{"success":true,"data":{"breaches":[],"emails":[],"usernames":[]},"error":null}"#,
+        )
+        .expect("decodes");
+        assert!(matches!(
+            body_verdict(&hit),
+            crate::util::http::BodyVerdict::Accept
+        ));
+        assert!(accepted(hit).is_ok());
     }
 }

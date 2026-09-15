@@ -178,3 +178,93 @@ use super::*;
         let es = build_abuse(&emails, "scan");
         assert_eq!(es.len(), 1, "a repeated abuse contact must be deduplicated: {es:?}");
     }
+
+    /// A canned [`StatSource`]: `Ok(json)` per endpoint, or `Err` for an
+    /// endpoint that is down.
+    struct Canned(std::collections::HashMap<&'static str, std::result::Result<serde_json::Value, &'static str>>);
+
+    #[async_trait]
+    impl StatSource for Canned {
+        async fn data(&self, endpoint: &str, _resource: &str) -> Result<serde_json::Value> {
+            match self.0.get(endpoint) {
+                Some(Ok(v)) => Ok(v.clone()),
+                Some(Err(msg)) => Err(Error::module(SRC, (*msg).to_string())),
+                None => Err(Error::module(SRC, format!("no canned answer for {endpoint}"))),
+            }
+        }
+    }
+
+    /// REGRESSION (docs/PROVIDER_SWEEP_BACKLOG.md #31). Every RIPEstat
+    /// sub-fetch was `.ok()`'d, so a total outage — no endpoint answered —
+    /// returned an empty result that read as a clean "no network info, no
+    /// abuse contact" negative. With every endpoint down the module must
+    /// report the failure, naming RIPEstat and the endpoint, never `Ok`.
+    #[tokio::test]
+    async fn a_total_ripestat_outage_is_a_module_failure_not_a_clean_negative() {
+        let down = Canned(
+            [
+                ("network-info", Err("HTTP 503 Service Unavailable")),
+                ("as-overview", Err("HTTP 503 Service Unavailable")),
+                ("announced-prefixes", Err("HTTP 503 Service Unavailable")),
+                ("abuse-contact-finder", Err("HTTP 503 Service Unavailable")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        for (kind, value) in [
+            (TargetKind::IpAddress, "8.8.8.8"),
+            (TargetKind::Asn, "AS15169"),
+        ] {
+            let target = Target::new(kind, value);
+            let err = lookup(&down, &target, "test")
+                .await
+                .expect_err("no endpoint answered — must not be a clean negative");
+            let msg = err.to_string();
+            assert!(
+                msg.starts_with("[ripestat] RIPEstat ") && msg.contains("503"),
+                "{kind:?} {value}: {msg}"
+            );
+        }
+    }
+
+    /// Each endpoint stays best-effort: what the live endpoints returned is
+    /// kept even when a sibling endpoint is down — a partial answer is an
+    /// answer, not a failure.
+    #[tokio::test]
+    async fn a_partial_outage_keeps_the_endpoints_that_answered() {
+        let partial = Canned(
+            [
+                (
+                    "network-info",
+                    Ok(serde_json::json!({"asns": ["15169"], "prefix": "8.8.8.0/24"})),
+                ),
+                ("abuse-contact-finder", Err("HTTP 502 Bad Gateway")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let target = Target::new(TargetKind::IpAddress, "8.8.8.8");
+        let r = lookup(&partial, &target, "test")
+            .await
+            .expect("network-info answered");
+        assert!(r.entities.iter().any(|e| e.kind == EntityKind::Asn && e.value == "AS15169"));
+        assert!(r.entities.iter().any(|e| e.kind == EntityKind::Cidr));
+    }
+
+    /// A shape the decoder does not recognise is a failure of THAT endpoint,
+    /// reported as such — and, alone, still a module failure rather than
+    /// "no data".
+    #[tokio::test]
+    async fn an_unexpected_data_shape_is_an_endpoint_failure() {
+        let drifted = Canned(
+            [
+                ("network-info", Ok(serde_json::json!({"asns": "not-a-list"}))),
+                ("abuse-contact-finder", Err("HTTP 503")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let target = Target::new(TargetKind::IpAddress, "8.8.8.8");
+        let err = lookup(&drifted, &target, "test").await.expect_err("drift is not absence");
+        assert!(err.to_string().contains("unexpected data shape"), "{err}");
+    }

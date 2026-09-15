@@ -122,7 +122,7 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
         "HUNTSMAN_PULSEDIVE_KEY" => "Pulsedive — free key at https://pulsedive.com/about/api",
         "HUNTSMAN_OPENCORP_KEY" => "OpenCorporates — https://opencorporates.com/api_accounts/new",
         "HUNTSMAN_GITHUB_TOKEN" => {
-            "GitHub — optional; the github_* modules run key-free but share GitHub's 60 req/hour unauthenticated limit. A no-scope personal access token from https://github.com/settings/tokens raises it."
+            "GitHub — required by github_code_search (GitHub's code search rejects unauthenticated requests with 401); optional for github_user and github_commits, which run key-free on GitHub's 60 req/hour unauthenticated limit. A no-scope personal access token from https://github.com/settings/tokens."
         }
         "HUNTSMAN_NUMVERIFY_KEY" => "numverify — free tier at https://numverify.com/product",
         "HUNTSMAN_HLR_KEY" => "HLR Lookups — free trial at https://hlrlookups.com",

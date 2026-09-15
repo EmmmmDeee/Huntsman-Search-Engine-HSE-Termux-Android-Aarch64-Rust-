@@ -346,8 +346,6 @@ const AUTHORITATIVE_AU_REGISTERS: &[(&str, &str)] = &[
     ("asic_persons", "ASIC"),
     ("asic_director", "ASIC"),
     ("asic_banned_orgs", "ASIC"),
-    ("au_electoral", "AU electoral roll"),
-    ("au_property", "AU property / title register"),
     ("acnc_charities", "ACNC (charities register)"),
     ("abn_lookup", "Australian Business Register (ABN)"),
 ];

@@ -1800,9 +1800,9 @@ fn regional_kinship_links_common_surname_family_sharing_a_town() {
     // family derive_kinship drops on the commonness discount. The shared postcode
     // is the corroboration that recovers the link.
     let mut a = ent(EntityKind::Person, "John Smith", 0.6);
-    a.add_evidence(Evidence::new("au_people", "directory").with_attr("postcode", "4557"));
+    a.add_evidence(Evidence::new("au_unclaimed", "directory").with_attr("postcode", "4557"));
     let mut b = ent(EntityKind::Person, "Jane Smith", 0.6);
-    b.add_evidence(Evidence::new("au_people", "directory").with_attr("postcode", "4557"));
+    b.add_evidence(Evidence::new("au_unclaimed", "directory").with_attr("postcode", "4557"));
 
     let rels = derive_regional_kinship(&[a.clone(), b.clone()], "s");
     assert_eq!(
@@ -1822,9 +1822,9 @@ fn regional_kinship_requires_the_same_town() {
     use crate::core::entity::Evidence;
     // Same common surname but DIFFERENT towns → not a family lead.
     let mut a = ent(EntityKind::Person, "John Smith", 0.6);
-    a.add_evidence(Evidence::new("au_people", "d").with_attr("postcode", "4557"));
+    a.add_evidence(Evidence::new("au_unclaimed", "d").with_attr("postcode", "4557"));
     let mut b = ent(EntityKind::Person, "Jane Smith", 0.6);
-    b.add_evidence(Evidence::new("au_people", "d").with_attr("postcode", "2000"));
+    b.add_evidence(Evidence::new("au_unclaimed", "d").with_attr("postcode", "2000"));
     assert!(
         derive_regional_kinship(&[a, b], "s").is_empty(),
         "different towns must not link strangers"

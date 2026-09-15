@@ -692,12 +692,32 @@ async fn print_live_capability_report() {
         return;
     }
 
-    let (mut alive, mut empty, mut unreachable, mut timed_out, mut panicked) =
-        (0usize, 0usize, 0usize, 0usize, 0usize);
+    let (
+        mut alive,
+        mut empty,
+        mut unreachable,
+        mut timed_out,
+        mut rate_limited,
+        mut blocked,
+        mut skipped,
+        mut panicked,
+    ) = (
+        0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize,
+    );
     let mut drift: Vec<&str> = Vec::new();
+    let mut dead: Vec<&str> = Vec::new();
     for r in &reports {
         let canary = if capability_probe::is_canary(r.module) {
             " [canary]"
+        } else {
+            ""
+        };
+        // A canary that answered nothing on any of its retried attempts: the
+        // provider is down or its endpoint retired — called out, never quietly
+        // tolerated the way a non-canary's transport failure is.
+        let dead_tag = if r.is_dead_canary() {
+            dead.push(r.module);
+            " — DEAD CANARY (no answer on any attempt: provider down or endpoint retired)"
         } else {
             ""
         };
@@ -725,11 +745,32 @@ async fn print_live_capability_report() {
             }
             ProbeOutcome::Unreachable { reason } => {
                 unreachable += 1;
-                println!("  unreachable  {:<22} {reason}{canary}", r.module);
+                println!("  unreachable  {:<22} {reason}{canary}{dead_tag}", r.module);
             }
             ProbeOutcome::TimedOut => {
                 timed_out += 1;
-                println!("  timed-out    {:<22}{canary}", r.module);
+                println!("  timed-out    {:<22}{canary}{dead_tag}", r.module);
+            }
+            ProbeOutcome::RateLimited { reason } => {
+                // Alive but throttling: neither dead nor drift.
+                rate_limited += 1;
+                println!("  rate-limited {:<22} {reason}{canary}", r.module);
+            }
+            ProbeOutcome::Blocked { reason } => {
+                // Alive but refusing this client (anti-bot challenge / WAF
+                // block): neither dead nor drift; a vantage-point problem.
+                blocked += 1;
+                println!("  blocked      {:<22} {reason}{canary}", r.module);
+            }
+            ProbeOutcome::Skipped { class, reason } => {
+                // Declined the sample in-band: not asked, so neither dead nor
+                // drift (an AU-only register with the fleet's New York point).
+                skipped += 1;
+                println!(
+                    "  skipped      {:<22} ({}) {reason}{canary}",
+                    r.module,
+                    class.as_str()
+                );
             }
             ProbeOutcome::Panicked { message } => {
                 panicked += 1;
@@ -741,7 +782,8 @@ async fn print_live_capability_report() {
     }
     println!(
         "  summary: {} probed — {alive} alive, {empty} empty, {unreachable} unreachable, \
-         {timed_out} timed-out, {panicked} panicked",
+         {timed_out} timed-out, {rate_limited} rate-limited, {blocked} blocked, \
+         {skipped} skipped, {panicked} panicked",
         reports.len()
     );
     if !drift.is_empty() {
@@ -749,6 +791,14 @@ async fn print_live_capability_report() {
             "  ⚠ confirmed drift in {}: {} — the upstream wire shape likely changed",
             drift.len(),
             drift.join(", ")
+        );
+    }
+    if !dead.is_empty() {
+        println!(
+            "  ⚠ dead canary: {} — no answer on any of {} attempts; the provider is down \
+             for now or its endpoint is retired (migrate it or retire the capability)",
+            dead.join(", "),
+            capability_probe::CANARY_ATTEMPTS
         );
     }
     // Persist so this finding survives past this one printout — the next

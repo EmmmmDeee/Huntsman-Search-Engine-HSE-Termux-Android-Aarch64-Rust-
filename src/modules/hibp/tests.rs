@@ -430,3 +430,47 @@ fn breach_entities_survive_a_paste_half_that_yields_nothing() {
         "no paste tag when the paste half yielded nothing"
     );
 }
+
+/// HIBP's terminal 429 — three `Retry-After` sleeps spent and no other pooled
+/// key to cascade to — was a hand-built `Error::module("HTTP 429 …")`: the one
+/// throttle left in the crate that the breaker counted as a fault after
+/// REQ-DRIFT-002 typed every other 429 through `http_status_error`. It is the
+/// typed `Error::RateLimited` now, so dispatch benches the module under its
+/// cooldown reason and `hse doctor` / the capabilities API read `rate-limited`.
+/// Driven against a loopback answering 429 with `Retry-After: 0` four times,
+/// so the three in-process retries sleep nothing.
+#[tokio::test]
+async fn a_terminal_429_is_the_typed_rate_limit_never_a_module_fault() {
+    use crate::core::error::Error;
+    use crate::util::http::test_server::{Canned, serve};
+    use std::collections::{HashMap, HashSet};
+    let throttled = || {
+        Canned::json(
+            429,
+            r#"{"statusCode":429,"message":"Rate limit is exceeded. Try again in 2 seconds."}"#,
+        )
+        .header("retry-after", "0")
+    };
+    let base = serve(vec![throttled(), throttled(), throttled(), throttled()]).await;
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = crate::core::module::ModuleContext {
+        scan_id: "test".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let mut key = "test-key".to_string();
+    let mut tried = HashSet::new();
+    let err = Hibp
+        .api_get::<serde_json::Value>(
+            &mut key,
+            &mut tried,
+            &format!("{base}/breachedaccount/x%40example.com"),
+            &ctx,
+        )
+        .await
+        .expect_err("four 429s with no key to cascade to is a failure, never a result");
+    assert!(matches!(err, Error::RateLimited(_)), "{err}");
+    assert!(err.to_string().contains("after 3 retries"), "{err}");
+}

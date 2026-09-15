@@ -36,7 +36,7 @@ use super::{
         assert!(!whole_word_token_match("Moreau Family", "m")); // initial not a whole word
         // A single missing token fails the whole match.
         assert!(!whole_word_token_match("Linus Torvalds", "linus pauling"));
-        // Empty / whitespace-only needle matches nothing (the guard au_property's copy lacks).
+        // Empty / whitespace-only needle matches nothing (a guard the per-module copies lacked).
         assert!(!whole_word_token_match("anything at all", ""));
         assert!(!whole_word_token_match("anything", "   "));
     }
@@ -56,7 +56,7 @@ use super::{
 
     #[test]
     fn parse_asn_strips_case_insensitive_prefix_and_validates() {
-        // The shared form the bgpview/ip_registry/zoomeye sites converged on.
+        // The shared form the ip_registry/zoomeye sites converged on.
         assert_eq!(parse_asn("AS13335"), Some(13335));
         assert_eq!(parse_asn("as13335"), Some(13335)); // zoomeye lacked this
         assert_eq!(parse_asn("As13335"), Some(13335));

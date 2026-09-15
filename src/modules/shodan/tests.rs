@@ -204,3 +204,74 @@ fn paid_host_resp_deserializes_the_tags_array() {
     let bare: HostResp = serde_json::from_str(r#"{"ports":[80]}"#).expect("should succeed");
     assert!(bare.tags.is_empty());
 }
+
+#[tokio::test]
+async fn internetdb_failures_are_the_modules_error_and_only_a_404_is_the_clean_negative() {
+    // Backlog #39. The keyless InternetDB path swallowed every transport
+    // failure, throttle (429), outage (5xx) and unreadable body with a debug
+    // line, so the scan recorded "no open ports, no CVEs" for the address. A
+    // 404 is InternetDB's documented "No information available" — the one
+    // genuine clean negative. Real request path against a loopback server.
+    use crate::util::http::test_server::{Canned, serve};
+    let base = serve(vec![
+        Canned::json(500, r#"{"detail":"Internal Server Error"}"#),
+        Canned::json(429, r#"{"detail":"Rate limit exceeded"}"#),
+        Canned::text(200, "<html>interstitial</html>"),
+        Canned::json(404, r#"{"detail":"No information available"}"#),
+        Canned::json(
+            200,
+            r#"{"cpes":[],"hostnames":["one.one.one.one"],"ip":"1.1.1.1","ports":[53,443],"tags":[],"vulns":[]}"#,
+        ),
+    ])
+    .await;
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = ModuleContext {
+        scan_id: "s".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+
+    let mut result = ModuleResult::new();
+    let err = Shodan
+        .query_internetdb(&base, "1.1.1.1", &ctx, &mut result)
+        .await
+        .expect_err("a 5xx is an outage, not 'no ports, no CVEs'");
+    assert!(err.to_string().contains("500"), "{err}");
+    let err = Shodan
+        .query_internetdb(&base, "1.1.1.1", &ctx, &mut result)
+        .await
+        .expect_err("a 429 is a throttle, not a clean host");
+    assert!(err.to_string().contains("429"), "{err}");
+    let err = Shodan
+        .query_internetdb(&base, "1.1.1.1", &ctx, &mut result)
+        .await
+        .expect_err("an unreadable 200 body is a failed lookup");
+    assert!(!err.to_string().is_empty());
+    assert!(result.is_empty(), "no failure may leave entities behind");
+
+    Shodan
+        .query_internetdb(&base, "1.1.1.1", &ctx, &mut result)
+        .await
+        .expect("404 is InternetDB's documented 'no information available'");
+    assert!(result.is_empty(), "the clean negative adds nothing");
+
+    Shodan
+        .query_internetdb(&base, "1.1.1.1", &ctx, &mut result)
+        .await
+        .expect("a genuine answer parses");
+    let ip = result
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::IpAddress)
+        .expect("the address entity carries the port summary");
+    assert!(ip.has_tag("shodan-internetdb"));
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Domain && e.value == "one.one.one.one"),
+        "the PTR hostname becomes a Domain pivot"
+    );
+}

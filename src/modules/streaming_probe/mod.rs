@@ -46,8 +46,9 @@ use crate::util::http::urlencode;
 // per-site adapter, M6 disambiguation), single-sourced in `util::probe` and
 // shared with `username_search`.
 use crate::util::probe::{
-    BODY_PROBE_CAP, BROWSER_ACCEPT, BROWSER_UA, ProbeResult, WithSite,
-    classify_non_matching_status, inconclusive,
+    BODY_PROBE_CAP, BROWSER_ACCEPT, BROWSER_UA, PageVerdict, ProbeResult,
+    classify_non_matching_status, classify_page, control_handle, control_presences,
+    inconclusive_after_control,
 };
 
 const SRC: &str = "streaming_probe";
@@ -57,7 +58,7 @@ pub struct StreamingProbe;
 mod sites;
 #[cfg(test)]
 use sites::CATEGORIES;
-use sites::{Detect, Method, SITES};
+use sites::{Detect, Method, SITES, Site};
 
 #[async_trait]
 impl Module for StreamingProbe {
@@ -117,82 +118,15 @@ impl Module for StreamingProbe {
             return Ok(ModuleResult::new());
         }
 
-        let encoded = urlencode(username);
-        let per_site_timeout = Duration::from_millis(4_500);
-
-        let sem = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PROBES));
-        let probes = SITES.iter().map(|site| {
-            let url = site.url.replace("{}", &encoded);
-            let client = ctx.http.clone();
-            let sem = Arc::clone(&sem);
-            async move {
-                let _permit = sem.acquire().await;
-                // `per_site_timeout` must bound the WHOLE probe, not just
-                // `send()`. It previously wrapped only the send, leaving
-                // `read_body_capped` below to run unbounded under the semaphore
-                // permit acquired above — a server that answers headers promptly
-                // and then trickles the body held the permit indefinitely. The
-                // module's own 30s envelope (`max_timeout_ms`) then expired and
-                // the engine discarded EVERY already-completed site hit, turning
-                // one slow server into a total loss for the module. This is the
-                // same defect `username_search` already fixed; its probe body is
-                // built as a future and awaited inside a single timeout, and this
-                // now matches.
-                let probe = async {
-                    let req = match site.method {
-                        Method::Get => client.get(&url),
-                        Method::Head => client.head(&url),
-                    };
-                    let req = req
-                        .header("User-Agent", BROWSER_UA)
-                        .header("Accept", BROWSER_ACCEPT)
-                        .header("Accept-Language", "en-US,en;q=0.9");
-                    let Ok(resp) = req.send().await else {
-                        return ProbeResult::Error;
-                    };
-
-                    let status = resp.status().as_u16();
-                    let (confidence, verified) = detection_strength(&site.detect);
-                    match site.detect {
-                        Detect::StatusEq(want) if status == want => ProbeResult::Found {
-                            url,
-                            confidence,
-                            verified,
-                        },
-                        // Same policy as `username_search`: a status that is not
-                        // this site's presence code may be a WAF challenge, a
-                        // throttle or an outage, none of which is an absence.
-                        Detect::StatusEq(_) => classify_non_matching_status(status),
-                        Detect::StatusAndNotBody(want, needle) => {
-                            if status != want {
-                                return classify_non_matching_status(status);
-                            }
-                            match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP).await {
-                                Some(body) if body.contains(needle) => ProbeResult::NotFound,
-                                Some(_) => ProbeResult::Found {
-                                    url,
-                                    confidence,
-                                    verified,
-                                },
-                                None => ProbeResult::Error,
-                            }
-                        }
-                    }
-                };
-                match tokio::time::timeout(per_site_timeout, probe).await {
-                    Ok(result) => result,
-                    Err(_) => ProbeResult::Error,
-                }
-            }
-            .then_with_site(site.name, site.cat)
-        });
-
-        let results: Vec<(&'static str, &'static str, ProbeResult)> = join_all(probes).await;
+        let results = sweep(&ctx.http, SITES, username).await;
         let results_len = results.len();
 
         let mut hits: Vec<Hit> = Vec::new();
         let mut inconclusive_probes = 0usize;
         let mut definitive_absent = 0usize;
+        // Sites that answered "present" for the control handle too: no answer
+        // about the handle at all (`ProbeResult::Indiscriminate`).
+        let mut indiscriminate: Vec<&'static str> = Vec::new();
 
         for (site_name, site_cat, outcome) in results {
             match outcome {
@@ -200,25 +134,32 @@ impl Module for StreamingProbe {
                     url,
                     confidence,
                     verified,
+                    controlled,
                 } => hits.push(Hit {
                     site_name,
                     site_cat,
                     url,
                     confidence,
                     verified,
+                    controlled,
                 }),
                 ProbeResult::NotFound => definitive_absent += 1,
                 ProbeResult::Error => inconclusive_probes += 1,
+                ProbeResult::Indiscriminate { .. } => indiscriminate.push(site_name),
             }
         }
 
         if hits.is_empty() {
-            if inconclusive(0, inconclusive_probes, results_len) {
+            if inconclusive_after_control(0, inconclusive_probes, indiscriminate.len(), results_len)
+            {
                 return Err(Error::module(
                     SRC,
                     format!(
-                        "inconclusive: {inconclusive_probes}/{results_len} platform probes were \
-                         blocked or unreachable — not a confirmed absence"
+                        "inconclusive: {inconclusive_probes} of {} platform probes that can tell were \
+                         blocked or unreachable, {} platforms answer \"present\" for any handle — \
+                         not a confirmed absence",
+                        results_len - indiscriminate.len(),
+                        indiscriminate.len()
                     ),
                 ));
             }
@@ -233,9 +174,136 @@ impl Module for StreamingProbe {
                 definitive_absent,
                 inconclusive_probes,
                 sites_probed: SITES.len(),
+                indiscriminate,
             },
         ))
     }
+}
+
+/// The per-site budget of a control probe: the site already answered once
+/// within the sweep's own budget, so its second answer is expected sooner.
+const CONTROL_TIMEOUT: Duration = Duration::from_millis(3_000);
+
+/// One site, one handle: the site's answer for `url`, bounded by
+/// `per_site_timeout` under the shared semaphore.
+async fn probe_site(
+    client: reqwest::Client,
+    sem: Arc<tokio::sync::Semaphore>,
+    site: &'static Site,
+    url: String,
+    per_site_timeout: Duration,
+) -> ProbeResult {
+    let _permit = sem.acquire().await;
+    // `per_site_timeout` must bound the WHOLE probe, not just
+    // `send()`. It previously wrapped only the send, leaving
+    // `read_body_capped` below to run unbounded under the semaphore
+    // permit acquired above — a server that answers headers promptly
+    // and then trickles the body held the permit indefinitely. The
+    // module's own 30s envelope (`max_timeout_ms`) then expired and
+    // the engine discarded EVERY already-completed site hit, turning
+    // one slow server into a total loss for the module. This is the
+    // same defect `username_search` already fixed; its probe body is
+    // built as a future and awaited inside a single timeout, and this
+    // now matches.
+    let probe = async {
+        let req = match site.method {
+            Method::Get => client.get(&url),
+            Method::Head => client.head(&url),
+        };
+        let req = req
+            .header("User-Agent", BROWSER_UA)
+            .header("Accept", BROWSER_ACCEPT)
+            .header("Accept-Language", "en-US,en;q=0.9");
+        let Ok(resp) = req.send().await else {
+            return ProbeResult::Error;
+        };
+
+        let status = resp.status().as_u16();
+        let (confidence, verified) = detection_strength(&site.detect);
+        match site.detect {
+            Detect::StatusEq(want) if status == want => ProbeResult::Found {
+                url,
+                confidence,
+                verified,
+                controlled: false,
+            },
+            // Same policy as `username_search`: a status that is not
+            // this site's presence code may be a WAF challenge, a
+            // throttle or an outage, none of which is an absence.
+            Detect::StatusEq(_) => classify_non_matching_status(status),
+            Detect::StatusAndNotBody(want, needle) => {
+                if status != want {
+                    return classify_non_matching_status(status);
+                }
+                // The missing profile carries the marker, so a wall
+                // served with 200 — which carries no marker — used
+                // to read as a verified presence. `classify_page`
+                // judges the wall first.
+                match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP).await {
+                    Some(body) => match classify_page(&body, needle, false) {
+                        PageVerdict::Present => ProbeResult::Found {
+                            url,
+                            confidence,
+                            verified,
+                            controlled: false,
+                        },
+                        PageVerdict::Absent => ProbeResult::NotFound,
+                        PageVerdict::Wall => ProbeResult::Error,
+                    },
+                    None => ProbeResult::Error,
+                }
+            }
+        }
+    };
+    match tokio::time::timeout(per_site_timeout, probe).await {
+        Ok(result) => result,
+        Err(_) => ProbeResult::Error,
+    }
+}
+
+/// Sweep every site for the handle, then judge each presence against the
+/// control handle on the same site ([`control_presences`]): a site that
+/// answers "present" for a handle nobody holds cannot tell a held handle
+/// from an unheld one for this client, and its presence for the target is
+/// [`ProbeResult::Indiscriminate`] — never a profile, on these platforms a
+/// sensitive claim. `sites` is a parameter so the real request path is
+/// driven against a loopback.
+async fn sweep(
+    client: &reqwest::Client,
+    sites: &'static [Site],
+    username: &str,
+) -> Vec<(&'static str, &'static str, ProbeResult)> {
+    let encoded = urlencode(username);
+    let per_site_timeout = Duration::from_millis(4_500);
+    let sem = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PROBES));
+    let first: Vec<(&'static Site, ProbeResult)> = join_all(sites.iter().map(|site| {
+        let probe = probe_site(
+            client.clone(),
+            Arc::clone(&sem),
+            site,
+            site.url.replace("{}", &encoded),
+            per_site_timeout,
+        );
+        async move { (site, probe.await) }
+    }))
+    .await;
+    let control_encoded = urlencode(control_handle());
+    let judged = control_presences(first, |site: &'static Site| {
+        let url = site.url.replace("{}", &control_encoded);
+        let probe = probe_site(
+            client.clone(),
+            Arc::clone(&sem),
+            site,
+            url.clone(),
+            CONTROL_TIMEOUT,
+        );
+        (url, probe)
+    })
+    .await;
+    judged
+        .into_iter()
+        .map(|(site, result)| (site.name, site.cat, result))
+        .collect()
 }
 
 /// A confirmed profile hit, carrying the confidence its detection method earns.
@@ -245,6 +313,10 @@ struct Hit {
     url: String,
     confidence: f64,
     verified: bool,
+    /// The site answered absence for the control handle (see
+    /// [`crate::util::probe::control_handle`]); false when its control could
+    /// not be read.
+    controlled: bool,
 }
 
 /// Non-hit probe tallies, surfaced on the summary so an operator can see how much
@@ -253,6 +325,9 @@ struct ProbeTally {
     definitive_absent: usize,
     inconclusive_probes: usize,
     sites_probed: usize,
+    /// Sites that answered "present" for the control handle too — no answer
+    /// about the handle, never a profile ([`ProbeResult::Indiscriminate`]).
+    indiscriminate: Vec<&'static str>,
 }
 
 /// Confidence + verified-flag a detection method earns, tiered by rigour — the
@@ -287,6 +362,7 @@ fn build_entities(username: &str, scan_id: &str, hits: &[Hit], tally: &ProbeTall
     let mut cat_counts: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
     let mut verified_total = 0usize;
     let mut weak_total = 0usize;
+    let mut uncontrolled_total = 0usize;
 
     for h in hits {
         found_names.push(h.site_name);
@@ -297,6 +373,9 @@ fn build_entities(username: &str, scan_id: &str, hits: &[Hit], tally: &ProbeTall
             verified_total += 1;
         } else {
             weak_total += 1;
+        }
+        if !h.controlled {
+            uncontrolled_total += 1;
         }
 
         let profile_tag = match h.site_cat {
@@ -332,7 +411,15 @@ fn build_entities(username: &str, scan_id: &str, hits: &[Hit], tally: &ProbeTall
             .with_attr("category", h.site_cat)
             .with_attr("username", username)
             .with_attr("url", h.url.as_str())
-            .with_attr("detection", detection),
+            .with_attr("detection", detection)
+            .with_attr(
+                "control",
+                if h.controlled {
+                    "absent"
+                } else {
+                    "unavailable"
+                },
+            ),
         );
         module_result.push(e);
     }
@@ -388,7 +475,13 @@ fn build_entities(username: &str, scan_id: &str, hits: &[Hit], tally: &ProbeTall
         .with_attr("hits_status_only", weak_total.to_string())
         .with_attr("sites_probed", tally.sites_probed.to_string())
         .with_attr("sites_not_found", tally.definitive_absent.to_string())
-        .with_attr("sites_inconclusive", tally.inconclusive_probes.to_string()),
+        .with_attr("sites_inconclusive", tally.inconclusive_probes.to_string())
+        .with_attr(
+            "sites_indiscriminate",
+            tally.indiscriminate.len().to_string(),
+        )
+        .with_attr("indiscriminate_platforms", tally.indiscriminate.join(", "))
+        .with_attr("hits_uncontrolled", uncontrolled_total.to_string()),
     );
     module_result.push(summary);
     module_result

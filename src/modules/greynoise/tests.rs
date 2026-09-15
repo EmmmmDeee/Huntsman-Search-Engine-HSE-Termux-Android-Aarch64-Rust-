@@ -228,7 +228,7 @@ use super::*;
             "link": "https://viz.greynoise.io/ip/71.6.135.131"
         }"#;
         let resp: PaidResp = serde_json::from_str(json).expect("should succeed");
-        assert!(resp.seen);
+        assert_eq!(resp.seen, Some(true));
         assert!(resp.noise);
         assert!(!resp.riot);
         assert_eq!(resp.classification.as_deref(), Some("malicious"));
@@ -305,3 +305,21 @@ fn last_seen_recency_flows_into_evidence() {
         "GreyNoise last_seen recency must surface in evidence"
     );
 }
+
+    #[test]
+    fn an_unrecognised_paid_response_shape_is_a_failed_lookup_never_an_unobserved_ip() {
+        // Backlog #22: every PaidResp field is defaulted, so a nested envelope
+        // decoded to an all-false record and read as "never observed".
+        let nested: PaidResp = serde_json::from_str(
+            r#"{"ip":"8.8.8.8","business_service_intelligence":{"found":true,"name":"Google"},"internet_scanner_intelligence":{"found":false}}"#,
+        )
+        .expect("decodes to a defaulted record");
+        let err = recognised(&nested).expect_err("no `seen`: the shape is not the one modelled");
+        assert!(err.to_string().contains("does not recognise"), "{err}");
+        assert!(
+            build_paid_entities(&nested, "8.8.8.8", "s").is_empty(),
+            "the old reading: an empty result, i.e. a clean negative"
+        );
+        let flat = paid_resp(r#"{"ip":"8.8.8.8","seen":false,"noise":false,"riot":true}"#);
+        recognised(&flat).expect("the flat shape is recognised");
+    }

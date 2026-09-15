@@ -159,6 +159,18 @@ const POSTED_LINK_CAVEAT: &str = "Linked by this account in a post or comment. S
      Graded below the expansion threshold so it is reported without seeding further automated \
      queries.";
 
+/// True when the response declares an HTML body (`Content-Type: text/html…`).
+fn content_type_is_html(resp: &reqwest::Response) -> bool {
+    resp.headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| {
+            ct.trim_start()
+                .to_ascii_lowercase()
+                .starts_with("text/html")
+        })
+}
+
 pub struct RedditUser;
 
 #[async_trait]
@@ -249,7 +261,14 @@ impl Module for RedditUser {
 /// (`Ok(Some)` = answered, `Ok(None)` = declared absent, `Err` = refused), so the
 /// policy stays in one place rather than being re-derived per module.
 async fn fetch_feed(ctx: &ModuleContext, handle: &str) -> Result<Option<String>> {
-    let url = format!("{PROFILE_BASE}/{}/.rss", urlencode(handle));
+    fetch_feed_from(ctx, PROFILE_BASE, handle).await
+}
+
+/// [`fetch_feed`] with the profile base as a parameter, so the request path —
+/// status classification, the block-page rule, the bounded body read — runs
+/// against a loopback in tests; production passes [`PROFILE_BASE`].
+async fn fetch_feed_from(ctx: &ModuleContext, base: &str, handle: &str) -> Result<Option<String>> {
+    let url = format!("{base}/{}/.rss", urlencode(handle));
     let resp = ctx
         .http
         .get(&url)
@@ -272,6 +291,22 @@ async fn fetch_feed(ctx: &ModuleContext, handle: &str) -> Result<Option<String>>
         .send_tagged(SRC)
         .await?;
 
+    // Reddit's network-security block: the Atom endpoint answers 403 with an
+    // HTML page ("You've been blocked by network security…") to clients it
+    // scores as bots — GitHub's runner on 2026-09-15, this project's sandbox
+    // on `about.json`. The page is ~190 KB of inline CSS with its only prose
+    // at the very end, beyond the bounded error-body read, so the shared
+    // classifier cannot see the words; the endpoint's own contract can: a feed
+    // is never `text/html`, so a 403 carrying HTML is the wall, typed as such
+    // (the breaker benches the module at once; the probe reads `blocked`, not
+    // `unreachable`).
+    if resp.status().as_u16() == 403 && content_type_is_html(&resp) {
+        return Err(crate::core::error::Error::BotChallenge(format!(
+            "{SRC}: HTTP 403 Forbidden on the Atom feed with an HTML page — Reddit's \
+             network-security block (\"You've been blocked by network security\"), not a \
+             feed and not an absent account"
+        )));
+    }
     // 404 is the ONE honest negative this endpoint offers: `.rss` answers 200 for
     // a real account and 404 for one that does not exist, so it is a clean
     // existence oracle. 403 is never Reddit's not-found signal, so it must not be

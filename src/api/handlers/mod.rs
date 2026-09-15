@@ -487,8 +487,18 @@ pub(crate) fn capability_probe_json(
 ) -> Value {
     use crate::selftest::capability_probe::{ProbeOutcome, is_canary};
 
-    let (mut alive, mut empty, mut unreachable, mut timed_out, mut panicked) =
-        (0usize, 0usize, 0usize, 0usize, 0usize);
+    let (
+        mut alive,
+        mut empty,
+        mut unreachable,
+        mut timed_out,
+        mut rate_limited,
+        mut blocked,
+        mut skipped,
+        mut panicked,
+    ) = (
+        0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize,
+    );
     let modules: Vec<Value> = reports
         .iter()
         .map(|r| {
@@ -509,6 +519,22 @@ pub(crate) fn capability_probe_json(
                     timed_out += 1;
                     ("timed-out", None, None)
                 }
+                ProbeOutcome::RateLimited { reason } => {
+                    rate_limited += 1;
+                    ("rate-limited", None, Some(reason.clone()))
+                }
+                ProbeOutcome::Blocked { reason } => {
+                    blocked += 1;
+                    ("blocked", None, Some(reason.clone()))
+                }
+                ProbeOutcome::Skipped { class, reason } => {
+                    skipped += 1;
+                    (
+                        "skipped",
+                        None,
+                        Some(format!("{}: {reason}", class.as_str())),
+                    )
+                }
                 ProbeOutcome::Panicked { message } => {
                     panicked += 1;
                     ("panicked", None, Some(message.clone()))
@@ -523,6 +549,11 @@ pub(crate) fn capability_probe_json(
                 "reason": reason,
                 "canary": is_canary(r.module),
                 "drift": r.is_confirmed_drift(),
+                // A canary that answered nothing on any of its retried
+                // attempts — provider down or endpoint retired; distinct from
+                // drift (the wire shape was never seen) and from a tolerated
+                // non-canary transport failure.
+                "dead_canary": r.is_dead_canary(),
             })
         })
         .collect();
@@ -531,21 +562,31 @@ pub(crate) fn capability_probe_json(
         .filter(|r| r.is_confirmed_drift())
         .map(|r| r.module)
         .collect();
+    let dead_canaries: Vec<&str> = reports
+        .iter()
+        .filter(|r| r.is_dead_canary())
+        .map(|r| r.module)
+        .collect();
     json!({
         "probed": reports.len(),
         "alive": alive,
         "empty": empty,
         "unreachable": unreachable,
         "timed_out": timed_out,
+        "rate_limited": rate_limited,
+        "blocked": blocked,
+        "skipped": skipped,
         "panicked": panicked,
         "drift": drift,
+        "dead_canaries": dead_canaries,
         "modules": modules,
     })
 }
 
 /// `POST /api/v1/capabilities/probe` — the **proactive** capability preflight:
 /// probe every keyless module against its real provider right now and report
-/// alive / empty / unreachable / timed-out / panicked per module, flagging
+/// alive / empty / unreachable / timed-out / rate-limited / blocked / skipped /
+/// panicked per module (a dead canary flagged on its row), flagging
 /// confirmed drift (a curated canary that reached its provider yet parsed
 /// nothing, or any module that panicked on the live response). This is the
 /// on-demand, network-bound HTTP twin of `hse doctor --live`, sharing the exact

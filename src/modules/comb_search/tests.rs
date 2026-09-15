@@ -216,3 +216,76 @@ fn secret_echo_of_identity_is_classified_as_junk_upstream() {
         CredentialField::Email
     );
 }
+
+#[tokio::test]
+async fn a_non_2xx_from_the_comb_endpoint_is_a_failed_lookup_and_a_200_without_lines_is_the_miss() {
+    // Backlog #12. ProxyNova signals "not in COMB" as a 200 with `count: 0,
+    // lines: []`; a 404 is the endpoint gone (or a WAF page) and a 5xx an
+    // outage. Before this the request went through `fetch_json_or_404`, so a
+    // 404 became `Ok(empty)` — recorded as a clean-negative breach claim about
+    // the named subject. Real request path against a loopback server.
+    use crate::util::http::test_server::{Canned, serve};
+    let base = serve(vec![
+        Canned::text(404, "<html>Not Found</html>"),
+        Canned::text(503, "upstream unavailable"),
+        Canned::json(200, r#"{"count":0,"lines":[]}"#),
+    ])
+    .await;
+    let client = reqwest::Client::new();
+    let endpoint = format!("{base}/comb");
+
+    let err = query_comb(&client, &endpoint, "jordan@example.com")
+        .await
+        .expect_err("a 404 on a fixed endpoint is a failed lookup, not 'not in COMB'");
+    assert!(err.to_string().contains("404"), "{err}");
+
+    let err = query_comb(&client, &endpoint, "jordan@example.com")
+        .await
+        .expect_err("an outage is a failed lookup");
+    assert!(err.to_string().contains("503"), "{err}");
+
+    let miss = query_comb(&client, &endpoint, "jordan@example.com")
+        .await
+        .expect("a 200 with no lines is the genuine miss");
+    assert!(miss.lines.is_empty());
+}
+
+#[test]
+fn a_username_seed_is_never_tagged_breach_from_strangers_same_local_part_lines() {
+    // Backlog #13. COMB is matched on the exact local part for a Username
+    // seed, so every `john@<any provider>` line is a different person's
+    // account. Those secrets stay candidate leads; the subject's own Username
+    // must not come back tagged `breach` with "N leaked credential line(s)".
+    let target = Target::new(TargetKind::Username, "john");
+    let lines = vec![
+        "john@gmail.com:hunter2".to_string(),
+        "john@yahoo.com:letmein".to_string(),
+    ];
+    let ents = build_entities_from_lines(&lines, &target, "s");
+    assert!(
+        ents.iter().all(|e| e.kind != EntityKind::Username),
+        "no Username entity may be minted from strangers' rows: {:?}",
+        ents.iter().map(|e| (&e.kind, &e.value)).collect::<Vec<_>>()
+    );
+    // The leaked secrets are breach records (about whoever owns them) and stay
+    // tagged so; nothing else — no seed copy — comes out of a Username match.
+    assert!(ents.iter().all(|e| e.kind == EntityKind::Password));
+    let pws: Vec<_> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Password)
+        .collect();
+    assert_eq!(pws.len(), 2);
+    assert!(
+        pws.iter()
+            .all(|p| p.has_tag(crate::core::tags::CANDIDATE))
+    );
+
+    // An Email seed's matched lines ARE the subject's account: still enriched.
+    let target = Target::new(TargetKind::Email, "john@gmail.com");
+    let ents = build_entities_from_lines(&lines, &target, "s");
+    let seed = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Email && e.value == "john@gmail.com")
+        .expect("the seed is enriched");
+    assert!(seed.has_tag(crate::core::tags::BREACH));
+}

@@ -292,6 +292,55 @@ fn build_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
     result
 }
 
+/// GitHub's users endpoint; [`fetch_profile`] takes it as a parameter so the
+/// primary request path runs against a loopback in tests.
+const USERS_BASE: &str = "https://api.github.com/users";
+
+/// The primary profile request. `None` is GitHub's `404` — no such login, the
+/// one clean negative. Every other non-2xx is judged by
+/// [`crate::modules::github_api::status_error`]: a throttle (GitHub's `403`
+/// naming the rate limit, or a `429`) is the typed `RateLimited`, anything
+/// else the module's error — until 2026-09-15 the throttle went through the
+/// generic status error and read as a module fault (observed live from the
+/// sandbox: `HTTP 403 Forbidden: {"message":"API rate limit exceeded for …"}`).
+/// A present token that is rejected or throttled is reported to the key pool
+/// (the rule `fetch_orgs` / `fetch_gists` already apply).
+async fn fetch_profile(
+    ctx: &ModuleContext,
+    users_base: &str,
+    login: &str,
+    token: Option<&str>,
+) -> Result<Option<GhUser>> {
+    let url = format!("{users_base}/{login}");
+    let mut req = ctx
+        .http
+        .get(&url)
+        .header("Accept", "application/vnd.github+json")
+        .header(
+            "X-GitHub-Api-Version",
+            crate::modules::github_api::API_VERSION,
+        );
+    if let Some(t) = token {
+        req = req.bearer_auth(t);
+    }
+    let resp = req.send_tagged(SRC).await?;
+
+    let status = resp.status();
+    if status.as_u16() == 404 {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        if let Some(t) = token {
+            crate::util::http::note_keyed_error(status.as_u16(), "github", t, ctx);
+        }
+        return Err(crate::modules::github_api::status_error(SRC, resp).await);
+    }
+
+    // json_scanned: GitHub user profiles include bio and blog fields —
+    // free-form user text that may contain embedded API keys.
+    Ok(Some(crate::util::http::json_scanned(resp, SRC).await?))
+}
+
 #[async_trait]
 impl Module for GithubUser {
     fn name(&self) -> &'static str {
@@ -374,38 +423,9 @@ impl Module for GithubUser {
         // shared-IP 60 req/h anonymous budget while the token's 5 000 req/h
         // sat unused, and a scan resolving many logins ran dry mid-way.
         let token = ctx.key_opt("HUNTSMAN_GITHUB_TOKEN");
-        let url = format!("https://api.github.com/users/{login}");
-        let mut req = ctx
-            .http
-            .get(&url)
-            .header("Accept", "application/vnd.github+json")
-            .header(
-                "X-GitHub-Api-Version",
-                crate::modules::github_api::API_VERSION,
-            );
-        if let Some(t) = token {
-            req = req.bearer_auth(t);
-        }
-        let resp = req.send_tagged(SRC).await?;
-
-        let status = resp.status();
-        if status.as_u16() == 404 {
+        let Some(user) = fetch_profile(ctx, USERS_BASE, login, token).await? else {
             return Ok(ModuleResult::new());
-        }
-        if !status.is_success() {
-            // A present token that is rejected/throttled must reach the pool
-            // (same rule `fetch_orgs`/`fetch_gists` already apply).
-            if let Some(t) = token {
-                crate::util::http::note_keyed_error(status.as_u16(), "github", t, ctx);
-            }
-            return Err(crate::util::http::http_status_error("github_user", resp).await);
-        }
-
-        // json_scanned: GitHub user profiles include bio and blog fields —
-        // free-form user text that may contain embedded API keys.
-        let user: GhUser = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+        };
 
         let mut result = ModuleResult::new();
         result.entities = build_entities(&user, &ctx.scan_id);

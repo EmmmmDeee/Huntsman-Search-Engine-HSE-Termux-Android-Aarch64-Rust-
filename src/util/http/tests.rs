@@ -1350,7 +1350,7 @@ fn pooled_keys_are_masked_wherever_they_appear_whatever_their_status() {
 // ── read_body_capped / read_body_capped_or_fail: the fail-closed body read ───
 // These primitives back the "a transport failure mid-stream is not a finding
 // that the subject has no record" rule that ~a dozen scraper modules depend on
-// (acma_rrl, ahpra, austlii, pgp, …). They had no direct coverage; the streamed
+// (ahpra, austlii, pgp, …). They had no direct coverage; the streamed
 // responses below exercise the transport-failure contract without a network by
 // building a body stream that drops part-way, exactly as a reset connection does.
 
@@ -1422,5 +1422,297 @@ async fn read_body_capped_or_fail_returns_the_body_on_success() {
             .await
             .expect("a clean transfer is Ok"),
         "ok"
+    );
+}
+
+#[test]
+fn json_failure_names_an_html_error_page_and_keeps_serde_for_shape_drift() {
+    use super::url::json_failure;
+    // WiFiDB's live answer to every `exp_search` query on 2026-09-15: HTTP 200,
+    // text/html, its error template — a licence comment, then the document.
+    // The sweep recorded it as "expected value at line 1 column 1"; the message
+    // must say what actually arrived, in the provider's own words.
+    let wifidb = "<!--\nError.tpl, Is the default error showing page for WiFiDB.\n-->\n<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<title>Error | Vistumbler WiFiDB</title>\n</head><body>Error: 0 Message: Argument 1 passed to export::buildSearchConditions() must be of the type array, string given</body></html>";
+    let err = serde_json::from_str::<serde_json::Value>(wifidb).expect_err("html is not json");
+    let msg = json_failure(wifidb, &err);
+    assert!(msg.contains("HTML page where JSON was expected"), "{msg}");
+    assert!(
+        msg.contains("Error | Vistumbler WiFiDB"),
+        "the provider's title is quoted: {msg}"
+    );
+    assert!(
+        msg.contains("expected value"),
+        "serde's reason is kept: {msg}"
+    );
+
+    // A document without a title falls back to its visible text.
+    let bare = "<html><body><h1>Just a moment...</h1></body></html>";
+    let err = serde_json::from_str::<serde_json::Value>(bare).expect_err("html is not json");
+    assert!(json_failure(bare, &err).contains("Just a moment"));
+
+    // Real JSON of the wrong shape is shape drift: serde's words plus the head of
+    // the body, never mislabelled as an error page.
+    #[derive(Debug, serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Wanted {
+        name: String,
+    }
+    let drifted = r#"{"data":{"name":"x"}}"#;
+    let err = serde_json::from_str::<Wanted>(drifted).expect_err("missing field");
+    let msg = json_failure(drifted, &err);
+    assert!(!msg.contains("HTML page"), "{msg}");
+    assert!(
+        msg.contains("missing field") && msg.contains("body starts"),
+        "{msg}"
+    );
+
+    // A JSON error body that merely quotes markup keeps its verbatim treatment.
+    let quoting = r#"{"error":"<html> is not allowed here"}"#;
+    let err = serde_json::from_str::<Wanted>(quoting).expect_err("missing field");
+    assert!(!json_failure(quoting, &err).contains("HTML page"));
+}
+
+#[tokio::test]
+async fn a_429_is_the_typed_rate_limited_error_and_other_statuses_stay_module_errors() {
+    // The 2026-09-15 live sweep classified reddit_user's and steam_profile's
+    // HTTP 429 as "unreachable" — the class of a provider that is down. A
+    // throttle is the provider answering; the breaker, the capability probe
+    // and the sweep must see the variant, not a "429" token in prose.
+    use super::test_server::{Canned, serve};
+    let base = serve(vec![
+        Canned::text(429, "slow down"),
+        Canned::text(503, "Service Unavailable"),
+    ])
+    .await;
+    let client = reqwest::Client::new();
+    let resp = client.get(&base).send().await.expect("loopback");
+    let err = super::http_status_error("m", resp).await;
+    assert!(
+        matches!(err, crate::core::error::Error::RateLimited(_)),
+        "{err}"
+    );
+    assert!(
+        err.to_string().contains("429") && err.to_string().contains("slow down"),
+        "{err}"
+    );
+    let resp = client.get(&base).send().await.expect("loopback");
+    let err = super::http_status_error("m", resp).await;
+    assert!(
+        matches!(err, crate::core::error::Error::Module { .. }),
+        "{err}"
+    );
+}
+
+/// The Cloudflare block page (`Attention Required!`) and managed-challenge
+/// interstitial (`Just a moment...`) as the runner received them on
+/// 2026-09-15 — the fingerprints `util::html::is_challenge_page` keys on are
+/// the title phrases with the vendor name, and the `/cdn-cgi/challenge-platform`
+/// loader URL.
+const CF_BLOCK_PAGE: &str = "<!DOCTYPE html><html lang=\"en-US\"><head>\
+    <title>Attention Required! | Cloudflare</title></head><body>\
+    <h1><span class=\"cf-error-type\">Sorry, you have been blocked</span></h1>\
+    <h2>You are unable to access example.org</h2>\
+    <p>This website is using a security service to protect itself from online attacks.</p>\
+    <p>Cloudflare Ray ID: 9d1f2c3b4a5e6f70 &bull; Performance &amp; security by Cloudflare</p>\
+    </body></html>";
+const CF_CHALLENGE_PAGE: &str = "<!DOCTYPE html><html lang=\"en-US\"><head>\
+    <title>Just a moment...</title></head><body>\
+    <noscript>Enable JavaScript and cookies to continue</noscript>\
+    <script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1?ray=9d1f2c3b4a5e6f70\"></script>\
+    </body></html>";
+
+#[tokio::test]
+async fn a_challenge_page_is_the_typed_bot_challenge_and_a_plain_refusal_or_outage_stays_a_module_error()
+ {
+    // The 2026-09-15 live sweep filed anubis's `HTTP 403 Forbidden:
+    // Attention Required! | Cloudflare` and austlii's `HTTP 403 Forbidden:
+    // Just a moment...` as "unreachable" — the class of a provider that is
+    // down. A wall is the provider refusing this client; an outage page and
+    // a plain 403 are not walls.
+    use super::test_server::{Canned, serve};
+    let base = serve(vec![
+        Canned::html(403, CF_BLOCK_PAGE),
+        Canned::html(403, CF_CHALLENGE_PAGE),
+        Canned::text(403, "Forbidden"),
+        Canned::html(
+            503,
+            "<!DOCTYPE html><html><head><title>Internet Archive: Temporarily Offline</title>\
+             </head><body>The Wayback Machine is temporarily offline.</body></html>",
+        ),
+    ])
+    .await;
+    let client = reqwest::Client::new();
+    for expect_title in ["Attention Required! | Cloudflare", "Just a moment..."] {
+        let resp = client.get(&base).send().await.expect("loopback");
+        let err = super::http_status_error("m", resp).await;
+        assert!(
+            matches!(err, crate::core::error::Error::BotChallenge(_)),
+            "{err}"
+        );
+        let text = err.to_string();
+        assert!(
+            text.starts_with("bot challenge: m: HTTP 403") && text.contains(expect_title),
+            "{text}"
+        );
+    }
+    for expect in ["Forbidden", "Internet Archive: Temporarily Offline"] {
+        let resp = client.get(&base).send().await.expect("loopback");
+        let err = super::http_status_error("m", resp).await;
+        assert!(
+            matches!(err, crate::core::error::Error::Module { .. }),
+            "{err}"
+        );
+        assert!(err.to_string().contains(expect), "{err}");
+    }
+}
+
+#[tokio::test]
+async fn a_challenge_page_served_with_200_where_json_was_expected_is_the_typed_bot_challenge() {
+    // Some edges answer a challenge as `200 text/html`; the decode helpers
+    // must type it, while a provider's own HTML error template (WiFiDB's
+    // `Error | Vistumbler WiFiDB`, observed 2026-09-15) stays a module error
+    // naming the page.
+    use super::test_server::{Canned, serve};
+    let base = serve(vec![
+        Canned::html(200, CF_CHALLENGE_PAGE),
+        Canned::html(
+            200,
+            "<!DOCTYPE html><html><head><title>Error | Vistumbler WiFiDB</title></head>\
+             <body>Fatal error: Uncaught TypeError</body></html>",
+        ),
+        Canned::html(200, CF_BLOCK_PAGE),
+    ])
+    .await;
+    let client = reqwest::Client::new();
+    // `fetch_json` → `decode_json_body`.
+    let err = super::fetch_json::<serde_json::Value>(&client, "m", &base)
+        .await
+        .expect_err("a challenge page is not JSON");
+    assert!(
+        matches!(err, crate::core::error::Error::BotChallenge(_)),
+        "{err}"
+    );
+    assert!(err.to_string().contains("Just a moment..."), "{err}");
+    let err = super::fetch_json::<serde_json::Value>(&client, "m", &base)
+        .await
+        .expect_err("an error template is not JSON");
+    assert!(
+        matches!(err, crate::core::error::Error::Module { .. }),
+        "{err}"
+    );
+    assert!(
+        err.to_string().contains("Error | Vistumbler WiFiDB"),
+        "{err}"
+    );
+    // `json_decode` (the un-scanned helper) types it the same way.
+    let resp = client.get(&base).send().await.expect("loopback");
+    let err = super::json_decode::<serde_json::Value>("m", resp)
+        .await
+        .expect_err("a block page is not JSON");
+    assert!(
+        matches!(err, crate::core::error::Error::BotChallenge(_)),
+        "{err}"
+    );
+    assert!(err.to_string().contains("Attention Required!"), "{err}");
+}
+
+#[tokio::test]
+async fn a_2xx_anti_bot_page_read_through_the_text_seams_is_the_typed_bot_challenge_never_the_document()
+ {
+    // Scrapers read their 2xx bodies through `read_body_capped_or_fail` /
+    // `read_text`; a wall served with 200 used to be handed to their parsers
+    // as the page they asked for, and "no results" followed. Only an HTML
+    // document is classified: a crawl index or host list that merely mentions
+    // a vendor path is the data.
+    use super::test_server::{Canned, serve};
+    const INDEX_LINE: &str = "{\"url\": \"https://example.com/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1\", \"status\": \"200\"}\n{\"url\": \"https://example.com/about\", \"status\": \"200\"}\n";
+    let base = serve(vec![
+        Canned::html(200, CF_CHALLENGE_PAGE),
+        Canned::html(200, CF_BLOCK_PAGE),
+        Canned::text(200, INDEX_LINE),
+        Canned::html(
+            200,
+            "<!DOCTYPE html><html><head><title>Register search</title></head>\
+             <body><table><tr><td>no records</td></tr></table></body></html>",
+        ),
+    ])
+    .await;
+    let client = reqwest::Client::new();
+
+    let resp = client.get(&base).send().await.expect("loopback");
+    let err = super::read_body_capped_or_fail("m", resp, 64 * 1024)
+        .await
+        .expect_err("a wall is not the document");
+    assert!(
+        matches!(err, crate::core::error::Error::BotChallenge(_)),
+        "{err}"
+    );
+    assert!(
+        err.to_string().contains("HTTP 200") && err.to_string().contains("Just a moment"),
+        "{err}"
+    );
+
+    let resp = client.get(&base).send().await.expect("loopback");
+    let err = super::read_text("m", resp)
+        .await
+        .expect_err("a block page is not the text payload");
+    assert!(
+        matches!(err, crate::core::error::Error::BotChallenge(_)),
+        "{err}"
+    );
+    assert!(err.to_string().contains("Attention Required"), "{err}");
+
+    // A non-document payload that mentions a vendor path is returned verbatim.
+    let resp = client.get(&base).send().await.expect("loopback");
+    let body = super::read_text("m", resp)
+        .await
+        .expect("a crawl index is the data, not a wall");
+    assert_eq!(body, INDEX_LINE);
+
+    // A real HTML document that is not a wall is returned verbatim.
+    let resp = client.get(&base).send().await.expect("loopback");
+    let body = super::read_body_capped_or_fail("m", resp, 64 * 1024)
+        .await
+        .expect("a register page is the document");
+    assert!(body.contains("no records"));
+}
+
+/// `json_scanned` fails the way `json_decode` fails: an anti-bot page served
+/// with a 2xx where JSON was expected is the typed `BotChallenge` (until
+/// 2026-09-15 it was a bare `String` every caller wrapped as `Error::module`,
+/// so a wall behind any of its thirty-odd call sites read as a module fault),
+/// and a decode failure's message is credential-redacted (this was the one
+/// JSON helper that never ran `redact_credentials`, and `json_failure` quotes
+/// a prefix of the body).
+#[tokio::test]
+async fn json_scanned_types_a_challenge_page_and_redacts_a_credential_in_the_decode_error() {
+    use crate::core::error::Error;
+    const WALL: &str = include_str!("../html/testdata/cloudflare_block_anubis_2026-09-15.html");
+    let wall = reqwest::Response::from(
+        http::Response::builder()
+            .status(200)
+            .body(WALL.to_string())
+            .expect("should succeed"),
+    );
+    let err = crate::util::http::json_scanned::<serde_json::Value>(wall, "test_mod")
+        .await
+        .expect_err("a wall is not JSON");
+    assert!(matches!(err, Error::BotChallenge(_)), "{err}");
+    assert!(err.to_string().contains("Attention Required"), "{err}");
+
+    let leaky = reqwest::Response::from(
+        http::Response::builder()
+            .status(200)
+            .body("api_key=sk_live_SECRETVALUE99&more not json".to_string())
+            .expect("should succeed"),
+    );
+    let err = crate::util::http::json_scanned::<serde_json::Value>(leaky, "test_mod")
+        .await
+        .expect_err("not JSON");
+    assert!(matches!(err, Error::Module { .. }), "{err}");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("test_mod") && !msg.contains("SECRETVALUE99"),
+        "the decode error must name the module and never quote the credential: {msg}"
     );
 }

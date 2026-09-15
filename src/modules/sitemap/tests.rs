@@ -267,3 +267,23 @@ fn loc_numeric_character_references_decode() {
         "decimal and hex character references resolve"
     );
 }
+
+#[test]
+fn no_sitemap_is_established_only_by_a_candidate_that_answered() {
+    // A transport failure used to be folded into the same outcome as a 404,
+    // so a site whose robots.txt and both conventional locations could not be
+    // fetched at all read as "publishes no sitemap".
+    let unreached = vec![
+        "https://example.com/robots.txt: connection reset".to_string(),
+        "https://example.com/sitemap.xml: connection reset".to_string(),
+    ];
+    let err = sweep_verdict("example.com", 0, &unreached).expect_err("nothing answered");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("nothing was established") && msg.contains("2 attempt(s) failed"),
+        "{msg}"
+    );
+    // One answered candidate (a 404) is the site saying it has none.
+    sweep_verdict("example.com", 1, &unreached).expect("a 404 establishes the negative");
+    sweep_verdict("example.com", 3, &[]).expect("all answered");
+}

@@ -178,3 +178,36 @@ fn iso_country_extraction() {
     assert_eq!(iso_country_from_url("garbage"), None);
     assert_eq!(iso_country_from_url("https://x/country/USA"), None); // not 2-char
 }
+
+#[test]
+fn a_failure_on_both_platforms_is_the_modules_error_never_no_accounts() {
+    // Backlog #9. A 429 / 5xx / transport failure / open breaker on both
+    // platforms was an empty result — coverage's "no Chess.com and no Lichess
+    // account". Evidence from one platform still survives the other's failure.
+    let err = || crate::core::error::Error::module(SRC, "429 Too Many Requests");
+    let both = combine(Err(err()), Err(err())).expect_err("nothing found and both failed");
+    assert!(both.to_string().contains("429"), "{both}");
+    let p: ChessComProfile = serde_json::from_str(CHESSCOM_ERIK).unwrap();
+    let found = parse_chesscom(&p, "erik", "s");
+    let kept = combine(Ok(found), Err(err())).expect("chess.com evidence is kept");
+    assert!(!kept.is_empty());
+    // Both platforms answering "no such account" is the clean negative.
+    assert!(combine(Ok(vec![]), Ok(vec![])).expect("clean").is_empty());
+}
+
+#[tokio::test]
+async fn chesscom_lookup_classifies_a_hit_a_404_and_a_failure() {
+    use crate::util::http::test_server::{Canned, serve};
+    let base = serve(vec![
+        Canned::json(200, CHESSCOM_ERIK),
+        Canned::text(404, "Not Found"),
+        Canned::text(503, "Service Unavailable"),
+    ])
+    .await;
+    let client = reqwest::Client::new();
+    let hit = chesscom_lookup(&client, &base, "erik", "s").await.expect("a profile parses");
+    assert!(hit.iter().any(|e| e.kind == EntityKind::Username && e.value == "erik"));
+    assert!(chesscom_lookup(&client, &base, "erik", "s").await.expect("404 is the miss").is_empty());
+    let err = chesscom_lookup(&client, &base, "erik", "s").await.expect_err("503 is a failure");
+    assert!(err.to_string().contains("503"), "{err}");
+}

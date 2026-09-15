@@ -159,7 +159,13 @@ pub(super) fn build_entities(gems: Vec<RgGem>, handle: &str, scan_id: &str) -> V
             }
         }
 
-        // Source code URI — usually GitHub; extract the GitHub username.
+        // Source code URI — usually GitHub. The first path segment is the
+        // REPOSITORY OWNER, which is the subject only when it is the subject's
+        // own handle: a gem co-owned with `rails`, an employer's org or a
+        // co-maintainer's fork host is someone else's account (backlog #37).
+        // A matching owner corroborates the subject on GitHub; any other owner
+        // is a candidate-quarantined pivot that names itself as the repository
+        // owner, never a confirmed handle of the subject.
         if let Some(src_url) = gem.source_code_uri.as_deref()
             && crate::util::url_util::is_absolute_http_url(src_url)
             && let Some(gh_user) = github_user_from_url(src_url)
@@ -173,11 +179,20 @@ pub(super) fn build_entities(gems: Vec<RgGem>, handle: &str, scan_id: &str) -> V
             );
             g.tag("github");
             g.tag("rubygems-pivot");
-            g.add_evidence(
-                gem_ev()
-                    .with_attr("source_field", "source_code_uri")
-                    .with_attr("source_url", src_url),
-            );
+            let mut ev = gem_ev()
+                .with_attr("source_field", "source_code_uri")
+                .with_attr("source_url", src_url);
+            if gh_user.eq_ignore_ascii_case(handle) {
+                ev = ev.with_attr("relation", "the subject's own GitHub account");
+            } else {
+                g.demote_to_candidate();
+                g.tag("repo-owner");
+                ev = ev.with_attr(
+                    "relation",
+                    "owner of the gem's repository — not necessarily the subject",
+                );
+            }
+            g.add_evidence(ev);
             result.push(g);
         }
     }

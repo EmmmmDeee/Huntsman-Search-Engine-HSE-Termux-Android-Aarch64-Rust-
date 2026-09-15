@@ -81,7 +81,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **GreyNoise** | internet-scan noise / RIOT benign | community free | UUID / 32 alnum | M K D |
 | **Pulsedive** | indicator/threat enrichment | free | alnum | M K D |
 | **ThreatFox (abuse.ch)** | IOCs (malware, C2) | free | abuse.ch key | M K D |
-| **URLhaus (abuse.ch)** | malicious URL feed | free | — | M D |
+| **URLhaus (abuse.ch)** | malicious URL feed | free key (Auth-Key) | — | M D |
 | **PhishTank** | phishing-URL verification feed/lookup | free | app key | D C |
 | **MalwareBazaar (abuse.ch)** | malware-sample intel | free | abuse.ch key | D |
 | **MalShare** | malware-sample repository (hash/source/filename search + download) | free (2k/day key) | alnum | D C |
@@ -141,7 +141,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **ipregistry** | IP geo + threat | ltd | `ira_`/alnum | M(ip_registry) D |
 | **MaxMind GeoIP2** | IP geo (API + GeoLite2 free DB) | GeoLite free | account id + license | D C |
 | **ipquery / ipapi / ip-api** | IP geo (keyless tiers) | free | — / key | M(ipquery) D |
-| *(keyless infra)* **bgpview / ripestat / hackertarget / ip_whois_geo** | ASN/prefix/WHOIS-geo, no key | free | — | M |
+| *(keyless infra)* **ip_registry / ripestat / hackertarget / ip_whois_geo** | RDAP allocation+autnum / ASN-prefix / WHOIS-geo, no key | free | — | M |
 
 ## 7. Domain / WHOIS / DNS / certificate
 
@@ -226,9 +226,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **ABR / ABN Lookup** | business number → entity, ACN | M |
 | **ASIC** (persons, directors, business names, banned orgs) | company & officeholder records | M |
 | **AHPRA** | registered health practitioners | M |
-| **ACMA RRL** | radio/spectrum licences | M |
-| **AEC / au_electoral** | electoral roll signals | M |
-| **au_property / qld_cadastre / au_unclaimed** | property, cadastre, unclaimed money | M |
+| **qld_cadastre / au_unclaimed** | cadastre, unclaimed money | M |
 | **au_geo** | ABS statistical geography (postcode, suburb, LGA, electorates) | M |
 | **AustLII** | case law / tribunal records | M |
 | **Trove** | National Library archive | M K |

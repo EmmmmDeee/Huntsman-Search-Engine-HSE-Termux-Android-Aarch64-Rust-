@@ -327,13 +327,23 @@ impl Module for Sitemap {
         // authoritative pointer), then the two conventional locations, for each
         // host variant.
         let mut candidates: Vec<String> = Vec::new();
+        // Candidates the server answered (a body or a non-2xx) versus those that
+        // could not be fetched at all — only the former can establish "no
+        // sitemap" (see `sweep_verdict`).
+        let mut answered = 0usize;
+        let mut unreached: Vec<String> = Vec::new();
         for h in &host_variants {
-            if let Some(robots) = fetch_capped(ctx, &format!("https://{h}/robots.txt")).await {
-                for sm in parse_robots_sitemaps(&robots) {
-                    if in_scope(&sm, &site) {
-                        candidates.push(sm);
+            match fetch_capped(ctx, &format!("https://{h}/robots.txt")).await {
+                Fetched::Body(robots) => {
+                    answered += 1;
+                    for sm in parse_robots_sitemaps(&robots) {
+                        if in_scope(&sm, &site) {
+                            candidates.push(sm);
+                        }
                     }
                 }
+                Fetched::Absent => answered += 1,
+                Fetched::Unreached(why) => unreached.push(why),
             }
             candidates.push(format!("https://{h}/sitemap.xml"));
             candidates.push(format!("https://{h}/sitemap_index.xml"));
@@ -372,8 +382,19 @@ impl Module for Sitemap {
             if !seen_docs.insert(doc_url.clone()) {
                 continue;
             }
-            let Some(body) = fetch_capped(ctx, &doc_url).await else {
-                continue;
+            let body = match fetch_capped(ctx, &doc_url).await {
+                Fetched::Body(body) => {
+                    answered += 1;
+                    body
+                }
+                Fetched::Absent => {
+                    answered += 1;
+                    continue;
+                }
+                Fetched::Unreached(why) => {
+                    unreached.push(why);
+                    continue;
+                }
             };
             fetched += 1;
 
@@ -425,6 +446,10 @@ impl Module for Sitemap {
             mark_truncated(&mut entities, reason);
         }
 
+        if entities.is_empty() {
+            sweep_verdict(&host, answered, &unreached)?;
+        }
+
         let mut result = ModuleResult::new();
         for e in entities {
             result.push(e);
@@ -433,18 +458,55 @@ impl Module for Sitemap {
     }
 }
 
-/// Fetch a URL as text, size-capped, returning `None` on any error, non-success
-/// status, or private-host preflight rejection. Confines the read to
+/// What one candidate fetch established. A transport failure used to be
+/// folded into the same `None` as a 404, so a domain whose every candidate
+/// could not be fetched at all read as "publishes no sitemap".
+enum Fetched {
+    /// A 2xx body, size-capped.
+    Body(String),
+    /// The server answered with a non-2xx status: the document is not there.
+    Absent,
+    /// Nothing was established: a private host (never fetched), a transport
+    /// failure, or a body that could not be read.
+    Unreached(String),
+}
+
+/// Fetch a URL as text, size-capped. Confines the read to
 /// [`MAX_SITEMAP_BYTES`] so a hostile server cannot stream unbounded bytes.
-async fn fetch_capped(ctx: &ModuleContext, url: &str) -> Option<String> {
+async fn fetch_capped(ctx: &ModuleContext, url: &str) -> Fetched {
     if crate::util::preflight::url_host_is_private(url) {
-        return None;
+        return Fetched::Unreached(format!("{url}: private host, not fetched"));
     }
-    let resp = ctx.http.get(url).send_tagged(SRC).await.ok()?;
+    let resp = match ctx.http.get(url).send_tagged(SRC).await {
+        Ok(r) => r,
+        Err(e) => return Fetched::Unreached(format!("{url}: {e}")),
+    };
     if !resp.status().is_success() {
-        return None;
+        return Fetched::Absent;
     }
-    read_body_capped(resp, MAX_SITEMAP_BYTES).await
+    match read_body_capped(resp, MAX_SITEMAP_BYTES).await {
+        Some(body) => Fetched::Body(body),
+        None => Fetched::Unreached(format!("{url}: body could not be read")),
+    }
+}
+
+/// The verdict of an enumeration that found no URL. "No sitemap" is
+/// established only when at least one candidate document was ANSWERED
+/// (a 404 on `/sitemap.xml` is the site saying so); when no candidate could
+/// be fetched at all, nothing was established about the site's sitemap and
+/// the module says so instead of reporting an empty enumeration. **Pure.**
+fn sweep_verdict(host: &str, answered: usize, unreached: &[String]) -> Result<()> {
+    if answered == 0 && !unreached.is_empty() {
+        return Err(crate::core::error::Error::module(
+            SRC,
+            format!(
+                "no sitemap candidate for {host} could be fetched, so nothing was established about its sitemap ({} attempt(s) failed): {}",
+                unreached.len(),
+                unreached.join("; ")
+            ),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

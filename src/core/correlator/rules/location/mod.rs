@@ -97,9 +97,6 @@ const ANCHORING_GEO_SOURCES: &[&str] = &[
     // `qld_unclaimed` source, so both needles are retained.
     "qld_unclaimed",
     "au_unclaimed",
-    // AU residential people-finder directories (White Pages AU, True People
-    // Search AU) — suburb/state/postcode for a confirmed name.
-    "au_people",
     // ASIC company-directors register — the director's company registered-office
     // address (a person-anchored business location).
     "asic_director",
@@ -108,12 +105,6 @@ const ANCHORING_GEO_SOURCES: &[&str] = &[
     // Timezone inference from breach timestamp clustering — coarse but
     // person-linked (the timestamps belong to the subject's account activity)
     "breach_timezone",
-    // AEC and state electoral commission enrolment lookups — compulsory
-    // enrolment and address-verified; highest-confidence residential signal.
-    "au_electoral",
-    // Property and land title register lookups — compulsory title registration,
-    // government-maintained, orthogonal to directories and electoral records.
-    "au_property",
 ];
 
 /// Returns `true` when a source name is a person-anchoring geo source —
@@ -164,7 +155,7 @@ pub(in crate::core) fn is_infrastructure_geo(e: &Entity) -> bool {
     // The "no person-anchoring source" heuristic only holds for `Coordinates`: a
     // bare lat/lon with no anchoring source is almost always an IP/WHOIS-derived
     // point. A street `Address` legitimately comes from registry sources
-    // (au_property, au_electoral, qld_unclaimed, opencorporates) that are NOT in
+    // (qld_unclaimed, opencorporates) that are NOT in
     // ANCHORING_GEO_SOURCES, so applying the anchoring test to an address would
     // discard a real home — addresses are gated by the infra TAGS above only.
     e.kind == EntityKind::Coordinates
@@ -486,10 +477,6 @@ pub(crate) enum GeoSourceClass {
     Enrichment,
     /// Search-snippet inline geocoding.
     Search,
-    /// Australian electoral roll — compulsory residential enrolment, AEC/state ECs.
-    Electoral,
-    /// Australian property/land title register — government-maintained ownership record.
-    Property,
     /// A person's **breach/stealer login IP** geolocated to a city — their own
     /// network connection at the time, not infrastructure. Coarse (ISP/cell-tower
     /// grain) but person-linked, so it corroborates a locality the finer signals
@@ -511,9 +498,7 @@ pub(crate) fn geo_source_class(source: &str) -> GeoSourceClass {
         "abn_lookup" | "opencorporates" | "acnc_charities" | "gleif_lei" | "asic_director" => {
             GeoSourceClass::Registry
         }
-        "qld_unclaimed" | "au_unclaimed" | "au_people" => GeoSourceClass::Directory,
-        "au_electoral" => GeoSourceClass::Electoral,
-        "au_property" => GeoSourceClass::Property,
+        "qld_unclaimed" | "au_unclaimed" => GeoSourceClass::Directory,
         "github_user" | "keybase" | "social_location" => GeoSourceClass::Social,
         "phone_area_geo" | "phone_carrier_geo" => GeoSourceClass::Phone,
         "epieos" | "contact_enrich" | "proxycurl" | "fullcontact" => GeoSourceClass::Enrichment,
@@ -539,9 +524,8 @@ pub(crate) fn geo_source_class(source: &str) -> GeoSourceClass {
 /// already provides (Rule 4: delegate, never duplicate). Monotonically ordered
 /// finest → coarsest: live handset GNSS (~10 m) < consumer GPS EXIF (~20 m)
 /// < rooftop/street geocoding
-/// (~40 m) < land-title parcel (~60 m) < WiGLE-class Wi-Fi AP geolocation
-/// (~75 m) < compulsory electoral enrolment (~150 m, exact address but not
-/// always rooftop-geocoded) < a business registry's registered office (~500 m —
+/// (~40 m) < WiGLE-class Wi-Fi AP geolocation
+/// (~75 m) < a business registry's registered office (~500 m —
 /// often an agent/PO-box, not necessarily the subject's own address) <
 /// people-finder directory (~2 km) < data-broker enrichment (~3 km) <
 /// self-reported social bio (~5 km, usually just a city name) < search-snippet
@@ -554,9 +538,7 @@ pub(in crate::core::correlator) fn precision_radius_m(class: GeoSourceClass) -> 
         GeoSourceClass::DeviceGps => 10.0,
         GeoSourceClass::PhotoGps => 20.0,
         GeoSourceClass::Geocode => 40.0,
-        GeoSourceClass::Property => 60.0,
         GeoSourceClass::WifiSensor => 75.0,
-        GeoSourceClass::Electoral => 150.0,
         GeoSourceClass::Registry => 500.0,
         GeoSourceClass::Directory => 2_000.0,
         GeoSourceClass::Enrichment => 3_000.0,
@@ -589,8 +571,6 @@ pub(crate) fn class_locates_subject_directly(class: GeoSourceClass) -> bool {
     match class {
         GeoSourceClass::DeviceGps | GeoSourceClass::PhotoGps | GeoSourceClass::WifiSensor => true,
         GeoSourceClass::Geocode
-        | GeoSourceClass::Property
-        | GeoSourceClass::Electoral
         | GeoSourceClass::Registry
         | GeoSourceClass::Directory
         | GeoSourceClass::Enrichment
@@ -1481,8 +1461,6 @@ fn geo_class_name(c: &GeoSourceClass) -> &'static str {
         GeoSourceClass::Phone => "phone",
         GeoSourceClass::Enrichment => "enrichment",
         GeoSourceClass::Search => "search",
-        GeoSourceClass::Electoral => "electoral",
-        GeoSourceClass::Property => "property",
         GeoSourceClass::NetworkIp => "network-ip",
         GeoSourceClass::Other => "other",
     }

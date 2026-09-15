@@ -83,17 +83,141 @@ pub(super) struct CrossrefItem {
     pub(super) doi: Option<String>,
     #[serde(rename = "URL", default)]
     pub(super) url: Option<String>,
+    /// The work's title(s) — Crossref models `title` as a list.
+    #[serde(default)]
+    pub(super) title: Vec<String>,
+    /// The work's authors — what ties a work to the subject.
+    #[serde(default)]
+    pub(super) author: Vec<CrossrefAuthor>,
+}
+
+/// One author of a work (`author[]`): the `given` / `family` name parts and
+/// the affiliation names the publisher deposited. Live shape 2026-09-15:
+/// `{"given":"Ada","family":"Lovelace","affiliation":[{"name":"…"}]}`.
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct CrossrefAuthor {
+    #[serde(default)]
+    pub(super) given: Option<String>,
+    #[serde(default)]
+    pub(super) family: Option<String>,
+    #[serde(default)]
+    pub(super) affiliation: Vec<CrossrefAffiliation>,
+}
+
+/// An author's affiliation (`author[].affiliation[]`).
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct CrossrefAffiliation {
+    #[serde(default)]
+    pub(super) name: Option<String>,
+}
+
+/// The Crossref query for a target: an author-scoped `query.author=` for a
+/// name, an affiliation-scoped `query.affiliation=` for an organisation. The
+/// generic `query=` searches every field (title, abstract, references,
+/// funder), so it returned works ABOUT a person as if they were the person's
+/// (backlog #14; observed live 2026-09-15: `query=Ada Lovelace` → "Introduction
+/// to the Ada Lovelace Symposium" by Alexander Wolf and "Ada Lovelace lives
+/// forever" by Betty Toole; `query.author=Ada Lovelace` → works whose author
+/// is Ada Lovelace). `select=` limits the payload to the fields read. **Pure.**
+fn build_query(kind: TargetKind, value: &str) -> Option<String> {
+    let field = match kind {
+        TargetKind::FullName => "query.author",
+        TargetKind::Organisation => "query.affiliation",
+        _ => return None,
+    };
+    Some(format!(
+        "https://api.crossref.org/works?{field}={}&rows={CAP}&select=DOI,URL,title,author",
+        urlencode(value)
+    ))
+}
+
+/// Why a work is attributable to the seed: the author whose name matches a
+/// FullName seed, or the affiliation naming an Organisation seed. `None` when
+/// nothing in the work's author list ties it to the subject — a work that
+/// merely mentions the name, or one Crossref's fuzzy author match admitted on
+/// a different person. **Pure.**
+pub(super) fn attribution(kind: TargetKind, seed: &str, item: &CrossrefItem) -> Option<String> {
+    match kind {
+        TargetKind::FullName => item.author.iter().find_map(|a| {
+            let family = a.family.as_deref()?.trim();
+            let given = a.given.as_deref().unwrap_or("").trim();
+            author_matches(seed, given, family)
+                .then(|| format!("{given} {family}").trim().to_string())
+        }),
+        TargetKind::Organisation => item
+            .author
+            .iter()
+            .flat_map(|a| a.affiliation.iter())
+            .filter_map(|af| af.name.as_deref())
+            .map(str::trim)
+            .find(|name| affiliation_matches(seed, name))
+            .map(str::to_string),
+        _ => None,
+    }
+}
+
+/// A seed name matches an author when the author's family name is the seed's
+/// trailing token(s) (Western order) or its leading token(s) (family-first
+/// order — Vietnamese, Hungarian, East Asian names), and, when both sides
+/// carry a given name, the seed's given token is the author's given name or
+/// its initial (`J.` for `Jordan`, either way round). ASCII case- and
+/// diacritic-folded. A bare family-name seed matches on the family name alone.
+pub(super) fn author_matches(seed: &str, given: &str, family: &str) -> bool {
+    let fold = |t: &str| crate::util::str_util::fold_ascii_lower(t.trim_end_matches('.'));
+    let tokens: Vec<String> = seed.split_whitespace().map(fold).collect();
+    let fam: Vec<String> = family.split_whitespace().map(fold).collect();
+    if fam.is_empty() || tokens.len() < fam.len() {
+        return false;
+    }
+    let given_first = given.split_whitespace().next().map(fold);
+    let given_ok = |rest: &[String]| match (rest.first(), given_first.as_deref()) {
+        // Nothing to compare on one side: the family name decides.
+        (None, _) | (_, None) => true,
+        (Some(s), Some(g)) => {
+            s == g
+                || (s.chars().count() == 1 && g.starts_with(s.as_str()))
+                || (g.chars().count() == 1 && s.starts_with(g))
+        }
+    };
+    if tokens.ends_with(&fam) && given_ok(&tokens[..tokens.len() - fam.len()]) {
+        return true;
+    }
+    tokens.len() > fam.len() && tokens.starts_with(&fam) && given_ok(&tokens[fam.len()..])
+}
+
+/// An affiliation names the organisation when every token of the seed appears
+/// in it (folded, punctuation-split), so `University of Wollongong` matches
+/// `University of Wollongong , Wollongong , Australia` and not `The Wollongong
+/// Hospital`.
+pub(super) fn affiliation_matches(seed: &str, affiliation: &str) -> bool {
+    let tokens = |s: &str| -> Vec<String> {
+        s.split(|c: char| !c.is_alphanumeric())
+            .filter(|t| !t.is_empty())
+            .map(crate::util::str_util::fold_ascii_lower)
+            .collect()
+    };
+    let hay = tokens(affiliation);
+    let needles = tokens(seed);
+    !needles.is_empty() && needles.iter().all(|n| hay.contains(n))
 }
 
 /// Project a Crossref search response onto entities.
 ///
-/// Pure, network-free, deterministic and deduplicated: prefers each item's
+/// Only a work [`attribution`] ties to the seed — by author for a name, by
+/// affiliation for an organisation — is emitted; the rest of a page is works
+/// that mention the name or fuzzy-matched someone else. Pure, network-free,
+/// deterministic and deduplicated: prefers each item's
 /// own `URL`, falling back to the canonical `doi.org` resolver built from its
 /// `DOI` when `URL` is absent; an item with neither is skipped. Dedup is
 /// case-insensitive on the URL (two spellings differing only in case are the
 /// same resolvable resource, unlike the case-sensitive cryptocurrency-address
 /// dedup elsewhere in this crate), capped at [`CAP`] entities.
-pub(super) fn build_entities(resp: &CrossrefResp, query: &str, scan_id: &str) -> Vec<Entity> {
+pub(super) fn build_entities(
+    resp: &CrossrefResp,
+    kind: TargetKind,
+    query: &str,
+    scan_id: &str,
+) -> Vec<Entity> {
     let mut out = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -103,6 +227,9 @@ pub(super) fn build_entities(resp: &CrossrefResp, query: &str, scan_id: &str) ->
             // walking the remaining items to discard them.
             break;
         }
+        let Some(matched) = attribution(kind, query, item) else {
+            continue;
+        };
         let doi = item.doi.as_deref().map(str::trim).filter(|d| !d.is_empty());
         let url = item
             .url
@@ -121,8 +248,19 @@ pub(super) fn build_entities(resp: &CrossrefResp, query: &str, scan_id: &str) ->
         let mut e = Entity::new(EntityKind::Url, &url, WORK_URL_CONFIDENCE, scan_id);
         e.tag("crossref");
         e.tag("academic");
-        let mut ev = Evidence::new(SRC, format!("Crossref work matching '{query}'"))
-            .with_attr("query", query);
+        let (summary, matched_key) = match kind {
+            TargetKind::Organisation => (
+                format!("Crossref work affiliated with '{matched}'"),
+                "matched_affiliation",
+            ),
+            _ => (format!("Crossref work by '{matched}'"), "matched_author"),
+        };
+        let mut ev = Evidence::new(SRC, summary)
+            .with_attr("query", query)
+            .with_attr(matched_key, &matched);
+        if let Some(t) = item.title.iter().map(|t| t.trim()).find(|t| !t.is_empty()) {
+            ev = ev.with_attr("title", t);
+        }
         if let Some(d) = doi {
             ev = ev.with_attr("doi", d);
         }
@@ -191,10 +329,9 @@ impl Module for CrossrefSearch {
             return Ok(ModuleResult::new());
         }
 
-        let url = format!(
-            "https://api.crossref.org/works?query={}&rows=5",
-            urlencode(query)
-        );
+        let Some(url) = build_query(target.kind, query) else {
+            return Ok(ModuleResult::new());
+        };
         let resp = ctx
             .http
             .get(&url)
@@ -208,7 +345,7 @@ impl Module for CrossrefSearch {
         let parsed: CrossrefResp = crate::util::http::json_decode(SRC, resp).await?;
 
         let mut result = ModuleResult::new();
-        result.entities = build_entities(&parsed, query, &ctx.scan_id);
+        result.entities = build_entities(&parsed, target.kind, query, &ctx.scan_id);
         Ok(result)
     }
 }

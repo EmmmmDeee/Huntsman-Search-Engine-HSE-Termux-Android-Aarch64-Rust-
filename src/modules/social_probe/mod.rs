@@ -6,7 +6,9 @@
 //! (soft-404/SPA-shell), a `negative_patterns` body check must also pass —
 //! see `Platform::negative_patterns`. Each confirmed profile becomes a Url
 //! entity with the platform tagged, plus `verified-detection` (body-marker
-//! confirmed) or `weak-detection` (status code alone — the correlator
+//! confirmed over the WHOLE page — a page curl cut short at the download cap
+//! is inconclusive, never a hit; see `classify_probe`) or `weak-detection`
+//! (status code alone — the correlator
 //! discounts these, see `core::correlator::rules::identity::account`'s
 //! AU-055 and `cluster`'s AU-003) so a bare status-only guess is never
 //! presented as a confirmed, subject-controlled account.
@@ -25,6 +27,10 @@ use crate::core::{
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
+};
+use crate::util::curl::StatusProbe;
+use crate::util::probe::{
+    ProbeResult, classify_non_matching_status, control_handle, control_presences,
 };
 
 #[cfg(test)]
@@ -46,8 +52,9 @@ pub(super) struct Platform {
 
 /// Confidence + verified-flag a hit earns, tiered by rigour — mirrors
 /// `streaming_probe`/`username_search`'s `detection_strength`. A platform
-/// with a `negative_patterns` check just had its body inspected for a
-/// "doesn't exist" marker and passed — a real confirmation (0.92, verified).
+/// with a `negative_patterns` check just had its WHOLE body inspected for a
+/// "doesn't exist" marker and passed — a real confirmation (0.92, verified);
+/// a body curl cut short never gets here (see [`classify_probe`]).
 /// A platform with no negative pattern rests entirely on the HTTP status
 /// code, which a soft-404/SPA-shell can return for almost any handle — an
 /// unconfirmed status-only lead (0.74, unverified). Tagging the weak case
@@ -57,6 +64,58 @@ pub(super) struct Platform {
 /// produced across 30+ status-only platforms.
 fn detection_strength(platform: &Platform) -> (f64, bool) {
     crate::util::probe_confidence::detection_strength(!platform.negative_patterns.is_empty())
+}
+
+/// Decide what one platform probe proved, from curl's answer alone. Pure, so
+/// the whole hit / absence / inconclusive policy is testable without the
+/// network.
+///
+/// * A status outside the platform's `exists_codes` is a definitive absence
+///   when it is one a platform answers for a missing handle (404/410, or a 2xx
+///   the table did not list) and inconclusive when it is a refusal — a WAF
+///   challenge, a throttle, an outage, or curl's `0` for "no answer at all"
+///   ([`classify_non_matching_status`], the policy the reqwest enumerators use).
+/// * A presence status on a status-only platform is a weak hit.
+/// * A presence status on a negative-marker platform is a definitive absence
+///   when the body carries a marker (a partial body suffices — the marker was
+///   seen), a verified hit when the **whole** body was read and carries none,
+///   and **inconclusive** when curl refused or cut the body
+///   ([`StatusProbe::truncated`]): the marker check is the only thing that
+///   separates a profile from this platform's 200-for-everything not-found
+///   page, and it ran over a document that was never delivered. Before this
+///   an empty body simply "contained no marker", and the probe minted a 0.92
+///   `verified-detection` profile for any handle on any of these platforms
+///   whose not-found page exceeds the download cap
+///   (`docs/PROVIDER_SWEEP_BACKLOG.md` #38).
+pub(super) fn classify_probe(platform: &Platform, url: &str, answer: &StatusProbe) -> ProbeResult {
+    if !platform.exists_codes.contains(&answer.status) {
+        return classify_non_matching_status(answer.status);
+    }
+    let (confidence, verified) = detection_strength(platform);
+    if platform.negative_patterns.is_empty() {
+        return ProbeResult::Found {
+            url: url.to_string(),
+            confidence,
+            verified,
+            controlled: false,
+        };
+    }
+    if platform
+        .negative_patterns
+        .iter()
+        .any(|p| answer.body.contains(p))
+    {
+        return ProbeResult::NotFound;
+    }
+    if answer.truncated {
+        return ProbeResult::Error;
+    }
+    ProbeResult::Found {
+        url: url.to_string(),
+        confidence,
+        verified,
+        controlled: false,
+    }
 }
 
 pub(super) const USERNAME_PLATFORMS: &[Platform] = &[
@@ -334,7 +393,10 @@ impl Module for SocialProbe {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        40_000
+        // The first wave is sequential and paced (37 platforms × up to 4 s of
+        // curl + 250 ms), the control wave concurrent (one more curl per
+        // presence); the 40 s envelope was reached on this sandbox at 37 s.
+        60_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -343,21 +405,10 @@ impl Module for SocialProbe {
             return Ok(ModuleResult::new());
         }
 
-        let mut result = ModuleResult::new();
-        let mut found_count = 0u32;
-        let mut verified_count = 0u32;
-        let mut checked_count = 0u32;
-        // Probes that returned no definitive answer — `fetch_with_status` code 0,
-        // i.e. curl could not connect / was blocked / had no egress — as distinct
-        // from a definitive not-found (a real HTTP status that just isn't a hit).
-        // Drives the M6 inconclusive-vs-absent verdict after the sweep.
-        let mut inconclusive_probes = 0u32;
-        let mut found_platforms: Vec<&str> = Vec::new();
-
         let platforms = match target.kind {
             TargetKind::Username => USERNAME_PLATFORMS,
             TargetKind::FullName => NAME_PLATFORMS,
-            _ => return Ok(result),
+            _ => return Ok(ModuleResult::new()),
         };
 
         let slug = match target.kind {
@@ -365,11 +416,13 @@ impl Module for SocialProbe {
             _ => value.to_string(),
         };
 
+        // First wave: every platform, for the target, paced.
+        let mut first: Vec<((&'static Platform, u16), ProbeResult)> = Vec::new();
+        let mut checked_count = 0u32;
         for platform in platforms {
             if ctx.cancel.is_cancelled() {
                 break;
             }
-
             // Percent-encode the substituted value so a handle with URL-significant
             // characters can't break out of the path/query (matches the other
             // presence probes); a plain alphanumeric handle is unchanged.
@@ -377,52 +430,128 @@ impl Module for SocialProbe {
                 .url_pattern
                 .replace("{}", &crate::util::http::urlencode(&slug));
             checked_count += 1;
-
-            let (code, body) = crate::util::curl::fetch_with_status(
+            let answer = crate::util::curl::fetch_with_status(
                 &url,
                 4_000,
                 !platform.negative_patterns.is_empty(),
             )
             .await;
+            first.push((
+                (platform, answer.status),
+                classify_probe(platform, &url, &answer),
+            ));
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
 
-            // A probe that did not answer must not be counted as a definitive
-            // "no such handle here".
-            //
-            // Code 0 = curl gave no definitive answer (couldn't connect / blocked
-            // / no egress); it can never be a hit, since `exists_codes` are real
-            // HTTP statuses, and the classifier maps it to `Error` like any other
-            // non-answer. That case was already handled.
-            //
-            // A real-but-refusing status needs the same treatment and did not get
-            // it: a 403 WAF challenge, a 429 throttle or a 5xx outage is not in
-            // `exists_codes`, so it silently fell through as a *definitive*
-            // "no such handle here" and never reached `inconclusive_sweep`. Only
-            // curl-level failure was counted, so a platform that answers every
-            // probe with a challenge page looked like a confirmed absence.
-            // `classify_non_matching_status` is the same policy the two
-            // `util::probe` enumerators use.
-            let refused = !platform.exists_codes.contains(&code)
-                && matches!(
-                    crate::util::probe::classify_non_matching_status(code),
-                    crate::util::probe::ProbeResult::Error
-                );
-            if refused {
-                inconclusive_probes += 1;
+        // Second wave: each presence judged against the control handle on the
+        // same platform (`util::probe::control_presences`) — a platform that is
+        // "present" for a handle nobody holds cannot tell a held handle from an
+        // unheld one, and on these platforms a fabricated presence is a
+        // sensitive claim (four adult/cam platforms answered so on 2026-09-15).
+        let judged = control_presences(first, |(platform, _): (&'static Platform, u16)| {
+            let url = platform
+                .url_pattern
+                .replace("{}", &crate::util::http::urlencode(control_handle()));
+            let capture = !platform.negative_patterns.is_empty();
+            let probe_url = url.clone();
+            (url, async move {
+                let answer = crate::util::curl::fetch_with_status(&probe_url, 4_000, capture).await;
+                classify_probe(platform, &probe_url, &answer)
+            })
+        })
+        .await;
+
+        let (mut result, tally) = emit_judged(&judged, &ctx.scan_id);
+
+        // M6: a zero-hit run where at least half the probes returned no definitive
+        // answer (curl code 0 — blocked / unreachable / no egress — or a platform
+        // that cannot tell) is *inconclusive*, not a confirmed absence. Surface it
+        // as a module error so a network-blocked sweep is never read as "this
+        // handle is on no social platform" — the same disambiguation
+        // `username_search` and `streaming_probe` make. A cancelled run is
+        // exempt: the operator stopped it, so the module asserts nothing about
+        // what it didn't probe.
+        if !ctx.cancel.is_cancelled()
+            && let Some(msg) = inconclusive_sweep(
+                tally.found,
+                tally.inconclusive,
+                tally.indiscriminate_platforms.len() as u32,
+                checked_count,
+            )
+        {
+            return Err(Error::module(SRC, msg));
+        }
+
+        // Add a summary echo of the target ONLY when at least one profile was
+        // actually confirmed (see `should_echo_target`). The negative result is
+        // still recorded in the dispatch log; it just must not vouch for the seed.
+        if let Some(summary) = build_target_summary(
+            target,
+            tally.found,
+            tally.verified,
+            checked_count,
+            &tally.found_platforms,
+            &tally.indiscriminate_platforms,
+            tally.uncontrolled,
+            &ctx.scan_id,
+        ) {
+            result.push(summary);
+        }
+
+        Ok(result)
+    }
+}
+
+/// What a sweep counted, for the summary and the M6 verdict.
+#[derive(Default)]
+pub(super) struct SweepTally {
+    pub(super) found: u32,
+    pub(super) verified: u32,
+    /// Probes that returned no definitive answer (curl code 0, a refusal).
+    pub(super) inconclusive: u32,
+    /// Presences whose control could not be read: they stand as they were.
+    pub(super) uncontrolled: u32,
+    pub(super) found_platforms: Vec<&'static str>,
+    /// Platforms that answered "present" for the control handle too — no
+    /// answer about the handle, never a profile.
+    pub(super) indiscriminate_platforms: Vec<&'static str>,
+}
+
+/// Turn the judged probes into entities. Pure (no I/O), so the reading of the
+/// control judgement — an indiscriminate platform is never a profile, a
+/// presence says whether its control was absent — is unit-tested directly.
+pub(super) fn emit_judged(
+    judged: &[((&'static Platform, u16), ProbeResult)],
+    scan_id: &str,
+) -> (ModuleResult, SweepTally) {
+    let mut result = ModuleResult::new();
+    let mut tally = SweepTally::default();
+    for ((platform, status), outcome) in judged {
+        let status = *status;
+        match outcome {
+            ProbeResult::Error => tally.inconclusive += 1,
+            ProbeResult::NotFound => {}
+            ProbeResult::Indiscriminate { .. } => {
+                tally.indiscriminate_platforms.push(platform.name);
             }
-
-            let body_blocks = !platform.negative_patterns.is_empty()
-                && platform.negative_patterns.iter().any(|p| body.contains(p));
-
-            if platform.exists_codes.contains(&code) && !body_blocks {
+            ProbeResult::Found {
+                url,
+                confidence,
+                verified,
+                controlled,
+            } => {
+                let (url, confidence, verified, controlled) =
+                    (url.as_str(), *confidence, *verified, *controlled);
+                let mut found_count = 0u32;
+                let mut verified_count = 0u32;
+                let mut found_platforms: Vec<&'static str> = Vec::new();
                 found_count += 1;
                 found_platforms.push(platform.name);
-
-                let (confidence, verified) = detection_strength(platform);
                 if verified {
                     verified_count += 1;
                 }
 
-                let mut entity = Entity::new(EntityKind::Url, &url, confidence, &ctx.scan_id);
+                let mut entity = Entity::new(EntityKind::Url, url, confidence, scan_id);
                 entity.tag("social-profile");
                 entity.tag(format!("platform:{}", platform.name));
                 entity.tag(if verified {
@@ -432,12 +561,12 @@ impl Module for SocialProbe {
                 });
                 entity.add_evidence(
                     Evidence::new(
-                        crate::modules::corpus_source(&url, SRC),
+                        crate::modules::corpus_source(url, SRC),
                         format!("Profile found on {}", platform.name),
                     )
                     .with_attr("platform", platform.name)
-                    .with_attr("http_status", code.to_string())
-                    .with_attr("profile_url", &url)
+                    .with_attr("http_status", status.to_string())
+                    .with_attr("profile_url", url)
                     .with_attr(
                         "detection",
                         if verified {
@@ -445,8 +574,12 @@ impl Module for SocialProbe {
                         } else {
                             "status-only"
                         },
-                    ),
+                    )
+                    .with_attr("control", if controlled { "absent" } else { "unavailable" }),
                 );
+                if !controlled {
+                    tally.uncontrolled += 1;
+                }
                 result.push(entity);
 
                 // A confirmed profile's value is the URL + handle, already
@@ -458,61 +591,31 @@ impl Module for SocialProbe {
                 // CRITICAL infrastructure-pollution). Only surface a platform host
                 // that is NOT a known mega/social/infra domain — i.e. a niche or
                 // self-hosted site that might genuinely belong to the subject.
-                if let Some(host) = url::Url::parse(&url)
+                if let Some(host) = url::Url::parse(url)
                     .ok()
                     .and_then(|u| u.host_str().map(str::to_lowercase))
                     && host.contains('.')
                     && !crate::core::scan::is_noncentral_domain(&host)
                 {
-                    let mut dom =
-                        Entity::new(EntityKind::Domain, &host, confidence::LOW, &ctx.scan_id);
+                    let mut dom = Entity::new(EntityKind::Domain, &host, confidence::LOW, scan_id);
                     dom.tag("social-platform");
                     dom.add_evidence(
                         Evidence::new(
-                            crate::modules::corpus_source(&url, SRC),
+                            crate::modules::corpus_source(url, SRC),
                             format!("Platform domain from {} profile", platform.name),
                         )
                         .with_attr("platform", platform.name),
                     );
                     result.push(dom);
                 }
+                tally.found += found_count;
+                tally.verified += verified_count;
+                tally.found_platforms.extend(found_platforms);
             }
-
-            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
-
-        // M6: a zero-hit run where at least half the probes returned no definitive
-        // answer (curl code 0 — blocked / unreachable / no egress) is
-        // *inconclusive*, not a confirmed absence. Surface it as a module error so
-        // a network-blocked sweep is never read as "this handle is on no social
-        // platform" — the same disambiguation `username_search` and
-        // `streaming_probe` make. `should_echo_target` already blocks the worse
-        // symptom (echoing the seed as corroboration), but a silent empty `Ok`
-        // still misreports the absence. A cancelled run is exempt: the operator
-        // stopped it, so the module asserts nothing about what it didn't probe.
-        if !ctx.cancel.is_cancelled()
-            && let Some(msg) = inconclusive_sweep(found_count, inconclusive_probes, checked_count)
-        {
-            return Err(Error::module(SRC, msg));
-        }
-
-        // Add a summary echo of the target ONLY when at least one profile was
-        // actually confirmed (see `should_echo_target`). The negative result is
-        // still recorded in the dispatch log; it just must not vouch for the seed.
-        found_platforms.sort_unstable();
-        if let Some(summary) = build_target_summary(
-            target,
-            found_count,
-            verified_count,
-            checked_count,
-            &found_platforms,
-            &ctx.scan_id,
-        ) {
-            result.push(summary);
-        }
-
-        Ok(result)
     }
+    tally.found_platforms.sort_unstable();
+    (result, tally)
 }
 
 /// Post-sweep M6 verdict: a zero-hit run is *inconclusive* — not a confirmed
@@ -526,16 +629,24 @@ impl Module for SocialProbe {
 /// predicate the `username_search` and `streaming_probe` enumerators use — so
 /// all three existence-probe modules agree on when a blocked sweep must be
 /// reported as inconclusive rather than as a confirmed absence.
-fn inconclusive_sweep(found: u32, inconclusive_probes: u32, checked: u32) -> Option<String> {
-    crate::util::probe::inconclusive(
+fn inconclusive_sweep(
+    found: u32,
+    inconclusive_probes: u32,
+    indiscriminate: u32,
+    checked: u32,
+) -> Option<String> {
+    crate::util::probe::inconclusive_after_control(
         found as usize,
         inconclusive_probes as usize,
+        indiscriminate as usize,
         checked as usize,
     )
     .then(|| {
         format!(
-            "inconclusive: {inconclusive_probes}/{checked} platform probes returned no \
-             definitive answer (blocked / unreachable / no egress) — not a confirmed absence"
+            "inconclusive: {inconclusive_probes} of {} platform probes that can tell returned no \
+             definitive answer (blocked / unreachable / no egress), {indiscriminate} platforms \
+             answer \"present\" for any handle — not a confirmed absence",
+            checked - indiscriminate
         )
     })
 }
@@ -554,12 +665,15 @@ pub(super) fn should_echo_target(found_count: u32) -> bool {
 
 /// Build the target-echo summary entity for a probe run, or `None` when the run
 /// confirmed nothing (see [`should_echo_target`]).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_target_summary(
     target: &Target,
     found_count: u32,
     verified_count: u32,
     checked_count: u32,
     found_platforms: &[&str],
+    indiscriminate_platforms: &[&str],
+    uncontrolled_count: u32,
     scan_id: &str,
 ) -> Option<Entity> {
     if !should_echo_target(found_count) {
@@ -602,7 +716,19 @@ pub(super) fn build_target_summary(
         .with_attr(
             "hits_status_only",
             (found_count - verified_count).to_string(),
-        ),
+        )
+        // The negative control (`util::probe::control_handle`): platforms that
+        // were "present" for a handle nobody holds too, and presences whose
+        // control could not be read.
+        .with_attr(
+            "sites_indiscriminate",
+            indiscriminate_platforms.len().to_string(),
+        )
+        .with_attr(
+            "indiscriminate_platforms",
+            indiscriminate_platforms.join(", "),
+        )
+        .with_attr("hits_uncontrolled", uncontrolled_count.to_string()),
     );
     Some(summary)
 }

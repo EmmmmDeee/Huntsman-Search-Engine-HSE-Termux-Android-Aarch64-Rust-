@@ -247,3 +247,43 @@ fn skips_platform_host_in_homepage() {
         "platform host must not produce a Domain entity"
     );
 }
+
+#[test]
+fn a_third_party_repository_owner_is_a_candidate_pivot_never_the_subjects_handle() {
+    // Backlog #37. `source_code_uri` names the repository OWNER. Only the
+    // subject's own handle is the subject; `rails` (a gem co-owned with an
+    // organisation) is a lead about the repository, quarantined as a candidate
+    // and labelled as the owner, never a confirmed handle of the subject.
+    let ents = build_entities(
+        vec![
+            gem("mygem", None, None, Some("https://github.com/alice/mygem")),
+            gem(
+                "rails-plugin",
+                None,
+                None,
+                Some("https://github.com/rails/rails-plugin"),
+            ),
+        ],
+        "alice",
+        "scan-rg-037",
+    );
+    let own = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Username && e.value == "alice" && e.has_tag("github"))
+        .expect("the subject's own GitHub handle");
+    assert!(!own.has_tag(crate::core::tags::CANDIDATE));
+    assert!((own.confidence - confidence::HIGH_PLUS).abs() < 1e-9);
+    let rails = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Username && e.value == "rails")
+        .expect("the owner is still a lead");
+    assert!(rails.has_tag(crate::core::tags::CANDIDATE) && rails.has_tag("repo-owner"));
+    assert!(rails.confidence < confidence::HIGH_PLUS);
+    assert_eq!(
+        rails.evidence[0]
+            .attributes
+            .get("relation")
+            .map(String::as_str),
+        Some("owner of the gem's repository — not necessarily the subject")
+    );
+}

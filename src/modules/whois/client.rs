@@ -6,8 +6,61 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, lookup_host};
 use tokio::time::timeout;
 
-use super::QUERY_TIMEOUT_MS;
 use super::parse::starts_with_ascii_ci;
+use super::{IANA_WHOIS, QUERY_TIMEOUT_MS};
+
+/// Why the authoritative hop produced no response text.
+#[derive(Debug)]
+pub(super) enum AuthoritativeError {
+    /// The referral host could not be resolved to a vetted PUBLIC whois/43
+    /// address (a private/loopback answer, a non-43 port, a local name, or a
+    /// DNS failure) — see [`resolve_public_whois`].
+    Unresolvable,
+    /// Connect / write / read failed or timed out.
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for AuthoritativeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unresolvable => f.write_str("did not resolve to a public whois/43 address"),
+            Self::Io(e) => write!(f, "did not answer: {e}"),
+        }
+    }
+}
+
+/// The two WHOIS hops behind one seam, so `super::lookup` — the bootstrap →
+/// referral → authoritative-query → parse decision chain — runs offline in
+/// tests against canned wire text (the IANA `COM`/`VN` records, an ARIN
+/// answer) exactly as it runs against the live servers. [`Tcp`] is the
+/// production implementation; nothing else in the crate dials port 43.
+#[async_trait::async_trait]
+pub(super) trait Transport: Sync {
+    /// The IANA bootstrap hop (`whois.iana.org`, a trusted constant).
+    async fn bootstrap(&self, q: &str) -> std::io::Result<String>;
+    /// The hop to the authoritative server IANA referred us to. `server` is
+    /// taken verbatim from the wire (attacker-influenceable), so the
+    /// production implementation resolves and PINS it to a vetted public
+    /// `:43` address before dialling.
+    async fn authoritative(&self, server: &str, q: &str) -> Result<String, AuthoritativeError>;
+}
+
+/// Production transport: raw TCP/43.
+pub(super) struct Tcp;
+
+#[async_trait::async_trait]
+impl Transport for Tcp {
+    async fn bootstrap(&self, q: &str) -> std::io::Result<String> {
+        query(IANA_WHOIS, q).await
+    }
+
+    async fn authoritative(&self, server: &str, q: &str) -> Result<String, AuthoritativeError> {
+        let addr = resolve_public_whois(server)
+            .await
+            .ok_or(AuthoritativeError::Unresolvable)?;
+        query(addr, q).await.map_err(AuthoritativeError::Io)
+    }
+}
 
 /// Open a TCP connection to `server`, send `q\r\n`, and read up to 64 KiB of the
 /// response. Both connect and read are capped at [`QUERY_TIMEOUT_MS`]. Generic

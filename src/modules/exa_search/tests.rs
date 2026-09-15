@@ -96,3 +96,21 @@ fn mine_snippet_email_lowercased() {
     let email = ents.iter().find(|e| e.kind == EntityKind::Email).expect("should succeed");
     assert_eq!(email.value, "alice@example.com");
 }
+
+#[test]
+fn request_and_response_use_exas_documented_field_names() {
+    // Backlog #20.
+    let body = request_body("who is alice");
+    assert_eq!(body["numResults"], NUM_RESULTS);
+    assert_eq!(body["useAutoprompt"], true);
+    assert_eq!(body["contents"]["text"]["maxCharacters"], 1000);
+    for dead in ["num_results", "use_autoprompt"] {
+        assert!(body.get(dead).is_none(), "{dead} is not an Exa parameter");
+    }
+    assert!(body["contents"]["text"].get("max_characters").is_none());
+    let parsed: ExaResponse = serde_json::from_str(
+        r#"{"results":[{"url":"https://example.org/a","publishedDate":"2024-05-01T00:00:00.000Z","author":"A"}]}"#,
+    )
+    .expect("decodes");
+    assert_eq!(parsed.results[0].published_date.as_deref(), Some("2024-05-01T00:00:00.000Z"));
+}

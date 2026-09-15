@@ -133,7 +133,7 @@ fn looks_like_coinjoin(tx: &Transaction) -> bool {
 /// that transaction's other inputs attributable at all.
 pub(super) fn build_entities(
     stats: &AddressStats,
-    txs: &[Transaction],
+    txs: std::result::Result<&[Transaction], &str>,
     target: &str,
     scan_id: &str,
 ) -> Vec<Entity> {
@@ -172,11 +172,24 @@ pub(super) fn build_entities(
     );
     anchor.tag("bitcoin");
     anchor.tag("on-chain");
-    anchor.add_evidence(
-        Evidence::new(SRC, summary)
-            .with_attr("tx_count", tx_count.to_string())
-            .with_attr("balance_sats", confirmed.to_string()),
-    );
+    let mut ev = Evidence::new(SRC, summary)
+        .with_attr("tx_count", tx_count.to_string())
+        .with_attr("balance_sats", confirmed.to_string());
+    // The transaction list is what the wallet cluster is read from. When that
+    // call failed the ledger reading is still real, but "no co-spent addresses"
+    // would not be: say so on the evidence rather than let a cluster that was
+    // never read pass for one that is empty.
+    let txs = match txs {
+        Ok(list) => list,
+        Err(reason) => {
+            ev = ev
+                .with_attr("cospend_lookup", "failed")
+                .with_attr("cospend_error", reason);
+            anchor.tag("cospend-unavailable");
+            &[]
+        }
+    };
+    anchor.add_evidence(ev);
     out.push(anchor);
 
     for tx in txs {
@@ -299,28 +312,57 @@ impl Module for Bitcoin {
         if !Self::handles_value(addr) {
             return Ok(ModuleResult::new());
         }
-        let enc = crate::util::http::urlencode(addr);
-
-        // Ledger reading first: an address with no transactions is still a
-        // reportable finding, and this call is the cheap one.
-        let stats: Option<AddressStats> =
-            fetch_json_or_404(&ctx.http, SRC, &format!("{API_BASE}/address/{enc}")).await?;
-        let Some(stats) = stats else {
-            return Ok(ModuleResult::new());
-        };
-
-        // Transactions are a separate endpoint. A failure here must not discard
-        // the ledger reading we already have, so an absent list degrades to "no
-        // co-spends found" rather than to no result at all.
-        let txs: Vec<Transaction> =
-            fetch_json_or_404(&ctx.http, SRC, &format!("{API_BASE}/address/{enc}/txs"))
-                .await?
-                .unwrap_or_default();
-
-        let mut result = ModuleResult::new();
-        result.entities = build_entities(&stats, &txs, addr, &ctx.scan_id);
-        Ok(result)
+        lookup(&ctx.http, API_BASE, addr, &ctx.scan_id).await
     }
+}
+
+/// The two Esplora calls behind one address, against `api_base`.
+///
+/// The ledger reading (`/address/{a}`) comes first: an address with no
+/// transactions is still a reportable finding, and this call is the cheap one;
+/// a 404 is Esplora's "unknown address" and the one clean negative, any other
+/// failure the module's error. The transaction list (`/address/{a}/txs`) is a
+/// separate endpoint whose failure must not discard the ledger reading already
+/// in hand — before this the `?` on that call did exactly that, contrary to the
+/// comment beside it (`docs/PROVIDER_SWEEP_BACKLOG.md` #6). Nor may it quietly
+/// become "no co-spends found": the anchor's evidence says the co-spend lookup
+/// failed, so a wallet cluster that was never read is not mistaken for one
+/// that is empty.
+async fn lookup(
+    client: &reqwest::Client,
+    api_base: &str,
+    addr: &str,
+    scan_id: &str,
+) -> Result<ModuleResult> {
+    let enc = crate::util::http::urlencode(addr);
+    let stats: Option<AddressStats> =
+        fetch_json_or_404(client, SRC, &format!("{api_base}/address/{enc}")).await?;
+    let Some(stats) = stats else {
+        return Ok(ModuleResult::new());
+    };
+
+    let txs: std::result::Result<Vec<Transaction>, String> = match fetch_json_or_404(
+        client,
+        SRC,
+        &format!("{api_base}/address/{enc}/txs"),
+    )
+    .await
+    {
+        Ok(list) => Ok(list.unwrap_or_default()),
+        Err(e) => {
+            tracing::warn!(address = addr, error = %e, "bitcoin: transaction list unavailable — ledger reading kept, co-spend clustering not performed");
+            Err(e.to_string())
+        }
+    };
+
+    let mut result = ModuleResult::new();
+    result.entities = build_entities(
+        &stats,
+        txs.as_deref().map_err(String::as_str),
+        addr,
+        scan_id,
+    );
+    Ok(result)
 }
 
 #[cfg(test)]

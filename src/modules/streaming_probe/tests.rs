@@ -99,6 +99,7 @@ use super::*;
             definitive_absent: 5,
             inconclusive_probes: 2,
             sites_probed: 40,
+            indiscriminate: Vec::new(),
         };
 
         // A STATUS-ONLY cam hit: its URL must ride at 0.74 tagged `weak-detection`,
@@ -111,6 +112,7 @@ use super::*;
             url: "https://stripchat.com/alice".to_string(),
             confidence: 0.74,
             verified: false,
+            controlled: true,
         }];
         let out = build_entities("alice", "s", &weak, &tally);
         let url = out
@@ -142,6 +144,7 @@ use super::*;
             url: "https://chaturbate.com/alice/".to_string(),
             confidence: 0.92,
             verified: true,
+            controlled: true,
         }];
         let out2 = build_entities("alice", "s", &verified, &tally);
         let url2 = out2
@@ -161,3 +164,96 @@ use super::*;
             "a body-verified cam hit earns the exposure tag"
         );
     }
+
+/// The negative control on the real request path: a loopback site that is
+/// "present" for anyone (200 for the target and for the control handle) is
+/// indiscriminate; one that denies the control handle stands, controlled.
+#[tokio::test]
+async fn a_site_present_for_the_control_handle_is_indiscriminate_and_one_that_is_not_stands() {
+    use crate::util::http::test_server::{Canned, serve};
+    let page = "<!doctype html><html><body>room</body></html>";
+    let soft = serve(vec![Canned::html(200, page), Canned::html(200, page)]).await;
+    let real = serve(vec![Canned::html(200, page), Canned::html(404, page)]).await;
+    let sites: &'static [Site] = Box::leak(
+        vec![
+            Site {
+                name: "Soft404",
+                url: Box::leak(format!("{soft}/{{}}").into_boxed_str()),
+                method: Method::Get,
+                detect: Detect::StatusEq(200),
+                cat: "cam",
+            },
+            Site {
+                name: "Real",
+                url: Box::leak(format!("{real}/{{}}").into_boxed_str()),
+                method: Method::Get,
+                detect: Detect::StatusEq(200),
+                cat: "fans",
+            },
+        ]
+        .into_boxed_slice(),
+    );
+    let results = sweep(&reqwest::Client::new(), sites, "alice").await;
+    assert_eq!(results.len(), 2);
+    assert!(
+        matches!(&results[0].2, ProbeResult::Indiscriminate { url } if url.ends_with("/alice")),
+        "{:?}",
+        results[0].2
+    );
+    assert!(
+        matches!(&results[1].2, ProbeResult::Found { controlled: true, .. }),
+        "{:?}",
+        results[1].2
+    );
+}
+
+/// The builder's reading of the judgement: a controlled presence says the
+/// control was absent, an uncontrolled one says so, and the summary counts
+/// the indiscriminate sites by name.
+#[test]
+fn the_summary_names_the_indiscriminate_sites_and_each_hit_says_whether_it_was_controlled() {
+    let hits = vec![
+        Hit {
+            site_name: "Chaturbate",
+            site_cat: "cam",
+            url: "https://chaturbate.com/alice".to_string(),
+            confidence: 0.92,
+            verified: true,
+            controlled: true,
+        },
+        Hit {
+            site_name: "Stripchat",
+            site_cat: "cam",
+            url: "https://stripchat.com/alice".to_string(),
+            confidence: 0.74,
+            verified: false,
+            controlled: false,
+        },
+    ];
+    let out = build_entities(
+        "alice",
+        "scan-ctl",
+        &hits,
+        &ProbeTally {
+            definitive_absent: 3,
+            inconclusive_probes: 1,
+            sites_probed: 8,
+            indiscriminate: vec!["SextPanther", "Loyalfans"],
+        },
+    );
+    let attr = |value: &str, key: &str| -> Option<String> {
+        out.entities
+            .iter()
+            .find(|e| e.value == value)
+            .and_then(|e| e.evidence.first())
+            .and_then(|ev| ev.attributes.get(key).cloned())
+    };
+    assert_eq!(attr("https://chaturbate.com/alice", "control").as_deref(), Some("absent"));
+    assert_eq!(attr("https://stripchat.com/alice", "control").as_deref(), Some("unavailable"));
+    assert_eq!(attr("alice", "sites_indiscriminate").as_deref(), Some("2"));
+    assert_eq!(
+        attr("alice", "indiscriminate_platforms").as_deref(),
+        Some("SextPanther, Loyalfans")
+    );
+    assert_eq!(attr("alice", "hits_uncontrolled").as_deref(), Some("1"));
+}

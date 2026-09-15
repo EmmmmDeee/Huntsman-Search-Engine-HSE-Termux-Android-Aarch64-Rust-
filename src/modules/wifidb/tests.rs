@@ -1,4 +1,4 @@
-use super::{Feature, FeatureCollection, Geometry, Props, SRC, WifiDb, build_result};
+use super::{Feature, FeatureCollection, Geometry, Props, SRC, WifiDb, build_result, lookup};
 use crate::core::{
     entity::EntityKind,
     module::Module,
@@ -153,4 +153,44 @@ fn skips_invalid_matching_feature_then_emits_one_fix_for_first_valid() {
     // continue-past-invalid reached A; break dropped B => exactly one entity.
     assert_eq!(r.entities.len(), 1);
     assert_eq!(r.entities[0].value, "33.596152,-111.946942");
+}
+
+#[tokio::test]
+async fn the_html_error_template_is_the_modules_error_never_a_clean_miss() {
+    // Observed live 2026-09-15: every `exp_search` query — the header-verified
+    // BSSID and an arbitrary one alike — answered HTTP 200 `text/html`, WiFiDB's
+    // error template carrying a server-side PHP type error. A body that is not
+    // the documented GeoJSON is a failed lookup that names the page, never "no
+    // sighting"; a 404 stays the clean miss; a real FeatureCollection parses.
+    use crate::util::http::test_server::{Canned, serve};
+    let template = "<!--\nError.tpl, Is the default error showing page for WiFiDB.\n-->\n<!DOCTYPE html>\n<html lang=\"en\"><head><title>Error | Vistumbler WiFiDB</title></head>\n<body>Error: 0 Message: Argument 1 passed to export::buildSearchConditions() must be of the type array, string given</body></html>";
+    let base = serve(vec![
+        Canned::html(200, template),
+        Canned::text(404, "Not Found"),
+        Canned::json(
+            200,
+            r#"{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[-83.1,42.5]},"properties":{"mac":"00:13:10:69:EF:11","ssid":"cryptic24g"}}]}"#,
+        ),
+    ])
+    .await;
+    let client = reqwest::Client::new();
+    let bssid = "00:13:10:69:EF:11";
+
+    let err = lookup(&client, &base, bssid)
+        .await
+        .expect_err("an HTML page is not a GeoJSON answer");
+    let msg = err.to_string();
+    assert!(msg.contains("HTML page where JSON was expected"), "{msg}");
+    assert!(msg.contains("Error | Vistumbler WiFiDB"), "{msg}");
+    assert!(
+        lookup(&client, &base, bssid)
+            .await
+            .expect("404 is the clean miss")
+            .is_none()
+    );
+    let fc = lookup(&client, &base, bssid)
+        .await
+        .expect("GeoJSON parses")
+        .expect("present");
+    assert_eq!(fc.features.len(), 1);
 }

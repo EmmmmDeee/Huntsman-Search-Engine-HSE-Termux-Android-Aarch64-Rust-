@@ -42,14 +42,47 @@ const SRC: &str = "stackoverflow_user";
 /// API revision; the default cannot). Usernames may contain spaces, so the query
 /// is URL-encoded.
 fn users_by_name_url(handle: &str) -> String {
-    // `pagesize=100` (the anonymous maximum) instead of the API's default 30: the
-    // exact-name match we want can sit past position 30 for a common display name,
-    // so the wider page raises match recall at no extra request cost (one search
-    // either way). Live-verified the parameter is accepted.
+    // `inname=` alone is a substring search over every display name in the
+    // API's default (reputation) order, so the module used to take the
+    // highest-reputation namesake as the subject (backlog #44; live
+    // 2026-09-15: `inname=John Smith` → 95 of the first 100 users are exact
+    // "John Smith"). `sort=name&min=X&max=X` narrows the page to the display
+    // names equal to X — the API folds case and trailing whitespace, so
+    // `JOHN Smith` and `John Smith ` arrive too — which makes the page the
+    // whole set of namesakes up to `pagesize=100` (the anonymous maximum) and
+    // `has_more` the sign that it overflowed. Live-verified: `Jon Skeet` → 2
+    // accounts, `has_more: false`; `John Smith` → 100, `has_more: true`.
+    let h = crate::util::http::urlencode(handle);
     format!(
-        "https://api.stackexchange.com/2.3/users?inname={}&site=stackoverflow&pagesize=100",
-        crate::util::http::urlencode(handle)
+        "https://api.stackexchange.com/2.3/users?inname={h}&sort=name&min={h}&max={h}&site=stackoverflow&pagesize=100"
     )
+}
+
+/// What the exact-name page says about a handle. **Pure.**
+pub(super) enum NameResolution {
+    /// No account carries the display name.
+    Nobody,
+    /// Exactly one account, and the page did not overflow: the only holder.
+    Unique(SoUser),
+    /// Several accounts share the name (or the page overflowed): a display
+    /// name is not an identifier here, so none of them can be attributed.
+    Shared { seen: usize, more: bool },
+}
+
+/// Resolve `handle` against the exact-name page: the display names equal to
+/// it, case-insensitively and ignoring surrounding whitespace (the API's own
+/// folding), decide between nobody, one holder, or a shared name.
+pub(super) fn resolve_name(items: Vec<SoUser>, has_more: bool, handle: &str) -> NameResolution {
+    let handle = handle.trim();
+    let mut exact: Vec<SoUser> = items
+        .into_iter()
+        .filter(|u| u.display_name.trim().eq_ignore_ascii_case(handle))
+        .collect();
+    match (exact.len(), has_more) {
+        (0, _) => NameResolution::Nobody,
+        (1, false) => NameResolution::Unique(exact.remove(0)),
+        (seen, more) => NameResolution::Shared { seen, more },
+    }
 }
 
 /// The network-wide "associated accounts" endpoint for a Stack Exchange
@@ -66,6 +99,10 @@ pub struct StackoverflowUser;
 pub(super) struct SoResp {
     #[serde(default)]
     pub(super) items: Vec<SoUser>,
+    /// `true` when the exact-name page overflowed its size — more namesakes
+    /// exist than were returned.
+    #[serde(default)]
+    pub(super) has_more: bool,
 }
 
 #[derive(Deserialize)]
@@ -161,19 +198,26 @@ impl Module for StackoverflowUser {
         }
 
         let url = users_by_name_url(handle);
-        let resp: Option<SoResp> = fetch_json_or_404(&ctx.http, SRC, &url).await?;
-        let items = match resp {
-            Some(r) => r.items,
-            None => return Ok(ModuleResult::new()),
+        let Some(resp) = fetch_json_or_404::<SoResp>(&ctx.http, SRC, &url).await? else {
+            return Ok(ModuleResult::new());
         };
 
-        // Pick the first element whose display_name exactly matches (case-insensitive).
-        let user = match items
-            .into_iter()
-            .find(|u| u.display_name.eq_ignore_ascii_case(handle))
-        {
-            Some(u) => u,
-            None => return Ok(ModuleResult::new()),
+        // A display name is attributable only when exactly one account holds
+        // it. Several holders are neither a clean negative (accounts exist)
+        // nor a failure: the provider cannot speak about THIS subject, which
+        // is the typed not-applicable skip, with the count in its reason.
+        let user = match resolve_name(resp.items, resp.has_more, handle) {
+            NameResolution::Nobody => return Ok(ModuleResult::new()),
+            NameResolution::Unique(u) => u,
+            NameResolution::Shared { seen, more } => {
+                return Err(crate::core::error::Error::skipped(
+                    crate::core::event::SkipClass::NotApplicable,
+                    format!(
+                        "{seen}{} Stack Overflow accounts share the display name {handle:?}; a display name is not an identifier, so none of them can be attributed to the subject",
+                        if more { "+" } else { "" }
+                    ),
+                ));
+            }
         };
 
         // Cross-Stack-Exchange footprint: a second, best-effort call to the
@@ -566,6 +610,72 @@ mod tests {
     #[test]
     fn search_url_requests_the_max_page_size() {
         assert!(users_by_name_url("alice").contains("pagesize=100"));
+    }
+
+    #[test]
+    fn search_url_asks_for_the_exact_name_page() {
+        // Backlog #44: the page must be the namesakes of the handle, not a
+        // reputation-ordered substring search the first hit of which is taken.
+        let url = users_by_name_url("John Smith");
+        assert!(
+            url.contains("sort=name&min=John+Smith&max=John+Smith"),
+            "{url}"
+        );
+    }
+
+    #[test]
+    fn a_shared_display_name_is_never_attributed_and_a_unique_one_is() {
+        // Live 2026-09-15: `Jon Skeet` → two accounts (the 1.5M-reputation
+        // original and a reputation-1 namesake); `John Smith` → 100 with more.
+        // The reputation-ordered first match used to become the subject.
+        let two: SoResp = serde_json::from_str(
+            r#"{"items":[{"display_name":"Jon Skeet","reputation":1529680,"user_id":22656},{"display_name":"Jon Skeet","reputation":1,"user_id":20010028}],"has_more":false}"#,
+        )
+        .expect("decodes");
+        assert!(matches!(
+            resolve_name(two.items, two.has_more, "jon skeet"),
+            NameResolution::Shared {
+                seen: 2,
+                more: false
+            }
+        ));
+        // Case and whitespace variants are the same name (the API folds them).
+        let variants: SoResp = serde_json::from_str(
+            r#"{"items":[{"display_name":"JOHN Smith"},{"display_name":"John Smith "}],"has_more":true}"#,
+        )
+        .expect("decodes");
+        assert!(matches!(
+            resolve_name(variants.items, variants.has_more, "John Smith"),
+            NameResolution::Shared {
+                seen: 2,
+                more: true
+            }
+        ));
+        // One exact holder on a page that overflowed is not proven unique.
+        let overflow: SoResp =
+            serde_json::from_str(r#"{"items":[{"display_name":"Ada Byron"}],"has_more":true}"#)
+                .expect("decodes");
+        assert!(matches!(
+            resolve_name(overflow.items, overflow.has_more, "Ada Byron"),
+            NameResolution::Shared {
+                seen: 1,
+                more: true
+            }
+        ));
+        let one: SoResp = serde_json::from_str(
+            r#"{"items":[{"display_name":"Ada Byron","reputation":10}],"has_more":false}"#,
+        )
+        .expect("decodes");
+        assert!(matches!(
+            resolve_name(one.items, one.has_more, "ada byron"),
+            NameResolution::Unique(u) if u.reputation == Some(10)
+        ));
+        let none: SoResp =
+            serde_json::from_str(r#"{"items":[],"has_more":false}"#).expect("decodes");
+        assert!(matches!(
+            resolve_name(none.items, none.has_more, "nobody"),
+            NameResolution::Nobody
+        ));
     }
 
     #[test]

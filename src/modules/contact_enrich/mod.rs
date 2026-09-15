@@ -422,9 +422,7 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
     // data, and the absence case already returned above on the 404. This was the ONLY one of the
     // ~20 `json_scanned` call sites in `src/modules/` that swallowed the decode error into an
     // empty result; every other propagates it.
-    let data: ProfileResp = crate::util::http::json_scanned(resp, SRC)
-        .await
-        .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+    let data: ProfileResp = crate::util::http::json_scanned(resp, SRC).await?;
 
     let Some(entry) = data.entry.into_iter().next() else {
         return Ok(ModuleResult::new());

@@ -39,6 +39,10 @@ use crate::util::http::fetch_json_or_404;
 
 const SRC: &str = "crates_io";
 
+/// crates.io's API root; the listing expansion takes it as a parameter so a
+/// loopback server can drive the transport path in tests.
+const API_BASE: &str = "https://crates.io/api/v1";
+
 pub struct CratesIo;
 
 #[derive(Deserialize)]
@@ -350,7 +354,7 @@ impl Module for CratesIo {
             return Ok(ModuleResult::new());
         }
 
-        let url = format!("https://crates.io/api/v1/users/{handle}");
+        let url = format!("{API_BASE}/users/{handle}");
         let Some(body): Option<UserResp> = fetch_json_or_404(&ctx.http, SRC, &url).await? else {
             return Ok(ModuleResult::new());
         };
@@ -362,17 +366,51 @@ impl Module for CratesIo {
         // homepages — the direct route from a confirmed handle to the owner's
         // repositories and personal domains (official, keyless).
         if let Some(id) = body.user.as_ref().and_then(|u| u.id) {
-            let crates_url =
-                format!("https://crates.io/api/v1/crates?user_id={id}&per_page=100&sort=downloads");
-            if let Some(listing) =
-                fetch_json_or_404::<CratesResp>(&ctx.http, SRC, &crates_url).await?
-            {
-                result
-                    .entities
-                    .extend(crate_url_entities(&listing, &ctx.scan_id));
-            }
+            expand_crates(&ctx.http, API_BASE, id, &ctx.scan_id, &mut result).await;
         }
         Ok(result)
+    }
+}
+
+/// Expand the maintainer's published crates into their source repos and
+/// homepages. A failure of this SECOND call never discards the account the
+/// FIRST call confirmed (backlog #15; the invariant in
+/// [`ModuleResult::or_hard_failure`]'s docs): the confirmed entities are kept
+/// and the Username's evidence says the listing was not read, so a partial
+/// outage is visible in the record rather than a silent gap — or, before this,
+/// a bare `ModuleError` with the confirmed handle, real name and GitHub pivot
+/// thrown away.
+async fn expand_crates(
+    client: &reqwest::Client,
+    api_base: &str,
+    user_id: u64,
+    scan_id: &str,
+    result: &mut ModuleResult,
+) {
+    let crates_url = format!("{api_base}/crates?user_id={user_id}&per_page=100&sort=downloads");
+    match fetch_json_or_404::<CratesResp>(client, SRC, &crates_url).await {
+        Ok(Some(listing)) => result
+            .entities
+            .extend(crate_url_entities(&listing, scan_id)),
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!(
+                target: "module.crates_io",
+                error = %e,
+                "crate listing not read; the confirmed account is kept"
+            );
+            if let Some(u) = result
+                .entities
+                .iter_mut()
+                .find(|e| e.kind == EntityKind::Username)
+            {
+                u.add_evidence(
+                    Evidence::new(SRC, "crates.io crate listing was not read (partial outage)")
+                        .with_attr("crates_listing", "failed")
+                        .with_attr("error", e.to_string()),
+                );
+            }
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 use super::CellIntel;
 use super::helpers::{
     accuracy_to_confidence, build_tower_device, json_to_str, mcc_to_centroid, parse_cells_survey,
+    query_opencellid,
 };
 use crate::core::module::Module;
 use crate::core::scan::{Target, TargetKind};
@@ -311,16 +312,28 @@ fn build_tower_device_carries_radio_tags_and_evidence_attrs() {
 }
 
 #[test]
-fn build_tower_device_defaults_absent_signal_fields_to_zero() {
+fn build_tower_device_omits_absent_readings_never_asserting_zero_or_false() {
+    // This test used to pin the defect: a tower record without `dbm` / `asu`
+    // / `level` / `pci` / `registered` gained all five as `0` / `false` —
+    // `dbm=0` an unphysically strong signal, `registered=false` a statement
+    // about the handset — asserted as observations (the class fixed for the
+    // Wi-Fi sensors in backlog #16). Absent stays absent.
     let cell = cell_from_json(r#"{"type":"gsm","mcc":"505","mnc":"1","cid":99,"lac":42}"#);
     let key = TowerKey::from_cell(&cell).expect("should succeed");
     let e = build_tower_device(&cell, &key, "s");
     let attrs = &e.evidence[0].attributes;
-    assert_eq!(attrs.get("pci").map(String::as_str), Some("0"));
-    assert_eq!(attrs.get("dbm").map(String::as_str), Some("0"));
-    assert_eq!(attrs.get("asu").map(String::as_str), Some("0"));
-    assert_eq!(attrs.get("level").map(String::as_str), Some("0"));
-    assert_eq!(attrs.get("registered").map(String::as_str), Some("false"));
+    for k in ["pci", "dbm", "asu", "level", "registered"] {
+        assert!(!attrs.contains_key(k), "{k} must be absent: {attrs:?}");
+    }
+    assert_eq!(attrs.get("cid").map(String::as_str), Some("99"));
+    // Readings the tool DID report are recorded verbatim.
+    let cell = cell_from_json(
+        r#"{"type":"gsm","mcc":"505","mnc":"1","cid":99,"lac":42,"dbm":-97,"registered":true}"#,
+    );
+    let key = TowerKey::from_cell(&cell).expect("should succeed");
+    let attrs = &build_tower_device(&cell, &key, "s").evidence[0].attributes;
+    assert_eq!(attrs.get("dbm").map(String::as_str), Some("-97"));
+    assert_eq!(attrs.get("registered").map(String::as_str), Some("true"));
 }
 
 // ---- OpenCellidResp bad-key error shape ----
@@ -460,4 +473,57 @@ fn opencellid_coordinate_confidence_matches_the_canonical_ladder() {
             "range {range} m: production entity confidence must match the canonical ladder"
         );
     }
+}
+
+#[tokio::test]
+async fn a_failed_opencellid_lookup_is_an_error_and_only_the_documented_miss_is_none() {
+    // A transport failure, a 5xx, the HTTP-200 key rejection and an
+    // undecodable body used to be `None` — indistinguishable from the
+    // provider's own "couldn't geolocate this tower" — so the centroid
+    // fallback silently stood in for a lookup that never happened.
+    use crate::util::http::test_server::{Canned, serve};
+    let base = serve(vec![
+        Canned::json(
+            200,
+            r#"{"status":"ok","lat":-33.8688,"lon":151.2093,"range":500}"#,
+        ),
+        Canned::json(200, r#"{"status":"error","message":"cell not found"}"#),
+        Canned::json(
+            200,
+            r#"{"error":"API Key not known: garbage00000invalid","code":2}"#,
+        ),
+        Canned::text(503, "Service Unavailable"),
+        Canned::html(200, "<html><body>Just a moment...</body></html>"),
+        Canned::json(200, r#"{"status":"ok"}"#),
+    ])
+    .await;
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = crate::core::module::ModuleContext {
+        scan_id: "t".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let cells: Vec<Cell> = serde_json::from_str(
+        r#"[{"type":"LTE","registered":true,"cid":12345,"tac":678,"mcc":"505","mnc":"01","dbm":-80}]"#,
+    )
+    .expect("decodes");
+    let key = TowerKey::from_cell(&cells[0]).expect("keyed");
+    let q = || query_opencellid(&ctx, &base, "k", &key, "LTE");
+
+    let fix = q().await.expect("a located tower").expect("present");
+    assert!((fix.0 - -33.8688).abs() < 1e-9 && fix.2 == 500);
+    assert!(q().await.expect("the documented miss").is_none());
+    let err = q().await.expect_err("a rejected key is not a miss");
+    assert!(err.to_string().contains("rejected the key"), "{err}");
+    let err = q().await.expect_err("503 is not a miss");
+    assert!(err.to_string().contains("503"), "{err}");
+    let err = q().await.expect_err("an HTML page is not a miss");
+    assert!(err.to_string().contains("HTML page"), "{err}");
+    let err = q().await.expect_err("ok without coordinates is not a miss");
+    assert!(
+        err.to_string().contains("without usable coordinates"),
+        "{err}"
+    );
 }

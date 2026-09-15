@@ -153,7 +153,7 @@ pub fn ascii_digits_and_plus(s: &str) -> String {
 /// Returns `None` for anything that isn't `AS?<ascii-digits>`, so callers reject
 /// malformed ASNs instead of building a garbage URL from them.
 ///
-/// Single definition for the `bgpview` / `ip_registry` / `zoomeye` modules,
+/// Single definition for the `ip_registry` / `zoomeye` modules,
 /// which each open-coded the prefix-strip-and-validate and drifted on case
 /// handling. Re-add a textual prefix at the call site when needed
 /// (`format!("AS{n}")`).

@@ -402,3 +402,62 @@ async fn both_passes_independent_no_match_does_not_suppress() {
         "an unmatched number yields nothing from either pass"
     );
 }
+
+// ── National numbers declare no country ──────────────────────────────────────
+
+/// REGRESSION (reproduced end to end with the built binary: `hse scan -k phone
+/// -v "817-555-1234" -m phone_geo -d 0` → Address "Kyoto" at 0.58). Stripped
+/// to digits, a Fort Worth number starts with Japan's `81` dialling prefix and
+/// then Kyoto's `75` area code; `process` read the raw digits country-first and
+/// fabricated a Japanese location. A number with no `+`/`00` marker declares no
+/// country, so both passes are out of scope — a typed `NotApplicable` skip,
+/// never an Address, and never an empty result that reads as "no geo signal".
+#[tokio::test]
+async fn a_bare_national_number_is_never_read_as_another_countrys_prefix() {
+    use crate::core::error::Error;
+    use crate::core::event::SkipClass;
+    for raw in [
+        "817-555-1234",
+        "(817) 555-1234",
+        "8175551234",
+        "(646) 555-1234",
+    ] {
+        let target = Target::new(TargetKind::Phone, raw);
+        let err = PhoneGeo
+            .process(&target, &test_ctx())
+            .await
+            .expect_err("a national number must be a typed skip");
+        let Error::Skipped { class, reason } = err else {
+            panic!("{raw}: expected Error::Skipped, got {err}");
+        };
+        assert_eq!(class, SkipClass::NotApplicable, "{raw}");
+        // `Target::new` normalises the value (separators stripped), and the
+        // reason names the value as the engine holds it.
+        assert!(
+            reason.contains("international") && reason.contains(&target.value),
+            "{raw}: reason must say why and name the value: {reason}"
+        );
+    }
+}
+
+/// The same Kyoto number in international form (`+` or the ITU `00` prefix)
+/// still resolves — the gate is on the marker, not on Japan.
+#[tokio::test]
+async fn an_international_number_still_resolves_its_area_code() {
+    for raw in ["+81 75 555 1234", "0081 75 555 1234"] {
+        let target = Target::new(TargetKind::Phone, raw);
+        let r = PhoneGeo
+            .process(&target, &test_ctx())
+            .await
+            .expect("international form is in scope");
+        let kyoto = r
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Address && e.raw_value == "Kyoto");
+        assert!(
+            kyoto.is_some(),
+            "{raw}: expected a Kyoto Address, got {:?}",
+            r.entities
+        );
+    }
+}

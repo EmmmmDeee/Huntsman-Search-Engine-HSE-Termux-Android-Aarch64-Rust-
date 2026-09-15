@@ -540,7 +540,7 @@ mod tests {
     fn mixed_provenance_is_not_held_to_the_breach_only_ceiling() {
         let mut e = entity(0.95);
         e.add_evidence(Evidence::new("hibp", "pwned"));
-        e.add_evidence(Evidence::new("au_electoral", "roll entry"));
+        e.add_evidence(Evidence::new("ahpra", "register entry"));
         let mut ents = vec![e];
 
         let report = run_consensus_pass(&mut ents, "scan-1");

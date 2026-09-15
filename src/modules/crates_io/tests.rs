@@ -292,3 +292,47 @@ fn placeholder_name_is_not_promoted_to_person() {
         Some("John Doe")
     );
 }
+
+#[tokio::test]
+async fn a_failed_crate_listing_keeps_the_confirmed_account_and_says_so() {
+    // Backlog #15 (the inverse class): the `?` on the second call discarded the
+    // account the first call had already confirmed — handle, real name, GitHub
+    // pivot — and recorded a bare ModuleError. The listing is best-effort; its
+    // failure is written onto the Username's evidence instead.
+    use crate::util::http::test_server::{Canned, serve};
+    let base = serve(vec![
+        Canned::text(503, "Service Unavailable"),
+        Canned::json(
+            200,
+            r#"{"crates":[{"repository":"https://github.com/alice/tool","homepage":null,"documentation":null}]}"#,
+        ),
+    ])
+    .await;
+    let client = reqwest::Client::new();
+    let body = user_resp(r#"{"user":{"id":7,"login":"alice","name":"Alice Dev","url":"https://github.com/alice"}}"#);
+    let mut result = ModuleResult::new();
+    result.entities = build_entities(&body, "s");
+    let before = result.entities.len();
+    assert!(before > 0);
+
+    expand_crates(&client, &base, 7, "s", &mut result).await;
+    assert_eq!(result.entities.len(), before, "nothing discarded, nothing added");
+    let u = of_kind(&result.entities, EntityKind::Username).expect("the confirmed handle");
+    assert!(
+        u.evidence
+            .iter()
+            .any(|ev| ev.attributes.get("crates_listing").map(String::as_str) == Some("failed")),
+        "the outage is written onto the record"
+    );
+
+    let mut result = ModuleResult::new();
+    result.entities = build_entities(&body, "s");
+    expand_crates(&client, &base, 7, "s", &mut result).await;
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Url && e.value.contains("github.com/alice/tool")),
+        "a listing that answers is expanded"
+    );
+}

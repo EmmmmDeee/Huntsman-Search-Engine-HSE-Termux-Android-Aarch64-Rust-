@@ -9,6 +9,20 @@
 //! `mac=00:13:10:69:EF:11` → HTTP 200 GeoJSON with a real
 //! `geometry.coordinates` and ssid `cryptic24g`.
 //!
+//! **Observed 2026-09-15 (upstream failure, every query):** the endpoint answers
+//! HTTP 200 `text/html` — WiFiDB's `Error | Vistumbler WiFiDB` template carrying
+//! a server-side PHP type error (`Argument 1 passed to
+//! export::buildSearchConditions() must be of the type array, string given`) —
+//! for the header-verified BSSID above and for an arbitrary one alike; an
+//! array-form `mac[]=` parameter fails the same way. That is the provider's
+//! export code broken, not a contract change on this side. The module fails
+//! closed on it: the HTML body is a decode failure, which
+//! `util::http::url::json_failure` names as an upstream error page, and the
+//! resulting `ModuleError` is never a clean "no sighting". `wifidb` is a
+//! live-drift canary (`selftest::capability_probe::CANARY_PROBES`), so the
+//! weekly sweep escalates it as a dead canary until WiFiDB recovers or the
+//! module is retired.
+//!
 //! This is HSE's **first keyless wardriving corpus**, sitting beside keyed WiGLE
 //! (`wigle`/`wifi_intel`) and the keyless `mylnikov`/`beacondb` BSSID lookups —
 //! the same independent-free-corpus pattern the codebase already uses. It answers
@@ -43,20 +57,20 @@ pub(crate) const SRC: &str = "wifidb";
 
 /// A GeoJSON `FeatureCollection`. Every field optional/defaulted so a schema
 /// change never fails the whole parse into a false miss.
-#[derive(Deserialize, Default)]
+#[derive(Debug, Deserialize, Default)]
 #[serde(default)]
 struct FeatureCollection {
     features: Vec<Feature>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Debug, Deserialize, Default)]
 #[serde(default)]
 struct Feature {
     geometry: Option<Geometry>,
     properties: Option<Props>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Debug, Deserialize, Default)]
 #[serde(default)]
 struct Geometry {
     /// GeoJSON `[longitude, latitude]`.
@@ -64,7 +78,7 @@ struct Geometry {
 }
 
 /// The corroborating WiFiDB record fields (all string-typed in the live JSON).
-#[derive(Deserialize, Default)]
+#[derive(Debug, Deserialize, Default)]
 #[serde(default)]
 struct Props {
     mac: Option<String>,
@@ -131,17 +145,28 @@ impl Module for WifiDb {
         if bssid.len() < 12 {
             return Ok(ModuleResult::new());
         }
-        let url = format!(
-            "https://wifidb.net/api/geojson.php?func=exp_search&mac={}",
-            urlencode(bssid)
-        );
-        // 404 → clean miss; any other non-2xx → real ModuleError (fail-closed).
-        let Some(fc): Option<FeatureCollection> = fetch_json_or_404(&ctx.http, SRC, &url).await?
-        else {
+        let Some(fc) = lookup(&ctx.http, API_BASE, bssid).await? else {
             return Ok(ModuleResult::new());
         };
         Ok(build_result(&fc, bssid, &ctx.scan_id))
     }
+}
+
+/// WiFiDB's export endpoint; `lookup` takes it as a parameter so a loopback
+/// server can drive the module's transport path in tests.
+const API_BASE: &str = "https://wifidb.net/api/geojson.php";
+
+/// One `exp_search` query for `bssid`. `Ok(None)` is the provider's 404 — the
+/// clean miss. Any other non-2xx, a transport failure, or a body that is not
+/// the documented GeoJSON (the HTML error template observed 2026-09-15
+/// included) is the module's error, never an empty answer.
+async fn lookup(
+    client: &reqwest::Client,
+    api_base: &str,
+    bssid: &str,
+) -> Result<Option<FeatureCollection>> {
+    let url = format!("{api_base}?func=exp_search&mac={}", urlencode(bssid));
+    fetch_json_or_404(client, SRC, &url).await
 }
 
 /// Extract a `(lat, lon)` pair from a feature — preferring GeoJSON

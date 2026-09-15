@@ -623,20 +623,53 @@ impl super::ScanEngine {
                     },
                 );
             }
+            Ok(Err(Error::Skipped { class, reason })) => {
+                // The module decided not to query the provider for this target
+                // and said so in-band (`Error::skipped`). A decision, not a
+                // fault: it is tallied under `skipped` (never `errored`), feeds
+                // neither the circuit breaker nor module health, and is emitted
+                // as a typed `ModuleSkipped` so `core::coverage` reads it as
+                // "not attempted" — a `NotApplicable` skip vanishes from the
+                // coverage verdict, an `Unavailable` one is an actionable gap.
+                // Before this arm existed the module's only in-band options
+                // were `Err` (a false failure) or `Ok(empty)` (recorded as
+                // `ModuleDone { found: 0 }` → a false clean negative).
+                //
+                // The dedup-ledger entry is deliberately kept, unlike the
+                // `MissingKey` arm above: nothing discovered later in the scan
+                // (a hot-injected key) can turn a structural "not applicable"
+                // or a host-level "unavailable" into an answer.
+                state.stats.skipped += 1;
+                debug!(module = name, class = class.as_str(), %reason, "skipped — module opted out");
+                self.emit(
+                    cx.scan_id,
+                    EventKind::ModuleSkipped {
+                        module: name.into(),
+                        reason,
+                        class: Some(class),
+                    },
+                );
+            }
             Ok(Err(e)) => {
                 state.stats.errored += 1;
-                // Feed the breaker: a rate-limit/quota error trips immediately; any
-                // other hard error counts toward the soft streak. Classify the
-                // TYPED `RateLimited` variant directly — the string path
-                // (`record_error`) only trips it today because `RateLimited`'s
-                // Display happens to contain "rate limited", so an edit to that
-                // Display would silently downgrade a real throttle to a 3-strike
-                // soft failure with no compile error. Non-typed errors that still
-                // carry a "429"/quota message in their text keep the string path.
-                if matches!(e, crate::core::error::Error::RateLimited(_)) {
-                    super::circuit::record_rate_limit(name);
-                } else {
-                    super::circuit::record_error(name, &e.to_string());
+                // Feed the breaker: a rate-limit/quota error trips immediately; an
+                // anti-bot challenge / WAF block benches the module at once under
+                // its own reason (the wall is per client, so every further target
+                // would only re-read it); any other hard error counts toward the
+                // soft streak. Classify the TYPED variants directly — the string
+                // path (`record_error`) only trips a throttle today because
+                // `RateLimited`'s Display happens to contain "rate limited", so an
+                // edit to that Display would silently downgrade a real throttle to
+                // a 3-strike soft failure with no compile error. Non-typed errors
+                // that still carry a "429"/quota message keep the string path.
+                match &e {
+                    crate::core::error::Error::RateLimited(_) => {
+                        super::circuit::record_rate_limit(name);
+                    }
+                    crate::core::error::Error::BotChallenge(_) => {
+                        super::circuit::record_bot_challenge(name);
+                    }
+                    _ => super::circuit::record_error(name, &e.to_string()),
                 }
                 super::health::record_failure(name);
                 warn!(module = name, error = %e, "module error");

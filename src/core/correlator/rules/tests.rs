@@ -81,7 +81,6 @@ use crate::core::entity::Evidence;
             "leakix",
             "niamonx",
             "osintcat",
-            "psbdmp",
             "pwned_passwords",
             "xposed_or_not",
         ] {
@@ -135,7 +134,6 @@ use crate::core::entity::Evidence;
         // diversity. Each is now classified to its genuine family.
         for m in [
             "abuseipdb",
-            "bgpview",
             "criminal_ip",
             "ipqs",
             "netblock",
@@ -154,8 +152,6 @@ use crate::core::entity::Evidence;
             "contact_enrich",
             "gleif_lei",
             "asic_director",
-            "au_electoral",
-            "au_people",
             "ahpra",
             "acnc_charities",
         ] {

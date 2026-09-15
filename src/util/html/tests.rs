@@ -349,3 +349,134 @@ mod prop {
         println!("8x input -> {ratio:.1}x time (quadratic would be ~64x)");
         assert!(ratio < 24.0, "8x the input cost {ratio:.1}x the time");
     }
+
+    /// The two shapes GitHub's runner received on 2026-09-15 (`anubis`,
+    /// `austlii`) are walls; a provider's own outage/error template is not —
+    /// `util::http::http_status_error` and the JSON decode helpers draw the
+    /// line here, and a false positive would turn a real outage into a
+    /// "blocked" verdict that hides it.
+    #[test]
+    fn is_challenge_page_recognises_cloudflare_walls_and_not_an_outage_page() {
+        assert!(is_challenge_page(
+            "<!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title>\
+             </head><body><h1>Sorry, you have been blocked</h1></body></html>"
+        ));
+        assert!(is_challenge_page(
+            "<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>\
+             <script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1\"></script>\
+             </body></html>"
+        ));
+        assert!(!is_challenge_page(
+            "<!DOCTYPE html><html><head><title>Internet Archive: Temporarily Offline</title>\
+             </head><body>The Wayback Machine is temporarily offline.</body></html>"
+        ));
+        assert!(!is_challenge_page(
+            "<!DOCTYPE html><html><head><title>Error | Vistumbler WiFiDB</title></head>\
+             <body>Fatal error: Uncaught TypeError</body></html>"
+        ));
+        assert!(!is_challenge_page("{\"error\":\"not found\"}"));
+        assert!(!is_challenge_page(""));
+    }
+
+    // Two REAL Cloudflare answers, fetched live from this project's sandbox on
+    // 2026-09-15 (15:53 UTC) with a browser User-Agent and checked in verbatim
+    // except for the Ray IDs and the egress address, which are scrubbed:
+    //   * `jonlu.ca/anubis/subdomains/example.com` (where `jldc.me` redirects)
+    //     → 403, the BLOCK page: "Attention Required! | Cloudflare", "Sorry, you
+    //     have been blocked", no challenge loader — only the title phrase set
+    //     recognises it;
+    //   * `www.austlii.edu.au/cgi-bin/sinosrch.cgi?query=…` → 403, the same
+    //     title plus the `/cdn-cgi/challenge-platform` loader — the vendor
+    //     fingerprint recognises it.
+    // GitHub's runner received the same two pages on the 2026-09-15 live-drift
+    // run (34985449332) and filed both providers as "unreachable". No PII: a
+    // CDN's generic refusal for the project's own canonical sample targets.
+    const CF_BLOCK_ANUBIS: &str = include_str!("testdata/cloudflare_block_anubis_2026-09-15.html");
+    const CF_CHALLENGE_AUSTLII: &str =
+        include_str!("testdata/cloudflare_challenge_austlii_2026-09-15.html");
+
+    /// Pins the classifier against the two real captures: if either tier
+    /// regresses, a real wall reads as an outage again ("unreachable", a false
+    /// DEAD CANARY for a canary) instead of `Error::BotChallenge`.
+    #[test]
+    fn is_challenge_page_recognises_both_real_cloudflare_captures() {
+        assert!(
+            CF_BLOCK_ANUBIS.contains("Sorry, you have been blocked")
+                && !CF_BLOCK_ANUBIS.contains("/cdn-cgi/challenge-platform"),
+            "the anubis capture must be the block page without a challenge loader — \
+             the phrase-set tier is what recognises it"
+        );
+        assert!(
+            is_challenge_page(CF_BLOCK_ANUBIS),
+            "the real Cloudflare block page must be a wall, not an outage"
+        );
+        assert!(
+            CF_CHALLENGE_AUSTLII.contains("/cdn-cgi/challenge-platform"),
+            "the austlii capture must carry the challenge loader — the vendor tier"
+        );
+        assert!(
+            is_challenge_page(CF_CHALLENGE_AUSTLII),
+            "the real Cloudflare challenge page must be a wall, not an outage"
+        );
+        // Both are under the 8 KiB error-body cap `http_status_error` reads, so
+        // the classifier sees them whole on the production path.
+        assert!(CF_BLOCK_ANUBIS.len() < 8 * 1024 && CF_CHALLENGE_AUSTLII.len() < 8 * 1024);
+    }
+
+    /// A 200-status wall observed on the first runner sweep carrying the 2xx
+    /// guard (live-drift run 34995740898, 2026-09-15) and reproduced from the
+    /// sandbox: AHPRA's register answers a datacenter client with an HTTP 200
+    /// interstitial — the `/cdn-cgi/challenge-platform` loader, 91 characters
+    /// of visible text ("Please enable JavaScript to view the page content.
+    /// Your support ID is: …"), no practitioner rows — and the runner's copy
+    /// keeps the origin's own `<title>`. Every earlier `ahpra` lookup parsed
+    /// this page for rows and reported "no registered practitioner". Scrubbed
+    /// of the support id.
+    /// The Akamai Bot Manager block page ACMA's register served the sandbox on
+    /// 2026-09-15 (HTTP 403, the reference number scrubbed): no vendor string
+    /// anywhere in it, only its own prose, so the phrase-set tier is what must
+    /// recognise it. Before this set it was `Error::Module`, and a 2xx copy
+    /// would have been parsed as "no licences".
+    #[test]
+    fn is_challenge_page_recognises_the_akamai_block_page() {
+        const WALL: &str = include_str!("testdata/wall_akamai_acma_403_2026-09-15.html");
+        assert!(is_challenge_page(WALL));
+        assert!(is_challenge_document(WALL));
+        // A page that merely mentions a reference number is not a wall.
+        assert!(!is_challenge_page(
+            "<html><body>Your order has been received. Reference number: 12345.</body></html>"
+        ));
+    }
+
+    #[test]
+    fn is_challenge_document_recognises_the_ahpra_200_wall() {
+        const WALL: &str = include_str!("testdata/wall_ahpra_200_2026-09-15.html");
+        assert!(is_challenge_document(WALL), "a 200 interstitial is a wall");
+        assert!(WALL.len() < 8 * 1024);
+        // A genuine register page that merely names the register is not.
+        assert!(!is_challenge_document(
+            "<!DOCTYPE html><html><head><title>Register of practitioners</title></head>\
+             <body><table><tr><td>No practitioners matched your search.</td></tr></table>\
+             </body></html>"
+        ));
+    }
+
+    /// Reddit's network-security block page opens with a bare `<body …>` and no
+    /// doctype (an excerpt of the 2026-09-15 capture: the real opener and the
+    /// page's only prose; its 189 KB of inline CSS/JSON elided). Before this a
+    /// 403 carrying it was neither a document (raw markup became the error
+    /// snippet) nor a wall. XML, RSS and Atom stay non-documents.
+    #[test]
+    fn a_document_may_open_with_a_bare_body_or_head_and_reddits_block_page_is_a_wall() {
+        const REDDIT_EXCERPT: &str = "<body class=theme-beta><div><style>/* elided */</style>\
+            <h1>You've been blocked by network security.</h1>\
+            <p>If you think you've been blocked by mistake, file a ticket below and we'll \
+            look into it.</p><a>File a ticket</a></div></body>";
+        assert!(looks_like_document(REDDIT_EXCERPT));
+        assert!(looks_like_document("<head><title>x</title></head><body>y</body>"));
+        assert!(!looks_like_document("<?xml version=\"1.0\"?><feed xmlns=\"http://www.w3.org/2005/Atom\"></feed>"));
+        assert!(!looks_like_document("<rss version=\"2.0\"><channel></channel></rss>"));
+        assert!(!looks_like_document("{\"error\":\"<body> quoted in a message\"}"));
+        assert!(is_challenge_page(REDDIT_EXCERPT));
+        assert!(is_challenge_document(REDDIT_EXCERPT));
+    }

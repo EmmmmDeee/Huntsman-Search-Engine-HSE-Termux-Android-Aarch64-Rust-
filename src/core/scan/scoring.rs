@@ -160,7 +160,7 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
 ///   Domain: +geo_domain_classifier (ccTLD/service → country)
 ///   Organisation: +cloud_storage exposure scanning → domain → geo
 ///   Address: +geocode/photon bidirectional, +overpass infrastructure
-///   IP: +abuseipdb country_code, +bgpview ASN→prefix→geo
+///   IP: +abuseipdb country_code, +ripestat ASN→prefix→geo
 pub fn geo_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
     match kind {
         TargetKind::Email => {
@@ -307,7 +307,7 @@ fn geo_proximity_boost(kind: TargetKind) -> f64 {
         TargetKind::Phone => 1.5,
         // Organisation → opencorporates → registered address → Coords. Two hops.
         TargetKind::Organisation => 1.3,
-        // ASN → bgpview → prefixes → IPs → Coords. Three hops, but each
+        // ASN → ripestat → prefixes → IPs → Coords. Three hops, but each
         // ASN often resolves to a fixed datacenter location.
         TargetKind::Asn => 1.2,
         // DeviceId → OpenCelliD cell/get → Coordinates. Single hop, like IP→geo.

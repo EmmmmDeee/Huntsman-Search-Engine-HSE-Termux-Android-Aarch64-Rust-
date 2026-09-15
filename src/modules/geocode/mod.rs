@@ -199,9 +199,8 @@ impl Geocode {
                     // 600-second rate-limit cooldown on a schema-drift coincidence.
                     // And serde's `invalid type` errors quote the offending VALUE,
                     // which lands in a `ModuleError` event persisted to the events
-                    // table; `json_scanned` is also the one JSON helper that does not
-                    // run `redact_credentials`. The decode error is still visible in
-                    // the log via `json_scanned` itself.
+                    // table. The decode error is still visible in the log via
+                    // `json_scanned` itself (credential-redacted there).
                     Err(_) => forward_via_curl(&url)
                         .await
                         .ok_or_else(|| Error::module(SRC, UNDECODABLE_MSG))?,
@@ -265,9 +264,7 @@ impl Geocode {
             return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
-        let data: NominatimResp = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| Error::module(SRC, e))?;
+        let data: NominatimResp = crate::util::http::json_scanned(resp, SRC).await?;
 
         let mut result = ModuleResult::new();
         result.push(build_reverse_entity(lat, lon, &data, &ctx.scan_id));

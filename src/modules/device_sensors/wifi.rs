@@ -36,7 +36,41 @@ pub(super) fn parse_conn(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
         .map_err(|e| super::unparseable(super::Sensor::WifiConnection, &e))?;
 
     let mut result = ModuleResult::new();
-    let ssid = info.ssid.as_deref().unwrap_or("<hidden>");
+    // An SSID the tool did not report is reported as absent — not as
+    // `<hidden>`, which names a different observation (a hidden network,
+    // which Android reports as `<unknown ssid>`).
+    let ssid = info
+        .ssid
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    // Optional readings are recorded only when the tool supplied them
+    // (backlog #16): a defaulted `rssi_dbm=0` would be the strongest possible
+    // signal reading, `frequency_mhz=0` / `link_speed_mbps=0` measurements of
+    // zero — none distinguishable from a real value once asserted. Same
+    // `filter_map`/`fold` shape as `device_fix::parse_fix`.
+    let readings = |ev: Evidence| -> Evidence {
+        [
+            ("ssid", ssid.map(str::to_string)),
+            ("frequency_mhz", info.frequency_mhz.map(|v| v.to_string())),
+            ("rssi_dbm", info.rssi.map(|v| v.to_string())),
+            (
+                "link_speed_mbps",
+                info.link_speed_mbps.map(|v| v.to_string()),
+            ),
+            (
+                "supplicant_state",
+                info.supplicant_state
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .fold(ev, |ev, (key, value)| ev.with_attr(key, value))
+    };
 
     if let Some(ref bssid) = info.bssid
         && !bssid.is_empty()
@@ -51,18 +85,13 @@ pub(super) fn parse_conn(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
         );
         e.tag("wifi-connected");
         e.tag("geolocatable");
-        let mut bssid_ev = Evidence::new(SRC, format!("Connected to: {ssid}"))
-            .with_attr("ssid", ssid)
-            .with_attr("frequency_mhz", info.frequency_mhz.unwrap_or(0).to_string())
-            .with_attr("rssi_dbm", info.rssi.unwrap_or(0).to_string())
-            .with_attr(
-                "link_speed_mbps",
-                info.link_speed_mbps.unwrap_or(0).to_string(),
-            )
-            .with_attr(
-                "supplicant_state",
-                info.supplicant_state.as_deref().unwrap_or("-"),
-            );
+        let mut bssid_ev = readings(Evidence::new(
+            SRC,
+            match ssid {
+                Some(s) => format!("Connected to: {s}"),
+                None => "Connected (SSID not reported)".to_string(),
+            },
+        ));
         if let Some(band) = crate::util::wifi::band(info.frequency_mhz) {
             e.tag(format!("band:{band}"));
             bssid_ev = bssid_ev.with_attr("band", band);
@@ -82,22 +111,17 @@ pub(super) fn parse_conn(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
             scan_id,
         );
         e.tag("local-wifi");
-        let mut ip_ev = Evidence::new(SRC, format!("Local IP on {ssid}")).with_attr("ssid", ssid);
+        let mut ip_ev = Evidence::new(
+            SRC,
+            match ssid {
+                Some(s) => format!("Local IP on {s}"),
+                None => "Local IP (SSID not reported)".to_string(),
+            },
+        );
         if let Some(ref bssid) = info.bssid {
             ip_ev = ip_ev.with_attr("bssid", bssid.as_str());
         }
-        ip_ev = ip_ev
-            .with_attr("frequency_mhz", info.frequency_mhz.unwrap_or(0).to_string())
-            .with_attr("rssi_dbm", info.rssi.unwrap_or(0).to_string())
-            .with_attr(
-                "link_speed_mbps",
-                info.link_speed_mbps.unwrap_or(0).to_string(),
-            )
-            .with_attr(
-                "supplicant_state",
-                info.supplicant_state.as_deref().unwrap_or("-"),
-            );
-        e.add_evidence(ip_ev);
+        e.add_evidence(readings(ip_ev));
         result.push(e);
     }
 

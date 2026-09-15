@@ -37,7 +37,7 @@ fn split_csv_line_keeps_comma_inside_quoted_field_as_one_field() {
 
 #[test]
 fn parse_individual_row_maps_correctly() {
-    let rec = parse_sdn_line(ROW_INDIVIDUAL).expect("row should parse");
+    let rec = parse_sdn_line(ROW_INDIVIDUAL, OfacList::Sdn).expect("row should parse");
     assert_eq!(rec.ent_num, 2674);
     assert_eq!(rec.name, "ABBAS, Abu");
     assert_eq!(rec.kind, SdnKind::Individual);
@@ -49,7 +49,7 @@ fn parse_individual_row_maps_correctly() {
 #[test]
 fn parse_organisation_row_with_blank_type_maps_correctly() {
     // Blank SDN_Type is the organisation bucket, NOT skipped/misclassified.
-    let rec = parse_sdn_line(ROW_ORGANISATION_BLANK_TYPE).expect("row should parse");
+    let rec = parse_sdn_line(ROW_ORGANISATION_BLANK_TYPE, OfacList::Sdn).expect("row should parse");
     assert_eq!(rec.ent_num, 36);
     assert_eq!(rec.name, "AEROCARIBBEAN AIRLINES");
     assert_eq!(rec.kind, SdnKind::Organisation);
@@ -60,7 +60,7 @@ fn parse_organisation_row_with_blank_type_maps_correctly() {
 
 #[test]
 fn parse_organisation_row_keeps_real_remarks() {
-    let rec = parse_sdn_line(ROW_ORGANISATION_WITH_REMARKS).expect("row should parse");
+    let rec = parse_sdn_line(ROW_ORGANISATION_WITH_REMARKS, OfacList::Sdn).expect("row should parse");
     assert_eq!(rec.name, "BANCO NACIONAL DE CUBA");
     assert_eq!(rec.kind, SdnKind::Organisation);
     assert_eq!(rec.remarks, "a.k.a. 'BNC'.");
@@ -68,7 +68,7 @@ fn parse_organisation_row_keeps_real_remarks() {
 
 #[test]
 fn parse_vessel_row_is_classified_as_vessel_not_organisation() {
-    let rec = parse_sdn_line(ROW_VESSEL).expect("row should parse");
+    let rec = parse_sdn_line(ROW_VESSEL, OfacList::Sdn).expect("row should parse");
     assert_eq!(rec.name, "MAR AZUL");
     assert_eq!(rec.kind, SdnKind::Vessel);
     assert_eq!(rec.program, "CUBA");
@@ -77,14 +77,14 @@ fn parse_vessel_row_is_classified_as_vessel_not_organisation() {
 #[test]
 fn parse_sdn_csv_skips_blank_lines_and_keeps_valid_rows() {
     let body = format!("\n{ROW_INDIVIDUAL}\n\n{ROW_ORGANISATION_BLANK_TYPE}\n");
-    let recs = parse_sdn_csv(&body);
+    let recs = parse_sdn_csv(&body, OfacList::Sdn);
     assert_eq!(recs.len(), 2);
 }
 
 #[test]
 fn parse_sdn_csv_drops_malformed_rows_without_panicking() {
     let body = format!("{ROW_INDIVIDUAL}\nnot,enough,fields\n{ROW_VESSEL}\n,,");
-    let recs = parse_sdn_csv(&body);
+    let recs = parse_sdn_csv(&body, OfacList::Sdn);
     // Only the two well-formed rows survive; malformed rows are silently dropped.
     assert_eq!(recs.len(), 2);
 }
@@ -130,4 +130,19 @@ fn record_name_matches_is_whole_word_not_substring() {
         !record_name_matches("KHALID ABDUL KHAN", &tokens),
         "\"ali\" must not match as a substring of \"KHALID\""
     );
+}
+
+/// Every row parsed from a list body is stamped with THAT list — the parser is
+/// the only place a row's origin can be recorded, since the two CSVs share one
+/// schema and are indistinguishable by content.
+#[test]
+fn parsed_rows_carry_the_list_they_were_read_from() {
+    let body = "36,\"AEROCARIBBEAN AIRLINES\",\"-0- \",\"CUBA\",\"-0- \",\"-0- \",\"-0- \",\"-0- \",\"-0- \",\"-0- \",\"-0- \",\"-0- \"\n\
+                17,\"CIMEX, S.A.\",\"-0- \",\"CUBA\",\"-0- \",\"-0- \",\"-0- \",\"-0- \",\"-0- \",\"-0- \",\"-0- \",\"-0- \"\n";
+    let sdn = parse_sdn_csv(body, OfacList::Sdn);
+    let cons = parse_sdn_csv(body, OfacList::Consolidated);
+    assert_eq!(sdn.len(), 2, "{sdn:?}");
+    assert_eq!(cons.len(), 2, "{cons:?}");
+    assert!(sdn.iter().all(|r| r.list == OfacList::Sdn));
+    assert!(cons.iter().all(|r| r.list == OfacList::Consolidated));
 }
