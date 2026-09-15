@@ -4000,6 +4000,10 @@ scrubbed capture (`src/util/html/testdata/wall_akamai_acma_403_2026-09-15.html`)
 pins `is_challenge_page` / `is_challenge_document` on it, and a page that
 merely mentions a reference number is pinned as not a wall.
 
+**Remote verification (live-drift run 34998644556 on `78e596f`, 2026-09-15
+17:03 UTC).** 118 modules probed (119 before); no `acma_rrl` row; the sweep
+is red only on the `wifidb` dead canary, by design.
+
 **Falsification.** The phrase set removed with only its lock run:
 
 ```
@@ -4087,6 +4091,14 @@ JSON line mentioning a vendor path is not a wall);
 ALL LOCKS SENSITIVE
 ```
 
+**Remote verification (live-drift run 34998644556 on `78e596f`, 2026-09-15
+17:03 UTC).** `unreachable au_electoral — … all 3 lookups (NSW, VIC, QLD)
+failed to respond, returned a reply that could not be read, or answered an
+anti-bot / WAF page instead of the roll …` and `unreachable asic_director —
+… answered an anti-bot / WAF page instead of the register, or its response
+body was unreadable — not "no director records for this name"`: the new
+outcomes are on the wire from GitHub's runner; `ahpra` reads `blocked`.
+
 **Residual.** The `StatusEq` rules (status-only, HEAD for some sites) never
 read a body, so a 200 wall on such a site still reads as presence at the
 bare-status confidence tier; reading the body for GET status-only sites is
@@ -4095,6 +4107,37 @@ the next step if a 200 wall is observed on one. The remaining
 `cloud_storage`, `employer_pivot`, `hacker_news`, `github_user`,
 `ip_reputation`) read JSON or crawl content and mint no negative claim from
 an empty parse.
+
+### REQ-SCOPE-002 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): an unimported local database is a typed skip, never "no towers"
+
+**Verified from source.** `cell_local::process` (`src/modules/cell_local.rs`):
+`Err(_) if !cell_db_path().exists() => return Ok(vec![])` — the module doc
+called it a "silent no-op until `hse cells import` is run". Dispatch records
+`ModuleDone { found: 0 }`; `core::coverage` aggregates that to
+`CleanNegative`: "no cell towers within ~556 m of this coordinate" for a
+database that does not exist (the sweep's `empty cell_local (coordinates
+40.7128,-74.0060)` on every run of a runner that never imported one).
+
+**Fix.** `database_not_imported()` — `Error::skipped(SkipClass::Unavailable,
+"local cell-tower database not imported (~/.huntsman/cell_towers.db) — run
+`hse cells import`; no towers were looked up for this coordinate")`; the
+module returns it in place of the empty result. A database that exists but
+will not open stays the hard error it was.
+
+**Evidence.** `cell_local::tests::an_unimported_database_is_a_typed_unavailable_skip_never_no_towers`
+(the pure outcome, and the real `process` path whenever the pid-scoped test
+data directory holds no database — its state in a fresh test process).
+
+**Falsification.** The arm restored to `return Ok(vec![])` with only the
+lock run:
+
+```
+[cell_local empty result restored] -> LOCK FAILS (expected)
+    modules::cell_local::tests::an_unimported_database_is_a_typed_unavailable_skip_never_no_towers --- FAILED
+    thread 'modules::cell_local::tests::an_unimported_database_is_a_typed_unavailable_skip_never_no_towers' (16930) panicked at src/modules/cell_local.rs:217:14:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
 
 ### REQ-CANARY-001 (**new, Pass 31 — OBSERVED live, EXTENDED, LOCKED**): the sweep observes what it asserts
 
@@ -4194,6 +4237,23 @@ live-drift sweep: 119 probed — 84 alive, 24 empty, 4 unreachable, 2 timed-out,
 
 (84 alive against 71 on the 15:02 run of the same day; the run is red only
 on the `wifidb` dead canary, by design — REQ-HTTP-001.)
+
+**Second batch (this sandbox, 2026-09-15 17:01 UTC, same method).**
+
+| module | sample | found |
+|---|---|---|
+| `acnc_charities` | `Australian Red Cross Society` | 5 |
+| `asic_business_names` | `Telstra` | 143 |
+| `crossref_search` | `Albert Einstein` | 5 |
+| `wikidata` | `Abraham Lincoln` | 8 |
+| `app_links` | `github.com` | 7 |
+| `data_gov_au` | `Telstra` | 0 — **not** a canary |
+| `asic_banned_orgs` | `Telstra` | 0 — **not** a canary |
+| `dns_axfr` | `zonetransfer.me` | inconclusive (raw TCP/53 is not routable from the sandbox) — **not** a canary |
+
+The five yielding pairs join `CANARY_PROBES`; the Australian registers'
+per-kind sample (`Google LLC`) holds nothing in them and `Fletcher Moreau`
+is synthetic, so none was observable before.
 
 ### REQ-SCOPE-001 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): an out-of-jurisdiction target is a typed skip, never a clean negative
 

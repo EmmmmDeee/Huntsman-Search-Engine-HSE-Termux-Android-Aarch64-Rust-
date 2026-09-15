@@ -4,8 +4,11 @@
 //! by `hse cells import`) and returns cell towers within a ~556 m bounding box.
 //! Emits a `DeviceId` and a `Coordinates` entity for each tower found.
 //!
-//! No API calls — completely offline once the database is populated.
-//! Silent no-op when the database has not been imported yet.
+//! No API calls — completely offline once the database is populated. When the
+//! database has never been imported the module says so as a typed
+//! `Unavailable` skip (an actionable coverage gap: run `hse cells import`),
+//! never as an empty result — which dispatch would record as "no cell towers
+//! within ~556 m of this coordinate" for a database that does not exist.
 
 use async_trait::async_trait;
 
@@ -66,14 +69,16 @@ impl Module for CellLocal {
         let cells = tokio::task::spawn_blocking(move || {
             let conn = match crate::util::cell_db::open_ro() {
                 Ok(c) => c,
-                // DB not yet populated — silent no-op until `hse cells import` is run.
-                // That is a real "nothing to search", and the only one: `open_ro`
-                // also returns `Err` when the file IS there but will not open (wrong
-                // permissions, a truncated import, a corrupt header), and folding
-                // that into an empty result would report "no cell towers within
-                // ~556 m of this coordinate" — indistinguishable from a loaded
-                // database with a genuine geographic miss.
-                Err(_) if !crate::util::cell_db::cell_db_path().exists() => return Ok(vec![]),
+                // DB not yet populated: nothing was searched, and the module says
+                // so in-band (`database_not_imported`) instead of returning an
+                // empty result that reads as "no cell towers within ~556 m of
+                // this coordinate". `open_ro` also returns `Err` when the file IS
+                // there but will not open (wrong permissions, a truncated import,
+                // a corrupt header) — that stays a hard error below, since
+                // folding it into a skip would hide a broken import.
+                Err(_) if !crate::util::cell_db::cell_db_path().exists() => {
+                    return Err(database_not_imported());
+                }
                 Err(e) => {
                     return Err(Error::module(
                         SRC,
@@ -155,10 +160,72 @@ use crate::util::cell_db::accuracy_to_confidence;
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
+/// The typed outcome for a lookup against a database that was never imported:
+/// an `Unavailable` skip — the provider (the local cell-tower database) could
+/// not be used from this host, a coverage gap the operator closes with
+/// `hse cells import`. Never `Ok(empty)`: the module doc used to call that a
+/// "silent no-op", and dispatch recorded it as `ModuleDone { found: 0 }`,
+/// which `core::coverage` reads as a clean negative about the coordinate.
+pub(super) fn database_not_imported() -> Error {
+    Error::skipped(
+        crate::core::event::SkipClass::Unavailable,
+        "local cell-tower database not imported (~/.huntsman/cell_towers.db) — run \
+         `hse cells import`; no towers were looked up for this coordinate",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::scan::TargetKind;
+
+    /// An unimported database is the typed `Unavailable` skip, never an empty
+    /// result; and the real `process` path takes it whenever the per-process
+    /// test database does not exist (which is the state of a fresh test
+    /// process — under `cfg(test)` the data directory is a pid-scoped temp
+    /// directory that nothing here imports into).
+    #[tokio::test]
+    async fn an_unimported_database_is_a_typed_unavailable_skip_never_no_towers() {
+        use crate::core::error::Error;
+        use crate::core::event::SkipClass;
+        match database_not_imported() {
+            Error::Skipped { class, reason } => {
+                assert_eq!(class, SkipClass::Unavailable);
+                assert!(reason.contains("hse cells import"), "{reason}");
+            }
+            other => panic!("expected an Unavailable skip, got {other}"),
+        }
+        if crate::util::cell_db::cell_db_path().exists() {
+            // Another test in this process imported a database: the skip path
+            // is not reachable here, and the pure check above is the lock.
+            return;
+        }
+        let (bus, _rx) = tokio::sync::broadcast::channel(1);
+        let ctx = ModuleContext {
+            scan_id: "t".into(),
+            bus,
+            http: reqwest::Client::new(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+        let err = CellLocal
+            .process(
+                &Target::new(TargetKind::Coordinates, "-27.4698,153.0251"),
+                &ctx,
+            )
+            .await
+            .expect_err("no database means nothing was searched — never a clean negative");
+        assert!(
+            matches!(
+                err,
+                Error::Skipped {
+                    class: SkipClass::Unavailable,
+                    ..
+                }
+            ),
+            "{err}"
+        );
+    }
 
     #[test]
     fn module_metadata() {

@@ -331,6 +331,24 @@ pub const CANARY_PROBES: &[(&str, TargetKind, &str)] = &[
     ("au_geo", TargetKind::Coordinates, "-33.8688,151.2093"),
     // Brisbane CBD: a DCDB cadastral parcel — 6.
     ("qld_cadastre", TargetKind::Coordinates, "-27.4698,153.0251"),
+    // ── Second batch, verified live from the sandbox on 2026-09-15 17:01 UTC
+    // (the AU registers' per-kind sample, `Google LLC`, holds nothing in
+    // them; `Fletcher Moreau` is a synthetic name). `data_gov_au` / `Telstra`
+    // and `asic_banned_orgs` / `Telstra` yielded nothing and are not canaries.
+    // The ACNC register's own entry for the Red Cross — 5.
+    (
+        "acnc_charities",
+        TargetKind::Organisation,
+        "Australian Red Cross Society",
+    ),
+    // ASIC business names registered by Telstra — 143.
+    ("asic_business_names", TargetKind::Organisation, "Telstra"),
+    // Works BY Einstein (`query.author=`, REQ-ATTR-001) — 5.
+    ("crossref_search", TargetKind::FullName, "Albert Einstein"),
+    // Wikidata's item for Lincoln — 8.
+    ("wikidata", TargetKind::FullName, "Abraham Lincoln"),
+    // GitHub's published `assetlinks.json` — 7.
+    ("app_links", TargetKind::Domain, "github.com"),
 ];
 
 /// Whether `module` is a curated must-yield canary (see [`CANARY_PROBES`]).
