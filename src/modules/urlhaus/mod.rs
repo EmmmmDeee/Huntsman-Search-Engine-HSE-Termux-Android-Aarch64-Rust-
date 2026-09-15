@@ -91,6 +91,24 @@ struct UrlEntry {
 /// than silently discarded, and an unparseable count — a real contract
 /// violation, distinct from the already-handled "no results" negative — is
 /// `Err` so the confirmed malicious-host finding is never silently dropped.
+/// Whether the in-body `query_status` says the host is in the corpus: `ok`
+/// (results follow) or `no_results` (the clean negative for a host URLhaus
+/// has never listed). Any other status — `invalid_host`, a maintenance or
+/// error status — is the provider failing the query, never "not listed"
+/// (backlog #50). **Pure.**
+fn has_results(query_status: &str) -> Result<bool> {
+    match query_status {
+        "ok" => Ok(true),
+        "no_results" => Ok(false),
+        other => Err(Error::module(
+            SRC,
+            format!(
+                "URLhaus answered query_status={other:?} — not a listing and not the documented no_results"
+            ),
+        )),
+    }
+}
+
 fn parse_url_count(body: &UrlhausResp) -> Result<u64> {
     match body.url_count.as_deref().map(str::parse::<u64>) {
         Some(Ok(n)) if n > 0 => Ok(n),
@@ -255,15 +273,16 @@ impl Module for UrlHaus {
             .await?;
 
         let status = resp.status();
-        // A present-but-rejected key (401/403) degrades to a clean skip rather
-        // than spamming a module error on every host in the scan — but the
-        // key pool must still learn about it, or a dead/rotated-away key
-        // silently degrades every host forever with no operator-visible
-        // signal and no chance to rotate to another pooled key.
-        if matches!(status.as_u16(), 401 | 403) {
+        // A rejected (401/403) or throttled (429) Auth-Key: the pool learns
+        // about it (so a dead or rotated-away key is rotated past, and a
+        // throttle backs off) and the lookup is the module's error. It used to
+        // be a clean empty result on 401/403 — for a threat module, the claim
+        // "this host is not in the URLhaus corpus" about a host that was never
+        // checked — and a 429 never reached the pool at all (backlog #50).
+        if crate::util::http::is_keyed_error_status(status.as_u16()) {
             crate::util::http::note_keyed_error(status.as_u16(), key_service, key, ctx);
-            tracing::warn!(target: "module.urlhaus", %status, "abuse.ch rejected the Auth-Key");
-            return Ok(ModuleResult::new());
+            tracing::warn!(target: "module.urlhaus", %status, "abuse.ch rejected or throttled the Auth-Key");
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
         if !status.is_success() {
             return Err(crate::util::http::http_status_error(SRC, resp).await);
@@ -271,8 +290,7 @@ impl Module for UrlHaus {
 
         let body: UrlhausResp = crate::util::http::json_decode(SRC, resp).await?;
 
-        // "no_results" is the common case for clean hosts — not an error.
-        if body.query_status != "ok" {
+        if !has_results(&body.query_status)? {
             return Ok(ModuleResult::new());
         }
 

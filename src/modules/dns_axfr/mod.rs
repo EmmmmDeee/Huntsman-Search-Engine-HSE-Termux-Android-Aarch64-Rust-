@@ -128,6 +128,13 @@ impl Module for DnsAxfr {
             .take(3)
             .collect();
 
+        // Nameservers that answered the AXFR request (permitted or refused),
+        // those that could not be reached (no address, connect / read failure)
+        // and those deliberately not probed (private addresses) are counted
+        // apart: only an answer establishes anything about the zone.
+        let mut answered = 0usize;
+        let mut unreached: Vec<String> = Vec::new();
+        let mut not_probed = 0usize;
         for ns_host in &ns_hosts {
             let ns_ip = match resolver.lookup_ip(ns_host.as_str()).await {
                 Ok(ips) => {
@@ -147,12 +154,21 @@ impl Module for DnsAxfr {
                         // AXFR path bypasses reqwest's `SsrfResolver`, so refuse
                         // the transfer explicitly — otherwise the tool becomes an
                         // internal port-53 prober for whoever controls the zone.
-                        Some(addr) if crate::util::preflight::is_private_addr(addr) => continue,
+                        Some(addr) if crate::util::preflight::is_private_addr(addr) => {
+                            not_probed += 1;
+                            continue;
+                        }
                         Some(addr) => addr.to_string(),
-                        None => continue,
+                        None => {
+                            unreached.push(format!("{ns_host}: no address record"));
+                            continue;
+                        }
                     }
                 }
-                Err(_) => continue,
+                Err(e) => {
+                    unreached.push(format!("{ns_host}: {e}"));
+                    continue;
+                }
             };
 
             match attempt_axfr(&ns_ip, &domain).await {
@@ -201,12 +217,58 @@ impl Module for DnsAxfr {
                     result.push(zone_e);
                     break;
                 }
-                _ => continue,
+                // The server answered — a refusal (rcode) or an empty transfer.
+                Ok(_) => answered += 1,
+                Err(e) => unreached.push(format!("{ns_host} ({ns_ip}): {e}")),
             }
         }
 
-        Ok(result)
+        if !result.is_empty() {
+            return Ok(result);
+        }
+        sweep_verdict(&domain, ns_hosts.len(), answered, &unreached, not_probed)
     }
+}
+
+/// The verdict of a sweep that found no open transfer. **Pure.** "No
+/// zone-transfer exposure" is established only by nameservers that ANSWERED
+/// (refused, or served nothing); a nameserver that could not be reached —
+/// TCP/53 filtered, a connect or read timeout, an unresolvable glue name —
+/// leaves the question open for it, so the sweep is the module's error naming
+/// it (backlog #10: the resolver-outage stage already failed closed; this
+/// stage still read a fully unreachable set as the clean negative its own
+/// comment forbids). A zone whose nameservers were all skipped as private
+/// addresses, or that lists none, is not applicable — nothing was probed.
+fn sweep_verdict(
+    domain: &str,
+    ns_count: usize,
+    answered: usize,
+    unreached: &[String],
+    not_probed: usize,
+) -> Result<ModuleResult> {
+    if !unreached.is_empty() {
+        return Err(crate::core::error::Error::module(
+            SRC,
+            format!(
+                "AXFR against {domain}: {} of {ns_count} nameserver(s) could not be reached, so no zone-transfer verdict was established for them ({answered} answered): {}",
+                unreached.len(),
+                unreached.join("; ")
+            ),
+        ));
+    }
+    if answered == 0 {
+        return Err(crate::core::error::Error::skipped(
+            crate::core::event::SkipClass::NotApplicable,
+            if ns_count == 0 {
+                format!("{domain} lists no nameservers: nothing to transfer from")
+            } else {
+                format!(
+                    "every nameserver of {domain} resolves to a private/reserved address ({not_probed} skipped): AXFR is not attempted against internal hosts"
+                )
+            },
+        ));
+    }
+    Ok(ModuleResult::new())
 }
 
 /// True when `name` is a genuine subdomain of `zone` under the SAME identity

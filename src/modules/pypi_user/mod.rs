@@ -31,7 +31,7 @@ use super::profile_kit;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -60,6 +60,25 @@ pub(super) struct PypiPackageInfo {
 #[derive(Deserialize)]
 pub(super) struct PypiPackageResp {
     pub(super) info: PypiPackageInfo,
+}
+
+/// The `faultString` of an XML-RPC `<fault>` response, if `xml` is one. PyPI
+/// answers a rejected call — a method it no longer serves, the XML-RPC rate
+/// limit (`HTTPTooManyRequests`), a disabled API — with HTTP 200 and a
+/// `<methodResponse><fault>…` body (captured live 2026-09-15 for an unknown
+/// method: `faultCode -32601`, `faultString "server error; requested method
+/// not found"`), which the pair parser read as "owns no packages" — a clean
+/// negative about the handle (backlog #33). **Pure.**
+pub(super) fn xmlrpc_fault(xml: &str) -> Option<String> {
+    let fault = xml.find("<fault>")?;
+    let body = &xml[fault..];
+    let text = body.find("<name>faultString</name>").and_then(|i| {
+        let rest = &body[i..];
+        let s = rest.find("<string>")? + "<string>".len();
+        let e = rest[s..].find("</string>")? + s;
+        Some(rest[s..e].trim().to_string())
+    });
+    Some(text.unwrap_or_else(|| "XML-RPC fault without a faultString".to_string()))
 }
 
 /// Parse the XML-RPC `user_packages` response into (role, package_name) pairs.
@@ -344,6 +363,9 @@ impl Module for PypiUser {
         // Termux device. `read_text` is the same capped helper every other body
         // read in the codebase uses (see `util::http::fetch`'s `JSON_BODY_CAP`).
         let xml_text = read_text(SRC, xml_resp).await?;
+        if let Some(fault) = xmlrpc_fault(&xml_text) {
+            return Err(Error::module(SRC, format!("PyPI XML-RPC fault: {fault}")));
+        }
         let packages = parse_user_packages(&xml_text);
         if packages.is_empty() {
             return Ok(ModuleResult::new());

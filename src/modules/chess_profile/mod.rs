@@ -46,6 +46,12 @@ use crate::util::http::{fetch_json_or_404, urlencode};
 
 const SRC: &str = "chess_profile";
 
+/// Chess.com's public player endpoint and Lichess's user endpoint; the
+/// lookups take them as parameters so a loopback server can drive the
+/// transport path in tests.
+const CHESSCOM_BASE: &str = "https://api.chess.com/pub/player";
+const LICHESS_BASE: &str = "https://lichess.org/api/user";
+
 /// Confidence for a chess account that resolves EXACTLY from the target handle
 /// (canonical `Username` + profile `Url`). An exact, keyless platform match with
 /// a live public profile — on par with `gaming_profile`'s Minecraft tier; a
@@ -170,47 +176,75 @@ impl Module for ChessProfile {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut result = ModuleResult::new();
         let v = target.value.trim();
         if !accepts_value(v) {
-            return Ok(result);
+            return Ok(ModuleResult::new());
         }
 
-        // Both platforms queried concurrently; each is best-effort — a failure or
-        // miss on one never sinks the other or the module.
-        let (chesscom, lichess) = tokio::join!(chesscom_lookup(ctx, v), lichess_lookup(ctx, v));
-        result.extend(chesscom);
-        result.extend(lichess);
-
-        Ok(result)
+        // Both platforms queried concurrently; a miss or a failure on one never
+        // sinks the other's evidence. A failure with nothing found on either
+        // side is the module's error (backlog #9) — until now a 429 / 5xx /
+        // transport failure / open breaker on both platforms was an empty
+        // result, which coverage read as "no Chess.com and no Lichess account".
+        let (chesscom, lichess) = tokio::join!(
+            chesscom_lookup(&ctx.http, CHESSCOM_BASE, v, &ctx.scan_id),
+            lichess_lookup(&ctx.http, LICHESS_BASE, v, &ctx.scan_id)
+        );
+        combine(chesscom, lichess)
     }
 }
 
-/// Fetch and parse a Chess.com profile for `username`. Best-effort: any
-/// transport / parse failure or a 404 yields an empty batch.
-async fn chesscom_lookup(ctx: &ModuleContext, username: &str) -> Vec<Entity> {
-    let url = format!("https://api.chess.com/pub/player/{}", urlencode(username));
-    match fetch_json_or_404::<ChessComProfile>(&ctx.http, SRC, &url).await {
-        Ok(Some(p)) => parse_chesscom(&p, username, &ctx.scan_id),
-        Ok(None) => Vec::new(), // no Chess.com account owns this exact handle
-        Err(e) => {
-            tracing::debug!(error = %e, "chess.com lookup failed");
-            Vec::new()
+/// Merge the two platform lookups: evidence from either is kept; when neither
+/// produced any and at least one failed, the failure is the outcome
+/// (`ModuleResult::or_hard_failure`). **Pure.**
+fn combine(chesscom: Result<Vec<Entity>>, lichess: Result<Vec<Entity>>) -> Result<ModuleResult> {
+    let mut result = ModuleResult::new();
+    let mut hard_failure = None;
+    for (platform, outcome) in [("chess.com", chesscom), ("lichess", lichess)] {
+        match outcome {
+            Ok(entities) => result.extend(entities),
+            Err(e) => {
+                tracing::warn!(target: "module.chess_profile", platform, error = %e, "lookup failed");
+                hard_failure = Some(e);
+            }
         }
     }
+    result.or_hard_failure(hard_failure)
 }
 
-/// Fetch and parse a Lichess profile for `username`. Best-effort, same contract.
-async fn lichess_lookup(ctx: &ModuleContext, username: &str) -> Vec<Entity> {
-    let url = format!("https://lichess.org/api/user/{}", urlencode(username));
-    match fetch_json_or_404::<LichessUser>(&ctx.http, SRC, &url).await {
-        Ok(Some(u)) => parse_lichess(&u, username, &ctx.scan_id),
-        Ok(None) => Vec::new(),
-        Err(e) => {
-            tracing::debug!(error = %e, "lichess lookup failed");
-            Vec::new()
-        }
-    }
+/// Fetch and parse a Chess.com profile for `username`. `Ok(empty)` is the
+/// platform's 404 — no account owns this exact handle; any other non-2xx, a
+/// transport failure or an undecodable body is the error.
+async fn chesscom_lookup(
+    client: &reqwest::Client,
+    api_base: &str,
+    username: &str,
+    scan_id: &str,
+) -> Result<Vec<Entity>> {
+    let url = format!("{api_base}/{}", urlencode(username));
+    Ok(
+        match fetch_json_or_404::<ChessComProfile>(client, SRC, &url).await? {
+            Some(p) => parse_chesscom(&p, username, scan_id),
+            None => Vec::new(),
+        },
+    )
+}
+
+/// Fetch and parse a Lichess profile for `username`; same contract as
+/// [`chesscom_lookup`].
+async fn lichess_lookup(
+    client: &reqwest::Client,
+    api_base: &str,
+    username: &str,
+    scan_id: &str,
+) -> Result<Vec<Entity>> {
+    let url = format!("{api_base}/{}", urlencode(username));
+    Ok(
+        match fetch_json_or_404::<LichessUser>(client, SRC, &url).await? {
+            Some(u) => parse_lichess(&u, username, scan_id),
+            None => Vec::new(),
+        },
+    )
 }
 
 /// Build entities from a Chess.com profile. Pure (no I/O) so the parse is unit

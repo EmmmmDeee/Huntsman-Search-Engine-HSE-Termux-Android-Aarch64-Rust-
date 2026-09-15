@@ -130,3 +130,28 @@ mod prop {
         }
     }
 }
+
+#[test]
+fn an_unreached_nameserver_leaves_no_zone_transfer_verdict() {
+    // Backlog #10 (the post-enumeration stage): three nameservers all
+    // dropping TCP/53 used to record exactly what three refusing nameservers
+    // record — an empty result, read as "no zone-transfer exposure".
+    let unreached = vec![
+        "ns1.example.com (192.0.2.1): connect timeout".to_string(),
+        "ns2.example.com: no address record".to_string(),
+    ];
+    let err = sweep_verdict("example.com", 3, 1, &unreached, 0).expect_err("two unreached");
+    let msg = err.to_string();
+    assert!(msg.contains("2 of 3 nameserver(s) could not be reached") && msg.contains("1 answered") && msg.contains("connect timeout"), "{msg}");
+    // Every nameserver answering (refusing) IS the clean negative.
+    assert!(sweep_verdict("example.com", 3, 3, &[], 0).expect("refused by all").is_empty());
+    // Nothing probed at all is not applicable, never a negative.
+    assert!(matches!(
+        sweep_verdict("example.com", 2, 0, &[], 2),
+        Err(crate::core::error::Error::Skipped { class: crate::core::event::SkipClass::NotApplicable, .. })
+    ));
+    assert!(matches!(
+        sweep_verdict("example.com", 0, 0, &[], 0),
+        Err(crate::core::error::Error::Skipped { .. })
+    ));
+}

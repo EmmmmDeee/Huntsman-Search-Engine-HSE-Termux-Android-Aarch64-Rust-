@@ -25,34 +25,40 @@ fn metadata() {
 
 #[test]
 fn build_entities_emits_org_and_per_article_url_sources() {
-    use super::{TroveArticle, build_entities};
+    use super::{TroveArticle, TroveTitle, build_entities};
     use crate::core::entity::EntityKind;
 
     let articles = vec![
         TroveArticle {
             id: Some("18341291".into()),
-            title: Some("ACME COMPANY NOTICE".into()),
+            heading: Some("ACME COMPANY NOTICE".into()),
             date: Some("1923-04-01".into()),
-            title_id: Some("35".into()),
+            title: Some(TroveTitle::Object {
+                id: Some("35".into()),
+                title: Some("The Sydney Morning Herald".into()),
+            }),
             snippet: Some("...the directors of Acme...".into()),
+            trove_url: None,
             url: Some("https://trove.nla.gov.au/newspaper/article/18341291".into()),
         },
         // A second article with the SAME url must dedup to one entity.
         TroveArticle {
             id: Some("18341291".into()),
-            title: Some("dup".into()),
+            heading: Some("dup".into()),
             date: Some("1923-04-02".into()),
-            title_id: None,
+            title: None,
             snippet: None,
+            trove_url: None,
             url: Some("https://trove.nla.gov.au/newspaper/article/18341291".into()),
         },
         // An article with no URL is skipped (nothing to pivot on).
         TroveArticle {
             id: Some("999".into()),
-            title: Some("no url".into()),
+            heading: Some("no url".into()),
             date: Some("1924-01-01".into()),
-            title_id: None,
+            title: None,
             snippet: None,
+            trove_url: None,
             url: None,
         },
     ];
@@ -91,8 +97,12 @@ fn build_entities_emits_org_and_per_article_url_sources() {
         Some("ACME COMPANY NOTICE")
     );
     assert!(attrs.get("snippet").is_some(), "snippet preserved");
-    // The publishing masthead id (titleId) is now carried as provenance.
+    // The publishing masthead (v3's `title` object) is carried as provenance.
     assert_eq!(attrs.get("masthead_id").map(String::as_str), Some("35"));
+    assert_eq!(
+        attrs.get("newspaper").map(String::as_str),
+        Some("The Sydney Morning Herald")
+    );
 
     // No hits → empty result.
     assert!(
@@ -115,10 +125,11 @@ fn build_entities_demotes_and_flags_an_article_whose_own_text_never_names_the_qu
 
     let articles = vec![TroveArticle {
         id: Some("1".into()),
-        title: Some("Totally Unrelated Historical Notice".into()),
+        heading: Some("Totally Unrelated Historical Notice".into()),
         date: Some("1901-01-01".into()),
-        title_id: None,
+        title: None,
         snippet: Some("nothing to do with the query at all".into()),
+        trove_url: None,
         url: Some("https://trove.nla.gov.au/newspaper/article/1".into()),
     }];
     let res = build_entities("Acme Pty Ltd", 1, &articles, "scan");
@@ -160,10 +171,11 @@ fn build_entities_trusts_an_article_whose_snippet_names_the_query_even_if_the_ti
 
     let articles = vec![TroveArticle {
         id: Some("1".into()),
-        title: Some("Local Business Notes".into()),
+        heading: Some("Local Business Notes".into()),
         date: Some("1950-01-01".into()),
-        title_id: None,
+        title: None,
         snippet: Some("...Acme Pty Ltd announced today...".into()),
+        trove_url: None,
         url: Some("https://trove.nla.gov.au/newspaper/article/1".into()),
     }];
     let res = build_entities("Acme Pty Ltd", 1, &articles, "scan");
@@ -186,10 +198,11 @@ fn all_fetched_articles_emit_url_sources_not_just_the_first_ten() {
     let articles: Vec<TroveArticle> = (0..20)
         .map(|i| TroveArticle {
             id: Some(format!("{i}")),
-            title: Some(format!("Mention {i}")),
+            heading: Some(format!("Mention {i}")),
             date: Some("1925-01-01".into()),
-            title_id: None,
+            title: None,
             snippet: None,
+            trove_url: None,
             url: Some(format!("https://trove.nla.gov.au/newspaper/article/{i}")),
         })
         .collect();
@@ -200,4 +213,47 @@ fn all_fetched_articles_emit_url_sources_not_just_the_first_ten() {
         .filter(|e| e.kind == EntityKind::Url)
         .count();
     assert_eq!(urls, 20, "all 20 fetched articles must emit a Url source");
+}
+
+#[test]
+fn the_v3_envelope_is_decoded_and_the_v2_shape_is_a_failed_lookup_not_zero_hits() {
+    // Backlog #46. The module decoded v2's `response.zone[]` from the v3
+    // endpoint, so every keyed search read as zero hits and was cached for a
+    // day. v3 answers a top-level `category[]`, each with `records.total` and
+    // `records.article[]`; an article's headline is `heading`, its `title` is
+    // the masthead object and `troveUrl` the reader page. (Shape per the Trove
+    // API v3 documentation; no key here for a live capture — a body of any
+    // other shape is now a failed lookup, never zero hits.)
+    use super::{TroveResp, build_entities, newspaper_records};
+    let v3: TroveResp = serde_json::from_str(
+        r#"{"query":"Acme Pty Ltd","category":[{"code":"newspaper","name":"Newspapers & Gazettes","records":{"s":"*","n":20,"total":42,"article":[{"id":"18341291","url":"https://api.trove.nla.gov.au/v3/newspaper/18341291","heading":"ACME COMPANY NOTICE","category":"Article","title":{"id":"35","title":"The Sydney Morning Herald"},"date":"1923-04-01","troveUrl":"https://trove.nla.gov.au/newspaper/article/18341291","snippet":"...the directors of Acme..."}]}}]}"#,
+    )
+    .expect("the v3 envelope decodes");
+    let (total, articles) = newspaper_records(v3).expect("recognised");
+    assert_eq!(total, 42);
+    assert_eq!(articles.len(), 1);
+    assert_eq!(articles[0].headline(), Some("ACME COMPANY NOTICE"));
+    assert_eq!(
+        articles[0].link(),
+        Some("https://trove.nla.gov.au/newspaper/article/18341291")
+    );
+    assert_eq!(
+        articles[0].newspaper(),
+        (Some("The Sydney Morning Herald"), Some("35"))
+    );
+    let res = build_entities("Acme Pty Ltd", total, &articles, "scan");
+    assert!(
+        res.entities
+            .iter()
+            .any(|e| e.value.contains("newspaper/article/18341291"))
+    );
+
+    // The v2 envelope — what the module used to expect — is no longer read
+    // as an empty archive.
+    let v2: TroveResp = serde_json::from_str(
+        r#"{"response":{"zone":[{"name":"newspaper","records":{"total":"42","article":[]}}]}}"#,
+    )
+    .expect("decodes to a defaulted record");
+    let err = newspaper_records(v2).expect_err("a shape this module does not recognise");
+    assert!(err.to_string().contains("does not recognise"), "{err}");
 }

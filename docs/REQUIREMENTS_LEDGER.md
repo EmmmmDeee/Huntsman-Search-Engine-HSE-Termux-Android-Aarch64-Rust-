@@ -3676,3 +3676,118 @@ gone until a keyed capture of the result endpoint is on record. The
 `crates_io`-style loopback drive of `crossref_search`'s HTTP path is not
 added (its pure seam is `build_query` + `attribution`).
 
+### REQ-SWEEP-002 (**new, Pass 31 — VERIFIED FROM SOURCE, two OBSERVED LIVE, FIXED, FALSIFIED**): thirteen more failed lookups read as clean negatives
+
+**Requirement.** Only a provider's documented miss is a clean negative. A
+non-2xx on a fixed endpoint, an HTTP-200 error envelope, an unrecognised
+response shape, an instance or nameserver that did not answer, and a
+second call's failure after a first call's evidence are each classified for
+what they are — a failed lookup, a partial outage kept visible, a typed skip
+— never `Ok(empty)`, which `core::coverage` records as a clean negative
+about the subject.
+
+**Observations** (2026-09-15, this sandbox, keyless; the rest verified from
+source by an independent read-only re-derivation):
+
+- Mylnikov: `bssid=zzz` → HTTP 200 `{"result":400, "data":{}, "message":2,
+  "desc":"Empty or bad search query"}`; a genuine miss → `{"result":404,
+  "data":{}, "message":6, "desc":"Object was not found"}`; a hit →
+  `{"result":200, "data":{"lat":…,"lon":…,"range":…}}`. Every non-200 was
+  "BSSID not located".
+- PyPI XML-RPC: an unknown method → HTTP 200 `text/xml`,
+  `<methodResponse><fault>…<name>faultCode</name><value><int>-32601</int>`
+  … `<name>faultString</name><value><string>server error; requested method
+  not found</string>` — one `<string>`, which the pair parser zipped to
+  nothing ("owns no packages"). A real `user_packages` answer is
+  `<params>…<array>…<string>Owner</string><string>apathy</string>…`.
+
+**Repair** (one authoritative site each):
+
+| # | Module | Before | After |
+|---|---|---|---|
+| 9 | `chess_profile` | both lookups swallowed 429 / 5xx / transport / breaker into an empty batch | `Result<Vec<Entity>>` per lookup (endpoint parameter); `combine` keeps either side's evidence and makes a failure with nothing found the error |
+| 10 | `dns_axfr` | unreachable nameservers read like refusing ones (post-enumeration stage) | answered / unreached / not-probed counted; `sweep_verdict`: unreached → error naming them; all answered → clean negative; nothing probed → `NotApplicable` skip |
+| 11 | `data_gov_au` | 404 on `package_search` → "no matching agency" | `package_search` seam via `fetch_json`; `success: false` rejected |
+| 15 | `crates_io` | listing `?` discarded the confirmed account | `expand_crates` keeps the account and writes `crates_listing: failed` onto its evidence |
+| 17 | `fofa` | 200 `error: true` → warn + empty; pool never told | `envelope_failure`; key/quota-shaped → `note_keyed_error`; every envelope → error |
+| 20 | `exa_search` | snake_case request keys and `published_date` | documented camelCase names (`request_body`); `publishedDate` with the old alias |
+| 22 | `greynoise` | all-defaulted `PaidResp` → nested/renamed shape = "never observed" | `seen: Option<bool>`; `recognised` fails an unrecognised shape |
+| 28 | `mastodon_user` | 1 answered / 9 failed → clean negative; failures unlogged | failures logged and collected; `sweep_verdict` errors on any unanswered instance |
+| 29 | `mylnikov` | every non-200 `result` → "not located" | `classify`: 404 the miss; 200 decodes `data`; else error with `desc` |
+| 33 | `pypi_user` | `<fault>` parsed as no packages | `xmlrpc_fault` → error with the `faultString` |
+| 40 | `stolen_tax` | non-key `success: false` → `Absent` (cached a day) | `body_verdict` accepts; `accepted` fails with the provider's text |
+| 46 | `trove_au` | v2 envelope from the v3 endpoint, `zone=` → zero hits | `category=`; v3 `category[]` / `records` / `heading` / masthead `title` / `troveUrl`; `newspaper_records` fails an unrecognised shape |
+| 50 | `urlhaus` | 401/403 → empty; 429 not reported; any non-`ok` status → empty | 401/403/429 → pool + error; `has_results`: `no_results` only |
+
+**Evidence.** `chess_profile::…a_failure_on_both_platforms…` and
+`…chesscom_lookup_classifies_a_hit_a_404_and_a_failure` (loopback),
+`dns_axfr::…an_unreached_nameserver_leaves_no_zone_transfer_verdict`,
+`data_gov_au::…a_404_or_a_rejected_query_is_a_failed_lookup…` (loopback),
+`crates_io::…a_failed_crate_listing_keeps_the_confirmed_account…` (loopback),
+`fofa::…an_error_envelope_is_a_failure…`,
+`greynoise::…an_unrecognised_paid_response_shape…`,
+`mastodon_user::…a_partial_sweep_is_never_a_clean_negative`,
+`mylnikov::…only_result_404_is_the_miss…` (the live bodies),
+`pypi_user::…an_xmlrpc_fault_is_a_failed_lookup…` (the live body),
+`stolen_tax::…a_non_key_error_envelope_fails_closed…`,
+`trove_au::…the_v3_envelope_is_decoded_and_the_v2_shape_is_a_failed_lookup…`,
+`urlhaus::…only_no_results_is_the_clean_negative…`,
+`exa_search::…request_and_response_use_exas_documented_field_names`.
+
+**Falsification.** Each repair reverted in turn with only its lock run:
+
+```
+[chess_profile #9] reverted -> LOCK FAILS (expected)
+    modules::chess_profile::tests::a_failure_on_both_platforms_is_the_modules_error_never_no_accounts --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.21s
+[data_gov_au #11] reverted -> LOCK FAILS (expected)
+    modules::data_gov_au::tests::a_404_or_a_rejected_query_is_a_failed_lookup_and_only_count_zero_is_the_miss --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.22s
+[crates_io #15] reverted -> LOCK FAILS (expected)
+    modules::crates_io::tests::a_failed_crate_listing_keeps_the_confirmed_account_and_says_so --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.22s
+[mastodon_user #28] reverted -> LOCK FAILS (expected)
+    modules::mastodon_user::tests::a_partial_sweep_is_never_a_clean_negative --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.21s
+[mylnikov #29] reverted -> LOCK FAILS (expected)
+    modules::mylnikov::tests::only_result_404_is_the_miss_every_other_code_is_a_failed_lookup --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.21s
+[pypi_user #33] reverted -> LOCK FAILS (expected)
+    modules::pypi_user::tests::an_xmlrpc_fault_is_a_failed_lookup_never_no_packages --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.21s
+[fofa #17] reverted -> LOCK FAILS (expected)
+    modules::fofa::tests::an_error_envelope_is_a_failure_and_a_key_shaped_one_is_flagged_for_the_pool --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.21s
+[greynoise #22] reverted -> LOCK FAILS (expected)
+    modules::greynoise::tests::an_unrecognised_paid_response_shape_is_a_failed_lookup_never_an_unobserved_ip --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.26s
+[stolen_tax #40] reverted -> LOCK FAILS (expected)
+    modules::stolen_tax::tests::a_non_key_error_envelope_fails_closed_instead_of_reading_as_no_breach --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.22s
+[trove_au #46] reverted -> LOCK FAILS (expected)
+    modules::trove_au::tests::the_v3_envelope_is_decoded_and_the_v2_shape_is_a_failed_lookup_not_zero_hits --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.21s
+[urlhaus #50] reverted -> LOCK FAILS (expected)
+    modules::urlhaus::tests::only_no_results_is_the_clean_negative_and_any_other_status_is_a_failure --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.22s
+[exa_search #20] reverted -> LOCK FAILS (expected)
+    modules::exa_search::tests::request_and_response_use_exas_documented_field_names --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.21s
+[dns_axfr #10] reverted -> LOCK FAILS (expected)
+    modules::dns_axfr::tests::an_unreached_nameserver_leaves_no_zone_transfer_verdict --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
+Restored: the thirteen modules' suites pass again (166 passed).
+
+**Residual.** No key for FOFA, GreyNoise, stolen.tax, Trove, URLhaus or Exa
+here: those six are fixed against their documented contracts and their live
+decode is unverified — each now fails loudly (an error naming the shape or
+the envelope) rather than silently on a mismatch, which is the property that
+makes the next keyed run diagnostic. GreyNoise's actual v3 body shape (flat
+per the crate's key probe, nested per the public docs) is the one open
+question; `recognised` turns either answer into a visible outcome.
+`dns_axfr` will now error from any host where TCP/53 is filtered — an honest
+"not performed" where it used to be a clean negative.
+

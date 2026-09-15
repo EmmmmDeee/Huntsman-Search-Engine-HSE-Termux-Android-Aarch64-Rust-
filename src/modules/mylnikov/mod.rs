@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -25,11 +25,52 @@ pub struct Mylnikov;
 struct MylnikovResp {
     #[serde(default)]
     result: Option<i32>,
+    /// The fix — an object on a hit. On a failure the provider sends `{}` (or,
+    /// on some errors, a string), so it is decoded only once `result` says
+    /// there is a fix.
     #[serde(default)]
-    data: Option<MylnikovData>,
+    data: Option<serde_json::Value>,
+    /// The provider's own description of a non-200 `result`.
+    #[serde(default)]
+    desc: Option<String>,
 }
 
-#[derive(Deserialize)]
+/// Classify a Mylnikov answer by its in-body `result` code — the HTTP status
+/// is 200 for all of them. Observed live 2026-09-15: a hit
+/// `{"result":200,"data":{"lat":…,"lon":…,"range":…}}`; the miss
+/// `{"result":404,"data":{},"message":6,"desc":"Object was not found"}`; a
+/// rejected query `{"result":400,"data":{},"message":2,"desc":"Empty or bad
+/// search query"}`. Only 404 is the miss. Any other code — a rejected query,
+/// a block, a backend error — or an absent code is a failed lookup carrying
+/// the provider's `desc`; it used to be folded into "BSSID not located" like
+/// the miss (backlog #29). **Pure.**
+fn classify(body: MylnikovResp) -> Result<Option<MylnikovData>> {
+    match body.result {
+        Some(200) => {
+            let data = body
+                .data
+                .ok_or_else(|| Error::module(SRC, "result 200 without a data block"))?;
+            let fix: MylnikovData = serde_json::from_value(data).map_err(|e| {
+                Error::module(
+                    SRC,
+                    format!("result 200 with an unreadable data block: {e}"),
+                )
+            })?;
+            Ok(Some(fix))
+        }
+        Some(404) => Ok(None),
+        other => Err(Error::module(
+            SRC,
+            format!(
+                "mylnikov result={}: {}",
+                other.map_or_else(|| "absent".to_string(), |c| c.to_string()),
+                body.desc.unwrap_or_else(|| "no description".to_string())
+            ),
+        )),
+    }
+}
+
+#[derive(Debug, Deserialize)]
 struct MylnikovData {
     #[serde(default)]
     lat: Option<f64>,
@@ -133,10 +174,7 @@ impl Module for Mylnikov {
 
         let body: MylnikovResp = fetch_json(&ctx.http, SRC, &url).await?;
 
-        if body.result != Some(200) {
-            return Ok(ModuleResult::new());
-        }
-        let Some(data) = body.data else {
+        let Some(data) = classify(body)? else {
             return Ok(ModuleResult::new());
         };
 

@@ -27,7 +27,7 @@ use serde::Deserialize;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -72,9 +72,11 @@ pub(crate) struct CommunityResp {
 #[derive(Debug, Deserialize)]
 pub(crate) struct PaidResp {
     /// `true` if GreyNoise has ever observed this IP (independent of the
-    /// community tier's more recent-activity-scoped `noise`/`riot`).
+    /// community tier's more recent-activity-scoped `noise`/`riot`). `None`
+    /// when the field is absent — the sign that the response is not the flat
+    /// shape this struct models (see [`recognised`]).
     #[serde(default)]
-    pub seen: bool,
+    pub seen: Option<bool>,
     #[serde(default)]
     pub noise: bool,
     #[serde(default)]
@@ -89,6 +91,24 @@ pub(crate) struct PaidResp {
     pub message: Option<String>,
     #[serde(default)]
     pub last_seen: Option<String>,
+}
+
+/// Every field of [`PaidResp`] is defaulted, so a body of another shape — a
+/// renamed field, or a nested envelope such as `{"ip", "internet_scanner_intelligence": {…}}`
+/// — decodes to an all-false record, which the no-findings gate turns into
+/// "GreyNoise has never observed this IP": a clean negative produced by a
+/// contract change, on the keyed path only, with no error and no log
+/// (backlog #22). The flat shape always carries `seen` (the crate's own key
+/// probe checks `ip` + `seen`), so its absence is the recognisable sign of
+/// drift and a failed lookup. **Pure.**
+fn recognised(data: &PaidResp) -> Result<()> {
+    if data.seen.is_none() {
+        return Err(Error::module(
+            SRC,
+            "GreyNoise v3/ip answered a shape this module does not recognise (no `seen` field) — a failed lookup, not an unobserved IP",
+        ));
+    }
+    Ok(())
 }
 
 // ── Module ────────────────────────────────────────────────────────
@@ -234,12 +254,12 @@ fn build_paid_entities(data: &PaidResp, ip: &str, scan_id: &str) -> Vec<Entity> 
             link: data.link.as_deref(),
             message: data.message.as_deref(),
             last_seen: data.last_seen.as_deref(),
-            extra_signal: data.seen,
+            extra_signal: data.seen.unwrap_or(false),
         },
         ip,
         scan_id,
     );
-    if data.seen
+    if data.seen == Some(true)
         && let Some(subject) = entities
             .iter_mut()
             .find(|e| e.kind == EntityKind::IpAddress)
@@ -321,6 +341,7 @@ impl Module for GreyNoise {
                 return Ok(ModuleResult::new());
             };
             let data: PaidResp = crate::util::http::json_decode(SRC, resp).await?;
+            recognised(&data)?;
             let mut result = ModuleResult::new();
             result.entities = build_paid_entities(&data, ip, &ctx.scan_id);
             return Ok(result);

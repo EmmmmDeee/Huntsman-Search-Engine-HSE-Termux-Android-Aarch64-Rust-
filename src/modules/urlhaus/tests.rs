@@ -139,3 +139,13 @@ fn accepts_domain_and_ip() {
         assert_eq!(attr(&e, "threats"), None);
         assert_eq!(attr(&e, "top_tags"), None);
     }
+
+#[test]
+fn only_no_results_is_the_clean_negative_and_any_other_status_is_a_failure() {
+    // Backlog #50: every non-`ok` status folded into "not in the corpus".
+    assert!(has_results("ok").expect("listed"));
+    assert!(!has_results("no_results").expect("the documented miss"));
+    let err = has_results("invalid_host").expect_err("a rejected query is not a clean host");
+    assert!(err.to_string().contains("invalid_host"), "{err}");
+    assert!(has_results("").is_err());
+}
