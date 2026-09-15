@@ -7,6 +7,8 @@
 //! guards read the emitted bodies back out of `install.sh` and pin the
 //! properties that are easy to get wrong and impossible to notice off-device.
 
+mod reconciler_harness;
+
 use std::fs;
 use std::path::Path;
 
@@ -1044,27 +1046,17 @@ mod reconciler_transaction {
     /// Run the real reconciler in the fixture (`--repo-only --json` plus
     /// `extra`) and return its exit code and parsed final state.
     fn reconcile(fx: &Fixture, extra: &[&str]) -> (i32, serde_json::Value) {
-        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/reconcile.sh");
-        let out = Command::new("bash")
-            .arg(&script)
-            .args(["--repo-only", "--json"])
-            .args(extra)
-            .current_dir(fx.dir.path())
-            .env(
-                "PATH",
-                path_without_cargo(&fx.dir.path().join("path-without-cargo")),
-            )
-            .env("HOME", fx.dir.path())
-            .output()
-            .expect("bash");
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let json: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
-            panic!(
-                "reconciler emitted non-JSON ({e}):\n--- stdout ---\n{stdout}\n--- stderr ---\n{}",
-                String::from_utf8_lossy(&out.stderr)
-            )
-        });
-        (out.status.code().unwrap_or(-1), json)
+        let path = path_without_cargo(&fx.dir.path().join("path-without-cargo"));
+        let mut args = vec!["--repo-only", "--json"];
+        args.extend_from_slice(extra);
+        reconciler_harness::run(
+            fx.dir.path(),
+            &args,
+            &[
+                ("PATH", path.as_os_str()),
+                ("HOME", fx.dir.path().as_os_str()),
+            ],
+        )
     }
 
     fn installer_in(fx: &Fixture) -> String {
@@ -1183,25 +1175,17 @@ mod reconciler_transaction {
         no_run_exit: &str,
         run_exit: &str,
     ) -> (i32, serde_json::Value) {
-        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/reconcile.sh");
-        let out = Command::new("bash")
-            .arg(&script)
-            .args(["--repo-only", "--json"])
-            .current_dir(fx.dir.path())
-            .env("PATH", stub_cargo(fx))
-            .env("HOME", fx.dir.path())
-            .env("STUB_NO_RUN_EXIT", no_run_exit)
-            .env("STUB_RUN_EXIT", run_exit)
-            .output()
-            .expect("bash");
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let json: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
-            panic!(
-                "reconciler emitted non-JSON ({e}):\n--- stdout ---\n{stdout}\n--- stderr ---\n{}",
-                String::from_utf8_lossy(&out.stderr)
-            )
-        });
-        (out.status.code().unwrap_or(-1), json)
+        let path = stub_cargo(fx);
+        reconciler_harness::run(
+            fx.dir.path(),
+            &["--repo-only", "--json"],
+            &[
+                ("PATH", path.as_os_str()),
+                ("HOME", fx.dir.path().as_os_str()),
+                ("STUB_NO_RUN_EXIT", std::ffi::OsStr::new(no_run_exit)),
+                ("STUB_RUN_EXIT", std::ffi::OsStr::new(run_exit)),
+            ],
+        )
     }
 
     /// Rust verification is attributed by measurement. What fails BEFORE the

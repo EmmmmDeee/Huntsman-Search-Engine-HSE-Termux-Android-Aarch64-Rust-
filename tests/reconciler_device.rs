@@ -21,6 +21,8 @@
 //! others.
 #![cfg(unix)]
 
+mod reconciler_harness;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -116,31 +118,25 @@ echo "stub pkg: $*""#,
     /// Run `scripts/reconcile.sh --device-only --json` (plus `extra`) against
     /// this device; returns the exit code and the parsed final state.
     fn reconcile(&self, extra: &[&str]) -> (i32, serde_json::Value) {
-        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/reconcile.sh");
         let host_path = std::env::var_os("PATH").unwrap_or_default();
         let path = std::env::join_paths(
             std::iter::once(self.bin()).chain(std::env::split_paths(&host_path)),
         )
         .unwrap();
-        let out = Command::new("bash")
-            .arg(&script)
-            .args(["--device-only", "--json"])
-            .args(extra)
-            .current_dir(self.dir.path())
-            .env("PATH", path)
-            .env("TERMUX_VERSION", "stub")
-            .env("PREFIX", self.dir.path().join("prefix"))
-            .env("HOME", self.dir.path().join("home"))
-            .output()
-            .expect("bash");
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let json = serde_json::from_str(&stdout).unwrap_or_else(|e| {
-            panic!(
-                "reconciler emitted non-JSON ({e}):\n--- stdout ---\n{stdout}\n--- stderr ---\n{}",
-                String::from_utf8_lossy(&out.stderr)
-            )
-        });
-        (out.status.code().unwrap_or(-1), json)
+        let prefix = self.dir.path().join("prefix");
+        let home = self.dir.path().join("home");
+        let mut args = vec!["--device-only", "--json"];
+        args.extend_from_slice(extra);
+        reconciler_harness::run(
+            self.dir.path(),
+            &args,
+            &[
+                ("PATH", path.as_os_str()),
+                ("TERMUX_VERSION", std::ffi::OsStr::new("stub")),
+                ("PREFIX", prefix.as_os_str()),
+                ("HOME", home.as_os_str()),
+            ],
+        )
     }
 }
 

@@ -640,16 +640,10 @@ apk_state() {
     printf 'unknown'
 }
 
-device_phase() {
-    if ! is_termux; then
-        S[termux.state]=not_termux
-        S[radar.evidence]=degraded
-        reason "not a Termux host: the device substrate cannot be converged here"
-        return
-    fi
 
-    # ── CLI: probe → install only if necessary → hash -r → re-probe ──────────
-    local missing status out
+# ── CLI: probe → install only if necessary → hash -r → re-probe ──────────────
+probe_cli() {
+    local missing status
     missing="$(missing_core_tools)"
     if [[ -n "$missing" ]]; then
         if ! mutating; then
@@ -684,19 +678,20 @@ device_phase() {
     else
         S[termux.cli]=pass
     fi
+}
 
-    # ── Android companion: an independent fact ───────────────────────────────
-    local apk
+# ── Android companion and bridge: two independent facts ──────────────────────
+# The bridge is only meaningful once the CLI exists. A package-manager query
+# that could not run is the one case the bridge itself may settle (it cannot
+# answer without the app); a query that ran and found no app is final.
+probe_companion_and_bridge() {
+    local apk out status
     apk="$(apk_state)"
     case "$apk" in
         present) S[termux.apk]=pass ;;
         absent)  S[termux.apk]=fail; reason "Termux:API app ($TERMUX_API_APK) is not installed" ;;
         unknown) S[termux.apk]=fail; reason "package manager query failed; $TERMUX_API_APK could not be verified (see $LOG_FILE)" ;;
     esac
-
-    # ── Bridge: only meaningful once the CLI exists; a query that could not
-    # run is the one case the bridge itself may settle (it cannot answer
-    # without the app), a query that ran and found no app is final.
     if [[ "${S[termux.cli]}" == pass && "$apk" != absent ]]; then
         out="$(bounded "$TERMUX_API_BRIDGE_PROBE")"; status=$?
         if [[ "$(classify_probe "$status" "$out")" == executed_valid ]]; then
@@ -710,7 +705,6 @@ device_phase() {
             reason "$TERMUX_API_BRIDGE_PROBE did not answer within ${PROBE_TIMEOUT_S}s (exit $status)"
         fi
     fi
-
     if [[ "${S[termux.cli]}" == pass ]]; then
         if [[ "${S[termux.apk]}" != pass ]]; then
             S[termux.state]=apk_missing
@@ -720,27 +714,39 @@ device_phase() {
             S[termux.state]=ready
         fi
     fi
+}
 
-    # ── Sensors: probed independently, only over a proven bridge ─────────────
-    local i label
-    if [[ "${S[termux.state]}" == ready ]]; then
-        for i in "${!TERMUX_API_CORE_TOOLS[@]}"; do
-            label=${SENSOR_LABELS[$i]}
-            # shellcheck disable=SC2086  # SENSOR_ARGV entries are fixed words
-            out="$(bounded "${TERMUX_API_CORE_TOOLS[$i]}" ${SENSOR_ARGV[$i]})"; status=$?
-            S[sensors.$label]="$(classify_probe "$status" "$out")"
-            [[ "${S[sensors.$label]}" != failed ]] || reason "$label probe (${TERMUX_API_CORE_TOOLS[$i]}) failed: sensor state unknown, not negative evidence"
-        done
-        if command -v "$BLE_PROVIDER" >/dev/null 2>&1; then
-            out="$(bounded "$BLE_PROVIDER")"; status=$?
-            case "$(classify_probe "$status" "$out")" in
-                executed_valid|executed_empty) S[sensors.ble]=available ;;
-                *) S[sensors.ble]=failed; reason "BLE provider $BLE_PROVIDER failed: Bluetooth state unknown" ;;
-            esac
-        else
-            S[sensors.ble]=unavailable
-        fi
+# ── Sensors: probed independently, only over a proven bridge ─────────────────
+probe_sensors() {
+    local i label out status
+    for i in "${!TERMUX_API_CORE_TOOLS[@]}"; do
+        label=${SENSOR_LABELS[$i]}
+        # shellcheck disable=SC2086  # SENSOR_ARGV entries are fixed words
+        out="$(bounded "${TERMUX_API_CORE_TOOLS[$i]}" ${SENSOR_ARGV[$i]})"; status=$?
+        S[sensors.$label]="$(classify_probe "$status" "$out")"
+        [[ "${S[sensors.$label]}" != failed ]] || reason "$label probe (${TERMUX_API_CORE_TOOLS[$i]}) failed: sensor state unknown, not negative evidence"
+    done
+    if command -v "$BLE_PROVIDER" >/dev/null 2>&1; then
+        out="$(bounded "$BLE_PROVIDER")"; status=$?
+        case "$(classify_probe "$status" "$out")" in
+            executed_valid|executed_empty) S[sensors.ble]=available ;;
+            *) S[sensors.ble]=failed; reason "BLE provider $BLE_PROVIDER failed: Bluetooth state unknown" ;;
+        esac
+    else
+        S[sensors.ble]=unavailable
     fi
+}
+
+device_phase() {
+    if ! is_termux; then
+        S[termux.state]=not_termux
+        S[radar.evidence]=degraded
+        reason "not a Termux host: the device substrate cannot be converged here"
+        return
+    fi
+    probe_cli
+    probe_companion_and_bridge
+    [[ "${S[termux.state]}" != ready ]] || probe_sensors
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -859,12 +865,19 @@ radar_process_phase() {
 # Derivation: radar evidence and the exit code, from observed state only
 # ═════════════════════════════════════════════════════════════════════════════
 
-derive_radar_evidence() {
-    local reads=0 label
+
+
+# How many core sensors produced a successful read (VALID or EMPTY).
+core_sensor_reads() {
+    local n=0 label
     for label in "${SENSOR_LABELS[@]}"; do
-        case "${S[sensors.$label]}" in executed_valid|executed_empty) reads=$((reads + 1)) ;; esac
+        case "${S[sensors.$label]}" in executed_valid|executed_empty) n=$((n + 1)) ;; esac
     done
-    if (( reads == ${#SENSOR_LABELS[@]} )); then
+    printf '%s' "$n"
+}
+
+derive_radar_evidence() {
+    if [[ "$(core_sensor_reads)" -eq "${#SENSOR_LABELS[@]}" ]]; then
         if [[ "${S[sensors.ble]}" == available ]]; then
             S[radar.evidence]=full_ready
         else
@@ -894,18 +907,13 @@ derive_exit_code() {
         if (( device_requested )); then
             [[ "$dev" == not_termux ]] && degraded=1
             [[ "${S[radar.evidence]}" != core_ready && "${S[radar.evidence]}" != full_ready ]] && degraded=1
-            if [[ "${S[radar.process]}" == stale_restart_required && "${S[radar.process_action]}" == none ]]; then
-                # An UNATTEMPTED restart is the ONLY thing between here and the
-                # requested state: every core sensor read, repository acceptable.
-                # (An authorised stop that failed is degraded, exit 2, below.)
-                local reads=0 label
-                for label in "${SENSOR_LABELS[@]}"; do
-                    case "${S[sensors.$label]}" in executed_valid|executed_empty) reads=$((reads + 1)) ;; esac
-                done
-                if (( reads == ${#SENSOR_LABELS[@]} )) \
-                    && [[ "$repo" == verified || "$repo" == already_fixed || "$repo" == skipped ]]; then
-                    sole_blocker_is_process=1
-                fi
+            # An UNATTEMPTED restart is the ONLY thing between here and the
+            # requested state: every core sensor read, repository acceptable.
+            # (An authorised stop that failed is degraded, exit 2, below.)
+            if [[ "${S[radar.process]}" == stale_restart_required && "${S[radar.process_action]}" == none ]] \
+                && [[ "$(core_sensor_reads)" -eq "${#SENSOR_LABELS[@]}" ]] \
+                && [[ "$repo" == verified || "$repo" == already_fixed || "$repo" == skipped ]]; then
+                sole_blocker_is_process=1
             fi
         fi
         if (( sole_blocker_is_process )); then code=8
@@ -935,48 +943,6 @@ json_words() { # space-separated words → JSON array of strings
     printf ']'
 }
 
-emit_json() {
-    printf '{\n'
-    printf '  "schema": 1,\n'
-    printf '  "mode": %s,\n' "$(json_str "${S[mode]}")"
-    printf '  "action": %s,\n' "$(json_str "${S[action]}")"
-    printf '  "repository": {\n'
-    printf '    "path": %s,\n' "$(json_str "${S[repository.path]}")"
-    printf '    "commit": %s,\n' "$(json_str "${S[repository.commit]}")"
-    printf '    "tree": %s,\n' "$(json_str "${S[repository.tree]}")"
-    printf '    "source": %s,\n' "$(json_str "${S[repository.source]}")"
-    printf '    "mutation": %s,\n' "$(json_str "${S[repository.mutation]}")"
-    printf '    "shell_verify": %s,\n' "$(json_str "${S[repository.shell_verify]}")"
-    printf '    "structural_verify": %s,\n' "$(json_str "${S[repository.structural_verify]}")"
-    printf '    "rust_verify": %s,\n' "$(json_str "${S[repository.rust_verify]}")"
-    printf '    "rollback": %s,\n' "$(json_str "${S[repository.rollback]}")"
-    printf '    "final_state": %s\n' "$(json_str "${S[repository.final_state]}")"
-    printf '  },\n'
-    printf '  "termux": {\n'
-    printf '    "state": %s,\n' "$(json_str "${S[termux.state]}")"
-    printf '    "package_action": %s,\n' "$(json_str "${S[termux.package_action]}")"
-    printf '    "cli": %s,\n' "$(json_str "${S[termux.cli]}")"
-    printf '    "cli_missing": %s,\n' "$(json_words "${S[termux.cli_missing]}")"
-    printf '    "apk": %s,\n' "$(json_str "${S[termux.apk]}")"
-    printf '    "bridge": %s\n' "$(json_str "${S[termux.bridge]}")"
-    printf '  },\n'
-    printf '  "sensors": {\n'
-    printf '    "gnss": %s,\n' "$(json_str "${S[sensors.gnss]}")"
-    printf '    "wifi_connection": %s,\n' "$(json_str "${S[sensors.wifi_connection]}")"
-    printf '    "wifi_scan": %s,\n' "$(json_str "${S[sensors.wifi_scan]}")"
-    printf '    "cell": %s,\n' "$(json_str "${S[sensors.cell]}")"
-    printf '    "ble": %s\n' "$(json_str "${S[sensors.ble]}")"
-    printf '  },\n'
-    printf '  "radar": {\n'
-    printf '    "process": %s,\n' "$(json_str "${S[radar.process]}")"
-    printf '    "process_pids": %s,\n' "$(json_words "${S[radar.process_pids]}")"
-    printf '    "process_action": %s,\n' "$(json_str "${S[radar.process_action]}")"
-    printf '    "evidence": %s\n' "$(json_str "${S[radar.evidence]}")"
-    printf '  },\n'
-    printf '  "exit_code": %s,\n' "${S[exit_code]}"
-    printf '  "reason": %s\n' "$(json_str "${S[reason]}")"
-    printf '}\n'
-}
 
 up() { printf '%s' "${1^^}"; }
 
@@ -1021,38 +987,95 @@ verdict_lines() {
     esac
 }
 
-row()  { printf '  %-18s %s\n' "$1" "$2"; }
-rrow() { printf '  %-19s %s\n' "$1" "$2"; }
+
+# ── The report registry ──────────────────────────────────────────────────────
+# Every field the reports render, in output order: the ONE list both renderers
+# walk, so a field cannot appear in one report and not the other.
+#   state key | JSON type (str | words | int) | human section | human label
+# An empty label means JSON only. JSON nesting follows the key's prefix
+# (`repository.source` → "repository": {"source": …}); top-level keys have none.
+REPORT_FIELDS=(
+    "mode|str||"
+    "action|str||"
+    "repository.path|str||"
+    "repository.commit|str||"
+    "repository.tree|str||"
+    "repository.source|str|Repository|source"
+    "repository.mutation|str|Repository|mutation"
+    "repository.shell_verify|str|Repository|shell verification"
+    "repository.structural_verify|str|Repository|structural checks"
+    "repository.rust_verify|str|Repository|Rust verification"
+    "repository.rollback|str||"
+    "repository.final_state|str|Repository|final state"
+    "termux.state|str||"
+    "termux.package_action|str||"
+    "termux.cli|str|Termux|CLI"
+    "termux.cli_missing|words||"
+    "termux.apk|str|Termux|Android companion"
+    "termux.bridge|str|Termux|bridge"
+    "sensors.gnss|str|Sensors|GNSS"
+    "sensors.wifi_connection|str|Sensors|Wi-Fi connection"
+    "sensors.wifi_scan|str|Sensors|Wi-Fi scan"
+    "sensors.cell|str|Sensors|Cell"
+    "sensors.ble|str|Sensors|BLE"
+    "radar.process|str|Radar|process"
+    "radar.process_pids|words||"
+    "radar.process_action|str||"
+    "radar.evidence|str|Radar|evidence"
+    "exit_code|int||"
+    "reason|str||"
+)
+
+# A field's JSON value, rendered by its registry type.
+json_value() { # json_value <type> <value>
+    case "$1" in
+        words) json_words "$2" ;;
+        int) printf '%s' "$2" ;;
+        *) json_str "$2" ;;
+    esac
+}
+
+emit_json() {
+    local -a out=('  "schema": 1')
+    local open="" entry key type section label prefix name
+    for entry in "${REPORT_FIELDS[@]}"; do
+        IFS='|' read -r key type section label <<<"$entry"
+        prefix=""; name=$key
+        [[ "$key" != *.* ]] || { prefix=${key%%.*}; name=${key#*.}; }
+        if [[ "$prefix" != "$open" ]]; then
+            [[ -z "$open" ]] || out+=('  }')
+            out[-1]+=','
+            [[ -z "$prefix" ]] || out+=("  \"$prefix\": {")
+            open=$prefix
+        else
+            out[-1]+=','
+        fi
+        if [[ -n "$open" ]]; then
+            out+=("    \"$name\": $(json_value "$type" "${S[$key]}")")
+        else
+            out+=("  \"$name\": $(json_value "$type" "${S[$key]}")")
+        fi
+    done
+    [[ -z "$open" ]] || out+=('  }')
+    printf '{\n'
+    printf '%s\n' "${out[@]}"
+    printf '}\n'
+}
 
 emit_human() {
-    local cli
-    cli="$(up "${S[termux.cli]}")"
-    [[ -n "${S[termux.cli_missing]}" ]] && cli+=" (missing: ${S[termux.cli_missing]})"
+    local entry key type section label current="" value width
     echo "HSE CAPABILITY RECONCILER"
-    echo
-    echo "Repository"
-    row "source" "$(up "${S[repository.source]}")"
-    row "mutation" "$(up "${S[repository.mutation]}")"
-    row "shell verification" "$(up "${S[repository.shell_verify]}")"
-    row "structural checks" "$(up "${S[repository.structural_verify]}")"
-    row "Rust verification" "$(up "${S[repository.rust_verify]}")"
-    row "final state" "$(up "${S[repository.final_state]}")"
-    echo
-    echo "Termux"
-    row "CLI" "$cli"
-    row "Android companion" "$(up "${S[termux.apk]}")"
-    row "bridge" "$(up "${S[termux.bridge]}")"
-    echo
-    echo "Sensors"
-    row "GNSS" "$(up "${S[sensors.gnss]}")"
-    row "Wi-Fi connection" "$(up "${S[sensors.wifi_connection]}")"
-    row "Wi-Fi scan" "$(up "${S[sensors.wifi_scan]}")"
-    row "Cell" "$(up "${S[sensors.cell]}")"
-    row "BLE" "$(up "${S[sensors.ble]}")"
-    echo
-    echo "Radar"
-    rrow "process" "$(up "${S[radar.process]}")"
-    rrow "evidence" "$(up "${S[radar.evidence]}")"
+    for entry in "${REPORT_FIELDS[@]}"; do
+        IFS='|' read -r key type section label <<<"$entry"
+        [[ -n "$label" ]] || continue
+        if [[ "$section" != "$current" ]]; then
+            echo; echo "$section"; current=$section
+        fi
+        value="$(up "${S[$key]}")"
+        [[ "$key" != termux.cli || -z "${S[termux.cli_missing]}" ]] || value+=" (missing: ${S[termux.cli_missing]})"
+        width=18; [[ "$section" != Radar ]] || width=19
+        printf "  %-${width}s %s\n" "$label" "$value"
+    done
     echo
     echo "VERDICT"
     verdict_lines | sed 's/^/  /'
