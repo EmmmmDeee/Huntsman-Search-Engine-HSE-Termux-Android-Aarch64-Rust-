@@ -4230,8 +4230,31 @@ its start, its last reading advanced. The offline `hse doctor` against that
 (confirmed once dead across probes 20 h apart): wifidb dead since 2026-09-15
 22:35 UTC, last read dead 2026-09-15 22:36 UTC`.
 
-**Remote.** The live-drift dispatch on the pushed head, twice: the first run
-without a memory, the second restoring the first's artifact.
+**Remote (GitHub's runner, the head `5901451`).** Run 35033505385 (22:58
+UTC), dispatched with no memory to restore — the restore step reports that
+no earlier run carried one: the sweep reads 116 probed, 94 alive (the most
+yet), 1 unreachable, 0 panicked; `wifidb` is the one dead reading —
+`provisional dead canary: wifidb — dead since 2026-09-15 23:00 UTC, not yet
+confirmed`, and the runner's own `##[warning]` annotation carrying the same
+line — and the run is **green**, the first green live-drift run since
+`wifidb` became a canary (REQ-HTTP-001); `crtsh` alive with 15,
+`chronicling_america` with 11, `steam_profile` with 5 (the 22:01 sweep's 503
+gone). The uploaded `live-drift-memory` artifact (226 bytes, digest
+`6c3052…`, downloaded into this sandbox) is
+`{"wifidb":{"first":1789513245,"last":1789513245}}` — 23:00:45 UTC. Run
+35033877610 (23:03 UTC, dispatched after the first completed; the workflow's
+concurrency group would otherwise have cancelled it) prints `dead-canary
+memory restored from run 35033505385` with that content, reads 116 probed,
+93 alive, 2 unreachable, 0 panicked, `wifidb` provisional again and **dated
+from the first run** (`dead since 2026-09-15 23:00 UTC`, not 23:05), green;
+its artifact (digest `606276…`) is
+`{"wifidb":{"first":1789513245,"last":1789513502}}` — the run kept its start
+and its last reading advanced to 23:05:02 UTC, the runner's readings
+accumulating as the sandbox's did. CI on `5901451` is green on every check.
+The confirmation itself cannot be observed before 2026-09-16 19:00 UTC (20 h
+after the first runner reading): the weekly sweep of 2026-09-21 08:00 UTC,
+or any dispatch after that hour, is the first that can read `wifidb`
+confirmed — the reading the retirement decision waits for.
 
 **Residual.** The confirmation needs a second sweep at least 20 h later: a
 canary whose provider is retired reads provisional on the day it dies and
@@ -4961,6 +4984,27 @@ pass; the test resets a process-global key pool (`reset_chain_pool`) that
 its sibling chain tests share while the suite runs its tests in parallel
 threads — a candidate cause, not a diagnosed one, recorded rather than
 re-run into silence. Beyond that the previous statement stands.
+
+**Stop — revised (5), 2026-09-15 23:1x UTC.** The attack moved from the
+sweep's rows and counts to the sweep's *verdict*: the cycle X reading
+(`crtsh` dead at 22:01, alive from this sandbox at 22:05) was the second
+live provider in one day the dead-canary verdict had ordered retired, and
+the retirement criterion the ledger states could not be checked by the check
+itself. Repaired (REQ-DRIFT-008, above): the verdict has a memory across
+sweeps, on the device and on the runner, and a first reading is a warning,
+not a red run; two runner sweeps carry it end to end. Unresolved and
+decision-relevant: the confirmation arithmetic has been exercised by the
+locks and by two runs four minutes apart, not yet by two runs a day apart —
+the weekly sweep of 2026-09-21 is the first that can read `wifidb` confirmed,
+and its reading decides the retirement REQ-HTTP-001 deferred (a provisional
+or alive reading instead would mean the memory or the provider changed, and
+the ledger must then say which); the restore step depends on `gh` and
+`actions: read` on GitHub's runner, exercised twice, its failure disclosed in
+the log rather than failing the run — a fork of the workflow on a runner
+without `gh` gets first readings forever and a log line saying so, the honest
+degradation but a degradation. The smoke intermittent recorded in (4) did
+not recur in this cycle's two full-suite runs. Beyond that the previous
+statement stands.
 
 ### REQ-HTTP-002 (**new, Pass 31 — VERIFIED FROM SOURCE, CONSOLIDATED, FIXED, FALSIFIED**): `json_scanned` fails the way `json_decode` fails
 
