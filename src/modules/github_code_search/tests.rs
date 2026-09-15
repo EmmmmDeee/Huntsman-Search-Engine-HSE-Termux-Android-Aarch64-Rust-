@@ -227,8 +227,7 @@ async fn without_a_token_the_module_is_a_missing_key_skip_before_any_request() {
     let err = GithubCodeSearch
         .process(&Target::new(TargetKind::Username, "haigen"), &ctx)
         .await
-        .err()
-        .expect("no token → typed skip, never a request");
+        .expect_err("no token → typed skip, never a request");
     assert!(
         matches!(&err, crate::core::error::Error::MissingKey(k) if k == "HUNTSMAN_GITHUB_TOKEN"),
         "{err}"
