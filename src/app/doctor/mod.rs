@@ -692,8 +692,15 @@ async fn print_live_capability_report() {
         return;
     }
 
-    let (mut alive, mut empty, mut unreachable, mut timed_out, mut rate_limited, mut panicked) =
-        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    let (
+        mut alive,
+        mut empty,
+        mut unreachable,
+        mut timed_out,
+        mut rate_limited,
+        mut blocked,
+        mut panicked,
+    ) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
     let mut drift: Vec<&str> = Vec::new();
     let mut dead: Vec<&str> = Vec::new();
     for r in &reports {
@@ -746,6 +753,12 @@ async fn print_live_capability_report() {
                 rate_limited += 1;
                 println!("  rate-limited {:<22} {reason}{canary}", r.module);
             }
+            ProbeOutcome::Blocked { reason } => {
+                // Alive but refusing this client (anti-bot challenge / WAF
+                // block): neither dead nor drift; a vantage-point problem.
+                blocked += 1;
+                println!("  blocked      {:<22} {reason}{canary}", r.module);
+            }
             ProbeOutcome::Panicked { message } => {
                 panicked += 1;
                 println!("  panicked     {:<22} {message}{canary}", r.module);
@@ -756,7 +769,8 @@ async fn print_live_capability_report() {
     }
     println!(
         "  summary: {} probed — {alive} alive, {empty} empty, {unreachable} unreachable, \
-         {timed_out} timed-out, {rate_limited} rate-limited, {panicked} panicked",
+         {timed_out} timed-out, {rate_limited} rate-limited, {blocked} blocked, \
+         {panicked} panicked",
         reports.len()
     );
     if !drift.is_empty() {

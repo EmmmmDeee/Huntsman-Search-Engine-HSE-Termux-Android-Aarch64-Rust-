@@ -57,6 +57,16 @@ fn append_capped(buf: &mut Vec<u8>, chunk: &[u8], cap: usize) -> bool {
 /// so the user sees the upstream's actual error payload rather than a
 /// bare status code.
 pub async fn error_snippet(resp: reqwest::Response) -> String {
+    snippet_of(error_body(resp).await.as_deref())
+}
+
+/// The bounded, credential-redacted text of an error response — up to 8 KiB of
+/// the body, lossily decoded — or `None` when the connection failed while
+/// streaming it. Consumes the response. This raw text, not the one-line
+/// [`snippet_of`] summary, is what a classifier needs: a challenge page's
+/// vendor fingerprint is a `<script>` URL in its head, which the summary (the
+/// page title) drops.
+async fn error_body(resp: reqwest::Response) -> Option<String> {
     // Stream up to 8 KiB before deciding the snippet is "long
     // enough" — a hostile or compromised upstream could otherwise
     // return a multi-GB body that reqwest's `resp.text()` happily
@@ -72,7 +82,7 @@ pub async fn error_snippet(resp: reqwest::Response) -> String {
                     break;
                 }
             }
-            Err(_) => return "<unreadable>".to_string(),
+            Err(_) => return None,
         }
     }
     // Lossy decode: the 8 KiB cap can fall mid-multibyte-char, which strict
@@ -81,8 +91,18 @@ pub async fn error_snippet(resp: reqwest::Response) -> String {
     // one) split char rather than discard the whole message.
     let body = String::from_utf8_lossy(&buf);
     scan_for_api_keys(&body);
-    let redacted = redact_credentials(&body);
-    let trimmed = redacted.trim();
+    Some(redact_credentials(&body))
+}
+
+/// Reduce an error body ([`error_body`]) to the one line a `ModuleError`
+/// carries: `<unreadable>` for a body that could not be read, `<empty>` for
+/// none, an HTML document's title, otherwise its first [`SNIPPET_CHARS`]
+/// characters on one line.
+fn snippet_of(body: Option<&str>) -> String {
+    let Some(body) = body else {
+        return "<unreadable>".to_string();
+    };
+    let trimmed = body.trim();
     if trimmed.is_empty() {
         return "<empty>".to_string();
     }
@@ -459,12 +479,7 @@ pub(super) fn transport_and_fallback_failed(transport: &str, url: &str) -> Strin
 async fn decode_json_body<T: DeserializeOwned>(resp: reqwest::Response, module: &str) -> Result<T> {
     let text = read_json_text(resp, module).await?;
     scan_for_api_keys(&text);
-    serde_json::from_str::<T>(&text).map_err(|e| {
-        Error::module(
-            module,
-            redact_credentials(&super::url::json_failure(&text, &e)),
-        )
-    })
+    serde_json::from_str::<T>(&text).map_err(|e| super::url::json_body_error(module, &text, &e))
 }
 
 async fn fetch_json_inner<T: DeserializeOwned>(
@@ -727,7 +742,8 @@ pub fn note_keyed_error(
 /// construction that ~20 keyed modules repeated verbatim.
 pub async fn http_status_error(module: &str, resp: reqwest::Response) -> Error {
     let status = resp.status();
-    let snippet = error_snippet(resp).await;
+    let body = error_body(resp).await;
+    let snippet = snippet_of(body.as_deref());
     // A throttle is its own class of outcome — the provider is alive and
     // answering, and only asks for less — so it is the typed `RateLimited`:
     // the breaker trips on the variant rather than on a "429" token in the
@@ -735,6 +751,19 @@ pub async fn http_status_error(module: &str, resp: reqwest::Response) -> Error {
     // instead of "unreachable" (a throttled canary is never a dead one).
     if status.as_u16() == 429 {
         return Error::RateLimited(format!("{module}: HTTP {status}: {snippet}"));
+    }
+    // An anti-bot challenge / WAF block page is the provider refusing THIS
+    // client, not the provider failing: typed so dispatch benches the module
+    // under its own reason and the capability probe / live sweep report
+    // "blocked", never "unreachable" (the 2026-09-15 sweep filed anubis's
+    // `403 Attention Required! | Cloudflare` and austlii's `Just a moment...`
+    // as the providers being down). Classified on the raw capped body — the
+    // vendor fingerprint is a `<script>` URL the one-line snippet drops.
+    if body
+        .as_deref()
+        .is_some_and(crate::util::html::is_challenge_page)
+    {
+        return Error::BotChallenge(format!("{module}: HTTP {status}: {snippet}"));
     }
     Error::module(module, format!("HTTP {status}: {snippet}"))
 }

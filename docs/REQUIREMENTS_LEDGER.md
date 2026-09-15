@@ -3956,6 +3956,117 @@ private-host preflight refuses 127.0.0.1 by design), so its classification is
 covered by inspection and the pure verdict; the `process` path of
 `cell_intel` is covered by the seam, not end to end.
 
+### REQ-DRIFT-003 (**new, Pass 31 — OBSERVED on the runner, FIXED, FALSIFIED**): BOT_CHALLENGE is not NETWORK_FAILURE
+
+**Observation (GitHub runner, live-drift run 34985449332 on `f41b49a`,
+2026-09-15 15:02 UTC).** The per-module table read:
+
+```
+  unreachable  anubis                 [anubis] HTTP 403 Forbidden: Attention Required! | Cloudflare
+  unreachable  austlii                [austlii] HTTP 403 Forbidden: Just a moment...
+  unreachable  wayback                [wayback] HTTP 503 Service Unavailable: Internet Archive: Temporarily Offline
+```
+
+Two of the three are Cloudflare answering the runner's datacenter address
+with its block page and its managed-challenge interstitial: the providers
+are up and refusing *this client*. The third is a real outage. All three
+carried the same class — `unreachable`, "provider down or the device is
+offline" — and had either of the first two been a canary, `probe_with_policy`
+would have re-read the wall three times 3 s apart and the sweep would have
+failed it as a DEAD CANARY with the instruction to migrate or retire the
+capability. `hse doctor --live` tells the operator the same thing today: two
+providers down that are not.
+
+**Observation (this sandbox, 2026-09-15 15:53 UTC, `curl` with a browser
+User-Agent).** The same two providers answer the sandbox's egress the same way:
+`GET https://jldc.me/anubis/subdomains/example.com` → 301 →
+`https://jonlu.ca/anubis/subdomains/example.com` → `403 text/html`, 4,544 bytes,
+`<title>Attention Required! | Cloudflare</title>`, "Sorry, you have been
+blocked" (the block page: no challenge loader, the title phrase set matches);
+`GET https://www.austlii.edu.au/cgi-bin/sinosrch.cgi?query=…` → `403 text/html`,
+5,023 bytes, the same title plus the `/cdn-cgi/challenge-platform` loader (the
+vendor fingerprint matches). Both bodies are under the 8 KiB error-body cap,
+so the classifier sees them whole. Both captures are checked in, scrubbed of
+the Ray ID and the egress address, as `src/util/html/testdata/`, and the
+classifier is pinned against them.
+
+**Root cause (source).** `util::http::http_status_error` — the single non-2xx
+error constructor behind `ok_or_absent`, `fetch_json_or_404`,
+`keyed_ok_or_404`, `keyed_cascade_json` and 24 direct callers — built the same
+`Error::Module` for a challenge page as for an outage, reducing the body to its
+`<title>`. The crate already had a two-tier challenge-page detector
+(`search_engines::fetch::is_captcha_page`, vendor fingerprints + AND-sets of
+phrases), but it was `pub(super)` to one module, so the shared HTTP layer could
+not classify what a search engine already recognised as a wall.
+
+**Fix.**
+- `util::html::is_challenge_page` (+ `CHALLENGE_VENDOR_SIGNATURES`,
+  `CHALLENGE_PHRASE_SETS`) is the crate's one classifier; the search-engine
+  fetcher, its live health check and its tests use it (the private copy is
+  deleted).
+- `core::error::Error::BotChallenge(String)` (Display `bot challenge: …`);
+  the Display drift guard pins it.
+- `http_status_error` reads the raw capped body (`error_body`), keeps the 429
+  → `RateLimited` rule first, then types a challenge/block body as
+  `BotChallenge`; the one-line snippet is unchanged (`snippet_of`).
+  `decode_json_body` and `json_decode` route through
+  `url::json_body_error`, which types a challenge served with a 2xx where JSON
+  was expected the same way (an HTML error template stays `Error::Module`
+  with REQ-HTTP-001's message).
+- Dispatch: `BotChallenge` → `circuit::record_bot_challenge` (trips at once
+  for the rate-limit cooldown under the reason `anti-bot challenge/WAF
+  block`) — a wall is per client, so re-dispatching the module for every
+  further target would only re-read it.
+- `capability_probe::ProbeOutcome::Blocked { reason }` (label `blocked`):
+  excluded from `is_confirmed_drift`, never `is_dead_canary`, final on the
+  first attempt; `hse doctor --live`, `capability_probe_json` (`blocked`
+  count, `"blocked"` outcome) and `tests/live_drift.rs` print and count it.
+
+**Evidence.** `util::http::tests::a_challenge_page_is_the_typed_bot_challenge_and_a_plain_refusal_or_outage_stays_a_module_error`
+(loopback: the Cloudflare block page and managed-challenge interstitial on
+403 → `BotChallenge`; `403 Forbidden` text and the Internet Archive outage
+page → `Module`);
+`a_challenge_page_served_with_200_where_json_was_expected_is_the_typed_bot_challenge`
+(`fetch_json` and `json_decode`; WiFiDB's error template stays `Module`);
+`util::html::tests::is_challenge_page_recognises_cloudflare_walls_and_not_an_outage_page`;
+`core::engine::circuit::tests::a_bot_challenge_trips_immediately_under_its_own_reason`;
+`selftest::capability_probe::tests::a_bot_challenge_is_its_own_outcome_never_retried_never_dead_never_drift`
+(one call under a three-attempt policy; a refused `crtsh` canary is neither
+dead nor drift); the API projection test carries a refused `crtsh` report;
+the search-engine detector tests (vendor interstitials, Mojeek's 403, the
+real you.com capture, the no-false-positive SERPs) run unchanged against the
+moved function.
+
+**Falsification.** Each repair reverted in turn with only its lock run:
+
+```
+[http_status_error challenge classification] reverted -> LOCK FAILS (expected)
+    util::http::tests::a_challenge_page_is_the_typed_bot_challenge_and_a_plain_refusal_or_outage_stays_a_module_error --- FAILED
+[json_body_error challenge classification] reverted -> LOCK FAILS (expected)
+    util::http::tests::a_challenge_page_served_with_200_where_json_was_expected_is_the_typed_bot_challenge --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7394 filtered out; finished in 0.21s
+[circuit record_bot_challenge trip] reverted -> LOCK FAILS (expected)
+    core::engine::circuit::tests::a_bot_challenge_trips_immediately_under_its_own_reason --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7395 filtered out; finished in 0.21s
+[dispatch BotChallenge arm] reverted -> LOCK FAILS (expected)
+    core::engine::tests::a_bot_challenge_error_benches_the_module_at_once_and_is_recorded_as_such --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7395 filtered out; finished in 0.21s
+[probe_once Blocked mapping] reverted -> LOCK FAILS (expected)
+    selftest::capability_probe::tests::a_bot_challenge_is_its_own_outcome_never_retried_never_dead_never_drift --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7395 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
+**Residual.** A scraper that reads a 2xx HTML body itself (`austlii`,
+`asic_director`, the AU registers) still parses a 200 challenge page as "no
+results" — a false clean negative if an edge ever serves the wall with 200
+to that path; `read_body_capped_or_fail` is the seam for that next cycle.
+`json_scanned` (32 callers) returns a `String` and cannot carry the variant;
+its callers keep `Error::Module`. Whether a canary persistently blocked from
+GitHub's runners should escalate (a different canary, a different vantage) is
+a policy decision the sweep now makes visible (`blocked` is counted and
+printed) rather than one it makes wrongly (a false retirement order).
+
 ### REQ-DRIFT-002 (**new, Pass 31 — OBSERVED on the runner, FIXED, FALSIFIED**): RATE_LIMITED is not NETWORK_FAILURE
 
 **Requirement.** A provider that answers with a throttle is alive: the

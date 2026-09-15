@@ -15,6 +15,26 @@ use super::*;
     }
 
     #[test]
+    fn a_bot_challenge_trips_immediately_under_its_own_reason() {
+        // The 2026-09-15 sweep: anubis and austlii answered 403 challenge
+        // pages to the runner. A wall is per client — re-dispatching the
+        // module for every further target would only re-read it.
+        let m = "t_bot_challenge_trips";
+        assert!(!is_open(m));
+        record_bot_challenge(m);
+        assert!(is_open(m), "a challenge page must bench the module at once");
+        let reason = state()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(m)
+            .map(|t| t.reason)
+            .expect("tripped entry");
+        assert_eq!(reason, "anti-bot challenge/WAF block");
+        record_success(m);
+        assert!(!is_open(m));
+    }
+
+    #[test]
     fn quota_prose_variants_are_recognised() {
         for (i, msg) in [
             "API count exceeded - Increase Quota with Membership",

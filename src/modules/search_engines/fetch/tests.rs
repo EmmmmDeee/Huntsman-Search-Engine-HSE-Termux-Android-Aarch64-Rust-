@@ -199,8 +199,8 @@ use super::*;
 
     /// Regression (real-execution derived): the EXACT 332-byte body Mojeek
     /// returned with HTTP 403 in a live 8/8-run sweep. It is < 500 bytes, so the
-    /// old ordering returned `Unreachable` ("down") before `is_captcha_page` ran
-    /// — mislabelling an anti-bot *block* as a network failure. `is_captcha_page`
+    /// old ordering returned `Unreachable` ("down") before `is_challenge_page` ran
+    /// — mislabelling an anti-bot *block* as a network failure. `is_challenge_page`
     /// must now recognise it so `try_fetch` returns `Blocked`.
     #[test]
     fn mojeek_403_automated_queries_detected_as_block() {
@@ -212,7 +212,7 @@ use super::*;
             </body></html>";
         assert!(body.len() < 500, "fixture must exercise the short-body path");
         assert!(
-            is_captcha_page(body),
+            is_challenge_page(body),
             "Mojeek 403 'sending automated queries' page must be detected as a block"
         );
     }
@@ -222,8 +222,8 @@ use super::*;
     /// `Unreachable` in `try_fetch`).
     #[test]
     fn short_non_block_body_is_not_flagged() {
-        assert!(!is_captcha_page("<html><body>ok</body></html>"));
-        assert!(!is_captcha_page(""));
+        assert!(!is_challenge_page("<html><body>ok</body></html>"));
+        assert!(!is_challenge_page(""));
     }
 
     // ── Golden fixture (T2.7 "scraper resilience" — the corpus leg) ─────────
@@ -673,8 +673,8 @@ use super::*;
     // href="…">` result anchors anywhere in the body — every genuine result
     // is hydrated client-side by JS this engine never executes. The
     // Cloudflare challenge loader (`/cdn-cgi/challenge-platform/…`) is
-    // present verbatim, matching an existing `BLOCK_VENDOR_SIGNATURES`
-    // fingerprint, so `is_captcha_page` correctly classifies this specimen
+    // present verbatim, matching an existing `CHALLENGE_VENDOR_SIGNATURES`
+    // fingerprint, so `is_challenge_page` correctly classifies this specimen
     // as `Blocked` rather than a fabricated "empty" success. It ALSO
     // surfaced a real, separate chrome-leak defect: the generic
     // href-extraction pass reads ANY `href=` attribute, not just `<a>`
@@ -688,15 +688,15 @@ use super::*;
     const GOLDEN_YOU_KYLO4KYLO: &str = include_str!("testdata/you_kylo4kylo.html");
 
     /// Pins the block classification against the real capture: if
-    /// `BLOCK_VENDOR_SIGNATURES` ever regresses to no longer recognise this
+    /// `CHALLENGE_VENDOR_SIGNATURES` ever regresses to no longer recognise this
     /// exact Cloudflare challenge shape, this fails instead of silently
     /// letting `fetch_and_parse` treat a real block as an honest "empty"
     /// result (0 organic hits from `parse_results`, which would otherwise
     /// look identical to a genuine no-match query).
     #[test]
-    fn is_captcha_page_detects_a_real_youcom_cloudflare_challenge_capture() {
+    fn is_challenge_page_detects_a_real_youcom_cloudflare_challenge_capture() {
         assert!(
-            is_captcha_page(GOLDEN_YOU_KYLO4KYLO),
+            is_challenge_page(GOLDEN_YOU_KYLO4KYLO),
             "the real you.com capture's Cloudflare challenge loader must be \
              detected as a block, not silently parsed as zero genuine results"
         );

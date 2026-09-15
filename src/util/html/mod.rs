@@ -293,6 +293,114 @@ fn decode_one_entity(body: &str) -> Option<char> {
     }
 }
 
+/// High-confidence anti-bot / CAPTCHA *vendor* fingerprints. Each string is
+/// specific enough that it essentially only appears when the actual challenge
+/// widget or script is embedded, so a single match is decisive. Compared
+/// case-insensitively, so every entry MUST be lowercase.
+///
+/// Kept data-driven (rather than a chain of `||`) so a new interstitial
+/// vendor is a one-line addition with a matching test, and so the matcher
+/// stays a strict superset of the block pages observed in the wild.
+pub const CHALLENGE_VENDOR_SIGNATURES: &[&str] = &[
+    // Cloudflare managed challenge / Turnstile / "Just a moment" interstitial
+    "challenges.cloudflare.com",
+    "/cdn-cgi/challenge-platform",
+    "cf-chl-", // cf-chl-opt / cf-chl-bypass challenge tokens
+    // Google reCAPTCHA + the classic "/sorry/" rate-limit interstitial
+    "/recaptcha/api",
+    "g-recaptcha",
+    "grecaptcha",
+    "/sorry/index",
+    // hCaptcha
+    "hcaptcha.com",
+    "h-captcha",
+    // DataDome
+    "captcha-delivery.com",
+    "datadome",
+    // PerimeterX / HUMAN
+    "perimeterx",
+    "px-captcha",
+    "_pxhd",
+    // FunCaptcha / Arkose Labs
+    "funcaptcha",
+    "arkoselabs",
+    // Yandex SmartCaptcha
+    "smartcaptcha",
+    "showcaptcha",
+    // DuckDuckGo anomaly interstitial / generic retry wall
+    "anomaly-modal",
+    "httpservice/retry",
+];
+
+/// Lower-confidence challenge *phrases*. Each entry is an AND-set: every
+/// token must be present for the page to count as a block. Requiring two
+/// independent tokens keeps a real results page that merely *mentions* one
+/// phrase (e.g. a SERP whose snippets discuss Cloudflare, or an article on
+/// "unusual traffic" in analytics) from being misread as a block — the
+/// previous single-substring detector flagged exactly those false positives.
+/// Multi-word phrases specific enough on their own are single-element sets.
+/// All tokens MUST be lowercase.
+pub const CHALLENGE_PHRASE_SETS: &[&[&str]] = &[
+    &["just a moment", "cloudflare"],
+    &["attention required", "cloudflare"],
+    &["checking your browser", "cloudflare"],
+    &["unusual traffic", "network"], // Google: "...unusual traffic from your computer network"
+    &["before you continue", "consent"],
+    &["request unsuccessful", "incapsula"], // Imperva / Incapsula
+    &["are not a robot"],
+    &["verify you are human"],
+    // Mojeek 403 anti-bot page ("your network appears to be sending automated
+    // queries so we can't process your search"); also a historical Google block
+    // phrasing. Specific enough to stand alone — a real SERP does not announce
+    // that it is refusing automated queries.
+    &["sending automated queries"],
+    &["enable javascript and cookies to continue"],
+    &["access to this page has been denied"], // PerimeterX classic block page
+];
+
+/// True when `body` is an anti-bot challenge, CAPTCHA or WAF block page — the
+/// provider's edge refusing *this* client — rather than the content the
+/// request asked for.
+///
+/// Two-tier match: a single high-confidence [`CHALLENGE_VENDOR_SIGNATURES`]
+/// fingerprint is decisive; otherwise an entire AND-set in
+/// [`CHALLENGE_PHRASE_SETS`] must match. The one such classifier in the crate:
+/// the search-engine fetcher reads a challenged SERP as blocked (never
+/// "empty", never "down"), and the shared HTTP layer types the same pages as
+/// [`crate::core::error::Error::BotChallenge`] — from
+/// [`crate::util::http::http_status_error`] for a `403 Attention Required! |
+/// Cloudflare` or `Just a moment...` (both answered to GitHub's runner on
+/// 2026-09-15, for `anubis` and `austlii`, and filed as the providers being
+/// down), and from the JSON decode helpers for a challenge served with a 2xx
+/// where JSON was expected. Two detectors would drift apart; this one is why
+/// a page a search engine recognises as a wall is never an "outage" to a
+/// registry lookup.
+#[must_use]
+pub fn is_challenge_page(body: &str) -> bool {
+    // First tier: any single high-confidence vendor signature, matched
+    // ASCII-case-insensitively against the RAW body in one cached aho-corasick
+    // (Teddy/SIMD) pass. Every signature is lowercase ASCII, so this is equivalent
+    // to the old `body.to_lowercase()` + case-sensitive match — but WITHOUT
+    // allocating a full Unicode-lowercased copy of every fetched body — this
+    // runs on every search-engine response and on every error body the shared
+    // HTTP layer classifies.
+    static VENDOR_AC: std::sync::LazyLock<crate::util::scan::MatchSet> =
+        std::sync::LazyLock::new(|| {
+            crate::util::scan::MatchSet::new_ascii_ci(CHALLENGE_VENDOR_SIGNATURES)
+        });
+    if VENDOR_AC.is_match(body) {
+        return true;
+    }
+    // Second tier: an entire AND-set of lowercase-ASCII phrase tokens must be
+    // present. `find_ascii_ci` (memchr/NEON, PR #220) matches each token
+    // case-insensitively over the raw body — equivalent to `lower.contains(tok)`
+    // with no allocation.
+    CHALLENGE_PHRASE_SETS.iter().any(|set| {
+        set.iter()
+            .all(|tok| crate::util::str_util::find_ascii_ci(body, tok).is_some())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

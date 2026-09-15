@@ -201,6 +201,25 @@ fn record_rate_limit_at(name: &'static str, now: SystemTime) {
     trip(name, now, RATE_LIMIT_COOLDOWN, "rate-limit/quota");
 }
 
+/// Record that `name` was refused by an anti-bot challenge / WAF block page →
+/// trip now for [`RATE_LIMIT_COOLDOWN`]. The wall is per client, not per
+/// request: every further target this scan sent the module would re-read the
+/// same page, so the module is benched at once — under its own reason, so the
+/// log never records a block as a throttle or as "repeated failure".
+pub(super) fn record_bot_challenge(name: &'static str) {
+    record_bot_challenge_at(name, SystemTime::now());
+}
+
+/// [`record_bot_challenge`] against an explicit `now` — see *Determinism*.
+fn record_bot_challenge_at(name: &'static str, now: SystemTime) {
+    trip(
+        name,
+        now,
+        RATE_LIMIT_COOLDOWN,
+        "anti-bot challenge/WAF block",
+    );
+}
+
 /// Record a hard transport error or timeout. Trips only once the failure streak
 /// reaches [`SOFT_TRIP_THRESHOLD`], for [`SOFT_COOLDOWN`].
 pub(super) fn record_soft_failure(name: &'static str) {

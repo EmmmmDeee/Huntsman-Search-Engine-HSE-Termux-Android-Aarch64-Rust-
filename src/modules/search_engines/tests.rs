@@ -6,6 +6,7 @@
 use super::queries::{Region, build_queries_fullname, regional_dorks};
 use super::*;
 use crate::core::confidence;
+use crate::util::html::is_challenge_page;
 
 #[test]
 fn primary_engine_order_floats_reliable_and_proven_engines_first() {
@@ -1133,13 +1134,13 @@ fn address_corroboration_counts_each_result_once_despite_two_extracted_variants(
 
 #[test]
 fn captcha_page_detection() {
-    assert!(is_captcha_page(
+    assert!(is_challenge_page(
         "<html><body>captcha-delivery.com script</body></html>"
     ));
-    assert!(is_captcha_page(
+    assert!(is_challenge_page(
         "<html><body>httpservice/retry redirect</body></html>"
     ));
-    assert!(!is_captcha_page(
+    assert!(!is_challenge_page(
         "<html><body>Normal search results page with lots of content</body></html>"
     ));
 }
@@ -2406,28 +2407,28 @@ fn description_engine_count_matches_registry() {
 #[test]
 fn captcha_detects_modern_vendor_interstitials() {
     // Cloudflare managed challenge ("/cdn-cgi/challenge-platform").
-    assert!(is_captcha_page(
+    assert!(is_challenge_page(
         "<html><head><title>Just a moment...</title></head><body>\
              Checking your browser before accessing. \
              <script src=\"/cdn-cgi/challenge-platform/h/g/orchestrate/chl/v1\"></script>\
              cloudflare</body></html>"
     ));
     // Google reCAPTCHA + "unusual traffic ... network" interstitial.
-    assert!(is_captcha_page(
+    assert!(is_challenge_page(
         "<html><body>Our systems have detected unusual traffic from your \
              computer network. <div class=\"g-recaptcha\"></div></body></html>"
     ));
     // hCaptcha widget.
-    assert!(is_captcha_page(
+    assert!(is_challenge_page(
         "<div class=\"h-captcha\" data-sitekey=\"x\"></div>\
              <script src=\"https://hcaptcha.com/1/api.js\"></script>"
     ));
     // PerimeterX / HUMAN classic block page.
-    assert!(is_captcha_page(
+    assert!(is_challenge_page(
         "Access to this page has been denied because we believe you are using automation."
     ));
     // Imperva / Incapsula.
-    assert!(is_captcha_page(
+    assert!(is_challenge_page(
         "Request unsuccessful. Incapsula incident ID: 1234-000567"
     ));
 }
@@ -2438,14 +2439,14 @@ fn captcha_does_not_flag_results_that_merely_mention_block_terms() {
     // as a block page. The AND-set design requires a co-token, so a single
     // ambiguous phrase no longer trips the detector — exactly the false
     // positives the old single-substring matcher produced.
-    assert!(!is_captcha_page(
+    assert!(!is_challenge_page(
         "Search results: how Cloudflare works and what a reCAPTCHA is — \
              articles about bot detection and network security."
     ));
-    assert!(!is_captcha_page(
+    assert!(!is_challenge_page(
         "Blog post: detecting unusual traffic spikes in your web analytics."
     ));
-    assert!(!is_captcha_page(
+    assert!(!is_challenge_page(
         "<html><body>10 results for your query about online privacy.</body></html>"
     ));
 }

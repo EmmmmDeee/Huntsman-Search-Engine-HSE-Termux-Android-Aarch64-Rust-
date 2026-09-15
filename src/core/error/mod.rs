@@ -33,6 +33,21 @@ pub enum Error {
     /// the scan with zero backoff.
     #[error("rate limited: {0}")]
     RateLimited(String),
+    /// The provider's edge refused this client with an anti-bot challenge,
+    /// CAPTCHA or WAF block page ([`crate::util::html::is_challenge_page`]) —
+    /// a `403 Attention Required! | Cloudflare`, a `Just a moment...`
+    /// interstitial, a challenge served with a 2xx where JSON was expected.
+    /// The provider is up and answering; it will not serve *this* client (a
+    /// datacenter address, a non-browser fingerprint) until something about
+    /// the client changes, so a retry within the run only re-reads the wall.
+    /// Distinct from [`Self::Module`] (a genuine failure) and from
+    /// [`Self::RateLimited`] (a throttle that clears with time): dispatch
+    /// benches the module at once under its own breaker reason, and the
+    /// capability probe reports it as `blocked` — never "unreachable", never a
+    /// dead canary. Observed 2026-09-15 on GitHub's runner for `anubis` and
+    /// `austlii`, both then filed as the provider being down.
+    #[error("bot challenge: {0}")]
+    BotChallenge(String),
     /// A module that deliberately did **not** query the provider for this
     /// target, saying so in-band so the engine can record a typed
     /// [`EventKind::ModuleSkipped`](crate::core::event::EventKind::ModuleSkipped)

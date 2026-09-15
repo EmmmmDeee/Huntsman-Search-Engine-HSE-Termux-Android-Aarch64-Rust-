@@ -154,13 +154,24 @@ use crate::app::export::csv_escape;
                     reason: "ripestat: HTTP 429 Too Many Requests: <empty>".into(),
                 },
             },
+            // A canary refused by an anti-bot challenge: alive, but not to
+            // this client — neither dead nor drift, its own outcome.
+            ProbeReport {
+                module: "crtsh",
+                kind: TargetKind::Domain,
+                value: "example.com",
+                outcome: ProbeOutcome::Blocked {
+                    reason: "crtsh: HTTP 403 Forbidden: Attention Required! | Cloudflare".into(),
+                },
+            },
         ];
         let v = capability_probe_json(&reports);
-        assert_eq!(v["probed"], 5);
+        assert_eq!(v["probed"], 6);
         assert_eq!(v["alive"], 1);
         assert_eq!(v["empty"], 2);
         assert_eq!(v["unreachable"], 1);
         assert_eq!(v["rate_limited"], 1);
+        assert_eq!(v["blocked"], 1);
         // Only the ip_geo canary's empty is confirmed drift.
         assert_eq!(v["drift"].as_array().expect("should succeed").len(), 1);
         assert_eq!(v["drift"][0], "ip_geo");
@@ -185,6 +196,17 @@ use crate::app::export::csv_escape;
         assert_eq!(throttled["outcome"], "rate-limited");
         assert_eq!(throttled["dead_canary"], false, "a throttled canary answered");
         assert_eq!(throttled["drift"], false);
+        let refused = mods.iter().find(|m| m["module"] == "crtsh").expect("should succeed");
+        assert_eq!(refused["outcome"], "blocked");
+        assert_eq!(refused["canary"], true);
+        assert_eq!(refused["dead_canary"], false, "a refused canary answered");
+        assert_eq!(refused["drift"], false);
+        assert!(
+            refused["reason"]
+                .as_str()
+                .expect("reason")
+                .contains("Attention Required")
+        );
         assert_eq!(v["dead_canaries"].as_array().expect("should succeed").len(), 1);
     }
 

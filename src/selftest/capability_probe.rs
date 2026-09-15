@@ -89,6 +89,19 @@ pub enum ProbeOutcome {
         /// The throttle as the module reported it (status line and body snippet).
         reason: String,
     },
+    /// The provider's edge refused this client with an anti-bot challenge,
+    /// CAPTCHA or WAF block page (the typed
+    /// [`crate::core::error::Error::BotChallenge`]): up and answering, but not
+    /// to this client. **Never** drift (the wire shape was not seen), **never**
+    /// a dead canary (the provider plainly exists), and never retried within a
+    /// run — the wall is per client and a retry only re-reads it. Before this
+    /// variant a challenge was `Unreachable`: the 2026-09-15 sweep filed
+    /// `anubis`'s `HTTP 403 Forbidden: Attention Required! | Cloudflare` and
+    /// `austlii`'s `Just a moment...` as the providers being down.
+    Blocked {
+        /// The refusal as the module reported it (status line and page title).
+        reason: String,
+    },
     /// The module's `process()` panicked while handling the live response — a
     /// hostile/malformed payload, or a bug the canned fixture tests never
     /// exercised. **Always** [`ProbeReport::is_confirmed_drift`], independent of
@@ -111,6 +124,7 @@ impl ProbeOutcome {
             Self::Unreachable { .. } => "unreachable",
             Self::TimedOut => "timed-out",
             Self::RateLimited { .. } => "rate-limited",
+            Self::Blocked { .. } => "blocked",
             Self::Panicked { .. } => "panicked",
         }
     }
@@ -170,7 +184,8 @@ impl ProbeReport {
             ProbeOutcome::Alive { .. }
             | ProbeOutcome::Unreachable { .. }
             | ProbeOutcome::TimedOut
-            | ProbeOutcome::RateLimited { .. } => false,
+            | ProbeOutcome::RateLimited { .. }
+            | ProbeOutcome::Blocked { .. } => false,
         }
     }
 
@@ -182,8 +197,8 @@ impl ProbeReport {
     /// provider is expected to answer, so a provider that answers nothing for
     /// a whole run is down or retired, and the capability is gone just as
     /// surely. A non-canary's transport failure is never a dead canary, and a
-    /// throttle ([`ProbeOutcome::RateLimited`]) never is either: the provider
-    /// answered.
+    /// throttle ([`ProbeOutcome::RateLimited`]) or a refusal
+    /// ([`ProbeOutcome::Blocked`]) never is either: the provider answered.
     pub fn is_dead_canary(&self) -> bool {
         is_canary(self.module)
             && matches!(
@@ -413,6 +428,9 @@ async fn probe_once(
         },
         Ok(Err(crate::core::error::Error::RateLimited(reason))) => {
             ProbeOutcome::RateLimited { reason }
+        }
+        Ok(Err(crate::core::error::Error::BotChallenge(reason))) => {
+            ProbeOutcome::Blocked { reason }
         }
         Ok(Err(e)) => ProbeOutcome::Unreachable {
             reason: e.to_string(),
@@ -973,6 +991,75 @@ mod tests {
             r.outcome
         );
         assert_eq!(m.calls.load(Ordering::SeqCst), 3);
+    }
+
+    /// Answers every call with the typed anti-bot refusal.
+    struct Challenged {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl Module for Challenged {
+        fn name(&self) -> &'static str {
+            "challenged_probe_fixture"
+        }
+        fn priority(&self) -> u8 {
+            50
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Domain)
+        }
+        async fn process(
+            &self,
+            _t: &Target,
+            _ctx: &ModuleContext,
+        ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(crate::core::error::Error::BotChallenge(
+                "challenged_probe_fixture: HTTP 403 Forbidden: Attention Required! | Cloudflare"
+                    .into(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_bot_challenge_is_its_own_outcome_never_retried_never_dead_never_drift() {
+        // The 2026-09-15 live sweep read anubis's and austlii's Cloudflare
+        // challenge pages as "unreachable" — the class of a provider that is
+        // down. A refused client is not a dead provider; a challenged canary
+        // must never be reported as one, and hammering the wall three times
+        // 3 s apart would only re-read it.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let http = reqwest::Client::new();
+        let m = Challenged {
+            calls: AtomicUsize::new(0),
+        };
+        let r = probe_with_policy(&m, &http, 3, Duration::ZERO)
+            .await
+            .expect("probeable");
+        assert!(
+            matches!(&r.outcome, ProbeOutcome::Blocked { reason } if reason.contains("Attention Required")),
+            "{:?}",
+            r.outcome
+        );
+        assert_eq!(r.outcome.label(), "blocked");
+        assert_eq!(
+            m.calls.load(Ordering::SeqCst),
+            1,
+            "a refusal is final on the first attempt"
+        );
+        // A canary carrying the refusal is neither dead nor drifted.
+        let canary = ProbeReport {
+            module: "crtsh",
+            kind: TargetKind::Domain,
+            value: "example.com",
+            outcome: ProbeOutcome::Blocked {
+                reason: "crtsh: HTTP 403 Forbidden: Just a moment...".into(),
+            },
+        };
+        assert!(is_canary(canary.module));
+        assert!(!canary.is_dead_canary(), "a refused canary answered");
+        assert!(!canary.is_confirmed_drift(), "no wire shape was seen");
     }
 
     /// Answers every call with a typed throttle.

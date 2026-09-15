@@ -349,3 +349,76 @@ mod prop {
         println!("8x input -> {ratio:.1}x time (quadratic would be ~64x)");
         assert!(ratio < 24.0, "8x the input cost {ratio:.1}x the time");
     }
+
+    /// The two shapes GitHub's runner received on 2026-09-15 (`anubis`,
+    /// `austlii`) are walls; a provider's own outage/error template is not —
+    /// `util::http::http_status_error` and the JSON decode helpers draw the
+    /// line here, and a false positive would turn a real outage into a
+    /// "blocked" verdict that hides it.
+    #[test]
+    fn is_challenge_page_recognises_cloudflare_walls_and_not_an_outage_page() {
+        assert!(is_challenge_page(
+            "<!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title>\
+             </head><body><h1>Sorry, you have been blocked</h1></body></html>"
+        ));
+        assert!(is_challenge_page(
+            "<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>\
+             <script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1\"></script>\
+             </body></html>"
+        ));
+        assert!(!is_challenge_page(
+            "<!DOCTYPE html><html><head><title>Internet Archive: Temporarily Offline</title>\
+             </head><body>The Wayback Machine is temporarily offline.</body></html>"
+        ));
+        assert!(!is_challenge_page(
+            "<!DOCTYPE html><html><head><title>Error | Vistumbler WiFiDB</title></head>\
+             <body>Fatal error: Uncaught TypeError</body></html>"
+        ));
+        assert!(!is_challenge_page("{\"error\":\"not found\"}"));
+        assert!(!is_challenge_page(""));
+    }
+
+    // Two REAL Cloudflare answers, fetched live from this project's sandbox on
+    // 2026-09-15 (15:53 UTC) with a browser User-Agent and checked in verbatim
+    // except for the Ray IDs and the egress address, which are scrubbed:
+    //   * `jonlu.ca/anubis/subdomains/example.com` (where `jldc.me` redirects)
+    //     → 403, the BLOCK page: "Attention Required! | Cloudflare", "Sorry, you
+    //     have been blocked", no challenge loader — only the title phrase set
+    //     recognises it;
+    //   * `www.austlii.edu.au/cgi-bin/sinosrch.cgi?query=…` → 403, the same
+    //     title plus the `/cdn-cgi/challenge-platform` loader — the vendor
+    //     fingerprint recognises it.
+    // GitHub's runner received the same two pages on the 2026-09-15 live-drift
+    // run (34985449332) and filed both providers as "unreachable". No PII: a
+    // CDN's generic refusal for the project's own canonical sample targets.
+    const CF_BLOCK_ANUBIS: &str = include_str!("testdata/cloudflare_block_anubis_2026-09-15.html");
+    const CF_CHALLENGE_AUSTLII: &str =
+        include_str!("testdata/cloudflare_challenge_austlii_2026-09-15.html");
+
+    /// Pins the classifier against the two real captures: if either tier
+    /// regresses, a real wall reads as an outage again ("unreachable", a false
+    /// DEAD CANARY for a canary) instead of `Error::BotChallenge`.
+    #[test]
+    fn is_challenge_page_recognises_both_real_cloudflare_captures() {
+        assert!(
+            CF_BLOCK_ANUBIS.contains("Sorry, you have been blocked")
+                && !CF_BLOCK_ANUBIS.contains("/cdn-cgi/challenge-platform"),
+            "the anubis capture must be the block page without a challenge loader — \
+             the phrase-set tier is what recognises it"
+        );
+        assert!(
+            is_challenge_page(CF_BLOCK_ANUBIS),
+            "the real Cloudflare block page must be a wall, not an outage"
+        );
+        assert!(
+            CF_CHALLENGE_AUSTLII.contains("/cdn-cgi/challenge-platform"),
+            "the austlii capture must carry the challenge loader — the vendor tier"
+        );
+        assert!(
+            is_challenge_page(CF_CHALLENGE_AUSTLII),
+            "the real Cloudflare challenge page must be a wall, not an outage"
+        );
+        // Both are under the 8 KiB error-body cap `http_status_error` reads, so
+        // the classifier sees them whole on the production path.
+        assert!(CF_BLOCK_ANUBIS.len() < 8 * 1024 && CF_CHALLENGE_AUSTLII.len() < 8 * 1024);
+    }

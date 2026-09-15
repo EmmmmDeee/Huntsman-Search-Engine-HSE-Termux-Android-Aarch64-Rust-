@@ -356,7 +356,7 @@ mod tests {
                     e.ua,
                 )
                 .await
-                    && !super::super::fetch::is_captcha_page(&body)
+                    && !crate::util::html::is_challenge_page(&body)
                     && super::super::fetch::external_link_count(&body, e.name) >= 5
                 {
                     served.push(e.name);

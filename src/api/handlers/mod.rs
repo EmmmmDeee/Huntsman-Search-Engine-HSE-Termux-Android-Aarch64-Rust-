@@ -487,8 +487,15 @@ pub(crate) fn capability_probe_json(
 ) -> Value {
     use crate::selftest::capability_probe::{ProbeOutcome, is_canary};
 
-    let (mut alive, mut empty, mut unreachable, mut timed_out, mut rate_limited, mut panicked) =
-        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    let (
+        mut alive,
+        mut empty,
+        mut unreachable,
+        mut timed_out,
+        mut rate_limited,
+        mut blocked,
+        mut panicked,
+    ) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
     let modules: Vec<Value> = reports
         .iter()
         .map(|r| {
@@ -512,6 +519,10 @@ pub(crate) fn capability_probe_json(
                 ProbeOutcome::RateLimited { reason } => {
                     rate_limited += 1;
                     ("rate-limited", None, Some(reason.clone()))
+                }
+                ProbeOutcome::Blocked { reason } => {
+                    blocked += 1;
+                    ("blocked", None, Some(reason.clone()))
                 }
                 ProbeOutcome::Panicked { message } => {
                     panicked += 1;
@@ -552,6 +563,7 @@ pub(crate) fn capability_probe_json(
         "unreachable": unreachable,
         "timed_out": timed_out,
         "rate_limited": rate_limited,
+        "blocked": blocked,
         "panicked": panicked,
         "drift": drift,
         "dead_canaries": dead_canaries,

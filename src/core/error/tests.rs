@@ -68,6 +68,7 @@ use super::*;
                 Error::MissingKey(m) => assert_eq!(s, format!("missing key: {m}")),
                 Error::Module { module, message } => assert_eq!(s, format!("[{module}] {message}")),
                 Error::RateLimited(m) => assert_eq!(s, format!("rate limited: {m}")),
+                Error::BotChallenge(m) => assert_eq!(s, format!("bot challenge: {m}")),
                 Error::Skipped { class, reason } => {
                     assert_eq!(s, format!("skipped ({}): {reason}", class.as_str()));
                 }
@@ -86,6 +87,9 @@ use super::*;
         assert_display(&Error::MissingKey("HUNTSMAN_X".into()));
         assert_display(&Error::module("m", "msg"));
         assert_display(&Error::RateLimited("see_know: throttled".into()));
+        assert_display(&Error::BotChallenge(
+            "anubis: HTTP 403 Forbidden: Attention Required! | Cloudflare".into(),
+        ));
         assert_display(&Error::skipped(
             crate::core::event::SkipClass::NotApplicable,
             "registry publishes no WHOIS server",

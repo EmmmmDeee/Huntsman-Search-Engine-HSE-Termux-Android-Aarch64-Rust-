@@ -54,7 +54,7 @@ pub async fn json_scanned<T: DeserializeOwned>(
 /// telemetry, geo lookups, DNS-over-HTTPS, etc.).
 pub async fn json_decode<T: DeserializeOwned>(module: &str, resp: reqwest::Response) -> Result<T> {
     let text = read_json_text(resp, module).await?;
-    serde_json::from_str(&text).map_err(|e| Error::module(module, json_failure(&text, &e)))
+    serde_json::from_str(&text).map_err(|e| json_body_error(module, &text, &e))
 }
 
 /// The message for a body that would not decode as the JSON a module asked
@@ -85,6 +85,22 @@ pub fn json_failure(body: &str, err: &serde_json::Error) -> String {
     }
     let sample: String = body.trim_start().chars().take(80).collect();
     format!("{err} (body starts: {sample:?})")
+}
+
+/// The typed error for a body that would not decode as the JSON a module asked
+/// for. An anti-bot challenge / WAF block page served with a 2xx — some edges
+/// answer a challenge as `200 text/html` — is
+/// [`Error::BotChallenge`]: the provider refusing this client, which dispatch
+/// benches under its own reason and the capability probe reports as `blocked`
+/// rather than as a failure or an outage. Anything else is [`Error::Module`]
+/// carrying [`json_failure`]'s message. Credential-looking query values an
+/// upstream echoes into its body are redacted in both.
+pub(super) fn json_body_error(module: &str, body: &str, err: &serde_json::Error) -> Error {
+    let message = super::redact_credentials(&json_failure(body, err));
+    if crate::util::html::is_challenge_page(body) {
+        return Error::BotChallenge(format!("{module}: {message}"));
+    }
+    Error::module(module, message)
 }
 
 /// `body` with any leading `<!-- … -->` comment blocks (and whitespace) removed,

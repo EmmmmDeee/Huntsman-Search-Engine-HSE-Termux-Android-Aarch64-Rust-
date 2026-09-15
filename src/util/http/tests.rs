@@ -1502,3 +1502,116 @@ async fn a_429_is_the_typed_rate_limited_error_and_other_statuses_stay_module_er
         "{err}"
     );
 }
+
+/// The Cloudflare block page (`Attention Required!`) and managed-challenge
+/// interstitial (`Just a moment...`) as the runner received them on
+/// 2026-09-15 — the fingerprints `util::html::is_challenge_page` keys on are
+/// the title phrases with the vendor name, and the `/cdn-cgi/challenge-platform`
+/// loader URL.
+const CF_BLOCK_PAGE: &str = "<!DOCTYPE html><html lang=\"en-US\"><head>\
+    <title>Attention Required! | Cloudflare</title></head><body>\
+    <h1><span class=\"cf-error-type\">Sorry, you have been blocked</span></h1>\
+    <h2>You are unable to access example.org</h2>\
+    <p>This website is using a security service to protect itself from online attacks.</p>\
+    <p>Cloudflare Ray ID: 9d1f2c3b4a5e6f70 &bull; Performance &amp; security by Cloudflare</p>\
+    </body></html>";
+const CF_CHALLENGE_PAGE: &str = "<!DOCTYPE html><html lang=\"en-US\"><head>\
+    <title>Just a moment...</title></head><body>\
+    <noscript>Enable JavaScript and cookies to continue</noscript>\
+    <script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1?ray=9d1f2c3b4a5e6f70\"></script>\
+    </body></html>";
+
+#[tokio::test]
+async fn a_challenge_page_is_the_typed_bot_challenge_and_a_plain_refusal_or_outage_stays_a_module_error()
+ {
+    // The 2026-09-15 live sweep filed anubis's `HTTP 403 Forbidden:
+    // Attention Required! | Cloudflare` and austlii's `HTTP 403 Forbidden:
+    // Just a moment...` as "unreachable" — the class of a provider that is
+    // down. A wall is the provider refusing this client; an outage page and
+    // a plain 403 are not walls.
+    use super::test_server::{Canned, serve};
+    let base = serve(vec![
+        Canned::html(403, CF_BLOCK_PAGE),
+        Canned::html(403, CF_CHALLENGE_PAGE),
+        Canned::text(403, "Forbidden"),
+        Canned::html(
+            503,
+            "<!DOCTYPE html><html><head><title>Internet Archive: Temporarily Offline</title>\
+             </head><body>The Wayback Machine is temporarily offline.</body></html>",
+        ),
+    ])
+    .await;
+    let client = reqwest::Client::new();
+    for expect_title in ["Attention Required! | Cloudflare", "Just a moment..."] {
+        let resp = client.get(&base).send().await.expect("loopback");
+        let err = super::http_status_error("m", resp).await;
+        assert!(
+            matches!(err, crate::core::error::Error::BotChallenge(_)),
+            "{err}"
+        );
+        let text = err.to_string();
+        assert!(
+            text.starts_with("bot challenge: m: HTTP 403") && text.contains(expect_title),
+            "{text}"
+        );
+    }
+    for expect in ["Forbidden", "Internet Archive: Temporarily Offline"] {
+        let resp = client.get(&base).send().await.expect("loopback");
+        let err = super::http_status_error("m", resp).await;
+        assert!(
+            matches!(err, crate::core::error::Error::Module { .. }),
+            "{err}"
+        );
+        assert!(err.to_string().contains(expect), "{err}");
+    }
+}
+
+#[tokio::test]
+async fn a_challenge_page_served_with_200_where_json_was_expected_is_the_typed_bot_challenge() {
+    // Some edges answer a challenge as `200 text/html`; the decode helpers
+    // must type it, while a provider's own HTML error template (WiFiDB's
+    // `Error | Vistumbler WiFiDB`, observed 2026-09-15) stays a module error
+    // naming the page.
+    use super::test_server::{Canned, serve};
+    let base = serve(vec![
+        Canned::html(200, CF_CHALLENGE_PAGE),
+        Canned::html(
+            200,
+            "<!DOCTYPE html><html><head><title>Error | Vistumbler WiFiDB</title></head>\
+             <body>Fatal error: Uncaught TypeError</body></html>",
+        ),
+        Canned::html(200, CF_BLOCK_PAGE),
+    ])
+    .await;
+    let client = reqwest::Client::new();
+    // `fetch_json` → `decode_json_body`.
+    let err = super::fetch_json::<serde_json::Value>(&client, "m", &base)
+        .await
+        .expect_err("a challenge page is not JSON");
+    assert!(
+        matches!(err, crate::core::error::Error::BotChallenge(_)),
+        "{err}"
+    );
+    assert!(err.to_string().contains("Just a moment..."), "{err}");
+    let err = super::fetch_json::<serde_json::Value>(&client, "m", &base)
+        .await
+        .expect_err("an error template is not JSON");
+    assert!(
+        matches!(err, crate::core::error::Error::Module { .. }),
+        "{err}"
+    );
+    assert!(
+        err.to_string().contains("Error | Vistumbler WiFiDB"),
+        "{err}"
+    );
+    // `json_decode` (the un-scanned helper) types it the same way.
+    let resp = client.get(&base).send().await.expect("loopback");
+    let err = super::json_decode::<serde_json::Value>("m", resp)
+        .await
+        .expect_err("a block page is not JSON");
+    assert!(
+        matches!(err, crate::core::error::Error::BotChallenge(_)),
+        "{err}"
+    );
+    assert!(err.to_string().contains("Attention Required!"), "{err}");
+}
