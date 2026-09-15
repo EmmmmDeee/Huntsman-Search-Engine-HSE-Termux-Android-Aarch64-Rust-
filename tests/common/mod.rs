@@ -569,14 +569,38 @@ impl Module for RegionalProbeModule {
     }
 }
 
-/// Clear any pre-existing keys for the chain-test service from the process-
-/// global pool so the key-chaining tests are hermetic. The global pool is a
-/// `OnceLock` seeded from the persisted `~/.huntsman/key_pool.json`, which can
-/// already hold real `shodan` keys (from prior CLI use or scans); those perturb
-/// `next_key("shodan")` selection and make the hot-inject assertion flaky
-/// depending on test order / the developer's local pool. Removal is in-memory
-/// only (never writes the file), so it cannot affect real keys on disk.
-pub fn reset_chain_pool() {
+/// The one lease on the chain-test service's keys in the process-global pool
+/// — see [`reset_chain_pool`]. A `tokio` mutex, not a `std` one: the lease is
+/// held across the test's `.await`s.
+static CHAIN_POOL_LEASE: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+/// Exclusive use of the chain-test service's keys in the process-global pool
+/// for as long as it is held. Returned by [`reset_chain_pool`]; a chain test
+/// keeps it until its scan has finished and its assertions have run.
+#[must_use = "hold the lease for the whole test — dropping it lets a sibling chain test reset \
+              the pool between this test's discoverer and its consumer"]
+pub struct ChainPoolLease(tokio::sync::MutexGuard<'static, ()>);
+
+/// Take the chain tests' lease on the process-global pool and clear any
+/// pre-existing keys for the chain-test service, so the key-chaining tests
+/// are hermetic. The global pool is a `OnceLock` seeded from the persisted
+/// `~/.huntsman/key_pool.json`, which can already hold real `shodan` keys
+/// (from prior CLI use or scans); those perturb `next_key("shodan")`
+/// selection and make the hot-inject assertion flaky depending on test order
+/// / the developer's local pool. Removal is in-memory only (never writes the
+/// file), so it cannot affect real keys on disk.
+///
+/// The lease is the point (REQ-CI-003). Two chain tests share this one
+/// process-global pool and `cargo test` runs them on parallel threads; a
+/// reset that ran while a sibling's scan was between its discoverer's store
+/// and its consumer's hot-inject emptied the pool under the sibling — the
+/// recorded shape of `key_chaining_concurrent_dispatch` failing once in a
+/// full-suite run with "consumer (KeyGated, Phase 2) must see the key via
+/// hot-inject" while passing alone and on every re-run. A chain test now
+/// waits for the lease before it resets, and holds it until it is done.
+pub async fn reset_chain_pool() -> ChainPoolLease {
+    let lease = CHAIN_POOL_LEASE.lock().await;
     let pool = huntsman_search_engine::util::key_pool::global_pool();
     let existing: Vec<String> = pool
         .snapshot()
@@ -589,6 +613,7 @@ pub fn reset_chain_pool() {
     for value in existing {
         pool.remove(CHAIN_TEST_SERVICE, &value);
     }
+    ChainPoolLease(lease)
 }
 
 // ── API helpers (moved from tests/api.rs) ──────────────────────────────────
@@ -694,7 +719,30 @@ fn test_app_with_modules_and_state(
 
 #[cfg(test)]
 mod tests {
-    use super::{stale_db_file, stale_dir, tmp_db, tmp_dir};
+    use super::{reset_chain_pool, stale_db_file, stale_dir, tmp_db, tmp_dir};
+
+    /// REQ-CI-003: the chain tests share one process-global key pool and run
+    /// on parallel threads, so a sibling's reset must wait for the running
+    /// test's lease instead of emptying the pool under it — and pass to the
+    /// sibling as soon as the test is done.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_chain_test_holds_the_pool_lease_until_it_finishes() {
+        let held = reset_chain_pool().await;
+        let sibling =
+            tokio::time::timeout(std::time::Duration::from_millis(150), reset_chain_pool()).await;
+        assert!(
+            sibling.is_err(),
+            "a sibling chain test must wait for the lease, never reset the pool under a \
+             running one"
+        );
+        drop(held);
+        let sibling =
+            tokio::time::timeout(std::time::Duration::from_secs(5), reset_chain_pool()).await;
+        assert!(
+            sibling.is_ok(),
+            "the lease passes to the sibling once the first test is done"
+        );
+    }
 
     /// Regression for CI runs 34985312683 / 34989423734 (2026-09-15):
     /// `tests/halting.rs`'s `quarantine` test swept the concurrently-running

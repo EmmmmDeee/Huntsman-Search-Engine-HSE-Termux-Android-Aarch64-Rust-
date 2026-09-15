@@ -4108,6 +4108,69 @@ the next step if a 200 wall is observed on one. The remaining
 `ip_reputation`) read JSON or crawl content and mint no negative claim from
 an empty parse.
 
+### REQ-CI-003 (**new, Pass 31 — OBSERVED once in a full-suite run, VERIFIED FROM SOURCE, FIXED in the harness, FALSIFIED**): the key-chaining smoke tests share one process-global pool and ran unserialised
+
+**Lead.** The stop revision (4) recorded
+`tests/smoke.rs::key_chaining_concurrent_dispatch` failing once in a full
+`cargo test --all` ("consumer (KeyGated, Phase 2) must see the key via
+hot-inject") and passing alone and on every re-run, with a candidate cause
+and no diagnosis. Diagnosed from source: `key_chaining_sequential_dispatch`
+and `key_chaining_concurrent_dispatch` each begin with `reset_chain_pool()`,
+which removes every key for the chain-test service (`shodan`) from the
+**process-global** key pool (`util::key_pool::global_pool()`, a `OnceLock`);
+each test's discoverer module then stores the chained key in that same pool,
+and its consumer expects to read it through the dispatcher's hot-inject.
+`cargo test` runs a binary's tests on parallel threads, so one test's reset
+can run between the other's store and its consumer's read: the pool is
+emptied under the running scan and the consumer sees no key — exactly the
+recorded assertion, and only when the two tests' starts are staggered by
+whatever ran before them, which is why 40 paired runs of the two tests at
+two threads (both resetting before either stores) and 15 full runs of the
+binary did not reproduce it here. FAILURE ≠ NEGATIVE FINDING: the race is a
+property of the harness, not of the one run that showed it.
+
+**Competing explanations.** (a) The hot-inject path itself losing a key —
+refuted: the sequential and concurrent dispatch paths both carry the key on
+every isolated run, and nothing in the production path is test-specific. (b)
+A stale `~/.huntsman/key_pool.json` perturbing `next_key` — the reason
+`reset_chain_pool` exists, and it cannot explain a key that was present a
+moment before. (c) The shared global reset by a parallel sibling — the only
+explanation with the observed shape; verified from source.
+
+**Fix (the harness, `tests/common/mod.rs`; no production code).**
+`reset_chain_pool` is `async` and returns `ChainPoolLease`, a `#[must_use]`
+guard on a `tokio::sync::Mutex` (held across the test's awaits) that the
+test keeps until its scan and assertions are done: a sibling's reset waits
+for the lease, never emptying the pool under a running scan, and takes it
+over as soon as the first test finishes. Both chain tests hold it (`let
+_pool = reset_chain_pool().await;`); a bare call is a `must_use` warning,
+which CI's `clippy -D warnings` over all targets turns into an error.
+
+**Lock (`common::tests::a_chain_test_holds_the_pool_lease_until_it_finishes`,
+compiled into every crate that uses the harness).** With a lease held, a
+second `reset_chain_pool()` does not return within 150 ms; once the first is
+dropped it returns within the bound.
+
+**Falsification (`cycle_z_falsify.py`, 23:17 UTC).** The lease released at
+once (`ChainPoolLease(())`, the guard dropped inside `reset_chain_pool`) →
+the lock fails at its first assertion ("a sibling chain test must wait for
+the lease, never reset the pool under a running one"); the file restored,
+sha-asserted.
+
+**Gate.** `cargo fmt --check`, `cargo clippy --all-targets --locked
+--features dep-cooldown -- -D warnings`, `cargo test --all --locked
+--features dep-cooldown` (7329 lib tests; `smoke` 64, `api` 152, `halting`
+10, `cli_seed_validation` 14 — each crate carrying the new lock) green at
+23:18–23:20 UTC; ten further full runs of the `smoke` binary with the lease
+in place, 0 failed.
+
+**Residual.** The failure reproduced once and not again in 55 local runs of
+the binary before the fix, so the fix's proof is the source-level race and
+the lock on the lease, not a before/after reproduction rate. The lease
+serialises two tests that take about a second together — no measurable cost
+to the suite's wall clock. Any future test that stores through
+`KeyDiscovererModule` needs the lease too; today only the two chain tests do.
+
 ### REQ-DRIFT-008 (**new, Pass 31 — OBSERVED on the runner twice in one day, FIXED at the sweep's verdict, CARRIED between runs, FALSIFIED**): a dead canary is confirmed across sweeps, never by one run
 
 **Lead.** FAILURE ≠ NEGATIVE FINDING. The dead-canary verdict (REQ-DRIFT-001)
@@ -5003,7 +5066,8 @@ the ledger must then say which); the restore step depends on `gh` and
 the log rather than failing the run — a fork of the workflow on a runner
 without `gh` gets first readings forever and a log line saying so, the honest
 degradation but a degradation. The smoke intermittent recorded in (4) did
-not recur in this cycle's two full-suite runs. Beyond that the previous
+not recur in this cycle's two full-suite runs; it is diagnosed from source
+and closed in the harness as REQ-CI-003 (above). Beyond that the previous
 statement stands.
 
 ### REQ-HTTP-002 (**new, Pass 31 — VERIFIED FROM SOURCE, CONSOLIDATED, FIXED, FALSIFIED**): `json_scanned` fails the way `json_decode` fails
