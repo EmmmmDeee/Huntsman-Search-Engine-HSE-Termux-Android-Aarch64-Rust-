@@ -37,8 +37,10 @@
 
 use huntsman_search_engine::selftest::capability_probe::{self, ProbeOutcome};
 
-/// Sweep the whole keyless module fleet against live providers. Fails only on a
-/// **confirmed** drift (a canary that reached its provider yet parsed nothing);
+/// Sweep the whole keyless module fleet against live providers. Fails on a
+/// **confirmed** drift (a canary that reached its provider yet parsed nothing,
+/// or any module that panicked) and on a **dead canary** (a canary whose
+/// provider gave no answer on any of its retried attempts — down or retired);
 /// everything else is reported and tolerated. `--nocapture` shows the full
 /// per-module table so a red run — or a healthy one — is triageable at a glance.
 #[tokio::test(flavor = "multi_thread")]
@@ -58,6 +60,7 @@ async fn fleet_capability_drift() {
     let mut timed_out = 0usize;
     let mut panicked = 0usize;
     let mut drifted: Vec<String> = Vec::new();
+    let mut dead: Vec<String> = Vec::new();
 
     for r in &reports {
         let canary = if capability_probe::is_canary(r.module) {
@@ -91,10 +94,24 @@ async fn fleet_capability_drift() {
             ProbeOutcome::Unreachable { reason } => {
                 unreachable += 1;
                 println!("  unreachable  {:<22} {reason}{canary}", r.module);
+                if r.is_dead_canary() {
+                    dead.push(format!(
+                        "{} — no answer on any of {} attempts: {reason}",
+                        r.module,
+                        capability_probe::CANARY_ATTEMPTS
+                    ));
+                }
             }
             ProbeOutcome::TimedOut => {
                 timed_out += 1;
                 println!("  timed-out    {:<22}{canary}", r.module);
+                if r.is_dead_canary() {
+                    dead.push(format!(
+                        "{} — timed out on all {} attempts",
+                        r.module,
+                        capability_probe::CANARY_ATTEMPTS
+                    ));
+                }
             }
             ProbeOutcome::Panicked { message } => {
                 panicked += 1;
@@ -116,13 +133,38 @@ async fn fleet_capability_drift() {
         reports.len()
     );
 
+    let drift_msg = if drifted.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "DRIFT: {} module(s) confirmed broken against their live provider — a \
+             canary that parsed zero entities, and/or a module that panicked — the \
+             upstream wire shape likely changed:\n  {}\n",
+            drifted.len(),
+            drifted.join("\n  ")
+        )
+    };
+    // A canary that gave no answer on any attempt is not drift (its wire shape
+    // was never seen) and not a flaky endpoint either (the probe already
+    // retried): the provider is down for the whole run or its endpoint is
+    // retired, and the capability is gone as surely as under drift. This used
+    // to be tolerated indefinitely — `api.bgpview.io` lost its DNS and the
+    // `bgpview` canary read "unreachable" on every weekly run while this test
+    // stayed green.
+    let dead_msg = if dead.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "DEAD CANARY: {} curated known-positive provider(s) gave no answer on any \
+             attempt — down for the whole run, or the endpoint is retired. Not drift, \
+             and not tolerable: migrate the endpoint or retire the capability honestly:\n  {}",
+            dead.len(),
+            dead.join("\n  ")
+        )
+    };
     assert!(
-        drifted.is_empty(),
-        "DRIFT: {} module(s) confirmed broken against their live provider — a \
-         canary that parsed zero entities, and/or a module that panicked — the \
-         upstream wire shape likely changed:\n  {}",
-        drifted.len(),
-        drifted.join("\n  ")
+        drifted.is_empty() && dead.is_empty(),
+        "{drift_msg}{dead_msg}"
     );
 }
 

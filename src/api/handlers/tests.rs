@@ -163,6 +163,13 @@ use crate::app::export::csv_escape;
         let cs = mods.iter().find(|m| m["module"] == "certspotter").expect("should succeed");
         assert_eq!(cs["outcome"], "alive");
         assert_eq!(cs["found"], 9);
+        // bgpview is a canary that gave no answer: a dead canary, not drift.
+        assert_eq!(v["dead_canaries"].as_array().expect("should succeed").len(), 1);
+        assert_eq!(v["dead_canaries"][0], "bgpview");
+        let bgp = mods.iter().find(|m| m["module"] == "bgpview").expect("should succeed");
+        assert_eq!(bgp["dead_canary"], true);
+        assert_eq!(bgp["drift"], false);
+        assert_eq!(ip_geo["dead_canary"], false, "drift is not death");
     }
 
     #[test]

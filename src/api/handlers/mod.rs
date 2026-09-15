@@ -523,12 +523,22 @@ pub(crate) fn capability_probe_json(
                 "reason": reason,
                 "canary": is_canary(r.module),
                 "drift": r.is_confirmed_drift(),
+                // A canary that answered nothing on any of its retried
+                // attempts — provider down or endpoint retired; distinct from
+                // drift (the wire shape was never seen) and from a tolerated
+                // non-canary transport failure.
+                "dead_canary": r.is_dead_canary(),
             })
         })
         .collect();
     let drift: Vec<&str> = reports
         .iter()
         .filter(|r| r.is_confirmed_drift())
+        .map(|r| r.module)
+        .collect();
+    let dead_canaries: Vec<&str> = reports
+        .iter()
+        .filter(|r| r.is_dead_canary())
         .map(|r| r.module)
         .collect();
     json!({
@@ -539,6 +549,7 @@ pub(crate) fn capability_probe_json(
         "timed_out": timed_out,
         "panicked": panicked,
         "drift": drift,
+        "dead_canaries": dead_canaries,
         "modules": modules,
     })
 }

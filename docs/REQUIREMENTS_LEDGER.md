@@ -3325,3 +3325,85 @@ Exactly the eight new tests; restored: 78 passed.
 table were re-derived from source and found already fixed on `main`
 (`server_total`-based truncation; `read_body_capped_or_fail`; `ok_or_absent(..,
 &[])` on the fixed AustLII path); the rows now say so.
+
+### REQ-DRIFT-001 (**new, Pass 31 — OBSERVED, FIXED, FALSIFIED, LIVE-VERIFIED at sandbox level**)
+
+**Requirement.** The weekly live-drift sweep fails on a canary whose provider
+gives no answer for the whole run. A canary is a curated known-positive chosen
+because its provider is expected to answer; a provider that answers nothing on
+any of several retried attempts is down or retired, and the capability is gone
+as surely as under wire-shape drift. The sweep's own contract already says so
+("a failure here means an upstream provider changed its wire shape (or is
+down)"); the test did not.
+
+**Observation** (class OBSERVABILITY_FAILURE masking ENDPOINT_RETIRED). The
+2026-09-14 sweep (run 34822949388, `main` 4c78411) printed
+
+```
+  unreachable  bgpview                [bgpview] transport error (error sending request for url (https://api.bgpview.io/asn/15169/prefixes)); curl fallback also failed [canary]
+  timed-out    chronicling_america    [canary]
+  timed-out    crtsh                  [canary]
+live-drift sweep: 124 probed — 68 alive, 38 empty, 13 unreachable, 5 timed-out
+test fleet_capability_drift ... ok
+```
+
+and passed: `ProbeReport::is_confirmed_drift` covers `Empty` (canary) and
+`Panicked` only; `Unreachable` / `TimedOut` were "**never** treated as drift" —
+correct for wire-shape drift, but nothing else ever escalated them.
+`api.bgpview.io` has no DNS at all (`getent hosts` fails here; the proxy's
+CONNECT returns 502; `docs/PROVIDER_SWEEP_BACKLOG.md` #25 records the NXDOMAIN),
+so the `bgpview` canary has been dead on every weekly run while the workflow
+stayed green — the exact "capability is gone and nothing says so" the sweep
+exists to catch.
+
+**Fix.** A canary's probe is retried — `CANARY_ATTEMPTS` (3) attempts,
+`CANARY_RETRY_PAUSE` (3 s) apart — so a transient blip is absorbed and only a
+provider that answers nothing on any attempt reaches the verdict; every other
+module keeps its single tolerated attempt (`attempts_for`). A canary still
+`Unreachable` / `TimedOut` after that is `ProbeReport::is_dead_canary()`,
+disjoint from drift (the wire shape was never seen). `tests/live_drift.rs`
+fails on it with a distinct message ("DEAD CANARY … migrate the endpoint or
+retire the capability honestly"); `hse doctor --live` tags the row and prints
+a summary warning; `GET /api/v1/capabilities/probe` carries `dead_canary` per
+module and a top-level `dead_canaries` list. Retries are bounded by
+construction (`probe_with_policy`: exactly `attempts` calls at most).
+
+**Regression locks.** `selftest::capability_probe::tests::{attempts_for_gives_a_canary_three_and_any_other_module_one,
+a_dead_canary_is_a_canary_that_gave_no_answer,
+a_transient_transport_failure_is_retried_and_a_persistent_one_is_final}` (the
+last drives `probe_with_policy` over a fixture module that fails its first N
+calls: a blip is absorbed under three attempts, a single attempt makes no
+second call, a provider that never answers costs exactly three calls) and
+`api::handlers::tests::capability_probe_json_tallies_outcomes_and_flags_canary_drift`
+(`bgpview` unreachable → `dead_canaries: ["bgpview"]`, `drift: false`).
+
+**Falsification.** Attempts forced to one and `is_dead_canary` forced false
+(the pre-fix policy):
+
+```
+test selftest::capability_probe::tests::a_dead_canary_is_a_canary_that_gave_no_answer ... FAILED
+test api::handlers::tests::capability_probe_json_tallies_outcomes_and_flags_canary_drift ... FAILED
+test selftest::capability_probe::tests::a_transient_transport_failure_is_retried_and_a_persistent_one_is_final ... FAILED
+test result: FAILED. 15 passed; 3 failed
+```
+
+Restored: 18 passed.
+
+**Live verification (2026-09-15, this sandbox, real modules, real providers
+through the HTTPS proxy).** A throwaway integration test (not committed) ran
+`probe_module` on the real `bgpview` and `ripestat` modules:
+
+```
+attempts policy: 3
+bgpview  → "unreachable"  dead_canary=true drift=false  (6.0s)
+  reason: [bgpview] transport error (error sending request for url (https://api.bgpview.io/asn/15169/prefixes)); curl fallback also failed
+ripestat → "alive"  dead_canary=false drift=false  (1.6s)
+```
+
+The dead provider costs its three attempts (two 3-s pauses; the connect fails
+at once) and is the dead-canary verdict; the live control is alive and not
+flagged. The production-level proof is the next scheduled `live-drift` run,
+which is now expected to go **red on `bgpview`** (and on `crtsh` /
+`chronicling_america` if they time out on all three attempts) — the truthful
+signal, not a regression: the endpoint must be migrated or the capability
+retired (the next unit of work, `docs/PROVIDER_SWEEP_BACKLOG.md` #25).

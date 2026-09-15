@@ -695,9 +695,19 @@ async fn print_live_capability_report() {
     let (mut alive, mut empty, mut unreachable, mut timed_out, mut panicked) =
         (0usize, 0usize, 0usize, 0usize, 0usize);
     let mut drift: Vec<&str> = Vec::new();
+    let mut dead: Vec<&str> = Vec::new();
     for r in &reports {
         let canary = if capability_probe::is_canary(r.module) {
             " [canary]"
+        } else {
+            ""
+        };
+        // A canary that answered nothing on any of its retried attempts: the
+        // provider is down or its endpoint retired — called out, never quietly
+        // tolerated the way a non-canary's transport failure is.
+        let dead_tag = if r.is_dead_canary() {
+            dead.push(r.module);
+            " — DEAD CANARY (no answer on any attempt: provider down or endpoint retired)"
         } else {
             ""
         };
@@ -725,11 +735,11 @@ async fn print_live_capability_report() {
             }
             ProbeOutcome::Unreachable { reason } => {
                 unreachable += 1;
-                println!("  unreachable  {:<22} {reason}{canary}", r.module);
+                println!("  unreachable  {:<22} {reason}{canary}{dead_tag}", r.module);
             }
             ProbeOutcome::TimedOut => {
                 timed_out += 1;
-                println!("  timed-out    {:<22}{canary}", r.module);
+                println!("  timed-out    {:<22}{canary}{dead_tag}", r.module);
             }
             ProbeOutcome::Panicked { message } => {
                 panicked += 1;
@@ -749,6 +759,14 @@ async fn print_live_capability_report() {
             "  ⚠ confirmed drift in {}: {} — the upstream wire shape likely changed",
             drift.len(),
             drift.join(", ")
+        );
+    }
+    if !dead.is_empty() {
+        println!(
+            "  ⚠ dead canary: {} — no answer on any of {} attempts; the provider is down \
+             for now or its endpoint is retired (migrate it or retire the capability)",
+            dead.join(", "),
+            capability_probe::CANARY_ATTEMPTS
         );
     }
     // Persist so this finding survives past this one printout — the next

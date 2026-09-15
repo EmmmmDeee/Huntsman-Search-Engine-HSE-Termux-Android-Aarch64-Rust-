@@ -33,6 +33,19 @@
 //! keeps the CI sweep faithful to the workflow's contract — a red run is an
 //! actionable drift, never a flaky endpoint — while giving the operator a
 //! full-fleet view in `doctor --live`.
+//!
+//! ## Dead canaries (why unreachable ≠ always tolerated)
+//!
+//! A transport failure on an arbitrary module is tolerated: the provider may be
+//! down for an hour, the runner's egress may be blocked. A canary is different —
+//! it is chosen *because* its provider is expected to answer — so its probe is
+//! retried ([`CANARY_ATTEMPTS`] attempts, [`CANARY_RETRY_PAUSE`] apart), and a
+//! canary that answers nothing on any attempt is a **dead canary**
+//! ([`ProbeReport::is_dead_canary`]): the provider is down for the whole run or
+//! its endpoint is retired, and the capability is gone as surely as under drift.
+//! Before this the sweep tolerated it forever — `api.bgpview.io` lost its DNS
+//! and the `bgpview` canary read "unreachable" on every weekly run while the
+//! workflow stayed green.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -83,6 +96,32 @@ impl ProbeOutcome {
     }
 }
 
+/// Attempts a canary's probe gets before its transport outcome is final.
+///
+/// A canary is a curated known-positive whose provider is expected to answer,
+/// so one failed connect or one timeout is not yet a verdict: the probe is
+/// repeated, this many times in all with [`CANARY_RETRY_PAUSE`] between, and
+/// only a provider that answers nothing for the whole run — down, or its
+/// endpoint retired — is the dead-canary verdict ([`ProbeReport::is_dead_canary`])
+/// the sweep fails on. Every other module keeps a single attempt: its transport
+/// failure is reported and tolerated, never escalated.
+pub const CANARY_ATTEMPTS: usize = 3;
+
+/// Pause between a canary's attempts — long enough for a transient blip to
+/// pass, short enough that every canary retrying twice adds well under a
+/// minute to the sweep.
+const CANARY_RETRY_PAUSE: Duration = Duration::from_secs(3);
+
+/// How many attempts `module`'s probe gets — see [`CANARY_ATTEMPTS`].
+#[must_use]
+pub fn attempts_for(module: &str) -> usize {
+    if is_canary(module) {
+        CANARY_ATTEMPTS
+    } else {
+        1
+    }
+}
+
 /// One module's probe result, with the target it was probed against.
 #[derive(Debug, Clone)]
 pub struct ProbeReport {
@@ -108,6 +147,22 @@ impl ProbeReport {
             | ProbeOutcome::Unreachable { .. }
             | ProbeOutcome::TimedOut => false,
         }
+    }
+
+    /// True for a [`CANARY_PROBES`] entry whose provider gave no answer at all
+    /// — unreachable or timed out on every one of its [`CANARY_ATTEMPTS`]
+    /// (the probe itself retries, so a report carrying either outcome for a
+    /// canary is already the persistent case). Not drift: the wire shape was
+    /// never seen. Not tolerable either: a canary is chosen because its
+    /// provider is expected to answer, so a provider that answers nothing for
+    /// a whole run is down or retired, and the capability is gone just as
+    /// surely. A non-canary's transport failure is never a dead canary.
+    pub fn is_dead_canary(&self) -> bool {
+        is_canary(self.module)
+            && matches!(
+                self.outcome,
+                ProbeOutcome::Unreachable { .. } | ProbeOutcome::TimedOut
+            )
     }
 }
 
@@ -237,8 +292,20 @@ async fn probe_arc(m: std::sync::Arc<dyn Module>, http: reqwest::Client) -> Opti
 }
 
 async fn probe_module_impl(m: &dyn Module, http: &reqwest::Client) -> Option<ProbeReport> {
-    use futures::FutureExt;
+    probe_with_policy(m, http, attempts_for(m.name()), CANARY_RETRY_PAUSE).await
+}
 
+/// [`probe_module`] under an explicit retry policy: a transport outcome
+/// (`Unreachable` / `TimedOut`) is tried again until `attempts` are spent,
+/// `pause` apart; any other outcome is final at once. Bounded by construction —
+/// exactly `attempts` calls at most. Production callers go through
+/// [`attempts_for`]; the policy's own tests inject the counts.
+pub(crate) async fn probe_with_policy(
+    m: &dyn Module,
+    http: &reqwest::Client,
+    attempts: usize,
+    pause: Duration,
+) -> Option<ProbeReport> {
     if m.cost() != ModuleCost::Free || m.is_passive() {
         return None;
     }
@@ -247,6 +314,44 @@ async fn probe_module_impl(m: &dyn Module, http: &reqwest::Client) -> Option<Pro
     let ctx = probe_ctx(http);
     let budget = Duration::from_millis(m.max_timeout_ms());
     let name = m.name();
+    let attempts = attempts.max(1);
+
+    let mut outcome = probe_once(m, &target, &ctx, budget, name).await;
+    for attempt in 2..=attempts {
+        if !matches!(
+            outcome,
+            ProbeOutcome::Unreachable { .. } | ProbeOutcome::TimedOut
+        ) {
+            break;
+        }
+        tracing::debug!(
+            module = name,
+            attempt,
+            of = attempts,
+            outcome = outcome.label(),
+            "capability probe: no answer — trying again"
+        );
+        tokio::time::sleep(pause).await;
+        outcome = probe_once(m, &target, &ctx, budget, name).await;
+    }
+    Some(ProbeReport {
+        module: name,
+        kind,
+        value,
+        outcome,
+    })
+}
+
+/// One bounded attempt: run `process` under the module's own timeout budget
+/// and classify what came back.
+async fn probe_once(
+    m: &dyn Module,
+    target: &Target,
+    ctx: &ModuleContext,
+    budget: Duration,
+    name: &'static str,
+) -> ProbeOutcome {
+    use futures::FutureExt;
 
     // A module's parser panicking on a hostile/drifted live response must be
     // reported, not silently dropped — this is precisely the "capability is
@@ -254,10 +359,9 @@ async fn probe_module_impl(m: &dyn Module, http: &reqwest::Client) -> Option<Pro
     // the module doc comment), so losing it here would defeat the point.
     // Mirrors `core::engine::dispatch::run_module_guarded`'s guard exactly
     // (including its exact `AssertUnwindSafe` shape) and shares its
-    // message-extraction helper so the two sites can't drift apart. Below this
-    // point `timeout_result` is untouched from the pre-existing logic.
+    // message-extraction helper so the two sites can't drift apart.
     let timeout_result =
-        match std::panic::AssertUnwindSafe(tokio::time::timeout(budget, m.process(&target, &ctx)))
+        match std::panic::AssertUnwindSafe(tokio::time::timeout(budget, m.process(target, ctx)))
             .catch_unwind()
             .await
         {
@@ -265,15 +369,10 @@ async fn probe_module_impl(m: &dyn Module, http: &reqwest::Client) -> Option<Pro
             Err(payload) => {
                 let message = crate::core::engine::panic_payload_to_string(&payload);
                 tracing::warn!(module = name, %message, "capability probe: module panic contained");
-                return Some(ProbeReport {
-                    module: name,
-                    kind,
-                    value,
-                    outcome: ProbeOutcome::Panicked { message },
-                });
+                return ProbeOutcome::Panicked { message };
             }
         };
-    let outcome = match timeout_result {
+    match timeout_result {
         Ok(Ok(r)) if r.entities.is_empty() => ProbeOutcome::Empty,
         Ok(Ok(r)) => ProbeOutcome::Alive {
             found: r.entities.len(),
@@ -282,13 +381,7 @@ async fn probe_module_impl(m: &dyn Module, http: &reqwest::Client) -> Option<Pro
             reason: e.to_string(),
         },
         Err(_) => ProbeOutcome::TimedOut,
-    };
-    Some(ProbeReport {
-        module: name,
-        kind,
-        value,
-        outcome,
-    })
+    }
 }
 
 /// Probe every keyless, network module in the registry, `concurrency` at a time,
@@ -712,5 +805,136 @@ mod tests {
         ] {
             assert!(canonical_sample(kind).is_some(), "{kind:?} needs a sample");
         }
+    }
+
+    #[test]
+    fn attempts_for_gives_a_canary_three_and_any_other_module_one() {
+        assert_eq!(attempts_for("bgpview"), CANARY_ATTEMPTS);
+        assert_eq!(attempts_for("ip_geo"), 3);
+        assert_eq!(attempts_for("gravatar"), 1);
+        assert_eq!(attempts_for("not_a_module"), 1);
+    }
+
+    #[test]
+    fn a_dead_canary_is_a_canary_that_gave_no_answer() {
+        let report = |module, outcome| ProbeReport {
+            module,
+            kind: TargetKind::Asn,
+            value: "AS15169",
+            outcome,
+        };
+        let dns = || ProbeOutcome::Unreachable {
+            reason: "dns error: Name or service not known".into(),
+        };
+        assert!(report("bgpview", dns()).is_dead_canary());
+        assert!(report("bgpview", ProbeOutcome::TimedOut).is_dead_canary());
+        assert!(
+            !report("bgpview", ProbeOutcome::Empty).is_dead_canary(),
+            "an answer that parsed to nothing is drift, not a dead provider"
+        );
+        assert!(!report("bgpview", ProbeOutcome::Alive { found: 1 }).is_dead_canary());
+        assert!(
+            !report("gravatar", dns()).is_dead_canary(),
+            "a non-canary's transport failure stays tolerated"
+        );
+        assert!(!report("gravatar", ProbeOutcome::TimedOut).is_dead_canary());
+        // Drift and death are disjoint verdicts.
+        assert!(!report("bgpview", dns()).is_confirmed_drift());
+    }
+
+    /// A module that fails its first `fail_first` calls at the transport level
+    /// and answers on the next — the shape of a transient blip (or, with
+    /// `usize::MAX`, of a provider that never answers).
+    struct Flaky {
+        fail_first: usize,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl Module for Flaky {
+        fn name(&self) -> &'static str {
+            "flaky_probe_fixture"
+        }
+        fn priority(&self) -> u8 {
+            50
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Domain)
+        }
+        async fn process(
+            &self,
+            t: &Target,
+            _ctx: &ModuleContext,
+        ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n < self.fail_first {
+                return Err(crate::core::error::Error::module(
+                    "flaky_probe_fixture",
+                    "error sending request: dns error",
+                ));
+            }
+            let mut r = crate::core::module::ModuleResult::new();
+            r.push(crate::core::entity::Entity::new(
+                crate::core::entity::EntityKind::Domain,
+                &t.value,
+                0.5,
+                "probe",
+            ));
+            Ok(r)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_transient_transport_failure_is_retried_and_a_persistent_one_is_final() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let http = reqwest::Client::new();
+
+        // Fails once, answers on the second attempt: under a three-attempt
+        // policy the blip is absorbed and the module is alive.
+        let m = Flaky {
+            fail_first: 1,
+            calls: AtomicUsize::new(0),
+        };
+        let r = probe_with_policy(&m, &http, 3, Duration::ZERO)
+            .await
+            .expect("probeable");
+        assert!(
+            matches!(r.outcome, ProbeOutcome::Alive { found: 1 }),
+            "{:?}",
+            r.outcome
+        );
+        assert_eq!(m.calls.load(Ordering::SeqCst), 2);
+
+        // The same blip under a single attempt (every non-canary's policy):
+        // unreachable, and no second call is ever made.
+        let m = Flaky {
+            fail_first: 1,
+            calls: AtomicUsize::new(0),
+        };
+        let r = probe_with_policy(&m, &http, 1, Duration::ZERO)
+            .await
+            .expect("probeable");
+        assert!(
+            matches!(r.outcome, ProbeOutcome::Unreachable { .. }),
+            "{:?}",
+            r.outcome
+        );
+        assert_eq!(m.calls.load(Ordering::SeqCst), 1);
+
+        // Never answers: every attempt is spent, then the verdict is final —
+        // bounded at exactly the attempts allowed, never more.
+        let m = Flaky {
+            fail_first: usize::MAX,
+            calls: AtomicUsize::new(0),
+        };
+        let r = probe_with_policy(&m, &http, 3, Duration::ZERO)
+            .await
+            .expect("probeable");
+        assert!(
+            matches!(r.outcome, ProbeOutcome::Unreachable { .. }),
+            "{:?}",
+            r.outcome
+        );
+        assert_eq!(m.calls.load(Ordering::SeqCst), 3);
     }
 }
