@@ -270,7 +270,7 @@ fn generated_wrappers_do_not_hardcode_the_termux_prefix() {
     // than a compiled-in guess.
     let script = install_sh();
     let mut offenders = Vec::new();
-    for tag in ["WRAPPER", "WATCH", "BOOT", "WAKELOCK"] {
+    for tag in ["WRAPPER", "WATCH", "BOOT", "WAKELOCK", "TEST"] {
         // WAKELOCK may not exist yet in older revisions; skip rather than panic.
         if !script.contains(&format!("<<'{tag}'")) {
             continue;
@@ -569,6 +569,65 @@ fn the_boot_script_is_regenerated_when_it_is_the_installers_own() {
     assert!(
         body.contains("hse-bg start") && body.contains("hse-watch start"),
         "the boot body starts both long-running wrappers"
+    );
+}
+
+#[test]
+fn hse_test_is_an_owned_path_wrapper_and_never_touches_operator_state() {
+    // Observed on-device 2026-09-15: a curl-pipe prebuilt install left the
+    // operator at `~` with no source tree, so the README's next command
+    // (`scripts/standard-test.sh`) 404'd. `hse-test` is the PATH-level
+    // replacement: same acceptance run, installed next to `hse`, isolated
+    // HOME so it cannot read/write ~/.huntsman.env or the operator DB.
+    let script = install_sh();
+    assert!(
+        script.contains("HSE_OWNED_NAMES=(hse hse-bg hse-watch hse-wakelock hse-test)"),
+        "hse-test must be in HSE_OWNED_NAMES so stale copies are purged and the \
+         current one is never treated as a duplicate"
+    );
+    assert!(
+        script.contains("TEST_WRAPPER=\"$HSE_BIN_DIR/hse-test\""),
+        "install.sh must write hse-test into the bin dir"
+    );
+    let body = heredoc(&script, "TEST");
+    assert!(
+        body.contains("export HOME=\"$RUN_HOME\""),
+        "hse-test must isolate HOME so the acceptance run cannot touch operator state"
+    );
+    assert!(
+        body.contains("mktemp -d"),
+        "the isolated HOME must be a throwaway directory"
+    );
+    assert!(
+        body.contains("--output dossier"),
+        "the acceptance run must print the full unredacted dossier"
+    );
+    assert!(
+        !body.contains("termux-wake-") && !body.contains("hse_wakelock_"),
+        "hse-test is a foreground one-shot; it must not hold a wake-lock"
+    );
+    assert!(
+        script.contains("hse-autoupdate.stamp")
+            && script.find("hse-autoupdate.stamp").unwrap()
+                < script
+                    .find("hse\" provision --env-only --discover")
+                    .unwrap(),
+        "the auto-update throttle stamp must be written BEFORE `hse provision`, \
+         which is the first CLI invocation and used to spawn a background rebuild"
+    );
+}
+
+#[test]
+fn post_install_quick_start_names_hse_test() {
+    let script = install_sh();
+    let start = script
+        .find("CLI quick start:")
+        .expect("install.sh prints a CLI quick start");
+    let block = &script[start..];
+    assert!(
+        block.contains("hse-test"),
+        "the post-install quick start must name `hse-test` so a curl-pipe \
+         operator is not sent to `scripts/standard-test.sh` from ~"
     );
 }
 
