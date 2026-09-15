@@ -459,8 +459,12 @@ pub(super) fn transport_and_fallback_failed(transport: &str, url: &str) -> Strin
 async fn decode_json_body<T: DeserializeOwned>(resp: reqwest::Response, module: &str) -> Result<T> {
     let text = read_json_text(resp, module).await?;
     scan_for_api_keys(&text);
-    serde_json::from_str::<T>(&text)
-        .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))
+    serde_json::from_str::<T>(&text).map_err(|e| {
+        Error::module(
+            module,
+            redact_credentials(&super::url::json_failure(&text, &e)),
+        )
+    })
 }
 
 async fn fetch_json_inner<T: DeserializeOwned>(

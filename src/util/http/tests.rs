@@ -1424,3 +1424,50 @@ async fn read_body_capped_or_fail_returns_the_body_on_success() {
         "ok"
     );
 }
+
+#[test]
+fn json_failure_names_an_html_error_page_and_keeps_serde_for_shape_drift() {
+    use super::url::json_failure;
+    // WiFiDB's live answer to every `exp_search` query on 2026-09-15: HTTP 200,
+    // text/html, its error template — a licence comment, then the document.
+    // The sweep recorded it as "expected value at line 1 column 1"; the message
+    // must say what actually arrived, in the provider's own words.
+    let wifidb = "<!--\nError.tpl, Is the default error showing page for WiFiDB.\n-->\n<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<title>Error | Vistumbler WiFiDB</title>\n</head><body>Error: 0 Message: Argument 1 passed to export::buildSearchConditions() must be of the type array, string given</body></html>";
+    let err = serde_json::from_str::<serde_json::Value>(wifidb).expect_err("html is not json");
+    let msg = json_failure(wifidb, &err);
+    assert!(msg.contains("HTML page where JSON was expected"), "{msg}");
+    assert!(
+        msg.contains("Error | Vistumbler WiFiDB"),
+        "the provider's title is quoted: {msg}"
+    );
+    assert!(
+        msg.contains("expected value"),
+        "serde's reason is kept: {msg}"
+    );
+
+    // A document without a title falls back to its visible text.
+    let bare = "<html><body><h1>Just a moment...</h1></body></html>";
+    let err = serde_json::from_str::<serde_json::Value>(bare).expect_err("html is not json");
+    assert!(json_failure(bare, &err).contains("Just a moment"));
+
+    // Real JSON of the wrong shape is shape drift: serde's words plus the head of
+    // the body, never mislabelled as an error page.
+    #[derive(Debug, serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Wanted {
+        name: String,
+    }
+    let drifted = r#"{"data":{"name":"x"}}"#;
+    let err = serde_json::from_str::<Wanted>(drifted).expect_err("missing field");
+    let msg = json_failure(drifted, &err);
+    assert!(!msg.contains("HTML page"), "{msg}");
+    assert!(
+        msg.contains("missing field") && msg.contains("body starts"),
+        "{msg}"
+    );
+
+    // A JSON error body that merely quotes markup keeps its verbatim treatment.
+    let quoting = r#"{"error":"<html> is not allowed here"}"#;
+    let err = serde_json::from_str::<Wanted>(quoting).expect_err("missing field");
+    assert!(!json_failure(quoting, &err).contains("HTML page"));
+}

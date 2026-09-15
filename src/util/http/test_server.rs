@@ -36,6 +36,16 @@ impl Canned {
             body: body.into(),
         }
     }
+
+    /// An HTML document — a provider's error template, a bot-challenge
+    /// interstitial or a login page served where JSON was expected.
+    pub(crate) fn html(status: u16, body: impl Into<String>) -> Self {
+        Self {
+            status,
+            content_type: "text/html; charset=UTF-8",
+            body: body.into(),
+        }
+    }
 }
 
 /// Bind a loopback listener that answers connections in order from `answers`

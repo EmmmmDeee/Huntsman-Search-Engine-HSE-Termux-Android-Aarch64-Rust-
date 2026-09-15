@@ -233,6 +233,13 @@ pub const CANARY_PROBES: &[(&str, TargetKind, &str)] = &[
     // Open Archives: the commonest name in two centuries of Dutch registers
     // (126 802 entries on 2026-09-06).
     ("openarch", TargetKind::FullName, "Jan Jansen"),
+    // wifidb's own header records this BSSID as a live-verified hit
+    // (`cryptic24g`, 2026-09). On 2026-09-15 the provider answered every query
+    // with an HTTP-200 HTML error template (a server-side type error in its
+    // export code); a canary makes that a dead-canary verdict rather than a
+    // tolerated "unreachable" line until WiFiDB recovers or the module is
+    // retired.
+    ("wifidb", TargetKind::MacAddress, "00:13:10:69:EF:11"),
 ];
 
 /// Whether `module` is a curated must-yield canary (see [`CANARY_PROBES`]).

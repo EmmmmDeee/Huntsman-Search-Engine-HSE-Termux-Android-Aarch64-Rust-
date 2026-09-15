@@ -3475,3 +3475,85 @@ sandbox, not through the module's own client (raw port-43 is irrelevant here —
 this is HTTPS — but the module was not run end to end against the RIR from the
 sandbox); the next scheduled sweep exercises the new `ip_registry` ASN canary on
 GitHub's runners. Backlog #25 is closed.
+
+### REQ-HTTP-001 (**new, Pass 31 — OBSERVED live, FIXED, FALSIFIED**): an HTML answer where JSON was expected is named as an upstream error page
+
+**Requirement.** A decode failure says what arrived. A provider's error
+template, a bot-challenge interstitial or a login page served with a 200 is an
+upstream failure (the provider broke, or blocked the client); a body that is
+real JSON of another shape is contract drift. The recorded reason must let the
+weekly sweep and the operator tell the two apart, because the repairs are
+opposite — wait or retire, versus re-model the struct.
+
+**Observation** (class UPSTREAM failure, every query; 2026-09-15 13:02Z from
+this sandbox, and twice earlier the same day).
+`GET https://wifidb.net/api/geojson.php?func=exp_search&mac=00:13:10:69:EF:11`
+— the BSSID the module's own header records as live-verified in 2026-09 — and
+the same query for an arbitrary `00:1A:2B:3C:4D:5E` both answered:
+
+```
+http=200 ct=text/html; charset=UTF-8 bytes=12608
+<title>Error | Vistumbler WiFiDB</title>
+Error: 0 Message: Argument 1 passed to export::buildSearchConditions() must be
+of the type array, string given, called in
+/srv/www/virtual/wifidb.net/lib/export.inc.php on line 1222
+File: /srv/www/virtual/wifidb.net/lib/searchconditions.inc.php Line: 54
+```
+
+An array-form `mac[]=` parameter fails the same way. The provider's export
+code is broken server-side; no request shape from this side reaches the data.
+What HSE did with it: `fetch_json_or_404` → `decode_json_body` →
+`Error::module("wifidb", "expected value at line 1 column 1")` — fail-closed,
+which is right (a `ModuleError`, never a clean negative), but a reason that
+said nothing about *what* arrived, so the sweep's `wifidb` line read exactly
+like a schema drift.
+
+**Repair.**
+
+- `util::http::url::json_failure(body, err)` — one pure classifier behind all
+  three shared decode helpers (`decode_json_body` under `fetch_json` /
+  `fetch_json_or_404`; `json_decode`; `json_scanned`). A body that reads as an
+  HTML document (leading `<!-- … -->` comments skipped — WiFiDB's template
+  opens with a licence comment — then `util::html::looks_like_document`) is
+  reported as `provider answered an HTML page where JSON was expected — an
+  error page, interstitial or login page, not the data (title: "…"); serde: …`
+  with the page's `<title>` (or its first visible text) quoted. Anything else
+  keeps serde's words plus the first 80 characters of the body, so a shape
+  change is legible from the message alone. Credential redaction still applies
+  on the `fetch_json` path.
+- `wifidb` gains the `API_BASE` + `lookup(client, api_base, bssid)` seam the
+  other repaired modules have; semantics unchanged (404 → clean miss; any
+  other non-2xx, transport failure or undecodable body → the module's error).
+- `wifidb` is a live-drift canary (`("wifidb", MacAddress,
+  "00:13:10:69:EF:11")` in `CANARY_PROBES`), so REQ-DRIFT-001's dead-canary
+  rule escalates it on every weekly sweep while the provider stays broken.
+- Not retired: the corpus and the documented contract are intact (the
+  module's 2026-09 live capture is authentic) and the failure is a server-side
+  bug the operator can fix. Retirement criterion: a `wifidb` canary still dead
+  on two consecutive weekly sweeps retires the module; `mylnikov` and
+  `beacondb` (keyless) and `wigle` (keyed) remain the BSSID → coordinates
+  authorities.
+
+**Evidence.** `util::http::tests::json_failure_names_an_html_error_page_and_keeps_serde_for_shape_drift`
+(the captured template head → named page with its title; a title-less document
+→ its visible text; JSON shape drift → serde's words plus the body head, never
+labelled a page; a JSON body that merely quotes markup → not a page) and
+`modules::wifidb::tests::the_html_error_template_is_the_modules_error_never_a_clean_miss`
+(loopback: template → the module's error naming the page; 404 → clean miss; a
+FeatureCollection → parsed). Live captures are in the session scratchpad
+(`wifidb_live.txt`, `wifidb_probe.txt`, `wifidb_now_*.txt`).
+
+**Falsification.** Classifier bypassed (`json_failure` returning serde's words
+for any non-empty body):
+
+```
+util::http::tests::json_failure_names_an_html_error_page_and_keeps_serde_for_shape_drift --- FAILED
+test result: FAILED. 0 passed; 1 failed
+```
+
+Restored: 1 passed.
+
+**Residual.** WiFiDB's recovery is outside the repository; the canary decides
+retirement. The module was driven against the captured template on a loopback
+and observed live with `curl`, not run end to end through its own client from
+this sandbox.

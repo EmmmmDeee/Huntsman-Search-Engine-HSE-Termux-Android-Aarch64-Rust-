@@ -41,7 +41,7 @@ pub async fn json_scanned<T: DeserializeOwned>(
         .await
         .map_err(|e| e.to_string())?;
     scan_for_api_keys(&text);
-    serde_json::from_str(&text).map_err(|e| format!("{module}: {e}"))
+    serde_json::from_str(&text).map_err(|e| format!("{module}: {}", json_failure(&text, &e)))
 }
 
 /// Decode a response body as JSON, tagging any decode failure with `module`.
@@ -54,7 +54,50 @@ pub async fn json_scanned<T: DeserializeOwned>(
 /// telemetry, geo lookups, DNS-over-HTTPS, etc.).
 pub async fn json_decode<T: DeserializeOwned>(module: &str, resp: reqwest::Response) -> Result<T> {
     let text = read_json_text(resp, module).await?;
-    serde_json::from_str(&text).map_err(|e| Error::module(module, e.to_string()))
+    serde_json::from_str(&text).map_err(|e| Error::module(module, json_failure(&text, &e)))
+}
+
+/// The message for a body that would not decode as the JSON a module asked
+/// for. The three decode helpers used to report serde's own words — `expected
+/// value at line 1 column 1` — which say nothing about *what* arrived. That
+/// matters for classification: a provider that answers `200 text/html` with its
+/// error template, a bot-challenge interstitial, or a login page is an
+/// **upstream error page**, not parser drift, and the two call for opposite
+/// repairs. So a body that reads as an HTML document (leading comments
+/// skipped — WiFiDB's template opens with a licence comment) is named as one,
+/// with its `<title>` quoted so the operator and the weekly sweep see the
+/// provider's own words — `Error | Vistumbler WiFiDB` (observed 2026-09-15)
+/// instead of a column number. Anything else keeps serde's message, with a
+/// short prefix of the body so a shape change is legible. Pure.
+pub fn json_failure(body: &str, err: &serde_json::Error) -> String {
+    let head = skip_leading_html_comments(body);
+    if crate::util::html::looks_like_document(head) {
+        let title = crate::util::html::title(head).unwrap_or_else(|| {
+            crate::util::html::collapse_whitespace(&crate::util::html::strip_html(head))
+                .chars()
+                .take(120)
+                .collect()
+        });
+        return format!(
+            "provider answered an HTML page where JSON was expected — an error page, \
+             interstitial or login page, not the data (title: {title:?}); serde: {err}"
+        );
+    }
+    let sample: String = body.trim_start().chars().take(80).collect();
+    format!("{err} (body starts: {sample:?})")
+}
+
+/// `body` with any leading `<!-- … -->` comment blocks (and whitespace) removed,
+/// so a document that opens with a comment still reads as a document.
+fn skip_leading_html_comments(body: &str) -> &str {
+    let mut s = body.trim_start();
+    while let Some(rest) = s.strip_prefix("<!--") {
+        match rest.find("-->") {
+            Some(i) => s = rest[i + 3..].trim_start(),
+            None => return s,
+        }
+    }
+    s
 }
 
 /// Extension on [`reqwest::RequestBuilder`] that sends the request and maps any
