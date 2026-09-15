@@ -4108,6 +4108,70 @@ the next step if a 200 wall is observed on one. The remaining
 `ip_reputation`) read JSON or crawl content and mint no negative claim from
 an empty parse.
 
+### REQ-DRIFT-004 (**new, Pass 31 — OBSERVED on the runner and from the sandbox, FIXED, FALSIFIED**): Reddit's block page is a wall; a document may open with a bare `<body>`
+
+**Observation (runner, live-drift run 34998644556 on `78e596f`, 2026-09-15
+17:03 UTC).** `unreachable reddit_user — [reddit_user] HTTP 403 Forbidden:
+<body class=theme-beta><div><style>.theme-light,:root{--rem360:22.5rem;…`
+— raw markup as the snippet, "provider down" as the class (the 16:35 run had
+read the same endpoint `rate-limited`, HTTP 429).
+
+**Observation (sandbox, 17:07 UTC).** `GET
+https://www.reddit.com/user/torvalds/about.json` → `403 text/html`, 189,908
+bytes, opening `<body class=theme-beta><div><style>…` with no doctype and no
+`<title>`; visible text (143 characters, at byte 189,318): "You've been
+blocked by network security. If you think you've been blocked by mistake,
+file a ticket below and we'll look into it. File a ticket". The Atom feed
+itself (`/user/torvalds.rss`) answered the sandbox 200 `application/atom+xml`
+(8,703 bytes) — the runner's address is the one Reddit scores as a bot.
+
+**Root causes (source).** (1) `util::html::looks_like_document` accepted only
+`<!doctype html` / `<html` openers, so this page was not a document:
+`html_error_summary` produced nothing (the raw markup became the snippet) and
+`is_challenge_document` never ran. (2) No phrase set knew Reddit's wording.
+(3) Even with both, the prose sits beyond the 8 KiB bounded error-body read
+(`error_body`), so the shared classifier cannot see it on the production
+path: `http_status_error` reads the first 8 KiB, all CSS.
+
+**Fix.** `looks_like_document` also accepts a bare `<head` / `<body` opener
+— only HTML documents open with them; XML, RSS and Atom open with `<?xml`,
+`<rss`, `<feed` and a JSON body never opens with `<`. The phrase set
+`["blocked by network security"]` joins `CHALLENGE_PHRASE_SETS` (for copies
+short enough to read). `reddit_user::fetch_feed_from` applies the endpoint's
+own contract before `ok_or_absent`: an Atom feed is never `text/html`, so a
+403 carrying an HTML body is `Error::BotChallenge` naming Reddit's
+network-security block — the breaker benches the module at once, the probe
+and the sweep read `blocked`, and the account is never called absent (404
+stays the one negative).
+
+**Evidence.** `util::html::tests::a_document_may_open_with_a_bare_body_or_head_and_reddits_block_page_is_a_wall`
+(the capture's opener and prose; XML / RSS / Atom / JSON-quoting-markup stay
+non-documents; the excerpt is a wall);
+`reddit_user::tests::a_403_with_an_html_page_on_the_feed_is_reddits_wall_never_an_absent_account`
+(loopback: 403 HTML → `BotChallenge`; 404 → `None`; 200 Atom → the feed).
+
+**Falsification.** Each repair reverted in turn with only its lock run:
+
+```
+[looks_like_document openers back to doctype/html only] reverted -> LOCK FAILS (expected)
+    util::html::tests::a_document_may_open_with_a_bare_body_or_head_and_reddits_block_page_is_a_wall --- FAILED
+    thread 'util::html::tests::a_document_may_open_with_a_bare_body_or_head_and_reddits_block_page_is_a_wall' (32522) panicked at src/util/html/tests.rs:475:9:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7405 filtered out; finished in 0.21s
+[Reddit phrase set removed] reverted -> LOCK FAILS (expected)
+    util::html::tests::a_document_may_open_with_a_bare_body_or_head_and_reddits_block_page_is_a_wall --- FAILED
+    thread 'util::html::tests::a_document_may_open_with_a_bare_body_or_head_and_reddits_block_page_is_a_wall' (350) panicked at src/util/html/tests.rs:480:9:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7405 filtered out; finished in 0.20s
+[reddit_user 403-with-HTML rule removed] reverted -> LOCK FAILS (expected)
+    modules::reddit_user::tests::a_403_with_an_html_page_on_the_feed_is_reddits_wall_never_an_absent_account --- FAILED
+    thread 'modules::reddit_user::tests::a_403_with_an_html_page_on_the_feed_is_reddits_wall_never_an_absent_account' (650) panicked at src/modules/reddit_user/tests.rs:614:5
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7405 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
+**Residual.** The shared classifier still reads only the first 8 KiB of an
+error body; a wall whose prose sits beyond that and whose opener carries no
+signature is typed only where the endpoint's contract can be applied, as here.
+
 ### REQ-SCOPE-002 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): an unimported local database is a typed skip, never "no towers"
 
 **Verified from source.** `cell_local::process` (`src/modules/cell_local.rs`):

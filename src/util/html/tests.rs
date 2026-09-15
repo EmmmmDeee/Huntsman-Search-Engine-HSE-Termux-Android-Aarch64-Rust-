@@ -460,3 +460,23 @@ mod prop {
              </body></html>"
         ));
     }
+
+    /// Reddit's network-security block page opens with a bare `<body …>` and no
+    /// doctype (an excerpt of the 2026-09-15 capture: the real opener and the
+    /// page's only prose; its 189 KB of inline CSS/JSON elided). Before this a
+    /// 403 carrying it was neither a document (raw markup became the error
+    /// snippet) nor a wall. XML, RSS and Atom stay non-documents.
+    #[test]
+    fn a_document_may_open_with_a_bare_body_or_head_and_reddits_block_page_is_a_wall() {
+        const REDDIT_EXCERPT: &str = "<body class=theme-beta><div><style>/* elided */</style>\
+            <h1>You've been blocked by network security.</h1>\
+            <p>If you think you've been blocked by mistake, file a ticket below and we'll \
+            look into it.</p><a>File a ticket</a></div></body>";
+        assert!(looks_like_document(REDDIT_EXCERPT));
+        assert!(looks_like_document("<head><title>x</title></head><body>y</body>"));
+        assert!(!looks_like_document("<?xml version=\"1.0\"?><feed xmlns=\"http://www.w3.org/2005/Atom\"></feed>"));
+        assert!(!looks_like_document("<rss version=\"2.0\"><channel></channel></rss>"));
+        assert!(!looks_like_document("{\"error\":\"<body> quoted in a message\"}"));
+        assert!(is_challenge_page(REDDIT_EXCERPT));
+        assert!(is_challenge_document(REDDIT_EXCERPT));
+    }

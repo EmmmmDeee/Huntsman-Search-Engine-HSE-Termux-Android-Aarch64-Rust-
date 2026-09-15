@@ -116,9 +116,14 @@ pub fn table_rows(html: &str) -> Vec<Vec<String>> {
 /// True when `html` looks like an HTML document rather than a JSON/text payload.
 ///
 /// Deliberately conservative — it requires an actual document opener at the very
-/// start (`<!doctype …` or `<html …`), not merely an angle bracket somewhere.
-/// A JSON error body that happens to quote markup in a message field must keep
-/// its verbatim treatment, so "contains `<html`" would be the wrong test.
+/// start (`<!doctype …`, `<html …`, or a bare `<head …` / `<body …`, which only
+/// HTML documents open with), not merely an angle bracket somewhere. A JSON
+/// error body that happens to quote markup in a message field must keep its
+/// verbatim treatment, so "contains `<html`" would be the wrong test; XML, RSS
+/// and Atom open with `<?xml`, `<rss`, `<feed`, none of which is accepted.
+/// Reddit's network-security block page (observed 2026-09-15) opens with
+/// `<body class=theme-beta>` and no doctype at all, so a 403 carrying it was
+/// neither summarised (raw markup became the error snippet) nor classified.
 #[must_use]
 pub fn looks_like_document(html: &str) -> bool {
     // `find_ascii_ci(…) == Some(0)` rather than `to_lowercase().starts_with(…)`:
@@ -126,7 +131,9 @@ pub fn looks_like_document(html: &str) -> bool {
     // original string (see [`title`] for why that matters).
     use crate::util::str_util::find_ascii_ci;
     let head = html.trim_start();
-    find_ascii_ci(head, "<!doctype html") == Some(0) || find_ascii_ci(head, "<html") == Some(0)
+    ["<!doctype html", "<html", "<head", "<body"]
+        .iter()
+        .any(|opener| find_ascii_ci(head, opener) == Some(0))
 }
 
 /// The document's `<title>` text — decoded and whitespace-collapsed — or `None`
@@ -361,6 +368,12 @@ pub const CHALLENGE_PHRASE_SETS: &[&[&str]] = &[
     // 18.…" — ACMA's register answered the sandbox with it on 2026-09-15 (a
     // 403 under the origin's own host); no vendor string appears in the page.
     &["your request has been blocked", "reference number"],
+    // Reddit's own network-security block page (2026-09-15, a 403 on the Atom
+    // feed from GitHub's runner and on `about.json` from the sandbox):
+    // "You've been blocked by network security. If you think you've been
+    // blocked by mistake, file a ticket below…". No vendor string; the page
+    // opens with a bare `<body class=theme-beta>`.
+    &["blocked by network security"],
 ];
 
 /// True when `body` is an anti-bot challenge, CAPTCHA or WAF block page — the
