@@ -22,7 +22,7 @@ use serde::de::DeserializeOwned;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -117,57 +117,116 @@ impl Module for RipeStat {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut result = ModuleResult::new();
-        let resource = target.value.trim();
-
-        match target.kind {
-            TargetKind::IpAddress => {
-                if let Some(ni) = stat::<NetworkInfo>(ctx, "network-info", resource).await {
-                    result.entities.extend(build_asns(&ni, &ctx.scan_id));
-                }
-            }
-            TargetKind::Asn => {
-                if let Some(ao) = stat::<AsOverview>(ctx, "as-overview", resource).await {
-                    result.entities.extend(build_org(&ao, &ctx.scan_id));
-                }
-                // The prefixes the ASN actually announces — each a scannable
-                // CIDR the graph can expand into constituent host IPs, the same
-                // way `network-info`'s covering prefix is surfaced for an IP.
-                if let Some(ap) =
-                    stat::<AnnouncedPrefixes>(ctx, "announced-prefixes", resource).await
-                {
-                    result
-                        .entities
-                        .extend(build_announced_prefixes(&ap, &ctx.scan_id));
-                }
-            }
-            _ => return Ok(result),
-        }
-
-        if let Some(ac) = stat::<AbuseContact>(ctx, "abuse-contact-finder", resource).await {
-            result
-                .entities
-                .extend(build_abuse(&ac.abuse_contacts, &ctx.scan_id));
-        }
-        Ok(result)
+        lookup(&Live { ctx }, target, &ctx.scan_id).await
     }
 }
 
-/// Fetch + unwrap a RIPEstat endpoint's `data` object. `None` on any transport
-/// or parse failure — best-effort, never fatal.
-async fn stat<T: DeserializeOwned + Default>(
-    ctx: &ModuleContext,
+/// One RIPEstat endpoint fetch behind a seam, so `lookup` — the per-endpoint
+/// best-effort / all-endpoints-failed decision — runs offline in tests. The
+/// production source is [`Live`]; the `data` object comes back as JSON and is
+/// decoded per endpoint by the caller.
+#[async_trait]
+trait StatSource: Sync {
+    async fn data(&self, endpoint: &str, resource: &str) -> Result<serde_json::Value>;
+}
+
+/// Production source: `https://stat.ripe.net/data/{endpoint}/data.json`.
+struct Live<'a> {
+    ctx: &'a ModuleContext,
+}
+
+#[async_trait]
+impl StatSource for Live<'_> {
+    async fn data(&self, endpoint: &str, resource: &str) -> Result<serde_json::Value> {
+        let url = format!(
+            "https://stat.ripe.net/data/{endpoint}/data.json?resource={}",
+            urlencode(resource)
+        );
+        fetch_json::<StatResp<serde_json::Value>>(&self.ctx.http, SRC, &url)
+            .await
+            .map(|r| r.data)
+    }
+}
+
+/// Fetch + decode one endpoint's `data` object. The error (transport, non-2xx,
+/// parse, shape) is returned, not swallowed: the caller decides per endpoint
+/// whether it is fatal — see [`lookup`].
+async fn stat<T: DeserializeOwned>(
+    source: &dyn StatSource,
     endpoint: &str,
     resource: &str,
-) -> Option<T> {
-    let url = format!(
-        "https://stat.ripe.net/data/{endpoint}/data.json?resource={}",
-        urlencode(resource)
-    );
-    fetch_json::<StatResp<T>>(&ctx.http, SRC, &url)
+) -> Result<T> {
+    let value = source
+        .data(endpoint, resource)
         .await
-        .ok()
-        .map(|r| r.data)
+        .map_err(|e| Error::module(SRC, format!("RIPEstat {endpoint} for {resource}: {e}")))?;
+    serde_json::from_value(value).map_err(|e| {
+        Error::module(
+            SRC,
+            format!("RIPEstat {endpoint} for {resource}: unexpected data shape: {e}"),
+        )
+    })
+}
+
+/// The whole lookup over an injected [`StatSource`]. Each endpoint is
+/// best-effort on its own — one dead endpoint must not discard what the
+/// others returned — but an answer built from NO endpoint is not an answer:
+/// with every sub-fetch failed, `or_hard_failure` turns the empty result into
+/// the first failure instead of the clean "no network info / no abuse
+/// contact" negative it used to read as (`docs/PROVIDER_SWEEP_BACKLOG.md`
+/// #31).
+async fn lookup(source: &dyn StatSource, target: &Target, scan_id: &str) -> Result<ModuleResult> {
+    let mut result = ModuleResult::new();
+    let resource = target.value.trim();
+    let mut hard_failure: Option<Error> = None;
+    let mut note = |r: Result<()>| {
+        if let Err(e) = r
+            && hard_failure.is_none()
+        {
+            hard_failure = Some(e);
+        }
+    };
+
+    match target.kind {
+        TargetKind::IpAddress => {
+            note(
+                stat::<NetworkInfo>(source, "network-info", resource)
+                    .await
+                    .map(|ni| result.entities.extend(build_asns(&ni, scan_id))),
+            );
+        }
+        TargetKind::Asn => {
+            note(
+                stat::<AsOverview>(source, "as-overview", resource)
+                    .await
+                    .map(|ao| result.entities.extend(build_org(&ao, scan_id))),
+            );
+            // The prefixes the ASN actually announces — each a scannable
+            // CIDR the graph can expand into constituent host IPs, the same
+            // way `network-info`'s covering prefix is surfaced for an IP.
+            note(
+                stat::<AnnouncedPrefixes>(source, "announced-prefixes", resource)
+                    .await
+                    .map(|ap| {
+                        result
+                            .entities
+                            .extend(build_announced_prefixes(&ap, scan_id));
+                    }),
+            );
+        }
+        _ => return Ok(result),
+    }
+
+    note(
+        stat::<AbuseContact>(source, "abuse-contact-finder", resource)
+            .await
+            .map(|ac| {
+                result
+                    .entities
+                    .extend(build_abuse(&ac.abuse_contacts, scan_id));
+            }),
+    );
+    result.or_hard_failure(hard_failure)
 }
 
 /// ASN entities (`AS<n>`) + covering `Cidr` entity, from `network-info`.
