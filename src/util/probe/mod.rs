@@ -83,22 +83,53 @@ pub enum ProbeResult {
 /// [`ProbeResult::Indiscriminate`]).
 pub fn control_handle() -> &'static str {
     static HANDLE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HANDLE.get_or_init(|| nonce_handle(0))
+}
+
+/// A second handle nobody holds, drawn once per process and never equal to
+/// [`control_handle`]: the target the capability sweep's known-negative
+/// controls probe a module with. It must differ from the probes' own control
+/// handle — a presence probe judges every presence against
+/// [`control_handle`], so a target equal to it would be judged indiscriminate
+/// by construction and the control would prove nothing.
+pub fn sweep_control_handle() -> &'static str {
+    static HANDLE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     HANDLE.get_or_init(|| {
-        use std::hash::{BuildHasher, Hasher};
-        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
-        hasher.write_u32(std::process::id());
-        let mut n = hasher.finish();
-        const LETTERS: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
-        const ALNUM: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
-        let mut handle = String::with_capacity(12);
-        handle.push(LETTERS[(n % 26) as usize] as char);
-        n /= 26;
-        for _ in 0..11 {
-            handle.push(ALNUM[(n % 36) as usize] as char);
-            n /= 36;
+        let mut handle = nonce_handle(1);
+        if handle == control_handle() {
+            // Distinct by construction, whatever the hasher keys: rotate the
+            // opening letter.
+            let first = handle.remove(0);
+            let next = if first == 'z' {
+                'a'
+            } else {
+                (first as u8 + 1) as char
+            };
+            handle.insert(0, next);
         }
         handle
     })
+}
+
+/// Twelve lowercase letters and digits from the process's random hasher keys,
+/// the process id and `salt`, opening with a letter so every site's handle
+/// rule accepts it.
+fn nonce_handle(salt: u32) -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u32(std::process::id());
+    hasher.write_u32(salt);
+    let mut n = hasher.finish();
+    const LETTERS: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
+    const ALNUM: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    let mut handle = String::with_capacity(12);
+    handle.push(LETTERS[(n % 26) as usize] as char);
+    n /= 26;
+    for _ in 0..11 {
+        handle.push(ALNUM[(n % 36) as usize] as char);
+        n /= 36;
+    }
+    handle
 }
 
 /// A site's answer for the target, judged against its answer for the control

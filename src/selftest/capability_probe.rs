@@ -489,6 +489,22 @@ pub(crate) async fn probe_with_policy(
         return None;
     }
     let (kind, value) = probe_target(m)?;
+    Some(probe_target_with_policy(m, http, kind, value, attempts, pause).await)
+}
+
+/// Probe `m` with an explicit `(kind, value)` under an explicit retry policy —
+/// the one probe every path shares: the fleet sweep and `probe_module` hand
+/// it the module's sample or canary target, the known-negative controls a
+/// target nobody holds. Bounded by construction — exactly `attempts` calls at
+/// most, each under the module's own timeout budget.
+pub(crate) async fn probe_target_with_policy(
+    m: &dyn Module,
+    http: &reqwest::Client,
+    kind: TargetKind,
+    value: &'static str,
+    attempts: usize,
+    pause: Duration,
+) -> ProbeReport {
     let target = Target::new(kind, value);
     let ctx = probe_ctx(http);
     let budget = Duration::from_millis(m.max_timeout_ms());
@@ -513,12 +529,12 @@ pub(crate) async fn probe_with_policy(
         tokio::time::sleep(pause).await;
         outcome = probe_once(m, &target, &ctx, budget, name).await;
     }
-    Some(ProbeReport {
+    ProbeReport {
         module: name,
         kind,
         value,
         outcome,
-    })
+    }
 }
 
 /// One bounded attempt: run `process` under the module's own timeout budget
@@ -530,6 +546,52 @@ async fn probe_once(
     budget: Duration,
     name: &'static str,
 ) -> ProbeOutcome {
+    classify_run(run_once(m, target, ctx, budget, name).await)
+}
+
+/// What one bounded attempt came back with, before classification.
+enum RunOutcome {
+    /// `process` returned.
+    Answered(crate::core::error::Result<crate::core::module::ModuleResult>),
+    /// The module's own budget ran out.
+    TimedOut,
+    /// `process` panicked; the payload as text.
+    Panicked(String),
+}
+
+/// A `RunOutcome` as a [`ProbeOutcome`].
+fn classify_run(run: RunOutcome) -> ProbeOutcome {
+    match run {
+        RunOutcome::Panicked(message) => ProbeOutcome::Panicked { message },
+        RunOutcome::TimedOut => ProbeOutcome::TimedOut,
+        RunOutcome::Answered(Ok(r)) if r.entities.is_empty() => ProbeOutcome::Empty,
+        RunOutcome::Answered(Ok(r)) => ProbeOutcome::Alive {
+            found: r.entities.len(),
+        },
+        RunOutcome::Answered(Err(crate::core::error::Error::RateLimited(reason))) => {
+            ProbeOutcome::RateLimited { reason }
+        }
+        RunOutcome::Answered(Err(crate::core::error::Error::BotChallenge(reason))) => {
+            ProbeOutcome::Blocked { reason }
+        }
+        RunOutcome::Answered(Err(crate::core::error::Error::Skipped { class, reason })) => {
+            ProbeOutcome::Skipped { class, reason }
+        }
+        RunOutcome::Answered(Err(e)) => ProbeOutcome::Unreachable {
+            reason: e.to_string(),
+        },
+    }
+}
+
+/// One bounded attempt, unclassified: run `process` under the module's own
+/// timeout budget with its panic contained.
+async fn run_once(
+    m: &dyn Module,
+    target: &Target,
+    ctx: &ModuleContext,
+    budget: Duration,
+    name: &'static str,
+) -> RunOutcome {
     use futures::FutureExt;
 
     // A module's parser panicking on a hostile/drifted live response must be
@@ -548,27 +610,12 @@ async fn probe_once(
             Err(payload) => {
                 let message = crate::core::engine::panic_payload_to_string(&payload);
                 tracing::warn!(module = name, %message, "capability probe: module panic contained");
-                return ProbeOutcome::Panicked { message };
+                return RunOutcome::Panicked(message);
             }
         };
     match timeout_result {
-        Ok(Ok(r)) if r.entities.is_empty() => ProbeOutcome::Empty,
-        Ok(Ok(r)) => ProbeOutcome::Alive {
-            found: r.entities.len(),
-        },
-        Ok(Err(crate::core::error::Error::RateLimited(reason))) => {
-            ProbeOutcome::RateLimited { reason }
-        }
-        Ok(Err(crate::core::error::Error::BotChallenge(reason))) => {
-            ProbeOutcome::Blocked { reason }
-        }
-        Ok(Err(crate::core::error::Error::Skipped { class, reason })) => {
-            ProbeOutcome::Skipped { class, reason }
-        }
-        Ok(Err(e)) => ProbeOutcome::Unreachable {
-            reason: e.to_string(),
-        },
-        Err(_) => ProbeOutcome::TimedOut,
+        Ok(answer) => RunOutcome::Answered(answer),
+        Err(_) => RunOutcome::TimedOut,
     }
 }
 
@@ -606,6 +653,146 @@ pub async fn probe_keyless_fleet(concurrency: usize) -> Vec<ProbeReport> {
     }
     reports.sort_by(|a, b| a.module.cmp(b.module));
     reports
+}
+
+// ── Known-negative controls ────────────────────────────────────────────────
+//
+// A canary proves a parser yields for a target its provider holds; it says
+// nothing about what the parser yields for a target nobody holds. Observed
+// 2026-09-15 from the project's sandbox (REQ-PROBE-001): three presence probes
+// minted profiles — two of them body-"verified" — for a twelve-character
+// handle no platform had ever seen, and every username scan had carried those
+// fabrications. A known-negative control is the sweep's other half: the same
+// modules probed with a handle nobody holds, where the only honest yield is
+// nothing.
+
+/// The control value for a target kind — a target nobody holds — or `None`
+/// for a kind the sweep has no control for. A Username's control is the
+/// process's second handle nobody holds
+/// ([`crate::util::probe::sweep_control_handle`]), distinct from the handle the
+/// presence probes judge their own presences against.
+fn control_value(kind: TargetKind) -> Option<&'static str> {
+    match kind {
+        TargetKind::Username => Some(crate::util::probe::sweep_control_handle()),
+        _ => None,
+    }
+}
+
+/// The `(kind, value)` this module's known-negative control probes: the first
+/// kind it [`consumes`](Module::consumes) that has a [`control_value`] **and**
+/// that the module [`accepts`](Module::accepts) with that value. `None` for a
+/// key-gated or paid module, a passive one, or one consuming no controllable
+/// kind — the module then has no control, which the sweep says in its count,
+/// never a passing one.
+pub fn control_target(m: &dyn Module) -> Option<(TargetKind, &'static str)> {
+    if m.cost() != ModuleCost::Free || m.is_passive() {
+        return None;
+    }
+    m.consumes().into_iter().find_map(|k| {
+        let v = control_value(k)?;
+        m.accepts(&Target::new(k, v)).then_some((k, v))
+    })
+}
+
+/// A known-negative control's reading: the probe report, and — when the
+/// module yielded — what it minted for the target nobody holds, so a
+/// fabrication names the entities the parser made up (a red run is
+/// triageable from its log; the engines' answers vary run to run, so the
+/// entities are the only record of what was minted).
+#[derive(Debug, Clone)]
+pub struct ControlReport {
+    /// The probe's reading.
+    pub report: ProbeReport,
+    /// `kind value` for each entity minted, in the module's order, at most
+    /// [`MINTED_NAMED`] of them — empty unless the outcome is `Alive`.
+    pub minted: Vec<String>,
+}
+
+/// How many minted entities a control names.
+pub const MINTED_NAMED: usize = 8;
+
+/// `kind value` for each entity of an answer, at most [`MINTED_NAMED`].
+fn minted_names(answer: &crate::core::module::ModuleResult) -> Vec<String> {
+    answer
+        .entities
+        .iter()
+        .take(MINTED_NAMED)
+        .map(|e| format!("{} {}", e.kind, e.value))
+        .collect()
+}
+
+/// Probe every module that has a known-negative control with it, `concurrency`
+/// at a time — one attempt each: a control's transport failure is
+/// uninformative and tolerated, never retried — and return one
+/// [`ControlReport`] per controlled module, sorted by name. The reports are
+/// the controls' own: never a canary reading, never drift, never a dead
+/// canary — [`fabrications`] is their one verdict.
+pub async fn probe_negative_controls(concurrency: usize) -> Vec<ControlReport> {
+    use std::sync::Arc;
+    use tokio::{sync::Semaphore, task::JoinSet};
+
+    let http = build_client();
+    let sem = Arc::new(Semaphore::new(concurrency.max(1)));
+    let mut set: JoinSet<Option<ControlReport>> = JoinSet::new();
+    for m in crate::modules::registry() {
+        let http = http.clone();
+        let sem = Arc::clone(&sem);
+        set.spawn(async move {
+            let _permit = sem.acquire_owned().await.ok()?;
+            let (kind, value) = control_target(m.as_ref())?;
+            Some(probe_control(m.as_ref(), &http, kind, value).await)
+        });
+    }
+    let mut reports = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        if let Ok(Some(report)) = joined {
+            reports.push(report);
+        }
+    }
+    reports.sort_by(|a, b| a.report.module.cmp(b.report.module));
+    reports
+}
+
+/// One control attempt of `m` with `(kind, value)`: the same bounded run
+/// every probe makes, classified the same way, plus the names of what it
+/// minted.
+pub(crate) async fn probe_control(
+    m: &dyn Module,
+    http: &reqwest::Client,
+    kind: TargetKind,
+    value: &'static str,
+) -> ControlReport {
+    let target = Target::new(kind, value);
+    let ctx = probe_ctx(http);
+    let budget = Duration::from_millis(m.max_timeout_ms());
+    let name = m.name();
+    let run = run_once(m, &target, &ctx, budget, name).await;
+    let minted = match &run {
+        RunOutcome::Answered(Ok(answer)) => minted_names(answer),
+        _ => Vec::new(),
+    };
+    ControlReport {
+        report: ProbeReport {
+            module: name,
+            kind,
+            value,
+            outcome: classify_run(run),
+        },
+        minted,
+    }
+}
+
+/// The controls that yielded: a module that minted entities for a target
+/// nobody holds — fabrication, the false-evidence class the sweep exists to
+/// catch, and the one verdict a control carries. `Empty` is the honest
+/// answer; a throttle, a refusal, a skip or a transport failure is no reading
+/// of the parser at all and is reported, never counted either way.
+#[must_use]
+pub fn fabrications(controls: &[ControlReport]) -> Vec<&ControlReport> {
+    controls
+        .iter()
+        .filter(|c| matches!(c.report.outcome, ProbeOutcome::Alive { .. }))
+        .collect()
 }
 
 /// `~/.huntsman/capability_drift.json` — module name → unix timestamp of the
@@ -1818,6 +2005,187 @@ mod tests {
             unreadable[0].verdict,
             DeadVerdict::Provisional { since: later + 2 },
             "a memory that cannot be read makes every dead reading a first reading"
+        );
+    }
+
+    // ── Known-negative controls ────────────────────────────────────────────
+
+    #[test]
+    fn every_username_module_has_a_control_with_the_sweeps_handle_and_no_other_module_does() {
+        let handle = crate::util::probe::sweep_control_handle();
+        assert_ne!(
+            handle,
+            crate::util::probe::control_handle(),
+            "the sweep's target must not be the handle the presence probes judge against"
+        );
+        let mut controlled = 0usize;
+        for m in crate::modules::registry() {
+            let m = m.as_ref();
+            let expected = m.cost() == ModuleCost::Free
+                && !m.is_passive()
+                && m.consumes().contains(&TargetKind::Username)
+                && m.accepts(&Target::new(TargetKind::Username, handle));
+            let control = control_target(m);
+            assert_eq!(
+                control.is_some(),
+                expected,
+                "{}: a keyless network module that accepts a Username has a control, no other \
+                 module does",
+                m.name()
+            );
+            if let Some((kind, value)) = control {
+                assert_eq!(kind, TargetKind::Username);
+                assert_eq!(value, handle);
+                controlled += 1;
+            }
+        }
+        assert!(
+            controlled >= 20,
+            "the username family is at least twenty modules; {controlled} controlled"
+        );
+    }
+
+    #[test]
+    fn a_control_that_yields_is_a_fabrication_and_any_other_outcome_is_not() {
+        let control = |module, outcome| ProbeReport {
+            module,
+            kind: TargetKind::Username,
+            value: "nobodyholds1",
+            outcome,
+        };
+        let controls = vec![
+            control("github_user", ProbeOutcome::Alive { found: 2 }),
+            control("gitlab_user", ProbeOutcome::Empty),
+            control(
+                "reddit_user",
+                ProbeOutcome::RateLimited {
+                    reason: "429".into(),
+                },
+            ),
+            control(
+                "steam_profile",
+                ProbeOutcome::Blocked {
+                    reason: "wall".into(),
+                },
+            ),
+            control(
+                "devto",
+                ProbeOutcome::Unreachable {
+                    reason: "dns".into(),
+                },
+            ),
+            control("lobsters", ProbeOutcome::TimedOut),
+            control(
+                "hacker_news",
+                ProbeOutcome::Skipped {
+                    class: crate::core::event::SkipClass::NotApplicable,
+                    reason: "declined".into(),
+                },
+            ),
+            control(
+                "pypi_user",
+                ProbeOutcome::Panicked {
+                    message: "boom".into(),
+                },
+            ),
+        ];
+        let controls: Vec<ControlReport> = controls
+            .into_iter()
+            .map(|report| ControlReport {
+                report,
+                minted: Vec::new(),
+            })
+            .collect();
+        let fabricated: Vec<&str> = fabrications(&controls)
+            .iter()
+            .map(|c| c.report.module)
+            .collect();
+        assert_eq!(
+            fabricated,
+            vec!["github_user"],
+            "only a control that yielded entities is a fabrication"
+        );
+    }
+
+    /// A module that answers any Username with one entity and records the
+    /// handle it was asked about.
+    struct Echo {
+        asked: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Module for Echo {
+        fn name(&self) -> &'static str {
+            "echo_probe_fixture"
+        }
+        fn priority(&self) -> u8 {
+            50
+        }
+        fn consumes(&self) -> Vec<TargetKind> {
+            vec![TargetKind::Username]
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Username)
+        }
+        async fn process(
+            &self,
+            t: &Target,
+            _ctx: &ModuleContext,
+        ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+            self.asked
+                .lock()
+                .expect("should succeed")
+                .push(t.value.clone());
+            let mut r = crate::core::module::ModuleResult::new();
+            r.push(crate::core::entity::Entity::new(
+                crate::core::entity::EntityKind::Username,
+                &t.value,
+                0.5,
+                "probe",
+            ));
+            Ok(r)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_control_probes_the_module_with_the_handle_nobody_holds_not_its_sample() {
+        let http = reqwest::Client::new();
+        let m = Echo {
+            asked: std::sync::Mutex::new(Vec::new()),
+        };
+        let (kind, value) = control_target(&m).expect("a Username module has a control");
+        let control = probe_control(&m, &http, kind, value).await;
+        assert_eq!(
+            control.report.value,
+            crate::util::probe::sweep_control_handle()
+        );
+        assert!(
+            matches!(control.report.outcome, ProbeOutcome::Alive { found: 1 }),
+            "{:?}",
+            control.report.outcome
+        );
+        assert_eq!(
+            control.minted,
+            vec![format!(
+                "username {}",
+                crate::util::probe::sweep_control_handle()
+            )],
+            "a fabrication names what was minted"
+        );
+        assert_eq!(fabrications(std::slice::from_ref(&control)).len(), 1);
+        let control = control.report;
+
+        // The positive probe of the same module asks about its sample, never
+        // the control handle: the two paths are different questions.
+        let positive = probe_with_policy(&m, &http, 1, Duration::ZERO)
+            .await
+            .expect("probeable");
+        assert_ne!(positive.value, control.value);
+        let asked = m.asked.lock().expect("should succeed").clone();
+        assert_eq!(
+            asked,
+            vec![control.value.to_string(), positive.value.to_string()],
+            "the module was asked the control handle, then its sample"
         );
     }
 }

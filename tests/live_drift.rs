@@ -41,9 +41,14 @@
 //! and a sweep that reached no provider at all fails as an offline vantage,
 //! never as dead providers. A **panicked** outcome always **fails**, canary or
 //! not — unlike `empty`, there is no legitimate reason a live response should
-//! crash the parser. That keeps the scheduled
+//! crash the parser. Every keyless module that accepts a Username is also
+//! probed with a handle nobody holds (`capability_probe::probe_negative_controls`,
+//! the sweep's **known-negative controls**): the only honest yield is nothing,
+//! and a module that mints entities for it is a **fabrication**, which
+//! **fails** the run like drift does. That keeps the scheduled
 //! `.github/workflows/live-drift.yml` run's contract intact — a red run is an
-//! actionable drift or a confirmed dead canary, never a flaky endpoint.
+//! actionable drift, a confirmed dead canary or a fabrication, never a flaky
+//! endpoint.
 //!
 //! The tests are `#[ignore]`d so the hermetic default suite (`cargo test --all`,
 //! what PR CI runs) never touches the network. Run the live sweep with:
@@ -220,9 +225,69 @@ async fn fleet_capability_drift() {
                 .join("\n  ")
         )
     };
+    // Known-negative controls (REQ-CANARY-002): the same parsers asked about
+    // a handle nobody holds. A canary proves a parser yields for a target its
+    // provider holds; only a control can show it yields nothing for one it
+    // does not — the false-evidence class REQ-PROBE-001 found in three
+    // presence probes. Never fed to the dead-canary memory or the drift
+    // store: a control is not a canary reading.
+    let controls = capability_probe::probe_negative_controls(8).await;
+    let nobody = controls.first().map_or("(none)", |c| c.report.value);
+    println!(
+        "\nknown-negative controls — every Username module asked about `{nobody}`, a handle \
+         nobody holds:"
+    );
+    let mut control_empty = 0usize;
+    let mut control_other = 0usize;
+    for c in &controls {
+        let r = &c.report;
+        match &r.outcome {
+            ProbeOutcome::Empty => {
+                control_empty += 1;
+                println!("  empty        {:<22}", r.module);
+            }
+            ProbeOutcome::Alive { found } => {
+                println!(
+                    "  FABRICATED   {:<22} {found} entities for a handle nobody holds: {}",
+                    r.module,
+                    c.minted.join("; ")
+                );
+            }
+            other => {
+                control_other += 1;
+                println!(
+                    "  {:<12} {:<22} (no reading of the parser)",
+                    other.label(),
+                    r.module
+                );
+            }
+        }
+    }
+    let fabricated = capability_probe::fabrications(&controls);
+    println!(
+        "controls: {} probed — {control_empty} empty, {} fabricated, {control_other} without a \
+         reading",
+        controls.len(),
+        fabricated.len()
+    );
+    let fabrication_msg = if fabricated.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "FABRICATION: {} module(s) minted entities for `{nobody}`, a handle nobody holds — \
+             false evidence on every scan of that kind until the parser is repaired:\n  {}\n",
+            fabricated.len(),
+            fabricated
+                .iter()
+                .map(|c| format!("{} — {}", c.report.module, c.minted.join("; ")))
+                .collect::<Vec<_>>()
+                .join("\n  ")
+        )
+    };
+
     assert!(
-        drifted.is_empty() && confirmed.is_empty(),
-        "{drift_msg}{dead_msg}"
+        drifted.is_empty() && confirmed.is_empty() && fabricated.is_empty(),
+        "{drift_msg}{dead_msg}{fabrication_msg}"
     );
 }
 

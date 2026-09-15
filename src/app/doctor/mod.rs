@@ -846,6 +846,35 @@ async fn print_live_capability_report() {
             println!("      {}", d.describe());
         }
     }
+    // Known-negative controls: every Username module asked about a handle
+    // nobody holds. A yield here is fabrication — false evidence on every
+    // username scan — and is called out as such; the controls are never a
+    // canary reading, so they reach neither the drift store nor the
+    // dead-canary memory.
+    let controls = capability_probe::probe_negative_controls(8).await;
+    let fabricated = capability_probe::fabrications(&controls);
+    let control_empty = controls
+        .iter()
+        .filter(|c| matches!(c.report.outcome, ProbeOutcome::Empty))
+        .count();
+    if let Some(nobody) = controls.first().map(|c| c.report.value) {
+        println!(
+            "  controls: {} module(s) asked about `{nobody}`, a handle nobody holds — {} empty, {} \
+             fabricated, {} without a reading",
+            controls.len(),
+            control_empty,
+            fabricated.len(),
+            controls.len() - control_empty - fabricated.len()
+        );
+    }
+    for c in &fabricated {
+        println!(
+            "  ⚠ FABRICATION {:<22} minted for a handle nobody holds — false evidence on every \
+             username scan until the parser is repaired: {}",
+            c.report.module,
+            c.minted.join("; ")
+        );
+    }
     // Persist so this finding survives past this one printout — the next
     // (offline, free) `hse doctor` run can surface it without a live re-probe.
     capability_probe::record_confirmed_drift(&reports);

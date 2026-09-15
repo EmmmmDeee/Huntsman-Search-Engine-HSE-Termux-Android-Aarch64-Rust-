@@ -262,3 +262,14 @@ fn an_indiscriminate_site_is_neither_an_answer_nor_a_failure_for_the_verdict() {
     assert!(!inconclusive_after_control(1, 4, 3, 8));
     assert!(!inconclusive_after_control(0, 0, 0, 0));
 }
+
+#[test]
+fn the_sweeps_control_handle_is_a_second_handle_nobody_holds_distinct_from_the_probes() {
+    let probes = control_handle();
+    let sweep = sweep_control_handle();
+    assert_ne!(sweep, probes, "a target equal to the probes' handle would be judged indiscriminate by construction");
+    assert_eq!(sweep.len(), 12);
+    assert!(sweep.as_bytes()[0].is_ascii_lowercase(), "{sweep}");
+    assert!(sweep.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()), "{sweep}");
+    assert_eq!(sweep, sweep_control_handle(), "drawn once per process");
+}

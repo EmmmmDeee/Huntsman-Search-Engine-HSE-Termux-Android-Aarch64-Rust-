@@ -4108,6 +4108,82 @@ the next step if a 200 wall is observed on one. The remaining
 `ip_reputation`) read JSON or crawl content and mint no negative claim from
 an empty parse.
 
+### REQ-CANARY-002 (**new, Pass 31 — MECHANISM, then OBSERVED live from the sandbox on its first run, FALSIFIED**): every Username module is asked about a handle nobody holds
+
+**Lead.** CANARY POLICY: "at least one stable known-positive input; one
+known-negative input where practical". The sweep asserted known-positives
+only (REQ-CANARY-001, three batches); the null — what a parser yields for a
+target nobody holds — had been tested by hand from the sandbox twice
+(REQ-PROBE-001, the stop revision (4)) and never on the production vantage,
+never mechanically, never weekly. A canary proves a parser yields for a
+target its provider holds; it says nothing about fabrication, the
+false-evidence class REQ-PROBE-001 found in three presence probes.
+
+**Mechanism (`selftest::capability_probe`).** `probe_target_with_policy` is
+the one probe every path shares — the fleet sweep hands it the sample or
+canary target, the controls a target nobody holds. `control_target(m)`
+gives every keyless network module that consumes and accepts a Username the
+process's second handle nobody holds, `util::probe::sweep_control_handle()`,
+drawn once per process and distinct by construction from
+`control_handle()`, which the presence probes judge their own presences
+against (a target equal to it would be judged indiscriminate by
+construction, and the control would prove nothing).
+`probe_negative_controls` probes them, one attempt each; `fabrications` is
+their one verdict: a control that yielded entities. The controls are never
+a canary reading — never drift, never a dead canary, never in the memory.
+`tests/live_drift.rs` prints the control table and fails on a fabrication
+as on drift; `hse doctor --live` prints the controls' summary and names a
+fabricating module.
+
+**Locks.**
+`every_username_module_has_a_control_with_the_sweeps_handle_and_no_other_module_does`
+(registry shape: exactly the keyless network Username modules, at least
+twenty, the sweep's handle, never the probes'),
+`a_control_that_yields_is_a_fabrication_and_any_other_outcome_is_not`
+(pure), `a_control_probes_the_module_with_the_handle_nobody_holds_not_its_sample`
+(a recording fixture module: the control path asks the control handle, the
+positive path the sample),
+`util::probe::tests::the_sweeps_control_handle_is_a_second_handle_nobody_holds_distinct_from_the_probes`.
+
+**Falsification (`cycle_aa_falsify.py`, 23:49–00:0x UTC; each mutation runs
+only its lock with `--exact`, the source restored and sha-asserted).** The
+verdict reverted (a control that yielded is not a fabrication) → the pure
+lock fails; the distinct nonce reverted (the control probes the probes' own
+handle) → the registry lock fails; the explicit target reverted (the shared
+probe asks the sample whatever it was handed) → the fixture lock fails; the
+second handle reverted with its distinctness guard removed → the util lock
+fails (the first attempt at that mutation left the guard in place, which
+rotated the handle's opening letter and kept the lock green — the guard
+doing its job; the mutation was widened). Four of four.
+
+**Observation (this sandbox, the first control sweep, 23:42–23:49 UTC, the
+handle `gd618sephcjw`).** 35 Username modules controlled: 27 empty, 6
+without a reading (the sandbox's refusals: `github_user` throttled,
+`gaming_profile` / `reddit_user` / `stackoverflow_user` / `streaming_probe`
+unreachable, `mastodon_user` timed out), **2 fabricated**: `username_search`
+minted, beyond the seed, `https://namemc.com/profile/gd618sephcjw` and
+`https://odysee.com/@gd618sephcjw` as `weak-detection` profiles at 0.74, and
+`search_engines` minted an `Email` `fidelity@service.healthaccountservices.com`
+(0.55, `email_domain_unverified`) and a `Username` `openai` (0.3) from the
+148 results Bing and Dogpile returned for 23 queries about a string no page
+contains. Direct observation of the two sites: Odysee answers `200` for any
+handle (an SPA shell, 11,347 bytes for two different nonces), NameMC answers
+Cloudflare's `403 Just a moment...` — a status-only presence whose control
+read failed had stood as a profile (REQ-PROBE-001's accepted residual, now
+measured); a second scan of the same handle minted neither, the control read
+having succeeded that time — the fabrication follows the control's
+availability, not the site's answer. Both are repaired next (REQ-PROBE-002,
+REQ-SEARCH-002), and the control sweep is the lock that keeps them repaired
+on the production vantage.
+
+**Residual.** Controls exist for the Username kind only; a Domain, Email or
+FullName control needs a value nobody holds that the providers treat as
+well-formed (a reserved TLD is refused by the CLI's own validation; a nonce
+`.com` may be a parked domain) — a later batch on the same mechanism. A
+control's transport failure is one attempt and tolerated: on a vantage that
+refuses the sweep (this sandbox's six), the control says nothing, which the
+count says.
+
 ### REQ-CI-003 (**new, Pass 31 — OBSERVED once in a full-suite run, VERIFIED FROM SOURCE, FIXED in the harness, FALSIFIED**): the key-chaining smoke tests share one process-global pool and ran unserialised
 
 **Lead.** The stop revision (4) recorded
