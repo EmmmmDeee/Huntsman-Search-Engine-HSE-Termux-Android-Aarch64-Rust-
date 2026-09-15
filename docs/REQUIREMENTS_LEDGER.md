@@ -5496,8 +5496,27 @@ so a dead reading would say nothing about the module; `subdomain_takeover`
 `asic_persons` (a real person's identifier as a checked-in sample);
 `greynoise` / `ip_reputation` (scanner addresses and Tor exits move);
 `ransomlook` (a real victim's domain); `beacondb` (a real BSSID). Remote: the
-live-drift dispatch on the pushed head (three new `[canary]` rows expected
-`alive` with those counts).
+22:01 sweep on `8a35ab2` (run 35028485965; the first dispatch, run
+35028370380, was cancelled by the workflow's concurrency group when a second
+was queued after a worker restart) reads `alive sanctions_ofac 1 found
+[canary]`, `alive data_gov_au 11 found [canary]`, `alive sitemap 8 found
+[canary]` — the three predicted rows with the three predicted counts; 116
+probed, 92 alive, 14 empty, 3 unreachable, 1 timed-out (`wayback`), 1
+rate-limited (`reddit_user`, 429), 4 blocked, 1 skipped, 0 panicked;
+`chronicling_america` alive with 11 again (the 20:33 dead reading stays a
+single one) and `github_user` alive with 9 (the runner address's anonymous
+quota had refilled). Red on two dead canaries: the by-design `wifidb`, and —
+for the first time — `crtsh`, `HTTP 502 Bad Gateway` on all three attempts.
+From this sandbox four minutes later (22:05–22:06 UTC)
+`https://crt.sh/?q=python.org&output=json` answered `200` three times in a
+row: an outage of minutes, read by a three-attempt, six-second window as
+"down for the whole run, or the endpoint is retired". Under the retirement
+criterion that is one reading of two, and it is the second single dead
+reading of a live provider today (`chronicling_america` at 20:33 was the
+first): the dead-canary verdict has no memory across sweeps — the runner
+residual the stop revision (4) named, and now the highest-return candidate
+(a dead reading confirmed across sweeps at least a day apart, never by one
+run).
 
 ### REQ-SCOPE-001 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): an out-of-jurisdiction target is a typed skip, never a clean negative
 
