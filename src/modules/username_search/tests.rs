@@ -159,6 +159,7 @@ use crate::core::confidence;
                     url: "https://example.com/alice".to_string(),
                     confidence: 0.92,
                     verified: true,
+                    controlled: false,
                 },
             ),
             (
@@ -168,6 +169,7 @@ use crate::core::confidence;
                     url: "https://example.com/alice".to_string(),
                     confidence: 0.74,
                     verified: false,
+                    controlled: false,
                 },
             ),
         ];
@@ -212,6 +214,7 @@ use crate::core::confidence;
                     url: "https://www.deviantart.com/alice".to_string(),
                     confidence: 0.74,
                     verified: false,
+                    controlled: false,
                 },
             ),
             (
@@ -221,6 +224,7 @@ use crate::core::confidence;
                     url: "https://www.deviantart.com/alice".to_string(),
                     confidence: 0.92,
                     verified: true,
+                    controlled: false,
                 },
             ),
         ];
@@ -261,6 +265,7 @@ use crate::core::confidence;
                     url: "https://example.com/alice".to_string(),
                     confidence: 0.92,
                     verified: true,
+                    controlled: false,
                 },
             ),
             (
@@ -270,6 +275,7 @@ use crate::core::confidence;
                     url: "https://example.org/alice".to_string(),
                     confidence: 0.92,
                     verified: true,
+                    controlled: false,
                 },
             ),
         ];
@@ -305,3 +311,113 @@ use crate::core::confidence;
         }
     }
 
+
+    /// The negative control on the real request path: two loopback sites, one
+    /// answering "present" for anyone (a soft 404: 200 for the target and 200
+    /// for the control handle), one answering 404 for the control handle.
+    #[tokio::test]
+    async fn a_site_present_for_the_control_handle_is_indiscriminate_and_one_that_is_not_stands()
+    {
+        use crate::util::http::test_server::{Canned, serve};
+        let page = "<!doctype html><html><body>profile</body></html>";
+        let soft = serve(vec![Canned::html(200, page), Canned::html(200, page)]).await;
+        let real = serve(vec![Canned::html(200, page), Canned::html(404, page)]).await;
+        let sites: &'static [Site] = Box::leak(
+            vec![
+                Site {
+                    name: "Soft404",
+                    url: Box::leak(format!("{soft}/u/{{}}").into_boxed_str()),
+                    method: Method::Get,
+                    detect: Detect::StatusEq(200),
+                    cat: "social",
+                },
+                Site {
+                    name: "Real",
+                    url: Box::leak(format!("{real}/u/{{}}").into_boxed_str()),
+                    method: Method::Get,
+                    detect: Detect::StatusEq(200),
+                    cat: "dev",
+                },
+            ]
+            .into_boxed_slice(),
+        );
+        let results = sweep(&reqwest::Client::new(), sites, "alice").await;
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, "Soft404");
+        assert!(
+            matches!(&results[0].2, ProbeResult::Indiscriminate { url } if url.ends_with("/u/alice")),
+            "{:?}",
+            results[0].2
+        );
+        assert_eq!(results[1].0, "Real");
+        assert!(
+            matches!(&results[1].2, ProbeResult::Found { controlled: true, url, .. } if url.ends_with("/u/alice")),
+            "{:?}",
+            results[1].2
+        );
+        // And the aggregate never mints the indiscriminate site as a profile.
+        let out = aggregate_results("alice", &results, "scan-ctl").expect("a result");
+        let urls: Vec<&str> = out
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Url)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert_eq!(urls.len(), 1, "{urls:?}");
+        assert!(urls[0].ends_with("/u/alice") && urls[0].starts_with(&real));
+    }
+
+    /// The aggregate's reading of the judgement: an indiscriminate site is
+    /// never a profile and is named in the summary; a controlled presence says
+    /// the control was absent; an uncontrolled one says so too.
+    #[test]
+    fn an_indiscriminate_site_is_never_a_profile_and_the_summary_names_it() {
+        let results: Vec<(&'static str, &'static str, ProbeResult)> = vec![
+            (
+                "Discord",
+                "messaging",
+                ProbeResult::Indiscriminate {
+                    url: "https://discord.com/users/alice".to_string(),
+                },
+            ),
+            (
+                "GitHub",
+                "dev",
+                ProbeResult::Found {
+                    url: "https://github.com/alice".to_string(),
+                    confidence: 0.92,
+                    verified: true,
+                    controlled: true,
+                },
+            ),
+            (
+                "Gitea",
+                "dev",
+                ProbeResult::Found {
+                    url: "https://gitea.com/alice".to_string(),
+                    confidence: 0.74,
+                    verified: false,
+                    controlled: false,
+                },
+            ),
+            ("Steam", "gaming", ProbeResult::NotFound),
+        ];
+        let out = aggregate_results("alice", &results, "scan-ctl-2").expect("a result");
+        let attr = |value: &str, key: &str| -> Option<String> {
+            out.entities
+                .iter()
+                .find(|e| e.value == value)
+                .and_then(|e| e.evidence.first())
+                .and_then(|ev| ev.attributes.get(key).cloned())
+        };
+        assert!(
+            out.entities.iter().all(|e| e.value != "https://discord.com/users/alice"),
+            "an indiscriminate site is never a profile"
+        );
+        assert_eq!(attr("https://github.com/alice", "control").as_deref(), Some("absent"));
+        assert_eq!(attr("https://gitea.com/alice", "control").as_deref(), Some("unavailable"));
+        assert_eq!(attr("alice", "sites_indiscriminate").as_deref(), Some("1"));
+        assert_eq!(attr("alice", "indiscriminate_platforms").as_deref(), Some("Discord"));
+        assert_eq!(attr("alice", "hits_uncontrolled").as_deref(), Some("1"));
+        assert_eq!(attr("alice", "platforms_count").as_deref(), Some("2"));
+    }

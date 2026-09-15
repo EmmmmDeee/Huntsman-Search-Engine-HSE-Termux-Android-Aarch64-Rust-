@@ -124,3 +124,141 @@ fn a_wall_served_with_the_presence_status_is_neither_present_nor_absent() {
         PageVerdict::Absent
     );
 }
+
+// ── The negative control: a presence is judged against a handle nobody holds ──
+
+fn present(url: &str) -> ProbeResult {
+    ProbeResult::Found {
+        url: url.to_string(),
+        confidence: 0.74,
+        verified: false,
+        controlled: false,
+    }
+}
+
+#[test]
+fn the_control_handle_is_a_twelve_character_handle_drawn_once_per_process() {
+    let h = control_handle();
+    assert_eq!(h.chars().count(), 12, "{h:?}");
+    assert!(h.chars().next().is_some_and(|c| c.is_ascii_lowercase()), "{h:?}");
+    assert!(
+        h.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
+        "{h:?}"
+    );
+    assert_eq!(control_handle(), h, "the same handle for the whole process");
+}
+
+/// The judgement: a presence the site also gave the control handle is
+/// indiscriminate; one the site denied the control handle stands, controlled;
+/// one whose control could not be read stands as it was; an absence or a
+/// refusal needs no control.
+#[test]
+fn a_presence_the_site_also_gives_the_control_handle_is_indiscriminate() {
+    let url = "https://example.test/u/alice";
+    assert_eq!(
+        controlled(present(url), &present("https://example.test/u/ctl")),
+        ProbeResult::Indiscriminate {
+            url: url.to_string()
+        }
+    );
+    assert_eq!(
+        controlled(
+            present(url),
+            &ProbeResult::Indiscriminate {
+                url: "https://example.test/u/ctl".to_string()
+            }
+        ),
+        ProbeResult::Indiscriminate {
+            url: url.to_string()
+        }
+    );
+    assert_eq!(
+        controlled(present(url), &ProbeResult::NotFound),
+        ProbeResult::Found {
+            url: url.to_string(),
+            confidence: 0.74,
+            verified: false,
+            controlled: true,
+        }
+    );
+    assert_eq!(
+        controlled(present(url), &ProbeResult::Error),
+        ProbeResult::Found {
+            url: url.to_string(),
+            confidence: 0.74,
+            verified: false,
+            controlled: false,
+        }
+    );
+    assert_eq!(
+        controlled(ProbeResult::NotFound, &present(url)),
+        ProbeResult::NotFound
+    );
+    assert_eq!(controlled(ProbeResult::Error, &present(url)), ProbeResult::Error);
+}
+
+/// The control wave: only presences are controlled, each site's control
+/// answer is remembered for the process, and the judgement lands on the
+/// right site.
+#[tokio::test]
+async fn the_control_wave_controls_only_presences_and_remembers_each_answer() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let probes = Arc::new(AtomicUsize::new(0));
+    // Site 1 is a soft 404 (present for everyone); site 2 discriminates; site
+    // 3 never answered for the target; site 4 denied the target.
+    let first: Vec<(&'static str, ProbeResult)> = vec![
+        ("soft404", present("https://soft404.test/u/alice")),
+        ("real", present("https://real.test/u/alice")),
+        ("blocked", ProbeResult::Error),
+        ("absent", ProbeResult::NotFound),
+    ];
+    let control = |site: &'static str| {
+        let probes = Arc::clone(&probes);
+        let url = format!("https://{site}.test/u/{}", control_handle());
+        (url, async move {
+            probes.fetch_add(1, Ordering::SeqCst);
+            if site == "soft404" {
+                present("ctl")
+            } else {
+                ProbeResult::NotFound
+            }
+        })
+    };
+    let judged = control_presences(first.clone(), control).await;
+    assert_eq!(probes.load(Ordering::SeqCst), 2, "only the two presences were controlled");
+    assert!(matches!(judged[0].1, ProbeResult::Indiscriminate { .. }), "{:?}", judged[0]);
+    assert!(
+        matches!(judged[1].1, ProbeResult::Found { controlled: true, .. }),
+        "{:?}",
+        judged[1]
+    );
+    assert_eq!(judged[2].1, ProbeResult::Error);
+    assert_eq!(judged[3].1, ProbeResult::NotFound);
+
+    // A second target in the same process: the sites' control answers are
+    // remembered, so no control probe runs again.
+    let again = control_presences(first, control).await;
+    assert_eq!(probes.load(Ordering::SeqCst), 2, "remembered answers, no new probes");
+    assert!(matches!(again[0].1, ProbeResult::Indiscriminate { .. }));
+    assert!(matches!(again[1].1, ProbeResult::Found { controlled: true, .. }));
+}
+
+/// An indiscriminate site leaves the sweep's decision capacity: the verdict
+/// is judged over the sites that can tell, and a run in which none could is
+/// inconclusive.
+#[test]
+fn an_indiscriminate_site_is_neither_an_answer_nor_a_failure_for_the_verdict() {
+    // 8 sites: 3 indiscriminate, 1 blocked, 4 absent → 1 of 5 telling sites
+    // blocked: a genuine absence. Counted as blocked, 4 of 8 would have read
+    // inconclusive.
+    assert!(!inconclusive_after_control(0, 1, 3, 8));
+    assert!(inconclusive(0, 4, 8), "the old accounting read it inconclusive");
+    // 4 of 5 telling sites blocked → inconclusive.
+    assert!(inconclusive_after_control(0, 4, 3, 8));
+    // No site could tell → inconclusive, never a clean zero.
+    assert!(inconclusive_after_control(0, 0, 8, 8));
+    // A hit is never inconclusive.
+    assert!(!inconclusive_after_control(1, 4, 3, 8));
+    assert!(!inconclusive_after_control(0, 0, 0, 0));
+}

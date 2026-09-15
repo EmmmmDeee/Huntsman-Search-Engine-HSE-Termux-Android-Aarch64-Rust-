@@ -4108,6 +4108,145 @@ the next step if a 200 wall is observed on one. The remaining
 `ip_reputation`) read JSON or crawl content and mint no negative claim from
 an empty parse.
 
+### REQ-PROBE-001 (**new, Pass 31 — MEASURED live from the sandbox, VERIFIED FROM SOURCE, FIXED at the shared layer, FALSIFIED**): a presence probe minted profiles for handles nobody holds; every presence is judged against a control handle
+
+**Observation (this sandbox, 2026-09-15 20:5x UTC, the binary built from
+`74ff835`).** Testing the null the sweep cannot: `username_search` for
+`qzv8k2r7xw1p`, a twelve-character handle nobody holds → **75 `Url`
+"profiles"** (two `verified-detection` at 0.92 — Lobste.rs and
+Yandex.Reviews — and 73 `weak-detection` at 0.74: Pinterest, TikTok,
+Discord, crates.io, Bluesky, Codeforces, Yelp, Badoo, OkCupid, …) and a
+`Username` summary "found on 75 platform(s)" tagged `strong-social-presence`,
+`dating-profile-exposed`, `messaging-identity`, `high-personal-exposure`;
+`social_probe` → 12 (four `verified-detection` at 0.92 on adult / cam
+platforms — mydirtyhobby, sextpanther, loyalfans, imlive — plus six platform
+`Domain`s); `streaming_probe` → 11 (two verified: sextpanther, loyalfans;
+nine weak: fansly, justfor.fans, fancentro, …). A second handle nobody holds,
+`m4t9w2ke7qzr` → 78 on `username_search`, **74 of the same sites** (the five
+that differ are the flaky ones). And `torvalds` → 139, of which **78 are
+among the sites present for a nonce**: the "134 platforms" every sweep
+reported for that handle were 56 % fabricated, and the 61 that survive the
+control (GitHub, GitLab, X/Twitter, Steam, Telegram, Wikipedia, Docker Hub,
+npm, RubyGems, Keybase, …) are the real accounts.
+
+**Verified from source.** 152 of the table's 354 rules are status-only
+(`H` / `G`: a `200` is a presence); a single-page-app shell, a soft 404, a
+catch-all route or a login wall served as `200` answers that for any path,
+and two body-marker rules (Lobste.rs, Yandex.Reviews) mis-fire the same way.
+REQ-SCRAPE-002 had judged the *wall* (a challenge page served as 200) and
+its residual recorded that "the `StatusEq` rules never read a body, so a 200
+… still reads as presence at the bare-status confidence tier" — the 0.74
+tier was the whole mitigation, and it still minted the profile, the
+`social-profile` tag, the exposure tags and the platform count that AU-011
+reads. Static curation cannot hold: the 74 sites are the ones whose
+not-found page is rendered client-side, and they change.
+
+**Competing explanations.** (a) *The nonce is held somewhere*: a random
+twelve-character string held on 75 platforms, 74 of them shared with a
+second random string — the second nonce refutes it. (b) *The sites were
+answering the sandbox a wall*: the wall predicate (REQ-SCRAPE-002) runs on
+the body-marker sites; the status-only sites answer `200` with their shells
+(Discord's, TikTok's, Pinterest's), not a challenge page, and the same
+sites make up the runner's `username_search 134 found` for `torvalds`
+(132 at 20:43). (c) *A curated site list would do*: 74 sites today, five
+flaky between two nonces an hour apart; a list is a snapshot of provider
+behaviour. The null must run at scan time.
+
+**Fix (the shared layer, `util::probe`, and the three probes).** Every
+presence is judged against a **control handle**: `control_handle()` — twelve
+lowercase letters and digits drawn once per process from the process's
+random hasher keys, opening with a letter — a handle no platform holds.
+`ProbeResult::Indiscriminate { url }` is the new outcome: the site answered
+"present" for the control handle too, so its rule does not tell a held
+handle from an unheld one for this client — never a profile, never an
+absence; `ProbeResult::Found` gains `controlled` (the site denied the control
+handle). `controlled(target, control)` is the judgement and
+`control_presences(first, control)` runs it as a second wave over the
+presences only — concurrent, 3 s per site, each site's control answer
+remembered for the process so a multi-target scan asks once.
+`username_search::sweep` and `streaming_probe::sweep` — their request paths
+made functions of the site table, so a loopback drives them — run the wave
+after the first; `social_probe` collects, judges, then emits through the
+pure `emit_judged`. An indiscriminate site is counted in the summary
+(`sites_indiscriminate`, `indiscriminate_platforms`) and in the M6
+inconclusive verdict (it gave no answer about the handle); a presence's
+evidence says `control: absent` or `control: unavailable`
+(`hits_uncontrolled` in the summary).
+
+**Locks.** `util::probe::tests::{the_control_handle_is_a_twelve_character_handle_drawn_once_per_process,
+a_presence_the_site_also_gives_the_control_handle_is_indiscriminate,
+the_control_wave_controls_only_presences_and_remembers_each_answer}`;
+`username_search::tests::{a_site_present_for_the_control_handle_is_indiscriminate_and_one_that_is_not_stands
+(two loopback sites through the real request path: 200/200 → indiscriminate,
+200/404 → controlled; the aggregate mints one profile),
+an_indiscriminate_site_is_never_a_profile_and_the_summary_names_it}`;
+`streaming_probe::tests::{a_site_present_for_the_control_handle_is_indiscriminate_and_one_that_is_not_stands,
+the_summary_names_the_indiscriminate_sites_and_each_hit_says_whether_it_was_controlled}`;
+`social_probe::tests::an_indiscriminate_platform_is_never_a_profile_and_the_summary_names_it`.
+
+**Falsification.** Each repair reverted with only its lock run:
+
+```
+[the judgement: a presence the site also gives the control handle stays a presence] reverted -> LOCK FAILS (expected)
+    test util::probe::tests::a_presence_the_site_also_gives_the_control_handle_is_indiscriminate ... FAILED
+    thread '…' panicked at src/util/probe/tests.rs:158:5:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7342 filtered out; finished in 0.19s
+[the wave reads the control answers but never applies them] reverted -> LOCK FAILS (expected)
+    test util::probe::tests::the_control_wave_controls_only_presences_and_remembers_each_answer ... FAILED
+    thread '…' panicked at src/util/probe/tests.rs:230:5:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7342 filtered out; finished in 0.20s
+[username_search's control never asks the site (every presence stands)] reverted -> LOCK FAILS (expected)
+    test modules::username_search::tests::a_site_present_for_the_control_handle_is_indiscriminate_and_one_that_is_not_stands ... FAILED
+    thread '…' panicked at src/modules/username_search/tests.rs:347:9:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7342 filtered out; finished in 0.21s
+[streaming_probe's control never asks the site (every presence stands)] reverted -> LOCK FAILS (expected)
+    test modules::streaming_probe::tests::a_site_present_for_the_control_handle_is_indiscriminate_and_one_that_is_not_stands ... FAILED
+    thread '…' panicked at src/modules/streaming_probe/tests.rs:198:5:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7342 filtered out; finished in 0.20s
+[social_probe mints an indiscriminate platform as a profile] reverted -> LOCK FAILS (expected)
+    test modules::social_probe::tests::an_indiscriminate_platform_is_never_a_profile_and_the_summary_names_it ... FAILED
+    thread '…' panicked at src/modules/social_probe/tests.rs:496:5:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7342 filtered out; finished in 0.20s
+ALL LOCKS SENSITIVE
+```
+
+**Live verification (the rebuilt binary, this sandbox, fresh store).**
+`username_search` for `qzv8k2r7xw1p` → **`found: 0`** (75 before), 17 s for
+the 354-site sweep and its control wave; for `torvalds` → **65 profiles**
+(139 before; 7 body-verified), `control: absent` on 62 and `unavailable` on
+3, the summary naming **77 indiscriminate sites** (TikTok, Pinterest,
+Bluesky, Signal, PyPI, Crates.io, HackerRank, CodinGame, Lobste.rs, Hashnode,
+Medium, Twitch, Discord, OkCupid, Badoo, Duolingo, Coursera, Archive.org,
+…), 17 s. `social_probe` for the nonce → 1 profile, its control
+`unavailable` (the pre-existing exposure, now visible and counted), and 11
+platforms indiscriminate (tiktok, pinterest, steam, hackernews, twitch,
+bluesky, threads, imlive, mydirtyhobby, sextpanther, loyalfans); for
+`torvalds` → 8 profiles (30 on the sweep); 32–37 s — the sequential, paced
+first wave against a 40 s envelope, raised to 60 s. `streaming_probe` for
+the nonce → no profile and the honest verdict `inconclusive: 20 of 32
+platform probes that can tell were blocked or unreachable, 11 platforms
+answer "present" for any handle — not a confirmed absence` (this sandbox is
+refused by twenty cam / fans platforms; before, the eleven fabricated
+profiles hid that); for `torvalds` → 1 profile (22 on the sweep), 5 s. A
+first cut counted an indiscriminate site as blocked in that verdict —
+`inconclusive: 20/43` — and was corrected to judge over the sites that can
+tell (`inconclusive_after_control`, locked). Gate on the tree: fmt, clippy
+`-D warnings`, CI's rustdoc lints, `cargo test --all` (7320 lib tests and
+every integration suite green; the one expectation on the reworded
+inconclusive message was updated and re-run green with the module's tests),
+doc coverage 1029 (ceiling lowered from 1030).
+
+**Residual and reversal.** A site whose control could not be read (a
+refusal, a throttle, a timeout on the second request) leaves the presence
+standing as it was, marked `control: unavailable` — the pre-existing
+exposure, now visible and counted. A site that treats a twelve-character
+alphanumeric handle as malformed and answers a `2xx` page reads
+indiscriminate and loses a real presence for this client (a `4xx` for it
+reads absent and the presence stands); none of the 61 real `torvalds`
+presences was lost to that. Reversed for any platform that starts answering
+`404` for unheld handles — the control then confirms it discriminates and
+nothing changes. Remote: the live-drift dispatch on the pushed head (recorded once read; `username_search` for `torvalds` is expected to fall from 132 toward 60, `social_probe` from 28 and `streaming_probe` from 22).
+
 ### REQ-ATTR-002 (**new, Pass 31 — OBSERVED live from the sandbox, FIXED, FALSIFIED**): a pulse author's paragraph is not a threat actor
 
 **Observation (this sandbox, 2026-09-15 20:2x UTC, the binary built from
@@ -4193,6 +4332,18 @@ stored evidence of the earlier scan, not produced by the rebuilt binary: the
 fresh-store run is the reading.) Gate on the tree: fmt, clippy `-D
 warnings`, CI's rustdoc lints, `cargo test --all` (7312 lib tests and every
 integration suite green), doc coverage held at 1030.
+
+**Remote (live-drift run 35021184849 on `74ff835`, 2026-09-15 20:41–20:43
+UTC).** 116 probed — 90 alive, 17 empty, 2 unreachable (`wifidb`, the
+by-design dead canary; `overpass`, a `504 Gateway Timeout` from the provider
+this run), 1 timed-out (`wayback`), 0 rate-limited, 5 blocked, 1 skipped,
+**0 panicked**; `empty ip_reputation (ip_address 8.8.8.8)` as on every sweep
+(the per-kind sample has no pulses, so the runner cannot exercise the
+adversary path — the sandbox reproduction and the locks are its proof);
+`alive bitbucket_user 3 found [canary]` again; `chronicling_america` back to
+`alive … 11 found [canary]`, so its 20:33 dead reading was a slow window,
+not a retirement (one reading under the criterion, now followed by an alive
+one). Red on `wifidb` alone.
 
 **Residual.** A single curated pulse (AlienVault's own) naming an actor sits
 at the single-author rung with the community's; OTX's pulse object carries
@@ -4549,6 +4700,25 @@ minted OTX's freeform `adversary` string as an `Organisation` —
 `Adversary Profile: Salt Typhoon Alignment The architectural gap` at 0.58,
 tagged `adversary` — a sentence fragment from one user-authored pulse among
 50, not a threat actor's name; repaired in this pass (REQ-ATTR-002, above).
+
+**Stop — revised (4), 2026-09-15 21:4x UTC.** The attack moved from the
+sweep's rows to the sweep's *counts*: `username_search 134 found` for one
+handle had been read as the module's health on every sweep and never tested
+against a handle nobody holds. Tested (REQ-PROBE-001, above), 78 of the 139
+"profiles" for `torvalds` were fabricated by sites that are "present" for
+anyone, `social_probe` minted four "verified" adult / cam profiles and
+`streaming_probe` eleven for a random string — the largest evidence-integrity
+defect of this pass by volume, and one no `empty` / `alive` row could show.
+The mechanism is a runtime null now (every presence judged against a control
+handle at the shared layer), so the class is prevented rather than detected.
+The same question — "what does this count read for a handle nobody holds?" —
+applies to the other aggregate counts the sweep reports (`hackertarget 501`,
+`subdomain_center 500`, `comb_search 30`, `typosquat 52`, `search_engines
+68`, `pgp 67`): each is a corpus query for a reserved sample (`example.com`,
+`test@example.com`) rather than a presence claim per site, and their
+modules' own locks (REQ-SWEEP-001/002, REQ-ATTR-001) cover the miss shapes;
+they are not re-tested here and remain the next candidates for a nonce
+control. Beyond that the previous statement stands.
 
 ### REQ-HTTP-002 (**new, Pass 31 — VERIFIED FROM SOURCE, CONSOLIDATED, FIXED, FALSIFIED**): `json_scanned` fails the way `json_decode` fails
 

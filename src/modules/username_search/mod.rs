@@ -40,8 +40,9 @@ use crate::util::http::{RequestBuilderExt, urlencode};
 // enum, per-site adapter, and the M6 zero-hit disambiguation are single-sourced
 // in `util::probe` (see `streaming_probe`, which shares the same primitives).
 use crate::util::probe::{
-    BODY_PROBE_CAP, BROWSER_ACCEPT, BROWSER_UA, PageVerdict, ProbeResult, WithSite,
-    classify_non_matching_status, classify_page, inconclusive,
+    BODY_PROBE_CAP, BROWSER_ACCEPT, BROWSER_UA, PageVerdict, ProbeResult,
+    classify_non_matching_status, classify_page, control_handle, control_presences,
+    inconclusive_after_control,
 };
 
 const SRC: &str = "username_search";
@@ -53,7 +54,7 @@ pub struct UsernameSearch;
 mod sites;
 #[cfg(test)]
 use sites::CATEGORIES;
-use sites::{Detect, Method, SITES};
+use sites::{Detect, Method, SITES, Site};
 
 #[async_trait]
 impl Module for UsernameSearch {
@@ -119,122 +120,153 @@ impl Module for UsernameSearch {
             return Ok(ModuleResult::new());
         }
 
-        let encoded = urlencode(username);
-        // Per-site timeout raised from 2.5s → 4.5s to absorb the
-        // Cloudflare / Akamai / PerimeterX "checking your browser"
-        // challenges that flag the dominant failure mode for username-
-        // enumeration tools (per social-analyzer's published rate-
-        // limit research). The outer module envelope (60s) gives ~13s
-        // of slack on top of the worst-case batch wall-time.
-        let per_site_timeout = Duration::from_millis(4_500);
-
-        let sem = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PROBES));
-        let probes = SITES.iter().map(|site| {
-            let url = site.url.replace("{}", &encoded);
-            let client = ctx.http.clone();
-            let sem = Arc::clone(&sem);
-            // Confidence + provenance the hit will carry, decided by how
-            // rigorously THIS site's rule corroborates existence (see
-            // `detection_strength`). Captured before the await so the async
-            // block doesn't need to borrow `site` past its lifetime.
-            let (hit_conf, hit_verified) = detection_strength(&site.detect);
-            async move {
-                let _permit = sem.acquire().await;
-                let req = match site.method {
-                    Method::Get => client.get(&url),
-                    Method::Head => client.head(&url),
-                };
-                // Browser-shaped UA + Accept headers — the tool-shaped
-                // default UA was being 403'd by Cloudflare-fronted
-                // platforms (~30% of SITES), masking real hits as
-                // Errors. See BROWSER_UA constant for rationale.
-                let req = req
-                    .header("User-Agent", BROWSER_UA)
-                    .header("Accept", BROWSER_ACCEPT)
-                    .header("Accept-Language", "en-US,en;q=0.9");
-                // The ENTIRE probe — request dispatch AND the body read — shares
-                // ONE `per_site_timeout` budget. Previously only `send()` was
-                // bounded here; the `read_body_capped` branches then fell back to
-                // the shared client's 30s read_timeout while still holding a
-                // semaphore permit, so a few slow-body sites could each pin one of
-                // the MAX_CONCURRENT_PROBES slots for ~34.5s and shrink coverage on
-                // exactly the flaky mobile links this module targets.
-                let probe = async {
-                    let resp = match req.send_tagged(SRC).await {
-                        Ok(r) => r,
-                        Err(_) => return ProbeResult::Error,
-                    };
-
-                    let status = resp.status().as_u16();
-                    let found = |url: String| ProbeResult::Found {
-                        url,
-                        confidence: hit_conf,
-                        verified: hit_verified,
-                    };
-                    match site.detect {
-                        Detect::StatusEq(want) if status == want => found(url),
-                        // A status that is not this site's presence code is not
-                        // automatically an absence: a 403 WAF challenge, a 429
-                        // throttle or a 5xx outage establishes nothing. See
-                        // `classify_non_matching_status` — the shared policy that
-                        // keeps a blocked sweep out of `definitive_absent`.
-                        Detect::StatusEq(_) => classify_non_matching_status(status),
-                        Detect::StatusAndBody(want, needle) => {
-                            if status != want {
-                                return classify_non_matching_status(status);
-                            }
-                            let body =
-                                match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP)
-                                    .await
-                                {
-                                    Some(t) => t,
-                                    None => return ProbeResult::Error,
-                                };
-                            scan_text_for_keys(&body);
-                            // A wall served with the presence status is
-                            // neither presence nor absence (`classify_page`).
-                            match classify_page(&body, needle, true) {
-                                PageVerdict::Present => found(url),
-                                PageVerdict::Absent => ProbeResult::NotFound,
-                                PageVerdict::Wall => ProbeResult::Error,
-                            }
-                        }
-                        Detect::StatusAndNotBody(want, needle) => {
-                            if status != want {
-                                return classify_non_matching_status(status);
-                            }
-                            let body =
-                                match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP)
-                                    .await
-                                {
-                                    Some(t) => t,
-                                    None => return ProbeResult::Error,
-                                };
-                            scan_text_for_keys(&body);
-                            // The missing profile carries the marker here, so a
-                            // wall — which carries no marker — used to read as
-                            // a verified presence. `classify_page` judges the
-                            // wall first.
-                            match classify_page(&body, needle, false) {
-                                PageVerdict::Present => found(url),
-                                PageVerdict::Absent => ProbeResult::NotFound,
-                                PageVerdict::Wall => ProbeResult::Error,
-                            }
-                        }
-                    }
-                };
-                match tokio::time::timeout(per_site_timeout, probe).await {
-                    Ok(result) => result,
-                    Err(_) => ProbeResult::Error,
-                }
-            }
-            .then_with_site(site.name, site.cat)
-        });
-
-        let results: Vec<(&'static str, &'static str, ProbeResult)> = join_all(probes).await;
-
+        let results = sweep(&ctx.http, SITES, username).await;
         aggregate_results(username, &results, &ctx.scan_id)
     }
+}
+
+/// The per-site budget of a control probe: the site already answered once
+/// within the sweep's own budget, so its second answer is expected sooner.
+const CONTROL_TIMEOUT: Duration = Duration::from_millis(3_000);
+
+/// One site, one handle: the site's answer for `url`, bounded by
+/// `per_site_timeout` under the shared semaphore.
+async fn probe_site(
+    client: reqwest::Client,
+    sem: Arc<tokio::sync::Semaphore>,
+    site: &'static Site,
+    url: String,
+    per_site_timeout: Duration,
+) -> ProbeResult {
+    let (hit_conf, hit_verified) = detection_strength(&site.detect);
+    let _permit = sem.acquire().await;
+    let req = match site.method {
+        Method::Get => client.get(&url),
+        Method::Head => client.head(&url),
+    };
+    // Browser-shaped UA + Accept headers — the tool-shaped
+    // default UA was being 403'd by Cloudflare-fronted
+    // platforms (~30% of SITES), masking real hits as
+    // Errors. See BROWSER_UA constant for rationale.
+    let req = req
+        .header("User-Agent", BROWSER_UA)
+        .header("Accept", BROWSER_ACCEPT)
+        .header("Accept-Language", "en-US,en;q=0.9");
+    // The ENTIRE probe — request dispatch AND the body read — shares
+    // ONE `per_site_timeout` budget. Previously only `send()` was
+    // bounded here; the `read_body_capped` branches then fell back to
+    // the shared client's 30s read_timeout while still holding a
+    // semaphore permit, so a few slow-body sites could each pin one of
+    // the MAX_CONCURRENT_PROBES slots for ~34.5s and shrink coverage on
+    // exactly the flaky mobile links this module targets.
+    let probe = async {
+        let resp = match req.send_tagged(SRC).await {
+            Ok(r) => r,
+            Err(_) => return ProbeResult::Error,
+        };
+
+        let status = resp.status().as_u16();
+        let found = |url: String| ProbeResult::Found {
+            url,
+            confidence: hit_conf,
+            verified: hit_verified,
+            controlled: false,
+        };
+        match site.detect {
+            Detect::StatusEq(want) if status == want => found(url),
+            // A status that is not this site's presence code is not
+            // automatically an absence: a 403 WAF challenge, a 429
+            // throttle or a 5xx outage establishes nothing. See
+            // `classify_non_matching_status` — the shared policy that
+            // keeps a blocked sweep out of `definitive_absent`.
+            Detect::StatusEq(_) => classify_non_matching_status(status),
+            Detect::StatusAndBody(want, needle) => {
+                if status != want {
+                    return classify_non_matching_status(status);
+                }
+                let body = match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP).await {
+                    Some(t) => t,
+                    None => return ProbeResult::Error,
+                };
+                scan_text_for_keys(&body);
+                // A wall served with the presence status is
+                // neither presence nor absence (`classify_page`).
+                match classify_page(&body, needle, true) {
+                    PageVerdict::Present => found(url),
+                    PageVerdict::Absent => ProbeResult::NotFound,
+                    PageVerdict::Wall => ProbeResult::Error,
+                }
+            }
+            Detect::StatusAndNotBody(want, needle) => {
+                if status != want {
+                    return classify_non_matching_status(status);
+                }
+                let body = match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP).await {
+                    Some(t) => t,
+                    None => return ProbeResult::Error,
+                };
+                scan_text_for_keys(&body);
+                // The missing profile carries the marker here, so a
+                // wall — which carries no marker — used to read as
+                // a verified presence. `classify_page` judges the
+                // wall first.
+                match classify_page(&body, needle, false) {
+                    PageVerdict::Present => found(url),
+                    PageVerdict::Absent => ProbeResult::NotFound,
+                    PageVerdict::Wall => ProbeResult::Error,
+                }
+            }
+        }
+    };
+    match tokio::time::timeout(per_site_timeout, probe).await {
+        Ok(result) => result,
+        Err(_) => ProbeResult::Error,
+    }
+}
+
+/// Sweep every site for the handle, then judge each presence against the
+/// control handle on the same site ([`control_presences`]): a site that
+/// answers "present" for a handle nobody holds cannot tell a held handle
+/// from an unheld one for this client, and its presence for the target is
+/// [`ProbeResult::Indiscriminate`] — never a profile. On 2026-09-15 that was
+/// 78 of the 139 "profiles" the sweep reported for `torvalds`. `sites` is a
+/// parameter so the real request path is driven against a loopback.
+async fn sweep(
+    client: &reqwest::Client,
+    sites: &'static [Site],
+    username: &str,
+) -> Vec<(&'static str, &'static str, ProbeResult)> {
+    let encoded = urlencode(username);
+    let per_site_timeout = Duration::from_millis(4_500);
+    let sem = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PROBES));
+    let first: Vec<(&'static Site, ProbeResult)> = join_all(sites.iter().map(|site| {
+        let probe = probe_site(
+            client.clone(),
+            Arc::clone(&sem),
+            site,
+            site.url.replace("{}", &encoded),
+            per_site_timeout,
+        );
+        async move { (site, probe.await) }
+    }))
+    .await;
+    let control_encoded = urlencode(control_handle());
+    let judged = control_presences(first, |site: &'static Site| {
+        let url = site.url.replace("{}", &control_encoded);
+        let probe = probe_site(
+            client.clone(),
+            Arc::clone(&sem),
+            site,
+            url.clone(),
+            CONTROL_TIMEOUT,
+        );
+        (url, probe)
+    })
+    .await;
+    judged
+        .into_iter()
+        .map(|(site, result)| (site.name, site.cat, result))
+        .collect()
 }
 
 /// Turn resolved per-site probe outcomes into the module's entities. Pure (no
@@ -260,6 +292,11 @@ fn aggregate_results(
     // the summary so the operator can weigh a "47 platforms" result honestly.
     let mut verified_hits = 0usize;
     let mut weak_hits = 0usize;
+    // Presences whose control could not be read stand as they were, and say so.
+    let mut uncontrolled_hits = 0usize;
+    // Sites that answered "present" for the control handle too: no answer
+    // about the handle at all (`ProbeResult::Indiscriminate`).
+    let mut indiscriminate_sites: Vec<&str> = Vec::new();
 
     // A handful of site-table entries resolve to the SAME URL (two upstream
     // list sources describing the same platform with different detection
@@ -271,7 +308,7 @@ fn aggregate_results(
     // table entry happens to be probed first. A first-seen-wins dedup would
     // let site-table ORDER decide whether a URL a stronger sibling rule also
     // confirmed still ends up reported as merely "weak-detection".
-    let mut best_by_url: std::collections::HashMap<&str, (&str, &str, f64, bool)> =
+    let mut best_by_url: std::collections::HashMap<&str, (&str, &str, f64, bool, bool)> =
         std::collections::HashMap::new();
     let mut url_order: Vec<&str> = Vec::new();
     for (site_name, site_cat, outcome) in results {
@@ -280,8 +317,9 @@ fn aggregate_results(
                 url,
                 confidence,
                 verified,
+                controlled,
             } => {
-                let candidate = (*site_name, *site_cat, *confidence, *verified);
+                let candidate = (*site_name, *site_cat, *confidence, *verified, *controlled);
                 match best_by_url.entry(url.as_str()) {
                     std::collections::hash_map::Entry::Vacant(v) => {
                         url_order.push(url.as_str());
@@ -300,13 +338,14 @@ fn aggregate_results(
             }
             ProbeResult::NotFound => definitive_absent += 1,
             ProbeResult::Error => inconclusive_probes += 1,
+            ProbeResult::Indiscriminate { .. } => indiscriminate_sites.push(*site_name),
         }
     }
 
     // Pass 2: emit one entity per distinct URL, in first-seen order, using
     // whichever table entry won the reduction above.
     for url in &url_order {
-        let (site_name, site_cat, confidence, verified) = best_by_url[url];
+        let (site_name, site_cat, confidence, verified, controlled) = best_by_url[url];
         found_names.push(site_name);
         *category_counts.entry(site_cat).or_insert(0) += 1;
         let mut e = Entity::new(EntityKind::Url, *url, confidence, scan_id);
@@ -340,8 +379,12 @@ fn aggregate_results(
                 } else {
                     "status-only"
                 },
-            ),
+            )
+            .with_attr("control", if controlled { "absent" } else { "unavailable" }),
         );
+        if !controlled {
+            uncontrolled_hits += 1;
+        }
         module_result.push(e);
     }
 
@@ -350,13 +393,20 @@ fn aggregate_results(
     // mostly inconclusive, surface an error instead of a silent zero so the
     // operator never reads a blocked run as a confirmed absence.
     if found_names.is_empty() {
-        if inconclusive(found_names.len(), inconclusive_probes, results.len()) {
+        if inconclusive_after_control(
+            found_names.len(),
+            inconclusive_probes,
+            indiscriminate_sites.len(),
+            results.len(),
+        ) {
             return Err(Error::module(
                 SRC,
                 format!(
-                    "inconclusive: {inconclusive_probes}/{} site probes were blocked or \
-                         unreachable (WAF / rate-limit / no egress) — not a confirmed absence",
-                    results.len()
+                    "inconclusive: {inconclusive_probes} of {} site probes that can tell were blocked or \
+                         unreachable (WAF / rate-limit / no egress), {} sites answer \"present\" for \
+                         any handle — not a confirmed absence",
+                    results.len() - indiscriminate_sites.len(),
+                    indiscriminate_sites.len()
                 ),
             ));
         }
@@ -430,7 +480,13 @@ fn aggregate_results(
             .with_attr("sites_not_found", definitive_absent.to_string())
             .with_attr("sites_inconclusive", inconclusive_probes.to_string())
             .with_attr("hits_verified", verified_hits.to_string())
-            .with_attr("hits_status_only", weak_hits.to_string()),
+            .with_attr("hits_status_only", weak_hits.to_string())
+            .with_attr("hits_uncontrolled", uncontrolled_hits.to_string())
+            .with_attr(
+                "sites_indiscriminate",
+                indiscriminate_sites.len().to_string(),
+            )
+            .with_attr("indiscriminate_platforms", indiscriminate_sites.join(", ")),
         );
         module_result.push(summary);
     }

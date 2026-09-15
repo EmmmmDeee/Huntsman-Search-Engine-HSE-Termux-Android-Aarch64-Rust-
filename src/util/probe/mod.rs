@@ -44,14 +44,159 @@ pub const BODY_PROBE_CAP: usize = 256 * 1024;
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProbeResult {
     Found {
+        /// The profile URL the site answered for.
         url: String,
         /// Confidence to stamp on the emitted `Url`, tiered by detection rigor.
         confidence: f64,
         /// True when corroborated by a body marker (vs. a bare status code).
         verified: bool,
+        /// True when the same site answered *absence* for the control handle
+        /// (see [`control_handle`]): its rule tells a held handle from an
+        /// unheld one for this client, so this presence is not the site's
+        /// answer for everything. False when the control could not be read.
+        controlled: bool,
     },
     NotFound,
     Error,
+    /// The site answered "present" for the control handle too. Its rule does
+    /// not tell a held handle from an unheld one for this client — a
+    /// single-page-app shell, a soft 404, a catch-all route, a login wall
+    /// served as 200 — so its presence answer for the target is neither a
+    /// presence nor an absence: never a profile, never a "not here".
+    ///
+    /// Observed 2026-09-15 from the project's sandbox: `username_search`
+    /// reported 75 profiles for a twelve-character handle nobody holds, 74 of
+    /// the same sites for a second such handle, and 78 of the 139 it reported
+    /// for `torvalds` were among them — every username scan minted those
+    /// "profiles" (two of them body-"verified") for any handle whatsoever.
+    Indiscriminate {
+        /// The URL the site answered "present" for — never emitted as a profile.
+        url: String,
+    },
+}
+
+/// The handle every presence claim is judged against: a string no platform
+/// holds, drawn once per process — twelve lowercase letters and digits from
+/// the process's random hasher keys, opening with a letter so every site's
+/// handle rule accepts it. A site that answers "present" for it cannot tell
+/// a held handle from an unheld one for this client (see
+/// [`ProbeResult::Indiscriminate`]).
+pub fn control_handle() -> &'static str {
+    static HANDLE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HANDLE.get_or_init(|| {
+        use std::hash::{BuildHasher, Hasher};
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        hasher.write_u32(std::process::id());
+        let mut n = hasher.finish();
+        const LETTERS: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
+        const ALNUM: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+        let mut handle = String::with_capacity(12);
+        handle.push(LETTERS[(n % 26) as usize] as char);
+        n /= 26;
+        for _ in 0..11 {
+            handle.push(ALNUM[(n % 36) as usize] as char);
+            n /= 36;
+        }
+        handle
+    })
+}
+
+/// A site's answer for the target, judged against its answer for the control
+/// handle on the same site. A presence the site also gave the control handle
+/// is [`ProbeResult::Indiscriminate`]; a presence the site denied the control
+/// handle stands, `controlled`; a presence whose control could not be read
+/// stands as it was, uncontrolled. Anything but a presence is unchanged — an
+/// absence or a refusal needs no control.
+#[must_use]
+pub fn controlled(target: ProbeResult, control: &ProbeResult) -> ProbeResult {
+    match (target, control) {
+        (
+            ProbeResult::Found { url, .. },
+            ProbeResult::Found { .. } | ProbeResult::Indiscriminate { .. },
+        ) => ProbeResult::Indiscriminate { url },
+        (
+            ProbeResult::Found {
+                url,
+                confidence,
+                verified,
+                ..
+            },
+            ProbeResult::NotFound,
+        ) => ProbeResult::Found {
+            url,
+            confidence,
+            verified,
+            controlled: true,
+        },
+        (
+            ProbeResult::Found {
+                url,
+                confidence,
+                verified,
+                ..
+            },
+            ProbeResult::Error,
+        ) => ProbeResult::Found {
+            url,
+            confidence,
+            verified,
+            controlled: false,
+        },
+        (other, _) => other,
+    }
+}
+
+/// Judge every presence in `first` against the control handle: for each
+/// [`ProbeResult::Found`], `control(site)` names the control URL and yields
+/// the probe of it, the answers run concurrently, and [`controlled`] is
+/// applied. A control answer is remembered per URL for the process, so a
+/// multi-target scan asks each site about the control handle once.
+pub async fn control_presences<S, Fut>(
+    first: Vec<(S, ProbeResult)>,
+    control: impl Fn(S) -> (String, Fut),
+) -> Vec<(S, ProbeResult)>
+where
+    S: Copy,
+    Fut: std::future::Future<Output = ProbeResult>,
+{
+    static ANSWERS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, ProbeResult>>,
+    > = std::sync::OnceLock::new();
+    let answers = ANSWERS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+    let mut pending = Vec::new();
+    for (site, result) in &first {
+        if !matches!(result, ProbeResult::Found { .. }) {
+            continue;
+        }
+        let (url, probe) = control(*site);
+        let remembered = answers.lock().map_or(None, |a| a.get(&url).cloned());
+        pending.push(async move {
+            let answer = match remembered {
+                Some(answer) => answer,
+                None => probe.await,
+            };
+            (url, answer)
+        });
+    }
+    let read: Vec<(String, ProbeResult)> = futures::future::join_all(pending).await;
+    if let Ok(mut a) = answers.lock() {
+        for (url, answer) in &read {
+            a.insert(url.clone(), answer.clone());
+        }
+    }
+    let mut read = read.into_iter();
+    first
+        .into_iter()
+        .map(|(site, result)| {
+            if matches!(result, ProbeResult::Found { .. }) {
+                let (_, answer) = read.next().expect("one control answer per presence");
+                (site, controlled(result, &answer))
+            } else {
+                (site, result)
+            }
+        })
+        .collect()
 }
 
 /// Classify a response status that did **not** match a site's declared presence
@@ -126,6 +271,29 @@ pub fn classify_page(body: &str, needle: &str, needle_means_present: bool) -> Pa
     } else {
         PageVerdict::Absent
     }
+}
+
+/// The zero-hit verdict once the control wave has run. An indiscriminate site
+/// is neither an answer nor a failure — its rule tells nothing about any
+/// handle for this client — so it leaves the sweep's decision capacity
+/// instead of counting as blocked: [`inconclusive`] is judged over the sites
+/// that can tell, and a run in which no site could tell is inconclusive.
+/// Counting the indiscriminate sites as blocked made a handle nobody holds
+/// read "inconclusive: 20/43 platform probes were blocked" on
+/// `streaming_probe` (11 indiscriminate + 9 refusals) where 23 sites had
+/// answered absent.
+#[must_use]
+pub fn inconclusive_after_control(
+    found: usize,
+    errored: usize,
+    indiscriminate: usize,
+    total: usize,
+) -> bool {
+    let telling = total.saturating_sub(indiscriminate);
+    if found == 0 && total > 0 && telling == 0 {
+        return true;
+    }
+    inconclusive(found, errored, telling)
 }
 
 /// True when a zero-hit run is *inconclusive* rather than a confirmed absence:

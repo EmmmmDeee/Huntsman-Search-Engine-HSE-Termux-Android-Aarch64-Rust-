@@ -131,7 +131,7 @@ fn probe_with_no_hits_does_not_echo_the_seed() {
     // source and inflates the seed to VERIFIED on phantom evidence.
     assert!(!should_echo_target(0));
     let t = Target::new(TargetKind::Username, "haigenb");
-    assert!(build_target_summary(&t, 0, 0, 28, &[], "scan").is_none());
+    assert!(build_target_summary(&t, 0, 0, 28, &[], &[], 0, "scan").is_none());
 }
 
 #[test]
@@ -140,31 +140,43 @@ fn blocked_zero_hit_sweep_is_inconclusive_not_a_confirmed_absence() {
     // answered. When at least half returned no definitive answer (curl code 0 —
     // blocked / unreachable / no egress), the sweep is inconclusive and must be
     // surfaced as an error, never as a silent empty "not on any platform".
-    let msg = inconclusive_sweep(0, 28, 28).expect("all-blocked zero-hit run is inconclusive");
+    let msg = inconclusive_sweep(0, 28, 0, 28).expect("all-blocked zero-hit run is inconclusive");
     assert!(
-        msg.contains("28/28") && msg.contains("not a confirmed absence"),
+        msg.contains("28 of 28") && msg.contains("not a confirmed absence"),
         "message must quantify the blocked probes and disclaim absence: {msg}"
     );
+    // An indiscriminate platform (present for the control handle too) is
+    // neither an answer nor a failure: the verdict is over the platforms that
+    // can tell, and the message says how many could not.
     assert!(
-        inconclusive_sweep(0, 14, 28).is_some(),
+        inconclusive_sweep(0, 3, 20, 28).is_none(),
+        "3 of 8 telling platforms blocked is a genuine absence"
+    );
+    let msg = inconclusive_sweep(0, 3, 24, 28).expect("3 of 4 telling platforms blocked");
+    assert!(
+        msg.contains("3 of 4") && msg.contains("24 platforms answer"),
+        "{msg}"
+    );
+    assert!(
+        inconclusive_sweep(0, 14, 0, 28).is_some(),
         "exactly half blocked is still inconclusive"
     );
 
     // A run whose probes mostly ANSWERED (definitive not-founds) with only a few
     // blocked IS a genuine absence — not inconclusive.
     assert!(
-        inconclusive_sweep(0, 3, 28).is_none(),
+        inconclusive_sweep(0, 3, 0, 28).is_none(),
         "mostly-definitive not-founds are a real absence, not inconclusive"
     );
     // Any confirmed hit means the sweep reached the network — never inconclusive,
     // even if other probes were blocked.
     assert!(
-        inconclusive_sweep(2, 26, 28).is_none(),
+        inconclusive_sweep(2, 26, 0, 28).is_none(),
         "any hit proves reachability, so the run is never inconclusive"
     );
     // A fully cancelled/empty sweep (nothing attempted) is not inconclusive.
     assert!(
-        inconclusive_sweep(0, 0, 0).is_none(),
+        inconclusive_sweep(0, 0, 0, 0).is_none(),
         "no probes attempted is not an inconclusive absence claim"
     );
 }
@@ -173,14 +185,23 @@ fn blocked_zero_hit_sweep_is_inconclusive_not_a_confirmed_absence() {
 fn probe_with_a_hit_echoes_the_seed_as_corroboration() {
     assert!(should_echo_target(1));
     let t = Target::new(TargetKind::Username, "haigenb");
-    let summary = build_target_summary(&t, 1, 1, 28, &["github"], "scan")
+    let summary = build_target_summary(&t, 1, 1, 28, &["github"], &[], 0, "scan")
         .expect("a confirmed profile must echo the seed");
     assert_eq!(summary.value, "haigenb");
     assert!(summary.has_tag("social-probed"));
     assert!(!summary.has_tag("multi-platform"));
     // Three or more confirmed profiles flags the multi-platform footprint.
-    let multi = build_target_summary(&t, 3, 3, 28, &["github", "reddit", "twitch"], "scan")
-        .expect("entity");
+    let multi = build_target_summary(
+        &t,
+        3,
+        3,
+        28,
+        &["github", "reddit", "twitch"],
+        &[],
+        0,
+        "scan",
+    )
+    .expect("entity");
     assert!(multi.has_tag("multi-platform"));
 }
 
@@ -198,7 +219,7 @@ fn module_metadata() {
 fn build_target_summary_evidence_lists_confirmed_platforms() {
     let t = Target::new(TargetKind::Username, "testuser");
     let confirmed = &["github", "reddit"];
-    let e = build_target_summary(&t, 2, 2, 30, confirmed, "scan").expect("should succeed");
+    let e = build_target_summary(&t, 2, 2, 30, confirmed, &[], 0, "scan").expect("should succeed");
     let attr = e.evidence[0]
         .attributes
         .get("platforms")
@@ -219,8 +240,8 @@ fn build_target_summary_stamps_hits_verified_and_status_only() {
     let t = Target::new(TargetKind::Username, "testuser");
 
     // All hits status-only (weak-detection): 0 verified of 2 found.
-    let weak =
-        build_target_summary(&t, 2, 0, 30, &["reddit", "tumblr"], "scan").expect("should succeed");
+    let weak = build_target_summary(&t, 2, 0, 30, &["reddit", "tumblr"], &[], 0, "scan")
+        .expect("should succeed");
     assert_eq!(
         weak.evidence[0]
             .attributes
@@ -237,8 +258,17 @@ fn build_target_summary_stamps_hits_verified_and_status_only() {
     );
 
     // A mixed sweep: 1 body-verified + 2 status-only of 3 found.
-    let mixed = build_target_summary(&t, 3, 1, 30, &["github", "reddit", "tumblr"], "scan")
-        .expect("should succeed");
+    let mixed = build_target_summary(
+        &t,
+        3,
+        1,
+        30,
+        &["github", "reddit", "tumblr"],
+        &[],
+        0,
+        "scan",
+    )
+    .expect("should succeed");
     assert_eq!(
         mixed.evidence[0]
             .attributes
@@ -267,8 +297,17 @@ fn build_target_summary_stamps_platforms_count_for_au011() {
     // canonical count attribute must now be present and equal the number of
     // confirmed platforms.
     let t = Target::new(TargetKind::Username, "testuser");
-    let e = build_target_summary(&t, 3, 3, 30, &["github", "reddit", "twitch"], "scan")
-        .expect("should succeed");
+    let e = build_target_summary(
+        &t,
+        3,
+        3,
+        30,
+        &["github", "reddit", "twitch"],
+        &[],
+        0,
+        "scan",
+    )
+    .expect("should succeed");
     assert_eq!(
         e.evidence[0]
             .attributes
@@ -361,6 +400,7 @@ fn a_whole_marker_free_body_on_a_presence_status_is_the_verified_hit() {
             url,
             confidence,
             verified,
+            ..
         } => {
             assert_eq!(url, PROBE_URL);
             assert!(
@@ -425,4 +465,106 @@ fn refusals_are_inconclusive_and_absence_statuses_are_definitive() {
             "status {absent} is the platform saying no such handle"
         );
     }
+}
+
+/// The reading of the control judgement, pure: an indiscriminate platform is
+/// never a profile and is named in the summary; a presence says whether the
+/// platform denied the control handle.
+#[test]
+fn an_indiscriminate_platform_is_never_a_profile_and_the_summary_names_it() {
+    let by_name = |name: &str| {
+        USERNAME_PLATFORMS
+            .iter()
+            .find(|p| p.name == name)
+            .unwrap_or_else(|| panic!("{name} is a platform"))
+    };
+    let judged: Vec<((&'static Platform, u16), ProbeResult)> = vec![
+        (
+            (by_name("github"), 200),
+            ProbeResult::Found {
+                url: "https://github.com/alice".to_string(),
+                confidence: 0.92,
+                verified: true,
+                controlled: true,
+            },
+        ),
+        (
+            (by_name("instagram"), 200),
+            ProbeResult::Indiscriminate {
+                url: "https://www.instagram.com/alice".to_string(),
+            },
+        ),
+        (
+            (by_name("tiktok"), 200),
+            ProbeResult::Found {
+                url: "https://www.tiktok.com/@alice".to_string(),
+                confidence: 0.74,
+                verified: false,
+                controlled: false,
+            },
+        ),
+    ];
+    let (result, tally) = emit_judged(&judged, "scan-ctl");
+    assert!(
+        result
+            .entities
+            .iter()
+            .all(|e| e.value != "https://www.instagram.com/alice"),
+        "an indiscriminate platform is never a profile"
+    );
+    assert_eq!(tally.found, 2);
+    assert_eq!(tally.verified, 1);
+    assert_eq!(tally.uncontrolled, 1);
+    assert_eq!(tally.found_platforms, vec!["github", "tiktok"]);
+    assert_eq!(tally.indiscriminate_platforms, vec!["instagram"]);
+    let attr = |value: &str, key: &str| -> Option<String> {
+        result
+            .entities
+            .iter()
+            .find(|e| e.value == value)
+            .and_then(|e| e.evidence.first())
+            .and_then(|ev| ev.attributes.get(key).cloned())
+    };
+    assert_eq!(
+        attr("https://github.com/alice", "control").as_deref(),
+        Some("absent")
+    );
+    assert_eq!(
+        attr("https://www.tiktok.com/@alice", "control").as_deref(),
+        Some("unavailable")
+    );
+    assert_eq!(
+        attr("https://github.com/alice", "http_status").as_deref(),
+        Some("200")
+    );
+
+    let t = Target::new(TargetKind::Username, "alice");
+    let summary = build_target_summary(
+        &t,
+        tally.found,
+        tally.verified,
+        3,
+        &tally.found_platforms,
+        &tally.indiscriminate_platforms,
+        tally.uncontrolled,
+        "scan-ctl",
+    )
+    .expect("a summary for a run with hits");
+    let ev = summary.evidence.first().expect("evidence");
+    assert_eq!(
+        ev.attributes
+            .get("sites_indiscriminate")
+            .map(String::as_str),
+        Some("1")
+    );
+    assert_eq!(
+        ev.attributes
+            .get("indiscriminate_platforms")
+            .map(String::as_str),
+        Some("instagram")
+    );
+    assert_eq!(
+        ev.attributes.get("hits_uncontrolled").map(String::as_str),
+        Some("1")
+    );
 }
