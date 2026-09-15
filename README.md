@@ -128,8 +128,9 @@ so keys never leave the device).
 > parser goes quiet while its unit tests stay green. **Engines → Run live
 > capability probe** (in the Web UI), `hse doctor --live` (CLI), or
 > `GET /api/v1/capabilities/probe` fires one bounded request per keyless module
-> at its real endpoint and reports **alive / empty / unreachable / drift** per
-> module — the proactive complement to the cross-scan *Scraper health* panel.
+> at its real endpoint and reports **alive / empty / unreachable / timed-out /
+> rate-limited / blocked / skipped / drift** per module, flagging a **dead
+> canary** — the proactive complement to the cross-scan *Scraper health* panel.
 > Loopback-only and bounded, so it is Termux-safe.
 
 > **Termux battery & background (required for long scans):** Android → Settings → Apps → Termux → Battery → set to **Unrestricted** and enable "Allow background data". Without this Android kills Termux mid-scan.

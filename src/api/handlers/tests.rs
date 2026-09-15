@@ -232,6 +232,109 @@ use crate::app::export::csv_escape;
         assert_eq!(v["dead_canaries"].as_array().expect("should succeed").len(), 1);
     }
 
+    /// The Engines page's live-probe panel (`src/web/js/views/engines.js`) is
+    /// the one operator surface for `POST /capabilities/probe`. Every counter
+    /// the endpoint emits and every outcome label a module row can carry must
+    /// be something the panel reads. Before this guard `rate_limited`,
+    /// `blocked`, `skipped` and `dead_canaries` reached the JSON
+    /// (REQ-DRIFT-001/002/003, REQ-SCOPE-001) while the panel painted all four
+    /// the red of a provider that is down, counted none of them and flagged no
+    /// dead canary: implemented, not reachable. Tying the panel to the contract
+    /// at the boundary means a new state can never vanish from the UI silently.
+    #[test]
+    fn the_engines_panel_reads_every_probe_counter_and_outcome_label_the_api_emits() {
+        use super::capability_probe_json;
+        use crate::core::event::SkipClass;
+        use crate::core::scan::TargetKind;
+        use crate::selftest::capability_probe::{ProbeOutcome, ProbeReport};
+        let report = |module: &'static str, outcome: ProbeOutcome| ProbeReport {
+            module,
+            kind: TargetKind::Domain,
+            value: "example.com",
+            outcome,
+        };
+        // One row per outcome variant, so every label the API can emit is on
+        // the table.
+        let reports = vec![
+            report("alive_src", ProbeOutcome::Alive { found: 3 }),
+            report("empty_src", ProbeOutcome::Empty),
+            report(
+                "down_src",
+                ProbeOutcome::Unreachable {
+                    reason: "transport error".into(),
+                },
+            ),
+            report("slow_src", ProbeOutcome::TimedOut),
+            report(
+                "throttled_src",
+                ProbeOutcome::RateLimited {
+                    reason: "HTTP 429".into(),
+                },
+            ),
+            report(
+                "walled_src",
+                ProbeOutcome::Blocked {
+                    reason: "HTTP 403 Attention Required".into(),
+                },
+            ),
+            report(
+                "declined_src",
+                ProbeOutcome::Skipped {
+                    class: SkipClass::NotApplicable,
+                    reason: "out of scope".into(),
+                },
+            ),
+            report(
+                "broken_src",
+                ProbeOutcome::Panicked {
+                    message: "index out of bounds".into(),
+                },
+            ),
+        ];
+        let v = capability_probe_json(&reports);
+        let js = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/web/js/views/engines.js"
+        ))
+        .expect("engines.js is checked in");
+        // Only the panel's renderer counts: the page's search-engine liveness
+        // table has its own `'blocked'` state, and a match there would let the
+        // probe panel drop the label unnoticed.
+        let panel = js
+            .split("export async function runCapabilityProbe(")
+            .nth(1)
+            .and_then(|rest| rest.split("\nexport ").next())
+            .expect("runCapabilityProbe is an exported function in engines.js");
+
+        let counters = v.as_object().expect("the probe JSON is an object");
+        assert!(counters.len() >= 12, "{:?}", counters.keys().collect::<Vec<_>>());
+        for key in counters.keys() {
+            assert!(
+                panel.contains(&format!("data.{key}")),
+                "runCapabilityProbe never reads the probe field `{key}` the API emits"
+            );
+        }
+        let labels: std::collections::BTreeSet<&str> = v["modules"]
+            .as_array()
+            .expect("modules")
+            .iter()
+            .map(|m| m["outcome"].as_str().expect("outcome label"))
+            .collect();
+        assert_eq!(labels.len(), 8, "one row per outcome variant: {labels:?}");
+        for label in labels {
+            assert!(
+                panel.contains(&format!("'{label}'")),
+                "runCapabilityProbe never renders the probe outcome `{label}`"
+            );
+        }
+        for flag in ["m.drift", "m.canary", "m.dead_canary"] {
+            assert!(
+                panel.contains(flag),
+                "runCapabilityProbe never reads the row flag `{flag}`"
+            );
+        }
+    }
+
     #[test]
     fn capability_probe_json_reports_a_panicked_module_as_confirmed_drift() {
         use super::capability_probe_json;

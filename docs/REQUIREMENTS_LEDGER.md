@@ -4108,6 +4108,102 @@ the next step if a 200 wall is observed on one. The remaining
 `ip_reputation`) read JSON or crawl content and mint no negative claim from
 an empty parse.
 
+### REQ-UI-001 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, LOCKED AT THE BOUNDARY, FALSIFIED**): the Engines panel shows every probe state the API emits
+
+**Lead.** IMPLEMENTATION ≠ REACHABILITY. REQ-DRIFT-001/002/003 and
+REQ-SCOPE-001 gave the capability probe four new outcomes and the API four
+new fields (`rate_limited`, `blocked`, `skipped`, `dead_canaries`, plus
+`dead_canary` on each row). `hse doctor --live` and the live-drift sweep
+render them; the Web UI is the third consumer.
+
+**Verified from source.** `src/web/js/views/engines.js`,
+`runCapabilityProbe()`: `stDot` coloured `alive` green, `empty` amber and
+every other outcome the red of a provider that is down, so a throttled, a
+walled and a declined module all looked dead; the sort ranked only
+`unreachable` / `timed-out` as problems; the four stat cards were Alive,
+Empty, Unreachable (+ timed-out) and Drift — `rate_limited`, `blocked`,
+`skipped`, `panicked` and `dead_canaries` were never read; no row or alert
+flagged a dead canary; the panel's own explanation listed four states. The
+WASM UI has no copy of this panel (`wasm-ui/src/views`: dash, diff, scans).
+
+**Fix.** One colour per outcome class (a throttle, a wall and a declined
+sample are decisions about this client or sample, not a fault); dead canaries
+first, then drift, then a provider that is down, then the per-client
+refusals; eight cards (Alive, Empty, Unreachable, Drift with the panicked
+count; Rate-limited, Blocked, Skipped, Dead canaries); a dead-canary alert
+beside the drift alert; the explanation names all eight states. The
+endpoint's doc names them too.
+
+**Lock (at the boundary).** `api::handlers::tests::the_engines_panel_reads_every_probe_counter_and_outcome_label_the_api_emits`
+builds one report per `ProbeOutcome` variant, runs the real
+`capability_probe_json`, and asserts that the panel's source reads every
+top-level field the JSON carries (`data.<field>`), renders every outcome
+label a row can carry (`'<label>'`) and reads every row flag (`m.drift`,
+`m.canary`, `m.dead_canary`) — within `runCapabilityProbe` alone, because the
+page's search-engine liveness table has its own `'blocked'` state (the first
+cut of the guard matched it and was insensitive to the panel dropping the
+label; scoped, it fails). A ninth outcome, or a new counter, fails the guard
+until the panel reads it.
+
+**Operational exercise.** Headless Chromium (Playwright 1.56, the pre-installed
+browser) against the real `hse serve -b 127.0.0.1:18080` built from this
+tree (the SPA is embedded in the binary), 2026-09-15 18:27 UTC: the probe
+endpoint answered by a synthetic payload of one row per outcome plus a dead
+canary — no live provider touched — then "Run live probe" clicked and the
+rendered DOM read back:
+
+```
+CARDS:
+  ALIVE 1
+  EMPTY 1
+  UNREACHABLE 2
+  DRIFT 1 (1 panicked)
+  RATE-LIMITED 1
+  BLOCKED 1
+  SKIPPED 1
+  DEAD CANARIES 1
+ALERTS:
+  Dead canary: dead_src — a curated known-positive provider answered nothing on any attempt: down for the whole run, or its endpoint is retired. Migrate the endpoint or retire the capability honestly.
+  Confirmed drift: broken_src — a canary provider changed its wire shape. Update the module's parser.
+ROWS (sorted as rendered):
+  dead_src canary | domain | ● dead canary | no answer on any of 3 attempts
+  broken_src | domain | ● drift | index out of bounds
+  down_src | domain | ● unreachable | transport error
+  slow_src | domain | ● timed-out | 
+  walled_src | domain | ● blocked | HTTP 403 Attention Required
+  throttled_src | domain | ● rate-limited | HTTP 429
+  empty_src | domain | ● empty | 0 parsed
+  declined_src | domain | ● skipped | not-applicable: out of scope
+  alive_src | domain | ● alive | 3 found
+STATUS COLOURS:
+  ● dead canary=rgb(169, 68, 66)
+  ● drift=rgb(169, 68, 66)
+  ● unreachable=rgb(169, 68, 66)
+  ● timed-out=rgb(169, 68, 66)
+  ● blocked=rgb(122, 31, 162)
+  ● rate-limited=rgb(178, 106, 0)
+  ● empty=rgb(138, 109, 59)
+  ● skipped=rgb(49, 112, 143)
+  ● alive=rgb(60, 118, 61)
+```
+
+
+**Falsification.** Each repair reverted with only the guard run:
+
+```
+[the dead-canary list no longer read (no alert, no count)] reverted -> LOCK FAILS (expected)
+    test api::handlers::tests::the_engines_panel_reads_every_probe_counter_and_outcome_label_the_api_emits ... FAILED
+    thread 'api::handlers::tests::the_engines_panel_reads_every_probe_counter_and_outcome_label_the_api_emits' (4668) panicked at src/api/handlers/tests.rs:312:13:
+    runCapabilityProbe never reads the probe field `dead_canaries` the API emits
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7325 filtered out; finished in 0.21s
+[the 'blocked' outcome no longer rendered as its own class] reverted -> LOCK FAILS (expected)
+    test api::handlers::tests::the_engines_panel_reads_every_probe_counter_and_outcome_label_the_api_emits ... FAILED
+    thread 'api::handlers::tests::the_engines_panel_reads_every_probe_counter_and_outcome_label_the_api_emits' (4958) panicked at src/api/handlers/tests.rs:325:13:
+    runCapabilityProbe never renders the probe outcome `blocked`
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7325 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
 ### REQ-ARCHIVE-001 (**refuted lead, Pass 31 — MEASURED twice, ATTACKED, NO CHANGE**): `wayback`'s every-run timeout is not its query shape
 
 **Lead.** Every live-drift run reads `timed-out wayback` (the module's 30 s
@@ -4229,6 +4325,13 @@ drives the path against a loopback serving, in turn, the Cloudflare block page
 as `403` (→ `Error::BotChallenge`, message `HTTP 403 … Attention Required`),
 the same page as `200` (→ `BotChallenge`), a `500` (→ `Error::Module`, `HTTP
 500`), and a register page naming no row (→ the empty result).
+
+**Remote verification (live-drift run 35006162811 on `f447265`, 2026-09-15
+18:13 UTC).** `blocked asic_director — asic_director: HTTP 403 Forbidden:
+Attention Required! | Cloudflare` — the same wall from GitHub's runner, a
+second datacenter vantage, where every earlier run read `unreachable`. The
+sweep: 116 probed — 89 alive, 18 empty, 1 unreachable (the `wifidb` dead
+canary alone), 1 timed-out, 2 rate-limited, 4 blocked, 1 skipped.
 
 **Falsification.** Each repair reverted in turn with only the lock run:
 

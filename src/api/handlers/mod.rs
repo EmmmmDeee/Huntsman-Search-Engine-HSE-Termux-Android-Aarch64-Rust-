@@ -585,7 +585,8 @@ pub(crate) fn capability_probe_json(
 
 /// `POST /api/v1/capabilities/probe` — the **proactive** capability preflight:
 /// probe every keyless module against its real provider right now and report
-/// alive / empty / unreachable / timed-out / panicked per module, flagging
+/// alive / empty / unreachable / timed-out / rate-limited / blocked / skipped /
+/// panicked per module (a dead canary flagged on its row), flagging
 /// confirmed drift (a curated canary that reached its provider yet parsed
 /// nothing, or any module that panicked on the live response). This is the
 /// on-demand, network-bound HTTP twin of `hse doctor --live`, sharing the exact
