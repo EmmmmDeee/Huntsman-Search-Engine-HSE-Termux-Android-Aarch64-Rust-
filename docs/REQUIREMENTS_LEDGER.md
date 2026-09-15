@@ -3956,6 +3956,67 @@ private-host preflight refuses 127.0.0.1 by design), so its classification is
 covered by inspection and the pure verdict; the `process` path of
 `cell_intel` is covered by the seam, not end to end.
 
+### REQ-CI-002 (**new, Pass 31 — OBSERVED on the runner, ROOT-CAUSED, FIXED, FALSIFIED**): the test harness never deletes a live sibling's database
+
+**Observation.** CI runs 34985312683 (`f41b49a`) and 34989423734
+(`7a42f09`) failed
+`tests/halting.rs::capability_aware_dispatch_off_runs_every_module_even_a_drifted_one`
+at `tests/common/mod.rs:94` (`Store::open(&path).unwrap()`):
+
+```
+called `Result::unwrap()` on an `Err` value: Storage(SqliteFailure(Error { code: SystemIoFailure, extended_code: 1802 }, Some("disk I/O error")))
+```
+
+The same test passed on `e1e4d13` between the two. `1802` is
+`SQLITE_IOERR_FSTAT`: `fstat()` failed on the database file — the file was
+unlinked under the open connection. The first occurrence was re-run as a
+possible runner-disk fault (the one re-run the rules allow); the second
+made it this PR's to root-cause.
+
+**Root cause (source, `tests/common/mod.rs::tmp_db`).** The stale-file sweep
+selected `starts_with("hse-<prefix>-") && ends_with("-<suffix>.db")` (and the
+`-wal`/`-shm` sidecars). `hse-halting-<pid>-no-quarantine.db` ends with
+`-quarantine.db`, so the `quarantine` test's `tmp_db("halting", "quarantine")`
+deleted the concurrently-running `no-quarantine` test's LIVE database — same
+binary, same pid — between its `Connection::open` and its schema DDL, whenever
+the scheduler interleaved them that way (the run's timestamps: the panic at
+15:41:30.338, the `quarantine` test finishing at 15:41:30.41). A pure timing
+race, deterministic in its selection. `tests/api.rs` carried the same latent
+pair (`forced-stealer-rows` / `stealer-rows`), and `tmp_dir`'s
+`starts_with("hse-<prefix>-")` would also match a longer prefix's directory
+and this process's own.
+
+**Fix.** `stale_db_file(name, prefix, suffix, own_pid)` — exactly
+`hse-<prefix>-<pid>-<suffix>.db` / `.db-wal` / `.db-shm` with a whole-segment,
+all-digit pid that is not this process's (a same-pid file is a sibling's by
+definition, never a past run's) — and `stale_dir(name, prefix, own_pid)`
+likewise; both pure, both used by the sweeps.
+
+**Evidence.** `common::tests::a_sibling_tests_live_database_is_never_a_sweep_candidate`
+(the exact halting and api names, own pid, longer prefix, non-numeric pid,
+bare sidecar) and `tmp_db_leaves_a_live_siblings_longer_suffix_file_alone`
+(the real sweep on the real temp dir: a same-pid `no-sweep` file and a past
+run's `no-sweep` file survive `tmp_db(_, "sweep")`; a past run's `sweep` file
+is swept). Both run in every integration binary that includes `common`.
+
+**Falsification.** With the old `starts_with`/`ends_with` selection restored
+inside `stale_db_file` and only the locks run:
+
+```
+[old starts_with/ends_with selection restored] common::tests::a_sibling_tests_live_database_is_never_a_sweep_candidate -> LOCK FAILS (expected)
+    common::tests::a_sibling_tests_live_database_is_never_a_sweep_candidate --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.19s
+[old starts_with/ends_with selection restored] common::tests::tmp_db_leaves_a_live_siblings_longer_suffix_file_alone -> LOCK FAILS (expected)
+    common::tests::tmp_db_leaves_a_live_siblings_longer_suffix_file_alone --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.21s
+HARNESS LOCKS SENSITIVE
+```
+
+**Remote verification.** The CI run on the commit carrying this fix is the
+first evidence; the race is timing-dependent, so a single green run proves
+the fix compiles and the locks hold, and the absence of the `1802` failure
+over the following runs is the operational evidence.
+
 ### REQ-DRIFT-003 (**new, Pass 31 — OBSERVED on the runner, FIXED, FALSIFIED**): BOT_CHALLENGE is not NETWORK_FAILURE
 
 **Observation (GitHub runner, live-drift run 34985449332 on `f41b49a`,

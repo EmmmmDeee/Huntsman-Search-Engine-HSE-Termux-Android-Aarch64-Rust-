@@ -43,8 +43,8 @@ pub fn isolate_home() -> std::path::PathBuf {
 }
 
 /// Fresh per-test SQLite path under the OS temp dir: `hse-<prefix>-<pid>-<suffix>.db`.
-/// Sweeps away every stale `hse-<prefix>-*-<suffix>.db` (plus its `-wal`/`-shm`
-/// sidecars) left by a past process before minting a fresh one — not just a file
+/// Sweeps away every stale `hse-<prefix>-<pid>-<suffix>.db` (plus its `-wal`/`-shm`
+/// sidecars) left by a PAST process before minting a fresh one — not just a file
 /// matching this process's own pid, which can never exist yet: the pid is unique
 /// per run, so a self-only check is permanently a no-op and never reclaims a PRIOR
 /// run's file. Unbounded over a long session of repeated `cargo test` invocations:
@@ -53,24 +53,27 @@ pub fn isolate_home() -> std::path::PathBuf {
 /// one-prefix-per-test-binary convention [`engine_setup`] already relies on to
 /// keep parallel test crates from colliding — so this can never delete a file a
 /// concurrently-running sibling binary still owns, only this binary's own past run.
+///
+/// The match is on the whole name shape ([`stale_db_file`]), never on
+/// `starts_with(prefix)` + `ends_with(suffix)`: that pair read
+/// `hse-halting-<pid>-no-quarantine.db` as a stale `quarantine` file, so the
+/// `quarantine` test's sweep deleted the `no-quarantine` test's LIVE database
+/// out from under its open connection whenever the two ran concurrently in the
+/// same binary — SQLite `disk I/O error` (`SQLITE_IOERR_FSTAT`, 1802) at
+/// `Store::open`, seen on CI runs 34985312683 and 34989423734 (2026-09-15).
+/// `tests/api.rs` carried the same latent pair (`forced-stealer-rows` /
+/// `stealer-rows`). And a file of this process's own pid is a sibling test's,
+/// never a past run's, so it is never a sweep candidate at all.
 pub fn tmp_db(prefix: &str, suffix: &str) -> String {
     isolate_home();
     let dir = std::env::temp_dir();
-    let stale_prefix = format!("hse-{prefix}-");
-    let stale_main = format!("-{suffix}.db");
-    let stale_wal = format!("{stale_main}-wal");
-    let stale_shm = format!("{stale_main}-shm");
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let Some(name) = name.to_str() else {
                 continue;
             };
-            if name.starts_with(&stale_prefix)
-                && (name.ends_with(&stale_main)
-                    || name.ends_with(&stale_wal)
-                    || name.ends_with(&stale_shm))
-            {
+            if stale_db_file(name, prefix, suffix, std::process::id()) {
                 let _ = std::fs::remove_file(dir.join(name));
             }
         }
@@ -78,6 +81,37 @@ pub fn tmp_db(prefix: &str, suffix: &str) -> String {
     let mut p = dir;
     p.push(format!("hse-{prefix}-{}-{suffix}.db", std::process::id()));
     p.to_string_lossy().into_owned()
+}
+
+/// True when `name` is exactly `hse-<prefix>-<pid>-<suffix>.db`, `….db-wal` or
+/// `….db-shm` for a `<pid>` that is all digits and is not `own_pid` — a file a
+/// past run of this same test left behind, and nothing else. Pure, so the
+/// harness's own tests pin the shape without touching the file system.
+pub fn stale_db_file(name: &str, prefix: &str, suffix: &str, own_pid: u32) -> bool {
+    let Some(rest) = name.strip_prefix("hse-") else {
+        return false;
+    };
+    let Some(rest) = rest.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some(rest) = rest.strip_prefix('-') else {
+        return false;
+    };
+    let main = format!("-{suffix}.db");
+    let pid = [main.as_str(), "-wal", "-shm"]
+        .iter()
+        .find_map(|tail| match *tail {
+            "-wal" | "-shm" => rest
+                .strip_suffix(tail)
+                .and_then(|r| r.strip_suffix(main.as_str())),
+            _ => rest.strip_suffix(tail),
+        });
+    let Some(pid) = pid else {
+        return false;
+    };
+    !pid.is_empty()
+        && pid.bytes().all(|b| b.is_ascii_digit())
+        && pid.parse::<u32>().is_ok_and(|p| p != own_pid)
 }
 
 /// Full engine harness over a fresh store: the (engine, store, scan_id,
@@ -131,11 +165,13 @@ pub fn engine_setup(
 pub fn tmp_dir(prefix: &str) -> std::path::PathBuf {
     isolate_home();
     let base = std::env::temp_dir();
-    let stale_prefix = format!("hse-{prefix}-");
     if let Ok(entries) = std::fs::read_dir(&base) {
         for entry in entries.flatten() {
             let name = entry.file_name();
-            if name.to_str().is_some_and(|n| n.starts_with(&stale_prefix)) {
+            if name
+                .to_str()
+                .is_some_and(|n| stale_dir(n, prefix, std::process::id()))
+            {
                 let _ = std::fs::remove_dir_all(base.join(&name));
             }
         }
@@ -143,6 +179,23 @@ pub fn tmp_dir(prefix: &str) -> std::path::PathBuf {
     let dir = base.join(format!("hse-{prefix}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+/// The directory counterpart of [`stale_db_file`]: exactly `hse-<prefix>-<pid>`
+/// for an all-digit `<pid>` other than `own_pid`. `starts_with("hse-<prefix>-")`
+/// alone would also match a longer prefix's directory (`hse-scan-json-…` for
+/// prefix `scan`) and this process's own live directory.
+pub fn stale_dir(name: &str, prefix: &str, own_pid: u32) -> bool {
+    let Some(pid) = name
+        .strip_prefix("hse-")
+        .and_then(|r| r.strip_prefix(prefix))
+        .and_then(|r| r.strip_prefix('-'))
+    else {
+        return false;
+    };
+    !pid.is_empty()
+        && pid.bytes().all(|b| b.is_ascii_digit())
+        && pid.parse::<u32>().is_ok_and(|p| p != own_pid)
 }
 
 // ── Synthetic modules (moved from tests/smoke.rs and tests/api.rs) ──────────
@@ -641,7 +694,139 @@ fn test_app_with_modules_and_state(
 
 #[cfg(test)]
 mod tests {
-    use super::{tmp_db, tmp_dir};
+    use super::{stale_db_file, stale_dir, tmp_db, tmp_dir};
+
+    /// Regression for CI runs 34985312683 / 34989423734 (2026-09-15):
+    /// `tests/halting.rs`'s `quarantine` test swept the concurrently-running
+    /// `no-quarantine` test's LIVE database (`-no-quarantine.db` ends with
+    /// `-quarantine.db`; same pid, same binary) and `Store::open` failed with
+    /// SQLite's `disk I/O error` (`SQLITE_IOERR_FSTAT`). A sweep candidate is
+    /// exactly `hse-<prefix>-<pid>-<suffix>.db` with a whole-segment pid that
+    /// is not this process — never a longer suffix, a longer prefix, or a
+    /// sibling test's file.
+    #[test]
+    fn a_sibling_tests_live_database_is_never_a_sweep_candidate() {
+        let own = 4242;
+        // A past run's file of exactly this test: swept (all three shapes).
+        assert!(stale_db_file(
+            "hse-halting-999-quarantine.db",
+            "halting",
+            "quarantine",
+            own
+        ));
+        assert!(stale_db_file(
+            "hse-halting-999-quarantine.db-wal",
+            "halting",
+            "quarantine",
+            own
+        ));
+        assert!(stale_db_file(
+            "hse-halting-999-quarantine.db-shm",
+            "halting",
+            "quarantine",
+            own
+        ));
+        // The sibling's file — a longer suffix that ENDS with this one — is not.
+        assert!(!stale_db_file(
+            "hse-halting-999-no-quarantine.db",
+            "halting",
+            "quarantine",
+            own
+        ));
+        assert!(!stale_db_file(
+            "hse-halting-4242-no-quarantine.db",
+            "halting",
+            "quarantine",
+            own
+        ));
+        assert!(!stale_db_file(
+            "hse-api-999-forced-stealer-rows.db",
+            "api",
+            "stealer-rows",
+            own
+        ));
+        // This process's own file is a live sibling's, whatever its suffix.
+        assert!(!stale_db_file(
+            "hse-halting-4242-quarantine.db",
+            "halting",
+            "quarantine",
+            own
+        ));
+        // A longer prefix, another prefix, a non-numeric pid, a bare sidecar.
+        assert!(!stale_db_file(
+            "hse-halting2-999-quarantine.db",
+            "halting",
+            "quarantine",
+            own
+        ));
+        assert!(!stale_db_file(
+            "hse-smoke-999-quarantine.db",
+            "halting",
+            "quarantine",
+            own
+        ));
+        assert!(!stale_db_file(
+            "hse-halting-abc-quarantine.db",
+            "halting",
+            "quarantine",
+            own
+        ));
+        assert!(!stale_db_file(
+            "hse-halting-999-quarantine-wal",
+            "halting",
+            "quarantine",
+            own
+        ));
+        assert!(!stale_db_file(
+            "hse-halting--quarantine.db",
+            "halting",
+            "quarantine",
+            own
+        ));
+        // The directory sweep draws the same line.
+        assert!(stale_dir("hse-scan-999", "scan", own));
+        assert!(!stale_dir("hse-scan-json-999", "scan", own));
+        assert!(!stale_dir("hse-scan-4242", "scan", own));
+        assert!(!stale_dir("hse-scan-abc", "scan", own));
+    }
+
+    /// The same contract through the real sweep on the real temp dir: a
+    /// sibling's same-pid file with a longer suffix survives `tmp_db`, a past
+    /// run's exact file does not.
+    #[test]
+    fn tmp_db_leaves_a_live_siblings_longer_suffix_file_alone() {
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let sibling = dir.join(format!("hse-tmpdbrace-{pid}-no-sweep.db"));
+        let sibling_wal = dir.join(format!("hse-tmpdbrace-{pid}-no-sweep.db-wal"));
+        let past_longer = dir.join("hse-tmpdbrace-999999999-no-sweep.db");
+        let past_exact = dir.join("hse-tmpdbrace-999999999-sweep.db");
+        for f in [&sibling, &sibling_wal, &past_longer, &past_exact] {
+            std::fs::write(f, b"x").expect("should succeed");
+        }
+
+        let fresh = tmp_db("tmpdbrace", "sweep");
+
+        assert!(
+            sibling.exists() && sibling_wal.exists(),
+            "a concurrently-running sibling test's live database (same pid, a suffix \
+             that merely ends with ours) must never be swept — that deletion is the \
+             CI `disk I/O error` at Store::open"
+        );
+        assert!(
+            past_longer.exists(),
+            "a past run's file of ANOTHER test (longer suffix) is that test's to sweep"
+        );
+        assert!(
+            !past_exact.exists(),
+            "a past run's file of this exact test is swept"
+        );
+
+        for f in [&sibling, &sibling_wal, &past_longer] {
+            let _ = std::fs::remove_file(f);
+        }
+        let _ = std::fs::remove_file(&fresh);
+    }
 
     #[test]
     fn tmp_dir_sweeps_a_stale_same_prefix_directory_but_leaves_other_prefixes_alone() {
