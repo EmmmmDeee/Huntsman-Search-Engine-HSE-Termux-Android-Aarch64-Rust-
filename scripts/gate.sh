@@ -162,8 +162,9 @@ else
         cargo test --locked --no-run --lib --bin hse --tests --target "$TARGET"
 fi
 
-# ── ci.yml: install.sh syntax + shellcheck ───────────────────────────────────
+# ── ci.yml: install.sh + scripts/reconcile.sh syntax + shellcheck ────────────
 run "install.sh syntax" bash -n install.sh
+run "reconcile.sh syntax" bash -n scripts/reconcile.sh
 if command -v shellcheck >/dev/null 2>&1; then
     # `--severity=warning` mirrors ci.yml's ShellCheck step exactly. Without it
     # this gate was STRICTER than CI: install.sh carries several long-standing
@@ -171,7 +172,7 @@ if command -v shellcheck >/dev/null 2>&1; then
     # tolerates, so a host that happens to have shellcheck installed reported a
     # FAIL for something CI passes. A gate that cries wolf is worse than one
     # that skips: it trains you to ignore it.
-    run "shellcheck" shellcheck --severity=warning install.sh scripts/gate.sh
+    run "shellcheck" shellcheck --severity=warning install.sh scripts/gate.sh scripts/reconcile.sh
 else
     skip "shellcheck" "not installed"
 fi

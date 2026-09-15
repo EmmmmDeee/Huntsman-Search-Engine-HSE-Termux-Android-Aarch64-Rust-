@@ -787,3 +787,380 @@ fn the_installer_delegates_post_install_verification_to_the_tested_function() {
         "post-install verification must live only in hse_verify_or_rollback, not re-inlined"
     );
 }
+
+// ─── Termux:API detection and the capability reconciler ─────────────────────
+//
+// install.sh's Termux:API step used to probe `termux-info` to decide whether
+// the `termux-api` package was installed. `termux-info` ships in `termux-tools`
+// on EVERY Termux install, so `pkg install termux-api` never ran and the
+// installer reported "termux-api CLI present" on devices that had no sensor
+// tool at all (provenance: 69b17eb, PR #585). The installer now probes the
+// canonical core-tool list and judges an install by its postcondition;
+// `scripts/reconcile.sh` applies the same change to an older checkout as a
+// snapshot → patch → verify → rollback transaction. These guards pin the
+// installer's shape, hold the reconciler's embedded block byte-for-byte
+// against it, and drive the transaction end to end through bash + git.
+
+fn reconciler_sh() -> String {
+    fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/reconcile.sh")).unwrap()
+}
+
+/// The body of `<<'TAG'` … `TAG` as the shell sees it: `heredoc` returns the
+/// text from just after the opening tag (i.e. the rest of that line first), so
+/// drop that remainder and the newline that precedes the terminator.
+fn heredoc_body(script: &str, tag: &str) -> String {
+    let raw = heredoc(script, tag);
+    let (_, body) = raw.split_once('\n').expect("heredoc opener line");
+    body.strip_suffix('\n').unwrap_or(body).to_string()
+}
+
+/// The single-quoted scalar `NAME='…'` defined at the reconciler's top level.
+fn reconciler_scalar<'a>(reconciler: &'a str, name: &str) -> &'a str {
+    let open = format!("{name}='");
+    let line = reconciler
+        .lines()
+        .find(|l| l.starts_with(&open))
+        .unwrap_or_else(|| panic!("scripts/reconcile.sh no longer defines `{name}`"));
+    line[open.len()..]
+        .strip_suffix('\'')
+        .expect("closing quote")
+}
+
+/// The reconciler's fixed block, rendered exactly as it writes it: the
+/// `INSTALLER_FIX_REGION` template with the tool list substituted from the
+/// script's own top-level TERMUX_API_CORE_TOOLS definition.
+fn reconciler_fix_region(reconciler: &str) -> String {
+    let tools = reconciler
+        .lines()
+        .find_map(|l| l.strip_prefix("TERMUX_API_CORE_TOOLS=("))
+        .and_then(|rest| rest.strip_suffix(')'))
+        .expect("scripts/reconcile.sh defines TERMUX_API_CORE_TOOLS at top level");
+    heredoc_body(reconciler, "INSTALLER_FIX_REGION").replace("@TERMUX_API_CORE_TOOLS@", tools)
+}
+
+/// Presence is not readiness: the installer must probe the sensor tools it
+/// actually needs, and must judge `pkg install` by re-probing them — never by
+/// `termux-info` (always present) or by pkg's exit status.
+#[test]
+fn termux_api_detection_probes_the_core_tools_by_postcondition() {
+    let script = install_sh();
+    let sentinels: Vec<String> = script
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| !is_comment(l) && l.contains("termux-info"))
+        .map(|(n, l)| format!("install.sh:{}: {}", n + 1, l.trim()))
+        .collect();
+    assert!(
+        sentinels.is_empty(),
+        "`termux-info` ships in termux-tools on every Termux install, so it proves \
+         nothing about the termux-api package:\n  {}",
+        sentinels.join("\n  ")
+    );
+    let defs = script
+        .lines()
+        .filter(|l| l.trim().starts_with("TERMUX_API_CORE_TOOLS=("))
+        .count();
+    assert_eq!(
+        defs, 1,
+        "the core-tool list is defined exactly once in install.sh"
+    );
+
+    let lines: Vec<&str> = script.lines().collect();
+    let pkg_at = lines
+        .iter()
+        .position(|l| !is_comment(l) && l.contains("pkg install -y termux-api"))
+        .expect("install.sh still installs termux-api");
+    let window = &lines[pkg_at..pkg_at + 3];
+    assert!(
+        !window.iter().any(|l| l.contains("&& ok")),
+        "a success line must not be chained to pkg's exit status: {window:?}"
+    );
+    let after = |from: usize, needle: &str| -> usize {
+        lines[from..]
+            .iter()
+            .position(|l| !is_comment(l) && l.contains(needle))
+            .map_or_else(
+                || panic!("`{needle}` must follow line {}", from + 1),
+                |i| from + i,
+            )
+    };
+    let hash_at = after(pkg_at, "hash -r");
+    let reprobe_at = after(hash_at, "$(termux_api_missing_tools)");
+    let report_at = after(reprobe_at, "ok \"Installed termux-api");
+    assert!(
+        pkg_at < hash_at && hash_at < reprobe_at && reprobe_at < report_at,
+        "order must be: pkg install → hash -r → re-probe the same tool set → report"
+    );
+}
+
+/// The reconciler rewrites an older checkout's block into the one that ships:
+/// its embedded fix must BE the installer's block, byte for byte, and its
+/// embedded defect must be gone from the installer.
+#[test]
+fn the_reconciler_writes_exactly_the_installer_block_that_ships() {
+    let script = install_sh();
+    let reconciler = reconciler_sh();
+    let fix = reconciler_fix_region(&reconciler);
+    assert_eq!(
+        script.matches(&fix).count(),
+        1,
+        "install.sh must contain the reconciler's rendered fixed block verbatim, exactly \
+         once. If the installer's termux-api block was edited on purpose, update the \
+         INSTALLER_FIX_REGION heredoc in scripts/reconcile.sh to match.\n--- block ---\n{fix}"
+    );
+    let bug = heredoc_body(&reconciler, "INSTALLER_BUG_REGION");
+    assert!(
+        !script.contains(&bug),
+        "install.sh still carries the defective block"
+    );
+    let sentinel = reconciler_scalar(&reconciler, "INSTALLER_BUG_SENTINEL");
+    assert!(
+        bug.lines().any(|l| l == sentinel),
+        "the sentinel the reconciler locates the defect by must be a line of the \
+         defective block it embeds"
+    );
+    assert!(
+        bug.lines().next().is_some_and(|l| !l.trim().is_empty()),
+        "the defective block must open with the line the reconciler anchors on"
+    );
+}
+
+mod reconciler_transaction {
+    use super::*;
+    use std::process::Command;
+
+    /// A throwaway git checkout holding a defective installer.
+    struct Fixture {
+        dir: tempfile::TempDir,
+        /// install.sh's bytes as committed — what a rollback must restore.
+        before: String,
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git must be installed to drive the reconciler tests");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Today's installer with the fixed block swapped back to the defective
+    /// one, committed in a fresh repo — the shape every affected device holds.
+    fn defective_checkout() -> Fixture {
+        let reconciler = reconciler_sh();
+        let fix = reconciler_fix_region(&reconciler);
+        let bug = heredoc_body(&reconciler, "INSTALLER_BUG_REGION");
+        let installer = install_sh();
+        assert_eq!(installer.matches(&fix).count(), 1);
+        let before = installer.replacen(&fix, &bug, 1);
+        let dir = tempfile::tempdir().expect("temp dir");
+        fs::write(dir.path().join("install.sh"), &before).unwrap();
+        fs::write(dir.path().join("README.md"), "fixture\n").unwrap();
+        git(dir.path(), &["init", "-q"]);
+        git(dir.path(), &["add", "."]);
+        git(
+            dir.path(),
+            &["commit", "-q", "-m", "fixture: defective installer"],
+        );
+        Fixture { dir, before }
+    }
+
+    /// `PATH` without any directory that provides `cargo`, so the reconciler's
+    /// Rust verification is an honest environment skip rather than a full
+    /// build of this crate inside the fixture.
+    fn path_without_cargo() -> std::ffi::OsString {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        std::env::join_paths(std::env::split_paths(&path).filter(|d| !d.join("cargo").exists()))
+            .expect("PATH without cargo")
+    }
+
+    /// Run the real reconciler in the fixture (`--repo-only --json` plus
+    /// `extra`) and return its exit code and parsed final state.
+    fn reconcile(fx: &Fixture, extra: &[&str]) -> (i32, serde_json::Value) {
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/reconcile.sh");
+        let out = Command::new("bash")
+            .arg(&script)
+            .args(["--repo-only", "--json"])
+            .args(extra)
+            .current_dir(fx.dir.path())
+            .env("PATH", path_without_cargo())
+            .env("HOME", fx.dir.path())
+            .output()
+            .expect("bash");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let json: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+            panic!(
+                "reconciler emitted non-JSON ({e}):\n--- stdout ---\n{stdout}\n--- stderr ---\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+        });
+        (out.status.code().unwrap_or(-1), json)
+    }
+
+    fn installer_in(fx: &Fixture) -> String {
+        fs::read_to_string(fx.dir.path().join("install.sh")).unwrap()
+    }
+
+    fn tracked_changes(fx: &Fixture) -> String {
+        let out = Command::new("git")
+            .args(["status", "--porcelain", "--untracked-files=no"])
+            .current_dir(fx.dir.path())
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    #[test]
+    fn dry_run_and_verify_only_classify_the_defect_and_touch_nothing() {
+        for (flag, mutation) in [("--dry-run", "would_apply"), ("--verify-only", "none")] {
+            let fx = defective_checkout();
+            let (code, json) = reconcile(&fx, &[flag]);
+            assert_eq!(
+                code, 2,
+                "{flag}: a defective repository is degraded: {json}"
+            );
+            assert_eq!(
+                json["repository"]["source"], "bug_present",
+                "{flag}: {json}"
+            );
+            assert_eq!(json["repository"]["mutation"], mutation, "{flag}: {json}");
+            assert_eq!(
+                json["repository"]["final_state"], "bug_present",
+                "{flag}: {json}"
+            );
+            assert_eq!(
+                json["exit_code"], 2,
+                "{flag}: the JSON carries the exit code"
+            );
+            assert_eq!(installer_in(&fx), fx.before, "{flag} must not mutate");
+            assert_eq!(tracked_changes(&fx), "", "{flag} must leave the tree clean");
+        }
+    }
+
+    #[test]
+    fn the_transaction_patches_the_defect_into_the_shipped_installer_byte_for_byte() {
+        let fx = defective_checkout();
+        let (code, json) = reconcile(&fx, &[]);
+        // No cargo on PATH: Rust verification is an environment skip, which is
+        // reported as such and keeps the state at PATCH_APPLIED, never VERIFIED.
+        assert_eq!(code, 2, "{json}");
+        let r = &json["repository"];
+        assert_eq!(r["source"], "bug_present", "{json}");
+        assert_eq!(r["mutation"], "applied", "{json}");
+        assert_eq!(r["shell_verify"], "pass", "{json}");
+        assert_eq!(r["structural_verify"], "pass", "{json}");
+        assert_eq!(r["rust_verify"], "skipped_environment", "{json}");
+        assert_eq!(r["final_state"], "patch_applied", "{json}");
+        assert_eq!(
+            installer_in(&fx),
+            install_sh(),
+            "the patched installer must be exactly the one that ships"
+        );
+        assert_eq!(
+            tracked_changes(&fx),
+            " M install.sh\n",
+            "only install.sh changes"
+        );
+
+        // Idempotent: on the fixed shape a second run rewrites nothing.
+        git(fx.dir.path(), &["commit", "-q", "-am", "patched"]);
+        let (code, json) = reconcile(&fx, &[]);
+        assert_eq!(code, 0, "{json}");
+        assert_eq!(json["repository"]["source"], "already_fixed", "{json}");
+        assert_eq!(json["repository"]["mutation"], "unchanged", "{json}");
+        assert_eq!(json["repository"]["final_state"], "already_fixed", "{json}");
+        assert_eq!(tracked_changes(&fx), "");
+    }
+
+    #[test]
+    fn a_failed_required_verification_rolls_the_tree_back_and_proves_it() {
+        let fx = defective_checkout();
+        // Make `git diff --check` — a required structural check — reject the
+        // patch: the fixed block is space-indented, so this whitespace rule
+        // flags every added line. Nothing in the reconciler is bypassed.
+        git(
+            fx.dir.path(),
+            &["config", "core.whitespace", "indent-with-non-tab"],
+        );
+        let (code, json) = reconcile(&fx, &[]);
+        assert_eq!(code, 6, "{json}");
+        let r = &json["repository"];
+        assert_eq!(r["mutation"], "rolled_back", "{json}");
+        assert_eq!(r["structural_verify"], "fail", "{json}");
+        assert_eq!(r["rollback"], "verified", "{json}");
+        assert_eq!(r["final_state"], "failed", "{json}");
+        assert_eq!(
+            installer_in(&fx),
+            fx.before,
+            "rollback must restore the pre-run bytes"
+        );
+        assert_eq!(
+            tracked_changes(&fx),
+            "",
+            "rollback must leave the tree clean"
+        );
+    }
+
+    #[test]
+    fn a_dirty_tree_refuses_mutation() {
+        let fx = defective_checkout();
+        fs::write(fx.dir.path().join("README.md"), "edited\n").unwrap();
+        let (code, json) = reconcile(&fx, &[]);
+        assert_eq!(code, 4, "{json}");
+        assert_eq!(json["repository"]["source"], "bug_present", "{json}");
+        assert_eq!(json["repository"]["mutation"], "refused", "{json}");
+        assert_eq!(json["repository"]["final_state"], "dirty", "{json}");
+        assert_eq!(installer_in(&fx), fx.before);
+    }
+
+    #[test]
+    fn an_unrecognised_source_shape_is_refused_not_guessed() {
+        let fx = defective_checkout();
+        // Same sentinel line, but the block around it is not the known one.
+        let altered = fx.before.replacen(
+            "# the APK from F-Droid is the actual sensor bridge.",
+            "# (edited by hand)",
+            1,
+        );
+        assert_ne!(altered, fx.before, "the fixture must actually be altered");
+        fs::write(fx.dir.path().join("install.sh"), &altered).unwrap();
+        git(fx.dir.path(), &["commit", "-q", "-am", "hand-edited"]);
+        let (code, json) = reconcile(&fx, &[]);
+        assert_eq!(code, 3, "{json}");
+        assert_eq!(json["repository"]["source"], "unknown", "{json}");
+        assert_eq!(json["repository"]["mutation"], "refused", "{json}");
+        assert_eq!(
+            installer_in(&fx),
+            altered,
+            "an unknown shape is never touched"
+        );
+    }
+
+    #[test]
+    fn verify_only_proves_the_shipped_installer_is_at_the_fixed_shape() {
+        let fx = defective_checkout();
+        fs::write(fx.dir.path().join("install.sh"), install_sh()).unwrap();
+        git(fx.dir.path(), &["commit", "-q", "-am", "shipped installer"]);
+        let (code, json) = reconcile(&fx, &["--verify-only"]);
+        assert_eq!(code, 0, "{json}");
+        assert_eq!(json["repository"]["source"], "already_fixed", "{json}");
+        assert_eq!(json["repository"]["mutation"], "unchanged", "{json}");
+        assert_eq!(json["repository"]["shell_verify"], "pass", "{json}");
+        assert_eq!(json["repository"]["structural_verify"], "pass", "{json}");
+        assert_eq!(json["repository"]["final_state"], "already_fixed", "{json}");
+        assert_eq!(tracked_changes(&fx), "");
+    }
+}

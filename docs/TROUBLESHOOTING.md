@@ -138,6 +138,39 @@
 
 ---
 
+### Termux Sensors (GNSS / Wi-Fi / cell radar)
+
+#### Issue: sensor modules no-op, or `hse radar` reports "no sensor readings"
+**Symptoms:** every sweep says the radios were not read; `hse selftest` warns
+that termux-api sensor tools are missing or that the Termux:API bridge did not
+answer; an older installer said "termux-api CLI present" anyway.
+
+**Solution:** run the capability reconciler from the checkout on the device.
+It probes the stock `termux-api` core tools, installs the package only if one
+is missing and re-probes (pkg exiting 0 is not the postcondition), verifies the
+Termux:API app and the bridge, probes each sensor, and tells you exactly which
+fact failed. It also repairs an older checkout's `install.sh` (the
+`termux-info` sentinel defect) as a snapshot → patch → verify → rollback
+transaction.
+
+```bash
+scripts/reconcile.sh                 # converge repository + device
+scripts/reconcile.sh --verify-only   # prove the current state, mutate nothing
+scripts/reconcile.sh --json          # machine-readable final state
+```
+
+Exit 0 means the requested state was verified; 5 means the device substrate is
+incomplete (the report names the missing tool, app, or bridge); 2 means a
+degraded state or a verification that could not run here. A running
+`hse radar` that started before the tools were installed is reported
+`STALE_RESTART_REQUIRED`: restart it before accepting further radar findings
+(or re-run with `--allow-process-restart` to have it stopped for you). Bluetooth
+is an optional provider (`termux-bluetooth-scaninfo` is not in the stock
+`termux-api` package): `BLE UNAVAILABLE` never counts against readiness and
+never supports a "nothing nearby" claim.
+
+---
+
 ## Performance Tuning
 
 ### Optimize for Speed
