@@ -3956,6 +3956,86 @@ private-host preflight refuses 127.0.0.1 by design), so its classification is
 covered by inspection and the pure verdict; the `process` path of
 `cell_intel` is covered by the seam, not end to end.
 
+### REQ-CANARY-001 (**new, Pass 31 — OBSERVED live, EXTENDED, LOCKED**): the sweep observes what it asserts
+
+**Lead.** After REQ-SCOPE-001 the 2026-09-15 live-drift table would read
+`skipped (not_applicable)` for the three Australia-only modules on every
+run, and it already read `empty` for ten username-family modules probed with
+`torvalds` — a handle none of them holds. Twelve keyless providers were swept
+weekly and none could ever be seen to drift: a parser that died in any of
+them looked exactly like a legitimate miss.
+
+**Mechanism (source).** `capability_probe::probe_target` prefers a
+`CANARY_PROBES` entry's own `(kind, value)` over the per-kind sample, so a
+canary is also the way to give one module a known-positive sample. The
+table's doc requires each pair to be "verified to yield deterministically
+against a stable public target".
+
+**Observation (this sandbox, 2026-09-15 16:20 UTC, the built binary,
+`HOME` isolated, `hse scan -k <kind> -v <value> -m <module> -d 0 -t 0
+--max-concurrent 1 --no-skip-dead-modules`; `found` is the dispatcher's
+count):**
+
+| module | sample | found |
+|---|---|---|
+| `gitlab_user` | `sytses` | 2 |
+| `hacker_news` | `pg` | 13 |
+| `devto` | `ben` | 6 |
+| `lobsters` | `pushcx` | 20 |
+| `hexpm_user` | `josevalim` | 3 |
+| `cpan_user` | `RJBS` | 8 |
+| `launchpad_user` | `sabdfl` | 3 |
+| `pypi_user` | `hugovk` | 5 |
+| `crates_io` | `dtolnay` | 68 |
+| `au_rdap` | `abc.net.au` | 13 |
+| `au_geo` | `-33.8688,151.2093` (Sydney CBD) | 10 |
+| `qld_cadastre` | `-27.4698,153.0251` (Brisbane CBD) | 6 |
+| `bitbucket_user` | `atlassian` | 0 — **not** a canary |
+
+Every listed account or anchor is long-lived and prominent (a platform's
+founder or administrator, a maintainer with hundreds of packages, a national
+broadcaster's registration, capital-city geography), so the yield is
+deterministic while the provider is up; a `bitbucket_user` sample that
+yields nothing is excluded rather than guessed.
+
+**Change.** The twelve pairs join `CANARY_PROBES` with the observed counts in
+their comments. `every_canary_has_a_sample_and_is_flagged` now resolves each
+entry in `crate::modules::registry()` and asserts the module accepts its
+sample, that `probe_target` returns that sample, and that the module is a
+keyless (`Free`) network module — a canary the sweep never probes would
+assert nothing.
+
+**What this changes in the weekly run.** Twelve `empty` / `skipped` rows
+become `alive … [canary]` while the parsers hold, and a parser that dies now
+fails the sweep as confirmed drift instead of hiding behind a miss. The
+providers are the ones already reached from GitHub's runner every week (the
+same modules read `empty`, not `unreachable`, on 2026-09-15), so no new
+transport exposure is introduced; a provider that starts refusing the runner
+reads `blocked`, never a dead canary (REQ-DRIFT-003).
+
+**Falsification.** The table corrupted two ways with only its lock run — a
+canary whose module does not accept its sample, and a canary naming a
+key-gated module the keyless sweep never probes (a first attempt used
+`shodan`, whose InternetDB path is `Free`; the lock rightly passed, so the
+mutation, not the lock, was wrong):
+
+```
+[a canary whose module does not accept its sample (au_geo with a Username)] -> LOCK FAILS (expected)
+    selftest::capability_probe::tests::every_canary_has_a_sample_and_is_flagged --- FAILED
+    thread 'selftest::capability_probe::tests::every_canary_has_a_sample_and_is_flagged' (13288) panicked at src/selftest/capability_probe.rs:776:13:
+    canary au_geo does not accept its own sample "sytses"
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7400 filtered out; finished in 0.21s
+[a canary naming a key-gated module (urlhaus, KeyGated since REQ-RETIRE-001; never probed keyless)] -> LOCK FAILS (expected)
+    selftest::capability_probe::tests::every_canary_has_a_sample_and_is_flagged --- FAILED
+    thread 'selftest::capability_probe::tests::every_canary_has_a_sample_and_is_flagged' (13577) panicked at src/selftest/capability_probe.rs:785:13:
+    canary urlhaus must be a keyless network module, or the sweep never probes it
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7400 filtered out; finished in 0.20s
+ALL LOCKS SENSITIVE
+```
+
+**Remote verification.** The `live-drift` workflow is dispatched on the
+branch after the push; the table is recorded here when it completes.
+
 ### REQ-SCOPE-001 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): an out-of-jurisdiction target is a typed skip, never a clean negative
 
 **Lead.** The 2026-09-15 live-drift table (run 34985449332) reads

@@ -298,6 +298,39 @@ pub const CANARY_PROBES: &[(&str, TargetKind, &str)] = &[
     // tolerated "unreachable" line until WiFiDB recovers or the module is
     // retired.
     ("wifidb", TargetKind::MacAddress, "00:13:10:69:EF:11"),
+    // ── Per-module known-positive samples ──────────────────────────────────
+    // The fleet's per-kind samples can never observe these providers: the
+    // username-family modules legitimately hold no `torvalds` account and read
+    // `empty` on every sweep, and the Australia-only registers decline the
+    // New York point in-band (`skipped`), so their drift was invisible. Each
+    // pair below was verified live from the project's sandbox on 2026-09-15
+    // (`hse scan -m <module> -d 0`; the entity count is noted) against a
+    // long-lived, prominent public account or a public-register anchor, so it
+    // yields deterministically while the provider is up.
+    // GitLab's founder — 2 entities.
+    ("gitlab_user", TargetKind::Username, "sytses"),
+    // Hacker News' founder — 13.
+    ("hacker_news", TargetKind::Username, "pg"),
+    // DEV's founder — 6.
+    ("devto", TargetKind::Username, "ben"),
+    // Lobsters' administrator — 20.
+    ("lobsters", TargetKind::Username, "pushcx"),
+    // Elixir's creator — 3.
+    ("hexpm_user", TargetKind::Username, "josevalim"),
+    // A PAUSE id with hundreds of distributions — 8.
+    ("cpan_user", TargetKind::Username, "RJBS"),
+    // Ubuntu's founder — 3.
+    ("launchpad_user", TargetKind::Username, "sabdfl"),
+    // A prolific PyPI maintainer — 5.
+    ("pypi_user", TargetKind::Username, "hugovk"),
+    // serde's maintainer — 68.
+    ("crates_io", TargetKind::Username, "dtolnay"),
+    // The ABC's own registration, auDA RDAP with eligibility data — 13.
+    ("au_rdap", TargetKind::Domain, "abc.net.au"),
+    // Sydney CBD: every ABS ASGS layer resolves — 10.
+    ("au_geo", TargetKind::Coordinates, "-33.8688,151.2093"),
+    // Brisbane CBD: a DCDB cadastral parcel — 6.
+    ("qld_cadastre", TargetKind::Coordinates, "-27.4698,153.0251"),
 ];
 
 /// Whether `module` is a curated must-yield canary (see [`CANARY_PROBES`]).
@@ -719,6 +752,7 @@ mod tests {
 
     #[test]
     fn every_canary_has_a_sample_and_is_flagged() {
+        let registry = crate::modules::registry();
         for (name, kind, value) in CANARY_PROBES {
             assert!(!name.is_empty(), "canary module name must be non-empty");
             assert!(!value.is_empty(), "canary {name} must have a probe value");
@@ -729,6 +763,28 @@ mod tests {
                 "canary {name} uses a kind with no canonical sample"
             );
             assert!(is_canary(name), "{name} must report as a canary");
+            // The sweep probes a canary with the canary's OWN value (that is
+            // what lets a per-module known-positive sample observe a provider
+            // the per-kind sample never could), so the value must be a target
+            // its module accepts, and the module must be one the keyless sweep
+            // runs at all — a canary that is never probed asserts nothing.
+            let m = registry
+                .iter()
+                .find(|m| m.name() == *name)
+                .unwrap_or_else(|| panic!("canary {name} is not a registered module"));
+            assert!(
+                m.accepts(&Target::new(*kind, *value)),
+                "canary {name} does not accept its own sample {value:?}"
+            );
+            assert_eq!(
+                probe_target(m.as_ref()),
+                Some((*kind, *value)),
+                "the sweep must probe canary {name} with its own value"
+            );
+            assert!(
+                matches!(m.cost(), crate::core::module::ModuleCost::Free) && !m.is_passive(),
+                "canary {name} must be a keyless network module, or the sweep never probes it"
+            );
         }
     }
 
