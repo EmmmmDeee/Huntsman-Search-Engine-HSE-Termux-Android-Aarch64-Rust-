@@ -3553,6 +3553,17 @@ test result: FAILED. 0 passed; 1 failed
 
 Restored: 1 passed.
 
+**Live proof (runner).** The live-drift dispatch on `f41b49a` (run
+34985449332, 2026-09-15 15:00Z) now reads the page's own words —
+`unreachable wifidb [wifidb] provider answered an HTML page where JSON was
+expected — an error page, interstitial or login page, not the data (title:
+"Error | Vistumbler WiFiDB"); serde: expected value at line 1 column 1
+[canary]` — and `fleet_capability_drift` FAILS on the dead canary as
+REQ-DRIFT-001 requires (the earlier dispatch on `9057132`, before the canary,
+read only `expected value at line 1 column 1` and passed). The sweep stays
+red until WiFiDB recovers or the module is retired; two consecutive dead
+weekly sweeps retire it.
+
 **Residual.** WiFiDB's recovery is outside the repository; the canary decides
 retirement. The module was driven against the captured template on a loopback
 and observed live with `curl`, not run end to end through its own client from
@@ -3871,4 +3882,77 @@ people-finder; the capability is gone, not migrated. Paste exposure keeps
 two producers. The cell-reading change widens the OpenCellID coordinate
 evidence to every reading present (pci / asu / level were previously not
 emitted there) — more, never fabricated, information.
+
+### REQ-SWEEP-003 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a fallback never hides the primary source's failure; a transport failure never establishes "none"
+
+**Requirement.** When every candidate fetch fails before the server answers,
+nothing is established — the module says so rather than reporting an empty
+enumeration. When a precise keyed source fails and a coarse offline fallback
+is emitted instead, the fallback's evidence says the precise lookup failed.
+
+**Observation** (2026-09-15, re-derived from source after the grep that
+followed backlog #16). `sitemap::fetch_capped` returned `None` for a private
+host, a transport failure, a non-2xx and an unreadable body alike, so a
+domain whose `robots.txt`, `/sitemap.xml` and `/sitemap_index.xml` all
+failed at the transport level read as "publishes no sitemap".
+`cell_intel::query_opencellid` returned `None` for a transport failure, a
+non-2xx (the pool was told), the HTTP-200 key rejection (the pool was told)
+and an undecodable body, exactly as for the provider's documented
+`status: "error"` miss — and `process` fell back to the MCC country centroid
+in every case with no trace, so a coarse fix stood in for a keyed lookup
+that never happened.
+
+**Repair.** `sitemap`: `Fetched::{Body, Absent, Unreached}`; candidates the
+server answered and those never reached are counted apart; `sweep_verdict`
+makes "no URL, nothing answered, something unreached" the module's error
+naming the attempts. `cell_intel`: `query_opencellid(ctx, api_base, key,
+tower, radio) -> Result<Option<(lat, lon, range)>>` — `Ok(None)` only for
+`status: "error"`; a transport failure, a non-2xx, the key rejection, an
+undecodable body and an `ok` answer without usable coordinates are `Err`;
+`process` still emits the centroid fallback on `Err` (offline and honest at
+country grain) with `opencellid_lookup: failed: …` on its evidence.
+
+**Evidence.** `sitemap::tests::no_sitemap_is_established_only_by_a_candidate_that_answered`;
+`cell_intel::tests::a_failed_opencellid_lookup_is_an_error_and_only_the_documented_miss_is_none`
+(loopback: fix / miss / rejected key / 503 / HTML page / `ok` without
+coordinates).
+
+**Falsification.** Each repair reverted in turn with only its lock run:
+
+```
+[sitemap verdict] reverted -> LOCK FAILS (expected)
+    modules::sitemap::tests::no_sitemap_is_established_only_by_a_candidate_that_answered --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7386 filtered out; finished in 0.23s
+[cell_intel key rejection] reverted -> LOCK FAILS (expected)
+    modules::cell_intel::tests::a_failed_opencellid_lookup_is_an_error_and_only_the_documented_miss_is_none --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7386 filtered out; finished in 0.29s
+[cell_intel non-2xx] reverted -> LOCK FAILS (expected)
+    modules::cell_intel::tests::a_failed_opencellid_lookup_is_an_error_and_only_the_documented_miss_is_none --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7386 filtered out; finished in 0.22s
+ALL LOCKS SENSITIVE
+test result: ok. 7364 passed; 0 failed; 23 ignored; 0 measured; 0 filtered out; finished in 6.20s
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 149 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.26s
+test result: ok. 90 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.26s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.40s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.06s
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.83s
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.16s
+test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.25s
+test result: ok. 77 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.06s
+```
+
+**Residual.** `fetch_capped` cannot be driven against a loopback (the
+private-host preflight refuses 127.0.0.1 by design), so its classification is
+covered by inspection and the pure verdict; the `process` path of
+`cell_intel` is covered by the seam, not end to end.
 

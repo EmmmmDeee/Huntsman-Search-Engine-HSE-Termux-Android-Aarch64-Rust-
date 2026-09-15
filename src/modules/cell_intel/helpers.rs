@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
 };
 use crate::util::geo::is_valid_coords;
 use crate::util::http::urlencode;
@@ -118,18 +118,30 @@ pub(super) fn build_tower_device(cell: &Cell, key: &TowerKey, scan_id: &str) -> 
     signal_readings(e, cell)
 }
 
+/// OpenCelliD's `cell/get` endpoint; `query_opencellid` takes it as a
+/// parameter so a loopback server can drive the transport path in tests.
+pub(super) const OPENCELLID_BASE: &str = "https://opencellid.org/cell/get";
+
+/// One OpenCelliD lookup for `tower`. `Ok(Some(fix))` is a located tower;
+/// `Ok(None)` is the provider's documented miss (`status: "error"` with a
+/// real key — "couldn't geolocate this tower"); every other outcome — a
+/// transport failure, a non-2xx, an undecodable body, the HTTP-200 key
+/// rejection, or an `ok` answer without usable coordinates — is `Err`. It
+/// used to be `Option`, so a failed keyed lookup and a genuine miss both fell
+/// back to the MCC country centroid with no trace that the lookup failed.
 pub(super) async fn query_opencellid(
     ctx: &crate::core::module::ModuleContext,
+    api_base: &str,
     api_key: &str,
     tower: &TowerKey<'_>,
     radio: &str,
-) -> Option<(f64, f64, u64)> {
+) -> Result<Option<(f64, f64, u64)>> {
     // URL-encode every interpolated value (consistent with censys). mcc/mnc
     // come from json_to_str of arbitrary cellinfo JSON; a malformed value with
     // a `&`/space would otherwise corrupt the query string. Numeric codes
     // (the normal case) pass through unchanged.
     let url = format!(
-        "https://opencellid.org/cell/get?key={}&mcc={}&mnc={}&lac={}&cellid={}&radio={}&format=json",
+        "{api_base}?key={}&mcc={}&mnc={}&lac={}&cellid={}&radio={}&format=json",
         urlencode(api_key),
         urlencode(&tower.mcc),
         urlencode(&tower.mnc),
@@ -144,7 +156,12 @@ pub(super) async fn query_opencellid(
         .header("Accept", "application/json")
         .send()
         .await
-        .ok()?;
+        .map_err(|e| {
+            Error::module(
+                SRC,
+                format!("OpenCelliD request failed: {}", e.without_url()),
+            )
+        })?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -161,33 +178,42 @@ pub(super) async fn query_opencellid(
             api_key,
             ctx,
         );
-        return None;
+        return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
 
-    let data: OpenCellidResp = crate::util::http::json_scanned(resp, SRC).await.ok()?;
+    let data: OpenCellidResp = crate::util::http::json_scanned(resp, SRC)
+        .await
+        .map_err(|e| Error::module(SRC, e))?;
 
-    if data.error.is_some() {
+    if let Some(err) = data.error {
         // See `OpenCellidResp::error`'s doc comment — a body-level key
         // failure OpenCelliD signals as a plain 200, so this can't be
         // caught by the status check above. Distinct from the `status:
         // "error"` case just below (a genuine "couldn't geolocate this
         // tower" negative with a real key — not a key problem).
         crate::util::http::note_keyed_error(401, crate::modules::opencellid::SRC, api_key, ctx);
-        return None;
+        return Err(Error::module(
+            SRC,
+            format!("OpenCelliD rejected the key: {err}"),
+        ));
     }
     if data.status.as_deref() == Some("error") {
-        return None;
+        return Ok(None);
     }
 
-    let lat = data.lat?;
-    let lon = data.lon?;
     // Shared validator: rejects Null Island AND out-of-range / non-finite
-    // values a malformed OpenCelliD payload could carry (see util::geo).
-    if !is_valid_coords(lat, lon) {
-        return None;
+    // values a malformed OpenCelliD payload could carry (see util::geo). An
+    // `ok` answer without usable coordinates is a shape this module does not
+    // recognise — a failed lookup, not a miss.
+    match (data.lat, data.lon) {
+        (Some(lat), Some(lon)) if is_valid_coords(lat, lon) => {
+            Ok(Some((lat, lon, data.range.unwrap_or(5000))))
+        }
+        _ => Err(Error::module(
+            SRC,
+            "OpenCelliD answered without usable coordinates and without its documented error status",
+        )),
     }
-
-    Some((lat, lon, data.range.unwrap_or(5000)))
 }
 
 /// Map a cell fix's accuracy radius (metres) to a coordinate confidence.
