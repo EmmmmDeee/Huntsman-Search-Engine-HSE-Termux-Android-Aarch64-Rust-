@@ -590,8 +590,7 @@ fn key_rejected_failure(rejection: Option<see_know::KeyRejection>) -> Option<Err
 /// failed call, so a rate-limit burst is visible in the operator's log even when
 /// this returns false.
 ///
-/// Mirrors [`crate::modules::asic_director`]'s `request_failed` and
-/// `cert_intel`'s `never_answered` for the multi-call case. Pure and free
+/// Mirrors `cert_intel`'s `never_answered` for the multi-call case. Pure and free
 /// of `ModuleContext`/network, so it is unit-testable without a live server or an
 /// API key — see `tests::seeknow_never_answered_*`.
 #[must_use]

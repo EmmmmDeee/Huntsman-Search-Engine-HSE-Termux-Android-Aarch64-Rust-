@@ -23,36 +23,38 @@
 //!   * ACN emitted for downstream abn_lookup: 0.82
 //!   * Address from registered office: 0.72
 //!
-//! **Live status (2026-08-04):** a direct request to the endpoint above
-//! returns `403` — including with a full browser `User-Agent` header — which
-//! is an anti-bot/WAF (or JS-challenge) block, NOT the plain IP rate-limiting
-//! this doc previously assumed. A rate limit would show as an eventual `429`
-//! or a delayed `200`; an immediate, UA-independent `403` on every request
-//! means no plain HTTP client (this module's `reqwest`/`curl` transport
-//! included) can currently pass it without a headless-browser-class
-//! workaround. Confirmed live from a non-residential IP; not yet confirmed
-//! whether a Termux/mobile-carrier IP fares differently. No fix attempted
-//! here — this is the module's next candidate work, the same
-//! "confirmed-dead-endpoint, no rewrite yet" pattern `au_property` carried
-//! until its endpoints were confirmed gone and it was retired.
+//! **Live status (2026-09-15, reconfirming 2026-08-04):** from a datacenter
+//! client the endpoint answers `403 text/html` with Cloudflare's block page
+//! ("Attention Required! … Sorry, you have been blocked … You are unable to
+//! access asic.gov.au", 4,547 bytes — the same template as the `anubis`
+//! capture in `util::html::testdata`), with a full browser `User-Agent`
+//! header and on every request: an anti-bot/WAF block, not rate limiting (a
+//! throttle shows as a `429` or a delayed `200`). A wall is per client, so
+//! whether a Termux/mobile-carrier IP passes it is still unconfirmed; the
+//! module stays, and says which outcome it met.
 //!
 //! This module uses a light scraping strategy with a single polite request
 //! per scan. The ABN/ACN pivot via `abn_lookup` then enriches the full
 //! company record including HQ address and geolocation — making this the
 //! highest-confidence AU geo pivot after a FullName seed, when reachable.
 //!
-//! `process()` distinguishes "the request never actually got a readable
-//! response" (a real `Error::module` failure, surfaced to the operator and to
-//! the T2.7 scraper-health signal) from "ASIC Connect Online answered but had
-//! no director record matching this name" (the ordinary, honest empty
-//! success) — see [`request_failed`].
+//! Every failure is typed at its seam ([`fetch_register_page`]): a transport
+//! failure and an unreadable body are `Error::Module`, a `429` is
+//! `Error::RateLimited`, and a challenge / block page — the `403` above, or a
+//! wall served with a 2xx — is `Error::BotChallenge`, which benches the module
+//! under the breaker's own reason and reads `blocked` in `hse doctor --live`,
+//! the capabilities API and the live-drift sweep. Until 2026-09-15 all four
+//! were folded into one `Error::module` string that admitted it could not tell
+//! them apart, and the sweep filed the wall as "unreachable" — a provider that
+//! is down. Only a register page read to its end that names no director row is
+//! the honest empty success.
 
 use async_trait::async_trait;
 
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -326,80 +328,60 @@ impl Module for AsicDirector {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let full_name = target.value.trim();
-        // ASIC Connect Online public person search (name search).
-        let url = format!(
-            "https://connectonline.asic.gov.au/RegistrySearch/faces/landing/SearchRegisters.jspx?searchText={}&searchType=OrgAndBus",
-            crate::util::http::urlencode(full_name),
-        );
+        let html = fetch_register_page(&ctx.http, SEARCH_URL, full_name).await?;
 
-        let mut html_read_ok = false;
         let mut result = ModuleResult::new();
-
-        if let Ok(resp) = ctx
-            .http
-            .get(&url)
-            .header("User-Agent", crate::util::http::UA_BROWSER)
-            .header("Accept", "text/html,application/xhtml+xml")
-            .send_tagged(SRC)
-            .await
-            && resp.status().is_success()
-            && let Some(html) = crate::util::http::read_body_capped(resp, 1_000_000).await
-            && register_page_is_usable(&html)
-        {
-            html_read_ok = true;
-            result.extend(parse_asic_html(&html, full_name).into_iter().flat_map(
-                |(company, acn, address)| {
-                    build_director_entities(
-                        &company,
-                        &acn,
-                        full_name,
-                        address.as_deref(),
-                        &ctx.scan_id,
-                    )
-                },
-            ));
-        }
-
-        if request_failed(html_read_ok, !result.entities.is_empty()) {
-            return Err(Error::module(
-                SRC,
-                "ASIC Connect Online request failed at the transport level, returned a \
-                 non-success HTTP status, answered an anti-bot / WAF page instead of the \
-                 register, or its response body was unreadable — not \"no director \
-                 records for this name\"",
-            ));
-        }
-
+        result.extend(parse_asic_html(&html, full_name).into_iter().flat_map(
+            |(company, acn, address)| {
+                build_director_entities(&company, &acn, full_name, address.as_deref(), &ctx.scan_id)
+            },
+        ));
         crate::core::entity::dedup_merge_entities(&mut result.entities);
         Ok(result)
     }
 }
 
-/// Whether `process()`'s single ASIC Connect Online request should be
-/// surfaced as a real `Error::module` failure rather than its ordinary empty
-/// success. True precisely when the request never produced a readable HTML
-/// body (`html_read_ok` false — a transport error, non-success HTTP status,
-/// or an oversized/undecodable body) AND nothing was found
-/// (`found_any_entity` false). A request that read successfully but simply
-/// matched no director record for this name is not a failure — only "ASIC
-/// Connect Online never actually answered this scan" is. Mirrors
-/// the multi-leg `all_legs_unreachable` shape (`cert_intel::never_answered`)
-/// for this module's single-request case; pure and free of
-/// `ModuleContext`/network so it is unit-testable without a live server —
-/// see `tests::request_failed_*`.
-/// True when a 2xx body is the register's own page rather than an anti-bot
-/// challenge / WAF block page served in its place (this host is known to
-/// answer non-browser clients with exactly that — see the module doc). A wall
-/// parsed for director rows finds none and used to read as "no director
-/// records for this name"; it is not a read page at all.
-#[must_use]
-fn register_page_is_usable(html: &str) -> bool {
-    !crate::util::html::is_challenge_document(html)
-}
+/// ASIC Connect Online's public register search (name search).
+const SEARCH_URL: &str =
+    "https://connectonline.asic.gov.au/RegistrySearch/faces/landing/SearchRegisters.jspx";
 
-#[must_use]
-fn request_failed(html_read_ok: bool, found_any_entity: bool) -> bool {
-    !html_read_ok && !found_any_entity
+/// One polite request for the register page naming `full_name`, typed at every
+/// seam. `search_url` is a parameter so the path runs against a loopback in
+/// tests; production passes [`SEARCH_URL`].
+///
+/// Every failure is an `Err`: "no director records for this name" is a negative
+/// claim an analyst acts on, so neither a transport failure, a non-2xx (the
+/// `403` Cloudflare block this host serves datacenter clients is the typed
+/// `BotChallenge`, a `429` the typed `RateLimited` — `ok_or_absent`), a body
+/// cut short, nor a wall served with a 2xx (`BotChallenge` —
+/// `read_body_capped_or_fail`) may manufacture one. Only a page read to its
+/// end is returned; until 2026-09-15 every one of those was the same
+/// `Error::module` string, and the sweep filed the wall as a provider that is
+/// down.
+pub(super) async fn fetch_register_page(
+    client: &reqwest::Client,
+    search_url: &str,
+    full_name: &str,
+) -> Result<String> {
+    let url = format!(
+        "{search_url}?searchText={}&searchType=OrgAndBus",
+        crate::util::http::urlencode(full_name),
+    );
+    let resp = client
+        .get(&url)
+        .header("User-Agent", crate::util::http::UA_BROWSER)
+        .header("Accept", "text/html,application/xhtml+xml")
+        .send_tagged(SRC)
+        .await?;
+    // `&[]`: the search page is a fixed endpoint, not a per-subject resource,
+    // so no status means "this name has no record" — a 404 is the endpoint
+    // gone, and every other non-2xx is the failure it is.
+    let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[]).await? else {
+        // Unreachable with `&[]` (no status is declared absent); an empty page
+        // parses to no rows.
+        return Ok(String::new());
+    };
+    crate::util::http::read_body_capped_or_fail(SRC, resp, 1_000_000).await
 }
 
 #[cfg(test)]

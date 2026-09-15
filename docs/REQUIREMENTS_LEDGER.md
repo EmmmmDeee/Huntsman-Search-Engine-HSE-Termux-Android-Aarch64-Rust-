@@ -4108,6 +4108,81 @@ the next step if a 200 wall is observed on one. The remaining
 `ip_reputation`) read JSON or crawl content and mint no negative claim from
 an empty parse.
 
+### REQ-DRIFT-005 (**new, Pass 31 — OBSERVED on the runner and from the sandbox, FIXED, FALSIFIED**): `asic_director` names the outcome it met; the register's Cloudflare block is `blocked`, not `unreachable`
+
+**Observation (runner).** Every live-drift run reads `unreachable asic_director
+— ASIC Connect Online request failed at the transport level, returned a
+non-success HTTP status, answered an anti-bot / WAF page instead of the
+register, or its response body was unreadable — not "no director records for
+this name"` (runs 34998644556 at 17:03 and 35000372348 at 17:20 UTC on
+2026-09-15, and every run before them): the message admits it cannot tell four
+outcomes apart, and the sweep files all four as a provider that is down.
+
+**Observation (this sandbox, 2026-09-15 17:36 UTC, `curl` with a browser
+User-Agent).** `GET https://connectonline.asic.gov.au/RegistrySearch/faces/landing/SearchRegisters.jspx?searchText=Fletcher%20Moreau&searchType=OrgAndBus`
+→ `403 text/html; charset=UTF-8`, 4,547 bytes in 1.65 s, `<title>Attention
+Required! | Cloudflare</title>`, visible text "Please enable cookies. Sorry,
+you have been blocked. You are unable to access asic.gov.au … Cloudflare Ray
+ID: … Your IP: …" — byte-for-byte the `anubis` block page already checked in
+(`src/util/html/testdata/cloudflare_block_anubis_2026-09-15.html`) but for the
+host line, so that fixture drives the lock and no second copy is added. The
+host resolves through Cloudflare (`connectonline.asic.gov.au.cdn.cloudflare.net`,
+172.65.90.0/1/3). The 2026-08-04 note in the module header (an immediate,
+UA-independent 403) is reconfirmed; a wall is per client, so a Termux /
+mobile-carrier client may still pass it, and the module stays.
+
+**Attack on the leading reading (a wall per client, so the module stays)
+against its rival (the register path is retired and the wall hides it).**
+Predictions recorded before the test: a client-wide WAF policy answers the
+host's root and any other path with the same block page; a retired path
+answers the root 2xx and the path 403/404. Observed (sandbox, 17:58 UTC):
+`GET https://connectonline.asic.gov.au/` → `403`, 4,547 B, "Attention
+Required! | Cloudflare"; `…/landing/panelSearch.jspx` → the same; `asic.gov.au`
+→ `301` to `www.asic.gov.au`. The block is host-wide for this client — the
+leader holds. **Residual, preserved:** whether the search page still exists
+for a browser-class client is not observable from a datacenter address (the
+archive answered this sandbox `429` on every attempt), and the runner is the
+same class of client. Reversal condition: a Termux / mobile-carrier client
+meeting a 404 or a redirect away from the register path retires the module
+(REQ-RETIRE-003's procedure); a 2xx register page confirms it.
+
+**Verified from source.** `process()` (`src/modules/asic_director/mod.rs`) ran
+`if let Ok(resp) = … && resp.status().is_success() && let Some(html) =
+read_body_capped(…) && register_page_is_usable(&html)` and, when the chain
+broke anywhere, returned one `Error::module` string. The typed error existed
+at every seam — `send_tagged`'s transport error, `http_status_error`'s
+`RateLimited` / `BotChallenge` / `Module` (REQ-DRIFT-002/003),
+`document_or_challenge`'s `BotChallenge` (REQ-SCRAPE-001) — and was thrown
+away.
+
+**Fix.** `fetch_register_page(client, search_url, full_name) -> Result<String>`
+is the one request path, its endpoint a parameter so it runs against a
+loopback; `ok_or_absent(SRC, resp, &[])` types every non-2xx (no status means
+"no record": the search page is a fixed endpoint) and
+`read_body_capped_or_fail` types a wall served with a 2xx and a body cut short.
+`process()` parses only a page read to its end; `request_failed` and
+`register_page_is_usable` are gone with the folded message.
+
+**Lock.** `the_register_edges_wall_is_the_typed_bot_challenge_never_unreachable_or_no_records`
+drives the path against a loopback serving, in turn, the Cloudflare block page
+as `403` (→ `Error::BotChallenge`, message `HTTP 403 … Attention Required`),
+the same page as `200` (→ `BotChallenge`), a `500` (→ `Error::Module`, `HTTP
+500`), and a register page naming no row (→ the empty result).
+
+**Falsification.** Each repair reverted in turn with only the lock run:
+
+```
+[the 403 declared absent again (a wall read as "no record")] reverted -> LOCK FAILS (expected)
+    test modules::asic_director::tests::the_register_edges_wall_is_the_typed_bot_challenge_never_unreachable_or_no_records ... FAILED
+    thread 'modules::asic_director::tests::the_register_edges_wall_is_the_typed_bot_challenge_never_unreachable_or_no_records' (5654) panicked at src/modules/asic_director/tests.rs:280:10:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7324 filtered out; finished in 0.21s
+[the 2xx body read permissively again (a wall parsed as the page)] reverted -> LOCK FAILS (expected)
+    test modules::asic_director::tests::the_register_edges_wall_is_the_typed_bot_challenge_never_unreachable_or_no_records ... FAILED
+    thread 'modules::asic_director::tests::the_register_edges_wall_is_the_typed_bot_challenge_never_unreachable_or_no_records' (5953) panicked at src/modules/asic_director/tests.rs:289:10:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7324 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
 ### REQ-RETIRE-003 (**new, Pass 31 — OBSERVED from two vantage points, RESEARCHED, RETIRED**): `au_electoral`'s hosts have no address and `au_property`'s endpoints are gone
 
 **Observation (runner).** Every live-drift run this branch dispatched reads
@@ -4176,6 +4251,12 @@ called it), the comments that named them, the API-reference rows (and the
 unchanged. Every full-name scan stops paying six doomed requests and two
 breaker trips. Doc-coverage ceiling 1032 → 1030; the built binary lists 192
 modules and neither name.
+
+**Remote verification (live-drift run 35005088938 on `19f2c03`, 2026-09-15
+18:03 UTC).** 116 modules probed (118 before); no `au_electoral` and no
+`au_property` row; 89 alive, 18 empty, 2 unreachable (`asic_director`,
+`wifidb`), 1 timed-out, 1 rate-limited, 4 blocked, 1 skipped. The sweep is
+red only on the `wifidb` dead canary, by design.
 
 **Falsification.** The README module count flipped back to the retired
 figure and the nine-class pin flipped back to eleven, each with only its
@@ -4257,9 +4338,14 @@ ALL LOCKS SENSITIVE
 17:20 UTC).** Reddit answered that run's probe with `HTTP 429 Too Many
 Requests: <empty>` — `rate-limited reddit_user`, the typed throttle
 (REQ-DRIFT-002), not the block page — so the wall rule was not exercised on
-the runner in that run; the loopback lock stands as its proof until Reddit
-serves the page to the runner again. The sweep read 118 probed — 88 alive,
-18 empty, 5 unreachable, 1 timed-out, 2 rate-limited, 3 blocked, 1 skipped.
+the runner in that run (118 probed — 88 alive, 18 empty, 5 unreachable,
+1 timed-out, 2 rate-limited, 3 blocked, 1 skipped). **The next run (35005088938
+on `19f2c03`, 18:03 UTC) met the wall:** `blocked reddit_user — reddit_user:
+HTTP 403 Forbidden on the Atom feed with an HTML page — Reddit's
+network-security block ("You've been blocked by network security"), not a
+feed and not an absent account` — the module-level rule, exercised on the
+runner, where the same answer had read `unreachable` with raw markup as the
+snippet at 17:03.
 
 **Residual.** The shared classifier still reads only the first 8 KiB of an
 error body; a wall whose prose sits beyond that and whose opener carries no

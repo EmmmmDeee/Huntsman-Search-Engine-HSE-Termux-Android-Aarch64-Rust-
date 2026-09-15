@@ -198,34 +198,6 @@ fn extract_au_address_requires_valid_postcode_range() {
     assert!(extract_au_address("Somewhere 3000").is_none());
 }
 
-// ── `request_failed` — the "ASIC Connect Online never answered" vs
-// "genuinely no director records" distinction (T2.120). ──────────────────
-
-#[test]
-fn request_failed_true_when_the_request_never_read_and_nothing_found() {
-    // Regression: before this fix, `process()` collapsed a transport error,
-    // a non-success HTTP status, AND an unreadable body all into the same
-    // silent `Ok(ModuleResult::new())` as a genuine "no director records for
-    // this name" result — indistinguishable from a real outage or a
-    // rejected request.
-    assert!(request_failed(false, false));
-}
-
-#[test]
-fn request_failed_false_when_the_request_read_even_with_no_match() {
-    // The request got a real, readable response — this name simply had no
-    // director record in it. An honest empty result, not a failure.
-    assert!(!request_failed(true, false));
-}
-
-#[test]
-fn request_failed_false_when_entities_were_found() {
-    // Found something, regardless of the html_read_ok bookkeeping — never
-    // report a hard failure over a real result.
-    assert!(!request_failed(false, true));
-    assert!(!request_failed(true, true));
-}
-
 #[test]
 fn clean_html_decodes_numeric_character_references() {
     // Regression: the hand-rolled decoder knew four named entities and nothing
@@ -274,18 +246,60 @@ fn clean_html_is_linear_in_ampersand_count() {
     );
 }
 
-/// The register's edge answering a Cloudflare wall with a 2xx is not a read
-/// register page: parsed for rows it finds none, which used to read as "no
-/// director records for this name". The 2026-09-15 austlii capture is the
-/// same edge's page shape.
-#[test]
-fn a_wall_served_with_2xx_is_not_a_usable_register_page() {
-    const WALL: &str =
-        include_str!("../../util/html/testdata/cloudflare_challenge_austlii_2026-09-15.html");
-    assert!(!register_page_is_usable(WALL));
-    assert!(register_page_is_usable(
-        "<html><body><table><tr><td>No results found</td></tr></table></body></html>"
-    ));
-    // Not usable + nothing found is the request-failed path, never a clean negative.
-    assert!(request_failed(register_page_is_usable(WALL), false));
+/// The register's edge answered the sandbox on 2026-09-15 with Cloudflare's
+/// block page — `403 text/html`, "Attention Required! … Sorry, you have been
+/// blocked … You are unable to access asic.gov.au", the same template as the
+/// `anubis` capture (only the host line differs) — and every live-drift run
+/// filed it as `unreachable`, the class of a provider that is down, because
+/// `process()` folded a transport failure, a non-2xx, a wall and an unreadable
+/// body into one `Error::module` string. Each is typed at the seam now: the
+/// 403 wall and a wall served with a 2xx are `BotChallenge` (the breaker's own
+/// reason; `blocked` in the sweep), a 500 stays `Error::Module`, and only a
+/// register page read to its end that names no row is the empty success.
+#[tokio::test]
+async fn the_register_edges_wall_is_the_typed_bot_challenge_never_unreachable_or_no_records() {
+    use crate::core::error::Error;
+    use crate::util::http::test_server::{Canned, serve};
+    const CF_BLOCK: &str =
+        include_str!("../../util/html/testdata/cloudflare_block_anubis_2026-09-15.html");
+    let base = serve(vec![
+        Canned::html(403, CF_BLOCK),
+        Canned::html(200, CF_BLOCK),
+        Canned::html(500, "<html><body>Internal Server Error</body></html>"),
+        Canned::html(
+            200,
+            "<!DOCTYPE html><html><head><title>Search registers</title></head>\
+             <body><table><tr><td>No results found</td></tr></table></body></html>",
+        ),
+    ])
+    .await;
+    let client = reqwest::Client::new();
+
+    let err = fetch_register_page(&client, &base, "Fletcher Moreau")
+        .await
+        .expect_err("the 403 block page is a refusal, not a register page");
+    assert!(matches!(err, Error::BotChallenge(_)), "{err}");
+    assert!(
+        err.to_string().contains("HTTP 403") && err.to_string().contains("Attention Required"),
+        "{err}"
+    );
+
+    let err = fetch_register_page(&client, &base, "Fletcher Moreau")
+        .await
+        .expect_err("a wall served with 200 is not a register page");
+    assert!(matches!(err, Error::BotChallenge(_)), "{err}");
+
+    let err = fetch_register_page(&client, &base, "Fletcher Moreau")
+        .await
+        .expect_err("a 500 is a failure, never \"no director records\"");
+    assert!(matches!(err, Error::Module { .. }), "{err}");
+    assert!(err.to_string().contains("HTTP 500"), "{err}");
+
+    let html = fetch_register_page(&client, &base, "Fletcher Moreau")
+        .await
+        .expect("a register page read to its end is returned");
+    assert!(
+        parse_asic_html(&html, "Fletcher Moreau").is_empty(),
+        "no rows is the honest empty result"
+    );
 }
