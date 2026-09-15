@@ -462,8 +462,7 @@ mod prop {
 // away on one expression.
 //
 // `never_answered` is pure so the policy is testable without a live crt.sh or a
-// TLS handshake, matching `see_know::seeknow_never_answered` and
-// `au_property::all_legs_unreachable`.
+// TLS handshake, matching `see_know::seeknow_never_answered`.
 
 #[test]
 fn a_total_outage_with_nothing_found_is_an_error() {

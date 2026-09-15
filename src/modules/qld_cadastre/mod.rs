@@ -9,8 +9,8 @@
 //! the point falls in. Coordinates outside QLD are skipped before any network
 //! call (`crate::util::geo::au_state_for_coords`).
 //!
-//! This is the coordinate-keyed complement to `au_property` (which is
-//! name-keyed): it surfaces the parcel identifier an analyst takes to the
+//! This is coordinate-keyed (no Australian state offers a keyless name-keyed
+//! owner search — title searches are paid): it surfaces the parcel identifier an analyst takes to the
 //! Queensland Titles Registry for ownership — ownership itself is not public,
 //! so this module deliberately emits none.
 

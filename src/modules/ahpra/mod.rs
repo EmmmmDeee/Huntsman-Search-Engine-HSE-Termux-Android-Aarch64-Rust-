@@ -111,8 +111,8 @@ impl Module for Ahpra {
         // subject, which an analyst will act on, so a connection reset while
         // streaming the body must never be able to produce one — see
         // `read_body_capped_or_fail`. Fail closed, as the sibling AU scrapers
-        // already do (`asic_director::request_failed`, `au_electoral`'s
-        // `RollOutcome::Unreachable`, `app_links`' `FetchOutcome::TransportFailed`).
+        // already do (`asic_director::request_failed`, `app_links`'
+        // `FetchOutcome::TransportFailed`).
         let html = crate::util::http::read_body_capped_or_fail(SRC, resp, 512 * 1024).await?;
 
         let practitioners = parse_ahpra_html(&html);

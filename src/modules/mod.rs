@@ -18,9 +18,7 @@ pub mod asic_business_names;
 pub mod asic_director;
 pub mod asic_persons;
 pub mod au_business_id;
-pub mod au_electoral;
 pub mod au_geo;
-pub mod au_property;
 pub mod au_rdap;
 pub mod au_unclaimed;
 pub mod auspost;
@@ -591,8 +589,6 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(asic_business_names::AsicBusinessNames),
             Arc::new(asic_banned_orgs::AsicBannedOrgs),
             Arc::new(au_business_id::AuBusinessId),
-            Arc::new(au_electoral::AuElectoral),
-            Arc::new(au_property::AuProperty),
             Arc::new(au_geo::AuGeo),
             Arc::new(acnc_charities::AcncCharities),
             Arc::new(gleif_lei::GleifLei),

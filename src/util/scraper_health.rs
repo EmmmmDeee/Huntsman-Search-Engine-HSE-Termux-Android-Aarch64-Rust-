@@ -339,10 +339,10 @@ mod tests {
     fn trailing_failures_count_until_the_last_success_and_stop_there() {
         // Chronological: success, fail, fail, fail (newest). Newest-first order:
         let events = vec![
-            err("s4", 400, "au_property", "parse error"),
-            err("s3", 300, "au_property", "parse error"),
-            err("s2", 200, "au_property", "parse error"),
-            done("s1", 100, "au_property"),
+            err("s4", 400, "ahpra", "parse error"),
+            err("s3", 300, "ahpra", "parse error"),
+            err("s2", 200, "ahpra", "parse error"),
+            done("s1", 100, "ahpra"),
         ];
         let health = aggregate_source_health(&events);
         assert_eq!(health.len(), 1);
@@ -358,8 +358,8 @@ mod tests {
     #[test]
     fn two_strikes_is_not_yet_drifted() {
         let events = vec![
-            err("s2", 200, "au_electoral", "http 500"),
-            err("s1", 100, "au_electoral", "http 500"),
+            err("s2", 200, "asic_director", "http 500"),
+            err("s1", 100, "asic_director", "http 500"),
         ];
         let health = aggregate_source_health(&events);
         assert_eq!(health[0].consecutive_failures, 2);
@@ -422,9 +422,9 @@ mod tests {
         // Every run is a genuine, legitimate zero — nothing distinguishes
         // this from a target that simply has nothing for this source.
         let events = vec![
-            done_found("s3", 300, "au_property", 0),
-            done_found("s2", 200, "au_property", 0),
-            done_found("s1", 100, "au_property", 0),
+            done_found("s3", 300, "ahpra", 0),
+            done_found("s2", 200, "ahpra", 0),
+            done_found("s1", 100, "ahpra", 0),
         ];
         let health = aggregate_source_health(&events);
         assert!(!health[0].ever_yielded);

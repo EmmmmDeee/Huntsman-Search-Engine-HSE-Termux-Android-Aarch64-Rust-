@@ -23,7 +23,7 @@
 //! findings are synergistic: the licensee becomes an `Organisation`, its ABN an
 //! `AbnAcn`, and the registered address an `Address`, each a pivot into the rest
 //! of the AU stack ([`crate::modules::abn_lookup`], `asic_director`,
-//! `au_property`, `geocode`). No mock: the JSON is fetched live from ASIC's own
+//! `geocode`). No mock: the JSON is fetched live from ASIC's own
 //! open dataset.
 
 use serde_json::{Map, Value};

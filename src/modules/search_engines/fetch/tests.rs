@@ -160,8 +160,8 @@ use super::*;
     /// Adversarial-input coverage (PROBLEM_TREE T2.7): `result_parsers_never_
     /// panic_on_adversarial_html` above covers a fixed, hand-picked battery of
     /// hostile bytes; this adds the same randomized `proptest` never-panics
-    /// guarantee already applied to `au_people`/`au_electoral`/`au_property`'s
-    /// HTML parsers, exercising the full `.{0,256}` arbitrary-input space
+    /// guarantee the (since-retired) AU register scrapers' HTML parsers carried,
+    /// exercising the full `.{0,256}` arbitrary-input space
     /// rather than a fixed case list. `html` is the untrusted, scraped SERP
     /// response.
     mod prop {

@@ -96,8 +96,6 @@ use super::*;
         }
         for class in [
             GeoSourceClass::Geocode,
-            GeoSourceClass::Property,
-            GeoSourceClass::Electoral,
             GeoSourceClass::Registry,
             GeoSourceClass::Directory,
             GeoSourceClass::Enrichment,
@@ -201,7 +199,7 @@ use super::*;
         assert_eq!(geo_source_class("exif_geo"), GeoSourceClass::PhotoGps);
         assert_eq!(geo_source_class("abn_lookup"), GeoSourceClass::Registry);
         assert_eq!(geo_source_class("asic_director"), GeoSourceClass::Registry);
-        assert_eq!(geo_source_class("au_people"), GeoSourceClass::Directory);
+        assert_eq!(geo_source_class("au_unclaimed"), GeoSourceClass::Directory);
         assert_eq!(geo_source_class("phone_area_geo"), GeoSourceClass::Phone);
         assert_eq!(geo_source_class("unknown_src"), GeoSourceClass::Other);
     }
@@ -368,7 +366,7 @@ use super::*;
             au_coord("-33.8700,151.2100", 0.75, "exif_geo", "NSW"),
             au_coord("-33.8710,151.2110", 0.70, "wigle", "NSW"),
             // A lone Perth sighting 3,290 km west.
-            au_coord("-31.9523,115.8613", 0.85, "au_electoral", "WA"),
+            au_coord("-31.9523,115.8613", 0.85, "au_unclaimed", "WA"),
         ];
         let f = au059_synergy_fix(&ents).expect("the Sydney cluster must still fire");
         assert!(

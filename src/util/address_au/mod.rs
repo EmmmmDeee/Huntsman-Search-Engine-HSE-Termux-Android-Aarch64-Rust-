@@ -927,43 +927,6 @@ fn au_network_operator_in(
         .map(|(_, canon, kind, _)| (*canon, *kind))
 }
 
-/// True when the four bytes `bytes[i..i + 4]` form a **standalone** Australian
-/// postcode: four ASCII digits that fall in an assigned state range per
-/// [`state_for_postcode`] — which includes the leading-zero ACT (`0200..=0299`)
-/// and NT (`0800..=0999`) ranges a bare `2000..=9999` gate would drop — and that
-/// are not part of a longer digit run on either side, so `20267` is rejected
-/// rather than read as `2026`, and `12026` is not read as `2026` either.
-///
-/// This is the single canonical postcode-boundary predicate shared by the AU
-/// free-text parsers (`modules::au_property::extract_postcode` and
-/// `modules::au_electoral`'s suburb-hint scan). It replaces two hand-rolled
-/// copies that had **diverged**: one enforced the digit-run boundary guards and
-/// the other did not, so the second anchored a suburb hint on a spurious 4-digit
-/// prefix of a 5-digit number. Collapsing them here makes that divergence
-/// impossible to reintroduce. Pure, total, allocation-free.
-///
-/// Callers scan `for i in 0..bytes.len().saturating_sub(3)`, where `i + 3` is
-/// always in bounds; the explicit `i + 3 < bytes.len()` guard keeps the
-/// predicate total (panic-free) for any `(bytes, i)`.
-#[must_use]
-pub fn is_standalone_postcode_at(bytes: &[u8], i: usize) -> bool {
-    i + 3 < bytes.len()
-        && bytes[i].is_ascii_digit()
-        && bytes[i + 1].is_ascii_digit()
-        && bytes[i + 2].is_ascii_digit()
-        && bytes[i + 3].is_ascii_digit()
-        // Not part of a longer digit run — a 5+ digit number is never a postcode.
-        && !bytes.get(i + 4).is_some_and(u8::is_ascii_digit)
-        && (i == 0 || !bytes[i - 1].is_ascii_digit())
-        && {
-            // Four ASCII digits — validate against the authoritative state-postcode map
-            // to ensure consistency with state_for_postcode. This includes NT (0800-0999)
-            // and ACT (0200-0299) which were previously excluded by a bare 2000..=9999 gate.
-            let pc_str = core::str::from_utf8(&bytes[i..i + 4]).unwrap_or("");
-            state_for_postcode(pc_str).is_some()
-        }
-}
-
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

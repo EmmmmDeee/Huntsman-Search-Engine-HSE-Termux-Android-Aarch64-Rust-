@@ -136,11 +136,11 @@ fn au093_geocode_reverse_geocode_is_not_labeled_breach() {
 
 #[test]
 fn au093_registry_enricher_is_not_labeled_breach() {
-    // A non-geo enricher (electoral roll) also stamps suburb/state/postcode but
+    // A non-geo enricher (a company-director register) also stamps suburb/state/postcode but
     // is not a leaked breach record — the same gate excludes it.
     let mut p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
     p.add_evidence(
-        Evidence::new("au_electoral", "electoral roll")
+        Evidence::new("asic_director", "director register")
             .with_attr("suburb", "Darwin")
             .with_attr("state", "NT")
             .with_attr("postcode", "0800"),

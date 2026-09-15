@@ -342,7 +342,7 @@ mod tests {
             confidence::MEDIUM,
             "s",
         );
-        home.add_evidence(Evidence::new("au_property", "property record"));
+        home.add_evidence(Evidence::new("asic_director", "registered office"));
         assert_eq!(address_state(&home), Some("QLD"));
 
         // Regression: a WHOIS REGISTRANT address (the domain owner's filing/privacy

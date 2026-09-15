@@ -802,8 +802,8 @@ fn see_know_errors_carry_the_registered_module_name_not_a_phantom_one() {
 /// about the subject — "holds no licence", "is not a registered practitioner",
 /// "has no legal records". An analyst acts on those. This is the contract's
 /// ABSENCE OF EASY EVIDENCE ≠ ABSENCE OF A NEXUS at the transport layer, and
-/// the class this codebase has now fixed in ahpra, asic_director,
-/// au_electoral, au_property and app_links.
+/// the class this codebase has now fixed in ahpra, asic_director and
+/// app_links.
 ///
 /// `util::http::read_body_capped_or_fail` is the shared fail-closed helper; a
 /// module that genuinely wants the permissive read (a best-effort enrichment

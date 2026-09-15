@@ -591,7 +591,7 @@ fn key_rejected_failure(rejection: Option<see_know::KeyRejection>) -> Option<Err
 /// this returns false.
 ///
 /// Mirrors [`crate::modules::asic_director`]'s `request_failed` and
-/// `au_property`'s `all_legs_unreachable` for the multi-call case. Pure and free
+/// `cert_intel`'s `never_answered` for the multi-call case. Pure and free
 /// of `ModuleContext`/network, so it is unit-testable without a live server or an
 /// API key — see `tests::seeknow_never_answered_*`.
 #[must_use]

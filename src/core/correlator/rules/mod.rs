@@ -530,13 +530,12 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "whoisxml",
         // Authoritative people / business / professional registries and identity
         // enrichers (exact registry module names) — independent identity sources
-        // that were falling to `other`. A subject confirmed by, e.g., an electoral
-        // roll AND a breach is genuine cross-family corroboration (AU-045).
+        // that were falling to `other`. A subject confirmed by, e.g., a
+        // practitioner register AND a breach is genuine cross-family corroboration (AU-045).
         "fullcontact",
         "contact_enrich",
         "gleif_lei",
         "asic_director",
-        "au_electoral",
         "ahpra",
         "acnc",
     ]) {

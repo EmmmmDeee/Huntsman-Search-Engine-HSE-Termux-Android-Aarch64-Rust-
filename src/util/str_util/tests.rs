@@ -36,7 +36,7 @@ use super::{
         assert!(!whole_word_token_match("Moreau Family", "m")); // initial not a whole word
         // A single missing token fails the whole match.
         assert!(!whole_word_token_match("Linus Torvalds", "linus pauling"));
-        // Empty / whitespace-only needle matches nothing (the guard au_property's copy lacks).
+        // Empty / whitespace-only needle matches nothing (a guard the per-module copies lacked).
         assert!(!whole_word_token_match("anything at all", ""));
         assert!(!whole_word_token_match("anything", "   "));
     }

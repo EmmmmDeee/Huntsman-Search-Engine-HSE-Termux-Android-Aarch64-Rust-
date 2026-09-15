@@ -4108,6 +4108,91 @@ the next step if a 200 wall is observed on one. The remaining
 `ip_reputation`) read JSON or crawl content and mint no negative claim from
 an empty parse.
 
+### REQ-RETIRE-003 (**new, Pass 31 — OBSERVED from two vantage points, RESEARCHED, RETIRED**): `au_electoral`'s hosts have no address and `au_property`'s endpoints are gone
+
+**Observation (runner).** Every live-drift run this branch dispatched reads
+`unreachable au_electoral — no electoral commission answered for Fletcher
+Moreau: all 3 lookups (NSW, VIC, QLD) failed to respond, returned a reply
+that could not be read, or answered an anti-bot / WAF page instead of the
+roll …` and `unreachable au_property — all 3 property-register endpoints
+(NSW ELVIS, VIC MapShare WFS, QLD titles search) returned a non-success HTTP
+status or redirected away to another host — likely retired/migrated legacy
+URLs …` (runs 34985449332, 34995740898 and 34998644556 on 2026-09-15, and the
+weekly runs before them). Both messages fold what happened into one string;
+the modules were never able to say which.
+
+**Observation (this sandbox, 2026-09-15 17:30–17:45 UTC).**
+
+`au_property`, `curl` with a browser User-Agent, every host resolving
+(`maps.six.nsw.gov.au` → 203.57.8.20; `mapshare.vic.gov.au` → 13.237.127.74 /
+3.104.40.5 / 15.135.101.182, on both Google's and Cloudflare's resolvers):
+
+| leg | request | answer |
+|---|---|---|
+| NSW | `GET https://maps.six.nsw.gov.au/services/public/Property_Name_Address?surname=Moreau&givenname=Fletcher&maxRows=10` | `404 text/html; charset=iso-8859-1`, 235 B, Apache's own "404 Not Found — The requested URL /services/public/Property_Name_Address was not found on this server." |
+| VIC | `GET https://mapshare.vic.gov.au/mapsharevic/ows?service=WFS&version=1.0.0&request=GetCapabilities` | `404 text/html`, 1,245 B, IIS's own "404 - File or directory not found." |
+| QLD | `GET https://www.qld.gov.au/environment/land/title/searching/owners?owner=Fletcher%20Moreau` | `404 text/html; charset=utf-8`, 178,258 B, "Page not found - qld.gov.au" |
+
+Each is the host's own not-found page — no wall, no redirect: the paths no
+longer exist.
+
+`au_electoral`: every request fails before TLS — the proxy answers `CONNECT
+tunnel failed, response 502` in under 0.6 s for all three hosts, the
+signature `api.bgpview.io` (REQ-BGP-001) and `psbdmp.ws` (REQ-RETIRE-001)
+left. DNS over HTTPS from two independent resolvers:
+
+| host | Google (`dns.google/resolve`) | Cloudflare (`cloudflare-dns.com/dns-query`) |
+|---|---|---|
+| `check.elections.nsw.gov.au` | Status 0, no A record | Status 0, no A record |
+| `check.vec.vic.gov.au` | Status 3 (NXDOMAIN) | Status 3 (NXDOMAIN) |
+| `enrol.ecq.qld.gov.au` | Status 0, no A record | Status 0, no A record |
+| `check.aec.gov.au` (reference) | 108.138.64.38 / .51 / .17 | 108.138.64.51 / .59 / .17 |
+
+None of the module's hosts has an address; the AEC's own enrolment tool does,
+and it is the address-based, name-less lookup the module's header already
+documented as unusable for a `FullName` target.
+
+**Migration research (no keyless path).** Enrolment: the AEC's
+`check.aec.gov.au` takes postcode → suburb → street → name and answers only
+the person entering their own details; the state commissions link to it;
+the roll itself is inspectable in person at AEC offices only. Property:
+owner-name title searches are paid services in every state (NSW LRS through
+its information brokers, Victoria's Landata, Titles Queensland), and the free
+spatial portals (NSW Spatial Services, VicPlan, QLD Globe) carry parcels and
+addresses, never owners — `qld_cadastre` already covers the keyless part.
+
+**Decision.** Retired honestly (REQ-RETIRE-001's procedure): both module
+directories, their registry entries, the README (192 modules; 143 free;
+API-Free 93; Full Name 27; the People list), `AUTHORITATIVE_AU_REGISTERS`
+(AU-088), the `identity_registry` family list, the person-anchoring geo
+source table and the `GeoSourceClass::{Electoral, Property}` classes (no
+other producer; `precision_radius_m`, `class_locates_subject_directly` and
+the class labels follow; the eleven-class convergence proof is a nine-class
+one), the `au_people` leftovers REQ-RETIRE-001 had left in those tables,
+`util::address_au::is_standalone_postcode_at` (only the two retired parsers
+called it), the comments that named them, the API-reference rows (and the
+`ACMA RRL` row REQ-RETIRE-002 had left), the backlog rows. `T1591.001` and
+`T1589.003` stay covered by other modules, so the pinned ATT&CK envelope is
+unchanged. Every full-name scan stops paying six doomed requests and two
+breaker trips. Doc-coverage ceiling 1032 → 1030; the built binary lists 192
+modules and neither name.
+
+**Falsification.** The README module count flipped back to the retired
+figure and the nine-class pin flipped back to eleven, each with only its
+guard run:
+
+```
+[README module count flipped back to 194] reverted -> LOCK FAILS (expected)
+    test readme_module_overview_count_matches_registry ... FAILED
+    thread 'readme_module_overview_count_matches_registry' (4051) panicked at tests/architecture_parts/architecture_part4.rs:775:5:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 89 filtered out; finished in 0.19s
+[nine-class pin flipped back to eleven] reverted -> LOCK FAILS (expected)
+    test core::correlator::tests::all_nine_classes::all_nine_classes_present_and_distinct ... FAILED
+    thread 'core::correlator::tests::all_nine_classes::all_nine_classes_present_and_distinct' (4341) panicked at src/core/correlator/tests/part11.rs:407:9:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7327 filtered out; finished in 0.20s
+ALL LOCKS SENSITIVE
+```
+
 ### REQ-DRIFT-004 (**new, Pass 31 — OBSERVED on the runner and from the sandbox, FIXED, FALSIFIED**): Reddit's block page is a wall; a document may open with a bare `<body>`
 
 **Observation (runner, live-drift run 34998644556 on `78e596f`, 2026-09-15
@@ -4168,6 +4253,14 @@ non-documents; the excerpt is a wall);
 ALL LOCKS SENSITIVE
 ```
 
+**Remote verification (live-drift run 35000372348 on `a5f3868`, 2026-09-15
+17:20 UTC).** Reddit answered that run's probe with `HTTP 429 Too Many
+Requests: <empty>` — `rate-limited reddit_user`, the typed throttle
+(REQ-DRIFT-002), not the block page — so the wall rule was not exercised on
+the runner in that run; the loopback lock stands as its proof until Reddit
+serves the page to the runner again. The sweep read 118 probed — 88 alive,
+18 empty, 5 unreachable, 1 timed-out, 2 rate-limited, 3 blocked, 1 skipped.
+
 **Residual.** The shared classifier still reads only the first 8 KiB of an
 error body; a wall whose prose sits beyond that and whose opener carries no
 signature is typed only where the endpoint's contract can be applied, as here.
@@ -4202,6 +4295,14 @@ lock run:
     test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.21s
 ALL LOCKS SENSITIVE
 ```
+
+**Remote verification (live-drift run 35000372348 on `a5f3868`, 2026-09-15
+17:20 UTC).** `skipped cell_local (unavailable) local cell-tower database not
+imported (~/.huntsman/cell_towers.db) — run `hse cells import`; no towers were
+looked up for this coordinate` — the first sweep to say so; every earlier one
+read `empty cell_local (coordinates 40.7128,-74.0060)`. The sweep counts it
+under `1 skipped`, not under `empty`.
+
 
 ### REQ-CANARY-001 (**new, Pass 31 — OBSERVED live, EXTENDED, LOCKED**): the sweep observes what it asserts
 
@@ -4318,6 +4419,13 @@ on the `wifidb` dead canary, by design — REQ-HTTP-001.)
 The five yielding pairs join `CANARY_PROBES`; the Australian registers'
 per-kind sample (`Google LLC`) holds nothing in them and `Fletcher Moreau`
 is synthetic, so none was observable before.
+
+**Remote verification, second batch (live-drift run 35000372348 on `a5f3868`,
+2026-09-15 17:20 UTC).** Every batch-2 canary reads alive with exactly the
+count the sandbox saw: `acnc_charities 5`, `app_links 7`,
+`asic_business_names 143`, `crossref_search 5`, `wikidata 8` (`[canary]`
+on each row); 88 alive against 83 on the 17:03 run, 18 empty against 24.
+
 
 ### REQ-SCOPE-001 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): an out-of-jurisdiction target is a typed skip, never a clean negative
 

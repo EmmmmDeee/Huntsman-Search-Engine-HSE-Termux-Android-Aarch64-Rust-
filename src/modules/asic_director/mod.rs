@@ -33,8 +33,8 @@
 //! workaround. Confirmed live from a non-residential IP; not yet confirmed
 //! whether a Termux/mobile-carrier IP fares differently. No fix attempted
 //! here — this is the module's next candidate work, the same
-//! "confirmed-dead-endpoint, no rewrite yet" pattern already documented for
-//! `au_property`'s three legs.
+//! "confirmed-dead-endpoint, no rewrite yet" pattern `au_property` carried
+//! until its endpoints were confirmed gone and it was retired.
 //!
 //! This module uses a light scraping strategy with a single polite request
 //! per scan. The ABN/ACN pivot via `abn_lookup` then enriches the full
@@ -383,9 +383,8 @@ impl Module for AsicDirector {
 /// (`found_any_entity` false). A request that read successfully but simply
 /// matched no director record for this name is not a failure — only "ASIC
 /// Connect Online never actually answered this scan" is. Mirrors
-/// `au_property`'s `all_legs_unreachable` for this module's single-request
-/// case (T2.120: "same defect class already fixed the same day for sibling
-/// `au_property` — `asic_director` was missed"); pure and free of
+/// the multi-leg `all_legs_unreachable` shape (`cert_intel::never_answered`)
+/// for this module's single-request case; pure and free of
 /// `ModuleContext`/network so it is unit-testable without a live server —
 /// see `tests::request_failed_*`.
 /// True when a 2xx body is the register's own page rather than an anti-bot

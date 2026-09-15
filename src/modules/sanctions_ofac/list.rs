@@ -89,8 +89,8 @@ pub(super) fn is_screenable(records: &[SdnRecord]) -> bool {
 /// yielded zero rows screens exactly as blindly as no download at all.
 ///
 /// Pure (no I/O, no cache access) so the cold-cache case is unit-testable
-/// without a live OFAC endpoint — mirroring `au_property`'s
-/// `all_legs_unreachable` predicate, which encodes the same distinction.
+/// without a live OFAC endpoint — mirroring `cert_intel`'s
+/// `never_answered` predicate, which encodes the same distinction.
 pub(super) fn degrade_on_fetch_failure(cached: Option<Vec<SdnRecord>>) -> Result<Vec<SdnRecord>> {
     match cached {
         Some(stale) if is_screenable(&stale) => Ok(stale),

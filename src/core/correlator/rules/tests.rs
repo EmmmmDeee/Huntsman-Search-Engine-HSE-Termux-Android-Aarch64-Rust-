@@ -152,7 +152,6 @@ use crate::core::entity::Evidence;
             "contact_enrich",
             "gleif_lei",
             "asic_director",
-            "au_electoral",
             "ahpra",
             "acnc_charities",
         ] {
