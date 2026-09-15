@@ -17,7 +17,9 @@
 //! post-filtered by [`line_matches_target`] to the EXACT target identity
 //! (full email / exact local-part / exact host) before any entity is minted.
 //! A username match is additionally candidate-quarantined, because a shared
-//! username root is not a unique person.
+//! username root is not a unique person — and the Username seed itself is
+//! never enriched or tagged `breach` from those lines: they are other people's
+//! accounts that happen to share a local part.
 
 use async_trait::async_trait;
 
@@ -276,7 +278,20 @@ fn build_entities_from_lines(lines: &[String], target: &Target, scan_id: &str) -
         return out;
     }
 
-    // Enrich the seed once with the aggregate exposure summary.
+    if target.kind == TargetKind::Username {
+        // A Username seed was matched on the exact local part of strangers'
+        // addresses — every `john@…` in the compilation — which says nothing
+        // about the subject (backlog #13). The candidate-quarantined secrets
+        // above are the leads; the seed itself is never enriched: an emitted
+        // copy would merge with the confirmed seed (a merge clears a candidate
+        // tag), and the `breach` tag is load-bearing downstream — breach-sector
+        // enrichment, the AU-061 pass and lead triage would classify the
+        // subject as breach-exposed on rows about other people.
+        return out;
+    }
+
+    // Enrich the seed once with the aggregate exposure summary — an Email or
+    // Domain seed's matched lines are the subject's own accounts.
     let mut seed = target.to_entity(seed_confidence(target.kind), scan_id);
     seed.tag(tags::BREACH);
     seed.tag("comb");

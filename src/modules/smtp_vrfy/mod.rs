@@ -128,8 +128,12 @@ pub(super) enum SmtpVerdict {
     NoMx,
     /// RCPT TO accepted (250) and a random-address probe was *not* accepted.
     Valid,
-    /// RCPT TO rejected; carries the 3-digit SMTP reply code.
+    /// RCPT TO rejected with a 5yz reply; carries the 3-digit SMTP reply code.
     Invalid(String),
+    /// RCPT TO deferred with a 4yz reply — greylisting, throttling, a full
+    /// queue: a temporary condition of the server, never a statement about
+    /// the mailbox. Carries the 3-digit reply code.
+    Transient(String),
     /// The server accepts every recipient (a random probe also got 250).
     CatchAll,
     /// Could not complete the handshake; carries a human reason.
@@ -168,6 +172,15 @@ pub(super) fn build_entity(
             confidence::TENTATIVE,
             "smtp-invalid",
             format!("SMTP RCPT TO rejected ({c}) by {}", mx_host.unwrap_or("?")),
+            Some(c.as_str()),
+        ),
+        SmtpVerdict::Transient(c) => (
+            confidence::SPECULATIVE,
+            "smtp-transient",
+            format!(
+                "SMTP RCPT TO deferred ({c}) by {} — a temporary server condition, not a mailbox rejection",
+                mx_host.unwrap_or("?")
+            ),
             Some(c.as_str()),
         ),
         SmtpVerdict::CatchAll => (
@@ -381,12 +394,31 @@ where
         return SmtpVerdict::Unreachable("RCPT TO response failed".into());
     }
 
-    let code = line.chars().take(3).collect::<String>();
-    let target_accepted = code == "250";
-
-    if !target_accepted {
-        let _ = send_cmd(&mut writer, "QUIT\r\n").await;
-        return SmtpVerdict::Invalid(code);
+    // RFC 5321 §4.2.1: the first digit is the verdict. 2yz accepted the
+    // recipient (250; 251 "will forward"; 252 "cannot VRFY, will attempt
+    // delivery"). 4yz is a TEMPORARY condition — greylisting (`450 4.7.1 try
+    // again later`), a full queue (452), a busy or throttled server (421) —
+    // the normal first-contact reply of a large share of real MTAs, and it
+    // says nothing about the mailbox (backlog #41). Only 5yz is a rejection of
+    // the recipient. Anything else is a server speaking out of protocol.
+    let code: String = line.chars().take(3).collect();
+    match code.as_bytes().first() {
+        Some(b'2') => {}
+        Some(b'4') => {
+            let _ = send_cmd(&mut writer, "QUIT\r\n").await;
+            return SmtpVerdict::Transient(code);
+        }
+        Some(b'5') => {
+            let _ = send_cmd(&mut writer, "QUIT\r\n").await;
+            return SmtpVerdict::Invalid(code);
+        }
+        _ => {
+            let _ = send_cmd(&mut writer, "QUIT\r\n").await;
+            return SmtpVerdict::Unreachable(format!(
+                "RCPT TO reply out of protocol: {}",
+                line.trim()
+            ));
+        }
     }
 
     // Catch-all detection: probe a random address

@@ -59,7 +59,9 @@ pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
             continue;
         }
 
-        let ssid = ap.ssid.as_deref().unwrap_or("<hidden>");
+        // An SSID the scan did not report is absent — never a `<hidden>`
+        // placeholder asserted as the network's name.
+        let ssid = ap.ssid.as_deref().map(str::trim).filter(|s| !s.is_empty());
         let confidence = rssi_confidence(ap.rssi);
 
         let mut e = Entity::new(EntityKind::MacAddress, &ap.bssid, confidence, scan_id);
@@ -90,21 +92,40 @@ pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
             e.tag(format!("proximity:{band}"));
         }
 
-        let mut ev = Evidence::new(SRC, format!("Wi-Fi AP scan: {ssid}"))
-            .with_attr("ssid", ssid)
-            .with_attr("bssid", &ap.bssid)
-            .with_attr("rssi_dbm", ap.rssi.unwrap_or(0).to_string())
-            .with_attr("frequency_mhz", ap.frequency.unwrap_or(0).to_string())
-            .with_attr(
-                "channel",
-                channel.map_or_else(|| "unknown".to_string(), |c| c.to_string()),
-            )
-            .with_attr("proximity", proximity.unwrap_or("unknown"))
-            .with_attr(
+        // Readings the scan omitted stay absent (backlog #16): `rssi_dbm=0`
+        // would be the strongest possible signal, `frequency_mhz=0` and
+        // `timestamp=0` measurements of zero — indistinguishable from a real
+        // value once asserted. Same `filter_map`/`fold` shape as
+        // `device_fix::parse_fix`.
+        let mut base = Evidence::new(
+            SRC,
+            match ssid {
+                Some(s) => format!("Wi-Fi AP scan: {s}"),
+                None => "Wi-Fi AP scan (SSID not reported)".to_string(),
+            },
+        )
+        .with_attr("bssid", &ap.bssid);
+        if let Some(s) = ssid {
+            base = base.with_attr("ssid", s);
+        }
+        let mut ev = [
+            ("rssi_dbm", ap.rssi.map(|v| v.to_string())),
+            ("frequency_mhz", ap.frequency.map(|v| v.to_string())),
+            ("channel", channel.map(|c| c.to_string())),
+            ("proximity", proximity.map(str::to_string)),
+            (
                 "channel_width",
-                ap.channel_width.as_deref().unwrap_or("unknown"),
-            )
-            .with_attr("timestamp", ap.timestamp.unwrap_or(0).to_string());
+                ap.channel_width
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+            ),
+            ("timestamp", ap.timestamp.map(|v| v.to_string())),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .fold(base, |ev, (key, value)| ev.with_attr(key, value));
 
         // OUI classification (parity with the WiGLE + Bluetooth paths): attribute
         // the AP's vendor/device class from a real hardware BSSID, or flag a
@@ -129,12 +150,12 @@ pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
         // The SSID is a WiGLE-geolocatable pivot in its own right (a network
         // name search can surface every place that SSID was ever seen), so it
         // earns its own Ssid entity alongside the BSSID's MacAddress entity —
-        // mirrors the precedent in `cli::import::push_ssids`. Skipped for the
-        // hidden-network placeholder (`ap.ssid` is `None`, defaulted to
-        // `"<hidden>"` above) and for an empty string; a real SSID confidence
-        // sits well below the BSSID's own, since a name is easier to spoof or
-        // duplicate than a hardware address.
-        if !ssid.is_empty() && ssid != "<hidden>" {
+        // mirrors the precedent in `cli::import::push_ssids`. Skipped when the
+        // scan reported no name (a hidden network, or a field the tool
+        // omitted); a real SSID confidence sits well below the BSSID's own,
+        // since a name is easier to spoof or duplicate than a hardware
+        // address.
+        if let Some(ssid) = ssid {
             let mut se = Entity::new(EntityKind::Ssid, ssid, confidence::MEDIUM_HIGH, scan_id);
             se.tag(crate::core::tags::WIFI_AP);
             se.tag("device-sensor");

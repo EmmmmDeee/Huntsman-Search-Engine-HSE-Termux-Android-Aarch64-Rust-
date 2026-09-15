@@ -3557,3 +3557,122 @@ Restored: 1 passed.
 retirement. The module was driven against the captured template on a loopback
 and observed live with `curl`, not run end to end through its own client from
 this sandbox.
+
+### REQ-ATTR-001 (**new, Pass 31 — VERIFIED FROM SOURCE, four OBSERVED LIVE, FIXED, FALSIFIED**): identifier match ≠ entity identity — nine attribution defects
+
+**Requirement.** A finding is attached to the subject only when the evidence
+ties it to the subject: a matching local part, display name, repository
+owner or search hit is a lead about *someone*, not a fact about the person
+scanned. A reading the sensor did not supply is absent, never a value. A
+provider's temporary condition is never recorded as a statement about the
+subject.
+
+**Observations** (2026-09-15, from this sandbox, keyless; the rest verified
+from source by three independent read-only re-derivations of the backlog
+leads):
+
+- Crossref (#14): `works?query=Ada+Lovelace` → "Introduction to the Ada
+  Lovelace Symposium" (Alexander Wolf), "Ada Lovelace lives forever" (Betty
+  Toole) — works ABOUT the name; `works?query.author=Ada+Lovelace` → works
+  whose `author[]` is `{given: Ada, family: Lovelace}`;
+  `query.affiliation=University+of+Wollongong` → `author[].affiliation[].name`
+  free text ("University of Wollongong , Wollongong , Australia") beside a
+  co-author at "The Wollongong Hospital".
+- Launchpad (#24): `~ubuntu-desktop` → `is_team: true`, `resource_type_link
+  …/#team`, `display_name: "Ubuntu Desktop"`, `is_valid: true`; `~mvo` →
+  `is_team: false`, `#person`. Same resource shape either way.
+- Stack Exchange (#44): `users?inname=John Smith` (reputation order) → 95 of
+  the first 100 are exact "John Smith", `has_more: true`;
+  `sort=name&min=John Smith&max=John Smith` → the exact names only (case and
+  trailing-space variants included); `Jon Skeet` → 2 accounts (1 529 680 and
+  1 reputation), `has_more: false`.
+- urlscan (#48, #49): `q=domain:"example.com"` → pages of `dodeliver.com.pk`
+  among the hits; `q=domain:"fonts.googleapis.com"` → five unrelated sites;
+  `q=page.domain:"example.com"` → `www.example.com` pages only. A search hit's
+  keys are `_id`, `_score`, `canonical`, `page`, `result`, `screenshot`,
+  `sort`, `stats`, `submitter`, `task` — no `verdicts`; the hit's `result`
+  URL (`/api/v1/result/{uuid}/`) answers `403 {"warning": "You're not logged
+  in!"}` without a key.
+
+**Repair** (one authoritative site each; every emitted claim now names what
+tied it to the subject):
+
+| # | Module | Before | After |
+|---|---|---|---|
+| 13 | `comb_search` | Username seed tagged `breach` + "N leaked lines" from strangers' same-local-part rows | Username seed never enriched or tagged from those rows; the secrets stay candidate leads |
+| 14 | `crossref_search` | all-fields `query=`; no author decoded | `query.author=` / `query.affiliation=` (`build_query`); `author[]` + `title` decoded; `attribution` gate (`author_matches`: family + given/initial, Western or family-first order, folded; `affiliation_matches`: every seed token) |
+| 24 | `launchpad_user` | team decoded as a person → 0.85 handle, Person, emails, `country:AU` | `is_team` decoded; a team yields nothing (no person owns the handle) |
+| 37 | `rubygems_user` | every gem's repository owner minted as the subject's GitHub handle at HIGH_PLUS | only the subject's own handle is the subject; other owners are candidate `repo-owner` pivots that say so |
+| 44 | `stackoverflow_user` | first reputation-ordered namesake taken as the subject | exact-name page; `resolve_name` → unique holder only; a shared name is a typed `NotApplicable` skip naming the count |
+| 45 | `structured_id` | ObjectID / KSUID date asserted as `account-age` | candidate lead "if this token is one" with the format's false-positive rate recorded; ULID unchanged |
+| 48 | `urlscan` | `domain:` selector; every hit's infrastructure attributed | `page.domain:` + `page_is_the_targets` gate per hit; total follows the gate |
+| 49 | `urlscan` | `verdicts.malicious` read from search hits (never present) | dead read, tag, attribute and confidence bump removed; header states why |
+| 16 | `device_sensors`, `signal_radar` | `rssi_dbm=0`, `frequency_mhz=0`, `link_speed_mbps=0`, `timestamp=0`, `<hidden>` asserted for absent fields | absent readings omitted (`filter_map`/`fold`, the `device_fix` contract); "(SSID not reported)" |
+| 41 | `smtp_vrfy` | every non-`250` RCPT reply → `Invalid` → `smtp-invalid` | RFC 5321 first digit: 2yz accepted, 4yz `Transient` (`smtp-transient`, speculative), 5yz `Invalid`, else `Unreachable` |
+
+**Evidence.** One lock per repair, each on the module's pure seam or a
+duplex/loopback transport: `comb_search::…a_username_seed_is_never_tagged_breach…`,
+`crossref_search::…a_work_that_merely_mentions_the_name…`,
+`…an_organisation_is_matched_on_an_authors_affiliation`,
+`…author_matching_takes_the_family_name…`, `…query_is_scoped…`,
+`launchpad_user::…a_launchpad_team_is_never_minted_as_a_person_account` (the
+live team record), `rubygems_user::…a_third_party_repository_owner_is_a_candidate_pivot…`,
+`stackoverflow_user::…a_shared_display_name_is_never_attributed…` (the live
+Jon Skeet pair), `…search_url_asks_for_the_exact_name_page`,
+`structured_id::…objectid_and_ksuid_are_reported_below_ulid_confidence` (now
+also the candidate tag, summary and rate), `urlscan::…only_scans_of_the_targets_own_page_are_kept`,
+`…build_query_uses_correct_field…`, `device_sensors::…absent_wifi_readings_are_omitted…`,
+`signal_radar::…wifi_absent_readings_are_omitted…`,
+`smtp_vrfy::…a_4yz_rcpt_reply_is_transient_never_an_invalid_mailbox` (a duplex
+MTA answering `450 4.7.1 … Greylisted`). Live captures in the session
+scratchpad (`crossref_*.json`, `lp_*.json`, `so_*.json`, `urlscan_*.json`).
+
+**Falsification.** Each repair reverted in turn (the gate, the selector, the
+demotion, the digit classification …) with only its lock run:
+
+```
+[comb_search #13] reverted -> LOCK FAILS (expected)
+    modules::comb_search::tests::a_username_seed_is_never_tagged_breach_from_strangers_same_local_part_lines --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.20s
+[launchpad_user #24] reverted -> LOCK FAILS (expected)
+    modules::launchpad_user::tests::a_launchpad_team_is_never_minted_as_a_person_account --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.21s
+[rubygems_user #37] reverted -> LOCK FAILS (expected)
+    modules::rubygems_user::tests::a_third_party_repository_owner_is_a_candidate_pivot_never_the_subjects_handle --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.22s
+[smtp_vrfy #41] reverted -> LOCK FAILS (expected)
+    modules::smtp_vrfy::tests::a_4yz_rcpt_reply_is_transient_never_an_invalid_mailbox --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.22s
+[crossref_search #14] reverted -> LOCK FAILS (expected)
+    modules::crossref_search::tests::a_work_that_merely_mentions_the_name_is_not_the_subjects_work --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.20s
+[stackoverflow_user #44] reverted -> LOCK FAILS (expected)
+    modules::stackoverflow_user::tests::a_shared_display_name_is_never_attributed_and_a_unique_one_is --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.21s
+[structured_id #45] reverted -> LOCK FAILS (expected)
+    modules::structured_id::tests::objectid_and_ksuid_are_reported_below_ulid_confidence --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.21s
+[urlscan #48 query] reverted -> LOCK FAILS (expected)
+    modules::urlscan::tests::build_query_uses_correct_field_and_max_page_size --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.21s
+[urlscan #48 gate] reverted -> LOCK FAILS (expected)
+    modules::urlscan::tests::only_scans_of_the_targets_own_page_are_kept --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.21s
+[device_sensors #16] reverted -> LOCK FAILS (expected)
+    modules::device_sensors::tests::absent_wifi_readings_are_omitted_never_asserted_as_zero_or_hidden --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.20s
+[signal_radar #16] reverted -> LOCK FAILS (expected)
+    modules::signal_radar::tests::wifi_absent_readings_are_omitted_never_zero_or_hidden --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
+**Residual.** Stack Overflow's exact-name page folds case and trailing
+whitespace but the API's exact folding rules are undocumented — a name that
+differs only in Unicode normalisation may be counted separately; a unique
+holder is attributed at the module's existing tier, which is a judgement that
+a unique display name is a usable identifier. urlscan's malicious verdict is
+gone until a keyed capture of the result endpoint is on record. The
+`crates_io`-style loopback drive of `crossref_search`'s HTTP path is not
+added (its pure seam is `build_query` + `attribution`).
+

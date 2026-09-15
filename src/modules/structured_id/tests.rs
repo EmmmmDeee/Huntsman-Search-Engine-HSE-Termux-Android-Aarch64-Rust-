@@ -211,10 +211,25 @@ async fn objectid_and_ksuid_are_reported_below_ulid_confidence() {
         .find(|e| e.has_tag("mongodb-objectid"))
         .expect("a mongodb-objectid-tagged entity");
     assert!(
-        (e.confidence - confidence::LOW_MEDIUM).abs() < 1e-9,
-        "a coincidentally-plausible non-ObjectID must not be reported at \
-         ULID's higher confidence tier: got {}",
-        e.confidence
+        e.has_tag(crate::core::tags::CANDIDATE) && e.confidence <= confidence::LOW_MEDIUM,
+        "a coincidentally-plausible non-ObjectID is a candidate lead, never \
+         reported at ULID's higher confidence tier: got {} tags {:?}",
+        e.confidence,
+        e.tags
+    );
+    // Backlog #45: the finding says what it is — a date IF the token is an
+    // ObjectID — and records why it cannot be asserted.
+    assert!(
+        e.evidence[0].summary.starts_with("MongoDB ObjectID — if this token is one — created"),
+        "{}",
+        e.evidence[0].summary
+    );
+    assert_eq!(
+        e.evidence[0]
+            .attributes
+            .get("false_positive_rate")
+            .map(String::as_str),
+        Some("about 1 in 5 random 24-hex tokens")
     );
     // Strict, not the tie-tolerant sibling: this IS the shape the
     // regression took (ObjectID silently sharing ULID's exact constant).
@@ -236,9 +251,17 @@ async fn objectid_and_ksuid_are_reported_below_ulid_confidence() {
         .find(|e| e.has_tag("ksuid"))
         .expect("a ksuid-tagged entity");
     assert!(
-        (e.confidence - confidence::LOW_MEDIUM).abs() < 1e-9,
-        "a KSUID decode must also be reported at the demoted tier: got {}",
-        e.confidence
+        e.has_tag(crate::core::tags::CANDIDATE) && e.confidence <= confidence::LOW_MEDIUM,
+        "a KSUID decode is a candidate lead at or below the demoted tier: got {} tags {:?}",
+        e.confidence,
+        e.tags
+    );
+    assert_eq!(
+        e.evidence[0]
+            .attributes
+            .get("false_positive_rate")
+            .map(String::as_str),
+        Some("about 1 in 11 random 27-character tokens")
     );
     confidence::assert_metamorphic_strictly_worse(
         confidence::MEDIUM_HIGH,

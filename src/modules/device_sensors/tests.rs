@@ -352,3 +352,54 @@ fn negative_coordinates_handled() {
 // The `fix_confidence` ladder and `is_valid_fix` are now defined and tested in
 // `crate::modules::device_fix`; these tests cover this module's `parse_fix`
 // wrapper and its Wi-Fi/connection parsing.
+
+#[test]
+fn absent_wifi_readings_are_omitted_never_asserted_as_zero_or_hidden() {
+    // Backlog #16. `termux-wifi-connectioninfo` omits fields it cannot read
+    // (permission denied, mid-association, an OEM ROM that suppresses RSSI).
+    // A defaulted `rssi_dbm=0` is the strongest possible signal reading and
+    // `frequency_mhz=0` a measurement of zero; an SSID the tool did not
+    // report is not a `<hidden>` network. Absent stays absent — the contract
+    // `device_fix` states for the same sensor family.
+    let json = br#"{"bssid":"aa:bb:cc:dd:ee:ff","ip":"192.168.1.42"}"#;
+    let r = parse_conn(json, "test").expect("valid sensor JSON parses");
+    assert_eq!(r.entities.len(), 2);
+    for e in &r.entities {
+        let attrs = &e.evidence[0].attributes;
+        for key in [
+            "rssi_dbm",
+            "frequency_mhz",
+            "link_speed_mbps",
+            "supplicant_state",
+            "ssid",
+        ] {
+            assert!(
+                !attrs.contains_key(key),
+                "{key} must be absent, got {:?}",
+                attrs.get(key)
+            );
+        }
+        assert!(
+            !e.evidence[0].summary.contains("<hidden>"),
+            "{}",
+            e.evidence[0].summary
+        );
+    }
+    assert_eq!(
+        r.entities[0].evidence[0].summary,
+        "Connected (SSID not reported)"
+    );
+    assert_eq!(
+        r.entities[1].evidence[0].summary,
+        "Local IP (SSID not reported)"
+    );
+
+    // Readings the tool DID supply are recorded verbatim.
+    let json = br#"{"bssid":"aa:bb:cc:dd:ee:ff","ssid":"MyNet","ip":"192.168.1.42","rssi":-45}"#;
+    let r = parse_conn(json, "test").expect("valid sensor JSON parses");
+    let attrs = &r.entities[0].evidence[0].attributes;
+    assert_eq!(attrs.get("rssi_dbm").map(String::as_str), Some("-45"));
+    assert_eq!(attrs.get("ssid").map(String::as_str), Some("MyNet"));
+    assert!(!attrs.contains_key("frequency_mhz"));
+    assert_eq!(r.entities[0].evidence[0].summary, "Connected to: MyNet");
+}
