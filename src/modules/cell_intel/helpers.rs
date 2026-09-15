@@ -181,9 +181,7 @@ pub(super) async fn query_opencellid(
         return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
 
-    let data: OpenCellidResp = crate::util::http::json_scanned(resp, SRC)
-        .await
-        .map_err(|e| Error::module(SRC, e))?;
+    let data: OpenCellidResp = crate::util::http::json_scanned(resp, SRC).await?;
 
     if let Some(err) = data.error {
         // See `OpenCellidResp::error`'s doc comment — a body-level key

@@ -272,9 +272,7 @@ impl Module for QldCadastre {
             return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
-        let body: QueryResp = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| Error::module(SRC, e))?;
+        let body: QueryResp = crate::util::http::json_scanned(resp, SRC).await?;
 
         let features = features_or_error(body)?;
         let mut result = ModuleResult::new();

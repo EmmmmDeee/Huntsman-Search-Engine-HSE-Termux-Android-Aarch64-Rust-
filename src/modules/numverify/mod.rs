@@ -18,7 +18,7 @@ use serde::Deserialize;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -109,9 +109,7 @@ impl Module for NumVerify {
         let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
             return Ok(ModuleResult::new());
         };
-        let parsed: NvResp = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| Error::module(SRC, e))?;
+        let parsed: NvResp = crate::util::http::json_scanned(resp, SRC).await?;
 
         let mut result = ModuleResult::new();
         result

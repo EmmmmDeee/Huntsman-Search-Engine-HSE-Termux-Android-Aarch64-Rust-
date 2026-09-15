@@ -184,9 +184,7 @@ impl Module for DeHashed {
         };
         // json_scanned: dehashed responses contain breach data including
         // leaked credentials — scan the raw body for API keys.
-        let body: DehashedResp = crate::util::http::json_scanned(resp, build::SRC)
-            .await
-            .map_err(|e| crate::core::error::Error::module(build::SRC, e))?;
+        let body: DehashedResp = crate::util::http::json_scanned(resp, build::SRC).await?;
 
         let entries = body.entries.unwrap_or_default();
         // Do NOT fabricate an exact total the provider did not give. `body.total`

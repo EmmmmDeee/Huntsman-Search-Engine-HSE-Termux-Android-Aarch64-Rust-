@@ -220,9 +220,7 @@ impl Module for ExaSearch {
         // The status is already validated 2xx, so a JSON parse failure here is a
         // malformed body from a live endpoint (an error/HTML page behind a 200) —
         // a real outage, not an empty result set. Propagate it.
-        let parsed: ExaResponse = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+        let parsed: ExaResponse = crate::util::http::json_scanned(resp, SRC).await?;
 
         let mut result = ModuleResult::new();
         let mut seen_domains = std::collections::HashSet::new();

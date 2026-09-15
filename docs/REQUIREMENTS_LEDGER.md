@@ -4108,6 +4108,41 @@ the next step if a 200 wall is observed on one. The remaining
 `ip_reputation`) read JSON or crawl content and mint no negative claim from
 an empty parse.
 
+### REQ-HTTP-002 (**new, Pass 31 — VERIFIED FROM SOURCE, CONSOLIDATED, FIXED, FALSIFIED**): `json_scanned` fails the way `json_decode` fails
+
+**Lead.** ONE CAPABILITY, ONE AUTHORITY. Two shared JSON decode helpers judged
+a body that would not decode: `json_decode` through `json_body_error` — typed
+(`Error::BotChallenge` for an anti-bot page, REQ-DRIFT-003), credential-
+redacted — and `json_scanned` (`src/util/http/url.rs`, the key-scanning
+variant every breach and enrichment module uses) through
+`format!("{module}: {}", json_failure(&text, &e))`: a bare `String`, unredacted,
+which each of its 31 call sites wrapped as `Error::module(SRC, e)` (and four
+matched on `Err(_)`). `geocode`'s own comment recorded that `json_scanned` "is
+also the one JSON helper that does not run `redact_credentials`". So behind
+those sites a wall served with a 2xx read as a module fault — the breaker's
+error count, `unreachable` in the sweep — and a decode failure could quote a
+credential from the body prefix into a persisted `ModuleError` event.
+
+**Fix.** `json_scanned` returns the crate `Result<T>`, passes the bounded
+read's error through and fails through `json_body_error`; the 31 `.map_err(|e|
+Error::module(SRC, e))` wrappers are removed mechanically (the four `match`
+sites compile unchanged); `geocode`'s comment follows.
+
+**Lock.** `util::http::tests::json_scanned_types_a_challenge_page_and_redacts_a_credential_in_the_decode_error`:
+the Cloudflare block capture served as `200` decodes to `Error::BotChallenge`
+naming "Attention Required"; a body opening `api_key=sk_live_SECRETVALUE99…`
+decodes to `Error::Module` naming the module and never the credential.
+
+**Falsification.** The repair reverted with only the lock run:
+
+```
+[json_scanned failing through the untyped, unredacted string path again] reverted -> LOCK FAILS (expected)
+    test util::http::tests::json_scanned_types_a_challenge_page_and_redacts_a_credential_in_the_decode_error ... FAILED
+    thread 'util::http::tests::json_scanned_types_a_challenge_page_and_redacts_a_credential_in_the_decode_error' (22842) panicked at src/util/http/tests.rs:1700:5:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7327 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
 ### REQ-DRIFT-006 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): HIBP's terminal 429 is the typed rate limit
 
 **Lead.** REQ-DRIFT-002's residual: the one 429 in the crate that is not built

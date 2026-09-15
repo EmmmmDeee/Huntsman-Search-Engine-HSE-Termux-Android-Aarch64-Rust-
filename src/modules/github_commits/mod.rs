@@ -189,9 +189,7 @@ async fn search_commits(
     }
     // json_scanned: commit messages are free-form text that can carry leaked
     // API keys — route the body through the key scanner.
-    crate::util::http::json_scanned(resp, SRC)
-        .await
-        .map_err(|e| Error::module(SRC, e))
+    crate::util::http::json_scanned(resp, SRC).await
 }
 
 /// Pure entity extraction from the commit-search items — unit-tested against a

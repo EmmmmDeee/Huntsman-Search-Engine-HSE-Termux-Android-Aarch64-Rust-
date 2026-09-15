@@ -94,8 +94,6 @@ pub(super) async fn get_with_retry(
 /// Shared tail for every WiGLE search endpoint once [`get_with_retry`] has
 /// resolved the 429 question.
 async fn classify_and_decode(resp: reqwest::Response) -> crate::core::error::Result<Resp> {
-    use crate::core::error::Error;
-
     if resp.status().as_u16() == 412 {
         return Ok(account_unverified_response());
     }
@@ -103,9 +101,7 @@ async fn classify_and_decode(resp: reqwest::Response) -> crate::core::error::Res
         return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
     super::account::mark_verified(crate::core::entity::unix_now());
-    crate::util::http::json_scanned(resp, SRC)
-        .await
-        .map_err(|e| Error::module(SRC, e))
+    crate::util::http::json_scanned(resp, SRC).await
 }
 
 /// Default WiFi-only fetch retained for back-compat — delegates to
@@ -234,5 +230,4 @@ pub(super) async fn fetch_detail(
     crate::util::http::json_scanned::<DetailResp>(resp, SRC)
         .await
         .map(Some)
-        .map_err(|e| crate::core::error::Error::module(SRC, e))
 }

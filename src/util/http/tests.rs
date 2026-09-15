@@ -1676,3 +1676,43 @@ async fn a_2xx_anti_bot_page_read_through_the_text_seams_is_the_typed_bot_challe
         .expect("a register page is the document");
     assert!(body.contains("no records"));
 }
+
+/// `json_scanned` fails the way `json_decode` fails: an anti-bot page served
+/// with a 2xx where JSON was expected is the typed `BotChallenge` (until
+/// 2026-09-15 it was a bare `String` every caller wrapped as `Error::module`,
+/// so a wall behind any of its thirty-odd call sites read as a module fault),
+/// and a decode failure's message is credential-redacted (this was the one
+/// JSON helper that never ran `redact_credentials`, and `json_failure` quotes
+/// a prefix of the body).
+#[tokio::test]
+async fn json_scanned_types_a_challenge_page_and_redacts_a_credential_in_the_decode_error() {
+    use crate::core::error::Error;
+    const WALL: &str = include_str!("../html/testdata/cloudflare_block_anubis_2026-09-15.html");
+    let wall = reqwest::Response::from(
+        http::Response::builder()
+            .status(200)
+            .body(WALL.to_string())
+            .expect("should succeed"),
+    );
+    let err = crate::util::http::json_scanned::<serde_json::Value>(wall, "test_mod")
+        .await
+        .expect_err("a wall is not JSON");
+    assert!(matches!(err, Error::BotChallenge(_)), "{err}");
+    assert!(err.to_string().contains("Attention Required"), "{err}");
+
+    let leaky = reqwest::Response::from(
+        http::Response::builder()
+            .status(200)
+            .body("api_key=sk_live_SECRETVALUE99&more not json".to_string())
+            .expect("should succeed"),
+    );
+    let err = crate::util::http::json_scanned::<serde_json::Value>(leaky, "test_mod")
+        .await
+        .expect_err("not JSON");
+    assert!(matches!(err, Error::Module { .. }), "{err}");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("test_mod") && !msg.contains("SECRETVALUE99"),
+        "the decode error must name the module and never quote the credential: {msg}"
+    );
+}

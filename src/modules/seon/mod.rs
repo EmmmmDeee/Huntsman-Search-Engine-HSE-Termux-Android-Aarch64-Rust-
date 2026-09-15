@@ -206,9 +206,7 @@ impl Seon {
             return Ok(ModuleResult::new());
         };
 
-        let body: SeonEmailResp = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+        let body: SeonEmailResp = crate::util::http::json_scanned(resp, SRC).await?;
 
         if body.success != Some(true) {
             if let Some(detail) = seon_key_error_detail(body.error.as_ref()) {
@@ -254,9 +252,7 @@ impl Seon {
             return Ok(ModuleResult::new());
         };
 
-        let body: SeonPhoneResp = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+        let body: SeonPhoneResp = crate::util::http::json_scanned(resp, SRC).await?;
 
         if body.success != Some(true) {
             if let Some(detail) = seon_key_error_detail(body.error.as_ref()) {

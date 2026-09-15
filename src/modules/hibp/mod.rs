@@ -421,9 +421,7 @@ impl Hibp {
                         // Via json_scanned: the paid breach body is retained in the
                         // raw archive and scanned for leaked keys (the "retain all
                         // paid data" invariant), then deserialised.
-                        let data = crate::util::http::json_scanned::<T>(resp, SRC)
-                            .await
-                            .map_err(|e| Error::module(SRC, e))?;
+                        let data = crate::util::http::json_scanned::<T>(resp, SRC).await?;
                         return Ok(Some(data));
                     }
                     404 => return Ok(None),

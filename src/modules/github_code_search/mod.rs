@@ -184,9 +184,7 @@ impl Module for GithubCodeSearch {
 
         // Status is a validated 2xx here, so a parse failure is a malformed body
         // from a live endpoint — an outage, not an empty result set.
-        let body: SearchResp = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+        let body: SearchResp = crate::util::http::json_scanned(resp, SRC).await?;
 
         if body.items.is_empty() {
             return Ok(ModuleResult::new());

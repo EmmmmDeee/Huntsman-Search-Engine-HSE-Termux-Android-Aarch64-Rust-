@@ -236,9 +236,7 @@ async fn process_area(target: &Target, ctx: &ModuleContext, api_key: &str) -> Re
     // A 2xx was already confirmed, so a decode failure here is OpenCelliD
     // changing its wire format or a captive-portal/WAF page served with 200 —
     // provider drift, not an empty area.
-    let data: AreaResp = crate::util::http::json_scanned(resp, SRC)
-        .await
-        .map_err(|e| Error::module(SRC, e))?;
+    let data: AreaResp = crate::util::http::json_scanned(resp, SRC).await?;
     if data.error.is_some() {
         // See `CellEntry::error`'s doc comment — OpenCelliD signals a body-level
         // key failure as a plain 200, so the status check above cannot catch it.
@@ -292,9 +290,7 @@ async fn process_tower(
         return Ok(ModuleResult::new());
     };
 
-    let cell: CellEntry = crate::util::http::json_scanned(resp, SRC)
-        .await
-        .map_err(|e| Error::module(SRC, e))?;
+    let cell: CellEntry = crate::util::http::json_scanned(resp, SRC).await?;
     if cell.error.is_some() {
         // See `CellEntry::error`'s doc comment.
         crate::util::http::note_keyed_error(401, SRC, api_key, ctx);

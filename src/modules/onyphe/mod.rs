@@ -173,9 +173,7 @@ impl Module for Onyphe {
         };
         // json_scanned: onyphe search results may contain leaked credentials —
         // scan the raw body for embedded API keys.
-        let body: OnypheResp = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+        let body: OnypheResp = crate::util::http::json_scanned(resp, SRC).await?;
 
         check_onyphe_error(&body)?;
         if body.results.is_empty() {

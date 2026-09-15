@@ -330,9 +330,7 @@ out center;"#
             return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
-        let body: OverpassResp = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| Error::module(SRC, e))?;
+        let body: OverpassResp = crate::util::http::json_scanned(resp, SRC).await?;
 
         let elements = infrastructure_or_error(body)?;
         if elements.is_empty() {

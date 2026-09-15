@@ -390,9 +390,7 @@ impl Module for Pulsedive {
         // json_scanned: Pulsedive's `comments`/`riskfactors`/threat-context
         // fields are free text that could embed a leaked third-party API key —
         // scan the raw body for one.
-        let body: InfoResp = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+        let body: InfoResp = crate::util::http::json_scanned(resp, SRC).await?;
         if body.error.is_some() {
             return Ok(ModuleResult::new());
         }

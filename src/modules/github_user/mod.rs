@@ -403,9 +403,7 @@ impl Module for GithubUser {
 
         // json_scanned: GitHub user profiles include bio and blog fields —
         // free-form user text that may contain embedded API keys.
-        let user: GhUser = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+        let user: GhUser = crate::util::http::json_scanned(resp, SRC).await?;
 
         let mut result = ModuleResult::new();
         result.entities = build_entities(&user, &ctx.scan_id);

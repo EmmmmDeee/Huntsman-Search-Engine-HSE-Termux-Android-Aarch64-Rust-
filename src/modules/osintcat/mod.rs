@@ -265,9 +265,7 @@ async fn fetch_email_osint(email: &str, ctx: &ModuleContext) -> Result<Value> {
     let Some(resp) = keyed_ok_or_404(SRC, key, ctx, resp).await? else {
         return Ok(Value::Null);
     };
-    json_scanned(resp, SRC)
-        .await
-        .map_err(|e| Error::module(SRC, e))
+    json_scanned(resp, SRC).await
 }
 
 // ── Emitters ───────────────────────────────────────────────────────────────────

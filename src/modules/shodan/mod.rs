@@ -200,9 +200,7 @@ impl Shodan {
             return Ok(());
         };
 
-        let body: InternetDbResp = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+        let body: InternetDbResp = crate::util::http::json_scanned(resp, SRC).await?;
 
         if body.ports.is_empty()
             && body.vulns.is_empty()

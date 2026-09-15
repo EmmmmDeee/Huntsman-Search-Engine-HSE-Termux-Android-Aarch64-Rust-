@@ -33,15 +33,19 @@ pub fn urldecode(s: &str) -> String {
 /// Parse a reqwest Response as JSON while scanning the raw body for API
 /// keys. Drop-in replacement for `resp.json::<T>().await` that ensures
 /// no response body bypasses the key scanner.
-pub async fn json_scanned<T: DeserializeOwned>(
-    resp: reqwest::Response,
-    module: &str,
-) -> std::result::Result<T, String> {
-    let text = read_json_text(resp, module)
-        .await
-        .map_err(|e| e.to_string())?;
+///
+/// Fails the way [`json_decode`] fails: the bounded read's own error passes
+/// through, and a body that will not decode is [`json_body_error`] — the typed
+/// `Error::BotChallenge` for an anti-bot page served where JSON was expected,
+/// otherwise `Error::Module` with the shape-drift message, credentials
+/// redacted. Until 2026-09-15 this helper returned a bare `String` that every
+/// caller wrapped as `Error::module`, so a wall behind any of its thirty-odd
+/// call sites read as a module fault, and its message was the one JSON path
+/// that never ran `redact_credentials`.
+pub async fn json_scanned<T: DeserializeOwned>(resp: reqwest::Response, module: &str) -> Result<T> {
+    let text = read_json_text(resp, module).await?;
     scan_for_api_keys(&text);
-    serde_json::from_str(&text).map_err(|e| format!("{module}: {}", json_failure(&text, &e)))
+    serde_json::from_str(&text).map_err(|e| json_body_error(module, &text, &e))
 }
 
 /// Decode a response body as JSON, tagging any decode failure with `module`.
