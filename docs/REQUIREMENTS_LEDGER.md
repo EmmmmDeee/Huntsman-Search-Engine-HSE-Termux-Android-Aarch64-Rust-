@@ -3956,3 +3956,57 @@ private-host preflight refuses 127.0.0.1 by design), so its classification is
 covered by inspection and the pure verdict; the `process` path of
 `cell_intel` is covered by the seam, not end to end.
 
+### REQ-DRIFT-002 (**new, Pass 31 — OBSERVED on the runner, FIXED, FALSIFIED**): RATE_LIMITED is not NETWORK_FAILURE
+
+**Requirement.** A provider that answers with a throttle is alive: the
+outcome is typed and reported as a throttle at every layer — the error the
+module returns, the breaker, the capability probe, `hse doctor --live`, the
+capabilities API and the live-drift sweep — never collapsed into the
+transport-failure class, and never escalated as a dead canary.
+
+**Observation.** The 2026-09-15 live-drift dispatches on `9057132` and
+`f41b49a` (runs 34970838278, 34985449332) recorded `unreachable
+reddit_user [reddit_user] HTTP 429 Too Many Requests: <empty>` and
+`unreachable steam_profile [steam_profile] HTTP 429 Too Many Requests: Steam
+Community :: Error`. `http_status_error` built an `Error::Module` whose text
+contained "429"; the breaker only classified it as a throttle through a
+string match on that text (its own comment records the fragility), and
+`probe_once` mapped every `Err` to `ProbeOutcome::Unreachable`, so a
+throttled canary — three attempts, 3 s apart, each deepening the throttle —
+would have been reported as a dead one and failed the sweep.
+
+**Repair.** `http_status_error` returns `Error::RateLimited(format!("{module}:
+HTTP 429 …: {snippet}"))` for a 429 (every other status stays `Error::Module`);
+`ProbeOutcome::RateLimited { reason }` is mapped from the typed error in
+`probe_once`, labelled `rate-limited`, excluded from `is_confirmed_drift` and
+`is_dead_canary`, and final at the first attempt in `probe_with_policy` (the
+retry loop only re-tries `Unreachable` / `TimedOut`); `hse doctor --live`,
+the capabilities API (`rate_limited` count, `"rate-limited"` outcome with
+the reason) and `tests/live_drift.rs` print and count it.
+
+**Evidence.** `util::http::tests::a_429_is_the_typed_rate_limited_error_and_other_statuses_stay_module_errors`
+(loopback 429 → `RateLimited`; 503 → `Module`);
+`selftest::capability_probe::tests::a_throttle_is_its_own_outcome_never_retried_never_dead_never_drift`
+(a fixture module answering the typed throttle: one call under a
+three-attempt policy, label `rate-limited`, a throttled `ip_registry` report
+is neither dead nor drift); the API projection test carries a throttled
+`ripestat` report (`rate_limited: 1`, `"rate-limited"`, `dead_canary: false`).
+
+**Falsification.** Each repair reverted in turn with only its lock run:
+
+```
+[http_status_error 429] reverted -> LOCK FAILS (expected)
+    util::http::tests::a_429_is_the_typed_rate_limited_error_and_other_statuses_stay_module_errors --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7388 filtered out; finished in 0.22s
+[probe_once RateLimited mapping] reverted -> LOCK FAILS (expected)
+    selftest::capability_probe::tests::a_throttle_is_its_own_outcome_never_retried_never_dead_never_drift --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7388 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
+**Residual.** Modules that build a 429 error by hand (`hibp`'s retry
+exhaustion message) keep the breaker's string path; the dispatcher's
+`record_error` text match stays as the fallback for them. A throttled canary
+is reported, not escalated — a canary throttled on every weekly run is
+visible in the table but does not fail the sweep.
+

@@ -144,12 +144,23 @@ use crate::app::export::csv_escape;
                     reason: "connect".into(),
                 },
             },
+            // A throttled canary: alive but asking for less — neither dead
+            // nor drift, reported as its own outcome.
+            ProbeReport {
+                module: "ripestat",
+                kind: TargetKind::IpAddress,
+                value: "8.8.8.8",
+                outcome: ProbeOutcome::RateLimited {
+                    reason: "ripestat: HTTP 429 Too Many Requests: <empty>".into(),
+                },
+            },
         ];
         let v = capability_probe_json(&reports);
-        assert_eq!(v["probed"], 4);
+        assert_eq!(v["probed"], 5);
         assert_eq!(v["alive"], 1);
         assert_eq!(v["empty"], 2);
         assert_eq!(v["unreachable"], 1);
+        assert_eq!(v["rate_limited"], 1);
         // Only the ip_geo canary's empty is confirmed drift.
         assert_eq!(v["drift"].as_array().expect("should succeed").len(), 1);
         assert_eq!(v["drift"][0], "ip_geo");
@@ -170,6 +181,11 @@ use crate::app::export::csv_escape;
         assert_eq!(dead["dead_canary"], true);
         assert_eq!(dead["drift"], false);
         assert_eq!(ip_geo["dead_canary"], false, "drift is not death");
+        let throttled = mods.iter().find(|m| m["module"] == "ripestat").expect("should succeed");
+        assert_eq!(throttled["outcome"], "rate-limited");
+        assert_eq!(throttled["dead_canary"], false, "a throttled canary answered");
+        assert_eq!(throttled["drift"], false);
+        assert_eq!(v["dead_canaries"].as_array().expect("should succeed").len(), 1);
     }
 
     #[test]

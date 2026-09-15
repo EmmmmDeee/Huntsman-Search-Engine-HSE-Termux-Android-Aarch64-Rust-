@@ -692,8 +692,8 @@ async fn print_live_capability_report() {
         return;
     }
 
-    let (mut alive, mut empty, mut unreachable, mut timed_out, mut panicked) =
-        (0usize, 0usize, 0usize, 0usize, 0usize);
+    let (mut alive, mut empty, mut unreachable, mut timed_out, mut rate_limited, mut panicked) =
+        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
     let mut drift: Vec<&str> = Vec::new();
     let mut dead: Vec<&str> = Vec::new();
     for r in &reports {
@@ -741,6 +741,11 @@ async fn print_live_capability_report() {
                 timed_out += 1;
                 println!("  timed-out    {:<22}{canary}{dead_tag}", r.module);
             }
+            ProbeOutcome::RateLimited { reason } => {
+                // Alive but throttling: neither dead nor drift.
+                rate_limited += 1;
+                println!("  rate-limited {:<22} {reason}{canary}", r.module);
+            }
             ProbeOutcome::Panicked { message } => {
                 panicked += 1;
                 println!("  panicked     {:<22} {message}{canary}", r.module);
@@ -751,7 +756,7 @@ async fn print_live_capability_report() {
     }
     println!(
         "  summary: {} probed — {alive} alive, {empty} empty, {unreachable} unreachable, \
-         {timed_out} timed-out, {panicked} panicked",
+         {timed_out} timed-out, {rate_limited} rate-limited, {panicked} panicked",
         reports.len()
     );
     if !drift.is_empty() {

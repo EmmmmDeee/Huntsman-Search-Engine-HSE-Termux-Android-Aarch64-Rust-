@@ -14,6 +14,8 @@
 //!   * **empty**       — provider reached, parser produced 0 entities.
 //!   * **unreachable** — transport error (provider down / device offline).
 //!   * **timed-out**   — exceeded the module's own budget (provider slow/hung).
+//!   * **rate-limited** — the provider answered with a throttle (alive, asking
+//!     for less): never drift, never a dead canary, never retried within a run.
 //!   * **panicked**    — the module's parser crashed on the live response.
 //!
 //! Only a curated **canary** set (`capability_probe::CANARY_PROBES`, e.g.
@@ -58,6 +60,7 @@ async fn fleet_capability_drift() {
     let mut empty = 0usize;
     let mut unreachable = 0usize;
     let mut timed_out = 0usize;
+    let mut rate_limited = 0usize;
     let mut panicked = 0usize;
     let mut drifted: Vec<String> = Vec::new();
     let mut dead: Vec<String> = Vec::new();
@@ -113,6 +116,10 @@ async fn fleet_capability_drift() {
                     ));
                 }
             }
+            ProbeOutcome::RateLimited { reason } => {
+                rate_limited += 1;
+                println!("  rate-limited {:<22} {reason}{canary}", r.module);
+            }
             ProbeOutcome::Panicked { message } => {
                 panicked += 1;
                 println!("  panicked     {:<22} {message}{canary}", r.module);
@@ -129,7 +136,8 @@ async fn fleet_capability_drift() {
 
     println!(
         "\nlive-drift sweep: {} probed — {alive} alive, {empty} empty, \
-         {unreachable} unreachable, {timed_out} timed-out, {panicked} panicked",
+         {unreachable} unreachable, {timed_out} timed-out, {rate_limited} rate-limited, \
+         {panicked} panicked",
         reports.len()
     );
 

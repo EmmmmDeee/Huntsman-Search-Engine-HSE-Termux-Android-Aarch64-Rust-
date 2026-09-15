@@ -61,7 +61,10 @@ use crate::util::http::build_client;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProbeOutcome {
     /// Provider reached; its parser produced ≥1 entity — capability healthy.
-    Alive { found: usize },
+    Alive {
+        /// How many entities the parser produced.
+        found: usize,
+    },
     /// Provider reached but the parse yielded **zero** entities. For a
     /// [`CANARY_PROBES`] module this is drift (the wire shape likely changed);
     /// for any other module it is only *suspected* — the sample may simply have
@@ -69,10 +72,23 @@ pub enum ProbeOutcome {
     Empty,
     /// Transport failure (DNS/TLS/connect/HTTP) — provider down or the device is
     /// offline. **Never** treated as drift.
-    Unreachable { reason: String },
+    Unreachable {
+        /// The module's error text (URL-stripped and credential-redacted).
+        reason: String,
+    },
     /// Exceeded the module's own timeout budget — provider slow/hung. **Never**
     /// treated as drift.
     TimedOut,
+    /// The provider answered with a throttle (the typed
+    /// [`crate::core::error::Error::RateLimited`]): alive, but asking for
+    /// less. **Never** drift (the wire shape was not seen), **never** a dead
+    /// canary (the provider plainly exists), and never retried within a run —
+    /// a retry would only deepen the throttle. Before this variant a throttle
+    /// was `Unreachable`, so a throttled canary read as a dead one.
+    RateLimited {
+        /// The throttle as the module reported it (status line and body snippet).
+        reason: String,
+    },
     /// The module's `process()` panicked while handling the live response — a
     /// hostile/malformed payload, or a bug the canned fixture tests never
     /// exercised. **Always** [`ProbeReport::is_confirmed_drift`], independent of
@@ -80,7 +96,10 @@ pub enum ProbeOutcome {
     /// guaranteed-data heuristic to separate signal from "this sample simply has
     /// no data"), a panic on a real provider response has no benign
     /// explanation — the module is unconditionally broken.
-    Panicked { message: String },
+    Panicked {
+        /// The panic payload, rendered as text.
+        message: String,
+    },
 }
 
 impl ProbeOutcome {
@@ -91,6 +110,7 @@ impl ProbeOutcome {
             Self::Empty => "empty",
             Self::Unreachable { .. } => "unreachable",
             Self::TimedOut => "timed-out",
+            Self::RateLimited { .. } => "rate-limited",
             Self::Panicked { .. } => "panicked",
         }
     }
@@ -125,9 +145,13 @@ pub fn attempts_for(module: &str) -> usize {
 /// One module's probe result, with the target it was probed against.
 #[derive(Debug, Clone)]
 pub struct ProbeReport {
+    /// Registry name of the probed module.
     pub module: &'static str,
+    /// Seed kind of the sample target it was probed against.
     pub kind: TargetKind,
+    /// The sample target's value.
     pub value: &'static str,
+    /// What happened.
     pub outcome: ProbeOutcome,
 }
 
@@ -145,7 +169,8 @@ impl ProbeReport {
             ProbeOutcome::Empty => is_canary(self.module),
             ProbeOutcome::Alive { .. }
             | ProbeOutcome::Unreachable { .. }
-            | ProbeOutcome::TimedOut => false,
+            | ProbeOutcome::TimedOut
+            | ProbeOutcome::RateLimited { .. } => false,
         }
     }
 
@@ -156,7 +181,9 @@ impl ProbeReport {
     /// never seen. Not tolerable either: a canary is chosen because its
     /// provider is expected to answer, so a provider that answers nothing for
     /// a whole run is down or retired, and the capability is gone just as
-    /// surely. A non-canary's transport failure is never a dead canary.
+    /// surely. A non-canary's transport failure is never a dead canary, and a
+    /// throttle ([`ProbeOutcome::RateLimited`]) never is either: the provider
+    /// answered.
     pub fn is_dead_canary(&self) -> bool {
         is_canary(self.module)
             && matches!(
@@ -384,6 +411,9 @@ async fn probe_once(
         Ok(Ok(r)) => ProbeOutcome::Alive {
             found: r.entities.len(),
         },
+        Ok(Err(crate::core::error::Error::RateLimited(reason))) => {
+            ProbeOutcome::RateLimited { reason }
+        }
         Ok(Err(e)) => ProbeOutcome::Unreachable {
             reason: e.to_string(),
         },
@@ -943,5 +973,73 @@ mod tests {
             r.outcome
         );
         assert_eq!(m.calls.load(Ordering::SeqCst), 3);
+    }
+
+    /// Answers every call with a typed throttle.
+    struct Throttled {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl Module for Throttled {
+        fn name(&self) -> &'static str {
+            "throttled_probe_fixture"
+        }
+        fn priority(&self) -> u8 {
+            50
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Domain)
+        }
+        async fn process(
+            &self,
+            _t: &Target,
+            _ctx: &ModuleContext,
+        ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(crate::core::error::Error::RateLimited(
+                "throttled_probe_fixture: HTTP 429 Too Many Requests: slow down".into(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_throttle_is_its_own_outcome_never_retried_never_dead_never_drift() {
+        // The 2026-09-15 live sweep read reddit_user's and steam_profile's
+        // HTTP 429 as "unreachable" — the class of a provider that is down.
+        // A throttled provider answered; a throttled canary is alive.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let http = reqwest::Client::new();
+        let m = Throttled {
+            calls: AtomicUsize::new(0),
+        };
+        let r = probe_with_policy(&m, &http, 3, Duration::ZERO)
+            .await
+            .expect("probeable");
+        assert!(
+            matches!(&r.outcome, ProbeOutcome::RateLimited { reason } if reason.contains("429")),
+            "{:?}",
+            r.outcome
+        );
+        assert_eq!(
+            m.calls.load(Ordering::SeqCst),
+            1,
+            "a throttle is final at once — retrying would deepen it"
+        );
+        assert_eq!(r.outcome.label(), "rate-limited");
+
+        let throttled = ProbeReport {
+            module: "ip_registry",
+            kind: TargetKind::Asn,
+            value: "AS15169",
+            outcome: ProbeOutcome::RateLimited {
+                reason: "ip_registry: HTTP 429 Too Many Requests: <empty>".into(),
+            },
+        };
+        assert!(!throttled.is_dead_canary(), "a throttled canary answered");
+        assert!(
+            !throttled.is_confirmed_drift(),
+            "the wire shape was not seen"
+        );
     }
 }

@@ -728,6 +728,14 @@ pub fn note_keyed_error(
 pub async fn http_status_error(module: &str, resp: reqwest::Response) -> Error {
     let status = resp.status();
     let snippet = error_snippet(resp).await;
+    // A throttle is its own class of outcome — the provider is alive and
+    // answering, and only asks for less — so it is the typed `RateLimited`:
+    // the breaker trips on the variant rather than on a "429" token in the
+    // text, and the capability probe / live sweep report "rate-limited"
+    // instead of "unreachable" (a throttled canary is never a dead one).
+    if status.as_u16() == 429 {
+        return Error::RateLimited(format!("{module}: HTTP {status}: {snippet}"));
+    }
     Error::module(module, format!("HTTP {status}: {snippet}"))
 }
 

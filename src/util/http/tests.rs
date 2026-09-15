@@ -1471,3 +1471,34 @@ fn json_failure_names_an_html_error_page_and_keeps_serde_for_shape_drift() {
     let err = serde_json::from_str::<Wanted>(quoting).expect_err("missing field");
     assert!(!json_failure(quoting, &err).contains("HTML page"));
 }
+
+#[tokio::test]
+async fn a_429_is_the_typed_rate_limited_error_and_other_statuses_stay_module_errors() {
+    // The 2026-09-15 live sweep classified reddit_user's and steam_profile's
+    // HTTP 429 as "unreachable" — the class of a provider that is down. A
+    // throttle is the provider answering; the breaker, the capability probe
+    // and the sweep must see the variant, not a "429" token in prose.
+    use super::test_server::{Canned, serve};
+    let base = serve(vec![
+        Canned::text(429, "slow down"),
+        Canned::text(503, "Service Unavailable"),
+    ])
+    .await;
+    let client = reqwest::Client::new();
+    let resp = client.get(&base).send().await.expect("loopback");
+    let err = super::http_status_error("m", resp).await;
+    assert!(
+        matches!(err, crate::core::error::Error::RateLimited(_)),
+        "{err}"
+    );
+    assert!(
+        err.to_string().contains("429") && err.to_string().contains("slow down"),
+        "{err}"
+    );
+    let resp = client.get(&base).send().await.expect("loopback");
+    let err = super::http_status_error("m", resp).await;
+    assert!(
+        matches!(err, crate::core::error::Error::Module { .. }),
+        "{err}"
+    );
+}
