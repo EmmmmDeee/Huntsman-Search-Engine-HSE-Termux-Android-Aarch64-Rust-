@@ -4,11 +4,17 @@
 //! value (kind auto-detected, or `--kind`), stamps the current time, and prints
 //! the ranked manual queries as a table or JSON. All generation is offline and
 //! deterministic; nothing is fetched.
+//!
+//! Pack selection is by target kind so this file stays signature-compatible
+//! with `Command::QueryPack { value, kind, output }`:
+//! - ABN / org / address / coordinates → EDD table
+//! - domain / url / IP / full name → exposure then EDD
+//! - email / username / phone / other → exposure six
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::error::{Error, Result};
-use crate::core::query_pack::{ManualQuery, generate};
+use crate::core::query_pack::{ManualQuery, Pack, generate_pack};
 use crate::core::scan::{Target, TargetKind};
 
 use super::{parse_target_kind, truncate};
@@ -23,7 +29,6 @@ pub(super) async fn cmd_query_pack(value: String, kind: String, output: String) 
         ));
     }
 
-    // Resolve output format before anything else, mirroring `hse query`.
     let json = match output.as_str() {
         "json" => true,
         "table" => false,
@@ -34,58 +39,80 @@ pub(super) async fn cmd_query_pack(value: String, kind: String, output: String) 
         }
     };
 
-    // An omitted (or `auto`) --kind is inferred from the value, exactly as
-    // `hse scan` does; an explicit kind is parsed and validated.
     let target_kind: TargetKind = if kind.is_empty() || kind.eq_ignore_ascii_case("auto") {
         crate::core::scan::detect_kind(v)
     } else {
         parse_target_kind(&kind)?
     };
     let target = Target::new(target_kind, v.to_string());
+    let selected = pack_for_kind(target_kind);
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let pack = generate(&target, now);
+    let rows = generate_pack(selected, &target, now);
 
     if json {
-        print_json(&target, &pack);
+        print_json(&target, selected, &rows);
     } else {
-        print_table(&target, &pack);
+        print_table(&target, selected, &rows);
     }
     Ok(())
 }
 
-fn print_table(target: &Target, pack: &[ManualQuery]) {
-    if pack.is_empty() {
+fn pack_for_kind(kind: TargetKind) -> Pack {
+    match kind {
+        TargetKind::AbnAcn
+        | TargetKind::Organisation
+        | TargetKind::Address
+        | TargetKind::Coordinates => Pack::Edd,
+        TargetKind::Domain
+        | TargetKind::Url
+        | TargetKind::IpAddress
+        | TargetKind::FullName => Pack::All,
+        _ => Pack::Exposure,
+    }
+}
+
+fn pack_label(pack: Pack) -> &'static str {
+    match pack {
+        Pack::Exposure => "exposure",
+        Pack::Edd => "edd",
+        Pack::All => "all",
+    }
+}
+
+fn print_table(target: &Target, pack: Pack, rows: &[ManualQuery]) {
+    if rows.is_empty() {
         println!(
-            "No manual providers apply to a {} target — the manual pack covers \
-             identity/exposure kinds (email, username, domain, phone, name, IP, …).",
+            "No {} providers apply to a {} target.",
+            pack_label(pack),
             target.kind.canonical_str()
         );
         return;
     }
     println!(
-        "Manual query pack for {} {:?} — {} provider quer{} \
-         (DISCOVERY / EXPOSURE VERIFICATION only; run each by hand)",
+        "{} query pack for {} {:?} — {} provider quer{} \
+         (DISCOVERY / EXPOSURE VERIFICATION / CORRELATION only; run each by hand)",
+        pack_label(pack),
         target.kind.canonical_str(),
         truncate(target.value.trim(), 60),
-        pack.len(),
-        if pack.len() == 1 { "y" } else { "ies" }
+        rows.len(),
+        if rows.len() == 1 { "y" } else { "ies" }
     );
-    if let Some(first) = pack.first() {
+    if let Some(first) = rows.first() {
         println!("parent_query_id: {}", first.parent_query_id);
     }
     println!();
-    for q in pack {
+    for q in rows {
         println!("{:>2}. {}  [{}]", q.rank, q.provider, q.manual_entrypoint);
         println!("      query: {:?}  ({})", q.query, q.query_type);
         println!("      expect: {}", q.expected_result_class);
     }
 }
 
-fn print_json(target: &Target, pack: &[ManualQuery]) {
-    let items: Vec<_> = pack
+fn print_json(target: &Target, pack: Pack, rows: &[ManualQuery]) {
+    let items: Vec<_> = rows
         .iter()
         .map(|q| {
             serde_json::json!({
@@ -103,8 +130,9 @@ fn print_json(target: &Target, pack: &[ManualQuery]) {
     let body = serde_json::json!({
         "target": target.value.trim(),
         "target_kind": target.kind.canonical_str(),
+        "pack": pack_label(pack),
         "purpose": "DISCOVERY / EXPOSURE VERIFICATION / CORRELATION",
-        "count": pack.len(),
+        "count": rows.len(),
         "queries": items,
     });
     println!(
