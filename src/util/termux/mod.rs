@@ -330,15 +330,26 @@ pub(crate) fn is_marked_unavailable_for_test(cmd: &str) -> bool {
     st.absent.contains_key(cmd) || st.timed_out.contains_key(cmd)
 }
 
-/// Test-only accessor: clear any cached mark for `cmd` (both the binary-wide
-/// absence and the bare-argv timeout backoff), so a test starts from a known
-/// state regardless of what earlier tests in the same process did to the
-/// shared, process-global [`STATE`].
-#[cfg(test)]
-pub(crate) fn clear_unavailable_for_test(cmd: &str) {
+/// Drop every cached mark for `cmd` — the binary-wide absence and the
+/// bare-argv timeout backoff — so the next call spawns it.
+///
+/// For a readiness probe that must observe the present, not the cache: the
+/// caches exist so a scan never pays a dead sensor's timeout twice, but a
+/// diagnostic asked "does the bridge answer NOW?" must not report a failure
+/// cached minutes ago in a long-lived `hse serve` after the operator has
+/// installed the app. Sensor modules never call this; they want the skip.
+pub(crate) fn forget(cmd: &str) {
     let mut st = state();
     st.absent.remove(cmd);
     st.timed_out.remove(cmd);
+}
+
+/// Test-only alias of [`forget`], so a test starts from a known state
+/// regardless of what earlier tests in the same process did to the shared,
+/// process-global [`STATE`].
+#[cfg(test)]
+pub(crate) fn clear_unavailable_for_test(cmd: &str) {
+    forget(cmd);
 }
 
 #[cfg(test)]

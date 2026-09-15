@@ -265,6 +265,35 @@ fn a_failed_probe_is_unknown_state_that_degrades_readiness_and_an_empty_answer_i
     assert_eq!(json["sensors"]["cell"], "failed", "{json}");
 }
 
+/// SUCCESSFUL ACQUISITION → VALIDATION → INTERPRETATION: a zero-exit answer
+/// is VALID only when it parses as JSON. Delimiters alone prove nothing.
+#[test]
+fn an_unparseable_answer_is_a_failed_probe_not_valid_evidence() {
+    let _g = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let dev = Device::new();
+    dev.stub("termux-telephony-cellinfo", "echo '{not-json}'");
+    dev.stub("termux-wifi-connectioninfo", "echo '[broken]'");
+    // Real, nested, escaped JSON stays valid.
+    dev.stub(
+        "termux-location",
+        r#"echo '{"latitude": -10.5e0, "tags": [1, {"n": "q\"uote\u00e9"}], "ok": true, "x": null}'"#,
+    );
+    let (code, json) = dev.reconcile(&[]);
+    assert_eq!(code, 2, "{json}");
+    assert_eq!(json["sensors"]["cell"], "failed", "{json}");
+    assert_eq!(json["sensors"]["wifi_connection"], "failed", "{json}");
+    assert_eq!(json["sensors"]["gnss"], "executed_valid", "{json}");
+    assert_eq!(json["sensors"]["wifi_scan"], "executed_empty", "{json}");
+    assert_eq!(json["radar"]["evidence"], "degraded", "{json}");
+
+    // The bridge is held to the same grammar: an unparseable "answer" is none.
+    dev.stub("termux-battery-status", "echo '{percentage: 81}'");
+    let (code, json) = dev.reconcile(&[]);
+    assert_eq!(code, 5, "{json}");
+    assert_eq!(json["termux"]["bridge"], "fail", "{json}");
+    assert_eq!(json["termux"]["state"], "bridge_failed", "{json}");
+}
+
 #[test]
 fn bluetooth_is_an_optional_provider_and_never_a_readiness_condition() {
     let _g = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);

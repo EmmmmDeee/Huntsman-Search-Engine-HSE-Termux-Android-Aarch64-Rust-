@@ -55,7 +55,8 @@
 #   --allow-process-restart permit a controlled stop of a stale `hse radar` process
 #
 # The repository acted on is the git checkout containing the current directory,
-# else the one containing this script. Human and JSON output are rendered from
+# else the one containing this script. A tree is DIRTY when a tracked file is
+# modified; untracked files cannot affect install.sh and never block. Human and JSON output are rendered from
 # ONE final-state object. Progress goes to stderr; details of every external
 # command to $HOME/.cache/hse-reconcile.log.
 #
@@ -67,7 +68,8 @@
 #   5  device capability incomplete
 #   6  verification failure; rollback executed
 #   7  rollback verification failure
-#   8  process restart required but not authorized (the sole remaining blocker)
+#   8  process restart required but not authorized (the sole remaining blocker;
+#      an authorized stop that failed is 2)
 #   9  internal invariant violation (including a bad invocation)
 #
 # Every mutation is idempotent: a second clean run reports repository.mutation
@@ -215,7 +217,7 @@ usage() {
 # An invariant of THIS program failed: report it and stop with the reserved code.
 invariant_violation() {
     log "internal invariant violation: $*"
-    S[reason]="internal invariant violation: $*"
+    reason "internal invariant violation: $*"
     S[exit_code]=9
     emit
     exit 9
@@ -225,26 +227,6 @@ logged() {
     { printf '\n$ %s\n' "$*"; "$@"; } >>"$LOG_FILE" 2>&1
 }
 mutating() { [[ "$ACTION" == converge ]]; }
-
-# ── Argument parsing ─────────────────────────────────────────────────────────
-for arg in "$@"; do
-    case "$arg" in
-        --repo-only|--device-only)
-            [[ "$MODE" == default ]] || { usage; invariant_violation "$arg conflicts with --$MODE"; }
-            MODE=${arg#--} ;;
-        --verify-only|--dry-run)
-            [[ "$ACTION" == converge ]] || { usage; invariant_violation "$arg conflicts with --$ACTION"; }
-            ACTION=${arg#--} ;;
-        --json) JSON=1 ;;
-        --allow-process-restart) ALLOW_RESTART=1 ;;
-        -h|--help) usage; exit 0 ;;
-        *) usage; invariant_violation "unknown argument: $arg" ;;
-    esac
-done
-S[mode]="$MODE"
-S[action]="$ACTION"
-mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
-printf '\n==== %s %s ====\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)" "$*" >>"$LOG_FILE" 2>/dev/null || LOG_FILE=/dev/null
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Repository phase
@@ -356,45 +338,47 @@ verify_shell() {
     fi
 }
 
-# Rust-side verification of the patched tree: rustfmt and the targeted test
-# suite that reads install.sh. Sets S[repository.rust_verify] to pass, fail, or
-# skipped_environment. Returns 1 only on FAIL — a skip is not a failure, and
-# is never reported as a pass.
-verify_rust() {
+# Rust-side verification, attributed by measurement rather than assumption.
+#
+# The patch touches no Rust source, so anything that does not format or build
+# BEFORE the patch cannot have been broken by it: a missing toolchain, an
+# offline registry, rustfmt drift already on the tree, a test target that does
+# not compile here. The preflight runs those checks on the unmodified tree and,
+# when one fails, records RUST_VERIFY=SKIPPED_ENVIRONMENT with the reason — a
+# skip, never a pass, so the transaction ends at PATCH_APPLIED (exit 2). Only a
+# tree that passed the preflight is held to the post-patch run, where ANY
+# failure (a test, or a rebuild that now breaks) is the patch's and rolls back.
+RUST_PREFLIGHT=unavailable   # unavailable | ready
+rust_skip() {
+    S[repository.rust_verify]=skipped_environment
+    reason "rust: $1"
+}
+rust_preflight() {
     if ! command -v cargo >/dev/null 2>&1; then
-        S[repository.rust_verify]=skipped_environment
-        reason "rust: cargo is not available here; run cargo test --test install_invariants where it is"
-        return 0
+        rust_skip "cargo is not available here; run cargo test --test install_invariants where it is"; return
     fi
     if [[ ! -f "$REPO/Cargo.toml" ]]; then
-        S[repository.rust_verify]=skipped_environment
-        reason "rust: no Cargo.toml at $REPO; nothing for cargo to verify"
-        return 0
+        rust_skip "no Cargo.toml at $REPO; nothing for cargo to verify"; return
     fi
     if ! (cd "$REPO" && logged cargo fmt --version); then
-        S[repository.rust_verify]=skipped_environment
-        reason "rust: rustfmt is not installed (cargo fmt unavailable)"
-        return 0
+        rust_skip "rustfmt is not installed (cargo fmt unavailable)"; return
     fi
     if ! (cd "$REPO" && logged cargo fmt --all -- --check); then
-        S[repository.rust_verify]=fail
-        reason "rust: cargo fmt --check failed (see $LOG_FILE)"
-        return 1
+        rust_skip "rustfmt drift is already present on the unpatched tree, so it is not attributable to this patch (see $LOG_FILE)"; return
     fi
-    # A test target that does not BUILD is an environment limitation (offline
-    # registry, missing system libraries): this patch touches no Rust source,
-    # so it cannot be what broke the build. A test that builds and FAILS is a
-    # verification failure.
     if ! (cd "$REPO" && logged cargo test --locked --test install_invariants --no-run); then
-        S[repository.rust_verify]=skipped_environment
-        reason "rust: the install_invariants test target did not build here (see $LOG_FILE)"
-        return 0
+        rust_skip "the install_invariants test target does not build on the unpatched tree (offline registry, missing toolchain component, or a pre-existing break; see $LOG_FILE)"; return
     fi
+    RUST_PREFLIGHT=ready
+}
+# Post-mutation, only after a passed preflight: the targeted tests on the
+# patched tree. Returns 1 on FAIL, which the caller answers with a rollback.
+verify_rust() {
     if (cd "$REPO" && logged cargo test --locked --test install_invariants); then
         S[repository.rust_verify]=pass
     else
         S[repository.rust_verify]=fail
-        reason "rust: cargo test --test install_invariants failed (see $LOG_FILE)"
+        reason "rust: cargo test --test install_invariants failed on the patched tree (see $LOG_FILE)"
         return 1
     fi
 }
@@ -492,6 +476,10 @@ repository_phase() {
         return
     fi
 
+    # Decide what Rust verification this environment can attribute, BEFORE
+    # touching anything (see rust_preflight).
+    rust_preflight
+
     # Transaction: snapshot → apply → verify → (rollback).
     snapshot_installer || invariant_violation "could not snapshot install.sh"
     log "patching install.sh (${S[repository.commit]}): termux-info sentinel → TERMUX_API_CORE_TOOLS probe"
@@ -506,7 +494,7 @@ repository_phase() {
     local failed=0
     verify_shell || failed=1
     verify_structural post-mutation || failed=1
-    if (( failed == 0 )); then
+    if (( failed == 0 )) && [[ "$RUST_PREFLIGHT" == ready ]]; then
         verify_rust || failed=1
     fi
     if (( failed == 1 )); then
@@ -544,20 +532,93 @@ bounded() {
     timeout -k 2 "$PROBE_TIMEOUT_S" "$@" 2>>"$LOG_FILE"
 }
 
+# A JSON grammar check (RFC 8259: one value, optional surrounding whitespace)
+# in POSIX awk, which every Termux and Linux host has; python or jq cannot be
+# assumed on a stock device. Recursive descent over the text, so `{not-json}`
+# or `[broken]` fail exactly like unbalanced input does. String contents are
+# not policed for raw control characters (Termux:API's JSON writer never emits
+# them, and a locale mishap must not turn a real reading into FAILED).
+IFS= read -r -d '' JSON_GRAMMAR_AWK <<'JSON_GRAMMAR_AWK' || true
+function ws() { while (pos <= n && index(" \t\r\n", substr(s, pos, 1))) pos++ }
+function lit(w) { if (substr(s, pos, length(w)) == w) { pos += length(w); return 1 } return 0 }
+function num(  m) {
+    m = substr(s, pos)
+    if (match(m, /^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?/)) { pos += RLENGTH; return 1 }
+    return 0
+}
+function str(  c) {
+    pos++
+    while (pos <= n) {
+        c = substr(s, pos, 1)
+        if (c == "\"") { pos++; return 1 }
+        if (c == "\\") {
+            pos++; c = substr(s, pos, 1)
+            if (c == "u") {
+                if (substr(s, pos + 1, 4) !~ /^[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]$/) return 0
+                pos += 4
+            } else if (index("\"\\/bfnrt", c) == 0) return 0
+        }
+        pos++
+    }
+    return 0
+}
+function obj(  c) {
+    pos++; ws()
+    if (substr(s, pos, 1) == "}") { pos++; return 1 }
+    while (1) {
+        ws(); if (substr(s, pos, 1) != "\"") return 0
+        if (!str()) return 0
+        ws(); if (substr(s, pos, 1) != ":") return 0
+        pos++
+        if (!val()) return 0
+        ws(); c = substr(s, pos, 1)
+        if (c == ",") { pos++; continue }
+        if (c == "}") { pos++; return 1 }
+        return 0
+    }
+}
+function arr(  c) {
+    pos++; ws()
+    if (substr(s, pos, 1) == "]") { pos++; return 1 }
+    while (1) {
+        if (!val()) return 0
+        ws(); c = substr(s, pos, 1)
+        if (c == ",") { pos++; continue }
+        if (c == "]") { pos++; return 1 }
+        return 0
+    }
+}
+function val(  c) {
+    ws(); c = substr(s, pos, 1)
+    if (c == "{") return obj()
+    if (c == "[") return arr()
+    if (c == "\"") return str()
+    if (c == "t") return lit("true")
+    if (c == "f") return lit("false")
+    if (c == "n") return lit("null")
+    if (c == "-" || (c >= "0" && c <= "9")) return num()
+    return 0
+}
+{ s = s $0 "\n" }
+END { n = length(s); pos = 1; if (!val()) exit 1; ws(); exit (pos <= n) }
+JSON_GRAMMAR_AWK
+json_valid() { awk "$JSON_GRAMMAR_AWK" <<<"$1"; }
+
 # Classify one probe: executed_valid | executed_empty | failed.
 #   $1 exit status, $2 stdout.
 # FAILED is an unknown sensor state, never "0 observations": a timeout, a
-# non-zero exit, an API error object, or non-JSON output all land here.
+# non-zero exit, Termux:API's own error object, or output that is not JSON all
+# land here. Only a parseable answer is VALID; only a parseable empty one is
+# EMPTY.
 classify_probe() {
-    local status="$1" out="$2"
+    local status="$1" out="$2" compact
     (( status == 0 )) || { printf 'failed'; return; }
-    out="${out//[$'\t\r\n ']/}"
-    case "$out" in
-        ""|"{}"|"[]") printf 'executed_empty' ;;
-        *API_ERROR*|*'"error"'*) printf 'failed' ;;
-        "{"*"}"|"["*"]") printf 'executed_valid' ;;
-        *) printf 'failed' ;;
+    compact="${out//[$'\t\r\n ']/}"
+    case "$compact" in
+        ""|"{}"|"[]") printf 'executed_empty'; return ;;
+        *API_ERROR*|*'"error"'*) printf 'failed'; return ;;
     esac
+    if json_valid "$out"; then printf 'executed_valid'; else printf 'failed'; fi
 }
 
 # Is the Termux:API app installed? Prints present | absent | unknown.
@@ -747,7 +808,9 @@ radar_process_phase() {
     installed="$(termux_api_install_epoch)" || installed=""
     for pid in $pids; do
         start="$(process_start_epoch "$pid")" || start=""
-        if [[ -z "$installed" || -z "$start" || "$start" -lt "$installed" ]]; then
+        # Whole-second clocks on both sides: equality cannot prove the process
+        # started after the install, so it is stale too (fail closed).
+        if [[ -z "$installed" || -z "$start" || "$start" -le "$installed" ]]; then
             stale+=("$pid")
         fi
     done
@@ -760,17 +823,18 @@ radar_process_phase() {
         reason "hse radar (pid ${stale[*]}) started before the termux-api tools were installed; its absent-tool cache is stale"
         return
     fi
-    # Authorized: stop each stale process through its own Ctrl-C path, prove
-    # it exited, then re-observe.
+    # Authorized: stop each stale process through its own Ctrl-C path (SIGINT,
+    # which `hse radar` answers by cancelling its sweep and finalising), prove
+    # it exited, then re-observe. Nothing stronger is ever sent: the radar has
+    # no SIGTERM handler, so escalating would kill it mid-scan while the report
+    # claimed a controlled stop. A process that outlives the wait is reported
+    # as such and left to the operator.
     local waited alive=()
     for pid in "${stale[@]}"; do
         log "stopping stale hse radar pid $pid (SIGINT)"
         kill -INT "$pid" 2>/dev/null
         waited=0
         while process_alive "$pid" && (( waited < RADAR_STOP_TIMEOUT_S )); do sleep 1; waited=$((waited + 1)); done
-        if process_alive "$pid"; then
-            kill -TERM "$pid" 2>/dev/null; sleep 3
-        fi
         process_alive "$pid" && alive+=("$pid")
     done
     if (( ${#alive[@]} == 0 )); then
@@ -787,7 +851,7 @@ radar_process_phase() {
         fi
     else
         S[radar.process_action]=stop_failed
-        reason "hse radar pid ${alive[*]} did not exit after SIGINT/SIGTERM"
+        reason "hse radar pid ${alive[*]} did not exit within ${RADAR_STOP_TIMEOUT_S}s of SIGINT; stop it manually"
     fi
 }
 
@@ -830,9 +894,10 @@ derive_exit_code() {
         if (( device_requested )); then
             [[ "$dev" == not_termux ]] && degraded=1
             [[ "${S[radar.evidence]}" != core_ready && "${S[radar.evidence]}" != full_ready ]] && degraded=1
-            if [[ "${S[radar.process]}" == stale_restart_required ]]; then
-                # Stale process is the ONLY thing between here and the requested
-                # state: every core sensor read, repository acceptable.
+            if [[ "${S[radar.process]}" == stale_restart_required && "${S[radar.process_action]}" == none ]]; then
+                # An UNATTEMPTED restart is the ONLY thing between here and the
+                # requested state: every core sensor read, repository acceptable.
+                # (An authorised stop that failed is degraded, exit 2, below.)
                 local reads=0 label
                 for label in "${SENSOR_LABELS[@]}"; do
                     case "${S[sensors.$label]}" in executed_valid|executed_empty) reads=$((reads + 1)) ;; esac
@@ -1002,6 +1067,29 @@ emit() {
     S[reason]="$r"
     if (( JSON )); then emit_json; else emit_human; fi
 }
+
+# ── Argument parsing ─────────────────────────────────────────────────────────
+# `--json` is honoured first so that even an invocation error reports in the
+# format the caller asked for, wherever the flag sits on the command line.
+for arg in "$@"; do [[ "$arg" == --json ]] && JSON=1; done
+for arg in "$@"; do
+    case "$arg" in
+        --repo-only|--device-only)
+            [[ "$MODE" == default ]] || { usage; invariant_violation "$arg conflicts with --$MODE"; }
+            MODE=${arg#--} ;;
+        --verify-only|--dry-run)
+            [[ "$ACTION" == converge ]] || { usage; invariant_violation "$arg conflicts with --$ACTION"; }
+            ACTION=${arg#--} ;;
+        --json) JSON=1 ;;
+        --allow-process-restart) ALLOW_RESTART=1 ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage; invariant_violation "unknown argument: $arg" ;;
+    esac
+done
+S[mode]="$MODE"
+S[action]="$ACTION"
+mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+printf '\n==== %s %s ====\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)" "$*" >>"$LOG_FILE" 2>/dev/null || LOG_FILE=/dev/null
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Main

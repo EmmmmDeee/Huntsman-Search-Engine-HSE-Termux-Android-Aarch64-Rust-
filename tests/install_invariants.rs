@@ -925,6 +925,42 @@ fn the_reconciler_writes_exactly_the_installer_block_that_ships() {
     );
 }
 
+#[cfg(unix)]
+/// `bash -n FILE1 FILE2` syntax-checks only FILE1 — FILE2 becomes its `$1` —
+/// so a joint invocation covers less than it reads as covering. Every
+/// `bash -n` in the CI workflow and the local gate must name exactly one
+/// script. (Found by review on this very change, which first shipped the
+/// joint form in ci.yml.)
+#[test]
+fn every_bash_syntax_check_names_exactly_one_script() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut seen = 0;
+    for rel in [".github/workflows/ci.yml", "scripts/gate.sh"] {
+        let text = fs::read_to_string(root.join(rel)).unwrap();
+        for (i, line) in text.lines().enumerate().filter(|(_, l)| !is_comment(l)) {
+            let Some(rest) = line.split("bash -n").nth(1) else {
+                continue;
+            };
+            let args: Vec<&str> = rest
+                .split_whitespace()
+                .take_while(|w| !matches!(*w, "&&" | "||" | "|" | ";") && !w.starts_with('#'))
+                .collect();
+            assert_eq!(
+                args.len(),
+                1,
+                "{rel}:{}: `bash -n` must check one script per invocation: {}",
+                i + 1,
+                line.trim()
+            );
+            seen += 1;
+        }
+    }
+    assert!(
+        seen >= 4,
+        "expected the install.sh + reconcile.sh checks in both files, saw {seen}"
+    );
+}
+
 mod reconciler_transaction {
     use super::*;
     use std::process::Command;
@@ -978,13 +1014,31 @@ mod reconciler_transaction {
         Fixture { dir, before }
     }
 
-    /// `PATH` without any directory that provides `cargo`, so the reconciler's
-    /// Rust verification is an honest environment skip rather than a full
-    /// build of this crate inside the fixture.
-    fn path_without_cargo() -> std::ffi::OsString {
-        let path = std::env::var_os("PATH").unwrap_or_default();
-        std::env::join_paths(std::env::split_paths(&path).filter(|d| !d.join("cargo").exists()))
-            .expect("PATH without cargo")
+    /// The host's `PATH` minus `cargo`: every executable on the host's `PATH`
+    /// is mirrored by symlink into one directory (first hit wins, as lookup
+    /// does), except the cargo front-end, so the reconciler's Rust
+    /// verification is an honest environment skip rather than a full build of
+    /// this crate inside the fixture. Dropping whole directories would not do:
+    /// on a distro or Termux install `cargo` shares `/usr/bin` or `$PREFIX/bin`
+    /// with `git`, `bash` and everything else the fixture needs.
+    fn path_without_cargo(mirror: &Path) -> std::ffi::OsString {
+        fs::create_dir_all(mirror).expect("mirror dir");
+        let host = std::env::var_os("PATH").unwrap_or_default();
+        for dir in std::env::split_paths(&host) {
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let link = mirror.join(&name);
+                if name == "cargo" || fs::symlink_metadata(&link).is_ok() {
+                    continue;
+                }
+                let target = fs::canonicalize(entry.path()).unwrap_or_else(|_| entry.path());
+                let _ = std::os::unix::fs::symlink(target, link);
+            }
+        }
+        mirror.as_os_str().to_os_string()
     }
 
     /// Run the real reconciler in the fixture (`--repo-only --json` plus
@@ -996,7 +1050,10 @@ mod reconciler_transaction {
             .args(["--repo-only", "--json"])
             .args(extra)
             .current_dir(fx.dir.path())
-            .env("PATH", path_without_cargo())
+            .env(
+                "PATH",
+                path_without_cargo(&fx.dir.path().join("path-without-cargo")),
+            )
             .env("HOME", fx.dir.path())
             .output()
             .expect("bash");
