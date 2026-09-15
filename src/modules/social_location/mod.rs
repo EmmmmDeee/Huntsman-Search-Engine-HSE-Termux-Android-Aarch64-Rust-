@@ -75,6 +75,15 @@ impl Module for SocialLocation {
         let url = target.value.trim();
 
         let resp = ctx.http.get(url).send_tagged(SRC).await?;
+        // Gate on HTTP status before parsing: a 403 scraper block, a 429
+        // throttle, or a 5xx outage page carries no location field, so reading
+        // its body would yield an empty result indistinguishable from "this
+        // profile lists no location" — a false negative about the subject. A 404
+        // is the one genuine miss (the profile URL does not exist), so it stays a
+        // clean empty result; every other non-2xx fails closed.
+        let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[404]).await? else {
+            return Ok(result);
+        };
         let body = crate::util::http::read_text(SRC, resp).await?;
 
         let host = crate::util::url_util::host_from_url(url).unwrap_or_default();

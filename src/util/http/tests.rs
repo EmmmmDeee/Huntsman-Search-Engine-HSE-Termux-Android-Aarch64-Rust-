@@ -2,7 +2,8 @@ use super::client::{build_client, build_client_with_timeout, build_client_with_t
 use super::fetch::{
     JSON_BODY_CAP, fetch_json, fetch_json_or_404, fetch_json_or_absent, fetch_json_probe,
     is_keyed_error_status, key_tail, keyed_cascade, keyed_cascade_json, keyed_ok_or_404,
-    ok_or_absent, parse_retry_after_secs, retry_after_secs,
+    ok_or_absent, parse_retry_after_secs, read_body_capped, read_body_capped_or_fail,
+    retry_after_secs,
 };
 use super::redact::{pool_secret_values, redact_credentials, redact_literal_secrets};
 use super::ssrf::{filter_public, redirect_to_private_ip};
@@ -1344,4 +1345,82 @@ fn pooled_keys_are_masked_wherever_they_appear_whatever_their_status() {
     );
     // Two services, one value each: the snapshot is walked in full.
     assert_eq!(pool_secret_values(&snapshot).count(), 2);
+}
+
+// ── read_body_capped / read_body_capped_or_fail: the fail-closed body read ───
+// These primitives back the "a transport failure mid-stream is not a finding
+// that the subject has no record" rule that ~a dozen scraper modules depend on
+// (acma_rrl, ahpra, austlii, pgp, …). They had no direct coverage; the streamed
+// responses below exercise the transport-failure contract without a network by
+// building a body stream that drops part-way, exactly as a reset connection does.
+
+/// A 200 response whose body arrives as `chunks` in order; a `None` entry aborts
+/// the transfer mid-stream (a transport failure), reproducing a dropped
+/// connection deterministically and offline.
+fn streamed_response(chunks: Vec<Option<&'static [u8]>>) -> reqwest::Response {
+    let items: Vec<Result<&'static [u8], std::io::Error>> = chunks
+        .into_iter()
+        .map(|c| {
+            c.ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "connection reset mid-body",
+                )
+            })
+        })
+        .collect();
+    let body = reqwest::Body::wrap_stream(futures::stream::iter(items));
+    reqwest::Response::from(
+        http::Response::builder()
+            .status(200)
+            .body(body)
+            .expect("response builds"),
+    )
+}
+
+#[tokio::test]
+async fn read_body_capped_returns_the_full_body_on_a_clean_transfer() {
+    let resp = streamed_response(vec![Some(b"hello "), Some(b"world")]);
+    assert_eq!(
+        read_body_capped(resp, 1024).await.as_deref(),
+        Some("hello world"),
+        "a clean multi-chunk transfer reassembles the whole body"
+    );
+}
+
+#[tokio::test]
+async fn read_body_capped_is_none_on_a_mid_stream_transport_failure() {
+    // A chunk arrives, then the connection drops. The bytes seen so far must NOT
+    // be reported as the complete body: `None` means "unreadable", the
+    // distinction every fail-closed caller relies on.
+    let resp = streamed_response(vec![Some(b"partial"), None]);
+    assert_eq!(
+        read_body_capped(resp, 1024).await,
+        None,
+        "a mid-stream drop is None, never a truncated Some"
+    );
+}
+
+#[tokio::test]
+async fn read_body_capped_or_fail_errors_on_a_mid_stream_transport_failure() {
+    let resp = streamed_response(vec![Some(b"partial"), None]);
+    let err = read_body_capped_or_fail("test_mod", resp, 1024)
+        .await
+        .expect_err("a mid-stream failure must be an Err, not an empty body");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("test_mod"),
+        "the error names the module so the failure is attributable: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn read_body_capped_or_fail_returns_the_body_on_success() {
+    let resp = streamed_response(vec![Some(b"ok")]);
+    assert_eq!(
+        read_body_capped_or_fail("test_mod", resp, 1024)
+            .await
+            .expect("a clean transfer is Ok"),
+        "ok"
+    );
 }

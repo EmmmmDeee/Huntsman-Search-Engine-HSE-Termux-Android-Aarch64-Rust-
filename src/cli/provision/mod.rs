@@ -392,11 +392,14 @@ async fn cmd_provision_verify() -> Result<()> {
     println!("    keys path:      {}", keys::env_path());
 
     let loaded = keys::load();
-    // Count REAL key values (skip template placeholders) so the report
-    // reflects what the operator actually has set.
+    // Count REAL key values (skip template placeholders and blanks) so the
+    // report reflects what the operator actually has set — through the one
+    // `keys::is_configured_value` authority `hse doctor`'s identical
+    // "keys loaded" count already uses, so the two can never drift (the exact
+    // divergence that predicate was created to end).
     let real_count = loaded
         .iter()
-        .filter(|(k, v)| k.starts_with("HUNTSMAN_") && !is_placeholder(v) && !v.is_empty())
+        .filter(|(k, v)| k.starts_with("HUNTSMAN_") && keys::is_configured_value(v))
         .count();
     let placeholder_count = loaded
         .iter()
@@ -437,7 +440,7 @@ async fn cmd_provision_verify() -> Result<()> {
     // assertion only makes sense when the key is genuinely absent.
     let oathnet_real = loaded
         .get("HUNTSMAN_OATHNET_KEY")
-        .is_some_and(|v| !is_placeholder(v) && !v.is_empty());
+        .is_some_and(|v| keys::is_configured_value(v));
     if oathnet_real {
         println!("    missing-key:    HUNTSMAN_OATHNET_KEY populated — sub-test skipped");
     } else {

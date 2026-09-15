@@ -121,3 +121,25 @@ fn module_metadata_is_free_geo_coordinate_consumer() {
     assert!(!m.accepts(&Target::new(TargetKind::Email, "a@b.com")));
     assert!(m.produces().contains(&EntityKind::Coordinates));
 }
+
+#[test]
+fn a_mediawiki_error_envelope_is_a_hard_error_not_no_nearby_places() {
+    // MediaWiki returns errors (query timeout, maxlag, bad coord) as HTTP 200
+    // with an `error` object and no `query`. That must fail closed, not decode
+    // to `query: None` and read as a clean "no nearby places" negative.
+    let body = r#"{"error":{"code":"invalidcoord","info":"Invalid coordinate provided."}}"#;
+    let resp: GeoResp = serde_json::from_str(body).expect("envelope parses");
+    assert!(
+        geosearch_places(resp).is_err(),
+        "a MediaWiki error envelope must surface as an error"
+    );
+}
+
+#[test]
+fn a_real_geosearch_response_still_yields_its_places() {
+    // The normal path is unaffected: the live golden fixture (no error envelope)
+    // resolves to its places through the same gate.
+    let resp: GeoResp = serde_json::from_str(GOLDEN).expect("golden fixture parses");
+    let places = geosearch_places(resp).expect("a normal response is not an error");
+    assert!(places.len() >= 5, "the fixture's places survive the gate");
+}

@@ -16,7 +16,10 @@ use clap::Subcommand;
 
 use crate::{
     core::error::{Error, Result},
-    util::cell_db::{self, CellRow},
+    util::{
+        cell_db::{self, CellRow},
+        keys,
+    },
 };
 
 /// Hard cap on the COMPRESSED OpenCelliD download (4 GiB) — generous headroom
@@ -164,6 +167,26 @@ pub(crate) fn opencellid_download_url(filename: &str, api_key: &str) -> String {
     )
 }
 
+/// Resolve the OpenCelliD API key for a dataset download: an explicit `--key`
+/// wins, otherwise the `HUNTSMAN_OPENCELLID_KEY` env slot — but only when that
+/// slot holds a real credential. **Pure** so the placeholder rule is
+/// unit-tested without touching the process environment.
+///
+/// The env fallback is filtered through [`keys::is_configured_value`]: `hse
+/// provision` writes an unedited `insert_opencellid_key_here` template
+/// placeholder (and a blank value is likewise unconfigured), and passing that
+/// literal string as the download `token` produces a rejected request instead
+/// of the actionable "pass --key / set HUNTSMAN_OPENCELLID_KEY" error. The
+/// explicit `--key` override is the operator's direct choice and is used as
+/// given — the same NAME-is-not-a-CREDENTIAL authority the scan engine, `hse
+/// doctor`, and the key pool already share.
+fn resolve_opencellid_key(
+    key_override: Option<String>,
+    env_value: Option<String>,
+) -> Option<String> {
+    key_override.or_else(|| env_value.filter(|v| keys::is_configured_value(v)))
+}
+
 async fn cmd_import(
     file: Option<String>,
     country: Option<String>,
@@ -179,14 +202,14 @@ async fn cmd_import(
             }
 
             // Resolve API key
-            let api_key = key_override
-                .or_else(|| std::env::var("HUNTSMAN_OPENCELLID_KEY").ok())
-                .ok_or_else(|| {
-                    Error::Other(
-                        "No OpenCelliD API key. Pass --key KEY or set HUNTSMAN_OPENCELLID_KEY"
-                            .to_string(),
-                    )
-                })?;
+            let api_key =
+                resolve_opencellid_key(key_override, std::env::var("HUNTSMAN_OPENCELLID_KEY").ok())
+                    .ok_or_else(|| {
+                        Error::Other(
+                            "No OpenCelliD API key. Pass --key KEY or set HUNTSMAN_OPENCELLID_KEY"
+                                .to_string(),
+                        )
+                    })?;
 
             let filename = opencellid_filename(country, mcc);
             let url = opencellid_download_url(&filename, &api_key);

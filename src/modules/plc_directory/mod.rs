@@ -253,7 +253,7 @@ impl Module for PlcDirectory {
             return Ok(out);
         }
 
-        let Some(log) = resolve::audit_log(ctx, &did).await else {
+        let Some(log) = resolve::audit_log(ctx, &did).await? else {
             return Ok(ModuleResult::new());
         };
 

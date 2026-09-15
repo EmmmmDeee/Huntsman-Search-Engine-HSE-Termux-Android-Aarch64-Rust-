@@ -40,6 +40,44 @@ pub struct QldCadastre;
 struct QueryResp {
     #[serde(default)]
     features: Vec<Feature>,
+    /// ArcGIS/Esri REST returns logical errors as HTTP 200 with an
+    /// `{"error":{"code":…,"message":…}}` envelope — see [`features_or_error`].
+    #[serde(default)]
+    error: Option<ArcgisError>,
+}
+
+/// The ArcGIS/Esri REST HTTP-200 error envelope.
+#[derive(Deserialize)]
+struct ArcgisError {
+    #[serde(default)]
+    code: i64,
+    #[serde(default)]
+    message: String,
+}
+
+/// The features from an ArcGIS layer-query response, or a hard error when the
+/// service returned its HTTP-200 `{"error":{…}}` envelope. **Pure**, so the
+/// fail-closed handling is unit-tested without a network.
+///
+/// ArcGIS/Esri REST reports logical errors (invalid query, layer/token error,
+/// service overload) as HTTP 200 with an error object and no `features`. Because
+/// `features` is `#[serde(default)]`, that envelope would otherwise decode to an
+/// empty feature list and read as "no cadastral parcel at this point" — the
+/// RULE 1 false negative this guards. (The sibling `au_geo` fails closed on the
+/// same class via a complementary "body did not decode as a feature response"
+/// check that also catches WAF pages.)
+fn features_or_error(resp: QueryResp) -> Result<Vec<Feature>> {
+    if let Some(err) = resp.error {
+        return Err(Error::module(
+            SRC,
+            format!(
+                "ArcGIS layer query error [{}]: {}",
+                err.code,
+                err.message.trim()
+            ),
+        ));
+    }
+    Ok(resp.features)
 }
 
 #[derive(Deserialize)]
@@ -226,8 +264,9 @@ impl Module for QldCadastre {
             .await
             .map_err(|e| Error::module(SRC, e))?;
 
+        let features = features_or_error(body)?;
         let mut result = ModuleResult::new();
-        result.entities = build_all_features(&target.value, &body.features, &ctx.scan_id);
+        result.entities = build_all_features(&target.value, &features, &ctx.scan_id);
         Ok(result)
     }
 }
