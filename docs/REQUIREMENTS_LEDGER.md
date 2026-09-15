@@ -2875,3 +2875,103 @@ TLD" — the sibling of the `.vn` case, now expressible with `Error::skipped`.
 `docs/PROVIDER_SWEEP_BACKLOG.md` still lists 42 unverified leads of the
 "failure read as clean negative" class (#46 `trove_au` v2-shape-on-v3-endpoint
 is the highest-value of them).
+
+### REQ-PHONE-001 (**new, Pass 31 — REPRODUCED END TO END, FIXED, FALSIFIED**)
+
+**A bare national number declares no country.** `phone_geo::process` stripped
+the value to digits and read them country-first (`lookup_area_code`,
+`identify_carrier`), so a Fort Worth number typed as `817-555-1234` matched
+Japan's `81` dialling prefix and Kyoto's `75` area code. Backlog lead #34;
+reproduced through the real seed path with the built binary:
+
+```
+$ HOME=$(mktemp -d) target/debug/hse scan -k phone -v "817-555-1234" -m phone_geo -d 0 --output json
+  geo entities: [('address', 'Kyoto', 0.58)]        # baseline — fabricated location
+$ … -v "+1 817 555 1234"    →  geo entities: []      # the same number, international form
+```
+
+`phone_geo` now gates both passes on `phone_intl::international_digits` — the
+one shared predicate `phone_intl`, `phone_au` and the `geo_intel` phone pass
+already use — and a number without a `+`/`00` marker is the typed
+`NotApplicable` skip naming the value. Reproduce-again with the rebuilt binary:
+
+```
+$ … -v "817-555-1234"       →  geo entities: []
+    {"level":"DEBUG","message":"skipped — module opted out","module":"phone_geo","class":"not_applicable",
+     "reason":"8175551234 carries no international marker (`+` or `00`), so its country — and therefore any
+     area-code or carrier geolocation — is unknown; offline phone geo needs the number in international form"}
+$ … -v "(646) 555-1234"     →  geo entities: []
+$ … -v "+81 75 555 1234"    →  geo entities: [('address', 'Kyoto', 0.58)]   # known-positive control
+$ … -v "0081 75 555 1234"   →  geo entities: [('address', 'Kyoto', 0.58)]
+```
+
+Tests: `a_bare_national_number_is_never_read_as_another_countrys_prefix`,
+`an_international_number_still_resolves_its_area_code`
+(`src/modules/phone_geo/tests.rs`).
+
+### REQ-OFAC-001 (**new, Pass 31 — FIXED, FALSIFIED**)
+
+**A Consolidated (non-SDN) row is never an SDN match.** `list.rs` merged
+`CONS_PRIM.CSV` rows into the same unlabelled set as `SDN.CSV`; `entity.rs`
+stamped every finding `register = "OFAC Specially Designated Nationals (SDN)
+List"` / "OFAC SDN list match". Backlog lead #35, confirmed from source. Each
+row now carries `OfacList::{Sdn, Consolidated}` (stamped by the fetcher per
+URL); register, summary and a per-list tag (`ofac-sdn` / `ofac-consolidated`)
+name the actual list on the subject and on the designated-wallet pivot.
+Falsification — relabel every row as SDN again (the original behaviour):
+
+```
+$ cargo test --lib -- modules::sanctions_ofac
+test result: FAILED. 37 passed; 2 failed      # a_consolidated_list_row_is_never_reported_as_an_sdn_match,
+                                              # a_wallet_off_a_consolidated_list_row_carries_the_consolidated_register
+# restored: ok. 39 passed; 0 failed
+```
+
+### REQ-RIPESTAT-001 (**new, Pass 31 — FIXED**)
+
+**A total RIPEstat outage is a failure, not "no data".** Every sub-fetch was
+`.ok()`'d and the empty result returned without `or_hard_failure` (backlog lead
+#31). The first attempt at an offline reproduction — a client whose every
+request is refused — did NOT reproduce it: `util::http`'s curl fallback took
+over and reached the live RIPEstat through the sandbox proxy (the module
+returned real AS15169 / 8.8.8.0/24 entities). That test was withdrawn; the
+lookup now runs over an injected `StatSource` seam (production: `Live` over
+`ctx.http`), and the outage, a partial outage and a drifted `data` shape are
+pinned offline: `a_total_ripestat_outage_is_a_module_failure_not_a_clean_negative`,
+`a_partial_outage_keeps_the_endpoints_that_answered`,
+`an_unexpected_data_shape_is_an_endpoint_failure` (`src/modules/ripestat/tests.rs`).
+
+### REQ-WHOIS-002 (**new, Pass 31 — review findings on PR #635, all verified and fixed**)
+
+Copilot's review of the first cut raised seven findings; each was verified
+against the source and fixed, with a regression test per finding
+(`src/modules/whois/tests.rs`, "Review findings" section):
+
+- a skip reason / refusal message interpolated the raw `target.value` — for a
+  URL that is its path, query and userinfo, persisted into `ModuleSkipped` /
+  `ModuleError`; every message now names the looked-up host (`q`) only;
+- the proxy branch keyed on `TargetKind::IpAddress`, so `http://8.8.8.8/…`
+  behind `HTTPS_PROXY` became an `Unavailable` skip and the RDAP fallback
+  would have encoded the whole URL; both now use the looked-up value;
+- `host_only` keeps IPv6 brackets, so `http://[2001:db8::1]/` classified and
+  queried as a domain; brackets are stripped for the WHOIS query;
+- a referral-less IANA answer was always the structural "no WHOIS server"
+  skip — an IANA refusal (`WHOIS LIMIT EXCEEDED`) or an error body was
+  laundered into a harmless skip; it is now classified first (refusal →
+  `RateLimited`, `0 objects` → typed skip naming the unknown namespace, any
+  other body → lookup failure);
+- any non-actionable authoritative reply fell through to `Ok(empty)` —
+  coverage's `CleanNegative` — for an empty body, a banner or an unknown
+  dialect; only a reply carrying a registry "no match" phrasing
+  (`parse::no_match_notice`) is the clean negative now, and DENIC's
+  `Status: free` no longer counts as a status *record*;
+- the CDN/anycast geolocation suppression ran on the raw target value, which
+  for a URL never parses as an address, so `http://104.16.0.1/…` emitted
+  Cloudflare's registered country as subject geolocation; it runs on `q`.
+
+While fixing the message-PII finding a pre-existing defect surfaced in the
+shared helper: `util::url_util::host_only("https://user:pw@example.com/…")`
+returned `user` (cut at the first colon), so `whois`, `sitemap`, `wayback`,
+`url_extract`, `host_from_url` and the raw-archive index all treated a
+credential fragment as the host. Fixed at the helper (`rsplit('@')`), pinned
+in `src/util/url_util/tests.rs`.
