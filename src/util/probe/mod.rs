@@ -41,6 +41,7 @@ pub const BODY_PROBE_CAP: usize = 256 * 1024;
 /// `Error` is inconclusive (blocked / unreachable / timed out) — the two are
 /// kept distinct so a mostly-blocked run is not reported as a confirmed absence
 /// (see [`inconclusive`]).
+#[derive(Debug, Clone, PartialEq)]
 pub enum ProbeResult {
     Found {
         url: String,

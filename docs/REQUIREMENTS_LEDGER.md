@@ -3028,3 +3028,91 @@ EXIT=0
 The regression lock is the invariant itself: the count under `always` now equals
 the count under plain output, and the CI step (dispatched on this branch) shows
 the real figure instead of 0.
+
+**Remote verification.** CI run 34961748014 (`workflow_dispatch`, head `6c85498`),
+job "Check & test (Linux x86_64, stable)", step "Doc coverage (ratchet, may fall
+but not rise)" — under the workflow's `CARGO_TERM_COLOR: always`:
+
+```
+2026-09-15T11:14:59.0027142Z doc coverage held at 1043 undocumented public items
+```
+
+### REQ-SOCIAL-001 (**new, Pass 31 — REPRODUCED, FIXED, FALSIFIED**)
+
+**Requirement.** `social_probe` vouches for a profile on a negative-marker
+platform only when it has read the whole page and found no marker. A page curl
+did not deliver — refused or cut at the download cap — is inconclusive: never a
+hit, never an absence.
+
+**Finding** (`docs/PROVIDER_SWEEP_BACKLOG.md` #38; class FALSE_POSITIVE_RISK).
+`util::curl::fetch_with_status` passed `--max-filesize 8192` and returned
+`(status, body)` with no word about truncation. curl aborts a download whose
+declared `Content-Length` exceeds the cap *before reading a byte* (exit 63,
+empty body) and cuts a chunked one mid-stream; the `-w` sentinel still delivers
+the status. The module then evaluated `negative_patterns` over that body, found
+nothing — there was nothing to find — and minted a `Url` at 0.92 tagged
+`verified-detection`, evidence `detection: body-marker`, for every
+negative-marker platform (the adult / cam table: livejasmin, imlive,
+mydirtyhobby, sextpanther, stripchat, loyalfans, …) whose not-found page exceeds
+8 KiB — which is every modern SPA shell. The subject-echo summary then counted
+it under `hits_verified`.
+
+**Reproduction (2026-09-15, curl 8.5.0, the production arguments verbatim,
+loopback server serving a 24 KiB not-found page).**
+
+```
+=== /len-marker-at-end     (Content-Length declared, marker at the end) ===
+exit=63 http_code=[200] body_len=0    marker_present=no
+=== /chunked-marker-at-end (chunked, marker past 8 KiB) ===
+exit=63 http_code=[200] body_len=8192 marker_present=no
+=== /chunked-marker-early  (chunked, marker in the head) ===
+exit=63 http_code=[200] body_len=8192 marker_present=yes
+=== /small-no-marker ===
+exit=0  http_code=[200] body_len=69   marker_present=no
+```
+
+The first two rows are the defect: status 200 ∈ `exists_codes`, no marker in
+the body → hit, `detection_strength` → (0.92, verified).
+
+**Fix — two layers, both necessary.**
+
+- `util::curl::fetch_with_status` returns a typed `StatusProbe { status, body,
+  truncated }`; exit 63 sets `truncated`. The cap is raised to 256 KiB
+  (`PROBE_BODY_CAP_BYTES`, the ceiling the reqwest enumerators already read a
+  profile page under), so truncation is the exception rather than every probe.
+- `social_probe::classify_probe(platform, url, &answer) -> util::probe::ProbeResult`
+  is the one place the hit / absence / inconclusive policy lives (pure): a
+  presence status with a marker-free body is a verified hit only when the body
+  is whole; a marker seen in a partial body is still a definitive not-found; a
+  truncated marker-free body is `Error` (inconclusive) and feeds the existing
+  M6 inconclusive-sweep verdict. Status-only platforms are unchanged (a weak
+  hit on the status alone).
+
+**Regression locks.**
+`util::curl::tests::fetch_with_status_reports_a_body_curl_refused_or_cut_as_truncated`
+(real curl against a loopback listener: a known-length page above the cap →
+status 200, `truncated`, empty body; a chunked page is either flagged or
+delivered whole; a page under the cap is whole and not flagged; the status-only
+path never truncates) and `modules::social_probe::tests::{a_presence_status_whose_body_curl_refused_or_cut_is_inconclusive_not_a_verified_hit,
+a_negative_marker_seen_in_a_partial_body_is_still_a_definitive_not_found,
+a_whole_marker_free_body_on_a_presence_status_is_the_verified_hit,
+a_status_only_platform_is_a_weak_hit_whatever_the_body,
+refusals_are_inconclusive_and_absence_statuses_are_definitive}`.
+
+**Falsification.** Removing the truncation guard from `classify_probe` (the
+pre-fix policy: an unseen body "contains no marker"):
+
+```
+test modules::social_probe::tests::a_presence_status_whose_body_curl_refused_or_cut_is_inconclusive_not_a_verified_hit ... FAILED
+assertion `left == right` failed: an empty body curl refused to download is no evidence of a profile on livejasmin
+  left: Found { url: "https://example.invalid/some-handle", confidence: 0.92, verified: true }
+test result: FAILED. 17 passed; 1 failed
+```
+
+Restored: 19 passed (the module's 18 tests plus the curl transport test).
+
+**Not verifiable here.** No live probe of the adult / cam platforms was run from
+this sandbox (it would put a synthetic handle to third-party adult sites through
+the HTTPS proxy). The transport behaviour is observed with the real curl binary
+and the production arguments; the classification is pure and pinned.
+

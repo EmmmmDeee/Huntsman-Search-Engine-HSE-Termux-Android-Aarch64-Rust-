@@ -278,3 +278,151 @@ fn build_target_summary_stamps_platforms_count_for_au011() {
         "platforms_count must equal the confirmed-platform count so AU-011 can count it"
     );
 }
+
+// ── Backlog #38: a body curl never delivered is not a marker-free body ─────────
+
+const PROBE_URL: &str = "https://example.invalid/some-handle";
+
+fn a_negative_marker_platform() -> &'static Platform {
+    USERNAME_PLATFORMS
+        .iter()
+        .chain(NAME_PLATFORMS.iter())
+        .find(|p| !p.negative_patterns.is_empty())
+        .expect("the table has negative-marker platforms")
+}
+
+fn a_status_only_platform() -> &'static Platform {
+    USERNAME_PLATFORMS
+        .iter()
+        .find(|p| p.negative_patterns.is_empty() && p.exists_codes.contains(&200))
+        .expect("the table has status-only platforms answering 200")
+}
+
+#[test]
+fn a_presence_status_whose_body_curl_refused_or_cut_is_inconclusive_not_a_verified_hit() {
+    // Reproduced at the transport (`util::curl` tests; and by hand with the
+    // production curl arguments): with `--max-filesize`, curl answers a
+    // not-found page whose Content-Length exceeds the cap with status 200, an
+    // EMPTY body and exit 63, and a chunked one with the first bytes only. The
+    // old loop ran the negative-marker check over that body, found nothing —
+    // there was nothing to find — and minted the 0.92 `verified-detection` /
+    // `body-marker` profile: for every negative-marker (adult / cam) platform,
+    // for any handle whose not-found page is bigger than the cap.
+    let p = a_negative_marker_platform();
+    let refused = StatusProbe {
+        status: 200,
+        body: String::new(),
+        truncated: true,
+    };
+    assert_eq!(
+        classify_probe(p, PROBE_URL, &refused),
+        ProbeResult::Error,
+        "an empty body curl refused to download is no evidence of a profile on {}",
+        p.name
+    );
+    let cut_before_the_marker = StatusProbe {
+        status: 200,
+        body: "<html><head><script>/* 256 KiB of application shell */</script>".into(),
+        truncated: true,
+    };
+    assert_eq!(
+        classify_probe(p, PROBE_URL, &cut_before_the_marker),
+        ProbeResult::Error,
+        "a marker-free PREFIX of the page proves nothing about the rest of it"
+    );
+}
+
+#[test]
+fn a_negative_marker_seen_in_a_partial_body_is_still_a_definitive_not_found() {
+    let p = a_negative_marker_platform();
+    let marker = p.negative_patterns[0];
+    let cut_after_the_marker = StatusProbe {
+        status: 200,
+        body: format!("<html><head><title>{marker}</title><script>"),
+        truncated: true,
+    };
+    assert_eq!(
+        classify_probe(p, PROBE_URL, &cut_after_the_marker),
+        ProbeResult::NotFound,
+        "the marker was seen — the cut came after it"
+    );
+}
+
+#[test]
+fn a_whole_marker_free_body_on_a_presence_status_is_the_verified_hit() {
+    let p = a_negative_marker_platform();
+    let whole = StatusProbe {
+        status: 200,
+        body: "<html><head><title>@some-handle — live now</title></head></html>".into(),
+        truncated: false,
+    };
+    match classify_probe(p, PROBE_URL, &whole) {
+        ProbeResult::Found {
+            url,
+            confidence,
+            verified,
+        } => {
+            assert_eq!(url, PROBE_URL);
+            assert!(
+                verified,
+                "the whole page was inspected and carries no marker"
+            );
+            assert!((confidence - 0.92).abs() < 1e-9, "{confidence}");
+        }
+        other => panic!(
+            "a complete marker-free page on a presence status is the verified hit, got {other:?}"
+        ),
+    }
+}
+
+#[test]
+fn a_status_only_platform_is_a_weak_hit_whatever_the_body() {
+    // No marker to check, so the body — delivered or not — is irrelevant; the
+    // hit rests on the status alone and says so (0.74, unverified).
+    let p = a_status_only_platform();
+    for truncated in [false, true] {
+        let answer = StatusProbe {
+            status: 200,
+            body: String::new(),
+            truncated,
+        };
+        match classify_probe(p, PROBE_URL, &answer) {
+            ProbeResult::Found {
+                confidence,
+                verified,
+                ..
+            } => {
+                assert!(!verified, "{}: status-only is never verified", p.name);
+                assert!((confidence - 0.74).abs() < 1e-9, "{confidence}");
+            }
+            other => panic!("{}: a presence status is a weak hit, got {other:?}", p.name),
+        }
+    }
+}
+
+#[test]
+fn refusals_are_inconclusive_and_absence_statuses_are_definitive() {
+    let p = a_negative_marker_platform();
+    for refusal in [0u16, 403, 429, 503] {
+        let answer = StatusProbe {
+            status: refusal,
+            ..StatusProbe::default()
+        };
+        assert_eq!(
+            classify_probe(p, PROBE_URL, &answer),
+            ProbeResult::Error,
+            "status {refusal} is a refusal, not an answer"
+        );
+    }
+    for absent in [404u16, 410] {
+        let answer = StatusProbe {
+            status: absent,
+            ..StatusProbe::default()
+        };
+        assert_eq!(
+            classify_probe(p, PROBE_URL, &answer),
+            ProbeResult::NotFound,
+            "status {absent} is the platform saying no such handle"
+        );
+    }
+}

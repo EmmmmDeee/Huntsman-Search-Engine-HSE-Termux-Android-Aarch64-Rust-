@@ -188,3 +188,131 @@ use super::*;
             );
         }
     }
+
+    #[tokio::test]
+    async fn fetch_with_status_reports_a_body_curl_refused_or_cut_as_truncated() {
+        // Backlog #38, transport half. `--max-filesize` makes curl REFUSE a
+        // download whose declared Content-Length exceeds the cap (exit 63,
+        // empty body) and cut a chunked one mid-stream. Before
+        // `StatusProbe::truncated` existed the caller got `(200, "")` and could
+        // not tell a page curl never delivered from an empty one — so a
+        // negative-marker check over it "passed". Loopback listener, real curl
+        // (a runtime dependency on Termux, present on every CI runner).
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        assert!(
+            std::process::Command::new("curl")
+                .arg("--version")
+                .output()
+                .is_ok(),
+            "curl must be installed to exercise the status probe"
+        );
+        let cap: usize = PROBE_BODY_CAP_BYTES.parse().expect("cap is a byte count");
+        const MARK: &str = "<title>Sorry, this page isn't available.</title>";
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = vec![0u8; 4096];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let (head, body): (String, Vec<u8>) = if req.starts_with("GET /oversized ") {
+                    // A not-found page bigger than the cap, length declared up
+                    // front — curl aborts before reading a byte of it.
+                    let mut body = vec![b'x'; cap + 1];
+                    body.extend_from_slice(MARK.as_bytes());
+                    (
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        ),
+                        body,
+                    )
+                } else if req.starts_with("GET /chunked ") {
+                    // The same page streamed without a length: the marker sits
+                    // past the cap, in bytes a capped read never sees.
+                    let filler = vec![b'x'; cap + 1];
+                    let mut body = Vec::new();
+                    for piece in [filler.as_slice(), MARK.as_bytes()] {
+                        body.extend_from_slice(format!("{:x}\r\n", piece.len()).as_bytes());
+                        body.extend_from_slice(piece);
+                        body.extend_from_slice(b"\r\n");
+                    }
+                    body.extend_from_slice(b"0\r\n\r\n");
+                    (
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n".to_string(),
+                        body,
+                    )
+                } else {
+                    let body = b"<html><title>@someone</title></html>".to_vec();
+                    (
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        ),
+                        body,
+                    )
+                };
+                let _ = sock.write_all(head.as_bytes()).await;
+                // curl may already have hung up on an oversized body — ignore.
+                let _ = sock.write_all(&body).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        let refused = fetch_with_status(&format!("http://{addr}/oversized"), 4_000, true).await;
+        assert_eq!(
+            refused.status, 200,
+            "the status still arrives through the -w sentinel: {refused:?}"
+        );
+        assert!(
+            refused.truncated,
+            "a download curl refused at the cap must be reported as truncated, \
+             not handed over as an empty (marker-free) page: {refused:?}"
+        );
+        assert!(
+            !refused.body.contains(MARK),
+            "the marker was never delivered, which is the whole point: {refused:?}"
+        );
+
+        // Streamed without a length curl either cuts at the cap (exit 63, the
+        // marker lost) or — on a curl that does not bound unknown-length
+        // transfers — delivers the whole page. Both are honest; what must never
+        // happen is a body without the marker reported as complete.
+        let streamed = fetch_with_status(&format!("http://{addr}/chunked"), 4_000, true).await;
+        assert_eq!(streamed.status, 200, "{streamed:?}");
+        assert!(
+            streamed.truncated || streamed.body.contains(MARK),
+            "a cut body must be flagged truncated; only a whole body may lack the flag: \
+             truncated={} len={}",
+            streamed.truncated,
+            streamed.body.len()
+        );
+
+        let whole = fetch_with_status(&format!("http://{addr}/small"), 4_000, true).await;
+        assert_eq!(
+            whole,
+            StatusProbe {
+                status: 200,
+                body: "<html><title>@someone</title></html>".into(),
+                truncated: false,
+            },
+            "a page under the cap is delivered whole and reported as such"
+        );
+
+        // The status-only path never asks for a body, so the cap never bites.
+        let status_only = fetch_with_status(&format!("http://{addr}/oversized"), 4_000, false).await;
+        assert_eq!(
+            status_only,
+            StatusProbe {
+                status: 200,
+                body: String::new(),
+                truncated: false,
+            }
+        );
+    }

@@ -462,18 +462,54 @@ pub async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str, timeout_ms: u
     }
 }
 
-/// Fetch `url` and return `(http_status_code, body)`.
+/// Cap on the body a status probe captures, passed to curl as `--max-filesize`.
+///
+/// 256 KiB — the ceiling the reqwest enumerators read a profile page under
+/// (`util::probe::BODY_PROBE_CAP`). It replaced an 8 KiB cap the negative-marker
+/// platforms could not live with: their not-found pages are full SPA shells far
+/// above 8 KiB, so curl refused (known length) or cut (chunked) the download on
+/// every probe and the marker check ran over nothing. Truncation is still
+/// possible above this cap; [`StatusProbe::truncated`] reports it so a caller
+/// never mistakes a body it did not get for one that carries no marker.
+pub(crate) const PROBE_BODY_CAP_BYTES: &str = "262144";
+
+/// What [`fetch_with_status`] got back: curl's HTTP status, the body it captured,
+/// and whether that body is the whole document.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StatusProbe {
+    /// The HTTP status curl reported; `0` when curl gave no definitive answer
+    /// (could not connect, was blocked, had no egress, or is not installed).
+    pub status: u16,
+    /// The captured body — empty when the caller asked for none, or when curl
+    /// refused the download outright (see `truncated`).
+    pub body: String,
+    /// `true` when `body` is **not** the whole document: curl stopped at the
+    /// `--max-filesize` cap (exit code 63). curl aborts *before* the download
+    /// when the server declares a `Content-Length` above the cap — then `body`
+    /// is empty — and mid-stream for a chunked body — then `body` is the first
+    /// bytes only. Either way whatever the caller looks for in the body may sit
+    /// in the part curl never delivered, so an absent marker proves nothing.
+    pub truncated: bool,
+}
+
+/// Fetch `url` and return the status, the body and whether the body is complete
+/// (see [`StatusProbe`]).
 ///
 /// When `capture_body` is `false` the body is discarded (`-o /dev/null`) and the
-/// returned string is empty — use this fast path when the status code alone is
-/// sufficient. When `capture_body` is `true` the body is captured (capped at 8 KB
-/// via `--max-filesize`) so the caller can apply negative-pattern checks.
+/// returned body is empty — use this fast path when the status code alone is
+/// sufficient. When `capture_body` is `true` the body is captured, capped at
+/// [`PROBE_BODY_CAP_BYTES`] via `--max-filesize`, so the caller can apply
+/// negative-pattern checks — and `truncated` says whether that cap bit.
 ///
 /// Uses curl's `-w "\n%{http_code}"` sentinel to surface the HTTP status even
-/// when the body was truncated by `--max-filesize` (curl exit code 63). Treating
-/// exit 63 as a hard failure would suppress real profiles whose pages exceed 8 KB.
-/// `timeout_ms` is reserved for future use; the current implementation encodes a
-/// 4-second curl `--max-time` internally.
+/// when the body was refused or cut by `--max-filesize` (curl exit code 63).
+/// Treating exit 63 as a hard failure would suppress real profiles whose pages
+/// exceed the cap; treating its body as complete — what this function did before
+/// `truncated` existed — let a not-found page curl never delivered pass a
+/// negative-marker check and mint a "verified" profile (`social_probe`,
+/// `docs/PROVIDER_SWEEP_BACKLOG.md` #38). `timeout_ms` is reserved for future
+/// use; the current implementation encodes a 4-second curl `--max-time`
+/// internally.
 ///
 /// # SSRF model
 /// This path applies the same protocol/redirect hardening as [`curl_exec`]
@@ -486,7 +522,7 @@ pub async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str, timeout_ms: u
 /// high-volume status fan-out is not warranted. Any future caller that passes an
 /// attacker-controlled host MUST route through [`curl_exec`] (or reqwest), which
 /// pin the resolved address against the private/reserved set.
-pub async fn fetch_with_status(url: &str, _timeout_ms: u64, capture_body: bool) -> (u16, String) {
+pub async fn fetch_with_status(url: &str, _timeout_ms: u64, capture_body: bool) -> StatusProbe {
     let mut args: Vec<&str> = vec![
         "-s",
         "-w",
@@ -497,8 +533,8 @@ pub async fn fetch_with_status(url: &str, _timeout_ms: u64, capture_body: bool) 
         // Protocol/redirect hardening, mirroring `FETCH_HARDENING_ARGS`: confine
         // the initial request and every redirect hop to http/https (no
         // `file://`/`gopher://`/`dict://` pivots) and bound the redirect chain.
-        // `--max-filesize` is set separately below because this path uses a tighter
-        // 8 KB body cap than the shared 32 MiB constant.
+        // `--max-filesize` is set separately below because this path uses a
+        // tighter body cap than the shared 32 MiB constant.
         "--proto",
         "=http,https",
         "--proto-redir",
@@ -509,10 +545,8 @@ pub async fn fetch_with_status(url: &str, _timeout_ms: u64, capture_body: bool) 
         UA_MOBILE,
     ];
 
-    let filesize_arg;
     if capture_body {
-        filesize_arg = "8192";
-        args.extend_from_slice(&["--max-filesize", filesize_arg]);
+        args.extend_from_slice(&["--max-filesize", PROBE_BODY_CAP_BYTES]);
     } else {
         args.extend_from_slice(&["-o", "/dev/null"]);
     }
@@ -527,20 +561,31 @@ pub async fn fetch_with_status(url: &str, _timeout_ms: u64, capture_body: bool) 
     match output {
         Ok(o) => {
             let raw = String::from_utf8_lossy(&o.stdout);
-            let is_truncated = o.status.code() == Some(63);
-            if o.status.success() || is_truncated {
+            // Exit 63: curl stopped at `--max-filesize`. The `-w` sentinel is
+            // still written, so the status is real — but the body is not the
+            // document, and the caller must know that.
+            let truncated = o.status.code() == Some(63);
+            if o.status.success() || truncated {
                 if capture_body && let Some(nl) = raw.rfind('\n') {
                     let body = raw[..nl].to_string();
-                    let code: u16 = raw[nl + 1..].trim().parse().unwrap_or(0);
-                    return (code, body);
+                    let status: u16 = raw[nl + 1..].trim().parse().unwrap_or(0);
+                    return StatusProbe {
+                        status,
+                        body,
+                        truncated,
+                    };
                 }
-                let code: u16 = raw.trim().parse().unwrap_or(0);
-                (code, String::new())
+                let status: u16 = raw.trim().parse().unwrap_or(0);
+                StatusProbe {
+                    status,
+                    body: String::new(),
+                    truncated,
+                }
             } else {
-                (0, String::new())
+                StatusProbe::default()
             }
         }
-        _ => (0, String::new()),
+        _ => StatusProbe::default(),
     }
 }
 #[cfg(test)]

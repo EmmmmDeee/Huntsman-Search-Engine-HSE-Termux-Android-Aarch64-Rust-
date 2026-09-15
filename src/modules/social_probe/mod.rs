@@ -6,7 +6,9 @@
 //! (soft-404/SPA-shell), a `negative_patterns` body check must also pass —
 //! see `Platform::negative_patterns`. Each confirmed profile becomes a Url
 //! entity with the platform tagged, plus `verified-detection` (body-marker
-//! confirmed) or `weak-detection` (status code alone — the correlator
+//! confirmed over the WHOLE page — a page curl cut short at the download cap
+//! is inconclusive, never a hit; see `classify_probe`) or `weak-detection`
+//! (status code alone — the correlator
 //! discounts these, see `core::correlator::rules::identity::account`'s
 //! AU-055 and `cluster`'s AU-003) so a bare status-only guess is never
 //! presented as a confirmed, subject-controlled account.
@@ -26,6 +28,8 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::curl::StatusProbe;
+use crate::util::probe::{ProbeResult, classify_non_matching_status};
 
 #[cfg(test)]
 mod tests;
@@ -46,8 +50,9 @@ pub(super) struct Platform {
 
 /// Confidence + verified-flag a hit earns, tiered by rigour — mirrors
 /// `streaming_probe`/`username_search`'s `detection_strength`. A platform
-/// with a `negative_patterns` check just had its body inspected for a
-/// "doesn't exist" marker and passed — a real confirmation (0.92, verified).
+/// with a `negative_patterns` check just had its WHOLE body inspected for a
+/// "doesn't exist" marker and passed — a real confirmation (0.92, verified);
+/// a body curl cut short never gets here (see [`classify_probe`]).
 /// A platform with no negative pattern rests entirely on the HTTP status
 /// code, which a soft-404/SPA-shell can return for almost any handle — an
 /// unconfirmed status-only lead (0.74, unverified). Tagging the weak case
@@ -57,6 +62,56 @@ pub(super) struct Platform {
 /// produced across 30+ status-only platforms.
 fn detection_strength(platform: &Platform) -> (f64, bool) {
     crate::util::probe_confidence::detection_strength(!platform.negative_patterns.is_empty())
+}
+
+/// Decide what one platform probe proved, from curl's answer alone. Pure, so
+/// the whole hit / absence / inconclusive policy is testable without the
+/// network.
+///
+/// * A status outside the platform's `exists_codes` is a definitive absence
+///   when it is one a platform answers for a missing handle (404/410, or a 2xx
+///   the table did not list) and inconclusive when it is a refusal — a WAF
+///   challenge, a throttle, an outage, or curl's `0` for "no answer at all"
+///   ([`classify_non_matching_status`], the policy the reqwest enumerators use).
+/// * A presence status on a status-only platform is a weak hit.
+/// * A presence status on a negative-marker platform is a definitive absence
+///   when the body carries a marker (a partial body suffices — the marker was
+///   seen), a verified hit when the **whole** body was read and carries none,
+///   and **inconclusive** when curl refused or cut the body
+///   ([`StatusProbe::truncated`]): the marker check is the only thing that
+///   separates a profile from this platform's 200-for-everything not-found
+///   page, and it ran over a document that was never delivered. Before this
+///   an empty body simply "contained no marker", and the probe minted a 0.92
+///   `verified-detection` profile for any handle on any of these platforms
+///   whose not-found page exceeds the download cap
+///   (`docs/PROVIDER_SWEEP_BACKLOG.md` #38).
+pub(super) fn classify_probe(platform: &Platform, url: &str, answer: &StatusProbe) -> ProbeResult {
+    if !platform.exists_codes.contains(&answer.status) {
+        return classify_non_matching_status(answer.status);
+    }
+    let (confidence, verified) = detection_strength(platform);
+    if platform.negative_patterns.is_empty() {
+        return ProbeResult::Found {
+            url: url.to_string(),
+            confidence,
+            verified,
+        };
+    }
+    if platform
+        .negative_patterns
+        .iter()
+        .any(|p| answer.body.contains(p))
+    {
+        return ProbeResult::NotFound;
+    }
+    if answer.truncated {
+        return ProbeResult::Error;
+    }
+    ProbeResult::Found {
+        url: url.to_string(),
+        confidence,
+        verified,
+    }
 }
 
 pub(super) const USERNAME_PLATFORMS: &[Platform] = &[
@@ -378,103 +433,89 @@ impl Module for SocialProbe {
                 .replace("{}", &crate::util::http::urlencode(&slug));
             checked_count += 1;
 
-            let (code, body) = crate::util::curl::fetch_with_status(
+            let answer = crate::util::curl::fetch_with_status(
                 &url,
                 4_000,
                 !platform.negative_patterns.is_empty(),
             )
             .await;
 
-            // A probe that did not answer must not be counted as a definitive
-            // "no such handle here".
-            //
-            // Code 0 = curl gave no definitive answer (couldn't connect / blocked
-            // / no egress); it can never be a hit, since `exists_codes` are real
-            // HTTP statuses, and the classifier maps it to `Error` like any other
-            // non-answer. That case was already handled.
-            //
-            // A real-but-refusing status needs the same treatment and did not get
-            // it: a 403 WAF challenge, a 429 throttle or a 5xx outage is not in
-            // `exists_codes`, so it silently fell through as a *definitive*
-            // "no such handle here" and never reached `inconclusive_sweep`. Only
-            // curl-level failure was counted, so a platform that answers every
-            // probe with a challenge page looked like a confirmed absence.
-            // `classify_non_matching_status` is the same policy the two
-            // `util::probe` enumerators use.
-            let refused = !platform.exists_codes.contains(&code)
-                && matches!(
-                    crate::util::probe::classify_non_matching_status(code),
-                    crate::util::probe::ProbeResult::Error
-                );
-            if refused {
-                inconclusive_probes += 1;
-            }
-
-            let body_blocks = !platform.negative_patterns.is_empty()
-                && platform.negative_patterns.iter().any(|p| body.contains(p));
-
-            if platform.exists_codes.contains(&code) && !body_blocks {
-                found_count += 1;
-                found_platforms.push(platform.name);
-
-                let (confidence, verified) = detection_strength(platform);
-                if verified {
-                    verified_count += 1;
+            match classify_probe(platform, &url, &answer) {
+                // No definitive answer: curl could not connect (status 0), the
+                // platform refused (a WAF challenge, a throttle, an outage — a
+                // real status that just is not a presence one), or the body
+                // the negative-marker check needed was never delivered. Feeds
+                // the M6 inconclusive-vs-absent verdict after the sweep; never
+                // a hit and never a "no such handle here".
+                ProbeResult::Error => {
+                    inconclusive_probes += 1;
                 }
+                ProbeResult::NotFound => {}
+                ProbeResult::Found {
+                    confidence,
+                    verified,
+                    ..
+                } => {
+                    found_count += 1;
+                    found_platforms.push(platform.name);
+                    if verified {
+                        verified_count += 1;
+                    }
 
-                let mut entity = Entity::new(EntityKind::Url, &url, confidence, &ctx.scan_id);
-                entity.tag("social-profile");
-                entity.tag(format!("platform:{}", platform.name));
-                entity.tag(if verified {
-                    "verified-detection"
-                } else {
-                    "weak-detection"
-                });
-                entity.add_evidence(
-                    Evidence::new(
-                        crate::modules::corpus_source(&url, SRC),
-                        format!("Profile found on {}", platform.name),
-                    )
-                    .with_attr("platform", platform.name)
-                    .with_attr("http_status", code.to_string())
-                    .with_attr("profile_url", &url)
-                    .with_attr(
-                        "detection",
-                        if verified {
-                            "body-marker"
-                        } else {
-                            "status-only"
-                        },
-                    ),
-                );
-                result.push(entity);
-
-                // A confirmed profile's value is the URL + handle, already
-                // emitted above. The platform's APEX domain (instagram.com,
-                // tiktok.com, …) is the provider's estate, never the subject's
-                // asset — emitting it as a Domain entity drags the scan into
-                // mapping the platform's DNS/CDN infrastructure and inflates
-                // correlations (a real on-device scan flagged exactly this as
-                // CRITICAL infrastructure-pollution). Only surface a platform host
-                // that is NOT a known mega/social/infra domain — i.e. a niche or
-                // self-hosted site that might genuinely belong to the subject.
-                if let Some(host) = url::Url::parse(&url)
-                    .ok()
-                    .and_then(|u| u.host_str().map(str::to_lowercase))
-                    && host.contains('.')
-                    && !crate::core::scan::is_noncentral_domain(&host)
-                {
-                    let mut dom =
-                        Entity::new(EntityKind::Domain, &host, confidence::LOW, &ctx.scan_id);
-                    dom.tag("social-platform");
-                    dom.add_evidence(
+                    let mut entity = Entity::new(EntityKind::Url, &url, confidence, &ctx.scan_id);
+                    entity.tag("social-profile");
+                    entity.tag(format!("platform:{}", platform.name));
+                    entity.tag(if verified {
+                        "verified-detection"
+                    } else {
+                        "weak-detection"
+                    });
+                    entity.add_evidence(
                         Evidence::new(
                             crate::modules::corpus_source(&url, SRC),
-                            format!("Platform domain from {} profile", platform.name),
+                            format!("Profile found on {}", platform.name),
                         )
-                        .with_attr("platform", platform.name),
+                        .with_attr("platform", platform.name)
+                        .with_attr("http_status", answer.status.to_string())
+                        .with_attr("profile_url", &url)
+                        .with_attr(
+                            "detection",
+                            if verified {
+                                "body-marker"
+                            } else {
+                                "status-only"
+                            },
+                        ),
                     );
-                    result.push(dom);
+                    result.push(entity);
+
+                    // A confirmed profile's value is the URL + handle, already
+                    // emitted above. The platform's APEX domain (instagram.com,
+                    // tiktok.com, …) is the provider's estate, never the subject's
+                    // asset — emitting it as a Domain entity drags the scan into
+                    // mapping the platform's DNS/CDN infrastructure and inflates
+                    // correlations (a real on-device scan flagged exactly this as
+                    // CRITICAL infrastructure-pollution). Only surface a platform host
+                    // that is NOT a known mega/social/infra domain — i.e. a niche or
+                    // self-hosted site that might genuinely belong to the subject.
+                    if let Some(host) = url::Url::parse(&url)
+                        .ok()
+                        .and_then(|u| u.host_str().map(str::to_lowercase))
+                        && host.contains('.')
+                        && !crate::core::scan::is_noncentral_domain(&host)
+                    {
+                        let mut dom =
+                            Entity::new(EntityKind::Domain, &host, confidence::LOW, &ctx.scan_id);
+                        dom.tag("social-platform");
+                        dom.add_evidence(
+                            Evidence::new(
+                                crate::modules::corpus_source(&url, SRC),
+                                format!("Platform domain from {} profile", platform.name),
+                            )
+                            .with_attr("platform", platform.name),
+                        );
+                        result.push(dom);
+                    }
                 }
             }
 
