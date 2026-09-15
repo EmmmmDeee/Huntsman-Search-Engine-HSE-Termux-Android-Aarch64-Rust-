@@ -1,8 +1,12 @@
 //! GitHub code search — mine public repositories for email/username seeds.
 //!
 //! Endpoint: `GET https://api.github.com/search/code?q={seed}&per_page=100`
-//! Auth:     Optional GitHub Personal Access Token (`github` key in key pool).
-//!           Without a key: 10 req/min unauthenticated. With a key: 30 req/min.
+//! Auth:     GitHub Personal Access Token (`HUNTSMAN_GITHUB_TOKEN`, the pooled
+//!           `github` key) — REQUIRED. GitHub's code search answers every
+//!           unauthenticated request `401 Requires authentication` (the live
+//!           sweep recorded exactly that on every keyless scan), so the module
+//!           is key-gated: without a token it is a clean `MissingKey` skip, not
+//!           a module error on every scan. 30 req/min with a token.
 //!
 //! The search page is the API maximum (100) so a single request surfaces as
 //! many repositories — hence owner accounts and repo URLs — as GitHub will
@@ -67,7 +71,11 @@ impl Module for GithubCodeSearch {
     }
 
     fn cost(&self) -> ModuleCost {
-        ModuleCost::Free
+        // GitHub's code search is authenticated-only (401 without a token):
+        // declaring it Free made the dispatcher run it keyless on every scan
+        // and record a ModuleError each time (`docs/PROVIDER_SWEEP_BACKLOG.md`,
+        // "Free-but-401").
+        ModuleCost::KeyGated
     }
 
     fn accepts(&self, t: &Target) -> bool {
@@ -102,7 +110,9 @@ impl Module for GithubCodeSearch {
             return Ok(ModuleResult::new());
         }
 
-        let token = ctx.key_opt("HUNTSMAN_GITHUB_TOKEN");
+        // `MissingKey` when unset — dispatch records a clean skip. GitHub's code
+        // search cannot be queried without it (401), so there is no keyless path.
+        let token = ctx.key("HUNTSMAN_GITHUB_TOKEN")?;
         // Request the API's maximum page size: the search itself is ONE request
         // regardless of `per_page`, so widening it from 10 to 100 yields up to
         // 10× more repositories — and therefore owner `Username` pivots and repo
@@ -113,7 +123,7 @@ impl Module for GithubCodeSearch {
             crate::util::http::urlencode(seed),
         );
 
-        let mut req = ctx
+        let req = ctx
             .http
             .get(&url)
             .header("Accept", "application/vnd.github+json")
@@ -121,36 +131,55 @@ impl Module for GithubCodeSearch {
                 "X-GitHub-Api-Version",
                 crate::modules::github_api::API_VERSION,
             )
-            .header("User-Agent", "huntsman-search-engine/1.4");
-        if let Some(tok) = token {
-            req = req.bearer_auth(tok);
-        }
+            .header("User-Agent", "huntsman-search-engine/1.4")
+            .bearer_auth(token);
 
         let resp = req.send_tagged(SRC).await?;
         let status = resp.status();
-        if status.as_u16() == 403 || status.as_u16() == 429 {
-            // Degrade to empty rather than failing the module (this search is
-            // best-effort) — but if a token was actually in play, the key pool
-            // must still learn it got rejected/throttled, or a dead token
-            // silently degrades every future scan with no operator-visible
-            // signal and no chance to rotate to another pooled token.
-            if let Some(tok) = token {
-                crate::util::http::note_keyed_error(status.as_u16(), "github", tok, ctx);
-            }
-            return Ok(ModuleResult::new());
-        }
-        // 422 is GitHub's "unprocessable query" — a search term it cannot index
-        // (too short, only punctuation, unsupported qualifier). That is a
-        // genuine clean miss, not an outage, so it stays an empty result.
-        if status.as_u16() == 422 {
-            return Ok(ModuleResult::new());
-        }
-        // Any OTHER non-2xx (5xx outage, unexpected 4xx) is a real failure of the
-        // primary search, not "no code matched" — surface it instead of a silent
-        // empty result. The 403/429 rate-limit degrade above is intentionally
-        // preserved.
         if !status.is_success() {
-            return Err(crate::util::http::http_status_error(SRC, resp).await);
+            // The key pool must learn a 401/403/429 happened, or a dead or
+            // throttled token silently degrades every future scan with no
+            // operator-visible signal and no chance to rotate to another
+            // pooled token.
+            crate::util::http::note_keyed_error(status.as_u16(), "github", token, ctx);
+            // 422 is GitHub's "unprocessable query" — a search term it cannot
+            // index (too short, only punctuation, unsupported qualifier). Nothing
+            // was searched, so nothing was found OR ruled out: a typed skip,
+            // not the clean-negative empty result it used to be.
+            if status.as_u16() == 422 {
+                return Err(crate::core::error::Error::skipped(
+                    crate::core::event::SkipClass::NotApplicable,
+                    format!(
+                        "GitHub cannot index this seed as a code-search query (HTTP 422: {})",
+                        crate::util::http::error_snippet(resp).await
+                    ),
+                ));
+            }
+            let remaining = resp
+                .headers()
+                .get("x-ratelimit-remaining")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+            let snippet = crate::util::http::error_snippet(resp).await;
+            // A throttle is the typed RateLimited: the breaker backs the module
+            // off and the scan records a throttled provider — before this a
+            // 403/429 was an empty result, "no code matched", on every throttled
+            // scan.
+            if crate::modules::github_api::throttled(
+                status.as_u16(),
+                remaining.as_deref(),
+                &snippet,
+            ) {
+                return Err(crate::core::error::Error::RateLimited(format!(
+                    "{SRC}: GitHub code search throttled (HTTP {status}): {snippet}"
+                )));
+            }
+            // Any other non-2xx (a 401 on a revoked token, a 5xx outage) is a
+            // real failure of the search, not "no code matched".
+            return Err(crate::core::error::Error::module(
+                SRC,
+                format!("HTTP {status}: {snippet}"),
+            ));
         }
 
         // Status is a validated 2xx here, so a parse failure is a malformed body
@@ -198,7 +227,7 @@ impl Module for GithubCodeSearch {
             }
             commit_fetches += 1;
             let commits_url = format!("{API}/repos/{full_name}/commits?per_page=5");
-            let mut creq = ctx
+            let creq = ctx
                 .http
                 .get(&commits_url)
                 .header("Accept", "application/vnd.github+json")
@@ -206,10 +235,8 @@ impl Module for GithubCodeSearch {
                     "X-GitHub-Api-Version",
                     crate::modules::github_api::API_VERSION,
                 )
-                .header("User-Agent", "huntsman-search-engine/1.4");
-            if let Some(tok) = token {
-                creq = creq.bearer_auth(tok);
-            }
+                .header("User-Agent", "huntsman-search-engine/1.4")
+                .bearer_auth(token);
             if let Ok(cr) = creq.send_tagged(SRC).await {
                 let cstatus = cr.status();
                 if cstatus.as_u16() == 403 || cstatus.as_u16() == 429 {
@@ -218,9 +245,7 @@ impl Module for GithubCodeSearch {
                     // token exhausted here (but fine for search) would otherwise
                     // silently no-op every commit-fetch for the rest of the scan
                     // with no operator-visible signal and no chance to rotate.
-                    if let Some(tok) = token {
-                        crate::util::http::note_keyed_error(cstatus.as_u16(), "github", tok, ctx);
-                    }
+                    crate::util::http::note_keyed_error(cstatus.as_u16(), "github", token, ctx);
                 } else if cstatus.is_success()
                     // Capped decode (32 MiB) — a raw `bytes()` would buffer an
                     // unbounded body on the low-RAM Termux target.

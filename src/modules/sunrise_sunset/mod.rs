@@ -12,7 +12,7 @@ use serde::Deserialize;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -21,17 +21,24 @@ use crate::util::timefmt::civil_from_days;
 
 const SRC: &str = "sunrise_sunset";
 
+/// Where the solar-phase JSON lives; `formatted=0` yields ISO-8601 UTC times.
+const API_BASE: &str = "https://api.sunrise-sunset.org/json";
+
 pub struct SunriseSunset;
 
 #[derive(Deserialize)]
 struct SsResp {
     #[serde(default)]
     status: Option<String>,
+    /// The phase object on `OK`. Kept as a raw value because the provider
+    /// sends `"results": ""` (a string) alongside an error status — typing it
+    /// as `Option<SsResults>` would turn every documented error answer into a
+    /// decode failure that hides the status the provider actually gave.
     #[serde(default)]
-    results: Option<SsResults>,
+    results: Option<serde_json::Value>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct SsResults {
     #[serde(default)]
     sunrise: Option<String>,
@@ -171,29 +178,7 @@ impl Module for SunriseSunset {
         let (lat, lon) = crate::util::geo::parse_coords(&target.value)?;
 
         let today = today_utc();
-        let url = format!(
-            "https://api.sunrise-sunset.org/json?lat={lat:.6}&lng={lon:.6}&date={today}&formatted=0",
-        );
-
-        let resp = ctx
-            .http
-            .get(&url)
-            .header("Accept", "application/json")
-            .send_tagged(SRC)
-            .await?;
-
-        let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[404]).await? else {
-            return Ok(ModuleResult::new());
-        };
-
-        let body: SsResp = crate::util::http::json_decode(SRC, resp).await?;
-
-        if body.status.as_deref() != Some("OK") {
-            return Ok(ModuleResult::new());
-        }
-        let Some(results) = body.results else {
-            return Ok(ModuleResult::new());
-        };
+        let results = fetch_solar(&ctx.http, API_BASE, lat, lon, &today).await?;
 
         let mut result = ModuleResult::new();
         result.push(build_solar_entity(
@@ -205,6 +190,53 @@ impl Module for SunriseSunset {
             &ctx.scan_id,
         ));
         Ok(result)
+    }
+}
+
+/// One solar-phase lookup. The provider computes phases for ANY coordinates, so
+/// there is no "no data for this place": a non-2xx (the endpoint is fixed — a
+/// 404 is the endpoint gone, not a miss), a non-`OK` status in the body
+/// (`INVALID_REQUEST`, `INVALID_DATE`, `UNKNOWN_ERROR` — the documented
+/// server-side failure) or an `OK` without `results` is a failed lookup and is
+/// the module's error. Before this every one of them was an empty result —
+/// recorded as a clean negative (`docs/PROVIDER_SWEEP_BACKLOG.md` #43).
+async fn fetch_solar(
+    client: &reqwest::Client,
+    api_base: &str,
+    lat: f64,
+    lon: f64,
+    date: &str,
+) -> Result<SsResults> {
+    let url = format!("{api_base}?lat={lat:.6}&lng={lon:.6}&date={date}&formatted=0");
+    let resp = client
+        .get(&url)
+        .header("Accept", "application/json")
+        .send_tagged(SRC)
+        .await?;
+    if !resp.status().is_success() {
+        return Err(crate::util::http::http_status_error(SRC, resp).await);
+    }
+    let body: SsResp = crate::util::http::json_decode(SRC, resp).await?;
+    match body.status.as_deref() {
+        Some("OK") => body
+            .results
+            .filter(serde_json::Value::is_object)
+            .map(serde_json::from_value::<SsResults>)
+            .transpose()?
+            .ok_or_else(|| {
+                Error::module(
+                    SRC,
+                    "status OK but no `results` object — the response shape has changed",
+                )
+            }),
+        other => Err(Error::module(
+            SRC,
+            format!(
+                "api.sunrise-sunset.org answered status {} for {lat:.4},{lon:.4} — a failed \
+                 lookup, not an empty one",
+                other.unwrap_or("<missing>")
+            ),
+        )),
     }
 }
 

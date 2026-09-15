@@ -30,9 +30,16 @@ use super::*;
         }"#;
         let r: SsResp = serde_json::from_str(raw).expect("should succeed");
         assert_eq!(r.status.as_deref(), Some("OK"));
-        let res = r.results.expect("should succeed");
+        let res: SsResults =
+            serde_json::from_value(r.results.expect("should succeed")).expect("phase object");
         assert!(res.sunrise.is_some());
         assert!(res.sunset.is_some());
+        // The provider's documented error shape carries `"results": ""` — a
+        // string — and must still decode so the status can be reported.
+        let e: SsResp = serde_json::from_str(r#"{"results":"","status":"UNKNOWN_ERROR"}"#)
+            .expect("error answers decode");
+        assert_eq!(e.status.as_deref(), Some("UNKNOWN_ERROR"));
+        assert!(!e.results.expect("present").is_object());
     }
 
     #[test]
@@ -96,4 +103,49 @@ use super::*;
         // Phases the response omitted must not appear.
         assert_eq!(attr(&e, "sunset_utc"), None);
         assert_eq!(attr(&e, "nautical_twilight_begin"), None);
+    }
+
+    #[tokio::test]
+    async fn a_provider_error_status_or_a_404_is_a_failed_lookup_never_an_empty_result() {
+        // Backlog #43. The provider computes solar phases for ANY coordinates,
+        // so there is no "no data here": its documented `UNKNOWN_ERROR` (a
+        // server-side failure), an `INVALID_REQUEST`, a 404 on the fixed
+        // endpoint, or an `OK` without `results` are all failed lookups. Before
+        // this every one of them was `Ok(empty)` — a clean negative.
+        use crate::util::http::test_server::{Canned, serve};
+        let base = serve(vec![
+            Canned::json(200, r#"{"results":"","status":"UNKNOWN_ERROR"}"#),
+            Canned::json(200, r#"{"results":"","status":"INVALID_REQUEST"}"#),
+            Canned::text(404, "Not Found"),
+            Canned::json(200, r#"{"status":"OK"}"#),
+            Canned::json(
+                200,
+                r#"{"results":{"sunrise":"2026-09-15T20:07:21+00:00","sunset":"2026-09-16T08:03:12+00:00","solar_noon":"2026-09-16T02:05:16+00:00","day_length":43000},"status":"OK"}"#,
+            ),
+        ])
+        .await;
+        let client = reqwest::Client::new();
+        let endpoint = format!("{base}/json");
+        let (lat, lon) = (-33.8688, 151.2093);
+
+        let err = fetch_solar(&client, &endpoint, lat, lon, "2026-09-15")
+            .await
+            .expect_err("UNKNOWN_ERROR is the provider failing, not an empty answer");
+        assert!(err.to_string().contains("UNKNOWN_ERROR"), "{err}");
+        let err = fetch_solar(&client, &endpoint, lat, lon, "2026-09-15")
+            .await
+            .expect_err("INVALID_REQUEST is a failed lookup");
+        assert!(err.to_string().contains("INVALID_REQUEST"), "{err}");
+        let err = fetch_solar(&client, &endpoint, lat, lon, "2026-09-15")
+            .await
+            .expect_err("404 on the fixed endpoint is the endpoint gone");
+        assert!(err.to_string().contains("404"), "{err}");
+        let err = fetch_solar(&client, &endpoint, lat, lon, "2026-09-15")
+            .await
+            .expect_err("OK without results is a shape change, not an empty answer");
+        assert!(err.to_string().contains("results"), "{err}");
+        let ok = fetch_solar(&client, &endpoint, lat, lon, "2026-09-15")
+            .await
+            .expect("a genuine OK answer parses");
+        assert_eq!(ok.sunrise.as_deref(), Some("2026-09-15T20:07:21+00:00"));
     }

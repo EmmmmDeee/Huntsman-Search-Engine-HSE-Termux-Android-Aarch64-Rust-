@@ -160,3 +160,59 @@ async fn github_commits_live_resolves_a_known_email() {
         }
     }
 }
+
+#[tokio::test]
+async fn a_non_2xx_from_the_commit_search_is_a_failure_and_a_throttle_is_typed() {
+    // Backlog #23. GitHub signals an empty search as a 200 with
+    // `total_count: 0`; every non-2xx used to collapse into `Ok(empty)` — a
+    // 5xx outage, a 401 on a revoked token, a 403/429 throttle all read as "no
+    // commits by this author". A throttle is now the typed RateLimited (the
+    // breaker backs the module off), anything else the module's error.
+    use crate::util::http::test_server::{Canned, serve};
+    let base = serve(vec![
+        Canned::json(500, r#"{"message":"Server Error"}"#),
+        Canned::json(403, r#"{"message":"API rate limit exceeded for 203.0.113.9."}"#),
+        Canned::json(429, r#"{"message":"You have exceeded a secondary rate limit."}"#),
+        Canned::json(401, r#"{"message":"Bad credentials"}"#),
+        Canned::json(200, r#"{"total_count":0,"incomplete_results":false,"items":[]}"#),
+    ])
+    .await;
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    // No token configured, so no key-pool bookkeeping runs (nothing written
+    // under $HOME); the classification under test is the same either way.
+    let ctx = ModuleContext {
+        scan_id: "s".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+
+    let err = search_commits(&ctx, &base, "someone@example.com")
+        .await
+        .err()
+        .expect("a 5xx is an outage, not an empty search");
+    assert!(err.to_string().contains("500"), "{err}");
+    let err = search_commits(&ctx, &base, "someone@example.com")
+        .await
+        .err()
+        .expect("a 403 naming the rate limit is a throttle");
+    assert!(matches!(err, Error::RateLimited(_)), "{err}");
+    let err = search_commits(&ctx, &base, "someone@example.com")
+        .await
+        .err()
+        .expect("a 429 is a throttle");
+    assert!(matches!(err, Error::RateLimited(_)), "{err}");
+    let err = search_commits(&ctx, &base, "someone@example.com")
+        .await
+        .err()
+        .expect("a 401 is a rejected credential, not an empty search");
+    assert!(
+        matches!(err, Error::Module { .. }) && err.to_string().contains("401"),
+        "{err}"
+    );
+    let empty = search_commits(&ctx, &base, "someone@example.com")
+        .await
+        .expect("a 200 with no items is the genuine miss");
+    assert!(empty.items.is_empty());
+}

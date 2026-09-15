@@ -41,7 +41,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{RequestBuilderExt, UA_OSINT, ok_or_absent, urlencode};
+use crate::util::http::{RequestBuilderExt, UA_OSINT, http_status_error, urlencode};
 
 const SRC: &str = "europepmc_search";
 
@@ -142,6 +142,28 @@ pub(super) fn build_entities(r: &SearchResp, query: &str, scan_id: &str) -> Vec<
 /// and does not (relevance ranking, pagination beyond the first page).
 pub struct EuropePmcSearch;
 
+/// One Europe PMC search. Every non-2xx is a failed lookup: the REST search
+/// endpoint is fixed, and "no hits" is a `200` with `hitCount: 0` and an empty
+/// `resultList` — so a 404 is the endpoint gone (or a WAF page), never "no
+/// publications by this author". Before this a 404 was mapped to an empty result,
+/// a clean negative about the named person (`docs/PROVIDER_SWEEP_BACKLOG.md` #21).
+async fn search(client: &reqwest::Client, api_base: &str, query: &str) -> Result<SearchResp> {
+    let url = format!(
+        "{api_base}?query={}&format=json&pageSize={CAP}",
+        urlencode(query)
+    );
+    let resp = client
+        .get(&url)
+        .header("User-Agent", UA_OSINT)
+        .header("Accept", "application/json")
+        .send_tagged(SRC)
+        .await?;
+    if !resp.status().is_success() {
+        return Err(http_status_error(SRC, resp).await);
+    }
+    crate::util::http::json_decode(SRC, resp).await
+}
+
 #[async_trait]
 impl Module for EuropePmcSearch {
     fn name(&self) -> &'static str {
@@ -196,21 +218,7 @@ impl Module for EuropePmcSearch {
             return Ok(ModuleResult::new());
         }
 
-        let url = format!(
-            "{API_BASE}?query={}&format=json&pageSize={CAP}",
-            urlencode(query)
-        );
-        let resp = ctx
-            .http
-            .get(&url)
-            .header("User-Agent", UA_OSINT)
-            .header("Accept", "application/json")
-            .send_tagged(SRC)
-            .await?;
-        let Some(resp) = ok_or_absent(SRC, resp, &[404]).await? else {
-            return Ok(ModuleResult::new());
-        };
-        let parsed: SearchResp = crate::util::http::json_decode(SRC, resp).await?;
+        let parsed = search(&ctx.http, API_BASE, query).await?;
 
         let mut result = ModuleResult::new();
         result.entities = build_entities(&parsed, query, &ctx.scan_id);

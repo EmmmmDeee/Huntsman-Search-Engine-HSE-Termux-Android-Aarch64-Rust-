@@ -25,7 +25,10 @@ fn accepts_email_and_username_only() {
 fn module_metadata() {
     let m = GithubCodeSearch;
     assert_eq!(m.name(), "github_code_search");
-    assert_eq!(m.cost(), ModuleCost::Free);
+    // GitHub's code search is authenticated-only (401 without a token), so the
+    // module is key-gated: keyless it is a clean MissingKey skip, never a
+    // ModuleError on every scan.
+    assert_eq!(m.cost(), ModuleCost::KeyGated);
     assert!(m.attack_techniques().contains(&"T1593.003"));
     assert!(m.attack_techniques().contains(&"T1589.002"));
 }
@@ -204,5 +207,30 @@ fn build_commit_emails_deduplicates() {
         email_ents.len(),
         1,
         "duplicate lowercased email should be deduped to one Email entity"
+    );
+}
+
+#[tokio::test]
+async fn without_a_token_the_module_is_a_missing_key_skip_before_any_request() {
+    // GitHub's code search answers every unauthenticated request 401, so a
+    // keyless scan used to run the module and record a ModuleError each time
+    // (the live sweep's "Free-but-401"). Key-gated, it opts out before a
+    // request is built: dispatch records a clean `MissingKey` skip.
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = crate::core::module::ModuleContext {
+        scan_id: "s".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let err = GithubCodeSearch
+        .process(&Target::new(TargetKind::Username, "haigen"), &ctx)
+        .await
+        .err()
+        .expect("no token → typed skip, never a request");
+    assert!(
+        matches!(&err, crate::core::error::Error::MissingKey(k) if k == "HUNTSMAN_GITHUB_TOKEN"),
+        "{err}"
     );
 }

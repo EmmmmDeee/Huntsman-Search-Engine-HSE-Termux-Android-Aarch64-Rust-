@@ -390,7 +390,7 @@ respectively.
 
 ---
 
-## Module Overview (198 modules — 151 free, 47 key-gated/paid)
+## Module Overview (198 modules — 150 free, 48 key-gated/paid)
 
 > A curated highlight of the modules below (not the full list). The complete, always-current catalogue
 > with target kinds and output entities lives in the running software — run

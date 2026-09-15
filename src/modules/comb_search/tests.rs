@@ -216,3 +216,36 @@ fn secret_echo_of_identity_is_classified_as_junk_upstream() {
         CredentialField::Email
     );
 }
+
+#[tokio::test]
+async fn a_non_2xx_from_the_comb_endpoint_is_a_failed_lookup_and_a_200_without_lines_is_the_miss() {
+    // Backlog #12. ProxyNova signals "not in COMB" as a 200 with `count: 0,
+    // lines: []`; a 404 is the endpoint gone (or a WAF page) and a 5xx an
+    // outage. Before this the request went through `fetch_json_or_404`, so a
+    // 404 became `Ok(empty)` — recorded as a clean-negative breach claim about
+    // the named subject. Real request path against a loopback server.
+    use crate::util::http::test_server::{Canned, serve};
+    let base = serve(vec![
+        Canned::text(404, "<html>Not Found</html>"),
+        Canned::text(503, "upstream unavailable"),
+        Canned::json(200, r#"{"count":0,"lines":[]}"#),
+    ])
+    .await;
+    let client = reqwest::Client::new();
+    let endpoint = format!("{base}/comb");
+
+    let err = query_comb(&client, &endpoint, "jordan@example.com")
+        .await
+        .expect_err("a 404 on a fixed endpoint is a failed lookup, not 'not in COMB'");
+    assert!(err.to_string().contains("404"), "{err}");
+
+    let err = query_comb(&client, &endpoint, "jordan@example.com")
+        .await
+        .expect_err("an outage is a failed lookup");
+    assert!(err.to_string().contains("503"), "{err}");
+
+    let miss = query_comb(&client, &endpoint, "jordan@example.com")
+        .await
+        .expect("a 200 with no lines is the genuine miss");
+    assert!(miss.lines.is_empty());
+}

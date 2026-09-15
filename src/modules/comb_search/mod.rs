@@ -32,9 +32,13 @@ use crate::core::{
 use crate::util::extract::{
     CredentialField, classify_credential_field, split_identity_secret as split_line,
 };
-use crate::util::http::{fetch_json_or_404, urlencode};
+use crate::util::http::{fetch_json, urlencode};
 
 const SRC: &str = "comb_search";
+
+/// ProxyNova's COMB endpoint. A miss is a `200` with `count: 0, lines: []` —
+/// never a 404 — so every non-2xx is a failed lookup, not "not in COMB".
+const API_BASE: &str = "https://api.proxynova.com/comb";
 
 /// Max credential lines requested per query. COMB caps `count` at 10000 (a
 /// sentinel, not a real total), so we request a bounded window and rely on the
@@ -56,7 +60,7 @@ const DOMAIN_ACCOUNT_CONF: f64 = confidence::MEDIUM;
 
 pub struct CombSearch;
 
-#[derive(serde::Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 struct CombResp {
     #[serde(default)]
     lines: Vec<String>,
@@ -137,19 +141,27 @@ impl Module for CombSearch {
             return Ok(result);
         }
 
-        let url = format!(
-            "https://api.proxynova.com/comb?query={}&start=0&limit={FETCH_LIMIT}",
-            urlencode(v)
-        );
-        let Some(resp): Option<CombResp> = fetch_json_or_404(&ctx.http, SRC, &url).await? else {
-            return Ok(result);
-        };
+        let resp = query_comb(&ctx.http, API_BASE, v).await?;
 
         for e in build_entities_from_lines(&resp.lines, target, &ctx.scan_id) {
             result.push(e);
         }
         Ok(result)
     }
+}
+
+/// One COMB query. Routed through [`fetch_json`], which errors on EVERY
+/// non-2xx: this endpoint signals a miss in the body of a `200`, so a 404 (the
+/// endpoint moved, a WAF page), a 429 or a 5xx is a failed lookup. Before this
+/// the call went through `fetch_json_or_404`, whose `404 → Ok(None)` the caller
+/// mapped to an empty result — an outage read as "not in COMB", a clean-negative
+/// breach claim about a named subject (`docs/PROVIDER_SWEEP_BACKLOG.md` #12).
+async fn query_comb(client: &reqwest::Client, api_base: &str, value: &str) -> Result<CombResp> {
+    let url = format!(
+        "{api_base}?query={}&start=0&limit={FETCH_LIMIT}",
+        urlencode(value)
+    );
+    fetch_json(client, SRC, &url).await
 }
 
 /// Build the credential entities from the raw COMB `lines`. **Pure** (no

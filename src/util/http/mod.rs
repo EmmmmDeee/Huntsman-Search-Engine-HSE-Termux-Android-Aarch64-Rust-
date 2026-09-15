@@ -23,6 +23,8 @@ mod keys;
 mod redact;
 mod ssrf;
 #[cfg(test)]
+pub(crate) mod test_server;
+#[cfg(test)]
 mod tests;
 mod trust;
 mod url;

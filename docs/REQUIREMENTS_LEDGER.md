@@ -3116,3 +3116,95 @@ this sandbox (it would put a synthetic handle to third-party adult sites through
 the HTTPS proxy). The transport behaviour is observed with the real curl binary
 and the production arguments; the classification is pure and pinned.
 
+### REQ-SWEEP-001 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): six swallowed failures read as clean negatives
+
+**Requirement.** A provider execution that did not establish absence never
+produces the empty result `core::coverage` aggregates to `CleanNegative`. Only
+the provider's own documented "no such subject" answer is the clean negative;
+a transport failure, a non-2xx on a fixed endpoint, a throttle, an outage, an
+unreadable body or a provider error status is the module's error (a throttle
+the typed `Error::RateLimited`).
+
+**Findings** (`docs/PROVIDER_SWEEP_BACKLOG.md` rows, each re-derived from the
+source; class FALSE_NEGATIVE_RISK / silent failure):
+
+| # | Module | What collapsed into `Ok(empty)` | Now |
+|---|---|---|---|
+| 12 | `comb_search` | `fetch_json_or_404`: a 404 on `api.proxynova.com/comb` (the endpoint signals a miss as `200 {count:0, lines:[]}`) | `query_comb` via `fetch_json` — every non-2xx is the failed lookup |
+| 21 | `europepmc_search` | `ok_or_absent(.., &[404])` on the fixed REST search endpoint ("no hits" is `200 / hitCount 0`) | `search` — every non-2xx is the failed lookup |
+| 39 | `shodan` (InternetDB) | transport failure, 429, 5xx, unreadable body — all `return` with a debug line | `query_internetdb -> Result<()>`; only the documented 404 "No information available" is the clean negative |
+| 18 | `gaming_profile` | every transport/HTTP/decode failure on Roblox and Mojang → empty batch | lookups return `Result<Vec<Entity>>`; `combine` applies `or_hard_failure` (a partial outage keeps a confirmed account; an outage with nothing found is the error) |
+| 23 | `github_commits` | `if !status.is_success() { return Ok(empty) }` — 5xx, 401 on a revoked token, 403/429 | `search_commits`: throttle → `RateLimited` (`github_api::throttled`), else the module's error; token rejections still reported to the key pool |
+| 43 | `sunrise_sunset` | `status != OK` → empty; `results` missing → empty; `ok_or_absent(.., &[404])` | `fetch_solar`: the provider computes phases for any coordinates, so every one is the failed lookup, naming the provider's status |
+
+**Seam.** Each module's request path now takes its endpoint base as a parameter
+(`API_BASE` / `INTERNETDB_BASE` / `ROBLOX_BASE` / `MOJANG_BASE` in production),
+so the REAL path — URL building, headers, status classification, body decoding
+— is exercised against `util::http::test_server` (a loopback listener answering
+canned statuses in order; the one copy of what 16 module tests had each
+hand-rolled). No mock of the HTTP client.
+
+**Verification (2026-09-15).** The batch's module tests plus the shared
+`util::http` / `util::curl` tests:
+
+```
+test result: ok. 183 passed; 0 failed; 3 ignored
+```
+
+**Falsification.** The seven pre-fix behaviours reintroduced at once (404 →
+empty in comb_search / europepmc_search; non-OK → empty phases in
+sunrise_sunset; non-2xx → empty in github_commits; every non-2xx swallowed in
+shodan; failures swallowed in gaming_profile's resolver and `combine`;
+github_code_search back to `Free` with a keyless request):
+
+```
+test modules::comb_search::tests::a_non_2xx_from_the_comb_endpoint_is_a_failed_lookup_and_a_200_without_lines_is_the_miss ... FAILED
+test modules::europepmc_search::tests::a_404_from_the_search_endpoint_is_a_failed_lookup_and_hit_count_zero_is_the_miss ... FAILED
+test modules::gaming_profile::tests::a_platform_failure_is_the_platforms_error_and_only_a_miss_is_empty ... FAILED
+test modules::gaming_profile::tests::combine_keeps_a_platform_failure_and_surfaces_it_only_when_nothing_was_found ... FAILED
+test modules::github_code_search::tests::module_metadata ... FAILED
+test modules::github_commits::tests::a_non_2xx_from_the_commit_search_is_a_failure_and_a_throttle_is_typed ... FAILED
+test modules::shodan::tests::internetdb_failures_are_the_modules_error_and_only_a_404_is_the_clean_negative ... FAILED
+test modules::sunrise_sunset::tests::a_provider_error_status_or_a_404_is_a_failed_lookup_never_an_empty_result ... FAILED
+test modules::github_code_search::tests::without_a_token_the_module_is_a_missing_key_skip_before_any_request ... FAILED
+test result: FAILED. 60 passed; 9 failed; 3 ignored
+```
+
+Exactly the nine new or changed tests, nothing else. Restored: 71 passed.
+
+**Not verifiable here.** No live call to any of the six providers was made
+from this sandbox; each fix changes only what the module does with a status it
+already receives, and the documented miss signals (`200 {count:0}`, `hitCount:
+0`, InternetDB's 404, Mojang's 404, `total_count: 0`, `status: "OK"`) are the
+ones the modules already parsed. The Monday `live-drift` run exercises the
+canaries on GitHub's runners.
+
+### REQ-GITHUB-001 (**new, Pass 31 — FIXED**): `github_code_search` declared Free, answered 401 on every keyless scan
+
+**Requirement.** A module whose provider cannot be queried without a credential
+is `KeyGated` and opts out with `MissingKey` before any request; it never runs
+keyless and records a `ModuleError` per scan.
+
+**Finding** (live sweep, "Free-but-401"; class AUTH_UNTESTED → DISPATCH). GitHub's
+code search is authenticated-only: every unauthenticated request is
+`401 Requires authentication`. `github_code_search` declared
+`ModuleCost::Free` and read the token with `key_opt`, so a keyless scan
+dispatched it on every Email / Username target, the 401 fell into the
+"any other non-2xx" branch, and the scan recorded a `ModuleError` — a failed
+module, breaker and health penalties — for a module that could never have
+answered. Its `403`/`429` branch also returned an empty result ("no code
+matched") on every throttle.
+
+**Fix.** `cost()` → `KeyGated`; `ctx.key("HUNTSMAN_GITHUB_TOKEN")?` (dispatch
+records a clean `MissingKey` skip, `free_only` never dispatches it); a throttle
+is the typed `RateLimited` via `github_api::throttled` (shared with
+`github_commits`: `429` always, `403` only when GitHub names the rate limit —
+`X-RateLimit-Remaining: 0` or a body saying so); GitHub's `422` "cannot index
+this query" is a typed `NotApplicable` skip (nothing was searched) instead of
+the clean negative it used to be. The key hint (`util::keys::constants`) and
+`env_template.txt` now say the token is required by this module and optional
+for `github_user` / `github_commits`.
+
+**Regression locks.** `github_code_search::tests::{module_metadata,
+without_a_token_the_module_is_a_missing_key_skip_before_any_request}`,
+`github_api::tests::throttled_reads_429_always_and_403_only_when_github_names_the_limit`.

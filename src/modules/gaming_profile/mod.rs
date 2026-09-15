@@ -39,6 +39,11 @@ use crate::util::http::{RequestBuilderExt, fetch_json, fetch_json_or_404, json_d
 
 const SRC: &str = "gaming_profile";
 
+/// Roblox's public users API root (username resolve, then profile).
+const ROBLOX_BASE: &str = "https://users.roblox.com";
+/// Mojang's public profile API root (Minecraft Java username → UUID).
+const MOJANG_BASE: &str = "https://api.mojang.com";
+
 /// Confidence for a Roblox account that resolves EXACTLY from the target handle
 /// — a single-source, exact-handle platform-existence lookup with a live public
 /// profile. HIGH_PLUSPLUS_PLUS is this codebase's settled tier for that evidence
@@ -153,57 +158,73 @@ impl Module for GamingProfile {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut result = ModuleResult::new();
         let v = target.value.trim();
         if !accepts_value(v) {
-            return Ok(result);
+            return Ok(ModuleResult::new());
         }
 
-        // Two platforms queried concurrently; each is best-effort — a failure
-        // or miss on one never sinks the other or the module.
-        let (roblox, minecraft) = tokio::join!(roblox_lookup(ctx, v), minecraft_lookup(ctx, v));
-        result.extend(roblox);
-        result.extend(minecraft);
-
-        Ok(result)
+        // Two platforms queried concurrently; a miss on one never sinks the
+        // other. A FAILURE on one is kept, and becomes the module's error when
+        // nothing was found at all — see `combine`.
+        let (roblox, minecraft) = tokio::join!(
+            roblox_lookup(&ctx.http, ROBLOX_BASE, v, &ctx.scan_id),
+            minecraft_lookup(&ctx.http, MOJANG_BASE, v, &ctx.scan_id)
+        );
+        combine(roblox, minecraft)
     }
 }
 
+/// Merge the two platforms' outcomes. A miss on one never sinks the other; a
+/// failure on one is kept and, when nothing was found at all, becomes the
+/// module's error (`ModuleResult::or_hard_failure`): a platform that never
+/// answered is not a platform that said "no such account". Before this every
+/// transport/HTTP failure on either platform was swallowed with a debug line,
+/// so a total outage read as "no Roblox / Minecraft account"
+/// (`docs/PROVIDER_SWEEP_BACKLOG.md` #18). Pure, so the policy is testable
+/// without the network.
+fn combine(roblox: Result<Vec<Entity>>, minecraft: Result<Vec<Entity>>) -> Result<ModuleResult> {
+    let mut result = ModuleResult::new();
+    let mut hard_failure = None;
+    for (platform, outcome) in [("roblox", roblox), ("minecraft", minecraft)] {
+        match outcome {
+            Ok(entities) => result.extend(entities),
+            Err(e) => {
+                tracing::warn!(platform, error = %e, "gaming_profile: platform lookup failed");
+                hard_failure = Some(e);
+            }
+        }
+    }
+    result.or_hard_failure(hard_failure)
+}
+
 /// Resolve a Roblox account for `username` and, on a hit, mint its profile
-/// Username + profile-URL entities. Best-effort: any transport/parse failure
-/// yields an empty batch rather than erroring the whole module.
-async fn roblox_lookup(ctx: &ModuleContext, username: &str) -> Vec<Entity> {
+/// Username + profile-URL entities. A transport failure, a non-2xx or an
+/// undecodable answer from the resolver is the platform's error (see
+/// [`combine`]); only a resolver answer that names no exact match is the miss.
+/// Profile enrichment (step 2) stays best-effort: the account is already
+/// confirmed by then.
+async fn roblox_lookup(
+    client: &reqwest::Client,
+    base: &str,
+    username: &str,
+    scan_id: &str,
+) -> Result<Vec<Entity>> {
     let mut out = Vec::new();
 
     // 1. Exact username → user id. This batch resolver returns `{"data":[]}`
     //    for a non-existent handle (never a 404), so a POST is unavoidable.
     let req = serde_json::json!({ "usernames": [username], "excludeBannedUsers": false });
-    let resp = match ctx
-        .http
-        .post("https://users.roblox.com/v1/usernames/users")
+    let resp = client
+        .post(format!("{base}/v1/usernames/users"))
         .json(&req)
         .send_tagged(SRC)
-        .await
-    {
-        Ok(r) if r.status().is_success() => r,
-        Ok(r) => {
-            tracing::debug!(status = %r.status(), "roblox username resolve non-success");
-            return out;
-        }
-        Err(e) => {
-            tracing::debug!(error = %e, "roblox username resolve failed");
-            return out;
-        }
-    };
-    let batch: RobloxUsernameResp = match json_decode(SRC, resp).await {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::debug!(error = %e, "roblox username resolve decode failed");
-            return out;
-        }
-    };
+        .await?;
+    if !resp.status().is_success() {
+        return Err(crate::util::http::http_status_error(SRC, resp).await);
+    }
+    let batch: RobloxUsernameResp = json_decode(SRC, resp).await?;
     let Some(stub) = pick_exact_roblox(&batch.data, username) else {
-        return out; // no Roblox account owns this exact handle
+        return Ok(out); // no Roblox account owns this exact handle
     };
     let roblox_id = stub.id;
     let canonical = stub.name.clone();
@@ -211,10 +232,20 @@ async fn roblox_lookup(ctx: &ModuleContext, username: &str) -> Vec<Entity> {
     // 2. Full public profile. A real id is always 200, so `fetch_json` (which
     //    also carries the per-host circuit breaker); degrade to stub-only on
     //    any failure rather than dropping the confirmed account.
-    let profile_url = format!("https://users.roblox.com/v1/users/{roblox_id}");
-    let profile: Option<RobloxProfile> = fetch_json::<RobloxProfile>(&ctx.http, SRC, &profile_url)
-        .await
-        .ok();
+    let profile_url = format!("{base}/v1/users/{roblox_id}");
+    let profile: Option<RobloxProfile> = match fetch_json::<RobloxProfile>(
+        client,
+        SRC,
+        &profile_url,
+    )
+    .await
+    {
+        Ok(p) => Some(p),
+        Err(e) => {
+            tracing::debug!(error = %e, "roblox profile enrichment failed; keeping the confirmed account");
+            None
+        }
+    };
 
     let human_url = format!("https://www.roblox.com/users/{roblox_id}/profile");
     let verified =
@@ -250,7 +281,7 @@ async fn roblox_lookup(ctx: &ModuleContext, username: &str) -> Vec<Entity> {
         EntityKind::Username,
         canonical.as_str(),
         ROBLOX_CONF,
-        &ctx.scan_id,
+        scan_id,
     );
     u.tag("gaming");
     u.tag("roblox");
@@ -264,12 +295,7 @@ async fn roblox_lookup(ctx: &ModuleContext, username: &str) -> Vec<Entity> {
     u.add_evidence(ev);
     out.push(u);
 
-    let mut url_e = Entity::new(
-        EntityKind::Url,
-        human_url.as_str(),
-        ROBLOX_CONF,
-        &ctx.scan_id,
-    );
+    let mut url_e = Entity::new(EntityKind::Url, human_url.as_str(), ROBLOX_CONF, scan_id);
     url_e.tag("gaming");
     url_e.tag("roblox");
     url_e.tag(tags::SOCIAL_PROFILE);
@@ -279,31 +305,28 @@ async fn roblox_lookup(ctx: &ModuleContext, username: &str) -> Vec<Entity> {
     );
     out.push(url_e);
 
-    out
+    Ok(out)
 }
 
 /// Resolve a Minecraft (Java) account for `username`. Mojang returns 404 for a
-/// non-existent handle (mapped to `None`); a hit yields the account UUID.
-async fn minecraft_lookup(ctx: &ModuleContext, username: &str) -> Vec<Entity> {
+/// non-existent handle — the one clean miss; any other non-2xx, a transport
+/// failure or an undecodable body is the platform's error (see [`combine`]).
+/// A hit yields the account UUID.
+async fn minecraft_lookup(
+    client: &reqwest::Client,
+    base: &str,
+    username: &str,
+    scan_id: &str,
+) -> Result<Vec<Entity>> {
     let mut out = Vec::new();
-    let url = format!(
-        "https://api.mojang.com/users/profiles/minecraft/{}",
-        urlencode(username)
-    );
-    let profile = match fetch_json_or_404::<MojangProfile>(&ctx.http, SRC, &url).await {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::debug!(error = %e, "mojang lookup failed");
-            return out;
-        }
-    };
-    let Some(profile) = profile else {
-        return out; // no such Java account
+    let url = format!("{base}/users/profiles/minecraft/{}", urlencode(username));
+    let Some(profile) = fetch_json_or_404::<MojangProfile>(client, SRC, &url).await? else {
+        return Ok(out); // no such Java account
     };
     // Mojang returns only the EXACT player and a 32-hex UUID; reject anything
     // that doesn't satisfy both (defends against an unexpected upstream shape).
     if !profile.name.eq_ignore_ascii_case(username) || profile.id.len() != 32 {
-        return out;
+        return Ok(out);
     }
     let uuid = dash_uuid(&profile.id).unwrap_or_else(|| profile.id.clone());
 
@@ -311,7 +334,7 @@ async fn minecraft_lookup(ctx: &ModuleContext, username: &str) -> Vec<Entity> {
         EntityKind::Username,
         profile.name.as_str(),
         MINECRAFT_CONF,
-        &ctx.scan_id,
+        scan_id,
     );
     u.tag("gaming");
     u.tag("minecraft");
@@ -325,7 +348,7 @@ async fn minecraft_lookup(ctx: &ModuleContext, username: &str) -> Vec<Entity> {
         .with_attr("source", "mojang-api"),
     );
     out.push(u);
-    out
+    Ok(out)
 }
 
 /// Value-level admission: a gaming handle is 3–20 chars, ASCII alphanumeric or
