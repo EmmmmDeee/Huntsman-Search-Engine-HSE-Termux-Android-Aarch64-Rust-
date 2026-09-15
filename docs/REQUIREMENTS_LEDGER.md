@@ -4108,6 +4108,145 @@ the next step if a 200 wall is observed on one. The remaining
 `ip_reputation`) read JSON or crawl content and mint no negative claim from
 an empty parse.
 
+### REQ-BITBUCKET-001 (**new, Pass 31 — OBSERVED on the runner and from the sandbox, REPRODUCED with the built binary, MIGRATED, FALSIFIED**): `bitbucket_user`'s resource is gone; a handle is a workspace
+
+**Observation.** Every live-drift sweep this session recorded reads `empty
+bitbucket_user (username torvalds)` — 28 of 28 readings — beside
+username-family siblings reading `alive` on their canaries, and REQ-CANARY-001
+had tried `atlassian` as a canary sample and recorded "0 — **not** a canary".
+From the sandbox on 2026-09-15 19:52 UTC the module's endpoint answers the
+same for every handle: `GET /2.0/users/atlassian` → `404 {"type": "error",
+"error": {"message": "atlassian"}}` (52 B), `/2.0/users/torvalds` → `404 …
+"torvalds"`, `/2.0/users/{7995b79e-…}` (a team's UUID read from a public
+repository listing) → `404`. Bitbucket's 2019 username deprecation removed
+the username-addressable user resource; the module shipped against it, and
+`fetch_json_or_404` reads its 404 as the documented "no such user", so every
+account, held or not, was the clean negative — coverage's "no Bitbucket
+account" for `zzzeek` (Mike Bayer, SQLAlchemy) exactly as for a handle nobody
+holds. **Reproduced with the built binary (tree `1c0dfc5`; the module
+unchanged since `main` `53705f6`), 19:56 UTC:** `hse scan -k username -v
+zzzeek -m bitbucket_user -d 0` → `done … found: 0`; `jespern` → 0;
+`no-such-workspace-xyz-4242` → 0. Implemented, unreachable.
+
+**Competing explanations, tested before the change.** (a) *The resource is
+throttled or key-gated for this vantage*: refuted — the answer is a `404`
+JSON error naming the handle, not a `401`/`403`/`429`, the same for a real
+team UUID, while the same host answers other resources `200` keyless in the
+same minute. (b) *The handle needs another form (a user UUID, `{…}`)*: a
+username target never carries one, so the by-handle capability is gone
+whichever form the resource still takes (residual below). (c) *The workspace
+resource is not the account*: predicted, before the change, that two
+long-lived personal accounts resolve to workspaces carrying their display
+names, that a handle nobody holds answers a distinct 404, and that the
+profile page redirects into the workspace. Observed: `GET
+/2.0/workspaces/zzzeek` → `200 {"name": "Mike Bayer", "slug": "zzzeek",
+"is_private": false, "created_on": "2018-11-29T02:09:41…", "is_personal":
+false, "links": {"html": "https://bitbucket.org/zzzeek/" …}}`; `jespern` →
+"Jesper Noehr"; `ZZZEEK` → slug `zzzeek` (case-insensitive);
+`no-such-workspace-xyz-4242` → `404 {"type": "error", "error": {"message":
+"No workspace with identifier 'no-such-workspace-xyz-4242'."}}`;
+`bitbucket.org/zzzeek/` → `302 /zzzeek/workspace/repositories/` → `200`
+(`404` for the absent handle); `GET
+/2.0/repositories/zzzeek?pagelen=…&sort=-updated_on&fields=…` → `200`,
+`size: 35`, the public repositories with `language`, `updated_on`,
+`website`, `parent` (`null` for the workspace's own projects). Every
+migrated account's `created_on` is 2018-11-29 — Bitbucket's workspace
+migration date — and `is_personal` is `false` for people (`zzzeek`,
+`jespern`) as for teams (`atlassian`, `pypy`, `tutorials`), so the API
+distinguishes a person's workspace from a team's only for accounts created
+since (`is_personal: true`); `/2.0/workspaces/{slug}/members` is `401`
+keyless. `torvalds` resolves to a workspace named "DoLoop" (a squatter), so
+the per-kind sample reads the module `alive` from now on; `atlassian` is a
+private workspace that still resolves (`is_private: true`); `birkenfeld` (a
+Bitbucket-era account) is `404` — deleted or renamed, an absence, not a
+counter-example to the mapping.
+
+**Fix (the authoritative layer: the module).** `bitbucket_user` resolves the
+handle as a workspace: `lookup(client, workspaces_base, repositories_base,
+handle)` — `GET {workspaces}/{handle}` through `fetch_json_or_404` (`None`
+for Bitbucket's 404, the typed error for a 429, a wall or an outage; a
+workspace whose canonical slug is not the handle is not the handle) and then
+`GET {repositories}/{slug}?pagelen=10&sort=-updated_on&fields=…` (Bitbucket's
+partial response: every field the decoder reads is named in `REPO_FIELDS`,
+or the API omits it silently). The listing is a `RepoReading` — `Read(page)`
+or `NotRead(why)`: the workspace's answer never depends on it, and a listing
+that fails is written into the evidence as `public_repositories: not read: …`,
+never "no repositories" (REQ-SWEEP-003's rule). Entities: the confirmed
+`Username` (0.85, `bitbucket`, `public-profile`), the profile `Url`, and the
+display name as a `Person` — at `HIGH_PLUS` only when Bitbucket marks the
+workspace personal, at `NOTABLE` with the `workspace-name` tag otherwise (a
+workspace it does not mark may be a team's). The evidence carries
+`workspace_kind`, `is_private`, `created_on`, `public_repositories`,
+`languages`, `last_public_activity`, `repositories`, `project_websites` (the
+workspace's own projects' sites; a fork's website is its upstream's, so
+forks are listed under `forks` with their upstream instead). `produces()`
+drops `Domain` / `Address` / `Coordinates`: Bitbucket publishes no `location`
+or `website` for an account any more. `("bitbucket_user", Username,
+"zzzeek")` joins `CANARY_PROBES`, so the sweep asserts the resource rather
+than tolerating a weekly `empty`.
+
+**Locks.**
+`modules::bitbucket_user::tests::the_lookup_resolves_the_workspace_and_types_every_other_answer`
+drives the real request path against a loopback answering the bodies
+captured live (404 → `None`; `ZZZeek` → the workspace and its repository
+page, `size: 35`, `zzzeek/sqlalchemy` python and not a fork; an alias slug →
+`None`; a `500` on the listing → the workspace stands with `NotRead("… HTTP
+500 …")`; a `429` → `Error::RateLimited`);
+`the_repository_reading_is_written_into_the_evidence`;
+`a_listing_that_could_not_be_read_is_said_so_and_the_workspace_still_stands`;
+`an_unmarked_workspaces_name_is_one_rung_lower_and_tagged`;
+`a_personal_workspaces_multi_word_name_is_the_account_holder`;
+`the_lookup_addresses_the_workspace_resources_and_asks_for_every_decoded_field`
+(the provider contract: no `/users`; every decoded repository field
+requested). Ten module tests; the probe table's own test admits the canary.
+
+**Falsification.** Each repair reverted with only its lock run:
+
+```
+[the decoder back on the removed users resource's shape (nickname, not slug)] reverted -> LOCK FAILS (expected)
+    test modules::bitbucket_user::tests::the_lookup_resolves_the_workspace_and_types_every_other_answer ... FAILED
+    thread '…' (15438) panicked at src/modules/bitbucket_user/tests.rs:259:10:
+[a listing that fails read as "no repositories"] reverted -> LOCK FAILS (expected)
+    test modules::bitbucket_user::tests::the_lookup_resolves_the_workspace_and_types_every_other_answer ... FAILED
+    thread '…' (5816) panicked at src/modules/bitbucket_user/tests.rs:302:9:
+[an unmarked workspace's name at the account-holder rung] reverted -> LOCK FAILS (expected)
+    test modules::bitbucket_user::tests::an_unmarked_workspaces_name_is_one_rung_lower_and_tagged ... FAILED
+    thread '…' (30175) panicked at src/modules/bitbucket_user/tests.rs:113:5:
+[a fork's website as the workspace's own] reverted -> LOCK FAILS (expected)
+    test modules::bitbucket_user::tests::the_repository_reading_is_written_into_the_evidence ... FAILED
+    thread '…' (24383) panicked at src/modules/bitbucket_user/tests.rs:183:5:
+ALL LOCKS SENSITIVE
+```
+
+**Live verification (the rebuilt binary, this sandbox).** `zzzeek` → `found: 3`: `Username zzzeek`
+(0.85 in the module; the CLI shows the seed merged at 0.9) with evidence
+`workspace_name: Mike Bayer`, `workspace_kind: unmarked`, `created_on:
+2018-11-29T02:09:41…`, `public_repositories: 35`, `languages: python`,
+`last_public_activity: 2023-10-31…`, `repositories: zzzeek/sqlalchemy,
+zzzeek/alembic, zzzeek/dogpile.cache, zzzeek/mako, zzzeek/testgerrit`,
+`project_websites: http://www.sqlalchemy.org, http://alembic.sqlalchemy.org/,
+https://dogpilecache.sqlalchemy.org`; `Url https://bitbucket.org/zzzeek`
+(0.80); `Person Mike Bayer` (0.62, `workspace-name`). `jespern` → 3 (`Jesper
+Noehr`; 2 public repositories, last activity 2026-01-26). `torvalds` → 2 (the
+workspace "DoLoop", a single token, so no Person; 3 repositories). `ZZZeek` →
+3, the same workspace (case-insensitive). `atlassian` → 2 (`is_private: true`
+and still 407 public repositories — Bitbucket's `is_private` is the profile's
+visibility to non-members, not the repositories'; java, javascript,
+typescript; last activity 2026-09-15). `no-such-workspace-xyz-4242` →
+`found: 0`, the clean negative. The baseline binary had read every one of
+these `found: 0` (20:xx UTC, both binaries from this sandbox). Gate on the
+tree: fmt, clippy `-D warnings`, CI's rustdoc lints, `cargo test --all`
+(7309 lib tests and every integration suite green), doc coverage held at
+1030.
+
+**Residual and reversal.** A person's and a team's workspace are
+indistinguishable for the accounts Bitbucket migrated in 2018
+(`is_personal: false` for both): the `Person` is one rung lower and tagged,
+single-source until corroborated; reversed if Bitbucket exposes an account
+type keyless. `/2.0/users/{uuid}` may still answer for a *user* UUID; no
+keyless path yields one from a handle, so nothing here depends on it. The
+runner's reading is the remote verification: the live-drift dispatch on the pushed head (recorded below once read).
+
 ### REQ-DRIFT-007 (**new, Pass 31 — OBSERVED live from the sandbox, CONSOLIDATED, FIXED, FALSIFIED**): GitHub's throttle is judged once, for every GitHub caller
 
 **Observation (this sandbox, 2026-09-15 19:11 UTC, the binary built from
@@ -4268,6 +4407,37 @@ it is repaired in the same pass. Beyond it, no reproduced root cause, temporary
 workaround, duplicated authority, unreachable capability or incomplete
 lifecycle pathway remains among what either vantage can observe; the next
 material observation is the 2026-09-21 weekly sweep.
+
+**Stop — revised (3), 2026-09-15 20:40 UTC.** Attacked again, this time on
+the runner's table rather than the sandbox's: the class the recomputation had
+not tested is a row that reads the same on every sweep — `empty
+bitbucket_user (username torvalds)` on 28 of 28 readings, which the census
+had accepted as a legitimate empty (no `torvalds` on Bitbucket) without
+testing that null. Tested, the null failed: the resource answers 404 for
+every handle and the module was unreachable end to end (REQ-BITBUCKET-001,
+above; migrated in this pass). The same test applied to the other steady
+`empty` rows, each driven from this sandbox with the built binary against a
+sample its provider is known to hold: `ip_reputation` yields for a live Tor
+exit (`171.25.193.25` → 3, `tor-exit`, `anonymous-network`); `ransomlook`
+yields for a victim its own index titles (`acmealliance.com` → the claiming
+group `dragonforce`; the sweep's `example.com` is a real empty, as is
+`acme.com`, which no post title names); `data_gov_au` yields for a
+publishing agency (`Australian Taxation Office` → 11; `Google LLC` and
+`Telstra` publish nothing there); `greynoise`'s `empty` for 8.8.8.8 is the
+provider's own documented miss (`404 {"noise": false, "riot": false,
+"message": "IP not observed scanning the internet."}`, observed live). The
+rows whose samples are reserved or synthetic (`example.com` for `dns_axfr`,
+`sitemap`, `subdomain_takeover`; `test@example.com` for the six email
+modules; `Fletcher Moreau` for `asic_persons` and `sanctions_ofac`; a
+fabricated MAC for `beacondb`; `Google LLC` for `asic_banned_orgs`) are
+empties by construction of the sample and remain untested against a held
+sample — the reasoning that hid `bitbucket_user` — so each is a canary
+candidate rather than a verified negative. The attack itself surfaced one
+reproduced lead the sweep cannot see: for the Tor exit, `ip_reputation`
+minted OTX's freeform `adversary` string as an `Organisation` —
+`Adversary Profile: Salt Typhoon Alignment The architectural gap` at 0.58,
+tagged `adversary` — a sentence fragment from one user-authored pulse among
+50, not a threat actor's name; the next cycle's target.
 
 ### REQ-HTTP-002 (**new, Pass 31 — VERIFIED FROM SOURCE, CONSOLIDATED, FIXED, FALSIFIED**): `json_scanned` fails the way `json_decode` fails
 
@@ -4829,7 +4999,7 @@ count):**
 | `au_rdap` | `abc.net.au` | 13 |
 | `au_geo` | `-33.8688,151.2093` (Sydney CBD) | 10 |
 | `qld_cadastre` | `-27.4698,153.0251` (Brisbane CBD) | 6 |
-| `bitbucket_user` | `atlassian` | 0 — **not** a canary |
+| `bitbucket_user` | `atlassian` | 0 — **not** a canary (the 0 was REQ-BITBUCKET-001's removed resource, not an absent account; `zzzeek` is the canary now) |
 
 Every listed account or anchor is long-lived and prominent (a platform's
 founder or administrator, a maintainer with hundreds of packages, a national

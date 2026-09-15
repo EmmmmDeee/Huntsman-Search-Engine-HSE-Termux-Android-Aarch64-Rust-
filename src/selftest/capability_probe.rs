@@ -325,6 +325,9 @@ pub const CANARY_PROBES: &[(&str, TargetKind, &str)] = &[
     ("pypi_user", TargetKind::Username, "hugovk"),
     // serde's maintainer — 68.
     ("crates_io", TargetKind::Username, "dtolnay"),
+    // SQLAlchemy's author's workspace: Bitbucket resolves a handle as a
+    // workspace since its 2019 username deprecation (REQ-BITBUCKET-001) — 3.
+    ("bitbucket_user", TargetKind::Username, "zzzeek"),
     // The ABC's own registration, auDA RDAP with eligibility data — 13.
     ("au_rdap", TargetKind::Domain, "abc.net.au"),
     // Sydney CBD: every ABS ASGS layer resolves — 10.
