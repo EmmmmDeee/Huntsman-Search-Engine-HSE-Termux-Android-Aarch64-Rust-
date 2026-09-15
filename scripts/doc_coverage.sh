@@ -67,11 +67,25 @@ set -euo pipefail
 # documents the pre-existing `GeoDomainClassifier` struct, lowering the count by
 # one before this locks in main's accurate current figure. NOT a permission slip
 # for new undocumented items. Figure from the command this script runs.
-BASELINE=1041
+# 1043, not 1041: the true count on main once the ratchet could see the
+# warnings again (two public items landed undocumented while CI's count was
+# stuck at 0 — see the CARGO_TERM_COLOR note below). Raised to the measured
+# value rather than silently inherited; lower it as items get documented.
+BASELINE=1043
 
 cd "$(dirname "$0")/.."
 
-out=$(cargo rustc --lib --locked -- -W missing_docs 2>&1 || true)
+# CARGO_TERM_COLOR=never is load-bearing, not cosmetic: ci.yml exports
+# CARGO_TERM_COLOR=always for every step, and under it rustc prefixes each
+# diagnostic with ANSI escapes ("\e[1m\e[33mwarning\e[0m: …"), so the
+# `^warning: missing documentation` count below matched NOTHING — CI reported
+# "doc coverage improved: 0 undocumented public items" on every run and the
+# ratchet was vacuous (reproduced 2026-09-15 by running this script with
+# CARGO_TERM_COLOR=always: count 0, exit 0; without it: the real count). A
+# ratchet that cannot see the thing it ratchets is worse than none — it
+# reports a ceiling it never enforced. Forced plain here so the count is the
+# same on a CI runner, a laptop and a phone.
+out=$(CARGO_TERM_COLOR=never cargo rustc --lib --locked --color never -- -W missing_docs 2>&1 || true)
 count=$(printf '%s\n' "$out" | grep -c '^warning: missing documentation' || true)
 
 if [ "$count" -gt "$BASELINE" ]; then

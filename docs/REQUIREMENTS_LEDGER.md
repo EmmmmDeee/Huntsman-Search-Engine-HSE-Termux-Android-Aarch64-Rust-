@@ -2975,3 +2975,56 @@ returned `user` (cut at the first colon), so `whois`, `sitemap`, `wayback`,
 `url_extract`, `host_from_url` and the raw-archive index all treated a
 credential fragment as the host. Fixed at the helper (`rsplit('@')`), pinned
 in `src/util/url_util/tests.rs`.
+
+### REQ-CI-001 (**new, Pass 31 — REPRODUCED, FIXED**)
+
+**Requirement.** A ratchet enforces the ceiling it reports. The doc-coverage
+step (`scripts/doc_coverage.sh`; CI step "Doc coverage (ratchet, may fall but
+not rise)") counts the same thing on a GitHub runner, a laptop and a phone, and
+a run that prints "held" or "improved" has measured the crate.
+
+**Finding.** `ci.yml` exports `CARGO_TERM_COLOR: always` for every step. Under
+it rustc prefixes each diagnostic with ANSI escapes (`ESC[1m ESC[33m warning
+ESC[0m: missing documentation …`), so the script's anchored
+`grep -c '^warning: missing documentation'` matched nothing. Every CI run since
+the ratchet landed reported `doc coverage improved: 0 undocumented public items`
+and passed; the first cut of PR #635 passed the step while the same tree measured
+1045 against the 1041 ceiling locally. Two public items had landed undocumented
+on `main` in the interval (1043 measured at `c439970`) with nothing to catch
+them. A ratchet that cannot see the thing it ratchets is worse than none: it
+reports a ceiling it never enforced.
+
+**Reproduction (2026-09-15, this checkout, committed script, `BASELINE=1041`).**
+
+```
+$ CARGO_TERM_COLOR=always scripts/doc_coverage.sh; echo EXIT=$?   # what CI runs
+doc coverage improved: 0 undocumented public items (baseline 1041, -1041)
+Lower BASELINE in scripts/doc_coverage.sh to 0 to lock the gain in.
+EXIT=0
+$ scripts/doc_coverage.sh; echo EXIT=$?                           # same tree, plain env
+doc coverage regressed: 1043 undocumented public items, baseline 1041
+…
+EXIT=1
+```
+
+**Fix.** The cargo call forces plain output (`CARGO_TERM_COLOR=never cargo rustc
+… --color never`), so the count is identical under any caller environment. The
+ceiling is set to the measured value on `main`, 1043 — raised explicitly, with
+the reason recorded in the script, rather than inherited from a count that was
+never checked; it falls as items get documented (`Error::Skipped`'s two fields
+were documented in this PR so its own additions do not lift it).
+
+**Verification (fixed script).**
+
+```
+$ scripts/doc_coverage.sh; echo EXIT=$?
+doc coverage held at 1043 undocumented public items
+EXIT=0
+$ CARGO_TERM_COLOR=always scripts/doc_coverage.sh; echo EXIT=$?   # CI's environment
+doc coverage held at 1043 undocumented public items
+EXIT=0
+```
+
+The regression lock is the invariant itself: the count under `always` now equals
+the count under plain output, and the CI step (dispatched on this branch) shows
+the real figure instead of 0.
