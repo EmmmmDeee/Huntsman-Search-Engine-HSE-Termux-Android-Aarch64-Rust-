@@ -75,7 +75,7 @@ pub fn strip_tags_plain(html: &str) -> String {
 /// (dropped-by-the-caller) cell vector, exactly as the hand-rolled copies did.
 ///
 /// One definition so the modules that each hand-rolled this identical `<tr>`/
-/// `<td>` walk (`acma_rrl`, `ahpra`) stay in agreement.
+/// `<td>` walk (`ahpra`; `acma_rrl` until its endpoint was retired) stay in agreement.
 ///
 /// ```
 /// use huntsman_search_engine::util::html::table_rows;
@@ -356,6 +356,11 @@ pub const CHALLENGE_PHRASE_SETS: &[&[&str]] = &[
     &["sending automated queries"],
     &["enable javascript and cookies to continue"],
     &["access to this page has been denied"], // PerimeterX classic block page
+    // Akamai Bot Manager block page: "Your request has been blocked. … A high
+    // volume of simultaneous submissions from your network … Reference Number:
+    // 18.…" — ACMA's register answered the sandbox with it on 2026-09-15 (a
+    // 403 under the origin's own host); no vendor string appears in the page.
+    &["your request has been blocked", "reference number"],
 ];
 
 /// True when `body` is an anti-bot challenge, CAPTCHA or WAF block page — the

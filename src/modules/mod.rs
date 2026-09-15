@@ -7,7 +7,6 @@
 
 pub mod abn_lookup;
 pub mod abuseipdb;
-pub mod acma_rrl;
 pub mod acnc_charities;
 pub mod ahmia;
 pub mod ahpra;
@@ -598,7 +597,6 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(acnc_charities::AcncCharities),
             Arc::new(gleif_lei::GleifLei),
             Arc::new(sanctions_ofac::SanctionsOfac),
-            Arc::new(acma_rrl::AcmaRrl),
             Arc::new(ahpra::Ahpra),
             Arc::new(hlr_cnam::HlrCnam),
             Arc::new(netlas::Netlas),

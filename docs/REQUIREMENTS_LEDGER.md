@@ -3956,6 +3956,60 @@ private-host preflight refuses 127.0.0.1 by design), so its classification is
 covered by inspection and the pure verdict; the `process` path of
 `cell_intel` is covered by the seam, not end to end.
 
+### REQ-RETIRE-002 (**new, Pass 31 — OBSERVED from two vantage points, RESEARCHED, RETIRED, CLASSIFIER EXTENDED**): `acma_rrl`'s endpoint is gone; the Akamai block page is a wall
+
+**Observation (runner).** Every live-drift run this branch dispatched reads
+`timed-out acma_rrl` (the module's 10 s budget): 15:02, 16:35 UTC on
+2026-09-15, and the weekly runs before them.
+
+**Observation (this sandbox, 2026-09-15 16:42 UTC, `curl` with a browser
+User-Agent).** `GET https://web.acma.gov.au/rrl/licence_search.do?submit=Search&clientName=Telstra`
+→ `301` in 0.7 s → `https://www.acma.gov.au/register-radiocommunication-licences-rrl?…`
+→ `403 text/html`, 2,789 bytes, no result rows, visible text: "Your request
+has been blocked. … A high volume of simultaneous submissions from your
+network have been made to this website and the security tools used to
+protect this website have interpreted this as a possible attack on the
+site. … Reference Number: 18.52213017.…" — Akamai Bot Manager's block page,
+under the origin's own host, with no vendor string in the page. The older
+`https://web.acma.gov.au/pls/radcom/` (the address data.gov.au still links)
+301s to the same page. The module's legacy endpoint is a permanent redirect
+to a JavaScript register that refuses non-browser clients.
+
+**Migration research (no keyless path).** `data.gov.au` package search for
+the register returns PDFs (nominated carrier declarations) and links back
+to `web.acma.gov.au`; the NSW Spatial Services ArcGIS feature service
+`Hosted/Australian_Communication_and_Media_Authority_Data/FeatureServer/0`
+(`Telco_Data`) answers keyless but is a NSW-only device/site point extract
+(fields `site_id`, `licence_no`, `device_registration_identifier`,
+`frequency`, …; extent 115.9–167.9°E, −37.3–−28.2°S; `portal_last_updated`
+2023-10-25) with no licensee / client-name field — it cannot serve the
+module's Organisation / ABN searches, and a national by-name register is
+what the module promised.
+
+**Decision.** Retired honestly (REQ-RETIRE-001's procedure): the module
+directory, its registry entry, the README (194 modules; 145 free; API-Free
+95; Coordinates 18, Organisation 26, ABN/ACN 6; the Corporate list), the
+comments that named it, the backlog row. `T1591.002` stays covered by
+`austlii`, so the pinned ATT&CK envelope is unchanged.
+
+**Classifier.** The captured page is the Akamai Bot Manager block shape, not
+in `CHALLENGE_PHRASE_SETS`; from the sandbox the module's 403 was therefore
+`Error::Module`, and a 2xx copy would have been parsed as "no licences". The
+set `["your request has been blocked", "reference number"]` is added; the
+scrubbed capture (`src/util/html/testdata/wall_akamai_acma_403_2026-09-15.html`)
+pins `is_challenge_page` / `is_challenge_document` on it, and a page that
+merely mentions a reference number is pinned as not a wall.
+
+**Falsification.** The phrase set removed with only its lock run:
+
+```
+[Akamai phrase set removed] -> LOCK FAILS (expected)
+    util::html::tests::is_challenge_page_recognises_the_akamai_block_page --- FAILED
+    thread 'util::html::tests::is_challenge_page_recognises_the_akamai_block_page' (1226) panicked at src/util/html/tests.rs:443:9:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7402 filtered out; finished in 0.20s
+ALL LOCKS SENSITIVE
+```
+
 ### REQ-SCRAPE-002 (**new, Pass 31 — VERIFIED FROM SOURCE, REPRODUCED against the real capture, FIXED, FALSIFIED**): a 2xx wall is never a presence, an absence or a roll answer
 
 **Lead.** REQ-SCRAPE-001's residual: the fourteen callers of
@@ -4178,6 +4232,8 @@ naming the state (or "outside Australia"). `au_geo`: outside the bounding box
 is the typed skip; a malformed coordinate is `parse_coords`'s own error via
 `?`, as `qld_cadastre` already did. `acma_rrl`: the Coordinates branch parses
 through `util::geo::parse_coords` (`?`) instead of splitting on a comma.
+(`acma_rrl` was retired later the same day — REQ-RETIRE-002 — so that change
+left with it; the invariant stands in `au_geo` and `qld_cadastre`.)
 `capability_probe::ProbeOutcome::Skipped { class, reason }` (label `skipped`):
 mapped from `Error::Skipped`, never drift, never a dead canary, final on the
 first attempt; `hse doctor --live` prints `skipped <module> (<class>) <reason>`,

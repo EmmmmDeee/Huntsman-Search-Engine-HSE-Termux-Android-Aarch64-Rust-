@@ -278,7 +278,7 @@ pub async fn read_text(module: &str, resp: reqwest::Response) -> Result<String> 
 /// that parsed it as the page it asked for found no case links, no
 /// practitioner rows, no profile — and reported a clean negative about the
 /// subject from a page that never held the answer (`austlii`, `ahpra`,
-/// `acma_rrl`, `steam_profile`, `reddit_user`, … read their 2xx bodies through
+/// `steam_profile`, `reddit_user`, … read their 2xx bodies through
 /// [`read_body_capped_or_fail`] / [`read_text`]). Only an HTML *document* is
 /// classified: a text or JSON payload that merely mentions a vendor path — a
 /// crawl index listing `/cdn-cgi/challenge-platform/…` URLs, a host list — is

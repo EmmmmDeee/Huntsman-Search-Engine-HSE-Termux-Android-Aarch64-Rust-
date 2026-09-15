@@ -8,7 +8,7 @@
 **All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition —
 SpiderFoot-inspired breadth without the daemon or the footprint.**
 
-Pure-Rust OSINT / GEOINT platform with **195 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **194 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 dark-console Web UI, zero native dependencies, keyless-first.
 
@@ -195,7 +195,7 @@ single-instance constraint (local SQLite — do not scale replicas above 1).
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 195 modules
+hse modules                                                 # list all 194 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
 hse keys status                                             # multi-key pool: what's loaded, per source
@@ -371,11 +371,11 @@ HSE's engine.
 | Domain | `--kind domain` | `example.com` | 59 |
 | ASN | `--kind asn` | `AS13335` | 3 |
 | CIDR | `--kind cidr` | `1.1.1.0/24` | 2 |
-| Coordinates | `--kind coords` | `-27.47,153.02` | 19 |
+| Coordinates | `--kind coords` | `-27.47,153.02` | 18 |
 | Address | `--kind address` | `Nundah, QLD 4012` | 5 |
 | URL | `--kind url` | `https://example.com/page` | 25 |
-| Organisation | `--kind org` | `ACME Pty Ltd` | 27 |
-| ABN/ACN | `--kind abn` | `51824753556` | 7 |
+| Organisation | `--kind org` | `ACME Pty Ltd` | 26 |
+| ABN/ACN | `--kind abn` | `51824753556` | 6 |
 | MAC Address | `--kind mac` | `AA:BB:CC:DD:EE:FF` | 10 |
 | Crypto Address | `--kind crypto` | `bc1q…` | 5 |
 | API Key | `--kind apikey` | `AKIA…` | 1 |
@@ -390,14 +390,14 @@ respectively.
 
 ---
 
-## Module Overview (195 modules — 146 free, 49 key-gated/paid)
+## Module Overview (194 modules — 145 free, 49 key-gated/paid)
 
 > A curated highlight of the modules below (not the full list). The complete, always-current catalogue
 > with target kinds and output entities lives in the running software — run
 > `hse modules` or open the web UI's module wizard — never a static doc that
 > can drift from the registry.
 
-**API-Free (no keys required) — 96:**
+**API-Free (no keys required) — 95:**
 - **Breach/identity & dark-web exposure**: `ahmia`, `pwned_passwords`, `xposed_or_not`
 - **Social**: `crates_io`, `github_code_search`, `github_user`, `hacker_news`, `keybase`, `npm_author`, `reddit_user`, `social_probe`, `streaming_probe`, `username_search`, `username_variants`
 - **People**: `ahpra`, `au_electoral`, `au_property`, `contact_enrich`, `employer_pivot`, `gravatar`, `name_intel`, `openarch`, `payid`, `pgp`, `wikidata`, `wikitree`
@@ -406,7 +406,7 @@ respectively.
 - **Geolocation**: `beacondb`, `breach_timezone`, `cell_local`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mylnikov`, `open_meteo_geo`, `overpass`, `phone_geo`, `photon`, `qld_cadastre`, `social_location`, `sunrise_sunset`
 - **Email**: `disposable_check`, `email_canonical`, `email_parse`, `smtp_vrfy`
 - **Phone**: `phone_au`, `phone_intl`
-- **Corporate**: `acma_rrl`, `acnc_charities`, `asic_director`, `au_unclaimed`, `austlii`, `gleif_lei`
+- **Corporate**: `acnc_charities`, `asic_director`, `au_unclaimed`, `austlii`, `gleif_lei`
 - **Search**: `chronicling_america`, `search_engines`
 - **Web analysis**: `cloud_storage`, `sitemap`, `waf_detect`, `wayback`, `web_crawler`, `webserver_banner`
 - **Termux sensors**: `cell_intel`, `device_sensors`, `local_net`, `signal_radar`

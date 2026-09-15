@@ -432,6 +432,22 @@ mod prop {
     /// keeps the origin's own `<title>`. Every earlier `ahpra` lookup parsed
     /// this page for rows and reported "no registered practitioner". Scrubbed
     /// of the support id.
+    /// The Akamai Bot Manager block page ACMA's register served the sandbox on
+    /// 2026-09-15 (HTTP 403, the reference number scrubbed): no vendor string
+    /// anywhere in it, only its own prose, so the phrase-set tier is what must
+    /// recognise it. Before this set it was `Error::Module`, and a 2xx copy
+    /// would have been parsed as "no licences".
+    #[test]
+    fn is_challenge_page_recognises_the_akamai_block_page() {
+        const WALL: &str = include_str!("testdata/wall_akamai_acma_403_2026-09-15.html");
+        assert!(is_challenge_page(WALL));
+        assert!(is_challenge_document(WALL));
+        // A page that merely mentions a reference number is not a wall.
+        assert!(!is_challenge_page(
+            "<html><body>Your order has been received. Reference number: 12345.</body></html>"
+        ));
+    }
+
     #[test]
     fn is_challenge_document_recognises_the_ahpra_200_wall() {
         const WALL: &str = include_str!("testdata/wall_ahpra_200_2026-09-15.html");

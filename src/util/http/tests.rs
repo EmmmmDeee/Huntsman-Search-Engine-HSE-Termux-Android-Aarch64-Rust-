@@ -1350,7 +1350,7 @@ fn pooled_keys_are_masked_wherever_they_appear_whatever_their_status() {
 // ── read_body_capped / read_body_capped_or_fail: the fail-closed body read ───
 // These primitives back the "a transport failure mid-stream is not a finding
 // that the subject has no record" rule that ~a dozen scraper modules depend on
-// (acma_rrl, ahpra, austlii, pgp, …). They had no direct coverage; the streamed
+// (ahpra, austlii, pgp, …). They had no direct coverage; the streamed
 // responses below exercise the transport-failure contract without a network by
 // building a body stream that drops part-way, exactly as a reset connection does.
 

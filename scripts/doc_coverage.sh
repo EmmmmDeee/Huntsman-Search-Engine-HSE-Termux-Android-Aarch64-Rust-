@@ -85,7 +85,7 @@ set -euo pipefail
 # command this script runs (two undocumented public items left with the retired
 # au_people / psbdmp modules), so the ceiling follows it down — the ratchet may
 # fall but not rise.
-BASELINE=1033
+BASELINE=1032
 
 cd "$(dirname "$0")/.."
 
