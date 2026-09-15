@@ -4165,6 +4165,27 @@ restore.)
 ALL LOCKS SENSITIVE
 ```
 
+**Remote verification (live-drift run 35015467441 on `b3a8ab2`, dispatched
+2026-09-15 19:45 UTC, table at 19:47).** 116 probed — 87 alive, 18 empty, 2
+unreachable, 2 timed-out, 1 rate-limited, 5 blocked, 1 skipped, **0
+panicked**. `github_user` reads `alive … 9 found` and `github_commits`
+`alive … 1 found`, the counts of the 19:08 table: the shared judgement changes
+nothing for a client GitHub is not throttling, and the runner cannot exercise
+the throttle branch (GitHub's anonymous limit is per address and the runner's
+is fresh), which is why that branch is proven on the sandbox's live capture
+and the loopback locks, not here. The two rows that moved since 19:08 are
+provider noise on this vantage, neither a GitHub caller: `wayback`
+`unreachable — HTTP 503 Service Unavailable: Internet Archive: Temporarily
+Offline` (the outage page REQ-DRIFT-003's table met; 19:08 had read it
+`timed-out`), and `ransomware_live` and `wikidata_geo` `timed-out` (each read
+`alive` — 9 and 12 found — in all but two of the sweep readings this session's
+transcript records). Every other row matches: `steam_profile` rate-limited;
+`ahpra`, `anubis`, `asic_director`, `austlii`, `reddit_user` blocked;
+`cell_local` skipped; `wifidb` the by-design dead canary that keeps the run
+red until its retirement criterion is met. CI on `b3a8ab2`: all eight checks
+green (`Check & test` finished 19:49:41 UTC); PR #635 `mergeable_state:
+clean`.
+
 ### Pass 31 recomputation (2026-09-15 19:10 UTC) — stop condition for the observable defect classes
 
 **Window.** `4431f23` (cycle K) → `faa3bc8` on `claude/charming-meitner-85h3aj`,
