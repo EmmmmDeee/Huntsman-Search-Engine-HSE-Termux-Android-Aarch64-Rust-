@@ -66,10 +66,9 @@ fn pack_for_kind(kind: TargetKind) -> Pack {
         | TargetKind::Organisation
         | TargetKind::Address
         | TargetKind::Coordinates => Pack::Edd,
-        TargetKind::Domain
-        | TargetKind::Url
-        | TargetKind::IpAddress
-        | TargetKind::FullName => Pack::All,
+        TargetKind::Domain | TargetKind::Url | TargetKind::IpAddress | TargetKind::FullName => {
+            Pack::All
+        }
         _ => Pack::Exposure,
     }
 }
