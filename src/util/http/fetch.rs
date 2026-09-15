@@ -288,8 +288,7 @@ fn document_or_challenge(
     status: reqwest::StatusCode,
     body: String,
 ) -> Result<String> {
-    use crate::util::html;
-    if html::looks_like_document(&body) && html::is_challenge_page(&body) {
+    if crate::util::html::is_challenge_document(&body) {
         let title =
             html_error_summary(&body).unwrap_or_else(|| "anti-bot challenge page".to_string());
         return Err(Error::BotChallenge(format!(

@@ -306,3 +306,63 @@ fn an_unreachable_commission_is_not_the_same_as_an_absent_enrolment() {
     // That is its own condition and must NOT be blamed on the registries.
     assert!(!rolls_wholly_unreachable(&[]));
 }
+
+/// A commission's edge answering a Cloudflare wall in place of the roll is not
+/// a page about enrolment: with every leg refused the module must report, not
+/// render "not on the NSW, VIC or QLD roll"; one commission that actually
+/// answered still makes the empties genuine.
+#[test]
+fn a_refused_commission_is_not_the_same_as_an_absent_enrolment() {
+    assert!(rolls_wholly_unreachable(&[
+        RollOutcome::Refused,
+        RollOutcome::Refused,
+        RollOutcome::Refused,
+    ]));
+    assert!(rolls_wholly_unreachable(&[
+        RollOutcome::Unreachable,
+        RollOutcome::Refused,
+    ]));
+    assert!(!rolls_wholly_unreachable(&[
+        RollOutcome::Refused,
+        RollOutcome::Answered,
+    ]));
+}
+
+/// The real request path against a loopback: the 2026-09-15 Cloudflare capture
+/// served with 200 in place of a roll page is `Refused`, and a genuine page
+/// naming no division is still `Answered` with no entities.
+#[tokio::test]
+async fn query_roll_reads_a_wall_as_refused_never_as_answered() {
+    use super::query_roll;
+    use crate::core::module::ModuleContext;
+    use crate::util::http::test_server::{Canned, serve};
+    const WALL: &str =
+        include_str!("../../util/html/testdata/cloudflare_challenge_austlii_2026-09-15.html");
+    let base = serve(vec![
+        Canned::html(200, WALL),
+        Canned::html(
+            200,
+            "<!DOCTYPE html><html><head><title>Check my enrolment</title></head>\
+             <body><p>No matching enrolment was found.</p></body></html>",
+        ),
+    ])
+    .await;
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = ModuleContext {
+        scan_id: "t".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let (outcome, entities) = query_roll(&base, "Fletcher Moreau", &ctx).await;
+    assert_eq!(outcome, RollOutcome::Refused, "a wall is not a roll page");
+    assert!(entities.is_empty());
+    let (outcome, entities) = query_roll(&base, "Fletcher Moreau", &ctx).await;
+    assert_eq!(
+        outcome,
+        RollOutcome::Answered,
+        "a real page with no division is the negative"
+    );
+    assert!(entities.is_empty());
+}

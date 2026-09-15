@@ -91,6 +91,43 @@ pub fn classify_non_matching_status(status: u16) -> ProbeResult {
     }
 }
 
+/// What a site's 2xx body says about the handle, once the status already
+/// matched the site's presence code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageVerdict {
+    /// The body is an anti-bot challenge / WAF block page served with the
+    /// presence status — the platform never showed us a page about this
+    /// handle. Neither presence nor absence: inconclusive.
+    Wall,
+    /// The page is the site's own and its marker says the profile exists.
+    Present,
+    /// The page is the site's own and its marker says the profile does not.
+    Absent,
+}
+
+/// Read a site's body-marker rule against a 2xx body.
+///
+/// `needle_means_present` is the rule's polarity: `true` for a
+/// `StatusAndBody` site (the profile page carries the marker), `false` for a
+/// `StatusAndNotBody` site (every URL 200s and the *missing* profile carries
+/// the marker). A wall is judged first, for either polarity: a Cloudflare
+/// interstitial served with 200 carries no site marker at all, so under the
+/// old needle-only reading it was a **verified presence** on every
+/// `StatusAndNotBody` site and a definitive absence on every `StatusAndBody`
+/// site — the `social_probe` defect (REQ-SOCIAL-001) in its status-200 form.
+/// [`crate::util::html::is_challenge_document`] is the one predicate.
+#[must_use]
+pub fn classify_page(body: &str, needle: &str, needle_means_present: bool) -> PageVerdict {
+    if crate::util::html::is_challenge_document(body) {
+        return PageVerdict::Wall;
+    }
+    if body.contains(needle) == needle_means_present {
+        PageVerdict::Present
+    } else {
+        PageVerdict::Absent
+    }
+}
+
 /// True when a zero-hit run is *inconclusive* rather than a confirmed absence:
 /// nothing was found AND at least half the probes were blocked or unreachable,
 /// so most sites never gave a definitive answer. Pure, so the M6 disambiguation

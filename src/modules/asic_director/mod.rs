@@ -344,6 +344,7 @@ impl Module for AsicDirector {
             .await
             && resp.status().is_success()
             && let Some(html) = crate::util::http::read_body_capped(resp, 1_000_000).await
+            && register_page_is_usable(&html)
         {
             html_read_ok = true;
             result.extend(parse_asic_html(&html, full_name).into_iter().flat_map(
@@ -363,8 +364,9 @@ impl Module for AsicDirector {
             return Err(Error::module(
                 SRC,
                 "ASIC Connect Online request failed at the transport level, returned a \
-                 non-success HTTP status, or its response body was unreadable — not \"no \
-                 director records for this name\"",
+                 non-success HTTP status, answered an anti-bot / WAF page instead of the \
+                 register, or its response body was unreadable — not \"no director \
+                 records for this name\"",
             ));
         }
 
@@ -386,6 +388,16 @@ impl Module for AsicDirector {
 /// `au_property` — `asic_director` was missed"); pure and free of
 /// `ModuleContext`/network so it is unit-testable without a live server —
 /// see `tests::request_failed_*`.
+/// True when a 2xx body is the register's own page rather than an anti-bot
+/// challenge / WAF block page served in its place (this host is known to
+/// answer non-browser clients with exactly that — see the module doc). A wall
+/// parsed for director rows finds none and used to read as "no director
+/// records for this name"; it is not a read page at all.
+#[must_use]
+fn register_page_is_usable(html: &str) -> bool {
+    !crate::util::html::is_challenge_document(html)
+}
+
 #[must_use]
 fn request_failed(html_read_ok: bool, found_any_entity: bool) -> bool {
     !html_read_ok && !found_any_entity

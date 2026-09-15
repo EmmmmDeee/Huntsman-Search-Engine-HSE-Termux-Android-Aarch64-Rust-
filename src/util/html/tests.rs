@@ -422,3 +422,25 @@ mod prop {
         // the classifier sees them whole on the production path.
         assert!(CF_BLOCK_ANUBIS.len() < 8 * 1024 && CF_CHALLENGE_AUSTLII.len() < 8 * 1024);
     }
+
+    /// A 200-status wall observed on the first runner sweep carrying the 2xx
+    /// guard (live-drift run 34995740898, 2026-09-15) and reproduced from the
+    /// sandbox: AHPRA's register answers a datacenter client with an HTTP 200
+    /// interstitial — the `/cdn-cgi/challenge-platform` loader, 91 characters
+    /// of visible text ("Please enable JavaScript to view the page content.
+    /// Your support ID is: …"), no practitioner rows — and the runner's copy
+    /// keeps the origin's own `<title>`. Every earlier `ahpra` lookup parsed
+    /// this page for rows and reported "no registered practitioner". Scrubbed
+    /// of the support id.
+    #[test]
+    fn is_challenge_document_recognises_the_ahpra_200_wall() {
+        const WALL: &str = include_str!("testdata/wall_ahpra_200_2026-09-15.html");
+        assert!(is_challenge_document(WALL), "a 200 interstitial is a wall");
+        assert!(WALL.len() < 8 * 1024);
+        // A genuine register page that merely names the register is not.
+        assert!(!is_challenge_document(
+            "<!DOCTYPE html><html><head><title>Register of practitioners</title></head>\
+             <body><table><tr><td>No practitioners matched your search.</td></tr></table>\
+             </body></html>"
+        ));
+    }

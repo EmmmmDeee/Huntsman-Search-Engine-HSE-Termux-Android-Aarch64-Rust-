@@ -273,3 +273,19 @@ fn clean_html_is_linear_in_ampersand_count() {
         "8x the input cost {ratio:.1}x the time; expected roughly linear (<24x)"
     );
 }
+
+/// The register's edge answering a Cloudflare wall with a 2xx is not a read
+/// register page: parsed for rows it finds none, which used to read as "no
+/// director records for this name". The 2026-09-15 austlii capture is the
+/// same edge's page shape.
+#[test]
+fn a_wall_served_with_2xx_is_not_a_usable_register_page() {
+    const WALL: &str =
+        include_str!("../../util/html/testdata/cloudflare_challenge_austlii_2026-09-15.html");
+    assert!(!register_page_is_usable(WALL));
+    assert!(register_page_is_usable(
+        "<html><body><table><tr><td>No results found</td></tr></table></body></html>"
+    ));
+    // Not usable + nothing found is the request-failed path, never a clean negative.
+    assert!(request_failed(register_page_is_usable(WALL), false));
+}

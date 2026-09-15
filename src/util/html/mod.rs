@@ -377,6 +377,23 @@ pub const CHALLENGE_PHRASE_SETS: &[&[&str]] = &[
 /// registry lookup.
 #[must_use]
 pub fn is_challenge_page(body: &str) -> bool {
+    challenge_signature_present(body)
+}
+
+/// True when `body` is an HTML *document* that [`is_challenge_page`] recognises
+/// — the shape a 2xx wall takes. The document test is what keeps a text or
+/// JSON payload that merely mentions a vendor path (a crawl index listing a
+/// `/cdn-cgi/challenge-platform/…` URL, a host list) from being read as a wall:
+/// every interstitial and block page opens with `<!doctype html>` / `<html`,
+/// data never does. The predicate every 2xx body reader shares —
+/// `util::http`'s text seams, the username / streaming probes, the AU
+/// registers that read their own HTML — so one wall reads the same everywhere.
+#[must_use]
+pub fn is_challenge_document(body: &str) -> bool {
+    looks_like_document(body) && challenge_signature_present(body)
+}
+
+fn challenge_signature_present(body: &str) -> bool {
     // First tier: any single high-confidence vendor signature, matched
     // ASCII-case-insensitively against the RAW body in one cached aho-corasick
     // (Teddy/SIMD) pass. Every signature is lowercase ASCII, so this is equivalent

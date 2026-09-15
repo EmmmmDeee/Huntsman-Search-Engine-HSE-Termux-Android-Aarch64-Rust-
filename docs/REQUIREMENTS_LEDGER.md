@@ -3956,6 +3956,92 @@ private-host preflight refuses 127.0.0.1 by design), so its classification is
 covered by inspection and the pure verdict; the `process` path of
 `cell_intel` is covered by the seam, not end to end.
 
+### REQ-SCRAPE-002 (**new, Pass 31 — VERIFIED FROM SOURCE, REPRODUCED against the real capture, FIXED, FALSIFIED**): a 2xx wall is never a presence, an absence or a roll answer
+
+**Lead.** REQ-SCRAPE-001's residual: the fourteen callers of
+`read_body_capped` (`Option<String>`) judge their 2xx bodies themselves.
+Verified from source, five of them turn a Cloudflare interstitial served with
+200 into a claim:
+
+- `username_search` (`mod.rs`, the `StatusAndBody` / `StatusAndNotBody`
+  arms) and `streaming_probe` (`mod.rs`, `StatusAndNotBody`): once the status
+  matched the site's presence code, presence was decided by the needle alone.
+  A wall carries no site marker, so on every `StatusAndNotBody` site (the
+  missing profile carries the marker) it read as a **verified presence** —
+  `Found { verified: true }`, the `social_probe` defect (REQ-SOCIAL-001) in
+  its status-200 form — and on every `StatusAndBody` site as a definitive
+  absence feeding `definitive_absent`. The you.com capture in the search
+  engines' testdata is such a page served with 200, live.
+- `au_electoral::query_roll`: any readable page was `RollOutcome::Answered`,
+  and a page naming no division is the module's negative — "not on the NSW,
+  VIC or QLD roll", in a compulsory-enrolment jurisdiction. The module's own
+  doc stated the gap ("an interstitial block page would also land there").
+- `subdomain_takeover::classify_body`: no marker → `Claim::Claimed` ("in use,
+  not vulnerable") — a real dangling CNAME hidden behind the CDN's wall.
+- `asic_director`: a readable 2xx body set `html_read_ok` and was parsed for
+  director rows; none → "no director records for this name". This host is the
+  one the module doc records as answering non-browser clients with exactly
+  such a page.
+
+**Fix.** `util::html::is_challenge_document(body)` — an HTML document that
+[`is_challenge_page`] recognises — is the one predicate; `util::http`'s
+`document_or_challenge` (REQ-SCRAPE-001) now calls it too. On it:
+`util::probe::classify_page(body, needle, needle_means_present) →
+PageVerdict::{Wall, Present, Absent}`, the wall judged first, used by both
+probe modules (`Wall` → `ProbeResult::Error`, which `inconclusive()` weighs);
+`au_electoral::RollOutcome::Refused` (a wall in place of the roll), with
+`rolls_wholly_unreachable` true when no leg `Answered`, so three refused
+commissions are the module's error and never "not enrolled";
+`subdomain_takeover`: a wall → `Claim::Inconclusive`; `asic_director`:
+`register_page_is_usable` gates `html_read_ok`, so a wall takes the
+request-failed path with a message naming it.
+
+**Reproduction (baseline, the real capture).** With the wall arm removed
+(the falsification below), `classify_page(WALL, "Page not found", false)`
+returns `Present` and `classify_page(WALL, "profile-header", true)` returns
+`Absent`; `query_roll` against a loopback serving the capture with 200 returns
+`Answered` with no entities; `classify_body(WALL, "NoSuchBucket", …)` returns
+`Claimed`; `register_page_is_usable(WALL)` returns `true`.
+
+**Evidence.** `util::probe::tests::a_wall_served_with_the_presence_status_is_neither_present_nor_absent`
+(both polarities on the capture; the site's own pages by their marker; a
+JSON line mentioning a vendor path is not a wall);
+`au_electoral::tests::query_roll_reads_a_wall_as_refused_never_as_answered`
+(loopback: the capture with 200 → `Refused`; a page naming no division →
+`Answered`) and `a_refused_commission_is_not_the_same_as_an_absent_enrolment`;
+`subdomain_takeover::tests::a_wall_in_place_of_the_provider_page_is_inconclusive_never_claimed`;
+`asic_director::tests::a_wall_served_with_2xx_is_not_a_usable_register_page`.
+
+**Falsification.** Each wall arm removed in turn with only its lock run:
+
+```
+[probe classify_page wall arm] reverted -> LOCK FAILS (expected)
+    util::probe::tests::a_wall_served_with_the_presence_status_is_neither_present_nor_absent --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7405 filtered out; finished in 0.20s
+[au_electoral query_roll wall arm] reverted -> LOCK FAILS (expected)
+    modules::au_electoral::tests::query_roll_reads_a_wall_as_refused_never_as_answered --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7405 filtered out; finished in 0.21s
+[au_electoral rolls_wholly_unreachable counts Refused] reverted -> LOCK FAILS (expected)
+    modules::au_electoral::tests::a_refused_commission_is_not_the_same_as_an_absent_enrolment --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7405 filtered out; finished in 0.20s
+[subdomain_takeover classify_body wall arm] reverted -> LOCK FAILS (expected)
+    modules::subdomain_takeover::tests::a_wall_in_place_of_the_provider_page_is_inconclusive_never_claimed --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7405 filtered out; finished in 0.21s
+[asic_director register_page_is_usable] reverted -> LOCK FAILS (expected)
+    modules::asic_director::tests::a_wall_served_with_2xx_is_not_a_usable_register_page --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7405 filtered out; finished in 0.20s
+ALL LOCKS SENSITIVE
+```
+
+**Residual.** The `StatusEq` rules (status-only, HEAD for some sites) never
+read a body, so a 200 wall on such a site still reads as presence at the
+bare-status confidence tier; reading the body for GET status-only sites is
+the next step if a 200 wall is observed on one. The remaining
+`read_body_capped` callers (`sitemap`, `wayback`, `web_crawler`,
+`cloud_storage`, `employer_pivot`, `hacker_news`, `github_user`,
+`ip_reputation`) read JSON or crawl content and mint no negative claim from
+an empty parse.
+
 ### REQ-CANARY-001 (**new, Pass 31 — OBSERVED live, EXTENDED, LOCKED**): the sweep observes what it asserts
 
 **Lead.** After REQ-SCOPE-001 the 2026-09-15 live-drift table would read
@@ -4033,8 +4119,27 @@ mutation, not the lock, was wrong):
 ALL LOCKS SENSITIVE
 ```
 
-**Remote verification.** The `live-drift` workflow is dispatched on the
-branch after the push; the table is recorded here when it completes.
+**Remote verification (GitHub runner, live-drift run 34995740898 on
+`70ce543`, 2026-09-15 16:35 UTC).** Every new canary is alive from the runner:
+
+```
+  alive        au_geo                 10 found [canary]
+  alive        au_rdap                13 found [canary]
+  alive        cpan_user              14 found [canary]
+  alive        crates_io              68 found [canary]
+  alive        devto                  7 found [canary]
+  alive        gitlab_user            2 found [canary]
+  alive        hacker_news            15 found [canary]
+  alive        hexpm_user             3 found [canary]
+  alive        launchpad_user         3 found [canary]
+  alive        lobsters               22 found [canary]
+  alive        pypi_user              5 found [canary]
+  alive        qld_cadastre           6 found [canary]
+live-drift sweep: 119 probed — 84 alive, 24 empty, 4 unreachable, 2 timed-out, 2 rate-limited, 3 blocked, 0 skipped, 0 panicked
+```
+
+(84 alive against 71 on the 15:02 run of the same day; the run is red only
+on the `wifidb` dead canary, by design — REQ-HTTP-001.)
 
 ### REQ-SCOPE-001 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): an out-of-jurisdiction target is a typed skip, never a clean negative
 
@@ -4182,6 +4287,26 @@ unconditionally) with only the two locks run:
     test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7397 filtered out; finished in 0.21s
 ALL LOCKS SENSITIVE
 ```
+
+**Observed on the runner and reproduced from the sandbox (2026-09-15).** The
+first live-drift run carrying the guard (34995740898, `70ce543`) reads:
+
+```
+  blocked      ahpra                  ahpra: HTTP 200 OK answered an anti-bot challenge / WAF block page, not the document: Australian Health Practitioner Regulation Agency - Register of practitioners
+```
+
+— a 200-status wall that keeps the origin's own `<title>`. Fetched from the
+sandbox with a browser User-Agent for two surnames
+(`Registers-of-Practitioners.aspx?Spousesurname=Moreau` / `=Smith`): HTTP
+200 `text/html`, 7,014 bytes both times, the `/cdn-cgi/challenge-platform`
+loader, 91 characters of visible text ("Please enable JavaScript to view the
+page content. Your support ID is: …"), no practitioner rows. Every earlier
+sweep's `empty ahpra (full_name Fletcher Moreau)` — and every production
+`ahpra` lookup from a datacenter address — was this page parsed for rows:
+"no registered practitioner by that name", a clean negative the register
+never made. The scrubbed capture is checked in as
+`src/util/html/testdata/wall_ahpra_200_2026-09-15.html` and the classifier
+is pinned against it (a wall under the origin's title is still a wall).
 
 **Residual.** `read_body_capped` (`Option<String>`, 14 callers: `sitemap`,
 `wayback`, `username_search`, `ip_reputation`, `github_user`, `asic_director`,
@@ -4354,6 +4479,11 @@ moved function.
 ALL LOCKS SENSITIVE
 ```
 
+**Remote verification (run 34995740898, `70ce543`).** `blocked anubis —
+anubis: HTTP 403 Forbidden: Attention Required! | Cloudflare` and `blocked
+austlii — austlii: HTTP 403 Forbidden: Just a moment...` — the two rows the
+15:02 run filed as `unreachable`; `unreachable` is down to the real outages.
+
 **Residual.** A scraper that reads a 2xx HTML body itself (`austlii`,
 `asic_director`, the AU registers) still parses a 200 challenge page as "no
 results" — a false clean negative if an edge ever serves the wall with 200
@@ -4411,6 +4541,11 @@ is neither dead nor drift); the API projection test carries a throttled
     test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7388 filtered out; finished in 0.21s
 ALL LOCKS SENSITIVE
 ```
+
+**Remote verification (run 34995740898, `70ce543`).** `rate-limited
+reddit_user … HTTP 429 Too Many Requests: <empty>` and `rate-limited
+steam_profile … HTTP 429 Too Many Requests: Steam Community :: Error` — the
+two rows the 15:02 run filed as `unreachable`.
 
 **Residual.** Modules that build a 429 error by hand (`hibp`'s retry
 exhaustion message) keep the breaker's string path; the dispatcher's

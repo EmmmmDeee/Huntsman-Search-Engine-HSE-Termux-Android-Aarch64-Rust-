@@ -88,3 +88,39 @@ fn a_fully_blocked_sweep_now_reaches_the_inconclusive_guard() {
          difference the fix makes stays visible"
     );
 }
+
+/// The real Cloudflare interstitial AustLII served on 2026-09-15, here served
+/// with the site's presence status: it carries no site marker, so the old
+/// needle-only reading called it a verified presence on every
+/// `StatusAndNotBody` site and a definitive absence on every `StatusAndBody`
+/// site. A wall is neither. The site's own pages still read by their marker.
+#[test]
+fn a_wall_served_with_the_presence_status_is_neither_present_nor_absent() {
+    const WALL: &str =
+        include_str!("../html/testdata/cloudflare_challenge_austlii_2026-09-15.html");
+    assert_eq!(classify_page(WALL, "Page not found", false), PageVerdict::Wall);
+    assert_eq!(classify_page(WALL, "profile-header", true), PageVerdict::Wall);
+    // A site that 200s for everything: the missing profile carries the marker.
+    assert_eq!(
+        classify_page("<html><body>Page not found</body></html>", "Page not found", false),
+        PageVerdict::Absent
+    );
+    assert_eq!(
+        classify_page("<html><body>@alice's channel</body></html>", "Page not found", false),
+        PageVerdict::Present
+    );
+    // A site whose profile page carries the marker.
+    assert_eq!(
+        classify_page("<html><div class=\"profile-header\"></div></html>", "profile-header", true),
+        PageVerdict::Present
+    );
+    assert_eq!(
+        classify_page("<html><body>nothing here</body></html>", "profile-header", true),
+        PageVerdict::Absent
+    );
+    // Data that merely mentions a vendor path is not a document, so not a wall.
+    assert_eq!(
+        classify_page("{\"src\":\"/cdn-cgi/challenge-platform/x\"}", "profile-header", true),
+        PageVerdict::Absent
+    );
+}

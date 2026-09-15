@@ -81,6 +81,12 @@ pub(super) enum RollOutcome {
     /// Nothing was established — the request failed, or the reply could not be
     /// read. **Not** a statement about enrolment.
     Unreachable,
+    /// The commission's edge answered an anti-bot challenge / WAF block page
+    /// instead of the roll (`util::html::is_challenge_document`): a page was
+    /// read, but not a page about enrolment. Before this variant such a page
+    /// parsed as "no division" and read as a real negative — the module's own
+    /// doc recorded the gap. **Not** a statement about enrolment.
+    Refused,
 }
 
 /// True when NO commission answered: every leg failed to reach or read a
@@ -101,7 +107,7 @@ pub(super) enum RollOutcome {
 /// An empty slice is NOT unreachable — no legs ran (cancellation, or an empty
 /// name), which is its own condition and must not be reported as an outage.
 pub(super) fn rolls_wholly_unreachable(outcomes: &[RollOutcome]) -> bool {
-    !outcomes.is_empty() && outcomes.iter().all(|o| *o == RollOutcome::Unreachable)
+    !outcomes.is_empty() && outcomes.iter().all(|o| *o != RollOutcome::Answered)
 }
 
 /// Query one electoral commission, returning what it established and any
@@ -109,11 +115,12 @@ pub(super) fn rolls_wholly_unreachable(outcomes: &[RollOutcome]) -> bool {
 ///
 /// Known limit, stated rather than papered over: a page that is read but names
 /// no division is reported as [`RollOutcome::Answered`] with no entities. That
-/// is right for a genuine "not on this roll", but a changed page layout or an
-/// interstitial block page would also land there and read as a real negative.
-/// Separating those needs a positive "no match found" marker per commission,
-/// which needs live samples of each state's negative-result page — a distinct
-/// unit, and one that must not be guessed at.
+/// is right for a genuine "not on this roll", but a changed page layout would
+/// also land there and read as a real negative. Separating those needs a
+/// positive "no match found" marker per commission, which needs live samples
+/// of each state's negative-result page — a distinct unit, and one that must
+/// not be guessed at. An anti-bot challenge / WAF block page served in place
+/// of the roll is no longer in that gap: it is [`RollOutcome::Refused`].
 async fn query_roll(url: &str, full_name: &str, ctx: &ModuleContext) -> (RollOutcome, Vec<Entity>) {
     let Ok(resp) = ctx
         .http
@@ -130,6 +137,11 @@ async fn query_roll(url: &str, full_name: &str, ctx: &ModuleContext) -> (RollOut
         // about enrolment was established. Not a negative.
         return (RollOutcome::Unreachable, Vec::new());
     };
+    if crate::util::html::is_challenge_document(&body) {
+        // The edge refused this client; the roll was never shown. Not a
+        // negative — see `RollOutcome::Refused`.
+        return (RollOutcome::Refused, Vec::new());
+    }
     match extract_division(&body) {
         Some((div, suburb)) => (
             RollOutcome::Answered,
@@ -229,9 +241,10 @@ impl Module for AuElectoral {
                 SRC,
                 format!(
                     "no electoral commission answered for {full_name}: all {} lookups \
-                     (NSW, VIC, QLD) failed to respond or returned a reply that could \
-                     not be read. Enrolment is compulsory in Australia, so an empty \
-                     result would read as 'not enrolled' — which nothing established.",
+                     (NSW, VIC, QLD) failed to respond, returned a reply that could not \
+                     be read, or answered an anti-bot / WAF page instead of the roll. \
+                     Enrolment is compulsory in Australia, so an empty result would read \
+                     as 'not enrolled' — which nothing established.",
                     outcomes.len()
                 ),
             ));

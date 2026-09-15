@@ -46,8 +46,8 @@ use crate::util::http::urlencode;
 // per-site adapter, M6 disambiguation), single-sourced in `util::probe` and
 // shared with `username_search`.
 use crate::util::probe::{
-    BODY_PROBE_CAP, BROWSER_ACCEPT, BROWSER_UA, ProbeResult, WithSite,
-    classify_non_matching_status, inconclusive,
+    BODY_PROBE_CAP, BROWSER_ACCEPT, BROWSER_UA, PageVerdict, ProbeResult, WithSite,
+    classify_non_matching_status, classify_page, inconclusive,
 };
 
 const SRC: &str = "streaming_probe";
@@ -167,12 +167,19 @@ impl Module for StreamingProbe {
                             if status != want {
                                 return classify_non_matching_status(status);
                             }
+                            // The missing profile carries the marker, so a wall
+                            // served with 200 — which carries no marker — used
+                            // to read as a verified presence. `classify_page`
+                            // judges the wall first.
                             match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP).await {
-                                Some(body) if body.contains(needle) => ProbeResult::NotFound,
-                                Some(_) => ProbeResult::Found {
-                                    url,
-                                    confidence,
-                                    verified,
+                                Some(body) => match classify_page(&body, needle, false) {
+                                    PageVerdict::Present => ProbeResult::Found {
+                                        url,
+                                        confidence,
+                                        verified,
+                                    },
+                                    PageVerdict::Absent => ProbeResult::NotFound,
+                                    PageVerdict::Wall => ProbeResult::Error,
                                 },
                                 None => ProbeResult::Error,
                             }

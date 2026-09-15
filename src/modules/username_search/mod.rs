@@ -40,8 +40,8 @@ use crate::util::http::{RequestBuilderExt, urlencode};
 // enum, per-site adapter, and the M6 zero-hit disambiguation are single-sourced
 // in `util::probe` (see `streaming_probe`, which shares the same primitives).
 use crate::util::probe::{
-    BODY_PROBE_CAP, BROWSER_ACCEPT, BROWSER_UA, ProbeResult, WithSite,
-    classify_non_matching_status, inconclusive,
+    BODY_PROBE_CAP, BROWSER_ACCEPT, BROWSER_UA, PageVerdict, ProbeResult, WithSite,
+    classify_non_matching_status, classify_page, inconclusive,
 };
 
 const SRC: &str = "username_search";
@@ -191,10 +191,12 @@ impl Module for UsernameSearch {
                                     None => return ProbeResult::Error,
                                 };
                             scan_text_for_keys(&body);
-                            if body.contains(needle) {
-                                found(url)
-                            } else {
-                                ProbeResult::NotFound
+                            // A wall served with the presence status is
+                            // neither presence nor absence (`classify_page`).
+                            match classify_page(&body, needle, true) {
+                                PageVerdict::Present => found(url),
+                                PageVerdict::Absent => ProbeResult::NotFound,
+                                PageVerdict::Wall => ProbeResult::Error,
                             }
                         }
                         Detect::StatusAndNotBody(want, needle) => {
@@ -209,10 +211,14 @@ impl Module for UsernameSearch {
                                     None => return ProbeResult::Error,
                                 };
                             scan_text_for_keys(&body);
-                            if body.contains(needle) {
-                                ProbeResult::NotFound
-                            } else {
-                                found(url)
+                            // The missing profile carries the marker here, so a
+                            // wall — which carries no marker — used to read as
+                            // a verified presence. `classify_page` judges the
+                            // wall first.
+                            match classify_page(&body, needle, false) {
+                                PageVerdict::Present => found(url),
+                                PageVerdict::Absent => ProbeResult::NotFound,
+                                PageVerdict::Wall => ProbeResult::Error,
                             }
                         }
                     }
