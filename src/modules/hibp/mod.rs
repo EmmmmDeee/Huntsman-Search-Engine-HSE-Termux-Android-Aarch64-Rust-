@@ -10,7 +10,9 @@
 //! proactively pace requests to stay under that budget; instead it reacts to
 //! a 429 by sleeping for the server's `Retry-After` (capped, up to a few
 //! attempts) before retrying, then cascading to the next pooled key, then
-//! surfacing a real error once no usable key remains.
+//! surfacing the typed `Error::RateLimited` once no usable key remains — the
+//! breaker benches the module under its cooldown reason rather than counting a
+//! fault, and `hse doctor` / the API read it as a throttle, not an outage.
 //!
 //! Key: required, from HUNTSMAN_HIBP_KEY. HIBP has no free tier and this build
 //! embeds no credential, so an unconfigured module reports a "needs key" skip
@@ -451,10 +453,9 @@ impl Hibp {
                             continue 'cascade;
                         }
                         let snippet = error_snippet(resp).await;
-                        return Err(Error::module(
-                            SRC,
-                            format!("HTTP 429 rate-limited after {retries} retries: {snippet}"),
-                        ));
+                        return Err(Error::RateLimited(format!(
+                            "{SRC}: HTTP 429 rate-limited after {retries} retries: {snippet}"
+                        )));
                     }
                     _ => {
                         let snippet = error_snippet(resp).await;

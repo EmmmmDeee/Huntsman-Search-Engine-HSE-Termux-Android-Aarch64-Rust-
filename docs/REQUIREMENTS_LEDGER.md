@@ -4108,6 +4108,41 @@ the next step if a 200 wall is observed on one. The remaining
 `ip_reputation`) read JSON or crawl content and mint no negative claim from
 an empty parse.
 
+### REQ-DRIFT-006 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): HIBP's terminal 429 is the typed rate limit
+
+**Lead.** REQ-DRIFT-002's residual: the one 429 in the crate that is not built
+by `http_status_error`. `hibp::Hibp::api_get` (`src/modules/hibp/mod.rs`)
+retries a 429 up to three times, sleeping the server's `Retry-After` (capped at
+10 s), cascades to the next pooled key, and — with no key left — returned
+`Error::module(SRC, "HTTP 429 rate-limited after {retries} retries: …")`:
+`finalise_module_result` filed it with `circuit::record_error`, a fault
+against the module's health, where every other throttle is
+`record_rate_limit`, a cooldown. The two other users of the shared
+`handle_keyed_error` retry helper (`censys`, `passivetotal`) already return
+`http_status_error(...)` after a terminal 429 and so were typed by
+REQ-DRIFT-002. Not observable by the sweep (key-gated); verified from source.
+
+**Fix.** The terminal arm returns `Error::RateLimited(format!("{SRC}: HTTP 429
+rate-limited after {retries} retries: {snippet}"))`; the module header says so.
+
+**Lock.** `modules::hibp::tests::a_terminal_429_is_the_typed_rate_limit_never_a_module_fault`
+drives the real `api_get` — retries, `Retry-After` parsing, key cascade — against
+a loopback answering `429` four times with `Retry-After: 0` (the retries sleep
+nothing) and a single key, and asserts `Error::RateLimited` naming "after 3
+retries". To make that possible the loopback server gained response headers
+(`test_server::Canned::header`), the first header-reading module path to be
+driven that way.
+
+**Falsification.** The repair reverted with only the lock run:
+
+```
+[the terminal 429 hand-built as Error::module again] reverted -> LOCK FAILS (expected)
+    test modules::hibp::tests::a_terminal_429_is_the_typed_rate_limit_never_a_module_fault ... FAILED
+    thread 'modules::hibp::tests::a_terminal_429_is_the_typed_rate_limit_never_a_module_fault' (6986) panicked at src/modules/hibp/tests.rs:474:5:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7326 filtered out; finished in 0.39s
+ALL LOCKS SENSITIVE
+```
+
 ### REQ-UI-001 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, LOCKED AT THE BOUNDARY, FALSIFIED**): the Engines panel shows every probe state the API emits
 
 **Lead.** IMPLEMENTATION ≠ REACHABILITY. REQ-DRIFT-001/002/003 and
@@ -4415,6 +4450,16 @@ called it), the comments that named them, the API-reference rows (and the
 unchanged. Every full-name scan stops paying six doomed requests and two
 breaker trips. Doc-coverage ceiling 1032 → 1030; the built binary lists 192
 modules and neither name.
+
+**Lifecycle (existing installs).** No schema or migration is involved: a scan
+store that holds evidence from the retired sources still loads, and its
+rows keep their recorded source names. What changes is classification on
+re-correlation: `geo_source_class("au_electoral" | "au_property")` is
+`Other` now (30 km, the moderate-coarse fallback) where the retired classes
+claimed 150 m and 60 m — the precision the modules themselves could no
+longer deliver. No legacy mapping is kept for the two names (it would be
+dormant code for evidence the modules could not have produced since their
+endpoints went), and none of the sandbox stores holds such rows.
 
 **Remote verification (live-drift run 35005088938 on `19f2c03`, 2026-09-15
 18:03 UTC).** 116 modules probed (118 before); no `au_electoral` and no

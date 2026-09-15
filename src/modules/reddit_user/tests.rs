@@ -596,6 +596,7 @@ async fn a_403_with_an_html_page_on_the_feed_is_reddits_wall_never_an_absent_acc
             status: 200,
             content_type: "application/atom+xml; charset=UTF-8",
             body: "<?xml version=\"1.0\" encoding=\"UTF-8\"?><feed xmlns=\"http://www.w3.org/2005/Atom\"><title>overview for torvalds</title></feed>".into(),
+            headers: Vec::new(),
         },
     ])
     .await;

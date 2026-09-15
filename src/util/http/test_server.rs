@@ -16,6 +16,8 @@ pub(crate) struct Canned {
     pub(crate) status: u16,
     pub(crate) content_type: &'static str,
     pub(crate) body: String,
+    /// Extra response headers (`Retry-After`, …), written after `Content-Type`.
+    pub(crate) headers: Vec<(&'static str, String)>,
 }
 
 impl Canned {
@@ -25,6 +27,7 @@ impl Canned {
             status,
             content_type: "application/json",
             body: body.into(),
+            headers: Vec::new(),
         }
     }
 
@@ -34,6 +37,7 @@ impl Canned {
             status,
             content_type: "text/plain",
             body: body.into(),
+            headers: Vec::new(),
         }
     }
 
@@ -44,7 +48,15 @@ impl Canned {
             status,
             content_type: "text/html; charset=UTF-8",
             body: body.into(),
+            headers: Vec::new(),
         }
+    }
+
+    /// Add a response header — a provider's `Retry-After` on a 429, say — so a
+    /// module's header-reading path runs against the value the test chooses.
+    pub(crate) fn header(mut self, name: &'static str, value: impl Into<String>) -> Self {
+        self.headers.push((name, value.into()));
+        self
     }
 }
 
@@ -67,12 +79,13 @@ pub(crate) async fn serve(answers: Vec<Canned>) -> String {
             // is never inspected.
             let mut buf = vec![0u8; 8192];
             let _ = sock.read(&mut buf).await;
-            let (status, content_type, body) = match queue.next() {
-                Some(c) => (c.status, c.content_type, c.body),
+            let (status, content_type, body, headers) = match queue.next() {
+                Some(c) => (c.status, c.content_type, c.body, c.headers),
                 None => (
                     599,
                     "text/plain",
                     "test_server: no canned answer left for this request".to_string(),
+                    Vec::new(),
                 ),
             };
             let reason = match status {
@@ -86,8 +99,12 @@ pub(crate) async fn serve(answers: Vec<Canned>) -> String {
                 503 => "Service Unavailable",
                 _ => "Status",
             };
+            let extra: String = headers
+                .iter()
+                .map(|(name, value)| format!("{name}: {value}\r\n"))
+                .collect();
             let head = format!(
-                "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n",
                 body.len()
             );
             let _ = sock.write_all(head.as_bytes()).await;
