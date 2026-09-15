@@ -50,7 +50,11 @@ pub enum Error {
     /// clean negative, so "not attempted" was misreported as one or the other.
     #[error("skipped ({}): {reason}", class.as_str())]
     Skipped {
+        /// What the silence means for coverage — see
+        /// [`SkipClass`](crate::core::event::SkipClass).
         class: crate::core::event::SkipClass,
+        /// Operator-facing reason: what was not asked and why. Persisted as
+        /// `ModuleSkipped.reason`, so it must never read as "found nothing".
         reason: String,
     },
     #[error("{0}")]
