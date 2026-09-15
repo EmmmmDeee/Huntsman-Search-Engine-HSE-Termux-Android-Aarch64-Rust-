@@ -84,9 +84,10 @@ impl Provenance {
 }
 
 /// The tags every entity this module emits carries, whatever its kind.
-fn tag_common(e: &mut Entity, prov: Provenance) {
+fn tag_common(e: &mut Entity, rec: &SdnRecord, prov: Provenance) {
     e.tag("sanctions");
     e.tag("ofac");
+    e.tag(rec.list.tag());
     e.tag("regulatory-action");
     if prov.needs_identity_verification() {
         e.tag("needs-identity-verification");
@@ -97,7 +98,7 @@ fn tag_common(e: &mut Entity, prov: Provenance) {
 /// designation, and — for a name match only — the caution.
 fn base_evidence(rec: &SdnRecord, summary: String, prov: Provenance) -> Evidence {
     let mut ev = Evidence::new(SRC, summary)
-        .with_attr("register", "OFAC Specially Designated Nationals (SDN) List")
+        .with_attr("register", rec.list.register())
         .with_attr("ent_num", rec.ent_num.to_string());
     ev = match prov {
         Provenance::Name => ev.with_attr(
@@ -141,10 +142,10 @@ pub(super) fn build_subject(rec: &SdnRecord, scan_id: &str, prov: Provenance) ->
     }
 
     let mut e = Entity::new(kind, &display_name, prov.confidence(), scan_id);
-    tag_common(&mut e, prov);
+    tag_common(&mut e, rec, prov);
     e.add_evidence(base_evidence(
         rec,
-        format!("OFAC SDN list match: {display_name}"),
+        format!("OFAC {} list match: {display_name}", rec.list.short()),
         prov,
     ));
     Some(e)
@@ -182,7 +183,7 @@ pub(super) fn build_wallet(
         prov.confidence(),
         scan_id,
     );
-    tag_common(&mut e, prov);
+    tag_common(&mut e, rec, prov);
     e.tag("crypto-address");
     e.tag("sanctioned-wallet");
     // HSE's own shape-based classification, kept as a separate `chain:` tag from
