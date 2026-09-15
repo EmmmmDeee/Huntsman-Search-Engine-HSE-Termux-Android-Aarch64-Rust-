@@ -1142,6 +1142,121 @@ mod reconciler_transaction {
         assert_eq!(tracked_changes(&fx), "");
     }
 
+    /// A stand-in `cargo` at the front of the fixture's PATH, with a stub
+    /// `Cargo.toml` so the preflight sees a crate. Every subcommand succeeds
+    /// unless the environment says otherwise: `STUB_NO_RUN_EXIT` is the status
+    /// of the pre-patch `cargo test … --no-run`, `STUB_RUN_EXIT` that of the
+    /// post-patch test run. No real cargo is involved, so the attribution rule
+    /// is exercised deterministically and in milliseconds.
+    fn stub_cargo(fx: &Fixture) -> std::ffi::OsString {
+        let bin = fx.dir.path().join("stub-cargo");
+        fs::create_dir_all(&bin).unwrap();
+        let cargo = bin.join("cargo");
+        fs::write(
+            &cargo,
+            "#!/usr/bin/env bash\ncase \"$*\" in\n\
+             \"test --locked --test install_invariants --no-run\") exit \"${STUB_NO_RUN_EXIT:-0}\" ;;\n\
+             \"test --locked --test install_invariants\") exit \"${STUB_RUN_EXIT:-0}\" ;;\n\
+             *) exit 0 ;;\nesac\n",
+        )
+        .unwrap();
+        fs::set_permissions(&cargo, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        fs::write(
+            fx.dir.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\n",
+        )
+        .unwrap();
+        git(fx.dir.path(), &["add", "Cargo.toml"]);
+        git(
+            fx.dir.path(),
+            &["commit", "-q", "-m", "fixture: stub crate"],
+        );
+        let mirror = path_without_cargo(&fx.dir.path().join("path-without-cargo"));
+        std::env::join_paths([bin.as_os_str().to_os_string(), mirror])
+            .expect("PATH with stub cargo")
+    }
+
+    /// Run the reconciler as `reconcile` does, but with the stub cargo on PATH
+    /// and the given stub exit statuses.
+    fn reconcile_with_stub_cargo(
+        fx: &Fixture,
+        no_run_exit: &str,
+        run_exit: &str,
+    ) -> (i32, serde_json::Value) {
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/reconcile.sh");
+        let out = Command::new("bash")
+            .arg(&script)
+            .args(["--repo-only", "--json"])
+            .current_dir(fx.dir.path())
+            .env("PATH", stub_cargo(fx))
+            .env("HOME", fx.dir.path())
+            .env("STUB_NO_RUN_EXIT", no_run_exit)
+            .env("STUB_RUN_EXIT", run_exit)
+            .output()
+            .expect("bash");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let json: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+            panic!(
+                "reconciler emitted non-JSON ({e}):\n--- stdout ---\n{stdout}\n--- stderr ---\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+        });
+        (out.status.code().unwrap_or(-1), json)
+    }
+
+    /// Rust verification is attributed by measurement. What fails BEFORE the
+    /// patch is the environment's (a skip that keeps the patch and stops at
+    /// PATCH_APPLIED); what fails only AFTER it is the patch's (a rollback);
+    /// and a run that passes both halves is the only way to VERIFIED.
+    #[test]
+    fn rust_verification_is_attributed_by_measurement() {
+        // Pre-patch build failure: environment. Patch kept, never a pass.
+        let fx = defective_checkout();
+        let (code, json) = reconcile_with_stub_cargo(&fx, "101", "0");
+        assert_eq!(code, 2, "{json}");
+        let r = &json["repository"];
+        assert_eq!(r["mutation"], "applied", "{json}");
+        assert_eq!(r["rust_verify"], "skipped_environment", "{json}");
+        assert_eq!(r["final_state"], "patch_applied", "{json}");
+        assert_eq!(installer_in(&fx), install_sh(), "the patch stays applied");
+        assert!(
+            json["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("unpatched tree"),
+            "the reason must say the failure predates the patch: {json}"
+        );
+
+        // Post-patch test failure: the patch's. Rolled back and proven.
+        let fx = defective_checkout();
+        let before = installer_in(&fx);
+        let (code, json) = reconcile_with_stub_cargo(&fx, "0", "101");
+        assert_eq!(code, 6, "{json}");
+        let r = &json["repository"];
+        assert_eq!(r["mutation"], "rolled_back", "{json}");
+        assert_eq!(r["shell_verify"], "pass", "{json}");
+        assert_eq!(r["structural_verify"], "pass", "{json}");
+        assert_eq!(r["rust_verify"], "fail", "{json}");
+        assert_eq!(r["rollback"], "verified", "{json}");
+        assert_eq!(r["final_state"], "failed", "{json}");
+        assert_eq!(
+            installer_in(&fx),
+            before,
+            "rollback restores the pre-run bytes"
+        );
+        assert_eq!(tracked_changes(&fx), "");
+
+        // Both halves pass: VERIFIED, exit 0, patch kept.
+        let fx = defective_checkout();
+        let (code, json) = reconcile_with_stub_cargo(&fx, "0", "0");
+        assert_eq!(code, 0, "{json}");
+        let r = &json["repository"];
+        assert_eq!(r["mutation"], "applied", "{json}");
+        assert_eq!(r["rust_verify"], "pass", "{json}");
+        assert_eq!(r["final_state"], "verified", "{json}");
+        assert_eq!(installer_in(&fx), install_sh());
+    }
+
     #[test]
     fn a_failed_required_verification_rolls_the_tree_back_and_proves_it() {
         let fx = defective_checkout();
