@@ -4108,6 +4108,98 @@ the next step if a 200 wall is observed on one. The remaining
 `ip_reputation`) read JSON or crawl content and mint no negative claim from
 an empty parse.
 
+### REQ-ATTR-002 (**new, Pass 31 — OBSERVED live from the sandbox, FIXED, FALSIFIED**): a pulse author's paragraph is not a threat actor
+
+**Observation (this sandbox, 2026-09-15 20:2x UTC, the binary built from
+`c2442f2`, while testing the null for the steady `empty ip_reputation` row
+with a held sample).** `hse scan -k ip -v 171.25.193.25 -m ip_reputation`
+(a live Tor exit taken from `check.torproject.org/exit-addresses`) yielded the
+address tagged `tor-exit` / `anonymous-network` with OTX's 50 pulses — and an
+`Organisation` **`Adversary Profile: Salt Typhoon Alignment The architectural
+gap`** at 0.58, tagged `adversary` and `threat-intel`, evidence "Threat actor
+linked to 171.25.193.25 per OTX". OTX's `general` answer for the address
+(68,875 B, captured) has 50 pulses; 49 carry an empty `adversary`, and one
+community pulse ("Double Umbrella AS15169/AS21928: This evaluates a critical
+structural convergence …", author `msudosos`, created 2026-02-12) carries
+`adversary = "Adversary Profile: Salt Typhoon Alignment The architectural gap
+identified by mudoSO mirrors the act"` — OTX's own 100-character cut of a
+paragraph. The module took the first non-empty `adversary` across the
+pulses, trimmed it at `(` and 64 characters, and minted the fragment as an
+organisation — identifier match ≠ entity identity (REQ-ATTR-001's class): one
+author's free text, in one pulse of fifty, became a "threat actor" on the
+address, and its evidence attribute `adversary` carried the same fragment.
+
+**Verified from source.** `run_otx` selected `pulses.iter().find_map(|p|
+p.adversary…)` — the first pulse naming anything, in OTX's order (newest
+first) — with no shape check and no count; the `Organisation` rung was
+`MEDIUM_SOLID` (0.58) whether one pulse or forty named the actor. The
+comment above the evidence attribute already knew the field is "sometimes a
+long freeform paragraph".
+
+**Competing explanations.** (a) *OTX's `adversary` is structured*: no — it is
+free text per pulse (the capture: 49 empty, one paragraph; curated pulses
+write short names such as `APT28`, `Lazarus Group`, `Mirai`, `NSO Group`). (b)
+*The fragment is a name in OTX's sense*: no — OTX cut it at 100 characters
+mid-word; a name is never a sentence. (c) *Trimming harder would do*: any cut
+of a paragraph is still a paragraph's prefix, not a name; the field must be
+judged, not shortened.
+
+**Fix (the module).** `is_actor_name` — a threat actor's name is 2–48
+characters, at most five tokens, contains no `:` `;` `.` `!` `?` and does not
+end in a comma (the parenthesised alias is trimmed first: `Lazarus Group
+(a.k.a. Hidden Cobra)` → `Lazarus Group`). `named_adversary(pulses)` counts
+the accepted lead names case-insensitively across the pulses and returns the
+most-named one with its count (a tie goes to the first seen); a paragraph is
+never an adversary and one pulse's text never outranks the name the rest
+agree on. `adversary_confidence(n)`: an actor named by a single pulse is one
+author's claim at `LOW_MEDIUM` (0.45); named by two or more it is the
+corroborated `MEDIUM_SOLID` (0.58) the module always used. The indicator's
+evidence carries `adversary` only when it is a name, with `adversary_pulses:
+n of N`; the `Organisation`'s evidence carries the same count.
+
+**Locks.** `modules::ip_reputation::tests::an_actor_name_is_short_and_never_a_sentence`
+(five names accepted; the captured paragraph, its 64-character cut, a colon
+form, a sentence, `""` and `"x"` rejected);
+`the_named_adversary_is_the_one_most_pulses_name_and_a_paragraph_is_never_one`
+(the captured shape — one paragraph among empties — names nothing; `Mirai`
+named three times case-insensitively outranks `Emotet` and the paragraph
+listed first; a tie goes to the first seen and an alias is trimmed);
+`an_actor_named_by_one_pulse_sits_below_one_named_by_two`.
+
+**Falsification.** Each repair reverted with only its lock run:
+
+```
+[the name gate removed (any free text is an adversary)] reverted -> LOCK FAILS (expected)
+    test modules::ip_reputation::tests::the_named_adversary_is_the_one_most_pulses_name_and_a_paragraph_is_never_one ... FAILED
+    thread '…' (14949) panicked at src/modules/ip_reputation/tests.rs:355:5:
+[the selection back to the first pulse that names anything] reverted -> LOCK FAILS (expected)
+    test modules::ip_reputation::tests::the_named_adversary_is_the_one_most_pulses_name_and_a_paragraph_is_never_one ... FAILED
+    thread '…' (16537) panicked at src/modules/ip_reputation/tests.rs:367:5:
+[one pulse's naming at the corroborated rung] reverted -> LOCK FAILS (expected)
+    test modules::ip_reputation::tests::an_actor_named_by_one_pulse_sits_below_one_named_by_two ... FAILED
+    thread '…' (5668) panicked at src/modules/ip_reputation/tests.rs:383:5:
+ALL LOCKS SENSITIVE
+```
+
+**Live verification (the rebuilt binary, this sandbox).** The same scan against a fresh
+store (`171.25.193.25`, 20:5x UTC): one entity — the address at 0.95,
+`tor-exit`, `anonymous-network`, `threat-intel`, evidence `OTX: 50 threat
+pulse(s)` with `pulse_count: 50` and the recent pulse names, **no
+`adversary` attribute and no `Organisation`**; the baseline binary had minted
+the paragraph fragment at 0.58 from the same 50 pulses. (A first re-run
+against the store the baseline scan had written still showed the old
+`adversary` attribute — with the old code's trailing space — merged from the
+stored evidence of the earlier scan, not produced by the rebuilt binary: the
+fresh-store run is the reading.) Gate on the tree: fmt, clippy `-D
+warnings`, CI's rustdoc lints, `cargo test --all` (7312 lib tests and every
+integration suite green), doc coverage held at 1030.
+
+**Residual.** A single curated pulse (AlienVault's own) naming an actor sits
+at the single-author rung with the community's; OTX's pulse object carries
+the author but no curation mark the module could read without a convention.
+A name that passes the gate can still be a wrong attribution by its author —
+the count and the rung say how many agreed, not that they are right.
+
 ### REQ-BITBUCKET-001 (**new, Pass 31 — OBSERVED on the runner and from the sandbox, REPRODUCED with the built binary, MIGRATED, FALSIFIED**): `bitbucket_user`'s resource is gone; a handle is a workspace
 
 **Observation.** Every live-drift sweep this session recorded reads `empty
@@ -4245,7 +4337,26 @@ indistinguishable for the accounts Bitbucket migrated in 2018
 single-source until corroborated; reversed if Bitbucket exposes an account
 type keyless. `/2.0/users/{uuid}` may still answer for a *user* UUID; no
 keyless path yields one from a handle, so nothing here depends on it. The
-runner's reading is the remote verification: the live-drift dispatch on the pushed head (recorded below once read).
+runner's reading is the remote verification: **live-drift run 35020085011 on `c2442f2`
+(2026-09-15 20:30–20:33 UTC): `alive bitbucket_user 3 found [canary]`** —
+the row that had read `empty` on 28 of 28 sweeps — in a table of 116 probed:
+90 alive, 17 empty, 1 unreachable (`wifidb`, the by-design dead canary), 2
+timed-out, 1 rate-limited (`reddit_user`, Reddit's 429 this time), 4 blocked,
+1 skipped, 0 panicked. The run is red on two dead canaries: `wifidb` (as on
+every run since REQ-HTTP-001) and, for the first time on a dispatch,
+`chronicling_america` — "timed out on all 3 attempts". That canary read
+`alive … 11 found` on all nine dispatches between 12:52 and 19:47 UTC and
+`timed-out` on both weekly Monday-08:34 sweeps (2026-09-07, 2026-09-14) and
+now; the exact query answers this sandbox in 0.18–0.47 s (three serial
+requests, 44,784 B, 262,023 hits) at 20:50 UTC, so the provider is alive
+and the episode was a slow window on the runner's path, not a retirement.
+The verdict's rule (REQ-DRIFT-001: no answer on three attempts 3 s apart) has
+a false-positive class — a provider slow for a minute — that the
+ledger's retirement criterion (two consecutive weekly dead readings, then a
+human decision) absorbs; the runner has no memory across runs to make the
+verdict itself require persistence, which is the reversal condition for
+changing the rule. Under the criterion `chronicling_america` is at one
+reading, not two, and the 2026-09-21 weekly sweep decides.
 
 ### REQ-DRIFT-007 (**new, Pass 31 — OBSERVED live from the sandbox, CONSOLIDATED, FIXED, FALSIFIED**): GitHub's throttle is judged once, for every GitHub caller
 
@@ -4437,7 +4548,7 @@ reproduced lead the sweep cannot see: for the Tor exit, `ip_reputation`
 minted OTX's freeform `adversary` string as an `Organisation` —
 `Adversary Profile: Salt Typhoon Alignment The architectural gap` at 0.58,
 tagged `adversary` — a sentence fragment from one user-authored pulse among
-50, not a threat actor's name; the next cycle's target.
+50, not a threat actor's name; repaired in this pass (REQ-ATTR-002, above).
 
 ### REQ-HTTP-002 (**new, Pass 31 — VERIFIED FROM SOURCE, CONSOLIDATED, FIXED, FALSIFIED**): `json_scanned` fails the way `json_decode` fails
 

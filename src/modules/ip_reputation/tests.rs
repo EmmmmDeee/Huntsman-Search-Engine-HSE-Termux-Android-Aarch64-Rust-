@@ -307,3 +307,81 @@ fn passive_dns_gates_unrelated_hosts_and_invalid_ips() {
         "no IP is attributed to the subject from out-of-scope or invalid rows"
     );
 }
+
+// ── OTX `adversary`: a threat actor's name, never a paragraph (REQ-ATTR-002) ──
+
+fn pulse_naming(adversary: Option<&str>) -> Pulse {
+    Pulse {
+        name: Some("a pulse".to_string()),
+        tags: Vec::new(),
+        adversary: adversary.map(str::to_string),
+        tlp: None,
+        created: None,
+    }
+}
+
+/// OTX's own 100-character cut of a community pulse's paragraph, captured
+/// live 2026-09-15 for a Tor exit (one pulse of fifty) and minted by the
+/// module as an `Organisation` "threat actor linked to" the address.
+const CAPTURED_PARAGRAPH: &str =
+    "Adversary Profile: Salt Typhoon Alignment The architectural gap identified by mudoSO mirrors the act";
+
+#[test]
+fn an_actor_name_is_short_and_never_a_sentence() {
+    for name in ["Mirai", "NSO Group", "APT28 / Fancy Bear", "Lazarus Group", "TA505"] {
+        assert!(is_actor_name(name), "{name} is a threat actor's name");
+    }
+    for text in [
+        CAPTURED_PARAGRAPH,
+        "Adversary Profile: Salt Typhoon Alignment The architectural gap",
+        "Salt Typhoon:",
+        "the group behind the campaign observed last spring",
+        "",
+        "x",
+    ] {
+        assert!(!is_actor_name(text), "{text:?} is not a name");
+    }
+}
+
+#[test]
+fn the_named_adversary_is_the_one_most_pulses_name_and_a_paragraph_is_never_one() {
+    // The captured shape: one paragraph among pulses that name nothing.
+    let pulses = vec![
+        pulse_naming(None),
+        pulse_naming(Some("")),
+        pulse_naming(Some(CAPTURED_PARAGRAPH)),
+        pulse_naming(None),
+    ];
+    assert_eq!(named_adversary(&pulses), None);
+
+    // Names are counted case-insensitively and the most-named wins; the
+    // paragraph, listed first, never outranks them.
+    let pulses = vec![
+        pulse_naming(Some(CAPTURED_PARAGRAPH)),
+        pulse_naming(Some("Emotet")),
+        pulse_naming(Some("Mirai")),
+        pulse_naming(Some(" mirai ")),
+        pulse_naming(Some("Lazarus Group (a.k.a. Hidden Cobra)")),
+        pulse_naming(Some("MIRAI")),
+    ];
+    assert_eq!(named_adversary(&pulses), Some(("Mirai".to_string(), 3)));
+
+    // A tie goes to the first seen (OTX lists pulses newest first); a
+    // parenthesised alias is trimmed to the lead name.
+    let pulses = vec![
+        pulse_naming(Some("Lazarus Group (a.k.a. Hidden Cobra)")),
+        pulse_naming(Some("Emotet")),
+    ];
+    assert_eq!(
+        named_adversary(&pulses),
+        Some(("Lazarus Group".to_string(), 1))
+    );
+}
+
+#[test]
+fn an_actor_named_by_one_pulse_sits_below_one_named_by_two() {
+    assert!((adversary_confidence(1) - confidence::LOW_MEDIUM).abs() < 0.01);
+    assert!((adversary_confidence(2) - confidence::MEDIUM_SOLID).abs() < 0.01);
+    assert!((adversary_confidence(40) - confidence::MEDIUM_SOLID).abs() < 0.01);
+    assert!(adversary_confidence(1) < adversary_confidence(2));
+}
