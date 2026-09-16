@@ -337,6 +337,17 @@ pub const CHALLENGE_VENDOR_SIGNATURES: &[&str] = &[
     // DuckDuckGo anomaly interstitial / generic retry wall
     "anomaly-modal",
     "httpservice/retry",
+    // Radware Bot Manager (formerly ShieldSquare) — the "Radware Captcha Page"
+    // interstitial served under validate.perfdrive.com. imlive.com answered the
+    // runner's known-negative control with exactly this page: a 200 whose body
+    // carries none of the site's own not-found markers, so the social probe read
+    // it as a verified profile for a handle nobody holds (REQ-PROBE-004,
+    // 2026-09-16 — perfdrive.com ×3, "Radware Captcha Page", shieldsquare in the
+    // live body). Each string is WAF-specific — a real profile page never
+    // references the challenge domain or names the vendor's captcha.
+    "perfdrive.com",
+    "shieldsquare",
+    "radware captcha",
 ];
 
 /// Lower-confidence challenge *phrases*. Each entry is an AND-set: every

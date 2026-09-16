@@ -5320,6 +5320,61 @@ vantage confirms the sandbox's: the counts every sweep had reported for
 read 36 against 68 and 3 on the two sweeps before — the search providers'
 own variance, untouched by this change.)
 
+### REQ-PROBE-004 (**new, Pass 31 — OBSERVED by the known-negative control on the runner (PR #636's live-drift), REPRODUCED, FIXED at the classify boundary, FALSIFIED**): a 200 bot-challenge page is not a profile
+
+**Observation (PR #636 live-drift, head `2909dcd4`, and reproduced live from
+this sandbox 2026-09-16).** The runner's known-negative control sweep flagged
+`social_probe` minting a verified profile for a handle nobody holds:
+`FABRICATED social_probe username 3 entities for vyw7xmcwjgb6 — url
+https://www.imlive.com/vyw7xmcwjgb6 (0.92); domain imlive.com (0.40); username
+vyw7xmcwjgb6 (0.95)`. Reproduced by hand: `imlive.com/<nonce>` answers **HTTP
+200** with a Radware Bot Manager interstitial (final URL
+`validate.perfdrive.com`, title "Radware Captcha Page"; the live body carries
+`perfdrive.com` ×3, `shieldsquare`, `captcha` ×15) while `imlive.com/jenna`
+answers 404. The 200 is the WAF refusing the datacenter client, not a profile —
+but it carries **none** of imlive's own not-found markers (`Page Not Found` /
+`user not found` / `404`), because it is the *vendor's* page, not the *site's*.
+
+**Reproduced (a unit lock that fails on the baseline).** `classify_probe`
+matched the 200 against `exists_codes`, found the body marker-free and not
+truncated, and returned `ProbeResult::Found { verified: true, confidence: 0.92 }`
+— there was no challenge check between the status match and the verified hit.
+The lock (`a_200_bot_challenge_page_is_inconclusive_never_a_profile`) hands
+`classify_probe` a Radware/perfdrive/shieldsquare body on the real `imlive`
+platform and asserts `ProbeResult::Error`; on the baseline it is `Found`, so the
+lock fails.
+
+**Fix (two coupled edits at the authoritative layers).** (1) `util::html`'s
+`CHALLENGE_VENDOR_SIGNATURES` — the crate's one shared challenge oracle — gains
+three WAF-specific fingerprints: `perfdrive.com`, `shieldsquare`, `radware
+captcha`. Each is decisive on its own and never appears on real content. (2)
+`social_probe::classify_probe` guards immediately after the status match: `if
+crate::util::html::is_challenge_page(&answer.body) { return ProbeResult::Error;
+}` — a success status carrying a challenge/CAPTCHA/WAF interstitial is
+inconclusive, never a hit, never an absence. Routed through the *same* oracle the
+search fetcher and HTTP layer use, so one wall reads the same everywhere.
+Signature-only (not the document-shape test): a captcha interstitial need not
+open with `<!doctype`. Body is captured only for negative-marker platforms
+(`fetch_with_status`'s capture flag), so this is a no-op for status-only
+platforms and does not slow their fast path; `ProbeResult::Error` is already
+tallied `inconclusive` by `emit_judged`, so the fabricated entities are never
+minted and the M6 inconclusive-sweep verdict already accounts for it.
+
+**Lock and falsification (`cycle_probe004_falsify.py`).** Two coupled locks, one
+per edit: the html lock
+(`is_challenge_page_recognises_the_radware_perfdrive_interstitial` — each
+fingerprint decisive, a page merely naming Radware is not a wall) and the probe
+lock (above). Stage 1 reverts only the `classify_probe` guard → the probe lock
+fails (`Found`, not `Error`) while its `is_challenge_page` assertion still passes
+— the guard is what turns the wall inconclusive. Stage 2 reverts only the
+signatures → **both** locks fail (the oracle no longer recognises the page).
+Each file sha256-restored, `--exact`. `RESULT: FALSIFIED (both halves lock)`.
+
+**Remote.** CI-exact gate green locally. Remote verification is the runner's
+known-negative control sweep (live-drift) on the pushed head reading `0
+fabricated` — the same vantage that observed the fabrication. Dispatch and CI on
+the pushed commit are recorded below.
+
 ### REQ-ATTR-003 (**new, Pass 31 — OBSERVED live from the sandbox against the merged binary, REPRODUCED, FIXED at the authoritative gate, FALSIFIED**): an unattributed placeholder is not a named threat actor
 
 **Observation (this sandbox, 2026-09-16, the binary built from the merged
