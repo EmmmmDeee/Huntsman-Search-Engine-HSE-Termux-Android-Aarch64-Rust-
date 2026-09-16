@@ -13,6 +13,7 @@ const REMARKS_MULTI: &str = "DOB 01 Jan 1980; nationality Russia; Digital Curren
 
 fn record(ent_num: u64, name: &str, remarks: &str) -> SdnRecord {
     SdnRecord {
+        list: super::super::parse::OfacList::Sdn,
         ent_num,
         name: name.to_string(),
         kind: SdnKind::Individual,

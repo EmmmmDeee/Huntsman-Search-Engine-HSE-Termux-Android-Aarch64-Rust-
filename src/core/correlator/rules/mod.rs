@@ -336,7 +336,6 @@ const EMAIL_CONFIRMATION_SOURCES: &[&str] = &[
     "fullcontact",
     "see_know",
     "intelx",
-    "psbdmp",
     "leakix",
 ];
 
@@ -442,7 +441,6 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         // invisible to the gap analysis's missing-family search. Exact module
         // names; `source_family_covers_every_breach_category_module` pins them.
         "comb_search", // COMB combo-list corpus
-        "psbdmp",      // Pastebin dump archive (paste exposure)
         "niamonx",     // Niamonx breach-lookup API
         "osintcat",    // OSINTCat breach-lookup API
     ]) {
@@ -532,14 +530,12 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "whoisxml",
         // Authoritative people / business / professional registries and identity
         // enrichers (exact registry module names) — independent identity sources
-        // that were falling to `other`. A subject confirmed by, e.g., an electoral
-        // roll AND a breach is genuine cross-family corroboration (AU-045).
+        // that were falling to `other`. A subject confirmed by, e.g., a
+        // practitioner register AND a breach is genuine cross-family corroboration (AU-045).
         "fullcontact",
         "contact_enrich",
         "gleif_lei",
         "asic_director",
-        "au_electoral",
-        "au_people",
         "ahpra",
         "acnc",
     ]) {
@@ -584,7 +580,6 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         // orthogonality (AU-062/063) and let `source_family`'s "covers the registry"
         // contract drift.
         "abuseipdb",
-        "bgpview",
         "criminal_ip",
         "ipqs",
         "netblock",

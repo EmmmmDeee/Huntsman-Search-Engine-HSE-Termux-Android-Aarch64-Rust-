@@ -189,7 +189,7 @@ use super::*;
             entity_with_attrs(
                 EntityKind::Person,
                 "Haigen Bamford",
-                "au_people",
+                "wikitree",
                 &[("date_of_birth", "1965-03-10")],
             ),
         ];

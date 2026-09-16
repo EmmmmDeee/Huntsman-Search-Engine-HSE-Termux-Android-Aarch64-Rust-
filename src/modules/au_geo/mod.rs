@@ -206,13 +206,22 @@ impl Module for AuGeo {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
-        let Ok((lat, lon)) = parse_coords(&target.value) else {
-            return Ok(result);
-        };
+        // A malformed coordinate is the target's fault and is reported as such
+        // (the same `?` as qld_cadastre) — never an empty result that reads as
+        // "no Australian geography here".
+        let (lat, lon) = parse_coords(&target.value)?;
         // Australia (mainland + Tasmania) bounding box — a point outside it has
-        // no ASGS coverage, so skip it before any request.
+        // no ASGS coverage, so it is a typed `NotApplicable` skip before any
+        // request, never `Ok(empty)` (which coverage reads as "no Australian
+        // geography for this point": the 2026-09-15 sweep's
+        // `empty au_geo (coordinates 40.7128,-74.0060)`).
         if !(-44.0..=-9.5).contains(&lat) || !(112.0..=154.5).contains(&lon) {
-            return Ok(result);
+            return Err(crate::core::error::Error::skipped(
+                crate::core::event::SkipClass::NotApplicable,
+                format!(
+                    "{lat},{lon} is outside Australia; the ABS ASGS layers cover Australia only"
+                ),
+            ));
         }
 
         // ArcGIS points are x,y = lon,lat.

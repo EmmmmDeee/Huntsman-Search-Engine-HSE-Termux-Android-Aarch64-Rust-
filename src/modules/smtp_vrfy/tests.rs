@@ -7,6 +7,28 @@ fn attr<'a>(e: &'a Entity, k: &str) -> Option<&'a str> {
     e.evidence[0].attributes.get(k).map(String::as_str)
 }
 
+/// Only an accepted recipient asserts the mailbox is held. Every other
+/// verdict — a rejection, a deferral, a catch-all, an unreachable MX, no MX
+/// — annotates the address below the rung the sweep's known-negative control
+/// reads as a presence claim (REQ-CANARY-003), so a mailbox nobody holds is
+/// never re-affirmed by the probe that could not reach it or was refused it.
+#[test]
+fn only_an_accepted_recipient_asserts_the_mailbox_is_held() {
+    let rung = crate::selftest::capability_probe::SEED_PRESENT_RUNG;
+    let mk =
+        |v: SmtpVerdict| build_entity("a@b.com", "b.com", Some("mx.b.com"), &v, "s").confidence;
+    assert!(mk(SmtpVerdict::Valid) >= rung);
+    for v in [
+        SmtpVerdict::Invalid("550".into()),
+        SmtpVerdict::Transient("451".into()),
+        SmtpVerdict::CatchAll,
+        SmtpVerdict::Unreachable("connect failed".into()),
+        SmtpVerdict::NoMx,
+    ] {
+        assert!(mk(v) < rung);
+    }
+}
+
 #[tokio::test]
 async fn module_metadata() {
     let m = SmtpVrfy;
@@ -113,8 +135,9 @@ fn deliverability_ladder_is_ordered() {
     let catchall = mk(SmtpVerdict::CatchAll);
     let invalid = mk(SmtpVerdict::Invalid("550".into()));
     assert!(valid > invalid && invalid > catchall);
-    // catchall and unreachable are both 0.30; verify equality holds
+    // catchall, unreachable and transient are all 0.30; verify equality holds
     assert!((catchall - mk(SmtpVerdict::Unreachable("x".into()))).abs() < f64::EPSILON);
+    assert!((catchall - mk(SmtpVerdict::Transient("450".into()))).abs() < f64::EPSILON);
 }
 
 /// Read one SMTP command line off the mock-server side of a
@@ -266,4 +289,61 @@ async fn read_line_timeout_caps_a_giant_newline_less_line() {
         buf.len()
     );
     assert!(!buf.is_empty(), "should have read the capped prefix");
+}
+
+#[tokio::test]
+async fn a_4yz_rcpt_reply_is_transient_never_an_invalid_mailbox() {
+    // Backlog #41. Greylisting answers the first RCPT TO with 450 and asks the
+    // sender to retry; a full queue answers 452; a busy server 421. None of
+    // them is a rejection of the mailbox — the address may be perfectly
+    // deliverable — so the verdict is Transient, mapped to `smtp-transient` at
+    // the speculative tier, never `smtp-invalid`.
+    use tokio::io::AsyncWriteExt;
+    let (client, mut server) = tokio::io::duplex(4096);
+    tokio::spawn(async move {
+        server
+            .write_all(b"220 mx.example.com ESMTP\r\n")
+            .await
+            .expect("should succeed");
+        read_cmd(&mut server).await; // EHLO
+        server
+            .write_all(b"250 mx.example.com\r\n")
+            .await
+            .expect("should succeed");
+        read_cmd(&mut server).await; // MAIL FROM
+        server
+            .write_all(b"250 OK\r\n")
+            .await
+            .expect("should succeed");
+        let rcpt = read_cmd(&mut server).await;
+        assert_eq!(rcpt, "RCPT TO:<target@example.com>\r\n");
+        server
+            .write_all(
+                b"450 4.7.1 <target@example.com>: Recipient address rejected: Greylisted\r\n",
+            )
+            .await
+            .expect("should succeed");
+        read_cmd(&mut server).await; // QUIT
+        server
+            .write_all(b"221 bye\r\n")
+            .await
+            .expect("should succeed");
+    });
+
+    let verdict = super::run_probe(client, "target@example.com").await;
+    assert!(
+        matches!(&verdict, SmtpVerdict::Transient(c) if c == "450"),
+        "a 450 must be Transient, not Invalid"
+    );
+    let e = build_entity(
+        "target@example.com",
+        "example.com",
+        Some("mx.example.com"),
+        &verdict,
+        "s",
+    );
+    assert!(e.has_tag("smtp-transient") && !e.has_tag("smtp-invalid"));
+    assert_eq!(attr(&e, "smtp_code"), Some("450"));
+    assert!((e.confidence - crate::core::confidence::SPECULATIVE).abs() < 1e-9);
+    assert!(e.evidence[0].summary.contains("deferred (450)"));
 }

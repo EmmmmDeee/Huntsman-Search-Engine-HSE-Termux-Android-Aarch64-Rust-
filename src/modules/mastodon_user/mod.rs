@@ -155,6 +155,7 @@ impl Module for MastodonUser {
         // fails, `Ok(empty)` would report "this handle has no Mastodon presence on
         // any major instance" when zero instances were successfully queried.
         let mut answered = 0usize;
+        let mut failed: Vec<String> = Vec::new();
         for instance in INSTANCES {
             if ctx.cancel.is_cancelled() {
                 break;
@@ -166,7 +167,16 @@ impl Module for MastodonUser {
                     answered += 1;
                     v
                 }
-                Err(_) => continue,
+                Err(e) => {
+                    tracing::debug!(
+                        target: "module.mastodon_user",
+                        instance,
+                        error = %e,
+                        "instance probe failed"
+                    );
+                    failed.push(format!("{instance}: {e}"));
+                    continue;
+                }
             };
             if let Some(acct) = acct {
                 // Confirm exact-match (API may return a prefix match on some servers).
@@ -178,19 +188,37 @@ impl Module for MastodonUser {
                 return Ok(r);
             }
         }
-        // Cancellation is excluded: the caller stopped the sweep and already knows
-        // why, so an error there would be noise rather than a finding.
-        if answered == 0 && !ctx.cancel.is_cancelled() {
-            return Err(crate::core::error::Error::module(
-                SRC,
-                format!(
-                    "no Mastodon instance answered for '{handle}' ({} tried)",
-                    INSTANCES.len()
-                ),
-            ));
-        }
-        Ok(ModuleResult::new())
+        sweep_verdict(handle, answered, &failed, ctx.cancel.is_cancelled())
     }
+}
+
+/// The outcome of a sweep that found no account. Every instance answering "no
+/// such account" is the clean negative; an instance that did NOT answer (a
+/// 429 — these instances rate-limit anonymous API calls hard — a 5xx, a
+/// transport failure) leaves the negative unestablished for it, so the sweep
+/// is the module's error naming the unanswered instances rather than "no
+/// Mastodon presence on any major instance" (backlog #28: the total outage was
+/// already an error; a 1-answered / 9-failed sweep read as the clean
+/// negative). Cancellation is excluded: the caller stopped the sweep and knows
+/// why. **Pure.**
+fn sweep_verdict(
+    handle: &str,
+    answered: usize,
+    failed: &[String],
+    cancelled: bool,
+) -> Result<ModuleResult> {
+    if cancelled || failed.is_empty() {
+        return Ok(ModuleResult::new());
+    }
+    Err(crate::core::error::Error::module(
+        SRC,
+        format!(
+            "no account for '{handle}' on the {answered} Mastodon instance(s) that answered, but {} of {} did not answer: {}",
+            failed.len(),
+            INSTANCES.len(),
+            failed.join("; ")
+        ),
+    ))
 }
 
 /// Pure account→entity mapping. `instance` is the Mastodon server that
@@ -759,5 +787,35 @@ mod tests {
             Some("https://alice.dev".to_string())
         );
         assert_eq!(extract_href("plain text"), None);
+    }
+
+    #[test]
+    fn a_partial_sweep_is_never_a_clean_negative() {
+        // Backlog #28: one instance answering 404 and nine failing (429s) used
+        // to read as "no Mastodon presence on any major instance".
+        let failed = vec!["mastodon.social: 429 Too Many Requests".to_string()];
+        let err = sweep_verdict("alice", 9, &failed, false).expect_err("one instance unanswered");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("9 Mastodon instance(s) that answered")
+                && msg.contains("1 of 10 did not answer")
+                && msg.contains("mastodon.social: 429"),
+            "{msg}"
+        );
+        // Every instance answering "no such account" is the clean negative.
+        assert!(
+            sweep_verdict("alice", 10, &[], false)
+                .expect("clean")
+                .is_empty()
+        );
+        // A total outage stays an error.
+        let all: Vec<String> = INSTANCES.iter().map(|i| format!("{i}: timeout")).collect();
+        assert!(sweep_verdict("alice", 0, &all, false).is_err());
+        // Cancellation is the caller's decision, not a finding.
+        assert!(
+            sweep_verdict("alice", 0, &all, true)
+                .expect("cancelled")
+                .is_empty()
+        );
     }
 }

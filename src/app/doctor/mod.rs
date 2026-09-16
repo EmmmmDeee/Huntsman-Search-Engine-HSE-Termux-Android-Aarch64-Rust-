@@ -206,6 +206,29 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
         println!("  run `hse doctor --live` to re-check whether these have recovered");
     }
 
+    // ── Remembered dead canaries (offline, always shown) ───────────────
+    // What earlier live probes read dead and since when — the memory
+    // `capability_probe::judge_dead_canaries` confirms a dead canary against
+    // (a run of dead readings spanning a day or more). Shown offline so the
+    // operator sees a run in progress without re-probing; the verdict itself
+    // is a live probe's.
+    let remembered = crate::selftest::capability_probe::remembered_dead_canaries();
+    if !remembered.is_empty() {
+        println!(
+            "\n⚠ Dead canaries remembered from previous live probes (confirmed once dead across \
+             probes {} h apart):",
+            crate::selftest::capability_probe::DEAD_CANARY_CONFIRMATION_SECS / 3600
+        );
+        for (module, span) in &remembered {
+            println!(
+                "  {module:<22} dead since {}, last read dead {}",
+                timefmt::ymd_hm_utc(span.first),
+                timefmt::ymd_hm_utc(span.last)
+            );
+        }
+        println!("  run `hse doctor --live` to re-check");
+    }
+
     // ── Live capability preflight (opt-in, --live) ─────────────────────
     // The module-health section above is reactive — it only knows what real
     // scans in THIS process have already tried. `--live` is the proactive
@@ -692,14 +715,40 @@ async fn print_live_capability_report() {
         return;
     }
 
-    let (mut alive, mut empty, mut unreachable, mut timed_out, mut panicked) =
-        (0usize, 0usize, 0usize, 0usize, 0usize);
+    let (
+        mut alive,
+        mut empty,
+        mut unreachable,
+        mut timed_out,
+        mut rate_limited,
+        mut blocked,
+        mut skipped,
+        mut panicked,
+    ) = (
+        0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize,
+    );
     let mut drift: Vec<&str> = Vec::new();
+    // A canary that answered nothing on any of its retried attempts is judged
+    // against the memory of earlier live sweeps, and this sweep's reading
+    // joins that memory: a first reading is an outage until a sweep a day
+    // later reads the same, a confirmed one is a provider down across sweeps
+    // or a retired endpoint. Called out either way, never quietly tolerated
+    // the way a non-canary's transport failure is.
+    let dead = capability_probe::judge_dead_canaries(&reports);
     for r in &reports {
         let canary = if capability_probe::is_canary(r.module) {
             " [canary]"
         } else {
             ""
+        };
+        let dead_tag = match dead.iter().find(|d| d.module == r.module) {
+            Some(d) if d.is_confirmed() => {
+                " — DEAD CANARY, confirmed across sweeps (down for a day or more, or endpoint retired)"
+            }
+            Some(_) => {
+                " — dead canary, first reading (an outage until a sweep a day later reads the same)"
+            }
+            None => "",
         };
         match &r.outcome {
             ProbeOutcome::Alive { found } => {
@@ -725,11 +774,32 @@ async fn print_live_capability_report() {
             }
             ProbeOutcome::Unreachable { reason } => {
                 unreachable += 1;
-                println!("  unreachable  {:<22} {reason}{canary}", r.module);
+                println!("  unreachable  {:<22} {reason}{canary}{dead_tag}", r.module);
             }
             ProbeOutcome::TimedOut => {
                 timed_out += 1;
-                println!("  timed-out    {:<22}{canary}", r.module);
+                println!("  timed-out    {:<22}{canary}{dead_tag}", r.module);
+            }
+            ProbeOutcome::RateLimited { reason } => {
+                // Alive but throttling: neither dead nor drift.
+                rate_limited += 1;
+                println!("  rate-limited {:<22} {reason}{canary}", r.module);
+            }
+            ProbeOutcome::Blocked { reason } => {
+                // Alive but refusing this client (anti-bot challenge / WAF
+                // block): neither dead nor drift; a vantage-point problem.
+                blocked += 1;
+                println!("  blocked      {:<22} {reason}{canary}", r.module);
+            }
+            ProbeOutcome::Skipped { class, reason } => {
+                // Declined the sample in-band: not asked, so neither dead nor
+                // drift (an AU-only register with the fleet's New York point).
+                skipped += 1;
+                println!(
+                    "  skipped      {:<22} ({}) {reason}{canary}",
+                    r.module,
+                    class.as_str()
+                );
             }
             ProbeOutcome::Panicked { message } => {
                 panicked += 1;
@@ -741,7 +811,8 @@ async fn print_live_capability_report() {
     }
     println!(
         "  summary: {} probed — {alive} alive, {empty} empty, {unreachable} unreachable, \
-         {timed_out} timed-out, {panicked} panicked",
+         {timed_out} timed-out, {rate_limited} rate-limited, {blocked} blocked, \
+         {skipped} skipped, {panicked} panicked",
         reports.len()
     );
     if !drift.is_empty() {
@@ -749,6 +820,75 @@ async fn print_live_capability_report() {
             "  ⚠ confirmed drift in {}: {} — the upstream wire shape likely changed",
             drift.len(),
             drift.join(", ")
+        );
+    }
+    let (confirmed, provisional): (Vec<_>, Vec<_>) = dead.iter().partition(|d| d.is_confirmed());
+    if !confirmed.is_empty() {
+        println!(
+            "  ⚠ DEAD CANARY, confirmed: no answer on any attempt in this sweep and in one at \
+             least {} h earlier — the provider is down across sweeps or its endpoint is \
+             retired (migrate it or retire the capability):",
+            capability_probe::DEAD_CANARY_CONFIRMATION_SECS / 3600
+        );
+        for d in &confirmed {
+            println!("      {}", d.describe());
+        }
+    }
+    if !provisional.is_empty() {
+        println!(
+            "  ⚠ dead canary, first reading: no answer on any of {} attempts — an outage until \
+             a live probe at least {} h later reads the same (remembered in {}):",
+            capability_probe::CANARY_ATTEMPTS,
+            capability_probe::DEAD_CANARY_CONFIRMATION_SECS / 3600,
+            capability_probe::dead_canary_memory_path().display()
+        );
+        for d in &provisional {
+            println!("      {}", d.describe());
+        }
+    }
+    // Known-negative controls: every keyless network module asked, per kind
+    // it consumes, about a target nobody holds. A yield here is fabrication —
+    // false evidence on every scan of that kind — and is called out as such;
+    // the controls are never a canary reading, so they reach neither the
+    // drift store nor the dead-canary memory.
+    let controls = capability_probe::probe_negative_controls(8).await;
+    let fabricated = capability_probe::fabrications(&controls);
+    let control_empty = controls
+        .iter()
+        .filter(|c| matches!(c.report.outcome, ProbeOutcome::Empty))
+        .count();
+    let control_annotated = controls.iter().filter(|c| c.is_annotation()).count();
+    if !controls.is_empty() {
+        let nobody = capability_probe::CONTROLLED_KINDS
+            .iter()
+            .filter_map(|k| {
+                Some(format!(
+                    "{} `{}`",
+                    k.canonical_str(),
+                    capability_probe::control_value(*k)?
+                ))
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!(
+            "  controls: {} probed, each a target nobody holds ({nobody}) — {} empty, {} \
+             annotated, {} fabricated, {} without a reading",
+            controls.len(),
+            control_empty,
+            control_annotated,
+            fabricated.len(),
+            controls.len() - control_empty - control_annotated - fabricated.len()
+        );
+    }
+    for c in &fabricated {
+        println!(
+            "  ⚠ FABRICATION {:<22} minted for {} `{}`, a target nobody holds — false evidence \
+             on every {} scan until the parser is repaired: {}",
+            c.report.module,
+            c.report.kind.canonical_str(),
+            c.report.value,
+            c.report.kind.canonical_str(),
+            c.fabricated.join("; ")
         );
     }
     // Persist so this finding survives past this one printout — the next

@@ -5,7 +5,11 @@
 //!   `GET https://api.hackertarget.com/reverseiplookup/?q={ip}`
 //!   `GET https://api.hackertarget.com/reversedns/?q={ip}`
 //!
-//! Rate limit: 100 queries/day without key. Returns plain-text CSV.
+//! Rate limit: 100 queries/day without key. Returns plain-text CSV, always
+//! with HTTP 200: a host with no DNS record answers `error invalid host`
+//! (a typed not-applicable skip — the corpus was not searched), an input the
+//! API declines `error check your search parameter` (likewise), and the spent
+//! quota `API count exceeded …` (the typed rate limit); see [`classify_answer`].
 
 use async_trait::async_trait;
 use std::collections::HashSet;
@@ -224,6 +228,71 @@ impl Module for HackerTarget {
     }
 }
 
+/// What HackerTarget's plain-text answer is. The API answers every request
+/// `200` and says the rest in the body: a CSV of records, its own no-record
+/// line (`No PTR records found`, left to the builders), or an `error …`
+/// sentence. Observed live 2026-09-15: `error invalid host` for a host with
+/// no DNS record, `error check your search parameter` for an address the API
+/// declines (a reserved range), and the documented `API count exceeded -
+/// Increase Quota with Membership` once the anonymous daily quota is spent.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Answer<'a> {
+    /// A CSV body for the builders.
+    Records(&'a str),
+    /// `error invalid host`: the host has no DNS record, so the corpus was
+    /// never searched — a property of the target, not of the provider.
+    NoDns,
+    /// `error check your search parameter`: an input the API declines.
+    Declined,
+    /// `API count exceeded …`: the anonymous quota (100 queries per day per
+    /// address) is spent — a throttle, never a fault.
+    Quota,
+    /// Any other `error …` sentence: a fault of the request.
+    Fault(&'a str),
+}
+
+/// Classify the body of a `200` answer (see [`Answer`]).
+pub(super) fn classify_answer(body: &str) -> Answer<'_> {
+    let trimmed = body.trim();
+    if trimmed.contains("API count exceeded") {
+        return Answer::Quota;
+    }
+    match trimmed {
+        "error invalid host" => Answer::NoDns,
+        "error check your search parameter" => Answer::Declined,
+        other if other.starts_with("error ") => Answer::Fault(other),
+        _ => Answer::Records(body),
+    }
+}
+
+/// The typed failure an answer is, or `None` for records. Before this every
+/// `error …` body and the quota notice were `Error::Module` — a fault against
+/// the module's health: a scan whose pivots include hosts with no DNS (a
+/// typosquat sweep's permutations, a retired domain) tripped the breaker and
+/// benched HackerTarget for the live hosts that followed, and the spent daily
+/// quota read as an outage rather than a cooldown.
+pub(super) fn failure_for(answer: &Answer<'_>) -> Option<Error> {
+    use crate::core::event::SkipClass;
+    match answer {
+        Answer::Records(_) => None,
+        Answer::NoDns => Some(Error::skipped(
+            SkipClass::NotApplicable,
+            "HackerTarget declines a host with no DNS record (\"error invalid host\"); \
+             its DNS corpus was not searched",
+        )),
+        Answer::Declined => Some(Error::skipped(
+            SkipClass::NotApplicable,
+            "HackerTarget declines this input (\"error check your search parameter\"); \
+             a reserved or private address is not looked up",
+        )),
+        Answer::Quota => Some(Error::RateLimited(format!(
+            "{SRC}: the anonymous daily quota is spent (100 queries per day per address): \
+             API count exceeded"
+        ))),
+        Answer::Fault(text) => Some(Error::module(SRC, text.to_string())),
+    }
+}
+
 impl HackerTarget {
     async fn fetch_text(&self, url: &str, ctx: &ModuleContext) -> Result<String> {
         let resp = ctx
@@ -238,11 +307,9 @@ impl HackerTarget {
         }
 
         let body = crate::util::http::read_text(SRC, resp).await?;
-
-        if body.starts_with("error ") || body.contains("API count exceeded") {
-            return Err(Error::module(SRC, body.trim().to_string()));
+        if let Some(failure) = failure_for(&classify_answer(&body)) {
+            return Err(failure);
         }
-
         Ok(body)
     }
 

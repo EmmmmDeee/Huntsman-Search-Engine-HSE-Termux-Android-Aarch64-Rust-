@@ -109,7 +109,9 @@ async fn gaming_profile_live_resolves_real_accounts() {
     };
 
     // Roblox account id 1 is the canonical "Roblox" handle — a stable live hit.
-    let roblox = roblox_lookup(&ctx, "Roblox").await;
+    let roblox = roblox_lookup(&ctx.http, ROBLOX_BASE, "Roblox", &ctx.scan_id)
+        .await
+        .expect("live Roblox resolve must not error");
     assert!(
         roblox.iter().any(|e| e.kind == EntityKind::Username
             && e.value.eq_ignore_ascii_case("Roblox")
@@ -124,7 +126,9 @@ async fn gaming_profile_live_resolves_real_accounts() {
     );
 
     // "Notch" is the canonical original Minecraft account — a stable live hit.
-    let minecraft = minecraft_lookup(&ctx, "Notch").await;
+    let minecraft = minecraft_lookup(&ctx.http, MOJANG_BASE, "Notch", &ctx.scan_id)
+        .await
+        .expect("live Mojang lookup must not error");
     assert!(
         minecraft.iter().any(|e| e.kind == EntityKind::Username
             && e.value.eq_ignore_ascii_case("Notch")
@@ -137,4 +141,74 @@ async fn gaming_profile_live_resolves_real_accounts() {
         roblox.len(),
         minecraft.len()
     );
+}
+
+#[tokio::test]
+async fn a_platform_failure_is_the_platforms_error_and_only_a_miss_is_empty() {
+    // Backlog #18. Both lookups swallowed every transport/HTTP failure with a
+    // debug line, so an outage on Roblox or Mojang read as "no such account".
+    // Real request path for each platform against a loopback server.
+    use crate::util::http::test_server::{Canned, serve};
+    let client = reqwest::Client::new();
+
+    let roblox = serve(vec![
+        Canned::json(503, r#"{"errors":[{"code":0,"message":"Service Unavailable"}]}"#),
+        Canned::json(200, r#"{"data":[]}"#),
+    ])
+    .await;
+    let err = roblox_lookup(&client, &roblox, "alice", "s")
+        .await
+        .expect_err("a 503 from the resolver is a failed lookup, not 'no Roblox account'");
+    assert!(err.to_string().contains("503"), "{err}");
+    let miss = roblox_lookup(&client, &roblox, "alice", "s")
+        .await
+        .expect("an empty resolver answer is the genuine miss");
+    assert!(miss.is_empty());
+
+    let mojang = serve(vec![
+        Canned::json(500, r#"{"error":"Internal Server Error"}"#),
+        Canned::json(
+            404,
+            r#"{"path":"/users/profiles/minecraft/alice","errorMessage":"Couldn't find any profile with name alice"}"#,
+        ),
+    ])
+    .await;
+    let err = minecraft_lookup(&client, &mojang, "alice", "s")
+        .await
+        .expect_err("a 500 from Mojang is a failed lookup, not 'no Minecraft account'");
+    assert!(err.to_string().contains("500"), "{err}");
+    let miss = minecraft_lookup(&client, &mojang, "alice", "s")
+        .await
+        .expect("Mojang's 404 is the documented miss");
+    assert!(miss.is_empty());
+}
+
+#[test]
+fn combine_keeps_a_platform_failure_and_surfaces_it_only_when_nothing_was_found() {
+    use crate::core::error::Error;
+    let failure = || Err(Error::module(SRC, "HTTP 503: Service Unavailable"));
+    let found = || {
+        Ok(vec![Entity::new(
+            EntityKind::Username,
+            "alice",
+            MINECRAFT_CONF,
+            "s",
+        )])
+    };
+
+    // One platform down, the other a genuine miss: the module cannot assert
+    // "no gaming account", so the failure is the outcome.
+    let err = combine(failure(), Ok(Vec::new())).expect_err("outage + miss is not a clean negative");
+    assert!(err.to_string().contains("503"), "{err}");
+    let err = combine(Ok(Vec::new()), failure()).expect_err("miss + outage is not a clean negative");
+    assert!(err.to_string().contains("503"), "{err}");
+    // Both down: still the failure.
+    assert!(combine(failure(), failure()).is_err());
+    // One platform down, the other confirmed an account: the finding is kept
+    // (a partial outage never discards genuine evidence).
+    let partial = combine(failure(), found()).expect("a confirmed account survives the other platform's outage");
+    assert_eq!(partial.len(), 1);
+    // Two genuine misses: the one real clean negative.
+    let clean = combine(Ok(Vec::new()), Ok(Vec::new())).expect("two misses are the clean negative");
+    assert!(clean.is_empty());
 }

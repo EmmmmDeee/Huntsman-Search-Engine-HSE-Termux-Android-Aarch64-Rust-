@@ -32,7 +32,7 @@ export const USE_CASES = {
   footprint: {
     label:'Footprint',
     desc:"<b>Understand what information this target exposes to the Internet.</b><br><br>Gain an understanding about the target's network perimeter, associated identities and other information that is obtained through web crawling and infrastructure lookups.",
-    pick:m=>['crtsh','dns_intel','doh_resolver','dns_axfr','wayback','bgpview','whois','ip_geo','rdap_domain','phone_intl','webserver_banner'].includes(m.name),
+    pick:m=>['crtsh','dns_intel','doh_resolver','dns_axfr','wayback','ip_registry','whois','ip_geo','rdap_domain','phone_intl','webserver_banner'].includes(m.name),
     options:picked=>({modules:picked})
   },
   investigate: {

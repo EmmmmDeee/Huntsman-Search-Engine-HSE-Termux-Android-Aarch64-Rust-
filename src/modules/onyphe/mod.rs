@@ -173,9 +173,7 @@ impl Module for Onyphe {
         };
         // json_scanned: onyphe search results may contain leaked credentials —
         // scan the raw body for embedded API keys.
-        let body: OnypheResp = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+        let body: OnypheResp = crate::util::http::json_scanned(resp, SRC).await?;
 
         check_onyphe_error(&body)?;
         if body.results.is_empty() {
@@ -309,7 +307,7 @@ fn extract_entities(
         // ── Subnet (geoloc CIDR) ─────────────────────────────────────────
         // ONYPHE's `geoloc` category also carries the covering `subnet` for
         // the resolved IP. It's a secondary field on a geoloc document, not
-        // an authoritative BGP-sourced prefix (cf. bgpview/ripestat's confidence::HIGH_PLUS-
+        // an authoritative BGP-sourced prefix (cf. ripestat's confidence::HIGH_PLUS-
         // confidence::HIGH_PLUSPLUS), so confidence is pinned lower in the unverified range.
         if let Some(subnet) = vstr(r, "subnet").filter(|s| s.contains('/'))
             && seen.insert(format!("@cidr:{subnet}"))

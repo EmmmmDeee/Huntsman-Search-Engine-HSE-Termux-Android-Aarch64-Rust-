@@ -170,7 +170,7 @@ mod geo_synergy_sim {
             ("abn_lookup", -33.8841, 151.2310, 0.82), // registry  (ABN registered office)
             ("exif_geo", -33.8850, 151.2300, 0.74),   // photo-gps (geotagged image)
             ("wigle", -33.8835, 151.2325, 0.66),      // wifi      (observed AP)
-            ("au_people", -33.8860, 151.2290, 0.55),  // directory (White Pages AU)
+            ("au_unclaimed", -33.8860, 151.2290, 0.55),  // directory (unclaimed-money register)
             ("social_location", -33.8848, 151.2312, 0.60), // social (profile bio)
             ("phone_area_geo", -33.8700, 151.2090, 0.52), // phone (02 area code → Sydney)
         ]
@@ -303,7 +303,7 @@ mod geo_synergy_sim {
         let ents = vec![
             sighting("abn_lookup", -33.8841, 151.2310, 0.82, "NSW"),
             sighting("exif_geo", -33.8850, 151.2300, 0.74, "NSW"),
-            sighting("au_people", -33.8860, 151.2290, 0.55, "NSW"),
+            sighting("au_unclaimed", -33.8860, 151.2290, 0.55, "NSW"),
             sighting("wigle", -37.8136, 144.9631, 0.66, "VIC"),
         ];
         let corrs = correlate_entities(&ents, "scan");
@@ -341,12 +341,11 @@ mod geo_synergy_sim {
     }
 }
 
-// ── All-eleven-class integration proof ───────────────────────────────────
+// ── All-nine-class integration proof ───────────────────────────────────
 //
-// Drives all 11 orthogonal AU geo source classes (PhotoGps, WifiSensor,
-// Geocode, Registry, Directory, Social, Phone, Enrichment, Search,
-// Electoral, Property) through the real `correlate_entities` pipeline in
-// one pass, then asserts:
+// Drives all 9 orthogonal AU geo source classes (PhotoGps, WifiSensor,
+// Geocode, Registry, Directory, Social, Phone, Enrichment, Search) through
+// the real `correlate_entities` pipeline in one pass, then asserts:
 //   1. AU-059 fires for every possible 2-class and 3-class subset.
 //   2. The best-location extractor recovers every structured field.
 //   3. Severity escalates correctly (Medium→High) as class count grows.
@@ -354,7 +353,7 @@ mod geo_synergy_sim {
 //
 // This is the offline authoritative proof that geolocation converges from
 // every seed-combination relevant to an AU subject, without live PII.
-mod all_eleven_classes {
+mod all_nine_classes {
     use super::super::rules::location::geo_source_class;
     use super::super::{Correlation, Severity, correlate_entities};
     use crate::app::export::extract_au_location_fix;
@@ -369,13 +368,11 @@ mod all_eleven_classes {
             ("wigle", -33.8700, 151.2100, 0.78),    // WifiSensor
             ("geocode", -33.8695, 151.2080, 0.82),  // Geocode
             ("abn_lookup", -33.8710, 151.2110, 0.80), // Registry
-            ("au_people", -33.8680, 151.2070, 0.72), // Directory
+            ("au_unclaimed", -33.8680, 151.2070, 0.72), // Directory
             ("github_user", -33.8720, 151.2120, 0.68), // Social
             ("phone_area_geo", -33.8660, 151.2060, 0.65), // Phone
             ("epieos", -33.8730, 151.2130, 0.75),   // Enrichment
             ("search_engines", -33.8650, 151.2050, 0.62), // Search
-            ("au_electoral", -33.8740, 151.2140, 0.74), // Electoral
-            ("au_property", -33.8670, 151.2090, 0.74), // Property
         ]
     }
 
@@ -400,7 +397,7 @@ mod all_eleven_classes {
     }
 
     #[test]
-    fn all_eleven_classes_present_and_distinct() {
+    fn all_nine_classes_present_and_distinct() {
         use std::collections::HashSet;
         let fixtures = all_class_fixtures();
         let classes: HashSet<_> = fixtures
@@ -409,21 +406,21 @@ mod all_eleven_classes {
             .collect();
         assert_eq!(
             classes.len(),
-            11,
-            "fixture must cover exactly 11 distinct geo source classes; got {}: {:?}",
+            9,
+            "fixture must cover exactly 9 distinct geo source classes; got {}: {:?}",
             classes.len(),
             classes
         );
     }
 
     #[test]
-    fn all_eleven_fires_au059_at_critical_severity() {
+    fn all_nine_fires_au059_at_critical_severity() {
         let ents: Vec<Entity> = all_class_fixtures()
             .iter()
             .map(|(src, lat, lon, conf)| au_coord(src, *lat, *lon, *conf))
             .collect();
         let corrs = correlate_entities(&ents, "s");
-        let c = au059(&corrs).expect("11 classes must fire AU-059");
+        let c = au059(&corrs).expect("9 classes must fire AU-059");
         assert!(
             c.description.contains("state=NSW"),
             "all-class fix must report NSW: {}",
@@ -437,7 +434,7 @@ mod all_eleven_classes {
     }
 
     #[test]
-    fn all_eleven_best_location_field_is_fully_structured() {
+    fn all_nine_best_location_field_is_fully_structured() {
         let ents: Vec<Entity> = all_class_fixtures()
             .iter()
             .map(|(src, lat, lon, conf)| au_coord(src, *lat, *lon, *conf))
@@ -469,7 +466,7 @@ mod all_eleven_classes {
             .expect("synergy_confidence must be f64");
         assert!(
             (0.0..=0.97).contains(&sc) && sc > 0.5,
-            "synergy_confidence must be > 0.5 for 11 classes: {sc}"
+            "synergy_confidence must be > 0.5 for 9 classes: {sc}"
         );
 
         let class_count = fix["class_count"]
@@ -477,20 +474,20 @@ mod all_eleven_classes {
             .expect("class_count must be u64");
         assert!(
             class_count >= 3,
-            "class_count must be ≥ 3 for 11 sources: {class_count}"
+            "class_count must be ≥ 3 for 9 sources: {class_count}"
         );
 
         let source_count = fix["source_count"]
             .as_u64()
             .expect("source_count must be u64");
         assert!(
-            source_count >= 11,
-            "source_count must be ≥ 11: {source_count}"
+            source_count >= 9,
+            "source_count must be ≥ 9: {source_count}"
         );
     }
 
-    /// Every 2-element subset of the 11 classes must independently fire AU-059.
-    /// Uses bitmask enumeration: 2^11 = 2048 masks, C(11,2) = 55 two-class pairs.
+    /// Every 2-element subset of the 9 classes must independently fire AU-059.
+    /// Uses bitmask enumeration: 2^9 = 512 masks, C(9,2) = 36 two-class pairs.
     #[test]
     fn every_two_class_pair_fires_au059() {
         let fixtures = all_class_fixtures();
@@ -523,7 +520,7 @@ mod all_eleven_classes {
             checked += 1;
         }
 
-        assert_eq!(checked, 55, "must check exactly C(11,2)=55 pairs");
+        assert_eq!(checked, 36, "must check exactly C(9,2)=36 pairs");
         assert!(
             failures.is_empty(),
             "{} two-class pair(s) failed to fire AU-059: {}",

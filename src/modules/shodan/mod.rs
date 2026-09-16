@@ -29,6 +29,9 @@ use crate::util::http::urlencode;
 
 pub(super) const KEY_ENV: &str = "HUNTSMAN_SHODAN_KEY";
 
+/// The free, keyless InternetDB endpoint root (`GET {base}/{ip}`).
+const INTERNETDB_BASE: &str = "https://internetdb.shodan.io";
+
 // ── Paid API response ────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -161,7 +164,8 @@ impl Module for Shodan {
             // country + everything InternetDB has). Skip free path.
             self.query_paid(ip, key, ctx, &mut result).await?;
         } else {
-            self.query_internetdb(ip, ctx, &mut result).await;
+            self.query_internetdb(INTERNETDB_BASE, ip, ctx, &mut result)
+                .await?;
         }
 
         Ok(result)
@@ -169,42 +173,34 @@ impl Module for Shodan {
 }
 
 impl Shodan {
-    /// Query the free InternetDB endpoint. Errors are swallowed so the
-    /// paid path can still proceed.
-    async fn query_internetdb(&self, ip: &str, ctx: &ModuleContext, result: &mut ModuleResult) {
-        let resp = match ctx
+    /// Query the free InternetDB endpoint. A `404` is InternetDB's documented
+    /// "No information available" for an address it has never scanned — the one
+    /// clean negative. A transport failure, a throttle (`429`), an outage (5xx)
+    /// or an unreadable body is a failed lookup and is the module's error:
+    /// before this every one of them was swallowed with a debug line and the
+    /// scan recorded "no open ports, no CVEs" for the address
+    /// (`docs/PROVIDER_SWEEP_BACKLOG.md` #39).
+    async fn query_internetdb(
+        &self,
+        base: &str,
+        ip: &str,
+        ctx: &ModuleContext,
+        result: &mut ModuleResult,
+    ) -> crate::core::error::Result<()> {
+        let resp = ctx
             .http
-            .get(format!("https://internetdb.shodan.io/{}", urlencode(ip)))
+            .get(format!("{base}/{}", urlencode(ip)))
             .header("Accept", "application/json")
             .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::debug!(target: "huntsman::shodan", ip, error = %e, "internetdb fetch failed");
-                return;
-            }
+            .send_tagged(SRC)
+            .await?;
+
+        let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[404]).await? else {
+            tracing::debug!(target: "huntsman::shodan", ip, "internetdb: no information available (404)");
+            return Ok(());
         };
 
-        let status = resp.status();
-        if status.as_u16() == 404 || !status.is_success() {
-            tracing::debug!(
-                target: "huntsman::shodan",
-                ip,
-                status = status.as_u16(),
-                "internetdb returned no usable data (404 / non-success)"
-            );
-            return;
-        }
-
-        let body: InternetDbResp = match crate::util::http::json_scanned(resp, SRC).await {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::debug!(target: "huntsman::shodan", ip, error = %e, "internetdb parse failed");
-                return;
-            }
-        };
+        let body: InternetDbResp = crate::util::http::json_scanned(resp, SRC).await?;
 
         if body.ports.is_empty()
             && body.vulns.is_empty()
@@ -212,7 +208,7 @@ impl Shodan {
             && body.cpes.is_empty()
             && body.tags.is_empty()
         {
-            return;
+            return Ok(());
         }
 
         // Enrich the originating IP with port/vuln summary.
@@ -301,6 +297,7 @@ impl Shodan {
                     d
                 }),
         );
+        Ok(())
     }
 
     /// Query the paid Shodan host API.

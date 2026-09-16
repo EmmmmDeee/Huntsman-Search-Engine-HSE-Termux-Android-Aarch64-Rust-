@@ -6,6 +6,7 @@
 use super::queries::{Region, build_queries_fullname, regional_dorks};
 use super::*;
 use crate::core::confidence;
+use crate::util::html::is_challenge_page;
 
 #[test]
 fn primary_engine_order_floats_reliable_and_proven_engines_first() {
@@ -1133,13 +1134,13 @@ fn address_corroboration_counts_each_result_once_despite_two_extracted_variants(
 
 #[test]
 fn captcha_page_detection() {
-    assert!(is_captcha_page(
+    assert!(is_challenge_page(
         "<html><body>captcha-delivery.com script</body></html>"
     ));
-    assert!(is_captcha_page(
+    assert!(is_challenge_page(
         "<html><body>httpservice/retry redirect</body></html>"
     ));
-    assert!(!is_captcha_page(
+    assert!(!is_challenge_page(
         "<html><body>Normal search results page with lots of content</body></html>"
     ));
 }
@@ -1878,7 +1879,15 @@ fn build_entities_classifies_subdomain_vs_external_with_engine_corroboration() {
     let results = vec![
         mk("https://mail.targetcorp.com.au/login", "duckduckgo"),
         mk("https://mail.targetcorp.com.au/login", "brave"),
-        mk("https://partnerfirm.com/about", "duckduckgo"),
+        // An external host is the seed's estate only when its page names the
+        // seed (REQ-CANARY-003).
+        SearchResult {
+            url: "https://partnerfirm.com/about".to_string(),
+            title: "About".to_string(),
+            snippet: "Partner firm of targetcorp.com.au".to_string(),
+            engine: "duckduckgo",
+            query: "targetcorp.com.au".to_string(),
+        },
     ];
     let url_engine_count = url_engine_counts(&results);
     let results = dedup_results(results);
@@ -1924,6 +1933,155 @@ fn build_entities_classifies_subdomain_vs_external_with_engine_corroboration() {
             && e.value == "targetcorp.com.au"
             && e.has_tag("external")),
         "the target's own registrable domain must not be re-emitted as external"
+    );
+}
+
+/// The known-negative control's finding (REQ-CANARY-003): Bing answers a
+/// `site:` query about a domain it has never indexed with results for the
+/// query's other tokens — `intitle:"index of" ".git" site:<nobody>.com`
+/// returned index.hr, index.hu and merriam-webster.com's "index" entry — and
+/// the builder filed 49 such hosts as the domain's external estate at 0.45.
+/// An external host is the seed's estate only when its page names the seed;
+/// a host under the seed is its subdomain whatever the page says; a page that
+/// names only the seed's label names the web's vocabulary, not the seed; and
+/// a run in which no page names the seed re-affirms nothing.
+#[test]
+fn an_external_host_whose_page_never_names_the_domain_seed_is_not_its_estate() {
+    let target = Target::new(TargetKind::Domain, "targetcorp.com.au");
+    let mk = |url: &str, title: &str, snippet: &str, query: &str| SearchResult {
+        url: url.to_string(),
+        title: title.to_string(),
+        snippet: snippet.to_string(),
+        engine: "bing",
+        query: query.to_string(),
+    };
+    let strangers = || {
+        vec![
+            mk(
+                "https://index.hu/",
+                "Index - friss hírek, események, tények",
+                "Hírek, események",
+                "intitle:\"index of\" \".git\" site:targetcorp.com.au",
+            ),
+            mk(
+                "https://www.merriam-webster.com/dictionary/index",
+                "INDEX Definition & Meaning",
+                "The meaning of INDEX is a list of items",
+                "intitle:\"index of\" \".git\" site:targetcorp.com.au",
+            ),
+            mk(
+                "https://partnerfirm.com/about",
+                "About",
+                "TargetCorp Pty Ltd is a partner",
+                "\"targetcorp.com.au\"",
+            ),
+        ]
+    };
+    let mut results = strangers();
+    results.push(mk(
+        "https://vendorcorp.com/clients",
+        "Clients",
+        "Supplier to targetcorp.com.au since 2019",
+        "\"targetcorp.com.au\"",
+    ));
+    results.push(mk(
+        "https://mail.targetcorp.com.au/login",
+        "login",
+        "mail server",
+        "site:targetcorp.com.au",
+    ));
+    let url_engine_count = url_engine_counts(&results);
+    let results = dedup_results(results);
+    let res = build_entities(&target, "s", &results, &url_engine_count);
+    let mut domains: Vec<&str> = res
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain && e.value != "targetcorp.com.au")
+        .map(|e| e.value.as_str())
+        .collect();
+    domains.sort_unstable();
+    assert_eq!(
+        domains,
+        vec!["mail.targetcorp.com.au", "vendorcorp.com"],
+        "the page naming the seed and the seed's own host, and none of the strangers: {:?}",
+        res.entities
+    );
+    let parent = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain && e.value == "targetcorp.com.au")
+        .expect("two results name the seed, so it is re-affirmed");
+    assert!(
+        parent.evidence.iter().any(|ev| ev
+            .attributes
+            .get("results_naming_subject")
+            .is_some_and(|n| n == "2")),
+        "{:?}",
+        parent.evidence
+    );
+
+    // Only the strangers: nothing is mined and nothing re-affirmed.
+    let strangers = strangers();
+    let url_engine_count = url_engine_counts(&strangers);
+    let strangers = dedup_results(strangers);
+    let res = build_entities(&target, "s", &strangers, &url_engine_count);
+    assert!(
+        res.entities.iter().all(|e| e.kind != EntityKind::Domain),
+        "{:?}",
+        res.entities
+    );
+}
+
+/// REQ-SEARCH-003 (the domain estate gate, contract boundary): a short domain
+/// seed is named only as a registrable unit, never as a raw substring of a
+/// longer host. For the seed `art.com`, a page mentioning `smart.com` and
+/// `start.com` embeds the literal `art.com`; the gate's `hay.contains("art.com")`
+/// read those pages as naming the seed and filed their unrelated hosts as the
+/// seed's external estate — the same 49-host false-estate class REQ-CANARY-003
+/// gated, narrowed to a substring collision. This pins `build_entities`' estate
+/// branch to `names_domain_token` at the call site: it fails if reverted to
+/// `contains`, while a page naming the seed as its own label still files.
+#[test]
+fn a_short_domain_seed_is_not_named_by_a_longer_host_string() {
+    let target = Target::new(TargetKind::Domain, "art.com");
+    let mk = |url: &str, snippet: &str, query: &str| SearchResult {
+        url: url.to_string(),
+        title: "result".to_string(),
+        snippet: snippet.to_string(),
+        engine: "bing",
+        query: query.to_string(),
+    };
+    // Two collisions and one genuine estate host. `smart.com` (leading `m`) and
+    // `start.com` (leading `t`) both embed `art.com`; `partnersite.net`'s page
+    // names the seed as its own registrable unit.
+    let results = vec![
+        mk(
+            "https://competitorlist.net/rivals",
+            "smart.com and start.com are the market leaders",
+            "\"art.com\"",
+        ),
+        mk(
+            "https://partnersite.net/clients",
+            "partner of art.com since 2019",
+            "\"art.com\"",
+        ),
+    ];
+    let url_engine_count = url_engine_counts(&results);
+    let results = dedup_results(results);
+    let res = build_entities(&target, "s", &results, &url_engine_count);
+    let mut domains: Vec<&str> = res
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain && e.value != "art.com")
+        .map(|e| e.value.as_str())
+        .collect();
+    domains.sort_unstable();
+    assert_eq!(
+        domains,
+        vec!["partnersite.net"],
+        "only the host whose page names the seed as a registrable unit is its \
+         estate; the substring collisions are not: {:?}",
+        res.entities
     );
 }
 
@@ -2101,24 +2259,199 @@ fn email_and_phone_extraction_requires_the_surname_in_the_result() {
 }
 
 #[test]
-fn email_extraction_unaffected_for_single_token_targets() {
-    // Single-token targets (email/username) are not prone to first-name
-    // collision, so the gate must stay a no-op for them — mirrors the existing
-    // guarantee already proven for address extraction.
+fn a_single_token_subject_is_gated_like_a_name_an_unrelated_page_mints_nothing() {
+    // This test used to assert the opposite — "single-token targets
+    // (email/username) are not prone to first-name collision, so the gate
+    // must stay a no-op for them" — and pinned the premise the sweep's
+    // known-negative control refuted (REQ-SEARCH-002): the engines answer a
+    // handle no page contains with fuzzy results, and an unrelated page's
+    // email was attributed to the handle. The unrelated page mints nothing;
+    // a page that names the handle mints its email as before.
     let target = Target::new(TargetKind::Username, "kylo4kylo");
-    let results = vec![SearchResult {
+    let unrelated = SearchResult {
         url: "https://example.com/unrelated".to_string(),
         title: "totally unrelated page".to_string(),
         snippet: "contact someone at other@example.com".to_string(),
         engine: "duckduckgo",
         query: "kylo4kylo".to_string(),
-    }];
+    };
+    let results = vec![unrelated];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        !res.entities.iter().any(|e| e.kind == EntityKind::Email),
+        "an unrelated page's email is not the subject's"
+    );
+
+    let named = SearchResult {
+        url: "https://example.com/kylo4kylo".to_string(),
+        title: "kylo4kylo's page".to_string(),
+        snippet: "contact kylo4kylo at other@example.com".to_string(),
+        engine: "duckduckgo",
+        query: "kylo4kylo".to_string(),
+    };
+    let results = vec![named];
     let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
     assert!(
         res.entities
             .iter()
             .any(|e| e.kind == EntityKind::Email && e.value == "other@example.com"),
-        "single-token targets must still extract emails regardless of surname presence"
+        "a page that names the subject still yields its email"
+    );
+}
+
+/// REQ-SEARCH-003 (the single-token subject gate, contract boundary): a short
+/// handle is named only as a whole word, never as a raw substring of a longer
+/// one. For the handle `abc`, a page about `abcnews.com` embeds the literal
+/// `abc`; the gate's `hay.contains("abc")` read it as naming the handle and
+/// minted the broadcaster's email as the subject's — the same false-attribution
+/// class REQ-SEARCH-002 gated, narrowed to a substring collision. This pins
+/// `build_entities`' subject-term branch to `names_word_token` at the call
+/// site: it fails if reverted to `contains`, while a page naming the handle as
+/// a whole word still yields its email.
+#[test]
+fn a_short_single_token_subject_is_not_named_by_a_longer_word() {
+    let target = Target::new(TargetKind::Username, "abc");
+    // The handle appears only embedded in `abcnews` (snippet email domain and
+    // URL host), never as a standalone word — the substring collision.
+    let collision = SearchResult {
+        url: "https://abcnews.com/tech".to_string(),
+        title: "Technology headlines".to_string(),
+        snippet: "reach the newsroom at editor@abcnews.com for tips".to_string(),
+        engine: "duckduckgo",
+        query: "abc".to_string(),
+    };
+    let results = vec![collision];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        !res.entities.iter().any(|e| e.kind == EntityKind::Email),
+        "a longer word embedding the handle is not the handle: {:?}",
+        res.entities
+    );
+
+    // A page that names the handle as a whole word still yields its email.
+    let named = SearchResult {
+        url: "https://example.com/u/abc".to_string(),
+        title: "abc's page".to_string(),
+        snippet: "abc can be reached at editor@example.com".to_string(),
+        engine: "duckduckgo",
+        query: "abc".to_string(),
+    };
+    let results = vec![named];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        res.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "editor@example.com"),
+        "a page that names the handle as a word still yields its email: {:?}",
+        res.entities
+    );
+}
+
+/// REQ-SEARCH-005 (the organisation relevance gate, contract boundary): an
+/// organisation is named by its distinctive name, never by its corporate
+/// form. The known-negative control minted 16 entities for `Carora Vovilo Pty
+/// Ltd`, a company nobody holds — the engines answered with real `... Pty Ltd`
+/// firms and the gate took the org's LAST token as its distinctive term, which
+/// for `X Pty Ltd` is the corporate suffix `ltd`, naming every company (the
+/// org analog of REQ-CANARY-003's "a domain's last label is the web's
+/// vocabulary"). A different `... Pty Ltd` that shares only one distinctive
+/// token is not the subject; a page naming the full distinctive name still
+/// mines its PII. Fails on the baseline (`terms.last()` == `ltd`).
+#[test]
+fn an_organisation_is_named_by_its_distinctive_name_not_its_corporate_form() {
+    let target = Target::new(TargetKind::Organisation, "Carora Vovilo Pty Ltd");
+    // A page about DIFFERENT companies that share the corporate form and one
+    // distinctive token (`carora`), never the subject's full name.
+    let stranger = SearchResult {
+        url: "https://bizly.example/listings".to_string(),
+        title: "CAROLINARA PTY LTD - Free Trust Scores".to_string(),
+        snippet: "CAROLINARA PTY LTD and CARORA GROUP PTY LTD are registered \
+                  companies. Contact +61 481 157 705."
+            .to_string(),
+        engine: "bing",
+        query: "\"Carora Vovilo Pty Ltd\"".to_string(),
+    };
+    let results = vec![stranger];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        res.entities
+            .iter()
+            .all(|e| e.kind != EntityKind::Organisation && e.kind != EntityKind::Phone),
+        "a page about a different '... Pty Ltd' company does not name the \
+         subject: {:?}",
+        res.entities
+            .iter()
+            .map(|e| (e.kind.clone(), e.value.clone()))
+            .collect::<Vec<_>>()
+    );
+
+    // A page that names the distinctive tokens still mines its PII — even
+    // without the corporate suffix, because the suffix is not required (that
+    // is what `is_generic_org_token` filters): if it were, this suffix-less
+    // page would be a false negative.
+    let named = SearchResult {
+        url: "https://bizly.example/carora-vovilo".to_string(),
+        title: "Carora Vovilo".to_string(),
+        snippet: "Carora Vovilo is a registered firm. Contact +61 481 157 705.".to_string(),
+        engine: "bing",
+        query: "\"Carora Vovilo Pty Ltd\"".to_string(),
+    };
+    let results = vec![named];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        res.entities.iter().any(|e| e.kind == EntityKind::Phone),
+        "a page that names the distinctive tokens (without the corporate form) \
+         still yields its phone: {:?}",
+        res.entities
+            .iter()
+            .map(|e| (e.kind.clone(), e.value.clone()))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// REQ-SEARCH-004 (the URL-path relevance gate, contract boundary): a short
+/// handle claims a result URL as its own profile only when the path names the
+/// handle as a whole token. For `mike`, `build_entities`' `url_matches_target`
+/// gate read `path.contains("mike")` and filed a stranger's `/mikeoxlong` as
+/// the handle's Url at 0.50 — the URL-path sibling of REQ-SEARCH-003's snippet
+/// collision, invisible to the 12-char known-negative control. This pins the
+/// gate to `names_word_token` at the call site: it fails if reverted to
+/// `contains`, while the handle as its own path token still yields a Url.
+#[test]
+fn a_short_handle_does_not_claim_a_longer_path_as_its_profile_url() {
+    let target = Target::new(TargetKind::Username, "mike");
+    // A stranger's profile whose handle merely starts with `mike`; the snippet
+    // and title never name `mike` as a word, so only the URL-path gate is in
+    // play.
+    let collision = SearchResult {
+        url: "https://twitter.com/mikeoxlong".to_string(),
+        title: "a profile page".to_string(),
+        snippet: "some unrelated biography text here".to_string(),
+        engine: "duckduckgo",
+        query: "mike".to_string(),
+    };
+    let results = vec![collision];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        !res.entities.iter().any(|e| e.kind == EntityKind::Url),
+        "a longer path token is not the handle's own profile URL: {:?}",
+        res.entities
+    );
+
+    // The handle as its own path token is its profile URL.
+    let named = SearchResult {
+        url: "https://twitter.com/mike".to_string(),
+        title: "a profile page".to_string(),
+        snippet: "some unrelated biography text here".to_string(),
+        engine: "duckduckgo",
+        query: "mike".to_string(),
+    };
+    let results = vec![named];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        res.entities.iter().any(|e| e.kind == EntityKind::Url),
+        "the handle as its own path token yields a Url entity: {:?}",
+        res.entities
     );
 }
 
@@ -2173,10 +2506,16 @@ fn location_seed_pivot_does_not_reaffirm_the_seed_at_0_82() {
 
 #[test]
 fn identity_seed_still_gets_flat_parent_reaffirmation() {
-    // The fix must not regress the legitimate case: for a genuine identity seed
-    // (email / username / domain) "this identifier has real web presence" IS
-    // corroboration, so the parent still re-affirms it at the flat 0.82
-    // search-enriched tier — the demotion is location-seed-specific.
+    // The location-seed fix must not regress the legitimate case: for a
+    // genuine identity seed (email / username / domain) a page that names the
+    // identifier IS corroboration, so the parent still re-affirms it at the
+    // flat 0.82 search-enriched tier — the demotion is location-seed-specific.
+    // "Names the identifier" is the condition (REQ-SEARCH-002): this test
+    // used to hand the builder a result that named nothing — `example.org/about`,
+    // "some page" — and asserted the parent anyway, the premise the sweep's
+    // known-negative control refuted (the engines answer a handle no page
+    // contains with 94 to 148 fuzzy results). A result that names nothing
+    // re-affirms nothing.
     for kind in [TargetKind::Email, TargetKind::Username, TargetKind::Domain] {
         let value = match kind {
             TargetKind::Email => "jerome.despal@example.com",
@@ -2184,13 +2523,15 @@ fn identity_seed_still_gets_flat_parent_reaffirmation() {
             _ => "acme.com",
         };
         let target = Target::new(kind, value);
-        let results = vec![SearchResult {
+        let mk = |snippet: &str| SearchResult {
             url: "https://example.org/about".to_string(),
             title: "profile".to_string(),
-            snippet: "some page".to_string(),
+            snippet: snippet.to_string(),
             engine: "duckduckgo",
             query: "q".to_string(),
-        }];
+        };
+
+        let results = vec![mk(&format!("some page about {value}"))];
         let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
         let parent = res
             .entities
@@ -2201,6 +2542,13 @@ fn identity_seed_still_gets_flat_parent_reaffirmation() {
             (parent.confidence - 0.82).abs() < 1e-9,
             "{kind:?} parent stays at 0.82, got {}",
             parent.confidence
+        );
+
+        let results = vec![mk("some page")];
+        let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+        assert!(
+            !res.entities.iter().any(|e| e.has_tag("search-enriched")),
+            "{kind:?}: a result that names nothing re-affirms nothing"
         );
     }
 }
@@ -2406,28 +2754,28 @@ fn description_engine_count_matches_registry() {
 #[test]
 fn captcha_detects_modern_vendor_interstitials() {
     // Cloudflare managed challenge ("/cdn-cgi/challenge-platform").
-    assert!(is_captcha_page(
+    assert!(is_challenge_page(
         "<html><head><title>Just a moment...</title></head><body>\
              Checking your browser before accessing. \
              <script src=\"/cdn-cgi/challenge-platform/h/g/orchestrate/chl/v1\"></script>\
              cloudflare</body></html>"
     ));
     // Google reCAPTCHA + "unusual traffic ... network" interstitial.
-    assert!(is_captcha_page(
+    assert!(is_challenge_page(
         "<html><body>Our systems have detected unusual traffic from your \
              computer network. <div class=\"g-recaptcha\"></div></body></html>"
     ));
     // hCaptcha widget.
-    assert!(is_captcha_page(
+    assert!(is_challenge_page(
         "<div class=\"h-captcha\" data-sitekey=\"x\"></div>\
              <script src=\"https://hcaptcha.com/1/api.js\"></script>"
     ));
     // PerimeterX / HUMAN classic block page.
-    assert!(is_captcha_page(
+    assert!(is_challenge_page(
         "Access to this page has been denied because we believe you are using automation."
     ));
     // Imperva / Incapsula.
-    assert!(is_captcha_page(
+    assert!(is_challenge_page(
         "Request unsuccessful. Incapsula incident ID: 1234-000567"
     ));
 }
@@ -2438,14 +2786,14 @@ fn captcha_does_not_flag_results_that_merely_mention_block_terms() {
     // as a block page. The AND-set design requires a co-token, so a single
     // ambiguous phrase no longer trips the detector — exactly the false
     // positives the old single-substring matcher produced.
-    assert!(!is_captcha_page(
+    assert!(!is_challenge_page(
         "Search results: how Cloudflare works and what a reCAPTCHA is — \
              articles about bot detection and network security."
     ));
-    assert!(!is_captcha_page(
+    assert!(!is_challenge_page(
         "Blog post: detecting unusual traffic spikes in your web analytics."
     ));
-    assert!(!is_captcha_page(
+    assert!(!is_challenge_page(
         "<html><body>10 results for your query about online privacy.</body></html>"
     ));
 }
@@ -2760,5 +3108,70 @@ fn court_record_hits_are_source_documents_never_pivots() {
     assert!(
         !url_of("example-portfolio.com").has_tag(crate::core::tags::SOURCE_DOCUMENT),
         "an ordinary page keeps its pivot"
+    );
+}
+
+/// REQ-SEARCH-002: a single-token subject collides like a name does. The
+/// engines answer a string no page contains with fuzzy results; a result that
+/// never names the handle — not in its URL, title or snippet — mines nothing,
+/// however plausible its snippet's email or its path's handle. The same PII
+/// in a result that names the handle is mined as before.
+#[test]
+fn a_result_that_never_names_a_single_token_subject_mines_neither_email_nor_handle() {
+    let target = Target::new(TargetKind::Username, "gd618sephcjw");
+    let email = "fidelity@service.healthaccountservices.com";
+    let stranger = SearchResult {
+        url: "https://github.com/openai".to_string(),
+        title: "OpenAI · GitHub".to_string(),
+        snippet: format!("Contact {email} for account help"),
+        engine: "bing",
+        query: "\"gd618sephcjw\"".to_string(),
+    };
+    let results = vec![stranger];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    let minted: Vec<(EntityKind, String)> = res
+        .entities
+        .iter()
+        .map(|e| (e.kind.clone(), e.value.clone()))
+        .collect();
+    assert!(
+        minted.is_empty(),
+        "a result that never names the subject mines nothing — not the stranger's email, not \
+         the handle in its path, and not a re-affirmation of the seed as having \"web \
+         presence\": {minted:?}"
+    );
+
+    let named = SearchResult {
+        url: "https://github.com/gd618sephcjw".to_string(),
+        title: "gd618sephcjw · GitHub".to_string(),
+        snippet: format!("gd618sephcjw — contact {email}"),
+        engine: "bing",
+        query: "\"gd618sephcjw\"".to_string(),
+    };
+    let results = vec![named];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        res.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == email),
+        "the same email in a result that names the subject is mined"
+    );
+    assert!(
+        res.entities.iter().any(|e| e.kind == EntityKind::Username
+            && e.value == "gd618sephcjw"
+            && e.has_tag("social-profile")),
+        "the handle in a path of a result that names the subject is mined"
+    );
+    let parent = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Username && e.has_tag("search-enriched"))
+        .expect("a result that names the subject re-affirms the seed");
+    assert_eq!(
+        parent.evidence[0]
+            .attributes
+            .get("results_naming_subject")
+            .map(String::as_str),
+        Some("1")
     );
 }

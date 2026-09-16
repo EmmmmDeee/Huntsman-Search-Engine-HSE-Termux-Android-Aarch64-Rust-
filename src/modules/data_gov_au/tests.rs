@@ -202,3 +202,34 @@ async fn short_query_is_skipped_without_a_request() {
     let result = m.process(&target, &ctx).await.expect("should succeed");
     assert!(result.entities.is_empty());
 }
+
+#[tokio::test]
+async fn a_404_or_a_rejected_query_is_a_failed_lookup_and_only_count_zero_is_the_miss() {
+    // Backlog #11. CKAN never 404s for a zero-match search; a 404 here is the
+    // endpoint path gone (the header records the bare `/api/3/` path doing
+    // exactly that). It used to read as "no matching Australian government
+    // agency" for every Organisation target, silently and indefinitely.
+    use crate::util::http::test_server::{Canned, serve};
+    let base = serve(vec![
+        Canned::text(404, "Not Found"),
+        Canned::json(
+            200,
+            r#"{"success":false,"error":{"message":"Bad search query"}}"#,
+        ),
+        Canned::json(200, r#"{"success":true,"result":{"count":0,"results":[]}}"#),
+    ])
+    .await;
+    let client = reqwest::Client::new();
+    let err = package_search(&client, &base, "Bureau of Meteorology")
+        .await
+        .expect_err("404 is the endpoint gone");
+    assert!(err.to_string().contains("404"), "{err}");
+    let err = package_search(&client, &base, "Bureau of Meteorology")
+        .await
+        .expect_err("success=false is a rejected query");
+    assert!(err.to_string().contains("success=false"), "{err}");
+    let ok = package_search(&client, &base, "Bureau of Meteorology")
+        .await
+        .expect("count 0 is the clean miss");
+    assert!(ok.success && ok.result.expect("present").results.is_empty());
+}

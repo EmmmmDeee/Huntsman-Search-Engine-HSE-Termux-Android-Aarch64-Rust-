@@ -23,6 +23,8 @@ mod keys;
 mod redact;
 mod ssrf;
 #[cfg(test)]
+pub(crate) mod test_server;
+#[cfg(test)]
 mod tests;
 mod trust;
 mod url;
@@ -43,9 +45,9 @@ pub(crate) use url::RequestBuilderExt;
 pub use url::{json_decode, json_scanned, urldecode, urlencode};
 
 /// Browser User-Agent presented by the AU directory/registry scrapers
-/// (`asic_director`, `au_property`, `au_people`, `au_electoral`) so scraper
+/// (`asic_director` and its siblings) so scraper
 /// detection on those sites doesn't short-circuit the request. Single source of
-/// truth — bump the Chrome version once here, not in four modules. Distinct from
+/// truth — bump the Chrome version once here, not in every module. Distinct from
 /// [`crate::util::curl::UA_POOL`], which rotates UAs for the curl fallback.
 pub const UA_BROWSER: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 

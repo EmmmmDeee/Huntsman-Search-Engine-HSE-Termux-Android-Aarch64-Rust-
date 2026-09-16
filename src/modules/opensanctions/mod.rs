@@ -168,9 +168,7 @@ impl Module for OpenSanctions {
             return Ok(ModuleResult::new());
         };
 
-        let body: MatchResp = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+        let body: MatchResp = crate::util::http::json_scanned(resp, SRC).await?;
 
         let mut result = ModuleResult::new();
         result.extend(build_entities(name, &body.responses.q, &ctx.scan_id));

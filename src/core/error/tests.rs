@@ -68,6 +68,10 @@ use super::*;
                 Error::MissingKey(m) => assert_eq!(s, format!("missing key: {m}")),
                 Error::Module { module, message } => assert_eq!(s, format!("[{module}] {message}")),
                 Error::RateLimited(m) => assert_eq!(s, format!("rate limited: {m}")),
+                Error::BotChallenge(m) => assert_eq!(s, format!("bot challenge: {m}")),
+                Error::Skipped { class, reason } => {
+                    assert_eq!(s, format!("skipped ({}): {reason}", class.as_str()));
+                }
                 Error::Other(m) => assert_eq!(&s, m),
             }
         }
@@ -83,7 +87,36 @@ use super::*;
         assert_display(&Error::MissingKey("HUNTSMAN_X".into()));
         assert_display(&Error::module("m", "msg"));
         assert_display(&Error::RateLimited("see_know: throttled".into()));
+        assert_display(&Error::BotChallenge(
+            "anubis: HTTP 403 Forbidden: Attention Required! | Cloudflare".into(),
+        ));
+        assert_display(&Error::skipped(
+            crate::core::event::SkipClass::NotApplicable,
+            "registry publishes no WHOIS server",
+        ));
         assert_display(&Error::Other("plain".into()));
+    }
+
+    /// `Error::skipped` is the typed "not attempted" a module returns in place of
+    /// a failure or an empty result. Its Display names the class (the wire
+    /// spelling `core::event::SkipClass::as_str` uses) so a log line or a probe
+    /// report shows *which kind* of silence this was, and the constructor keeps
+    /// the class and the operator-facing reason exactly as given — dispatch
+    /// forwards both verbatim into `EventKind::ModuleSkipped`.
+    #[test]
+    fn error_skipped_carries_class_and_reason() {
+        use crate::core::event::SkipClass;
+        let e = Error::skipped(SkipClass::Unavailable, "TCP/43 not routable here");
+        assert_eq!(e.to_string(), "skipped (unavailable): TCP/43 not routable here");
+        let Error::Skipped { class, reason } = e else {
+            panic!("constructor must build the Skipped variant");
+        };
+        assert_eq!(class, SkipClass::Unavailable);
+        assert_eq!(reason, "TCP/43 not routable here");
+        assert_eq!(
+            Error::skipped(SkipClass::NotApplicable, "x").to_string(),
+            "skipped (not_applicable): x"
+        );
     }
 
     /// SECURITY REGRESSION. The `From<reqwest::Error>` conversion MUST strip the

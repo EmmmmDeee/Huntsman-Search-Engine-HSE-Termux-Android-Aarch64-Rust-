@@ -129,7 +129,7 @@ fn scan_evidence_corpus<'a>(
 /// The geo and AU-registry *enrichment* passes attach the SAME
 /// `state`/`postcode`/`suburb`/`city`/`street` attributes these rules key on — a
 /// reverse geocode (`geocode` / `photon`), and registry enrichers such as
-/// `au_property` / `au_electoral` / `abn_lookup` / `au_people` — so without this
+/// `abn_lookup` / `asic_director` / `ahpra` — so without this
 /// gate a reverse-geocoded or registry-sourced locality was assembled and
 /// mislabelled, e.g. a live phone scan produced "assembled from 1 breach record
 /// source(s) (geocode)" for a bare AU mobile. Allow-list (default-deny) so a
@@ -144,8 +144,8 @@ fn scan_evidence_corpus<'a>(
 /// `"presence"` (its name matches a presence needle first), so it is added back
 /// explicitly, or real SeekNow breach localities/addresses would silently
 /// vanish. Every non-breach enricher that leaks the same attributes — `geocode`,
-/// `photon`, `search_engines`, and the AU registries (`au_property`,
-/// `au_electoral`, `abn_lookup`, `au_people`) — is classified non-breach by
+/// `photon`, `search_engines`, and the AU registries (`abn_lookup`,
+/// `asic_director`, `ahpra`) — is classified non-breach by
 /// `source_family` and so is correctly rejected. Pure.
 pub(in crate::core) fn is_breach_source(name: &str) -> bool {
     super::source_family(name) == "breach"

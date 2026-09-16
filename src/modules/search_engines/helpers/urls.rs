@@ -608,14 +608,19 @@ pub(in crate::modules::search_engines) fn url_matches_target(url: &str, terms: &
     match significant.split_last() {
         None => false,
         // A single distinctive token (email handle, username, one-word name): a
-        // path hit is sufficient — that token IS the identity.
-        Some((only, [])) => path.contains(only),
+        // path hit is sufficient — that token IS the identity. As a whole path
+        // token, never a raw substring: `path.contains("mike")` matched a
+        // stranger's `/mikeoxlong` and filed it as the handle `mike`'s own page
+        // at 0.50 (REQ-SEARCH-004, the URL-path sibling of REQ-SEARCH-003's
+        // snippet gate). `/mike`, `/mike-smith`, `/users/mike` still match.
+        Some((only, [])) => names_word_token(&path, only),
         // A multi-part name: the LAST significant token is the surname — the
         // distinctive anchor. A common FIRST name alone cross-attributes
         // different people (a "Cindy He" UNSW staff page matched "Cindy
         // Haynes"), so require the surname in the path; given names corroborate
-        // but cannot stand in for it.
-        Some((surname, _given)) => path.contains(surname),
+        // but cannot stand in for it. As a whole token: the surname `haynes`
+        // names `/cindy-haynes` and `/c-haynes`, never `/haynesville`.
+        Some((surname, _given)) => names_word_token(&path, surname),
     }
 }
 

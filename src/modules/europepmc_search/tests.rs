@@ -149,3 +149,33 @@ fn module_metadata_is_coherent() {
     );
     assert!(!m.description().is_empty());
 }
+
+#[tokio::test]
+async fn a_404_from_the_search_endpoint_is_a_failed_lookup_and_hit_count_zero_is_the_miss() {
+    // Backlog #21. Europe PMC signals "no hits" as a 200 with `hitCount: 0`
+    // and an empty `resultList`; the endpoint is fixed, so a 404 is the
+    // endpoint gone, never "no publications by this author". Before this a
+    // 404 was `Ok(empty)` — a clean negative about the named person.
+    use crate::util::http::test_server::{Canned, serve};
+    let base = serve(vec![
+        Canned::text(404, "Not Found"),
+        Canned::text(500, "Internal Server Error"),
+        Canned::json(200, r#"{"hitCount":0,"resultList":{"result":[]}}"#),
+    ])
+    .await;
+    let client = reqwest::Client::new();
+    let endpoint = format!("{base}/europepmc/webservices/rest/search");
+
+    let err = search(&client, &endpoint, QUERY)
+        .await
+        .expect_err("404 on a fixed search endpoint is a failed lookup");
+    assert!(err.to_string().contains("404"), "{err}");
+    let err = search(&client, &endpoint, QUERY)
+        .await
+        .expect_err("an outage is a failed lookup");
+    assert!(err.to_string().contains("500"), "{err}");
+    let miss = search(&client, &endpoint, QUERY)
+        .await
+        .expect("hitCount 0 is the genuine miss");
+    assert!(build_entities(&miss, QUERY, SCAN).is_empty());
+}

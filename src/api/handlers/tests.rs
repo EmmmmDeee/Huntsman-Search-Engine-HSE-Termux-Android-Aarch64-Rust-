@@ -137,19 +137,53 @@ use crate::app::export::csv_escape;
                 outcome: ProbeOutcome::Empty,
             },
             ProbeReport {
-                module: "bgpview",
+                module: "ip_registry",
                 kind: TargetKind::Asn,
                 value: "AS15169",
                 outcome: ProbeOutcome::Unreachable {
                     reason: "connect".into(),
                 },
             },
+            // A throttled canary: alive but asking for less — neither dead
+            // nor drift, reported as its own outcome.
+            ProbeReport {
+                module: "ripestat",
+                kind: TargetKind::IpAddress,
+                value: "8.8.8.8",
+                outcome: ProbeOutcome::RateLimited {
+                    reason: "ripestat: HTTP 429 Too Many Requests: <empty>".into(),
+                },
+            },
+            // A canary refused by an anti-bot challenge: alive, but not to
+            // this client — neither dead nor drift, its own outcome.
+            ProbeReport {
+                module: "crtsh",
+                kind: TargetKind::Domain,
+                value: "example.com",
+                outcome: ProbeOutcome::Blocked {
+                    reason: "crtsh: HTTP 403 Forbidden: Attention Required! | Cloudflare".into(),
+                },
+            },
+            // An Australia-only module declining the fleet's New York sample
+            // in-band: not asked, so neither dead nor drift, its own outcome.
+            ProbeReport {
+                module: "au_geo",
+                kind: TargetKind::Coordinates,
+                value: "40.7128,-74.0060",
+                outcome: ProbeOutcome::Skipped {
+                    class: crate::core::event::SkipClass::NotApplicable,
+                    reason: "40.7128,-74.006 is outside Australia; the ABS ASGS layers cover Australia only".into(),
+                },
+            },
         ];
         let v = capability_probe_json(&reports);
-        assert_eq!(v["probed"], 4);
+        assert_eq!(v["probed"], 7);
         assert_eq!(v["alive"], 1);
         assert_eq!(v["empty"], 2);
         assert_eq!(v["unreachable"], 1);
+        assert_eq!(v["rate_limited"], 1);
+        assert_eq!(v["blocked"], 1);
+        assert_eq!(v["skipped"], 1);
         // Only the ip_geo canary's empty is confirmed drift.
         assert_eq!(v["drift"].as_array().expect("should succeed").len(), 1);
         assert_eq!(v["drift"][0], "ip_geo");
@@ -163,6 +197,142 @@ use crate::app::export::csv_escape;
         let cs = mods.iter().find(|m| m["module"] == "certspotter").expect("should succeed");
         assert_eq!(cs["outcome"], "alive");
         assert_eq!(cs["found"], 9);
+        // ip_registry is a canary that gave no answer: a dead canary, not drift.
+        assert_eq!(v["dead_canaries"].as_array().expect("should succeed").len(), 1);
+        assert_eq!(v["dead_canaries"][0], "ip_registry");
+        let dead = mods.iter().find(|m| m["module"] == "ip_registry").expect("should succeed");
+        assert_eq!(dead["dead_canary"], true);
+        assert_eq!(dead["drift"], false);
+        assert_eq!(ip_geo["dead_canary"], false, "drift is not death");
+        let throttled = mods.iter().find(|m| m["module"] == "ripestat").expect("should succeed");
+        assert_eq!(throttled["outcome"], "rate-limited");
+        assert_eq!(throttled["dead_canary"], false, "a throttled canary answered");
+        assert_eq!(throttled["drift"], false);
+        let declined = mods.iter().find(|m| m["module"] == "au_geo").expect("should succeed");
+        assert_eq!(declined["outcome"], "skipped");
+        assert_eq!(declined["dead_canary"], false);
+        assert_eq!(declined["drift"], false);
+        assert!(
+            declined["reason"]
+                .as_str()
+                .expect("reason")
+                .starts_with("not_applicable: ")
+        );
+        let refused = mods.iter().find(|m| m["module"] == "crtsh").expect("should succeed");
+        assert_eq!(refused["outcome"], "blocked");
+        assert_eq!(refused["canary"], true);
+        assert_eq!(refused["dead_canary"], false, "a refused canary answered");
+        assert_eq!(refused["drift"], false);
+        assert!(
+            refused["reason"]
+                .as_str()
+                .expect("reason")
+                .contains("Attention Required")
+        );
+        assert_eq!(v["dead_canaries"].as_array().expect("should succeed").len(), 1);
+    }
+
+    /// The Engines page's live-probe panel (`src/web/js/views/engines.js`) is
+    /// the one operator surface for `POST /capabilities/probe`. Every counter
+    /// the endpoint emits and every outcome label a module row can carry must
+    /// be something the panel reads. Before this guard `rate_limited`,
+    /// `blocked`, `skipped` and `dead_canaries` reached the JSON
+    /// (REQ-DRIFT-001/002/003, REQ-SCOPE-001) while the panel painted all four
+    /// the red of a provider that is down, counted none of them and flagged no
+    /// dead canary: implemented, not reachable. Tying the panel to the contract
+    /// at the boundary means a new state can never vanish from the UI silently.
+    #[test]
+    fn the_engines_panel_reads_every_probe_counter_and_outcome_label_the_api_emits() {
+        use super::capability_probe_json;
+        use crate::core::event::SkipClass;
+        use crate::core::scan::TargetKind;
+        use crate::selftest::capability_probe::{ProbeOutcome, ProbeReport};
+        let report = |module: &'static str, outcome: ProbeOutcome| ProbeReport {
+            module,
+            kind: TargetKind::Domain,
+            value: "example.com",
+            outcome,
+        };
+        // One row per outcome variant, so every label the API can emit is on
+        // the table.
+        let reports = vec![
+            report("alive_src", ProbeOutcome::Alive { found: 3 }),
+            report("empty_src", ProbeOutcome::Empty),
+            report(
+                "down_src",
+                ProbeOutcome::Unreachable {
+                    reason: "transport error".into(),
+                },
+            ),
+            report("slow_src", ProbeOutcome::TimedOut),
+            report(
+                "throttled_src",
+                ProbeOutcome::RateLimited {
+                    reason: "HTTP 429".into(),
+                },
+            ),
+            report(
+                "walled_src",
+                ProbeOutcome::Blocked {
+                    reason: "HTTP 403 Attention Required".into(),
+                },
+            ),
+            report(
+                "declined_src",
+                ProbeOutcome::Skipped {
+                    class: SkipClass::NotApplicable,
+                    reason: "out of scope".into(),
+                },
+            ),
+            report(
+                "broken_src",
+                ProbeOutcome::Panicked {
+                    message: "index out of bounds".into(),
+                },
+            ),
+        ];
+        let v = capability_probe_json(&reports);
+        let js = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/web/js/views/engines.js"
+        ))
+        .expect("engines.js is checked in");
+        // Only the panel's renderer counts: the page's search-engine liveness
+        // table has its own `'blocked'` state, and a match there would let the
+        // probe panel drop the label unnoticed.
+        let panel = js
+            .split("export async function runCapabilityProbe(")
+            .nth(1)
+            .and_then(|rest| rest.split("\nexport ").next())
+            .expect("runCapabilityProbe is an exported function in engines.js");
+
+        let counters = v.as_object().expect("the probe JSON is an object");
+        assert!(counters.len() >= 12, "{:?}", counters.keys().collect::<Vec<_>>());
+        for key in counters.keys() {
+            assert!(
+                panel.contains(&format!("data.{key}")),
+                "runCapabilityProbe never reads the probe field `{key}` the API emits"
+            );
+        }
+        let labels: std::collections::BTreeSet<&str> = v["modules"]
+            .as_array()
+            .expect("modules")
+            .iter()
+            .map(|m| m["outcome"].as_str().expect("outcome label"))
+            .collect();
+        assert_eq!(labels.len(), 8, "one row per outcome variant: {labels:?}");
+        for label in labels {
+            assert!(
+                panel.contains(&format!("'{label}'")),
+                "runCapabilityProbe never renders the probe outcome `{label}`"
+            );
+        }
+        for flag in ["m.drift", "m.canary", "m.dead_canary"] {
+            assert!(
+                panel.contains(flag),
+                "runCapabilityProbe never reads the row flag `{flag}`"
+            );
+        }
     }
 
     #[test]

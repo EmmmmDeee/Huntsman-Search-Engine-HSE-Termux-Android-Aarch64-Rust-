@@ -14,6 +14,7 @@ fn make_person(
         web_link: web_link.map(str::to_string),
         description: description.map(str::to_string),
         is_valid,
+        is_team: false,
         time_zone: None,
     }
 }
@@ -168,4 +169,26 @@ fn invalid_account_returns_no_entities() {
 fn empty_name_returns_no_entities() {
     let p = make_person("", None, None, None, true);
     assert!(build_entities(p, "scan-lp-007").is_empty());
+}
+
+#[test]
+fn a_launchpad_team_is_never_minted_as_a_person_account() {
+    // Backlog #24. `~ubuntu-desktop` is a team: the same `~name` namespace and
+    // resource shape as a person, distinguished only by `is_team` (captured
+    // live 2026-09-15). A Username target that collides with a team slug must
+    // not come back as a confirmed personal account, a Person from the team's
+    // display name, an email from its description or a country tag from its
+    // time zone.
+    let raw = r#"{"name":"ubuntu-desktop","display_name":"Ubuntu Desktop","web_link":"https://launchpad.net/~ubuntu-desktop","description":"Contact: desktop-team@lists.example.invalid","is_valid":true,"is_team":true,"time_zone":"Australia/Sydney","resource_type_link":"https://api.launchpad.net/1.0/#team"}"#;
+    let team: LpPerson = serde_json::from_str(raw).expect("decodes");
+    assert!(team.is_team);
+    assert!(build_entities(team, "scan-lp-team").is_empty());
+
+    // A person record — `is_team` absent on older records — defaults to a
+    // person and is minted as before.
+    let person: LpPerson =
+        serde_json::from_str(r#"{"name":"mvo","display_name":"Michael Vogt","is_valid":true}"#)
+            .expect("decodes");
+    assert!(!person.is_team);
+    assert!(!build_entities(person, "scan-lp-person").is_empty());
 }

@@ -793,7 +793,7 @@ fn already_linked_to_block(ip_entity: &Entity, block: &str) -> bool {
 /// block (`Cidr` entity) also discovered in this scan — shared hosting
 /// infrastructure, not personal ownership.
 ///
-/// `bgpview`/`ripestat`/`netblock` surface `Cidr` entities (an ASN's announced
+/// `ripestat`/`netblock` surface `Cidr` entities (an ASN's announced
 /// prefix, or an explicit netblock target) using the CIDR-containment maths
 /// [`crate::util::spf`] already built (and tests) for SPF `ip4:`/`ip6:`
 /// mechanisms — reused here rather than re-implemented, per this project's

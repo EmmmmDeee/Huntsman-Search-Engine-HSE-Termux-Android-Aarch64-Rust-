@@ -172,6 +172,7 @@ impl Module for StructuredId {
                     date_attr: "objectid_created_date",
                     label: "MongoDB ObjectID",
                     confidence: confidence::LOW_MEDIUM,
+                    false_positive_rate: Some("about 1 in 5 random 24-hex tokens"),
                 },
             ),
             (
@@ -181,6 +182,7 @@ impl Module for StructuredId {
                     date_attr: "ulid_created_date",
                     label: "ULID",
                     confidence: confidence::MEDIUM_HIGH,
+                    false_positive_rate: None,
                 },
             ),
             (
@@ -190,6 +192,7 @@ impl Module for StructuredId {
                     date_attr: "ksuid_created_date",
                     label: "KSUID",
                     confidence: confidence::LOW_MEDIUM,
+                    false_positive_rate: Some("about 1 in 11 random 27-character tokens"),
                 },
             ),
         ] {
@@ -324,6 +327,13 @@ struct IdFormat {
     date_attr: &'static str,
     label: &'static str,
     confidence: f64,
+    /// For a format whose second-resolution timestamp lets a sizeable share
+    /// of random same-shape tokens through the plausibility window, that
+    /// measured share — the decoded date is then a candidate lead about a
+    /// token that MAY be an ID, never an asserted account-age finding
+    /// (backlog #45). `None` for ULID, whose window is selective enough to
+    /// assert.
+    false_positive_rate: Option<&'static str>,
 }
 
 /// Enrich the seed ID with its decoded creation date — shared by the
@@ -340,14 +350,31 @@ fn emit_creation(
     e.tag(fmt.tag);
     e.tag("derived");
     e.tag("account-age");
-    e.add_evidence(
-        Evidence::new(
-            SRC,
-            format!("{} created {date} (decoded offline)", fmt.label),
-        )
+    let summary = match fmt.false_positive_rate {
+        Some(rate) => format!(
+            "{} — if this token is one — created {date} (decoded offline; {rate} passes this shape check)",
+            fmt.label
+        ),
+        None => format!("{} created {date} (decoded offline)", fmt.label),
+    };
+    let mut ev = Evidence::new(SRC, summary)
         .with_attr(fmt.date_attr, date.as_str())
-        .with_attr("decoder", fmt.tag),
-    );
+        .with_attr("decoder", fmt.tag);
+    if let Some(rate) = fmt.false_positive_rate {
+        // The window is the format's ONLY validation (no checksum) and it
+        // passes `rate` of random tokens of the right shape — a truncated
+        // hash, a session token, a breach-dump field. The date is a candidate
+        // lead, quarantined out of exports, the timeline and the correlator
+        // until something confirms the value is an ID (backlog #45).
+        e.demote_to_candidate();
+        ev = ev
+            .with_attr(
+                "validation",
+                "timestamp plausibility window only — the format has no checksum",
+            )
+            .with_attr("false_positive_rate", rate);
+    }
+    e.add_evidence(ev);
     result.push(e);
 }
 

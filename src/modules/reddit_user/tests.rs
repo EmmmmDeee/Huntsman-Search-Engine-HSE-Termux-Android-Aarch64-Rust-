@@ -576,3 +576,53 @@ fn mining_a_feed_labels_a_bio_hit_distinctly_from_an_item_hit() {
         "a leaked key in the profile description must be pooled"
     );
 }
+
+/// The Atom endpoint answering 403 with an HTML page is Reddit's network-security
+/// block, typed as the wall; 404 is still the one honest negative and a 200
+/// Atom document is still the feed. Driven against a loopback with the
+/// capture's opener and prose (the 189 KB of inline CSS elided).
+#[tokio::test]
+async fn a_403_with_an_html_page_on_the_feed_is_reddits_wall_never_an_absent_account() {
+    use super::fetch_feed_from;
+    use crate::core::error::Error;
+    use crate::core::module::ModuleContext;
+    use crate::util::http::test_server::{Canned, serve};
+    const REDDIT_EXCERPT: &str = "<body class=theme-beta><div><style>/* elided */</style>\
+        <h1>You've been blocked by network security.</h1></div></body>";
+    let base = serve(vec![
+        Canned::html(403, REDDIT_EXCERPT),
+        Canned::text(404, "Not Found"),
+        Canned {
+            status: 200,
+            content_type: "application/atom+xml; charset=UTF-8",
+            body: "<?xml version=\"1.0\" encoding=\"UTF-8\"?><feed xmlns=\"http://www.w3.org/2005/Atom\"><title>overview for torvalds</title></feed>".into(),
+            headers: Vec::new(),
+        },
+    ])
+    .await;
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = ModuleContext {
+        scan_id: "t".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let err = fetch_feed_from(&ctx, &base, "torvalds")
+        .await
+        .expect_err("a wall on the feed is the typed refusal");
+    assert!(matches!(err, Error::BotChallenge(_)), "{err}");
+    assert!(err.to_string().contains("network-security block"), "{err}");
+    assert!(
+        fetch_feed_from(&ctx, &base, "torvalds")
+            .await
+            .expect("404 is the negative")
+            .is_none(),
+        "404 stays the one honest negative"
+    );
+    let feed = fetch_feed_from(&ctx, &base, "torvalds")
+        .await
+        .expect("a feed is read")
+        .expect("a feed is present");
+    assert!(feed.contains("<feed"));
+}

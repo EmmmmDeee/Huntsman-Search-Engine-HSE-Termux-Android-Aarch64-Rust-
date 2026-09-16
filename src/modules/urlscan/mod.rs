@@ -1,16 +1,30 @@
-//! URLScan.io domain intelligence — recent scans, resolved IPs, and verdicts.
+//! URLScan.io domain intelligence — recent scans of the target's own pages
+//! and the infrastructure they resolved to.
 //!
-//! Endpoint: `GET https://urlscan.io/api/v1/search/?q=domain:{domain}&size=100`
+//! Endpoint: `GET https://urlscan.io/api/v1/search/?q=page.domain:{domain}&size=100`
 //!           `GET https://urlscan.io/api/v1/search/?q=page.url:{url}&size=100`
+//!           `GET https://urlscan.io/api/v1/search/?q=page.ip:{ip}&size=100`
 //!
 //! No API key required for the search endpoint. Anonymous queries are
 //! rate-limited to ~100/min by URLScan.io; an optional pooled `HUNTSMAN_URLSCAN_KEY`
 //! (sent as the `API-Key` header) raises that limit for large fan-outs. The
-//! page size is the keyless per-page maximum (100). The response carries per-scan
-//! metadata (page URL, domain, resolved IP, country, server header) and
-//! community/engine verdicts. We surface aggregate intel (scan count,
-//! unique IPs, countries, server types) and tag the target as
-//! "urlscan-malicious" when any verdict flags it.
+//! page size is the keyless per-page maximum (100). Each hit carries the
+//! scanned page's metadata (URL, domain, resolved IP, country, server header,
+//! ASN, PTR); the aggregate (scan count, unique IPs, countries, servers) and
+//! the resolved infrastructure are surfaced for the target.
+//!
+//! Scope: the query and a per-hit gate keep only scans OF the target — the
+//! bare `domain:` selector matches every page that loaded a resource from the
+//! domain (observed live 2026-09-15: `domain:"example.com"` returned
+//! `dodeliver.com.pk` pages; `fonts.googleapis.com` returned five unrelated
+//! sites), which attributed strangers' hosting to the target (backlog #48).
+//!
+//! Verdicts are NOT read: a search hit carries no `verdicts` (observed live
+//! 2026-09-15 — hit keys are `_id`, `_score`, `canonical`, `page`, `result`,
+//! `screenshot`, `sort`, `stats`, `submitter`, `task`), and the per-scan
+//! result endpoint that does carry them answers 403 "You're not logged in!"
+//! without a key. The former `urlscan-malicious` tag could never fire
+//! (backlog #49) and is gone rather than promised.
 
 use std::collections::BTreeSet;
 
@@ -46,7 +60,10 @@ const PAGE_SIZE: u32 = 100;
 /// `None` for a kind URLScan cannot be keyed on.
 fn build_query(kind: TargetKind, value: &str) -> Option<String> {
     let field = match kind {
-        TargetKind::Domain => "domain",
+        // `page.domain`, never the bare `domain`: the latter matches every
+        // page that loaded a resource from the domain (backlog #48). Verified
+        // live 2026-09-15 to match the host and its subdomains.
+        TargetKind::Domain => "page.domain",
         TargetKind::Url => "page.url",
         TargetKind::IpAddress => "page.ip",
         _ => return None,
@@ -94,8 +111,6 @@ struct SearchResp {
 struct ScanResult {
     #[serde(default)]
     page: Option<PageInfo>,
-    #[serde(default)]
-    verdicts: Option<Verdicts>,
 }
 
 #[derive(Deserialize)]
@@ -118,12 +133,6 @@ struct PageInfo {
     /// from `domain` (which is the requested host, not the resolved PTR).
     #[serde(default)]
     ptr: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct Verdicts {
-    #[serde(default)]
-    malicious: Option<bool>,
 }
 
 // ─── Module impl ────────────────────────────────────────────────────────────
@@ -193,12 +202,36 @@ impl Module for UrlScan {
             return Ok(ModuleResult::new());
         }
 
+        // Keep only the scans OF the target: a hit whose own page is not the
+        // target's (a page that merely loaded a resource from it) would
+        // contribute ITS infrastructure — IP, country, ASN, PTR, domain — to
+        // the target's record (backlog #48). The `page.*` selectors scope the
+        // query; this gate holds the line if the selector's matching drifts.
+        let page_count = data.results.len();
+        let results: Vec<ScanResult> = data
+            .results
+            .into_iter()
+            .filter(|r| {
+                r.page
+                    .as_ref()
+                    .is_some_and(|p| page_is_the_targets(target.kind, &target.value, p))
+            })
+            .collect();
+        if results.is_empty() {
+            return Ok(ModuleResult::new());
+        }
+
         // True total, not the page-capped count: `data.total` (when present)
         // reflects URLScan.io's whole match count, so it doesn't understate
         // a heavily-scanned target's real footprint the way `results.len()`
-        // (the current page) would.
-        let total_matches = data.total.unwrap_or(data.results.len() as u64);
-        let intel = summarize(&data.results);
+        // (the current page) would — unless the gate dropped hits, in which
+        // case the corpus total counts pages that were not the target's.
+        let total_matches = if results.len() == page_count {
+            data.total.unwrap_or(results.len() as u64)
+        } else {
+            results.len() as u64
+        };
+        let intel = summarize(&results);
 
         let entity = build_target_entity(target, &intel, total_matches, &ctx.scan_id);
         let mut result = ModuleResult::new();
@@ -217,16 +250,8 @@ fn build_target_entity(
     total_matches: u64,
     scan_id: &str,
 ) -> Entity {
-    let confidence = if intel.any_malicious {
-        confidence::EXPERT
-    } else {
-        confidence::HIGH_PLUS
-    };
-    let mut entity = target.to_entity(confidence, scan_id);
+    let mut entity = target.to_entity(confidence::HIGH_PLUS, scan_id);
     entity.tag("urlscan");
-    if intel.any_malicious {
-        entity.tag("urlscan-malicious");
-    }
 
     let mut ev = Evidence::new(
         SRC,
@@ -249,11 +274,32 @@ fn build_target_entity(
         let list: Vec<&str> = intel.servers.iter().map(String::as_str).collect();
         ev = ev.with_attr("servers", list.join(", "));
     }
-    if intel.any_malicious {
-        ev = ev.with_attr("malicious_verdict", "true");
-    }
     entity.add_evidence(ev);
     entity
+}
+
+/// Whether a hit's scanned page is the target's own — the gate behind the
+/// `page.*` query selectors. A Domain target owns the page whose host is the
+/// domain or a subdomain of it; a Url target the page on the URL's host; an
+/// IpAddress target the page that resolved to the address. **Pure.**
+fn page_is_the_targets(kind: TargetKind, value: &str, page: &PageInfo) -> bool {
+    let host = |h: &str| h.trim().trim_end_matches('.').to_ascii_lowercase();
+    let page_host = page.domain.as_deref().map(host);
+    match kind {
+        TargetKind::Domain => {
+            let target = host(value);
+            page_host.is_some_and(|d| d == target || d.ends_with(&format!(".{target}")))
+        }
+        TargetKind::Url => {
+            let target = host(crate::util::url_util::host_only(value));
+            !target.is_empty() && page_host.is_some_and(|d| d == target)
+        }
+        TargetKind::IpAddress => page
+            .ip
+            .as_deref()
+            .is_some_and(|ip| ip.trim().eq_ignore_ascii_case(value.trim())),
+        _ => false,
+    }
 }
 
 /// Aggregated, deduplicated intel across a URLScan.io search response. **Pure.**
@@ -270,7 +316,6 @@ struct UrlScanIntel {
     /// Reverse-DNS (PTR) hostnames of the scanned pages' IPs.
     ptrs: BTreeSet<String>,
     scan_count: usize,
-    any_malicious: bool,
 }
 
 /// Reduce a search response to its deduplicated fields. **Pure** (no IO).
@@ -316,10 +361,6 @@ fn summarize(results: &[ScanResult]) -> UrlScanIntel {
         asns: field(|p| p.asn.as_deref()),
         ptrs: field(|p| p.ptr.as_deref()),
         scan_count: results.len(),
-        any_malicious: results
-            .iter()
-            .filter_map(|e| e.verdicts.as_ref())
-            .any(|v| v.malicious == Some(true)),
     }
 }
 

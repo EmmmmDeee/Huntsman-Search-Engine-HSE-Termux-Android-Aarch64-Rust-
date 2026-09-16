@@ -1,9 +1,59 @@
 //! Raw whois protocol (TCP port 43). Free, no key, no root.
 //!
-//! Most TLDs delegate via referral — we follow one hop to the authoritative
-//! whois server, then parse the response for registrar / dates / registrant
-//! email. The parser is line-prefix based, robust across the half-dozen
-//! mostly-but-not-quite-RFC-3912 dialects in the wild.
+//! Most TLDs delegate via referral — we ask IANA which server is
+//! authoritative, follow that one hop, then parse the authoritative answer
+//! for registrar / dates / registrant contacts (domains) or the allocation's
+//! operator / country / abuse contact (addresses). The parser is line-prefix
+//! based, robust across the half-dozen mostly-but-not-quite-RFC-3912 dialects
+//! in the wild.
+//!
+//! ## What is — and is not — evidence about the target
+//!
+//! IANA's bootstrap answer describes the **TLD** (`domain: COM`, `created:
+//! 1985-01-01`, the thirteen `nserver:` gTLD servers, `status: ACTIVE`) or the
+//! **/8** an address sits in (`inetnum: 8.0.0.0 - 8.255.255.255`, `status:
+//! LEGACY`) — never the target. It is consumed for exactly one thing, the
+//! referral (`refer:` / `whois:`), and never reaches the parser. This module
+//! used to fall back to parsing it whenever the referral hop failed (a
+//! timeout, a refused connection, an unresolvable host) or whenever IANA
+//! listed no WHOIS server at all (`.vn`'s registry publishes none): every
+//! `.vn` domain, and any domain whose registry was momentarily unreachable,
+//! came back "registered 1985-01-01 / 1994-04-14, status ACTIVE" with the
+//! TLD's root servers minted as `whois-ns` Domain entities at CORROBORATED
+//! confidence — fabricated registration data at HIGH_PLUSPLUS_PLUS, fed to the
+//! timeline as a `Registered` event and to the expansion loop as pivots.
+//!
+//! Now each outcome is reported as what it is:
+//! * the authoritative server did not answer / could not be resolved →
+//!   `Error::Module` — the registry did not say "no record", it said nothing
+//!   (a coverage `Failed`, not a clean negative);
+//! * IANA lists no WHOIS server for the registry → a typed
+//!   [`SkipClass::NotApplicable`] skip (`Error::skipped`) — port-43 WHOIS
+//!   structurally cannot speak about that namespace; `rdap_domain` is the
+//!   registry-data path;
+//! * the registry refused the query for load (`WHOIS LIMIT EXCEEDED`, DENIC's
+//!   `access control limit reached`) → `Error::RateLimited`;
+//! * the registry answered with a record → entities;
+//! * the registry answered "no match" → an empty result, the one genuine
+//!   clean negative.
+//!
+//! ## Address (RIR) records
+//!
+//! An RIR answers an address query with an allocation record, not a domain
+//! record: `NetRange`/`NetName`/`OrgName`/`Country`/`OrgAbuseEmail` at ARIN,
+//! `inetnum`/`netname`/`org-name`/`country`/`abuse-mailbox` in RPSL
+//! (RIPE/APNIC/AFRINIC), `inetnum`/`owner` at LACNIC. These are judged on
+//! their own signals: the previous domain-only "actionable data" gate
+//! (registrar/created/nameservers/status) read every ARIN allocation — all
+//! of North America — as "no data", while the HTTPS RDAP fallback for the
+//! same address yielded the operator, country and abuse contact. ARIN also
+//! returns every enclosing allocation, least specific first, so the parse is
+//! anchored on the MOST specific block (`parse::most_specific_network_record`)
+//! rather than attributing the parent carrier's operator to the address. An
+//! RPSL `org:` line is an organisation HANDLE (`ORG-RIEN1-RIPE`), never a
+//! name — the name is `org-name:` — and the `person:`/`role:` objects an RIR
+//! returns are the network's technical contacts, never the subject, so an
+//! address record mints no Person entity.
 //!
 //! ## Proxy-environment fallback
 //!
@@ -27,12 +77,13 @@ use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
+    event::SkipClass,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::http::RequestBuilderExt;
 
-use client::{find_referral, query, resolve_public_whois};
+use client::{Transport, find_referral};
 use parse::{WhoisFields, field, parse_whois};
 
 const SRC: &str = "whois";
@@ -154,11 +205,8 @@ fn registrant_org_name(entities: &[RdapIpEntity]) -> Option<String> {
 /// `https://rdap.org/ip/{ip}` bootstraps to the authoritative RIR (ARIN /
 /// RIPE / APNIC / LACNIC / AFRINIC) and returns the same org / country /
 /// abuse-contact data that raw WHOIS would have provided.
-async fn rdap_ip_fallback(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-    let url = format!(
-        "https://rdap.org/ip/{}",
-        crate::util::http::urlencode(&target.value)
-    );
+async fn rdap_ip_fallback(ip: &str, ctx: &ModuleContext) -> Result<ModuleResult> {
+    let url = format!("https://rdap.org/ip/{}", crate::util::http::urlencode(ip));
     let resp = ctx
         .http
         .get(&url)
@@ -186,10 +234,9 @@ async fn rdap_ip_fallback(target: &Target, ctx: &ModuleContext) -> Result<Module
     if let Some(org) = &org_name {
         let org = org.trim();
         if org.len() >= 3 {
-            let mut ev =
-                Evidence::new(SRC, format!("RDAP network registrant for {}", target.value))
-                    .with_attr("source", "rdap-fallback")
-                    .with_attr("ip", target.value.as_str());
+            let mut ev = Evidence::new(SRC, format!("RDAP network registrant for {ip}"))
+                .with_attr("source", "rdap-fallback")
+                .with_attr("ip", ip);
             if !net_name.is_empty() {
                 ev = ev.with_attr("net_name", net_name.as_str());
             }
@@ -214,9 +261,7 @@ async fn rdap_ip_fallback(target: &Target, ctx: &ModuleContext) -> Result<Module
     // PROVIDER's registered country, not the subject's — the same class
     // `untrusted_ip_geo_reason` exists to catch (the org/abuse-contact data
     // above is unaffected: an operator attribution, not a geo claim).
-    if !country.is_empty()
-        && crate::core::validation::untrusted_ip_geo_reason(&target.value).is_none()
-    {
+    if !country.is_empty() && crate::core::validation::untrusted_ip_geo_reason(ip).is_none() {
         let mut ae = Entity::new(
             EntityKind::Address,
             &country,
@@ -227,9 +272,9 @@ async fn rdap_ip_fallback(target: &Target, ctx: &ModuleContext) -> Result<Module
         ae.tag("rdap-fallback");
         ae.tag("geoint");
         ae.add_evidence(
-            Evidence::new(SRC, format!("RDAP country for {}", target.value))
+            Evidence::new(SRC, format!("RDAP country for {ip}"))
                 .with_attr("source", "rdap-fallback")
-                .with_attr("ip", target.value.as_str()),
+                .with_attr("ip", ip),
         );
         result.push(ae);
     }
@@ -250,9 +295,9 @@ async fn rdap_ip_fallback(target: &Target, ctx: &ModuleContext) -> Result<Module
         ee.tag("whois-abuse");
         ee.tag("rdap-fallback");
         ee.add_evidence(
-            Evidence::new(SRC, format!("RDAP abuse contact for {}", target.value))
+            Evidence::new(SRC, format!("RDAP abuse contact for {ip}"))
                 .with_attr("source", "rdap-fallback")
-                .with_attr("ip", target.value.as_str()),
+                .with_attr("ip", ip),
         );
         result.push(ee);
     }
@@ -317,317 +362,494 @@ impl Module for Whois {
         KINDS
     }
 
-    async fn process(&self, target: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         // When running behind an HTTPS proxy, TCP port 43 is not routable.
-        // Domain targets skip instantly (rdap_domain covers that path over HTTPS).
-        // IP targets fall back to RDAP-over-HTTPS for the same org/country/abuse data.
+        // IP targets fall back to RDAP-over-HTTPS for the same org/country/abuse
+        // data. Domain targets are reported as a typed `Unavailable` skip —
+        // this host cannot reach the registry over port 43, so WHOIS was NOT
+        // consulted; that is a coverage gap the operator can see (rdap_domain
+        // carries the registry data over HTTPS), never the clean "no
+        // registration data" an empty result would have recorded.
         if behind_proxy() {
-            return match target.kind {
-                TargetKind::IpAddress => rdap_ip_fallback(target, _ctx).await,
-                _ => {
-                    tracing::debug!(
-                        module = SRC,
-                        "skipping domain WHOIS — TCP/43 unavailable behind HTTPS proxy; \
-                         rdap_domain provides structured registry data over HTTPS"
-                    );
-                    Ok(ModuleResult::new())
-                }
+            // Decided on the looked-up value — a URL whose host is an address
+            // (`http://8.8.8.8/…`) takes the address path like a bare address.
+            let q = query_value(target)?;
+            return if q.parse::<std::net::IpAddr>().is_ok() {
+                rdap_ip_fallback(&q, ctx).await
+            } else {
+                Err(Error::skipped(
+                    SkipClass::Unavailable,
+                    "TCP/43 WHOIS is not routable through the configured HTTPS proxy — \
+                     domain WHOIS was not attempted (rdap_domain carries the registry \
+                     data over HTTPS)",
+                ))
             };
         }
+        lookup(&client::Tcp, target, &ctx.scan_id).await
+    }
+}
 
-        let query_value = match target.kind {
-            TargetKind::Url => {
-                let host = crate::util::url_util::host_only(&target.value);
-                if host.is_empty() {
-                    return Ok(ModuleResult::new());
-                }
-                host.to_string()
+/// The value sent down the wire for `target`: a URL's host (an IPv6 literal
+/// without its `[…]` brackets, so it classifies and queries as an address),
+/// otherwise the value itself. A URL with no host has nothing to look up.
+///
+/// Every operator-facing message this module builds names THIS value, never
+/// the raw target: a URL's path, query or userinfo (`?token=…`, `user:pw@`)
+/// is not the WHOIS subject and must not reach a persisted skip reason or
+/// error string.
+fn query_value(target: &Target) -> Result<String> {
+    match target.kind {
+        TargetKind::Url => {
+            let host = crate::util::url_util::host_only(&target.value);
+            let host = host
+                .strip_prefix('[')
+                .and_then(|h| h.strip_suffix(']'))
+                .unwrap_or(host);
+            if host.is_empty() {
+                return Err(Error::skipped(
+                    SkipClass::NotApplicable,
+                    "URL target has no host to look up — nothing to send to a WHOIS server",
+                ));
             }
-            _ => target.value.clone(),
-        };
-        // 1) Ask IANA who's authoritative for this name.
-        let raw = query(IANA_WHOIS, &query_value)
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            Ok(host.to_string())
+        }
+        _ => Ok(target.value.clone()),
+    }
+}
 
-        // 2) If IANA's response references another whois server, follow once.
-        let response = match find_referral(&raw) {
-            // SSRF gate (PROBLEM_TREE §7 S2): the referral host comes verbatim from
-            // the WHOIS response (attacker-influenceable) and this raw TCP/43 path
-            // bypasses the HTTP `SsrfResolver`, so resolve it to a vetted PUBLIC :43
-            // address (pinned) before dialling. Refuse a private/internal/non-43
-            // referral and keep IANA's answer rather than probing an internal host.
-            Some(server) => match resolve_public_whois(&server).await {
-                Some(addr) => query(addr, &query_value).await.unwrap_or(raw),
-                None => raw,
-            },
-            None => raw,
-        };
+/// The ONLY thing taken from IANA's bootstrap answer: the authoritative
+/// server it refers `q` to. The rest of that answer describes the TLD or the
+/// /8, not the target, and must never be parsed as the target's record (see
+/// the module docs). No referral — IANA's `whois:` line is blank for a
+/// registry that publishes no WHOIS server, `.vn` among them — is a typed
+/// `NotApplicable` skip: port-43 WHOIS structurally cannot say anything about
+/// that namespace, which is not "no registration record". **Pure** — tested
+/// against the live IANA records for `COM`, `VN` and `8.8.8.8`.
+fn bootstrap_referral(iana_answer: &str, q: &str) -> Result<String> {
+    if let Some(server) = find_referral(iana_answer) {
+        return Ok(server);
+    }
+    // No referral. That is "the registry publishes no WHOIS server" ONLY when
+    // IANA actually answered with the registry's object; a refusal or an
+    // unrecognised body must not be laundered into a harmless structural skip.
+    if let Some(notice) = parse::rate_limit_notice(iana_answer) {
+        return Err(Error::RateLimited(format!(
+            "[{SRC}] IANA WHOIS bootstrap ({IANA_WHOIS}) refused the query for {q}: {notice}"
+        )));
+    }
+    match parse::iana_bootstrap_shape(iana_answer) {
+        parse::IanaShape::RegistryObject => Err(Error::skipped(
+            SkipClass::NotApplicable,
+            format!(
+                "IANA lists no WHOIS server for the registry of {q} — port-43 WHOIS \
+                 cannot say anything about it (this is not \"no registration \
+                 record\"); rdap_domain carries the registry data over HTTPS"
+            ),
+        )),
+        parse::IanaShape::NoObject => Err(Error::skipped(
+            SkipClass::NotApplicable,
+            format!(
+                "IANA knows no registry for {q} (its bootstrap answer returned 0 \
+                 objects) — port-43 WHOIS cannot say anything about it (this is not \
+                 \"no registration record\")"
+            ),
+        )),
+        parse::IanaShape::Unrecognised => Err(Error::module(
+            SRC,
+            format!(
+                "IANA WHOIS bootstrap ({IANA_WHOIS}) answered {q} with neither a referral \
+                 nor a registry object ({} bytes) — unrecognised reply, not \"no \
+                 registration record\"",
+                iana_answer.len()
+            ),
+        )),
+    }
+}
 
-        crate::util::http::scan_for_api_keys_with_source(&response, "whois");
+/// The whole lookup — bootstrap, referral, authoritative query, parse — over
+/// an injected [`Transport`], so the decision chain runs offline in tests
+/// against canned wire text. `process` runs it over [`client::Tcp`].
+async fn lookup(transport: &dyn Transport, target: &Target, scan_id: &str) -> Result<ModuleResult> {
+    let q = query_value(target)?;
+    // 1) Ask IANA who's authoritative for this name. The answer is consumed by
+    //    `bootstrap_referral` alone — deliberately never bound to a name the
+    //    parser could be handed.
+    let server = bootstrap_referral(
+        &transport.bootstrap(&q).await.map_err(|e| {
+            Error::module(
+                SRC,
+                format!(
+                    "IANA WHOIS bootstrap ({IANA_WHOIS}) did not answer for {q}: {e} — \
+                     not \"no registration record\""
+                ),
+            )
+        })?,
+        &q,
+    )?;
+    // 2) Query the authoritative server. Its silence is a failure of the
+    //    lookup, reported as such — never papered over with another record.
+    let response = transport.authoritative(&server, &q).await.map_err(|e| {
+        Error::module(
+            SRC,
+            format!(
+                "authoritative WHOIS server {server} for {q} {e} — not \"no \
+                 registration record\""
+            ),
+        )
+    })?;
 
-        // 3) Parse the response into the fields we surface.
-        let WhoisFields {
-            registrar,
-            registrar_iana,
-            registrar_url,
-            updated,
-            created,
-            expires,
-            registrant_email,
-            registrant_org,
-            registrant_country,
-            registrant_state,
-            admin_email,
-            admin_name,
-            admin_org,
-            tech_email,
-            tech_name,
-            tech_org,
-            abuse_email,
-            nameservers,
-            statuses,
-            dnssec,
-            phones,
-        } = parse_whois(&response);
+    crate::util::http::scan_for_api_keys_with_source(&response, "whois");
 
-        // No actionable data parsed — skip the entity to avoid noise.
-        if registrar.is_none() && created.is_none() && nameservers.is_empty() && statuses.is_empty()
-        {
+    build_result(target, &q, &server, &response, scan_id)
+}
+
+/// Turn the authoritative server's answer for `target` (looked up as `q`) into
+/// entities. **Pure** (no I/O): the parse, the "did the registry actually say
+/// anything" gate (per record kind — an address record has no
+/// registrar/nameservers), the load-refusal check, and the entity mapping,
+/// all unit-tested against real registry answers.
+fn build_result(
+    target: &Target,
+    q: &str,
+    server: &str,
+    response: &str,
+    scan_id: &str,
+) -> Result<ModuleResult> {
+    // An address record is what an RIR answers for an address — whether the
+    // target IS the address or is a URL whose host is one (`http://8.8.8.8/`).
+    let is_ip = target.kind == TargetKind::IpAddress || q.parse::<std::net::IpAddr>().is_ok();
+    // An RIR answer can carry every enclosing allocation; only the most
+    // specific one describes the address (see `most_specific_network_record`).
+    let record = if is_ip {
+        parse::most_specific_network_record(response)
+    } else {
+        response
+    };
+
+    // 3) Parse the response into the fields we surface.
+    let WhoisFields {
+        registrar,
+        registrar_iana,
+        registrar_url,
+        updated,
+        created,
+        expires,
+        registrant_email,
+        registrant_org,
+        registrant_country,
+        registrant_state,
+        admin_email,
+        admin_name,
+        admin_org,
+        tech_email,
+        tech_name,
+        tech_org,
+        abuse_email,
+        nameservers,
+        statuses,
+        dnssec,
+        phones,
+        net_name,
+        net_range,
+        cidr,
+        net_type,
+        descr,
+    } = parse_whois(record);
+
+    // Did the registry say anything about this target? A domain record
+    // carries a registrar / creation date / nameservers / status; an address
+    // record carries an allocation (net name / range), its operator, country
+    // or abuse contact. Judged per kind — the domain-only gate read every
+    // ARIN allocation as "no data".
+    // A "no record" reply can itself carry a status line — DENIC answers an
+    // unregistered name with `Status: free` — so a status alone is a record
+    // only when the reply does not also say there is nothing there.
+    let no_match = parse::no_match_notice(response).is_some();
+    let actionable = if is_ip {
+        net_name.is_some()
+            || net_range.is_some()
+            || registrant_org.is_some()
+            || registrant_country.is_some()
+            || abuse_email.is_some()
+    } else {
+        registrar.is_some()
+            || created.is_some()
+            || !nameservers.is_empty()
+            || (!statuses.is_empty() && !no_match)
+    };
+    if !actionable {
+        // A server that refused the query for load answered "not now", not
+        // "no record" — surface it as the typed rate-limit so the breaker
+        // backs off and coverage records a failure, never a clean negative.
+        if let Some(notice) = parse::rate_limit_notice(response) {
+            return Err(Error::RateLimited(format!(
+                "[{SRC}] {server} refused the query for {q}: {notice}"
+            )));
+        }
+        // The registry answered and holds nothing for this target — a reply
+        // that SAYS so ("No match for …", "NOT FOUND", RIPE's ERROR:101 …).
+        // The one genuine clean negative.
+        if no_match {
             return Ok(ModuleResult::new());
         }
+        // Anything else — an empty reply, a banner, a dialect the parser does
+        // not know, an error we have no marker for — is a reply this module
+        // could not read, and coverage must record it as a failure, never as
+        // "checked, nothing there".
+        return Err(Error::module(
+            SRC,
+            format!(
+                "authoritative WHOIS server {server} answered {q} with neither a record \
+                 nor a \"no match\" reply ({} bytes) — unrecognised reply, not \"no \
+                 registration record\"",
+                response.len()
+            ),
+        ));
+    }
 
-        let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS_PLUS, &_ctx.scan_id);
+    let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS_PLUS, scan_id);
 
-        // Status flags become tags so the SPA can highlight them. These
-        // are the most operationally interesting: lock states, hold flags,
-        // pending transfers, etc.
-        for status in &statuses {
-            let lower = status.to_lowercase();
-            for flag in [
-                "clienttransferprohibited",
-                "clientdeleteprohibited",
-                "clientholdprohibited",
-                "clientupdateprohibited",
-                "servertransferprohibited",
-                "serverdeleteprohibited",
-                "serverholdprohibited",
-                "serverupdateprohibited",
-                "redemptionperiod",
-                "pendingdelete",
-                "pendingtransfer",
-                "addperiod",
-                "autorenewperiod",
-                "ok",
-            ] {
-                if lower.contains(flag) {
-                    entity.tag(format!("status:{flag}"));
-                }
+    // Status flags become tags so the SPA can highlight them. These
+    // are the most operationally interesting: lock states, hold flags,
+    // pending transfers, etc.
+    for status in &statuses {
+        let lower = status.to_lowercase();
+        for flag in [
+            "clienttransferprohibited",
+            "clientdeleteprohibited",
+            "clientholdprohibited",
+            "clientupdateprohibited",
+            "servertransferprohibited",
+            "serverdeleteprohibited",
+            "serverholdprohibited",
+            "serverupdateprohibited",
+            "redemptionperiod",
+            "pendingdelete",
+            "pendingtransfer",
+            "addperiod",
+            "autorenewperiod",
+            "ok",
+        ] {
+            if lower.contains(flag) {
+                entity.tag(format!("status:{flag}"));
             }
         }
-        if let Some(d) = &dnssec
-            && d.to_lowercase().contains("unsigned")
-        {
-            entity.tag("dnssec:unsigned");
-        }
-        if let Some(d) = &dnssec
-            && d.to_lowercase().contains("signed")
-        {
-            entity.tag("dnssec:signed");
-        }
+    }
+    if let Some(d) = &dnssec
+        && d.to_lowercase().contains("unsigned")
+    {
+        entity.tag("dnssec:unsigned");
+    }
+    if let Some(d) = &dnssec
+        && d.to_lowercase().contains("signed")
+    {
+        entity.tag("dnssec:signed");
+    }
 
-        // Parsed here (not only at the Person-emission site below) so the
-        // registrant/admin/tech NAMES fold into the domain's own evidence attrs —
-        // those attrs are what `core::relation::derive_registration` matches a
-        // registrant Person against to build the Domain→Person `RegisteredBy`
-        // edge. A redacted name folds harmlessly: no Person entity is emitted for
-        // it, so it can never form an edge.
-        let registrant_name = field(
-            &response,
-            &["Registrant Name:", "Registrant Person:", "person:"],
-        );
-        let ev = [
-            ("registrar", registrar.clone()),
-            ("registrar_iana_id", registrar_iana.clone()),
-            ("registrar_url", registrar_url.clone()),
-            ("created", created.clone()),
-            ("updated", updated.clone()),
-            ("expires", expires.clone()),
-            (
-                "name_servers",
-                (!nameservers.is_empty()).then(|| nameservers.join(", ")),
-            ),
-            (
-                "statuses",
-                (!statuses.is_empty()).then(|| statuses.join(", ")),
-            ),
-            ("dnssec", dnssec.clone()),
-            ("registrant_org", registrant_org.clone()),
-            ("registrant_name", registrant_name.clone()),
-            ("admin_name", admin_name.clone()),
-            ("tech_name", tech_name.clone()),
-            ("registrant_country", registrant_country.clone()),
-            ("registrant_state", registrant_state.clone()),
-            ("registrant_email", registrant_email.clone()),
-            ("admin_email", admin_email.clone()),
-            ("tech_email", tech_email.clone()),
-            ("abuse_email", abuse_email.clone()),
+    // Parsed here (not only at the Person-emission site below) so the
+    // registrant/admin/tech NAMES fold into the domain's own evidence attrs —
+    // those attrs are what `core::relation::derive_registration` matches a
+    // registrant Person against to build the Domain→Person `RegisteredBy`
+    // edge. A redacted name folds harmlessly: no Person entity is emitted for
+    // it, so it can never form an edge.
+    //
+    // Domain records only: on an address record `person:` is the RIR's
+    // technical/admin contact object for the NETWORK (an ISP engineer, a
+    // registry employee), never the subject — an RIR record names no
+    // registrant person.
+    let registrant_name = (!is_ip)
+        .then(|| {
+            field(
+                record,
+                &["Registrant Name:", "Registrant Person:", "person:"],
+            )
+        })
+        .flatten();
+    let ev = [
+        ("whois_server", Some(server.to_string())),
+        ("registrar", registrar.clone()),
+        ("registrar_iana_id", registrar_iana.clone()),
+        ("registrar_url", registrar_url.clone()),
+        ("created", created.clone()),
+        ("updated", updated.clone()),
+        ("expires", expires.clone()),
+        (
+            "name_servers",
+            (!nameservers.is_empty()).then(|| nameservers.join(", ")),
+        ),
+        (
+            "statuses",
+            (!statuses.is_empty()).then(|| statuses.join(", ")),
+        ),
+        ("dnssec", dnssec.clone()),
+        ("net_name", net_name.clone()),
+        ("net_range", net_range.clone()),
+        ("cidr", cidr.clone()),
+        ("net_type", net_type.clone()),
+        ("descr", descr.clone()),
+        ("registrant_org", registrant_org.clone()),
+        ("registrant_name", registrant_name.clone()),
+        ("admin_name", admin_name.clone()),
+        ("tech_name", tech_name.clone()),
+        ("registrant_country", registrant_country.clone()),
+        ("registrant_state", registrant_state.clone()),
+        ("registrant_email", registrant_email.clone()),
+        ("admin_email", admin_email.clone()),
+        ("tech_email", tech_email.clone()),
+        ("abuse_email", abuse_email.clone()),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| value.map(|v| (key, v)))
+    .fold(
+        Evidence::new(SRC, format!("WHOIS for {}", target.value)),
+        |ev, (key, v)| ev.with_attr(key, v),
+    );
+
+    entity.add_evidence(ev);
+
+    let mut result = ModuleResult::new();
+    result.push(entity);
+
+    // Surface contact emails as discrete Email entities so they fan
+    // out as scan targets in autonomous-expansion mode.
+    // A WHOIS contact that is an infrastructure mailbox — a role address
+    // (`abuse@`, `dns@`, `hostmaster@`) or a mailbox on a CDN/registrar/cloud
+    // provider (`abuse@cloudflare.com`) — is the registrar/provider's desk,
+    // NEVER the subject. Emitting it as a confidence::STRONG Email entity made it a
+    // breach-checked, identity-clustered, expandable target (a real scan
+    // merged `dns@cloudflare.com` / `abuse@cloudflare.com` into the subject's
+    // identity). The address is still preserved in the parent domain's
+    // evidence attrs above; it just must not become standalone PII.
+    result.extend(
+        [
+            (&registrant_email, "registrant"),
+            (&admin_email, "admin"),
+            (&tech_email, "tech"),
+            (&abuse_email, "abuse"),
         ]
         .into_iter()
-        .filter_map(|(key, value)| value.map(|v| (key, v)))
-        .fold(
-            Evidence::new(SRC, format!("WHOIS for {}", target.value)),
-            |ev, (key, v)| ev.with_attr(key, v),
-        );
+        .filter_map(|(email, role)| {
+            let addr = email.as_deref()?;
+            if !is_usable_contact_email(addr) {
+                return None;
+            }
+            let mut e = Entity::new(EntityKind::Email, addr, confidence::STRONG, scan_id);
+            e.tag(format!("whois-{role}"));
+            e.add_evidence(
+                Evidence::new(SRC, format!("WHOIS {role} contact for {}", target.value))
+                    .with_attr("role", role)
+                    .with_attr("parent_target", target.value.as_str()),
+            );
+            Some(e)
+        }),
+    );
 
-        entity.add_evidence(ev);
-
-        let mut result = ModuleResult::new();
-        result.push(entity);
-
-        // Surface contact emails as discrete Email entities so they fan
-        // out as scan targets in autonomous-expansion mode.
-        // A WHOIS contact that is an infrastructure mailbox — a role address
-        // (`abuse@`, `dns@`, `hostmaster@`) or a mailbox on a CDN/registrar/cloud
-        // provider (`abuse@cloudflare.com`) — is the registrar/provider's desk,
-        // NEVER the subject. Emitting it as a confidence::STRONG Email entity made it a
-        // breach-checked, identity-clustered, expandable target (a real scan
-        // merged `dns@cloudflare.com` / `abuse@cloudflare.com` into the subject's
-        // identity). The address is still preserved in the parent domain's
-        // evidence attrs above; it just must not become standalone PII.
-        result.extend(
-            [
-                (&registrant_email, "registrant"),
-                (&admin_email, "admin"),
-                (&tech_email, "tech"),
-                (&abuse_email, "abuse"),
-            ]
-            .into_iter()
-            .filter_map(|(email, role)| {
-                let addr = email.as_deref()?;
-                if !is_usable_contact_email(addr) {
-                    return None;
-                }
-                let mut e = Entity::new(EntityKind::Email, addr, confidence::STRONG, &_ctx.scan_id);
-                e.tag(format!("whois-{role}"));
-                e.add_evidence(
-                    Evidence::new(SRC, format!("WHOIS {role} contact for {}", target.value))
-                        .with_attr("role", role)
-                        .with_attr("parent_target", target.value.as_str()),
-                );
-                Some(e)
-            }),
-        );
-
-        // Registrant organisation → Organisation entity.
-        if let Some(org) = &registrant_org {
-            let org = org.trim();
-            if org.len() >= 3 && !crate::core::validation::is_whois_privacy_placeholder(org) {
-                let mut oe = Entity::new(
-                    EntityKind::Organisation,
-                    org,
-                    confidence::ATTRIBUTED,
-                    &_ctx.scan_id,
-                );
-                oe.tag("whois");
+    // Registrant organisation → Organisation entity. For an address this is
+    // the allocation's operator (tagged `ip-registrant`, like the RDAP path),
+    // not a domain registrant.
+    if let Some(org) = &registrant_org {
+        let org = org.trim();
+        if org.len() >= 3 && !crate::core::validation::is_whois_privacy_placeholder(org) {
+            let mut oe = Entity::new(
+                EntityKind::Organisation,
+                org,
+                confidence::ATTRIBUTED,
+                scan_id,
+            );
+            oe.tag("whois");
+            if is_ip {
+                oe.tag("ip-registrant");
+            } else {
                 oe.tag(crate::core::tags::REGISTRANT);
-                oe.add_evidence(
-                    Evidence::new(SRC, format!("WHOIS registrant for {}", target.value))
-                        .with_attr("parent_target", target.value.as_str()),
-                );
-                result.push(oe);
             }
+            oe.add_evidence(
+                Evidence::new(SRC, format!("WHOIS registrant for {}", target.value))
+                    .with_attr("parent_target", target.value.as_str()),
+            );
+            result.push(oe);
         }
+    }
 
-        // Registrant name → Person entity (when not redacted). `registrant_name`
-        // is parsed above so it can also fold into the domain evidence.
-        if let Some(name) = &registrant_name {
-            let name = name.trim();
-            if name.len() >= 4
-                && name.contains(' ')
-                && !crate::core::validation::is_whois_privacy_placeholder(name)
-            {
-                let mut pe = Entity::new(
-                    EntityKind::Person,
-                    name,
-                    confidence::ATTRIBUTED,
-                    &_ctx.scan_id,
+    // Registrant name → Person entity (when not redacted). `registrant_name`
+    // is parsed above so it can also fold into the domain evidence.
+    if let Some(name) = &registrant_name {
+        let name = name.trim();
+        if name.len() >= 4
+            && name.contains(' ')
+            && !crate::core::validation::is_whois_privacy_placeholder(name)
+        {
+            let mut pe = Entity::new(EntityKind::Person, name, confidence::ATTRIBUTED, scan_id);
+            pe.tag("whois");
+            pe.tag(crate::core::tags::REGISTRANT);
+            pe.add_evidence(
+                Evidence::new(SRC, format!("WHOIS registrant for {}", target.value))
+                    .with_attr("parent_target", target.value.as_str()),
+            );
+            result.push(pe);
+        }
+    }
+
+    // Registrant address → Address entity (when available and not a
+    // privacy-proxy placeholder — via the SAME shared guard the registrant
+    // name/org paths above use, not a narrow redacted/privacy substring test).
+    //
+    // For an IpAddress target this same field also carries the RIR
+    // allocation record's `country:`/`state:` RPSL attributes — a CDN/
+    // anycast edge IP's own registration describes the PROVIDER's
+    // registered address, not the subject's, exactly the class
+    // `untrusted_ip_geo_reason` exists to catch (the same policy
+    // `ip_whois_geo`/`geo_intel`/`ipinfo`/`ip2location`/`ipquery`/`netlas`
+    // already apply). A Domain target's registrant address is unaffected
+    // — it has nothing to do with IP geolocation trust.
+    let geo_trusted = !is_ip || crate::core::validation::untrusted_ip_geo_reason(q).is_none();
+    if geo_trusted && let Some(country) = &registrant_country {
+        let parts = registrant_location_parts(registrant_state.as_deref(), country);
+        if !parts.is_empty() && parts.iter().any(|p| p.len() >= 2) {
+            let addr = parts.join(", ");
+            let mut ae = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM, scan_id);
+            ae.tag("whois");
+            ae.tag(crate::core::tags::REGISTRANT);
+            ae.tag("geoint");
+            ae.add_evidence(
+                Evidence::new(SRC, format!("Registrant location for {}", target.value))
+                    .with_attr("parent_target", target.value.as_str()),
+            );
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::LOW,
+                    scan_id,
                 );
-                pe.tag("whois");
-                pe.tag(crate::core::tags::REGISTRANT);
-                pe.add_evidence(
-                    Evidence::new(SRC, format!("WHOIS registrant for {}", target.value))
-                        .with_attr("parent_target", target.value.as_str()),
+                c.tag("whois");
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("Geocode of registrant address for {}", target.value),
+                    )
+                    .with_attr("parent_target", target.value.as_str()),
                 );
-                result.push(pe);
+                result.push(c);
             }
+            result.push(ae);
         }
+    }
 
-        // Registrant address → Address entity (when available and not a
-        // privacy-proxy placeholder — via the SAME shared guard the registrant
-        // name/org paths above use, not a narrow redacted/privacy substring test).
-        //
-        // For an IpAddress target this same field also carries the RIR
-        // allocation record's `country:`/`state:` RPSL attributes — a CDN/
-        // anycast edge IP's own registration describes the PROVIDER's
-        // registered address, not the subject's, exactly the class
-        // `untrusted_ip_geo_reason` exists to catch (the same policy
-        // `ip_whois_geo`/`geo_intel`/`ipinfo`/`ip2location`/`ipquery`/`netlas`
-        // already apply). A Domain target's registrant address is unaffected
-        // — it has nothing to do with IP geolocation trust.
-        let geo_trusted = target.kind != TargetKind::IpAddress
-            || crate::core::validation::untrusted_ip_geo_reason(&target.value).is_none();
-        if geo_trusted && let Some(country) = &registrant_country {
-            let parts = registrant_location_parts(registrant_state.as_deref(), country);
-            if !parts.is_empty() && parts.iter().any(|p| p.len() >= 2) {
-                let addr = parts.join(", ");
-                let mut ae = Entity::new(
-                    EntityKind::Address,
-                    &addr,
-                    confidence::MEDIUM,
-                    &_ctx.scan_id,
-                );
-                ae.tag("whois");
-                ae.tag(crate::core::tags::REGISTRANT);
-                ae.tag("geoint");
-                ae.add_evidence(
-                    Evidence::new(SRC, format!("Registrant location for {}", target.value))
-                        .with_attr("parent_target", target.value.as_str()),
-                );
-                if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
-                    let coord_val = format!("{lat:.4},{lon:.4}");
-                    let mut c = Entity::new(
-                        EntityKind::Coordinates,
-                        &coord_val,
-                        confidence::LOW,
-                        &_ctx.scan_id,
-                    );
-                    c.tag("whois");
-                    c.tag("addr-derived");
-                    c.tag("geoint");
-                    c.add_evidence(
-                        Evidence::new(
-                            SRC,
-                            format!("Geocode of registrant address for {}", target.value),
-                        )
-                        .with_attr("parent_target", target.value.as_str()),
-                    );
-                    result.push(c);
-                }
-                result.push(ae);
-            }
-        }
-
-        // Admin and tech contact names / organisations — same redaction filter
-        // as the registrant block above (the shared, complete privacy-proxy guard).
-        let is_redacted = crate::core::validation::is_whois_privacy_placeholder;
+    // Admin and tech contact names / organisations — same redaction filter
+    // as the registrant block above (the shared, complete privacy-proxy guard).
+    // Domain records only: an RIR record's contacts are the network's staff.
+    let is_redacted = crate::core::validation::is_whois_privacy_placeholder;
+    if !is_ip {
         for (name_opt, role) in [(&admin_name, "admin"), (&tech_name, "tech")] {
             if let Some(name) = name_opt
                 .as_deref()
                 .map(str::trim)
                 .filter(|n| n.len() >= 4 && n.contains(' ') && !is_redacted(n))
             {
-                let mut pe = Entity::new(EntityKind::Person, name, confidence::HIGH, &_ctx.scan_id);
+                let mut pe = Entity::new(EntityKind::Person, name, confidence::HIGH, scan_id);
                 pe.tag("whois");
                 pe.tag(role);
                 pe.add_evidence(
@@ -644,12 +866,8 @@ impl Module for Whois {
                 .map(str::trim)
                 .filter(|o| o.len() >= 3 && !is_redacted(o))
             {
-                let mut oe = Entity::new(
-                    EntityKind::Organisation,
-                    org,
-                    confidence::NOTABLE,
-                    &_ctx.scan_id,
-                );
+                let mut oe =
+                    Entity::new(EntityKind::Organisation, org, confidence::NOTABLE, scan_id);
                 oe.tag("whois");
                 oe.tag(role);
                 oe.add_evidence(
@@ -660,45 +878,36 @@ impl Module for Whois {
                 result.push(oe);
             }
         }
-
-        // Contact phone numbers — redacted values are already excluded in
-        // parse_whois; each surviving number is in E.164 `+<digits>` form.
-        for phone in &phones {
-            let mut pe = Entity::new(
-                EntityKind::Phone,
-                phone,
-                confidence::HIGH_PLUS,
-                &_ctx.scan_id,
-            );
-            pe.tag("whois");
-            pe.add_evidence(
-                Evidence::new(SRC, format!("WHOIS contact phone for {}", target.value))
-                    .with_attr("parent_target", target.value.as_str()),
-            );
-            result.push(pe);
-        }
-
-        // Surface nameservers as Domain entities too so DNS chaining
-        // picks them up at depth>=1.
-        result.extend(nameservers.iter().filter_map(|ns| {
-            let host = ns.trim_end_matches('.').to_lowercase();
-            if host.is_empty() {
-                return None;
-            }
-            let mut e = Entity::new(
-                EntityKind::Domain,
-                &host,
-                confidence::CORROBORATED,
-                &_ctx.scan_id,
-            );
-            e.tag("whois-ns");
-            e.add_evidence(
-                Evidence::new(SRC, format!("Nameserver for {}", target.value))
-                    .with_attr("parent_target", target.value.as_str()),
-            );
-            Some(e)
-        }));
-
-        Ok(result)
     }
+
+    // Contact phone numbers — redacted values are already excluded in
+    // parse_whois; each surviving number is in E.164 `+<digits>` form.
+    for phone in &phones {
+        let mut pe = Entity::new(EntityKind::Phone, phone, confidence::HIGH_PLUS, scan_id);
+        pe.tag("whois");
+        pe.add_evidence(
+            Evidence::new(SRC, format!("WHOIS contact phone for {}", target.value))
+                .with_attr("parent_target", target.value.as_str()),
+        );
+        result.push(pe);
+    }
+
+    // Surface nameservers as Domain entities too so DNS chaining
+    // picks them up at depth>=1. Values are already host-only (glue
+    // stripped, shape-checked) — see `parse::clean_nameserver`.
+    result.extend(nameservers.iter().filter_map(|ns| {
+        let host = ns.trim_end_matches('.').to_lowercase();
+        if host.is_empty() {
+            return None;
+        }
+        let mut e = Entity::new(EntityKind::Domain, &host, confidence::CORROBORATED, scan_id);
+        e.tag("whois-ns");
+        e.add_evidence(
+            Evidence::new(SRC, format!("Nameserver for {}", target.value))
+                .with_attr("parent_target", target.value.as_str()),
+        );
+        Some(e)
+    }));
+
+    Ok(result)
 }

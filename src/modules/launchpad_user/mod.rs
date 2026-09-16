@@ -51,6 +51,14 @@ pub(super) struct LpPerson {
     /// `false` when the account is deactivated or suspended.
     #[serde(default = "default_true")]
     pub(super) is_valid: bool,
+    /// `true` for a Launchpad **team**. People and teams share the `~name`
+    /// namespace and the same resource shape, so a team decodes exactly like
+    /// a person — this is the field that tells them apart (captured live
+    /// 2026-09-15: `~ubuntu-desktop` → `is_team: true`, `resource_type_link`
+    /// `…/#team`; `~mvo` → `false`, `#person`). Absent on older records, so
+    /// it defaults to a person.
+    #[serde(default)]
+    pub(super) is_team: bool,
     /// The account's declared IANA time zone (e.g. `"Australia/Brisbane"`) — a
     /// chronolocation lead, previously decoded nowhere.
     #[serde(default)]
@@ -64,7 +72,12 @@ fn default_true() -> bool {
 pub(super) fn build_entities(person: LpPerson, scan_id: &str) -> Vec<Entity> {
     let mut out = Vec::new();
     let handle = person.name.trim();
-    if handle.is_empty() || !person.is_valid {
+    // A team is not a person: minting its slug as a confirmed personal
+    // account, its display name as a Person, the emails in its description
+    // and a country tag from its time zone would attribute an organisation's
+    // record to a human subject (backlog #24). No person owns this handle,
+    // which is the honest clean negative.
+    if handle.is_empty() || !person.is_valid || person.is_team {
         return out;
     }
     let profile_url = profile_kit::profile_url(person.web_link.as_deref(), || {
@@ -185,6 +198,12 @@ impl Module for LaunchpadUser {
         };
         if !person.name.eq_ignore_ascii_case(handle) {
             return Ok(ModuleResult::new());
+        }
+        if person.is_team {
+            tracing::debug!(
+                target: "module.launchpad_user",
+                "~{handle} is a Launchpad team, not a person account — no person owns this handle"
+            );
         }
         let mut result = ModuleResult::new();
         result.entities = build_entities(person, &ctx.scan_id);

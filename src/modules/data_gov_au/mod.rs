@@ -43,9 +43,38 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::fetch_json_or_404;
+use crate::util::http::fetch_json;
 
 const SRC: &str = "data_gov_au";
+
+/// CKAN's `package_search` action on data.gov.au; `package_search` takes it as
+/// a parameter so a loopback server can drive the transport path in tests.
+const API_BASE: &str = "https://data.gov.au/data/api/3/action/package_search";
+
+/// One `package_search` call. CKAN signals zero matches with a 200
+/// `success: true, count: 0`, so every non-2xx — a 404 in particular, which
+/// on this deployment means the endpoint path is gone (the header records
+/// that the bare `/api/3/` path 404s) — is a failed lookup, never "no matching
+/// agency" (backlog #11). A 2xx with `success: false` is CKAN rejecting the
+/// query, the same class of failure.
+async fn package_search(
+    client: &reqwest::Client,
+    api_base: &str,
+    query: &str,
+) -> Result<PackageSearchResponse> {
+    let url = format!(
+        "{api_base}?q={}&rows={ROWS}",
+        crate::util::http::urlencode(query)
+    );
+    let data: PackageSearchResponse = fetch_json(client, SRC, &url).await?;
+    if !data.success {
+        return Err(Error::module(
+            SRC,
+            "data.gov.au: search request rejected (success=false)",
+        ));
+    }
+    Ok(data)
+}
 
 /// Bound the search page so one query can't pull an unbounded catalog response.
 const ROWS: usize = 10;
@@ -213,26 +242,7 @@ impl Module for DataGovAu {
             return Ok(ModuleResult::new());
         }
 
-        let url = format!(
-            "https://data.gov.au/data/api/3/action/package_search?q={}&rows={ROWS}",
-            crate::util::http::urlencode(query)
-        );
-
-        let data: Option<PackageSearchResponse> = fetch_json_or_404(&ctx.http, SRC, &url).await?;
-        let Some(data) = data else {
-            return Ok(ModuleResult::new());
-        };
-
-        // CKAN answers a rejected/malformed query with a 2xx status and success=false — a
-        // genuine API-level failure, distinct from a legitimate zero-match search
-        // (success=true, count=0) — so it must surface as Err (fail-closed), not be treated the
-        // same as "no results".
-        if !data.success {
-            return Err(Error::module(
-                SRC,
-                "data.gov.au: search request rejected (success=false)",
-            ));
-        }
+        let data = package_search(&ctx.http, API_BASE, query).await?;
 
         let mut result = ModuleResult::new();
         result.entities = build_entities(&data, query, &ctx.scan_id);

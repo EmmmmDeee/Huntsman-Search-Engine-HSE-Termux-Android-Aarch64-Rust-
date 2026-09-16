@@ -33,6 +33,45 @@ pub enum Error {
     /// the scan with zero backoff.
     #[error("rate limited: {0}")]
     RateLimited(String),
+    /// The provider's edge refused this client with an anti-bot challenge,
+    /// CAPTCHA or WAF block page ([`crate::util::html::is_challenge_page`]) —
+    /// a `403 Attention Required! | Cloudflare`, a `Just a moment...`
+    /// interstitial, a challenge served with a 2xx where JSON was expected.
+    /// The provider is up and answering; it will not serve *this* client (a
+    /// datacenter address, a non-browser fingerprint) until something about
+    /// the client changes, so a retry within the run only re-reads the wall.
+    /// Distinct from [`Self::Module`] (a genuine failure) and from
+    /// [`Self::RateLimited`] (a throttle that clears with time): dispatch
+    /// benches the module at once under its own breaker reason, and the
+    /// capability probe reports it as `blocked` — never "unreachable", never a
+    /// dead canary. Observed 2026-09-15 on GitHub's runner for `anubis` and
+    /// `austlii`, both then filed as the provider being down.
+    #[error("bot challenge: {0}")]
+    BotChallenge(String),
+    /// A module that deliberately did **not** query the provider for this
+    /// target, saying so in-band so the engine can record a typed
+    /// [`EventKind::ModuleSkipped`](crate::core::event::EventKind::ModuleSkipped)
+    /// carrying `class` — never a `ModuleError` (which would trip the circuit
+    /// breaker and degrade module health for a decision, not a fault) and never
+    /// `Ok(empty)` (which dispatch records as `ModuleDone { found: 0 }` and
+    /// `core::coverage` aggregates to `CleanNegative`, the one outcome that is a
+    /// real negative). The class decides what the silence means: a
+    /// [`SkipClass::NotApplicable`](crate::core::event::SkipClass::NotApplicable)
+    /// skip (the provider structurally has nothing to say about this target — a
+    /// registry that publishes no WHOIS server) carries no information about the
+    /// subject, while an `Unavailable` skip (the provider could not be used from
+    /// this host) is a coverage gap the operator can act on. Before this
+    /// variant existed a module's only in-band options were a failure or a
+    /// clean negative, so "not attempted" was misreported as one or the other.
+    #[error("skipped ({}): {reason}", class.as_str())]
+    Skipped {
+        /// What the silence means for coverage — see
+        /// [`SkipClass`](crate::core::event::SkipClass).
+        class: crate::core::event::SkipClass,
+        /// Operator-facing reason: what was not asked and why. Persisted as
+        /// `ModuleSkipped.reason`, so it must never read as "found nothing".
+        reason: String,
+    },
     #[error("{0}")]
     Other(String),
 }
@@ -45,6 +84,18 @@ impl Error {
         Self::Module {
             module: module.into(),
             message: message.into(),
+        }
+    }
+
+    /// Construct an [`Error::Skipped`] — the typed "not attempted" a module
+    /// returns instead of a failure or an empty result when it decided not to
+    /// query the provider at all. `reason` is operator-facing (it becomes the
+    /// `ModuleSkipped.reason` the dossier and coverage report show), so it must
+    /// say what was not asked and why, and must never read as "found nothing".
+    pub fn skipped(class: crate::core::event::SkipClass, reason: impl Into<String>) -> Self {
+        Self::Skipped {
+            class,
+            reason: reason.into(),
         }
     }
 }

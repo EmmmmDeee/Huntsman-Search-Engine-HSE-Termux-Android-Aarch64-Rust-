@@ -7,8 +7,21 @@ name: Live API drift
 # it can never block a PR. The job is deliberately allowed to go RED on
 # failure (no continue-on-error) — a failed run is the whole point, since that
 # is what fires the scheduled-workflow failure notification surfacing a drift
-# or upstream outage. Swallowing the failure into a green run would hide
-# exactly the signal this workflow exists to raise.
+# or a confirmed dead canary. Swallowing the failure into a green run would
+# hide exactly the signal this workflow exists to raise.
+#
+# A dead canary (a curated known-positive provider that answered nothing on
+# any of its retried attempts) is confirmed across sweeps, never by one run:
+# one sweep's reading is three attempts over six seconds, and a live provider
+# can fail all three (2026-09-15: `crtsh` answered 502 on every attempt at
+# 22:01 and 200 four minutes later). The sweep remembers which canaries it
+# read dead and since when in `~/.huntsman/capability_dead_canaries.json`
+# (`capability_probe::judge_dead_canaries`); this workflow carries that file
+# between runs as the `live-drift-memory` artifact, so a first reading is a
+# warning annotation and only a canary dead on a sweep at least
+# `DEAD_CANARY_CONFIRMATION_SECS` (20 h) later, with no answer between, fails
+# the run. Without a memory (the first run, an expired artifact) every dead
+# reading is a first reading — the side that never fails.
 on:
   schedule:
     # Mondays 08:00 UTC — once a week is enough to catch upstream shape
@@ -17,10 +30,12 @@ on:
     - cron: "0 8 * * 1"
   workflow_dispatch:
 
-# Least privilege: the job only reads the checked-out tree and hits public
-# third-party endpoints. No write scopes.
+# Least privilege: the job reads the checked-out tree, hits public third-party
+# endpoints, and reads this workflow's own earlier runs to restore the sweep's
+# memory artifact (`actions: read`). No write scopes.
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -41,8 +56,52 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (v2.9.2)
 
+      # The most recent completed run of this workflow that uploaded a memory
+      # — on any branch: a dead canary is a fact about the provider, not about
+      # the branch. A cancelled run may have uploaded none; a run older than
+      # the artifact retention has none: both fall through to the next older
+      # run, and no memory at all is disclosed, not assumed away.
+      - name: Restore the previous sweep's dead-canary memory
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          memory_dir="$HOME/.huntsman"
+          mkdir -p "$memory_dir"
+          echo "HSE_DEAD_CANARY_MEMORY=$memory_dir/capability_dead_canaries.json" >> "$GITHUB_ENV"
+          runs=$(gh run list --workflow live-drift.yml --status completed --limit 12 \
+                   --json databaseId --jq '.[].databaseId') \
+            || { echo "could not list this workflow's earlier runs — every dead reading this run is a first reading"; runs=""; }
+          restored=""
+          for run_id in $runs; do
+            if gh run download "$run_id" --name live-drift-memory --dir "$memory_dir" 2>/dev/null; then
+              restored="$run_id"
+              break
+            fi
+          done
+          if [ -n "$restored" ]; then
+            echo "dead-canary memory restored from run $restored:"
+            cat "$memory_dir/capability_dead_canaries.json"
+          else
+            echo "no earlier run carried a dead-canary memory — every dead reading this run is a first reading"
+          fi
+
       # Only the ignored live-drift tests; `--ignored` runs exactly those.
-      # A failure here means an upstream provider changed its wire shape (or is
-      # down) — investigate tests/live_drift.rs, don't ignore it.
+      # A failure here means an upstream provider changed its wire shape, or a
+      # canary has been dead across sweeps — investigate tests/live_drift.rs,
+      # don't ignore it.
       - name: Run live-drift tests
         run: cargo test --test live_drift --locked -- --ignored --nocapture
+
+      # Whatever the outcome: a red sweep's memory is the one the next sweep
+      # must confirm against. Nothing to upload when this run recorded
+      # nothing and restored nothing (a clean sweep from a clean slate).
+      - name: Keep this sweep's dead-canary memory for the next one
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: live-drift-memory
+          path: ${{ env.HSE_DEAD_CANARY_MEMORY }}
+          if-no-files-found: ignore
+          retention-days: 90

@@ -33,7 +33,8 @@ use async_trait::async_trait;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
+    event::SkipClass,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -106,7 +107,30 @@ impl Module for PhoneGeo {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
 
-        let digits = crate::util::str_util::ascii_digits(&target.value);
+        // Both passes read the number COUNTRY-FIRST (dialling prefix, then
+        // area code or mobile prefix), so they can only run on a value that
+        // declares its country — a `+` or `00` international marker. A bare
+        // national number carries no country: its leading digits are its area
+        // code, not a dialling prefix, and reading them as one fabricates a
+        // location. `817-555-1234` (Fort Worth, Texas), stripped to digits,
+        // starts with Japan's `81` and then Kyoto's `75` — reproduced end to
+        // end with the built binary as an Address "Kyoto" at 0.58. The
+        // sibling offline phone modules (`phone_intl`, `phone_au`, the
+        // `geo_intel` phone pass) already gate on this one shared predicate;
+        // this module was the one that read the raw digits. A number without
+        // a marker is out of scope, and says so as a typed skip — never a
+        // guess, and never an empty result that reads as "no geo signal".
+        let Some(digits) = crate::modules::phone_intl::international_digits(&target.value) else {
+            return Err(Error::skipped(
+                SkipClass::NotApplicable,
+                format!(
+                    "{} carries no international marker (`+` or `00`), so its country — and \
+                     therefore any area-code or carrier geolocation — is unknown; offline \
+                     phone geo needs the number in international form",
+                    target.value
+                ),
+            ));
+        };
 
         // Pass 1: area-code → city/region (former `phone_area_geo`).
         area_code_pass(&digits, ctx, &mut result);

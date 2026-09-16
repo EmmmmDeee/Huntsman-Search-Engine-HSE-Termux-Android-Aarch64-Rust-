@@ -1117,7 +1117,8 @@ pub(in crate::core::correlator) fn rule_au_037_credential_exposure(
     )]
 }
 
-/// AU-043 — the subject's data appears in one or more public pastes (`psbdmp`):
+/// AU-043 — the subject's data appears in one or more public pastes (`intelx`'s
+/// paste bucket, `xposed_or_not`'s paste sightings):
 /// a public-exposure signal that corroborates breach findings. `Medium`. One
 /// grouped firing over all paste URLs.
 pub(in crate::core::correlator) fn rule_au_043_paste_exposure(

@@ -2689,3 +2689,4388 @@ CI-bound session cannot supply:
 
 The session should now REPORT the stop condition to the user rather than force
 marginal changes past this point.
+
+## Pass 31 findings
+
+Baseline `origin/main` at `c439970` (#633); branch `claude/charming-meitner-85h3aj`
+restarted from it. Discovery was driven by OBSERVED PRODUCTION BEHAVIOUR rather
+than by reading: the two most recent scheduled `live-drift` runs on `main`
+(2026-09-07, run 34100825380; 2026-09-14, run 34822949388) were pulled and
+diffed. Both are green, and both carry the same persistent non-yields:
+`whois 8.8.8.8 → empty`, `bgpview` (canary) unreachable, `chronicling_america`
+(canary) timed-out, `au_people` DNS-dead, `au_property` "retired/migrated legacy
+URLs", `github_code_search` HTTP 401 on a module declared `Free`. Ranked by the
+method's precedence (false evidence and silent failure before retired endpoints
+and observability), `whois` was traced first.
+
+### REQ-WHOIS-001 (**new, Pass 31 — REPRODUCED, FIXED, FALSIFIED**)
+
+**IANA's bootstrap answer was parsed as the target's own WHOIS record.**
+`process()` asked `whois.iana.org`, followed the referral with
+`query(addr, q).await.unwrap_or(raw)` — so any failed hop (timeout, refused,
+unresolvable) handed IANA's **TLD** record to the parser — and when
+`find_referral` found nothing (IANA's `whois:` line is blank for a registry
+that publishes no WHOIS server; `.vn`, HSE's primary operating jurisdiction, is
+one) the same text was parsed on **every** lookup. Captured over HTTPS from
+`https://www.iana.org/whois?q=…` on 2026-09-15 (port 43 is blocked from this
+sandbox), the `COM` record carries `created: 1985-01-01`, `status: ACTIVE` and
+thirteen `nserver:` lines with glue; `VN` carries `created: 1994-04-14`,
+`status: ACTIVE`, seven `nserver:` lines and an empty `whois:`. Both satisfy
+the module's "actionable data" gate (`registrar || created || nameservers ||
+statuses`), so the target Domain was emitted at `HIGH_PLUSPLUS_PLUS` with the
+TLD's creation date (→ a `Registered` timeline event via
+`core::timeline::classify`), the TLD's status, and each root server — glue
+included, e.g. `a.gtld-servers.net 192.5.6.30 2001:503:a83e:0:0:0:2:30` — as a
+`whois-ns` Domain entity at `CORROBORATED`, which admission accepts
+(`is_fragment_value` only asks for a dot) and the expansion loop pivots on.
+This was `docs/PROVIDER_SWEEP_BACKLOG.md` #47, an UNVERIFIED lead; it is now
+re-derived, reproduced and closed — and worse than the lead said (the no-server
+case is deterministic, not a failed-hop edge).
+
+**Three siblings in the address path, same file.** (a) ARIN's answer for an
+address carries no registrar / creation date / nameservers / `status:`, so the
+domain-shaped gate discarded every ARIN allocation whole — the live sweep's
+persistent `whois 8.8.8.8 → empty` — while the HTTPS RDAP fallback for the same
+address yields operator, country and abuse contact. (b) ARIN lists every
+enclosing allocation least-specific first; a first-match read attributed the
+parent carrier's operator and abuse desk to the address. (c) An RPSL `org:`
+line is an organisation HANDLE (`ORG-RIEN1-RIPE`) — minted as an Organisation
+entity in place of `org-name:` — and the `person:` objects an RIR returns are
+the network's contacts, minted as the address's "registrant" Person.
+
+**Fix.** `src/modules/whois/{mod,parse,client}.rs`: the lookup is
+bootstrap → referral → authoritative → `build_result` over an injected
+`client::Transport` (`client::Tcp` in production). IANA's text is consumed by
+`bootstrap_referral` alone and is never bound to a name the parser could be
+handed; a failed/unresolvable hop is `Error::Module` naming the server (`not
+"no registration record"`); no WHOIS server for the registry is a typed
+`NotApplicable` skip pointing at `rdap_domain`; a load refusal (`WHOIS LIMIT
+EXCEEDED`, DENIC's `access control limit reached`) is `Error::RateLimited`; a
+"No match" reply is the one genuine clean negative. RIR fields
+(`NetRange`/`inetnum`/`inet6num`, `NetName`, `CIDR`, `NetType`,
+`OrgName`/`org-name`/`owner`, `descr`, `RegDate`/`Updated`/`last-modified`) are
+parsed; an address answer is judged on them, anchored on the most specific
+block (`parse::most_specific_network_record`); `org:` handles are never names;
+no Person is minted from an address record; nameserver values are host-only
+and shape-checked (`parse::clean_nameserver`); `whois_server` is stamped on
+the evidence.
+
+**Regression tests** (`src/modules/whois/tests.rs`, on the authentic IANA /
+ARIN / RIPE wire text): `iana_bootstrap_yields_only_the_referral_for_com`,
+`a_registry_without_a_whois_server_is_a_typed_not_applicable_skip`,
+`a_failed_referral_hop_is_a_lookup_failure_never_the_tld_record`,
+`a_vn_domain_is_skipped_without_fabricating_registration_data`,
+`a_url_without_a_host_is_a_typed_skip`,
+`an_arin_address_record_yields_operator_country_and_abuse_contact`,
+`a_url_with_an_ip_host_reads_the_rir_record_as_an_address_record`,
+`arin_nested_allocations_attribute_the_most_specific_block`,
+`an_address_record_without_dates_or_status_is_still_a_record` (the control
+that isolates the address gate — see falsification C below),
+`most_specific_network_record_anchors_on_the_last_netrange_or_first_inetnum`,
+`a_ripe_record_names_the_organisation_not_its_handle_and_mints_no_person`,
+`is_rpsl_org_handle_matches_rir_handles_only`,
+`a_ru_style_org_line_with_a_real_name_still_surfaces_as_the_registrant_org`,
+`a_load_refusal_is_a_typed_rate_limit_not_a_clean_negative`,
+`a_no_match_reply_is_a_clean_negative`,
+`a_record_mentioning_a_quota_in_its_remarks_is_still_a_record`,
+`nameserver_glue_is_stripped_and_non_hosts_dropped`.
+
+### REQ-CORE-013 (**new, Pass 31**)
+
+**A module can say "not attempted" in-band.** `core::error::Error::Skipped
+{ class: SkipClass, reason }` (constructor `Error::skipped`). Dispatch
+(`finalise_module_result`) records it as `ModuleSkipped { class, reason }`,
+tallies it under `modules_skipped`, and touches neither the circuit breaker nor
+module health — never a `ModuleError` (a decision is not a fault) and never
+`ModuleDone { found: 0 }` (which `core::coverage` aggregates to
+`CleanNegative`). Until now a module's only in-band outcomes were a failure or
+a clean negative, so a structural "this provider cannot speak about this
+target" was misreported as one or the other — REQ-COV-001 closed that class
+for the missing-credential case only. Locked at the engine boundary by
+`tests/smoke.rs::a_typed_module_skip_is_a_module_skipped_event_not_an_error_or_a_clean_negative`
+(event shape, `modules_skipped == 1`, `modules_errored == 0`, no coverage row
+for a `NotApplicable` skip) and by the `Error` Display drift guard
+(`every_variant_display_is_pinned`, now exhaustive over the new variant).
+The `whois` behind-HTTPS-proxy domain path is its `Unavailable` user (was a
+silent empty result); the no-WHOIS-server registry is its `NotApplicable` user.
+
+### Baseline reproduction (origin/main `c439970`, worktree, same fixtures)
+
+Three temporary tests appended to the module's test file in a detached
+worktree at `c439970` (never committed), driving the UNMODIFIED baseline
+parser and its gate with the same authentic fixtures the fix's tests use:
+
+```
+$ git -C baseline-wt log --oneline -1
+c439970 Fix rustfmt drift in `query-pack` match arm (#633)
+$ cargo test --lib -- modules::whois::tests::baseline_
+test modules::whois::tests::baseline_iana_tld_record_passes_the_actionable_gate ... ok
+    # IANA's COM record satisfies registrar||created||nameservers||statuses:
+    # created = "1985-01-01", statuses = ["ACTIVE"], nameservers keep their glue
+test modules::whois::tests::baseline_arin_record_is_dropped_by_the_domain_shaped_gate ... ok
+    # ARIN's 8.8.8.8 record fails the same gate while country "US" and
+    # abuse_email "network-abuse@google.com" were parsed — then discarded;
+    # OrgName: was not read at all
+test modules::whois::tests::baseline_ripe_org_handle_is_taken_as_the_organisation ... ok
+    # registrant_org == "ORG-RIEN1-RIPE"
+test result: ok. 3 passed; 0 failed
+```
+
+Each of the three is the defect asserted AS IT STOOD; on this branch the
+corresponding regression tests assert the opposite and pass.
+
+### Verification and falsification (this branch)
+
+```
+$ cargo fmt --all -- --check                                              # clean
+$ cargo clippy --all-targets --locked --features dep-cooldown -- -D warnings   # EXIT 0
+$ RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::bare_urls -D rustdoc::invalid_html_tags" \
+    cargo doc --no-deps --document-private-items --locked --features dep-cooldown   # EXIT 0
+$ cargo test --all --lib --bins --tests --locked --features dep-cooldown
+    # lib: ok. 7317 passed; 0 failed; 23 ignored — every integration binary ok (0 failed)
+$ cargo test --doc --locked                    # ok. 77 passed; 0 failed; 3 ignored
+$ scripts/doc_coverage.sh                      # EXIT 0
+$ cargo test --lib -- modules::whois           # ok. 52 passed (after the control test was added)
+$ cargo test --test smoke -- a_typed_module_skip missing_key_releases   # ok. 2 passed
+
+# FALSIFICATION — each root cause reintroduced in turn, tested, then restored
+# from a byte-identical copy (`cmp` verified) and re-tested:
+# A. `transport.authoritative(..).await.unwrap_or(iana)` — the original fallback
+$ cargo test --lib -- modules::whois
+test modules::whois::tests::a_failed_referral_hop_is_a_lookup_failure_never_the_tld_record ... FAILED
+test result: FAILED. 50 passed; 1 failed
+# B. `let record = response;` — first-match over the whole ARIN answer
+test modules::whois::tests::arin_nested_allocations_attribute_the_most_specific_block ... FAILED
+test result: FAILED. 50 passed; 1 failed
+# C. the domain-shaped gate (registrar||created||nameservers||statuses) for addresses
+#    First attempt: 51 passed, 0 failed — the ARIN/RIPE fixtures carry RegDate/created,
+#    so the gate change was NOT locked by any test (the regression tests passed for
+#    the wrong reason). Added the date-less/status-less control record, re-ran:
+test modules::whois::tests::an_address_record_without_dates_or_status_is_still_a_record ... FAILED
+test result: FAILED. 51 passed; 1 failed
+# restored after each: ok. 52 passed; 0 failed
+```
+
+**Not verifiable here.** Raw TCP/43 is blocked from this sandbox (and behind
+`HTTPS_PROXY` the module takes its RDAP path), so the live port-43 hop is
+proven through the offline transport seam against byte-faithful captures of
+the live wire dialects, not by a live dial. The next scheduled `live-drift` run
+(Mondays, GitHub-hosted runners with port 43 open) exercises `whois 8.8.8.8`
+end-to-end: the expected transition is `empty → alive`.
+
+### Re-ranked, not taken this pass (recorded for the next)
+
+From the same two live sweeps, all honest failures (lower precedence than the
+false-evidence class above): `bgpview` canary unreachable both weeks and
+`api.bgpview.io` has NO DNS record from this sandbox either (ENDPOINT_RETIRED
+probable — `ip_registry` also calls it); `chronicling_america` canary timed-out
+both weeks; `au_people` DNS-dead both weeks; `au_property` self-documented
+retired endpoints; `github_code_search` declared `Free` but `/search/code`
+requires authentication (401 both weeks — CONFIGURATION_FAILURE); and the
+drift harness itself: a canary that is unreachable or timed-out stays green
+indefinitely, with no cross-run memory, contrary to the canary policy that
+repeated non-yield must degrade the source. `rdap_domain` maps rdap.org's 404
+to a clean negative for both "no such domain" and "no RDAP server for this
+TLD" — the sibling of the `.vn` case, now expressible with `Error::skipped`.
+`docs/PROVIDER_SWEEP_BACKLOG.md` still lists 42 unverified leads of the
+"failure read as clean negative" class (#46 `trove_au` v2-shape-on-v3-endpoint
+is the highest-value of them).
+
+### REQ-PHONE-001 (**new, Pass 31 — REPRODUCED END TO END, FIXED, FALSIFIED**)
+
+**A bare national number declares no country.** `phone_geo::process` stripped
+the value to digits and read them country-first (`lookup_area_code`,
+`identify_carrier`), so a Fort Worth number typed as `817-555-1234` matched
+Japan's `81` dialling prefix and Kyoto's `75` area code. Backlog lead #34;
+reproduced through the real seed path with the built binary:
+
+```
+$ HOME=$(mktemp -d) target/debug/hse scan -k phone -v "817-555-1234" -m phone_geo -d 0 --output json
+  geo entities: [('address', 'Kyoto', 0.58)]        # baseline — fabricated location
+$ … -v "+1 817 555 1234"    →  geo entities: []      # the same number, international form
+```
+
+`phone_geo` now gates both passes on `phone_intl::international_digits` — the
+one shared predicate `phone_intl`, `phone_au` and the `geo_intel` phone pass
+already use — and a number without a `+`/`00` marker is the typed
+`NotApplicable` skip naming the value. Reproduce-again with the rebuilt binary:
+
+```
+$ … -v "817-555-1234"       →  geo entities: []
+    {"level":"DEBUG","message":"skipped — module opted out","module":"phone_geo","class":"not_applicable",
+     "reason":"8175551234 carries no international marker (`+` or `00`), so its country — and therefore any
+     area-code or carrier geolocation — is unknown; offline phone geo needs the number in international form"}
+$ … -v "(646) 555-1234"     →  geo entities: []
+$ … -v "+81 75 555 1234"    →  geo entities: [('address', 'Kyoto', 0.58)]   # known-positive control
+$ … -v "0081 75 555 1234"   →  geo entities: [('address', 'Kyoto', 0.58)]
+```
+
+Tests: `a_bare_national_number_is_never_read_as_another_countrys_prefix`,
+`an_international_number_still_resolves_its_area_code`
+(`src/modules/phone_geo/tests.rs`).
+
+### REQ-OFAC-001 (**new, Pass 31 — FIXED, FALSIFIED**)
+
+**A Consolidated (non-SDN) row is never an SDN match.** `list.rs` merged
+`CONS_PRIM.CSV` rows into the same unlabelled set as `SDN.CSV`; `entity.rs`
+stamped every finding `register = "OFAC Specially Designated Nationals (SDN)
+List"` / "OFAC SDN list match". Backlog lead #35, confirmed from source. Each
+row now carries `OfacList::{Sdn, Consolidated}` (stamped by the fetcher per
+URL); register, summary and a per-list tag (`ofac-sdn` / `ofac-consolidated`)
+name the actual list on the subject and on the designated-wallet pivot.
+Falsification — relabel every row as SDN again (the original behaviour):
+
+```
+$ cargo test --lib -- modules::sanctions_ofac
+test result: FAILED. 37 passed; 2 failed      # a_consolidated_list_row_is_never_reported_as_an_sdn_match,
+                                              # a_wallet_off_a_consolidated_list_row_carries_the_consolidated_register
+# restored: ok. 39 passed; 0 failed
+```
+
+### REQ-RIPESTAT-001 (**new, Pass 31 — FIXED**)
+
+**A total RIPEstat outage is a failure, not "no data".** Every sub-fetch was
+`.ok()`'d and the empty result returned without `or_hard_failure` (backlog lead
+#31). The first attempt at an offline reproduction — a client whose every
+request is refused — did NOT reproduce it: `util::http`'s curl fallback took
+over and reached the live RIPEstat through the sandbox proxy (the module
+returned real AS15169 / 8.8.8.0/24 entities). That test was withdrawn; the
+lookup now runs over an injected `StatSource` seam (production: `Live` over
+`ctx.http`), and the outage, a partial outage and a drifted `data` shape are
+pinned offline: `a_total_ripestat_outage_is_a_module_failure_not_a_clean_negative`,
+`a_partial_outage_keeps_the_endpoints_that_answered`,
+`an_unexpected_data_shape_is_an_endpoint_failure` (`src/modules/ripestat/tests.rs`).
+
+### REQ-WHOIS-002 (**new, Pass 31 — review findings on PR #635, all verified and fixed**)
+
+Copilot's review of the first cut raised seven findings; each was verified
+against the source and fixed, with a regression test per finding
+(`src/modules/whois/tests.rs`, "Review findings" section):
+
+- a skip reason / refusal message interpolated the raw `target.value` — for a
+  URL that is its path, query and userinfo, persisted into `ModuleSkipped` /
+  `ModuleError`; every message now names the looked-up host (`q`) only;
+- the proxy branch keyed on `TargetKind::IpAddress`, so `http://8.8.8.8/…`
+  behind `HTTPS_PROXY` became an `Unavailable` skip and the RDAP fallback
+  would have encoded the whole URL; both now use the looked-up value;
+- `host_only` keeps IPv6 brackets, so `http://[2001:db8::1]/` classified and
+  queried as a domain; brackets are stripped for the WHOIS query;
+- a referral-less IANA answer was always the structural "no WHOIS server"
+  skip — an IANA refusal (`WHOIS LIMIT EXCEEDED`) or an error body was
+  laundered into a harmless skip; it is now classified first (refusal →
+  `RateLimited`, `0 objects` → typed skip naming the unknown namespace, any
+  other body → lookup failure);
+- any non-actionable authoritative reply fell through to `Ok(empty)` —
+  coverage's `CleanNegative` — for an empty body, a banner or an unknown
+  dialect; only a reply carrying a registry "no match" phrasing
+  (`parse::no_match_notice`) is the clean negative now, and DENIC's
+  `Status: free` no longer counts as a status *record*;
+- the CDN/anycast geolocation suppression ran on the raw target value, which
+  for a URL never parses as an address, so `http://104.16.0.1/…` emitted
+  Cloudflare's registered country as subject geolocation; it runs on `q`.
+
+While fixing the message-PII finding a pre-existing defect surfaced in the
+shared helper: `util::url_util::host_only("https://user:pw@example.com/…")`
+returned `user` (cut at the first colon), so `whois`, `sitemap`, `wayback`,
+`url_extract`, `host_from_url` and the raw-archive index all treated a
+credential fragment as the host. Fixed at the helper (`rsplit('@')`), pinned
+in `src/util/url_util/tests.rs`.
+
+### REQ-CI-001 (**new, Pass 31 — REPRODUCED, FIXED**)
+
+**Requirement.** A ratchet enforces the ceiling it reports. The doc-coverage
+step (`scripts/doc_coverage.sh`; CI step "Doc coverage (ratchet, may fall but
+not rise)") counts the same thing on a GitHub runner, a laptop and a phone, and
+a run that prints "held" or "improved" has measured the crate.
+
+**Finding.** `ci.yml` exports `CARGO_TERM_COLOR: always` for every step. Under
+it rustc prefixes each diagnostic with ANSI escapes (`ESC[1m ESC[33m warning
+ESC[0m: missing documentation …`), so the script's anchored
+`grep -c '^warning: missing documentation'` matched nothing. Every CI run since
+the ratchet landed reported `doc coverage improved: 0 undocumented public items`
+and passed; the first cut of PR #635 passed the step while the same tree measured
+1045 against the 1041 ceiling locally. Two public items had landed undocumented
+on `main` in the interval (1043 measured at `c439970`) with nothing to catch
+them. A ratchet that cannot see the thing it ratchets is worse than none: it
+reports a ceiling it never enforced.
+
+**Reproduction (2026-09-15, this checkout, committed script, `BASELINE=1041`).**
+
+```
+$ CARGO_TERM_COLOR=always scripts/doc_coverage.sh; echo EXIT=$?   # what CI runs
+doc coverage improved: 0 undocumented public items (baseline 1041, -1041)
+Lower BASELINE in scripts/doc_coverage.sh to 0 to lock the gain in.
+EXIT=0
+$ scripts/doc_coverage.sh; echo EXIT=$?                           # same tree, plain env
+doc coverage regressed: 1043 undocumented public items, baseline 1041
+…
+EXIT=1
+```
+
+**Fix.** The cargo call forces plain output (`CARGO_TERM_COLOR=never cargo rustc
+… --color never`), so the count is identical under any caller environment. The
+ceiling is set to the measured value on `main`, 1043 — raised explicitly, with
+the reason recorded in the script, rather than inherited from a count that was
+never checked; it falls as items get documented (`Error::Skipped`'s two fields
+were documented in this PR so its own additions do not lift it).
+
+**Verification (fixed script).**
+
+```
+$ scripts/doc_coverage.sh; echo EXIT=$?
+doc coverage held at 1043 undocumented public items
+EXIT=0
+$ CARGO_TERM_COLOR=always scripts/doc_coverage.sh; echo EXIT=$?   # CI's environment
+doc coverage held at 1043 undocumented public items
+EXIT=0
+```
+
+The regression lock is the invariant itself: the count under `always` now equals
+the count under plain output, and the CI step (dispatched on this branch) shows
+the real figure instead of 0.
+
+**Remote verification.** CI run 34961748014 (`workflow_dispatch`, head `6c85498`),
+job "Check & test (Linux x86_64, stable)", step "Doc coverage (ratchet, may fall
+but not rise)" — under the workflow's `CARGO_TERM_COLOR: always`:
+
+```
+2026-09-15T11:14:59.0027142Z doc coverage held at 1043 undocumented public items
+```
+
+### REQ-SOCIAL-001 (**new, Pass 31 — REPRODUCED, FIXED, FALSIFIED**)
+
+**Requirement.** `social_probe` vouches for a profile on a negative-marker
+platform only when it has read the whole page and found no marker. A page curl
+did not deliver — refused or cut at the download cap — is inconclusive: never a
+hit, never an absence.
+
+**Finding** (`docs/PROVIDER_SWEEP_BACKLOG.md` #38; class FALSE_POSITIVE_RISK).
+`util::curl::fetch_with_status` passed `--max-filesize 8192` and returned
+`(status, body)` with no word about truncation. curl aborts a download whose
+declared `Content-Length` exceeds the cap *before reading a byte* (exit 63,
+empty body) and cuts a chunked one mid-stream; the `-w` sentinel still delivers
+the status. The module then evaluated `negative_patterns` over that body, found
+nothing — there was nothing to find — and minted a `Url` at 0.92 tagged
+`verified-detection`, evidence `detection: body-marker`, for every
+negative-marker platform (the adult / cam table: livejasmin, imlive,
+mydirtyhobby, sextpanther, stripchat, loyalfans, …) whose not-found page exceeds
+8 KiB — which is every modern SPA shell. The subject-echo summary then counted
+it under `hits_verified`.
+
+**Reproduction (2026-09-15, curl 8.5.0, the production arguments verbatim,
+loopback server serving a 24 KiB not-found page).**
+
+```
+=== /len-marker-at-end     (Content-Length declared, marker at the end) ===
+exit=63 http_code=[200] body_len=0    marker_present=no
+=== /chunked-marker-at-end (chunked, marker past 8 KiB) ===
+exit=63 http_code=[200] body_len=8192 marker_present=no
+=== /chunked-marker-early  (chunked, marker in the head) ===
+exit=63 http_code=[200] body_len=8192 marker_present=yes
+=== /small-no-marker ===
+exit=0  http_code=[200] body_len=69   marker_present=no
+```
+
+The first two rows are the defect: status 200 ∈ `exists_codes`, no marker in
+the body → hit, `detection_strength` → (0.92, verified).
+
+**Fix — two layers, both necessary.**
+
+- `util::curl::fetch_with_status` returns a typed `StatusProbe { status, body,
+  truncated }`; exit 63 sets `truncated`. The cap is raised to 256 KiB
+  (`PROBE_BODY_CAP_BYTES`, the ceiling the reqwest enumerators already read a
+  profile page under), so truncation is the exception rather than every probe.
+- `social_probe::classify_probe(platform, url, &answer) -> util::probe::ProbeResult`
+  is the one place the hit / absence / inconclusive policy lives (pure): a
+  presence status with a marker-free body is a verified hit only when the body
+  is whole; a marker seen in a partial body is still a definitive not-found; a
+  truncated marker-free body is `Error` (inconclusive) and feeds the existing
+  M6 inconclusive-sweep verdict. Status-only platforms are unchanged (a weak
+  hit on the status alone).
+
+**Regression locks.**
+`util::curl::tests::fetch_with_status_reports_a_body_curl_refused_or_cut_as_truncated`
+(real curl against a loopback listener: a known-length page above the cap →
+status 200, `truncated`, empty body; a chunked page is either flagged or
+delivered whole; a page under the cap is whole and not flagged; the status-only
+path never truncates) and `modules::social_probe::tests::{a_presence_status_whose_body_curl_refused_or_cut_is_inconclusive_not_a_verified_hit,
+a_negative_marker_seen_in_a_partial_body_is_still_a_definitive_not_found,
+a_whole_marker_free_body_on_a_presence_status_is_the_verified_hit,
+a_status_only_platform_is_a_weak_hit_whatever_the_body,
+refusals_are_inconclusive_and_absence_statuses_are_definitive}`.
+
+**Falsification.** Removing the truncation guard from `classify_probe` (the
+pre-fix policy: an unseen body "contains no marker"):
+
+```
+test modules::social_probe::tests::a_presence_status_whose_body_curl_refused_or_cut_is_inconclusive_not_a_verified_hit ... FAILED
+assertion `left == right` failed: an empty body curl refused to download is no evidence of a profile on livejasmin
+  left: Found { url: "https://example.invalid/some-handle", confidence: 0.92, verified: true }
+test result: FAILED. 17 passed; 1 failed
+```
+
+Restored: 19 passed (the module's 18 tests plus the curl transport test).
+
+**Not verifiable here.** No live probe of the adult / cam platforms was run from
+this sandbox (it would put a synthetic handle to third-party adult sites through
+the HTTPS proxy). The transport behaviour is observed with the real curl binary
+and the production arguments; the classification is pure and pinned.
+
+### REQ-SWEEP-001 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): six swallowed failures read as clean negatives
+
+**Requirement.** A provider execution that did not establish absence never
+produces the empty result `core::coverage` aggregates to `CleanNegative`. Only
+the provider's own documented "no such subject" answer is the clean negative;
+a transport failure, a non-2xx on a fixed endpoint, a throttle, an outage, an
+unreadable body or a provider error status is the module's error (a throttle
+the typed `Error::RateLimited`).
+
+**Findings** (`docs/PROVIDER_SWEEP_BACKLOG.md` rows, each re-derived from the
+source; class FALSE_NEGATIVE_RISK / silent failure):
+
+| # | Module | What collapsed into `Ok(empty)` | Now |
+|---|---|---|---|
+| 12 | `comb_search` | `fetch_json_or_404`: a 404 on `api.proxynova.com/comb` (the endpoint signals a miss as `200 {count:0, lines:[]}`) | `query_comb` via `fetch_json` — every non-2xx is the failed lookup |
+| 21 | `europepmc_search` | `ok_or_absent(.., &[404])` on the fixed REST search endpoint ("no hits" is `200 / hitCount 0`) | `search` — every non-2xx is the failed lookup |
+| 39 | `shodan` (InternetDB) | transport failure, 429, 5xx, unreadable body — all `return` with a debug line | `query_internetdb -> Result<()>`; only the documented 404 "No information available" is the clean negative |
+| 18 | `gaming_profile` | every transport/HTTP/decode failure on Roblox and Mojang → empty batch | lookups return `Result<Vec<Entity>>`; `combine` applies `or_hard_failure` (a partial outage keeps a confirmed account; an outage with nothing found is the error) |
+| 23 | `github_commits` | `if !status.is_success() { return Ok(empty) }` — 5xx, 401 on a revoked token, 403/429 | `search_commits`: throttle → `RateLimited` (`github_api::throttled`), else the module's error; token rejections still reported to the key pool |
+| 43 | `sunrise_sunset` | `status != OK` → empty; `results` missing → empty; `ok_or_absent(.., &[404])` | `fetch_solar`: the provider computes phases for any coordinates, so every one is the failed lookup, naming the provider's status |
+
+**Seam.** Each module's request path now takes its endpoint base as a parameter
+(`API_BASE` / `INTERNETDB_BASE` / `ROBLOX_BASE` / `MOJANG_BASE` in production),
+so the REAL path — URL building, headers, status classification, body decoding
+— is exercised against `util::http::test_server` (a loopback listener answering
+canned statuses in order; the one copy of what 16 module tests had each
+hand-rolled). No mock of the HTTP client.
+
+**Verification (2026-09-15).** The batch's module tests plus the shared
+`util::http` / `util::curl` tests:
+
+```
+test result: ok. 183 passed; 0 failed; 3 ignored
+```
+
+**Falsification.** The seven pre-fix behaviours reintroduced at once (404 →
+empty in comb_search / europepmc_search; non-OK → empty phases in
+sunrise_sunset; non-2xx → empty in github_commits; every non-2xx swallowed in
+shodan; failures swallowed in gaming_profile's resolver and `combine`;
+github_code_search back to `Free` with a keyless request):
+
+```
+test modules::comb_search::tests::a_non_2xx_from_the_comb_endpoint_is_a_failed_lookup_and_a_200_without_lines_is_the_miss ... FAILED
+test modules::europepmc_search::tests::a_404_from_the_search_endpoint_is_a_failed_lookup_and_hit_count_zero_is_the_miss ... FAILED
+test modules::gaming_profile::tests::a_platform_failure_is_the_platforms_error_and_only_a_miss_is_empty ... FAILED
+test modules::gaming_profile::tests::combine_keeps_a_platform_failure_and_surfaces_it_only_when_nothing_was_found ... FAILED
+test modules::github_code_search::tests::module_metadata ... FAILED
+test modules::github_commits::tests::a_non_2xx_from_the_commit_search_is_a_failure_and_a_throttle_is_typed ... FAILED
+test modules::shodan::tests::internetdb_failures_are_the_modules_error_and_only_a_404_is_the_clean_negative ... FAILED
+test modules::sunrise_sunset::tests::a_provider_error_status_or_a_404_is_a_failed_lookup_never_an_empty_result ... FAILED
+test modules::github_code_search::tests::without_a_token_the_module_is_a_missing_key_skip_before_any_request ... FAILED
+test result: FAILED. 60 passed; 9 failed; 3 ignored
+```
+
+Exactly the nine new or changed tests, nothing else. Restored: 71 passed.
+
+**Not verifiable here.** No live call to any of the six providers was made
+from this sandbox; each fix changes only what the module does with a status it
+already receives, and the documented miss signals (`200 {count:0}`, `hitCount:
+0`, InternetDB's 404, Mojang's 404, `total_count: 0`, `status: "OK"`) are the
+ones the modules already parsed. The Monday `live-drift` run exercises the
+canaries on GitHub's runners.
+
+### REQ-GITHUB-001 (**new, Pass 31 — FIXED**): `github_code_search` declared Free, answered 401 on every keyless scan
+
+**Requirement.** A module whose provider cannot be queried without a credential
+is `KeyGated` and opts out with `MissingKey` before any request; it never runs
+keyless and records a `ModuleError` per scan.
+
+**Finding** (live sweep, "Free-but-401"; class AUTH_UNTESTED → DISPATCH). GitHub's
+code search is authenticated-only: every unauthenticated request is
+`401 Requires authentication`. `github_code_search` declared
+`ModuleCost::Free` and read the token with `key_opt`, so a keyless scan
+dispatched it on every Email / Username target, the 401 fell into the
+"any other non-2xx" branch, and the scan recorded a `ModuleError` — a failed
+module, breaker and health penalties — for a module that could never have
+answered. Its `403`/`429` branch also returned an empty result ("no code
+matched") on every throttle.
+
+**Fix.** `cost()` → `KeyGated`; `ctx.key("HUNTSMAN_GITHUB_TOKEN")?` (dispatch
+records a clean `MissingKey` skip, `free_only` never dispatches it); a throttle
+is the typed `RateLimited` via `github_api::throttled` (shared with
+`github_commits`: `429` always, `403` only when GitHub names the rate limit —
+`X-RateLimit-Remaining: 0` or a body saying so); GitHub's `422` "cannot index
+this query" is a typed `NotApplicable` skip (nothing was searched) instead of
+the clean negative it used to be. The key hint (`util::keys::constants`) and
+`env_template.txt` now say the token is required by this module and optional
+for `github_user` / `github_commits`.
+
+**Regression locks.** `github_code_search::tests::{module_metadata,
+without_a_token_the_module_is_a_missing_key_skip_before_any_request}`,
+`github_api::tests::throttled_reads_429_always_and_403_only_when_github_names_the_limit`.
+
+### REQ-BITCOIN-001 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**)
+
+**Requirement.** A partial provider failure never discards evidence already
+acquired, and never passes for a negative: the ledger reading of an address
+survives a failed transaction-list call, and the anchor says the co-spend
+cluster was not read.
+
+**Finding** (`docs/PROVIDER_SWEEP_BACKLOG.md` #6; classes PARTIAL_RESPONSE →
+SILENT_FAILURE). `process` fetched `/address/{a}` (the ledger reading), then
+`fetch_json_or_404(../txs).await?` — the `?` propagated any transport / 5xx
+failure of the *second* call and the whole module errored, discarding the
+stats already in hand, contrary to the comment beside it ("a failure here must
+not discard the ledger reading"). The obvious alternative — swallowing the
+failure — would have turned an unread cluster into "no co-spent addresses".
+
+**Fix.** `lookup(client, api_base, addr, scan_id)`: the ledger call's failure
+is the module's error and Esplora's 404 the one clean negative; a failed
+`/txs` call keeps the anchor and stamps its evidence `cospend_lookup: failed`,
+`cospend_error: <reason>` and the tag `cospend-unavailable`, so a wallet
+cluster that was never read is not mistaken for one that is empty
+(`build_entities(stats, Result<&[Transaction], &str>, ..)`).
+
+**Regression locks.** `bitcoin::tests::{a_failed_transaction_lookup_keeps_the_ledger_reading_and_says_so,
+lookup_keeps_the_ledger_on_a_txs_failure_and_errors_on_a_ledger_failure}` (the
+latter drives the real request path against a loopback Esplora: stats 200 +
+txs 503 → anchor kept with the failure on its evidence; stats 500 → error;
+stats 404 → empty).
+
+### REQ-AUPROP-001 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**)
+
+**Requirement.** `au_property` reports "register consulted, no records" only
+when a register answered: a 2xx that arrived from a different host than the
+portal asked, or a body that could not be read to the end, is not an answer.
+
+**Findings** (`docs/PROVIDER_SWEEP_BACKLOG.md` #3 and #4; class
+FALSE_NEGATIVE_RISK). `run_leg` tallied `LegOutcome::Ok` (a) after
+`read_body_capped` returned `None` on a mid-body transport failure — an empty
+page parsed to nothing, "no records for this name" — and (b) for any 2xx,
+including NSW's legacy `maps.six.nsw.gov.au` 308-redirecting wholesale to the
+SDT Explorer SPA on `portal.spatial.nsw.gov.au` (observed 2026-08-04, recorded
+in the module's own header), whose shell page says nothing about anyone. With
+all three portals retired, that is a clean negative on every AU property
+lookup whenever NSW forwards instead of 404-ing.
+
+**Fix.** A new `LegOutcome::Migrated` — the response's final host differs from
+the requested host (`landed_off_host`, pure) — counted with `HttpError` as a
+dead endpoint in `leg_failure` (the verdict names it: "returned a non-success
+HTTP status or redirected away to another host"); the body is read with
+`read_body_capped_or_fail`, a failure being `LegOutcome::Unreachable`.
+
+**Regression locks.** `au_property::tests::{a_leg_that_landed_on_another_host_is_a_dead_endpoint_in_the_verdict,
+landed_off_host_compares_hosts_only,
+run_leg_classifies_a_cross_host_redirect_and_a_cut_body_honestly}` (the last
+drives `run_leg` against loopback listeners: a 308 to another host → `Migrated`;
+a body whose `Content-Length` promises more than arrives → `Unreachable`, nothing
+kept; a whole 2xx → `Ok`).
+
+**Residual.** The three portals remain retired (the 2026-09-14 sweep:
+"all 3 property-register endpoints … returned a non-success HTTP status");
+no replacement endpoint is identified. The module now fails closed on every
+way those retirements can present; it does not regain the capability.
+
+### REQ-AUSPOST-001 (**new, Pass 31 — FIXED against the published contract; live decode UNVERIFIED**)
+
+**Requirement.** `auspost` decodes what the PAC Postcode Search API sends.
+
+**Finding** (`docs/PROVIDER_SWEEP_BACKLOG.md` #5, confirmed 3/3 in Pass 17;
+class SCHEMA_DRIFT). The struct expected `{"localities": [ {"locality", "state",
+"postcode": "…"} ]}`. Australia Post documents `{"localities": {"locality": [
+{"category", "id", "latitude", "location", "longitude", "postcode": 2000,
+"state"} ]}}` — a wrapper object, the name under `location`, a *numeric*
+postcode — plus the XML-derived quirks that a single match is a lone object
+under `locality` and no match is `"localities": ""`. Every real answer
+therefore failed to decode (a decode error is at least a visible failure, not
+a clean negative — but the capability was dead for every keyed operator).
+
+**Fix.** `AusPostAddress { location (alias locality), postcode: number or
+string, state }`; `AusPostResponse.localities` via a deserializer that accepts
+the wrapper (array or lone object), the empty-string no-match, and the pre-fix
+bare list; an object wrapper without `locality`, or any other type, is a decode
+failure (shape drift must surface, never read as "no localities").
+
+**Evidence level.** No `HUNTSMAN_AUSPOST_KEY` exists in this environment, so
+the live answer was not observed; the shape is taken from Australia Post's
+published PAC documentation and the lead's 3/3 verification. Tests:
+`auspost::tests::{the_documented_multi_match_envelope_decodes,
+a_single_match_arrives_as_an_object_and_decodes,
+no_match_is_an_empty_string_and_reads_as_empty,
+an_unrecognised_wrapper_is_a_decode_failure_not_an_empty_answer,
+the_pre_fix_bare_list_spelling_still_decodes}`. Status: FIXED against the
+documented contract; live decode remains UNVERIFIED until a keyed run.
+
+**Batch falsification (2026-09-15).** The three pre-fix behaviours
+reintroduced at once (`/txs` failure propagating and the anchor silent about
+it; no host comparison, a body-read failure tolerated, migrated legs not
+counted; the bare-list AusPost struct):
+
+```
+test modules::au_property::tests::a_leg_that_landed_on_another_host_is_a_dead_endpoint_in_the_verdict ... FAILED
+test modules::au_property::tests::landed_off_host_compares_hosts_only ... FAILED
+test modules::au_property::tests::run_leg_classifies_a_cross_host_redirect_and_a_cut_body_honestly ... FAILED
+test modules::auspost::tests::a_single_match_arrives_as_an_object_and_decodes ... FAILED
+test modules::auspost::tests::no_match_is_an_empty_string_and_reads_as_empty ... FAILED
+test modules::auspost::tests::the_documented_multi_match_envelope_decodes ... FAILED
+test modules::bitcoin::tests::a_failed_transaction_lookup_keeps_the_ledger_reading_and_says_so ... FAILED
+test modules::bitcoin::tests::lookup_keeps_the_ledger_on_a_txs_failure_and_errors_on_a_ledger_failure ... FAILED
+test result: FAILED. 70 passed; 8 failed
+```
+
+Exactly the eight new tests; restored: 78 passed.
+
+**Backlog housekeeping.** Rows #0 (`asic_business_names` truncation), #1
+(`acma_rrl`), #2 (`ahpra`), #7 and #8 (`austlii`) of the same "confirmed"
+table were re-derived from source and found already fixed on `main`
+(`server_total`-based truncation; `read_body_capped_or_fail`; `ok_or_absent(..,
+&[])` on the fixed AustLII path); the rows now say so.
+
+### REQ-DRIFT-001 (**new, Pass 31 — OBSERVED, FIXED, FALSIFIED, LIVE-VERIFIED at sandbox level**)
+
+**Requirement.** The weekly live-drift sweep fails on a canary whose provider
+gives no answer for the whole run. A canary is a curated known-positive chosen
+because its provider is expected to answer; a provider that answers nothing on
+any of several retried attempts is down or retired, and the capability is gone
+as surely as under wire-shape drift. The sweep's own contract already says so
+("a failure here means an upstream provider changed its wire shape (or is
+down)"); the test did not.
+
+**Observation** (class OBSERVABILITY_FAILURE masking ENDPOINT_RETIRED). The
+2026-09-14 sweep (run 34822949388, `main` 4c78411) printed
+
+```
+  unreachable  bgpview                [bgpview] transport error (error sending request for url (https://api.bgpview.io/asn/15169/prefixes)); curl fallback also failed [canary]
+  timed-out    chronicling_america    [canary]
+  timed-out    crtsh                  [canary]
+live-drift sweep: 124 probed — 68 alive, 38 empty, 13 unreachable, 5 timed-out
+test fleet_capability_drift ... ok
+```
+
+and passed: `ProbeReport::is_confirmed_drift` covers `Empty` (canary) and
+`Panicked` only; `Unreachable` / `TimedOut` were "**never** treated as drift" —
+correct for wire-shape drift, but nothing else ever escalated them.
+`api.bgpview.io` has no DNS at all (`getent hosts` fails here; the proxy's
+CONNECT returns 502; `docs/PROVIDER_SWEEP_BACKLOG.md` #25 records the NXDOMAIN),
+so the `bgpview` canary has been dead on every weekly run while the workflow
+stayed green — the exact "capability is gone and nothing says so" the sweep
+exists to catch.
+
+**Fix.** A canary's probe is retried — `CANARY_ATTEMPTS` (3) attempts,
+`CANARY_RETRY_PAUSE` (3 s) apart — so a transient blip is absorbed and only a
+provider that answers nothing on any attempt reaches the verdict; every other
+module keeps its single tolerated attempt (`attempts_for`). A canary still
+`Unreachable` / `TimedOut` after that is `ProbeReport::is_dead_canary()`,
+disjoint from drift (the wire shape was never seen). `tests/live_drift.rs`
+fails on it with a distinct message ("DEAD CANARY … migrate the endpoint or
+retire the capability honestly"); `hse doctor --live` tags the row and prints
+a summary warning; `GET /api/v1/capabilities/probe` carries `dead_canary` per
+module and a top-level `dead_canaries` list. Retries are bounded by
+construction (`probe_with_policy`: exactly `attempts` calls at most).
+
+**Regression locks.** `selftest::capability_probe::tests::{attempts_for_gives_a_canary_three_and_any_other_module_one,
+a_dead_canary_is_a_canary_that_gave_no_answer,
+a_transient_transport_failure_is_retried_and_a_persistent_one_is_final}` (the
+last drives `probe_with_policy` over a fixture module that fails its first N
+calls: a blip is absorbed under three attempts, a single attempt makes no
+second call, a provider that never answers costs exactly three calls) and
+`api::handlers::tests::capability_probe_json_tallies_outcomes_and_flags_canary_drift`
+(`bgpview` unreachable → `dead_canaries: ["bgpview"]`, `drift: false`).
+
+**Falsification.** Attempts forced to one and `is_dead_canary` forced false
+(the pre-fix policy):
+
+```
+test selftest::capability_probe::tests::a_dead_canary_is_a_canary_that_gave_no_answer ... FAILED
+test api::handlers::tests::capability_probe_json_tallies_outcomes_and_flags_canary_drift ... FAILED
+test selftest::capability_probe::tests::a_transient_transport_failure_is_retried_and_a_persistent_one_is_final ... FAILED
+test result: FAILED. 15 passed; 3 failed
+```
+
+Restored: 18 passed.
+
+**Live verification (2026-09-15, this sandbox, real modules, real providers
+through the HTTPS proxy).** A throwaway integration test (not committed) ran
+`probe_module` on the real `bgpview` and `ripestat` modules:
+
+```
+attempts policy: 3
+bgpview  → "unreachable"  dead_canary=true drift=false  (6.0s)
+  reason: [bgpview] transport error (error sending request for url (https://api.bgpview.io/asn/15169/prefixes)); curl fallback also failed
+ripestat → "alive"  dead_canary=false drift=false  (1.6s)
+```
+
+The dead provider costs its three attempts (two 3-s pauses; the connect fails
+at once) and is the dead-canary verdict; the live control is alive and not
+flagged. The production-level proof is the next scheduled `live-drift` run,
+which is now expected to go **red on `bgpview`** (and on `crtsh` /
+`chronicling_america` if they time out on all three attempts) — the truthful
+signal, not a regression: the endpoint must be migrated or the capability
+retired (the next unit of work, `docs/PROVIDER_SWEEP_BACKLOG.md` #25).
+
+### REQ-BGP-001 (**new, Pass 31 — OBSERVED, RETIRED / REPLACED, VERIFIED with live RDAP captures**)
+
+**Requirement.** A retired endpoint is migrated or its capability retired
+honestly — never left to hard-error on every scan and to read "unreachable" on
+every sweep.
+
+**Observation** (class ENDPOINT_RETIRED). `api.bgpview.io` no longer resolves:
+`getent hosts api.bgpview.io` fails here, the proxy's CONNECT returns 502, the
+2026-09-14 sweep recorded the `bgpview` canary "transport error … curl fallback
+also failed", and `docs/PROVIDER_SWEEP_BACKLOG.md` #25 recorded the NXDOMAIN
+(`bgpview.io` itself has no DNS either). Consequences on every scan: the
+`bgpview` module errored on every ASN and IP target (breaker and health
+penalties for a provider that cannot answer); `ip_registry`'s ASN path — BGPView
+only — hard-errored on every ASN target; its IP path silently lost the
+announcing-ASN half (a debug line). After REQ-DRIFT-001 the weekly sweep would
+have gone red on it every Monday.
+
+**Repair.** The endpoint's two capabilities already have an authority elsewhere:
+
+- IP → announcing ASN + covering prefix (+ abuse contact): `ripestat`
+  (`network-info`, a live canary) — `bgpview`'s IP path and `ip_registry`'s
+  BGPView IP half duplicated it. Both are removed; `ripestat` is the one
+  authority.
+- ASN → registry record: RDAP `autnum` (RFC 9083 §5.5) —
+  `https://rdap.arin.net/registry/autnum/{asn}`, ARIN's root redirecting to the
+  authoritative RIR (observed: `AS3320` → `rdap.db.ripe.net`, 200). This is the
+  same corpus `ip_registry`'s IP path already reads, so the module now speaks
+  one protocol to one registry system. `build_autnum_entities` emits the
+  registered `Asn` (handle, name, status, the RIR that answered via `port43`,
+  every dated event, a number range when the object covers one), the operator
+  `Organisation` (a registrant whose vCard says `kind: org` — RIPE's
+  `individual`-kind maintainer and routing-registry handles such as `DTAG-RR`
+  are never minted as organisations) and role-tagged, deduplicated contact
+  `Email`s through the crate's role-local-part / provider-domain gate. RDAP
+  carries no website, so the BGPView-era `asn-website` `Url` is gone rather
+  than fabricated. `bgpview`'s ASN → announced-prefixes pivot is `ripestat`'s
+  `announced-prefixes`.
+- The `bgpview` module is deleted (registry, README list and counts — 197
+  modules, 149 free — the API reference row, the correlator's infra-family
+  name list, the ASN search dork's `site:bgpview.io`, and every comment that
+  described behaviour through it). The ASN canary is now
+  `("ip_registry", Asn, "AS15169")`.
+
+**Evidence.** Fixtures in `ip_registry/tests.rs` are the live RIR answers
+captured 2026-09-15 (`rdap.arin.net` for AS15169; RIPE's for AS3320 via ARIN's
+redirect), trimmed to the fields read with structure and values verbatim; a
+synthetic contact tree in the RIR's shape covers the emitted-contact path the
+authentic captures cannot (their only mailboxes are role local-parts, which the
+gate drops by design). The transport path is driven against a loopback RDAP
+(record → entities; 404 → clean negative; 503 → the module's error).
+
+**Falsification.** The builder's two judgement rules reverted (any registrant
+minted as the organisation; contacts not deduplicated across roles):
+
+```
+test modules::ip_registry::tests::autnum_contacts_are_role_tagged_deduplicated_and_gated ... FAILED
+test modules::ip_registry::tests::ripe_autnum_picks_the_org_kind_registrant_never_a_maintainer_handle ... FAILED
+test result: FAILED. 15 passed; 2 failed
+```
+
+Restored: 17 passed.
+
+**Residual.** The live `autnum` fetch was observed with `curl` from this
+sandbox, not through the module's own client (raw port-43 is irrelevant here —
+this is HTTPS — but the module was not run end to end against the RIR from the
+sandbox); the next scheduled sweep exercises the new `ip_registry` ASN canary on
+GitHub's runners. Backlog #25 is closed.
+
+### REQ-HTTP-001 (**new, Pass 31 — OBSERVED live, FIXED, FALSIFIED**): an HTML answer where JSON was expected is named as an upstream error page
+
+**Requirement.** A decode failure says what arrived. A provider's error
+template, a bot-challenge interstitial or a login page served with a 200 is an
+upstream failure (the provider broke, or blocked the client); a body that is
+real JSON of another shape is contract drift. The recorded reason must let the
+weekly sweep and the operator tell the two apart, because the repairs are
+opposite — wait or retire, versus re-model the struct.
+
+**Observation** (class UPSTREAM failure, every query; 2026-09-15 13:02Z from
+this sandbox, and twice earlier the same day).
+`GET https://wifidb.net/api/geojson.php?func=exp_search&mac=00:13:10:69:EF:11`
+— the BSSID the module's own header records as live-verified in 2026-09 — and
+the same query for an arbitrary `00:1A:2B:3C:4D:5E` both answered:
+
+```
+http=200 ct=text/html; charset=UTF-8 bytes=12608
+<title>Error | Vistumbler WiFiDB</title>
+Error: 0 Message: Argument 1 passed to export::buildSearchConditions() must be
+of the type array, string given, called in
+/srv/www/virtual/wifidb.net/lib/export.inc.php on line 1222
+File: /srv/www/virtual/wifidb.net/lib/searchconditions.inc.php Line: 54
+```
+
+An array-form `mac[]=` parameter fails the same way. The provider's export
+code is broken server-side; no request shape from this side reaches the data.
+What HSE did with it: `fetch_json_or_404` → `decode_json_body` →
+`Error::module("wifidb", "expected value at line 1 column 1")` — fail-closed,
+which is right (a `ModuleError`, never a clean negative), but a reason that
+said nothing about *what* arrived, so the sweep's `wifidb` line read exactly
+like a schema drift.
+
+**Repair.**
+
+- `util::http::url::json_failure(body, err)` — one pure classifier behind all
+  three shared decode helpers (`decode_json_body` under `fetch_json` /
+  `fetch_json_or_404`; `json_decode`; `json_scanned`). A body that reads as an
+  HTML document (leading `<!-- … -->` comments skipped — WiFiDB's template
+  opens with a licence comment — then `util::html::looks_like_document`) is
+  reported as `provider answered an HTML page where JSON was expected — an
+  error page, interstitial or login page, not the data (title: "…"); serde: …`
+  with the page's `<title>` (or its first visible text) quoted. Anything else
+  keeps serde's words plus the first 80 characters of the body, so a shape
+  change is legible from the message alone. Credential redaction still applies
+  on the `fetch_json` path.
+- `wifidb` gains the `API_BASE` + `lookup(client, api_base, bssid)` seam the
+  other repaired modules have; semantics unchanged (404 → clean miss; any
+  other non-2xx, transport failure or undecodable body → the module's error).
+- `wifidb` is a live-drift canary (`("wifidb", MacAddress,
+  "00:13:10:69:EF:11")` in `CANARY_PROBES`), so REQ-DRIFT-001's dead-canary
+  rule escalates it on every weekly sweep while the provider stays broken.
+- Not retired: the corpus and the documented contract are intact (the
+  module's 2026-09 live capture is authentic) and the failure is a server-side
+  bug the operator can fix. Retirement criterion: a `wifidb` canary still dead
+  on two consecutive weekly sweeps retires the module; `mylnikov` and
+  `beacondb` (keyless) and `wigle` (keyed) remain the BSSID → coordinates
+  authorities.
+
+**Evidence.** `util::http::tests::json_failure_names_an_html_error_page_and_keeps_serde_for_shape_drift`
+(the captured template head → named page with its title; a title-less document
+→ its visible text; JSON shape drift → serde's words plus the body head, never
+labelled a page; a JSON body that merely quotes markup → not a page) and
+`modules::wifidb::tests::the_html_error_template_is_the_modules_error_never_a_clean_miss`
+(loopback: template → the module's error naming the page; 404 → clean miss; a
+FeatureCollection → parsed). Live captures are in the session scratchpad
+(`wifidb_live.txt`, `wifidb_probe.txt`, `wifidb_now_*.txt`).
+
+**Falsification.** Classifier bypassed (`json_failure` returning serde's words
+for any non-empty body):
+
+```
+util::http::tests::json_failure_names_an_html_error_page_and_keeps_serde_for_shape_drift --- FAILED
+test result: FAILED. 0 passed; 1 failed
+```
+
+Restored: 1 passed.
+
+**Live proof (runner).** The live-drift dispatch on `f41b49a` (run
+34985449332, 2026-09-15 15:00Z) now reads the page's own words —
+`unreachable wifidb [wifidb] provider answered an HTML page where JSON was
+expected — an error page, interstitial or login page, not the data (title:
+"Error | Vistumbler WiFiDB"); serde: expected value at line 1 column 1
+[canary]` — and `fleet_capability_drift` FAILS on the dead canary as
+REQ-DRIFT-001 requires (the earlier dispatch on `9057132`, before the canary,
+read only `expected value at line 1 column 1` and passed). The sweep stays
+red until WiFiDB recovers or the module is retired; two consecutive dead
+weekly sweeps retire it.
+
+**Residual.** WiFiDB's recovery is outside the repository; the canary decides
+retirement. The module was driven against the captured template on a loopback
+and observed live with `curl`, not run end to end through its own client from
+this sandbox.
+
+### REQ-ATTR-001 (**new, Pass 31 — VERIFIED FROM SOURCE, four OBSERVED LIVE, FIXED, FALSIFIED**): identifier match ≠ entity identity — nine attribution defects
+
+**Requirement.** A finding is attached to the subject only when the evidence
+ties it to the subject: a matching local part, display name, repository
+owner or search hit is a lead about *someone*, not a fact about the person
+scanned. A reading the sensor did not supply is absent, never a value. A
+provider's temporary condition is never recorded as a statement about the
+subject.
+
+**Observations** (2026-09-15, from this sandbox, keyless; the rest verified
+from source by three independent read-only re-derivations of the backlog
+leads):
+
+- Crossref (#14): `works?query=Ada+Lovelace` → "Introduction to the Ada
+  Lovelace Symposium" (Alexander Wolf), "Ada Lovelace lives forever" (Betty
+  Toole) — works ABOUT the name; `works?query.author=Ada+Lovelace` → works
+  whose `author[]` is `{given: Ada, family: Lovelace}`;
+  `query.affiliation=University+of+Wollongong` → `author[].affiliation[].name`
+  free text ("University of Wollongong , Wollongong , Australia") beside a
+  co-author at "The Wollongong Hospital".
+- Launchpad (#24): `~ubuntu-desktop` → `is_team: true`, `resource_type_link
+  …/#team`, `display_name: "Ubuntu Desktop"`, `is_valid: true`; `~mvo` →
+  `is_team: false`, `#person`. Same resource shape either way.
+- Stack Exchange (#44): `users?inname=John Smith` (reputation order) → 95 of
+  the first 100 are exact "John Smith", `has_more: true`;
+  `sort=name&min=John Smith&max=John Smith` → the exact names only (case and
+  trailing-space variants included); `Jon Skeet` → 2 accounts (1 529 680 and
+  1 reputation), `has_more: false`.
+- urlscan (#48, #49): `q=domain:"example.com"` → pages of `dodeliver.com.pk`
+  among the hits; `q=domain:"fonts.googleapis.com"` → five unrelated sites;
+  `q=page.domain:"example.com"` → `www.example.com` pages only. A search hit's
+  keys are `_id`, `_score`, `canonical`, `page`, `result`, `screenshot`,
+  `sort`, `stats`, `submitter`, `task` — no `verdicts`; the hit's `result`
+  URL (`/api/v1/result/{uuid}/`) answers `403 {"warning": "You're not logged
+  in!"}` without a key.
+
+**Repair** (one authoritative site each; every emitted claim now names what
+tied it to the subject):
+
+| # | Module | Before | After |
+|---|---|---|---|
+| 13 | `comb_search` | Username seed tagged `breach` + "N leaked lines" from strangers' same-local-part rows | Username seed never enriched or tagged from those rows; the secrets stay candidate leads |
+| 14 | `crossref_search` | all-fields `query=`; no author decoded | `query.author=` / `query.affiliation=` (`build_query`); `author[]` + `title` decoded; `attribution` gate (`author_matches`: family + given/initial, Western or family-first order, folded; `affiliation_matches`: every seed token) |
+| 24 | `launchpad_user` | team decoded as a person → 0.85 handle, Person, emails, `country:AU` | `is_team` decoded; a team yields nothing (no person owns the handle) |
+| 37 | `rubygems_user` | every gem's repository owner minted as the subject's GitHub handle at HIGH_PLUS | only the subject's own handle is the subject; other owners are candidate `repo-owner` pivots that say so |
+| 44 | `stackoverflow_user` | first reputation-ordered namesake taken as the subject | exact-name page; `resolve_name` → unique holder only; a shared name is a typed `NotApplicable` skip naming the count |
+| 45 | `structured_id` | ObjectID / KSUID date asserted as `account-age` | candidate lead "if this token is one" with the format's false-positive rate recorded; ULID unchanged |
+| 48 | `urlscan` | `domain:` selector; every hit's infrastructure attributed | `page.domain:` + `page_is_the_targets` gate per hit; total follows the gate |
+| 49 | `urlscan` | `verdicts.malicious` read from search hits (never present) | dead read, tag, attribute and confidence bump removed; header states why |
+| 16 | `device_sensors`, `signal_radar` | `rssi_dbm=0`, `frequency_mhz=0`, `link_speed_mbps=0`, `timestamp=0`, `<hidden>` asserted for absent fields | absent readings omitted (`filter_map`/`fold`, the `device_fix` contract); "(SSID not reported)" |
+| 41 | `smtp_vrfy` | every non-`250` RCPT reply → `Invalid` → `smtp-invalid` | RFC 5321 first digit: 2yz accepted, 4yz `Transient` (`smtp-transient`, speculative), 5yz `Invalid`, else `Unreachable` |
+
+**Evidence.** One lock per repair, each on the module's pure seam or a
+duplex/loopback transport: `comb_search::…a_username_seed_is_never_tagged_breach…`,
+`crossref_search::…a_work_that_merely_mentions_the_name…`,
+`…an_organisation_is_matched_on_an_authors_affiliation`,
+`…author_matching_takes_the_family_name…`, `…query_is_scoped…`,
+`launchpad_user::…a_launchpad_team_is_never_minted_as_a_person_account` (the
+live team record), `rubygems_user::…a_third_party_repository_owner_is_a_candidate_pivot…`,
+`stackoverflow_user::…a_shared_display_name_is_never_attributed…` (the live
+Jon Skeet pair), `…search_url_asks_for_the_exact_name_page`,
+`structured_id::…objectid_and_ksuid_are_reported_below_ulid_confidence` (now
+also the candidate tag, summary and rate), `urlscan::…only_scans_of_the_targets_own_page_are_kept`,
+`…build_query_uses_correct_field…`, `device_sensors::…absent_wifi_readings_are_omitted…`,
+`signal_radar::…wifi_absent_readings_are_omitted…`,
+`smtp_vrfy::…a_4yz_rcpt_reply_is_transient_never_an_invalid_mailbox` (a duplex
+MTA answering `450 4.7.1 … Greylisted`). Live captures in the session
+scratchpad (`crossref_*.json`, `lp_*.json`, `so_*.json`, `urlscan_*.json`).
+
+**Falsification.** Each repair reverted in turn (the gate, the selector, the
+demotion, the digit classification …) with only its lock run:
+
+```
+[comb_search #13] reverted -> LOCK FAILS (expected)
+    modules::comb_search::tests::a_username_seed_is_never_tagged_breach_from_strangers_same_local_part_lines --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.20s
+[launchpad_user #24] reverted -> LOCK FAILS (expected)
+    modules::launchpad_user::tests::a_launchpad_team_is_never_minted_as_a_person_account --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.21s
+[rubygems_user #37] reverted -> LOCK FAILS (expected)
+    modules::rubygems_user::tests::a_third_party_repository_owner_is_a_candidate_pivot_never_the_subjects_handle --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.22s
+[smtp_vrfy #41] reverted -> LOCK FAILS (expected)
+    modules::smtp_vrfy::tests::a_4yz_rcpt_reply_is_transient_never_an_invalid_mailbox --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.22s
+[crossref_search #14] reverted -> LOCK FAILS (expected)
+    modules::crossref_search::tests::a_work_that_merely_mentions_the_name_is_not_the_subjects_work --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.20s
+[stackoverflow_user #44] reverted -> LOCK FAILS (expected)
+    modules::stackoverflow_user::tests::a_shared_display_name_is_never_attributed_and_a_unique_one_is --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.21s
+[structured_id #45] reverted -> LOCK FAILS (expected)
+    modules::structured_id::tests::objectid_and_ksuid_are_reported_below_ulid_confidence --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.21s
+[urlscan #48 query] reverted -> LOCK FAILS (expected)
+    modules::urlscan::tests::build_query_uses_correct_field_and_max_page_size --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.21s
+[urlscan #48 gate] reverted -> LOCK FAILS (expected)
+    modules::urlscan::tests::only_scans_of_the_targets_own_page_are_kept --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.21s
+[device_sensors #16] reverted -> LOCK FAILS (expected)
+    modules::device_sensors::tests::absent_wifi_readings_are_omitted_never_asserted_as_zero_or_hidden --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.20s
+[signal_radar #16] reverted -> LOCK FAILS (expected)
+    modules::signal_radar::tests::wifi_absent_readings_are_omitted_never_zero_or_hidden --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7389 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
+**Residual.** Stack Overflow's exact-name page folds case and trailing
+whitespace but the API's exact folding rules are undocumented — a name that
+differs only in Unicode normalisation may be counted separately; a unique
+holder is attributed at the module's existing tier, which is a judgement that
+a unique display name is a usable identifier. urlscan's malicious verdict is
+gone until a keyed capture of the result endpoint is on record. The
+`crates_io`-style loopback drive of `crossref_search`'s HTTP path is not
+added (its pure seam is `build_query` + `attribution`).
+
+### REQ-SWEEP-002 (**new, Pass 31 — VERIFIED FROM SOURCE, two OBSERVED LIVE, FIXED, FALSIFIED**): thirteen more failed lookups read as clean negatives
+
+**Requirement.** Only a provider's documented miss is a clean negative. A
+non-2xx on a fixed endpoint, an HTTP-200 error envelope, an unrecognised
+response shape, an instance or nameserver that did not answer, and a
+second call's failure after a first call's evidence are each classified for
+what they are — a failed lookup, a partial outage kept visible, a typed skip
+— never `Ok(empty)`, which `core::coverage` records as a clean negative
+about the subject.
+
+**Observations** (2026-09-15, this sandbox, keyless; the rest verified from
+source by an independent read-only re-derivation):
+
+- Mylnikov: `bssid=zzz` → HTTP 200 `{"result":400, "data":{}, "message":2,
+  "desc":"Empty or bad search query"}`; a genuine miss → `{"result":404,
+  "data":{}, "message":6, "desc":"Object was not found"}`; a hit →
+  `{"result":200, "data":{"lat":…,"lon":…,"range":…}}`. Every non-200 was
+  "BSSID not located".
+- PyPI XML-RPC: an unknown method → HTTP 200 `text/xml`,
+  `<methodResponse><fault>…<name>faultCode</name><value><int>-32601</int>`
+  … `<name>faultString</name><value><string>server error; requested method
+  not found</string>` — one `<string>`, which the pair parser zipped to
+  nothing ("owns no packages"). A real `user_packages` answer is
+  `<params>…<array>…<string>Owner</string><string>apathy</string>…`.
+
+**Repair** (one authoritative site each):
+
+| # | Module | Before | After |
+|---|---|---|---|
+| 9 | `chess_profile` | both lookups swallowed 429 / 5xx / transport / breaker into an empty batch | `Result<Vec<Entity>>` per lookup (endpoint parameter); `combine` keeps either side's evidence and makes a failure with nothing found the error |
+| 10 | `dns_axfr` | unreachable nameservers read like refusing ones (post-enumeration stage) | answered / unreached / not-probed counted; `sweep_verdict`: unreached → error naming them; all answered → clean negative; nothing probed → `NotApplicable` skip |
+| 11 | `data_gov_au` | 404 on `package_search` → "no matching agency" | `package_search` seam via `fetch_json`; `success: false` rejected |
+| 15 | `crates_io` | listing `?` discarded the confirmed account | `expand_crates` keeps the account and writes `crates_listing: failed` onto its evidence |
+| 17 | `fofa` | 200 `error: true` → warn + empty; pool never told | `envelope_failure`; key/quota-shaped → `note_keyed_error`; every envelope → error |
+| 20 | `exa_search` | snake_case request keys and `published_date` | documented camelCase names (`request_body`); `publishedDate` with the old alias |
+| 22 | `greynoise` | all-defaulted `PaidResp` → nested/renamed shape = "never observed" | `seen: Option<bool>`; `recognised` fails an unrecognised shape |
+| 28 | `mastodon_user` | 1 answered / 9 failed → clean negative; failures unlogged | failures logged and collected; `sweep_verdict` errors on any unanswered instance |
+| 29 | `mylnikov` | every non-200 `result` → "not located" | `classify`: 404 the miss; 200 decodes `data`; else error with `desc` |
+| 33 | `pypi_user` | `<fault>` parsed as no packages | `xmlrpc_fault` → error with the `faultString` |
+| 40 | `stolen_tax` | non-key `success: false` → `Absent` (cached a day) | `body_verdict` accepts; `accepted` fails with the provider's text |
+| 46 | `trove_au` | v2 envelope from the v3 endpoint, `zone=` → zero hits | `category=`; v3 `category[]` / `records` / `heading` / masthead `title` / `troveUrl`; `newspaper_records` fails an unrecognised shape |
+| 50 | `urlhaus` | 401/403 → empty; 429 not reported; any non-`ok` status → empty | 401/403/429 → pool + error; `has_results`: `no_results` only |
+
+**Evidence.** `chess_profile::…a_failure_on_both_platforms…` and
+`…chesscom_lookup_classifies_a_hit_a_404_and_a_failure` (loopback),
+`dns_axfr::…an_unreached_nameserver_leaves_no_zone_transfer_verdict`,
+`data_gov_au::…a_404_or_a_rejected_query_is_a_failed_lookup…` (loopback),
+`crates_io::…a_failed_crate_listing_keeps_the_confirmed_account…` (loopback),
+`fofa::…an_error_envelope_is_a_failure…`,
+`greynoise::…an_unrecognised_paid_response_shape…`,
+`mastodon_user::…a_partial_sweep_is_never_a_clean_negative`,
+`mylnikov::…only_result_404_is_the_miss…` (the live bodies),
+`pypi_user::…an_xmlrpc_fault_is_a_failed_lookup…` (the live body),
+`stolen_tax::…a_non_key_error_envelope_fails_closed…`,
+`trove_au::…the_v3_envelope_is_decoded_and_the_v2_shape_is_a_failed_lookup…`,
+`urlhaus::…only_no_results_is_the_clean_negative…`,
+`exa_search::…request_and_response_use_exas_documented_field_names`.
+
+**Falsification.** Each repair reverted in turn with only its lock run:
+
+```
+[chess_profile #9] reverted -> LOCK FAILS (expected)
+    modules::chess_profile::tests::a_failure_on_both_platforms_is_the_modules_error_never_no_accounts --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.21s
+[data_gov_au #11] reverted -> LOCK FAILS (expected)
+    modules::data_gov_au::tests::a_404_or_a_rejected_query_is_a_failed_lookup_and_only_count_zero_is_the_miss --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.22s
+[crates_io #15] reverted -> LOCK FAILS (expected)
+    modules::crates_io::tests::a_failed_crate_listing_keeps_the_confirmed_account_and_says_so --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.22s
+[mastodon_user #28] reverted -> LOCK FAILS (expected)
+    modules::mastodon_user::tests::a_partial_sweep_is_never_a_clean_negative --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.21s
+[mylnikov #29] reverted -> LOCK FAILS (expected)
+    modules::mylnikov::tests::only_result_404_is_the_miss_every_other_code_is_a_failed_lookup --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.21s
+[pypi_user #33] reverted -> LOCK FAILS (expected)
+    modules::pypi_user::tests::an_xmlrpc_fault_is_a_failed_lookup_never_no_packages --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.21s
+[fofa #17] reverted -> LOCK FAILS (expected)
+    modules::fofa::tests::an_error_envelope_is_a_failure_and_a_key_shaped_one_is_flagged_for_the_pool --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.21s
+[greynoise #22] reverted -> LOCK FAILS (expected)
+    modules::greynoise::tests::an_unrecognised_paid_response_shape_is_a_failed_lookup_never_an_unobserved_ip --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.26s
+[stolen_tax #40] reverted -> LOCK FAILS (expected)
+    modules::stolen_tax::tests::a_non_key_error_envelope_fails_closed_instead_of_reading_as_no_breach --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.22s
+[trove_au #46] reverted -> LOCK FAILS (expected)
+    modules::trove_au::tests::the_v3_envelope_is_decoded_and_the_v2_shape_is_a_failed_lookup_not_zero_hits --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.21s
+[urlhaus #50] reverted -> LOCK FAILS (expected)
+    modules::urlhaus::tests::only_no_results_is_the_clean_negative_and_any_other_status_is_a_failure --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.22s
+[exa_search #20] reverted -> LOCK FAILS (expected)
+    modules::exa_search::tests::request_and_response_use_exas_documented_field_names --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.21s
+[dns_axfr #10] reverted -> LOCK FAILS (expected)
+    modules::dns_axfr::tests::an_unreached_nameserver_leaves_no_zone_transfer_verdict --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
+Restored: the thirteen modules' suites pass again (166 passed).
+
+**Residual.** No key for FOFA, GreyNoise, stolen.tax, Trove, URLhaus or Exa
+here: those six are fixed against their documented contracts and their live
+decode is unverified — each now fails loudly (an error naming the shape or
+the envelope) rather than silently on a mismatch, which is the property that
+makes the next keyed run diagnostic. GreyNoise's actual v3 body shape (flat
+per the crate's key probe, nested per the public docs) is the one open
+question; `recognised` turns either answer into a visible outcome.
+`dns_axfr` will now error from any host where TCP/53 is filtered — an honest
+"not performed" where it used to be a clean negative.
+
+### REQ-RETIRE-001 (**new, Pass 31 — OBSERVED from two vantage points, RETIRED; urlhaus KEY-GATED; cell readings**)
+
+**Requirement.** A capability whose only endpoint is gone is retired
+honestly (REQ-BGP-001's rule): never left to hard-error on every scan and
+read "unreachable" on every sweep. A key-required module declares itself so,
+and a missing key is a typed skip, never an empty result.
+
+**Observations** (2026-09-15).
+
+- `www.truepeoplesearch.com.au` (the sole source of `au_people` after the
+  White Pages leg was retired in 2026-07): NXDOMAIN from this sandbox
+  (`getent hosts` fails) and from GitHub's runner — the live-drift sweep on
+  `9057132` (run 34970838278) recorded `unreachable au_people … dns error:
+  failed to lookup address information: Name or service not known`; the
+  same line stood on the earlier sweeps. The Wayback availability API was
+  rate-limited (429) when asked for the last capture.
+- `psbdmp.ws`: NXDOMAIN here; the sweep recorded `transport error … curl
+  fallback also failed`; the module's own header already recorded the
+  endpoint "averaging 0/152 ok". `psbdmp.cc` resolves but serves a
+  136-byte HTML stub and answers 404 on `/api/v3/search/…`,
+  `/api/search/…`, `/api/v3/dump/search/…` and `/api/v2/search/…`;
+  `psbdmp.it` and `www.psbdmp.ws` have no DNS.
+- `urlhaus` appeared in the sweep's FREE-module table as `empty urlhaus
+  (ip_address 8.8.8.8)`: the module has no `cost()` (so `Free`) and returned
+  `Ok(empty)` without an Auth-Key — the claim "not in the URLhaus corpus"
+  about a host it never checked, on every keyless scan.
+- `cell_intel` / `signal_radar` tower evidence asserted `dbm=0`, `pci=0`,
+  `asu=0`, `level=0`, `registered=false` for fields the tool omitted (found
+  by the grep that followed backlog #16; a test pinned the zero defaults).
+
+**Repair.** `au_people` and `psbdmp` deleted: registry, README (195 modules,
+146 free / 49 key-gated; seed-type rows Email 44, Username 50, Full Name 29,
+Domain 59), the correlator's breach and identity-registry family lists and
+their pinning tests, the provider catalogues (`osint_providers`,
+`key_harvest` service domains, `key_roi`), the scraper-health text and the
+comments that named them. AU-043 stays: `intelx` and `xposed_or_not` still
+tag `paste-exposed`. `urlhaus`: `cost() = KeyGated`, keyless →
+`Error::MissingKey`, README and API reference say "free key". Cell readings:
+one `signal_readings` helper behind both `cell_intel` builders and the
+`signal_radar` cell parser records only the fields present.
+
+**Evidence.** The registry / README guards (`readme_module_overview_count_
+matches_registry`, `readme_seed_type_module_counts_match_registry`) named
+the exact new counts; `urlhaus_is_key_gated`; `build_tower_device_omits_
+absent_readings_never_asserting_zero_or_false` (the inverted pin);
+`signal_radar::cell_absent_dbm_is_omitted_never_zero`; the correlator's
+source-family tests re-pinned without the retired names.
+
+**Falsification.** Each repair reverted in turn with only its lock run. The
+first `urlhaus` lock (`urlhaus_is_key_gated`, `cost()` only) was INSENSITIVE
+to the keyless path — reverting `Err(MissingKey)` to `Ok(empty)` left it
+green — so `without_an_auth_key_the_lookup_is_the_typed_missing_key_skip…`
+(a keyless `ModuleContext` through `process`) was added and falsified:
+
+```
+# first run (the cost()-only lock)
+[urlhaus key-gate] reverted -> LOCK STILL PASSES (BAD)
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7383 filtered out; finished in 0.00s
+[urlhaus cost()] reverted -> LOCK FAILS (expected)
+    modules::urlhaus::tests::urlhaus_is_key_gated --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7383 filtered out; finished in 0.21s
+[cell_intel readings] reverted -> LOCK FAILS (expected)
+    modules::cell_intel::tests::build_tower_device_omits_absent_readings_never_asserting_zero_or_false --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7383 filtered out; finished in 0.21s
+[signal_radar cell dbm] reverted -> LOCK FAILS (expected)
+    modules::signal_radar::tests::cell_absent_dbm_is_omitted_never_zero --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7383 filtered out; finished in 0.21s
+SOME LOCK INSENSITIVE
+# second run (the keyless-path lock added)
+[urlhaus keyless path] reverted -> LOCK FAILS (expected)
+    modules::urlhaus::tests::without_an_auth_key_the_lookup_is_the_typed_missing_key_skip_never_an_empty_result --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7384 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
+**Residual.** No replacement source exists for an Australian residential
+people-finder; the capability is gone, not migrated. Paste exposure keeps
+two producers. The cell-reading change widens the OpenCellID coordinate
+evidence to every reading present (pci / asu / level were previously not
+emitted there) — more, never fabricated, information.
+
+### REQ-SWEEP-003 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a fallback never hides the primary source's failure; a transport failure never establishes "none"
+
+**Requirement.** When every candidate fetch fails before the server answers,
+nothing is established — the module says so rather than reporting an empty
+enumeration. When a precise keyed source fails and a coarse offline fallback
+is emitted instead, the fallback's evidence says the precise lookup failed.
+
+**Observation** (2026-09-15, re-derived from source after the grep that
+followed backlog #16). `sitemap::fetch_capped` returned `None` for a private
+host, a transport failure, a non-2xx and an unreadable body alike, so a
+domain whose `robots.txt`, `/sitemap.xml` and `/sitemap_index.xml` all
+failed at the transport level read as "publishes no sitemap".
+`cell_intel::query_opencellid` returned `None` for a transport failure, a
+non-2xx (the pool was told), the HTTP-200 key rejection (the pool was told)
+and an undecodable body, exactly as for the provider's documented
+`status: "error"` miss — and `process` fell back to the MCC country centroid
+in every case with no trace, so a coarse fix stood in for a keyed lookup
+that never happened.
+
+**Repair.** `sitemap`: `Fetched::{Body, Absent, Unreached}`; candidates the
+server answered and those never reached are counted apart; `sweep_verdict`
+makes "no URL, nothing answered, something unreached" the module's error
+naming the attempts. `cell_intel`: `query_opencellid(ctx, api_base, key,
+tower, radio) -> Result<Option<(lat, lon, range)>>` — `Ok(None)` only for
+`status: "error"`; a transport failure, a non-2xx, the key rejection, an
+undecodable body and an `ok` answer without usable coordinates are `Err`;
+`process` still emits the centroid fallback on `Err` (offline and honest at
+country grain) with `opencellid_lookup: failed: …` on its evidence.
+
+**Evidence.** `sitemap::tests::no_sitemap_is_established_only_by_a_candidate_that_answered`;
+`cell_intel::tests::a_failed_opencellid_lookup_is_an_error_and_only_the_documented_miss_is_none`
+(loopback: fix / miss / rejected key / 503 / HTML page / `ok` without
+coordinates).
+
+**Falsification.** Each repair reverted in turn with only its lock run:
+
+```
+[sitemap verdict] reverted -> LOCK FAILS (expected)
+    modules::sitemap::tests::no_sitemap_is_established_only_by_a_candidate_that_answered --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7386 filtered out; finished in 0.23s
+[cell_intel key rejection] reverted -> LOCK FAILS (expected)
+    modules::cell_intel::tests::a_failed_opencellid_lookup_is_an_error_and_only_the_documented_miss_is_none --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7386 filtered out; finished in 0.29s
+[cell_intel non-2xx] reverted -> LOCK FAILS (expected)
+    modules::cell_intel::tests::a_failed_opencellid_lookup_is_an_error_and_only_the_documented_miss_is_none --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7386 filtered out; finished in 0.22s
+ALL LOCKS SENSITIVE
+test result: ok. 7364 passed; 0 failed; 23 ignored; 0 measured; 0 filtered out; finished in 6.20s
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 149 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.26s
+test result: ok. 90 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.26s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.40s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.06s
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.83s
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.16s
+test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.25s
+test result: ok. 77 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.06s
+```
+
+**Residual.** `fetch_capped` cannot be driven against a loopback (the
+private-host preflight refuses 127.0.0.1 by design), so its classification is
+covered by inspection and the pure verdict; the `process` path of
+`cell_intel` is covered by the seam, not end to end.
+
+### REQ-RETIRE-002 (**new, Pass 31 — OBSERVED from two vantage points, RESEARCHED, RETIRED, CLASSIFIER EXTENDED**): `acma_rrl`'s endpoint is gone; the Akamai block page is a wall
+
+**Observation (runner).** Every live-drift run this branch dispatched reads
+`timed-out acma_rrl` (the module's 10 s budget): 15:02, 16:35 UTC on
+2026-09-15, and the weekly runs before them.
+
+**Observation (this sandbox, 2026-09-15 16:42 UTC, `curl` with a browser
+User-Agent).** `GET https://web.acma.gov.au/rrl/licence_search.do?submit=Search&clientName=Telstra`
+→ `301` in 0.7 s → `https://www.acma.gov.au/register-radiocommunication-licences-rrl?…`
+→ `403 text/html`, 2,789 bytes, no result rows, visible text: "Your request
+has been blocked. … A high volume of simultaneous submissions from your
+network have been made to this website and the security tools used to
+protect this website have interpreted this as a possible attack on the
+site. … Reference Number: 18.52213017.…" — Akamai Bot Manager's block page,
+under the origin's own host, with no vendor string in the page. The older
+`https://web.acma.gov.au/pls/radcom/` (the address data.gov.au still links)
+301s to the same page. The module's legacy endpoint is a permanent redirect
+to a JavaScript register that refuses non-browser clients.
+
+**Migration research (no keyless path).** `data.gov.au` package search for
+the register returns PDFs (nominated carrier declarations) and links back
+to `web.acma.gov.au`; the NSW Spatial Services ArcGIS feature service
+`Hosted/Australian_Communication_and_Media_Authority_Data/FeatureServer/0`
+(`Telco_Data`) answers keyless but is a NSW-only device/site point extract
+(fields `site_id`, `licence_no`, `device_registration_identifier`,
+`frequency`, …; extent 115.9–167.9°E, −37.3–−28.2°S; `portal_last_updated`
+2023-10-25) with no licensee / client-name field — it cannot serve the
+module's Organisation / ABN searches, and a national by-name register is
+what the module promised.
+
+**Decision.** Retired honestly (REQ-RETIRE-001's procedure): the module
+directory, its registry entry, the README (194 modules; 145 free; API-Free
+95; Coordinates 18, Organisation 26, ABN/ACN 6; the Corporate list), the
+comments that named it, the backlog row. `T1591.002` stays covered by
+`austlii`, so the pinned ATT&CK envelope is unchanged.
+
+**Classifier.** The captured page is the Akamai Bot Manager block shape, not
+in `CHALLENGE_PHRASE_SETS`; from the sandbox the module's 403 was therefore
+`Error::Module`, and a 2xx copy would have been parsed as "no licences". The
+set `["your request has been blocked", "reference number"]` is added; the
+scrubbed capture (`src/util/html/testdata/wall_akamai_acma_403_2026-09-15.html`)
+pins `is_challenge_page` / `is_challenge_document` on it, and a page that
+merely mentions a reference number is pinned as not a wall.
+
+**Remote verification (live-drift run 34998644556 on `78e596f`, 2026-09-15
+17:03 UTC).** 118 modules probed (119 before); no `acma_rrl` row; the sweep
+is red only on the `wifidb` dead canary, by design.
+
+**Falsification.** The phrase set removed with only its lock run:
+
+```
+[Akamai phrase set removed] -> LOCK FAILS (expected)
+    util::html::tests::is_challenge_page_recognises_the_akamai_block_page --- FAILED
+    thread 'util::html::tests::is_challenge_page_recognises_the_akamai_block_page' (1226) panicked at src/util/html/tests.rs:443:9:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7402 filtered out; finished in 0.20s
+ALL LOCKS SENSITIVE
+```
+
+### REQ-SCRAPE-002 (**new, Pass 31 — VERIFIED FROM SOURCE, REPRODUCED against the real capture, FIXED, FALSIFIED**): a 2xx wall is never a presence, an absence or a roll answer
+
+**Lead.** REQ-SCRAPE-001's residual: the fourteen callers of
+`read_body_capped` (`Option<String>`) judge their 2xx bodies themselves.
+Verified from source, five of them turn a Cloudflare interstitial served with
+200 into a claim:
+
+- `username_search` (`mod.rs`, the `StatusAndBody` / `StatusAndNotBody`
+  arms) and `streaming_probe` (`mod.rs`, `StatusAndNotBody`): once the status
+  matched the site's presence code, presence was decided by the needle alone.
+  A wall carries no site marker, so on every `StatusAndNotBody` site (the
+  missing profile carries the marker) it read as a **verified presence** —
+  `Found { verified: true }`, the `social_probe` defect (REQ-SOCIAL-001) in
+  its status-200 form — and on every `StatusAndBody` site as a definitive
+  absence feeding `definitive_absent`. The you.com capture in the search
+  engines' testdata is such a page served with 200, live.
+- `au_electoral::query_roll`: any readable page was `RollOutcome::Answered`,
+  and a page naming no division is the module's negative — "not on the NSW,
+  VIC or QLD roll", in a compulsory-enrolment jurisdiction. The module's own
+  doc stated the gap ("an interstitial block page would also land there").
+- `subdomain_takeover::classify_body`: no marker → `Claim::Claimed` ("in use,
+  not vulnerable") — a real dangling CNAME hidden behind the CDN's wall.
+- `asic_director`: a readable 2xx body set `html_read_ok` and was parsed for
+  director rows; none → "no director records for this name". This host is the
+  one the module doc records as answering non-browser clients with exactly
+  such a page.
+
+**Fix.** `util::html::is_challenge_document(body)` — an HTML document that
+[`is_challenge_page`] recognises — is the one predicate; `util::http`'s
+`document_or_challenge` (REQ-SCRAPE-001) now calls it too. On it:
+`util::probe::classify_page(body, needle, needle_means_present) →
+PageVerdict::{Wall, Present, Absent}`, the wall judged first, used by both
+probe modules (`Wall` → `ProbeResult::Error`, which `inconclusive()` weighs);
+`au_electoral::RollOutcome::Refused` (a wall in place of the roll), with
+`rolls_wholly_unreachable` true when no leg `Answered`, so three refused
+commissions are the module's error and never "not enrolled";
+`subdomain_takeover`: a wall → `Claim::Inconclusive`; `asic_director`:
+`register_page_is_usable` gates `html_read_ok`, so a wall takes the
+request-failed path with a message naming it.
+
+**Reproduction (baseline, the real capture).** With the wall arm removed
+(the falsification below), `classify_page(WALL, "Page not found", false)`
+returns `Present` and `classify_page(WALL, "profile-header", true)` returns
+`Absent`; `query_roll` against a loopback serving the capture with 200 returns
+`Answered` with no entities; `classify_body(WALL, "NoSuchBucket", …)` returns
+`Claimed`; `register_page_is_usable(WALL)` returns `true`.
+
+**Evidence.** `util::probe::tests::a_wall_served_with_the_presence_status_is_neither_present_nor_absent`
+(both polarities on the capture; the site's own pages by their marker; a
+JSON line mentioning a vendor path is not a wall);
+`au_electoral::tests::query_roll_reads_a_wall_as_refused_never_as_answered`
+(loopback: the capture with 200 → `Refused`; a page naming no division →
+`Answered`) and `a_refused_commission_is_not_the_same_as_an_absent_enrolment`;
+`subdomain_takeover::tests::a_wall_in_place_of_the_provider_page_is_inconclusive_never_claimed`;
+`asic_director::tests::a_wall_served_with_2xx_is_not_a_usable_register_page`.
+
+**Falsification.** Each wall arm removed in turn with only its lock run:
+
+```
+[probe classify_page wall arm] reverted -> LOCK FAILS (expected)
+    util::probe::tests::a_wall_served_with_the_presence_status_is_neither_present_nor_absent --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7405 filtered out; finished in 0.20s
+[au_electoral query_roll wall arm] reverted -> LOCK FAILS (expected)
+    modules::au_electoral::tests::query_roll_reads_a_wall_as_refused_never_as_answered --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7405 filtered out; finished in 0.21s
+[au_electoral rolls_wholly_unreachable counts Refused] reverted -> LOCK FAILS (expected)
+    modules::au_electoral::tests::a_refused_commission_is_not_the_same_as_an_absent_enrolment --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7405 filtered out; finished in 0.20s
+[subdomain_takeover classify_body wall arm] reverted -> LOCK FAILS (expected)
+    modules::subdomain_takeover::tests::a_wall_in_place_of_the_provider_page_is_inconclusive_never_claimed --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7405 filtered out; finished in 0.21s
+[asic_director register_page_is_usable] reverted -> LOCK FAILS (expected)
+    modules::asic_director::tests::a_wall_served_with_2xx_is_not_a_usable_register_page --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7405 filtered out; finished in 0.20s
+ALL LOCKS SENSITIVE
+```
+
+**Remote verification (live-drift run 34998644556 on `78e596f`, 2026-09-15
+17:03 UTC).** `unreachable au_electoral — … all 3 lookups (NSW, VIC, QLD)
+failed to respond, returned a reply that could not be read, or answered an
+anti-bot / WAF page instead of the roll …` and `unreachable asic_director —
+… answered an anti-bot / WAF page instead of the register, or its response
+body was unreadable — not "no director records for this name"`: the new
+outcomes are on the wire from GitHub's runner; `ahpra` reads `blocked`.
+
+**Residual.** The `StatusEq` rules (status-only, HEAD for some sites) never
+read a body, so a 200 wall on such a site still reads as presence at the
+bare-status confidence tier; reading the body for GET status-only sites is
+the next step if a 200 wall is observed on one. The remaining
+`read_body_capped` callers (`sitemap`, `wayback`, `web_crawler`,
+`cloud_storage`, `employer_pivot`, `hacker_news`, `github_user`,
+`ip_reputation`) read JSON or crawl content and mint no negative claim from
+an empty parse.
+
+### REQ-PROBE-003 (**new, Pass 31 — OBSERVED live on the production vantage by the known-negative control, VERIFIED FROM SOURCE, FIXED at the site rule, FALSIFIED**): two soft-404 sites the per-site control did not catch
+
+**Lead.** REQ-CANARY-003's first sweep on GitHub's runner (`6591cb6`, run
+35051107582, 03:18 UTC) read **`controls: 97 probed — 79 empty, 2 annotated,
+1 fabricated`** and failed: `social_probe` minted a Hacker News profile for
+the handle `sqfky7y2wvat`, which no platform holds. The AE sweep on the same
+vantage's sibling (the sandbox, 03:18 UTC, `f404wc66qy04`) reproduced it and
+added a second: `username_search` minted a Yandex reviews profile. Both are
+on the production path (a Username scan runs both), both fabricate for a
+handle nobody holds, and the sandbox's earlier REQ-CANARY-003 sweeps had
+read `social_probe` *unreachable* for the username kind — the runner reaches
+Hacker News, the sandbox often does not, so only the production vantage
+surfaced it. This is the control mechanism doing exactly its job: a
+known-negative on the vantage that runs the scan.
+
+**Observation, verified from source (direct HTTP from the sandbox 2026-09-16).**
+
+1. **`social_probe` / Hacker News** minted
+   `url https://news.ycombinator.com/user?id=<nobody> (0.74, weak-detection)`.
+   `GET news.ycombinator.com/user?id=<any nonce>` answers **`200` with the
+   13-byte body `No such user.`** for every handle (two distinct nonces, both
+   `200`; a real user carries `karma:` / `created:`). The platform rule was
+   `exists_codes: &[200], negative_patterns: &[]` — a status-only rule that
+   read every `200` as a present profile. Every Username scan carried it.
+
+2. **`username_search` / Yandex.Reviews** minted
+   `url https://reviews.yandex.ru/user/<nobody> (0.92, body-verified)`.
+   `GET reviews.yandex.ru/user/<nonce>` answers **`200` with a 270 KB generic
+   `Отзывы и оценки — Яндекс` landing page** (no captcha, not a wall — a real
+   soft-404), and the site's `StatusAndBody(200, "Отзывы и оценки")` needle is
+   that page's own `<title>` — matched for every handle. The sibling Yandex
+   sites discriminate and stay: `market.yandex.ru/user/<nonce>` answers `302`,
+   `music.yandex.ru/users/<nonce>` answers `404`.
+
+**Why the control did not catch them.** REQ-PROBE-001's per-site control is a
+backstop that probes the same site with a second handle nobody holds and, on
+a site present for both, reads `Indiscriminate` (never a profile). It failed
+here for the reason REQ-PROBE-002 documented as its accepted residual: a
+**body-verified** presence stands when its control could not be read
+(`Found{verified:true}` + control `Error` → `Found{controlled:false}`), and on
+the runner Yandex rate-limited the burst of control probes, so the false
+verified-presence stood. For Hacker News the control's answer varied under
+the same throttling. The lesson: the control is not a reliable substitute for
+a **sound site rule** on a rate-limiting soft-404 site — the authoritative
+fix makes each site self-discriminating so the outcome does not depend on the
+control.
+
+**Fix (the authoritative layer — the site rule).**
+- Hacker News gains `negative_patterns: &["No such user."]`: `classify_probe`
+  now reads the body and returns `NotFound` for the soft-404 line and a
+  body-verified `Found` for a real profile — deterministic, independent of the
+  control. (The site moves from the weak-detection fast path to the
+  body-capture verified path, as its soft-404 shape requires.)
+- Yandex.Reviews is **removed**: it 200s the generic landing page for every
+  handle and cannot tell present from absent keylessly. `market`/`music`
+  stay. `SITES` is 353.
+
+**Locks.**
+`social_probe::tests::hackernews_soft_404_is_not_a_profile` (`classify_probe`
+of a `200 "No such user."` body → `NotFound`; of a `200` profile body →
+body-verified `Found`),
+`username_search::tests::yandex_reviews_is_removed_because_its_needle_matched_the_generic_page`
+(no `reviews.yandex.ru` in `SITES`; and the real predicate
+`classify_page(generic_page, "Отзывы и оценки", true)` → `Present`, pinning
+the root cause). Each fails with its fix reverted (`cycle_af_falsify.py`,
+2/2 FAILED as required).
+
+**Local, after the fixes (this sandbox, 03:55–03:57 UTC, nonce `<handle>` / `<Name>`).** `controls: 114 probed — 89 empty, 2
+annotated, 0 fabricated, 23 without a reading`, the run green: `social_probe`
+now reads `empty` for the username control (the Hacker News fabrication gone),
+`username_search` `unreachable` this run (the sandbox's own refusal, never a
+fabrication), the two `annotated` still `disposable_check` and `smtp_vrfy`.
+The org kind (REQ-CANARY-003's extension, 17 controls) read `empty` on every
+register.
+
+**Remote (GitHub's runner, `dfa77a2`, run 35053789242, 04:01 UTC — the
+vantage that first surfaced both fabrications).** `controls: 114 probed — 93
+empty, 2 annotated, 0 fabricated, 19 without a reading`, the run green
+(`test result: ok. 2 passed`): `social_probe username` and `username_search
+username` both read **`empty`** for the handle nobody holds — the Hacker
+News and Yandex.Reviews fabrications gone on the production vantage — and no
+`reviews.yandex.ru` row exists. The two `annotated` are `disposable_check`
+(0.30) and `smtp_vrfy` (0.35, Gmail's rejection). The positive sweep on the
+same run passed unchanged. The completion gate is met: root cause verified
+from source, repaired at the site rule, locked, falsified, no longer
+reproduced on the vantage that found it — **CLOSED**.
+
+**Residual.** The per-site control remains a backstop, not a guarantee, on a
+rate-limiting soft-404 site: a body-verified presence with a sound needle is
+trusted (REQ-PROBE-002), so a site whose needle is generic chrome defeats it
+until the rule is fixed. The systematic defense is a sound per-site rule; the
+known-negative control on the production vantage is what surfaces the ones
+that are not (REQ-CANARY-002/003). Other status-only platforms in both
+tables are candidates for the same soft-404 shape and are audited as the
+control reads each on the runner.
+
+### REQ-CANARY-003 (**new, Pass 31 — MECHANISM extended to three kinds, then OBSERVED live from the sandbox on its first run: three findings, two of them defects, FIXED, FALSIFIED**): every keyless network module is asked, per kind it consumes, about a domain, a mailbox and a name nobody holds
+
+**Lead.** REQ-CANARY-002's residual and the stop revision (7): controls
+existed for the Username kind only, and the same mechanism could ask the
+Domain, Email and FullName families the null question. The prior was not
+low — the Username controls had found three fabrications in two modules on
+their first run — and the test was feasible, so under the method it had to
+be run before any stop.
+
+**Mechanism (`selftest::capability_probe`).** `CONTROLLED_KINDS` names the
+four kinds the sweep has a control for, in report order; `control_value`
+reads every control from the process's one handle nobody holds
+(`util::probe::sweep_control_handle`): the handle itself for a Username, the
+handle as a `.com` label for a Domain (a registrable namespace with no
+wildcard, so an unregistered label answers NXDOMAIN and "no match"
+everywhere — a reserved namespace is refused by `Target::validate` and read
+as a placeholder by every provider), the handle at Gmail for an Email (a real
+mailbox provider, so every provider-facing parser is read against a real
+mail domain instead of skipping on a missing MX), and the handle read as a
+pronounceable two-token name for a FullName (`name_from_handle`: consonant
+and vowel alternating, capitalised, letters only — `Nepiro Sutave` for
+`a1b2c3d4e5f6`). A Phone or an IpAddress has no control, stated in the
+constant's doc: what a module says about a number nobody holds (its
+numbering-plan region) or an address nobody announces (its geolocation, its
+registry) is a fact of the value itself, as honest for an unheld value as for
+a held one, so a yield there is no fabrication and a control would prove
+nothing. `control_targets(m)` is one control per controllable kind a keyless
+network module consumes and accepts, in `CONTROLLED_KINDS` order — 97 pairs
+across 120 free network modules (username 35, domain 31, email 17, full_name
+14; eight modules answer more than one kind, `search_engines` all four) —
+and `probe_negative_controls` probes every pair, one attempt each, through
+`probe_controls_of` (the registry's controls in production, a fixture's under
+test). The sweep and `hse doctor --live` print each row with its kind and the
+four values in the header.
+
+**Observation 1 (this sandbox, the first sweep over the three new kinds,
+02:25–02:28 UTC, the nonce `qfyhxgtlr64s` → `qfyhxgtlr64s.com`,
+`qfyhxgtlr64s@gmail.com`, `Jatise Mekego`).** `controls: 97 probed — 73
+empty, 3 fabricated, 21 without a reading` (the sandbox's refusals: four
+Cloudflare walls — `ahpra`, `anubis`, `asic_director`, `austlii` — twelve
+transport failures, most of them the unregistered domain's own NXDOMAIN
+reaching `app_links`, `commoncrawl`, `employer_pivot`, `sitemap`,
+`waf_detect`, `wayback`, `web_crawler`, three skips — `au_rdap` out of
+jurisdiction, `hackertarget` and `whois` declining a name that does not
+resolve — `dns_intel` timed out, `github_user` throttled). Every FullName
+control read `empty` (`asic_persons`, `au_unclaimed`, `chronicling_america`,
+`crossref_search`, `europepmc_search`, `openarch`, `sanctions_ofac`,
+`search_engines`, `wikidata`, `wikitree`): no register answered a name nobody
+holds with a namesake. The three that read `FABRICATED`:
+
+1. **`search_engines` for the domain: 58 entities** — `agame.com`,
+   `ahrefs.com`, `arimetrics.com`, `atlassian.com`, `baltimoresun.com`,
+   `cdc.gov`, `cnbc.com`, `comparestacks.com`, … Reproduced with the built
+   binary (`hse scan -k domain -v qfyhxgtlr64s.com -m search_engines`): 49
+   `Domain` entities at 0.45 tagged `external` / `search-discovered`, each
+   from Bing's answer to a query whose `site:` operator names a domain Bing
+   has never indexed — `intitle:"index of" ".git" site:qfyhxgtlr64s.com`
+   returned `index.hr`, `index.hu` and Merriam-Webster's *index* entry;
+   `site:qfyhxgtlr64s.com intext:"password" OR intext:"api_key"` returned
+   the Japanese Cabinet Office and Baidu Baike's article on Japan;
+   `link:qfyhxgtlr64s.com` an Illinois DHS page. The builder's
+   external-domain branch (`build.rs`: "bare EXTERNAL registrable domains
+   are a meaningful finding for a DOMAIN seed — relationship/estate
+   discovery") had **no relevance gate at all**: every result host outside
+   the generic/social/freemail/non-central lists was the seed's estate.
+   Every domain scan carried it. Two repairs: the branch is gated on
+   `names_the_subject` (the result must name the seed), and for a Domain
+   seed the distinctive term is **the domain itself** — `target_terms` had
+   split it into labels and dropped the TLD as a stopword, so `terms.last()`
+   was a label (`targetcorp`, `cross`, `index`), the web's own vocabulary.
+   The `result_names_the_subject` decision moved above the host
+   classification so one predicate gates the estate, the snippet PII and the
+   seed's re-affirmation.
+2. **`disposable_check` for the mailbox: the target itself at 0.75**
+   (`email-validated`, "uses a legitimate email provider"). debounce.io
+   classifies the provider, not the mailbox, and the engine merges by uid
+   with GREATEST semantics (`Entity::merge`, "replaying the same entities
+   only ever raises confidence"): the re-emission raised **every Gmail (or
+   any non-throwaway) address a scan found, however weakly, to 0.75**, and
+   re-affirmed a mailbox nobody holds at 0.75. `LEGIT_CONFIDENCE` is
+   `SPECULATIVE` (0.30) now — the ladder's "indirect signal with no
+   confirming source" — so the address keeps the annotation and gains no
+   presence claim.
+3. **`smtp_vrfy` for the mailbox: the target itself at 0.30**
+   (`smtp-unreachable`: this sandbox cannot open port 25, so the verdict was
+   `Unreachable`; the runner's would be Gmail's `550 5.1.1`, `Invalid` at
+   0.35). Not a defect: a rejected or unreachable mailbox is an honest
+   annotation of the address, and the module must be able to say it.
+
+**The verdict, refined (finding 3).** The Username controls' verdict — a
+control that yielded is a fabrication — was too coarse for the new kinds:
+an email parser's honest answer to a mailbox nobody holds is the mailbox
+itself carrying a rejection. `ControlReport.fabricated` (`fabricated_names`)
+is the subset of an answer that is fabrication: every entity other than the
+target itself (the uid the engine merges by, so case and the engine's own
+normalisation are not a new entity), and the target itself when re-emitted
+at or above `SEED_PRESENT_RUNG` (`confidence::MEDIUM`, 0.50 — the first
+rung a finding stands on by itself; below it the seed carries an annotation
+and no presence claim, at or above it a module asserts the target is real).
+`fabrications` is the controls with a non-empty `fabricated`;
+`ControlReport::is_annotation` is the target alone below the rung, printed
+as `annotated` and counted apart from `empty`. Under the refined verdict
+REQ-SEARCH-002's third finding (the seed re-affirmed at 0.82) still reads
+fabrication, `smtp_vrfy`'s six verdicts read as they should (only `Valid`,
+0.92, asserts the mailbox is held), and `disposable_check` at its old 0.75
+still read fabrication — the refinement hides no defect this run found.
+
+**Locks.**
+`every_keyless_network_module_has_one_control_per_controllable_kind_and_no_other_does`
+(registry shape, the concrete members `github_user` / `whois` / `gravatar` /
+`wikitree` / `search_engines` × 4 / `crtsh` × 2, a paid module and an
+IpAddress module with none, the four family minimums),
+`every_control_is_a_well_formed_target_nobody_holds_read_from_one_handle`
+(each value passes `Target::validate`, is never the sample nor a canary, is
+drawn once; the domain, mailbox and name shapes; `name_from_handle` pinned
+on two handles; no control for Phone / IpAddress / Url),
+`the_control_wave_asks_every_controllable_kind_a_module_answers_in_order`
+(a two-kind fixture, a paid fixture, an annotator and the echo through
+`probe_controls_of`: one row per pair in order, the verdict per control,
+the annotator's mailbox below the rung no fabrication),
+`the_target_re_emitted_below_the_present_rung_is_an_annotation_and_anything_else_is_not`
+(pure: nothing; the target below the rung in any spelling; the target at the
+rung; a stranger at any rung; the naming cap),
+`a_control_that_fabricates_is_a_fabrication_and_any_other_reading_is_not`,
+`search_engines::tests::an_external_host_whose_page_never_names_the_domain_seed_is_not_its_estate`
+(the control's own hosts as fixtures — `index.hu`, Merriam-Webster's
+*index*, a page naming only the label — mint nothing; a page naming the
+seed and the seed's own host do; only strangers → nothing re-affirmed),
+`disposable_check::tests::a_provider_class_verdict_never_asserts_the_mailbox_is_held`
+and `smtp_vrfy::tests::only_an_accepted_recipient_asserts_the_mailbox_is_held`
+(each module's ladder against `SEED_PRESENT_RUNG` — the boundary the sweep
+reads, asserted where the rungs are chosen). The fixture that had asserted
+the refuted premise (`build_entities_classifies_subdomain_vs_external…`: an
+external host is the estate whatever its page says) keeps its shape with a
+page that names the seed.
+
+**Falsification (`cycle_ad_falsify.py`; each mutation runs only its lock
+with `--exact`, the source restored and sha-asserted).** Thirteen mutations, 03:0x
+UTC, each **FAILED as required**: the Domain family's control removed and
+the per-module control reverted to its first kind (the registry lock); the
+name's capitalisation dropped and the mailbox control moved to a placeholder
+domain the CLI refuses (the well-formed lock); the wave probing only a
+module's first control and the wave's kind order reversed (the wave lock);
+the verdict reverted both ways — every entity of an answer fabrication, the
+target's own annotation included, and the target never fabrication at any
+rung (the pure verdict lock); `fabrications` reverted to "the control
+yielded" (the pure control lock); the external-estate gate reverted and the
+domain's distinctive term reverted to its last label (the search_engines
+lock); `disposable_check`'s legitimate verdict back at 0.75 and
+`smtp_vrfy`'s catch-all raised to the present rung (each module's rung
+lock).
+
+**Local, after the repairs (this sandbox, 02:52–02:54 UTC, the nonce `ey20k0vi8t03` → `Tudaba Polubo`).** `controls: 97 probed — 73 empty, 2 annotated, 0
+fabricated, 22 without a reading`, the run green: `search_engines` reads
+`empty` for the domain (49 hosts before), `disposable_check` and
+`smtp_vrfy` read `annotated` — "the target alone, below the present rung:
+email ey20k0vi8t03@gmail.com (0.30)" — and every other control as before;
+the positive sweep unchanged (116 probed — 88 alive, 13 empty, 0 panicked;
+the sandbox's refusals as on every sweep from it).
+
+**Remote (GitHub's runner, `dfa77a2`, run 35053789242, 04:01 UTC).** The
+control family — Username, Domain, Email, FullName and (REQ-PROBE-003's
+cycle) Organisation — on the production vantage: `controls: 114 probed — 93
+empty, 2 annotated, 0 fabricated, 19 without a reading`, the run green. Every
+Domain / Email / FullName / Organisation control read `empty` or (the two
+mailbox annotators) `annotated`; the first run's estate and provider-class
+fabrications (`search_engines`, `disposable_check`) are gone, and the org
+kind read `empty` on every register (`acnc_charities`, `asic_banned_orgs`,
+`asic_business_names`, `data_gov_au`, `gleif_lei`, `sanctions_ofac`,
+`wikidata`, …). The `19 without a reading` are the runner's own refusals
+(`crtsh` unreachable, `reddit_user` throttled, `wayback` timed out, the
+Cloudflare walls).
+
+**Residual.** A control's transport failure is one attempt and tolerated;
+for a Domain control the unregistered name's own NXDOMAIN is that failure
+on every module that fetches the host (`app_links`, `sitemap`, `waf_detect`,
+`wayback`, `web_crawler`, `employer_pivot`), so those parsers are read by
+the control only where they answer before resolving — a name that does not
+resolve being a typed skip rather than a fault (REQ-HACKERTARGET-001's
+shape) is the next improvement on that family. A Url target's distinctive
+term is still its last path token; the Url kind has no control. A page that
+names a domain's organisation without the domain string no longer mines the
+host as its estate — precision over recall, recorded here. `email-validated`
+still names debounce.io's provider reading; the tag is kept for its
+consumers, the rung says what it means.
+
+### REQ-SEARCH-004 (**new, Pass 31 — ADVERSARIAL RE-ATTACK extension of REQ-SEARCH-003, VERIFIED FROM SOURCE, FIXED at the shared predicate, LOCKED AT THE CONTRACT BOUNDARY, FALSIFIED**): a URL path names the handle as a whole token, never as a prefix
+
+**Lead.** The REQ-SEARCH-003 audit (its own re-attack step) found the third
+raw-substring relevance predicate the boundary-aware fix had not reached:
+`url_matches_target`, the gate `build_entities` uses to decide whether a SERP
+result's URL is the subject's own page (`build.rs:526`, `:683`). It read
+`path.contains(only)` for a single-token subject and `path.contains(surname)`
+for a name — the same collision REQ-SEARCH-003 closed for snippets, on the URL
+path. A four-character handle `mike` is "named" by a stranger's
+`twitter.com/mikeoxlong`, filed as the handle's own `Url` entity at `MEDIUM`
+(0.50, the expansion floor) and recursed; a surname `haynes` is "named" by a
+`/haynesville-festival` placename. The 12-character known-negative controls
+never surfaced it — a long nonce is not a prefix of a longer path token — so it
+was invisible to the sweep, found only by reading the fix adversarially.
+
+**Verified from source.** `url_matches_target` filters the target's terms to
+the significant (≥ 4-char) ones and matches the last as `path.contains(...)`;
+`entity/mod.rs`'s `score_username_candidate` is deliberately fuzzy (bidirectional
+substring for alias/stem detection, with its own layered precision gates and the
+"Tackle World Lawnton" surname-substring guard) and is left as designed —
+`url_matches_target` is the one binary relevance gate in the class.
+
+**Fix (the shared predicate).** Both arms route through the REQ-SEARCH-003
+`names_word_token` (bounded by a non-alphanumeric byte), so the handle or
+surname must be a whole path token: `/mike`, `/mike-smith`, `/users/mike/…`
+still match; `/mikeoxlong` and `/haynesville` do not. `entity` and query
+building are untouched.
+
+**Lock and falsification (`cycle_search004_falsify.py`).** A helper unit test
+(`url_matches_target_names_a_whole_path_token_not_a_prefix`) pins both arms, and
+a `build_entities` contract-boundary lock
+(`a_short_handle_does_not_claim_a_longer_path_as_its_profile_url`) pins that the
+gate consumes the predicate — a stranger's `/mikeoxlong` mints no `Url`, the
+handle's own `/mike` still does. Each arm reverted to `path.contains` fails its
+coupled lock(s); `urls.rs` sha256-restored. `RESULT: ALL LOCKS FALSIFIED`.
+
+**Remote.** CI-exact gate green locally; no network dependency (a pure path
+predicate). The live-drift control sweep on the integrated head `453c5fd` (run 35074235307) read **`controls: 114 probed — 93 empty, 2 annotated, 0 fabricated, 19 without a reading`** — `search_engines organisation` empty, `fleet_capability_drift ... ok` — with the whole CI matrix green on that commit.
+
+### REQ-SEARCH-005 (**new, Pass 31 — OBSERVED live on the production vantage by the known-negative control, REPRODUCED against the real gate, FIXED at the authoritative layer, FALSIFIED**): an organisation is named by its distinctive name, never by its corporate form
+
+**Lead.** The runner's known-negative control sweep on `a39071e` (the
+REQ-SEARCH-003 commit; CI run 35070941850, the "Live drift (free modules)"
+check) failed: `search_engines` minted **16 entities for `Carora Vovilo Pty
+Ltd`, an organisation nobody holds** — `controls: 114 probed — 92 empty, 2
+annotated, 1 fabricated`. The fabrications were real companies the engines
+returned for a `"Carora Vovilo Pty Ltd"` query: `CAROLINARA PTY LTD` (0.45),
+`CARORA GROUP PTY LTD` (0.45), `CARWOO PTY LTD` (0.45), two garbage
+`... - Free Trust Scores — Bizly ...` org strings, two phones (0.55), and the
+control org itself re-affirmed at 0.82. The sandbox never surfaced it (the org
+control's name is a fresh random nonce each run, and this nonce happened to
+resemble real `Caro...` companies); only the production vantage did — the
+control mechanism doing its job.
+
+**Reproduced against the real gate (a unit lock that fails on the baseline).**
+`build_entities`' subject-relevance gate `names_the_subject` had, since
+REQ-SEARCH-002, a single `else` branch for every non-domain/phone/location
+subject that took the subject's **last** distinctive token as its anchor — a
+multi-part name's surname. For an Organisation `X Pty Ltd` the last token is
+the corporate suffix `ltd`, and `names_word_token(hay, "ltd")` is true of every
+`... Pty Ltd` company page, so the gate read every such page as naming the
+subject and mined its orgs and phones. Feeding the exact control name to
+`build_entities` reproduces the runner's 16 entities precisely:
+`[(Phone, "+61481157705"), (Organisation, "Carora Vovilo Pty Ltd"),
+(Organisation, "CAROLINARA PTY LTD"), …]`. This is the organisation analog of
+REQ-CANARY-003's finding that a domain's last label (`com`, the web's own
+vocabulary) is not its distinctive term — `pty`/`ltd`/`inc` are the corporate
+world's shared vocabulary.
+
+**Why REQ-SEARCH-003 did not cause it, and did not catch it.** REQ-SEARCH-003
+tightened the same branch from `hay.contains(term)` to
+`names_word_token(hay, term)`, a strict subset — it can only ever match less,
+never more, so it did not introduce the fabrication (the `contains("ltd")` gate
+before it matched every company too). And the 12-character username/domain
+controls REQ-SEARCH-003 locks never exercise the org branch: only the multi-token
+Organisation control, whose last token is a corporate suffix, does.
+
+**Fix (the authoritative layer — the distinctive-term selection).** An
+Organisation gets its own branch in `names_the_subject`: strip the generic
+corporate-form tokens (`is_generic_org_token` in `helpers::relevance` — the
+legal-entity types `pty`/`ltd`/`inc`/`llc`/`gmbh`/… and the bare structural
+fillers `group`/`holdings`) and require **every remaining distinctive token**
+to appear as a bounded word. A different company that shares only one
+distinctive token (`CARORA GROUP` shares `carora`, not `vovilo`) no longer
+names the subject; a page naming the distinctive tokens without the corporate
+suffix still does (the suffix is not required — precision without a
+false-negative on abbreviated mentions). The corporate-form list is deliberately
+limited to unambiguous legal/structural tokens; descriptive words (`services`,
+`solutions`, `international`) can be distinctive and are kept. Query building
+(`build_queries`) is untouched — it still queries the full raw value, so recall
+into the engines is unchanged; only the relevance gate over the answers is
+tightened.
+
+**Lock and falsification (`cycle_search005_falsify.py`).** One contract-boundary
+lock over `build_entities`
+(`an_organisation_is_named_by_its_distinctive_name_not_its_corporate_form`)
+pins both halves: the negative (a page about `CAROLINARA`/`CARORA GROUP PTY LTD`
+mints no Organisation or Phone) and the recall positive (a page naming
+`Carora Vovilo` **without** `Pty Ltd` still mines its phone). Two independent
+reverts each fail it through a different assertion: disabling the Organisation
+branch (the org falls back to `terms.last() == "ltd"`) fabricates on the
+negative; dropping `ltd` from `is_generic_org_token` (so it is required) makes
+the suffix-less recall page a false negative. Each file sha256-restored to
+baseline; `RESULT: ALL LOCKS FALSIFIED`.
+
+**Remote.** CI-exact gate green locally (fmt / clippy `-D warnings` / rustdoc /
+`cargo test --all --locked --features dep-cooldown` / doc-coverage). The
+standing remote check is the same known-negative control sweep that surfaced
+this: the org control (a fresh nonce each run) must read empty. The live-drift
+sweep on the integrated head `453c5fd` (run 35074235307) read **`controls: 114
+probed — 93 empty, 2 annotated, 0 fabricated, 19 without a reading`** —
+`search_engines organisation` empty, the fabrication gone — with the whole CI
+matrix green on that commit.
+
+### REQ-SEARCH-003 (**new, Pass 31 — ADVERSARIAL RE-ATTACK on REQ-SEARCH-002/CANARY-003's own gate, VERIFIED FROM SOURCE, FIXED at the predicate, LOCKED AT THREE CONTRACT BOUNDARIES, FALSIFIED**): the subject names a whole word, never a raw substring of a longer one
+
+**Lead.** REQ-SEARCH-002 closed "a result that never names the subject mines
+nothing" by requiring the subject's distinctive term in the result, and
+REQ-CANARY-003 gave a domain seed the same gate over its own registrable
+string. Both wrote the predicate as a raw `hay.contains(needle)`. An
+adversarial re-attack on the fix itself — the method's re-reproduction step —
+shows the gate *narrowed* the false-attribution class, it did not close it:
+`contains` matches the subject inside a longer token. A three-character handle
+`abc` is "named" by any result mentioning `abcnews.com`; a short seed domain
+`art.com` is "named" by any page mentioning `smart.com` or `start.com`. The
+same false-relevance / false-attribution the parent cycles fixed, now on a
+shorter needle.
+
+**Observation (verified from source, reproduced against the real gate).** Three
+call sites carried the raw substring, each reproduced by a boundary test that
+fails on the baseline:
+
+1. `build_entities`' domain estate gate —
+   `hay.contains(target_domain.trim_start_matches("www."))`: a stranger host
+   whose page mentioned `smart.com` was filed as the seed `art.com`'s external
+   estate (the same 49-host false-estate class REQ-CANARY-003 gated).
+2. `build_entities`' single-token subject gate (the `else` branch
+   REQ-SEARCH-002 tightened) — `hay.contains(terms.last())`: a page about
+   `abcnews.com` re-affirmed the handle `abc` and minted the broadcaster's
+   email as the subject's.
+3. `extract::recycled_result_names_its_subject` —
+   `hay.contains(&term.to_lowercase())`: a recycled result about `abcnews`
+   mined its address as the handle `abc`'s.
+
+**Fix (the authoritative layer — the shared predicate).** Two boundary-aware
+predicates in `search_engines::helpers::relevance`, the shared home both
+`build.rs` and `extract` already draw from (`use super::helpers::*`):
+
+- `names_word_token(hay, term)` — `term` occurs bounded by the text's
+  start/end or a non-alphanumeric byte (a whole word).
+- `names_domain_token(hay, domain)` — `domain` occurs bounded by a byte that
+  is not a domain-label byte `[a-z0-9-]`, so a leading `.` is a boundary
+  (`mail.art.com` names `art.com`) while a leading letter, digit or hyphen is
+  not (`smart.com`, `my-art.com`, `art.community` do not).
+
+Both delegate to one `token_bounded` helper over `str::match_indices`; it is
+byte-boundary safe on UTF-8 text (a non-ASCII neighbour byte, ≥ `0x80`, is
+never `is_ascii_alphanumeric`, so it reads as a boundary), and an empty needle
+never matches. All three call sites route through the matching predicate; no
+other behaviour changed — a distinctive longer token still matches exactly as
+`contains` did, subdomains and standalone tokens still match.
+
+**Lock (five, at the predicate and at every call site).** Two helper unit tests
+pin the predicates directly
+(`relevance::token_boundary_tests::a_short_subject_is_a_word_not_a_substring`,
+`a_domain_is_a_registrable_unit_not_a_substring`). Three contract-boundary
+tests pin *consumption* — that each gate actually calls the boundary-aware
+predicate, not merely that the predicate exists (CONFIGURATION ≠ CONSUMPTION):
+`a_short_domain_seed_is_not_named_by_a_longer_host_string` (estate gate:
+`smart.com`/`start.com` are not the seed `art.com`; `partnersite.net`, whose
+page names it, is), `a_short_single_token_subject_is_not_named_by_a_longer_word`
+(subject gate: `abcnews` is not the handle `abc`; a page naming `abc` as a word
+still yields its email), and
+`a_recycled_subject_embedded_in_a_longer_word_is_not_named_by_it` (recycler:
+`abcnews` mines nothing; a result naming `abc` still mines its address).
+
+**Falsification (`cycle_ag_falsify.py`, the full matrix).** Each of the five
+repairs is reverted independently to the raw `contains` it replaced and only
+its coupled lock is run with `--exact`; every one FAILS with the repair
+reverted, and each file is sha256-asserted back to baseline. The two helper
+reverts fail the two unit tests; each of the three call-site reverts fails its
+boundary test with the helper left intact — proving the coupling is at
+consumption, not merely at the predicate. `RESULT: ALL LOCKS FALSIFIED`. Two of
+the boundary tests first failed as written because their fixtures named the
+handle as a standalone word in the result title (`"ABC News"` contains `abc`);
+the gate correctly matched it, and the fixtures were corrected so the handle
+appears only embedded — the gate's own behaviour disproved the first draft of
+its lock.
+
+**Remote.** CI-exact gate green locally (fmt / clippy `-D warnings` / rustdoc
+lints / `cargo test --all --locked --features dep-cooldown` / doc-coverage).
+This is a pure relevance-gate change with no network dependency: the runner's
+known-negative control sweep is the standing remote check — a short control
+handle or domain nobody holds must not be named by a longer token. The
+live-drift sweep on the integrated head `453c5fd` (run 35074235307) read
+**`controls: 114 probed — 93 empty, 2 annotated, 0 fabricated, 19 without a
+reading`** with the whole CI matrix green on that commit.
+
+### REQ-SEARCH-002 (**new, Pass 31 — OBSERVED by the known-negative control, VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a result that never names a single-token subject mines nothing
+
+**Lead.** IDENTIFIER MATCH ≠ ENTITY IDENTITY. `search_engines::build_entities`
+gates snippet PII (emails, phones, organisations, addresses) on
+`result_names_the_subject`: for a multi-part name the surname must appear in
+the result's snippet or URL — the gate that stopped a "Riley Morley" scan
+attributing `pr@rileyjorja.com` from a stranger's bio. Its `else` branch read
+`true` for a single-token subject, with the comment "single-token targets
+(email handle / username) are not prone to this first-name collision and are
+unaffected". The control sweep refuted the premise: for `gd618sephcjw`, Bing
+and Dogpile returned 148 results for 23 queries about a string no page
+contains, and the module minted `fidelity@service.healthaccountservices.com`
+(Email, 0.55, `email_domain_unverified`) and `openai` (Username, 0.3, from a
+social host's path) as the handle's.
+
+**Competing explanations.** (a) The engines returned exact-match pages for
+the nonce — refuted: no page contains twelve random characters drawn this
+process. (b) The queries' quotes were not honoured and the results are the
+engines' fuzzy fallback — the shape does not matter: a result that does not
+name the subject is not about the subject whatever the engine's reason for
+showing it. (c) The gate — verified from source: `else { true }`, and the
+social-host path-username mining was not gated at all.
+
+**Second observation (the recycler).** With the builder gated, the control
+sweep still read `search_engines` fabricated: for `qx82vtnrmpaw` the module
+minted an `Address` "Redmond" (0.45) — from Microsoft's Wikipedia page,
+answered by Bing to the *recycle* query `"qx82vtnrmpaw" address OR location
+OR city` (the recycler re-queries the engines about every entity the primary
+pass produced, the seed included, and mines addresses, coordinates, emails
+and phones from whatever comes back). `extract::recycle_entities` had no
+subject gate at all: the builder's `result_names_the_subject` never saw a
+recycled result.
+
+**Third observation (the seed's re-affirmation).** With the builder and the
+recycler gated, the control sweep still read the module fabricated, and —
+the control naming what was minted from then on — the entity was the seed
+itself: `username fue63qzlk5uy`, the builder's parent entity, `target.to_entity`
+at `CORROBORATED` tagged `search-enriched`, "Search across N engine(s)
+returned M result(s)", emitted whenever the engines returned anything. For a
+handle no page contains the engines returned 94 to 148 fuzzy results, and the
+module re-affirmed the handle's "real web presence" at 0.90 — invisible in a
+scan's entity count (it merges into the seed) and false corroboration on
+every username and email scan.
+
+**Fix (`search_engines/build.rs`, `search_engines/extract/mod.rs`).** The
+distinctive term — a multi-part name's surname, a single-token subject's
+only term — must appear in the result's snippet, title or URL before
+anything is mined from it, the same rule for every subject; a subject with
+no distinctive term mines nothing. The social-host path-username mining is
+gated on the same predicate: a handle in a result's path is the subject's
+only when the result names the subject. The recycler's mining loop is a pure
+function now, `mine_recycled_results`, and a recycled result is mined only
+when it names the entity its query asked about
+(`recycled_result_names_its_subject`: the query's quoted term — the recycled
+entity's value — in the result's title, snippet or URL). And the seed is
+re-affirmed only when at least one result names it (`names_the_subject`, the
+one predicate behind the parent and every per-result extraction); the parent
+says how many did (`results_naming_subject`).
+
+**Locks.**
+`search_engines::tests::a_result_that_never_names_a_single_token_subject_mines_neither_email_nor_handle`
+(the same email in a `github.com/openai` result that never names the handle
+is not mined, `openai` is not a profile, and nothing at all is minted — not
+the seed's re-affirmation either; in a result that names the handle the
+email is mined, the path handle is a `social-profile`, and the seed is
+re-affirmed with `results_naming_subject: 1`);
+`search_engines::extract::tests::a_recycled_result_that_never_names_the_entity_its_query_asked_about_mines_nothing`
+(Microsoft's page for the nonce's recycle query mines nothing; the same
+sentence naming the handle yields "Redmond"). The existing test
+`email_extraction_unaffected_for_single_token_targets` asserted the refuted
+premise itself — an unrelated page's email "must still" be extracted for a
+username — and is inverted, keeping its fixture
+(`a_single_token_subject_is_gated_like_a_name_an_unrelated_page_mints_nothing`):
+the regression suite had encoded the same mistaken assumption as the
+implementation, the case the method warns of.
+
+**Falsification (`cycle_abac_falsify.py`, 00:26–01:39 UTC; each mutation
+runs only its lock with `--exact`, the source restored and sha-asserted).**
+The relevance gate reverted (a single-token subject never required to
+appear) → the builder lock fails (`fidelity@service.healthaccountservices.com`
+mined); the path-handle gate reverted → the builder lock fails (`openai` a
+profile); the recycler's gate reverted → the recycler lock fails (`Address,
+"Redmond, Washington"` mined from Microsoft's page); the seed's
+re-affirmation gate reverted → the builder lock fails (the seed re-affirmed
+from a result naming nothing). Four of four. Two existing tests pinned the
+refuted premise and were corrected, keeping their fixtures:
+`email_extraction_unaffected_for_single_token_targets` (inverted, above)
+and `identity_seed_still_gets_flat_parent_reaffirmation`, which handed the
+builder a result naming nothing (`example.org/about`, "some page") and
+asserted the parent anyway — it now asserts the parent for a result that
+names the identifier and none for one that does not, for an email, a
+username and a domain seed.
+
+**Local (this sandbox, the rebuilt binary).** The control sweep read
+`search_engines` fabricated on three consecutive runs, each a different
+entity (the email and `openai`; "Redmond"; the seed itself), and reads it
+`empty` for three process nonces in a row after the three gates — `controls:
+35 probed — 30 / 28 / 31 empty, 0 fabricated, 5 / 7 / 4 without a reading`
+(01:13, 01:19, 01:26 UTC); the positive canaries unchanged (`search_engines`
+17–19 alive for its sample).
+
+**Remote.** Run 35045841506 on `557a9f7` (01:55 UTC): `search_engines`
+`empty` for the runner's control handle `y4kx7rfp1iuj` — the engines' fuzzy
+answers mined nothing and re-affirmed nothing — with its positive sample
+still alive.
+
+**Residual.** An email's local part is its subject's distinctive term
+(`target_terms`), so a result naming any "alice" passes an `alice@…` seed's
+gate — the same collision class one rung narrower; a full-address anchor
+would be stricter and is a candidate. Confirmed-profile `Url` entities carry
+their own path-match gate and are unchanged.
+
+### REQ-PROBE-002 (**new, Pass 31 — OBSERVED by the known-negative control, VERIFIED FROM SOURCE, FIXED at the shared layer, FALSIFIED**): a status-only presence whose control could not be read is not a profile
+
+**Lead.** UNKNOWN ≠ VALID DATA. REQ-PROBE-001 judged every presence against
+a handle nobody holds and let a presence whose control could not be read
+"stand as it was, uncontrolled" — recorded as its residual. The first
+known-negative control sweep (REQ-CANARY-002, 23:42 UTC) measured it: for
+`gd618sephcjw`, `username_search` minted `https://namemc.com/profile/gd618sephcjw`
+and `https://odysee.com/@gd618sephcjw` as `weak-detection` profiles at 0.74
+— two status-only presences whose control reads had failed.
+
+**Observation.** Direct: Odysee answers `200` for any handle (an 11,347-byte
+SPA shell for two different nonces; its site rule is `HEAD` + status 200, so
+every handle is "present" by status) and NameMC answers Cloudflare's `403
+Just a moment...`. A second scan of the same handle minted neither — the
+control read succeeded that time and judged Odysee indiscriminate — so the
+fabrication followed the control's availability: the same site, the same
+answer for the target, a profile or not depending on whether a second
+request got through.
+
+**Competing explanations.** (a) The sites answered differently for the two
+handles, a genuine discrimination — refuted by the direct observation:
+identical answers for two nonces. (b) The control wave's cache returned a
+stale answer — the cache is keyed by URL and stores the answer it got; an
+`Error` stored once would make every later judgement uncontrolled, the same
+defect, not a different one. (c) The judgement lets an unreadable control
+leave a status-only presence standing — the code's stated policy, verified
+from source (`util::probe::controlled`, the `(Found, Error)` arm).
+
+**Fix (`util::probe`, the shared layer; three consumers).**
+`ProbeResult::Uncontrolled { url }`: a status-only presence whose control
+could not be read cannot be judged, so it is neither a profile nor an
+absence. `controlled(Found { verified: false, .. }, Error)` yields it; a
+body-verified presence — its own evidence — stands uncontrolled and flagged
+as before. `username_search`, `streaming_probe` and `social_probe` count it
+among the probes that could not tell (the M6 verdict) and name it in the
+summary (`sites_uncontrolled`, `uncontrolled_platforms`) so the operator can
+look by hand; none mints it.
+
+**Locks.**
+`util::probe::tests::a_presence_the_site_also_gives_the_control_handle_is_indiscriminate`
+(extended: status-only with an unreadable control → `Uncontrolled`;
+body-verified with an unreadable control → stands, uncontrolled;
+body-verified with a present control → indiscriminate),
+`username_search::tests::a_site_present_for_the_control_handle_is_indiscriminate_and_one_that_is_not_stands`
+(extended with a third loopback site that answers the target and nothing
+more: `Uncontrolled`, never a `Url`, named in `uncontrolled_platforms`),
+`streaming_probe::tests::an_uncontrolled_status_only_presence_is_named_in_the_summary_and_never_a_profile`.
+
+**Falsification (`cycle_abac_falsify.py`, 00:07–00:20 UTC; each mutation
+runs only its lock with `--exact`, the source restored and sha-asserted).**
+The judgement reverted (a status-only presence whose control could not be
+read stands as a profile again) → the shared-layer lock fails, and the same
+reversion seen from `username_search`'s loopback sweep → its lock fails;
+`username_search`'s summary no longer naming the site it could not judge →
+its lock fails; `streaming_probe`'s summary no longer naming it → its lock
+fails. Four of four.
+
+**Local (this sandbox, the rebuilt binary).** The control sweep that had
+read `username_search` fabricated (NameMC, Odysee) reads it `empty` for
+three process nonces in a row after the repair.
+
+**Remote.** Run 35045841506 on `557a9f7` (01:55 UTC): `username_search`,
+`social_probe` and `streaming_probe` all `empty` for the runner's control
+handle, their positive samples alive (54, 10, 3).
+
+**Residual.** A body-verified presence whose control could not be read still
+stands (flagged `control: unavailable`): its marker match is evidence of its
+own, but an echo page that repeats the handle in the marker's place would
+pass it — the control catches that when readable and nothing does when not.
+`social_probe` gained the arm and the attributes without a lock of its own on
+this path (its `emit_judged` is pure; the shared layer's lock and the two
+siblings' cover the judgement).
+
+### REQ-CANARY-002 (**new, Pass 31 — MECHANISM, then OBSERVED live from the sandbox on its first run, FALSIFIED**): every Username module is asked about a handle nobody holds
+
+**Lead.** CANARY POLICY: "at least one stable known-positive input; one
+known-negative input where practical". The sweep asserted known-positives
+only (REQ-CANARY-001, three batches); the null — what a parser yields for a
+target nobody holds — had been tested by hand from the sandbox twice
+(REQ-PROBE-001, the stop revision (4)) and never on the production vantage,
+never mechanically, never weekly. A canary proves a parser yields for a
+target its provider holds; it says nothing about fabrication, the
+false-evidence class REQ-PROBE-001 found in three presence probes.
+
+**Mechanism (`selftest::capability_probe`).** `probe_target_with_policy` is
+the one probe every path shares — the fleet sweep hands it the sample or
+canary target, the controls a target nobody holds. `control_target(m)`
+gives every keyless network module that consumes and accepts a Username the
+process's second handle nobody holds, `util::probe::sweep_control_handle()`,
+drawn once per process and distinct by construction from
+`control_handle()`, which the presence probes judge their own presences
+against (a target equal to it would be judged indiscriminate by
+construction, and the control would prove nothing).
+`probe_negative_controls` probes them, one attempt each, and each
+`ControlReport` names what the module minted (`kind value`, at most eight)
+— the engines' answers vary run to run, so the names are the only record
+of what a fabrication was, and the third fabrication below was found only
+once the control named it; `fabrications` is their one verdict: a control
+that yielded entities. The controls are never a canary reading — never
+drift, never a dead canary, never in the memory.
+`tests/live_drift.rs` prints the control table and fails on a fabrication
+as on drift; `hse doctor --live` prints the controls' summary and names a
+fabricating module.
+
+**Locks.**
+`every_username_module_has_a_control_with_the_sweeps_handle_and_no_other_module_does`
+(registry shape: exactly the keyless network Username modules, at least
+twenty, the sweep's handle, never the probes'),
+`a_control_that_yields_is_a_fabrication_and_any_other_outcome_is_not`
+(pure), `a_control_probes_the_module_with_the_handle_nobody_holds_not_its_sample`
+(a recording fixture module: the control path asks the control handle, the
+positive path the sample),
+`util::probe::tests::the_sweeps_control_handle_is_a_second_handle_nobody_holds_distinct_from_the_probes`.
+
+**Falsification (`cycle_aa_falsify.py`, 23:49–00:0x UTC; each mutation runs
+only its lock with `--exact`, the source restored and sha-asserted).** The
+verdict reverted (a control that yielded is not a fabrication) → the pure
+lock fails; the distinct nonce reverted (the control probes the probes' own
+handle) → the registry lock fails; the explicit target reverted (the shared
+probe asks the sample whatever it was handed) → the fixture lock fails; the
+second handle reverted with its distinctness guard removed → the util lock
+fails (the first attempt at that mutation left the guard in place, which
+rotated the handle's opening letter and kept the lock green — the guard
+doing its job; the mutation was widened). Four of four.
+
+**Observation (this sandbox, the first control sweep, 23:42–23:49 UTC, the
+handle `gd618sephcjw`).** 35 Username modules controlled: 27 empty, 6
+without a reading (the sandbox's refusals: `github_user` throttled,
+`gaming_profile` / `reddit_user` / `stackoverflow_user` / `streaming_probe`
+unreachable, `mastodon_user` timed out), **2 fabricated**: `username_search`
+minted, beyond the seed, `https://namemc.com/profile/gd618sephcjw` and
+`https://odysee.com/@gd618sephcjw` as `weak-detection` profiles at 0.74, and
+`search_engines` minted an `Email` `fidelity@service.healthaccountservices.com`
+(0.55, `email_domain_unverified`) and a `Username` `openai` (0.3) from the
+148 results Bing and Dogpile returned for 23 queries about a string no page
+contains. Direct observation of the two sites: Odysee answers `200` for any
+handle (an SPA shell, 11,347 bytes for two different nonces), NameMC answers
+Cloudflare's `403 Just a moment...` — a status-only presence whose control
+read failed had stood as a profile (REQ-PROBE-001's accepted residual, now
+measured); a second scan of the same handle minted neither, the control read
+having succeeded that time — the fabrication follows the control's
+availability, not the site's answer. Both are repaired next (REQ-PROBE-002,
+REQ-SEARCH-002 — which took three findings to close: the builder's
+snippets, the recycler, and the seed's own re-affirmation, the last visible
+only once the control named what was minted), and the control sweep is the
+lock that keeps them repaired on the production vantage: after the repairs
+the sweep reads `controls: 35 probed — 30 empty, 0 fabricated, 5 without a
+reading` from this sandbox.
+
+**Remote (GitHub's runner, `557a9f7`, run 35045841506, 01:55 UTC).** The
+first control sweep on the production vantage: `controls: 35 probed — 34
+empty, 0 fabricated, 1 without a reading` (`reddit_user` throttled); every
+presence probe and `search_engines` `empty` for the runner's handle
+`y4kx7rfp1iuj`; the positive sweep unchanged — 116 probed, 94 alive, 0
+panicked, `username_search 54` / `social_probe 10` / `streaming_probe 3` for
+their samples; `wifidb` provisional and dated from 2026-09-15 23:00 UTC, the
+memory restored three runs deep; the run green.
+
+**Residual.** Controls existed for the Username kind only; the Domain, Email
+and FullName controls followed on the same mechanism (REQ-CANARY-003: a
+nonce `.com` label, the nonce at Gmail, the nonce read as a name, and — in
+REQ-PROBE-003's cycle — a name read as `<Name> Pty Ltd` for the Organisation
+kind, 114 controls over 120 modules, the org kind empty on every register), and
+their first run found the estate fabrication and the provider-class
+re-affirmation recorded there. A control's transport failure is one attempt
+and tolerated: on a vantage that refuses the sweep (this sandbox's six), the
+control says nothing, which the count says.
+
+### REQ-CI-003 (**new, Pass 31 — OBSERVED once in a full-suite run, VERIFIED FROM SOURCE, FIXED in the harness, FALSIFIED**): the key-chaining smoke tests share one process-global pool and ran unserialised
+
+**Lead.** The stop revision (4) recorded
+`tests/smoke.rs::key_chaining_concurrent_dispatch` failing once in a full
+`cargo test --all` ("consumer (KeyGated, Phase 2) must see the key via
+hot-inject") and passing alone and on every re-run, with a candidate cause
+and no diagnosis. Diagnosed from source: `key_chaining_sequential_dispatch`
+and `key_chaining_concurrent_dispatch` each begin with `reset_chain_pool()`,
+which removes every key for the chain-test service (`shodan`) from the
+**process-global** key pool (`util::key_pool::global_pool()`, a `OnceLock`);
+each test's discoverer module then stores the chained key in that same pool,
+and its consumer expects to read it through the dispatcher's hot-inject.
+`cargo test` runs a binary's tests on parallel threads, so one test's reset
+can run between the other's store and its consumer's read: the pool is
+emptied under the running scan and the consumer sees no key — exactly the
+recorded assertion, and only when the two tests' starts are staggered by
+whatever ran before them, which is why 40 paired runs of the two tests at
+two threads (both resetting before either stores) and 15 full runs of the
+binary did not reproduce it here. FAILURE ≠ NEGATIVE FINDING: the race is a
+property of the harness, not of the one run that showed it.
+
+**Competing explanations.** (a) The hot-inject path itself losing a key —
+refuted: the sequential and concurrent dispatch paths both carry the key on
+every isolated run, and nothing in the production path is test-specific. (b)
+A stale `~/.huntsman/key_pool.json` perturbing `next_key` — the reason
+`reset_chain_pool` exists, and it cannot explain a key that was present a
+moment before. (c) The shared global reset by a parallel sibling — the only
+explanation with the observed shape; verified from source.
+
+**Fix (the harness, `tests/common/mod.rs`; no production code).**
+`reset_chain_pool` is `async` and returns `ChainPoolLease`, a `#[must_use]`
+guard on a `tokio::sync::Mutex` (held across the test's awaits) that the
+test keeps until its scan and assertions are done: a sibling's reset waits
+for the lease, never emptying the pool under a running scan, and takes it
+over as soon as the first test finishes. Both chain tests hold it (`let
+_pool = reset_chain_pool().await;`); a bare call is a `must_use` warning,
+which CI's `clippy -D warnings` over all targets turns into an error.
+
+**Lock (`common::tests::a_chain_test_holds_the_pool_lease_until_it_finishes`,
+compiled into every crate that uses the harness).** With a lease held, a
+second `reset_chain_pool()` does not return within 150 ms; once the first is
+dropped it returns within the bound.
+
+**Falsification (`cycle_z_falsify.py`, 23:17 UTC).** The lease released at
+once (`ChainPoolLease(())`, the guard dropped inside `reset_chain_pool`) →
+the lock fails at its first assertion ("a sibling chain test must wait for
+the lease, never reset the pool under a running one"); the file restored,
+sha-asserted.
+
+**Gate.** `cargo fmt --check`, `cargo clippy --all-targets --locked
+--features dep-cooldown -- -D warnings`, `cargo test --all --locked
+--features dep-cooldown` (7329 lib tests; `smoke` 64, `api` 152, `halting`
+10, `cli_seed_validation` 14 — each crate carrying the new lock) green at
+23:18–23:20 UTC; ten further full runs of the `smoke` binary with the lease
+in place, 0 failed.
+
+**Residual.** The failure reproduced once and not again in 55 local runs of
+the binary before the fix, so the fix's proof is the source-level race and
+the lock on the lease, not a before/after reproduction rate. The lease
+serialises two tests that take about a second together — no measurable cost
+to the suite's wall clock. Any future test that stores through
+`KeyDiscovererModule` needs the lease too; today only the two chain tests do.
+
+### REQ-DRIFT-008 (**new, Pass 31 — OBSERVED on the runner twice in one day, FIXED at the sweep's verdict, CARRIED between runs, FALSIFIED**): a dead canary is confirmed across sweeps, never by one run
+
+**Lead.** FAILURE ≠ NEGATIVE FINDING. The dead-canary verdict (REQ-DRIFT-001)
+was one sweep's reading — three attempts over six seconds (`CANARY_ATTEMPTS`,
+`CANARY_RETRY_PAUSE`) — and a canary that answered none of them failed the run
+with "down for the whole run, or the endpoint is retired … migrate the
+endpoint or retire the capability honestly". The retirement criterion this
+ledger states (two consecutive weekly readings; REQ-HTTP-001's `wifidb`
+paragraph) lived in prose only: the runner remembered nothing between runs,
+so the criterion was enforced by whoever read the logs, and the check itself
+could not tell a first reading from a second.
+
+**Observation (GitHub's runner, 2026-09-15).** Two live providers read
+"retired" in one day. `chronicling_america` timed out on all three attempts
+at 20:33 (run 35020085011; alive with 11 on the nine dispatches before and on
+every sweep since; it answers this sandbox in under half a second), and
+`crtsh` answered `HTTP 502 Bad Gateway` on all three attempts at 22:01 (run
+35028485965) while `https://crt.sh/?q=python.org&output=json` answered `200`
+from this sandbox three times at 22:05–22:06. Both runs were red with the
+instruction to retire a live capability; followed, the second would have
+removed the Certificate Transparency source. And while the run was red by
+design on `wifidb` until its second weekly reading, a new dead reading
+changed nothing visible in the check status: red is red.
+
+**Competing explanations.** (a) Both providers were briefly down — an outage
+class a six-second window cannot separate from retirement, and a longer
+in-run window (a second pass at the sweep's end, ~40 s later) would still
+miss crt.sh's minutes. (b) The runner's egress or DNS blipped — then several
+canaries would have read dead at once; both readings were single-canary among
+forty-odd canaries that answered. (c) Retired endpoints — refuted by the same
+providers answering minutes later and on every neighbouring sweep. The
+mechanism is (a), and the judgement it needs is temporal: a retired endpoint
+is dead on every sweep, an outage on one.
+
+**Fix (the authoritative layer: the sweep's verdict,
+`selftest::capability_probe`).** A dead reading (`ProbeReport::is_dead_canary`,
+unchanged: unreachable or timed out on every attempt) is judged by
+`judge_dead_canaries` against a memory of the earlier sweeps —
+`~/.huntsman/capability_dead_canaries.json`, module → `DeadSpan { first, last
+}`, the canary's unbroken run of dead readings — and carried forward:
+`Provisional` on the first reading and on any reading within
+`DEAD_CANARY_CONFIRMATION_SECS` (20 h) of it (a day's dispatches are one
+reading), `Confirmed` once the run began at least 20 h ago with no answer
+between (the weekly cadence confirms on the second Monday; a dispatch the
+next day confirms too). Any answer — `ProbeReport::answered`: alive, empty,
+throttled, walled, or a body that crashed the parser, exhaustive over
+`ProbeOutcome` — ends the run; a skip (never asked) and a canary not probed
+leave it untouched; a non-canary never enters it; a run last read dead more
+than thirty days ago is forgotten; and a sweep in which no canary answered at
+all is a reading of the vantage, not of the providers — every verdict
+provisional, nothing recorded. Only a memory that changed is written; one
+that cannot be read makes every dead reading a first reading (the side that
+never fails), the policy the drift cache already had. Consumers:
+`tests/live_drift.rs` fails on a confirmed verdict only, prints a provisional
+one (a `::warning` annotation on the runner's summary page), and fails a
+sweep that reached no provider at all as an offline vantage; `hse doctor
+--live` prints both verdicts with the memory's path, and the offline `hse
+doctor` lists the remembered runs (`remembered_dead_canaries`); the Web UI's
+probe records its reading (its panel keeps showing the reading — the verdict
+is the memory's). `util::timefmt::ymd_hm_utc` renders the instants. The
+workflow (`.github/workflows/live-drift.yml`) restores the memory from the
+most recent completed run of the workflow that uploaded one (`gh run
+download`, any branch — a dead canary is a fact about the provider;
+`actions: read` joins the least-privilege block) and uploads this run's
+memory whatever the outcome (`live-drift-memory`, 90 days), so the runner's
+readings accumulate as an operator's device's do; no memory at all is
+disclosed in the restore step's log, never assumed away.
+
+**Locks (`selftest::capability_probe::tests`, pure over an explicit memory and
+clock; `util::timefmt::tests`).**
+`a_first_dead_reading_is_provisional_and_one_a_day_later_confirms_it` (first
+reading provisional since now; an hour later still provisional, dated from
+the first; `DEAD_CANARY_CONFIRMATION_SECS` later confirmed since the first
+with the run's start kept; the `describe` line),
+`a_canary_that_answers_ends_its_run_and_a_skipped_one_keeps_it` (and a canary
+not probed keeps its run), `a_non_canary_transport_failure_never_enters_the_memory`,
+`a_sweep_in_which_no_canary_answered_is_a_reading_of_the_vantage_not_the_providers`
+(three canaries dead and a non-canary alive: every verdict provisional, a
+run old enough to confirm not confirmed, the memory unchanged),
+`a_run_of_readings_older_than_the_memory_ttl_is_forgotten`,
+`the_memory_is_carried_between_sweeps_through_the_store` (a clean sweep
+creates no file; the persisted JSON is `{"crtsh":{"first":1000,"last":1000}}`;
+the second sweep reads the first's memory from the store and confirms; an
+answer ends the run in the store; an unreadable memory makes the reading a
+first one), `ymd_hm_utc_renders_the_date_and_the_minute`.
+
+**Falsification (`cycle_y_falsify.py`, 22:36–22:52 UTC; each mutation runs
+only its lock with `--exact`, the source restored and sha-asserted after
+each).** The confirmation reverted (a reading a day after the first stays
+provisional) → `a_first_dead_reading_is_provisional_and_one_a_day_later_confirms_it`
+fails (`left: Provisional { since: 1000000 }`, `right: Confirmed { since:
+1000000 }`); the clearing reverted (an answer no longer ends the run) →
+`a_canary_that_answers_ends_its_run_and_a_skipped_one_keeps_it` fails; the
+offline-vantage guard reverted (a sweep no canary answered is judged and
+recorded) →
+`a_sweep_in_which_no_canary_answered_is_a_reading_of_the_vantage_not_the_providers`
+fails; the forgetting reverted (a run last read dead a month ago kept) →
+`a_run_of_readings_older_than_the_memory_ttl_is_forgotten` fails; the
+persistence reverted (the memory never written) →
+`the_memory_is_carried_between_sweeps_through_the_store` fails; the canary
+gate reverted (any module's transport failure a dead reading) →
+`a_non_canary_transport_failure_never_enters_the_memory` fails (`assertion
+failed: verdicts.is_empty()`). Six of six. The script's first run stopped
+before its fourth mutation because the TTL filter's text occurs twice (the
+offline reader shares it): the anchor was widened and the last three run
+again, the file's sha checked untouched between.
+
+**Local (this sandbox, the binary built from this tree, a fresh `HOME`).**
+Sweep 1 at 22:35 UTC: 116 probed, 87 alive, 0 panicked; `wifidb` the only
+dead reading — `provisional dead canary: wifidb — dead since 2026-09-15 22:35
+UTC, not yet confirmed: no answer on any of 3 attempts: …Error | Vistumbler
+WiFiDB…` — and the test **passed** where the same sweep had been red on that
+row since REQ-HTTP-001; `crtsh` alive with 15, `chronicling_america` with
+11; the memory written as `{"wifidb":{"first":1789511734,"last":1789511734}}`.
+Sweep 2 a minute later against the same `HOME`: 88 alive, `wifidb` still
+provisional and **dated from the first sweep** (`dead since 2026-09-15 22:35
+UTC`), the memory `{"first":1789511734,"last":1789511800}` — the run kept
+its start, its last reading advanced. The offline `hse doctor` against that
+`HOME` prints `⚠ Dead canaries remembered from previous live probes
+(confirmed once dead across probes 20 h apart): wifidb dead since 2026-09-15
+22:35 UTC, last read dead 2026-09-15 22:36 UTC`.
+
+**Remote (GitHub's runner, the head `5901451`).** Run 35033505385 (22:58
+UTC), dispatched with no memory to restore — the restore step reports that
+no earlier run carried one: the sweep reads 116 probed, 94 alive (the most
+yet), 1 unreachable, 0 panicked; `wifidb` is the one dead reading —
+`provisional dead canary: wifidb — dead since 2026-09-15 23:00 UTC, not yet
+confirmed`, and the runner's own `##[warning]` annotation carrying the same
+line — and the run is **green**, the first green live-drift run since
+`wifidb` became a canary (REQ-HTTP-001); `crtsh` alive with 15,
+`chronicling_america` with 11, `steam_profile` with 5 (the 22:01 sweep's 503
+gone). The uploaded `live-drift-memory` artifact (226 bytes, digest
+`6c3052…`, downloaded into this sandbox) is
+`{"wifidb":{"first":1789513245,"last":1789513245}}` — 23:00:45 UTC. Run
+35033877610 (23:03 UTC, dispatched after the first completed; the workflow's
+concurrency group would otherwise have cancelled it) prints `dead-canary
+memory restored from run 35033505385` with that content, reads 116 probed,
+93 alive, 2 unreachable, 0 panicked, `wifidb` provisional again and **dated
+from the first run** (`dead since 2026-09-15 23:00 UTC`, not 23:05), green;
+its artifact (digest `606276…`) is
+`{"wifidb":{"first":1789513245,"last":1789513502}}` — the run kept its start
+and its last reading advanced to 23:05:02 UTC, the runner's readings
+accumulating as the sandbox's did. CI on `5901451` is green on every check.
+The confirmation itself cannot be observed before 2026-09-16 19:00 UTC (20 h
+after the first runner reading): the weekly sweep of 2026-09-21 08:00 UTC,
+or any dispatch after that hour, is the first that can read `wifidb`
+confirmed — the reading the retirement decision waits for.
+
+**Residual.** The confirmation needs a second sweep at least 20 h later: a
+canary whose provider is retired reads provisional on the day it dies and
+confirmed on the next sweep a day or more later — with the weekly cadence
+alone, one week — and a provider down for a day or more reads confirmed with
+the date in the verdict, which a human reads before retiring anything (the
+same human read every red run before this). The artifact carries 90 days; a
+longer gap starts the memory afresh, disclosed in the restore step's log.
+The Web UI panel shows the reading, not the verdict (the API's JSON is
+unchanged; a `dead_since` field there needs the panel and its boundary lock
+— a small follow-up). `wifidb` is first read dead by the runner's memory on
+the first run carrying it; the weekly sweep of 2026-09-21 confirms it and
+the retirement decision REQ-HTTP-001 deferred to that reading is then taken
+by the mechanism, not by memory of the logs.
+
+### REQ-HACKERTARGET-001 (**new, Pass 31 — OBSERVED live from the sandbox, FIXED, FALSIFIED**): HackerTarget's own sentences are typed, never all faults
+
+**Observation (this sandbox, 2026-09-15 21:3x UTC, the binary built from
+`aec6024`, while running nonce controls over the sweep's corpus-query
+counts).** `hse scan -k domain -v qzv8k2r7xw1p-nonce.com -m hackertarget`
+logged `module error … [hackertarget] error invalid host`: the API answers
+every request `200` and says the rest in the body, and the module's
+`fetch_text` filed every `error …` sentence and the quota notice as
+`Error::Module` — a fault against the module's health. Observed live for the
+three shapes: `hostsearch/?q=<no such host>` → `error invalid host`;
+`reverseiplookup/?q=203.0.113.5` → `error check your search parameter` (a
+reserved range the API declines); `reversedns/?q=203.0.113.5` → `No PTR
+records found` (not an error; the builders yield nothing); and the
+documented `API count exceeded - Increase Quota with Membership` once the
+anonymous 100-per-day quota is spent. The other corpus-query modules driven
+against the same nonce targets fabricated nothing (`typosquat`,
+`subdomain_center`, `comb_search`, `pgp`, `search_engines`: 0 each).
+
+**Why it matters.** A scan's pivots include hosts with no DNS record — a
+`typosquat` sweep's permutations, a retired domain from a breach line — and
+each one was a fault: five in a row trip the breaker and bench HackerTarget
+for the live hosts that follow; the spent daily quota read as an outage
+(`unreachable` in the sweep, `record_error` in the breaker) rather than the
+cooldown a throttle is (REQ-DRIFT-002's rule).
+
+**Fix.** `hackertarget::classify_answer(body) -> Answer` — `Records`,
+`NoDns` (`error invalid host`), `Declined` (`error check your search
+parameter`), `Quota` (`API count exceeded`), `Fault(other error sentence)` —
+and `failure_for(&Answer) -> Option<Error>`: `NoDns` and `Declined` are
+`Error::skipped(NotApplicable, …)` (the corpus was never searched; a property
+of the target, and coverage reads it as not asked rather than as a fault or a
+"no records"), `Quota` is `Error::RateLimited`, `Fault` stays `Error::Module`,
+`Records` is the body. `fetch_text` applies both.
+
+**Lock.** `modules::hackertarget::tests::the_providers_own_sentences_are_typed_never_all_faults`
+(the three live sentences and the quota notice classified; the skips'
+class and wording, the rate-limit variant, the fault variant, and a CSV and
+`No PTR records found` as records).
+
+**Falsification.** Each repair reverted with only its lock run:
+
+```
+[a host with no DNS record read as a fault again] reverted -> LOCK FAILS (expected)
+    test modules::hackertarget::tests::the_providers_own_sentences_are_typed_never_all_faults ... FAILED
+    thread '…' panicked at src/modules/hackertarget/tests.rs:205:9:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7344 filtered out; finished in 0.20s
+[the spent quota read as a fault again] reverted -> LOCK FAILS (expected)
+    test modules::hackertarget::tests::the_providers_own_sentences_are_typed_never_all_faults ... FAILED
+    thread '…' panicked at src/modules/hackertarget/tests.rs:237:9:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7344 filtered out; finished in 0.20s
+ALL LOCKS SENSITIVE
+```
+
+**Live verification (the rebuilt binary).** `hse scan -k domain -v
+qzv8k2r7xw1p-nonce.com -m hackertarget` → `skipped — module opted out …
+class: not_applicable, reason: HackerTarget declines a host with no DNS
+record ("error invalid host"); its DNS corpus was not searched` — a typed
+skip where the baseline had logged a module error; `github.com` → `done …
+found: 77` (the CLI rejects `example.com`, the sweep's reserved sample, before
+dispatch, so the positive control is a real domain). Gate on the tree: fmt,
+clippy `-D warnings`, CI's rustdoc lints, `cargo test --all` (7336 lib tests
+green; `tests/smoke.rs::key_chaining_concurrent_dispatch` failed once in the
+suite and passed alone — recorded in the Pass 31 stop revision as an
+observed intermittent with its candidate cause), doc coverage held at
+1029. **Remote (live-drift run 35027612197 on `19c8651`, 2026-09-15 21:48–21:50
+UTC):** `alive hackertarget 501 found` as on every sweep (a runner's sample
+resolves, so the no-DNS shape is the sandbox's and the lock's to prove);
+116 probed — 89 alive, 17 empty, 2 unreachable (`wifidb`; `overpass` 504
+again), 1 timed-out (`wayback`), **2 rate-limited**, 4 blocked, 1 skipped, 0
+panicked; `username_search 58`, `social_probe 17`, `streaming_probe 4`
+(REQ-PROBE-001 holding). One of the two rate-limited rows is the first
+runner reading of REQ-DRIFT-007's shape: **`rate-limited github_user —
+GitHub throttled this client (HTTP 403 Forbidden): {"message":"API rate
+limit exceeded for 52.161.201.86 …"}`** — the day's dispatches spent the
+runner address's anonymous quota, and the throttle reads as the cooldown the
+cycle built, not as `unreachable` (the S entry had recorded that the runner
+"cannot exercise the throttle branch"; it can, and did).
+
+### REQ-PROBE-001 (**new, Pass 31 — MEASURED live from the sandbox, VERIFIED FROM SOURCE, FIXED at the shared layer, FALSIFIED**): a presence probe minted profiles for handles nobody holds; every presence is judged against a control handle
+
+**Observation (this sandbox, 2026-09-15 20:5x UTC, the binary built from
+`74ff835`).** Testing the null the sweep cannot: `username_search` for
+`qzv8k2r7xw1p`, a twelve-character handle nobody holds → **75 `Url`
+"profiles"** (two `verified-detection` at 0.92 — Lobste.rs and
+Yandex.Reviews — and 73 `weak-detection` at 0.74: Pinterest, TikTok,
+Discord, crates.io, Bluesky, Codeforces, Yelp, Badoo, OkCupid, …) and a
+`Username` summary "found on 75 platform(s)" tagged `strong-social-presence`,
+`dating-profile-exposed`, `messaging-identity`, `high-personal-exposure`;
+`social_probe` → 12 (four `verified-detection` at 0.92 on adult / cam
+platforms — mydirtyhobby, sextpanther, loyalfans, imlive — plus six platform
+`Domain`s); `streaming_probe` → 11 (two verified: sextpanther, loyalfans;
+nine weak: fansly, justfor.fans, fancentro, …). A second handle nobody holds,
+`m4t9w2ke7qzr` → 78 on `username_search`, **74 of the same sites** (the five
+that differ are the flaky ones). And `torvalds` → 139, of which **78 are
+among the sites present for a nonce**: the "134 platforms" every sweep
+reported for that handle were 56 % fabricated, and the 61 that survive the
+control (GitHub, GitLab, X/Twitter, Steam, Telegram, Wikipedia, Docker Hub,
+npm, RubyGems, Keybase, …) are the real accounts.
+
+**Verified from source.** 152 of the table's 354 rules are status-only
+(`H` / `G`: a `200` is a presence); a single-page-app shell, a soft 404, a
+catch-all route or a login wall served as `200` answers that for any path,
+and two body-marker rules (Lobste.rs, Yandex.Reviews) mis-fire the same way.
+REQ-SCRAPE-002 had judged the *wall* (a challenge page served as 200) and
+its residual recorded that "the `StatusEq` rules never read a body, so a 200
+… still reads as presence at the bare-status confidence tier" — the 0.74
+tier was the whole mitigation, and it still minted the profile, the
+`social-profile` tag, the exposure tags and the platform count that AU-011
+reads. Static curation cannot hold: the 74 sites are the ones whose
+not-found page is rendered client-side, and they change.
+
+**Competing explanations.** (a) *The nonce is held somewhere*: a random
+twelve-character string held on 75 platforms, 74 of them shared with a
+second random string — the second nonce refutes it. (b) *The sites were
+answering the sandbox a wall*: the wall predicate (REQ-SCRAPE-002) runs on
+the body-marker sites; the status-only sites answer `200` with their shells
+(Discord's, TikTok's, Pinterest's), not a challenge page, and the same
+sites make up the runner's `username_search 134 found` for `torvalds`
+(132 at 20:43). (c) *A curated site list would do*: 74 sites today, five
+flaky between two nonces an hour apart; a list is a snapshot of provider
+behaviour. The null must run at scan time.
+
+**Fix (the shared layer, `util::probe`, and the three probes).** Every
+presence is judged against a **control handle**: `control_handle()` — twelve
+lowercase letters and digits drawn once per process from the process's
+random hasher keys, opening with a letter — a handle no platform holds.
+`ProbeResult::Indiscriminate { url }` is the new outcome: the site answered
+"present" for the control handle too, so its rule does not tell a held
+handle from an unheld one for this client — never a profile, never an
+absence; `ProbeResult::Found` gains `controlled` (the site denied the control
+handle). `controlled(target, control)` is the judgement and
+`control_presences(first, control)` runs it as a second wave over the
+presences only — concurrent, 3 s per site, each site's control answer
+remembered for the process so a multi-target scan asks once.
+`username_search::sweep` and `streaming_probe::sweep` — their request paths
+made functions of the site table, so a loopback drives them — run the wave
+after the first; `social_probe` collects, judges, then emits through the
+pure `emit_judged`. An indiscriminate site is counted in the summary
+(`sites_indiscriminate`, `indiscriminate_platforms`) and in the M6
+inconclusive verdict (it gave no answer about the handle); a presence's
+evidence says `control: absent` or `control: unavailable`
+(`hits_uncontrolled` in the summary).
+
+**Locks.** `util::probe::tests::{the_control_handle_is_a_twelve_character_handle_drawn_once_per_process,
+a_presence_the_site_also_gives_the_control_handle_is_indiscriminate,
+the_control_wave_controls_only_presences_and_remembers_each_answer}`;
+`username_search::tests::{a_site_present_for_the_control_handle_is_indiscriminate_and_one_that_is_not_stands
+(two loopback sites through the real request path: 200/200 → indiscriminate,
+200/404 → controlled; the aggregate mints one profile),
+an_indiscriminate_site_is_never_a_profile_and_the_summary_names_it}`;
+`streaming_probe::tests::{a_site_present_for_the_control_handle_is_indiscriminate_and_one_that_is_not_stands,
+the_summary_names_the_indiscriminate_sites_and_each_hit_says_whether_it_was_controlled}`;
+`social_probe::tests::an_indiscriminate_platform_is_never_a_profile_and_the_summary_names_it`.
+
+**Falsification.** Each repair reverted with only its lock run:
+
+```
+[the judgement: a presence the site also gives the control handle stays a presence] reverted -> LOCK FAILS (expected)
+    test util::probe::tests::a_presence_the_site_also_gives_the_control_handle_is_indiscriminate ... FAILED
+    thread '…' panicked at src/util/probe/tests.rs:158:5:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7342 filtered out; finished in 0.19s
+[the wave reads the control answers but never applies them] reverted -> LOCK FAILS (expected)
+    test util::probe::tests::the_control_wave_controls_only_presences_and_remembers_each_answer ... FAILED
+    thread '…' panicked at src/util/probe/tests.rs:230:5:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7342 filtered out; finished in 0.20s
+[username_search's control never asks the site (every presence stands)] reverted -> LOCK FAILS (expected)
+    test modules::username_search::tests::a_site_present_for_the_control_handle_is_indiscriminate_and_one_that_is_not_stands ... FAILED
+    thread '…' panicked at src/modules/username_search/tests.rs:347:9:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7342 filtered out; finished in 0.21s
+[streaming_probe's control never asks the site (every presence stands)] reverted -> LOCK FAILS (expected)
+    test modules::streaming_probe::tests::a_site_present_for_the_control_handle_is_indiscriminate_and_one_that_is_not_stands ... FAILED
+    thread '…' panicked at src/modules/streaming_probe/tests.rs:198:5:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7342 filtered out; finished in 0.20s
+[social_probe mints an indiscriminate platform as a profile] reverted -> LOCK FAILS (expected)
+    test modules::social_probe::tests::an_indiscriminate_platform_is_never_a_profile_and_the_summary_names_it ... FAILED
+    thread '…' panicked at src/modules/social_probe/tests.rs:496:5:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7342 filtered out; finished in 0.20s
+ALL LOCKS SENSITIVE
+```
+
+**Live verification (the rebuilt binary, this sandbox, fresh store).**
+`username_search` for `qzv8k2r7xw1p` → **`found: 0`** (75 before), 17 s for
+the 354-site sweep and its control wave; for `torvalds` → **65 profiles**
+(139 before; 7 body-verified), `control: absent` on 62 and `unavailable` on
+3, the summary naming **77 indiscriminate sites** (TikTok, Pinterest,
+Bluesky, Signal, PyPI, Crates.io, HackerRank, CodinGame, Lobste.rs, Hashnode,
+Medium, Twitch, Discord, OkCupid, Badoo, Duolingo, Coursera, Archive.org,
+…), 17 s. `social_probe` for the nonce → 1 profile, its control
+`unavailable` (the pre-existing exposure, now visible and counted), and 11
+platforms indiscriminate (tiktok, pinterest, steam, hackernews, twitch,
+bluesky, threads, imlive, mydirtyhobby, sextpanther, loyalfans); for
+`torvalds` → 8 profiles (30 on the sweep); 32–37 s — the sequential, paced
+first wave against a 40 s envelope, raised to 60 s. `streaming_probe` for
+the nonce → no profile and the honest verdict `inconclusive: 20 of 32
+platform probes that can tell were blocked or unreachable, 11 platforms
+answer "present" for any handle — not a confirmed absence` (this sandbox is
+refused by twenty cam / fans platforms; before, the eleven fabricated
+profiles hid that); for `torvalds` → 1 profile (22 on the sweep), 5 s. A
+first cut counted an indiscriminate site as blocked in that verdict —
+`inconclusive: 20/43` — and was corrected to judge over the sites that can
+tell (`inconclusive_after_control`, locked). Gate on the tree: fmt, clippy
+`-D warnings`, CI's rustdoc lints, `cargo test --all` (7320 lib tests and
+every integration suite green; the one expectation on the reworded
+inconclusive message was updated and re-run green with the module's tests),
+doc coverage 1029 (ceiling lowered from 1030).
+
+**Residual and reversal.** A site whose control could not be read (a
+refusal, a throttle, a timeout on the second request) leaves the presence
+standing as it was, marked `control: unavailable` — the pre-existing
+exposure, now visible and counted. A site that treats a twelve-character
+alphanumeric handle as malformed and answers a `2xx` page reads
+indiscriminate and loses a real presence for this client (a `4xx` for it
+reads absent and the presence stands); none of the 61 real `torvalds`
+presences was lost to that. Reversed for any platform that starts answering
+`404` for unheld handles — the control then confirms it discriminates and
+nothing changes. Remote: **live-drift run 35026556734 on `aec6024` (2026-09-15
+21:36–21:38 UTC): `username_search 59 found` (132 at 20:43, 134 on the
+morning sweeps; the prediction recorded before the run was "toward 60"),
+`social_probe 14 found` (28), `streaming_probe 3 found` (22)** — the runner's
+vantage confirms the sandbox's: the counts every sweep had reported for
+`torvalds` were more than half fabricated. 116 probed — 91 alive, 17 empty,
+1 unreachable (`wifidb`, the by-design dead canary), 1 timed-out
+(`wayback`), 0 rate-limited, 5 blocked, 1 skipped, **0 panicked**;
+`chronicling_america` alive with 11; red on `wifidb` alone. (`search_engines`
+read 36 against 68 and 3 on the two sweeps before — the search providers'
+own variance, untouched by this change.)
+
+### REQ-ATTR-002 (**new, Pass 31 — OBSERVED live from the sandbox, FIXED, FALSIFIED**): a pulse author's paragraph is not a threat actor
+
+**Observation (this sandbox, 2026-09-15 20:2x UTC, the binary built from
+`c2442f2`, while testing the null for the steady `empty ip_reputation` row
+with a held sample).** `hse scan -k ip -v 171.25.193.25 -m ip_reputation`
+(a live Tor exit taken from `check.torproject.org/exit-addresses`) yielded the
+address tagged `tor-exit` / `anonymous-network` with OTX's 50 pulses — and an
+`Organisation` **`Adversary Profile: Salt Typhoon Alignment The architectural
+gap`** at 0.58, tagged `adversary` and `threat-intel`, evidence "Threat actor
+linked to 171.25.193.25 per OTX". OTX's `general` answer for the address
+(68,875 B, captured) has 50 pulses; 49 carry an empty `adversary`, and one
+community pulse ("Double Umbrella AS15169/AS21928: This evaluates a critical
+structural convergence …", author `msudosos`, created 2026-02-12) carries
+`adversary = "Adversary Profile: Salt Typhoon Alignment The architectural gap
+identified by mudoSO mirrors the act"` — OTX's own 100-character cut of a
+paragraph. The module took the first non-empty `adversary` across the
+pulses, trimmed it at `(` and 64 characters, and minted the fragment as an
+organisation — identifier match ≠ entity identity (REQ-ATTR-001's class): one
+author's free text, in one pulse of fifty, became a "threat actor" on the
+address, and its evidence attribute `adversary` carried the same fragment.
+
+**Verified from source.** `run_otx` selected `pulses.iter().find_map(|p|
+p.adversary…)` — the first pulse naming anything, in OTX's order (newest
+first) — with no shape check and no count; the `Organisation` rung was
+`MEDIUM_SOLID` (0.58) whether one pulse or forty named the actor. The
+comment above the evidence attribute already knew the field is "sometimes a
+long freeform paragraph".
+
+**Competing explanations.** (a) *OTX's `adversary` is structured*: no — it is
+free text per pulse (the capture: 49 empty, one paragraph; curated pulses
+write short names such as `APT28`, `Lazarus Group`, `Mirai`, `NSO Group`). (b)
+*The fragment is a name in OTX's sense*: no — OTX cut it at 100 characters
+mid-word; a name is never a sentence. (c) *Trimming harder would do*: any cut
+of a paragraph is still a paragraph's prefix, not a name; the field must be
+judged, not shortened.
+
+**Fix (the module).** `is_actor_name` — a threat actor's name is 2–48
+characters, at most five tokens, contains no `:` `;` `.` `!` `?` and does not
+end in a comma (the parenthesised alias is trimmed first: `Lazarus Group
+(a.k.a. Hidden Cobra)` → `Lazarus Group`). `named_adversary(pulses)` counts
+the accepted lead names case-insensitively across the pulses and returns the
+most-named one with its count (a tie goes to the first seen); a paragraph is
+never an adversary and one pulse's text never outranks the name the rest
+agree on. `adversary_confidence(n)`: an actor named by a single pulse is one
+author's claim at `LOW_MEDIUM` (0.45); named by two or more it is the
+corroborated `MEDIUM_SOLID` (0.58) the module always used. The indicator's
+evidence carries `adversary` only when it is a name, with `adversary_pulses:
+n of N`; the `Organisation`'s evidence carries the same count.
+
+**Locks.** `modules::ip_reputation::tests::an_actor_name_is_short_and_never_a_sentence`
+(five names accepted; the captured paragraph, its 64-character cut, a colon
+form, a sentence, `""` and `"x"` rejected);
+`the_named_adversary_is_the_one_most_pulses_name_and_a_paragraph_is_never_one`
+(the captured shape — one paragraph among empties — names nothing; `Mirai`
+named three times case-insensitively outranks `Emotet` and the paragraph
+listed first; a tie goes to the first seen and an alias is trimmed);
+`an_actor_named_by_one_pulse_sits_below_one_named_by_two`.
+
+**Falsification.** Each repair reverted with only its lock run:
+
+```
+[the name gate removed (any free text is an adversary)] reverted -> LOCK FAILS (expected)
+    test modules::ip_reputation::tests::the_named_adversary_is_the_one_most_pulses_name_and_a_paragraph_is_never_one ... FAILED
+    thread '…' (14949) panicked at src/modules/ip_reputation/tests.rs:355:5:
+[the selection back to the first pulse that names anything] reverted -> LOCK FAILS (expected)
+    test modules::ip_reputation::tests::the_named_adversary_is_the_one_most_pulses_name_and_a_paragraph_is_never_one ... FAILED
+    thread '…' (16537) panicked at src/modules/ip_reputation/tests.rs:367:5:
+[one pulse's naming at the corroborated rung] reverted -> LOCK FAILS (expected)
+    test modules::ip_reputation::tests::an_actor_named_by_one_pulse_sits_below_one_named_by_two ... FAILED
+    thread '…' (5668) panicked at src/modules/ip_reputation/tests.rs:383:5:
+ALL LOCKS SENSITIVE
+```
+
+**Live verification (the rebuilt binary, this sandbox).** The same scan against a fresh
+store (`171.25.193.25`, 20:5x UTC): one entity — the address at 0.95,
+`tor-exit`, `anonymous-network`, `threat-intel`, evidence `OTX: 50 threat
+pulse(s)` with `pulse_count: 50` and the recent pulse names, **no
+`adversary` attribute and no `Organisation`**; the baseline binary had minted
+the paragraph fragment at 0.58 from the same 50 pulses. (A first re-run
+against the store the baseline scan had written still showed the old
+`adversary` attribute — with the old code's trailing space — merged from the
+stored evidence of the earlier scan, not produced by the rebuilt binary: the
+fresh-store run is the reading.) Gate on the tree: fmt, clippy `-D
+warnings`, CI's rustdoc lints, `cargo test --all` (7312 lib tests and every
+integration suite green), doc coverage held at 1030.
+
+**Remote (live-drift run 35021184849 on `74ff835`, 2026-09-15 20:41–20:43
+UTC).** 116 probed — 90 alive, 17 empty, 2 unreachable (`wifidb`, the
+by-design dead canary; `overpass`, a `504 Gateway Timeout` from the provider
+this run), 1 timed-out (`wayback`), 0 rate-limited, 5 blocked, 1 skipped,
+**0 panicked**; `empty ip_reputation (ip_address 8.8.8.8)` as on every sweep
+(the per-kind sample has no pulses, so the runner cannot exercise the
+adversary path — the sandbox reproduction and the locks are its proof);
+`alive bitbucket_user 3 found [canary]` again; `chronicling_america` back to
+`alive … 11 found [canary]`, so its 20:33 dead reading was a slow window,
+not a retirement (one reading under the criterion, now followed by an alive
+one). Red on `wifidb` alone.
+
+**Residual.** A single curated pulse (AlienVault's own) naming an actor sits
+at the single-author rung with the community's; OTX's pulse object carries
+the author but no curation mark the module could read without a convention.
+A name that passes the gate can still be a wrong attribution by its author —
+the count and the rung say how many agreed, not that they are right.
+
+### REQ-BITBUCKET-001 (**new, Pass 31 — OBSERVED on the runner and from the sandbox, REPRODUCED with the built binary, MIGRATED, FALSIFIED**): `bitbucket_user`'s resource is gone; a handle is a workspace
+
+**Observation.** Every live-drift sweep this session recorded reads `empty
+bitbucket_user (username torvalds)` — 28 of 28 readings — beside
+username-family siblings reading `alive` on their canaries, and REQ-CANARY-001
+had tried `atlassian` as a canary sample and recorded "0 — **not** a canary".
+From the sandbox on 2026-09-15 19:52 UTC the module's endpoint answers the
+same for every handle: `GET /2.0/users/atlassian` → `404 {"type": "error",
+"error": {"message": "atlassian"}}` (52 B), `/2.0/users/torvalds` → `404 …
+"torvalds"`, `/2.0/users/{7995b79e-…}` (a team's UUID read from a public
+repository listing) → `404`. Bitbucket's 2019 username deprecation removed
+the username-addressable user resource; the module shipped against it, and
+`fetch_json_or_404` reads its 404 as the documented "no such user", so every
+account, held or not, was the clean negative — coverage's "no Bitbucket
+account" for `zzzeek` (Mike Bayer, SQLAlchemy) exactly as for a handle nobody
+holds. **Reproduced with the built binary (tree `1c0dfc5`; the module
+unchanged since `main` `53705f6`), 19:56 UTC:** `hse scan -k username -v
+zzzeek -m bitbucket_user -d 0` → `done … found: 0`; `jespern` → 0;
+`no-such-workspace-xyz-4242` → 0. Implemented, unreachable.
+
+**Competing explanations, tested before the change.** (a) *The resource is
+throttled or key-gated for this vantage*: refuted — the answer is a `404`
+JSON error naming the handle, not a `401`/`403`/`429`, the same for a real
+team UUID, while the same host answers other resources `200` keyless in the
+same minute. (b) *The handle needs another form (a user UUID, `{…}`)*: a
+username target never carries one, so the by-handle capability is gone
+whichever form the resource still takes (residual below). (c) *The workspace
+resource is not the account*: predicted, before the change, that two
+long-lived personal accounts resolve to workspaces carrying their display
+names, that a handle nobody holds answers a distinct 404, and that the
+profile page redirects into the workspace. Observed: `GET
+/2.0/workspaces/zzzeek` → `200 {"name": "Mike Bayer", "slug": "zzzeek",
+"is_private": false, "created_on": "2018-11-29T02:09:41…", "is_personal":
+false, "links": {"html": "https://bitbucket.org/zzzeek/" …}}`; `jespern` →
+"Jesper Noehr"; `ZZZEEK` → slug `zzzeek` (case-insensitive);
+`no-such-workspace-xyz-4242` → `404 {"type": "error", "error": {"message":
+"No workspace with identifier 'no-such-workspace-xyz-4242'."}}`;
+`bitbucket.org/zzzeek/` → `302 /zzzeek/workspace/repositories/` → `200`
+(`404` for the absent handle); `GET
+/2.0/repositories/zzzeek?pagelen=…&sort=-updated_on&fields=…` → `200`,
+`size: 35`, the public repositories with `language`, `updated_on`,
+`website`, `parent` (`null` for the workspace's own projects). Every
+migrated account's `created_on` is 2018-11-29 — Bitbucket's workspace
+migration date — and `is_personal` is `false` for people (`zzzeek`,
+`jespern`) as for teams (`atlassian`, `pypy`, `tutorials`), so the API
+distinguishes a person's workspace from a team's only for accounts created
+since (`is_personal: true`); `/2.0/workspaces/{slug}/members` is `401`
+keyless. `torvalds` resolves to a workspace named "DoLoop" (a squatter), so
+the per-kind sample reads the module `alive` from now on; `atlassian` is a
+private workspace that still resolves (`is_private: true`); `birkenfeld` (a
+Bitbucket-era account) is `404` — deleted or renamed, an absence, not a
+counter-example to the mapping.
+
+**Fix (the authoritative layer: the module).** `bitbucket_user` resolves the
+handle as a workspace: `lookup(client, workspaces_base, repositories_base,
+handle)` — `GET {workspaces}/{handle}` through `fetch_json_or_404` (`None`
+for Bitbucket's 404, the typed error for a 429, a wall or an outage; a
+workspace whose canonical slug is not the handle is not the handle) and then
+`GET {repositories}/{slug}?pagelen=10&sort=-updated_on&fields=…` (Bitbucket's
+partial response: every field the decoder reads is named in `REPO_FIELDS`,
+or the API omits it silently). The listing is a `RepoReading` — `Read(page)`
+or `NotRead(why)`: the workspace's answer never depends on it, and a listing
+that fails is written into the evidence as `public_repositories: not read: …`,
+never "no repositories" (REQ-SWEEP-003's rule). Entities: the confirmed
+`Username` (0.85, `bitbucket`, `public-profile`), the profile `Url`, and the
+display name as a `Person` — at `HIGH_PLUS` only when Bitbucket marks the
+workspace personal, at `NOTABLE` with the `workspace-name` tag otherwise (a
+workspace it does not mark may be a team's). The evidence carries
+`workspace_kind`, `is_private`, `created_on`, `public_repositories`,
+`languages`, `last_public_activity`, `repositories`, `project_websites` (the
+workspace's own projects' sites; a fork's website is its upstream's, so
+forks are listed under `forks` with their upstream instead). `produces()`
+drops `Domain` / `Address` / `Coordinates`: Bitbucket publishes no `location`
+or `website` for an account any more. `("bitbucket_user", Username,
+"zzzeek")` joins `CANARY_PROBES`, so the sweep asserts the resource rather
+than tolerating a weekly `empty`.
+
+**Locks.**
+`modules::bitbucket_user::tests::the_lookup_resolves_the_workspace_and_types_every_other_answer`
+drives the real request path against a loopback answering the bodies
+captured live (404 → `None`; `ZZZeek` → the workspace and its repository
+page, `size: 35`, `zzzeek/sqlalchemy` python and not a fork; an alias slug →
+`None`; a `500` on the listing → the workspace stands with `NotRead("… HTTP
+500 …")`; a `429` → `Error::RateLimited`);
+`the_repository_reading_is_written_into_the_evidence`;
+`a_listing_that_could_not_be_read_is_said_so_and_the_workspace_still_stands`;
+`an_unmarked_workspaces_name_is_one_rung_lower_and_tagged`;
+`a_personal_workspaces_multi_word_name_is_the_account_holder`;
+`the_lookup_addresses_the_workspace_resources_and_asks_for_every_decoded_field`
+(the provider contract: no `/users`; every decoded repository field
+requested). Ten module tests; the probe table's own test admits the canary.
+
+**Falsification.** Each repair reverted with only its lock run:
+
+```
+[the decoder back on the removed users resource's shape (nickname, not slug)] reverted -> LOCK FAILS (expected)
+    test modules::bitbucket_user::tests::the_lookup_resolves_the_workspace_and_types_every_other_answer ... FAILED
+    thread '…' (15438) panicked at src/modules/bitbucket_user/tests.rs:259:10:
+[a listing that fails read as "no repositories"] reverted -> LOCK FAILS (expected)
+    test modules::bitbucket_user::tests::the_lookup_resolves_the_workspace_and_types_every_other_answer ... FAILED
+    thread '…' (5816) panicked at src/modules/bitbucket_user/tests.rs:302:9:
+[an unmarked workspace's name at the account-holder rung] reverted -> LOCK FAILS (expected)
+    test modules::bitbucket_user::tests::an_unmarked_workspaces_name_is_one_rung_lower_and_tagged ... FAILED
+    thread '…' (30175) panicked at src/modules/bitbucket_user/tests.rs:113:5:
+[a fork's website as the workspace's own] reverted -> LOCK FAILS (expected)
+    test modules::bitbucket_user::tests::the_repository_reading_is_written_into_the_evidence ... FAILED
+    thread '…' (24383) panicked at src/modules/bitbucket_user/tests.rs:183:5:
+ALL LOCKS SENSITIVE
+```
+
+**Live verification (the rebuilt binary, this sandbox).** `zzzeek` → `found: 3`: `Username zzzeek`
+(0.85 in the module; the CLI shows the seed merged at 0.9) with evidence
+`workspace_name: Mike Bayer`, `workspace_kind: unmarked`, `created_on:
+2018-11-29T02:09:41…`, `public_repositories: 35`, `languages: python`,
+`last_public_activity: 2023-10-31…`, `repositories: zzzeek/sqlalchemy,
+zzzeek/alembic, zzzeek/dogpile.cache, zzzeek/mako, zzzeek/testgerrit`,
+`project_websites: http://www.sqlalchemy.org, http://alembic.sqlalchemy.org/,
+https://dogpilecache.sqlalchemy.org`; `Url https://bitbucket.org/zzzeek`
+(0.80); `Person Mike Bayer` (0.62, `workspace-name`). `jespern` → 3 (`Jesper
+Noehr`; 2 public repositories, last activity 2026-01-26). `torvalds` → 2 (the
+workspace "DoLoop", a single token, so no Person; 3 repositories). `ZZZeek` →
+3, the same workspace (case-insensitive). `atlassian` → 2 (`is_private: true`
+and still 407 public repositories — Bitbucket's `is_private` is the profile's
+visibility to non-members, not the repositories'; java, javascript,
+typescript; last activity 2026-09-15). `no-such-workspace-xyz-4242` →
+`found: 0`, the clean negative. The baseline binary had read every one of
+these `found: 0` (20:xx UTC, both binaries from this sandbox). Gate on the
+tree: fmt, clippy `-D warnings`, CI's rustdoc lints, `cargo test --all`
+(7309 lib tests and every integration suite green), doc coverage held at
+1030.
+
+**Residual and reversal.** A person's and a team's workspace are
+indistinguishable for the accounts Bitbucket migrated in 2018
+(`is_personal: false` for both): the `Person` is one rung lower and tagged,
+single-source until corroborated; reversed if Bitbucket exposes an account
+type keyless. `/2.0/users/{uuid}` may still answer for a *user* UUID; no
+keyless path yields one from a handle, so nothing here depends on it. The
+runner's reading is the remote verification: **live-drift run 35020085011 on `c2442f2`
+(2026-09-15 20:30–20:33 UTC): `alive bitbucket_user 3 found [canary]`** —
+the row that had read `empty` on 28 of 28 sweeps — in a table of 116 probed:
+90 alive, 17 empty, 1 unreachable (`wifidb`, the by-design dead canary), 2
+timed-out, 1 rate-limited (`reddit_user`, Reddit's 429 this time), 4 blocked,
+1 skipped, 0 panicked. The run is red on two dead canaries: `wifidb` (as on
+every run since REQ-HTTP-001) and, for the first time on a dispatch,
+`chronicling_america` — "timed out on all 3 attempts". That canary read
+`alive … 11 found` on all nine dispatches between 12:52 and 19:47 UTC and
+`timed-out` on both weekly Monday-08:34 sweeps (2026-09-07, 2026-09-14) and
+now; the exact query answers this sandbox in 0.18–0.47 s (three serial
+requests, 44,784 B, 262,023 hits) at 20:50 UTC, so the provider is alive
+and the episode was a slow window on the runner's path, not a retirement.
+The verdict's rule (REQ-DRIFT-001: no answer on three attempts 3 s apart) has
+a false-positive class — a provider slow for a minute — that the
+ledger's retirement criterion (two consecutive weekly dead readings, then a
+human decision) absorbs; the runner has no memory across runs to make the
+verdict itself require persistence, which is the reversal condition for
+changing the rule. Under the criterion `chronicling_america` is at one
+reading, not two, and the 2026-09-21 weekly sweep decides.
+
+### REQ-DRIFT-007 (**new, Pass 31 — OBSERVED live from the sandbox, CONSOLIDATED, FIXED, FALSIFIED**): GitHub's throttle is judged once, for every GitHub caller
+
+**Observation (this sandbox, 2026-09-15 19:11 UTC, the binary built from
+`faa3bc8`, during the second-vantage reproduction of REQ-HTTP-002).**
+`hse scan -k username -v torvalds -m github_user` logged `module error …
+[github_user] HTTP 403 Forbidden: {"message":"API rate limit exceeded for
+35.226.34.3. (But here's the good news: Authenticated requests get a higher
+rate limit. …)"}` — GitHub's anonymous 60-requests-per-hour throttle for this
+sandbox's egress address, filed as `Error::Module`: `circuit::record_error`, a
+fault against the module's health, where a throttle is `record_rate_limit`, a
+cooldown; `unreachable` in the sweep and `hse doctor --live` were a runner's
+address ever throttled the same way.
+
+**Verified from source.** `github_api::throttled` (REQ-SWEEP-001) already
+knew GitHub's shape — a `429`, or a `403` whose body names the rate limit or
+that carries `X-RateLimit-Remaining: 0` — and `github_commits` and
+`github_code_search` each inlined the same remaining-header / snippet /
+`throttled` / `RateLimited`-or-`Module` block. `github_user::process`'s
+primary profile request, the one every other request in that module depends
+on, went through the generic `http_status_error`, which types a `429` and a
+challenge page but not GitHub's `403`. Three GitHub callers, two copies of
+the judgement, one caller with none.
+
+**Fix.** `github_api::status_error(module, resp)` is the one judgement; the
+two copies are removed and `github_user`'s profile request is
+`fetch_profile(ctx, users_base, login, token)` — `None` for GitHub's `404`,
+the typed error otherwise, its endpoint a parameter. The key-pool note for a
+present token stays at each call site.
+
+**Locks.** `github_api::tests::status_error_types_githubs_403_throttle_and_keeps_a_plain_403_a_fault`
+(a `403` naming the limit and a `403` with `X-RateLimit-Remaining: 0` →
+`RateLimited`; a `403` refusal with remaining quota and a `500` → `Module`);
+`github_user::tests::the_profile_fetch_types_githubs_throttle_and_keeps_a_refusal_a_fault`
+drives the real request path against a loopback (throttle → `RateLimited`,
+refusal → `Module`, `404` → `None`, `200` → the profile).
+`github_commits`' existing loopback lock covers its call site.
+
+**Falsification.** Each repair reverted with only its lock run. (Process
+note: a first run of this script was killed mid-mutation while the tree was
+still being repaired, which left the second anchor's "broken" variant in
+place — the gate that followed failed the profile-fetch lock on exactly that
+line, the tree was restored from the diff, and the run below is the clean
+one. A falsification script is never stopped between its mutate and its
+restore.)
+
+```
+[the shared judgement no longer types the throttle] reverted -> LOCK FAILS (expected)
+    test modules::github_api::tests::status_error_types_githubs_403_throttle_and_keeps_a_plain_403_a_fault ... FAILED
+    thread 'modules::github_api::tests::status_error_types_githubs_403_throttle_and_keeps_a_plain_403_a_fault' (26776) panicked at src/modules/github_api.rs:159:9:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7329 filtered out; finished in 0.21s
+[github_user's profile fetch back on the generic status error] reverted -> LOCK FAILS (expected)
+    test modules::github_user::tests::the_profile_fetch_types_githubs_throttle_and_keeps_a_refusal_a_fault ... FAILED
+    thread 'modules::github_user::tests::the_profile_fetch_types_githubs_throttle_and_keeps_a_refusal_a_fault' (27074) panicked at src/modules/github_user/tests.rs:480:5:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7329 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
+**Remote verification (live-drift run 35015467441 on `b3a8ab2`, dispatched
+2026-09-15 19:45 UTC, table at 19:47).** 116 probed — 87 alive, 18 empty, 2
+unreachable, 2 timed-out, 1 rate-limited, 5 blocked, 1 skipped, **0
+panicked**. `github_user` reads `alive … 9 found` and `github_commits`
+`alive … 1 found`, the counts of the 19:08 table: the shared judgement changes
+nothing for a client GitHub is not throttling, and the runner cannot exercise
+the throttle branch (GitHub's anonymous limit is per address and the runner's
+is fresh), which is why that branch is proven on the sandbox's live capture
+and the loopback locks, not here. (Superseded at 21:50 UTC: after the day's
+dispatches the runner's address was throttled too, and run 35027612197 on
+`19c8651` reads `rate-limited github_user — GitHub throttled this client
+(HTTP 403 Forbidden) …` — the branch exercised on the production vantage;
+recorded under REQ-HACKERTARGET-001's remote paragraph.) The two rows that moved since 19:08 are
+provider noise on this vantage, neither a GitHub caller: `wayback`
+`unreachable — HTTP 503 Service Unavailable: Internet Archive: Temporarily
+Offline` (the outage page REQ-DRIFT-003's table met; 19:08 had read it
+`timed-out`), and `ransomware_live` and `wikidata_geo` `timed-out` (each read
+`alive` — 9 and 12 found — in all but two of the sweep readings this session's
+transcript records). Every other row matches: `steam_profile` rate-limited;
+`ahpra`, `anubis`, `asic_director`, `austlii`, `reddit_user` blocked;
+`cell_local` skipped; `wifidb` the by-design dead canary that keeps the run
+red until its retirement criterion is met. CI on `b3a8ab2`: all eight checks
+green (`Check & test` finished 19:49:41 UTC); PR #635 `mergeable_state:
+clean`.
+
+### Pass 31 recomputation (2026-09-15 19:10 UTC) — stop condition for the observable defect classes
+
+**Window.** `4431f23` (cycle K) → `faa3bc8` on `claude/charming-meitner-85h3aj`,
+base `main` `53705f6`; seven upgrade commits (REQ-DRIFT-004, REQ-RETIRE-003,
+REQ-DRIFT-005, REQ-UI-001, REQ-DRIFT-006, REQ-HTTP-002) and one refutation
+(REQ-ARCHIVE-001), each falsified, each behind the CI-exact gate, each verified
+on the remote where the runner can observe it. CI on every pushed head is
+green (eight checks); the live-drift dispatch is red only on the `wifidb` dead
+canary, by design.
+
+**Recomputation.** After REQ-DRIFT-005 the sweep's every non-alive row is a
+typed, honest outcome: 4 blocked (`ahpra`, `anubis`, `asic_director`,
+`austlii` — walls per client), 2 rate-limited (`reddit_user`, `steam_profile`),
+1 timed-out (`wayback`, provider-side, REQ-ARCHIVE-001), 1 skipped
+(`cell_local`, a named local prerequisite), 1 unreachable (`wifidb`, the dead
+canary awaiting its retirement criterion), and 18 `empty` rows each verified a
+true negative (synthetic samples, a documented 404 miss, or a register that
+holds nothing for the sample). Static censuses, verified negatives:
+
+- every remaining `.await.ok()?` / `unwrap_or_default()` on a fetch sits in an
+  `Option`-returning best-effort enrichment whose primary result is kept, or a
+  per-record lookup inside a batch; every `else { return Ok(empty) }` sits
+  behind a typed 404-or-error helper;
+- configuration versus consumption: no `HUNTSMAN_*` name in `.env.example` is
+  unread by the code; every name the code reads outside tests is documented
+  (`HUNTSMAN_DEFAULT_SEED` in the README and REQ-ENV-005);
+- no compatibility shim without an exit condition; the one legacy-path notice
+  (`see_know`'s old log directory, warned once) is operational, not dormant;
+- the retirements leave no reference in the installer, the scripts or the
+  workflows; the README pins, the nine-class pin and the ATT&CK envelope hold.
+
+**Residuals, time-gated or out of reach from here.**
+
+- `wifidb`: retire after two consecutive dead *weekly* sweeps (the first was
+  2026-09-14; the next is 2026-09-21) — dispatches are not counted.
+- `wayback`: a moderate-archive canary (`sqlite.org` answered the pass-1 shape
+  in 1.8 s) after two calm weekly sweeps; the query-shape hypothesis reopens
+  only if a calm day refuses collapsed queries alone.
+- `asic_director`: whether the register page still exists for a browser-class
+  client is unobservable from any datacenter address; a Termux / mobile client
+  meeting a 404 or a redirect retires it.
+- `username_search` / `streaming_probe` status-only (`HEAD`) sites: a wall
+  served as `200` to a HEAD still reads as an unverified, status-only hit; the
+  module already grades it below every body-verified hit and counts it under
+  `hits_status_only`. No 200-to-HEAD wall has been observed; not changed on
+  that evidence.
+
+**Attack on the stop decision (REQ-HTTP-002 was its least-observed assumption:
+31 live JSON paths rewired with only local proof).** Rivals recorded before
+reading: a rewired module now errors or panics where it parsed; CI red on the
+final head; a sweep row that changed class. Prediction: the final sweep on
+`faa3bc8` matches the 18:13 table row for row apart from provider noise, with
+zero `panicked` rows and no new `unreachable`; any JSON module flipping class
+reverses the stop and R is repaired or reverted. **Observed (live-drift run
+35011571827, 2026-09-15 19:08 UTC):** 116 probed — 89 alive, 18 empty, 1
+unreachable (`wifidb`), 1 timed-out (`wayback`), 1 rate-limited
+(`steam_profile`), 5 blocked (`ahpra`, `anubis`, `asic_director`, `austlii`,
+`reddit_user` — the wall served again), 1 skipped, **0 panicked**; every
+keyless module R rewired reads alive with its earlier count (`github_user 9`,
+`github_commits 1`, `geocode 1`, `overpass 21`, `qld_cadastre 6`, `shodan 3`;
+`contact_enrich` empty as before). The prediction held; the runner is one
+vantage, the sandbox reproduction below the second.
+
+**Second vantage (this sandbox, 2026-09-15 19:11 UTC, the binary rebuilt from
+`faa3bc8`).** The keyless modules R rewired, driven against their real
+providers with the built binary: `github_commits` 1 (runner 1), `overpass` 21
+(21), `shodan` 3 (3), `qld_cadastre` 6 at the module (dispatch `done … found:
+6`; the runner 6 — the CLI's JSON shows 2 after the engine's post-processing,
+so the like-for-like count is the dispatch one), `geocode` alive on an address
+sample. `github_user` was throttled by GitHub for this sandbox's egress address
+— `HTTP 403 Forbidden: {"message":"API rate limit exceeded for 35.226.34.3 …"}`
+— an environmental cause on this vantage, not a regression, and the capture
+shows that throttle typed as `Error::Module`: a reproduced lead
+(REQ-DRIFT-007, below). R holds on both vantages.
+
+**Stop — revised.** The attack on this decision found one more reproduced
+root cause on the second vantage (REQ-DRIFT-007, above: GitHub's throttle a
+module fault on `github_user`, and two copies of the judgement elsewhere) and
+it is repaired in the same pass. Beyond it, no reproduced root cause, temporary
+workaround, duplicated authority, unreachable capability or incomplete
+lifecycle pathway remains among what either vantage can observe; the next
+material observation is the 2026-09-21 weekly sweep.
+
+**Stop — revised (3), 2026-09-15 20:40 UTC.** Attacked again, this time on
+the runner's table rather than the sandbox's: the class the recomputation had
+not tested is a row that reads the same on every sweep — `empty
+bitbucket_user (username torvalds)` on 28 of 28 readings, which the census
+had accepted as a legitimate empty (no `torvalds` on Bitbucket) without
+testing that null. Tested, the null failed: the resource answers 404 for
+every handle and the module was unreachable end to end (REQ-BITBUCKET-001,
+above; migrated in this pass). The same test applied to the other steady
+`empty` rows, each driven from this sandbox with the built binary against a
+sample its provider is known to hold: `ip_reputation` yields for a live Tor
+exit (`171.25.193.25` → 3, `tor-exit`, `anonymous-network`); `ransomlook`
+yields for a victim its own index titles (`acmealliance.com` → the claiming
+group `dragonforce`; the sweep's `example.com` is a real empty, as is
+`acme.com`, which no post title names); `data_gov_au` yields for a
+publishing agency (`Australian Taxation Office` → 11; `Google LLC` and
+`Telstra` publish nothing there); `greynoise`'s `empty` for 8.8.8.8 is the
+provider's own documented miss (`404 {"noise": false, "riot": false,
+"message": "IP not observed scanning the internet."}`, observed live). The
+rows whose samples are reserved or synthetic (`example.com` for `dns_axfr`,
+`sitemap`, `subdomain_takeover`; `test@example.com` for the six email
+modules; `Fletcher Moreau` for `asic_persons` and `sanctions_ofac`; a
+fabricated MAC for `beacondb`; `Google LLC` for `asic_banned_orgs`) are
+empties by construction of the sample and remain untested against a held
+sample — the reasoning that hid `bitbucket_user` — so each is a canary
+candidate rather than a verified negative. The attack itself surfaced one
+reproduced lead the sweep cannot see: for the Tor exit, `ip_reputation`
+minted OTX's freeform `adversary` string as an `Organisation` —
+`Adversary Profile: Salt Typhoon Alignment The architectural gap` at 0.58,
+tagged `adversary` — a sentence fragment from one user-authored pulse among
+50, not a threat actor's name; repaired in this pass (REQ-ATTR-002, above).
+
+**Stop — revised (4), 2026-09-15 21:4x UTC.** The attack moved from the
+sweep's rows to the sweep's *counts*: `username_search 134 found` for one
+handle had been read as the module's health on every sweep and never tested
+against a handle nobody holds. Tested (REQ-PROBE-001, above), 78 of the 139
+"profiles" for `torvalds` were fabricated by sites that are "present" for
+anyone, `social_probe` minted four "verified" adult / cam profiles and
+`streaming_probe` eleven for a random string — the largest evidence-integrity
+defect of this pass by volume, and one no `empty` / `alive` row could show.
+The mechanism is a runtime null now (every presence judged against a control
+handle at the shared layer), so the class is prevented rather than detected.
+The same question — "what does this count read for a handle nobody holds?" —
+applies to the other aggregate counts the sweep reports (`hackertarget 501`,
+`subdomain_center 500`, `comb_search 30`, `typosquat 52`, `search_engines
+68`, `pgp 67`): each is a corpus query for a reserved sample (`example.com`,
+`test@example.com`) rather than a presence claim per site, and their
+modules' own locks (REQ-SWEEP-001/002, REQ-ATTR-001) cover the miss shapes;
+they were then driven against nonce targets from this sandbox (21:3x UTC,
+the binary built from `aec6024`): `typosquat`, `subdomain_center`,
+`comb_search`, `pgp` and `search_engines` fabricate nothing (0 each for a
+domain, an address or a handle nobody holds), and `hackertarget` answered
+the nonce domain with a module fault — the one lead of that round
+(REQ-HACKERTARGET-001, above; repaired in this pass). One intermittent
+observed while gating it: `tests/smoke.rs::key_chaining_concurrent_dispatch`
+failed once in the full suite (`consumer (KeyGated, Phase 2) must see the
+key via hot-inject`) and passed alone and in every other full run of this
+pass; the test resets a process-global key pool (`reset_chain_pool`) that
+its sibling chain tests share while the suite runs its tests in parallel
+threads — a candidate cause, not a diagnosed one, recorded rather than
+re-run into silence. Beyond that the previous statement stands.
+
+**Stop — revised (5), 2026-09-15 23:1x UTC.** The attack moved from the
+sweep's rows and counts to the sweep's *verdict*: the cycle X reading
+(`crtsh` dead at 22:01, alive from this sandbox at 22:05) was the second
+live provider in one day the dead-canary verdict had ordered retired, and
+the retirement criterion the ledger states could not be checked by the check
+itself. Repaired (REQ-DRIFT-008, above): the verdict has a memory across
+sweeps, on the device and on the runner, and a first reading is a warning,
+not a red run; two runner sweeps carry it end to end. Unresolved and
+decision-relevant: the confirmation arithmetic has been exercised by the
+locks and by two runs four minutes apart, not yet by two runs a day apart —
+the weekly sweep of 2026-09-21 is the first that can read `wifidb` confirmed,
+and its reading decides the retirement REQ-HTTP-001 deferred (a provisional
+or alive reading instead would mean the memory or the provider changed, and
+the ledger must then say which); the restore step depends on `gh` and
+`actions: read` on GitHub's runner, exercised twice, its failure disclosed in
+the log rather than failing the run — a fork of the workflow on a runner
+without `gh` gets first readings forever and a log line saying so, the honest
+degradation but a degradation. The smoke intermittent recorded in (4) did
+not recur in this cycle's two full-suite runs; it is diagnosed from source
+and closed in the harness as REQ-CI-003 (above). Beyond that the previous
+statement stands.
+
+**Stop — revised (6), 2026-09-15 23:3x UTC.** Recomputed after REQ-DRIFT-008
+and REQ-CI-003, with CI green on `7404500` on every check and the
+live-drift check green on both dispatched runs. Remaining candidates, each
+asked whether a feasible test today could change a decision: (a) the
+`wifidb` retirement — decided by a sweep at least 20 h after 23:00 UTC, so
+no test before 2026-09-16 19:00 UTC can change it (time-gated; the
+check-in reads it); (b) the Web UI panel showing the reading rather than
+the cross-sweep verdict — a presentation gap with a small, known follow-up
+(a `dead_since` field and the panel's boundary lock) on which no decision
+hinges; (c) the sweep's steady `timed-out wayback` and `rate-limited
+reddit_user` rows — typed honestly (REQ-ARCHIVE-001, REQ-DRIFT-002/004),
+the vantage's, not the code's; (d) the remaining `empty` rows — each
+excluded from the canary table with its reason (REQ-CANARY-001, batch 3).
+No feasible test today could materially change a decision; the unresolved,
+decision-reversing uncertainty is (a), explicit above. Stop.
+
+**Stop — revised (7), 2026-09-16 01:4x UTC.** Withdrawn. The CANARY POLICY's
+other half — a known-negative control — was a feasible test, and it changed
+three decisions: `username_search` was still minting profiles for a handle
+nobody holds whenever a control read failed (REQ-PROBE-002),
+`search_engines` was minting a stranger's email and handle, a stranger's
+city, and the seed's own "web presence" from the engines' fuzzy answers to a
+term no page contains (REQ-SEARCH-002 — three findings, the last visible
+only once the control named what it minted), and the sweep now asks every
+Username module the null question weekly (REQ-CANARY-002). After the
+repairs the control reads 0 fabricated for three process nonces from this
+sandbox. Unresolved and decision-relevant: the same controls for the
+Domain, Email and FullName kinds (a value nobody holds that the providers
+treat as well-formed; the CLI refuses reserved TLDs) — a feasible test
+with the same mechanism, the next candidate; the `wifidb` confirmation
+(time-gated, unchanged). The rest of (6) stands.
+
+**Gate note (01:48–01:52 UTC).** Two full-suite runs of this tree failed
+`tests/reconciler_device.rs::a_radar_older_than_the_package_install_is_stale_and_only_stopped_when_authorised`
+at its authorised stop (`process_action: stop_failed`, "did not exit within
+20s of SIGINT") while the test passed alone and with its crate. Diagnosed,
+not re-run into silence: the two runs were launched from a subshell
+background job (`( nohup … & )`), whose descendants inherit SIGINT and
+SIGQUIT ignored (`SigIgn 0x7` against `0x1` for a top-level job — measured),
+so the fake radar could not be interrupted and the reconciler, which sends
+SIGINT alone by design, honestly reported the stop failed; reproduced
+deterministically with `bash -c 'trap "" INT; cargo test …'` (20.79 s,
+`stop_failed`), and the suite is green launched at top level (reconciler
+crate 7 of 7 in 2.18 s; CI's foreground step is the top-level case). A
+follow-up candidate, not this pass's: a radar started from a non-interactive
+background shell — a Termux:Boot script, `nohup hse radar &` — ignores
+SIGINT the same way, and the reconciler waits twenty seconds to say "stop it
+manually" where `/proc/<pid>/status` would tell it at once that SIGINT is
+ignored; escalating to SIGTERM is what the script's own comment refuses (a
+kill mid-scan reported as a controlled stop), so the improvement is the
+diagnosis, not the escalation.
+
+**Stop — revised (8): exhaustive finalization inventory, 2026-09-16 06:2x UTC.**
+An evidence-gated whole-repository finalization pass over `d4d6da6` (57
+commits ahead of `origin/main`, 0 behind, `main` an ancestor — no rebase or
+conflict). N = 1305 tracked files, accounted for by disposition: the 1132
+Rust sources through whole-repo defect detectors rather than per-file
+narration (the cost-appropriate accounting), the rest (`docs/`, `wasm-ui/`,
+`tests/`, `.github/`, config, generated/vendor artifacts — `Cargo.lock`, the
+`proptest-regressions`, the checked-in `.wasm`/`.der`/`.pem`) kept as-is.
+The detectors found no material actionable defect: **0** `todo!`/
+`unimplemented!` (no functional gaps), **0** genuine `TODO`/`FIXME`/`HACK`
+code markers (every match was an `XXX` format mask — `UA-XXXXXXX-X`,
+`ORG-XXX-RIPE`, phone masks), **0** `dbg!` leftovers, **0** prod-code bare
+`unwrap()` (all 51 are in test code; the two the module-path filter missed —
+`websearch/mod.rs:253` inside a `#[test]`, `patterns.rs:619` a proptest whose
+`unwrap` follows its own `prop_assert!(parsed.is_ok())` — were read and
+confirmed guarded), and **34 of 34** root dependencies used (the two the
+name cross-reference flagged, `kamadak-exif` and `md-5`, are package names
+whose crates import as `exif` and `md5` — verified used in
+`util/exif`/`document_parse/image_geolocation` and `gravatar`/`hashcat`, so
+not removable). The residual (7) named — the Domain, Email and FullName
+known-negative controls — is closed (REQ-CANARY-003), the Organisation
+control added (REQ-PROBE-003's cycle), and the production vantage's control
+sweep found and fixed two soft-404 fabrications the sandbox could not reach
+(`social_probe`/Hacker News, `username_search`/Yandex.Reviews —
+REQ-PROBE-003), remote-verified `0 fabricated` over 114 controls. **Final
+gate on `d4d6da6`:** `cargo fmt --check`, `clippy --all-targets --locked
+--features dep-cooldown -D warnings`, the rustdoc lints, `cargo test --all
+--locked --features dep-cooldown` (the whole suite), and
+`scripts/doc_coverage.sh` (held at 1029) all exit 0 locally, matching green
+CI and the green live-drift run. **Capability classification:** every
+baseline capability PRESERVED or IMPROVED; none REGRESSED. The only surface
+UNVERIFIED from this vantage — whether other status-only platforms in
+`social_probe`/`username_search` share the soft-404 shape — is now
+instrumented by the runner's control sweep across all five target kinds
+every run, and is not reproducible from the sandbox, so no site rule is
+changed without first reproducing its soft-404. No code change this pass:
+the strongest reproducibly-correct state is the current one, and fabricating
+a refactor to appear productive is the failure this method forbids.
+Residual, decision-relevant and unchanged: the `wifidb` retirement,
+time-gated (a sweep at least 20 h after 2026-09-15 23:00 UTC, i.e. after
+19:00 UTC on 2026-09-16). No feasible sandbox-reproducible test today could
+materially change a decision. Stop.
+
+**Stop — revised (9): Termux / Android aarch64 / no-root platform audit, 2026-09-16 06:4x UTC.**
+A finalization pass under the project's actual production target — Termux on
+Android aarch64, unprivileged — auditing every latent platform-assumption
+class that compiles green (the CI `Build (aarch64-linux-android)` job) yet
+could still fail at runtime on the device (REACHABILITY ≠ FUNCTION). Each
+class is already handled, verified from source:
+
+- **Temp paths:** 0 hardcoded `/tmp` in prod; 27 uses of `std::env::temp_dir()`
+  / `TMPDIR`, which Termux sets under `$PREFIX/tmp`.
+- **Data dir / `$HOME`:** `util::paths` resolves `std::env::var("HOME")`
+  (Termux's `/data/data/com.termux/files/home`) with a `.` fallback — no FHS
+  assumption. The one `/opt/hse-source` and `/etc/passwd` string matches are a
+  test env-file fixture and a MITRE ATT&CK technique label, not filesystem
+  access.
+- **No-root sockets:** no raw sockets or ICMP; `portscan` is a TCP **connect**
+  scan (needs no root); `whois` dials outbound `:43`; `local_net` and
+  `signal_radar` read `/proc/net/arp` and already treat the unprivileged-app
+  unreadable case as empty, in code and comment.
+- **Privileged ports:** `hse serve` defaults to `:8080` and, on `EACCES`
+  binding a low port, prints the Termux-specific, actionable
+  `permission denied (no root on Termux; use a port >= 1024, e.g. 8080)`.
+- **Shelled binaries:** `curl` / `git` / `bash` / `which` / `tesseract` are
+  standard Termux packages; `hse doctor` detects a missing one; OCR degrades
+  through a typed `OcrUnavailable` ("tesseract missing; image processing
+  disabled") and a pure-Rust fallback, never a crash.
+- **Build profile:** `[profile.release]` is size-tuned for mobile
+  (`opt-level="s"`, `lto`, `codegen-units=1`, `strip`) with `panic="unwind"`
+  **deliberately** retained — documented, so a panicking module is contained
+  at the dispatch boundary rather than aborting a long-lived `hse serve`; a
+  dedicated `[profile.fast]` and `install.sh`'s profile picker handle the
+  slow on-device LTO link (~15–20 min vs ~4–6 min on aarch64). 15 `cfg(target_*)`
+  sites, exactly one `unsafe` block, and the portable system allocator (no
+  jemalloc/mimalloc to fail the aarch64-android link).
+
+No material actionable defect or un-made optimization: the codebase is
+already thoroughly and explicitly adapted for the target, with reasoning at
+each decision point. No code change this pass. The gate stays green on
+`b4b3bad` (fmt, clippy `-D warnings`, rustdoc, `cargo test --all`,
+doc-coverage), and the CI aarch64-Termux build is green. Stop.
+
+### REQ-HTTP-002 (**new, Pass 31 — VERIFIED FROM SOURCE, CONSOLIDATED, FIXED, FALSIFIED**): `json_scanned` fails the way `json_decode` fails
+
+**Lead.** ONE CAPABILITY, ONE AUTHORITY. Two shared JSON decode helpers judged
+a body that would not decode: `json_decode` through `json_body_error` — typed
+(`Error::BotChallenge` for an anti-bot page, REQ-DRIFT-003), credential-
+redacted — and `json_scanned` (`src/util/http/url.rs`, the key-scanning
+variant every breach and enrichment module uses) through
+`format!("{module}: {}", json_failure(&text, &e))`: a bare `String`, unredacted,
+which each of its 31 call sites wrapped as `Error::module(SRC, e)` (and four
+matched on `Err(_)`). `geocode`'s own comment recorded that `json_scanned` "is
+also the one JSON helper that does not run `redact_credentials`". So behind
+those sites a wall served with a 2xx read as a module fault — the breaker's
+error count, `unreachable` in the sweep — and a decode failure could quote a
+credential from the body prefix into a persisted `ModuleError` event.
+
+**Fix.** `json_scanned` returns the crate `Result<T>`, passes the bounded
+read's error through and fails through `json_body_error`; the 31 `.map_err(|e|
+Error::module(SRC, e))` wrappers are removed mechanically (the four `match`
+sites compile unchanged); `geocode`'s comment follows.
+
+**Lock.** `util::http::tests::json_scanned_types_a_challenge_page_and_redacts_a_credential_in_the_decode_error`:
+the Cloudflare block capture served as `200` decodes to `Error::BotChallenge`
+naming "Attention Required"; a body opening `api_key=sk_live_SECRETVALUE99…`
+decodes to `Error::Module` naming the module and never the credential.
+
+**Falsification.** The repair reverted with only the lock run:
+
+```
+[json_scanned failing through the untyped, unredacted string path again] reverted -> LOCK FAILS (expected)
+    test util::http::tests::json_scanned_types_a_challenge_page_and_redacts_a_credential_in_the_decode_error ... FAILED
+    thread 'util::http::tests::json_scanned_types_a_challenge_page_and_redacts_a_credential_in_the_decode_error' (22842) panicked at src/util/http/tests.rs:1700:5:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7327 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
+### REQ-DRIFT-006 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): HIBP's terminal 429 is the typed rate limit
+
+**Lead.** REQ-DRIFT-002's residual: the one 429 in the crate that is not built
+by `http_status_error`. `hibp::Hibp::api_get` (`src/modules/hibp/mod.rs`)
+retries a 429 up to three times, sleeping the server's `Retry-After` (capped at
+10 s), cascades to the next pooled key, and — with no key left — returned
+`Error::module(SRC, "HTTP 429 rate-limited after {retries} retries: …")`:
+`finalise_module_result` filed it with `circuit::record_error`, a fault
+against the module's health, where every other throttle is
+`record_rate_limit`, a cooldown. The two other users of the shared
+`handle_keyed_error` retry helper (`censys`, `passivetotal`) already return
+`http_status_error(...)` after a terminal 429 and so were typed by
+REQ-DRIFT-002. Not observable by the sweep (key-gated); verified from source.
+
+**Fix.** The terminal arm returns `Error::RateLimited(format!("{SRC}: HTTP 429
+rate-limited after {retries} retries: {snippet}"))`; the module header says so.
+
+**Lock.** `modules::hibp::tests::a_terminal_429_is_the_typed_rate_limit_never_a_module_fault`
+drives the real `api_get` — retries, `Retry-After` parsing, key cascade — against
+a loopback answering `429` four times with `Retry-After: 0` (the retries sleep
+nothing) and a single key, and asserts `Error::RateLimited` naming "after 3
+retries". To make that possible the loopback server gained response headers
+(`test_server::Canned::header`), the first header-reading module path to be
+driven that way.
+
+**Falsification.** The repair reverted with only the lock run:
+
+```
+[the terminal 429 hand-built as Error::module again] reverted -> LOCK FAILS (expected)
+    test modules::hibp::tests::a_terminal_429_is_the_typed_rate_limit_never_a_module_fault ... FAILED
+    thread 'modules::hibp::tests::a_terminal_429_is_the_typed_rate_limit_never_a_module_fault' (6986) panicked at src/modules/hibp/tests.rs:474:5:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7326 filtered out; finished in 0.39s
+ALL LOCKS SENSITIVE
+```
+
+### REQ-UI-001 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, LOCKED AT THE BOUNDARY, FALSIFIED**): the Engines panel shows every probe state the API emits
+
+**Lead.** IMPLEMENTATION ≠ REACHABILITY. REQ-DRIFT-001/002/003 and
+REQ-SCOPE-001 gave the capability probe four new outcomes and the API four
+new fields (`rate_limited`, `blocked`, `skipped`, `dead_canaries`, plus
+`dead_canary` on each row). `hse doctor --live` and the live-drift sweep
+render them; the Web UI is the third consumer.
+
+**Verified from source.** `src/web/js/views/engines.js`,
+`runCapabilityProbe()`: `stDot` coloured `alive` green, `empty` amber and
+every other outcome the red of a provider that is down, so a throttled, a
+walled and a declined module all looked dead; the sort ranked only
+`unreachable` / `timed-out` as problems; the four stat cards were Alive,
+Empty, Unreachable (+ timed-out) and Drift — `rate_limited`, `blocked`,
+`skipped`, `panicked` and `dead_canaries` were never read; no row or alert
+flagged a dead canary; the panel's own explanation listed four states. The
+WASM UI has no copy of this panel (`wasm-ui/src/views`: dash, diff, scans).
+
+**Fix.** One colour per outcome class (a throttle, a wall and a declined
+sample are decisions about this client or sample, not a fault); dead canaries
+first, then drift, then a provider that is down, then the per-client
+refusals; eight cards (Alive, Empty, Unreachable, Drift with the panicked
+count; Rate-limited, Blocked, Skipped, Dead canaries); a dead-canary alert
+beside the drift alert; the explanation names all eight states. The
+endpoint's doc names them too.
+
+**Lock (at the boundary).** `api::handlers::tests::the_engines_panel_reads_every_probe_counter_and_outcome_label_the_api_emits`
+builds one report per `ProbeOutcome` variant, runs the real
+`capability_probe_json`, and asserts that the panel's source reads every
+top-level field the JSON carries (`data.<field>`), renders every outcome
+label a row can carry (`'<label>'`) and reads every row flag (`m.drift`,
+`m.canary`, `m.dead_canary`) — within `runCapabilityProbe` alone, because the
+page's search-engine liveness table has its own `'blocked'` state (the first
+cut of the guard matched it and was insensitive to the panel dropping the
+label; scoped, it fails). A ninth outcome, or a new counter, fails the guard
+until the panel reads it.
+
+**Operational exercise.** Headless Chromium (Playwright 1.56, the pre-installed
+browser) against the real `hse serve -b 127.0.0.1:18080` built from this
+tree (the SPA is embedded in the binary), 2026-09-15 18:27 UTC: the probe
+endpoint answered by a synthetic payload of one row per outcome plus a dead
+canary — no live provider touched — then "Run live probe" clicked and the
+rendered DOM read back:
+
+```
+CARDS:
+  ALIVE 1
+  EMPTY 1
+  UNREACHABLE 2
+  DRIFT 1 (1 panicked)
+  RATE-LIMITED 1
+  BLOCKED 1
+  SKIPPED 1
+  DEAD CANARIES 1
+ALERTS:
+  Dead canary: dead_src — a curated known-positive provider answered nothing on any attempt: down for the whole run, or its endpoint is retired. Migrate the endpoint or retire the capability honestly.
+  Confirmed drift: broken_src — a canary provider changed its wire shape. Update the module's parser.
+ROWS (sorted as rendered):
+  dead_src canary | domain | ● dead canary | no answer on any of 3 attempts
+  broken_src | domain | ● drift | index out of bounds
+  down_src | domain | ● unreachable | transport error
+  slow_src | domain | ● timed-out | 
+  walled_src | domain | ● blocked | HTTP 403 Attention Required
+  throttled_src | domain | ● rate-limited | HTTP 429
+  empty_src | domain | ● empty | 0 parsed
+  declined_src | domain | ● skipped | not-applicable: out of scope
+  alive_src | domain | ● alive | 3 found
+STATUS COLOURS:
+  ● dead canary=rgb(169, 68, 66)
+  ● drift=rgb(169, 68, 66)
+  ● unreachable=rgb(169, 68, 66)
+  ● timed-out=rgb(169, 68, 66)
+  ● blocked=rgb(122, 31, 162)
+  ● rate-limited=rgb(178, 106, 0)
+  ● empty=rgb(138, 109, 59)
+  ● skipped=rgb(49, 112, 143)
+  ● alive=rgb(60, 118, 61)
+```
+
+
+**Falsification.** Each repair reverted with only the guard run:
+
+```
+[the dead-canary list no longer read (no alert, no count)] reverted -> LOCK FAILS (expected)
+    test api::handlers::tests::the_engines_panel_reads_every_probe_counter_and_outcome_label_the_api_emits ... FAILED
+    thread 'api::handlers::tests::the_engines_panel_reads_every_probe_counter_and_outcome_label_the_api_emits' (4668) panicked at src/api/handlers/tests.rs:312:13:
+    runCapabilityProbe never reads the probe field `dead_canaries` the API emits
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7325 filtered out; finished in 0.21s
+[the 'blocked' outcome no longer rendered as its own class] reverted -> LOCK FAILS (expected)
+    test api::handlers::tests::the_engines_panel_reads_every_probe_counter_and_outcome_label_the_api_emits ... FAILED
+    thread 'api::handlers::tests::the_engines_panel_reads_every_probe_counter_and_outcome_label_the_api_emits' (4958) panicked at src/api/handlers/tests.rs:325:13:
+    runCapabilityProbe never renders the probe outcome `blocked`
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7325 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
+### REQ-ARCHIVE-001 (**refuted lead, Pass 31 — MEASURED twice, ATTACKED, NO CHANGE**): `wayback`'s every-run timeout is not its query shape
+
+**Lead.** Every live-drift run reads `timed-out wayback` (the module's 30 s
+budget) for the sample `example.com`, and `commoncrawl` read `timed-out` at
+17:03. A first sandbox round (2026-09-15 17:40–17:50 UTC) contrasted the
+module's pass-1 query with and without `collapse=urlkey`: collapsed, the
+query hung for 40 s and 35 s and was reset at 11 s in every shape tried
+(`limit=50`, `from=2024`); uncollapsed, the same query returned 1,001 rows in
+2.6 s and later 12.1 s. Common Crawl's `*.example.com&limit=100` died (`504`
+at 10.5 s; a reset at 6 s) while `limit=25` / `limit=50` answered in under a
+second. The leading reading was a structural cost of `collapse=urlkey`, with
+client-side de-duplication as the fix.
+
+**Attack.** Rival mechanisms recorded before the second round: (a) a
+measurement artefact — the first round fired several CDX requests
+concurrently from one address; (b) the sample's archive (example.com is among
+the most-captured hosts) rather than the shape; (c) provider load.
+Predictions: structural → collapsed queries slow on medium archives while
+plain ones answer; sample-size → a medium archive answers every module-shaped
+query in seconds; load/artefact → results vary with concurrency and time, not
+shape.
+
+**Observed (serial, one request at a time, 5 s apart, 60 s ceiling, 18:16
+UTC):**
+
+| query | answer |
+|---|---|
+| `sqlite.org/*` pass-1 shape, collapsed | `200`, 1,001 rows, 1.8 s |
+| `sqlite.org/*` pass-2 shape (`filter=statuscode:200`, collapsed) | reset at 11.1 s |
+| `*.sqlite.org` pass-3 shape (collapsed) | `503`, Wayback's own error page, 5.5 s |
+| `example.com/*` pass-1, collapsed | no answer in 30.8 s |
+| `example.com/*` pass-1, **plain** | reset at 11.2 s |
+| `iana.org/*` pass-1, collapsed | reset at 11.3 s |
+
+An eight-way concurrent round minutes earlier had answered a collapsed
+`sqlite.org` query in 3.7 s and reset the plain one — the opposite ordering.
+
+**Decision.** The shape is not the cause: plain queries reset where collapsed
+ones did, a collapsed query on a medium archive answered in under 2 s, and a
+`503` arrived at no query cost at all. What the rounds do establish is
+provider-side: Wayback's CDX front end answers nothing within ~11 s under
+load and 503s outright, and the cost scales with the archive scanned. A
+client-side change supported by the first round alone would have been a
+change supported by assumption — none is made. `commoncrawl` read `alive
+commoncrawl 5 found` at 17:20 and 18:03 on the same query, so its earlier
+`timed-out` was the same class of transient. Both modules already type the
+outcome honestly: a query that outruns the budget is `TimedOut` ("provider
+slow/hung"), a `503` is `Error::Module` naming the status, and neither is a
+dead canary (neither is a canary).
+
+**Residual, preserved.** Whether the module completes for a typical target
+from the runner is not observed — the sweep's per-kind sample is
+`example.com`. A known-positive canary with a moderate archive (`sqlite.org`
+answered the pass-1 shape in 1.8 s here) would give the sweep that
+observation; it is not added from one afternoon of a visibly unstable
+provider, because a canary that dies on provider load fails the whole sweep
+as a DEAD CANARY. Reversal: two consecutive weekly sweeps reading `alive
+wayback` for such a sample make it a canary; a Wayback that answers plain
+queries and refuses only collapsed ones on a calm day reopens the shape
+hypothesis.
+
+### REQ-DRIFT-005 (**new, Pass 31 — OBSERVED on the runner and from the sandbox, FIXED, FALSIFIED**): `asic_director` names the outcome it met; the register's Cloudflare block is `blocked`, not `unreachable`
+
+**Observation (runner).** Every live-drift run reads `unreachable asic_director
+— ASIC Connect Online request failed at the transport level, returned a
+non-success HTTP status, answered an anti-bot / WAF page instead of the
+register, or its response body was unreadable — not "no director records for
+this name"` (runs 34998644556 at 17:03 and 35000372348 at 17:20 UTC on
+2026-09-15, and every run before them): the message admits it cannot tell four
+outcomes apart, and the sweep files all four as a provider that is down.
+
+**Observation (this sandbox, 2026-09-15 17:36 UTC, `curl` with a browser
+User-Agent).** `GET https://connectonline.asic.gov.au/RegistrySearch/faces/landing/SearchRegisters.jspx?searchText=Fletcher%20Moreau&searchType=OrgAndBus`
+→ `403 text/html; charset=UTF-8`, 4,547 bytes in 1.65 s, `<title>Attention
+Required! | Cloudflare</title>`, visible text "Please enable cookies. Sorry,
+you have been blocked. You are unable to access asic.gov.au … Cloudflare Ray
+ID: … Your IP: …" — byte-for-byte the `anubis` block page already checked in
+(`src/util/html/testdata/cloudflare_block_anubis_2026-09-15.html`) but for the
+host line, so that fixture drives the lock and no second copy is added. The
+host resolves through Cloudflare (`connectonline.asic.gov.au.cdn.cloudflare.net`,
+172.65.90.0/1/3). The 2026-08-04 note in the module header (an immediate,
+UA-independent 403) is reconfirmed; a wall is per client, so a Termux /
+mobile-carrier client may still pass it, and the module stays.
+
+**Attack on the leading reading (a wall per client, so the module stays)
+against its rival (the register path is retired and the wall hides it).**
+Predictions recorded before the test: a client-wide WAF policy answers the
+host's root and any other path with the same block page; a retired path
+answers the root 2xx and the path 403/404. Observed (sandbox, 17:58 UTC):
+`GET https://connectonline.asic.gov.au/` → `403`, 4,547 B, "Attention
+Required! | Cloudflare"; `…/landing/panelSearch.jspx` → the same; `asic.gov.au`
+→ `301` to `www.asic.gov.au`. The block is host-wide for this client — the
+leader holds. **Residual, preserved:** whether the search page still exists
+for a browser-class client is not observable from a datacenter address (the
+archive answered this sandbox `429` on every attempt), and the runner is the
+same class of client. Reversal condition: a Termux / mobile-carrier client
+meeting a 404 or a redirect away from the register path retires the module
+(REQ-RETIRE-003's procedure); a 2xx register page confirms it.
+
+**Verified from source.** `process()` (`src/modules/asic_director/mod.rs`) ran
+`if let Ok(resp) = … && resp.status().is_success() && let Some(html) =
+read_body_capped(…) && register_page_is_usable(&html)` and, when the chain
+broke anywhere, returned one `Error::module` string. The typed error existed
+at every seam — `send_tagged`'s transport error, `http_status_error`'s
+`RateLimited` / `BotChallenge` / `Module` (REQ-DRIFT-002/003),
+`document_or_challenge`'s `BotChallenge` (REQ-SCRAPE-001) — and was thrown
+away.
+
+**Fix.** `fetch_register_page(client, search_url, full_name) -> Result<String>`
+is the one request path, its endpoint a parameter so it runs against a
+loopback; `ok_or_absent(SRC, resp, &[])` types every non-2xx (no status means
+"no record": the search page is a fixed endpoint) and
+`read_body_capped_or_fail` types a wall served with a 2xx and a body cut short.
+`process()` parses only a page read to its end; `request_failed` and
+`register_page_is_usable` are gone with the folded message.
+
+**Lock.** `the_register_edges_wall_is_the_typed_bot_challenge_never_unreachable_or_no_records`
+drives the path against a loopback serving, in turn, the Cloudflare block page
+as `403` (→ `Error::BotChallenge`, message `HTTP 403 … Attention Required`),
+the same page as `200` (→ `BotChallenge`), a `500` (→ `Error::Module`, `HTTP
+500`), and a register page naming no row (→ the empty result).
+
+**Remote verification (live-drift run 35006162811 on `f447265`, 2026-09-15
+18:13 UTC).** `blocked asic_director — asic_director: HTTP 403 Forbidden:
+Attention Required! | Cloudflare` — the same wall from GitHub's runner, a
+second datacenter vantage, where every earlier run read `unreachable`. The
+sweep: 116 probed — 89 alive, 18 empty, 1 unreachable (the `wifidb` dead
+canary alone), 1 timed-out, 2 rate-limited, 4 blocked, 1 skipped.
+
+**Falsification.** Each repair reverted in turn with only the lock run:
+
+```
+[the 403 declared absent again (a wall read as "no record")] reverted -> LOCK FAILS (expected)
+    test modules::asic_director::tests::the_register_edges_wall_is_the_typed_bot_challenge_never_unreachable_or_no_records ... FAILED
+    thread 'modules::asic_director::tests::the_register_edges_wall_is_the_typed_bot_challenge_never_unreachable_or_no_records' (5654) panicked at src/modules/asic_director/tests.rs:280:10:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7324 filtered out; finished in 0.21s
+[the 2xx body read permissively again (a wall parsed as the page)] reverted -> LOCK FAILS (expected)
+    test modules::asic_director::tests::the_register_edges_wall_is_the_typed_bot_challenge_never_unreachable_or_no_records ... FAILED
+    thread 'modules::asic_director::tests::the_register_edges_wall_is_the_typed_bot_challenge_never_unreachable_or_no_records' (5953) panicked at src/modules/asic_director/tests.rs:289:10:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7324 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
+### REQ-RETIRE-003 (**new, Pass 31 — OBSERVED from two vantage points, RESEARCHED, RETIRED**): `au_electoral`'s hosts have no address and `au_property`'s endpoints are gone
+
+**Observation (runner).** Every live-drift run this branch dispatched reads
+`unreachable au_electoral — no electoral commission answered for Fletcher
+Moreau: all 3 lookups (NSW, VIC, QLD) failed to respond, returned a reply
+that could not be read, or answered an anti-bot / WAF page instead of the
+roll …` and `unreachable au_property — all 3 property-register endpoints
+(NSW ELVIS, VIC MapShare WFS, QLD titles search) returned a non-success HTTP
+status or redirected away to another host — likely retired/migrated legacy
+URLs …` (runs 34985449332, 34995740898 and 34998644556 on 2026-09-15, and the
+weekly runs before them). Both messages fold what happened into one string;
+the modules were never able to say which.
+
+**Observation (this sandbox, 2026-09-15 17:30–17:45 UTC).**
+
+`au_property`, `curl` with a browser User-Agent, every host resolving
+(`maps.six.nsw.gov.au` → 203.57.8.20; `mapshare.vic.gov.au` → 13.237.127.74 /
+3.104.40.5 / 15.135.101.182, on both Google's and Cloudflare's resolvers):
+
+| leg | request | answer |
+|---|---|---|
+| NSW | `GET https://maps.six.nsw.gov.au/services/public/Property_Name_Address?surname=Moreau&givenname=Fletcher&maxRows=10` | `404 text/html; charset=iso-8859-1`, 235 B, Apache's own "404 Not Found — The requested URL /services/public/Property_Name_Address was not found on this server." |
+| VIC | `GET https://mapshare.vic.gov.au/mapsharevic/ows?service=WFS&version=1.0.0&request=GetCapabilities` | `404 text/html`, 1,245 B, IIS's own "404 - File or directory not found." |
+| QLD | `GET https://www.qld.gov.au/environment/land/title/searching/owners?owner=Fletcher%20Moreau` | `404 text/html; charset=utf-8`, 178,258 B, "Page not found - qld.gov.au" |
+
+Each is the host's own not-found page — no wall, no redirect: the paths no
+longer exist.
+
+`au_electoral`: every request fails before TLS — the proxy answers `CONNECT
+tunnel failed, response 502` in under 0.6 s for all three hosts, the
+signature `api.bgpview.io` (REQ-BGP-001) and `psbdmp.ws` (REQ-RETIRE-001)
+left. DNS over HTTPS from two independent resolvers:
+
+| host | Google (`dns.google/resolve`) | Cloudflare (`cloudflare-dns.com/dns-query`) |
+|---|---|---|
+| `check.elections.nsw.gov.au` | Status 0, no A record | Status 0, no A record |
+| `check.vec.vic.gov.au` | Status 3 (NXDOMAIN) | Status 3 (NXDOMAIN) |
+| `enrol.ecq.qld.gov.au` | Status 0, no A record | Status 0, no A record |
+| `check.aec.gov.au` (reference) | 108.138.64.38 / .51 / .17 | 108.138.64.51 / .59 / .17 |
+
+None of the module's hosts has an address; the AEC's own enrolment tool does,
+and it is the address-based, name-less lookup the module's header already
+documented as unusable for a `FullName` target.
+
+**Migration research (no keyless path).** Enrolment: the AEC's
+`check.aec.gov.au` takes postcode → suburb → street → name and answers only
+the person entering their own details; the state commissions link to it;
+the roll itself is inspectable in person at AEC offices only. Property:
+owner-name title searches are paid services in every state (NSW LRS through
+its information brokers, Victoria's Landata, Titles Queensland), and the free
+spatial portals (NSW Spatial Services, VicPlan, QLD Globe) carry parcels and
+addresses, never owners — `qld_cadastre` already covers the keyless part.
+
+**Decision.** Retired honestly (REQ-RETIRE-001's procedure): both module
+directories, their registry entries, the README (192 modules; 143 free;
+API-Free 93; Full Name 27; the People list), `AUTHORITATIVE_AU_REGISTERS`
+(AU-088), the `identity_registry` family list, the person-anchoring geo
+source table and the `GeoSourceClass::{Electoral, Property}` classes (no
+other producer; `precision_radius_m`, `class_locates_subject_directly` and
+the class labels follow; the eleven-class convergence proof is a nine-class
+one), the `au_people` leftovers REQ-RETIRE-001 had left in those tables,
+`util::address_au::is_standalone_postcode_at` (only the two retired parsers
+called it), the comments that named them, the API-reference rows (and the
+`ACMA RRL` row REQ-RETIRE-002 had left), the backlog rows. `T1591.001` and
+`T1589.003` stay covered by other modules, so the pinned ATT&CK envelope is
+unchanged. Every full-name scan stops paying six doomed requests and two
+breaker trips. Doc-coverage ceiling 1032 → 1030; the built binary lists 192
+modules and neither name.
+
+**Lifecycle (existing installs).** No schema or migration is involved: a scan
+store that holds evidence from the retired sources still loads, and its
+rows keep their recorded source names. What changes is classification on
+re-correlation: `geo_source_class("au_electoral" | "au_property")` is
+`Other` now (30 km, the moderate-coarse fallback) where the retired classes
+claimed 150 m and 60 m — the precision the modules themselves could no
+longer deliver. No legacy mapping is kept for the two names (it would be
+dormant code for evidence the modules could not have produced since their
+endpoints went), and none of the sandbox stores holds such rows.
+
+**Remote verification (live-drift run 35005088938 on `19f2c03`, 2026-09-15
+18:03 UTC).** 116 modules probed (118 before); no `au_electoral` and no
+`au_property` row; 89 alive, 18 empty, 2 unreachable (`asic_director`,
+`wifidb`), 1 timed-out, 1 rate-limited, 4 blocked, 1 skipped. The sweep is
+red only on the `wifidb` dead canary, by design.
+
+**Falsification.** The README module count flipped back to the retired
+figure and the nine-class pin flipped back to eleven, each with only its
+guard run:
+
+```
+[README module count flipped back to 194] reverted -> LOCK FAILS (expected)
+    test readme_module_overview_count_matches_registry ... FAILED
+    thread 'readme_module_overview_count_matches_registry' (4051) panicked at tests/architecture_parts/architecture_part4.rs:775:5:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 89 filtered out; finished in 0.19s
+[nine-class pin flipped back to eleven] reverted -> LOCK FAILS (expected)
+    test core::correlator::tests::all_nine_classes::all_nine_classes_present_and_distinct ... FAILED
+    thread 'core::correlator::tests::all_nine_classes::all_nine_classes_present_and_distinct' (4341) panicked at src/core/correlator/tests/part11.rs:407:9:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7327 filtered out; finished in 0.20s
+ALL LOCKS SENSITIVE
+```
+
+### REQ-DRIFT-004 (**new, Pass 31 — OBSERVED on the runner and from the sandbox, FIXED, FALSIFIED**): Reddit's block page is a wall; a document may open with a bare `<body>`
+
+**Observation (runner, live-drift run 34998644556 on `78e596f`, 2026-09-15
+17:03 UTC).** `unreachable reddit_user — [reddit_user] HTTP 403 Forbidden:
+<body class=theme-beta><div><style>.theme-light,:root{--rem360:22.5rem;…`
+— raw markup as the snippet, "provider down" as the class (the 16:35 run had
+read the same endpoint `rate-limited`, HTTP 429).
+
+**Observation (sandbox, 17:07 UTC).** `GET
+https://www.reddit.com/user/torvalds/about.json` → `403 text/html`, 189,908
+bytes, opening `<body class=theme-beta><div><style>…` with no doctype and no
+`<title>`; visible text (143 characters, at byte 189,318): "You've been
+blocked by network security. If you think you've been blocked by mistake,
+file a ticket below and we'll look into it. File a ticket". The Atom feed
+itself (`/user/torvalds.rss`) answered the sandbox 200 `application/atom+xml`
+(8,703 bytes) — the runner's address is the one Reddit scores as a bot.
+
+**Root causes (source).** (1) `util::html::looks_like_document` accepted only
+`<!doctype html` / `<html` openers, so this page was not a document:
+`html_error_summary` produced nothing (the raw markup became the snippet) and
+`is_challenge_document` never ran. (2) No phrase set knew Reddit's wording.
+(3) Even with both, the prose sits beyond the 8 KiB bounded error-body read
+(`error_body`), so the shared classifier cannot see it on the production
+path: `http_status_error` reads the first 8 KiB, all CSS.
+
+**Fix.** `looks_like_document` also accepts a bare `<head` / `<body` opener
+— only HTML documents open with them; XML, RSS and Atom open with `<?xml`,
+`<rss`, `<feed` and a JSON body never opens with `<`. The phrase set
+`["blocked by network security"]` joins `CHALLENGE_PHRASE_SETS` (for copies
+short enough to read). `reddit_user::fetch_feed_from` applies the endpoint's
+own contract before `ok_or_absent`: an Atom feed is never `text/html`, so a
+403 carrying an HTML body is `Error::BotChallenge` naming Reddit's
+network-security block — the breaker benches the module at once, the probe
+and the sweep read `blocked`, and the account is never called absent (404
+stays the one negative).
+
+**Evidence.** `util::html::tests::a_document_may_open_with_a_bare_body_or_head_and_reddits_block_page_is_a_wall`
+(the capture's opener and prose; XML / RSS / Atom / JSON-quoting-markup stay
+non-documents; the excerpt is a wall);
+`reddit_user::tests::a_403_with_an_html_page_on_the_feed_is_reddits_wall_never_an_absent_account`
+(loopback: 403 HTML → `BotChallenge`; 404 → `None`; 200 Atom → the feed).
+
+**Falsification.** Each repair reverted in turn with only its lock run:
+
+```
+[looks_like_document openers back to doctype/html only] reverted -> LOCK FAILS (expected)
+    util::html::tests::a_document_may_open_with_a_bare_body_or_head_and_reddits_block_page_is_a_wall --- FAILED
+    thread 'util::html::tests::a_document_may_open_with_a_bare_body_or_head_and_reddits_block_page_is_a_wall' (32522) panicked at src/util/html/tests.rs:475:9:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7405 filtered out; finished in 0.21s
+[Reddit phrase set removed] reverted -> LOCK FAILS (expected)
+    util::html::tests::a_document_may_open_with_a_bare_body_or_head_and_reddits_block_page_is_a_wall --- FAILED
+    thread 'util::html::tests::a_document_may_open_with_a_bare_body_or_head_and_reddits_block_page_is_a_wall' (350) panicked at src/util/html/tests.rs:480:9:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7405 filtered out; finished in 0.20s
+[reddit_user 403-with-HTML rule removed] reverted -> LOCK FAILS (expected)
+    modules::reddit_user::tests::a_403_with_an_html_page_on_the_feed_is_reddits_wall_never_an_absent_account --- FAILED
+    thread 'modules::reddit_user::tests::a_403_with_an_html_page_on_the_feed_is_reddits_wall_never_an_absent_account' (650) panicked at src/modules/reddit_user/tests.rs:614:5
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7405 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
+**Remote verification (live-drift run 35000372348 on `a5f3868`, 2026-09-15
+17:20 UTC).** Reddit answered that run's probe with `HTTP 429 Too Many
+Requests: <empty>` — `rate-limited reddit_user`, the typed throttle
+(REQ-DRIFT-002), not the block page — so the wall rule was not exercised on
+the runner in that run (118 probed — 88 alive, 18 empty, 5 unreachable,
+1 timed-out, 2 rate-limited, 3 blocked, 1 skipped). **The next run (35005088938
+on `19f2c03`, 18:03 UTC) met the wall:** `blocked reddit_user — reddit_user:
+HTTP 403 Forbidden on the Atom feed with an HTML page — Reddit's
+network-security block ("You've been blocked by network security"), not a
+feed and not an absent account` — the module-level rule, exercised on the
+runner, where the same answer had read `unreachable` with raw markup as the
+snippet at 17:03.
+
+**Residual.** The shared classifier still reads only the first 8 KiB of an
+error body; a wall whose prose sits beyond that and whose opener carries no
+signature is typed only where the endpoint's contract can be applied, as here.
+
+### REQ-SCOPE-002 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): an unimported local database is a typed skip, never "no towers"
+
+**Verified from source.** `cell_local::process` (`src/modules/cell_local.rs`):
+`Err(_) if !cell_db_path().exists() => return Ok(vec![])` — the module doc
+called it a "silent no-op until `hse cells import` is run". Dispatch records
+`ModuleDone { found: 0 }`; `core::coverage` aggregates that to
+`CleanNegative`: "no cell towers within ~556 m of this coordinate" for a
+database that does not exist (the sweep's `empty cell_local (coordinates
+40.7128,-74.0060)` on every run of a runner that never imported one).
+
+**Fix.** `database_not_imported()` — `Error::skipped(SkipClass::Unavailable,
+"local cell-tower database not imported (~/.huntsman/cell_towers.db) — run
+`hse cells import`; no towers were looked up for this coordinate")`; the
+module returns it in place of the empty result. A database that exists but
+will not open stays the hard error it was.
+
+**Evidence.** `cell_local::tests::an_unimported_database_is_a_typed_unavailable_skip_never_no_towers`
+(the pure outcome, and the real `process` path whenever the pid-scoped test
+data directory holds no database — its state in a fresh test process).
+
+**Falsification.** The arm restored to `return Ok(vec![])` with only the
+lock run:
+
+```
+[cell_local empty result restored] -> LOCK FAILS (expected)
+    modules::cell_local::tests::an_unimported_database_is_a_typed_unavailable_skip_never_no_towers --- FAILED
+    thread 'modules::cell_local::tests::an_unimported_database_is_a_typed_unavailable_skip_never_no_towers' (16930) panicked at src/modules/cell_local.rs:217:14:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7403 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
+**Remote verification (live-drift run 35000372348 on `a5f3868`, 2026-09-15
+17:20 UTC).** `skipped cell_local (unavailable) local cell-tower database not
+imported (~/.huntsman/cell_towers.db) — run `hse cells import`; no towers were
+looked up for this coordinate` — the first sweep to say so; every earlier one
+read `empty cell_local (coordinates 40.7128,-74.0060)`. The sweep counts it
+under `1 skipped`, not under `empty`.
+
+
+### REQ-CANARY-001 (**new, Pass 31 — OBSERVED live, EXTENDED, LOCKED**): the sweep observes what it asserts
+
+**Lead.** After REQ-SCOPE-001 the 2026-09-15 live-drift table would read
+`skipped (not_applicable)` for the three Australia-only modules on every
+run, and it already read `empty` for ten username-family modules probed with
+`torvalds` — a handle none of them holds. Twelve keyless providers were swept
+weekly and none could ever be seen to drift: a parser that died in any of
+them looked exactly like a legitimate miss.
+
+**Mechanism (source).** `capability_probe::probe_target` prefers a
+`CANARY_PROBES` entry's own `(kind, value)` over the per-kind sample, so a
+canary is also the way to give one module a known-positive sample. The
+table's doc requires each pair to be "verified to yield deterministically
+against a stable public target".
+
+**Observation (this sandbox, 2026-09-15 16:20 UTC, the built binary,
+`HOME` isolated, `hse scan -k <kind> -v <value> -m <module> -d 0 -t 0
+--max-concurrent 1 --no-skip-dead-modules`; `found` is the dispatcher's
+count):**
+
+| module | sample | found |
+|---|---|---|
+| `gitlab_user` | `sytses` | 2 |
+| `hacker_news` | `pg` | 13 |
+| `devto` | `ben` | 6 |
+| `lobsters` | `pushcx` | 20 |
+| `hexpm_user` | `josevalim` | 3 |
+| `cpan_user` | `RJBS` | 8 |
+| `launchpad_user` | `sabdfl` | 3 |
+| `pypi_user` | `hugovk` | 5 |
+| `crates_io` | `dtolnay` | 68 |
+| `au_rdap` | `abc.net.au` | 13 |
+| `au_geo` | `-33.8688,151.2093` (Sydney CBD) | 10 |
+| `qld_cadastre` | `-27.4698,153.0251` (Brisbane CBD) | 6 |
+| `bitbucket_user` | `atlassian` | 0 — **not** a canary (the 0 was REQ-BITBUCKET-001's removed resource, not an absent account; `zzzeek` is the canary now) |
+| `sanctions_ofac` (batch 3) | `KOREA HYOKSIN TRADING CORPORATION` (Organisation) | 1 — the subject re-emitted tagged `ofac-sdn`, program NPWMD |
+| `data_gov_au` (batch 3) | `Australian Taxation Office` (Organisation) | 11 |
+| `sitemap` (batch 3) | `docs.python.org` | 8 — one URL per documented version |
+
+Every listed account or anchor is long-lived and prominent (a platform's
+founder or administrator, a maintainer with hundreds of packages, a national
+broadcaster's registration, capital-city geography), so the yield is
+deterministic while the provider is up; a `bitbucket_user` sample that
+yields nothing is excluded rather than guessed.
+
+**Change.** The twelve pairs join `CANARY_PROBES` with the observed counts in
+their comments. `every_canary_has_a_sample_and_is_flagged` now resolves each
+entry in `crate::modules::registry()` and asserts the module accepts its
+sample, that `probe_target` returns that sample, and that the module is a
+keyless (`Free`) network module — a canary the sweep never probes would
+assert nothing.
+
+**What this changes in the weekly run.** Twelve `empty` / `skipped` rows
+become `alive … [canary]` while the parsers hold, and a parser that dies now
+fails the sweep as confirmed drift instead of hiding behind a miss. The
+providers are the ones already reached from GitHub's runner every week (the
+same modules read `empty`, not `unreachable`, on 2026-09-15), so no new
+transport exposure is introduced; a provider that starts refusing the runner
+reads `blocked`, never a dead canary (REQ-DRIFT-003).
+
+**Falsification.** The table corrupted two ways with only its lock run — a
+canary whose module does not accept its sample, and a canary naming a
+key-gated module the keyless sweep never probes (a first attempt used
+`shodan`, whose InternetDB path is `Free`; the lock rightly passed, so the
+mutation, not the lock, was wrong):
+
+```
+[a canary whose module does not accept its sample (au_geo with a Username)] -> LOCK FAILS (expected)
+    selftest::capability_probe::tests::every_canary_has_a_sample_and_is_flagged --- FAILED
+    thread 'selftest::capability_probe::tests::every_canary_has_a_sample_and_is_flagged' (13288) panicked at src/selftest/capability_probe.rs:776:13:
+    canary au_geo does not accept its own sample "sytses"
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7400 filtered out; finished in 0.21s
+[a canary naming a key-gated module (urlhaus, KeyGated since REQ-RETIRE-001; never probed keyless)] -> LOCK FAILS (expected)
+    selftest::capability_probe::tests::every_canary_has_a_sample_and_is_flagged --- FAILED
+    thread 'selftest::capability_probe::tests::every_canary_has_a_sample_and_is_flagged' (13577) panicked at src/selftest/capability_probe.rs:785:13:
+    canary urlhaus must be a keyless network module, or the sweep never probes it
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7400 filtered out; finished in 0.20s
+ALL LOCKS SENSITIVE
+```
+
+**Remote verification (GitHub runner, live-drift run 34995740898 on
+`70ce543`, 2026-09-15 16:35 UTC).** Every new canary is alive from the runner:
+
+```
+  alive        au_geo                 10 found [canary]
+  alive        au_rdap                13 found [canary]
+  alive        cpan_user              14 found [canary]
+  alive        crates_io              68 found [canary]
+  alive        devto                  7 found [canary]
+  alive        gitlab_user            2 found [canary]
+  alive        hacker_news            15 found [canary]
+  alive        hexpm_user             3 found [canary]
+  alive        launchpad_user         3 found [canary]
+  alive        lobsters               22 found [canary]
+  alive        pypi_user              5 found [canary]
+  alive        qld_cadastre           6 found [canary]
+live-drift sweep: 119 probed — 84 alive, 24 empty, 4 unreachable, 2 timed-out, 2 rate-limited, 3 blocked, 0 skipped, 0 panicked
+```
+
+(84 alive against 71 on the 15:02 run of the same day; the run is red only
+on the `wifidb` dead canary, by design — REQ-HTTP-001.)
+
+**Second batch (this sandbox, 2026-09-15 17:01 UTC, same method).**
+
+| module | sample | found |
+|---|---|---|
+| `acnc_charities` | `Australian Red Cross Society` | 5 |
+| `asic_business_names` | `Telstra` | 143 |
+| `crossref_search` | `Albert Einstein` | 5 |
+| `wikidata` | `Abraham Lincoln` | 8 |
+| `app_links` | `github.com` | 7 |
+| `data_gov_au` | `Telstra` | 0 — **not** a canary |
+| `asic_banned_orgs` | `Telstra` | 0 — **not** a canary |
+| `dns_axfr` | `zonetransfer.me` | inconclusive (raw TCP/53 is not routable from the sandbox) — **not** a canary |
+
+The five yielding pairs join `CANARY_PROBES`; the Australian registers'
+per-kind sample (`Google LLC`) holds nothing in them and `Fletcher Moreau`
+is synthetic, so none was observable before.
+
+**Remote verification, second batch (live-drift run 35000372348 on `a5f3868`,
+2026-09-15 17:20 UTC).** Every batch-2 canary reads alive with exactly the
+count the sandbox saw: `acnc_charities 5`, `app_links 7`,
+`asic_business_names 143`, `crossref_search 5`, `wikidata 8` (`[canary]`
+on each row); 88 alive against 83 on the 17:03 run, 18 empty against 24.
+
+
+**Batch 3 (2026-09-15 21:5x UTC, the binary built from `19c8651`).** The
+steady `empty` rows the stop revision (4) had left "untested against a held
+sample" were driven against one each: `sanctions_ofac` re-emits `KOREA
+HYOKSIN TRADING CORPORATION` tagged `ofac`, `ofac-sdn`, `sanctions`,
+`regulatory-action`, `needs-identity-verification` (program NPWMD; 1 entity —
+for a `FullName` the module's all-tokens-of-three-letters match makes `Kim
+Jong Un` five 0.5 candidates with the identity caution, `un` being two
+letters, so the organisation form is the deterministic sample); `data_gov_au`
+resolves `Australian Taxation Office` to the ATO's own organisation entry and
+ten datasets (11); `sitemap` reads docs.python.org's sitemap (8, one URL per
+documented version; www.gov.uk and wordpress.org answer 200 at the cap and are
+not the sample for that reason; www.python.org publishes none). The three
+join `CANARY_PROBES`; `every_canary_has_a_sample_and_is_flagged` admits them
+(19 probe tests green). Not canaries, with the reason recorded in the table's
+comment: `dns_axfr` / `zonetransfer.me` — the module times out from this
+sandbox (TCP/53 is closed here) and AXFR is unreliable from mobile vantages,
+so a dead reading would say nothing about the module; `subdomain_takeover`
+(a dangling record is nobody's stable sample); the six email modules and
+`asic_persons` (a real person's identifier as a checked-in sample);
+`greynoise` / `ip_reputation` (scanner addresses and Tor exits move);
+`ransomlook` (a real victim's domain); `beacondb` (a real BSSID). Remote: the
+22:01 sweep on `8a35ab2` (run 35028485965; the first dispatch, run
+35028370380, was cancelled by the workflow's concurrency group when a second
+was queued after a worker restart) reads `alive sanctions_ofac 1 found
+[canary]`, `alive data_gov_au 11 found [canary]`, `alive sitemap 8 found
+[canary]` — the three predicted rows with the three predicted counts; 116
+probed, 92 alive, 14 empty, 3 unreachable, 1 timed-out (`wayback`), 1
+rate-limited (`reddit_user`, 429), 4 blocked, 1 skipped, 0 panicked;
+`chronicling_america` alive with 11 again (the 20:33 dead reading stays a
+single one) and `github_user` alive with 9 (the runner address's anonymous
+quota had refilled). Red on two dead canaries: the by-design `wifidb`, and —
+for the first time — `crtsh`, `HTTP 502 Bad Gateway` on all three attempts.
+From this sandbox four minutes later (22:05–22:06 UTC)
+`https://crt.sh/?q=python.org&output=json` answered `200` three times in a
+row: an outage of minutes, read by a three-attempt, six-second window as
+"down for the whole run, or the endpoint is retired". Under the retirement
+criterion that is one reading of two, and it is the second single dead
+reading of a live provider today (`chronicling_america` at 20:33 was the
+first): the dead-canary verdict has no memory across sweeps — the runner
+residual the stop revision (4) named, and now the highest-return candidate
+(a dead reading confirmed across sweeps at least a day apart, never by one
+run).
+
+### REQ-SCOPE-001 (**new, Pass 31 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): an out-of-jurisdiction target is a typed skip, never a clean negative
+
+**Lead.** The 2026-09-15 live-drift table (run 34985449332) reads
+`empty au_rdap (domain example.com)`, `empty qld_cadastre (coordinates
+40.7128,-74.0060)` and `empty au_geo (coordinates 40.7128,-74.0060)` — three
+Australia-scoped modules "reached, parsed nothing" for samples they can never
+answer.
+
+**Verified from source.** `au_rdap::process`: `!domain.ends_with(".au")` →
+`Ok(ModuleResult::new())`; `qld_cadastre::process`: `au_state_for_coords(lat,
+lon) != Some("QLD")` → `Ok(empty)`; `au_geo::process`: a `parse_coords`
+failure → `Ok(empty)`, and a point outside the Australian bounding box →
+`Ok(empty)`; `acma_rrl::process`: a Coordinates value without a comma →
+`Ok(empty)`. Dispatch records each as `ModuleDone { found: 0 }` and
+`core::coverage` aggregates that to `CleanNegative` — "no .au registration for
+example.com", "no cadastral parcel at 40.7128,-74.0060", "no licences within
+10 km of not-a-coord" — negatives about subjects the register was never asked
+about. The typed in-band skip (`Error::skipped(SkipClass::NotApplicable, …)`,
+introduced by this PR for `whois`) is exactly the vocabulary for "the provider
+structurally has nothing to say about this target"; `core::coverage` drops a
+`NotApplicable` skip from the verdict rather than counting it as a negative or
+a gap.
+
+The capability probe carried the same gap one level up: `probe_once` mapped
+every `Err` other than the two typed ones to `ProbeOutcome::Unreachable`, so a
+typed skip — from these modules once fixed, or from `whois` behind an HTTPS
+proxy today — would have read "provider down"; for a canary, three attempts
+and a false DEAD CANARY.
+
+**Fix.** `au_rdap`: a non-`.au` name is `Error::skipped(NotApplicable, "… is
+not in the .au namespace; auDA's RDAP publishes nothing about it —
+rdap_domain covers the other registries")`, an empty value
+`Error::InvalidTarget`. `qld_cadastre`: outside Queensland is the typed skip
+naming the state (or "outside Australia"). `au_geo`: outside the bounding box
+is the typed skip; a malformed coordinate is `parse_coords`'s own error via
+`?`, as `qld_cadastre` already did. `acma_rrl`: the Coordinates branch parses
+through `util::geo::parse_coords` (`?`) instead of splitting on a comma.
+(`acma_rrl` was retired later the same day — REQ-RETIRE-002 — so that change
+left with it; the invariant stands in `au_geo` and `qld_cadastre`.)
+`capability_probe::ProbeOutcome::Skipped { class, reason }` (label `skipped`):
+mapped from `Error::Skipped`, never drift, never a dead canary, final on the
+first attempt; `hse doctor --live` prints `skipped <module> (<class>) <reason>`,
+`capability_probe_json` counts `skipped` and reports the outcome with
+`<class>: <reason>`, `tests/live_drift.rs` prints and counts it.
+
+**Evidence.** `au_rdap::tests::non_au_domain_is_a_typed_not_applicable_skip_never_a_clean_negative`
+(inverted from the test that pinned the empty result),
+`qld_cadastre::tests::a_point_outside_queensland_is_a_typed_not_applicable_skip_never_a_clean_negative`
+(New York → "outside Australia", Sydney → "in NSW"),
+`au_geo::tests::non_au_coordinate_is_a_typed_skip_and_a_malformed_one_an_error_neither_a_clean_negative`
+(inverted), `acma_rrl::tests::a_malformed_coordinate_is_an_error_before_any_request_never_no_licences`,
+`selftest::capability_probe::tests::a_typed_skip_is_its_own_outcome_never_retried_never_dead_never_drift`
+(one call under a three-attempt policy; a `crtsh` report carrying an
+`Unavailable` skip is neither dead nor drift), and the API projection test's
+skipped `au_geo` row.
+
+**Falsification.** Each short-circuit restored (and the probe's arm removed)
+in turn with only its lock run:
+
+```
+[au_rdap non-.au short-circuit] reverted -> LOCK FAILS (expected)
+    modules::au_rdap::tests::non_au_domain_is_a_typed_not_applicable_skip_never_a_clean_negative --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7400 filtered out; finished in 0.21s
+[qld_cadastre outside-QLD short-circuit] reverted -> LOCK FAILS (expected)
+    modules::qld_cadastre::tests::a_point_outside_queensland_is_a_typed_not_applicable_skip_never_a_clean_negative --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7400 filtered out; finished in 0.22s
+[au_geo outside-AU short-circuit] reverted -> LOCK FAILS (expected)
+    modules::au_geo::tests::non_au_coordinate_is_a_typed_skip_and_a_malformed_one_an_error_neither_a_clean_negative --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7400 filtered out; finished in 0.21s
+[acma_rrl malformed-coordinate short-circuit] reverted -> LOCK FAILS (expected)
+    modules::acma_rrl::tests::a_malformed_coordinate_is_an_error_before_any_request_never_no_licences --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7400 filtered out; finished in 0.21s
+[probe_once Skipped mapping] reverted -> LOCK FAILS (expected)
+    selftest::capability_probe::tests::a_typed_skip_is_its_own_outcome_never_retried_never_dead_never_drift --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7400 filtered out; finished in 0.20s
+ALL LOCKS SENSITIVE
+```
+
+**Residual.** The sweep's Coordinates sample is New York, so the three
+Australia-only modules will now read `skipped (not_applicable)` on every run
+rather than `empty`; a per-module sample (an Australian point for the AU
+registers) would let the sweep observe their wire shapes — a
+`CANARY_PROBES`-style override table is the next step if their drift is
+worth watching. `acma_rrl` has no jurisdiction gate for names (ACMA is
+Australian, names are global): an overseas organisation's empty result there
+is a genuine "no Australian radiocommunications licence".
+
+### REQ-SCRAPE-001 (**new, Pass 31 — VERIFIED FROM SOURCE, REPRODUCED against the real capture, FIXED, FALSIFIED**): a 2xx anti-bot page is never the document
+
+**Lead.** REQ-DRIFT-003's residual: the shared HTTP layer now types a
+challenge page on a non-2xx (`http_status_error`) and where JSON was
+expected (`json_body_error`), but a scraper that reads a 2xx HTML body
+itself parsed a wall as the page it asked for.
+
+**Verified from source.** `austlii::process` → `ok_or_absent(SRC, resp, &[])`
+→ `read_body_capped_or_fail` → `extract_case_links(&html)` → `links.is_empty()`
+→ `Ok(ModuleResult::new())`: a Cloudflare interstitial served with 200 yields
+no `/cgi-bin/viewdoc/` links, so the module answered "no AustLII legal records
+for this subject" — `ModuleDone { found: 0 }`, `core::coverage::CleanNegative`,
+the negative claim an analyst acts on. `ahpra` (`read_body_capped_or_fail` →
+practitioner rows), `acma_rrl` (→ licence rows), `steam_profile` /
+`reddit_user` / `pypi_user` (`read_text` → XML that is not XML → no profile),
+`commoncrawl`, `social_location` take the same shape. AustLII is exactly the
+host that answers GitHub's runner and this sandbox with Cloudflare's wall
+(REQ-DRIFT-003: 403 today; edges serve the same page with 200 to some clients,
+and Cloudflare's own managed challenge is documented as either).
+
+**Reproduction (baseline, the real capture).** With the guard absent (the
+falsification below), `austlii::search` against a loopback answering the
+scrubbed 2026-09-15 austlii capture with HTTP 200 returns `Ok(html)`,
+`extract_case_links` finds nothing, and the module reports the clean negative:
+`a_challenge_page_served_with_200_is_never_no_legal_records` panics at
+`expect_err("a wall served with 200 is not a results page")`.
+
+**Fix.** `util::http::fetch::document_or_challenge(module, status, body)`:
+an HTML *document* (`html::looks_like_document`) that `html::is_challenge_page`
+recognises is `Error::BotChallenge("{module}: HTTP {status} answered an anti-bot
+challenge / WAF block page, not the document: {title}")`; anything else is
+returned untouched. Applied inside `read_body_capped_or_fail` (5 callers) and
+`read_text` (10 callers) — the seams every scraper already reads through, so
+no module changes and no module can forget. Document-only on purpose: a text
+or JSON payload that mentions a vendor path — a Common Crawl index listing
+`/cdn-cgi/challenge-platform/…` URLs, a host list — is the data; the lock pins
+that a crawl-index line is returned verbatim. `austlii::search(client,
+search_url, query)` is the module's request path with the endpoint as a
+parameter (production passes `SEARCH_URL`); `process` is the parse alone.
+
+**Evidence.** `util::http::tests::a_2xx_anti_bot_page_read_through_the_text_seams_is_the_typed_bot_challenge_never_the_document`
+(loopback: the challenge page through `read_body_capped_or_fail` and the block
+page through `read_text` → `BotChallenge` naming `HTTP 200` and the title; a
+crawl-index line with a vendor path through `read_text` → returned verbatim;
+a register page → returned);
+`modules::austlii::tests::a_challenge_page_served_with_200_is_never_no_legal_records`
+(the real capture with 200 → `BotChallenge`; a genuine empty results page →
+`Ok` and no links — the one clean negative).
+
+**Falsification.** The guard removed (`document_or_challenge` returns the body
+unconditionally) with only the two locks run:
+
+```
+[2xx anti-bot guard removed] util::http::tests::a_2xx_anti_bot_page_read_through_the_text_seams_is_the_typed_bot_challenge_never_the_document -> LOCK FAILS (expected)
+    util::http::tests::a_2xx_anti_bot_page_read_through_the_text_seams_is_the_typed_bot_challenge_never_the_document --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7397 filtered out; finished in 0.22s
+[2xx anti-bot guard removed] modules::austlii::tests::a_challenge_page_served_with_200_is_never_no_legal_records -> LOCK FAILS (expected)
+    modules::austlii::tests::a_challenge_page_served_with_200_is_never_no_legal_records --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7397 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
+**Observed on the runner and reproduced from the sandbox (2026-09-15).** The
+first live-drift run carrying the guard (34995740898, `70ce543`) reads:
+
+```
+  blocked      ahpra                  ahpra: HTTP 200 OK answered an anti-bot challenge / WAF block page, not the document: Australian Health Practitioner Regulation Agency - Register of practitioners
+```
+
+— a 200-status wall that keeps the origin's own `<title>`. Fetched from the
+sandbox with a browser User-Agent for two surnames
+(`Registers-of-Practitioners.aspx?Spousesurname=Moreau` / `=Smith`): HTTP
+200 `text/html`, 7,014 bytes both times, the `/cdn-cgi/challenge-platform`
+loader, 91 characters of visible text ("Please enable JavaScript to view the
+page content. Your support ID is: …"), no practitioner rows. Every earlier
+sweep's `empty ahpra (full_name Fletcher Moreau)` — and every production
+`ahpra` lookup from a datacenter address — was this page parsed for rows:
+"no registered practitioner by that name", a clean negative the register
+never made. The scrubbed capture is checked in as
+`src/util/html/testdata/wall_ahpra_200_2026-09-15.html` and the classifier
+is pinned against it (a wall under the origin's title is still a wall).
+
+**Residual.** `read_body_capped` (`Option<String>`, 14 callers: `sitemap`,
+`wayback`, `username_search`, `ip_reputation`, `github_user`, `asic_director`,
+`web_crawler`, `cloud_storage`, `employer_pivot`, `streaming_probe`,
+`au_electoral`, `hacker_news`, `subdomain_takeover`) carries no module name and
+no error channel; its callers judge their bodies themselves (`username_search`
+and `streaming_probe` already detect WAF walls; `asic_director`'s host answers
+403 outright). Typing those is per-caller work, not a seam change, and is the
+next candidate if a 2xx wall is observed on any of them.
+
+### REQ-CI-002 (**new, Pass 31 — OBSERVED on the runner, ROOT-CAUSED, FIXED, FALSIFIED**): the test harness never deletes a live sibling's database
+
+**Observation.** CI runs 34985312683 (`f41b49a`) and 34989423734
+(`7a42f09`) failed
+`tests/halting.rs::capability_aware_dispatch_off_runs_every_module_even_a_drifted_one`
+at `tests/common/mod.rs:94` (`Store::open(&path).unwrap()`):
+
+```
+called `Result::unwrap()` on an `Err` value: Storage(SqliteFailure(Error { code: SystemIoFailure, extended_code: 1802 }, Some("disk I/O error")))
+```
+
+The same test passed on `e1e4d13` between the two. `1802` is
+`SQLITE_IOERR_FSTAT`: `fstat()` failed on the database file — the file was
+unlinked under the open connection. The first occurrence was re-run as a
+possible runner-disk fault (the one re-run the rules allow); the second
+made it this PR's to root-cause.
+
+**Root cause (source, `tests/common/mod.rs::tmp_db`).** The stale-file sweep
+selected `starts_with("hse-<prefix>-") && ends_with("-<suffix>.db")` (and the
+`-wal`/`-shm` sidecars). `hse-halting-<pid>-no-quarantine.db` ends with
+`-quarantine.db`, so the `quarantine` test's `tmp_db("halting", "quarantine")`
+deleted the concurrently-running `no-quarantine` test's LIVE database — same
+binary, same pid — between its `Connection::open` and its schema DDL, whenever
+the scheduler interleaved them that way (the run's timestamps: the panic at
+15:41:30.338, the `quarantine` test finishing at 15:41:30.41). A pure timing
+race, deterministic in its selection. `tests/api.rs` carried the same latent
+pair (`forced-stealer-rows` / `stealer-rows`), and `tmp_dir`'s
+`starts_with("hse-<prefix>-")` would also match a longer prefix's directory
+and this process's own.
+
+**Fix.** `stale_db_file(name, prefix, suffix, own_pid)` — exactly
+`hse-<prefix>-<pid>-<suffix>.db` / `.db-wal` / `.db-shm` with a whole-segment,
+all-digit pid that is not this process's (a same-pid file is a sibling's by
+definition, never a past run's) — and `stale_dir(name, prefix, own_pid)`
+likewise; both pure, both used by the sweeps.
+
+**Evidence.** `common::tests::a_sibling_tests_live_database_is_never_a_sweep_candidate`
+(the exact halting and api names, own pid, longer prefix, non-numeric pid,
+bare sidecar) and `tmp_db_leaves_a_live_siblings_longer_suffix_file_alone`
+(the real sweep on the real temp dir: a same-pid `no-sweep` file and a past
+run's `no-sweep` file survive `tmp_db(_, "sweep")`; a past run's `sweep` file
+is swept). Both run in every integration binary that includes `common`.
+
+**Falsification.** With the old `starts_with`/`ends_with` selection restored
+inside `stale_db_file` and only the locks run:
+
+```
+[old starts_with/ends_with selection restored] common::tests::a_sibling_tests_live_database_is_never_a_sweep_candidate -> LOCK FAILS (expected)
+    common::tests::a_sibling_tests_live_database_is_never_a_sweep_candidate --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.19s
+[old starts_with/ends_with selection restored] common::tests::tmp_db_leaves_a_live_siblings_longer_suffix_file_alone -> LOCK FAILS (expected)
+    common::tests::tmp_db_leaves_a_live_siblings_longer_suffix_file_alone --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.21s
+HARNESS LOCKS SENSITIVE
+```
+
+**Remote verification.** The CI run on the commit carrying this fix is the
+first evidence; the race is timing-dependent, so a single green run proves
+the fix compiles and the locks hold, and the absence of the `1802` failure
+over the following runs is the operational evidence.
+
+### REQ-DRIFT-003 (**new, Pass 31 — OBSERVED on the runner, FIXED, FALSIFIED**): BOT_CHALLENGE is not NETWORK_FAILURE
+
+**Observation (GitHub runner, live-drift run 34985449332 on `f41b49a`,
+2026-09-15 15:02 UTC).** The per-module table read:
+
+```
+  unreachable  anubis                 [anubis] HTTP 403 Forbidden: Attention Required! | Cloudflare
+  unreachable  austlii                [austlii] HTTP 403 Forbidden: Just a moment...
+  unreachable  wayback                [wayback] HTTP 503 Service Unavailable: Internet Archive: Temporarily Offline
+```
+
+Two of the three are Cloudflare answering the runner's datacenter address
+with its block page and its managed-challenge interstitial: the providers
+are up and refusing *this client*. The third is a real outage. All three
+carried the same class — `unreachable`, "provider down or the device is
+offline" — and had either of the first two been a canary, `probe_with_policy`
+would have re-read the wall three times 3 s apart and the sweep would have
+failed it as a DEAD CANARY with the instruction to migrate or retire the
+capability. `hse doctor --live` tells the operator the same thing today: two
+providers down that are not.
+
+**Observation (this sandbox, 2026-09-15 15:53 UTC, `curl` with a browser
+User-Agent).** The same two providers answer the sandbox's egress the same way:
+`GET https://jldc.me/anubis/subdomains/example.com` → 301 →
+`https://jonlu.ca/anubis/subdomains/example.com` → `403 text/html`, 4,544 bytes,
+`<title>Attention Required! | Cloudflare</title>`, "Sorry, you have been
+blocked" (the block page: no challenge loader, the title phrase set matches);
+`GET https://www.austlii.edu.au/cgi-bin/sinosrch.cgi?query=…` → `403 text/html`,
+5,023 bytes, the same title plus the `/cdn-cgi/challenge-platform` loader (the
+vendor fingerprint matches). Both bodies are under the 8 KiB error-body cap,
+so the classifier sees them whole. Both captures are checked in, scrubbed of
+the Ray ID and the egress address, as `src/util/html/testdata/`, and the
+classifier is pinned against them.
+
+**Root cause (source).** `util::http::http_status_error` — the single non-2xx
+error constructor behind `ok_or_absent`, `fetch_json_or_404`,
+`keyed_ok_or_404`, `keyed_cascade_json` and 24 direct callers — built the same
+`Error::Module` for a challenge page as for an outage, reducing the body to its
+`<title>`. The crate already had a two-tier challenge-page detector
+(`search_engines::fetch::is_captcha_page`, vendor fingerprints + AND-sets of
+phrases), but it was `pub(super)` to one module, so the shared HTTP layer could
+not classify what a search engine already recognised as a wall.
+
+**Fix.**
+- `util::html::is_challenge_page` (+ `CHALLENGE_VENDOR_SIGNATURES`,
+  `CHALLENGE_PHRASE_SETS`) is the crate's one classifier; the search-engine
+  fetcher, its live health check and its tests use it (the private copy is
+  deleted).
+- `core::error::Error::BotChallenge(String)` (Display `bot challenge: …`);
+  the Display drift guard pins it.
+- `http_status_error` reads the raw capped body (`error_body`), keeps the 429
+  → `RateLimited` rule first, then types a challenge/block body as
+  `BotChallenge`; the one-line snippet is unchanged (`snippet_of`).
+  `decode_json_body` and `json_decode` route through
+  `url::json_body_error`, which types a challenge served with a 2xx where JSON
+  was expected the same way (an HTML error template stays `Error::Module`
+  with REQ-HTTP-001's message).
+- Dispatch: `BotChallenge` → `circuit::record_bot_challenge` (trips at once
+  for the rate-limit cooldown under the reason `anti-bot challenge/WAF
+  block`) — a wall is per client, so re-dispatching the module for every
+  further target would only re-read it.
+- `capability_probe::ProbeOutcome::Blocked { reason }` (label `blocked`):
+  excluded from `is_confirmed_drift`, never `is_dead_canary`, final on the
+  first attempt; `hse doctor --live`, `capability_probe_json` (`blocked`
+  count, `"blocked"` outcome) and `tests/live_drift.rs` print and count it.
+
+**Evidence.** `util::http::tests::a_challenge_page_is_the_typed_bot_challenge_and_a_plain_refusal_or_outage_stays_a_module_error`
+(loopback: the Cloudflare block page and managed-challenge interstitial on
+403 → `BotChallenge`; `403 Forbidden` text and the Internet Archive outage
+page → `Module`);
+`a_challenge_page_served_with_200_where_json_was_expected_is_the_typed_bot_challenge`
+(`fetch_json` and `json_decode`; WiFiDB's error template stays `Module`);
+`util::html::tests::is_challenge_page_recognises_cloudflare_walls_and_not_an_outage_page`;
+`core::engine::circuit::tests::a_bot_challenge_trips_immediately_under_its_own_reason`;
+`selftest::capability_probe::tests::a_bot_challenge_is_its_own_outcome_never_retried_never_dead_never_drift`
+(one call under a three-attempt policy; a refused `crtsh` canary is neither
+dead nor drift); the API projection test carries a refused `crtsh` report;
+the search-engine detector tests (vendor interstitials, Mojeek's 403, the
+real you.com capture, the no-false-positive SERPs) run unchanged against the
+moved function.
+
+**Falsification.** Each repair reverted in turn with only its lock run:
+
+```
+[http_status_error challenge classification] reverted -> LOCK FAILS (expected)
+    util::http::tests::a_challenge_page_is_the_typed_bot_challenge_and_a_plain_refusal_or_outage_stays_a_module_error --- FAILED
+[json_body_error challenge classification] reverted -> LOCK FAILS (expected)
+    util::http::tests::a_challenge_page_served_with_200_where_json_was_expected_is_the_typed_bot_challenge --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7394 filtered out; finished in 0.21s
+[circuit record_bot_challenge trip] reverted -> LOCK FAILS (expected)
+    core::engine::circuit::tests::a_bot_challenge_trips_immediately_under_its_own_reason --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7395 filtered out; finished in 0.21s
+[dispatch BotChallenge arm] reverted -> LOCK FAILS (expected)
+    core::engine::tests::a_bot_challenge_error_benches_the_module_at_once_and_is_recorded_as_such --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7395 filtered out; finished in 0.21s
+[probe_once Blocked mapping] reverted -> LOCK FAILS (expected)
+    selftest::capability_probe::tests::a_bot_challenge_is_its_own_outcome_never_retried_never_dead_never_drift --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7395 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
+**Remote verification (run 34995740898, `70ce543`).** `blocked anubis —
+anubis: HTTP 403 Forbidden: Attention Required! | Cloudflare` and `blocked
+austlii — austlii: HTTP 403 Forbidden: Just a moment...` — the two rows the
+15:02 run filed as `unreachable`; `unreachable` is down to the real outages.
+
+**Residual.** A scraper that reads a 2xx HTML body itself (`austlii`,
+`asic_director`, the AU registers) still parses a 200 challenge page as "no
+results" — a false clean negative if an edge ever serves the wall with 200
+to that path; `read_body_capped_or_fail` is the seam for that next cycle.
+`json_scanned` (32 callers) returns a `String` and cannot carry the variant;
+its callers keep `Error::Module`. Whether a canary persistently blocked from
+GitHub's runners should escalate (a different canary, a different vantage) is
+a policy decision the sweep now makes visible (`blocked` is counted and
+printed) rather than one it makes wrongly (a false retirement order).
+
+### REQ-DRIFT-002 (**new, Pass 31 — OBSERVED on the runner, FIXED, FALSIFIED**): RATE_LIMITED is not NETWORK_FAILURE
+
+**Requirement.** A provider that answers with a throttle is alive: the
+outcome is typed and reported as a throttle at every layer — the error the
+module returns, the breaker, the capability probe, `hse doctor --live`, the
+capabilities API and the live-drift sweep — never collapsed into the
+transport-failure class, and never escalated as a dead canary.
+
+**Observation.** The 2026-09-15 live-drift dispatches on `9057132` and
+`f41b49a` (runs 34970838278, 34985449332) recorded `unreachable
+reddit_user [reddit_user] HTTP 429 Too Many Requests: <empty>` and
+`unreachable steam_profile [steam_profile] HTTP 429 Too Many Requests: Steam
+Community :: Error`. `http_status_error` built an `Error::Module` whose text
+contained "429"; the breaker only classified it as a throttle through a
+string match on that text (its own comment records the fragility), and
+`probe_once` mapped every `Err` to `ProbeOutcome::Unreachable`, so a
+throttled canary — three attempts, 3 s apart, each deepening the throttle —
+would have been reported as a dead one and failed the sweep.
+
+**Repair.** `http_status_error` returns `Error::RateLimited(format!("{module}:
+HTTP 429 …: {snippet}"))` for a 429 (every other status stays `Error::Module`);
+`ProbeOutcome::RateLimited { reason }` is mapped from the typed error in
+`probe_once`, labelled `rate-limited`, excluded from `is_confirmed_drift` and
+`is_dead_canary`, and final at the first attempt in `probe_with_policy` (the
+retry loop only re-tries `Unreachable` / `TimedOut`); `hse doctor --live`,
+the capabilities API (`rate_limited` count, `"rate-limited"` outcome with
+the reason) and `tests/live_drift.rs` print and count it.
+
+**Evidence.** `util::http::tests::a_429_is_the_typed_rate_limited_error_and_other_statuses_stay_module_errors`
+(loopback 429 → `RateLimited`; 503 → `Module`);
+`selftest::capability_probe::tests::a_throttle_is_its_own_outcome_never_retried_never_dead_never_drift`
+(a fixture module answering the typed throttle: one call under a
+three-attempt policy, label `rate-limited`, a throttled `ip_registry` report
+is neither dead nor drift); the API projection test carries a throttled
+`ripestat` report (`rate_limited: 1`, `"rate-limited"`, `dead_canary: false`).
+
+**Falsification.** Each repair reverted in turn with only its lock run:
+
+```
+[http_status_error 429] reverted -> LOCK FAILS (expected)
+    util::http::tests::a_429_is_the_typed_rate_limited_error_and_other_statuses_stay_module_errors --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7388 filtered out; finished in 0.22s
+[probe_once RateLimited mapping] reverted -> LOCK FAILS (expected)
+    selftest::capability_probe::tests::a_throttle_is_its_own_outcome_never_retried_never_dead_never_drift --- FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7388 filtered out; finished in 0.21s
+ALL LOCKS SENSITIVE
+```
+
+**Remote verification (run 34995740898, `70ce543`).** `rate-limited
+reddit_user … HTTP 429 Too Many Requests: <empty>` and `rate-limited
+steam_profile … HTTP 429 Too Many Requests: Steam Community :: Error` — the
+two rows the 15:02 run filed as `unreachable`.
+
+**Residual.** Modules that build a 429 error by hand (`hibp`'s retry
+exhaustion message) keep the breaker's string path; the dispatcher's
+`record_error` text match stays as the fallback for them. A throttled canary
+is reported, not escalated — a canary throttled on every weekly run is
+visible in the table but does not fail the sweep.
+

@@ -1,4 +1,4 @@
-use super::{AustLii, build_entities, extract_case_links};
+use super::{AustLii, build_entities, extract_case_links, search};
 use crate::core::entity::EntityKind;
 use crate::core::module::{Module, ModuleCost};
 use crate::core::scan::{Target, TargetKind};
@@ -331,4 +331,47 @@ fn every_austlii_document_is_a_source_document_never_a_pivot() {
             u.value
         );
     }
+}
+
+/// AustLII answers GitHub's runner and this project's sandbox with Cloudflare's
+/// wall (2026-09-15: `403 Attention Required! | Cloudflare` with the
+/// `/cdn-cgi/challenge-platform` loader). Served with 403 it is the typed
+/// refusal; served with a 2xx — as edges do for some clients — the old path
+/// parsed the interstitial for case links, found none, and returned an empty
+/// result: "no AustLII legal records for this subject", a clean negative the
+/// analyst acts on, minted from a page that never held the answer. The real
+/// capture is the fixture; a genuine empty results page stays the negative.
+#[tokio::test]
+async fn a_challenge_page_served_with_200_is_never_no_legal_records() {
+    use crate::core::error::Error;
+    use crate::util::http::test_server::{Canned, serve};
+    const CF_CHALLENGE_AUSTLII: &str =
+        include_str!("../../util/html/testdata/cloudflare_challenge_austlii_2026-09-15.html");
+    let base = serve(vec![
+        Canned::html(200, CF_CHALLENGE_AUSTLII),
+        Canned::html(
+            200,
+            "<!DOCTYPE html><html><head><title>AustLII search results</title></head>\
+             <body><p>No documents found for your query.</p></body></html>",
+        ),
+    ])
+    .await;
+    let client = reqwest::Client::new();
+
+    let err = search(&client, &base, "Fletcher Moreau")
+        .await
+        .expect_err("a wall served with 200 is not a results page");
+    assert!(matches!(err, Error::BotChallenge(_)), "{err}");
+    assert!(
+        err.to_string().contains("HTTP 200") && err.to_string().contains("Attention Required"),
+        "{err}"
+    );
+
+    let html = search(&client, &base, "Fletcher Moreau")
+        .await
+        .expect("a real results page is read");
+    assert!(
+        extract_case_links(&html).is_empty(),
+        "an empty results page is still the one genuine clean negative"
+    );
 }

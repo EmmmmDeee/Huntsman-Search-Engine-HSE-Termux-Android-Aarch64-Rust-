@@ -605,7 +605,7 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
             };
             vec![
                 format!("\"{asn}\""),
-                format!("\"{asn}\" site:bgp.he.net OR site:bgpview.io OR site:peeringdb.com"),
+                format!("\"{asn}\" site:bgp.he.net OR site:peeringdb.com"),
                 format!("\"{asn}\" abuse OR peering OR prefix OR allocation"),
             ]
         }

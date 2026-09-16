@@ -84,7 +84,6 @@ pub const OSINT_SERVICES: &[(&str, OsintCategory)] = &[
     ("leak_lookup", BreachLeak),
     ("leakbase", BreachLeak),
     ("hashes", BreachLeak),
-    ("psbdmp", BreachLeak),
     ("ghostproject", BreachLeak),
     ("scylla", BreachLeak),
     ("weleakinfo", BreachLeak),

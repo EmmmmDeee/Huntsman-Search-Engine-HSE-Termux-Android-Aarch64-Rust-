@@ -20,8 +20,30 @@ use super::*;
         let raw = r#"{"result": 200, "data": {"lat": -33.8688, "lon": 151.2093, "range": 250.0}}"#;
         let r: MylnikovResp = serde_json::from_str(raw).expect("should succeed");
         assert_eq!(r.result, Some(200));
-        let d = r.data.expect("should succeed");
+        let d = classify(r).expect("a hit").expect("a fix");
         assert!((d.lat.expect("should succeed") - (-33.8688)).abs() < 0.001);
+    }
+
+    #[test]
+    fn only_result_404_is_the_miss_every_other_code_is_a_failed_lookup() {
+        // Backlog #29, bodies captured live 2026-09-15.
+        let miss: MylnikovResp = serde_json::from_str(
+            r#"{"result":404, "data":{}, "message":6, "desc":"Object was not found", "time":1789478664}"#,
+        )
+        .expect("decodes");
+        assert!(classify(miss).expect("the miss").is_none());
+        let rejected: MylnikovResp = serde_json::from_str(
+            r#"{"result":400, "data":{}, "message":2, "desc":"Empty or bad search query", "time":1789478603}"#,
+        )
+        .expect("decodes");
+        let err = classify(rejected).expect_err("a rejected query is not 'BSSID not located'");
+        assert!(err.to_string().contains("result=400") && err.to_string().contains("Empty or bad search query"), "{err}");
+        // A string `data` on an error body no longer breaks the decode.
+        let odd: MylnikovResp = serde_json::from_str(r#"{"result":403, "data":"blocked", "desc":"Too many requests"}"#).expect("decodes");
+        assert!(classify(odd).expect_err("403 is a failure").to_string().contains("Too many requests"));
+        // No code at all is not a miss either.
+        let none: MylnikovResp = serde_json::from_str(r#"{}"#).expect("decodes");
+        assert!(classify(none).expect_err("absent code").to_string().contains("result=absent"));
     }
 
     #[test]

@@ -23,7 +23,7 @@ use serde::Deserialize;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -200,15 +200,33 @@ impl Module for Fofa {
 
         let body: FofaResp = crate::util::http::json_decode(SRC, resp).await?;
 
-        if body.error {
-            if let Some(msg) = body.errmsg {
-                tracing::warn!(target: "module.fofa", "FOFA error: {}", msg);
+        if let Some((msg, key_shaped)) = envelope_failure(&body) {
+            // FOFA reports a dead key, an unpaid plan and an exhausted quota
+            // as HTTP 200 `error: true`, which the status-level cascade above
+            // cannot see (backlog #17). A key/quota-shaped message reaches the
+            // pool so the next scan rotates past the dead key; every error
+            // envelope is the module's error — never "FOFA has no indexed
+            // infrastructure for this host".
+            if key_shaped {
+                crate::util::http::note_keyed_error(401, SRC, key, ctx);
             }
-            return Ok(ModuleResult::new());
+            return Err(Error::module(SRC, format!("FOFA error envelope: {msg}")));
         }
 
         Ok(build_entities(&body, &ctx.scan_id))
     }
+}
+
+/// The provider's in-body error envelope, if the 200 body is one: the message
+/// and whether it names a key or quota problem (the pool must learn about it)
+/// rather than a rejected query. **Pure.**
+fn envelope_failure(body: &FofaResp) -> Option<(String, bool)> {
+    if !body.error {
+        return None;
+    }
+    let msg = body.errmsg.clone().unwrap_or_default();
+    let key_shaped = crate::util::http::is_key_or_quota_message(&msg);
+    Some((msg, key_shaped))
 }
 
 /// Map a decoded FOFA response to entities. **Pure** (no network/IO).

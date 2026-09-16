@@ -159,6 +159,12 @@ fn matching_fingerprints(cname_target: &str) -> impl Iterator<Item = &'static Fi
 /// resource is unclaimed. That is a real negative — unlike a transport failure,
 /// which never reaches this function.
 fn classify_body(body: &str, marker: &str, strength: Marker) -> Claim {
+    // An anti-bot challenge / WAF block page in place of the provider's own
+    // page carries no marker, so it used to read as "claimed, in use" — a
+    // dangling CNAME hidden behind the CDN's wall. Nothing was established.
+    if crate::util::html::is_challenge_document(body) {
+        return Claim::Inconclusive;
+    }
     if !body.contains(marker) {
         return Claim::Claimed;
     }

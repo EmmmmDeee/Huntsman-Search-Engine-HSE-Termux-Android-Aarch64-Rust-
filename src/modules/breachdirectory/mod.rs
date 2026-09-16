@@ -236,9 +236,7 @@ impl Module for BreachDirectory {
         // json_scanned: a breach record's `sources`/hash fields are attacker-
         // supplied free text that could plausibly hide a third-party API key —
         // scan the raw body, same as every other breach module.
-        let body: BreachDirResp = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+        let body: BreachDirResp = crate::util::http::json_scanned(resp, SRC).await?;
 
         if !body.success || body.result.is_empty() {
             return Ok(ModuleResult::new());

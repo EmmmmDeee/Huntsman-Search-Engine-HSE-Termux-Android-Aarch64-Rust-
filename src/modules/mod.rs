@@ -7,7 +7,6 @@
 
 pub mod abn_lookup;
 pub mod abuseipdb;
-pub mod acma_rrl;
 pub mod acnc_charities;
 pub mod ahmia;
 pub mod ahpra;
@@ -19,16 +18,12 @@ pub mod asic_business_names;
 pub mod asic_director;
 pub mod asic_persons;
 pub mod au_business_id;
-pub mod au_electoral;
 pub mod au_geo;
-pub mod au_people;
-pub mod au_property;
 pub mod au_rdap;
 pub mod au_unclaimed;
 pub mod auspost;
 pub mod austlii;
 pub mod beacondb;
-pub mod bgpview;
 pub mod binaryedge;
 pub mod bitbucket_user;
 pub mod bitcoin;
@@ -172,7 +167,6 @@ pub mod wikitree;
 // inspects `pub mod` declarations).
 pub(crate) mod profile_kit;
 pub mod proxycurl;
-pub mod psbdmp;
 pub mod pulsedive;
 pub mod pwned_passwords;
 pub mod pypi_user;
@@ -509,7 +503,6 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(nostr::Nostr),
             Arc::new(payid::PayId),
             Arc::new(pgp::Pgp),
-            Arc::new(psbdmp::Psbdmp),
             Arc::new(phone_intl::PhoneIntl),
             Arc::new(phone_au::PhoneAu),
             Arc::new(wayback::Wayback),
@@ -576,7 +569,6 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(subdomain_takeover::SubdomainTakeover),
             Arc::new(waf_detect::WafDetect),
             Arc::new(cloud_storage::CloudStorage),
-            Arc::new(bgpview::BgpView),
             Arc::new(netblock::Netblock),
             Arc::new(portscan::PortScan),
             Arc::new(typosquat::Typosquat),
@@ -592,19 +584,15 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(opencorporates::OpenCorporates),
             Arc::new(data_gov_au::DataGovAu),
             Arc::new(au_unclaimed::AuUnclaimed),
-            Arc::new(au_people::AuPeople),
             Arc::new(asic_director::AsicDirector),
             Arc::new(asic_persons::AsicPersons),
             Arc::new(asic_business_names::AsicBusinessNames),
             Arc::new(asic_banned_orgs::AsicBannedOrgs),
             Arc::new(au_business_id::AuBusinessId),
-            Arc::new(au_electoral::AuElectoral),
-            Arc::new(au_property::AuProperty),
             Arc::new(au_geo::AuGeo),
             Arc::new(acnc_charities::AcncCharities),
             Arc::new(gleif_lei::GleifLei),
             Arc::new(sanctions_ofac::SanctionsOfac),
-            Arc::new(acma_rrl::AcmaRrl),
             Arc::new(ahpra::Ahpra),
             Arc::new(hlr_cnam::HlrCnam),
             Arc::new(netlas::Netlas),

@@ -22,7 +22,7 @@ use serde::Deserialize;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -181,9 +181,7 @@ impl Module for FullContact {
         };
         // Via json_scanned: the response is retained in the raw archive and
         // scanned for leaked keys, then deserialised.
-        let parsed: FcResp = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| Error::module(SRC, e))?;
+        let parsed: FcResp = crate::util::http::json_scanned(resp, SRC).await?;
 
         let mut result = ModuleResult::new();
         result

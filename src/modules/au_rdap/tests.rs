@@ -65,7 +65,7 @@ fn query_domain_empty_value_yields_none() {
 // ── The .au short-circuit (no network reached) ──────────────────────────────
 
 #[tokio::test]
-async fn non_au_domain_is_skipped_without_a_request() {
+async fn non_au_domain_is_a_typed_not_applicable_skip_never_a_clean_negative() {
     let m = AuRdap;
     let (bus, _rx) = tokio::sync::broadcast::channel(1);
     let ctx = ModuleContext {
@@ -78,8 +78,25 @@ async fn non_au_domain_is_skipped_without_a_request() {
     // If this reached the network it would hang/error in a sandboxed test run;
     // since it must short-circuit before any request, it returns instantly.
     let target = Target::new(TargetKind::Domain, "example.com");
-    let result = m.process(&target, &ctx).await.unwrap();
-    assert!(result.entities.is_empty());
+    // `Ok(empty)` here was recorded as `ModuleDone { found: 0 }` — "no .au
+    // registration for example.com", a clean negative about a domain auDA's
+    // RDAP was never asked about (the 2026-09-15 sweep's `empty au_rdap`).
+    let err = m
+        .process(&target, &ctx)
+        .await
+        .expect_err("a non-.au domain is a typed not-applicable skip, never a clean negative");
+    match err {
+        crate::core::error::Error::Skipped { class, reason } => {
+            assert_eq!(class, crate::core::event::SkipClass::NotApplicable);
+            assert!(
+                reason.contains("example.com")
+                    && reason.contains(".au")
+                    && reason.contains("rdap_domain"),
+                "{reason}"
+            );
+        }
+        other => panic!("expected a NotApplicable skip, got {other}"),
+    }
 }
 
 // ── auData_eligibility projection ───────────────────────────────────────────

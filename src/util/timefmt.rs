@@ -60,9 +60,30 @@ pub fn ymd_utc(unix_secs: i64) -> Option<String> {
     Some(format!("{year:04}-{m:02}-{d:02}"))
 }
 
+/// `YYYY-MM-DD HH:MM UTC` for `unix_secs` — a human-legible instant for a
+/// verdict or status line where the date and the time both matter and the
+/// second does not (a canary's first dead reading).
+#[must_use]
+pub fn ymd_hm_utc(unix_secs: u64) -> String {
+    let (year, m, d) = civil_from_days((unix_secs / 86_400) as i64);
+    let rem = unix_secs % 86_400;
+    format!(
+        "{year:04}-{m:02}-{d:02} {:02}:{:02} UTC",
+        rem / 3600,
+        (rem % 3600) / 60
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ymd_hm_utc_renders_the_date_and_the_minute() {
+        assert_eq!(ymd_hm_utc(0), "1970-01-01 00:00 UTC");
+        // Same instant as the compact_utc test, to the minute.
+        assert_eq!(ymd_hm_utc(1_780_726_449), "2026-06-06 06:14 UTC");
+    }
 
     #[test]
     fn compact_utc_matches_known_instants() {

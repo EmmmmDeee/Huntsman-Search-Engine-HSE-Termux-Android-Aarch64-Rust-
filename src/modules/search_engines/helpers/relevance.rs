@@ -171,3 +171,143 @@ mod email_tests {
         ));
     }
 }
+
+/// True when `needle` occurs in `hay` as a bounded token, not merely a raw
+/// substring: the byte immediately before and after every candidate match is
+/// outside the token's own alphabet (`is_inner`), or the match sits at a text
+/// boundary. A relevance gate over free-text SERP snippets that used a plain
+/// `contains` false-matched a short subject inside a longer word
+/// (REQ-SEARCH-003). `needle` is assumed already lowercased by the caller;
+/// an empty `needle` never matches. Byte-boundary safe on UTF-8 text: a
+/// non-ASCII neighbour byte is never `is_inner`, so it reads as a boundary.
+fn token_bounded(hay: &str, needle: &str, is_inner: impl Fn(u8) -> bool) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let hb = hay.as_bytes();
+    let nlen = needle.len();
+    hay.match_indices(needle).any(|(start, _)| {
+        let before_ok = start == 0 || !is_inner(hb[start - 1]);
+        let end = start + nlen;
+        let after_ok = end == hb.len() || !is_inner(hb[end]);
+        before_ok && after_ok
+    })
+}
+
+/// True when `term` occurs in `hay` as a whole word — bounded by the start/end
+/// of the text or a non-alphanumeric byte. Closes the false match a raw
+/// `contains` made of a short single-token subject (a 3-char handle `abc`)
+/// inside a longer word (`abcnews.com`) — REQ-SEARCH-003, the residual an
+/// adversarial re-attack found in REQ-SEARCH-002's snippet gate. `term` is
+/// assumed lowercased.
+pub(in crate::modules::search_engines) fn names_word_token(hay: &str, term: &str) -> bool {
+    token_bounded(hay, term, |b| b.is_ascii_alphanumeric())
+}
+
+/// True when `domain` occurs in `hay` as a domain unit — bounded by the
+/// start/end or a byte that is not a domain-label byte (`[a-z0-9-]`). A `.`
+/// before it is a boundary, so `mail.art.com` names the seed `art.com`, while
+/// `smart.com` (leading `m`), `my-art.com` (leading `-`) and `art.community`
+/// (trailing `m`) do not — REQ-SEARCH-003, the residual an adversarial
+/// re-attack found in REQ-PROBE-003's Domain relevance gate. `domain` is
+/// assumed lowercased.
+pub(in crate::modules::search_engines) fn names_domain_token(hay: &str, domain: &str) -> bool {
+    token_bounded(hay, domain, |b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// True when `token` is a generic corporate-form word (a legal entity type
+/// like `pty`/`ltd`/`inc`, or a bare structural filler like `group`/`holdings`)
+/// rather than a distinctive part of an organisation's name. An organisation's
+/// distinctive term is its name, not its corporate form: the last token of
+/// `Carora Vovilo Pty Ltd` is `ltd`, shared by every `... Pty Ltd` company, so
+/// a relevance gate that took it as the anchor filed real companies as the
+/// subject (REQ-SEARCH-005, the org analog of a domain's last label being the
+/// web's own vocabulary — REQ-CANARY-003). Only the unambiguous legal-form and
+/// structural tokens are listed; descriptive words (`services`, `solutions`,
+/// `international`) can themselves be distinctive and are not treated as
+/// generic. `token` is assumed lowercased.
+pub(in crate::modules::search_engines) fn is_generic_org_token(token: &str) -> bool {
+    matches!(
+        token,
+        "pty"
+            | "ltd"
+            | "limited"
+            | "inc"
+            | "incorporated"
+            | "llc"
+            | "llp"
+            | "lp"
+            | "corp"
+            | "corporation"
+            | "co"
+            | "company"
+            | "gmbh"
+            | "ug"
+            | "ag"
+            | "kg"
+            | "kgaa"
+            | "mbh"
+            | "nv"
+            | "bv"
+            | "sa"
+            | "sas"
+            | "srl"
+            | "spa"
+            | "plc"
+            | "oy"
+            | "oyj"
+            | "ab"
+            | "as"
+            | "sarl"
+            | "kk"
+            | "kft"
+            | "group"
+            | "holdings"
+            | "holding"
+            | "the"
+            | "and"
+    )
+}
+
+#[cfg(test)]
+mod token_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn a_short_subject_is_a_word_not_a_substring() {
+        assert!(names_word_token("visit abc today", "abc"));
+        assert!(names_word_token("github.com/abc profile", "abc"));
+        assert!(names_word_token("john.doe@x.com wrote", "doe"));
+        assert!(!names_word_token("abcnews.com covered it", "abc"));
+        assert!(!names_word_token("see cabca listed", "abc"));
+        assert!(!names_word_token("", "abc"));
+        assert!(!names_word_token("anything at all", ""));
+        // A distinctive longer token still matches exactly as `contains` did.
+        assert!(names_word_token(
+            "profile of gd618sephcjw here",
+            "gd618sephcjw"
+        ));
+        assert!(!names_word_token("nothing relevant here", "gd618sephcjw"));
+    }
+
+    #[test]
+    fn a_domain_is_a_registrable_unit_not_a_substring() {
+        assert!(names_domain_token("mail.art.com/login", "art.com"));
+        assert!(names_domain_token("about art.com since 2019", "art.com"));
+        assert!(names_domain_token("https://art.com", "art.com"));
+        assert!(!names_domain_token("https://smart.com/x", "art.com"));
+        assert!(!names_domain_token("start.com homepage", "art.com"));
+        assert!(!names_domain_token("my-art.com blog", "art.com"));
+        assert!(!names_domain_token("art.community forum", "art.com"));
+        // A long seed and its subdomains are unaffected.
+        assert!(names_domain_token(
+            "supplier to targetcorp.com.au since 2019",
+            "targetcorp.com.au"
+        ));
+        assert!(names_domain_token(
+            "https://mail.targetcorp.com.au/x",
+            "targetcorp.com.au"
+        ));
+        assert!(!names_domain_token("index.hu news", "targetcorp.com.au"));
+    }
+}

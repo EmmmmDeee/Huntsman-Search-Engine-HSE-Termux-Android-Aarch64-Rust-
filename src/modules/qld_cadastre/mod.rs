@@ -9,8 +9,8 @@
 //! the point falls in. Coordinates outside QLD are skipped before any network
 //! call (`crate::util::geo::au_state_for_coords`).
 //!
-//! This is the coordinate-keyed complement to `au_property` (which is
-//! name-keyed): it surfaces the parcel identifier an analyst takes to the
+//! This is coordinate-keyed (no Australian state offers a keyless name-keyed
+//! owner search — title searches are paid): it surfaces the parcel identifier an analyst takes to the
 //! Queensland Titles Registry for ownership — ownership itself is not public,
 //! so this module deliberately emits none.
 
@@ -225,9 +225,21 @@ impl Module for QldCadastre {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let (lat, lon) = crate::util::geo::parse_coords(&target.value)?;
 
-        // QLD-only: skip (no network) when the point isn't in Queensland.
-        if crate::util::geo::au_state_for_coords(lat, lon) != Some("QLD") {
-            return Ok(ModuleResult::new());
+        // QLD-only: the DCDB covers Queensland alone, so a point anywhere else
+        // is a typed `NotApplicable` skip before any request — never
+        // `Ok(empty)`, which coverage reads as "no cadastral parcel at this
+        // point" for a point the cadastre was never asked about (the
+        // 2026-09-15 sweep's `empty qld_cadastre (coordinates 40.7128,-74.0060)`).
+        let state = crate::util::geo::au_state_for_coords(lat, lon);
+        if state != Some("QLD") {
+            let location =
+                state.map_or_else(|| "outside Australia".to_string(), |s| format!("in {s}"));
+            return Err(Error::skipped(
+                crate::core::event::SkipClass::NotApplicable,
+                format!(
+                    "{lat},{lon} is {location}; the Queensland DCDB cadastre covers Queensland only"
+                ),
+            ));
         }
 
         let mut resp = ctx
@@ -260,9 +272,7 @@ impl Module for QldCadastre {
             return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
-        let body: QueryResp = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| Error::module(SRC, e))?;
+        let body: QueryResp = crate::util::http::json_scanned(resp, SRC).await?;
 
         let features = features_or_error(body)?;
         let mut result = ModuleResult::new();

@@ -609,6 +609,45 @@ fn url_matches_target_requires_surname_for_multipart_name() {
     assert!(url_matches_target("https://example.com/c-haynes", &terms));
 }
 
+#[test]
+fn url_matches_target_names_a_whole_path_token_not_a_prefix() {
+    // REQ-SEARCH-004 (the URL-path sibling of REQ-SEARCH-003): the distinctive
+    // token must be a whole path token, not a raw substring of a longer one. A
+    // four-character handle `mike` matched a stranger's `/mikeoxlong` under
+    // `path.contains`, filing that profile as the subject's own Url at 0.50 —
+    // the same false-attribution class REQ-SEARCH-002/003 closed for snippets,
+    // invisible to the 12-char known-negative control because a long nonce is
+    // never a prefix of a longer token.
+    let handle = vec!["mike".to_string()];
+    assert!(!url_matches_target(
+        "https://twitter.com/mikeoxlong",
+        &handle
+    ));
+    assert!(!url_matches_target("https://example.com/mikey", &handle));
+    // The handle as its own path token still matches, at every delimiter.
+    assert!(url_matches_target("https://twitter.com/mike", &handle));
+    assert!(url_matches_target(
+        "https://example.com/mike-smith",
+        &handle
+    ));
+    assert!(url_matches_target(
+        "https://example.com/users/mike/photos",
+        &handle
+    ));
+
+    // A surname embedded in a longer word is not the surname (a placename that
+    // merely starts with it): `haynes` does not name `/haynesville`.
+    let name = vec!["cindy".to_string(), "haynes".to_string()];
+    assert!(!url_matches_target(
+        "https://example.com/haynesville-festival",
+        &name
+    ));
+    assert!(url_matches_target(
+        "https://example.com/cindy-haynes",
+        &name
+    ));
+}
+
 // ── canonicalize_url ─────────────────────────────────────────────────────────
 
 #[test]

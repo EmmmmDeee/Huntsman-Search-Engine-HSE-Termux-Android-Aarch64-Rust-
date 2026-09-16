@@ -13,7 +13,7 @@ use crate::core::module::ModuleContext;
 use crate::util::http::{RequestBuilderExt, UA_BROWSER, read_text};
 
 use super::SRC;
-use super::parse::{SdnRecord, parse_sdn_csv};
+use super::parse::{OfacList, SdnRecord, parse_sdn_csv};
 
 /// OFAC's PRIMARY list — the Specially Designated Nationals (full blocking) list.
 const SDN_URL: &str = "https://sanctionslistservice.ofac.treas.gov/api/download/SDN.CSV";
@@ -89,8 +89,8 @@ pub(super) fn is_screenable(records: &[SdnRecord]) -> bool {
 /// yielded zero rows screens exactly as blindly as no download at all.
 ///
 /// Pure (no I/O, no cache access) so the cold-cache case is unit-testable
-/// without a live OFAC endpoint — mirroring `au_property`'s
-/// `all_legs_unreachable` predicate, which encodes the same distinction.
+/// without a live OFAC endpoint — mirroring `cert_intel`'s
+/// `never_answered` predicate, which encodes the same distinction.
 pub(super) fn degrade_on_fetch_failure(cached: Option<Vec<SdnRecord>>) -> Result<Vec<SdnRecord>> {
     match cached {
         Some(stale) if is_screenable(&stale) => Ok(stale),
@@ -106,7 +106,7 @@ pub(super) fn degrade_on_fetch_failure(cached: Option<Vec<SdnRecord>>) -> Result
 
 /// Fetch + parse ONE OFAC CSV list. Returns `None` on any transport / non-2xx /
 /// body-read failure so the caller can decide how to degrade.
-async fn fetch_one_list(ctx: &ModuleContext, url: &str) -> Option<Vec<SdnRecord>> {
+async fn fetch_one_list(ctx: &ModuleContext, url: &str, list: OfacList) -> Option<Vec<SdnRecord>> {
     let resp = ctx
         .http
         .get(url)
@@ -118,7 +118,7 @@ async fn fetch_one_list(ctx: &ModuleContext, url: &str) -> Option<Vec<SdnRecord>
         return None;
     }
     let body = read_text(SRC, resp).await.ok()?;
-    Some(parse_sdn_csv(&body))
+    Some(parse_sdn_csv(&body, list))
 }
 
 /// The combined SDN + Consolidated screening set, from cache when fresh.
@@ -147,7 +147,7 @@ pub(super) async fn fetch_sdn_list(ctx: &ModuleContext) -> Result<Vec<SdnRecord>
     // body yields zero rows — an empty response, a garbled body, or OFAC
     // changing the CSV shape under us — screens just as blindly as no download,
     // and caching it would then serve that blindness for the whole TTL.
-    let records = fetch_one_list(ctx, SDN_URL)
+    let records = fetch_one_list(ctx, SDN_URL, OfacList::Sdn)
         .await
         .filter(|r| is_screenable(r));
     let Some(mut records) = records else {
@@ -156,7 +156,9 @@ pub(super) async fn fetch_sdn_list(ctx: &ModuleContext) -> Result<Vec<SdnRecord>
     // Consolidated (non-SDN / sectoral) list — same schema, supplementary. A
     // failure here is non-fatal: keep the SDN-only set rather than blocking the
     // whole screen on the secondary list.
-    if let Some(cons) = fetch_one_list(ctx, CONS_URL).await {
+    // Each row keeps the list it came from (`SdnRecord::list`), so a
+    // consolidated-list designation is never reported as an SDN match.
+    if let Some(cons) = fetch_one_list(ctx, CONS_URL, OfacList::Consolidated).await {
         records.extend(cons);
     }
 

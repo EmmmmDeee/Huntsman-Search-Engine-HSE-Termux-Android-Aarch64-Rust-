@@ -33,6 +33,9 @@ use crate::util::http::{RequestBuilderExt, UA_OSINT, urlencode};
 
 const SRC: &str = "github_commits";
 
+/// GitHub's REST root — the commit search lives under `/search/commits`.
+const API_BASE: &str = "https://api.github.com";
+
 /// Commits scanned per email. The author identity repeats across commits, so a
 /// small page is plenty to recover it without paying for deep pagination.
 const PER_PAGE: u32 = 20;
@@ -119,48 +122,65 @@ impl Module for GithubCommits {
             return Ok(ModuleResult::new());
         }
 
-        let url = format!(
-            "https://api.github.com/search/commits?q={}&per_page={PER_PAGE}",
-            urlencode(&format!("author-email:{email}"))
-        );
-        let mut req = ctx
-            .http
-            .get(&url)
-            .header("Accept", "application/vnd.github+json")
-            .header(
-                "X-GitHub-Api-Version",
-                crate::modules::github_api::API_VERSION,
-            )
-            .header("User-Agent", UA_OSINT);
-        // Optional token only raises the unauthenticated search rate limit
-        // (10/min → 30/min); the module is fully functional without it.
-        if let Some(token) = ctx.key_opt("HUNTSMAN_GITHUB_TOKEN") {
-            req = req.header("Authorization", format!("Bearer {token}"));
-        }
-
-        let resp = req.send_tagged(SRC).await?;
-        // Search is best-effort and free: a 403/429 means "rate-limited", not a
-        // scan error. Degrade to an empty result rather than failing the module.
-        let status = resp.status();
-        if !status.is_success() {
-            // If a token was in play, the key pool must still learn a 401/403/429
-            // happened, or a dead/throttled token silently degrades every future
-            // scan with no operator-visible signal and no chance to rotate.
-            if let Some(token) = ctx.key_opt("HUNTSMAN_GITHUB_TOKEN") {
-                crate::util::http::note_keyed_error(status.as_u16(), "github", token, ctx);
-            }
-            return Ok(ModuleResult::new());
-        }
-        // json_scanned: commit messages are free-form text that can carry leaked
-        // API keys — route the body through the key scanner.
-        let parsed: CommitSearchResp = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+        let parsed = search_commits(ctx, API_BASE, email).await?;
 
         Ok(ModuleResult {
             entities: extract(&parsed.items, email, &ctx.scan_id),
         })
     }
+}
+
+/// One commit-author search. A non-2xx is never "no commits by this author":
+/// GitHub signals an empty search as a `200` with `total_count: 0`. A throttle
+/// (`429`, or a `403` that names the rate limit — `github_api::throttled`) is
+/// the typed [`crate::core::error::Error::RateLimited`], so the breaker backs the module off and
+/// the scan records a throttled provider; any other non-2xx (a `401` on a
+/// revoked token, a `422` on a query GitHub cannot index, a 5xx) is the
+/// module's error. A configured token is reported to the key pool on every
+/// rejection so a dead or exhausted token can be rotated. Before this every
+/// non-2xx collapsed into an empty result — a clean negative about the named
+/// email (`docs/PROVIDER_SWEEP_BACKLOG.md` #23).
+async fn search_commits(
+    ctx: &ModuleContext,
+    api_base: &str,
+    email: &str,
+) -> Result<CommitSearchResp> {
+    let url = format!(
+        "{api_base}/search/commits?q={}&per_page={PER_PAGE}",
+        urlencode(&format!("author-email:{email}"))
+    );
+    // Optional token only raises the unauthenticated search rate limit
+    // (10/min → 30/min); the module is fully functional without it.
+    let token = ctx.key_opt("HUNTSMAN_GITHUB_TOKEN");
+    let mut req = ctx
+        .http
+        .get(&url)
+        .header("Accept", "application/vnd.github+json")
+        .header(
+            "X-GitHub-Api-Version",
+            crate::modules::github_api::API_VERSION,
+        )
+        .header("User-Agent", UA_OSINT);
+    if let Some(token) = token {
+        req = req.header("Authorization", format!("Bearer {token}"));
+    }
+
+    let resp = req.send_tagged(SRC).await?;
+    let status = resp.status();
+    if !status.is_success() {
+        // The key pool must learn a 401/403/429 happened, or a dead/throttled
+        // token silently degrades every future scan with no operator-visible
+        // signal and no chance to rotate.
+        if let Some(token) = token {
+            crate::util::http::note_keyed_error(status.as_u16(), "github", token, ctx);
+        }
+        // One judgement for every GitHub caller: a throttle is the typed
+        // RateLimited, anything else the module's error.
+        return Err(crate::modules::github_api::status_error(SRC, resp).await);
+    }
+    // json_scanned: commit messages are free-form text that can carry leaked
+    // API keys — route the body through the key scanner.
+    crate::util::http::json_scanned(resp, SRC).await
 }
 
 /// Pure entity extraction from the commit-search items — unit-tested against a

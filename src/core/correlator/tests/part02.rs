@@ -95,12 +95,12 @@ fn au001_recognises_real_breach_modules_the_allow_list_had_missed() {
     // source_family_covers_every_breach_category_module (rules/tests.rs),
     // which pins all of them as family "breach". Two of the previously-missed
     // modules together must still fire AU-001, exactly as two listed ones do.
-    let e = email("x@y.com", &["intelx", "psbdmp"]);
+    let e = email("x@y.com", &["intelx", "niamonx"]);
     let r = rule_au_001_multi_breach(&RuleContext::new(&[e]), "s1", 0);
     assert_eq!(
         r.len(),
         1,
-        "intelx + psbdmp is two genuinely independent breach corpora: {r:?}"
+        "intelx + niamonx is two genuinely independent breach corpora: {r:?}"
     );
     assert_eq!(r[0].severity, Severity::Critical);
 }

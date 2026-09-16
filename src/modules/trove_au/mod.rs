@@ -13,7 +13,7 @@ use serde::Deserialize;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -24,21 +24,23 @@ const KEY_ENV: &str = "HUNTSMAN_TROVE_KEY";
 
 pub struct TroveAu;
 
+/// Trove API **v3** result envelope: a top-level `category[]` (v2's
+/// `response.zone[]`), each with its `records`. The module decoded the v2
+/// envelope from the v3 endpoint, so every answer read as zero hits — a
+/// clean "the newspaper archive has no mention of this organisation", cached
+/// for a day, on a key-gated provider (backlog #46). A body with no
+/// `category` is a shape this module does not recognise and is a failed
+/// lookup, never zero hits.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct TroveResp {
-    response: Option<TroveResponse>,
+    category: Option<Vec<TroveCategory>>,
 }
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
-struct TroveResponse {
-    zone: Option<Vec<TroveZone>>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct TroveZone {
+struct TroveCategory {
+    code: Option<String>,
     records: Option<TroveRecords>,
 }
 
@@ -49,16 +51,82 @@ struct TroveRecords {
     article: Option<Vec<TroveArticle>>,
 }
 
-#[derive(Deserialize, Default)]
+/// A v3 newspaper article record. The headline is `heading` (v2's `title`);
+/// `title` is the newspaper it appeared in — an object `{id, title}` in v3, a
+/// string in v2 — so it is decoded either way; `troveUrl` is the reader page.
+#[derive(Debug, Deserialize, Default)]
 #[serde(default)]
 struct TroveArticle {
     id: Option<String>,
-    title: Option<String>,
+    heading: Option<String>,
+    /// The newspaper (`{"id":"35","title":"The Sydney Morning Herald"}` in v3;
+    /// a bare string in v2).
+    title: Option<TroveTitle>,
     date: Option<String>,
-    #[serde(rename = "titleId")]
-    title_id: Option<String>,
     snippet: Option<String>,
+    #[serde(rename = "troveUrl")]
+    trove_url: Option<String>,
     url: Option<String>,
+}
+
+/// v3's `title` object or v2's bare string.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum TroveTitle {
+    Object {
+        #[serde(default)]
+        id: Option<String>,
+        #[serde(default)]
+        title: Option<String>,
+    },
+    Text(String),
+}
+
+impl TroveArticle {
+    /// The headline: v3 `heading`, or v2's string `title`.
+    fn headline(&self) -> Option<&str> {
+        self.heading.as_deref().or(match &self.title {
+            Some(TroveTitle::Text(t)) => Some(t.as_str()),
+            _ => None,
+        })
+    }
+
+    /// The newspaper's own title and id (v3 only).
+    fn newspaper(&self) -> (Option<&str>, Option<&str>) {
+        match &self.title {
+            Some(TroveTitle::Object { id, title }) => (title.as_deref(), id.as_deref()),
+            _ => (None, None),
+        }
+    }
+
+    /// The page to open: the reader page (`troveUrl`) before the API record.
+    fn link(&self) -> Option<&str> {
+        self.trove_url.as_deref().or(self.url.as_deref())
+    }
+}
+
+/// Total hits and the fetched articles of the newspaper category, or the
+/// shape failure. **Pure.**
+fn newspaper_records(body: TroveResp) -> Result<(u64, Vec<TroveArticle>)> {
+    let Some(categories) = body.category else {
+        return Err(Error::module(
+            SRC,
+            "Trove answered a shape this module does not recognise (no `category` — the v3 envelope) — a failed lookup, not zero hits",
+        ));
+    };
+    let mut total_hits: u64 = 0;
+    let mut articles: Vec<TroveArticle> = Vec::new();
+    for category in categories {
+        if let Some(records) = category.records {
+            if let Some(t) = records.total {
+                total_hits += t;
+            }
+            if let Some(arts) = records.article {
+                articles.extend(arts);
+            }
+        }
+    }
+    Ok((total_hits, articles))
 }
 
 #[async_trait]
@@ -116,8 +184,9 @@ impl Module for TroveAu {
         let key = ctx.key(KEY_ENV)?;
 
         let query = crate::util::http::urlencode(target.value.trim());
+        // v3 selects with `category=` (v2's `zone=`).
         let url = format!(
-            "https://api.trove.nla.gov.au/v3/result?q={query}&zone=newspaper&encoding=json&n=20&reclevel=brief"
+            "https://api.trove.nla.gov.au/v3/result?q={query}&category=newspaper&encoding=json&n=20&reclevel=brief"
         );
 
         let resp = ctx
@@ -134,24 +203,7 @@ impl Module for TroveAu {
         };
 
         let body: TroveResp = crate::util::http::json_decode(SRC, resp).await?;
-
-        let zones = match body.response.and_then(|r| r.zone) {
-            Some(z) => z,
-            None => return Ok(ModuleResult::new()),
-        };
-
-        let mut total_hits: u64 = 0;
-        let mut articles: Vec<TroveArticle> = Vec::new();
-        for zone in zones {
-            if let Some(records) = zone.records {
-                if let Some(t) = records.total {
-                    total_hits += t;
-                }
-                if let Some(arts) = records.article {
-                    articles.extend(arts);
-                }
-            }
-        }
+        let (total_hits, articles) = newspaper_records(body)?;
 
         Ok(build_entities(
             target.value.trim(),
@@ -170,8 +222,7 @@ impl Module for TroveAu {
 /// anything this module verifies itself.
 fn article_is_relevant(article: &TroveArticle, query: &str) -> bool {
     article
-        .title
-        .as_deref()
+        .headline()
         .is_some_and(|t| crate::util::str_util::shares_whole_word_token(t, query))
         || article
             .snippet
@@ -218,7 +269,7 @@ fn build_entities(
     )
     .with_attr("total_hits", total_hits.to_string());
     for article in articles.iter().take(5) {
-        if let Some(title) = &article.title
+        if let Some(title) = article.headline()
             && let Some(date) = &article.date
         {
             ev = ev.with_attr("article", format!("{date}: {title}"));
@@ -244,7 +295,7 @@ fn build_entities(
     // deterministic (input order).
     let mut seen_urls = std::collections::HashSet::new();
     for article in articles.iter().take(20) {
-        let Some(u) = article.url.as_deref() else {
+        let Some(u) = article.link() else {
             continue;
         };
         if !crate::util::url_util::is_absolute_http_url(u) || !seen_urls.insert(u.to_string()) {
@@ -272,7 +323,7 @@ fn build_entities(
             "Trove newspaper article returned by full-text search (relevance unconfirmed)"
         };
         let mut uev = Evidence::new(SRC, summary);
-        if let Some(t) = &article.title {
+        if let Some(t) = article.headline() {
             uev = uev.with_attr("title", t);
         }
         if let Some(d) = &article.date {
@@ -284,10 +335,13 @@ fn build_entities(
         if let Some(id) = &article.id {
             uev = uev.with_attr("article_id", id);
         }
-        // The publishing masthead's Trove title id (provenance: which newspaper
-        // ran the mention) — deserialized via the `titleId` rename but otherwise
-        // dropped.
-        if let Some(tid) = &article.title_id {
+        // The masthead the mention ran in — v3's `title` object (its id was
+        // v2's `titleId`): provenance for which newspaper carried the mention.
+        let (paper, paper_id) = article.newspaper();
+        if let Some(p) = paper {
+            uev = uev.with_attr("newspaper", p);
+        }
+        if let Some(tid) = paper_id {
             uev = uev.with_attr("masthead_id", tid);
         }
         url_e.add_evidence(uev);

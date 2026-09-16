@@ -77,17 +77,21 @@ pub(super) fn parse_cells(cellinfo: &[u8], scan_id: &str) -> Result<ModuleResult
             e.tag("registered");
         }
 
-        e.add_evidence(
-            Evidence::new(SRC, format!("Cell tower: {tower_id}"))
-                .with_attr("tower_id", &tower_id)
-                .with_attr("mcc", mcc.as_ref())
-                .with_attr("mnc", mnc.as_ref())
-                .with_attr("lac", lac.to_string())
-                .with_attr("cid", cid.to_string())
-                .with_attr("tech", tech)
-                .with_attr("dbm", cell.dbm.unwrap_or(0).to_string())
-                .with_attr("registered", registered.to_string()),
-        );
+        // A signal reading the tool omitted stays absent: `dbm=0` would be
+        // an unphysically strong signal asserted as measured (the class fixed
+        // for the Wi-Fi sensors in backlog #16).
+        let mut ev = Evidence::new(SRC, format!("Cell tower: {tower_id}"))
+            .with_attr("tower_id", &tower_id)
+            .with_attr("mcc", mcc.as_ref())
+            .with_attr("mnc", mnc.as_ref())
+            .with_attr("lac", lac.to_string())
+            .with_attr("cid", cid.to_string())
+            .with_attr("tech", tech)
+            .with_attr("registered", registered.to_string());
+        if let Some(dbm) = cell.dbm {
+            ev = ev.with_attr("dbm", dbm.to_string());
+        }
+        e.add_evidence(ev);
 
         result.push(e);
     }

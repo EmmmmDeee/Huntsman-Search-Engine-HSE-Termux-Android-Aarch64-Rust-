@@ -32,7 +32,16 @@ const SRC: &str = "disposable_check";
 /// below-floor value.
 const DISPOSABLE_CONFIDENCE: f64 = confidence::VERY_LOW;
 /// Confidence for an address on a legitimate (non-throwaway) provider.
-const LEGIT_CONFIDENCE: f64 = confidence::VERY_HIGH;
+/// debounce.io classifies the *provider*, not the mailbox, so the verdict
+/// says nothing about whether anyone holds the address. The engine merges by
+/// uid with GREATEST semantics, and at [`confidence::VERY_HIGH`] this
+/// re-emission raised every Gmail address a scan found, however weakly, to
+/// 0.75 — and re-affirmed a mailbox nobody holds at 0.75 (REQ-CANARY-003, the
+/// sweep's known-negative control). An indirect signal with no confirming
+/// source is [`confidence::SPECULATIVE`]: the address keeps the annotation and
+/// gains no presence claim (below
+/// [`crate::selftest::capability_probe::SEED_PRESENT_RUNG`]).
+const LEGIT_CONFIDENCE: f64 = confidence::SPECULATIVE;
 
 /// debounce.io returns its boolean verdict as the JSON *string* `"true"` /
 /// `"false"`, not a bare bool — hence `String`, parsed via [`parse_verdict`].

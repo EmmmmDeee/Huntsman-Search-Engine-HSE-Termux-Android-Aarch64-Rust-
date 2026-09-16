@@ -282,7 +282,7 @@ fn au088_single_register_is_high_confirmation() {
 fn au088_two_distinct_registers_is_critical() {
     // Two DIFFERENT authorities agreeing is the strongest identity signal → Critical.
     let p = ent_from_source(EntityKind::Person, "Jane Citizen", "ahpra");
-    let o = ent_from_source(EntityKind::Person, "Jane Citizen", "au_electoral");
+    let o = ent_from_source(EntityKind::Person, "Jane Citizen", "abn_lookup");
     let hits = super::rules::rule_au_088_authoritative_register_confirmation(
         &RuleContext::new(&[p, o]),
         "s",
@@ -291,7 +291,7 @@ fn au088_two_distinct_registers_is_critical() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].severity, super::Severity::Critical);
     assert!(hits[0].description.contains("2 authoritative"));
-    assert!(hits[0].description.contains("AHPRA") && hits[0].description.contains("electoral"));
+    assert!(hits[0].description.contains("AHPRA") && hits[0].description.contains("Business Register"));
 }
 
 #[test]

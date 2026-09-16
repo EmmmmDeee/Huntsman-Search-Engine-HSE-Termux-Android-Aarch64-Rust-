@@ -284,6 +284,61 @@ async fn otx_fetch<T: serde::de::DeserializeOwned>(
     }
 }
 
+/// Whether an OTX `adversary` value is a threat actor's *name*. The field is
+/// free text a pulse author types; a name is short — `APT28`, `Lazarus
+/// Group`, `Mirai`, `NSO Group`, `APT28 / Fancy Bear` — and never a sentence.
+/// The 2026-09-15 capture for a Tor exit carried, in one community pulse of
+/// fifty, `Adversary Profile: Salt Typhoon Alignment The architectural gap
+/// identified by mudoSO mirrors the act` (OTX's own 100-character cut of a
+/// paragraph), which this module minted as an `Organisation` "threat actor
+/// linked to" the address. A parenthesised alias (`Lazarus Group (a.k.a.
+/// Hidden Cobra)`) is trimmed to the lead name by the caller.
+fn is_actor_name(name: &str) -> bool {
+    let n = name.trim();
+    let chars = n.chars().count();
+    let tokens = n.split_whitespace().count();
+    (2..=48).contains(&chars)
+        && (1..=5).contains(&tokens)
+        && !n.contains([':', ';', '.', '!', '?'])
+        && !n.ends_with(',')
+}
+
+/// The adversary the pulses name, and how many of them name it: the lead
+/// name of each pulse's `adversary` (before any parenthesised alias) that
+/// [`is_actor_name`] accepts, counted case-insensitively, the most-named one
+/// chosen (the first seen on a tie — OTX lists pulses newest first). A
+/// paragraph is never an adversary, and one pulse's free text never outranks
+/// the name the rest agree on.
+fn named_adversary(pulses: &[Pulse]) -> Option<(String, usize)> {
+    let mut names: Vec<(String, String, usize)> = Vec::new(); // (key, display, count)
+    for raw in pulses.iter().filter_map(|p| p.adversary.as_deref()) {
+        let lead = raw.split('(').next().unwrap_or(raw).trim();
+        if !is_actor_name(lead) {
+            continue;
+        }
+        let key = lead.to_lowercase();
+        match names.iter_mut().find(|(k, _, _)| *k == key) {
+            Some((_, _, count)) => *count += 1,
+            None => names.push((key, lead.to_string(), 1)),
+        }
+    }
+    names
+        .into_iter()
+        .enumerate()
+        .max_by(|(ia, a), (ib, b)| a.2.cmp(&b.2).then_with(|| ib.cmp(ia)))
+        .map(|(_, (_, display, count))| (display, count))
+}
+
+/// An actor named by a single pulse is one author's claim; named by two or
+/// more it is the corroborated rung the module always used.
+fn adversary_confidence(naming_pulses: usize) -> f64 {
+    if naming_pulses >= 2 {
+        confidence::MEDIUM_SOLID
+    } else {
+        confidence::LOW_MEDIUM
+    }
+}
+
 async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult) -> Result<()> {
     let itype = match target.kind {
         TargetKind::IpAddress => "IPv4",
@@ -342,10 +397,7 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
     // Most frequent first; alphabetical tiebreak for determinism.
     ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
     let all_tags: Vec<&str> = ranked.into_iter().take(12).map(|(t, _)| t).collect();
-    let adversary = pulse_info
-        .pulses
-        .iter()
-        .find_map(|p| p.adversary.as_deref().filter(|s| !s.is_empty()));
+    let adversary = named_adversary(&pulse_info.pulses);
 
     let latest_tlp = pulse_info
         .pulses
@@ -374,14 +426,10 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
     if !all_tags.is_empty() {
         ev = ev.with_attr("pulse_tags", all_tags.join(", "));
     }
-    if let Some(a) = adversary {
-        // OTX `adversary` is sometimes a long freeform paragraph after the
-        // group name — keep just the lead name, capped.
-        let name = a.split('(').next().unwrap_or(a).trim();
-        let capped: String = name.chars().take(64).collect();
-        if !capped.is_empty() {
-            ev = ev.with_attr("adversary", &capped);
-        }
+    if let Some((name, naming)) = &adversary {
+        ev = ev
+            .with_attr("adversary", name)
+            .with_attr("adversary_pulses", format!("{naming} of {pulse_count}"));
     }
     if let Some(t) = latest_tlp {
         ev = ev.with_attr("tlp", t);
@@ -393,28 +441,26 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
     result.push(entity);
 
     // The named adversary/threat-actor (e.g. "Mirai", "NSO Group") is a
-    // correlatable Organisation pivot, not just an evidence string.
-    if let Some(a) = adversary {
-        let name = a.split('(').next().unwrap_or(a).trim();
-        let capped: String = name.chars().take(64).collect();
-        if capped.len() >= 2 {
-            let mut o = Entity::new(
-                EntityKind::Organisation,
-                &capped,
-                confidence::MEDIUM_SOLID,
-                &ctx.scan_id,
-            );
-            o.tag(crate::core::tags::THREAT_INTEL);
-            o.tag("adversary");
-            o.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Threat actor linked to {} per OTX", target.value),
-                )
-                .with_attr("indicator", target.value.as_str()),
-            );
-            result.push(o);
-        }
+    // correlatable Organisation pivot, not just an evidence string — at a
+    // rung that says how many pulses name it.
+    if let Some((name, naming)) = adversary {
+        let mut o = Entity::new(
+            EntityKind::Organisation,
+            &name,
+            adversary_confidence(naming),
+            &ctx.scan_id,
+        );
+        o.tag(crate::core::tags::THREAT_INTEL);
+        o.tag("adversary");
+        o.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("Threat actor linked to {} per OTX", target.value),
+            )
+            .with_attr("indicator", target.value.as_str())
+            .with_attr("adversary_pulses", format!("{naming} of {pulse_count}")),
+        );
+        result.push(o);
     }
 
     Ok(())

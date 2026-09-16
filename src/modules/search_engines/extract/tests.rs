@@ -426,3 +426,120 @@ use super::*;
             "no seed term match → should emit nothing"
         );
     }
+
+/// REQ-SEARCH-002 (the recycler): a recycled result is about the entity its
+/// query asked for only when it names that entity. The engines answered
+/// `"qx82vtnrmpaw" address OR location OR city` with Microsoft's Wikipedia
+/// page and the recycler minted "Redmond" as the handle's address; the same
+/// text naming the handle still yields it.
+#[test]
+fn a_recycled_result_that_never_names_the_entity_its_query_asked_about_mines_nothing() {
+    let query = "\"qx82vtnrmpaw\" address OR location OR city";
+    assert_eq!(recycled_subject(query), Some("qx82vtnrmpaw"));
+    assert_eq!(recycled_subject("no quoted term"), None);
+    assert_eq!(recycled_subject("\"\" address"), None);
+
+    let existing = ModuleResult::new();
+    let stranger = SearchResult {
+        url: "https://en.wikipedia.org/wiki/Microsoft".to_string(),
+        title: "Microsoft - Wikipedia".to_string(),
+        snippet: "Microsoft Corporation is an American multinational technology company \
+                  headquartered in Redmond, Washington."
+            .to_string(),
+        engine: "bing",
+        query: query.to_string(),
+    };
+    assert!(!recycled_result_names_its_subject(&stranger));
+    let mined = mine_recycled_results(&existing, &[stranger], "scan");
+    assert!(
+        mined.is_empty(),
+        "a result that never names the entity mines nothing: {:?}",
+        mined
+            .iter()
+            .map(|e| (e.kind.clone(), e.value.clone()))
+            .collect::<Vec<_>>()
+    );
+
+    let named = SearchResult {
+        url: "https://example.com/people/qx82vtnrmpaw".to_string(),
+        title: "qx82vtnrmpaw".to_string(),
+        snippet: "qx82vtnrmpaw is a technology worker headquartered in Redmond, Washington."
+            .to_string(),
+        engine: "bing",
+        query: query.to_string(),
+    };
+    assert!(recycled_result_names_its_subject(&named));
+    let mined = mine_recycled_results(&existing, &[named], "scan");
+    assert!(
+        mined
+            .iter()
+            .any(|e| e.kind == EntityKind::Address && e.value.to_lowercase().contains("redmond")),
+        "the same text in a result that names the entity yields the address: {:?}",
+        mined
+            .iter()
+            .map(|e| (e.kind.clone(), e.value.clone()))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// REQ-SEARCH-003 (the recycler, contract boundary): the recycled subject is
+/// named only as a whole word, never as a raw substring of a longer one. A
+/// three-character handle `abc` recycled through the engines and answered with
+/// a page about `abcnews.com` embedded `abc` — `hay.contains("abc")` read the
+/// longer host as naming the handle and minted its address, the same
+/// false-attribution class REQ-SEARCH-002 gated, narrowed to a substring
+/// collision. This pins the gate (`recycled_result_names_its_subject`) to the
+/// boundary-aware predicate at the call site, not merely the helper in
+/// isolation: it fails if the recycler is reverted to `contains`.
+#[test]
+fn a_recycled_subject_embedded_in_a_longer_word_is_not_named_by_it() {
+    let query = "\"abc\" address OR location OR city";
+    assert_eq!(recycled_subject(query), Some("abc"));
+
+    let existing = ModuleResult::new();
+    // `abcnews` embeds `abc`; the page is about the broadcaster, not the handle.
+    // The handle appears only inside `abcnews.com` (snippet and URL), never as a
+    // standalone word — the substring collision.
+    let collision = SearchResult {
+        url: "https://abcnews.com/tech".to_string(),
+        title: "Technology desk".to_string(),
+        snippet: "abcnews.com is headquartered in Redmond, Washington.".to_string(),
+        engine: "bing",
+        query: query.to_string(),
+    };
+    assert!(
+        !recycled_result_names_its_subject(&collision),
+        "a longer word embedding the handle does not name it"
+    );
+    let mined = mine_recycled_results(&existing, &[collision], "scan");
+    assert!(
+        mined.is_empty(),
+        "a substring collision mines nothing: {:?}",
+        mined
+            .iter()
+            .map(|e| (e.kind.clone(), e.value.clone()))
+            .collect::<Vec<_>>()
+    );
+
+    // The same body in a result that names the handle as a whole word still
+    // mines — the gate narrowed the false match, it did not close the real one.
+    let named = SearchResult {
+        url: "https://example.com/u/abc".to_string(),
+        title: "abc".to_string(),
+        snippet: "abc is a technology worker headquartered in Redmond, Washington.".to_string(),
+        engine: "bing",
+        query: query.to_string(),
+    };
+    assert!(recycled_result_names_its_subject(&named));
+    let mined = mine_recycled_results(&existing, &[named], "scan");
+    assert!(
+        mined
+            .iter()
+            .any(|e| e.kind == EntityKind::Address && e.value.to_lowercase().contains("redmond")),
+        "a result that names the handle as a word still yields the address: {:?}",
+        mined
+            .iter()
+            .map(|e| (e.kind.clone(), e.value.clone()))
+            .collect::<Vec<_>>()
+    );
+}

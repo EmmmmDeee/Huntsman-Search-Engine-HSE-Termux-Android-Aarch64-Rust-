@@ -37,6 +37,7 @@ fn produces_person_organisation_and_crypto_address() {
 
 fn individual_record() -> SdnRecord {
     SdnRecord {
+        list: super::parse::OfacList::Sdn,
         ent_num: 2674,
         name: "ABBAS, Abu".to_string(),
         kind: SdnKind::Individual,
@@ -48,6 +49,7 @@ fn individual_record() -> SdnRecord {
 
 fn organisation_record() -> SdnRecord {
     SdnRecord {
+        list: super::parse::OfacList::Sdn,
         ent_num: 36,
         name: "AEROCARIBBEAN AIRLINES".to_string(),
         kind: SdnKind::Organisation,
@@ -59,6 +61,7 @@ fn organisation_record() -> SdnRecord {
 
 fn vessel_record() -> SdnRecord {
     SdnRecord {
+        list: super::parse::OfacList::Sdn,
         ent_num: 4238,
         name: "MAR AZUL".to_string(),
         kind: SdnKind::Vessel,
@@ -72,6 +75,7 @@ fn vessel_record() -> SdnRecord {
 /// makes the name path a pivot into `chain_intel`.
 fn wallet_record() -> SdnRecord {
     SdnRecord {
+        list: super::parse::OfacList::Sdn,
         ent_num: 31234,
         name: "IVANOV, Ivan".to_string(),
         kind: SdnKind::Individual,
@@ -250,6 +254,7 @@ fn failed_download_without_a_cached_list_is_an_error_not_a_clean_screen() {
     use super::list::degrade_on_fetch_failure;
 
     let rec = |name: &str| super::parse::SdnRecord {
+        list: super::parse::OfacList::Sdn,
         ent_num: 1,
         name: name.to_string(),
         kind: SdnKind::Individual,
@@ -298,6 +303,7 @@ fn an_empty_record_set_is_never_screenable_by_any_route() {
     use super::list::{degrade_on_fetch_failure, is_screenable};
 
     let rec = || super::parse::SdnRecord {
+        list: super::parse::OfacList::Sdn,
         ent_num: 1,
         name: "ABBAS, Abu".to_string(),
         kind: SdnKind::Individual,
@@ -321,4 +327,67 @@ fn an_empty_record_set_is_never_screenable_by_any_route() {
         degrade_on_fetch_failure(Some(vec![rec()])).is_ok(),
         "a populated cached set must still degrade gracefully"
     );
+}
+
+// ── List of origin ───────────────────────────────────────────────────────────
+
+/// REGRESSION (docs/PROVIDER_SWEEP_BACKLOG.md #35). Consolidated-list rows are
+/// screened alongside SDN rows but are NOT SDN designations: a sectoral / FSE /
+/// NS-ISA / PLC listing is a sanction, not a full-blocking one. Every finding
+/// off such a row used to be stamped `register = "OFAC Specially Designated
+/// Nationals (SDN) List"` and summarised "OFAC SDN list match" — the most
+/// serious register asserted for a row that was never on it.
+#[test]
+fn a_consolidated_list_row_is_never_reported_as_an_sdn_match() {
+    let mut rec = organisation_record();
+    rec.list = super::parse::OfacList::Consolidated;
+    let e = super::entity::build_subject(&rec, "scan-1", super::entity::Provenance::Name)
+        .expect("organisation row maps to an entity");
+    let ev = &e.evidence[0];
+    assert_eq!(
+        ev.attributes.get("register").map(String::as_str),
+        Some("OFAC Consolidated (non-SDN) Sanctions List")
+    );
+    assert!(
+        ev.summary.starts_with("OFAC Consolidated (non-SDN) list match:"),
+        "{}",
+        ev.summary
+    );
+    assert!(!ev.summary.contains("SDN list match"), "{}", ev.summary);
+    assert!(e.has_tag("ofac-consolidated"), "{:?}", e.tags);
+    assert!(!e.has_tag("ofac-sdn"), "{:?}", e.tags);
+    // The shared tags still apply — it IS a sanctions designation.
+    assert!(e.has_tag("sanctions") && e.has_tag("ofac"), "{:?}", e.tags);
+}
+
+/// The control: an SDN row keeps its SDN register, summary and tag.
+#[test]
+fn an_sdn_row_is_reported_as_an_sdn_match() {
+    let rec = organisation_record();
+    assert_eq!(rec.list, super::parse::OfacList::Sdn);
+    let e = super::entity::build_subject(&rec, "scan-1", super::entity::Provenance::Name)
+        .expect("organisation row maps to an entity");
+    let ev = &e.evidence[0];
+    assert_eq!(
+        ev.attributes.get("register").map(String::as_str),
+        Some("OFAC Specially Designated Nationals (SDN) List")
+    );
+    assert!(ev.summary.starts_with("OFAC SDN list match:"), "{}", ev.summary);
+    assert!(e.has_tag("ofac-sdn") && !e.has_tag("ofac-consolidated"), "{:?}", e.tags);
+}
+
+/// The wallet pivot off a consolidated-list row carries the same list, so the
+/// address finding cannot claim SDN either.
+#[test]
+fn a_wallet_off_a_consolidated_list_row_carries_the_consolidated_register() {
+    let mut rec = wallet_record();
+    rec.list = super::parse::OfacList::Consolidated;
+    let addrs = super::crypto::digital_currency_addresses(&rec.remarks);
+    let addr = addrs.first().expect("the wallet fixture carries an address");
+    let e = super::entity::build_wallet(&rec, addr, "scan-1", super::entity::Provenance::Name);
+    assert_eq!(
+        e.evidence[0].attributes.get("register").map(String::as_str),
+        Some("OFAC Consolidated (non-SDN) Sanctions List")
+    );
+    assert!(e.has_tag("ofac-consolidated") && !e.has_tag("ofac-sdn"), "{:?}", e.tags);
 }
