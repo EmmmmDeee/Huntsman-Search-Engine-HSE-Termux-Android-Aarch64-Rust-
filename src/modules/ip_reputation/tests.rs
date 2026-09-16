@@ -328,7 +328,17 @@ const CAPTURED_PARAGRAPH: &str =
 
 #[test]
 fn an_actor_name_is_short_and_never_a_sentence() {
-    for name in ["Mirai", "NSO Group", "APT28 / Fancy Bear", "Lazarus Group", "TA505"] {
+    for name in [
+        "Mirai",
+        "NSO Group",
+        "APT28 / Fancy Bear",
+        "Lazarus Group",
+        "TA505",
+        // A real actor whose name merely CONTAINS a would-be placeholder word
+        // is still a name — the placeholder gate is anchored, not a substring
+        // match (REQ-ATTR-003): `Anonymous Sudan` is a real hacktivist group.
+        "Anonymous Sudan",
+    ] {
         assert!(is_actor_name(name), "{name} is a threat actor's name");
     }
     for text in [
@@ -338,6 +348,22 @@ fn an_actor_name_is_short_and_never_a_sentence() {
         "the group behind the campaign observed last spring",
         "",
         "x",
+        // Placeholder / non-attribution labels a pulse author types when the
+        // activity is UNattributed. Name-shaped (short, no sentence
+        // punctuation), so the shape gate accepted them and the module minted
+        // one as a named `Organisation` "linked to" the address — a concrete
+        // actor where the feed declared none (REQ-ATTR-003, observed live
+        // 2026-09-16 on a mozilla.org scan: `Unknown APT Group`).
+        "Unknown APT Group",
+        "Unknown",
+        "unknown",
+        "Unknown Threat Actor",
+        "Unattributed",
+        "Unidentified",
+        "N/A",
+        "None",
+        "Various",
+        "Multiple",
     ] {
         assert!(!is_actor_name(text), "{text:?} is not a name");
     }
@@ -351,6 +377,17 @@ fn the_named_adversary_is_the_one_most_pulses_name_and_a_paragraph_is_never_one(
         pulse_naming(Some("")),
         pulse_naming(Some(CAPTURED_PARAGRAPH)),
         pulse_naming(None),
+    ];
+    assert_eq!(named_adversary(&pulses), None);
+
+    // A placeholder is never an adversary even when many pulses corroborate it
+    // (REQ-ATTR-003): the feed declaring "Unknown APT Group" on ten pulses is
+    // ten authors saying they could not attribute it, not a named actor.
+    let pulses = vec![
+        pulse_naming(Some("Unknown APT Group")),
+        pulse_naming(Some("unknown apt group")),
+        pulse_naming(Some("Unknown")),
+        pulse_naming(Some("Unattributed")),
     ];
     assert_eq!(named_adversary(&pulses), None);
 

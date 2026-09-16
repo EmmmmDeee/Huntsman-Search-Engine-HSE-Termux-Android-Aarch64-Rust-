@@ -301,6 +301,43 @@ fn is_actor_name(name: &str) -> bool {
         && (1..=5).contains(&tokens)
         && !n.contains([':', ';', '.', '!', '?'])
         && !n.ends_with(',')
+        && !is_placeholder_adversary(n)
+}
+
+/// Whether an adversary label is a placeholder meaning *no known actor* rather
+/// than an identified threat actor. OTX pulse authors type `Unknown`, `Unknown
+/// APT Group`, `Unattributed`, `N/A` and the like when they cannot attribute
+/// the activity; the label is name-shaped (short, no sentence punctuation), so
+/// [`is_actor_name`]'s shape gate accepted it and the module minted it as a
+/// named `Organisation` at the corroborated rung "linked to" the address — a
+/// concrete actor asserted where the feed declared none. Observed live
+/// 2026-09-16 on a `mozilla.org` scan (`AU-015 … organisation 'Unknown APT
+/// Group' … in ip_reputation`), the placeholder residual of REQ-ATTR-002's
+/// paragraph gate (REQ-ATTR-003). Compared case-insensitively on the already
+/// trimmed value.
+///
+/// The unattributed prefixes match on a WORD boundary, never a substring, so a
+/// real actor whose name merely contains one (`Anonymous Sudan`) is untouched;
+/// the bare non-answers match only in full.
+fn is_placeholder_adversary(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    const UNATTRIBUTED_PREFIXES: &[&str] = &[
+        "unknown",
+        "unattributed",
+        "unidentified",
+        "unclassified",
+        "undetermined",
+    ];
+    if UNATTRIBUTED_PREFIXES
+        .iter()
+        .any(|p| n == *p || n.strip_prefix(p).is_some_and(|rest| rest.starts_with(' ')))
+    {
+        return true;
+    }
+    matches!(
+        n.as_str(),
+        "n/a" | "na" | "none" | "null" | "various" | "multiple" | "tbd"
+    )
 }
 
 /// The adversary the pulses name, and how many of them name it: the lead

@@ -5320,6 +5320,52 @@ vantage confirms the sandbox's: the counts every sweep had reported for
 read 36 against 68 and 3 on the two sweeps before — the search providers'
 own variance, untouched by this change.)
 
+### REQ-ATTR-003 (**new, Pass 31 — OBSERVED live from the sandbox against the merged binary, REPRODUCED, FIXED at the authoritative gate, FALSIFIED**): an unattributed placeholder is not a named threat actor
+
+**Observation (this sandbox, 2026-09-16, the binary built from the merged
+`ecb5b5c`).** A post-merge live exercise of the production path — a bounded
+`hse scan -v mozilla.org -d 0 --free-only` — surfaced, among coherent honest
+findings (real subdomains at three-source infra consensus, corroborated emails
+with calibrated `C_eff`, an honest single-pathway-gap flag), one false
+attribution: `AU-015  HIGH  Threat-intel hit  organisation 'Unknown APT Group'
+present in ip_reputation`. `ip_reputation` minted **`Unknown APT Group`** — a
+placeholder OTX pulse authors type when they *cannot* attribute activity — as a
+named threat-actor `Organisation` at the corroborated rung, which AU-015 then
+attributed to the scanned target's infrastructure. mozilla.org is not a threat
+actor, and "Unknown APT Group" is not an actor: it is the feed declaring *no
+known actor*.
+
+**Reproduced (a unit lock that fails on the baseline).** REQ-ATTR-002's
+`is_actor_name` rejects a *paragraph* (a sentence, `:`/`.`, too long) but a
+placeholder is name-shaped — `Unknown APT Group` is 14 chars, three tokens, no
+sentence punctuation — so the shape gate accepted it and `named_adversary`
+selected it. `is_actor_name("Unknown APT Group")` returns `true` on the
+baseline; the extended test asserting it is *not* a name fails there.
+
+**Fix (the authoritative layer — the actor-name gate).** `is_actor_name` gains
+`!is_placeholder_adversary(n)`: a label that is, or begins on a word boundary
+with, an unattributed marker (`unknown`, `unattributed`, `unidentified`,
+`unclassified`, `undetermined`) or is a bare non-answer (`n/a`, `none`, `null`,
+`various`, `multiple`, `tbd`) is not an actor name. The prefix match is
+anchored, never a substring (the REQ-SEARCH-003 discipline), so a real actor
+whose name merely contains such a word — `Anonymous Sudan` — is untouched. Since
+`named_adversary` gates every candidate through `is_actor_name`, the placeholder
+is filtered at the point it is counted: a feed naming `Unknown APT Group` on ten
+pulses is ten authors declaring non-attribution, not a corroborated actor.
+
+**Lock and falsification (`cycle_attr003_falsify.py`).** Two coupled locks: the
+shape gate (`an_actor_name_is_short_and_never_a_sentence` — the placeholders are
+not names, `Anonymous Sudan` still is) and the consumption boundary
+(`named_adversary` returns `None` for a wave of placeholder pulses). Reverting
+`!is_placeholder_adversary(n)` from `is_actor_name` fails **both**; `mod.rs`
+sha256-restored. `RESULT: FALSIFIED`.
+
+**Remote.** CI-exact gate green locally. This is a keyless module on every IP /
+domain / URL scan (the Termux production path); the runner's known-negative
+control sweep cannot surface it (a placeholder is a real feed value, not a
+nonce), so the live scan against a real target is the observing vantage. CI on
+the pushed commit is recorded below.
+
 ### REQ-ATTR-002 (**new, Pass 31 — OBSERVED live from the sandbox, FIXED, FALSIFIED**): a pulse author's paragraph is not a threat actor
 
 **Observation (this sandbox, 2026-09-15 20:2x UTC, the binary built from
