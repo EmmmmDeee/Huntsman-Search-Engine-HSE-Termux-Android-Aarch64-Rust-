@@ -163,7 +163,7 @@ pub(super) fn recycled_result_names_its_subject(r: &SearchResult) -> bool {
         return false;
     };
     let hay = format!("{} {} {}", r.title, r.snippet, r.url).to_lowercase();
-    hay.contains(&term.to_lowercase())
+    names_word_token(&hay, &term.to_lowercase())
 }
 
 /// Mine the recycled results for addresses, coordinates, emails and phones —

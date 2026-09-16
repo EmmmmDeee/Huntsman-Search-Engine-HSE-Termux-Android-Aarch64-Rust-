@@ -4390,6 +4390,89 @@ host as its estate — precision over recall, recorded here. `email-validated`
 still names debounce.io's provider reading; the tag is kept for its
 consumers, the rung says what it means.
 
+### REQ-SEARCH-003 (**new, Pass 31 — ADVERSARIAL RE-ATTACK on REQ-SEARCH-002/CANARY-003's own gate, VERIFIED FROM SOURCE, FIXED at the predicate, LOCKED AT THREE CONTRACT BOUNDARIES, FALSIFIED**): the subject names a whole word, never a raw substring of a longer one
+
+**Lead.** REQ-SEARCH-002 closed "a result that never names the subject mines
+nothing" by requiring the subject's distinctive term in the result, and
+REQ-CANARY-003 gave a domain seed the same gate over its own registrable
+string. Both wrote the predicate as a raw `hay.contains(needle)`. An
+adversarial re-attack on the fix itself — the method's re-reproduction step —
+shows the gate *narrowed* the false-attribution class, it did not close it:
+`contains` matches the subject inside a longer token. A three-character handle
+`abc` is "named" by any result mentioning `abcnews.com`; a short seed domain
+`art.com` is "named" by any page mentioning `smart.com` or `start.com`. The
+same false-relevance / false-attribution the parent cycles fixed, now on a
+shorter needle.
+
+**Observation (verified from source, reproduced against the real gate).** Three
+call sites carried the raw substring, each reproduced by a boundary test that
+fails on the baseline:
+
+1. `build_entities`' domain estate gate —
+   `hay.contains(target_domain.trim_start_matches("www."))`: a stranger host
+   whose page mentioned `smart.com` was filed as the seed `art.com`'s external
+   estate (the same 49-host false-estate class REQ-CANARY-003 gated).
+2. `build_entities`' single-token subject gate (the `else` branch
+   REQ-SEARCH-002 tightened) — `hay.contains(terms.last())`: a page about
+   `abcnews.com` re-affirmed the handle `abc` and minted the broadcaster's
+   email as the subject's.
+3. `extract::recycled_result_names_its_subject` —
+   `hay.contains(&term.to_lowercase())`: a recycled result about `abcnews`
+   mined its address as the handle `abc`'s.
+
+**Fix (the authoritative layer — the shared predicate).** Two boundary-aware
+predicates in `search_engines::helpers::relevance`, the shared home both
+`build.rs` and `extract` already draw from (`use super::helpers::*`):
+
+- `names_word_token(hay, term)` — `term` occurs bounded by the text's
+  start/end or a non-alphanumeric byte (a whole word).
+- `names_domain_token(hay, domain)` — `domain` occurs bounded by a byte that
+  is not a domain-label byte `[a-z0-9-]`, so a leading `.` is a boundary
+  (`mail.art.com` names `art.com`) while a leading letter, digit or hyphen is
+  not (`smart.com`, `my-art.com`, `art.community` do not).
+
+Both delegate to one `token_bounded` helper over `str::match_indices`; it is
+byte-boundary safe on UTF-8 text (a non-ASCII neighbour byte, ≥ `0x80`, is
+never `is_ascii_alphanumeric`, so it reads as a boundary), and an empty needle
+never matches. All three call sites route through the matching predicate; no
+other behaviour changed — a distinctive longer token still matches exactly as
+`contains` did, subdomains and standalone tokens still match.
+
+**Lock (five, at the predicate and at every call site).** Two helper unit tests
+pin the predicates directly
+(`relevance::token_boundary_tests::a_short_subject_is_a_word_not_a_substring`,
+`a_domain_is_a_registrable_unit_not_a_substring`). Three contract-boundary
+tests pin *consumption* — that each gate actually calls the boundary-aware
+predicate, not merely that the predicate exists (CONFIGURATION ≠ CONSUMPTION):
+`a_short_domain_seed_is_not_named_by_a_longer_host_string` (estate gate:
+`smart.com`/`start.com` are not the seed `art.com`; `partnersite.net`, whose
+page names it, is), `a_short_single_token_subject_is_not_named_by_a_longer_word`
+(subject gate: `abcnews` is not the handle `abc`; a page naming `abc` as a word
+still yields its email), and
+`a_recycled_subject_embedded_in_a_longer_word_is_not_named_by_it` (recycler:
+`abcnews` mines nothing; a result naming `abc` still mines its address).
+
+**Falsification (`cycle_ag_falsify.py`, the full matrix).** Each of the five
+repairs is reverted independently to the raw `contains` it replaced and only
+its coupled lock is run with `--exact`; every one FAILS with the repair
+reverted, and each file is sha256-asserted back to baseline. The two helper
+reverts fail the two unit tests; each of the three call-site reverts fails its
+boundary test with the helper left intact — proving the coupling is at
+consumption, not merely at the predicate. `RESULT: ALL LOCKS FALSIFIED`. Two of
+the boundary tests first failed as written because their fixtures named the
+handle as a standalone word in the result title (`"ABC News"` contains `abc`);
+the gate correctly matched it, and the fixtures were corrected so the handle
+appears only embedded — the gate's own behaviour disproved the first draft of
+its lock.
+
+**Remote.** CI-exact gate green locally (fmt / clippy `-D warnings` / rustdoc
+lints / `cargo test --all --locked --features dep-cooldown` / doc-coverage).
+This is a pure relevance-gate change with no network dependency: the runner's
+known-negative control sweep is the standing remote check — a short control
+handle or domain nobody holds must not be named by a longer token — and the
+live-drift run on `4cd108a` already read `0 fabricated`. CI on the pushed
+commit is recorded below.
+
 ### REQ-SEARCH-002 (**new, Pass 31 — OBSERVED by the known-negative control, VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a result that never names a single-token subject mines nothing
 
 **Lead.** IDENTIFIER MATCH ≠ ENTITY IDENTITY. `search_engines::build_entities`

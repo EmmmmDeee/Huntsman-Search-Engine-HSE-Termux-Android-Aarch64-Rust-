@@ -2032,6 +2032,59 @@ fn an_external_host_whose_page_never_names_the_domain_seed_is_not_its_estate() {
     );
 }
 
+/// REQ-SEARCH-003 (the domain estate gate, contract boundary): a short domain
+/// seed is named only as a registrable unit, never as a raw substring of a
+/// longer host. For the seed `art.com`, a page mentioning `smart.com` and
+/// `start.com` embeds the literal `art.com`; the gate's `hay.contains("art.com")`
+/// read those pages as naming the seed and filed their unrelated hosts as the
+/// seed's external estate — the same 49-host false-estate class REQ-CANARY-003
+/// gated, narrowed to a substring collision. This pins `build_entities`' estate
+/// branch to `names_domain_token` at the call site: it fails if reverted to
+/// `contains`, while a page naming the seed as its own label still files.
+#[test]
+fn a_short_domain_seed_is_not_named_by_a_longer_host_string() {
+    let target = Target::new(TargetKind::Domain, "art.com");
+    let mk = |url: &str, snippet: &str, query: &str| SearchResult {
+        url: url.to_string(),
+        title: "result".to_string(),
+        snippet: snippet.to_string(),
+        engine: "bing",
+        query: query.to_string(),
+    };
+    // Two collisions and one genuine estate host. `smart.com` (leading `m`) and
+    // `start.com` (leading `t`) both embed `art.com`; `partnersite.net`'s page
+    // names the seed as its own registrable unit.
+    let results = vec![
+        mk(
+            "https://competitorlist.net/rivals",
+            "smart.com and start.com are the market leaders",
+            "\"art.com\"",
+        ),
+        mk(
+            "https://partnersite.net/clients",
+            "partner of art.com since 2019",
+            "\"art.com\"",
+        ),
+    ];
+    let url_engine_count = url_engine_counts(&results);
+    let results = dedup_results(results);
+    let res = build_entities(&target, "s", &results, &url_engine_count);
+    let mut domains: Vec<&str> = res
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain && e.value != "art.com")
+        .map(|e| e.value.as_str())
+        .collect();
+    domains.sort_unstable();
+    assert_eq!(
+        domains,
+        vec!["partnersite.net"],
+        "only the host whose page names the seed as a registrable unit is its \
+         estate; the substring collisions are not: {:?}",
+        res.entities
+    );
+}
+
 #[test]
 fn a_www_result_host_is_not_tagged_a_subdomain_of_the_apex_seed() {
     // Regression: a search result's own "www.<target>" homepage — exactly
@@ -2243,6 +2296,54 @@ fn a_single_token_subject_is_gated_like_a_name_an_unrelated_page_mints_nothing()
             .iter()
             .any(|e| e.kind == EntityKind::Email && e.value == "other@example.com"),
         "a page that names the subject still yields its email"
+    );
+}
+
+/// REQ-SEARCH-003 (the single-token subject gate, contract boundary): a short
+/// handle is named only as a whole word, never as a raw substring of a longer
+/// one. For the handle `abc`, a page about `abcnews.com` embeds the literal
+/// `abc`; the gate's `hay.contains("abc")` read it as naming the handle and
+/// minted the broadcaster's email as the subject's — the same false-attribution
+/// class REQ-SEARCH-002 gated, narrowed to a substring collision. This pins
+/// `build_entities`' subject-term branch to `names_word_token` at the call
+/// site: it fails if reverted to `contains`, while a page naming the handle as
+/// a whole word still yields its email.
+#[test]
+fn a_short_single_token_subject_is_not_named_by_a_longer_word() {
+    let target = Target::new(TargetKind::Username, "abc");
+    // The handle appears only embedded in `abcnews` (snippet email domain and
+    // URL host), never as a standalone word — the substring collision.
+    let collision = SearchResult {
+        url: "https://abcnews.com/tech".to_string(),
+        title: "Technology headlines".to_string(),
+        snippet: "reach the newsroom at editor@abcnews.com for tips".to_string(),
+        engine: "duckduckgo",
+        query: "abc".to_string(),
+    };
+    let results = vec![collision];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        !res.entities.iter().any(|e| e.kind == EntityKind::Email),
+        "a longer word embedding the handle is not the handle: {:?}",
+        res.entities
+    );
+
+    // A page that names the handle as a whole word still yields its email.
+    let named = SearchResult {
+        url: "https://example.com/u/abc".to_string(),
+        title: "abc's page".to_string(),
+        snippet: "abc can be reached at editor@example.com".to_string(),
+        engine: "duckduckgo",
+        query: "abc".to_string(),
+    };
+    let results = vec![named];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        res.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "editor@example.com"),
+        "a page that names the handle as a word still yields its email: {:?}",
+        res.entities
     );
 }
 

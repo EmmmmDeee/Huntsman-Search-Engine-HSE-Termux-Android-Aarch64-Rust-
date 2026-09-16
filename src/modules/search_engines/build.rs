@@ -86,10 +86,12 @@ pub(super) fn build_entities(
             let hay = format!("{combined_text} {}", r.url).to_lowercase();
             target_domain
                 .as_deref()
-                .is_some_and(|d| hay.contains(d.trim_start_matches("www.")))
+                .is_some_and(|d| names_domain_token(&hay, d.trim_start_matches("www.")))
         } else {
             let hay = format!("{combined_text} {}", r.url).to_lowercase();
-            terms.last().is_some_and(|term| hay.contains(term.as_str()))
+            terms
+                .last()
+                .is_some_and(|term| names_word_token(&hay, term.as_str()))
         }
     };
     // The results that name the subject. The engines answer a term no page
