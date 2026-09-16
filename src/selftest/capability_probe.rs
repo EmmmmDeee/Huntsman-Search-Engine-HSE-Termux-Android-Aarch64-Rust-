@@ -663,85 +663,245 @@ pub async fn probe_keyless_fleet(concurrency: usize) -> Vec<ProbeReport> {
 // minted profiles — two of them body-"verified" — for a twelve-character
 // handle no platform had ever seen, and every username scan had carried those
 // fabrications. A known-negative control is the sweep's other half: the same
-// modules probed with a handle nobody holds, where the only honest yield is
-// nothing.
+// modules probed with a target nobody holds, where the only honest yield is
+// nothing — a handle for the Username family (REQ-CANARY-002), and a domain,
+// a mailbox and a name nobody holds for the Domain, Email and FullName
+// families (REQ-CANARY-003), one control per kind a module consumes.
 
-/// The control value for a target kind — a target nobody holds — or `None`
-/// for a kind the sweep has no control for. A Username's control is the
-/// process's second handle nobody holds
-/// ([`crate::util::probe::sweep_control_handle`]), distinct from the handle the
-/// presence probes judge their own presences against.
-fn control_value(kind: TargetKind) -> Option<&'static str> {
+/// The kinds the sweep has a control for, in the order a module's controls
+/// are probed and reported. A Phone or an IpAddress has none: what a module
+/// says about a number nobody holds (its numbering-plan region) or an address
+/// nobody announces (its geolocation, its registry) is a fact of the value
+/// itself, as honest for an unheld value as for a held one, so a yield there
+/// is no fabrication and a control would prove nothing.
+pub const CONTROLLED_KINDS: [TargetKind; 4] = [
+    TargetKind::Username,
+    TargetKind::Domain,
+    TargetKind::Email,
+    TargetKind::FullName,
+];
+
+/// The control value for a target kind — a well-formed target nobody holds —
+/// or `None` for a kind the sweep has no control for ([`CONTROLLED_KINDS`]).
+/// Every value is read from the process's second handle nobody holds
+/// ([`crate::util::probe::sweep_control_handle`], distinct from the handle the
+/// presence probes judge their own presences against), so one process asks
+/// every kind about one nonce: the handle itself for a Username; the handle
+/// as a `.com` label for a Domain (a registrable namespace with no wildcard,
+/// so an unregistered label answers NXDOMAIN and "no match" everywhere — a
+/// reserved namespace is refused by the CLI's own validation and read as a
+/// placeholder by every provider); the handle at Gmail for an Email (a real
+/// mailbox provider, so every provider-facing parser is read against a real
+/// mail domain instead of skipping on a missing MX); the handle read as a
+/// pronounceable two-token name for a FullName (letters only, capitalised, so
+/// every register's name rule accepts it).
+pub fn control_value(kind: TargetKind) -> Option<&'static str> {
     match kind {
         TargetKind::Username => Some(crate::util::probe::sweep_control_handle()),
+        TargetKind::Domain => Some(sweep_control_domain()),
+        TargetKind::Email => Some(sweep_control_email()),
+        TargetKind::FullName => Some(sweep_control_name()),
         _ => None,
     }
 }
 
-/// The `(kind, value)` this module's known-negative control probes: the first
-/// kind it [`consumes`](Module::consumes) that has a [`control_value`] **and**
-/// that the module [`accepts`](Module::accepts) with that value. `None` for a
-/// key-gated or paid module, a passive one, or one consuming no controllable
-/// kind — the module then has no control, which the sweep says in its count,
-/// never a passing one.
-pub fn control_target(m: &dyn Module) -> Option<(TargetKind, &'static str)> {
-    if m.cost() != ModuleCost::Free || m.is_passive() {
-        return None;
+/// `<handle>.com` — the sweep's handle nobody holds as a domain nobody
+/// registered, drawn once per process.
+fn sweep_control_domain() -> &'static str {
+    static DOMAIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DOMAIN.get_or_init(|| format!("{}.com", crate::util::probe::sweep_control_handle()))
+}
+
+/// `<handle>@gmail.com` — the sweep's handle nobody holds as a mailbox nobody
+/// holds at a provider every email parser knows, drawn once per process.
+fn sweep_control_email() -> &'static str {
+    static EMAIL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    EMAIL.get_or_init(|| format!("{}@gmail.com", crate::util::probe::sweep_control_handle()))
+}
+
+/// The sweep's handle nobody holds read as a name nobody holds
+/// ([`name_from_handle`]), drawn once per process.
+fn sweep_control_name() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| name_from_handle(crate::util::probe::sweep_control_handle()))
+}
+
+/// A handle's twelve characters read as two six-letter tokens, consonant and
+/// vowel alternating so each is pronounceable, each capitalised — `Nepiro
+/// Sutave` for `a1b2c3d4e5f6`. Letters only, so every register's name rule
+/// accepts it; a pure function of the handle, so the name a process asks
+/// about is the same nonce its other controls ask about.
+fn name_from_handle(handle: &str) -> String {
+    const CONSONANTS: &[u8] = b"bcdfghjklmnprstvwxyz";
+    const VOWELS: &[u8] = b"aeiou";
+    let mut name = String::with_capacity(13);
+    for (i, b) in handle.bytes().take(12).enumerate() {
+        let v = match b {
+            b'0'..=b'9' => usize::from(b - b'0'),
+            _ => usize::from(b.to_ascii_lowercase().wrapping_sub(b'a')) + 10,
+        };
+        let letter = if i % 2 == 0 {
+            CONSONANTS[v % CONSONANTS.len()]
+        } else {
+            VOWELS[v % VOWELS.len()]
+        };
+        if i == 6 {
+            name.push(' ');
+        }
+        if i == 0 || i == 6 {
+            name.push(letter.to_ascii_uppercase() as char);
+        } else {
+            name.push(letter as char);
+        }
     }
-    m.consumes().into_iter().find_map(|k| {
-        let v = control_value(k)?;
-        m.accepts(&Target::new(k, v)).then_some((k, v))
-    })
+    name
+}
+
+/// The `(kind, value)` pairs this module's known-negative controls probe: one
+/// for every kind of [`CONTROLLED_KINDS`], in that order, that the module
+/// [`consumes`](Module::consumes) **and** [`accepts`](Module::accepts) with
+/// the kind's [`control_value`]. Empty for a key-gated or paid module, a
+/// passive one, or one consuming no controllable kind — the module then has
+/// no control, which the sweep says in its count, never a passing one.
+pub fn control_targets(m: &dyn Module) -> Vec<(TargetKind, &'static str)> {
+    if m.cost() != ModuleCost::Free || m.is_passive() {
+        return Vec::new();
+    }
+    let consumed = m.consumes();
+    CONTROLLED_KINDS
+        .into_iter()
+        .filter(|k| consumed.contains(k))
+        .filter_map(|k| {
+            let v = control_value(k)?;
+            m.accepts(&Target::new(k, v)).then_some((k, v))
+        })
+        .collect()
+}
+
+/// Where `kind` sits in [`CONTROLLED_KINDS`] — the order a module's controls
+/// are reported in.
+fn control_rank(kind: TargetKind) -> usize {
+    CONTROLLED_KINDS
+        .iter()
+        .position(|k| *k == kind)
+        .unwrap_or(CONTROLLED_KINDS.len())
 }
 
 /// A known-negative control's reading: the probe report, and — when the
-/// module yielded — what it minted for the target nobody holds, so a
-/// fabrication names the entities the parser made up (a red run is
-/// triageable from its log; the engines' answers vary run to run, so the
-/// entities are the only record of what was minted).
+/// module yielded — what it minted for the target nobody holds and which of
+/// that is fabrication, so a fabrication names the entities the parser made
+/// up (a red run is triageable from its log; the engines' answers vary run
+/// to run, so the entities are the only record of what was minted).
 #[derive(Debug, Clone)]
 pub struct ControlReport {
     /// The probe's reading.
     pub report: ProbeReport,
-    /// `kind value` for each entity minted, in the module's order, at most
-    /// [`MINTED_NAMED`] of them — empty unless the outcome is `Alive`.
+    /// `kind value (confidence)` for each entity minted, in the module's
+    /// order, at most [`MINTED_NAMED`] of them — empty unless the outcome is
+    /// `Alive`.
     pub minted: Vec<String>,
+    /// The subset of the answer that is fabrication ([`fabricated_names`]):
+    /// every entity other than the target itself, and the target itself when
+    /// re-emitted at or above [`SEED_PRESENT_RUNG`]. Empty for an honest
+    /// answer — nothing, or the target alone carrying an annotation.
+    pub fabricated: Vec<String>,
+}
+
+impl ControlReport {
+    /// The module yielded the target itself and nothing else, below
+    /// [`SEED_PRESENT_RUNG`]: an annotation of a target nobody holds (a
+    /// rejected mailbox, an unreachable MX, a provider class), which says
+    /// nothing about whether anyone holds it — honest, not a fabrication.
+    pub fn is_annotation(&self) -> bool {
+        matches!(self.report.outcome, ProbeOutcome::Alive { .. }) && self.fabricated.is_empty()
+    }
 }
 
 /// How many minted entities a control names.
 pub const MINTED_NAMED: usize = 8;
 
-/// `kind value` for each entity of an answer, at most [`MINTED_NAMED`].
+/// The confidence at which a module that re-emits the target itself asserts
+/// the target is real. The engine merges by uid with GREATEST semantics, so a
+/// module that re-emits a found identifier at a rung raises the identifier to
+/// that rung whatever its own evidence was: `disposable_check` re-emitting a
+/// mailbox nobody holds at 0.75 because Gmail is a real provider raised every
+/// Gmail address a scan found, however weakly, to 0.75 (REQ-CANARY-003, the
+/// sweep's known-negative control). Below this rung the target carries an
+/// annotation and no presence claim; at or above it, a target nobody holds
+/// re-emitted is fabrication. [`crate::core::confidence::MEDIUM`] is the
+/// ladder's "reasonable context or solid source" — the first rung a finding
+/// stands on by itself.
+pub const SEED_PRESENT_RUNG: f64 = crate::core::confidence::MEDIUM;
+
+/// `kind value (confidence)` for an entity.
+fn entity_name(e: &crate::core::entity::Entity) -> String {
+    format!("{} {} ({:.2})", e.kind, e.value, e.confidence)
+}
+
+/// [`entity_name`] for each entity of an answer, at most [`MINTED_NAMED`].
 fn minted_names(answer: &crate::core::module::ModuleResult) -> Vec<String> {
     answer
         .entities
         .iter()
         .take(MINTED_NAMED)
-        .map(|e| format!("{} {}", e.kind, e.value))
+        .map(entity_name)
         .collect()
 }
 
-/// Probe every module that has a known-negative control with it, `concurrency`
-/// at a time — one attempt each: a control's transport failure is
-/// uninformative and tolerated, never retried — and return one
-/// [`ControlReport`] per controlled module, sorted by name. The reports are
-/// the controls' own: never a canary reading, never drift, never a dead
-/// canary — [`fabrications`] is their one verdict.
+/// The fabricated entities of an answer to the control `(kind, value)`,
+/// named, at most [`MINTED_NAMED`]: every entity that is not the target
+/// itself (the uid the engine merges by, so case and the engine's own
+/// normalisation are not a new entity), and the target itself when re-emitted
+/// at or above [`SEED_PRESENT_RUNG`]. Empty for nothing, and for the target
+/// alone below the rung — an annotation.
+pub fn fabricated_names(
+    answer: &crate::core::module::ModuleResult,
+    kind: TargetKind,
+    value: &str,
+) -> Vec<String> {
+    let seed = Target::new(kind, value).to_entity(SEED_PRESENT_RUNG, "control");
+    answer
+        .entities
+        .iter()
+        .filter(|e| e.uid != seed.uid || e.confidence >= SEED_PRESENT_RUNG)
+        .take(MINTED_NAMED)
+        .map(entity_name)
+        .collect()
+}
+
+/// Probe every module that has known-negative controls with each of them
+/// ([`control_targets`]), `concurrency` at a time — one attempt each: a
+/// control's transport failure is uninformative and tolerated, never retried
+/// — and return one [`ControlReport`] per controlled `(module, kind)`, sorted
+/// by module name and then in [`CONTROLLED_KINDS`] order. The reports are the
+/// controls' own: never a canary reading, never drift, never a dead canary —
+/// [`fabrications`] is their one verdict.
 pub async fn probe_negative_controls(concurrency: usize) -> Vec<ControlReport> {
+    probe_controls_of(crate::modules::registry(), build_client(), concurrency).await
+}
+
+/// [`probe_negative_controls`] over `modules` with `http` — the registry's
+/// controls in production, a fixture's under test.
+pub(crate) async fn probe_controls_of(
+    modules: Vec<std::sync::Arc<dyn Module>>,
+    http: reqwest::Client,
+    concurrency: usize,
+) -> Vec<ControlReport> {
     use std::sync::Arc;
     use tokio::{sync::Semaphore, task::JoinSet};
 
-    let http = build_client();
     let sem = Arc::new(Semaphore::new(concurrency.max(1)));
     let mut set: JoinSet<Option<ControlReport>> = JoinSet::new();
-    for m in crate::modules::registry() {
-        let http = http.clone();
-        let sem = Arc::clone(&sem);
-        set.spawn(async move {
-            let _permit = sem.acquire_owned().await.ok()?;
-            let (kind, value) = control_target(m.as_ref())?;
-            Some(probe_control(m.as_ref(), &http, kind, value).await)
-        });
+    for m in modules {
+        for (kind, value) in control_targets(m.as_ref()) {
+            let m = Arc::clone(&m);
+            let http = http.clone();
+            let sem = Arc::clone(&sem);
+            set.spawn(async move {
+                let _permit = sem.acquire_owned().await.ok()?;
+                Some(probe_control(m.as_ref(), &http, kind, value).await)
+            });
+        }
     }
     let mut reports = Vec::new();
     while let Some(joined) = set.join_next().await {
@@ -749,7 +909,7 @@ pub async fn probe_negative_controls(concurrency: usize) -> Vec<ControlReport> {
             reports.push(report);
         }
     }
-    reports.sort_by(|a, b| a.report.module.cmp(b.report.module));
+    reports.sort_by_key(|c| (c.report.module, control_rank(c.report.kind)));
     reports
 }
 
@@ -767,9 +927,11 @@ pub(crate) async fn probe_control(
     let budget = Duration::from_millis(m.max_timeout_ms());
     let name = m.name();
     let run = run_once(m, &target, &ctx, budget, name).await;
-    let minted = match &run {
-        RunOutcome::Answered(Ok(answer)) => minted_names(answer),
-        _ => Vec::new(),
+    let (minted, fabricated) = match &run {
+        RunOutcome::Answered(Ok(answer)) => {
+            (minted_names(answer), fabricated_names(answer, kind, value))
+        }
+        _ => (Vec::new(), Vec::new()),
     };
     ControlReport {
         report: ProbeReport {
@@ -779,19 +941,22 @@ pub(crate) async fn probe_control(
             outcome: classify_run(run),
         },
         minted,
+        fabricated,
     }
 }
 
-/// The controls that yielded: a module that minted entities for a target
-/// nobody holds — fabrication, the false-evidence class the sweep exists to
-/// catch, and the one verdict a control carries. `Empty` is the honest
-/// answer; a throttle, a refusal, a skip or a transport failure is no reading
-/// of the parser at all and is reported, never counted either way.
+/// The controls that fabricated: a module that minted, for a target nobody
+/// holds, anything but the target itself below [`SEED_PRESENT_RUNG`] — the
+/// false-evidence class the sweep exists to catch, and the one verdict a
+/// control carries. `Empty` is the honest answer, and the target alone,
+/// annotated below the rung, is honest too ([`ControlReport::is_annotation`]);
+/// a throttle, a refusal, a skip or a transport failure is no reading of the
+/// parser at all and is reported, never counted either way.
 #[must_use]
 pub fn fabrications(controls: &[ControlReport]) -> Vec<&ControlReport> {
     controls
         .iter()
-        .filter(|c| matches!(c.report.outcome, ProbeOutcome::Alive { .. }))
+        .filter(|c| !c.fabricated.is_empty())
         .collect()
 }
 
@@ -2011,42 +2176,125 @@ mod tests {
     // ── Known-negative controls ────────────────────────────────────────────
 
     #[test]
-    fn every_username_module_has_a_control_with_the_sweeps_handle_and_no_other_module_does() {
+    fn every_keyless_network_module_has_one_control_per_controllable_kind_and_no_other_does() {
         let handle = crate::util::probe::sweep_control_handle();
         assert_ne!(
             handle,
             crate::util::probe::control_handle(),
             "the sweep's target must not be the handle the presence probes judge against"
         );
-        let mut controlled = 0usize;
+        let mut per_kind: HashMap<TargetKind, usize> = HashMap::new();
+        let mut by_module: HashMap<&'static str, Vec<TargetKind>> = HashMap::new();
         for m in crate::modules::registry() {
             let m = m.as_ref();
-            let expected = m.cost() == ModuleCost::Free
-                && !m.is_passive()
-                && m.consumes().contains(&TargetKind::Username)
-                && m.accepts(&Target::new(TargetKind::Username, handle));
-            let control = control_target(m);
+            let network = m.cost() == ModuleCost::Free && !m.is_passive();
+            let consumed = m.consumes();
+            let expected: Vec<(TargetKind, &'static str)> = CONTROLLED_KINDS
+                .into_iter()
+                .filter(|k| network && consumed.contains(k))
+                .filter_map(|k| {
+                    let v = control_value(k).expect("a controlled kind has a value");
+                    m.accepts(&Target::new(k, v)).then_some((k, v))
+                })
+                .collect();
+            let controls = control_targets(m);
             assert_eq!(
-                control.is_some(),
+                controls,
                 expected,
-                "{}: a keyless network module that accepts a Username has a control, no other \
-                 module does",
+                "{}: one control per controllable kind a keyless network module consumes and \
+                 accepts, in CONTROLLED_KINDS order, and none for any other module",
                 m.name()
             );
-            if let Some((kind, value)) = control {
-                assert_eq!(kind, TargetKind::Username);
-                assert_eq!(value, handle);
-                controlled += 1;
+            for (k, _) in &controls {
+                *per_kind.entry(*k).or_default() += 1;
             }
+            by_module.insert(m.name(), controls.into_iter().map(|(k, _)| k).collect());
         }
-        assert!(
-            controlled >= 20,
-            "the username family is at least twenty modules; {controlled} controlled"
+        // Concrete members of each family, and the modules that have none.
+        let kinds = |name: &str| by_module.get(name).cloned().unwrap_or_default();
+        assert_eq!(kinds("github_user"), vec![TargetKind::Username]);
+        assert_eq!(kinds("whois"), vec![TargetKind::Domain]);
+        assert_eq!(kinds("gravatar"), vec![TargetKind::Email]);
+        assert_eq!(kinds("wikitree"), vec![TargetKind::FullName]);
+        assert_eq!(
+            kinds("search_engines"),
+            CONTROLLED_KINDS.to_vec(),
+            "the engines answer every kind, so they are controlled for every kind"
         );
+        assert_eq!(kinds("crtsh"), vec![TargetKind::Domain, TargetKind::Email]);
+        assert!(kinds("see_know").is_empty(), "a paid module has no control");
+        assert!(kinds("ip_geo").is_empty(), "an IpAddress has no control");
+        for (kind, at_least) in [
+            (TargetKind::Username, 20),
+            (TargetKind::Domain, 20),
+            (TargetKind::Email, 10),
+            (TargetKind::FullName, 10),
+        ] {
+            let n = per_kind.get(&kind).copied().unwrap_or(0);
+            assert!(
+                n >= at_least,
+                "the {kind:?} family is at least {at_least} modules; {n} controlled"
+            );
+        }
+    }
+
+    /// Every control is a well-formed target nobody holds, read from the one
+    /// handle, never the sweep's sample or a canary; a kind outside
+    /// `CONTROLLED_KINDS` has none.
+    #[test]
+    fn every_control_is_a_well_formed_target_nobody_holds_read_from_one_handle() {
+        let handle = crate::util::probe::sweep_control_handle();
+        for kind in CONTROLLED_KINDS {
+            let value = control_value(kind).expect("a controlled kind has a value");
+            assert_eq!(
+                Target::new(kind, value).validate(),
+                Ok(()),
+                "{kind:?} `{value}` passes the CLI's own validation"
+            );
+            assert_ne!(
+                Some(value),
+                canonical_sample(kind),
+                "{kind:?}: never the sample"
+            );
+            assert!(
+                !CANARY_PROBES
+                    .iter()
+                    .any(|(_, k, v)| *k == kind && *v == value),
+                "{kind:?}: never a canary"
+            );
+            assert_eq!(control_value(kind), Some(value), "drawn once per process");
+        }
+        assert_eq!(control_value(TargetKind::Username), Some(handle));
+        assert_eq!(
+            control_value(TargetKind::Domain),
+            Some(format!("{handle}.com").as_str())
+        );
+        assert_eq!(
+            control_value(TargetKind::Email),
+            Some(format!("{handle}@gmail.com").as_str())
+        );
+        assert_eq!(
+            control_value(TargetKind::FullName),
+            Some(name_from_handle(handle).as_str())
+        );
+        let name = control_value(TargetKind::FullName).expect("a name");
+        let tokens: Vec<&str> = name.split(' ').collect();
+        assert_eq!(tokens.len(), 2, "{name}");
+        for t in &tokens {
+            assert_eq!(t.len(), 6, "{name}");
+            assert!(t.starts_with(|c: char| c.is_ascii_uppercase()), "{name}");
+            assert!(t[1..].bytes().all(|b| b.is_ascii_lowercase()), "{name}");
+        }
+        assert_eq!(name_from_handle("a1b2c3d4e5f6"), "Nepiro Sutave");
+        assert_eq!(name_from_handle("zzzzzzzzzzzz"), "Vavava Vavava");
+        // A fact of the value is not a fabrication: no control for these.
+        assert_eq!(control_value(TargetKind::Phone), None);
+        assert_eq!(control_value(TargetKind::IpAddress), None);
+        assert_eq!(control_value(TargetKind::Url), None);
     }
 
     #[test]
-    fn a_control_that_yields_is_a_fabrication_and_any_other_outcome_is_not() {
+    fn a_control_that_fabricates_is_a_fabrication_and_any_other_reading_is_not() {
         let control = |module, outcome| ProbeReport {
             module,
             kind: TargetKind::Username,
@@ -2055,6 +2303,8 @@ mod tests {
         };
         let controls = vec![
             control("github_user", ProbeOutcome::Alive { found: 2 }),
+            // The target alone, annotated below the present rung.
+            control("gravatar", ProbeOutcome::Alive { found: 1 }),
             control("gitlab_user", ProbeOutcome::Empty),
             control(
                 "reddit_user",
@@ -2091,9 +2341,26 @@ mod tests {
         ];
         let controls: Vec<ControlReport> = controls
             .into_iter()
-            .map(|report| ControlReport {
-                report,
-                minted: Vec::new(),
+            .map(|report| {
+                let (minted, fabricated) = match report.module {
+                    "github_user" => (
+                        vec![
+                            "username nobodyholds1 (0.82)".to_string(),
+                            "url https://github.com/nobodyholds1 (0.70)".to_string(),
+                        ],
+                        vec![
+                            "username nobodyholds1 (0.82)".to_string(),
+                            "url https://github.com/nobodyholds1 (0.70)".to_string(),
+                        ],
+                    ),
+                    "gravatar" => (vec!["username nobodyholds1 (0.30)".to_string()], Vec::new()),
+                    _ => (Vec::new(), Vec::new()),
+                };
+                ControlReport {
+                    report,
+                    minted,
+                    fabricated,
+                }
             })
             .collect();
         let fabricated: Vec<&str> = fabrications(&controls)
@@ -2103,7 +2370,84 @@ mod tests {
         assert_eq!(
             fabricated,
             vec!["github_user"],
-            "only a control that yielded entities is a fabrication"
+            "only a control that fabricated is a fabrication"
+        );
+        let annotated: Vec<&str> = controls
+            .iter()
+            .filter(|c| c.is_annotation())
+            .map(|c| c.report.module)
+            .collect();
+        assert_eq!(
+            annotated,
+            vec!["gravatar"],
+            "the target alone below the rung is an annotation, and only that"
+        );
+    }
+
+    /// The pure verdict on an answer: nothing is honest; the target itself
+    /// below the present rung is an annotation, whatever the engine's own
+    /// normalisation did to its spelling; the target at the rung asserts it is
+    /// real; anything else is fabrication at any rung.
+    #[test]
+    fn the_target_re_emitted_below_the_present_rung_is_an_annotation_and_anything_else_is_not() {
+        use crate::core::confidence;
+        use crate::core::entity::{Entity, EntityKind};
+        let value = "nobodyholds1@gmail.com";
+        let mut answer = crate::core::module::ModuleResult::new();
+        assert!(fabricated_names(&answer, TargetKind::Email, value).is_empty());
+        answer.push(Entity::new(
+            EntityKind::Email,
+            value,
+            confidence::TENTATIVE,
+            "s",
+        ));
+        assert!(fabricated_names(&answer, TargetKind::Email, value).is_empty());
+        answer.push(Entity::new(
+            EntityKind::Email,
+            " NobodyHolds1@Gmail.com ",
+            confidence::SPECULATIVE,
+            "s",
+        ));
+        assert!(fabricated_names(&answer, TargetKind::Email, value).is_empty());
+        answer.push(Entity::new(
+            EntityKind::Email,
+            value,
+            SEED_PRESENT_RUNG,
+            "s",
+        ));
+        assert_eq!(
+            fabricated_names(&answer, TargetKind::Email, value),
+            vec![format!("email {value} (0.50)")]
+        );
+        let mut stranger = crate::core::module::ModuleResult::new();
+        stranger.push(Entity::new(
+            EntityKind::Domain,
+            "partnerfirm.com",
+            confidence::VERY_LOW,
+            "s",
+        ));
+        stranger.push(Entity::new(
+            EntityKind::Domain,
+            "nobodyholds1.com",
+            confidence::VERY_LOW,
+            "s",
+        ));
+        assert_eq!(
+            fabricated_names(&stranger, TargetKind::Domain, "nobodyholds1.com"),
+            vec!["domain partnerfirm.com (0.25)".to_string()]
+        );
+        let mut many = crate::core::module::ModuleResult::new();
+        for i in 0..(MINTED_NAMED + 3) {
+            many.push(Entity::new(
+                EntityKind::Domain,
+                format!("host{i}.example.com"),
+                confidence::LOW_MEDIUM,
+                "s",
+            ));
+        }
+        assert_eq!(
+            fabricated_names(&many, TargetKind::Domain, "nobodyholds1.com").len(),
+            MINTED_NAMED
         );
     }
 
@@ -2147,13 +2491,164 @@ mod tests {
         }
     }
 
+    /// A module answering two controllable kinds is controlled once per kind,
+    /// each control asking that kind's value; the wave reports them sorted by
+    /// module and then in `CONTROLLED_KINDS` order, and a module with no
+    /// control has no row.
+    #[tokio::test]
+    async fn the_control_wave_asks_every_controllable_kind_a_module_answers_in_order() {
+        struct Two;
+        #[async_trait::async_trait]
+        impl Module for Two {
+            fn name(&self) -> &'static str {
+                "two_kinds_fixture"
+            }
+            fn priority(&self) -> u8 {
+                50
+            }
+            fn consumes(&self) -> Vec<TargetKind> {
+                vec![TargetKind::Domain, TargetKind::Username]
+            }
+            fn accepts(&self, t: &Target) -> bool {
+                matches!(t.kind, TargetKind::Domain | TargetKind::Username)
+            }
+            async fn process(
+                &self,
+                t: &Target,
+                _ctx: &ModuleContext,
+            ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+                let mut r = crate::core::module::ModuleResult::new();
+                if t.kind == TargetKind::Domain {
+                    r.push(crate::core::entity::Entity::new(
+                        crate::core::entity::EntityKind::Domain,
+                        &t.value,
+                        0.5,
+                        "probe",
+                    ));
+                }
+                Ok(r)
+            }
+        }
+        struct Paid;
+        #[async_trait::async_trait]
+        impl Module for Paid {
+            fn name(&self) -> &'static str {
+                "a_paid_fixture"
+            }
+            fn priority(&self) -> u8 {
+                50
+            }
+            fn cost(&self) -> ModuleCost {
+                ModuleCost::Paid
+            }
+            fn accepts(&self, t: &Target) -> bool {
+                matches!(t.kind, TargetKind::Username)
+            }
+            async fn process(
+                &self,
+                _t: &Target,
+                _ctx: &ModuleContext,
+            ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+                Ok(crate::core::module::ModuleResult::new())
+            }
+        }
+        // A module that annotates the mailbox it was asked about — an SMTP
+        // rejection, a provider class — below the present rung.
+        struct Annotator;
+        #[async_trait::async_trait]
+        impl Module for Annotator {
+            fn name(&self) -> &'static str {
+                "annotator_fixture"
+            }
+            fn priority(&self) -> u8 {
+                50
+            }
+            fn consumes(&self) -> Vec<TargetKind> {
+                vec![TargetKind::Email]
+            }
+            fn accepts(&self, t: &Target) -> bool {
+                matches!(t.kind, TargetKind::Email)
+            }
+            async fn process(
+                &self,
+                t: &Target,
+                _ctx: &ModuleContext,
+            ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+                let mut r = crate::core::module::ModuleResult::new();
+                r.push(crate::core::entity::Entity::new(
+                    crate::core::entity::EntityKind::Email,
+                    &t.value,
+                    crate::core::confidence::SPECULATIVE,
+                    "probe",
+                ));
+                Ok(r)
+            }
+        }
+        let modules: Vec<std::sync::Arc<dyn Module>> = vec![
+            std::sync::Arc::new(Two),
+            std::sync::Arc::new(Paid),
+            std::sync::Arc::new(Annotator),
+            std::sync::Arc::new(Echo {
+                asked: std::sync::Mutex::new(Vec::new()),
+            }),
+        ];
+        let controls = probe_controls_of(modules, reqwest::Client::new(), 2).await;
+        let rows: Vec<(&str, TargetKind, &str)> = controls
+            .iter()
+            .map(|c| (c.report.module, c.report.kind, c.report.value))
+            .collect();
+        let handle = crate::util::probe::sweep_control_handle();
+        let domain = control_value(TargetKind::Domain).expect("a domain control");
+        let email = control_value(TargetKind::Email).expect("an email control");
+        assert_eq!(
+            rows,
+            vec![
+                ("annotator_fixture", TargetKind::Email, email),
+                ("echo_probe_fixture", TargetKind::Username, handle),
+                ("two_kinds_fixture", TargetKind::Username, handle),
+                ("two_kinds_fixture", TargetKind::Domain, domain),
+            ],
+            "one row per (module, kind), sorted by module then CONTROLLED_KINDS order; the \
+             paid module has none"
+        );
+        // The verdict is per control: the two-kind fixture fabricates for a
+        // domain nobody registered and not for a handle nobody holds; the
+        // echo re-emits the handle at the present rung; the annotator's
+        // mailbox alone, below it, is no fabrication.
+        let fabricated: Vec<(&str, TargetKind)> = fabrications(&controls)
+            .iter()
+            .map(|c| (c.report.module, c.report.kind))
+            .collect();
+        assert_eq!(
+            fabricated,
+            vec![
+                ("echo_probe_fixture", TargetKind::Username),
+                ("two_kinds_fixture", TargetKind::Domain)
+            ]
+        );
+        assert!(controls[0].is_annotation(), "{:?}", controls[0]);
+        assert_eq!(controls[0].minted, vec![format!("email {email} (0.30)")]);
+        assert!(controls[0].fabricated.is_empty());
+        assert_eq!(controls[3].minted, vec![format!("domain {domain} (0.50)")]);
+        assert_eq!(controls[3].fabricated, controls[3].minted);
+    }
+
     #[tokio::test]
     async fn a_control_probes_the_module_with_the_handle_nobody_holds_not_its_sample() {
         let http = reqwest::Client::new();
         let m = Echo {
             asked: std::sync::Mutex::new(Vec::new()),
         };
-        let (kind, value) = control_target(&m).expect("a Username module has a control");
+        let controls = control_targets(&m);
+        assert_eq!(
+            controls,
+            vec![(
+                TargetKind::Username,
+                crate::util::probe::sweep_control_handle()
+            )],
+            "a Username module has exactly its Username control"
+        );
+        let (kind, value) = controls[0];
         let control = probe_control(&m, &http, kind, value).await;
         assert_eq!(
             control.report.value,
@@ -2167,10 +2662,14 @@ mod tests {
         assert_eq!(
             control.minted,
             vec![format!(
-                "username {}",
+                "username {} (0.50)",
                 crate::util::probe::sweep_control_handle()
             )],
             "a fabrication names what was minted"
+        );
+        assert_eq!(
+            control.fabricated, control.minted,
+            "the target re-emitted at the present rung asserts it is real"
         );
         assert_eq!(fabrications(std::slice::from_ref(&control)).len(), 1);
         let control = control.report;

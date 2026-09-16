@@ -846,33 +846,49 @@ async fn print_live_capability_report() {
             println!("      {}", d.describe());
         }
     }
-    // Known-negative controls: every Username module asked about a handle
-    // nobody holds. A yield here is fabrication — false evidence on every
-    // username scan — and is called out as such; the controls are never a
-    // canary reading, so they reach neither the drift store nor the
-    // dead-canary memory.
+    // Known-negative controls: every keyless network module asked, per kind
+    // it consumes, about a target nobody holds. A yield here is fabrication —
+    // false evidence on every scan of that kind — and is called out as such;
+    // the controls are never a canary reading, so they reach neither the
+    // drift store nor the dead-canary memory.
     let controls = capability_probe::probe_negative_controls(8).await;
     let fabricated = capability_probe::fabrications(&controls);
     let control_empty = controls
         .iter()
         .filter(|c| matches!(c.report.outcome, ProbeOutcome::Empty))
         .count();
-    if let Some(nobody) = controls.first().map(|c| c.report.value) {
+    let control_annotated = controls.iter().filter(|c| c.is_annotation()).count();
+    if !controls.is_empty() {
+        let nobody = capability_probe::CONTROLLED_KINDS
+            .iter()
+            .filter_map(|k| {
+                Some(format!(
+                    "{} `{}`",
+                    k.canonical_str(),
+                    capability_probe::control_value(*k)?
+                ))
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
         println!(
-            "  controls: {} module(s) asked about `{nobody}`, a handle nobody holds — {} empty, {} \
-             fabricated, {} without a reading",
+            "  controls: {} probed, each a target nobody holds ({nobody}) — {} empty, {} \
+             annotated, {} fabricated, {} without a reading",
             controls.len(),
             control_empty,
+            control_annotated,
             fabricated.len(),
-            controls.len() - control_empty - fabricated.len()
+            controls.len() - control_empty - control_annotated - fabricated.len()
         );
     }
     for c in &fabricated {
         println!(
-            "  ⚠ FABRICATION {:<22} minted for a handle nobody holds — false evidence on every \
-             username scan until the parser is repaired: {}",
+            "  ⚠ FABRICATION {:<22} minted for {} `{}`, a target nobody holds — false evidence \
+             on every {} scan until the parser is repaired: {}",
             c.report.module,
-            c.minted.join("; ")
+            c.report.kind.canonical_str(),
+            c.report.value,
+            c.report.kind.canonical_str(),
+            c.fabricated.join("; ")
         );
     }
     // Persist so this finding survives past this one printout — the next

@@ -76,6 +76,17 @@ pub(super) fn build_entities(
             false
         } else if matches!(target.kind, TargetKind::Phone) {
             result_mentions_phone(&format!("{combined_text} {}", r.url), &target.value)
+        } else if matches!(target.kind, TargetKind::Domain) {
+            // A domain's distinctive term is the domain itself: its labels
+            // are the web's own vocabulary (`com`, `index`, `mail`), and the
+            // engines answer a `site:` query about a domain they have never
+            // indexed with results for the query's other tokens — 49 hosts
+            // for a domain nobody registered (REQ-CANARY-003, the sweep's
+            // known-negative control).
+            let hay = format!("{combined_text} {}", r.url).to_lowercase();
+            target_domain
+                .as_deref()
+                .is_some_and(|d| hay.contains(d.trim_start_matches("www.")))
         } else {
             let hay = format!("{combined_text} {}", r.url).to_lowercase();
             terms.last().is_some_and(|term| hay.contains(term.as_str()))
@@ -120,6 +131,10 @@ pub(super) fn build_entities(
         if host.is_empty() {
             continue;
         }
+        // Whether this result is about the subject at all (`names_the_subject`
+        // above): decided before the host is classified, because an external
+        // host is the subject's estate only when its page names the subject.
+        let result_names_the_subject = names_the_subject(r);
 
         let domain = extract_registrable(&host);
         // Canonicalise before classifying/deduping, not the raw `host` — a
@@ -146,7 +161,15 @@ pub(super) fn build_entities(
             e.tag(tags::SEARCH_DISCOVERED);
             e.add_evidence(build_search_evidence(r));
             result.push(e);
-        } else if matches!(target.kind, TargetKind::Domain)
+        } else if result_names_the_subject
+            // An external host is the seed's estate only when its page names
+            // the seed. The engines answer a `site:` query about a domain they
+            // have never indexed with results for the query's other tokens
+            // (`intitle:"index of" ".git" site:<nobody>.com` → index.hr,
+            // index.hu, merriam-webster.com's "index"), and every one of
+            // those hosts was filed as the domain's estate at 0.45 — 49 of
+            // them for a domain nobody registered (REQ-CANARY-003).
+            && matches!(target.kind, TargetKind::Domain)
             // Bare EXTERNAL registrable domains are only a meaningful finding for
             // a DOMAIN seed (relationship/estate discovery). For a person / email
             // / username seed, the SERP host is just where the name happened to
@@ -220,8 +243,6 @@ pub(super) fn build_entities(
         // (REQ-SEARCH-002, observed 2026-09-15 by the sweep's known-negative
         // control: 148 results from Bing and Dogpile for 23 queries about
         // it). A subject with no distinctive term at all mines nothing.
-        let result_names_the_subject = names_the_subject(r);
-
         if result_names_the_subject {
             for email in extract_emails_from_text(&combined_text) {
                 if crate::util::domains::is_infrastructure_email(&email) {

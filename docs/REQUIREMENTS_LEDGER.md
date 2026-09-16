@@ -4108,6 +4108,184 @@ the next step if a 200 wall is observed on one. The remaining
 `ip_reputation`) read JSON or crawl content and mint no negative claim from
 an empty parse.
 
+### REQ-CANARY-003 (**new, Pass 31 — MECHANISM extended to three kinds, then OBSERVED live from the sandbox on its first run: three findings, two of them defects, FIXED, FALSIFIED**): every keyless network module is asked, per kind it consumes, about a domain, a mailbox and a name nobody holds
+
+**Lead.** REQ-CANARY-002's residual and the stop revision (7): controls
+existed for the Username kind only, and the same mechanism could ask the
+Domain, Email and FullName families the null question. The prior was not
+low — the Username controls had found three fabrications in two modules on
+their first run — and the test was feasible, so under the method it had to
+be run before any stop.
+
+**Mechanism (`selftest::capability_probe`).** `CONTROLLED_KINDS` names the
+four kinds the sweep has a control for, in report order; `control_value`
+reads every control from the process's one handle nobody holds
+(`util::probe::sweep_control_handle`): the handle itself for a Username, the
+handle as a `.com` label for a Domain (a registrable namespace with no
+wildcard, so an unregistered label answers NXDOMAIN and "no match"
+everywhere — a reserved namespace is refused by `Target::validate` and read
+as a placeholder by every provider), the handle at Gmail for an Email (a real
+mailbox provider, so every provider-facing parser is read against a real
+mail domain instead of skipping on a missing MX), and the handle read as a
+pronounceable two-token name for a FullName (`name_from_handle`: consonant
+and vowel alternating, capitalised, letters only — `Nepiro Sutave` for
+`a1b2c3d4e5f6`). A Phone or an IpAddress has no control, stated in the
+constant's doc: what a module says about a number nobody holds (its
+numbering-plan region) or an address nobody announces (its geolocation, its
+registry) is a fact of the value itself, as honest for an unheld value as for
+a held one, so a yield there is no fabrication and a control would prove
+nothing. `control_targets(m)` is one control per controllable kind a keyless
+network module consumes and accepts, in `CONTROLLED_KINDS` order — 97 pairs
+across 120 free network modules (username 35, domain 31, email 17, full_name
+14; eight modules answer more than one kind, `search_engines` all four) —
+and `probe_negative_controls` probes every pair, one attempt each, through
+`probe_controls_of` (the registry's controls in production, a fixture's under
+test). The sweep and `hse doctor --live` print each row with its kind and the
+four values in the header.
+
+**Observation 1 (this sandbox, the first sweep over the three new kinds,
+02:25–02:28 UTC, the nonce `qfyhxgtlr64s` → `qfyhxgtlr64s.com`,
+`qfyhxgtlr64s@gmail.com`, `Jatise Mekego`).** `controls: 97 probed — 73
+empty, 3 fabricated, 21 without a reading` (the sandbox's refusals: four
+Cloudflare walls — `ahpra`, `anubis`, `asic_director`, `austlii` — twelve
+transport failures, most of them the unregistered domain's own NXDOMAIN
+reaching `app_links`, `commoncrawl`, `employer_pivot`, `sitemap`,
+`waf_detect`, `wayback`, `web_crawler`, three skips — `au_rdap` out of
+jurisdiction, `hackertarget` and `whois` declining a name that does not
+resolve — `dns_intel` timed out, `github_user` throttled). Every FullName
+control read `empty` (`asic_persons`, `au_unclaimed`, `chronicling_america`,
+`crossref_search`, `europepmc_search`, `openarch`, `sanctions_ofac`,
+`search_engines`, `wikidata`, `wikitree`): no register answered a name nobody
+holds with a namesake. The three that read `FABRICATED`:
+
+1. **`search_engines` for the domain: 58 entities** — `agame.com`,
+   `ahrefs.com`, `arimetrics.com`, `atlassian.com`, `baltimoresun.com`,
+   `cdc.gov`, `cnbc.com`, `comparestacks.com`, … Reproduced with the built
+   binary (`hse scan -k domain -v qfyhxgtlr64s.com -m search_engines`): 49
+   `Domain` entities at 0.45 tagged `external` / `search-discovered`, each
+   from Bing's answer to a query whose `site:` operator names a domain Bing
+   has never indexed — `intitle:"index of" ".git" site:qfyhxgtlr64s.com`
+   returned `index.hr`, `index.hu` and Merriam-Webster's *index* entry;
+   `site:qfyhxgtlr64s.com intext:"password" OR intext:"api_key"` returned
+   the Japanese Cabinet Office and Baidu Baike's article on Japan;
+   `link:qfyhxgtlr64s.com` an Illinois DHS page. The builder's
+   external-domain branch (`build.rs`: "bare EXTERNAL registrable domains
+   are a meaningful finding for a DOMAIN seed — relationship/estate
+   discovery") had **no relevance gate at all**: every result host outside
+   the generic/social/freemail/non-central lists was the seed's estate.
+   Every domain scan carried it. Two repairs: the branch is gated on
+   `names_the_subject` (the result must name the seed), and for a Domain
+   seed the distinctive term is **the domain itself** — `target_terms` had
+   split it into labels and dropped the TLD as a stopword, so `terms.last()`
+   was a label (`targetcorp`, `cross`, `index`), the web's own vocabulary.
+   The `result_names_the_subject` decision moved above the host
+   classification so one predicate gates the estate, the snippet PII and the
+   seed's re-affirmation.
+2. **`disposable_check` for the mailbox: the target itself at 0.75**
+   (`email-validated`, "uses a legitimate email provider"). debounce.io
+   classifies the provider, not the mailbox, and the engine merges by uid
+   with GREATEST semantics (`Entity::merge`, "replaying the same entities
+   only ever raises confidence"): the re-emission raised **every Gmail (or
+   any non-throwaway) address a scan found, however weakly, to 0.75**, and
+   re-affirmed a mailbox nobody holds at 0.75. `LEGIT_CONFIDENCE` is
+   `SPECULATIVE` (0.30) now — the ladder's "indirect signal with no
+   confirming source" — so the address keeps the annotation and gains no
+   presence claim.
+3. **`smtp_vrfy` for the mailbox: the target itself at 0.30**
+   (`smtp-unreachable`: this sandbox cannot open port 25, so the verdict was
+   `Unreachable`; the runner's would be Gmail's `550 5.1.1`, `Invalid` at
+   0.35). Not a defect: a rejected or unreachable mailbox is an honest
+   annotation of the address, and the module must be able to say it.
+
+**The verdict, refined (finding 3).** The Username controls' verdict — a
+control that yielded is a fabrication — was too coarse for the new kinds:
+an email parser's honest answer to a mailbox nobody holds is the mailbox
+itself carrying a rejection. `ControlReport.fabricated` (`fabricated_names`)
+is the subset of an answer that is fabrication: every entity other than the
+target itself (the uid the engine merges by, so case and the engine's own
+normalisation are not a new entity), and the target itself when re-emitted
+at or above `SEED_PRESENT_RUNG` (`confidence::MEDIUM`, 0.50 — the first
+rung a finding stands on by itself; below it the seed carries an annotation
+and no presence claim, at or above it a module asserts the target is real).
+`fabrications` is the controls with a non-empty `fabricated`;
+`ControlReport::is_annotation` is the target alone below the rung, printed
+as `annotated` and counted apart from `empty`. Under the refined verdict
+REQ-SEARCH-002's third finding (the seed re-affirmed at 0.82) still reads
+fabrication, `smtp_vrfy`'s six verdicts read as they should (only `Valid`,
+0.92, asserts the mailbox is held), and `disposable_check` at its old 0.75
+still read fabrication — the refinement hides no defect this run found.
+
+**Locks.**
+`every_keyless_network_module_has_one_control_per_controllable_kind_and_no_other_does`
+(registry shape, the concrete members `github_user` / `whois` / `gravatar` /
+`wikitree` / `search_engines` × 4 / `crtsh` × 2, a paid module and an
+IpAddress module with none, the four family minimums),
+`every_control_is_a_well_formed_target_nobody_holds_read_from_one_handle`
+(each value passes `Target::validate`, is never the sample nor a canary, is
+drawn once; the domain, mailbox and name shapes; `name_from_handle` pinned
+on two handles; no control for Phone / IpAddress / Url),
+`the_control_wave_asks_every_controllable_kind_a_module_answers_in_order`
+(a two-kind fixture, a paid fixture, an annotator and the echo through
+`probe_controls_of`: one row per pair in order, the verdict per control,
+the annotator's mailbox below the rung no fabrication),
+`the_target_re_emitted_below_the_present_rung_is_an_annotation_and_anything_else_is_not`
+(pure: nothing; the target below the rung in any spelling; the target at the
+rung; a stranger at any rung; the naming cap),
+`a_control_that_fabricates_is_a_fabrication_and_any_other_reading_is_not`,
+`search_engines::tests::an_external_host_whose_page_never_names_the_domain_seed_is_not_its_estate`
+(the control's own hosts as fixtures — `index.hu`, Merriam-Webster's
+*index*, a page naming only the label — mint nothing; a page naming the
+seed and the seed's own host do; only strangers → nothing re-affirmed),
+`disposable_check::tests::a_provider_class_verdict_never_asserts_the_mailbox_is_held`
+and `smtp_vrfy::tests::only_an_accepted_recipient_asserts_the_mailbox_is_held`
+(each module's ladder against `SEED_PRESENT_RUNG` — the boundary the sweep
+reads, asserted where the rungs are chosen). The fixture that had asserted
+the refuted premise (`build_entities_classifies_subdomain_vs_external…`: an
+external host is the estate whatever its page says) keeps its shape with a
+page that names the seed.
+
+**Falsification (`cycle_ad_falsify.py`; each mutation runs only its lock
+with `--exact`, the source restored and sha-asserted).** Thirteen mutations, 03:0x
+UTC, each **FAILED as required**: the Domain family's control removed and
+the per-module control reverted to its first kind (the registry lock); the
+name's capitalisation dropped and the mailbox control moved to a placeholder
+domain the CLI refuses (the well-formed lock); the wave probing only a
+module's first control and the wave's kind order reversed (the wave lock);
+the verdict reverted both ways — every entity of an answer fabrication, the
+target's own annotation included, and the target never fabrication at any
+rung (the pure verdict lock); `fabrications` reverted to "the control
+yielded" (the pure control lock); the external-estate gate reverted and the
+domain's distinctive term reverted to its last label (the search_engines
+lock); `disposable_check`'s legitimate verdict back at 0.75 and
+`smtp_vrfy`'s catch-all raised to the present rung (each module's rung
+lock).
+
+**Local, after the repairs (this sandbox, 02:52–02:54 UTC, the nonce `ey20k0vi8t03` → `Tudaba Polubo`).** `controls: 97 probed — 73 empty, 2 annotated, 0
+fabricated, 22 without a reading`, the run green: `search_engines` reads
+`empty` for the domain (49 hosts before), `disposable_check` and
+`smtp_vrfy` read `annotated` — "the target alone, below the present rung:
+email ey20k0vi8t03@gmail.com (0.30)" — and every other control as before;
+the positive sweep unchanged (116 probed — 88 alive, 13 empty, 0 panicked;
+the sandbox's refusals as on every sweep from it).
+
+**Remote.** Dispatched on the pushed head; the runner's reading —
+the first control sweep over 97 pairs on the production vantage, expected
+`0 fabricated` with `smtp_vrfy` reading `annotated` at Gmail's `550` — is
+recorded here once it completes.
+
+**Residual.** A control's transport failure is one attempt and tolerated;
+for a Domain control the unregistered name's own NXDOMAIN is that failure
+on every module that fetches the host (`app_links`, `sitemap`, `waf_detect`,
+`wayback`, `web_crawler`, `employer_pivot`), so those parsers are read by
+the control only where they answer before resolving — a name that does not
+resolve being a typed skip rather than a fault (REQ-HACKERTARGET-001's
+shape) is the next improvement on that family. A Url target's distinctive
+term is still its last path token; the Url kind has no control. A page that
+names a domain's organisation without the domain string no longer mines the
+host as its estate — precision over recall, recorded here. `email-validated`
+still names debounce.io's provider reading; the tag is kept for its
+consumers, the rung says what it means.
+
 ### REQ-SEARCH-002 (**new, Pass 31 — OBSERVED by the known-negative control, VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a result that never names a single-token subject mines nothing
 
 **Lead.** IDENTIFIER MATCH ≠ ENTITY IDENTITY. `search_engines::build_entities`
@@ -4378,13 +4556,13 @@ panicked, `username_search 54` / `social_probe 10` / `streaming_probe 3` for
 their samples; `wifidb` provisional and dated from 2026-09-15 23:00 UTC, the
 memory restored three runs deep; the run green.
 
-**Residual.** Controls exist for the Username kind only; a Domain, Email or
-FullName control needs a value nobody holds that the providers treat as
-well-formed (a reserved TLD is refused by the CLI's own validation; a nonce
-`.com` may be a parked domain) — a later batch on the same mechanism. A
-control's transport failure is one attempt and tolerated: on a vantage that
-refuses the sweep (this sandbox's six), the control says nothing, which the
-count says.
+**Residual.** Controls existed for the Username kind only; the Domain, Email
+and FullName controls followed on the same mechanism (REQ-CANARY-003: a
+nonce `.com` label, the nonce at Gmail, the nonce read as a name), and
+their first run found the estate fabrication and the provider-class
+re-affirmation recorded there. A control's transport failure is one attempt
+and tolerated: on a vantage that refuses the sweep (this sandbox's six), the
+control says nothing, which the count says.
 
 ### REQ-CI-003 (**new, Pass 31 — OBSERVED once in a full-suite run, VERIFIED FROM SOURCE, FIXED in the harness, FALSIFIED**): the key-chaining smoke tests share one process-global pool and ran unserialised
 

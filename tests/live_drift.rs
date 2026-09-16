@@ -41,11 +41,13 @@
 //! and a sweep that reached no provider at all fails as an offline vantage,
 //! never as dead providers. A **panicked** outcome always **fails**, canary or
 //! not — unlike `empty`, there is no legitimate reason a live response should
-//! crash the parser. Every keyless module that accepts a Username is also
-//! probed with a handle nobody holds (`capability_probe::probe_negative_controls`,
+//! crash the parser. Every keyless network module is also probed, for each
+//! kind it consumes among Username, Domain, Email and FullName, with a
+//! well-formed target nobody holds (`capability_probe::probe_negative_controls`,
 //! the sweep's **known-negative controls**): the only honest yield is nothing,
-//! and a module that mints entities for it is a **fabrication**, which
-//! **fails** the run like drift does. That keeps the scheduled
+//! or the target itself carrying an annotation below the rung at which a
+//! module asserts a target is real, and a module that mints anything else for
+//! it is a **fabrication**, which **fails** the run like drift does. That keeps the scheduled
 //! `.github/workflows/live-drift.yml` run's contract intact — a red run is an
 //! actionable drift, a confirmed dead canary or a fabrication, never a flaky
 //! endpoint.
@@ -225,48 +227,72 @@ async fn fleet_capability_drift() {
                 .join("\n  ")
         )
     };
-    // Known-negative controls (REQ-CANARY-002): the same parsers asked about
-    // a handle nobody holds. A canary proves a parser yields for a target its
-    // provider holds; only a control can show it yields nothing for one it
-    // does not — the false-evidence class REQ-PROBE-001 found in three
-    // presence probes. Never fed to the dead-canary memory or the drift
-    // store: a control is not a canary reading.
+    // Known-negative controls (REQ-CANARY-002, REQ-CANARY-003): the same
+    // parsers asked, per kind they consume, about a target nobody holds. A
+    // canary proves a parser yields for a target its provider holds; only a
+    // control can show it yields nothing for one it does not — the
+    // false-evidence class REQ-PROBE-001 found in three presence probes.
+    // Never fed to the dead-canary memory or the drift store: a control is
+    // not a canary reading.
     let controls = capability_probe::probe_negative_controls(8).await;
-    let nobody = controls.first().map_or("(none)", |c| c.report.value);
+    let nobody = capability_probe::CONTROLLED_KINDS
+        .iter()
+        .filter_map(|k| {
+            Some(format!(
+                "{} `{}`",
+                k.canonical_str(),
+                capability_probe::control_value(*k)?
+            ))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
     println!(
-        "\nknown-negative controls — every Username module asked about `{nobody}`, a handle \
-         nobody holds:"
+        "\nknown-negative controls — every keyless network module asked, per kind it consumes, \
+         about a target nobody holds ({nobody}):"
     );
     let mut control_empty = 0usize;
+    let mut control_annotated = 0usize;
     let mut control_other = 0usize;
     for c in &controls {
         let r = &c.report;
         match &r.outcome {
             ProbeOutcome::Empty => {
                 control_empty += 1;
-                println!("  empty        {:<22}", r.module);
+                println!("  empty        {:<22} {}", r.module, r.kind.canonical_str());
+            }
+            ProbeOutcome::Alive { .. } if c.is_annotation() => {
+                control_annotated += 1;
+                println!(
+                    "  annotated    {:<22} {} the target alone, below the present rung: {}",
+                    r.module,
+                    r.kind.canonical_str(),
+                    c.minted.join("; ")
+                );
             }
             ProbeOutcome::Alive { found } => {
                 println!(
-                    "  FABRICATED   {:<22} {found} entities for a handle nobody holds: {}",
+                    "  FABRICATED   {:<22} {} {found} entities for `{}`, a target nobody holds: {}",
                     r.module,
-                    c.minted.join("; ")
+                    r.kind.canonical_str(),
+                    r.value,
+                    c.fabricated.join("; ")
                 );
             }
             other => {
                 control_other += 1;
                 println!(
-                    "  {:<12} {:<22} (no reading of the parser)",
+                    "  {:<12} {:<22} {} (no reading of the parser)",
                     other.label(),
-                    r.module
+                    r.module,
+                    r.kind.canonical_str()
                 );
             }
         }
     }
     let fabricated = capability_probe::fabrications(&controls);
     println!(
-        "controls: {} probed — {control_empty} empty, {} fabricated, {control_other} without a \
-         reading",
+        "controls: {} probed — {control_empty} empty, {control_annotated} annotated, {} \
+         fabricated, {control_other} without a reading",
         controls.len(),
         fabricated.len()
     );
@@ -274,12 +300,20 @@ async fn fleet_capability_drift() {
         String::new()
     } else {
         format!(
-            "FABRICATION: {} module(s) minted entities for `{nobody}`, a handle nobody holds — \
-             false evidence on every scan of that kind until the parser is repaired:\n  {}\n",
+            "FABRICATION: {} control(s) minted entities for a target nobody holds — false \
+             evidence on every scan of that kind until the parser is repaired:\n  {}\n",
             fabricated.len(),
             fabricated
                 .iter()
-                .map(|c| format!("{} — {}", c.report.module, c.minted.join("; ")))
+                .map(|c| {
+                    format!(
+                        "{} {} `{}` — {}",
+                        c.report.module,
+                        c.report.kind.canonical_str(),
+                        c.report.value,
+                        c.fabricated.join("; ")
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join("\n  ")
         )

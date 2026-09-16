@@ -73,6 +73,17 @@ use super::*;
         );
     }
 
+    /// debounce.io classifies the provider, not the mailbox: neither verdict
+    /// may re-emit the address at the rung the sweep's known-negative control
+    /// reads as a presence claim (REQ-CANARY-003) — at 0.75 the legitimate
+    /// verdict raised every Gmail address a scan found to 0.75.
+    #[test]
+    fn a_provider_class_verdict_never_asserts_the_mailbox_is_held() {
+        let rung = crate::selftest::capability_probe::SEED_PRESENT_RUNG;
+        assert!(build_email_entity("person@gmail.com", false, "s").confidence < rung);
+        assert!(build_email_entity("burner@mailinator.com", true, "s").confidence < rung);
+    }
+
     #[test]
     fn disposable_is_far_lower_confidence_than_legit() {
         // The whole point: a throwaway must not out-weigh a real address.

@@ -1879,7 +1879,15 @@ fn build_entities_classifies_subdomain_vs_external_with_engine_corroboration() {
     let results = vec![
         mk("https://mail.targetcorp.com.au/login", "duckduckgo"),
         mk("https://mail.targetcorp.com.au/login", "brave"),
-        mk("https://partnerfirm.com/about", "duckduckgo"),
+        // An external host is the seed's estate only when its page names the
+        // seed (REQ-CANARY-003).
+        SearchResult {
+            url: "https://partnerfirm.com/about".to_string(),
+            title: "About".to_string(),
+            snippet: "Partner firm of targetcorp.com.au".to_string(),
+            engine: "duckduckgo",
+            query: "targetcorp.com.au".to_string(),
+        },
     ];
     let url_engine_count = url_engine_counts(&results);
     let results = dedup_results(results);
@@ -1925,6 +1933,102 @@ fn build_entities_classifies_subdomain_vs_external_with_engine_corroboration() {
             && e.value == "targetcorp.com.au"
             && e.has_tag("external")),
         "the target's own registrable domain must not be re-emitted as external"
+    );
+}
+
+/// The known-negative control's finding (REQ-CANARY-003): Bing answers a
+/// `site:` query about a domain it has never indexed with results for the
+/// query's other tokens — `intitle:"index of" ".git" site:<nobody>.com`
+/// returned index.hr, index.hu and merriam-webster.com's "index" entry — and
+/// the builder filed 49 such hosts as the domain's external estate at 0.45.
+/// An external host is the seed's estate only when its page names the seed;
+/// a host under the seed is its subdomain whatever the page says; a page that
+/// names only the seed's label names the web's vocabulary, not the seed; and
+/// a run in which no page names the seed re-affirms nothing.
+#[test]
+fn an_external_host_whose_page_never_names_the_domain_seed_is_not_its_estate() {
+    let target = Target::new(TargetKind::Domain, "targetcorp.com.au");
+    let mk = |url: &str, title: &str, snippet: &str, query: &str| SearchResult {
+        url: url.to_string(),
+        title: title.to_string(),
+        snippet: snippet.to_string(),
+        engine: "bing",
+        query: query.to_string(),
+    };
+    let strangers = || {
+        vec![
+            mk(
+                "https://index.hu/",
+                "Index - friss hírek, események, tények",
+                "Hírek, események",
+                "intitle:\"index of\" \".git\" site:targetcorp.com.au",
+            ),
+            mk(
+                "https://www.merriam-webster.com/dictionary/index",
+                "INDEX Definition & Meaning",
+                "The meaning of INDEX is a list of items",
+                "intitle:\"index of\" \".git\" site:targetcorp.com.au",
+            ),
+            mk(
+                "https://partnerfirm.com/about",
+                "About",
+                "TargetCorp Pty Ltd is a partner",
+                "\"targetcorp.com.au\"",
+            ),
+        ]
+    };
+    let mut results = strangers();
+    results.push(mk(
+        "https://vendorcorp.com/clients",
+        "Clients",
+        "Supplier to targetcorp.com.au since 2019",
+        "\"targetcorp.com.au\"",
+    ));
+    results.push(mk(
+        "https://mail.targetcorp.com.au/login",
+        "login",
+        "mail server",
+        "site:targetcorp.com.au",
+    ));
+    let url_engine_count = url_engine_counts(&results);
+    let results = dedup_results(results);
+    let res = build_entities(&target, "s", &results, &url_engine_count);
+    let mut domains: Vec<&str> = res
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain && e.value != "targetcorp.com.au")
+        .map(|e| e.value.as_str())
+        .collect();
+    domains.sort_unstable();
+    assert_eq!(
+        domains,
+        vec!["mail.targetcorp.com.au", "vendorcorp.com"],
+        "the page naming the seed and the seed's own host, and none of the strangers: {:?}",
+        res.entities
+    );
+    let parent = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain && e.value == "targetcorp.com.au")
+        .expect("two results name the seed, so it is re-affirmed");
+    assert!(
+        parent.evidence.iter().any(|ev| ev
+            .attributes
+            .get("results_naming_subject")
+            .is_some_and(|n| n == "2")),
+        "{:?}",
+        parent.evidence
+    );
+
+    // Only the strangers: nothing is mined and nothing re-affirmed.
+    let strangers = strangers();
+    let url_engine_count = url_engine_counts(&strangers);
+    let strangers = dedup_results(strangers);
+    let res = build_entities(&target, "s", &strangers, &url_engine_count);
+    assert!(
+        res.entities.iter().all(|e| e.kind != EntityKind::Domain),
+        "{:?}",
+        res.entities
     );
 }
 

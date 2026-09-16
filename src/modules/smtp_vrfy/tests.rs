@@ -7,6 +7,28 @@ fn attr<'a>(e: &'a Entity, k: &str) -> Option<&'a str> {
     e.evidence[0].attributes.get(k).map(String::as_str)
 }
 
+/// Only an accepted recipient asserts the mailbox is held. Every other
+/// verdict — a rejection, a deferral, a catch-all, an unreachable MX, no MX
+/// — annotates the address below the rung the sweep's known-negative control
+/// reads as a presence claim (REQ-CANARY-003), so a mailbox nobody holds is
+/// never re-affirmed by the probe that could not reach it or was refused it.
+#[test]
+fn only_an_accepted_recipient_asserts_the_mailbox_is_held() {
+    let rung = crate::selftest::capability_probe::SEED_PRESENT_RUNG;
+    let mk =
+        |v: SmtpVerdict| build_entity("a@b.com", "b.com", Some("mx.b.com"), &v, "s").confidence;
+    assert!(mk(SmtpVerdict::Valid) >= rung);
+    for v in [
+        SmtpVerdict::Invalid("550".into()),
+        SmtpVerdict::Transient("451".into()),
+        SmtpVerdict::CatchAll,
+        SmtpVerdict::Unreachable("connect failed".into()),
+        SmtpVerdict::NoMx,
+    ] {
+        assert!(mk(v) < rung);
+    }
+}
+
 #[tokio::test]
 async fn module_metadata() {
     let m = SmtpVrfy;
