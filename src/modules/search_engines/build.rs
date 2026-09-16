@@ -117,6 +117,19 @@ pub(super) fn build_entities(
                 .is_some_and(|term| names_word_token(&hay, term.as_str()))
         }
     };
+    // Whether a URL's PATH names the subject as a whole token — the gate for
+    // mining a result/snippet URL as the subject's own `Url`. Kind-aware, like
+    // `names_the_subject`: an organisation needs the conjunction of its
+    // distinctive tokens (a single shared token minted a stranger's
+    // `facebook.com/sougi.ceremo` as the org control's page — REQ-SEARCH-006),
+    // a person/username the surname/handle anchor.
+    let url_names_target = |url: &str| -> bool {
+        if matches!(target.kind, TargetKind::Organisation) {
+            url_matches_org_target(url, &terms)
+        } else {
+            url_matches_target(url, &terms)
+        }
+    };
     // The results that name the subject. The engines answer a term no page
     // contains with fuzzy results — 94 to 148 of them for a twelve-character
     // handle nobody holds (REQ-SEARCH-002, the sweep's known-negative
@@ -546,7 +559,7 @@ pub(super) fn build_entities(
         // whitepages.com/people-search) are excluded unless the path
         // also contains a target term — only specific profile pages
         // like peekyou.com/jerome_despal pass.
-        if url_matches_target(&r.url, &terms)
+        if url_names_target(&r.url)
             && seen_domains.insert(format!("@url:{}", canonicalize_url(&r.url)))
         {
             // Elevate a CONFIRMED profile — the result URL is the searched
@@ -703,7 +716,7 @@ pub(super) fn build_entities(
             // (quarantined from confirmed correlation) so an incidentally-linked
             // page can't masquerade as the subject's own. Stricter than the
             // result-URL path, which promotes a bare path-match to 0.50.
-            if url_matches_target(&snippet_url, &terms)
+            if url_names_target(&snippet_url)
                 && seen_domains.insert(format!("@url:{}", canonicalize_url(&snippet_url)))
             {
                 let confirmed = is_confirmed_profile(target, &snippet_url, &s_host);

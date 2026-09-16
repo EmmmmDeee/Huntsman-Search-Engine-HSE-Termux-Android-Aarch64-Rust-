@@ -5320,6 +5320,60 @@ vantage confirms the sandbox's: the counts every sweep had reported for
 read 36 against 68 and 3 on the two sweeps before — the search providers'
 own variance, untouched by this change.)
 
+### REQ-SEARCH-006 (**new, Pass 31 — OBSERVED by the Organisation known-negative control on the runner (PR #636's live-drift), REPRODUCED, FIXED at the URL-path gate, FALSIFIED**): an organisation URL needs its whole distinctive name, not one shared token
+
+**Observation (live-drift run 35100613296 on `d221f68b`).** The runner's
+known-negative control sweep flagged `search_engines` minting a `Url` for the
+Organisation control nobody holds: `FABRICATED search_engines organisation 1
+entities for `Duraje Ceremo Pty Ltd`: url https://www.facebook.com/sougi.ceremo
+(0.50)`. The control org name is randomly generated per run (`<Name> Pty Ltd`),
+so the fabrication is **non-deterministic** — it fires only when a distinctive
+token of the generated name collides with a real indexed path; the prior run on
+`f1033f86` drew a name that did not collide and read `0 fabricated`. This one
+drew `Duraje Ceremo`, whose token `ceremo` collides with a real Facebook handle
+`sougi.ceremo`. Not caused by this PR's diff (ip_reputation / social_probe); a
+pre-existing latent `search_engines` defect surfaced by the random draw.
+
+**Reproduced (a unit lock that fails on the baseline).** `url_matches_target`
+gates the result-URL → `Url` mining at `build.rs`. For a multi-token target it
+takes the LAST significant token as the distinctive anchor (correct for a
+person's surname: `Cindy Haynes` → `haynes`). Applied to an **organisation** it
+took `ceremo` (the last significant token of `Duraje Ceremo Pty Ltd`) as a
+surname, and a single whole-token path match on it minted the stranger's page.
+The integration lock
+(`an_organisation_url_needs_its_whole_distinctive_name_not_one_shared_token`)
+drives `build_entities` with that exact result and asserts no `Url`; on the
+baseline dispatch it is minted at 0.50, reproducing the finding.
+
+**Fix (the authoritative layer — a kind-aware URL-path gate).** New
+`url_matches_org_target`: an organisation's identity is the *conjunction* of its
+distinctive (non-corporate-form) tokens — every one must appear as a whole path
+token — the URL-path analog of REQ-SEARCH-005's snippet-gate org branch and its
+`is_generic_org_token` filter. `build.rs` routes an `Organisation` target's
+URL-path mining (both the result-URL and snippet-URL call sites, via one
+`url_names_target` closure) through it; every other kind keeps the person-name
+gate unchanged. So `facebook.com/sougi.ceremo` (only `ceremo`) is rejected while
+`facebook.com/duraje.ceremo` (both tokens) still mines. The person-name gate
+(`url_matches_target`) is byte-for-byte unchanged, keeping REQ-SEARCH-004's
+username/surname contract and its tests intact.
+
+**Lock and falsification (`cycle_search006_falsify.py`).** Locked at the
+`build_entities` boundary (integration) and at the pure `url_matches_org_target`
+contract (unit: one shared token is rejected, the whole distinctive name at any
+delimiter matches, a substring of a longer word does not, and the person-name
+gate is shown to accept the single token — why the org must not use it).
+Reverting the org dispatch to the person-name gate re-mints
+`facebook.com/sougi.ceremo` at 0.50 and fails the integration lock; `build.rs`
+sha256-restored. `RESULT: FALSIFIED`.
+
+**Remote.** CI-exact gate green locally. Remote verification is the runner's
+Organisation known-negative control sweep (live-drift) on the pushed head
+reading `0 fabricated` — the same vantage (and control kind) that observed the
+fabrication on 35100613296. Because the control name is a random draw, a single
+green run is corroborated by the deterministic unit/integration locks that pin
+the collision the draw exposed. Dispatch and CI on the pushed commit are
+recorded below.
+
 ### REQ-PROBE-004 (**new, Pass 31 — OBSERVED by the known-negative control on the runner (PR #636's live-drift), REPRODUCED, FIXED at the classify boundary, FALSIFIED**): a 200 bot-challenge page is not a profile
 
 **Observation (PR #636 live-drift, head `2909dcd4`, and reproduced live from
