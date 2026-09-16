@@ -4427,7 +4427,7 @@ handle's own `/mike` still does. Each arm reverted to `path.contains` fails its
 coupled lock(s); `urls.rs` sha256-restored. `RESULT: ALL LOCKS FALSIFIED`.
 
 **Remote.** CI-exact gate green locally; no network dependency (a pure path
-predicate). CI on the pushed commit is recorded below.
+predicate). The live-drift control sweep on the integrated head `453c5fd` (run 35074235307) read **`controls: 114 probed — 93 empty, 2 annotated, 0 fabricated, 19 without a reading`** — `search_engines organisation` empty, `fleet_capability_drift ... ok` — with the whole CI matrix green on that commit.
 
 ### REQ-SEARCH-005 (**new, Pass 31 — OBSERVED live on the production vantage by the known-negative control, REPRODUCED against the real gate, FIXED at the authoritative layer, FALSIFIED**): an organisation is named by its distinctive name, never by its corporate form
 
