@@ -100,6 +100,7 @@ use super::*;
             inconclusive_probes: 2,
             sites_probed: 40,
             indiscriminate: Vec::new(),
+            uncontrolled_sites: Vec::new(),
         };
 
         // A STATUS-ONLY cam hit: its URL must ride at 0.74 tagged `weak-detection`,
@@ -239,6 +240,7 @@ fn the_summary_names_the_indiscriminate_sites_and_each_hit_says_whether_it_was_c
             inconclusive_probes: 1,
             sites_probed: 8,
             indiscriminate: vec!["SextPanther", "Loyalfans"],
+            uncontrolled_sites: Vec::new(),
         },
     );
     let attr = |value: &str, key: &str| -> Option<String> {
@@ -256,4 +258,51 @@ fn the_summary_names_the_indiscriminate_sites_and_each_hit_says_whether_it_was_c
         Some("SextPanther, Loyalfans")
     );
     assert_eq!(attr("alice", "hits_uncontrolled").as_deref(), Some("1"));
+}
+
+/// REQ-PROBE-002: a status-only presence whose control could not be read is
+/// never a profile; the summary counts and names it so the operator can look
+/// by hand.
+#[test]
+fn an_uncontrolled_status_only_presence_is_named_in_the_summary_and_never_a_profile() {
+    let hits = vec![Hit {
+        site_name: "Twitch",
+        site_cat: "streaming",
+        url: "https://twitch.tv/alice".to_string(),
+        confidence: 0.92,
+        verified: true,
+        controlled: true,
+    }];
+    let out = build_entities(
+        "alice",
+        "scan",
+        &hits,
+        &ProbeTally {
+            definitive_absent: 3,
+            inconclusive_probes: 2,
+            sites_probed: 8,
+            indiscriminate: Vec::new(),
+            uncontrolled_sites: vec!["Odysee"],
+        },
+    );
+    let urls: Vec<&str> = out
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Url)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert_eq!(urls, vec!["https://twitch.tv/alice"]);
+    let summary = out
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Username)
+        .expect("summary");
+    let attr = |k: &str| {
+        summary
+            .evidence
+            .iter()
+            .find_map(|ev| ev.attributes.get(k).cloned())
+    };
+    assert_eq!(attr("uncontrolled_platforms").as_deref(), Some("Odysee"));
+    assert_eq!(attr("sites_uncontrolled").as_deref(), Some("1"));
 }

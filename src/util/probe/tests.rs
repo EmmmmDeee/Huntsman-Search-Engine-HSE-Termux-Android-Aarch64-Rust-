@@ -181,14 +181,36 @@ fn a_presence_the_site_also_gives_the_control_handle_is_indiscriminate() {
             controlled: true,
         }
     );
+    // A status-only presence whose control could not be read cannot be
+    // judged: never a profile (REQ-PROBE-002). A body-verified one stands,
+    // uncontrolled.
     assert_eq!(
         controlled(present(url), &ProbeResult::Error),
+        ProbeResult::Uncontrolled {
+            url: url.to_string()
+        }
+    );
+    let verified = ProbeResult::Found {
+        url: url.to_string(),
+        confidence: 0.92,
+        verified: true,
+        controlled: false,
+    };
+    assert_eq!(
+        controlled(verified.clone(), &ProbeResult::Error),
         ProbeResult::Found {
             url: url.to_string(),
-            confidence: 0.74,
-            verified: false,
+            confidence: 0.92,
+            verified: true,
             controlled: false,
         }
+    );
+    assert_eq!(
+        controlled(verified, &present("https://example.test/u/ctl")),
+        ProbeResult::Indiscriminate {
+            url: url.to_string()
+        },
+        "a body-verified presence the site also gives the control handle is still indiscriminate"
     );
     assert_eq!(
         controlled(ProbeResult::NotFound, &present(url)),

@@ -127,6 +127,9 @@ impl Module for StreamingProbe {
         // Sites that answered "present" for the control handle too: no answer
         // about the handle at all (`ProbeResult::Indiscriminate`).
         let mut indiscriminate: Vec<&'static str> = Vec::new();
+        // Status-only presences whose control could not be read: unjudgeable,
+        // never a profile (`ProbeResult::Uncontrolled`, REQ-PROBE-002).
+        let mut uncontrolled_sites: Vec<&'static str> = Vec::new();
 
         for (site_name, site_cat, outcome) in results {
             match outcome {
@@ -146,6 +149,10 @@ impl Module for StreamingProbe {
                 ProbeResult::NotFound => definitive_absent += 1,
                 ProbeResult::Error => inconclusive_probes += 1,
                 ProbeResult::Indiscriminate { .. } => indiscriminate.push(site_name),
+                ProbeResult::Uncontrolled { .. } => {
+                    uncontrolled_sites.push(site_name);
+                    inconclusive_probes += 1;
+                }
             }
         }
 
@@ -175,6 +182,7 @@ impl Module for StreamingProbe {
                 inconclusive_probes,
                 sites_probed: SITES.len(),
                 indiscriminate,
+                uncontrolled_sites,
             },
         ))
     }
@@ -328,6 +336,9 @@ struct ProbeTally {
     /// Sites that answered "present" for the control handle too — no answer
     /// about the handle, never a profile ([`ProbeResult::Indiscriminate`]).
     indiscriminate: Vec<&'static str>,
+    /// Status-only presences whose control could not be read — unjudgeable,
+    /// never a profile ([`ProbeResult::Uncontrolled`]).
+    uncontrolled_sites: Vec<&'static str>,
 }
 
 /// Confidence + verified-flag a detection method earns, tiered by rigour — the
@@ -481,7 +492,15 @@ fn build_entities(username: &str, scan_id: &str, hits: &[Hit], tally: &ProbeTall
             tally.indiscriminate.len().to_string(),
         )
         .with_attr("indiscriminate_platforms", tally.indiscriminate.join(", "))
-        .with_attr("hits_uncontrolled", uncontrolled_total.to_string()),
+        .with_attr("hits_uncontrolled", uncontrolled_total.to_string())
+        .with_attr(
+            "sites_uncontrolled",
+            tally.uncontrolled_sites.len().to_string(),
+        )
+        .with_attr(
+            "uncontrolled_platforms",
+            tally.uncontrolled_sites.join(", "),
+        ),
     );
     module_result.push(summary);
     module_result

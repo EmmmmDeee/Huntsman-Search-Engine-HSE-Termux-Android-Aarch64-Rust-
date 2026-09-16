@@ -322,6 +322,8 @@ use crate::core::confidence;
         let page = "<!doctype html><html><body>profile</body></html>";
         let soft = serve(vec![Canned::html(200, page), Canned::html(200, page)]).await;
         let real = serve(vec![Canned::html(200, page), Canned::html(404, page)]).await;
+        // Answers the target and nothing more: the control read fails.
+        let hidden = serve(vec![Canned::html(200, page)]).await;
         let sites: &'static [Site] = Box::leak(
             vec![
                 Site {
@@ -338,11 +340,26 @@ use crate::core::confidence;
                     detect: Detect::StatusEq(200),
                     cat: "dev",
                 },
+                Site {
+                    name: "Hidden",
+                    url: Box::leak(format!("{hidden}/u/{{}}").into_boxed_str()),
+                    method: Method::Get,
+                    detect: Detect::StatusEq(200),
+                    cat: "video",
+                },
             ]
             .into_boxed_slice(),
         );
         let results = sweep(&reqwest::Client::new(), sites, "alice").await;
-        assert_eq!(results.len(), 2);
+        assert_eq!(results.len(), 3);
+        // A status-only presence whose control could not be read cannot be
+        // judged (REQ-PROBE-002).
+        assert_eq!(results[2].0, "Hidden");
+        assert!(
+            matches!(&results[2].2, ProbeResult::Uncontrolled { url } if url.ends_with("/u/alice")),
+            "{:?}",
+            results[2].2
+        );
         assert_eq!(results[0].0, "Soft404");
         assert!(
             matches!(&results[0].2, ProbeResult::Indiscriminate { url } if url.ends_with("/u/alice")),
@@ -365,6 +382,20 @@ use crate::core::confidence;
             .collect();
         assert_eq!(urls.len(), 1, "{urls:?}");
         assert!(urls[0].ends_with("/u/alice") && urls[0].starts_with(&real));
+        // …and names the site it could not judge.
+        let summary = out
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Username)
+            .expect("summary");
+        let attr = |k: &str| {
+            summary
+                .evidence
+                .iter()
+                .find_map(|ev| ev.attributes.get(k).cloned())
+        };
+        assert_eq!(attr("uncontrolled_platforms").as_deref(), Some("Hidden"));
+        assert_eq!(attr("sites_uncontrolled").as_deref(), Some("1"));
     }
 
     /// The aggregate's reading of the judgement: an indiscriminate site is

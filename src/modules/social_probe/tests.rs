@@ -131,7 +131,7 @@ fn probe_with_no_hits_does_not_echo_the_seed() {
     // source and inflates the seed to VERIFIED on phantom evidence.
     assert!(!should_echo_target(0));
     let t = Target::new(TargetKind::Username, "haigenb");
-    assert!(build_target_summary(&t, 0, 0, 28, &[], &[], 0, "scan").is_none());
+    assert!(build_target_summary(&t, 0, 0, 28, &[], &[], &[], 0, "scan").is_none());
 }
 
 #[test]
@@ -185,7 +185,7 @@ fn blocked_zero_hit_sweep_is_inconclusive_not_a_confirmed_absence() {
 fn probe_with_a_hit_echoes_the_seed_as_corroboration() {
     assert!(should_echo_target(1));
     let t = Target::new(TargetKind::Username, "haigenb");
-    let summary = build_target_summary(&t, 1, 1, 28, &["github"], &[], 0, "scan")
+    let summary = build_target_summary(&t, 1, 1, 28, &["github"], &[], &[], 0, "scan")
         .expect("a confirmed profile must echo the seed");
     assert_eq!(summary.value, "haigenb");
     assert!(summary.has_tag("social-probed"));
@@ -197,6 +197,7 @@ fn probe_with_a_hit_echoes_the_seed_as_corroboration() {
         3,
         28,
         &["github", "reddit", "twitch"],
+        &[],
         &[],
         0,
         "scan",
@@ -219,7 +220,8 @@ fn module_metadata() {
 fn build_target_summary_evidence_lists_confirmed_platforms() {
     let t = Target::new(TargetKind::Username, "testuser");
     let confirmed = &["github", "reddit"];
-    let e = build_target_summary(&t, 2, 2, 30, confirmed, &[], 0, "scan").expect("should succeed");
+    let e =
+        build_target_summary(&t, 2, 2, 30, confirmed, &[], &[], 0, "scan").expect("should succeed");
     let attr = e.evidence[0]
         .attributes
         .get("platforms")
@@ -240,7 +242,7 @@ fn build_target_summary_stamps_hits_verified_and_status_only() {
     let t = Target::new(TargetKind::Username, "testuser");
 
     // All hits status-only (weak-detection): 0 verified of 2 found.
-    let weak = build_target_summary(&t, 2, 0, 30, &["reddit", "tumblr"], &[], 0, "scan")
+    let weak = build_target_summary(&t, 2, 0, 30, &["reddit", "tumblr"], &[], &[], 0, "scan")
         .expect("should succeed");
     assert_eq!(
         weak.evidence[0]
@@ -264,6 +266,7 @@ fn build_target_summary_stamps_hits_verified_and_status_only() {
         1,
         30,
         &["github", "reddit", "tumblr"],
+        &[],
         &[],
         0,
         "scan",
@@ -303,6 +306,7 @@ fn build_target_summary_stamps_platforms_count_for_au011() {
         3,
         30,
         &["github", "reddit", "twitch"],
+        &[],
         &[],
         0,
         "scan",
@@ -546,6 +550,7 @@ fn an_indiscriminate_platform_is_never_a_profile_and_the_summary_names_it() {
         3,
         &tally.found_platforms,
         &tally.indiscriminate_platforms,
+        &tally.uncontrolled_platforms,
         tally.uncontrolled,
         "scan-ctl",
     )

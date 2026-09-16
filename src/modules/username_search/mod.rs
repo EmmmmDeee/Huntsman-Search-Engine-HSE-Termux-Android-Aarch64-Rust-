@@ -297,6 +297,10 @@ fn aggregate_results(
     // Sites that answered "present" for the control handle too: no answer
     // about the handle at all (`ProbeResult::Indiscriminate`).
     let mut indiscriminate_sites: Vec<&str> = Vec::new();
+    // Status-only presences whose control could not be read: unjudgeable,
+    // never a profile, named so the operator can look by hand
+    // (`ProbeResult::Uncontrolled`, REQ-PROBE-002).
+    let mut uncontrolled_sites: Vec<&str> = Vec::new();
 
     // A handful of site-table entries resolve to the SAME URL (two upstream
     // list sources describing the same platform with different detection
@@ -339,6 +343,12 @@ fn aggregate_results(
             ProbeResult::NotFound => definitive_absent += 1,
             ProbeResult::Error => inconclusive_probes += 1,
             ProbeResult::Indiscriminate { .. } => indiscriminate_sites.push(*site_name),
+            ProbeResult::Uncontrolled { .. } => {
+                uncontrolled_sites.push(*site_name);
+                // The site could not be judged: for the verdict it is one
+                // more probe that could not tell.
+                inconclusive_probes += 1;
+            }
         }
     }
 
@@ -486,7 +496,9 @@ fn aggregate_results(
                 "sites_indiscriminate",
                 indiscriminate_sites.len().to_string(),
             )
-            .with_attr("indiscriminate_platforms", indiscriminate_sites.join(", ")),
+            .with_attr("indiscriminate_platforms", indiscriminate_sites.join(", "))
+            .with_attr("sites_uncontrolled", uncontrolled_sites.len().to_string())
+            .with_attr("uncontrolled_platforms", uncontrolled_sites.join(", ")),
         );
         module_result.push(summary);
     }

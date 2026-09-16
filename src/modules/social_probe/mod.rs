@@ -492,6 +492,7 @@ impl Module for SocialProbe {
             checked_count,
             &tally.found_platforms,
             &tally.indiscriminate_platforms,
+            &tally.uncontrolled_platforms,
             tally.uncontrolled,
             &ctx.scan_id,
         ) {
@@ -515,6 +516,9 @@ pub(super) struct SweepTally {
     /// Platforms that answered "present" for the control handle too — no
     /// answer about the handle, never a profile.
     pub(super) indiscriminate_platforms: Vec<&'static str>,
+    /// Status-only presences whose control could not be read — unjudgeable,
+    /// never a profile ([`ProbeResult::Uncontrolled`], REQ-PROBE-002).
+    pub(super) uncontrolled_platforms: Vec<&'static str>,
 }
 
 /// Turn the judged probes into entities. Pure (no I/O), so the reading of the
@@ -533,6 +537,10 @@ pub(super) fn emit_judged(
             ProbeResult::NotFound => {}
             ProbeResult::Indiscriminate { .. } => {
                 tally.indiscriminate_platforms.push(platform.name);
+            }
+            ProbeResult::Uncontrolled { .. } => {
+                tally.uncontrolled_platforms.push(platform.name);
+                tally.inconclusive += 1;
             }
             ProbeResult::Found {
                 url,
@@ -673,6 +681,7 @@ pub(super) fn build_target_summary(
     checked_count: u32,
     found_platforms: &[&str],
     indiscriminate_platforms: &[&str],
+    uncontrolled_platforms: &[&str],
     uncontrolled_count: u32,
     scan_id: &str,
 ) -> Option<Entity> {
@@ -728,7 +737,12 @@ pub(super) fn build_target_summary(
             "indiscriminate_platforms",
             indiscriminate_platforms.join(", "),
         )
-        .with_attr("hits_uncontrolled", uncontrolled_count.to_string()),
+        .with_attr("hits_uncontrolled", uncontrolled_count.to_string())
+        .with_attr(
+            "sites_uncontrolled",
+            uncontrolled_platforms.len().to_string(),
+        )
+        .with_attr("uncontrolled_platforms", uncontrolled_platforms.join(", ")),
     );
     Some(summary)
 }

@@ -73,6 +73,20 @@ pub enum ProbeResult {
         /// The URL the site answered "present" for — never emitted as a profile.
         url: String,
     },
+    /// The site answered "present" for the target by status alone, and its
+    /// answer for the control handle could not be read: the presence cannot
+    /// be judged, so it is neither a profile nor an absence — counted and
+    /// named in the summary, never minted. Observed 2026-09-15 from the
+    /// project's sandbox by the sweep's known-negative control: Odysee
+    /// answers `200` for any handle and NameMC sits behind a Cloudflare
+    /// challenge, and a status-only presence whose control read had failed
+    /// stood as a `weak-detection` profile for a handle nobody holds — the
+    /// residual REQ-PROBE-001 had accepted. A body-verified presence carries
+    /// its own evidence and stands without a control, flagged.
+    Uncontrolled {
+        /// The URL the site answered "present" for — never emitted as a profile.
+        url: String,
+    },
 }
 
 /// The handle every presence claim is judged against: a string no platform
@@ -136,8 +150,10 @@ fn nonce_handle(salt: u32) -> String {
 /// handle on the same site. A presence the site also gave the control handle
 /// is [`ProbeResult::Indiscriminate`]; a presence the site denied the control
 /// handle stands, `controlled`; a presence whose control could not be read
-/// stands as it was, uncontrolled. Anything but a presence is unchanged — an
-/// absence or a refusal needs no control.
+/// is [`ProbeResult::Uncontrolled`] when it rests on the status alone (it
+/// cannot be judged, so it is never a profile) and stands uncontrolled when
+/// the body verified it (its own evidence, flagged). Anything but a presence
+/// is unchanged — an absence or a refusal needs no control.
 #[must_use]
 pub fn controlled(target: ProbeResult, control: &ProbeResult) -> ProbeResult {
     match (target, control) {
@@ -159,6 +175,14 @@ pub fn controlled(target: ProbeResult, control: &ProbeResult) -> ProbeResult {
             verified,
             controlled: true,
         },
+        (
+            ProbeResult::Found {
+                url,
+                verified: false,
+                ..
+            },
+            ProbeResult::Error,
+        ) => ProbeResult::Uncontrolled { url },
         (
             ProbeResult::Found {
                 url,
