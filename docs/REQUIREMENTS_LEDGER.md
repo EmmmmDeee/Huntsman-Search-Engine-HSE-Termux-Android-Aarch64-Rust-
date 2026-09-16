@@ -5684,6 +5684,49 @@ ignored; escalating to SIGTERM is what the script's own comment refuses (a
 kill mid-scan reported as a controlled stop), so the improvement is the
 diagnosis, not the escalation.
 
+**Stop — revised (8): exhaustive finalization inventory, 2026-09-16 06:2x UTC.**
+An evidence-gated whole-repository finalization pass over `d4d6da6` (57
+commits ahead of `origin/main`, 0 behind, `main` an ancestor — no rebase or
+conflict). N = 1305 tracked files, accounted for by disposition: the 1132
+Rust sources through whole-repo defect detectors rather than per-file
+narration (the cost-appropriate accounting), the rest (`docs/`, `wasm-ui/`,
+`tests/`, `.github/`, config, generated/vendor artifacts — `Cargo.lock`, the
+`proptest-regressions`, the checked-in `.wasm`/`.der`/`.pem`) kept as-is.
+The detectors found no material actionable defect: **0** `todo!`/
+`unimplemented!` (no functional gaps), **0** genuine `TODO`/`FIXME`/`HACK`
+code markers (every match was an `XXX` format mask — `UA-XXXXXXX-X`,
+`ORG-XXX-RIPE`, phone masks), **0** `dbg!` leftovers, **0** prod-code bare
+`unwrap()` (all 51 are in test code; the two the module-path filter missed —
+`websearch/mod.rs:253` inside a `#[test]`, `patterns.rs:619` a proptest whose
+`unwrap` follows its own `prop_assert!(parsed.is_ok())` — were read and
+confirmed guarded), and **34 of 34** root dependencies used (the two the
+name cross-reference flagged, `kamadak-exif` and `md-5`, are package names
+whose crates import as `exif` and `md5` — verified used in
+`util/exif`/`document_parse/image_geolocation` and `gravatar`/`hashcat`, so
+not removable). The residual (7) named — the Domain, Email and FullName
+known-negative controls — is closed (REQ-CANARY-003), the Organisation
+control added (REQ-PROBE-003's cycle), and the production vantage's control
+sweep found and fixed two soft-404 fabrications the sandbox could not reach
+(`social_probe`/Hacker News, `username_search`/Yandex.Reviews —
+REQ-PROBE-003), remote-verified `0 fabricated` over 114 controls. **Final
+gate on `d4d6da6`:** `cargo fmt --check`, `clippy --all-targets --locked
+--features dep-cooldown -D warnings`, the rustdoc lints, `cargo test --all
+--locked --features dep-cooldown` (the whole suite), and
+`scripts/doc_coverage.sh` (held at 1029) all exit 0 locally, matching green
+CI and the green live-drift run. **Capability classification:** every
+baseline capability PRESERVED or IMPROVED; none REGRESSED. The only surface
+UNVERIFIED from this vantage — whether other status-only platforms in
+`social_probe`/`username_search` share the soft-404 shape — is now
+instrumented by the runner's control sweep across all five target kinds
+every run, and is not reproducible from the sandbox, so no site rule is
+changed without first reproducing its soft-404. No code change this pass:
+the strongest reproducibly-correct state is the current one, and fabricating
+a refactor to appear productive is the failure this method forbids.
+Residual, decision-relevant and unchanged: the `wifidb` retirement,
+time-gated (a sweep at least 20 h after 2026-09-15 23:00 UTC, i.e. after
+19:00 UTC on 2026-09-16). No feasible sandbox-reproducible test today could
+materially change a decision. Stop.
+
 ### REQ-HTTP-002 (**new, Pass 31 — VERIFIED FROM SOURCE, CONSOLIDATED, FIXED, FALSIFIED**): `json_scanned` fails the way `json_decode` fails
 
 **Lead.** ONE CAPABILITY, ONE AUTHORITY. Two shared JSON decode helpers judged
