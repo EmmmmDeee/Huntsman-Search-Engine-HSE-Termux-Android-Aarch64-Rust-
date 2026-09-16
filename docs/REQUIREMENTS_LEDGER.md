@@ -5727,6 +5727,46 @@ time-gated (a sweep at least 20 h after 2026-09-15 23:00 UTC, i.e. after
 19:00 UTC on 2026-09-16). No feasible sandbox-reproducible test today could
 materially change a decision. Stop.
 
+**Stop — revised (9): Termux / Android aarch64 / no-root platform audit, 2026-09-16 06:4x UTC.**
+A finalization pass under the project's actual production target — Termux on
+Android aarch64, unprivileged — auditing every latent platform-assumption
+class that compiles green (the CI `Build (aarch64-linux-android)` job) yet
+could still fail at runtime on the device (REACHABILITY ≠ FUNCTION). Each
+class is already handled, verified from source:
+
+- **Temp paths:** 0 hardcoded `/tmp` in prod; 27 uses of `std::env::temp_dir()`
+  / `TMPDIR`, which Termux sets under `$PREFIX/tmp`.
+- **Data dir / `$HOME`:** `util::paths` resolves `std::env::var("HOME")`
+  (Termux's `/data/data/com.termux/files/home`) with a `.` fallback — no FHS
+  assumption. The one `/opt/hse-source` and `/etc/passwd` string matches are a
+  test env-file fixture and a MITRE ATT&CK technique label, not filesystem
+  access.
+- **No-root sockets:** no raw sockets or ICMP; `portscan` is a TCP **connect**
+  scan (needs no root); `whois` dials outbound `:43`; `local_net` and
+  `signal_radar` read `/proc/net/arp` and already treat the unprivileged-app
+  unreadable case as empty, in code and comment.
+- **Privileged ports:** `hse serve` defaults to `:8080` and, on `EACCES`
+  binding a low port, prints the Termux-specific, actionable
+  `permission denied (no root on Termux; use a port >= 1024, e.g. 8080)`.
+- **Shelled binaries:** `curl` / `git` / `bash` / `which` / `tesseract` are
+  standard Termux packages; `hse doctor` detects a missing one; OCR degrades
+  through a typed `OcrUnavailable` ("tesseract missing; image processing
+  disabled") and a pure-Rust fallback, never a crash.
+- **Build profile:** `[profile.release]` is size-tuned for mobile
+  (`opt-level="s"`, `lto`, `codegen-units=1`, `strip`) with `panic="unwind"`
+  **deliberately** retained — documented, so a panicking module is contained
+  at the dispatch boundary rather than aborting a long-lived `hse serve`; a
+  dedicated `[profile.fast]` and `install.sh`'s profile picker handle the
+  slow on-device LTO link (~15–20 min vs ~4–6 min on aarch64). 15 `cfg(target_*)`
+  sites, exactly one `unsafe` block, and the portable system allocator (no
+  jemalloc/mimalloc to fail the aarch64-android link).
+
+No material actionable defect or un-made optimization: the codebase is
+already thoroughly and explicitly adapted for the target, with reasoning at
+each decision point. No code change this pass. The gate stays green on
+`b4b3bad` (fmt, clippy `-D warnings`, rustdoc, `cargo test --all`,
+doc-coverage), and the CI aarch64-Termux build is green. Stop.
+
 ### REQ-HTTP-002 (**new, Pass 31 — VERIFIED FROM SOURCE, CONSOLIDATED, FIXED, FALSIFIED**): `json_scanned` fails the way `json_decode` fails
 
 **Lead.** ONE CAPABILITY, ONE AUTHORITY. Two shared JSON decode helpers judged
