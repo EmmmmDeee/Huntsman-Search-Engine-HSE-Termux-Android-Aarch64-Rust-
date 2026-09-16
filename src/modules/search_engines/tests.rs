@@ -2409,6 +2409,52 @@ fn an_organisation_is_named_by_its_distinctive_name_not_its_corporate_form() {
     );
 }
 
+/// REQ-SEARCH-004 (the URL-path relevance gate, contract boundary): a short
+/// handle claims a result URL as its own profile only when the path names the
+/// handle as a whole token. For `mike`, `build_entities`' `url_matches_target`
+/// gate read `path.contains("mike")` and filed a stranger's `/mikeoxlong` as
+/// the handle's Url at 0.50 — the URL-path sibling of REQ-SEARCH-003's snippet
+/// collision, invisible to the 12-char known-negative control. This pins the
+/// gate to `names_word_token` at the call site: it fails if reverted to
+/// `contains`, while the handle as its own path token still yields a Url.
+#[test]
+fn a_short_handle_does_not_claim_a_longer_path_as_its_profile_url() {
+    let target = Target::new(TargetKind::Username, "mike");
+    // A stranger's profile whose handle merely starts with `mike`; the snippet
+    // and title never name `mike` as a word, so only the URL-path gate is in
+    // play.
+    let collision = SearchResult {
+        url: "https://twitter.com/mikeoxlong".to_string(),
+        title: "a profile page".to_string(),
+        snippet: "some unrelated biography text here".to_string(),
+        engine: "duckduckgo",
+        query: "mike".to_string(),
+    };
+    let results = vec![collision];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        !res.entities.iter().any(|e| e.kind == EntityKind::Url),
+        "a longer path token is not the handle's own profile URL: {:?}",
+        res.entities
+    );
+
+    // The handle as its own path token is its profile URL.
+    let named = SearchResult {
+        url: "https://twitter.com/mike".to_string(),
+        title: "a profile page".to_string(),
+        snippet: "some unrelated biography text here".to_string(),
+        engine: "duckduckgo",
+        query: "mike".to_string(),
+    };
+    let results = vec![named];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        res.entities.iter().any(|e| e.kind == EntityKind::Url),
+        "the handle as its own path token yields a Url entity: {:?}",
+        res.entities
+    );
+}
+
 #[test]
 fn location_seed_pivot_does_not_reaffirm_the_seed_at_0_82() {
     // T2.36 regression: the engine re-queues every discovered entity as a pivot,

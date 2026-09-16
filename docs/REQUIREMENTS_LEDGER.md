@@ -4390,6 +4390,45 @@ host as its estate — precision over recall, recorded here. `email-validated`
 still names debounce.io's provider reading; the tag is kept for its
 consumers, the rung says what it means.
 
+### REQ-SEARCH-004 (**new, Pass 31 — ADVERSARIAL RE-ATTACK extension of REQ-SEARCH-003, VERIFIED FROM SOURCE, FIXED at the shared predicate, LOCKED AT THE CONTRACT BOUNDARY, FALSIFIED**): a URL path names the handle as a whole token, never as a prefix
+
+**Lead.** The REQ-SEARCH-003 audit (its own re-attack step) found the third
+raw-substring relevance predicate the boundary-aware fix had not reached:
+`url_matches_target`, the gate `build_entities` uses to decide whether a SERP
+result's URL is the subject's own page (`build.rs:526`, `:683`). It read
+`path.contains(only)` for a single-token subject and `path.contains(surname)`
+for a name — the same collision REQ-SEARCH-003 closed for snippets, on the URL
+path. A four-character handle `mike` is "named" by a stranger's
+`twitter.com/mikeoxlong`, filed as the handle's own `Url` entity at `MEDIUM`
+(0.50, the expansion floor) and recursed; a surname `haynes` is "named" by a
+`/haynesville-festival` placename. The 12-character known-negative controls
+never surfaced it — a long nonce is not a prefix of a longer path token — so it
+was invisible to the sweep, found only by reading the fix adversarially.
+
+**Verified from source.** `url_matches_target` filters the target's terms to
+the significant (≥ 4-char) ones and matches the last as `path.contains(...)`;
+`entity/mod.rs`'s `score_username_candidate` is deliberately fuzzy (bidirectional
+substring for alias/stem detection, with its own layered precision gates and the
+"Tackle World Lawnton" surname-substring guard) and is left as designed —
+`url_matches_target` is the one binary relevance gate in the class.
+
+**Fix (the shared predicate).** Both arms route through the REQ-SEARCH-003
+`names_word_token` (bounded by a non-alphanumeric byte), so the handle or
+surname must be a whole path token: `/mike`, `/mike-smith`, `/users/mike/…`
+still match; `/mikeoxlong` and `/haynesville` do not. `entity` and query
+building are untouched.
+
+**Lock and falsification (`cycle_search004_falsify.py`).** A helper unit test
+(`url_matches_target_names_a_whole_path_token_not_a_prefix`) pins both arms, and
+a `build_entities` contract-boundary lock
+(`a_short_handle_does_not_claim_a_longer_path_as_its_profile_url`) pins that the
+gate consumes the predicate — a stranger's `/mikeoxlong` mints no `Url`, the
+handle's own `/mike` still does. Each arm reverted to `path.contains` fails its
+coupled lock(s); `urls.rs` sha256-restored. `RESULT: ALL LOCKS FALSIFIED`.
+
+**Remote.** CI-exact gate green locally; no network dependency (a pure path
+predicate). CI on the pushed commit is recorded below.
+
 ### REQ-SEARCH-005 (**new, Pass 31 — OBSERVED live on the production vantage by the known-negative control, REPRODUCED against the real gate, FIXED at the authoritative layer, FALSIFIED**): an organisation is named by its distinctive name, never by its corporate form
 
 **Lead.** The runner's known-negative control sweep on `a39071e` (the
