@@ -4108,6 +4108,95 @@ the next step if a 200 wall is observed on one. The remaining
 `ip_reputation`) read JSON or crawl content and mint no negative claim from
 an empty parse.
 
+### REQ-PROBE-003 (**new, Pass 31 — OBSERVED live on the production vantage by the known-negative control, VERIFIED FROM SOURCE, FIXED at the site rule, FALSIFIED**): two soft-404 sites the per-site control did not catch
+
+**Lead.** REQ-CANARY-003's first sweep on GitHub's runner (`6591cb6`, run
+35051107582, 03:18 UTC) read **`controls: 97 probed — 79 empty, 2 annotated,
+1 fabricated`** and failed: `social_probe` minted a Hacker News profile for
+the handle `sqfky7y2wvat`, which no platform holds. The AE sweep on the same
+vantage's sibling (the sandbox, 03:18 UTC, `f404wc66qy04`) reproduced it and
+added a second: `username_search` minted a Yandex reviews profile. Both are
+on the production path (a Username scan runs both), both fabricate for a
+handle nobody holds, and the sandbox's earlier REQ-CANARY-003 sweeps had
+read `social_probe` *unreachable* for the username kind — the runner reaches
+Hacker News, the sandbox often does not, so only the production vantage
+surfaced it. This is the control mechanism doing exactly its job: a
+known-negative on the vantage that runs the scan.
+
+**Observation, verified from source (direct HTTP from the sandbox 2026-09-16).**
+
+1. **`social_probe` / Hacker News** minted
+   `url https://news.ycombinator.com/user?id=<nobody> (0.74, weak-detection)`.
+   `GET news.ycombinator.com/user?id=<any nonce>` answers **`200` with the
+   13-byte body `No such user.`** for every handle (two distinct nonces, both
+   `200`; a real user carries `karma:` / `created:`). The platform rule was
+   `exists_codes: &[200], negative_patterns: &[]` — a status-only rule that
+   read every `200` as a present profile. Every Username scan carried it.
+
+2. **`username_search` / Yandex.Reviews** minted
+   `url https://reviews.yandex.ru/user/<nobody> (0.92, body-verified)`.
+   `GET reviews.yandex.ru/user/<nonce>` answers **`200` with a 270 KB generic
+   `Отзывы и оценки — Яндекс` landing page** (no captcha, not a wall — a real
+   soft-404), and the site's `StatusAndBody(200, "Отзывы и оценки")` needle is
+   that page's own `<title>` — matched for every handle. The sibling Yandex
+   sites discriminate and stay: `market.yandex.ru/user/<nonce>` answers `302`,
+   `music.yandex.ru/users/<nonce>` answers `404`.
+
+**Why the control did not catch them.** REQ-PROBE-001's per-site control is a
+backstop that probes the same site with a second handle nobody holds and, on
+a site present for both, reads `Indiscriminate` (never a profile). It failed
+here for the reason REQ-PROBE-002 documented as its accepted residual: a
+**body-verified** presence stands when its control could not be read
+(`Found{verified:true}` + control `Error` → `Found{controlled:false}`), and on
+the runner Yandex rate-limited the burst of control probes, so the false
+verified-presence stood. For Hacker News the control's answer varied under
+the same throttling. The lesson: the control is not a reliable substitute for
+a **sound site rule** on a rate-limiting soft-404 site — the authoritative
+fix makes each site self-discriminating so the outcome does not depend on the
+control.
+
+**Fix (the authoritative layer — the site rule).**
+- Hacker News gains `negative_patterns: &["No such user."]`: `classify_probe`
+  now reads the body and returns `NotFound` for the soft-404 line and a
+  body-verified `Found` for a real profile — deterministic, independent of the
+  control. (The site moves from the weak-detection fast path to the
+  body-capture verified path, as its soft-404 shape requires.)
+- Yandex.Reviews is **removed**: it 200s the generic landing page for every
+  handle and cannot tell present from absent keylessly. `market`/`music`
+  stay. `SITES` is 353.
+
+**Locks.**
+`social_probe::tests::hackernews_soft_404_is_not_a_profile` (`classify_probe`
+of a `200 "No such user."` body → `NotFound`; of a `200` profile body →
+body-verified `Found`),
+`username_search::tests::yandex_reviews_is_removed_because_its_needle_matched_the_generic_page`
+(no `reviews.yandex.ru` in `SITES`; and the real predicate
+`classify_page(generic_page, "Отзывы и оценки", true)` → `Present`, pinning
+the root cause). Each fails with its fix reverted (`cycle_af_falsify.py`,
+2/2 FAILED as required).
+
+**Local, after the fixes (this sandbox, 03:55–03:57 UTC, nonce `<handle>` / `<Name>`).** `controls: 114 probed — 89 empty, 2
+annotated, 0 fabricated, 23 without a reading`, the run green: `social_probe`
+now reads `empty` for the username control (the Hacker News fabrication gone),
+`username_search` `unreachable` this run (the sandbox's own refusal, never a
+fabrication), the two `annotated` still `disposable_check` and `smtp_vrfy`.
+The org kind (REQ-CANARY-003's extension, 17 controls) read `empty` on every
+register.
+
+**Remote.** Dispatched on the pushed head; the runner's
+control sweep — the vantage that first surfaced both fabrications — is
+expected to read `0 fabricated` for `social_probe` and (Yandex.Reviews gone)
+`username_search`, and is recorded here once it completes.
+
+**Residual.** The per-site control remains a backstop, not a guarantee, on a
+rate-limiting soft-404 site: a body-verified presence with a sound needle is
+trusted (REQ-PROBE-002), so a site whose needle is generic chrome defeats it
+until the rule is fixed. The systematic defense is a sound per-site rule; the
+known-negative control on the production vantage is what surfaces the ones
+that are not (REQ-CANARY-002/003). Other status-only platforms in both
+tables are candidates for the same soft-404 shape and are audited as the
+control reads each on the runner.
+
 ### REQ-CANARY-003 (**new, Pass 31 — MECHANISM extended to three kinds, then OBSERVED live from the sandbox on its first run: three findings, two of them defects, FIXED, FALSIFIED**): every keyless network module is asked, per kind it consumes, about a domain, a mailbox and a name nobody holds
 
 **Lead.** REQ-CANARY-002's residual and the stop revision (7): controls
@@ -4558,7 +4647,9 @@ memory restored three runs deep; the run green.
 
 **Residual.** Controls existed for the Username kind only; the Domain, Email
 and FullName controls followed on the same mechanism (REQ-CANARY-003: a
-nonce `.com` label, the nonce at Gmail, the nonce read as a name), and
+nonce `.com` label, the nonce at Gmail, the nonce read as a name, and — in
+REQ-PROBE-003's cycle — a name read as `<Name> Pty Ltd` for the Organisation
+kind, 114 controls over 120 modules, the org kind empty on every register), and
 their first run found the estate fabrication and the provider-class
 re-affirmation recorded there. A control's transport failure is one attempt
 and tolerated: on a vantage that refuses the sweep (this sandbox's six), the

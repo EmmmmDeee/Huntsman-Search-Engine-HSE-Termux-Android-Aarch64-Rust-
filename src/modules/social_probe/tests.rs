@@ -376,6 +376,47 @@ fn a_presence_status_whose_body_curl_refused_or_cut_is_inconclusive_not_a_verifi
 }
 
 #[test]
+fn hackernews_soft_404_is_not_a_profile() {
+    // REQ-PROBE-003: news.ycombinator.com/user?id=<nobody> answers 200 "No such
+    // user." for every handle, so the old status-only rule (negative_patterns
+    // &[]) minted a weak-detection profile for a handle nobody holds — the
+    // runner's known-negative control caught it 2026-09-16. The body marker
+    // discriminates: a nonce is a definitive NotFound, a real profile a
+    // body-verified Found.
+    let hn = USERNAME_PLATFORMS
+        .iter()
+        .find(|p| p.name == "hackernews")
+        .expect("hackernews platform");
+    assert_eq!(
+        hn.negative_patterns,
+        &["No such user."],
+        "the soft-404 marker must gate the presence claim"
+    );
+    let absent = StatusProbe {
+        status: 200,
+        body: "No such user.".into(),
+        truncated: false,
+    };
+    assert_eq!(
+        classify_probe(hn, PROBE_URL, &absent),
+        ProbeResult::NotFound,
+        "200 \"No such user.\" is an absence, not a profile"
+    );
+    let present = StatusProbe {
+        status: 200,
+        body: "<html><body>user: pg<br>created: 6000 days ago<br>karma: 155000</body></html>"
+            .into(),
+        truncated: false,
+    };
+    match classify_probe(hn, PROBE_URL, &present) {
+        ProbeResult::Found { verified, .. } => {
+            assert!(verified, "a real HN profile is body-verified");
+        }
+        other => panic!("a real HN profile must be Found, got {other:?}"),
+    }
+}
+
+#[test]
 fn a_negative_marker_seen_in_a_partial_body_is_still_a_definitive_not_found() {
     let p = a_negative_marker_platform();
     let marker = p.negative_patterns[0];

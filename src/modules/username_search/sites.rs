@@ -896,14 +896,14 @@ pub(super) const SITES: &[Site] = &[
         200,
         "music"
     ),
-    s!(
-        "Yandex.Reviews",
-        "https://reviews.yandex.ru/user/{}",
-        HAS,
-        200,
-        "Отзывы и оценки",
-        "other"
-    ),
+    // Yandex.Reviews (reviews.yandex.ru/user/{}) is removed: it soft-404s to a
+    // generic "Отзывы и оценки — Яндекс" landing page for every handle
+    // (captured from the runner and the sandbox 2026-09-16), and its
+    // StatusAndBody needle "Отзывы и оценки" is that page's own title — matched
+    // for every handle. The known-negative control caught it minted as a
+    // body-verified profile (0.92) for a handle nobody holds (REQ-PROBE-003);
+    // it cannot tell present from absent keylessly. Yandex.Market (302 for a
+    // nonexistent user) and Yandex.Music (404) discriminate and stay.
     // ── Gaming (Maigret) ───────────────────────────────────────────
     s!(
         "Steam Group",

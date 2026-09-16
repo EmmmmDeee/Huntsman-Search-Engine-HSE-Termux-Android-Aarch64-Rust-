@@ -201,7 +201,15 @@ pub(super) const USERNAME_PLATFORMS: &[Platform] = &[
         name: "hackernews",
         url_pattern: "https://news.ycombinator.com/user?id={}",
         exists_codes: &[200],
-        negative_patterns: &[],
+        // Hacker News is a soft-404: `user?id=<nobody>` answers 200 with the
+        // 13-byte body "No such user." for every handle, so a status-only rule
+        // read every handle as a present profile — the runner's known-negative
+        // control minted one for a handle nobody holds (REQ-PROBE-003,
+        // 2026-09-16). The body marker makes the site self-discriminating (a
+        // real profile carries "karma:"/"created:" and not this line),
+        // independent of the control wave, which the runner showed is not a
+        // reliable backstop on a rate-limiting soft-404 site.
+        negative_patterns: &["No such user."],
     },
     Platform {
         name: "twitch",

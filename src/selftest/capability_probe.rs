@@ -674,11 +674,12 @@ pub async fn probe_keyless_fleet(concurrency: usize) -> Vec<ProbeReport> {
 /// nobody announces (its geolocation, its registry) is a fact of the value
 /// itself, as honest for an unheld value as for a held one, so a yield there
 /// is no fabrication and a control would prove nothing.
-pub const CONTROLLED_KINDS: [TargetKind; 4] = [
+pub const CONTROLLED_KINDS: [TargetKind; 5] = [
     TargetKind::Username,
     TargetKind::Domain,
     TargetKind::Email,
     TargetKind::FullName,
+    TargetKind::Organisation,
 ];
 
 /// The control value for a target kind — a well-formed target nobody holds —
@@ -694,15 +695,26 @@ pub const CONTROLLED_KINDS: [TargetKind; 4] = [
 /// mailbox provider, so every provider-facing parser is read against a real
 /// mail domain instead of skipping on a missing MX); the handle read as a
 /// pronounceable two-token name for a FullName (letters only, capitalised, so
-/// every register's name rule accepts it).
+/// every register's name rule accepts it); and that name as a proprietary
+/// company for an Organisation (`<name> Pty Ltd` — the suffix every
+/// Australian register and the engines' organisation queries expect, on a
+/// name no register holds).
 pub fn control_value(kind: TargetKind) -> Option<&'static str> {
     match kind {
         TargetKind::Username => Some(crate::util::probe::sweep_control_handle()),
         TargetKind::Domain => Some(sweep_control_domain()),
         TargetKind::Email => Some(sweep_control_email()),
         TargetKind::FullName => Some(sweep_control_name()),
+        TargetKind::Organisation => Some(sweep_control_org()),
         _ => None,
     }
+}
+
+/// `<name> Pty Ltd` — the sweep's name nobody holds as a company nobody
+/// registered, drawn once per process.
+fn sweep_control_org() -> &'static str {
+    static ORG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ORG.get_or_init(|| format!("{} Pty Ltd", sweep_control_name()))
 }
 
 /// `<handle>.com` — the sweep's handle nobody holds as a domain nobody
@@ -2222,6 +2234,11 @@ mod tests {
             "the engines answer every kind, so they are controlled for every kind"
         );
         assert_eq!(kinds("crtsh"), vec![TargetKind::Domain, TargetKind::Email]);
+        assert_eq!(kinds("acnc_charities"), vec![TargetKind::Organisation]);
+        assert_eq!(
+            kinds("wikidata"),
+            vec![TargetKind::FullName, TargetKind::Organisation]
+        );
         assert!(kinds("see_know").is_empty(), "a paid module has no control");
         assert!(kinds("ip_geo").is_empty(), "an IpAddress has no control");
         for (kind, at_least) in [
@@ -2229,6 +2246,7 @@ mod tests {
             (TargetKind::Domain, 20),
             (TargetKind::Email, 10),
             (TargetKind::FullName, 10),
+            (TargetKind::Organisation, 10),
         ] {
             let n = per_kind.get(&kind).copied().unwrap_or(0);
             assert!(
@@ -2287,6 +2305,10 @@ mod tests {
         }
         assert_eq!(name_from_handle("a1b2c3d4e5f6"), "Nepiro Sutave");
         assert_eq!(name_from_handle("zzzzzzzzzzzz"), "Vavava Vavava");
+        assert_eq!(
+            control_value(TargetKind::Organisation),
+            Some(format!("{name} Pty Ltd").as_str())
+        );
         // A fact of the value is not a fabrication: no control for these.
         assert_eq!(control_value(TargetKind::Phone), None);
         assert_eq!(control_value(TargetKind::IpAddress), None);

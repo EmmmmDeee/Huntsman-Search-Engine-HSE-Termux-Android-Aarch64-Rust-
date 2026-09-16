@@ -27,6 +27,28 @@ use crate::core::confidence;
         }
     }
 
+    /// REQ-PROBE-003: `reviews.yandex.ru/user/<nobody>` answers 200 with the
+    /// generic "Отзывы и оценки — Яндекс" landing page for every handle, and
+    /// the removed site's `StatusAndBody` needle was that page's own title —
+    /// so the real detection predicate read the generic page as a present
+    /// profile, and the site fabricated for every scan. The site is removed;
+    /// re-adding it fails this test.
+    #[test]
+    fn yandex_reviews_is_removed_because_its_needle_matched_the_generic_page() {
+        assert!(
+            SITES.iter().all(|s| !s.url.contains("reviews.yandex.ru")),
+            "reviews.yandex.ru 200s a generic page for every handle — never a probed site"
+        );
+        const GENERIC_PAGE: &str = "<!doctype html><html lang=\"ru\"><head>\
+             <meta charset=\"utf-8\"><title>Отзывы и оценки — Яндекс</title></head>\
+             <body><div class=\"landing\">Отзывы и оценки</div></body></html>";
+        assert_eq!(
+            crate::util::probe::classify_page(GENERIC_PAGE, "Отзывы и оценки", true),
+            crate::util::probe::PageVerdict::Present,
+            "the removed needle matched the generic landing page — the root cause"
+        );
+    }
+
     #[test]
     fn every_probe_url_is_https() {
         // A username probe over plaintext http leaks the searched handle to any
