@@ -5320,6 +5320,50 @@ vantage confirms the sandbox's: the counts every sweep had reported for
 read 36 against 68 and 3 on the two sweeps before — the search providers'
 own variance, untouched by this change.)
 
+### REQ-ATTR-004 (**new, Pass 31 — OBSERVED live from the sandbox against a real target, REPRODUCED, FIXED at the correlator gate, FALSIFIED**): a numbered infrastructure series is not look-alike impersonation
+
+**Observation (this sandbox, 2026-09-16, `hse scan -v redcross.org.au -d 0
+--free-only` against the binary built from `ad5065e3`).** Among coherent, honest
+findings (3-source infra consensus on real subdomains, corroborated org/email
+entities, honest single-pathway-gap flags), one false HIGH: `AU-118 HIGH
+Look-alike domain impersonation — 'awsdns-52.org' and 'awsdns-62.net' are
+visual/typo look-alike domains … one is almost certainly impersonating the other
+(phishing / brand-abuse infrastructure)`. Those two are the target's **own** AWS
+Route 53 nameserver parents: a single hosted zone's four nameservers are
+`ns-<n>.awsdns-<NN>.{com,org,net,co.uk}`, so `awsdns-52.org` and `awsdns-62.net`
+are two shards of one legitimate AWS series, not one brand impersonating another.
+
+**Reproduced (a unit lock that fails on the baseline).** AU-118 compares the
+registrable brand labels via `is_lookalike` (homoglyph skeleton OR single edit).
+`awsdns-52` vs `awsdns-62` differ by one character, so `is_lookalike` fires and
+the pair is minted High. The lock
+(`au118_silent_on_a_numbered_infrastructure_series`) asserts no finding for the
+`awsdns-52.org` / `awsdns-62.net` pair; on the baseline it fires, reproducing the
+live correlation verbatim.
+
+**Fix (the authoritative gate — the AU-118 pair test).** A new
+`differ_only_in_digits(a, b)` — the two labels are identical once ASCII digits
+are removed — gates the pair: `if !is_lookalike(&li, &lj) ||
+differ_only_in_digits(&li, &lj) { continue; }`. Two members of one operator's
+numbered series (`awsdns-52` / `awsdns-62`, `ns1` / `ns2`, `mx1` / `mx2`,
+`server01` / `server02`) are enumerated hosts, never impersonation. A homoglyph
+or typo that substitutes a digit for a LETTER (`paypa1` for `paypal`, `g00gle`
+for `google`) leaves the digit-stripped forms UNEQUAL (`paypa` ≠ `paypal`), so
+those real impersonations still fire — the existing homoglyph lock is untouched.
+
+**Lock and falsification (`cycle_attr004_falsify.py`).** Locked at the AU-118
+boundary (the numbered series is silent, `mx1`/`mx2` too, a digit-for-letter
+homoglyph still fires) and at the pure `differ_only_in_digits` predicate.
+Reverting the `|| differ_only_in_digits(&li, &lj)` guard re-mints the
+`awsdns-52.org` / `awsdns-62.net` High "phishing / brand-abuse" correlation and
+fails the lock; `lookalike.rs` sha256-restored. `RESULT: FALSIFIED`.
+
+**Remote.** CI-exact gate green locally. AU-118 is a correlator rule, not a
+keyless module, so the known-negative control sweep does not exercise it; its
+observing vantage is the live scan against a real target. The fix is
+re-exercised end-to-end against the same `redcross.org.au` production path (the
+AU-118 awsdns finding is gone), and CI on the pushed commit is recorded below.
+
 ### REQ-SEARCH-006 (**new, Pass 31 — OBSERVED by the Organisation known-negative control on the runner (PR #636's live-drift), REPRODUCED, FIXED at the URL-path gate, FALSIFIED**): an organisation URL needs its whole distinctive name, not one shared token
 
 **Observation (live-drift run 35100613296 on `d221f68b`).** The runner's

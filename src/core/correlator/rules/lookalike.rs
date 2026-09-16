@@ -48,6 +48,23 @@ fn is_generated_permutation(e: &Entity) -> bool {
     e.has_tag("typosquat") && e.corroborating_sources().iter().all(|s| *s == "typosquat")
 }
 
+/// True when two brand labels are identical once their ASCII digits are removed
+/// — they differ ONLY in a numeric component. Two members of one operator's
+/// numbered infrastructure series (`awsdns-52` / `awsdns-62`, the AWS Route 53
+/// nameserver parents of a single hosted zone; `ns1` / `ns2`; `mx1` / `mx2`)
+/// are the SAME operator's enumerated hosts, not one brand impersonating
+/// another — yet [`is_lookalike`] sees a single-character edit and fires. A live
+/// `redcross.org.au` scan flagged the org's own `awsdns-52.org` / `awsdns-62.net`
+/// nameservers as "phishing / brand-abuse infrastructure" at High this way
+/// (REQ-ATTR-004). A homoglyph or typo that substitutes a digit for a LETTER
+/// (`paypa1` for `paypal`, `g00gle` for `google`) leaves the digit-stripped
+/// forms UNEQUAL, so those real impersonations still fire.
+fn differ_only_in_digits(a: &str, b: &str) -> bool {
+    let without_digits =
+        |s: &str| -> String { s.chars().filter(|c| !c.is_ascii_digit()).collect() };
+    without_digits(a) == without_digits(b)
+}
+
 /// AU-118 — Look-alike domain impersonation.
 ///
 /// Entity-only: folds the `Domain` entities to distinct registrable domains and
@@ -92,7 +109,7 @@ pub(in crate::core::correlator) fn rule_au_118_lookalike_domain_impersonation(
         let li = label(keys[i]);
         for kj in keys.iter().skip(i + 1) {
             let lj = label(kj);
-            if !is_lookalike(&li, &lj) {
+            if !is_lookalike(&li, &lj) || differ_only_in_digits(&li, &lj) {
                 continue;
             }
             // Union both sides' entities, in entity order for a stable render.
@@ -270,5 +287,58 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rule_id, "AU-118");
         assert!(out[0].entity_uids.contains(&fake.uid));
+    }
+
+    /// REQ-ATTR-004: two members of one operator's numbered infrastructure
+    /// series differ only in a shard number, which `is_lookalike` reads as a
+    /// single edit. A live `redcross.org.au` scan flagged the zone's own AWS
+    /// Route 53 nameserver parents `awsdns-52.org` / `awsdns-62.net` as
+    /// "phishing / brand-abuse infrastructure" at High. They are the same
+    /// provider's enumerated hosts, not one impersonating the other, so AU-118
+    /// must stay silent — while a digit-for-LETTER homoglyph still fires.
+    #[test]
+    fn au118_silent_on_a_numbered_infrastructure_series() {
+        let out = rule_au_118_lookalike_domain_impersonation(
+            &RuleContext::new(&[dom("awsdns-52.org"), dom("awsdns-62.net")]),
+            "s",
+            0,
+        );
+        assert!(
+            out.is_empty(),
+            "two shards of one AWS nameserver series are not impersonation: {out:?}"
+        );
+        // Sibling infrastructure enumerations behave the same.
+        let out = rule_au_118_lookalike_domain_impersonation(
+            &RuleContext::new(&[dom("mx1.example-mail.com"), dom("mx2.example-host.net")]),
+            "s",
+            0,
+        );
+        assert!(
+            out.is_empty(),
+            "mx1 / mx2 are enumerated hosts, not impersonation: {out:?}"
+        );
+        // A digit that REPLACES a letter is still a homoglyph impersonation: the
+        // digit-stripped forms (`paypa` vs `paypal`) are unequal, so it fires.
+        let out = rule_au_118_lookalike_domain_impersonation(
+            &RuleContext::new(&[dom("paypal.com"), dom("paypa1.com")]),
+            "s",
+            0,
+        );
+        assert_eq!(
+            out.len(),
+            1,
+            "a digit-for-letter homoglyph still fires: {out:?}"
+        );
+    }
+
+    #[test]
+    fn differ_only_in_digits_distinguishes_a_series_from_a_homoglyph() {
+        assert!(differ_only_in_digits("awsdns-52", "awsdns-62"));
+        assert!(differ_only_in_digits("ns1", "ns2"));
+        assert!(differ_only_in_digits("server01", "server02"));
+        // Digit-for-letter substitution is NOT a pure numeric difference.
+        assert!(!differ_only_in_digits("paypa1", "paypal"));
+        assert!(!differ_only_in_digits("g00gle", "google"));
+        assert!(!differ_only_in_digits("arnazon", "amazon"));
     }
 }
