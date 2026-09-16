@@ -2102,24 +2102,43 @@ fn email_and_phone_extraction_requires_the_surname_in_the_result() {
 }
 
 #[test]
-fn email_extraction_unaffected_for_single_token_targets() {
-    // Single-token targets (email/username) are not prone to first-name
-    // collision, so the gate must stay a no-op for them — mirrors the existing
-    // guarantee already proven for address extraction.
+fn a_single_token_subject_is_gated_like_a_name_an_unrelated_page_mints_nothing() {
+    // This test used to assert the opposite — "single-token targets
+    // (email/username) are not prone to first-name collision, so the gate
+    // must stay a no-op for them" — and pinned the premise the sweep's
+    // known-negative control refuted (REQ-SEARCH-002): the engines answer a
+    // handle no page contains with fuzzy results, and an unrelated page's
+    // email was attributed to the handle. The unrelated page mints nothing;
+    // a page that names the handle mints its email as before.
     let target = Target::new(TargetKind::Username, "kylo4kylo");
-    let results = vec![SearchResult {
+    let unrelated = SearchResult {
         url: "https://example.com/unrelated".to_string(),
         title: "totally unrelated page".to_string(),
         snippet: "contact someone at other@example.com".to_string(),
         engine: "duckduckgo",
         query: "kylo4kylo".to_string(),
-    }];
+    };
+    let results = vec![unrelated];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        !res.entities.iter().any(|e| e.kind == EntityKind::Email),
+        "an unrelated page's email is not the subject's"
+    );
+
+    let named = SearchResult {
+        url: "https://example.com/kylo4kylo".to_string(),
+        title: "kylo4kylo's page".to_string(),
+        snippet: "contact kylo4kylo at other@example.com".to_string(),
+        engine: "duckduckgo",
+        query: "kylo4kylo".to_string(),
+    };
+    let results = vec![named];
     let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
     assert!(
         res.entities
             .iter()
             .any(|e| e.kind == EntityKind::Email && e.value == "other@example.com"),
-        "single-token targets must still extract emails regardless of surname presence"
+        "a page that names the subject still yields its email"
     );
 }
 
@@ -2174,10 +2193,16 @@ fn location_seed_pivot_does_not_reaffirm_the_seed_at_0_82() {
 
 #[test]
 fn identity_seed_still_gets_flat_parent_reaffirmation() {
-    // The fix must not regress the legitimate case: for a genuine identity seed
-    // (email / username / domain) "this identifier has real web presence" IS
-    // corroboration, so the parent still re-affirms it at the flat 0.82
-    // search-enriched tier — the demotion is location-seed-specific.
+    // The location-seed fix must not regress the legitimate case: for a
+    // genuine identity seed (email / username / domain) a page that names the
+    // identifier IS corroboration, so the parent still re-affirms it at the
+    // flat 0.82 search-enriched tier — the demotion is location-seed-specific.
+    // "Names the identifier" is the condition (REQ-SEARCH-002): this test
+    // used to hand the builder a result that named nothing — `example.org/about`,
+    // "some page" — and asserted the parent anyway, the premise the sweep's
+    // known-negative control refuted (the engines answer a handle no page
+    // contains with 94 to 148 fuzzy results). A result that names nothing
+    // re-affirms nothing.
     for kind in [TargetKind::Email, TargetKind::Username, TargetKind::Domain] {
         let value = match kind {
             TargetKind::Email => "jerome.despal@example.com",
@@ -2185,13 +2210,15 @@ fn identity_seed_still_gets_flat_parent_reaffirmation() {
             _ => "acme.com",
         };
         let target = Target::new(kind, value);
-        let results = vec![SearchResult {
+        let mk = |snippet: &str| SearchResult {
             url: "https://example.org/about".to_string(),
             title: "profile".to_string(),
-            snippet: "some page".to_string(),
+            snippet: snippet.to_string(),
             engine: "duckduckgo",
             query: "q".to_string(),
-        }];
+        };
+
+        let results = vec![mk(&format!("some page about {value}"))];
         let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
         let parent = res
             .entities
@@ -2202,6 +2229,13 @@ fn identity_seed_still_gets_flat_parent_reaffirmation() {
             (parent.confidence - 0.82).abs() < 1e-9,
             "{kind:?} parent stays at 0.82, got {}",
             parent.confidence
+        );
+
+        let results = vec![mk("some page")];
+        let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+        assert!(
+            !res.entities.iter().any(|e| e.has_tag("search-enriched")),
+            "{kind:?}: a result that names nothing re-affirms nothing"
         );
     }
 }
@@ -2761,5 +2795,70 @@ fn court_record_hits_are_source_documents_never_pivots() {
     assert!(
         !url_of("example-portfolio.com").has_tag(crate::core::tags::SOURCE_DOCUMENT),
         "an ordinary page keeps its pivot"
+    );
+}
+
+/// REQ-SEARCH-002: a single-token subject collides like a name does. The
+/// engines answer a string no page contains with fuzzy results; a result that
+/// never names the handle — not in its URL, title or snippet — mines nothing,
+/// however plausible its snippet's email or its path's handle. The same PII
+/// in a result that names the handle is mined as before.
+#[test]
+fn a_result_that_never_names_a_single_token_subject_mines_neither_email_nor_handle() {
+    let target = Target::new(TargetKind::Username, "gd618sephcjw");
+    let email = "fidelity@service.healthaccountservices.com";
+    let stranger = SearchResult {
+        url: "https://github.com/openai".to_string(),
+        title: "OpenAI · GitHub".to_string(),
+        snippet: format!("Contact {email} for account help"),
+        engine: "bing",
+        query: "\"gd618sephcjw\"".to_string(),
+    };
+    let results = vec![stranger];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    let minted: Vec<(EntityKind, String)> = res
+        .entities
+        .iter()
+        .map(|e| (e.kind.clone(), e.value.clone()))
+        .collect();
+    assert!(
+        minted.is_empty(),
+        "a result that never names the subject mines nothing — not the stranger's email, not \
+         the handle in its path, and not a re-affirmation of the seed as having \"web \
+         presence\": {minted:?}"
+    );
+
+    let named = SearchResult {
+        url: "https://github.com/gd618sephcjw".to_string(),
+        title: "gd618sephcjw · GitHub".to_string(),
+        snippet: format!("gd618sephcjw — contact {email}"),
+        engine: "bing",
+        query: "\"gd618sephcjw\"".to_string(),
+    };
+    let results = vec![named];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        res.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == email),
+        "the same email in a result that names the subject is mined"
+    );
+    assert!(
+        res.entities.iter().any(|e| e.kind == EntityKind::Username
+            && e.value == "gd618sephcjw"
+            && e.has_tag("social-profile")),
+        "the handle in a path of a result that names the subject is mined"
+    );
+    let parent = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Username && e.has_tag("search-enriched"))
+        .expect("a result that names the subject re-affirms the seed");
+    assert_eq!(
+        parent.evidence[0]
+            .attributes
+            .get("results_naming_subject")
+            .map(String::as_str),
+        Some("1")
     );
 }

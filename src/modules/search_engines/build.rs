@@ -63,7 +63,32 @@ pub(super) fn build_entities(
     // tautological for a place, so a location seed earns no re-affirmation; the
     // gated per-result extraction below still emits whatever the pages genuinely
     // yield, tiered on its own merits.
-    if !location_seed {
+    // Whether a result is about the subject at all: the one predicate behind
+    // the seed's re-affirmation and every per-result extraction below. A
+    // location seed has no identity anchor; a phone must appear as a number;
+    // any other subject's distinctive term — a multi-part name's surname, a
+    // single-token subject's only term — must appear in the result's snippet,
+    // title or URL. See `result_names_the_subject` in the loop for the
+    // reasoning behind each branch.
+    let names_the_subject = |r: &SearchResult| -> bool {
+        let combined_text = format!("{} {}", r.title, r.snippet);
+        if location_seed {
+            false
+        } else if matches!(target.kind, TargetKind::Phone) {
+            result_mentions_phone(&format!("{combined_text} {}", r.url), &target.value)
+        } else {
+            let hay = format!("{combined_text} {}", r.url).to_lowercase();
+            terms.last().is_some_and(|term| hay.contains(term.as_str()))
+        }
+    };
+    // The results that name the subject. The engines answer a term no page
+    // contains with fuzzy results — 94 to 148 of them for a twelve-character
+    // handle nobody holds (REQ-SEARCH-002, the sweep's known-negative
+    // control) — so "the web returned results" re-affirms nothing by itself:
+    // only a result that names the subject does.
+    let naming_subject = results.iter().filter(|r| names_the_subject(r)).count();
+
+    if !location_seed && naming_subject > 0 {
         let engines_hit: HashSet<&str> = results.iter().map(|r| r.engine).collect();
         let queries_run: HashSet<&str> = results.iter().map(|r| r.query.as_str()).collect();
         // Search re-affirmation of seed identity (2-engine discovery boost)
@@ -83,6 +108,7 @@ pub(super) fn build_entities(
                 ),
             )
             .with_attr("result_count", results.len().to_string())
+            .with_attr("results_naming_subject", naming_subject.to_string())
             .with_attr("engines", engines_list.join(", "))
             .with_attr("queries_run", queries_run.len().to_string()),
         );
@@ -179,25 +205,22 @@ pub(super) fn build_entities(
         // aggregator page that indexed the address reproduces verbatim — the
         // gate would be tautologically true, so a location seed never mines
         // snippet PII at all (mirrors the parent-reaffirmation skip above).
-        let result_names_the_subject = if location_seed {
-            false
-        } else if matches!(target.kind, TargetKind::Phone) {
-            // A phone is a PRECISE identifier — require the number itself (in any
-            // format) to appear before mining this result's snippet PII/geo.
-            // Without this a phone seed (a single token) fell through to the
-            // permissive branch below and mined every irrelevant result: a live
-            // +61 scan geocoded a generic "Ghan, NT" weather page that never
-            // contained the number into a confident NT location. See
-            // `helpers::relevance::result_mentions_phone`.
-            result_mentions_phone(&format!("{combined_text} {}", r.url), &target.value)
-        } else if terms.len() >= 2 {
-            let hay = format!("{combined_text} {}", r.url).to_lowercase();
-            terms
-                .last()
-                .is_some_and(|surname| hay.contains(surname.as_str()))
-        } else {
-            true
-        };
+        // A phone is a PRECISE identifier — the number itself (in any format)
+        // must appear before mining this result's snippet PII/geo. Without
+        // this a phone seed (a single token) fell through to a permissive
+        // branch and mined every irrelevant result: a live +61 scan geocoded
+        // a generic "Ghan, NT" weather page that never contained the number
+        // into a confident NT location (`helpers::relevance::result_mentions_phone`).
+        // For any other subject the distinctive term — a multi-part name's
+        // surname, a single-token subject's only term — must appear in this
+        // result's snippet, title or URL. A single-token subject collides too:
+        // the engines answer a string no page contains with fuzzy results,
+        // and mining those snippets attributed a stranger's email and a
+        // stranger's handle to a twelve-character handle nobody holds
+        // (REQ-SEARCH-002, observed 2026-09-15 by the sweep's known-negative
+        // control: 148 results from Bing and Dogpile for 23 queries about
+        // it). A subject with no distinctive term at all mines nothing.
+        let result_names_the_subject = names_the_subject(r);
 
         if result_names_the_subject {
             for email in extract_emails_from_text(&combined_text) {
@@ -553,7 +576,14 @@ pub(super) fn build_entities(
             // even scored. The key is now claimed only once a candidate has
             // actually earned an entity (`score >= 1`), so a zero-score attempt
             // leaves the door open for a stronger later occurrence.
-            if is_social && lower_user.len() >= 3 && !is_navigation_path(&lower_user) {
+            // A handle in a result's path is the subject's only when the
+            // result names the subject (REQ-SEARCH-002): the fuzzy results for
+            // a handle nobody holds carried `github.com/openai`.
+            if result_names_the_subject
+                && is_social
+                && lower_user.len() >= 3
+                && !is_navigation_path(&lower_user)
+            {
                 let (score, confidence) = score_username(&lower_user, &host, &terms, r);
                 if score >= 1 && seen_domains.insert(format!("@username:{lower_user}")) {
                     let mut e = Entity::new(EntityKind::Username, &lower_user, confidence, scan_id);

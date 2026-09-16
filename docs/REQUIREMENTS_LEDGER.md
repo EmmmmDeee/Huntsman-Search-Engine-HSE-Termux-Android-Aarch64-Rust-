@@ -4108,6 +4108,182 @@ the next step if a 200 wall is observed on one. The remaining
 `ip_reputation`) read JSON or crawl content and mint no negative claim from
 an empty parse.
 
+### REQ-SEARCH-002 (**new, Pass 31 — OBSERVED by the known-negative control, VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a result that never names a single-token subject mines nothing
+
+**Lead.** IDENTIFIER MATCH ≠ ENTITY IDENTITY. `search_engines::build_entities`
+gates snippet PII (emails, phones, organisations, addresses) on
+`result_names_the_subject`: for a multi-part name the surname must appear in
+the result's snippet or URL — the gate that stopped a "Riley Morley" scan
+attributing `pr@rileyjorja.com` from a stranger's bio. Its `else` branch read
+`true` for a single-token subject, with the comment "single-token targets
+(email handle / username) are not prone to this first-name collision and are
+unaffected". The control sweep refuted the premise: for `gd618sephcjw`, Bing
+and Dogpile returned 148 results for 23 queries about a string no page
+contains, and the module minted `fidelity@service.healthaccountservices.com`
+(Email, 0.55, `email_domain_unverified`) and `openai` (Username, 0.3, from a
+social host's path) as the handle's.
+
+**Competing explanations.** (a) The engines returned exact-match pages for
+the nonce — refuted: no page contains twelve random characters drawn this
+process. (b) The queries' quotes were not honoured and the results are the
+engines' fuzzy fallback — the shape does not matter: a result that does not
+name the subject is not about the subject whatever the engine's reason for
+showing it. (c) The gate — verified from source: `else { true }`, and the
+social-host path-username mining was not gated at all.
+
+**Second observation (the recycler).** With the builder gated, the control
+sweep still read `search_engines` fabricated: for `qx82vtnrmpaw` the module
+minted an `Address` "Redmond" (0.45) — from Microsoft's Wikipedia page,
+answered by Bing to the *recycle* query `"qx82vtnrmpaw" address OR location
+OR city` (the recycler re-queries the engines about every entity the primary
+pass produced, the seed included, and mines addresses, coordinates, emails
+and phones from whatever comes back). `extract::recycle_entities` had no
+subject gate at all: the builder's `result_names_the_subject` never saw a
+recycled result.
+
+**Third observation (the seed's re-affirmation).** With the builder and the
+recycler gated, the control sweep still read the module fabricated, and —
+the control naming what was minted from then on — the entity was the seed
+itself: `username fue63qzlk5uy`, the builder's parent entity, `target.to_entity`
+at `CORROBORATED` tagged `search-enriched`, "Search across N engine(s)
+returned M result(s)", emitted whenever the engines returned anything. For a
+handle no page contains the engines returned 94 to 148 fuzzy results, and the
+module re-affirmed the handle's "real web presence" at 0.90 — invisible in a
+scan's entity count (it merges into the seed) and false corroboration on
+every username and email scan.
+
+**Fix (`search_engines/build.rs`, `search_engines/extract/mod.rs`).** The
+distinctive term — a multi-part name's surname, a single-token subject's
+only term — must appear in the result's snippet, title or URL before
+anything is mined from it, the same rule for every subject; a subject with
+no distinctive term mines nothing. The social-host path-username mining is
+gated on the same predicate: a handle in a result's path is the subject's
+only when the result names the subject. The recycler's mining loop is a pure
+function now, `mine_recycled_results`, and a recycled result is mined only
+when it names the entity its query asked about
+(`recycled_result_names_its_subject`: the query's quoted term — the recycled
+entity's value — in the result's title, snippet or URL). And the seed is
+re-affirmed only when at least one result names it (`names_the_subject`, the
+one predicate behind the parent and every per-result extraction); the parent
+says how many did (`results_naming_subject`).
+
+**Locks.**
+`search_engines::tests::a_result_that_never_names_a_single_token_subject_mines_neither_email_nor_handle`
+(the same email in a `github.com/openai` result that never names the handle
+is not mined, `openai` is not a profile, and nothing at all is minted — not
+the seed's re-affirmation either; in a result that names the handle the
+email is mined, the path handle is a `social-profile`, and the seed is
+re-affirmed with `results_naming_subject: 1`);
+`search_engines::extract::tests::a_recycled_result_that_never_names_the_entity_its_query_asked_about_mines_nothing`
+(Microsoft's page for the nonce's recycle query mines nothing; the same
+sentence naming the handle yields "Redmond"). The existing test
+`email_extraction_unaffected_for_single_token_targets` asserted the refuted
+premise itself — an unrelated page's email "must still" be extracted for a
+username — and is inverted, keeping its fixture
+(`a_single_token_subject_is_gated_like_a_name_an_unrelated_page_mints_nothing`):
+the regression suite had encoded the same mistaken assumption as the
+implementation, the case the method warns of.
+
+**Falsification (`cycle_abac_falsify.py`, 00:26–01:39 UTC; each mutation
+runs only its lock with `--exact`, the source restored and sha-asserted).**
+The relevance gate reverted (a single-token subject never required to
+appear) → the builder lock fails (`fidelity@service.healthaccountservices.com`
+mined); the path-handle gate reverted → the builder lock fails (`openai` a
+profile); the recycler's gate reverted → the recycler lock fails (`Address,
+"Redmond, Washington"` mined from Microsoft's page); the seed's
+re-affirmation gate reverted → the builder lock fails (the seed re-affirmed
+from a result naming nothing). Four of four. Two existing tests pinned the
+refuted premise and were corrected, keeping their fixtures:
+`email_extraction_unaffected_for_single_token_targets` (inverted, above)
+and `identity_seed_still_gets_flat_parent_reaffirmation`, which handed the
+builder a result naming nothing (`example.org/about`, "some page") and
+asserted the parent anyway — it now asserts the parent for a result that
+names the identifier and none for one that does not, for an email, a
+username and a domain seed.
+
+**Local (this sandbox, the rebuilt binary).** The control sweep read
+`search_engines` fabricated on three consecutive runs, each a different
+entity (the email and `openai`; "Redmond"; the seed itself), and reads it
+`empty` for three process nonces in a row after the three gates — `controls:
+35 probed — 30 / 28 / 31 empty, 0 fabricated, 5 / 7 / 4 without a reading`
+(01:13, 01:19, 01:26 UTC); the positive canaries unchanged (`search_engines`
+17–19 alive for its sample).
+
+**Residual.** An email's local part is its subject's distinctive term
+(`target_terms`), so a result naming any "alice" passes an `alice@…` seed's
+gate — the same collision class one rung narrower; a full-address anchor
+would be stricter and is a candidate. Confirmed-profile `Url` entities carry
+their own path-match gate and are unchanged.
+
+### REQ-PROBE-002 (**new, Pass 31 — OBSERVED by the known-negative control, VERIFIED FROM SOURCE, FIXED at the shared layer, FALSIFIED**): a status-only presence whose control could not be read is not a profile
+
+**Lead.** UNKNOWN ≠ VALID DATA. REQ-PROBE-001 judged every presence against
+a handle nobody holds and let a presence whose control could not be read
+"stand as it was, uncontrolled" — recorded as its residual. The first
+known-negative control sweep (REQ-CANARY-002, 23:42 UTC) measured it: for
+`gd618sephcjw`, `username_search` minted `https://namemc.com/profile/gd618sephcjw`
+and `https://odysee.com/@gd618sephcjw` as `weak-detection` profiles at 0.74
+— two status-only presences whose control reads had failed.
+
+**Observation.** Direct: Odysee answers `200` for any handle (an 11,347-byte
+SPA shell for two different nonces; its site rule is `HEAD` + status 200, so
+every handle is "present" by status) and NameMC answers Cloudflare's `403
+Just a moment...`. A second scan of the same handle minted neither — the
+control read succeeded that time and judged Odysee indiscriminate — so the
+fabrication followed the control's availability: the same site, the same
+answer for the target, a profile or not depending on whether a second
+request got through.
+
+**Competing explanations.** (a) The sites answered differently for the two
+handles, a genuine discrimination — refuted by the direct observation:
+identical answers for two nonces. (b) The control wave's cache returned a
+stale answer — the cache is keyed by URL and stores the answer it got; an
+`Error` stored once would make every later judgement uncontrolled, the same
+defect, not a different one. (c) The judgement lets an unreadable control
+leave a status-only presence standing — the code's stated policy, verified
+from source (`util::probe::controlled`, the `(Found, Error)` arm).
+
+**Fix (`util::probe`, the shared layer; three consumers).**
+`ProbeResult::Uncontrolled { url }`: a status-only presence whose control
+could not be read cannot be judged, so it is neither a profile nor an
+absence. `controlled(Found { verified: false, .. }, Error)` yields it; a
+body-verified presence — its own evidence — stands uncontrolled and flagged
+as before. `username_search`, `streaming_probe` and `social_probe` count it
+among the probes that could not tell (the M6 verdict) and name it in the
+summary (`sites_uncontrolled`, `uncontrolled_platforms`) so the operator can
+look by hand; none mints it.
+
+**Locks.**
+`util::probe::tests::a_presence_the_site_also_gives_the_control_handle_is_indiscriminate`
+(extended: status-only with an unreadable control → `Uncontrolled`;
+body-verified with an unreadable control → stands, uncontrolled;
+body-verified with a present control → indiscriminate),
+`username_search::tests::a_site_present_for_the_control_handle_is_indiscriminate_and_one_that_is_not_stands`
+(extended with a third loopback site that answers the target and nothing
+more: `Uncontrolled`, never a `Url`, named in `uncontrolled_platforms`),
+`streaming_probe::tests::an_uncontrolled_status_only_presence_is_named_in_the_summary_and_never_a_profile`.
+
+**Falsification (`cycle_abac_falsify.py`, 00:07–00:20 UTC; each mutation
+runs only its lock with `--exact`, the source restored and sha-asserted).**
+The judgement reverted (a status-only presence whose control could not be
+read stands as a profile again) → the shared-layer lock fails, and the same
+reversion seen from `username_search`'s loopback sweep → its lock fails;
+`username_search`'s summary no longer naming the site it could not judge →
+its lock fails; `streaming_probe`'s summary no longer naming it → its lock
+fails. Four of four.
+
+**Local (this sandbox, the rebuilt binary).** The control sweep that had
+read `username_search` fabricated (NameMC, Odysee) reads it `empty` for
+three process nonces in a row after the repair.
+
+**Residual.** A body-verified presence whose control could not be read still
+stands (flagged `control: unavailable`): its marker match is evidence of its
+own, but an echo page that repeats the handle in the marker's place would
+pass it — the control catches that when readable and nothing does when not.
+`social_probe` gained the arm and the attributes without a lock of its own on
+this path (its `emit_judged` is pure; the shared layer's lock and the two
+siblings' cover the judgement).
+
 ### REQ-CANARY-002 (**new, Pass 31 — MECHANISM, then OBSERVED live from the sandbox on its first run, FALSIFIED**): every Username module is asked about a handle nobody holds
 
 **Lead.** CANARY POLICY: "at least one stable known-positive input; one
@@ -4128,9 +4304,13 @@ drawn once per process and distinct by construction from
 `control_handle()`, which the presence probes judge their own presences
 against (a target equal to it would be judged indiscriminate by
 construction, and the control would prove nothing).
-`probe_negative_controls` probes them, one attempt each; `fabrications` is
-their one verdict: a control that yielded entities. The controls are never
-a canary reading — never drift, never a dead canary, never in the memory.
+`probe_negative_controls` probes them, one attempt each, and each
+`ControlReport` names what the module minted (`kind value`, at most eight)
+— the engines' answers vary run to run, so the names are the only record
+of what a fabrication was, and the third fabrication below was found only
+once the control named it; `fabrications` is their one verdict: a control
+that yielded entities. The controls are never a canary reading — never
+drift, never a dead canary, never in the memory.
 `tests/live_drift.rs` prints the control table and fails on a fabrication
 as on drift; `hse doctor --live` prints the controls' summary and names a
 fabricating module.
@@ -4173,8 +4353,12 @@ read failed had stood as a profile (REQ-PROBE-001's accepted residual, now
 measured); a second scan of the same handle minted neither, the control read
 having succeeded that time — the fabrication follows the control's
 availability, not the site's answer. Both are repaired next (REQ-PROBE-002,
-REQ-SEARCH-002), and the control sweep is the lock that keeps them repaired
-on the production vantage.
+REQ-SEARCH-002 — which took three findings to close: the builder's
+snippets, the recycler, and the seed's own re-affirmation, the last visible
+only once the control named what was minted), and the control sweep is the
+lock that keeps them repaired on the production vantage: after the repairs
+the sweep reads `controls: 35 probed — 30 empty, 0 fabricated, 5 without a
+reading` from this sandbox.
 
 **Residual.** Controls exist for the Username kind only; a Domain, Email or
 FullName control needs a value nobody holds that the providers treat as
@@ -5161,6 +5345,42 @@ the vantage's, not the code's; (d) the remaining `empty` rows — each
 excluded from the canary table with its reason (REQ-CANARY-001, batch 3).
 No feasible test today could materially change a decision; the unresolved,
 decision-reversing uncertainty is (a), explicit above. Stop.
+
+**Stop — revised (7), 2026-09-16 01:4x UTC.** Withdrawn. The CANARY POLICY's
+other half — a known-negative control — was a feasible test, and it changed
+three decisions: `username_search` was still minting profiles for a handle
+nobody holds whenever a control read failed (REQ-PROBE-002),
+`search_engines` was minting a stranger's email and handle, a stranger's
+city, and the seed's own "web presence" from the engines' fuzzy answers to a
+term no page contains (REQ-SEARCH-002 — three findings, the last visible
+only once the control named what it minted), and the sweep now asks every
+Username module the null question weekly (REQ-CANARY-002). After the
+repairs the control reads 0 fabricated for three process nonces from this
+sandbox. Unresolved and decision-relevant: the same controls for the
+Domain, Email and FullName kinds (a value nobody holds that the providers
+treat as well-formed; the CLI refuses reserved TLDs) — a feasible test
+with the same mechanism, the next candidate; the `wifidb` confirmation
+(time-gated, unchanged). The rest of (6) stands.
+
+**Gate note (01:48–01:52 UTC).** Two full-suite runs of this tree failed
+`tests/reconciler_device.rs::a_radar_older_than_the_package_install_is_stale_and_only_stopped_when_authorised`
+at its authorised stop (`process_action: stop_failed`, "did not exit within
+20s of SIGINT") while the test passed alone and with its crate. Diagnosed,
+not re-run into silence: the two runs were launched from a subshell
+background job (`( nohup … & )`), whose descendants inherit SIGINT and
+SIGQUIT ignored (`SigIgn 0x7` against `0x1` for a top-level job — measured),
+so the fake radar could not be interrupted and the reconciler, which sends
+SIGINT alone by design, honestly reported the stop failed; reproduced
+deterministically with `bash -c 'trap "" INT; cargo test …'` (20.79 s,
+`stop_failed`), and the suite is green launched at top level (reconciler
+crate 7 of 7 in 2.18 s; CI's foreground step is the top-level case). A
+follow-up candidate, not this pass's: a radar started from a non-interactive
+background shell — a Termux:Boot script, `nohup hse radar &` — ignores
+SIGINT the same way, and the reconciler waits twenty seconds to say "stop it
+manually" where `/proc/<pid>/status` would tell it at once that SIGINT is
+ignored; escalating to SIGTERM is what the script's own comment refuses (a
+kill mid-scan reported as a controlled stop), so the improvement is the
+diagnosis, not the escalation.
 
 ### REQ-HTTP-002 (**new, Pass 31 — VERIFIED FROM SOURCE, CONSOLIDATED, FIXED, FALSIFIED**): `json_scanned` fails the way `json_decode` fails
 

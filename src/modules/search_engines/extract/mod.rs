@@ -140,11 +140,46 @@ pub(super) async fn recycle_entities(
 
     let recycled_results = dedup_results(recycled_results);
 
+    for e in mine_recycled_results(result, &recycled_results, &scan_id) {
+        result.push(e);
+    }
+}
+
+/// The quoted term a recycle query asks about — the recycled entity's value
+/// — or `None` for a query with no quoted term.
+pub(super) fn recycled_subject(query: &str) -> Option<&str> {
+    let rest = query.split_once('"')?.1;
+    let (term, _) = rest.split_once('"')?;
+    let term = term.trim();
+    (!term.is_empty()).then_some(term)
+}
+
+/// True when a recycled result names the entity its query asked about: the
+/// query's quoted term appears in the result's title, snippet or URL,
+/// case-insensitively. A result that does not is the engine's fuzzy answer
+/// to a term it found nowhere, and nothing in it is about that entity.
+pub(super) fn recycled_result_names_its_subject(r: &SearchResult) -> bool {
+    let Some(term) = recycled_subject(&r.query) else {
+        return false;
+    };
+    let hay = format!("{} {} {}", r.title, r.snippet, r.url).to_lowercase();
+    hay.contains(&term.to_lowercase())
+}
+
+/// Mine the recycled results for addresses, coordinates, emails and phones —
+/// from the results that name the entity their query asked about, and none
+/// other — deduplicated against `existing`. Pure over its inputs so the gate
+/// and the mining are unit-tested without an engine.
+pub(super) fn mine_recycled_results(
+    existing: &ModuleResult,
+    recycled_results: &[SearchResult],
+    scan_id: &str,
+) -> Vec<Entity> {
     // Pre-allocate dedup sets with capacity hints based on typical entity discovery
     // patterns. On Termux with limited RAM, explicit capacity prevents growth spikes
     // when processing many high-yield results. Estimate: 5-10% of primary entities
     // are typically rediscovered in recycled results; this is conservative for most scans.
-    let primary_entity_count = result.entities.len().max(10);
+    let primary_entity_count = existing.entities.len().max(10);
     let recycle_capacity = (primary_entity_count / 8).max(16);
 
     let mut seen_addrs: HashSet<String> = HashSet::with_capacity(recycle_capacity);
@@ -155,7 +190,7 @@ pub(super) async fn recycle_entities(
     let mut seen_coords: HashSet<String> = HashSet::with_capacity(recycle_capacity / 4);
 
     // Collect existing entity values to avoid duplicates
-    for e in &result.entities {
+    for e in &existing.entities {
         match e.kind {
             EntityKind::Address => {
                 seen_addrs.insert(e.value.to_lowercase());
@@ -173,7 +208,15 @@ pub(super) async fn recycle_entities(
         }
     }
 
-    for r in &recycled_results {
+    let mut out: Vec<Entity> = Vec::new();
+    for r in recycled_results {
+        // A recycled result is about the entity its query asked for only
+        // when it names that entity (REQ-SEARCH-002): the engines answer a
+        // quoted term no page contains with fuzzy results, and mining them
+        // attributed Microsoft's "Redmond" to a handle nobody holds.
+        if !recycled_result_names_its_subject(r) {
+            continue;
+        }
         let combined = format!("{} {}", r.title, r.snippet);
 
         for addr in extract_addresses_from_text(&combined) {
@@ -187,7 +230,7 @@ pub(super) async fn recycle_entities(
                 } else {
                     confidence::LOW_MEDIUM
                 };
-                let mut e = Entity::new(EntityKind::Address, &addr, base_conf, &scan_id);
+                let mut e = Entity::new(EntityKind::Address, &addr, base_conf, scan_id);
                 e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 e.tag("recycled");
                 if has_postcode {
@@ -209,16 +252,16 @@ pub(super) async fn recycle_entities(
                         EntityKind::Coordinates,
                         &coord_val,
                         confidence::derived_from(base_conf),
-                        &scan_id,
+                        scan_id,
                     );
                     c.tag("addr-derived");
                     c.tag("geoint");
                     c.tag(crate::core::tags::SEARCH_DISCOVERED);
                     c.tag("recycled");
                     c.add_evidence(recycled_evidence(r, "Coordinates", &coord_val, &combined));
-                    result.push(c);
+                    out.push(c);
                 }
-                result.push(e);
+                out.push(e);
             }
         }
 
@@ -228,21 +271,21 @@ pub(super) async fn recycle_entities(
             }
             if seen_emails.insert(email.clone()) {
                 let mut e =
-                    Entity::new(EntityKind::Email, &email, confidence::MEDIUM_HIGH, &scan_id);
+                    Entity::new(EntityKind::Email, &email, confidence::MEDIUM_HIGH, scan_id);
                 e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 e.tag("recycled");
                 e.add_evidence(recycled_evidence(r, "Email", &email, &combined));
-                result.push(e);
+                out.push(e);
             }
         }
 
         for phone in extract_phones_from_text(&combined) {
             if seen_phones.insert(phone.clone()) {
-                let mut e = Entity::new(EntityKind::Phone, &phone, confidence::MEDIUM, &scan_id);
+                let mut e = Entity::new(EntityKind::Phone, &phone, confidence::MEDIUM, scan_id);
                 e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 e.tag("recycled");
                 e.add_evidence(recycled_evidence(r, "Phone", &phone, &combined));
-                result.push(e);
+                out.push(e);
             }
         }
 
@@ -255,21 +298,18 @@ pub(super) async fn recycle_entities(
         // `extract_coords_from_text`) so prose numbers never fabricate a point.
         for coord in extract_coords_from_text(&combined) {
             if seen_coords.insert(coord.clone()) {
-                let mut c = Entity::new(
-                    EntityKind::Coordinates,
-                    &coord,
-                    confidence::MEDIUM,
-                    &scan_id,
-                );
+                let mut c =
+                    Entity::new(EntityKind::Coordinates, &coord, confidence::MEDIUM, scan_id);
                 c.tag(crate::core::tags::SEARCH_DISCOVERED);
                 c.tag("recycled");
                 c.tag("geoint");
                 c.tag("snippet-coord");
                 c.add_evidence(recycled_evidence(r, "Coordinates", &coord, &combined));
-                result.push(c);
+                out.push(c);
             }
         }
     }
+    out
 }
 
 /// Scan snippet/title text for coordinate literals, returning each as a

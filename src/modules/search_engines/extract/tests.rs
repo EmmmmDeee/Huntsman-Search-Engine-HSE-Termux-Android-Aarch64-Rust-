@@ -426,3 +426,58 @@ use super::*;
             "no seed term match → should emit nothing"
         );
     }
+
+/// REQ-SEARCH-002 (the recycler): a recycled result is about the entity its
+/// query asked for only when it names that entity. The engines answered
+/// `"qx82vtnrmpaw" address OR location OR city` with Microsoft's Wikipedia
+/// page and the recycler minted "Redmond" as the handle's address; the same
+/// text naming the handle still yields it.
+#[test]
+fn a_recycled_result_that_never_names_the_entity_its_query_asked_about_mines_nothing() {
+    let query = "\"qx82vtnrmpaw\" address OR location OR city";
+    assert_eq!(recycled_subject(query), Some("qx82vtnrmpaw"));
+    assert_eq!(recycled_subject("no quoted term"), None);
+    assert_eq!(recycled_subject("\"\" address"), None);
+
+    let existing = ModuleResult::new();
+    let stranger = SearchResult {
+        url: "https://en.wikipedia.org/wiki/Microsoft".to_string(),
+        title: "Microsoft - Wikipedia".to_string(),
+        snippet: "Microsoft Corporation is an American multinational technology company \
+                  headquartered in Redmond, Washington."
+            .to_string(),
+        engine: "bing",
+        query: query.to_string(),
+    };
+    assert!(!recycled_result_names_its_subject(&stranger));
+    let mined = mine_recycled_results(&existing, &[stranger], "scan");
+    assert!(
+        mined.is_empty(),
+        "a result that never names the entity mines nothing: {:?}",
+        mined
+            .iter()
+            .map(|e| (e.kind.clone(), e.value.clone()))
+            .collect::<Vec<_>>()
+    );
+
+    let named = SearchResult {
+        url: "https://example.com/people/qx82vtnrmpaw".to_string(),
+        title: "qx82vtnrmpaw".to_string(),
+        snippet: "qx82vtnrmpaw is a technology worker headquartered in Redmond, Washington."
+            .to_string(),
+        engine: "bing",
+        query: query.to_string(),
+    };
+    assert!(recycled_result_names_its_subject(&named));
+    let mined = mine_recycled_results(&existing, &[named], "scan");
+    assert!(
+        mined
+            .iter()
+            .any(|e| e.kind == EntityKind::Address && e.value.to_lowercase().contains("redmond")),
+        "the same text in a result that names the entity yields the address: {:?}",
+        mined
+            .iter()
+            .map(|e| (e.kind.clone(), e.value.clone()))
+            .collect::<Vec<_>>()
+    );
+}
