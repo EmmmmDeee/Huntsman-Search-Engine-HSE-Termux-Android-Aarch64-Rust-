@@ -4498,8 +4498,11 @@ baseline; `RESULT: ALL LOCKS FALSIFIED`.
 **Remote.** CI-exact gate green locally (fmt / clippy `-D warnings` / rustdoc /
 `cargo test --all --locked --features dep-cooldown` / doc-coverage). The
 standing remote check is the same known-negative control sweep that surfaced
-this: the org control (a fresh nonce each run) must read empty. CI on the
-pushed commit is recorded below.
+this: the org control (a fresh nonce each run) must read empty. The live-drift
+sweep on the integrated head `453c5fd` (run 35074235307) read **`controls: 114
+probed — 93 empty, 2 annotated, 0 fabricated, 19 without a reading`** —
+`search_engines organisation` empty, the fabrication gone — with the whole CI
+matrix green on that commit.
 
 ### REQ-SEARCH-003 (**new, Pass 31 — ADVERSARIAL RE-ATTACK on REQ-SEARCH-002/CANARY-003's own gate, VERIFIED FROM SOURCE, FIXED at the predicate, LOCKED AT THREE CONTRACT BOUNDARIES, FALSIFIED**): the subject names a whole word, never a raw substring of a longer one
 
@@ -4580,9 +4583,10 @@ its lock.
 lints / `cargo test --all --locked --features dep-cooldown` / doc-coverage).
 This is a pure relevance-gate change with no network dependency: the runner's
 known-negative control sweep is the standing remote check — a short control
-handle or domain nobody holds must not be named by a longer token — and the
-live-drift run on `4cd108a` already read `0 fabricated`. CI on the pushed
-commit is recorded below.
+handle or domain nobody holds must not be named by a longer token. The
+live-drift sweep on the integrated head `453c5fd` (run 35074235307) read
+**`controls: 114 probed — 93 empty, 2 annotated, 0 fabricated, 19 without a
+reading`** with the whole CI matrix green on that commit.
 
 ### REQ-SEARCH-002 (**new, Pass 31 — OBSERVED by the known-negative control, VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a result that never names a single-token subject mines nothing
 
