@@ -87,6 +87,29 @@ pub(super) fn build_entities(
             target_domain
                 .as_deref()
                 .is_some_and(|d| names_domain_token(&hay, d.trim_start_matches("www.")))
+        } else if matches!(target.kind, TargetKind::Organisation) {
+            // An organisation's distinctive term is its name, not its corporate
+            // form. The last token of "Carora Vovilo Pty Ltd" is the suffix
+            // "ltd", shared by every "... Pty Ltd" company, so the surname
+            // branch below filed real firms (CAROLINARA PTY LTD, CARORA GROUP
+            // PTY LTD) as the control org's own — 16 fabricated entities for a
+            // company nobody holds (REQ-SEARCH-005, the org analog of
+            // REQ-CANARY-003's "a domain's last label is the web's
+            // vocabulary"). Require every distinctive (non-corporate-form)
+            // token, so a different company that shares only one is not the
+            // subject; fall back to the whole value when the name is nothing
+            // but corporate-form words.
+            let hay = format!("{combined_text} {}", r.url).to_lowercase();
+            let distinctive: Vec<&str> = terms
+                .iter()
+                .map(String::as_str)
+                .filter(|t| !is_generic_org_token(t))
+                .collect();
+            if distinctive.is_empty() {
+                names_word_token(&hay, &target.value.to_lowercase())
+            } else {
+                distinctive.iter().all(|term| names_word_token(&hay, term))
+            }
         } else {
             let hay = format!("{combined_text} {}", r.url).to_lowercase();
             terms

@@ -4390,6 +4390,78 @@ host as its estate — precision over recall, recorded here. `email-validated`
 still names debounce.io's provider reading; the tag is kept for its
 consumers, the rung says what it means.
 
+### REQ-SEARCH-005 (**new, Pass 31 — OBSERVED live on the production vantage by the known-negative control, REPRODUCED against the real gate, FIXED at the authoritative layer, FALSIFIED**): an organisation is named by its distinctive name, never by its corporate form
+
+**Lead.** The runner's known-negative control sweep on `a39071e` (the
+REQ-SEARCH-003 commit; CI run 35070941850, the "Live drift (free modules)"
+check) failed: `search_engines` minted **16 entities for `Carora Vovilo Pty
+Ltd`, an organisation nobody holds** — `controls: 114 probed — 92 empty, 2
+annotated, 1 fabricated`. The fabrications were real companies the engines
+returned for a `"Carora Vovilo Pty Ltd"` query: `CAROLINARA PTY LTD` (0.45),
+`CARORA GROUP PTY LTD` (0.45), `CARWOO PTY LTD` (0.45), two garbage
+`... - Free Trust Scores — Bizly ...` org strings, two phones (0.55), and the
+control org itself re-affirmed at 0.82. The sandbox never surfaced it (the org
+control's name is a fresh random nonce each run, and this nonce happened to
+resemble real `Caro...` companies); only the production vantage did — the
+control mechanism doing its job.
+
+**Reproduced against the real gate (a unit lock that fails on the baseline).**
+`build_entities`' subject-relevance gate `names_the_subject` had, since
+REQ-SEARCH-002, a single `else` branch for every non-domain/phone/location
+subject that took the subject's **last** distinctive token as its anchor — a
+multi-part name's surname. For an Organisation `X Pty Ltd` the last token is
+the corporate suffix `ltd`, and `names_word_token(hay, "ltd")` is true of every
+`... Pty Ltd` company page, so the gate read every such page as naming the
+subject and mined its orgs and phones. Feeding the exact control name to
+`build_entities` reproduces the runner's 16 entities precisely:
+`[(Phone, "+61481157705"), (Organisation, "Carora Vovilo Pty Ltd"),
+(Organisation, "CAROLINARA PTY LTD"), …]`. This is the organisation analog of
+REQ-CANARY-003's finding that a domain's last label (`com`, the web's own
+vocabulary) is not its distinctive term — `pty`/`ltd`/`inc` are the corporate
+world's shared vocabulary.
+
+**Why REQ-SEARCH-003 did not cause it, and did not catch it.** REQ-SEARCH-003
+tightened the same branch from `hay.contains(term)` to
+`names_word_token(hay, term)`, a strict subset — it can only ever match less,
+never more, so it did not introduce the fabrication (the `contains("ltd")` gate
+before it matched every company too). And the 12-character username/domain
+controls REQ-SEARCH-003 locks never exercise the org branch: only the multi-token
+Organisation control, whose last token is a corporate suffix, does.
+
+**Fix (the authoritative layer — the distinctive-term selection).** An
+Organisation gets its own branch in `names_the_subject`: strip the generic
+corporate-form tokens (`is_generic_org_token` in `helpers::relevance` — the
+legal-entity types `pty`/`ltd`/`inc`/`llc`/`gmbh`/… and the bare structural
+fillers `group`/`holdings`) and require **every remaining distinctive token**
+to appear as a bounded word. A different company that shares only one
+distinctive token (`CARORA GROUP` shares `carora`, not `vovilo`) no longer
+names the subject; a page naming the distinctive tokens without the corporate
+suffix still does (the suffix is not required — precision without a
+false-negative on abbreviated mentions). The corporate-form list is deliberately
+limited to unambiguous legal/structural tokens; descriptive words (`services`,
+`solutions`, `international`) can be distinctive and are kept. Query building
+(`build_queries`) is untouched — it still queries the full raw value, so recall
+into the engines is unchanged; only the relevance gate over the answers is
+tightened.
+
+**Lock and falsification (`cycle_search005_falsify.py`).** One contract-boundary
+lock over `build_entities`
+(`an_organisation_is_named_by_its_distinctive_name_not_its_corporate_form`)
+pins both halves: the negative (a page about `CAROLINARA`/`CARORA GROUP PTY LTD`
+mints no Organisation or Phone) and the recall positive (a page naming
+`Carora Vovilo` **without** `Pty Ltd` still mines its phone). Two independent
+reverts each fail it through a different assertion: disabling the Organisation
+branch (the org falls back to `terms.last() == "ltd"`) fabricates on the
+negative; dropping `ltd` from `is_generic_org_token` (so it is required) makes
+the suffix-less recall page a false negative. Each file sha256-restored to
+baseline; `RESULT: ALL LOCKS FALSIFIED`.
+
+**Remote.** CI-exact gate green locally (fmt / clippy `-D warnings` / rustdoc /
+`cargo test --all --locked --features dep-cooldown` / doc-coverage). The
+standing remote check is the same known-negative control sweep that surfaced
+this: the org control (a fresh nonce each run) must read empty. CI on the
+pushed commit is recorded below.
+
 ### REQ-SEARCH-003 (**new, Pass 31 — ADVERSARIAL RE-ATTACK on REQ-SEARCH-002/CANARY-003's own gate, VERIFIED FROM SOURCE, FIXED at the predicate, LOCKED AT THREE CONTRACT BOUNDARIES, FALSIFIED**): the subject names a whole word, never a raw substring of a longer one
 
 **Lead.** REQ-SEARCH-002 closed "a result that never names the subject mines

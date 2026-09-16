@@ -2347,6 +2347,68 @@ fn a_short_single_token_subject_is_not_named_by_a_longer_word() {
     );
 }
 
+/// REQ-SEARCH-005 (the organisation relevance gate, contract boundary): an
+/// organisation is named by its distinctive name, never by its corporate
+/// form. The known-negative control minted 16 entities for `Carora Vovilo Pty
+/// Ltd`, a company nobody holds — the engines answered with real `... Pty Ltd`
+/// firms and the gate took the org's LAST token as its distinctive term, which
+/// for `X Pty Ltd` is the corporate suffix `ltd`, naming every company (the
+/// org analog of REQ-CANARY-003's "a domain's last label is the web's
+/// vocabulary"). A different `... Pty Ltd` that shares only one distinctive
+/// token is not the subject; a page naming the full distinctive name still
+/// mines its PII. Fails on the baseline (`terms.last()` == `ltd`).
+#[test]
+fn an_organisation_is_named_by_its_distinctive_name_not_its_corporate_form() {
+    let target = Target::new(TargetKind::Organisation, "Carora Vovilo Pty Ltd");
+    // A page about DIFFERENT companies that share the corporate form and one
+    // distinctive token (`carora`), never the subject's full name.
+    let stranger = SearchResult {
+        url: "https://bizly.example/listings".to_string(),
+        title: "CAROLINARA PTY LTD - Free Trust Scores".to_string(),
+        snippet: "CAROLINARA PTY LTD and CARORA GROUP PTY LTD are registered \
+                  companies. Contact +61 481 157 705."
+            .to_string(),
+        engine: "bing",
+        query: "\"Carora Vovilo Pty Ltd\"".to_string(),
+    };
+    let results = vec![stranger];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        res.entities
+            .iter()
+            .all(|e| e.kind != EntityKind::Organisation && e.kind != EntityKind::Phone),
+        "a page about a different '... Pty Ltd' company does not name the \
+         subject: {:?}",
+        res.entities
+            .iter()
+            .map(|e| (e.kind.clone(), e.value.clone()))
+            .collect::<Vec<_>>()
+    );
+
+    // A page that names the distinctive tokens still mines its PII — even
+    // without the corporate suffix, because the suffix is not required (that
+    // is what `is_generic_org_token` filters): if it were, this suffix-less
+    // page would be a false negative.
+    let named = SearchResult {
+        url: "https://bizly.example/carora-vovilo".to_string(),
+        title: "Carora Vovilo".to_string(),
+        snippet: "Carora Vovilo is a registered firm. Contact +61 481 157 705.".to_string(),
+        engine: "bing",
+        query: "\"Carora Vovilo Pty Ltd\"".to_string(),
+    };
+    let results = vec![named];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        res.entities.iter().any(|e| e.kind == EntityKind::Phone),
+        "a page that names the distinctive tokens (without the corporate form) \
+         still yields its phone: {:?}",
+        res.entities
+            .iter()
+            .map(|e| (e.kind.clone(), e.value.clone()))
+            .collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn location_seed_pivot_does_not_reaffirm_the_seed_at_0_82() {
     // T2.36 regression: the engine re-queues every discovered entity as a pivot,

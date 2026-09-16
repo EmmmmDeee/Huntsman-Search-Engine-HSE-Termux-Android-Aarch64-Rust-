@@ -215,6 +215,60 @@ pub(in crate::modules::search_engines) fn names_domain_token(hay: &str, domain: 
     token_bounded(hay, domain, |b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
+/// True when `token` is a generic corporate-form word (a legal entity type
+/// like `pty`/`ltd`/`inc`, or a bare structural filler like `group`/`holdings`)
+/// rather than a distinctive part of an organisation's name. An organisation's
+/// distinctive term is its name, not its corporate form: the last token of
+/// `Carora Vovilo Pty Ltd` is `ltd`, shared by every `... Pty Ltd` company, so
+/// a relevance gate that took it as the anchor filed real companies as the
+/// subject (REQ-SEARCH-005, the org analog of a domain's last label being the
+/// web's own vocabulary — REQ-CANARY-003). Only the unambiguous legal-form and
+/// structural tokens are listed; descriptive words (`services`, `solutions`,
+/// `international`) can themselves be distinctive and are not treated as
+/// generic. `token` is assumed lowercased.
+pub(in crate::modules::search_engines) fn is_generic_org_token(token: &str) -> bool {
+    matches!(
+        token,
+        "pty"
+            | "ltd"
+            | "limited"
+            | "inc"
+            | "incorporated"
+            | "llc"
+            | "llp"
+            | "lp"
+            | "corp"
+            | "corporation"
+            | "co"
+            | "company"
+            | "gmbh"
+            | "ug"
+            | "ag"
+            | "kg"
+            | "kgaa"
+            | "mbh"
+            | "nv"
+            | "bv"
+            | "sa"
+            | "sas"
+            | "srl"
+            | "spa"
+            | "plc"
+            | "oy"
+            | "oyj"
+            | "ab"
+            | "as"
+            | "sarl"
+            | "kk"
+            | "kft"
+            | "group"
+            | "holdings"
+            | "holding"
+            | "the"
+            | "and"
+    )
+}
+
 #[cfg(test)]
 mod token_boundary_tests {
     use super::*;
