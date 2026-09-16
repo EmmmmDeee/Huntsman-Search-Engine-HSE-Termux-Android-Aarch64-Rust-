@@ -4209,6 +4209,11 @@ entity (the email and `openai`; "Redmond"; the seed itself), and reads it
 (01:13, 01:19, 01:26 UTC); the positive canaries unchanged (`search_engines`
 17–19 alive for its sample).
 
+**Remote.** Run 35045841506 on `557a9f7` (01:55 UTC): `search_engines`
+`empty` for the runner's control handle `y4kx7rfp1iuj` — the engines' fuzzy
+answers mined nothing and re-affirmed nothing — with its positive sample
+still alive.
+
 **Residual.** An email's local part is its subject's distinctive term
 (`target_terms`), so a result naming any "alice" passes an `alice@…` seed's
 gate — the same collision class one rung narrower; a full-address anchor
@@ -4275,6 +4280,10 @@ fails. Four of four.
 **Local (this sandbox, the rebuilt binary).** The control sweep that had
 read `username_search` fabricated (NameMC, Odysee) reads it `empty` for
 three process nonces in a row after the repair.
+
+**Remote.** Run 35045841506 on `557a9f7` (01:55 UTC): `username_search`,
+`social_probe` and `streaming_probe` all `empty` for the runner's control
+handle, their positive samples alive (54, 10, 3).
 
 **Residual.** A body-verified presence whose control could not be read still
 stands (flagged `control: unavailable`): its marker match is evidence of its
@@ -4359,6 +4368,15 @@ only once the control named what was minted), and the control sweep is the
 lock that keeps them repaired on the production vantage: after the repairs
 the sweep reads `controls: 35 probed — 30 empty, 0 fabricated, 5 without a
 reading` from this sandbox.
+
+**Remote (GitHub's runner, `557a9f7`, run 35045841506, 01:55 UTC).** The
+first control sweep on the production vantage: `controls: 35 probed — 34
+empty, 0 fabricated, 1 without a reading` (`reddit_user` throttled); every
+presence probe and `search_engines` `empty` for the runner's handle
+`y4kx7rfp1iuj`; the positive sweep unchanged — 116 probed, 94 alive, 0
+panicked, `username_search 54` / `social_probe 10` / `streaming_probe 3` for
+their samples; `wifidb` provisional and dated from 2026-09-15 23:00 UTC, the
+memory restored three runs deep; the run green.
 
 **Residual.** Controls exist for the Username kind only; a Domain, Email or
 FullName control needs a value nobody holds that the providers treat as
