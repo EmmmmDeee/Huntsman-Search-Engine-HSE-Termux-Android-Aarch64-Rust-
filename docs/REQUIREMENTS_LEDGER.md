@@ -4183,10 +4183,17 @@ fabrication), the two `annotated` still `disposable_check` and `smtp_vrfy`.
 The org kind (REQ-CANARY-003's extension, 17 controls) read `empty` on every
 register.
 
-**Remote.** Dispatched on the pushed head; the runner's
-control sweep — the vantage that first surfaced both fabrications — is
-expected to read `0 fabricated` for `social_probe` and (Yandex.Reviews gone)
-`username_search`, and is recorded here once it completes.
+**Remote (GitHub's runner, `dfa77a2`, run 35053789242, 04:01 UTC — the
+vantage that first surfaced both fabrications).** `controls: 114 probed — 93
+empty, 2 annotated, 0 fabricated, 19 without a reading`, the run green
+(`test result: ok. 2 passed`): `social_probe username` and `username_search
+username` both read **`empty`** for the handle nobody holds — the Hacker
+News and Yandex.Reviews fabrications gone on the production vantage — and no
+`reviews.yandex.ru` row exists. The two `annotated` are `disposable_check`
+(0.30) and `smtp_vrfy` (0.35, Gmail's rejection). The positive sweep on the
+same run passed unchanged. The completion gate is met: root cause verified
+from source, repaired at the site rule, locked, falsified, no longer
+reproduced on the vantage that found it — **CLOSED**.
 
 **Residual.** The per-site control remains a backstop, not a guarantee, on a
 rate-limiting soft-404 site: a body-verified presence with a sound needle is
@@ -4357,10 +4364,18 @@ email ey20k0vi8t03@gmail.com (0.30)" — and every other control as before;
 the positive sweep unchanged (116 probed — 88 alive, 13 empty, 0 panicked;
 the sandbox's refusals as on every sweep from it).
 
-**Remote.** Dispatched on the pushed head; the runner's reading —
-the first control sweep over 97 pairs on the production vantage, expected
-`0 fabricated` with `smtp_vrfy` reading `annotated` at Gmail's `550` — is
-recorded here once it completes.
+**Remote (GitHub's runner, `dfa77a2`, run 35053789242, 04:01 UTC).** The
+control family — Username, Domain, Email, FullName and (REQ-PROBE-003's
+cycle) Organisation — on the production vantage: `controls: 114 probed — 93
+empty, 2 annotated, 0 fabricated, 19 without a reading`, the run green. Every
+Domain / Email / FullName / Organisation control read `empty` or (the two
+mailbox annotators) `annotated`; the first run's estate and provider-class
+fabrications (`search_engines`, `disposable_check`) are gone, and the org
+kind read `empty` on every register (`acnc_charities`, `asic_banned_orgs`,
+`asic_business_names`, `data_gov_au`, `gleif_lei`, `sanctions_ofac`,
+`wikidata`, …). The `19 without a reading` are the runner's own refusals
+(`crtsh` unreachable, `reddit_user` throttled, `wayback` timed out, the
+Cloudflare walls).
 
 **Residual.** A control's transport failure is one attempt and tolerated;
 for a Domain control the unregistered name's own NXDOMAIN is that failure
