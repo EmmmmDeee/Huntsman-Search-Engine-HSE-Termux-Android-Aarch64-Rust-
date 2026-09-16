@@ -338,6 +338,12 @@ fn an_actor_name_is_short_and_never_a_sentence() {
         // is still a name — the placeholder gate is anchored, not a substring
         // match (REQ-ATTR-003): `Anonymous Sudan` is a real hacktivist group.
         "Anonymous Sudan",
+        // A marker word AFTER another token is not a placeholder: the prefix is
+        // anchored at the start of the label, so this name-shaped value (a
+        // would-be `contains("unknown")` substring match) must still be
+        // accepted. Guards the anchoring against a future substring regression —
+        // `Anonymous Sudan` alone does not, since `anonymous` is no marker.
+        "Cozy Unknown",
     ] {
         assert!(is_actor_name(name), "{name} is a threat actor's name");
     }
@@ -364,6 +370,14 @@ fn an_actor_name_is_short_and_never_a_sentence() {
         "None",
         "Various",
         "Multiple",
+        // The prefix boundary is any Unicode whitespace, not just a space:
+        // `is_actor_name` tokenises with `split_whitespace()`, so a placeholder
+        // separated by a tab, newline or NBSP is a name-shaped three-token
+        // label there and must still be rejected (REQ-ATTR-003 — matching the
+        // prefix only before a literal space let these through the same gate).
+        "Unknown\tAPT Group",
+        "Unknown\nAPT Group",
+        "Unknown\u{a0}APT Group",
     ] {
         assert!(!is_actor_name(text), "{text:?} is not a name");
     }
@@ -380,9 +394,10 @@ fn the_named_adversary_is_the_one_most_pulses_name_and_a_paragraph_is_never_one(
     ];
     assert_eq!(named_adversary(&pulses), None);
 
-    // A placeholder is never an adversary even when many pulses corroborate it
-    // (REQ-ATTR-003): the feed declaring "Unknown APT Group" on ten pulses is
-    // ten authors saying they could not attribute it, not a named actor.
+    // A placeholder is never an adversary even when several pulses corroborate
+    // one (REQ-ATTR-003): a wave of non-attribution labels — differently spelled
+    // and cased across these four pulses — is authors saying they could not
+    // attribute it, not a named actor.
     let pulses = vec![
         pulse_naming(Some("Unknown APT Group")),
         pulse_naming(Some("unknown apt group")),

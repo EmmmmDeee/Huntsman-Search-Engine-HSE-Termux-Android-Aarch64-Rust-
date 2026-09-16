@@ -5370,10 +5370,12 @@ fails (`Found`, not `Error`) while its `is_challenge_page` assertion still passe
 signatures → **both** locks fail (the oracle no longer recognises the page).
 Each file sha256-restored, `--exact`. `RESULT: FALSIFIED (both halves lock)`.
 
-**Remote.** CI-exact gate green locally. Remote verification is the runner's
-known-negative control sweep (live-drift) on the pushed head reading `0
-fabricated` — the same vantage that observed the fabrication. Dispatch and CI on
-the pushed commit are recorded below.
+**Remote.** CI-exact gate green locally. Remote-verified: the runner's
+known-negative control sweep (live-drift) is the vantage that observed the
+fabrication (run 35096709827 on `2909dcd4`, **FAILED** — the imlive
+`vyw7xmcwjgb6` mint) and that confirms its removal (run 35099479951 on
+`f1033f86`, **success** — `0 fabricated`). A follow-up commit adds the
+Copilot-review whitespace-boundary hardening (below) and re-verifies on its head.
 
 ### REQ-ATTR-003 (**new, Pass 31 — OBSERVED live from the sandbox against the merged binary, REPRODUCED, FIXED at the authoritative gate, FALSIFIED**): an unattributed placeholder is not a named threat actor
 
@@ -5392,7 +5394,7 @@ known actor*.
 
 **Reproduced (a unit lock that fails on the baseline).** REQ-ATTR-002's
 `is_actor_name` rejects a *paragraph* (a sentence, `:`/`.`, too long) but a
-placeholder is name-shaped — `Unknown APT Group` is 14 chars, three tokens, no
+placeholder is name-shaped — `Unknown APT Group` is 17 chars, three tokens, no
 sentence punctuation — so the shape gate accepted it and `named_adversary`
 selected it. `is_actor_name("Unknown APT Group")` returns `true` on the
 baseline; the extended test asserting it is *not* a name fails there.
@@ -5420,6 +5422,20 @@ domain / URL scan (the Termux production path); the runner's known-negative
 control sweep cannot surface it (a placeholder is a real feed value, not a
 nonce), so the live scan against a real target is the observing vantage. CI on
 the pushed commit is recorded below.
+
+**Post-review hardening (Copilot review 5222717963 on `2909dcd4`).** The prefix
+boundary matched only a literal ASCII space (`rest.starts_with(' ')`), but
+`is_actor_name` tokenises with `split_whitespace()` — so a tab / newline / NBSP
+form (`Unknown\tAPT Group`) was a name-shaped three-token label the gate still
+accepted. Boundary widened to `char::is_whitespace` (exactly `split_whitespace`'s
+own predicate), locked with the three whitespace variants added to the shape
+test, and falsified (`cycle_attr003b_falsify.py`: reverting to the space-only
+boundary fails the lock on `Unknown\tAPT Group`; `mod.rs` sha256-restored). The
+same review's test/ledger accuracy notes are folded in: an anchoring probe
+(`Cozy Unknown`, a marker word after another token, must stay a name) guards the
+non-substring contract that `Anonymous Sudan` alone did not; the corroboration
+comment now matches its four-pulse vector; and the reproduction's char count is
+corrected (`Unknown APT Group` is 17, not 14).
 
 ### REQ-ATTR-002 (**new, Pass 31 — OBSERVED live from the sandbox, FIXED, FALSIFIED**): a pulse author's paragraph is not a threat actor
 

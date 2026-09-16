@@ -319,6 +319,14 @@ fn is_actor_name(name: &str) -> bool {
 /// The unattributed prefixes match on a WORD boundary, never a substring, so a
 /// real actor whose name merely contains one (`Anonymous Sudan`) is untouched;
 /// the bare non-answers match only in full.
+///
+/// The boundary is *any* Unicode whitespace, not just an ASCII space:
+/// [`is_actor_name`] tokenises with `split_whitespace()`, so `Unknown\tAPT
+/// Group` and `Unknown\u{a0}APT Group` are name-shaped three-token labels there
+/// — matching the prefix only before a literal space would let those
+/// tab/newline/NBSP-separated placeholders through the gate `is_actor_name`
+/// applies. `char::is_whitespace` is exactly `split_whitespace`'s own
+/// predicate, so the two agree on what a word boundary is.
 fn is_placeholder_adversary(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     const UNATTRIBUTED_PREFIXES: &[&str] = &[
@@ -328,10 +336,11 @@ fn is_placeholder_adversary(name: &str) -> bool {
         "unclassified",
         "undetermined",
     ];
-    if UNATTRIBUTED_PREFIXES
-        .iter()
-        .any(|p| n == *p || n.strip_prefix(p).is_some_and(|rest| rest.starts_with(' ')))
-    {
+    if UNATTRIBUTED_PREFIXES.iter().any(|p| {
+        n == *p
+            || n.strip_prefix(p)
+                .is_some_and(|rest| rest.starts_with(char::is_whitespace))
+    }) {
         return true;
     }
     matches!(
