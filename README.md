@@ -369,7 +369,7 @@ HSE's engine.
 | Phone | `--kind phone` | `+61400000000` | 18 |
 | Full Name | `--kind name` | `Jordan Leigh Meyers` | 27 |
 | IP Address | `--kind ip` | `1.1.1.1` | 41 |
-| Domain | `--kind domain` | `example.com` | 59 |
+| Domain | `--kind domain` | `example.com` | 60 |
 | ASN | `--kind asn` | `AS13335` | 3 |
 | CIDR | `--kind cidr` | `1.1.1.0/24` | 2 |
 | Coordinates | `--kind coords` | `-27.47,153.02` | 18 |
