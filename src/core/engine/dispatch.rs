@@ -473,10 +473,24 @@ pub(super) fn module_skip_reason(
                     "private/reserved IP — external API would reject",
                 ));
             }
-            TargetKind::Domain if preflight::is_local_domain(&target.value) => {
+            // SSRF gate: a Domain value that is itself an IP-literal
+            // string (`169.254.169.254`, `127.0.0.1`, …) is NOT caught
+            // by `is_local_domain` — that only matches IANA reserved
+            // *names* (`.local`, `.internal`, …), never an IP-shaped
+            // value. Without `is_private_ip` here too, a Domain-kind
+            // target of a private/reserved IP literal sailed past this
+            // gate untouched and reached web_crawler (and any other
+            // Domain-accepting external module), which dials it as a
+            // plain hostname with no further check. Mirrors the Url
+            // arm's own SSRF gate below — same risk, same fix, just a
+            // different `TargetKind` shape for the identical value.
+            TargetKind::Domain
+                if preflight::is_local_domain(&target.value)
+                    || preflight::is_private_ip(&target.value) =>
+            {
                 return Some((
                     SkipClass::NotApplicable,
-                    "local/reserved domain — external API would reject",
+                    "local/reserved domain or private IP — external API would reject (SSRF gate)",
                 ));
             }
             // SSRF gate: a URL whose host is a private IP or local

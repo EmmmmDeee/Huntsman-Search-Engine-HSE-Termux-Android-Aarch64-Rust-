@@ -1935,8 +1935,50 @@ fn skip_reason_rejects_local_domain_for_external_module() {
     let opts = ScanOptions::default();
     assert_eq!(
         skip_reason(&m, &local, &opts, false, 0),
-        Some("local/reserved domain — external API would reject")
+        Some("local/reserved domain or private IP — external API would reject (SSRF gate)")
     );
+}
+
+#[test]
+fn skip_reason_rejects_ip_literal_domain_ssrf_gate() {
+    // SSRF gate: a Domain target whose VALUE is itself an IP literal
+    // (not caught by is_local_domain, which only matches reserved
+    // NAMES) must not reach external-API modules. Without this,
+    // `{"kind":"domain","value":"169.254.169.254"}` reached
+    // web_crawler with no guard at all — the cloud-metadata endpoint,
+    // named explicitly because it is the highest-value real target
+    // this gap exposed.
+    let m = free_active();
+    let opts = ScanOptions::default();
+    for hostile in [
+        "169.254.169.254", // cloud-metadata endpoint
+        "127.0.0.1",
+        "10.0.0.1",
+        "192.168.1.1",
+        "::1",
+    ] {
+        let t = Target::new(TargetKind::Domain, hostile);
+        let reason = skip_reason(&m, &t, &opts, false, 0);
+        assert!(
+            reason.is_some_and(|r| r.contains("SSRF") || r.contains("private")),
+            "Domain {hostile} should be SSRF-rejected, got {reason:?}",
+        );
+    }
+}
+
+#[test]
+fn skip_reason_lets_public_domain_through() {
+    // Regression guard for the fix above: a genuine public domain must
+    // still pass — the new is_private_ip check must not overreach.
+    let m = free_active();
+    let opts = ScanOptions::default();
+    for benign in ["example.com", "github.com", "abc.net.au"] {
+        let t = Target::new(TargetKind::Domain, benign);
+        assert!(
+            skip_reason(&m, &t, &opts, false, 0).is_none(),
+            "Domain {benign} should pass through",
+        );
+    }
 }
 
 #[test]
