@@ -7289,3 +7289,78 @@ exhaustion message) keep the breaker's string path; the dispatcher's
 is reported, not escalated — a canary throttled on every weekly run is
 visible in the table but does not fail the sweep.
 
+## Pass 32 findings
+
+Baseline `origin/main` at `37e5c624` (#636); branch `claude/charming-meitner-85h3aj`
+restarted from it (squash-merge, zero content drift confirmed against the
+prior branch head). Discovery this pass was driven by systematic source
+audit rather than observed production behaviour: bounded parallel read-only
+hunters swept `src/modules/` and shared `core`/`util` infrastructure area by
+area, each self-refuting before reporting, followed in every case by
+personal `Read`/`Grep`/`Bash` re-verification of every cited file:line
+against live source before a finding was trusted. Ranked by the method's
+precedence, the first shipped fix is the one finding this pass surfaced that
+is not an OSINT-fabrication defect at all, but a genuine SSRF vulnerability.
+
+### REQ-SSRF-001 (**new, Pass 32 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a Domain target that is itself an IP literal skipped the SSRF gate
+
+**Lead.** Source audit of the engine's universal pre-dispatch preflight
+(`core::engine::dispatch::module_skip_reason`) against its own documented
+contract, cross-checked against `util::preflight::url_host_is_private`'s doc
+comment and `util::http::ssrf::SsrfResolver`'s doc comment (which names the
+engine's target check as the authoritative backstop for IP-literal SSRF).
+
+**Verified from source.** The gate's `TargetKind::Domain` arm called only
+`preflight::is_local_domain` (IANA-reserved *names* — `.local`, `.internal`,
+`.lan`, …); the `TargetKind::Url` arm called `url_host_is_private`, which is
+`is_private_ip(host) || is_local_domain(host)`. The Domain arm never got the
+first half. A Domain-kind target whose *value* is a bare private/reserved IP
+string (`169.254.169.254`, `127.0.0.1`, `10.0.0.1`, …) is not a reserved
+*name*, so it passed the gate untouched. `Target::validate()`'s Domain
+branch (dot present, alnum/`.`/`-`/`_` charset, not a placeholder domain)
+does not reject an IP-shaped value either. `web_crawler` — a
+Domain-accepting external module, not on the `LOCAL_PASSIVE_MODULES`
+exemption list — dials whatever domain string it receives (`resolve_seed`,
+`fetch_robots`, `probe_config_leaks`) with no guard of its own beyond the
+engine's gate, exactly as `SsrfResolver`'s own doc comment says the engine's
+target check is meant to own for an IP-literal URL (which bypasses the
+DNS-resolver-level filter entirely, since hyper dials an IP literal without
+a lookup).
+
+**Fix.** The `Domain` arm now also calls `preflight::is_private_ip`,
+mirroring the `Url` arm's own SSRF gate rather than adding a new mechanism —
+the identical pattern, applied to the value shape it was missing.
+
+**Evidence.** `core::engine::tests::skip_reason_rejects_ip_literal_domain_ssrf_gate`
+(a Domain target of `169.254.169.254`, `127.0.0.1`, `10.0.0.1`,
+`192.168.1.1`, `::1` must all be SSRF-rejected);
+`core::engine::tests::skip_reason_lets_public_domain_through` (`example.com`,
+`github.com`, `abc.net.au` must still pass — the new check must not
+overreach); `core::engine::tests::skip_reason_rejects_local_domain_for_external_module`
+updated to the arm's new combined rejection message.
+
+**Falsification.** `dispatch.rs` reverted alone (new tests kept):
+
+```
+[Domain arm is_private_ip check] reverted -> LOCK FAILS (expected)
+    core::engine::tests::skip_reason_rejects_ip_literal_domain_ssrf_gate --- FAILED
+    "Domain 169.254.169.254 should be SSRF-rejected, got None"
+    core::engine::tests::skip_reason_rejects_local_domain_for_external_module --- FAILED
+    (message mismatch — the arm's old, narrower wording)
+    test result: FAILED. 3 passed; 2 failed; 0 ignored; 0 measured; 7378 filtered out; finished in 0.37s
+ALL LOCKS SENSITIVE
+```
+
+Restored: all 5 targeted tests and the full 190-test `core::engine` suite
+pass.
+
+**Residual.** `resolve_seed`/`fetch_robots`/`probe_config_leaks` (the three
+functions that actually perform `web_crawler`'s earliest egress) are
+`pub(super)`, and their only callers already pass exclusively
+gate-vetted `target.value`-derived data within one `process()` call — so the
+dispatch-layer fix alone is sufficient; a considered defense-in-depth
+addition directly inside those three functions was reverted after it broke
+two existing hermetic tests that legitimately dial loopback to stand up a
+mock server, and adds no protection beyond what the now-fixed gate already
+gives their only reachable input.
+
