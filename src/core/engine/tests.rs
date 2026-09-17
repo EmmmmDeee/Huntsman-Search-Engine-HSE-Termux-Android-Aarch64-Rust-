@@ -1982,6 +1982,57 @@ fn skip_reason_lets_public_domain_through() {
 }
 
 #[test]
+fn skip_reason_rejects_encoded_ip_literal_domain_ssrf_bypass() {
+    // Adversarial follow-up to skip_reason_rejects_ip_literal_domain_ssrf_gate
+    // (caught live by a Copilot review on that very fix): std::net::IpAddr's
+    // strict parser rejects shorthand-dotted, decimal, hex, and octal IPv4
+    // forms, but Target::validate's Domain branch admits every one of them
+    // (a dot + alnum/-/_ charset), and the URL host parser web_crawler's own
+    // request path uses (via reqwest/url) canonicalizes each to the exact
+    // private address it dials. The gate must canonicalize before judging,
+    // not parse strictly, or every one of these reaches loopback/metadata
+    // unguarded.
+    let m = free_active();
+    let opts = ScanOptions::default();
+    for hostile in [
+        "127.1",        // shorthand-dotted -> 127.0.0.1
+        "127.0.1",      // shorthand-dotted -> 127.0.0.1
+        "2130706433",   // decimal -> 127.0.0.1
+        "0x7f000001",   // hex -> 127.0.0.1
+        "017700000001", // octal -> 127.0.0.1
+        "0177.0.0.1",   // octal first octet -> 127.0.0.1
+    ] {
+        let t = Target::new(TargetKind::Domain, hostile);
+        let reason = skip_reason(&m, &t, &opts, false, 0);
+        assert!(
+            reason.is_some_and(|r| r.contains("SSRF") || r.contains("private")),
+            "Domain {hostile} (canonicalizes to a private IP) should be SSRF-rejected, got {reason:?}",
+        );
+    }
+}
+
+#[test]
+fn skip_reason_lets_encoded_public_ip_domain_through() {
+    // Regression guard for the bypass fix above: a Domain value that merely
+    // LOOKS numeric but canonicalizes to a PUBLIC address must still pass —
+    // the canonicalizing check must not overreach into treating every
+    // digit-only Domain value as hostile.
+    let m = free_active();
+    let opts = ScanOptions::default();
+    for benign in [
+        "8.8.8.8",   // already-canonical public IP as a Domain value
+        "134744072", // decimal -> 8.8.8.8 (public)
+        "1.1",       // shorthand-dotted -> 1.0.0.1 (public)
+    ] {
+        let t = Target::new(TargetKind::Domain, benign);
+        assert!(
+            skip_reason(&m, &t, &opts, false, 0).is_none(),
+            "Domain {benign} (canonicalizes to a public IP) should pass through",
+        );
+    }
+}
+
+#[test]
 fn skip_reason_lets_local_passive_module_see_private_ip() {
     // local_net, device_sensors, wifi_intel, cell_intel are
     // listed in LOCAL_PASSIVE_MODULES and bypass the preflight.

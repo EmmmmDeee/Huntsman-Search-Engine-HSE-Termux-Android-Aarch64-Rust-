@@ -7327,9 +7327,27 @@ target check is meant to own for an IP-literal URL (which bypasses the
 DNS-resolver-level filter entirely, since hyper dials an IP literal without
 a lookup).
 
-**Fix.** The `Domain` arm now also calls `preflight::is_private_ip`,
+**Fix.** The `Domain` arm now also calls `preflight::is_private_ip_host`,
 mirroring the `Url` arm's own SSRF gate rather than adding a new mechanism —
-the identical pattern, applied to the value shape it was missing.
+applied to the value shape it was missing. This shipped first (PR #637) as
+a narrower `preflight::is_private_ip` call (`std::net::IpAddr`'s strict
+parser); a GitHub Copilot automated review on that PR caught it incomplete,
+flagging that `127.1` — a Domain-kind value `Target::validate()`'s
+dot-plus-alnum/`-`/`_` charset admits — canonicalizes to `127.0.0.1` under
+the WHATWG host-parsing algorithm `web_crawler`'s own request path applies
+(the `url` crate), but `IpAddr`'s strict parser rejects the string outright
+and so never flags it. Independently reproducing the claim (a throwaway
+scratch Rust project, not just trusting the review comment) showed it
+understated the bypass: the identical gap also admits pure-decimal
+(`2130706433`), hex (`0x7f000001`) and octal (`017700000001` /
+`0177.0.0.1`) encodings, every one canonicalizing to the same private
+address. The new `is_private_ip_host` (`util::preflight`) closes all four
+forms by trying the strict `is_private_ip` first — which alone still
+correctly catches every *bare* IPv6 form (`::1`, `fe80::1`) that the WHATWG
+parser requires brackets for and would otherwise miss — and, only if that
+fails, falling back to `url::Host::parse`-based canonicalization, which
+catches every non-canonical IPv4 encoding the strict parser misses. Neither
+parser is sufficient alone; both run.
 
 **Evidence.** `core::engine::tests::skip_reason_rejects_ip_literal_domain_ssrf_gate`
 (a Domain target of `169.254.169.254`, `127.0.0.1`, `10.0.0.1`,
@@ -7337,9 +7355,23 @@ the identical pattern, applied to the value shape it was missing.
 `core::engine::tests::skip_reason_lets_public_domain_through` (`example.com`,
 `github.com`, `abc.net.au` must still pass — the new check must not
 overreach); `core::engine::tests::skip_reason_rejects_local_domain_for_external_module`
-updated to the arm's new combined rejection message.
+updated to the arm's new combined rejection message;
+`core::engine::tests::skip_reason_rejects_encoded_ip_literal_domain_ssrf_bypass`
+(`127.1`, `127.0.1`, `2130706433`, `0x7f000001`, `017700000001`,
+`0177.0.0.1` must all still be SSRF-rejected once canonicalized — the
+Copilot-flagged case plus the three encodings its own comment didn't name);
+`core::engine::tests::skip_reason_lets_encoded_public_ip_domain_through`
+(`8.8.8.8`, `134744072`, `1.1` — decimal and shorthand-dotted encodings of a
+*public* address — must still pass, proving the fallback does not overreach
+into rejecting a legitimate domain). Every canonicalization claim behind
+these assertions (which numeric string maps to which address, under which
+parser) was independently reproduced in a throwaway scratch Rust project
+against the pinned `url` crate before being trusted, not read off the
+review comment or the crate's own test output alone.
 
-**Falsification.** `dispatch.rs` reverted alone (new tests kept):
+**Falsification.** Two independent rounds, both against the eventual
+combined fix. First, before the Copilot review, `dispatch.rs`'s
+`is_private_ip` check reverted alone (new tests kept):
 
 ```
 [Domain arm is_private_ip check] reverted -> LOCK FAILS (expected)
@@ -7351,8 +7383,27 @@ updated to the arm's new combined rejection message.
 ALL LOCKS SENSITIVE
 ```
 
-Restored: all 5 targeted tests and the full 190-test `core::engine` suite
-pass.
+Second, after `is_private_ip_host` replaced the plain `is_private_ip` call
+in `dispatch.rs`, its entire definition was stashed out of
+`util::preflight::mod` to confirm the new call is a real, load-bearing
+dependency rather than dead code the compiler would silently tolerate:
+
+```
+[is_private_ip_host definition] stashed -> COMPILE FAILS (expected)
+    error[E0425]: cannot find function `is_private_ip_host` in module `preflight`
+      --> src/core/engine/dispatch.rs
+ALL LOCKS SENSITIVE
+```
+
+Restored (`git stash pop`), diffed byte-identical against the pre-stash
+tree. A third attempt — locally weakening `is_private_ip_host` back to a
+bare `is_private_ip(ip)` to drive the two encoding-bypass tests red through
+the running suite rather than through a compile error — was itself refused
+by the environment's own security-weaken guardrail (an SSRF predicate is
+security-sensitive code, live-under-test or not); the change was reverted
+immediately without attempting to route around the refusal. Restored: all 7
+targeted tests, the full 192-test `core::engine` suite, and the 24-test
+`util::preflight` suite pass, 0 failed.
 
 **Residual.** `resolve_seed`/`fetch_robots`/`probe_config_leaks` (the three
 functions that actually perform `web_crawler`'s earliest egress) are
@@ -7362,5 +7413,17 @@ dispatch-layer fix alone is sufficient; a considered defense-in-depth
 addition directly inside those three functions was reverted after it broke
 two existing hermetic tests that legitimately dial loopback to stand up a
 mock server, and adds no protection beyond what the now-fixed gate already
-gives their only reachable input.
+gives their only reachable input. Checked whether the strict-vs-canonicalizing
+parser asymmetry that caused the encoding bypass reopens at any other
+`is_private_ip` call site: `util::preflight::url_host_is_private` receives
+an already-`Url::parse`'d `host_str()` (canonicalized by construction before
+`is_private_ip` ever sees it), and `Target::validate()`'s `IpAddress` branch
+requires a strict `IpAddr` parse to construct such a target at all, so
+neither can carry an un-canonicalized numeric string past the check the way
+a `Domain`-kind value could; `see_know` and `oathnet_pro`'s own
+`is_private_ip(v)` guards on `TargetKind::IpAddress` inputs are the same
+already-strict-validated case. Both exemptions are now recorded on
+`is_private_ip_host`'s own doc comment so the asymmetry cannot silently
+reopen unnoticed at a future `is_private_ip` call site that lacks either
+guarantee.
 

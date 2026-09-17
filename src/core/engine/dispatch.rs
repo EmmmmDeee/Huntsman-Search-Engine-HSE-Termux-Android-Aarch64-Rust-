@@ -477,16 +477,25 @@ pub(super) fn module_skip_reason(
             // string (`169.254.169.254`, `127.0.0.1`, …) is NOT caught
             // by `is_local_domain` — that only matches IANA reserved
             // *names* (`.local`, `.internal`, …), never an IP-shaped
-            // value. Without `is_private_ip` here too, a Domain-kind
+            // value. Without `is_private_ip_host` here too, a Domain-kind
             // target of a private/reserved IP literal sailed past this
             // gate untouched and reached web_crawler (and any other
             // Domain-accepting external module), which dials it as a
             // plain hostname with no further check. Mirrors the Url
             // arm's own SSRF gate below — same risk, same fix, just a
             // different `TargetKind` shape for the identical value.
+            //
+            // `is_private_ip_host`, not the stricter `is_private_ip`:
+            // `Target::validate`'s Domain branch admits any dotted
+            // alnum/`-`/`_` string, including shorthand-dotted (`127.1`),
+            // decimal (`2130706433`), hex, and octal IPv4 forms that
+            // `std::net::IpAddr`'s strict parser rejects but the URL host
+            // parser `web_crawler`'s own request path uses canonicalizes
+            // to the exact private address they dial — a bypass a
+            // Copilot review on this fix caught live (REQ-SSRF-001).
             TargetKind::Domain
                 if preflight::is_local_domain(&target.value)
-                    || preflight::is_private_ip(&target.value) =>
+                    || preflight::is_private_ip_host(&target.value) =>
             {
                 return Some((
                     SkipClass::NotApplicable,

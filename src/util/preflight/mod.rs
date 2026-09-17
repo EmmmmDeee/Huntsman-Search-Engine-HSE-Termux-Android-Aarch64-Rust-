@@ -177,6 +177,45 @@ pub fn is_private_ip(ip: &str) -> bool {
     ip.parse::<std::net::IpAddr>().is_ok_and(is_private_addr)
 }
 
+/// Like [`is_private_ip`], but also catches a private IP written in a form
+/// `std::net::IpAddr`'s strict parser rejects.
+///
+/// Two parsers, neither alone sufficient, so both run:
+///   - [`is_private_ip`] (`IpAddr`'s strict parser) accepts BARE IPv6
+///     (`::1`, `fe80::1`) but rejects a bracketed literal (`[::1]`) and
+///     every non-canonical IPv4 encoding.
+///   - [`url::Host::parse`] — the exact WHATWG host-parsing algorithm the
+///     URL/HTTP-fetch layer applies — canonicalizes shorthand-dotted
+///     (`127.1` → `127.0.0.1`), pure-decimal (`2130706433`), hex
+///     (`0x7f000001`), and octal (`017700000001` / `0177.0.0.1`) IPv4 to
+///     the address they dial, but requires brackets for IPv6 and so misses
+///     every bare IPv6 form.
+///
+/// Trying `is_private_ip` first and falling back to the canonicalizing
+/// parser covers both: a bare IPv6 literal is caught by the first, a
+/// numeric-IPv4-encoding bypass by the second.
+///
+/// `is_private_ip`'s narrower, strict-only contract is safe for its other
+/// callers because each receives a value some other layer already
+/// canonicalized (a full `Url::parse` before reading `host_str()`, e.g.
+/// [`url_host_is_private`] below) or strictly validated
+/// (`Target::validate`'s `IpAddress` branch requires a strict `IpAddr`
+/// parse to construct the target at all). A `Domain`-kind target's value
+/// has neither guarantee: `Target::validate`'s Domain branch only requires
+/// a dot and an alnum/`.`/`-`/`_` charset, which every one of these
+/// numeric forms satisfies, so the engine's SSRF gate must canonicalize
+/// for itself before judging one.
+pub fn is_private_ip_host(ip: &str) -> bool {
+    if is_private_ip(ip) {
+        return true;
+    }
+    match url::Host::parse(ip) {
+        Ok(url::Host::Ipv4(v4)) => is_private_addr(std::net::IpAddr::V4(v4)),
+        Ok(url::Host::Ipv6(v6)) => is_private_addr(std::net::IpAddr::V6(v6)),
+        _ => false,
+    }
+}
+
 /// True only for a parseable, **publicly routable** IP literal: the single
 /// gate every breach/stealer extractor uses to decide whether an `ip` /
 /// `lastip` field is a geolocatable lead. A hostname, a malformed value, or any
