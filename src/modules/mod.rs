@@ -224,6 +224,7 @@ pub mod wifidb;
 pub mod wigle;
 pub mod wikidata;
 pub mod xposed_or_not;
+pub mod xposed_or_not_domain;
 pub mod zoomeye;
 
 use std::sync::Arc;
@@ -376,6 +377,11 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(hudsonrock::HudsonRock),
             Arc::new(comb_search::CombSearch),
             Arc::new(xposed_or_not::XposedOrNot),
+            // Domain-kind complement to the Email-only module above: was
+            // this domain's own operator itself a breach victim (XposedOrNot
+            // /v1/breaches?domain=), the Domain analog of what
+            // ransomware_live/ransomlook already do for ransomware victims.
+            Arc::new(xposed_or_not_domain::XposedOrNotDomain),
             Arc::new(stolen_tax::StolenTax),
             Arc::new(osintcat::OsintCat),
             Arc::new(niamonx::NiamonX),

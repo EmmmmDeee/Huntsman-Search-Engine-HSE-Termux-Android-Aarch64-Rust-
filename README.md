@@ -8,7 +8,7 @@
 **All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition —
 SpiderFoot-inspired breadth without the daemon or the footprint.**
 
-Pure-Rust OSINT / GEOINT platform with **192 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **193 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 dark-console Web UI, zero native dependencies, keyless-first.
 
@@ -196,7 +196,7 @@ single-instance constraint (local SQLite — do not scale replicas above 1).
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 192 modules
+hse modules                                                 # list all 193 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
 hse keys status                                             # multi-key pool: what's loaded, per source
@@ -391,7 +391,7 @@ respectively.
 
 ---
 
-## Module Overview (192 modules — 143 free, 49 key-gated/paid)
+## Module Overview (193 modules — 144 free, 49 key-gated/paid)
 
 > A curated highlight of the modules below (not the full list). The complete, always-current catalogue
 > with target kinds and output entities lives in the running software — run
@@ -399,11 +399,11 @@ respectively.
 > can drift from the registry.
 
 **API-Free (no keys required) — 93:**
-- **Breach/identity & dark-web exposure**: `ahmia`, `pwned_passwords`, `xposed_or_not`
+- **Breach/identity & dark-web exposure**: `ahmia`, `comb_search`, `hudsonrock`, `leakcheck_public`, `pwned_passwords`, `ransomlook`, `ransomware_live`, `xposed_or_not`, `xposed_or_not_domain`
 - **Social**: `crates_io`, `github_code_search`, `github_user`, `hacker_news`, `keybase`, `npm_author`, `reddit_user`, `social_probe`, `streaming_probe`, `username_search`, `username_variants`
 - **People**: `ahpra`, `contact_enrich`, `employer_pivot`, `gravatar`, `name_intel`, `openarch`, `payid`, `pgp`, `wikidata`, `wikitree`
 - **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `hackertarget`, `mnemonic_pdns`, `rdap_domain`, `subdomain_center`, `subdomain_takeover`, `typosquat`, `whois`
-- **IP/infrastructure**: `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipinfo`, `ipquery`, `netblock`, `portscan`, `ripestat`, `shodan`, `urlscan`
+- **IP/infrastructure**: `greynoise`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipinfo`, `ipquery`, `netblock`, `portscan`, `ripestat`, `shodan`, `urlscan`
 - **Geolocation**: `beacondb`, `breach_timezone`, `cell_local`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mylnikov`, `open_meteo_geo`, `overpass`, `phone_geo`, `photon`, `qld_cadastre`, `social_location`, `sunrise_sunset`
 - **Email**: `disposable_check`, `email_canonical`, `email_parse`, `smtp_vrfy`
 - **Phone**: `phone_au`, `phone_intl`
@@ -413,11 +413,11 @@ respectively.
 - **Termux sensors**: `cell_intel`, `device_sensors`, `local_net`, `signal_radar`
 - **Other**: `api_key_probe`, `chain_intel`
 
-**Key-gated / Paid — 37:**
-- `abn_lookup`, `abuseipdb`, `censys`, `criminal_ip`, `dehashed`, `domainsdb`, `emailrep`
+**Key-gated / Paid — 39:**
+- `abn_lookup`, `abuseipdb`, `breachdirectory`, `censys`, `criminal_ip`, `dehashed`, `domainsdb`, `emailrep`
 - `epieos`, `europeana`, `exa_search`, `fullcontact`, `hibp`, `hlr_cnam`, `hunter_io`, `intelx`, `ipqs`
 - `leakix`, `netlas`, `niamonx`, `numverify`, `oathnet_pro`, `onyphe`, `opencellid`, `opencorporates`, `osintcat`
-- `securitytrails`, `see_know`, `seon`, `threatfox`, `trove_au`, `urlhaus`, `virustotal`, `whoisxml`
+- `securitytrails`, `see_know`, `seon`, `stolen_tax`, `threatfox`, `trove_au`, `urlhaus`, `virustotal`, `whoisxml`
 - `wifi_intel`, `wigle`, `zoomeye`
 
 ### MITRE ATT&CK alignment (in the data, not a side report)
