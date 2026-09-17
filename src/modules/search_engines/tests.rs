@@ -2455,6 +2455,55 @@ fn a_short_handle_does_not_claim_a_longer_path_as_its_profile_url() {
     );
 }
 
+/// REQ-SEARCH-006 (the URL-path org gate, contract boundary): an organisation's
+/// identity is the CONJUNCTION of its distinctive tokens, not any single one.
+/// The Organisation known-negative control `Duraje Ceremo Pty Ltd` shares only
+/// `ceremo` with a stranger's `facebook.com/sougi.ceremo`; the person-name
+/// URL-path gate (`url_matches_target`) took the last significant token
+/// (`ceremo`) as a surname and minted that page as the org's own `Url` at 0.50 —
+/// a fabrication for a company nobody holds, the URL-path sibling of
+/// REQ-SEARCH-005's snippet-gate fabrication, surfaced by the org control on
+/// live-drift run 35100613296. This pins the org branch to
+/// `url_matches_org_target` at the call site: it fails if the dispatch reverts
+/// to the person-name gate, while a page whose path carries the WHOLE
+/// distinctive name still yields a Url.
+#[test]
+fn an_organisation_url_needs_its_whole_distinctive_name_not_one_shared_token() {
+    let target = Target::new(TargetKind::Organisation, "Duraje Ceremo Pty Ltd");
+    // A stranger's page sharing only the token `ceremo` in the URL path; the
+    // title and snippet never name the org, so only the URL-path gate is in play.
+    let collision = SearchResult {
+        url: "https://www.facebook.com/sougi.ceremo".to_string(),
+        title: "a public profile".to_string(),
+        snippet: "some unrelated personal biography text here".to_string(),
+        engine: "bing",
+        query: "\"Duraje Ceremo Pty Ltd\"".to_string(),
+    };
+    let results = vec![collision];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        !res.entities.iter().any(|e| e.kind == EntityKind::Url),
+        "one shared token does not make a stranger's page the org's own URL: {:?}",
+        res.entities
+    );
+
+    // A page whose path carries the WHOLE distinctive name is the org's own URL.
+    let named = SearchResult {
+        url: "https://www.facebook.com/duraje.ceremo".to_string(),
+        title: "a public profile".to_string(),
+        snippet: "some unrelated business directory text here".to_string(),
+        engine: "bing",
+        query: "\"Duraje Ceremo Pty Ltd\"".to_string(),
+    };
+    let results = vec![named];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        res.entities.iter().any(|e| e.kind == EntityKind::Url),
+        "the whole distinctive name as path tokens yields a Url entity: {:?}",
+        res.entities
+    );
+}
+
 #[test]
 fn location_seed_pivot_does_not_reaffirm_the_seed_at_0_82() {
     // T2.36 regression: the engine re-queues every discovered entity as a pivot,

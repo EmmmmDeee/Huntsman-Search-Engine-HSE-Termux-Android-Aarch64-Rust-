@@ -461,6 +461,58 @@ fn a_whole_marker_free_body_on_a_presence_status_is_the_verified_hit() {
 }
 
 #[test]
+fn a_200_bot_challenge_page_is_inconclusive_never_a_profile() {
+    // REQ-PROBE-004: imlive.com answered the runner's known-negative control with
+    // a Radware Bot Manager ("Radware Captcha Page", validate.perfdrive.com,
+    // shieldsquare) interstitial under a 200 — the WAF refusing THIS client, not
+    // a profile. It carries none of imlive's own not-found markers ("Page Not
+    // Found"/"user not found"/"404" — those are the SITE's, and this is the
+    // VENDOR's page), so the pre-guard classifier fell through to the 0.92
+    // verified hit and minted a profile for a handle nobody holds. The shared
+    // is_challenge_page oracle now types it inconclusive at the boundary.
+    let body = concat!(
+        "<html><head><title>Radware Captcha Page</title></head><body>",
+        "<script src=\"https://validate.perfdrive.com/captcha/loader.js\"></script>",
+        "<div class=\"ss-captcha\" data-vendor=\"shieldsquare\">complete the captcha</div>",
+        "</body></html>",
+    );
+    // The guard is only sound if the shared oracle actually recognises this page.
+    assert!(
+        crate::util::html::is_challenge_page(body),
+        "the Radware/perfdrive/shieldsquare interstitial must be a known challenge page"
+    );
+    // And the fixture must carry none of imlive's own not-found markers —
+    // otherwise the NotFound path, not this guard, would be what caught it.
+    let imlive = USERNAME_PLATFORMS
+        .iter()
+        .find(|p| p.name == "imlive")
+        .expect("imlive platform");
+    assert!(
+        !imlive.negative_patterns.iter().any(|m| body.contains(m)),
+        "the fixture must be a marker-free WAF page, not an accidental NotFound"
+    );
+    let challenged = StatusProbe {
+        status: 200,
+        body: body.to_string(),
+        truncated: false,
+    };
+    assert_eq!(
+        classify_probe(imlive, PROBE_URL, &challenged),
+        ProbeResult::Error,
+        "a 200 captcha page is inconclusive on imlive, never the verified profile"
+    );
+    // The invariant holds before the verified/weak split: a status-only platform
+    // handed the same page is inconclusive too, never a weak status-code hit.
+    let status_only = a_status_only_platform();
+    assert_eq!(
+        classify_probe(status_only, PROBE_URL, &challenged),
+        ProbeResult::Error,
+        "a 200 captcha page is inconclusive on {} too, never a weak hit",
+        status_only.name
+    );
+}
+
+#[test]
 fn a_status_only_platform_is_a_weak_hit_whatever_the_body() {
     // No marker to check, so the body — delivered or not — is irrelevant; the
     // hit rests on the status alone and says so (0.74, unverified).

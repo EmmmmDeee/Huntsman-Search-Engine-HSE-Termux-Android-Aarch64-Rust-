@@ -5320,6 +5320,221 @@ vantage confirms the sandbox's: the counts every sweep had reported for
 read 36 against 68 and 3 on the two sweeps before — the search providers'
 own variance, untouched by this change.)
 
+### REQ-ATTR-004 (**new, Pass 31 — OBSERVED live from the sandbox against a real target, REPRODUCED, FIXED at the correlator gate, FALSIFIED**): a numbered infrastructure series is not look-alike impersonation
+
+**Observation (this sandbox, 2026-09-16, `hse scan -v redcross.org.au -d 0
+--free-only` against the binary built from `ad5065e3`).** Among coherent, honest
+findings (3-source infra consensus on real subdomains, corroborated org/email
+entities, honest single-pathway-gap flags), one false HIGH: `AU-118 HIGH
+Look-alike domain impersonation — 'awsdns-52.org' and 'awsdns-62.net' are
+visual/typo look-alike domains … one is almost certainly impersonating the other
+(phishing / brand-abuse infrastructure)`. Those two are the target's **own** AWS
+Route 53 nameserver parents: a single hosted zone's four nameservers are
+`ns-<n>.awsdns-<NN>.{com,org,net,co.uk}`, so `awsdns-52.org` and `awsdns-62.net`
+are two shards of one legitimate AWS series, not one brand impersonating another.
+
+**Reproduced (a unit lock that fails on the baseline).** AU-118 compares the
+registrable brand labels via `is_lookalike` (homoglyph skeleton OR single edit).
+`awsdns-52` vs `awsdns-62` differ by one character, so `is_lookalike` fires and
+the pair is minted High. The lock
+(`au118_silent_on_a_numbered_infrastructure_series`) asserts no finding for the
+`awsdns-52.org` / `awsdns-62.net` pair; on the baseline it fires, reproducing the
+live correlation verbatim.
+
+**Fix (the authoritative gate — the AU-118 pair test).** A new
+`differ_only_in_digits(a, b)` — the two labels are identical once ASCII digits
+are removed — gates the pair: `if !is_lookalike(&li, &lj) ||
+differ_only_in_digits(&li, &lj) { continue; }`. Two members of one operator's
+numbered series (`awsdns-52` / `awsdns-62`, `ns1` / `ns2`, `mx1` / `mx2`,
+`server01` / `server02`) are enumerated hosts, never impersonation. A homoglyph
+or typo that substitutes a digit for a LETTER (`paypa1` for `paypal`, `g00gle`
+for `google`) leaves the digit-stripped forms UNEQUAL (`paypa` ≠ `paypal`), so
+those real impersonations still fire — the existing homoglyph lock is untouched.
+
+**Lock and falsification (`cycle_attr004_falsify.py`).** Locked at the AU-118
+boundary (the numbered series is silent, `mx1`/`mx2` too, a digit-for-letter
+homoglyph still fires) and at the pure `differ_only_in_digits` predicate.
+Reverting the `|| differ_only_in_digits(&li, &lj)` guard re-mints the
+`awsdns-52.org` / `awsdns-62.net` High "phishing / brand-abuse" correlation and
+fails the lock; `lookalike.rs` sha256-restored. `RESULT: FALSIFIED`.
+
+**Remote.** CI-exact gate green locally. AU-118 is a correlator rule, not a
+keyless module, so the known-negative control sweep does not exercise it; its
+observing vantage is the live scan against a real target. The fix is
+re-exercised end-to-end against the same `redcross.org.au` production path (the
+AU-118 awsdns finding is gone), and CI on the pushed commit is recorded below.
+
+### REQ-SEARCH-006 (**new, Pass 31 — OBSERVED by the Organisation known-negative control on the runner (PR #636's live-drift), REPRODUCED, FIXED at the URL-path gate, FALSIFIED**): an organisation URL needs its whole distinctive name, not one shared token
+
+**Observation (live-drift run 35100613296 on `d221f68b`).** The runner's
+known-negative control sweep flagged `search_engines` minting a `Url` for the
+Organisation control nobody holds: `FABRICATED search_engines organisation 1
+entities for `Duraje Ceremo Pty Ltd`: url https://www.facebook.com/sougi.ceremo
+(0.50)`. The control org name is randomly generated per run (`<Name> Pty Ltd`),
+so the fabrication is **non-deterministic** — it fires only when a distinctive
+token of the generated name collides with a real indexed path; the prior run on
+`f1033f86` drew a name that did not collide and read `0 fabricated`. This one
+drew `Duraje Ceremo`, whose token `ceremo` collides with a real Facebook handle
+`sougi.ceremo`. Not caused by this PR's diff (ip_reputation / social_probe); a
+pre-existing latent `search_engines` defect surfaced by the random draw.
+
+**Reproduced (a unit lock that fails on the baseline).** `url_matches_target`
+gates the result-URL → `Url` mining at `build.rs`. For a multi-token target it
+takes the LAST significant token as the distinctive anchor (correct for a
+person's surname: `Cindy Haynes` → `haynes`). Applied to an **organisation** it
+took `ceremo` (the last significant token of `Duraje Ceremo Pty Ltd`) as a
+surname, and a single whole-token path match on it minted the stranger's page.
+The integration lock
+(`an_organisation_url_needs_its_whole_distinctive_name_not_one_shared_token`)
+drives `build_entities` with that exact result and asserts no `Url`; on the
+baseline dispatch it is minted at 0.50, reproducing the finding.
+
+**Fix (the authoritative layer — a kind-aware URL-path gate).** New
+`url_matches_org_target`: an organisation's identity is the *conjunction* of its
+distinctive (non-corporate-form) tokens — every one must appear as a whole path
+token — the URL-path analog of REQ-SEARCH-005's snippet-gate org branch and its
+`is_generic_org_token` filter. `build.rs` routes an `Organisation` target's
+URL-path mining (both the result-URL and snippet-URL call sites, via one
+`url_names_target` closure) through it; every other kind keeps the person-name
+gate unchanged. So `facebook.com/sougi.ceremo` (only `ceremo`) is rejected while
+`facebook.com/duraje.ceremo` (both tokens) still mines. The person-name gate
+(`url_matches_target`) is byte-for-byte unchanged, keeping REQ-SEARCH-004's
+username/surname contract and its tests intact.
+
+**Lock and falsification (`cycle_search006_falsify.py`).** Locked at the
+`build_entities` boundary (integration) and at the pure `url_matches_org_target`
+contract (unit: one shared token is rejected, the whole distinctive name at any
+delimiter matches, a substring of a longer word does not, and the person-name
+gate is shown to accept the single token — why the org must not use it).
+Reverting the org dispatch to the person-name gate re-mints
+`facebook.com/sougi.ceremo` at 0.50 and fails the integration lock; `build.rs`
+sha256-restored. `RESULT: FALSIFIED`.
+
+**Remote.** CI-exact gate green locally. Remote verification is the runner's
+Organisation known-negative control sweep (live-drift) on the pushed head
+reading `0 fabricated` — the same vantage (and control kind) that observed the
+fabrication on 35100613296. Because the control name is a random draw, a single
+green run is corroborated by the deterministic unit/integration locks that pin
+the collision the draw exposed. Dispatch and CI on the pushed commit are
+recorded below.
+
+### REQ-PROBE-004 (**new, Pass 31 — OBSERVED by the known-negative control on the runner (PR #636's live-drift), REPRODUCED, FIXED at the classify boundary, FALSIFIED**): a 200 bot-challenge page is not a profile
+
+**Observation (PR #636 live-drift, head `2909dcd4`, and reproduced live from
+this sandbox 2026-09-16).** The runner's known-negative control sweep flagged
+`social_probe` minting a verified profile for a handle nobody holds:
+`FABRICATED social_probe username 3 entities for vyw7xmcwjgb6 — url
+https://www.imlive.com/vyw7xmcwjgb6 (0.92); domain imlive.com (0.40); username
+vyw7xmcwjgb6 (0.95)`. Reproduced by hand: `imlive.com/<nonce>` answers **HTTP
+200** with a Radware Bot Manager interstitial (final URL
+`validate.perfdrive.com`, title "Radware Captcha Page"; the live body carries
+`perfdrive.com` ×3, `shieldsquare`, `captcha` ×15) while `imlive.com/jenna`
+answers 404. The 200 is the WAF refusing the datacenter client, not a profile —
+but it carries **none** of imlive's own not-found markers (`Page Not Found` /
+`user not found` / `404`), because it is the *vendor's* page, not the *site's*.
+
+**Reproduced (a unit lock that fails on the baseline).** `classify_probe`
+matched the 200 against `exists_codes`, found the body marker-free and not
+truncated, and returned `ProbeResult::Found { verified: true, confidence: 0.92 }`
+— there was no challenge check between the status match and the verified hit.
+The lock (`a_200_bot_challenge_page_is_inconclusive_never_a_profile`) hands
+`classify_probe` a Radware/perfdrive/shieldsquare body on the real `imlive`
+platform and asserts `ProbeResult::Error`; on the baseline it is `Found`, so the
+lock fails.
+
+**Fix (two coupled edits at the authoritative layers).** (1) `util::html`'s
+`CHALLENGE_VENDOR_SIGNATURES` — the crate's one shared challenge oracle — gains
+three WAF-specific fingerprints: `perfdrive.com`, `shieldsquare`, `radware
+captcha`. Each is decisive on its own and never appears on real content. (2)
+`social_probe::classify_probe` guards immediately after the status match: `if
+crate::util::html::is_challenge_page(&answer.body) { return ProbeResult::Error;
+}` — a success status carrying a challenge/CAPTCHA/WAF interstitial is
+inconclusive, never a hit, never an absence. Routed through the *same* oracle the
+search fetcher and HTTP layer use, so one wall reads the same everywhere.
+Signature-only (not the document-shape test): a captcha interstitial need not
+open with `<!doctype`. Body is captured only for negative-marker platforms
+(`fetch_with_status`'s capture flag), so this is a no-op for status-only
+platforms and does not slow their fast path; `ProbeResult::Error` is already
+tallied `inconclusive` by `emit_judged`, so the fabricated entities are never
+minted and the M6 inconclusive-sweep verdict already accounts for it.
+
+**Lock and falsification (`cycle_probe004_falsify.py`).** Two coupled locks, one
+per edit: the html lock
+(`is_challenge_page_recognises_the_radware_perfdrive_interstitial` — each
+fingerprint decisive, a page merely naming Radware is not a wall) and the probe
+lock (above). Stage 1 reverts only the `classify_probe` guard → the probe lock
+fails (`Found`, not `Error`) while its `is_challenge_page` assertion still passes
+— the guard is what turns the wall inconclusive. Stage 2 reverts only the
+signatures → **both** locks fail (the oracle no longer recognises the page).
+Each file sha256-restored, `--exact`. `RESULT: FALSIFIED (both halves lock)`.
+
+**Remote.** CI-exact gate green locally. Remote-verified: the runner's
+known-negative control sweep (live-drift) is the vantage that observed the
+fabrication (run 35096709827 on `2909dcd4`, **FAILED** — the imlive
+`vyw7xmcwjgb6` mint) and that confirms its removal (run 35099479951 on
+`f1033f86`, **success** — `0 fabricated`). A follow-up commit adds the
+Copilot-review whitespace-boundary hardening (below) and re-verifies on its head.
+
+### REQ-ATTR-003 (**new, Pass 31 — OBSERVED live from the sandbox against the merged binary, REPRODUCED, FIXED at the authoritative gate, FALSIFIED**): an unattributed placeholder is not a named threat actor
+
+**Observation (this sandbox, 2026-09-16, the binary built from the merged
+`ecb5b5c`).** A post-merge live exercise of the production path — a bounded
+`hse scan -v mozilla.org -d 0 --free-only` — surfaced, among coherent honest
+findings (real subdomains at three-source infra consensus, corroborated emails
+with calibrated `C_eff`, an honest single-pathway-gap flag), one false
+attribution: `AU-015  HIGH  Threat-intel hit  organisation 'Unknown APT Group'
+present in ip_reputation`. `ip_reputation` minted **`Unknown APT Group`** — a
+placeholder OTX pulse authors type when they *cannot* attribute activity — as a
+named threat-actor `Organisation` at the corroborated rung, which AU-015 then
+attributed to the scanned target's infrastructure. mozilla.org is not a threat
+actor, and "Unknown APT Group" is not an actor: it is the feed declaring *no
+known actor*.
+
+**Reproduced (a unit lock that fails on the baseline).** REQ-ATTR-002's
+`is_actor_name` rejects a *paragraph* (a sentence, `:`/`.`, too long) but a
+placeholder is name-shaped — `Unknown APT Group` is 17 chars, three tokens, no
+sentence punctuation — so the shape gate accepted it and `named_adversary`
+selected it. `is_actor_name("Unknown APT Group")` returns `true` on the
+baseline; the extended test asserting it is *not* a name fails there.
+
+**Fix (the authoritative layer — the actor-name gate).** `is_actor_name` gains
+`!is_placeholder_adversary(n)`: a label that is, or begins on a word boundary
+with, an unattributed marker (`unknown`, `unattributed`, `unidentified`,
+`unclassified`, `undetermined`) or is a bare non-answer (`n/a`, `none`, `null`,
+`various`, `multiple`, `tbd`) is not an actor name. The prefix match is
+anchored, never a substring (the REQ-SEARCH-003 discipline), so a real actor
+whose name merely contains such a word — `Anonymous Sudan` — is untouched. Since
+`named_adversary` gates every candidate through `is_actor_name`, the placeholder
+is filtered at the point it is counted: a feed naming `Unknown APT Group` on ten
+pulses is ten authors declaring non-attribution, not a corroborated actor.
+
+**Lock and falsification (`cycle_attr003_falsify.py`).** Two coupled locks: the
+shape gate (`an_actor_name_is_short_and_never_a_sentence` — the placeholders are
+not names, `Anonymous Sudan` still is) and the consumption boundary
+(`named_adversary` returns `None` for a wave of placeholder pulses). Reverting
+`!is_placeholder_adversary(n)` from `is_actor_name` fails **both**; `mod.rs`
+sha256-restored. `RESULT: FALSIFIED`.
+
+**Remote.** CI-exact gate green locally. This is a keyless module on every IP /
+domain / URL scan (the Termux production path); the runner's known-negative
+control sweep cannot surface it (a placeholder is a real feed value, not a
+nonce), so the live scan against a real target is the observing vantage. CI on
+the pushed commit is recorded below.
+
+**Post-review hardening (Copilot review 5222717963 on `2909dcd4`).** The prefix
+boundary matched only a literal ASCII space (`rest.starts_with(' ')`), but
+`is_actor_name` tokenises with `split_whitespace()` — so a tab / newline / NBSP
+form (`Unknown\tAPT Group`) was a name-shaped three-token label the gate still
+accepted. Boundary widened to `char::is_whitespace` (exactly `split_whitespace`'s
+own predicate), locked with the three whitespace variants added to the shape
+test, and falsified (`cycle_attr003b_falsify.py`: reverting to the space-only
+boundary fails the lock on `Unknown\tAPT Group`; `mod.rs` sha256-restored). The
+same review's test/ledger accuracy notes are folded in: an anchoring probe
+(`Cozy Unknown`, a marker word after another token, must stay a name) guards the
+non-substring contract that `Anonymous Sudan` alone did not; the corroboration
+comment now matches its four-pulse vector; and the reproduction's char count is
+corrected (`Unknown APT Group` is 17, not 14).
+
 ### REQ-ATTR-002 (**new, Pass 31 — OBSERVED live from the sandbox, FIXED, FALSIFIED**): a pulse author's paragraph is not a threat actor
 
 **Observation (this sandbox, 2026-09-15 20:2x UTC, the binary built from

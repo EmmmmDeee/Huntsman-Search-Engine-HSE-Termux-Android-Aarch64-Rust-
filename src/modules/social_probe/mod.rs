@@ -91,6 +91,22 @@ pub(super) fn classify_probe(platform: &Platform, url: &str, answer: &StatusProb
     if !platform.exists_codes.contains(&answer.status) {
         return classify_non_matching_status(answer.status);
     }
+    // A success status carrying an anti-bot / CAPTCHA / WAF interstitial is the
+    // provider's edge refusing THIS client, not the profile the URL names. It
+    // matches no platform's not-found marker (it is the vendor's page, not the
+    // site's), so without this guard `classify_probe` reads it as a verified or
+    // weak hit — the exact fabrication the runner's known-negative control caught
+    // on imlive.com: a Radware/perfdrive captcha 200 minted as a profile for a
+    // handle nobody holds (REQ-PROBE-004). Inconclusive — never a hit, never an
+    // absence — routed through the same shared oracle the search fetcher and HTTP
+    // layer use, so one wall reads the same everywhere. Signature-only (not the
+    // document-shape test): a captcha interstitial need not open with `<!doctype`.
+    // Body is captured only for negative-marker platforms (`fetch_with_status`'s
+    // capture flag); a status-only platform's empty body is not a challenge, so
+    // this is a no-op there.
+    if crate::util::html::is_challenge_page(&answer.body) {
+        return ProbeResult::Error;
+    }
     let (confidence, verified) = detection_strength(platform);
     if platform.negative_patterns.is_empty() {
         return ProbeResult::Found {

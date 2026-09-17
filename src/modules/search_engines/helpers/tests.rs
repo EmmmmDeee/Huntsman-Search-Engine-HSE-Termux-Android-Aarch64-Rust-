@@ -648,6 +648,46 @@ fn url_matches_target_names_a_whole_path_token_not_a_prefix() {
     ));
 }
 
+#[test]
+fn url_matches_org_target_needs_every_distinctive_token_not_one_shared() {
+    // REQ-SEARCH-006: an organisation's identity is the CONJUNCTION of its
+    // distinctive (non-corporate-form) tokens. `Duraje Ceremo Pty Ltd` shares
+    // only `ceremo` with a stranger's `facebook.com/sougi.ceremo` — one shared
+    // token is not the org.
+    let terms = vec![
+        "duraje".to_string(),
+        "ceremo".to_string(),
+        "pty".to_string(),
+        "ltd".to_string(),
+    ];
+    assert!(!url_matches_org_target(
+        "https://www.facebook.com/sougi.ceremo",
+        &terms
+    ));
+    // The whole distinctive name as path tokens IS the org's own page, at any
+    // delimiter.
+    assert!(url_matches_org_target(
+        "https://www.facebook.com/duraje.ceremo",
+        &terms
+    ));
+    assert!(url_matches_org_target(
+        "https://bizly.example/company/duraje-ceremo",
+        &terms
+    ));
+    // A whole path token, never a substring of a longer word (the
+    // REQ-SEARCH-003/004 discipline): `ceremony` is not `ceremo`.
+    assert!(!url_matches_org_target(
+        "https://example.com/duraje-ceremony",
+        &terms
+    ));
+    // The person-name gate, by contrast, DOES accept the single last token —
+    // which is exactly why an organisation must not be routed through it.
+    assert!(url_matches_target(
+        "https://www.facebook.com/sougi.ceremo",
+        &terms
+    ));
+}
+
 // ── canonicalize_url ─────────────────────────────────────────────────────────
 
 #[test]

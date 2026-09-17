@@ -378,6 +378,27 @@ mod prop {
         assert!(!is_challenge_page(""));
     }
 
+    /// REQ-PROBE-004: the Radware Bot Manager (formerly ShieldSquare) captcha
+    /// interstitial imlive.com served the runner's known-negative control — a
+    /// 200 under `validate.perfdrive.com` titled "Radware Captcha Page".
+    /// `social_probe::classify_probe` reads a probe body through this oracle, so
+    /// each of the three fingerprints must be decisive on its own (the vendor
+    /// tier is a single match), while a page that merely names the company is not
+    /// a wall.
+    #[test]
+    fn is_challenge_page_recognises_the_radware_perfdrive_interstitial() {
+        for one in [
+            "<html><body><img src=\"https://validate.perfdrive.com/px/captcha\"></body></html>",
+            "<html><body>powered by shieldsquare bot manager</body></html>",
+            "<html><head><title>Radware Captcha Page</title></head></html>",
+        ] {
+            assert!(is_challenge_page(one), "each Radware fingerprint is decisive: {one}");
+        }
+        assert!(!is_challenge_page(
+            "<html><body>Radware reported record revenue this quarter.</body></html>"
+        ));
+    }
+
     // Two REAL Cloudflare answers, fetched live from this project's sandbox on
     // 2026-09-15 (15:53 UTC) with a browser User-Agent and checked in verbatim
     // except for the Ray IDs and the egress address, which are scrubbed:

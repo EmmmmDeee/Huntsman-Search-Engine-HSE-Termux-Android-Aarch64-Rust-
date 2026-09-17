@@ -591,12 +591,22 @@ pub(in crate::modules::search_engines) fn is_offtarget_repo_url(
     !owner_matches && deeper_matches
 }
 
-/// Check whether a URL's path contains any target term (≥4 chars).
-pub(in crate::modules::search_engines) fn url_matches_target(url: &str, terms: &[String]) -> bool {
-    let path = url::Url::parse(url)
+/// The lowercased path of `url`, or `""` when it does not parse — the shared
+/// input of the URL-path relevance gates below, so a person and an organisation
+/// read the same path the same way.
+fn url_path_lower(url: &str) -> String {
+    url::Url::parse(url)
         .ok()
         .map(|u| u.path().to_lowercase())
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+/// Check whether a URL's path names a **person / username** target as a whole
+/// path token (≥4 chars). For an [`TargetKind::Organisation`] target use
+/// [`url_matches_org_target`] instead — an org's identity is a conjunction, not
+/// a single anchor.
+pub(in crate::modules::search_engines) fn url_matches_target(url: &str, terms: &[String]) -> bool {
+    let path = url_path_lower(url);
     if path.len() < 4 {
         return false;
     }
@@ -622,6 +632,45 @@ pub(in crate::modules::search_engines) fn url_matches_target(url: &str, terms: &
         // names `/cindy-haynes` and `/c-haynes`, never `/haynesville`.
         Some((surname, _given)) => names_word_token(&path, surname),
     }
+}
+
+/// Check whether a URL's path names an **organisation** target. An org's
+/// identity is the *conjunction* of its distinctive (non-corporate-form)
+/// tokens, never any single one — the URL-path analog of
+/// [`names_the_subject`](super::super::build)'s Organisation branch
+/// (REQ-SEARCH-005). The control `Duraje Ceremo Pty Ltd` shares only `ceremo`
+/// with a stranger's `facebook.com/sougi.ceremo`; the person-name gate
+/// ([`url_matches_target`]) took the last significant token (`ceremo`) as a
+/// surname and minted that page as the org's own `Url` at 0.50 — a fabrication
+/// for a company nobody holds, the URL-path sibling of REQ-SEARCH-005's
+/// snippet-gate fabrication, caught by the Organisation known-negative control
+/// (REQ-SEARCH-006). Require EVERY distinctive token as a whole path token, so a
+/// different company that shares only one is not the subject; fall back to the
+/// whole significant set when the name is nothing but corporate-form words.
+pub(in crate::modules::search_engines) fn url_matches_org_target(
+    url: &str,
+    terms: &[String],
+) -> bool {
+    let path = url_path_lower(url);
+    if path.len() < 4 {
+        return false;
+    }
+    let significant: Vec<&str> = terms
+        .iter()
+        .map(String::as_str)
+        .filter(|w| w.len() >= 4)
+        .collect();
+    let distinctive: Vec<&str> = significant
+        .iter()
+        .copied()
+        .filter(|t| !is_generic_org_token(t))
+        .collect();
+    let required = if distinctive.is_empty() {
+        &significant
+    } else {
+        &distinctive
+    };
+    !required.is_empty() && required.iter().all(|t| names_word_token(&path, t))
 }
 
 /// Count how many DISTINCT engines returned each canonical URL, keyed by the
