@@ -201,10 +201,19 @@ pub fn is_private_ip(ip: &str) -> bool {
 /// [`url_host_is_private`] below) or strictly validated
 /// (`Target::validate`'s `IpAddress` branch requires a strict `IpAddr`
 /// parse to construct the target at all). A `Domain`-kind target's value
-/// has neither guarantee: `Target::validate`'s Domain branch only requires
-/// a dot and an alnum/`.`/`-`/`_` charset, which every one of these
-/// numeric forms satisfies, so the engine's SSRF gate must canonicalize
-/// for itself before judging one.
+/// has neither guarantee, and not every numeric encoding reaches this gate
+/// the same way: `Target::validate`'s Domain branch requires a dot before
+/// its alnum/`.`/`-`/`_` charset check, so only the dotted forms among
+/// these (shorthand-dotted `127.1`, dotted octal `0177.0.0.1`) can arrive
+/// as a directly user-supplied Domain seed. The dot-free forms (pure-decimal
+/// `2130706433`, hex `0x7f000001`, single-token octal `017700000001`)
+/// cannot pass `Target::validate` as a seed, but remain reachable through
+/// `core::engine`'s pivot-expansion path (`Target::new(tk,
+/// entity.value.clone())`, e.g. in the round-expansion loop), which
+/// constructs the next round's targets directly from a discovered entity's
+/// value with no validation step at all — so the gate must canonicalize
+/// unconditionally rather than assume every numeric form arrived
+/// pre-validated.
 pub fn is_private_ip_host(ip: &str) -> bool {
     if is_private_ip(ip) {
         return true;

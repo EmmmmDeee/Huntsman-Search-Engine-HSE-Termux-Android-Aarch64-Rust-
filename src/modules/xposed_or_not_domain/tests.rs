@@ -72,6 +72,53 @@ fn unexpected_status_propagates_not_collapsed() {
 }
 
 #[test]
+fn empty_body_is_an_error_not_a_clean_negative() {
+    // `{}` — both fields absent. Neither documented shape (`status:
+    // "success"` + present `exposedBreaches`, or `status: "Not Found"` +
+    // absent `exposedBreaches`) matches, so this must be a real error, not
+    // a silently swallowed "clean" (a Copilot-review-caught regression:
+    // `unwrap_or(&[])` previously treated this identically to a genuine
+    // clean miss).
+    let resp = DomainBreachResp {
+        status: None,
+        exposed_breaches: None,
+    };
+    let target = Target::new(TargetKind::Domain, "adobe.com");
+    build_result(&resp, &target, "s").expect_err("an empty body must be an error");
+}
+
+#[test]
+fn success_status_with_no_breaches_key_is_an_error() {
+    // `{"status":"success"}` — success claimed, but the array the hit shape
+    // requires is entirely absent (not even an empty array). This is not
+    // the documented empty-array success shape, so it must error rather
+    // than silently read as "searched, found nothing".
+    let resp = DomainBreachResp {
+        status: Some("success".into()),
+        exposed_breaches: None,
+    };
+    let target = Target::new(TargetKind::Domain, "adobe.com");
+    build_result(&resp, &target, "s").expect_err("success with no breaches key must be an error");
+}
+
+#[test]
+fn non_success_status_with_records_never_mints_a_hit() {
+    // A non-"success" status carrying records anyway (e.g. stale data
+    // riding along with a throttle response) must not be read as a
+    // trustworthy hit — the documented hit shape requires `status:
+    // "success"`, and minting entities from records the provider itself
+    // did not vouch for under that status would fabricate a finding.
+    let resp = DomainBreachResp {
+        status: Some("Too Many Requests".into()),
+        exposed_breaches: Some(vec![record("adobe.com", "Adobe", true, 152_403_035)]),
+    };
+    let target = Target::new(TargetKind::Domain, "adobe.com");
+    let err = build_result(&resp, &target, "s")
+        .expect_err("records under a non-success status must error");
+    assert!(format!("{err}").contains("Too Many Requests"));
+}
+
+#[test]
 fn populated_response_yields_breach_tagged_domain() {
     let resp = DomainBreachResp {
         status: Some("success".into()),

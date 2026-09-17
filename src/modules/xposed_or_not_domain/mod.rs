@@ -163,23 +163,32 @@ fn confidence_for(verified: bool) -> f64 {
 fn build_result(resp: &DomainBreachResp, target: &Target, scan_id: &str) -> Result<ModuleResult> {
     let mut result = ModuleResult::new();
 
-    let records = resp.exposed_breaches.as_deref().unwrap_or(&[]);
-    if records.is_empty() {
-        // `status` distinguishes an ordinary clean miss ("Not Found", or
-        // absent on a minimally-shaped clean body) from a genuine failure
-        // the provider reported some other way — a throttle or malformed
-        // query must still surface as a real error, never a false "clean"
-        // (fail-closed, matching `leakcheck_public`'s identical discipline).
-        let status = resp.status.as_deref().unwrap_or_default();
-        if !status.is_empty()
-            && !status.eq_ignore_ascii_case("not found")
-            && !status.eq_ignore_ascii_case("success")
-        {
+    // Only the two documented shapes are trusted (fail-closed, matching
+    // `leakcheck_public`'s identical discipline): `status: "success"` paired
+    // with a present `exposedBreaches` (hit, possibly an empty array — a
+    // legitimate "searched, found nothing" success), or `status: "Not
+    // Found"` paired with an absent `exposedBreaches`. Every other
+    // combination — a malformed/partial 200 body (`{}`,
+    // `{"status":"success"}` with no `exposedBreaches` key at all), a
+    // throttle or error status, or stale records riding along with a
+    // non-"success" status — is a genuine ambiguity that must surface as a
+    // real error, never a silent "clean" or a false hit built from records
+    // the provider itself did not vouch for under `status: "success"`.
+    let status = resp.status.as_deref().unwrap_or_default();
+    let records: &[BreachRecord] = match (&resp.exposed_breaches, status) {
+        (Some(records), s) if s.eq_ignore_ascii_case("success") => records,
+        (None, s) if s.eq_ignore_ascii_case("not found") => return Ok(result),
+        _ => {
             return Err(Error::module(
                 SRC,
-                format!("XposedOrNot domain-breach API: unexpected status {status:?}"),
+                format!(
+                    "XposedOrNot domain-breach API: unexpected response shape (status={status:?}, exposedBreaches present={})",
+                    resp.exposed_breaches.is_some()
+                ),
             ));
         }
+    };
+    if records.is_empty() {
         return Ok(result);
     }
 
