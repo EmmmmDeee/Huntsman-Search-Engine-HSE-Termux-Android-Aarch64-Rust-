@@ -493,7 +493,10 @@ pub fn tag_flags(entity: &mut crate::core::entity::Entity, flags: &[(Option<bool
 /// use huntsman_search_engine::util::geo::confidence_for_accuracy_m;
 /// use huntsman_search_engine::core::confidence;
 ///
-/// assert_eq!(confidence_for_accuracy_m(Some(25.0)), confidence::VERY_HIGH);
+/// // A doorway-grade fix (<= 50 m) sits at the top of the ladder.
+/// assert_eq!(confidence_for_accuracy_m(Some(25.0)), confidence::HIGH_PLUSPLUS_PLUS);
+/// // A block-grade one (51..=300 m) one rung below it.
+/// assert_eq!(confidence_for_accuracy_m(Some(150.0)), confidence::VERY_HIGH);
 /// assert_eq!(confidence_for_accuracy_m(Some(2_000.0)), confidence::MEDIUM);
 /// // A 25 km IP-derived radius is not a wireless fix.
 /// assert_eq!(confidence_for_accuracy_m(Some(25_000.0)), 0.35);
