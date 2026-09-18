@@ -219,6 +219,44 @@ fn null_island_whois_coords_are_rejected_but_city_still_maps() {
 }
 
 #[test]
+fn derived_geo_entities_carry_vpn_proxy_tags() {
+    // REQ-CRIMINALIP-002: Coordinates and Address derived from whois geo
+    // must inherit the VPN/proxy/Tor tags so a VPN exit's geo is correctly
+    // marked as infrastructure, not potential subject location.
+    let body = report(
+        r#"{
+            "status": 200,
+            "issues": { "is_vpn": true, "is_proxy": true, "is_tor": false },
+            "whois": { "data": [
+                { "org_country_code": "nl",
+                  "city": "Amsterdam", "region": "North Holland", "latitude": 52.37, "longitude": 4.89 }
+            ] }
+        }"#,
+    );
+    let ents = build_entities(&body, &ip_target("1.2.3.4"), "s");
+
+    let coord = of_kind(&ents, EntityKind::Coordinates).expect("should have Coordinates");
+    assert!(
+        coord.has_tag("vpn") && coord.has_tag("proxy"),
+        "Coordinates must inherit VPN/proxy tags"
+    );
+    assert!(
+        !coord.has_tag("tor"),
+        "false flags must not tag"
+    );
+
+    let addr = of_kind(&ents, EntityKind::Address).expect("should have Address");
+    assert!(
+        addr.has_tag("vpn") && addr.has_tag("proxy"),
+        "Address must inherit VPN/proxy tags"
+    );
+    assert!(
+        !addr.has_tag("tor"),
+        "false flags must not tag"
+    );
+}
+
+#[test]
 fn nonblank_filters_empty_and_whitespace_only() {
     assert_eq!(nonblank(Some("  AS13335 ")), Some("AS13335"));
     assert_eq!(nonblank(Some("x")), Some("x"));

@@ -251,6 +251,9 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
         // `City, Region, Country` `Address`. Both are IP-infrastructure geo, so
         // they carry `geoint` and stay at modest confidence — the ASN operator's
         // registered location, not proof of the subject's whereabouts.
+        // REQ-CRIMINALIP-002: derived geo entities inherit the same VPN/proxy/Tor
+        // tags as the subject IP so that a VPN exit point's geo is correctly
+        // marked as infrastructure, not the subject.
         if let (Some(lat), Some(lon)) = (w.latitude, w.longitude)
             && crate::util::geo::is_valid_coords(lat, lon)
             && geo_trusted
@@ -264,6 +267,11 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
             );
             ce.tag("criminal_ip");
             ce.tag("geoint");
+            if let Some(issues) = &body.issues {
+                for (tag, _) in issues.active() {
+                    ce.tag(tag);
+                }
+            }
             ce.add_evidence(
                 Evidence::new(SRC, format!("Whois geolocation for {ip}")).with_attr("ip", ip),
             );
@@ -279,6 +287,11 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
             let mut ae = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM, scan_id);
             ae.tag("criminal_ip");
             ae.tag("geoint");
+            if let Some(issues) = &body.issues {
+                for (tag, _) in issues.active() {
+                    ae.tag(tag);
+                }
+            }
             ae.add_evidence(Evidence::new(SRC, format!("Whois location for {ip}")));
             out.push(ae);
         }
