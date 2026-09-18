@@ -9536,3 +9536,126 @@ two doctests above must pass, having failed on 5 of the last 6 pushes.
 **Permanent invariant.** CI verifies the commit the author actually pushed. A
 green branch is never failed, and a broken branch is never passed, by a tree
 neither the author nor the reviewer can see.
+
+### REQ-CI-005 — correction and outcome (the first fix attempt broke the gate outright)
+
+The verification paragraph above said the next push would confirm the fix. It
+did not: it exposed that **the fix commit itself broke `ci.yml`**. Recording the
+correction rather than quietly amending the entry, because the mechanism is the
+lesson.
+
+**What happened.** The patch was applied by a script that ran two
+`str.replace` passes over `ci.yml` — one for the first checkout (full comment)
+and one for the remaining four (short comment). The second pass matched the
+checkout line *inside the text the first pass had already inserted*, producing a
+step with two `with:` keys:
+
+```yaml
+      - uses: actions/checkout@… # v4
+        with:
+          ref: ${{ … }}
+        with:
+```
+
+**Why the validation missed it.** The change was checked with
+`yaml.safe_load`, which **silently accepts duplicate mapping keys** and keeps
+the last. GitHub's workflow schema rejects them. So the check reported VALID for
+a file GitHub would refuse — a validator that could not observe the defect it
+existed to catch. That is the same failure this session already recorded twice:
+the vacuous `--depth 0` scan (REQ-SOURCEFAMILY-001) and the case-sensitive
+assertion against a case-folded value (REQ-OATHNET-001).
+
+**What the breakage looked like, and why it is dangerous.** Run 35387662085 on
+`7cd696ce` reported `event: push`, conclusion `failure`, with `created_at`,
+`run_started_at` and `updated_at` all identical — zero seconds, no job executed.
+That is a GitHub **startup failure**. On the blocking `check` job it is visually
+indistinguishable from "CI has not started yet", so the entire test gate was
+silent and the branch merely looked slow. Scope was established by observation,
+not inference: `audit.yml`, `rust-clippy.yml` and `secret-scan.yml` each took a
+single `replace` call, and all three demonstrably *ran* on that same head
+(cargo-audit, clippy and gitleaks all reported), so the damage was confined to
+`ci.yml`.
+
+**Fix.** `ci.yml` was restored from `f8329e59` and re-patched by splitting on the
+checkout line and rejoining — replacement text is never re-scanned, so a comment
+containing the word "checkout" cannot be matched again. All 8 `pull_request`
+checkouts across the 4 workflows are pinned, verified structurally.
+
+---
+
+### REQ-CI-007 (**new, Pass 35 — FIXED, FALSIFIED**): nothing could see a workflow file GitHub would reject
+
+**Defect.** The repo had no check on `.github/workflows/*.yml` at all. Neither
+`scripts/gate.sh` nor CI parsed them, so a workflow GitHub's schema refuses
+reached `main`'s history with every local check green — and announced itself
+only as a zero-second run with no job, which on the blocking gate reads as "not
+started yet". REQ-CI-005's correction above is that failure actually happening.
+
+**Fix.** `scripts/check_workflows.py`, wired into `scripts/gate.sh` (guarded on
+`python3`) and into `ci.yml`'s existing cheap `install-script` job. It asserts
+two invariants, both learned from real breakage here:
+
+1. **No duplicate mapping keys**, via a loader that refuses them. This is the
+   half `yaml.safe_load` structurally cannot do.
+2. **Every `pull_request` checkout is pinned to the PR's real head.** This is
+   REQ-CI-005's regression lock: the pin cannot be silently dropped again.
+
+**Falsification.** Re-introducing the exact shipped defect (the duplicate
+`with:`) into `ci.yml`:
+
+| Checker | Verdict |
+| --- | --- |
+| `yaml.safe_load` (what was used before) | **VALID** — vacuous, cannot see it |
+| `check_workflows.py` (strict) | **REJECTED** — `DUPLICATE KEY 'with' at line 47` |
+
+The contrast is the point: the new check is load-bearing precisely where the old
+one was blind, and it names the line.
+
+**Permanent invariant.** A workflow file GitHub would reject fails the gate on
+the contributor's machine, and a `pull_request` checkout cannot silently revert
+to the stale merge ref.
+
+---
+
+### REQ-DEPS-001 (**new, Pass 35 — FIXED**): a RustSec advisory sat unseen because the audit workflow's path filter never let it run on this PR
+
+**Defect.** `cargo audit` reported on `7cd696ce`:
+
+```
+Crate:    rustls
+Version:  0.23.43
+Title:    TLS 1.3 handshake messages incorrectly accepted across encryption level boundaries
+Date:     2026-09-14
+ID:       RUSTSEC-2026-0285
+Severity: 5.3 (medium)
+Solution: Upgrade to >=0.23.45
+```
+
+**Why it had been invisible.** `audit.yml` is path-filtered to
+`**/Cargo.toml`, `**/Cargo.lock`, `deny.toml` and `.github/workflows/audit.yml`.
+This PR had touched none of them, so the workflow had never fired on it, and
+`scripts/gate.sh` mirrors the same filter and skipped it locally for the same
+reason. The advisory surfaced only because REQ-CI-005 edited `audit.yml` itself
+— the filter's last clause — which is an accident, not a control. A dependency
+advisory published mid-PR is invisible to a branch that happens not to touch a
+manifest, for as long as that branch lives.
+
+**Fix.** `cargo update -p rustls` → `0.23.43` → `0.23.45`, exactly the
+advisory's stated minimum; one package changed, a lockfile-only patch bump.
+`rustls` is transitive via `reqwest`'s `rustls-tls` feature, so no manifest
+constraint needed changing. This matters more than usual for HSE: the tool makes
+TLS connections on nearly every module path, and `rustls` is its only TLS stack
+by an explicit architectural invariant recorded in `Cargo.toml`.
+
+**Verification.** The bumped `rustls 0.23.45` compiles and the full gate passes.
+`cargo-audit` is not installed in this sandbox, so the advisory's clearance
+itself is CI's to confirm — the lockfile now records `0.23.45`, which is the
+exact fact the advisory keys on, and the audit job re-runs on this push because
+`Cargo.lock` changed.
+
+**Residual, recorded not fixed.** The path filter remains the reason an
+advisory can go unobserved on a long-lived branch. Left as-is deliberately: the
+weekly schedule (`cron: 0 6 * * 1`) does cover `main`, and widening the filter to
+every PR trades a real cost (a ~2-minute `cargo-audit` build on every push) for a
+gap the schedule already partly closes. Filed here so the trade-off is a decision
+on the record rather than an oversight.

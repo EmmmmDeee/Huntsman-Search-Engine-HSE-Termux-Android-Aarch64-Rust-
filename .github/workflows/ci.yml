@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # Check out the PR's ACTUAL head, not GitHub's `refs/pull/N/merge`.
-      # `actions/checkout` defaults to that server-computed merge ref on a
+      # The checkout action defaults to that server-computed merge ref on a
       # `pull_request` event, and GitHub recomputes it asynchronously — for a
       # run started right after a push it is routinely served STALE, so CI
       # compiles a tree that is not the branch. Observed repeatedly on this
@@ -41,12 +41,7 @@ jobs:
       # The `|| github.sha` fallback keeps every non-PR event (push, schedule,
       # workflow_dispatch) on exactly the ref it used before: outside a
       # `pull_request` event `github.event.pull_request` is null.
-      # Pin to the PR's real head rather than the stale-prone
-      # `refs/pull/N/merge` default — see ci.yml's checkout for the full
-      # rationale and the observed failure.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -116,8 +111,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # Pin to the PR's real head rather than the stale-prone
-      # `refs/pull/N/merge` default — see ci.yml's checkout for the full
-      # rationale and the observed failure.
+      # `refs/pull/N/merge` default — see the `check` job's checkout above for
+      # the full rationale and the observed failure.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -221,8 +216,8 @@ jobs:
       RUSTUP_TOOLCHAIN: "1.98"
     steps:
       # Pin to the PR's real head rather than the stale-prone
-      # `refs/pull/N/merge` default — see ci.yml's checkout for the full
-      # rationale and the observed failure.
+      # `refs/pull/N/merge` default — see the `check` job's checkout above for
+      # the full rationale and the observed failure.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -243,8 +238,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # Pin to the PR's real head rather than the stale-prone
-      # `refs/pull/N/merge` default — see ci.yml's checkout for the full
-      # rationale and the observed failure.
+      # `refs/pull/N/merge` default — see the `check` job's checkout above for
+      # the full rationale and the observed failure.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -301,8 +296,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # Pin to the PR's real head rather than the stale-prone
-      # `refs/pull/N/merge` default — see ci.yml's checkout for the full
-      # rationale and the observed failure.
+      # `refs/pull/N/merge` default — see the `check` job's checkout above for
+      # the full rationale and the observed failure.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -311,6 +306,17 @@ jobs:
       # it reads as covering.
       - run: bash -n install.sh
       - run: bash -n scripts/reconcile.sh
+      # Lint the workflow files themselves. A file GitHub's schema rejects
+      # yields a startup failure — a zero-second run with no job executed —
+      # which on `check` above is indistinguishable from "not started yet",
+      # so it can silence the whole test gate unnoticed. This asserts no
+      # duplicate mapping keys (which `yaml.safe_load` accepts and GitHub does
+      # not) and that every pull_request checkout stays pinned to the PR head.
+      # It runs here because this job is already the cheap syntax-only one.
+      - name: Workflow files
+        run: |
+          python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          python3 scripts/check_workflows.py
       # shellcheck ships preinstalled on ubuntu-latest — call it directly
       # rather than via a third-party action so a master-pinned drift
       # can't break this job for reasons unrelated to install.sh

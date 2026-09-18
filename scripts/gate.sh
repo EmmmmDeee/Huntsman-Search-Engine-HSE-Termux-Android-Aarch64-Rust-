@@ -177,6 +177,22 @@ else
     skip "shellcheck" "not installed"
 fi
 
+# ── the workflow files themselves ────────────────────────────────────────────
+# A workflow GitHub's schema rejects produces a *startup failure*: a run that
+# completes in zero seconds with no job executed. On the blocking `ci.yml` that
+# looks exactly like "CI hasn't started yet", so a broken workflow can sit
+# unnoticed while the branch merely appears slow — which is how a duplicate
+# `with:` key once silenced this repo's entire test gate for a push. A generic
+# `yaml.safe_load` cannot catch that (it accepts duplicate keys and keeps the
+# last), so `check_workflows.py` parses with a loader that refuses them, and
+# also asserts every `pull_request` checkout stays pinned to the PR's real head
+# rather than the stale-prone `refs/pull/N/merge` default.
+if command -v python3 >/dev/null 2>&1; then
+    run "workflow files" python3 scripts/check_workflows.py
+else
+    skip "workflow files" "python3 not installed"
+fi
+
 # ── audit.yml: only fires when a manifest changed, so mirror that ────────────
 # Must match audit.yml's `push.paths` exactly (src/bin/dep_cooldown/** included,
 # and fuzz/Cargo.{toml,lock} plus hse-core/Cargo.{toml,lock} and
