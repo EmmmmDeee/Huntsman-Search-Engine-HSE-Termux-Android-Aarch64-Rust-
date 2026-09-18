@@ -109,6 +109,43 @@ pub fn redact_entities(entities: &mut [Entity]) {
     }
 }
 
+/// Mask the OPERATOR's own secret echoes (their configured API keys / tokens)
+/// out of entity evidence in place, for EVERY export — shareable or not.
+///
+/// Distinct from [`redact_entities`], which masks the *subject's* PII (breach
+/// passwords, precise coordinates) and is an opt-in, share-only pass. An
+/// operator secret that an upstream provider reflected back — a request URL it
+/// echoed in an error body with the key riding as `?api_key=<OPERATOR_KEY>`, or
+/// a pooled key embedded in a path — and that an extractor then folded into an
+/// `Evidence.summary` or attribute value is never an investigation finding: it
+/// is the operator's own credential accidentally captured, and must never reach
+/// ANY exported artifact, not even the "complete, unredacted" local dossier
+/// (whose embedded raw-response copy already scrubs the same secrets via
+/// [`crate::util::http::redact_credentials`], the exact redactor reused here).
+/// Runs that redactor over each evidence summary and each attribute value.
+///
+/// It masks only credential query-params (`?api_key=…` → `***`) and values
+/// matching the operator's configured env/pool secrets, so a subject finding — a
+/// breach password, a username — is left verbatim (it is neither), preserving
+/// the operator-local dossier's "nothing omitted" contract for findings.
+/// Idempotent (a `***` mask is not itself a secret). REQ-EXPORT-001.
+pub fn redact_operator_secrets(entities: &mut [Entity]) {
+    for e in entities.iter_mut() {
+        for ev in &mut e.evidence {
+            let masked = crate::util::http::redact_credentials(&ev.summary);
+            if masked != ev.summary {
+                ev.summary = masked;
+            }
+            for v in ev.attributes.values_mut() {
+                let masked = crate::util::http::redact_credentials(v);
+                if masked != *v {
+                    *v = masked;
+                }
+            }
+        }
+    }
+}
+
 /// Mask a credential entity's value and scrub its evidence so the plaintext
 /// cannot survive in the summary or a raw-record attribute. The evidence
 /// *entries* are kept (so `source_count`/corroboration stay truthful) — only
@@ -378,5 +415,44 @@ mod tests {
         let before = corr[0].description.clone();
         redact_correlations(&mut corr, &[email]);
         assert_eq!(corr[0].description, before);
+    }
+
+    #[test]
+    fn redact_operator_secrets_masks_an_echoed_key_but_leaves_findings() {
+        // REQ-EXPORT-001: an operator key an upstream reflected into evidence
+        // (a `?api_key=…` in a summary and a via_endpoint attribute) is masked,
+        // while a subject finding (a username) is left verbatim — the export's
+        // "nothing omitted" contract is about findings, not the operator's own
+        // leaked auth. Uses the query-param pass, so no env/pool setup is needed.
+        let mut e = Entity::new(EntityKind::Email, "vic@corp.com", confidence::HIGH, "s");
+        e.add_evidence(
+            Evidence::new(
+                "some_provider",
+                "looked up via https://api.x.io/q?api_key=OPERATORKEY12345",
+            )
+            .with_attr(
+                "via_endpoint",
+                "https://api.x.io/q?api_key=OPERATORKEY12345",
+            )
+            .with_attr("username", "victim_handle"),
+        );
+        let mut list = [e];
+        redact_operator_secrets(&mut list);
+        let ev = &list[0].evidence[0];
+        assert!(
+            !ev.summary.contains("OPERATORKEY12345") && ev.summary.contains("api_key=***"),
+            "summary still leaks: {}",
+            ev.summary
+        );
+        let endpoint = ev.attributes.get("via_endpoint").expect("via_endpoint");
+        assert!(
+            !endpoint.contains("OPERATORKEY12345") && endpoint.contains("api_key=***"),
+            "endpoint still leaks: {endpoint}"
+        );
+        // The subject finding is untouched.
+        assert_eq!(
+            ev.attributes.get("username").map(String::as_str),
+            Some("victim_handle")
+        );
     }
 }

@@ -193,6 +193,48 @@ fn render_full_dumps_every_field_and_provenance() {
 }
 
 #[test]
+fn render_full_masks_an_operator_key_echoed_in_evidence() {
+    // REQ-EXPORT-001: the "complete, unredacted" dossier is unredacted for
+    // SUBJECT findings, but an operator key an upstream reflected into an
+    // entity's evidence (here a `?api_key=…` in a via_endpoint attribute) is the
+    // operator's own auth, never a finding, and must be masked even here — as
+    // the embedded raw-response copy already is.
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let dir = tempfile::tempdir().expect("should succeed");
+    let db = dir.path().join("opsecret_test.db");
+    let store = Store::open(db.to_str().expect("should succeed")).expect("should succeed");
+    let target = Target::new(TargetKind::Email, "vic@corp.com");
+    let scan = Scan::new("scan-op", target);
+    store.upsert_scan(&scan).expect("should succeed");
+
+    let mut e = Entity::new(EntityKind::Email, "vic@corp.com", 0.7, "scan-op");
+    e.add_evidence(
+        Evidence::new("some_provider", "resolved via the provider API")
+            .with_attr(
+                "via_endpoint",
+                "https://api.x.io/lookup?api_key=OPERATORKEY12345",
+            )
+            .with_attr("username", "victim_handle"),
+    );
+    store.upsert_entities_batch(&[e]).expect("should succeed");
+
+    let out = render_full(&store, "scan-op").expect("should succeed");
+    assert!(
+        !out.contains("OPERATORKEY12345"),
+        "the operator's own key must not survive into the dossier: {out}"
+    );
+    assert!(
+        out.contains("api_key=***"),
+        "the key site must show the mask: {out}"
+    );
+    // The subject finding survives verbatim.
+    assert!(
+        out.contains("username = victim_handle"),
+        "finding must survive: {out}"
+    );
+}
+
+#[test]
 fn render_full_carries_generation_and_every_per_evidence_qualifier() {
     // Regression guard for the "every field, fully unredacted" contract: the
     // ENTITIES section previously dropped the entity's `generation` (pivot

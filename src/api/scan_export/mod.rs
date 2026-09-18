@@ -44,8 +44,10 @@ pub async fn scan_entities_csv(
     if !crate::api::scan_handlers::wants_candidates(&params) {
         entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
     }
-    // Redaction of the proprietary source names in the `sources` /
-    // `corroborating_sources` columns is enforced by `download_response`.
+    // REQ-EXPORT-001: strip the operator's own secret echoes from evidence
+    // before the CSV is built (proprietary source-name redaction is separate,
+    // enforced by `download_response`).
+    crate::util::redact::redact_operator_secrets(&mut entities);
     download_response(
         crate::app::export::entities_to_csv(&entities),
         "text/csv; charset=utf-8",
@@ -115,6 +117,9 @@ pub async fn scan_export_gexf(
     if !wants_candidates(&params) {
         entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
     }
+    // REQ-EXPORT-001: strip the operator's own secret echoes from evidence
+    // before the GEXF node attributes are built.
+    crate::util::redact::redact_operator_secrets(&mut entities);
     let body = crate::core::gexf::entities_to_gexf(&entities, &relations, &id);
     // Redaction of proprietary source names is enforced by `download_response`.
     download_response(body, "application/xml; charset=utf-8", &id, "gexf", "gexf")

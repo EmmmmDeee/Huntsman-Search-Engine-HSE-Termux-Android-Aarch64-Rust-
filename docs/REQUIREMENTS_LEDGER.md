@@ -8358,3 +8358,92 @@ REQ-LEAKCHECK-001 / REQ-HUDSONROCK-001. The generalisable rule, now applied thre
 times: a struct that decodes every JSON object cannot gate on "did it decode";
 the guard must require a field the real shape always carries and fail closed
 without it.
+
+---
+
+### REQ-EXPORT-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): the operator's own API keys leaked into every export because the secret redactor was wired into the raw archive but not the evidence renderers
+
+**Subsystem.** `export` — the entity-evidence rendering path shared by the CLI
+renderers (`src/app/export/renderers.rs`) and the HTTP export API
+(`src/api/scan_export/mod.rs`). The operator-secret redactor lives in
+`src/util/http/redact.rs` (`redact_credentials`): a boundary-gated masker that
+turns credential query-params (`?api_key=`, `apiKey=`, `access_token=`,
+`token=`, `auth=`, `key=`, …) into `***` and masks any literal value matching
+the operator's configured `HUNTSMAN_*` env secrets or the global key pool.
+
+**Defect.** Every export surface dumps `Evidence.summary` and every evidence
+attribute value **verbatim**: the CLI `json`/`csv`/`gexf` renderers (through
+`confirmed_entities`), the operator dossier (`render_full`), the structured scan
+report (`build_scan_report`), and the two HTTP export endpoints
+(`scan_entities_csv`, `scan_export_gexf`). None of those paths ran
+`redact_credentials`. Upstream OSINT providers routinely reflect the request URL
+or a keyed error string back into their response body, and HSE files that body
+into an entity's evidence — e.g. an attribute `via_endpoint =
+https://api.x.io/lookup?api_key=OPERATORKEY12345`, or a summary quoting a
+`{"error":"Invalid key <KEY>"}` page. The operator's **own live credential** was
+therefore written into the exported dossier, the CSV/GEXF a case is shared as,
+and the HTTP export response body. The redactor was already applied to the
+**raw-archive copy** embedded in the very same report, so the identical evidence
+string appeared scrubbed in the archive and in clear in the human-facing
+rendering beside it — proof the protection existed and was simply never wired
+onto the parallel output path.
+
+**Authoritative layer.** The redactor (`http::redact_credentials`) is
+authoritative and correct; the gap is a **missing edge in the call graph** — the
+sanitizer that guards the serialized raw-archive copy of an evidence string was
+never routed onto the independent renderings of that same string. The fix
+belongs at the export path's entry to the entity list, not inside any one
+renderer's formatting code (which would duplicate authority across five sites).
+
+**Fix.** Added one pure function `redact::redact_operator_secrets(&mut [Entity])`
+(`src/util/redact.rs`) that walks every entity's evidence and runs the existing
+`http::redact_credentials` over each summary and each attribute value, writing
+back only when the mask changed the string. Wired it at all five always-on
+export seams: `confirmed_entities` (covers CLI `json`/`csv`/`gexf`),
+`render_full` (dossier), `build_scan_report` (report), `scan_entities_csv`, and
+`scan_export_gexf` (API). Because it delegates to `redact_credentials`, it masks
+**only** operator secrets — credential params and configured env/pool values —
+so a *subject* finding (a breached password, a username, a token belonging to
+the target of the investigation) is left byte-for-byte intact. Redaction here
+removes the investigator's credentials, never the investigation's evidence,
+preserving the operator-local dossier's "nothing omitted" contract for findings.
+The mask is idempotent (`***` is not itself a secret), so the extra pass over an
+already-archived string is a no-op.
+
+**Regression locks.** Two, at both boundaries:
+- Pure seam (`src/util/redact.rs`,
+  `redact_operator_secrets_masks_an_echoed_key_but_leaves_findings`): an entity
+  whose evidence carries `?api_key=OPERATORKEY12345` in both the summary and a
+  `via_endpoint` attribute **and** a `username = victim_handle` attribute →
+  after the call the key is gone (`api_key=***`) from both summary and
+  attribute, and `victim_handle` is still present verbatim.
+- End to end (`src/app/export/tests.rs`,
+  `render_full_masks_an_operator_key_echoed_in_evidence`): a real `Store` →
+  `Scan` → `Entity` with the same evidence, rendered through `render_full`, whose
+  output must **not** contain `OPERATORKEY12345`, **must** contain `api_key=***`,
+  and **must** still contain `username = victim_handle`.
+
+Both pre-existing "dumps every field and provenance, unredacted" contract tests
+(`render_full_dumps_every_field_and_provenance`,
+`render_entity_prints_full_unredacted_evidence`) remain green, proving subject
+findings are untouched — the change subtracts only operator secrets.
+
+**Falsification.** The helper body was neutered in place to `let _ = entities;`
+(a no-op) and the two new locks were run and observed **FAILING** (`test result:
+FAILED. 0 passed; 2 failed` — both read the operator key straight into the
+export), then `src/util/redact.rs` was restored byte-for-byte from a pre-edit
+backup (`grep -c FALSIFY` → 0) and the suite went green.
+
+**Gate.** `cargo fmt --all` (scope unchanged: the four REQ-EXPORT-001 files);
+`cargo clippy --all-targets --locked -- -D warnings` → clean; `cargo test
+--locked --all-targets` → pass; `cargo test --doc` → 77 passed, 0 failed (the
+doctest leg CI runs and the local `--all-targets` gate omits — now standing).
+
+**Class.** Distinct from the `#[serde(default)]`-swallows-a-200 family that
+dominates this wave: this is a **sanitizer wired into one output path but not a
+parallel one**. The generalisable rule (recorded for the sibling sweep): when a
+redactor guards a *serialized copy* of a field, every independent rendering of
+that same field must route through the same redactor — audit the sanitizer's
+call sites against **all** emitters of the value it protects, not just the one
+that motivated it. Here the raw archive was guarded and the five human-facing
+and API renderings of the identical evidence were not.

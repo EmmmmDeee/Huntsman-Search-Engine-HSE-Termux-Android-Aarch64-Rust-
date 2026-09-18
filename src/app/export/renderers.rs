@@ -14,6 +14,10 @@ use crate::storage::Store;
 fn confirmed_entities(store: &Store, sid: &str) -> Result<Vec<crate::core::entity::Entity>> {
     let mut entities = store.entities_for_scan(sid)?;
     entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+    // REQ-EXPORT-001: strip the operator's own secret echoes from evidence for
+    // every CLI export (json/csv/gexf) — the embedded raw-archive copy already
+    // scrubs them, but the entity-evidence renderers never did.
+    crate::util::redact::redact_operator_secrets(&mut entities);
     Ok(entities)
 }
 
@@ -288,6 +292,10 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
         .get_scan(sid)?
         .ok_or_else(|| Error::Other(format!("scan {sid} not found")))?;
     let mut entities = store.entities_for_scan(sid)?;
+    // REQ-EXPORT-001: the operator's own secret echoes never belong in any
+    // export, not even this "complete, unredacted" dossier (whose embedded
+    // raw-response copy already scrubs them). Subject findings stay verbatim.
+    crate::util::redact::redact_operator_secrets(&mut entities);
     let relations = store.relations_for_scan(sid)?;
     let correlations = store.correlations_for_scan(sid)?;
     // Stable, readable grouping: by kind, then value.
@@ -944,6 +952,10 @@ pub(crate) fn build_scan_report(
         return Ok(None);
     };
     let mut entities = store.entities_for_scan(scan_id)?;
+    // REQ-EXPORT-001: scrub the operator's own secret echoes from evidence
+    // before the report (and the HTTP `report.json`) is built. Subject findings
+    // are untouched.
+    crate::util::redact::redact_operator_secrets(&mut entities);
     // Quarantine in the dossier too: speculative `candidate` entities (the
     // non-target breach-dump rows) are hidden by default so the report reads
     // as the target's confirmed footprint. `include_candidates=true` returns
