@@ -536,18 +536,20 @@ fn au_041_fires_on_ens_handle() {
     assert!(rule_au_041_ens_identity(&RuleContext::new(&[plain]), "scan", 0).is_empty());
 }
 
-// A pgp-linked email carrying the `key_fingerprint` evidence attribute the real
-// `pgp` module attaches — the fingerprint AU-042 now partitions on.
+// A `pgp-unverified-uid` email carrying the `key_fingerprint` evidence attribute
+// the real `pgp` module attaches — the fingerprint AU-042 partitions on
+// (co-resident keyserver UIDs, unverified; see REQ-PGP-001).
 fn pgp_email(addr: &str, fpr: &str) -> Entity {
-    let mut e = Entity::new(EntityKind::Email, addr, 0.8, "scan");
-    e.tag("pgp-linked");
+    let mut e = Entity::new(EntityKind::Email, addr, 0.35, "scan");
+    e.tag("pgp-unverified-uid");
     e.add_evidence(Evidence::new("pgp", "PGP keyserver User ID").with_attr("key_fingerprint", fpr));
     e
 }
 
 #[test]
-fn au_042_groups_pgp_linked_emails() {
-    // Two emails bound to the SAME PGP key group into one same-owner finding.
+fn au_042_groups_pgp_unverified_uid_emails() {
+    // Two emails self-asserted on the SAME PGP key group into one same-owner
+    // lead.
     let ents = vec![
         pgp_email("alt@work.com", "AAAA1111BBBB2222"),
         pgp_email("other@home.com", "AAAA1111BBBB2222"),
@@ -558,9 +560,12 @@ fn au_042_groups_pgp_linked_emails() {
     assert_eq!(
         out[0].entity_uids.len(),
         2,
-        "only the two same-key pgp-linked emails"
+        "only the two same-key co-resident UID emails"
     );
-    assert_eq!(out[0].severity, Severity::High);
+    // REQ-PGP-001: a keyserver key's co-resident UIDs are an UNVERIFIED
+    // same-owner lead (anyone can self-certify a UID), so the firing is Low,
+    // not the old "proven owner" High.
+    assert_eq!(out[0].severity, Severity::Low);
     assert!(out[0].description.contains("AAAA1111BBBB2222"));
 }
 

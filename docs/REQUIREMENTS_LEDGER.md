@@ -7875,3 +7875,102 @@ must consciously decide provenance; that is the intended forcing function,
 not a residual. `hse keys add` and the CLI TSV import do not route through
 `add_and_validate` (verified: the only caller is the stealer-import path),
 so no operator-supplied-key path is affected by the new stamp.
+
+### REQ-PGP-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a self-certified co-resident UID fabricated the engine's strongest correlation
+
+**Lead.** Wave-8 hunt into `src/modules/{chain_intel,pgp,payid}/`, then a full
+read of the `pgp` module's gate, mint loop and Credential-binding loop plus the
+two correlator rules the Credential and the linked emails feed.
+
+**Verified from source.** `extract()` (`src/modules/pgp/mod.rs`) gates a whole
+keyserver-returned key on whether ANY of its UIDs names the queried email
+(`key_matches_query`), then — once that per-KEY gate passes — minted a `Person`
+(`confidence::HIGH`) from EVERY UID's name and an `Email`
+(`confidence::HIGH_PLUS`, tagged `pgp-linked`) from every OTHER UID's email,
+and bound EVERY UID email (queried + all co-resident) into one correlatable
+`Credential` `pgp:<fp>` (`confidence::HIGH_PLUSPLUS_PLUS`, tagged `pgp-key`).
+Nothing distinguished the UID that actually matched the query from any other
+UID riding on the same key. `keyserver.ubuntu.com` — this module's deliberate
+choice, precisely because keys.openpgp.org hides unverified UIDs — performs NO
+ownership check on a UID: anyone can self-certify any `Name <email>` onto their
+own key and upload it. The gate's own doc comment reasoned only about the
+wrong-KEY threat (an unrelated `pub:` block), never the same-key-different-UID
+threat.
+
+The Credential is exactly what AU-048
+(`src/core/correlator/rules/identity/account/key.rs`) reads: its
+`rule_au_048_shared_public_key` collects the distinct `email` (and
+`github_login`/`username`) evidence attrs a key-tagged Credential carries and,
+on `≥ 2` distinct controller accounts, fires a `Severity::Critical` "a reused
+public key proves one person controls N accounts (same private key)" — the doc
+comment calls it "the strongest cross-account link in the engine." The
+co-resident `pgp-linked` emails separately fed AU-042
+(`rule_au_042_pgp_email_identity`, `Severity::High` "PGP key binds multiple
+emails to one identity").
+
+**Failure scenario (trivially weaponizable, no compromise of anything).** An
+attacker runs `gpg --quick-generate-key`, adds two self-certified UIDs —
+`Real Owner <victim@example.com>` and `Attacker Alias <alt@attacker.tld>` — and
+uploads the key. Any later HSE scan of `victim@example.com` finds the key,
+passes `key_matches_query` on UID 1, and mints a `Person` "Attacker Alias" at
+`HIGH`, an `Email` `alt@attacker.tld` at `HIGH_PLUS` tagged `pgp-linked`, and a
+Credential binding BOTH addresses — so AU-048 fires a Critical "cryptographic
+proof of control" between the victim and an identity the attacker invented from
+nothing. Standard, unauthenticated protocol action; zero sophistication beyond
+`gpg`.
+
+**Fix (authoritative layer = the module that mints the evidence).**
+`key_matches_query` only proves SOME UID names the query; it says nothing about
+the OTHER UIDs. So `extract()` now precomputes the names carried by a
+query-matching UID (`query_names`) and:
+
+- mints a first-class `Person` (`HIGH`, tag `pgp`) only for a name a
+  query-matching UID carries; a name riding only on a non-matching UID is minted
+  at `confidence::TENTATIVE` tagged `pgp-unverified-uid` — a clearly-labelled
+  lead the identity correlators cannot read as corroborated fact;
+- mints an alternate `Email` at `TENTATIVE` tagged `pgp-unverified-uid` (never
+  `pgp-linked`), so AU-042 no longer reads it as verified same-owner evidence;
+- binds ONLY the query-matched email into the `pgp:<fp>` Credential's `email`
+  evidence. A single key's unverified co-resident UIDs therefore bind one
+  controller and AU-048 cannot fire from them. Genuine cross-account linkage is
+  preserved: when a SEPARATE seed independently matches this same key on its own
+  address, the fingerprinted Credential dedups the two matched controllers and
+  AU-048 fires on real convergence.
+
+AU-042 was consolidated onto the new reality: it now reads `pgp-unverified-uid`
+and fires at `Severity::Low` with honest "self-asserts N co-resident email
+address(es) (keyserver UID, unverified)" wording — the multi-email-owner lead is
+preserved at the tier a bare keyserver index actually supports, not the old
+`High` "proven same owner". `TENTATIVE` (0.35) sits below the `0.40`
+cross-scan-history gate (`is_cross_scan_candidate`), so an attacker-chosen
+alternate address is a within-scan lead, never a persisted cross-investigation
+identity bridge.
+
+**Evidence.** New lock
+`modules::pgp::tests::a_forged_co_resident_uid_never_produces_corroborated_identity`
+feeds a two-UID key whose second UID names `alt@attacker.tld` and asserts the
+attacker Person/Email are down-tiered + `pgp-unverified-uid` (not `pgp-linked`)
+and the Credential's `email` set contains the queried address but NOT
+`alt@attacker.tld`. `extract_mints_correlatable_pgp_key_credential` and
+`extract_pulls_name_and_alternate_emails` were corrected (not deleted) to the
+new contract, each keeping its genuine intent — the legitimate multi-email owner
+still surfaces, now as a labelled tentative lead. AU-042's three correlator
+tests moved to `pgp-unverified-uid` + `Severity::Low`.
+
+**Falsification.** Test-first: the lock was written and observed FAILING on the
+unfixed module — `panicked at src/modules/pgp/tests.rs:195: an unverified
+co-resident UID name must be down-tiered, got 0.65` (the attacker's Person
+minted at `confidence::HIGH`), and the Credential-binding assertion would have
+failed identically. After the fix: `modules::pgp` 8 passed / 0 failed;
+`core::correlator` 615 passed / 0 failed (the three AU-042 tests among them);
+`cargo fmt --check` clean; `cargo clippy --all-targets --locked -- -D warnings`
+exit 0.
+
+**Residual.** An attacker can still self-certify the QUERY UID's own name
+(`Defamatory Name <victim@example.com>`), which is minted `HIGH` — this is the
+module's irreducible premise (a keyserver key naming an address asserts an owner
+name for it) and inherent to any unauthenticated keyserver source; it is tagged
+`pgp` so its provenance is explicit, and it never crosses identities. Truly
+verifying a UID would require downloading the key and checking self-signatures,
+which the HKP machine-readable index does not carry; that is a separate,
+larger capability, not this fix.
