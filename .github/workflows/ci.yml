@@ -59,6 +59,29 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (v2.9.2)
 
+      # Which tree is this job actually compiling, and is any doc-test artifact
+      # being reused? CI has reported doctest failures quoting `canonical.rs`
+      # line 88 — origin/main's line — while executing THIS branch's library
+      # (the assertion's left side carries the branch's new behaviour, the
+      # right side main's old expectation). A single checkout cannot produce
+      # that pairing, so either the checkout is not what we think or a stale
+      # doc-test artifact is being reused. Three cheap lines settle which,
+      # instead of another round of inference.
+      - name: Tree identity (diagnostic)
+        run: |
+          echo "HEAD:              $(git rev-parse HEAD)"
+          echo "expected head.sha: ${{ github.event.pull_request.head.sha || github.sha }}"
+          echo "canonical_email_mailbox doctest fence is at line(s):"
+          grep -n '^/// ```$' src/util/canonical.rs | head -5
+          echo "restored target/ doc-test artifacts, if any:"
+          ls -la target/debug/doctestbins 2>/dev/null || echo "  (none)"
+
+      # Doc-tests are the one step observed reading a tree older than the
+      # checkout, so they start from a clean slate rather than from whatever
+      # the cache restored. Costs a rustdoc re-run, not a full rebuild.
+      - name: Drop any restored doc-test artifacts
+        run: rm -rf target/debug/doctestbins target/doc
+
       - name: Format
         run: cargo fmt --all -- --check
 

@@ -9659,3 +9659,64 @@ weekly schedule (`cron: 0 6 * * 1`) does cover `main`, and widening the filter t
 every PR trades a real cost (a ~2-minute `cargo-audit` build on every push) for a
 gap the schedule already partly closes. Filed here so the trade-off is a decision
 on the record rather than an oversight.
+
+### REQ-CI-005 — the stated mechanism was WRONG; retained as REQ-CI-008 (open)
+
+The stale-merge-ref mechanism asserted above is **falsified**. Recording it
+rather than editing it away, because the refutation is the useful part.
+
+**What was claimed.** That CI checked out a stale `refs/pull/637/merge`, so it
+compiled an older tree — evidenced by CI reporting `canonical.rs`'s doctest at
+line 88 where the branch has it at 139.
+
+**What refutes it.** After pinning every `pull_request` checkout to
+`github.event.pull_request.head.sha`, run 35394046160 on `56b32d33` failed with
+**exactly the same two doctests at exactly the same lines**. The pin changed
+nothing, and `origin/main` was already an ancestor of HEAD, so a correct merge
+ref would have equalled the head anyway.
+
+**What is actually happening — established by four observations.**
+
+| Tree | `canonical.rs` doctest | Asserts | `confidence_for_accuracy_m` | Self-consistent? |
+| --- | --- | --- | --- | --- |
+| `origin/main` (`d7c13ceb`) | line 88 | `Some("jane@corp.com")` | `0..=200 => VERY_HIGH` (0.75) | yes — passes |
+| this branch (`56b32d33`) | line 138 | `Some("jane+promo@corp.com")` | `0..=50 => HIGH_PLUSPLUS_PLUS` (0.85) | yes — passes |
+
+CI reported line **88** with `left: Some("jane+promo@corp.com")` (this branch's
+behaviour) and `right: Some("jane@corp.com")` (main's expectation); and
+`left: 0.85` (this branch's body) against `right: 0.75` (main's expectation).
+
+So CI evaluated **`origin/main`'s doc comments against this branch's compiled
+library** — a mixed tree. No single checkout can produce that pairing: each
+tree is internally consistent and passes on its own. The local control confirms
+it, on a clean build of `56b32d33`:
+
+```
+test src/util/canonical.rs - util::canonical::canonical_email_mailbox (line 138) ... ok
+test src/util/geo/mod.rs - util::geo::confidence_for_accuracy_m (line 492) ... ok
+test result: ok. 77 passed; 0 failed; 3 ignored
+```
+
+**Why the original inference was wrong.** Line 88 *is* `origin/main`'s line —
+that observation was correct. The error was jumping from "CI quotes main's line
+number" to "CI checked out main's tree", without checking the other half: the
+values in the assertion. Those show the library is current. One half of the
+evidence was read; the half that would have refuted the conclusion was not.
+Third vacuous-inference failure of this session, and the first where the flawed
+conclusion was asserted as established fact in a commit message.
+
+**Status: REQ-CI-008, open.** The remaining hypothesis — the job uses
+`Swatinem/rust-cache`, and a restored doc-test artifact is reused while the
+library is rebuilt — is consistent with every observation, including the 5-of-6
+failure rate (cache hit vs miss) and why re-running sometimes cleared it. It is
+**not yet verified**, so it is not being asserted. Two changes go out together:
+a diagnostic step printing the checked-out SHA, the actual doctest fence lines
+and any restored doc-test artifacts; and a step dropping those artifacts before
+the run. The next run either goes green (hypothesis supported) or prints exactly
+which tree it holds (hypothesis refuted, with the data to re-diagnose).
+
+**What stands from REQ-CI-005.** The checkout pin itself is still correct and
+is kept: `refs/pull/N/merge` genuinely is served stale in general, `push` is
+scoped to `main` so a feature branch otherwise gets no verification of its own
+tip, and `secret-scan.yml` reading a stale tree is its own hazard. It simply
+was not the cause of *these* failures.
