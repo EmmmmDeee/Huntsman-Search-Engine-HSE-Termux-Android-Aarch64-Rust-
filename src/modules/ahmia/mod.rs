@@ -75,10 +75,12 @@ impl Module for Ahmia {
         ModuleCost::Free
     }
 
-    /// Read-only: a single clearnet GET against Ahmia's public search, no
-    /// credential and no active probing of any discovered service.
+    /// Active: a single clearnet GET against Ahmia's public search (`https://ahmia.fi`),
+    /// no credential, no probing of discovered onion services. The module is
+    /// reachable only under `--passive-only` if it is wired to no-dispatch (currently
+    /// it is live). Live network request violates passive-only scan expectations.
     fn is_passive(&self) -> bool {
-        true
+        false
     }
 
     fn accepts(&self, t: &Target) -> bool {
