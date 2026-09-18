@@ -6,7 +6,9 @@ use super::fetch::{
     retry_after_secs,
 };
 use super::redact::{pool_secret_values, redact_credentials, redact_literal_secrets};
-use super::ssrf::{filter_public, redirect_to_private_ip};
+use super::ssrf::{
+    MAX_REDIRECT_HOPS, RedirectVerdict, filter_public, redirect_to_private_ip, redirect_verdict,
+};
 use super::url::json_decode;
 use super::url::{RequestBuilderExt, urlencode};
 use crate::util::found_keys::{is_key_delimiter, key_tokens};
@@ -674,6 +676,248 @@ async fn build_client_with_timeout_refuses_a_redirect_to_a_private_ip() {
         internal_hits.load(std::sync::atomic::Ordering::SeqCst),
         0,
         "the private-IP redirect target must never be reached"
+    );
+}
+
+// ── REQ-HTTP-003: a credential must not replay to a destination the caller
+// did not choose ──────────────────────────────────────────────────────────
+//
+// reqwest copies the original request's headers onto every followed hop, and
+// HSE's providers authenticate with headers (`x-api-key`, `Authorization`, …).
+// Before this, the policy judged only the private-IP arm, so any endpoint HSE
+// queries could answer `302 Location: https://attacker.example/collect` and be
+// handed the live provider key.
+//
+// These judge `redirect_verdict` directly rather than through a client. They
+// have to: the private-IP arm refuses every loopback address, so a test server
+// on 127.0.0.1 is stopped before the credential arms are reached — a
+// client-level test of those arms passes identically on a build with them
+// deleted, and proves nothing. (That the closure runs at all is covered by
+// `build_client_with_timeout_refuses_a_redirect_to_a_private_ip` above; the
+// closure has no logic of its own beyond translating this verdict.)
+
+fn u(s: &str) -> url::Url {
+    url::Url::parse(s).expect("test URL parses")
+}
+
+#[test]
+fn redirect_verdict_follows_a_same_host_hop() {
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://api.example.com/v1/lookup")],
+            &u("https://api.example.com/v2/lookup")
+        ),
+        RedirectVerdict::Follow,
+        "a provider moving its own endpoint is the ordinary case and must still work"
+    );
+}
+
+#[test]
+fn redirect_verdict_follows_a_same_host_hop_on_a_different_port_or_upgraded_scheme() {
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://api.example.com/v1")],
+            &u("https://api.example.com:8443/v1")
+        ),
+        RedirectVerdict::Follow,
+        "another port on the same host is the same operator — not a leak"
+    );
+    assert_eq!(
+        redirect_verdict(
+            &[u("http://api.example.com/v1")],
+            &u("https://api.example.com/v1")
+        ),
+        RedirectVerdict::Follow,
+        "http -> https is an upgrade; refusing it would break plain-http entry points"
+    );
+}
+
+#[test]
+fn redirect_verdict_stops_a_hop_to_a_different_host() {
+    // The defect itself: the baseline returned Follow here and replayed the
+    // caller's `x-api-key` to attacker.example.
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://api.example.com/v1/lookup")],
+            &u("https://attacker.example/collect")
+        ),
+        RedirectVerdict::Stop,
+        "a 3xx to a host the caller never chose must not carry the caller's key"
+    );
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://api.example.com/v1")],
+            &u("https://api.example.com.attacker.example/v1")
+        ),
+        RedirectVerdict::Stop,
+        "a suffix-extended look-alike host is a different registrable domain"
+    );
+}
+
+#[test]
+fn redirect_verdict_follows_the_apex_to_www_hop_real_sites_depend_on() {
+    // Measured, not assumed: of ten real sites HSE fetches, five serve their
+    // content only through a cross-HOST redirect. Judging by host instead of by
+    // registrable domain would have broken all five to close a hole that only
+    // exists for credentialed requests — the credential stays inside the same
+    // registrant's namespace on every one of these.
+    for (from, to) in [
+        (
+            "https://reddit.com/robots.txt",
+            "https://www.reddit.com/robots.txt",
+        ),
+        (
+            "https://nytimes.com/robots.txt",
+            "https://www.nytimes.com/robots.txt",
+        ),
+        (
+            "https://bbc.com/robots.txt",
+            "https://www.bbc.com/robots.txt",
+        ),
+        (
+            "https://amazon.com/robots.txt",
+            "https://www.amazon.com/robots.txt",
+        ),
+        (
+            "https://wikipedia.org/robots.txt",
+            "https://en.wikipedia.org/robots.txt",
+        ),
+    ] {
+        assert_eq!(
+            redirect_verdict(&[u(from)], &u(to)),
+            RedirectVerdict::Follow,
+            "{from} -> {to} is a real, observed hop within one registrant's namespace"
+        );
+    }
+    // The same-site rule holds under a multi-label public suffix too.
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://example.com.au/a")],
+            &u("https://www.example.com.au/a")
+        ),
+        RedirectVerdict::Follow,
+        "example.com.au and www.example.com.au are one registrable domain"
+    );
+}
+
+#[test]
+fn redirect_verdict_compares_ip_literals_exactly_never_by_registrable_domain() {
+    // `registrable_domain` is a name helper: its last-two-labels rule reads
+    // 10.20.30.40 and 99.88.30.40 as the same "site" (30.40). Routing IP
+    // literals through it would reopen the leak between two unrelated public
+    // addresses, so they are compared exactly.
+    // Both public — a private literal would be refused by the SSRF arm first
+    // and would not exercise the site comparison at all.
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://93.184.216.34/v1")],
+            &u("https://8.8.216.34/v1")
+        ),
+        RedirectVerdict::Stop,
+        "two unrelated public IPs share trailing octets (216.34) but are not one site"
+    );
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://93.184.216.34/v1")],
+            &u("https://93.184.216.34/v2")
+        ),
+        RedirectVerdict::Follow,
+        "the same IP literal is the same site"
+    );
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://93.184.216.34/v1")],
+            &u("https://example.com/v1")
+        ),
+        RedirectVerdict::Stop,
+        "an IP literal and a name are never the same site, even if the name resolves there"
+    );
+}
+
+#[test]
+fn redirect_verdict_judges_the_original_request_host_not_the_previous_hop() {
+    // Laundering attempt: hop within the provider's own host, then off it. The
+    // comparison is against `previous[0]` — the request whose headers the caller
+    // chose — so the last hop is still judged against api.example.com.
+    let chain = [
+        u("https://api.example.com/v1"),
+        u("https://api.example.com/v2"),
+    ];
+    assert_eq!(
+        redirect_verdict(&chain, &u("https://api.example.com/v3")),
+        RedirectVerdict::Follow,
+        "several hops within the provider's own host stay legitimate"
+    );
+    assert_eq!(
+        redirect_verdict(&chain, &u("https://attacker.example/collect")),
+        RedirectVerdict::Stop,
+        "an intermediate same-host hop must not launder a later cross-host one"
+    );
+}
+
+#[test]
+fn redirect_verdict_stops_an_https_to_http_downgrade_on_the_same_host() {
+    // Same host, so the host arm allows it — but following would put the same
+    // live key on the wire in plaintext for any on-path observer.
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://api.example.com/v1")],
+            &u("http://api.example.com/v1")
+        ),
+        RedirectVerdict::Stop,
+        "a transport downgrade leaks the key to any on-path observer"
+    );
+}
+
+#[test]
+fn redirect_verdict_stops_a_hop_to_a_private_ip() {
+    // The pre-existing SSRF arm, at the layer that now owns the decision.
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://api.example.com/v1")],
+            &u("http://169.254.169.254/latest/meta-data/")
+        ),
+        RedirectVerdict::Stop,
+        "cloud-metadata redirect hop"
+    );
+    assert_eq!(
+        redirect_verdict(&[u("https://api.example.com/v1")], &u("http://[::1]/")),
+        RedirectVerdict::Stop,
+        "IPv6 loopback literal, brackets and all"
+    );
+}
+
+#[test]
+fn redirect_verdict_errors_past_the_hop_cap() {
+    let chain: Vec<url::Url> = (0..MAX_REDIRECT_HOPS)
+        .map(|i| u(&format!("https://api.example.com/hop{i}")))
+        .collect();
+    assert_eq!(
+        redirect_verdict(&chain, &u("https://api.example.com/hop-next")),
+        RedirectVerdict::TooManyHops,
+        "the cap is an error, not a silent stop — a redirect loop must be visible"
+    );
+    assert_eq!(
+        redirect_verdict(
+            &chain[..MAX_REDIRECT_HOPS - 1],
+            &u("https://api.example.com/x")
+        ),
+        RedirectVerdict::Follow,
+        "one hop below the cap is still followed"
+    );
+}
+
+#[test]
+fn redirect_verdict_stops_a_hop_that_has_no_host_at_all() {
+    // Fail closed. `data:`/`file:` have no host, so they can never match the
+    // origin's — the comparison must not treat "no host" as "same host".
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://api.example.com/v1")],
+            &u("data:text/plain,leak")
+        ),
+        RedirectVerdict::Stop,
+        "a hostless hop is never the origin host"
     );
 }
 

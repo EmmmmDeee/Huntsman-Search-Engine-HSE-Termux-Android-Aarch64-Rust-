@@ -29,6 +29,113 @@ pub(super) fn redirect_to_private_ip(host: Option<&str>) -> bool {
         .is_some_and(crate::util::preflight::is_private_ip)
 }
 
+/// Hops the shared client will follow before giving up on a redirect chain.
+pub(super) const MAX_REDIRECT_HOPS: usize = 10;
+
+/// What the shared client's redirect policy decides for one 3xx hop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RedirectVerdict {
+    /// Follow the hop.
+    Follow,
+    /// Refuse the hop. reqwest hands the caller the 3xx response itself, so the
+    /// refusal is visible rather than silently mistaken for the final answer.
+    Stop,
+    /// The chain is longer than [`MAX_REDIRECT_HOPS`] — surface a request error.
+    TooManyHops,
+}
+
+/// True if `next` is the *same site* as `origin` — the boundary a credential
+/// may be replayed across.
+///
+/// "Site" is the registrable domain (eTLD+1) via the codebase's own
+/// [`crate::util::domains::registrable_domain`] authority, not the bare host.
+/// Host equality is too strict to ship: measured against ten real sites HSE
+/// fetches, five reach their content only through a cross-*host* redirect
+/// (`reddit.com` → `www.reddit.com`, `wikipedia.org` → `en.wikipedia.org`,
+/// and the apex → `www` hop of nytimes/bbc/amazon). Refusing those would break
+/// ordinary un-credentialed fetching of much of the web to close a hole that
+/// only exists for credentialed requests.
+///
+/// The registrable domain is the right boundary because it is the unit of
+/// registration: every host under it answers to the same registrant — the party
+/// that issued the key in the first place. A hop off it reaches a different
+/// registrant, which is exactly the leak.
+///
+/// IP literals are compared exactly, never by registrable domain:
+/// `registrable_domain` is a name-oriented helper, and its last-two-labels rule
+/// would read the unrelated public addresses `93.184.216.34` and `8.8.216.34` as
+/// the same "site" (`216.34`). Total and fail-closed: a pair that is not two
+/// domains or two same-family IPs is not the same site.
+fn same_site(origin: &url::Url, next: &url::Url) -> bool {
+    use crate::util::domains::registrable_domain;
+    match (origin.host(), next.host()) {
+        (Some(url::Host::Domain(a)), Some(url::Host::Domain(b))) => {
+            if a.eq_ignore_ascii_case(b) {
+                return true;
+            }
+            match (registrable_domain(a), registrable_domain(b)) {
+                (Some(x), Some(y)) => x == y,
+                _ => false,
+            }
+        }
+        (Some(url::Host::Ipv4(a)), Some(url::Host::Ipv4(b))) => a == b,
+        (Some(url::Host::Ipv6(a)), Some(url::Host::Ipv6(b))) => a == b,
+        _ => false,
+    }
+}
+
+/// Decide a single redirect hop for the shared client.
+///
+/// `previous` is the chain already requested — `previous[0]` is the ORIGINAL
+/// request, the one whose headers the caller chose; `next` is where this hop
+/// wants to go. Extracted from the policy closure in [`client_builder`] because
+/// the closure itself cannot be exercised end-to-end: every loopback test server
+/// is refused by the private-IP arm below before the credential arms are ever
+/// reached, so a client-level test of those arms would pass on a build that had
+/// them removed. Judged here, against ordinary public URLs, the arms are real.
+///
+/// Three invariants. The first is the pre-existing SSRF guard; the other two are
+/// about where a credential may be replayed. reqwest copies the original
+/// request's headers onto every followed hop, and while it strips the four
+/// headers it knows to be sensitive (`Authorization`, `Cookie`,
+/// `Proxy-Authorization`, `WWW-Authenticate`) when a hop leaves the host, HSE's
+/// providers authenticate with names reqwest has never heard of — `x-api-key`,
+/// `hibp-api-key`, `Dehashed-Api-Key`, `X-RapidAPI-Key`, `Auth-Key`, and a dozen
+/// more. Those replay verbatim, so a hop to a destination the caller did not
+/// choose hands a live provider key to whoever answers:
+///
+/// * **No private-IP hop.** [`redirect_to_private_ip`] — a public URL must not
+///   3xx us onto an internal address.
+/// * **Same site.** A 3xx off the original request's registrable domain is
+///   refused — see [`same_site`] for why the boundary is the site and not the
+///   host. Judged against the original request rather than the immediately
+///   preceding hop, so an intermediate same-site hop cannot launder a later one.
+/// * **No transport downgrade.** An `https` → `http` hop is refused even within
+///   the site: it would put the same key on the wire in plaintext for any
+///   on-path observer. (`http` → `https` is an upgrade and is allowed.)
+///
+/// A module that genuinely needs a second site issues its own request, with its
+/// own deliberate header scope.
+pub(super) fn redirect_verdict(previous: &[url::Url], next: &url::Url) -> RedirectVerdict {
+    if previous.len() >= MAX_REDIRECT_HOPS {
+        return RedirectVerdict::TooManyHops;
+    }
+    if redirect_to_private_ip(next.host_str()) {
+        return RedirectVerdict::Stop;
+    }
+    let Some(origin) = previous.first() else {
+        // Not a redirect at all (no prior hop) — nothing to compare against.
+        return RedirectVerdict::Follow;
+    };
+    if !same_site(origin, next) {
+        return RedirectVerdict::Stop;
+    }
+    if origin.scheme() == "https" && next.scheme() != "https" {
+        return RedirectVerdict::Stop;
+    }
+    RedirectVerdict::Follow
+}
+
 /// Drop private/reserved IPs from a resolved address set — the SSRF DNS filter.
 pub(super) fn filter_public(
     addrs: impl Iterator<Item = std::net::SocketAddr>,
@@ -186,13 +293,14 @@ pub(super) fn client_builder() -> reqwest::ClientBuilder {
         // curl pool, not this guarded reqwest path — so an ambient proxy env must
         // never neutralize the SSRF DNS guard here.
         .no_proxy()
+        // Every arm of this decision lives in `redirect_verdict`, which is where
+        // it is tested; this closure only translates the verdict into reqwest's
+        // vocabulary, so there is no second copy of the policy to drift.
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() >= 10 {
-                attempt.error("too many redirects")
-            } else if redirect_to_private_ip(attempt.url().host_str()) {
-                attempt.stop()
-            } else {
-                attempt.follow()
+            match redirect_verdict(attempt.previous(), attempt.url()) {
+                RedirectVerdict::Follow => attempt.follow(),
+                RedirectVerdict::Stop => attempt.stop(),
+                RedirectVerdict::TooManyHops => attempt.error("too many redirects"),
             }
         }))
         .connect_timeout(CONNECT_TIMEOUT)
