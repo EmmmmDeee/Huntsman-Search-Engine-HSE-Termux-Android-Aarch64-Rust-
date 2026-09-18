@@ -69,6 +69,7 @@ use crate::core::{
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
+    validation::is_whois_privacy_placeholder,
 };
 use crate::util::http::{fetch_json_or_404, urlencode};
 
@@ -153,6 +154,9 @@ pub(super) fn build_entities(resp: &RdapResponse, domain: &str, scan_id: &str) -
         }
         match name.to_ascii_lowercase().as_str() {
             "registrant name" => {
+                if is_whois_privacy_placeholder(value) {
+                    continue;
+                }
                 let mut e = Entity::new(
                     EntityKind::Organisation,
                     value,
@@ -249,6 +253,9 @@ pub(super) fn build_entities(resp: &RdapResponse, domain: &str, scan_id: &str) -
             continue;
         }
         if let Some(org) = crate::modules::whois::vcard_field(vcard, "fn") {
+            if is_whois_privacy_placeholder(&org) {
+                continue;
+            }
             let mut e = Entity::new(
                 EntityKind::Organisation,
                 &org,
