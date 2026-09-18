@@ -20,7 +20,35 @@ jobs:
     name: Check & test (Linux x86_64, stable)
     runs-on: ubuntu-latest
     steps:
+      # Check out the PR's ACTUAL head, not GitHub's `refs/pull/N/merge`.
+      # `actions/checkout` defaults to that server-computed merge ref on a
+      # `pull_request` event, and GitHub recomputes it asynchronously — for a
+      # run started right after a push it is routinely served STALE, so CI
+      # compiles a tree that is not the branch. Observed repeatedly on this
+      # repo: runs reporting doctest failures at source lines the branch does
+      # not have (`canonical.rs` line 88 when the branch's doctest is at 139),
+      # with `origin/main` already an ancestor of HEAD — i.e. nothing to merge,
+      # so an accurate merge ref would have been byte-identical to the head.
+      # The result is a red X on a green branch, and, worse, real regressions
+      # masked by results from an older tree.
+      #
+      # Nothing is lost by not testing the merge commit here: `push` above is
+      # scoped to `main`, so the merged result IS verified — by the push run
+      # that fires when the PR lands. This trigger's job is to verify what the
+      # author actually wrote, which until now it never reliably did, because a
+      # feature branch gets no `push` run at all.
+      #
+      # The `|| github.sha` fallback keeps every non-PR event (push, schedule,
+      # workflow_dispatch) on exactly the ref it used before: outside a
+      # `pull_request` event `github.event.pull_request` is null.
+      # Pin to the PR's real head rather than the stale-prone
+      # `refs/pull/N/merge` default — see ci.yml's checkout for the full
+      # rationale and the observed failure.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       # Pinned to the SAME literal version as rust-toolchain.toml (not
       # `@stable`) so this job's clippy/rustfmt can never drift from a
@@ -87,7 +115,12 @@ jobs:
     name: hse-core + wasm-ui (native; not in the root workspace)
     runs-on: ubuntu-latest
     steps:
+      # Pin to the PR's real head rather than the stale-prone
+      # `refs/pull/N/merge` default — see ci.yml's checkout for the full
+      # rationale and the observed failure.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
@@ -187,7 +220,12 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: "1.98"
     steps:
+      # Pin to the PR's real head rather than the stale-prone
+      # `refs/pull/N/merge` default — see ci.yml's checkout for the full
+      # rationale and the observed failure.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Install pinned MSRV toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
@@ -204,7 +242,12 @@ jobs:
     name: Build (aarch64-linux-android, Termux target)
     runs-on: ubuntu-latest
     steps:
+      # Pin to the PR's real head rather than the stale-prone
+      # `refs/pull/N/merge` default — see ci.yml's checkout for the full
+      # rationale and the observed failure.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       # Pinned to the same literal version as rust-toolchain.toml — see the
       # `check` job's comment above for why `@stable` alone isn't used here.
@@ -257,7 +300,12 @@ jobs:
     name: install.sh syntax (bash + shellcheck)
     runs-on: ubuntu-latest
     steps:
+      # Pin to the PR's real head rather than the stale-prone
+      # `refs/pull/N/merge` default — see ci.yml's checkout for the full
+      # rationale and the observed failure.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       # One script per `bash -n`: with two paths bash checks only the first
       # and hands the second to it as `$1`, so a joint call covers less than
       # it reads as covering.

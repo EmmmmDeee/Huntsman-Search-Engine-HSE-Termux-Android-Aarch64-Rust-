@@ -9470,3 +9470,69 @@ than a rename.
 and never becomes a pivot dispatched to a live lookup. One predicate decides
 absence for every emitter in this module, and no weaker sibling remains for a
 future site to reach for.
+
+### REQ-CI-005 (**new, Pass 35 — FIXED**): every `pull_request` workflow checked out GitHub's stale merge ref, so CI verified a tree that was not the branch
+
+**Defect.** All five `pull_request`-triggered workflows used a bare
+`actions/checkout` with no `ref:`. On a `pull_request` event that action
+defaults to `refs/pull/N/merge` — a merge commit GitHub computes **server-side
+and asynchronously**. A workflow run that starts moments after a push is
+routinely handed the PREVIOUS merge commit, so CI compiles a tree that is not
+the branch.
+
+**Reproduction (observed twice, on two different heads).** Run 35384005747 on
+head `f8329e59` failed two doctests:
+
+| Doctest | CI says | Branch actually has |
+| --- | --- | --- |
+| `util::canonical::canonical_email_mailbox` | line 88, `Some("jane+promo@corp.com")` | line 139, `Some("jane@corp.com")` |
+| `util::geo::confidence_for_accuracy_m` | `left: 0.85  right: 0.75` | passes locally |
+
+Line 88 on this branch is inside a Proton domain list (`"protonmail.ch"`) — not
+a doctest at all. And `git merge-base --is-ancestor origin/main HEAD` answers
+YES (`origin/main` = `d7c13ceb`), so there was **nothing to merge**: an accurate
+merge ref would have been byte-identical to the head. The tree CI compiled was
+the pre-REQ-EMAILCANON-001 tree, whose `+tag` expectation this branch had
+already changed. Failure rate: 5 of 6 pushes.
+
+**Why this was worse than a red X on a green branch.** `push` in `ci.yml` is
+scoped to `branches: [main]`, so a feature branch gets **no push run at all**.
+The `pull_request` run was its only CI signal — and that signal was reading a
+stale tree. The branch tip was therefore never reliably verified by CI in the
+first place, which means a real regression could be masked by a pass from an
+older tree just as easily as a pass could be masked by a phantom failure. The
+same defect in `secret-scan.yml` is its own hazard: a credential scanner reading
+a stale tree can miss the very commit that introduced the secret.
+
+**Fix.** Every `pull_request` checkout is pinned to the PR's real head:
+
+```yaml
+with:
+  ref: ${{ github.event.pull_request.head.sha || github.sha }}
+```
+
+Applied to `ci.yml` (5 sites), `audit.yml`, `rust-clippy.yml` and
+`secret-scan.yml` — the complete set of `pull_request` workflows that check out
+code (`copilot-setup-steps.yml` has no checkout). The repo already established
+this mechanism: `release.yml` sets an explicit `ref:` for the same class of
+reason.
+
+**Nothing is lost by not testing the merge commit here.** `push` is scoped to
+`main`, so the merged result *is* verified — by the push run that fires when the
+PR lands. The division is now coherent and complete: the `pull_request` run
+verifies what the author wrote, the `push` run verifies what landed. Before this
+change, neither was reliably true for a feature branch.
+
+**Non-PR events are byte-for-byte unchanged.** Outside a `pull_request` event
+`github.event.pull_request` is null, so the `|| github.sha` fallback resolves to
+exactly the ref those runs (push, schedule, `workflow_dispatch`) used before.
+
+**Verification.** All four workflows re-parse as valid YAML with their job sets
+intact. This change cannot be exercised by `scripts/gate.sh` — it is CI
+configuration, and only a real run on the runner can confirm it. The next push
+to this branch is that run, and the evidence is specific and falsifiable: the
+two doctests above must pass, having failed on 5 of the last 6 pushes.
+
+**Permanent invariant.** CI verifies the commit the author actually pushed. A
+green branch is never failed, and a broken branch is never passed, by a tree
+neither the author nor the reviewer can see.
