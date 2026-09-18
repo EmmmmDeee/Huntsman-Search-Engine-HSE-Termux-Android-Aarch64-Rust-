@@ -20,7 +20,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::geo::is_valid_coords;
+use crate::util::geo::is_plausible_provider_coord;
 use crate::util::http::RequestBuilderExt;
 use crate::util::http::{handle_keyed_error, urlencode};
 
@@ -255,11 +255,10 @@ fn build_entities(host: &HostResult, ip: &str, scan_id: &str) -> Vec<Entity> {
     if let Some(loc) = &host.location
         && let Some(coords) = &loc.coordinates
         && let (Some(lat), Some(lon)) = (coords.latitude, coords.longitude)
-        // Shared validator: finite + in-range + not-Null-Island. Censys
-        // (and data-centre geo APIs generally) emit 0,0 as an
-        // "unknown location" placeholder, which the prior range-only
-        // check let through as a false Coordinates entity.
-        && is_valid_coords(lat, lon)
+        // Shared validator for IP-geo providers: rejects Null Island (0,0),
+        // near-null-island jitter band that data-centre/IP-geo APIs emit as
+        // "unknown" placeholders (0.001, etc), and out-of-range/non-finite values.
+        && is_plausible_provider_coord(lat, lon)
         // Suppressed when the host IP is a CDN/anycast edge (the geo is the
         // datacentre, not the subject) — parity with the sibling IP-geo
         // modules (ipinfo/ip2location/ip_whois_geo/ipquery/netlas/geo_intel).
