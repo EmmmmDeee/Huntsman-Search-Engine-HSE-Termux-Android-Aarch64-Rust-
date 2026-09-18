@@ -68,6 +68,7 @@ mod qld {
         SRC, owner_person_names, records_to_entities, suburbs_to_entities,
     };
     use crate::core::entity::{Entity, EntityKind};
+    use crate::core::scan::TargetKind;
     use crate::util::ckan::Response as CkanResp;
     use crate::util::postcode_au::Locality;
 
@@ -101,7 +102,7 @@ mod qld {
     #[test]
     fn classifies_exact_person_vs_surname_only_family() {
         let recs = sample().result.expect("should succeed").records;
-        let curt = records_to_entities(&recs, 3, "Curt Avery", "Avery", true, "s");
+        let curt = records_to_entities(&recs, 3, "Curt Avery", "Avery", true, TargetKind::FullName, "s");
         let exact = |e: &Entity| e.tags.iter().any(|t| t.as_str() == "exact-name-match");
         let addrs: Vec<&Entity> = curt
             .iter()
@@ -145,7 +146,7 @@ mod qld {
             .result
             .expect("should succeed")
             .records;
-        let ents = records_to_entities(&recs, 2, "Riley Morley", "Morley", true, "s");
+        let ents = records_to_entities(&recs, 2, "Riley Morley", "Morley", true, TargetKind::FullName, "s");
         let addrs: Vec<&Entity> = ents
             .iter()
             .filter(|e| e.kind == EntityKind::Address)
@@ -188,7 +189,7 @@ mod qld {
             .result
             .expect("should succeed")
             .records;
-        let ents = records_to_entities(&recs, 3, "gift shop", "shop", true, "s");
+        let ents = records_to_entities(&recs, 3, "gift shop", "shop", true, TargetKind::FullName, "s");
 
         // The owner that genuinely contains the queried token survives.
         assert!(
@@ -238,7 +239,7 @@ mod qld {
             .result
             .expect("should succeed")
             .records;
-        let ents = records_to_entities(&recs, 2, "Onur Ada", "Ada", true, "s");
+        let ents = records_to_entities(&recs, 2, "Onur Ada", "Ada", true, TargetKind::FullName, "s");
 
         assert!(
             !ents.iter().any(|e| e.value.contains("Drinkwater")),
@@ -273,7 +274,7 @@ mod qld {
             .records;
         // Query "M Mcloughlin": "M" is a bare initial (ignored), "Mcloughlin"
         // does not appear in "M Smith" → the row is dropped.
-        let ents = records_to_entities(&recs, 1, "M Mcloughlin", "M Mcloughlin", false, "s");
+        let ents = records_to_entities(&recs, 1, "M Mcloughlin", "M Mcloughlin", false, TargetKind::FullName, "s");
         assert!(
             ents.is_empty(),
             "a bare initial must not license the match: {:?}",
@@ -291,7 +292,7 @@ mod qld {
             .result
             .expect("should succeed")
             .records;
-        let ents = records_to_entities(&recs, 1, "ACME Widgets", "Widgets", true, "s");
+        let ents = records_to_entities(&recs, 1, "ACME Widgets", "Widgets", true, TargetKind::FullName, "s");
         let org = ents
             .iter()
             .find(|e| e.kind == EntityKind::Organisation)
@@ -313,7 +314,7 @@ mod qld {
             .result
             .expect("should succeed")
             .records;
-        let ents = records_to_entities(&recs, 1, "Jane Citizen", "Citizen", true, "s");
+        let ents = records_to_entities(&recs, 1, "Jane Citizen", "Citizen", true, TargetKind::FullName, "s");
         let sender = ents
             .iter()
             .find(|e| {
@@ -352,7 +353,7 @@ mod qld {
             .result
             .expect("should succeed")
             .records;
-        let ents = records_to_entities(&recs, 1, "Fletcher Moreau", "Moreau", true, "s");
+        let ents = records_to_entities(&recs, 1, "Fletcher Moreau", "Moreau", true, TargetKind::FullName, "s");
 
         let sender = ents
             .iter()
@@ -392,6 +393,7 @@ mod qld {
             "Avery",
             "Avery",
             true,
+            TargetKind::FullName,
             "scan-1",
         );
         let addrs: Vec<&Entity> = ents
@@ -449,5 +451,78 @@ mod qld {
             ]
         );
         assert!(ents.iter().all(|e| e.confidence < crate::core::confidence::MEDIUM));
+    }
+
+    #[test]
+    fn organisation_seed_rejects_corporate_form_word_collisions() {
+        // REQ-AU-UNCLAIMED-001: searching for "ABC CORP" as an Organisation seed
+        // must NOT match records with owner "DEF CORP" — corporate form words
+        // ("CORP", "PTY", "LTD") should not license false attribution.
+        let raw = r#"{"result":{"total":1,"records":[
+            {"_id":1,"Owner":"DEF CORP PTY LTD","Amount":"100.00","PCode":"4000"}
+        ]}}"#;
+        let recs = serde_json::from_str::<CkanResp>(raw)
+            .expect("should succeed")
+            .result
+            .expect("should succeed")
+            .records;
+
+        // Organisation seed with no exact match: should emit zero entities
+        let ents = records_to_entities(&recs, 1, "ABC CORP", "ABC CORP", false, TargetKind::Organisation, "s");
+        assert!(
+            ents.is_empty(),
+            "Organisation seed 'ABC CORP' should not match record with owner 'DEF CORP PTY LTD' \
+             (corporate form word collision); zero entities expected, got: {:?}",
+            ents.iter().map(|e| &e.value).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn organisation_seed_accepts_exact_company_match() {
+        // Organisation seed "ABC CORP" should match and emit a company entity only
+        // when the owner field contains the exact company name.
+        let raw = r#"{"result":{"total":1,"records":[
+            {"_id":1,"Owner":"ABC CORP PTY LTD","Amount":"150.00","PCode":"4000"}
+        ]}}"#;
+        let recs = serde_json::from_str::<CkanResp>(raw)
+            .expect("should succeed")
+            .result
+            .expect("should succeed")
+            .records;
+
+        // Organisation seed matching the actual company name: should emit entities
+        let ents = records_to_entities(&recs, 1, "ABC CORP PTY LTD", "ABC CORP PTY LTD", false, TargetKind::Organisation, "s");
+        let orgs: Vec<&Entity> = ents
+            .iter()
+            .filter(|e| e.kind == EntityKind::Organisation)
+            .collect();
+        assert_eq!(orgs.len(), 1, "one company entity for exact organisation match");
+        assert_eq!(orgs[0].value, "ABC CORP PTY LTD");
+    }
+
+    #[test]
+    fn organisation_seed_filters_sender_companies_by_exactness() {
+        // When an Organisation seed is used, the sender-company extraction
+        // should also apply the exactness gate, preventing false attribution.
+        let raw = r#"{"result":{"total":1,"records":[
+            {"_id":1,"Owner":"ABC CORP","Amount":"50.00","SenderName":"DEF INSURANCE LTD","PCode":"4000"}
+        ]}}"#;
+        let recs = serde_json::from_str::<CkanResp>(raw)
+            .expect("should succeed")
+            .result
+            .expect("should succeed")
+            .records;
+
+        // Organisation seed "ABC CORP" should match the owner but NOT the sender
+        let ents = records_to_entities(&recs, 1, "ABC CORP", "ABC CORP", false, TargetKind::Organisation, "s");
+        let orgs: Vec<&Entity> = ents
+            .iter()
+            .filter(|e| e.kind == EntityKind::Organisation)
+            .collect();
+        // Should have one entity for the owner "ABC CORP", zero for the sender
+        assert_eq!(orgs.len(), 1, "one organisation entity for the matching owner");
+        assert_eq!(orgs[0].value, "ABC CORP");
+        assert!(!orgs.iter().any(|o| o.value == "DEF INSURANCE LTD"),
+            "sender organisation should not be emitted (does not match seed)");
     }
 }
