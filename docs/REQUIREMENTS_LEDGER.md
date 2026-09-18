@@ -7596,3 +7596,86 @@ full correlator suite (617 passed, 0 failed) and the adjacency tests
 `core::correlator::rules` is a separate mechanism (which *sources* count as
 threat intel) and is unaffected. `is_tor`, `usage_type`/hosting and the
 whitelist flag keep their own independent gating.
+
+### REQ-PHONEAU-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): phone_au claimed Australia for a marker-less national number
+
+**Lead.** Wave 9 module audit (`phone_au`), checked against the already-fixed
+`phone_geo` defect it repeats.
+
+**Verified from source.** `phone_au::au_national` tries an explicit
+international marker first (`phone_intl::international_digits`, filtered on
+`61`) and otherwise falls back to `core::validation::to_e164_au` →
+`util::address_au::normalise_phone`. That function's bare-9-digit branch
+accepts ANY 9-digit numeral whose first digit is one of 2/3/4/5/7/8 — six of
+ten possible leads — with no `+`, no `61`, and no leading trunk `0`, and
+canonicalises it to `+61…`. `phone_au` then stamps `au-phone`, a `line:*`
+type and (for a geographic lead) an `au-region:*` attribute plus the
+`geographic` tag, on a re-emitted `+61…` Phone entity at confidence 0.80.
+
+So the input `412345678` — a string carrying zero evidence of being
+Australian — became a confirmed Australian mobile with a region claim. This
+is the same fabrication class as the already-fixed `phone_geo` defect (a
+bare national number read country-first placed `817-555-1234` in Kyoto): a
+country inferred for an ambiguous national-format number before confirming
+it could only be that country. The realistic trigger is routine — a source
+that stores phone numbers as integers drops the leading `0`, so a foreign
+9-digit local number lands squarely in this branch.
+
+The module's own test suite already stated the correct policy in a comment —
+"A bare national number with no country marker is ambiguous → not claimed" —
+but only ever exercised it against `202-555-0100`, a 10-digit value
+`normalise_phone` rejects for unrelated reasons. The 9-digit shape silently
+violated the module's own documented contract.
+
+**Fix, and why at this layer.** `to_e164_au`/`normalise_phone` has ten-plus
+callers, six of them import paths (`app::import::{csv, sql_dump,
+oathnet_report, dossier, combined}`) that canonicalise a breach dump's phone
+column so the same number written any other way dedups to one entity, plus
+`hlr_cnam` and `payid`. Dropping the bare-9-digit branch there would trade
+this fabrication for real import data loss on AU-sourced dumps — the very
+reason the branch exists (its own test pins the 9- and 10-digit spellings of
+one number agreeing).
+
+The fabrication is the *jurisdiction claim*, not the canonicalisation. So
+the gate went where the claim is made: `au_national` now requires the raw
+value to carry a domestic AU signal — a leading trunk `0`, or an
+AU-specific `1300`/`1800` service prefix — before it will trust the
+`to_e164_au` fallback. An explicit `+61`/`0061` marker still short-circuits
+ahead of it. `phone_intl` already applies exactly this discipline in the
+other direction (no country attribution without an explicit `+`/`00`
+marker), so this makes the two consistent. Every other `to_e164_au` caller
+is untouched by construction.
+
+**Evidence.** Two new locks in `modules::phone_au::tests`:
+`rejects_a_marker_less_nine_digit_national_number` (all six accepted lead
+digits, spaced and unspaced, plus the 8-digit case pinned so it stays
+rejected) and `still_accepts_every_shape_that_does_carry_an_au_signal`
+(`+61`/`0061` markers, punctuated and bare trunk-`0` forms, and the
+`1300`/`1800` service prefixes — eight shapes that must all still resolve).
+
+**Falsification.** Test-first:
+
+```
+[no domestic-signal gate] -> LOCK FAILS (expected)
+    modules::phone_au::tests::rejects_a_marker_less_nine_digit_national_number --- FAILED
+    "412345678 carries no AU country signal and must not be claimed as Australian"
+    test result: FAILED. 14 passed; 1 failed; 0 ignored; 7391 filtered out
+```
+
+`still_accepts_every_shape_that_does_carry_an_au_signal` PASSED in that same
+pre-fix run, so it is not vacuously green from the gate rejecting
+everything. Post-fix: `phone_au` 15 passed, and the three suites sharing the
+helper are unchanged — `phone_intl` 6, `address_au` 32, `payid` 12, all 0
+failed.
+
+**Residual.** `payid` (`mod.rs:178`) still reaches the lenient
+`normalise_phone` when classifying a Phone target as PayID-eligible, so a
+marker-less 9-digit value can still make it *suggest* an AU banking
+confirm-payee lookup. Left as-is deliberately: `payid` is a pure offline
+annotator capped at `confidence::SPECULATIVE` (0.30) that never raises an
+entity's confidence tier, so the harm is a wasted manual suggestion rather
+than a fabricated fact — a materially different severity from a 0.80
+`au-phone`/`au-region` claim. The deeper question — that `to_e164_au`
+returning `+61…` embeds a country claim in the entity VALUE on the import
+path, where no jurisdiction gate applies at all — is genuinely wider than
+this fix and is recorded as its own queue item rather than folded in here.
