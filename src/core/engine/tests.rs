@@ -2012,6 +2012,66 @@ fn skip_reason_rejects_encoded_ip_literal_domain_ssrf_bypass() {
 }
 
 #[test]
+fn skip_reason_rejects_private_email_domain_ssrf_gate() {
+    // REQ-SSRF-002. The Domain arm above closed the IP-literal hole for
+    // Domain-kind targets, but the gate's own comment asserted "there's no
+    // concept of a 'private email'" and let every Email-kind target fall
+    // through untouched. That assumption is false: `employer_pivot` and
+    // `fediverse` both derive a bare hostname from the email's domain part
+    // and dial it directly (`https://{domain}/…`,
+    // `https://{domain}/.well-known/webfinger?…`) with no guard of their
+    // own, so an Email target is a second, fully-open route to the exact
+    // internal addresses the Domain arm now refuses. The DNS-level SSRF
+    // resolver cannot help — an IP-literal host is dialled with no lookup.
+    let m = free_active();
+    let opts = ScanOptions::default();
+    for hostile in [
+        "finance@169.254.169.254", // cloud-metadata endpoint
+        "x@127.0.0.1",
+        "user@10.0.0.1",
+        "user@192.168.1.1",
+        "user@127.1",         // shorthand-dotted -> 127.0.0.1
+        "user@2130706433",    // decimal -> 127.0.0.1
+        "user@0x7f000001",    // hex -> 127.0.0.1
+        "user@[::1]",         // RFC 5321 address literal, loopback
+        "user@[IPv6:::1]",    // RFC 5321 tagged IPv6 literal form
+        "admin@router.local", // IANA reserved name
+        "postmaster@localhost",
+        "a@svc.internal",
+    ] {
+        let t = Target::new(TargetKind::Email, hostile);
+        let reason = skip_reason(&m, &t, &opts, false, 0);
+        assert!(
+            reason.is_some_and(|r| r.contains("SSRF") || r.contains("private")),
+            "Email {hostile} should be SSRF-rejected, got {reason:?}",
+        );
+    }
+}
+
+#[test]
+fn skip_reason_lets_public_email_domain_through() {
+    // Regression guard for REQ-SSRF-002: an ordinary email must still reach
+    // every email-accepting module — the new gate must not overreach. A
+    // local part that merely CONTAINS an `@`-adjacent private-looking token
+    // is not the host and must not trip the gate either.
+    let m = free_active();
+    let opts = ScanOptions::default();
+    for benign in [
+        "jane@example.com",
+        "j.citizen@abc.net.au",
+        "dns@cloudflare.com",
+        "127.0.0.1@example.com", // the LOCAL part is IP-shaped, the host is public
+        "user@8.8.8.8",          // public IP literal as the host
+    ] {
+        let t = Target::new(TargetKind::Email, benign);
+        assert!(
+            skip_reason(&m, &t, &opts, false, 0).is_none(),
+            "Email {benign} should pass through",
+        );
+    }
+}
+
+#[test]
 fn skip_reason_lets_encoded_public_ip_domain_through() {
     // Regression guard for the bypass fix above: a Domain value that merely
     // LOOKS numeric but canonicalizes to a PUBLIC address must still pass —

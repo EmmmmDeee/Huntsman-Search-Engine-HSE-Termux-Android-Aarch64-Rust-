@@ -7427,3 +7427,103 @@ already-strict-validated case. Both exemptions are now recorded on
 reopen unnoticed at a future `is_private_ip` call site that lacks either
 guarantee.
 
+
+### REQ-SSRF-002 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): Email-kind targets bypassed the SSRF gate entirely
+
+**Lead.** Adversarial re-attack on REQ-SSRF-001. That fix closed the
+IP-literal hole for `TargetKind::Domain`, so the natural next question is
+which OTHER target kind carries a dialable host. The gate's own comment
+answered it — and asserted the wrong thing.
+
+**Verified from source.** `core::engine::dispatch::module_skip_reason`'s
+universal preflight match stated verbatim: "Modules with non-IP/Domain
+accepts (Email, Phone, Username, etc.) fall through the `_` arm and run
+normally — there's no concept of a 'private email'." That premise is false
+for `Email`, because two registered modules derive a bare hostname from the
+address's domain part and dial it directly with no guard of their own:
+
+* `employer_pivot` (`accepts` admits `TargetKind::Email`) takes the domain
+  via `domain_for_target()` (`t.value.rsplit_once('@')`), then builds
+  `format!("https://{domain}{path}")` for up to eight paths and issues a
+  live `ctx.http.get(&url)`. Its only pre-fetch guards are `is_freemail` /
+  `is_social_platform` / `is_role_email_local` — none of which has any
+  notion of a private IP or a reserved name.
+* `fediverse` takes `email.split_once('@')`, checks only
+  `domain_worth_probing()` (a freemail exclusion), then fetches
+  `https://{domain}/.well-known/webfinger?resource=…` through
+  `fetch_json_probe`, which performs no host validation either. It has no
+  role-localpart exception, so it is reachable with an ordinary local part.
+
+Neither the client's DNS-level `SsrfResolver` nor `Target::validate()`
+closes it: an IP-literal host is dialled with no DNS lookup (the resolver
+never sees it — the same documented gap REQ-SSRF-001 turned on), and
+`validate()`'s Email branch only requires the host part to contain a dot.
+So `finance@169.254.169.254` was a second, fully-open route to the exact
+cloud-metadata endpoint the `Domain` arm had just been taught to refuse.
+
+**Fix.** `util::preflight::email_host_is_private` — the Email-kind
+counterpart to `url_host_is_private`, added beside it as one more predicate
+on the same authoritative layer rather than a new mechanism — plus a
+`TargetKind::Email` arm in `module_skip_reason` that calls it. Deliberate
+choices, each mirroring a lesson already paid for:
+
+* Splits on the **last** `@` (`rsplit_once`), so a local part that itself
+  contains one, or is merely IP-shaped (`127.0.0.1@example.com`), cannot
+  shift the host boundary — the same discipline as `util::url_util::host_only`'s
+  userinfo strip and `employer_pivot`'s own `domain_for_target`.
+* Unwraps RFC 5321 address literals (`user@[192.168.1.1]`, `user@[::1]`,
+  and the tagged `user@[IPv6:::1]` form) before judging.
+* Uses the canonicalizing `is_private_ip_host`, never the strict
+  `is_private_ip` — an Email target's domain part has no more
+  canonicalization guarantee than a `Domain` value, so the identical
+  numeric-encoding bypass (`user@2130706433`, `user@0x7f000001`) applies.
+  This is REQ-SSRF-001's Copilot-caught lesson applied up front rather than
+  after review.
+
+Fixing it at the dispatch layer covers every current AND future
+Email-accepting module centrally, which is the same argument (and the same
+layer) REQ-SSRF-001 settled on, instead of patching `employer_pivot` and
+`fediverse` separately and leaving the next such module unguarded.
+
+**Evidence.** Two new locks in `core::engine::tests`:
+`skip_reason_rejects_private_email_domain_ssrf_gate` (twelve hostile hosts:
+the metadata endpoint, loopback, RFC1918, the shorthand-dotted / decimal /
+hex encodings, both bracketed-IPv6 literal forms, and the `.local` /
+`localhost` / `.internal` reserved names) and
+`skip_reason_lets_public_email_domain_through` (five benign addresses,
+including `127.0.0.1@example.com` — IP-shaped LOCAL part, public host — and
+`user@8.8.8.8`, proving the gate reads the host and does not overreach).
+
+**Falsification.** Test-first, so the pre-fix failure is the primary
+evidence rather than a reconstruction — the lock was written and run
+BEFORE the gate arm or the predicate existed:
+
+```
+[no Email arm, no predicate] -> LOCK FAILS (expected)
+    core::engine::tests::skip_reason_rejects_private_email_domain_ssrf_gate --- FAILED
+    "Email finance@169.254.169.254 should be SSRF-rejected, got None"
+    test result: FAILED. 26 passed; 1 failed; 0 ignored; 7374 filtered out
+```
+
+The guard test (`..._lets_public_email_domain_through`) passed in that same
+pre-fix run, proving it is not vacuously green from the gate rejecting
+everything. After the fix: `test result: ok. 27 passed; 0 failed`.
+
+One intermediate failure is worth recording, because the lock caught a real
+defect in the fix itself: the first implementation stripped the RFC 5321
+`IPv6:` tag with a case-SENSITIVE `strip_prefix`, and an Email target's
+value arrives already lowercased by the entity normaliser, so
+`user@[IPv6:::1]` still passed the gate. Only that one case of twelve
+failed, which is exactly the kind of single-encoding hole the
+REQ-SSRF-001 review found; the tag match is now `eq_ignore_ascii_case`.
+
+**Residual.** Two pre-existing, unrelated flaky tests were observed while
+verifying this (`skip_reason_in_allowlist_passes` and
+`skip_reason_lets_encoded_public_ip_domain_through` each failed once, in
+different runs, under cargo's default parallel harness; both pass
+deterministically under `--test-threads=1`, and the full suite is green).
+That is process-global test-state contention of the same family as
+REQ-CI-003, NOT a product defect and not caused by this change — recorded
+here so the observation is not lost, and filed separately rather than
+folded into this fix. `Phone` and `Username` remain correctly outside the
+gate: neither carries a dialable host.

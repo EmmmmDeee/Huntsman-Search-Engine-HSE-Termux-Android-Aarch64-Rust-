@@ -455,9 +455,10 @@ pub(super) fn module_skip_reason(
     // service" so we save its quota / suppress its "HTTP 400 invalid
     // IP" responses before the dispatch even fires.
     //
-    // Modules with non-IP/Domain accepts (Email, Phone, Username, etc.)
-    // fall through the `_` arm and run normally — there's no concept
-    // of a "private email".
+    // Phone/Username/etc. still fall through the `_` arm — none of them
+    // carries a dialable host. `Email` DOES, and used to fall through on
+    // the assumption that "there's no concept of a 'private email'"; see
+    // the `Email` arm below (REQ-SSRF-002) for why that was false.
     if !super::LOCAL_PASSIVE_MODULES.contains(&name) {
         use crate::util::preflight;
         match target.kind {
@@ -512,6 +513,27 @@ pub(super) fn module_skip_reason(
                 return Some((
                     SkipClass::NotApplicable,
                     "URL with private host — external API would reject (SSRF gate)",
+                ));
+            }
+            // SSRF gate (REQ-SSRF-002): an Email whose DOMAIN part is a
+            // private/reserved IP literal or a local domain. Several
+            // Email-accepting modules derive a bare hostname from that
+            // domain and dial it directly with no guard of their own —
+            // `employer_pivot` fetches `https://{domain}/` plus seven
+            // more paths, `fediverse` fetches
+            // `https://{domain}/.well-known/webfinger?…` — so
+            // `finance@169.254.169.254` was a second, fully-open route to
+            // the cloud-metadata endpoint the Domain arm above already
+            // refuses. Neither module validated the derived host, and the
+            // client's DNS-level SSRF resolver never sees an IP literal
+            // (dialled with no lookup), so the only layer that can close
+            // this for every current and future Email-accepting module is
+            // this one — the same argument, and the same authoritative
+            // layer, as REQ-SSRF-001's Domain arm.
+            TargetKind::Email if preflight::email_host_is_private(&target.value) => {
+                return Some((
+                    SkipClass::NotApplicable,
+                    "email domain is a local/reserved name or private IP — external API would reject (SSRF gate)",
                 ));
             }
             _ => {}
