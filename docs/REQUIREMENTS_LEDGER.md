@@ -9168,3 +9168,66 @@ source. With the guard restored, AU-093 returns empty.
 **Permanent invariant.** No deterministic self-enrichment pass can be treated as
 a leaked record, whatever its name happens to contain — and the two consumers of
 `is_breach_source` no longer disagree about what the predicate means.
+
+---
+
+### REQ-CI-006 (**new, Pass 34 — CI-OBSERVED, ROOT-CAUSED, FIXED, FALSIFIED**): a test's loopback server serialised 16 concurrent clients behind head-of-line blocking, so its exact-count assertion was timing-dependent
+
+**Observation.** CI run 35372461257, job 105692239329, head `439af234`:
+
+```
+src/modules/web_crawler/crawl_util/tests.rs:744
+assertion `left == right` failed: every probe must reach the seed's port —
+none may be sent to the default port for the scheme
+  left: 98   right: 100
+```
+
+`config_leak_probes_target_the_seed_port_not_just_the_host` passed locally under
+`scripts/gate.sh` and had passed in earlier CI runs. Two of 100 probes went
+unaccounted for.
+
+**Root cause — the harness, not the invariant.** The code under test,
+`probe_config_leaks`, spawns every `CONFIG_LEAK_PATHS` entry into a `JoinSet`
+gated by `Semaphore::new(16)` — 16 requests in flight, ~7 waves — each with a
+`Duration::from_millis(3000)` per-request timeout. The test's server was a
+SINGLE sequential accept loop that performed a connection's full read and write
+before accepting the next. The 16 concurrent clients therefore queued in the
+listen backlog behind one another; on a loaded runner the tail of a wave
+exceeded the 3 s client timeout, the client abandoned those requests, and the
+connections were consequently never accepted — so `hits` was never incremented
+for them.
+
+Nothing about the invariant under test requires a sequential server. What the
+assertion exists to catch is probes sent to the SCHEME'S DEFAULT PORT instead of
+the seed's ephemeral one, and that failure yields **zero** hits (the listener is
+on an ephemeral port, unreachable on port 80), never a near-miss like 98/100.
+A count just short of the total could therefore only ever mean harness lag.
+
+**Fix.** Each accepted connection is now served on its own task, so the accept
+loop never blocks on I/O and drains the backlog as fast as the kernel delivers
+it. The assertion is UNCHANGED and still exact (`== CONFIG_LEAK_PATHS.len()`).
+No test was skipped, relaxed, quarantined or made conditional.
+
+The sibling `a_cancelled_scan_stops_probing_for_config_leaks` shares the
+sequential-loop shape but asserts `hits == 0` (the sweep is cancelled before the
+call), so the mechanism cannot affect it; it is deliberately left untouched.
+
+**Falsification — the mechanism reproduced on demand.** A 200 ms delay injected
+into the per-connection handler, with everything else identical:
+
+| Configuration | Result |
+| --- | --- |
+| concurrent handler, no injected delay, 5 consecutive runs | ok (0.01 s each) |
+| 200 ms delay, **concurrent** handler | ok (1.42 s) |
+| 200 ms delay, **sequential** handler (the pre-fix shape) | **FAILED — `left: 94  right: 100`** (19.13 s) |
+
+The pre-fix shape reproduces CI's failure signature (a count just short of the
+total) deliberately and locally; the fixed shape is immune to the same injected
+lag. That is the mechanism demonstrated, not inferred.
+
+**Family.** Third recorded instance of "a test harness that cannot keep up under
+CI parallelism", after REQ-CI-003 (a process-global key pool reset by parallel
+threads) and REQ-CI-004 (two `core::engine` `skip_reason` tests that pass only
+under `--test-threads=1`). The shared lesson: a test that counts completed
+asynchronous round-trips must not put a serialising component in the path of the
+concurrency the code under test legitimately uses.

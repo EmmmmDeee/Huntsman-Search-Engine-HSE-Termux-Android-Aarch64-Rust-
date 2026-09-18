@@ -721,12 +721,27 @@ async fn config_leak_probes_target_the_seed_port_not_just_the_host() {
                 return;
             };
             hits_srv.fetch_add(1, Ordering::SeqCst);
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let mut buf = [0u8; 1024];
-            let _ = sock.read(&mut buf).await;
-            let _ = sock
-                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
-                .await;
+            // Served on its OWN task, so the accept loop never blocks on I/O.
+            // `probe_config_leaks` fires every `CONFIG_LEAK_PATHS` entry
+            // concurrently behind a 16-permit semaphore with a 3000 ms
+            // per-request timeout. A loop that completed one connection's full
+            // read/write before accepting the next serialised those 16
+            // in-flight clients behind head-of-line blocking; on a loaded
+            // runner the tail exceeded the client timeout, was abandoned, and
+            // so was never accepted at all — observed in CI as
+            // `left: 98  right: 100`. The HARNESS was timing-dependent, not the
+            // invariant: the assertion below is unchanged and still exact,
+            // because what it exists to catch (probes sent to the scheme's
+            // default port instead of the seed's) yields ZERO hits, never a
+            // near-miss.
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock
+                    .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+            });
         }
     });
 
