@@ -157,3 +157,53 @@ fn bare_relative_link_is_resolved_against_base() {
         .expect("reference url emitted");
     assert_eq!(url.value, "https://www.ransomlook.io/leaks/q");
 }
+
+#[test]
+fn org_seed_substring_match_within_word_is_rejected() {
+    // REQ-RANSOMWARE-001: substring containment that is NOT a whole-word boundary
+    // must NOT match. An Organisation seed "acm" must not match a title "Acme Inc"
+    // — the old code had (title.contains(needle) || needle.contains(&title)) which
+    // would incorrectly match this. The new whole-word-token gate requires all
+    // tokens in the needle to appear as complete words.
+    let resp = SearchResp {
+        posts: vec![post("Acme Inc", "clop", "/leaks/q")],
+    };
+    let target = Target::new(TargetKind::Organisation, "acm");
+    let r = build_result(&resp, &target, "s");
+    assert_eq!(
+        r.entities.len(),
+        0,
+        "substring 'acm' within 'Acme' must not match"
+    );
+
+    // Reverse direction: seed is a substring of a title word, also fails.
+    let resp = SearchResp {
+        posts: vec![post("Acme", "clop", "/leaks/q")],
+    };
+    let target = Target::new(TargetKind::Organisation, "company acme");
+    let r = build_result(&resp, &target, "s");
+    assert_eq!(
+        r.entities.len(),
+        0,
+        "tokens ['company', 'acme'] where 'company' is missing must not match title 'Acme'"
+    );
+}
+
+#[test]
+fn org_seed_whole_word_token_match_partial_succeeds() {
+    // Positive control: when all tokens of the seed are present as whole words
+    // in the title, the match succeeds as Partial. "Acme Holdings" as a seed matches
+    // a title "Acme Holdings Inc" because both tokens "acme" and "holdings" are
+    // present as whole words in the title.
+    let resp = SearchResp {
+        posts: vec![post("Acme Holdings Inc", "lockbit", "/leaks/abc")],
+    };
+    let target = Target::new(TargetKind::Organisation, "Acme Holdings");
+    let r = build_result(&resp, &target, "s");
+    let org = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Organisation)
+        .expect("whole-word tokens 'Acme' + 'Holdings' must match title 'Acme Holdings Inc'");
+    assert_eq!(org.confidence, confidence::MEDIUM_HIGH);
+}

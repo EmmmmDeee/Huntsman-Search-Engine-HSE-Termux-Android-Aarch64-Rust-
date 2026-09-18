@@ -34,6 +34,7 @@ use crate::core::{
 };
 use crate::util::domains::is_or_subdomain_of;
 use crate::util::http::{fetch_json_or_404, urlencode};
+use crate::util::str_util::whole_word_token_match;
 
 /// Stable evidence-source string. `pub(crate)` so a test can pin it and no
 /// sibling module can silently claim the same corpus.
@@ -149,8 +150,7 @@ fn classify(victim: &Victim, target: &Target, needle: &str) -> Option<Match> {
             if name.is_empty() {
                 return None;
             }
-            (name == needle || name.contains(needle) || needle.contains(&name))
-                .then_some(Match::Org)
+            whole_word_token_match(&name, needle).then_some(Match::Org)
         }
         _ => None,
     }
