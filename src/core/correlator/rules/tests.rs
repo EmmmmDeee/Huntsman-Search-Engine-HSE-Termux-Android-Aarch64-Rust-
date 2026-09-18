@@ -128,6 +128,41 @@ use crate::core::entity::Evidence;
     }
 
     #[test]
+    fn no_self_enrichment_pass_is_ever_a_leaked_record_source() {
+        // The CONVERSE of the test above, and the direction it does not cover.
+        // `source_family`'s breach needles are SUBSTRING-matched, so a source
+        // whose name merely contains `breach`/`stealer`/`pwned`/… is classed
+        // `"breach"` on its name alone. `breach_timezone` is exactly that: a
+        // deterministic self-enrichment pass (it is the first entry in
+        // `ENRICHMENT_ONLY_SOURCES`) that makes no network call and DERIVES
+        // Address/Coordinates by clustering timestamps to guess a UTC offset.
+        //
+        // A derivation is never a leaked record. `breach_consensus`'s
+        // `breach_sources_of` already knew that and spells the pairing out —
+        // `is_breach_source(..) && !is_non_corroborating_source(..)` — but
+        // `breach_pii`'s ~15 record gates call `is_breach_source` bare, so the
+        // guard protected the corpus COUNT while the PII-assembly gates, whose
+        // whole purpose is to keep derived localities out of an assembled
+        // person, were left open to any name that happens to collide.
+        //
+        // Asserted over the whole enrichment list rather than the one colliding
+        // name, so adding (say) `stealer_normalize` to `ENRICHMENT_ONLY_SOURCES`
+        // fails here instead of silently re-opening the hole.
+        for src in crate::core::entity::ENRICHMENT_ONLY_SOURCES {
+            assert!(
+                !super::breach_pii::is_breach_source(src),
+                "`{src}` is a deterministic self-enrichment pass — a derivation, never a leaked \
+                 record — yet `is_breach_source` accepts it, so `breach_pii` would assemble its \
+                 derived attributes into a person as breach-record PII"
+            );
+        }
+        // The specific collision this test was written for, named so a failure
+        // is self-explaining.
+        assert_eq!(source_family("breach_timezone"), "breach");
+        assert!(!super::breach_pii::is_breach_source("breach_timezone"));
+    }
+
+    #[test]
     fn source_family_classifies_all_major_families() {
         assert_eq!(source_family("hibp"), "breach");
         assert_eq!(source_family("dehashed"), "breach");

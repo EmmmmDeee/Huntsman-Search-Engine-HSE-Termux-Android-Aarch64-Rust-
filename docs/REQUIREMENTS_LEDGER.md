@@ -9078,3 +9078,93 @@ classified deliberately — graded as a corpus, or recorded as a non-corpus with
 its reason — and the classification is checked against the live registry rather
 than against a copy of itself. A newly registered breach module fails the build
 until someone decides which it is.
+
+---
+
+### REQ-SOURCEFAMILY-002 (**new, Pass 34 — ADVERSARIAL RE-ATTACK ON REQ-SOURCEFAMILY-001, FIXED, FALSIFIED**): a self-enrichment pass was admitted as a leaked-record source because its NAME contains "breach"
+
+**How it was found.** Not by a new search: the falsification run for REQ-SOURCEFAMILY-001
+printed the engine's real breach-sweep allow-list, and `breach_timezone` was in
+it. The lock shipped in that entry enforces one direction only — every
+`ModuleCategory::Breach` module is deliberately classified — and says nothing
+about the converse, that everything `source_family` calls `"breach"` is
+actually a corpus. This is that converse.
+
+**Defect.** `source_family`'s breach needles are SUBSTRING-matched, including the
+bare token `"breach"`. `breach_timezone` matches on its name alone. It is not a
+corpus by any reading: it declares `ModuleCategory::Geo`, makes no network call,
+and DERIVES `Address`/`Coordinates` by clustering timestamps to guess a UTC
+offset. It is the first entry in
+[`ENRICHMENT_ONLY_SOURCES`](hse-core/src/lib.rs) — the codebase's own register of
+deterministic self-enrichment passes.
+
+**Scope, established before fixing (and narrower than first assumed).**
+`core::breach_consensus`'s `breach_sources_of` was ALREADY protected: it pairs
+the predicate with the guard explicitly —
+`is_breach_source(&ev.source) && !is_non_corroborating_source(&ev.source)` — and
+its doc comment states the reason. So the corpus COUNT never miscounted this
+pass, and an initial reading of this defect that claimed otherwise was wrong.
+The hole is in the other consumer: `breach_pii` contains **zero** occurrences of
+that guard across its ~15 record gates, all of which call `is_breach_source`
+bare. The guard therefore protected the tally while leaving open the assembly —
+the half whose entire purpose is to keep a DERIVED locality out of an assembled
+person.
+
+Checked all 17 `ENRICHMENT_ONLY_SOURCES` against every breach needle: exactly one
+collides (`name_intel` does **not** match the `intelx` needle). The pre-existing
+test `au101_does_not_count_a_name_intel_permutation_as_a_breach_facet` asserts
+that `name_intel` — "exactly the source `is_breach_source` exists to exclude" —
+is rejected, but it passes only INCIDENTALLY: `name_intel`'s family is
+`"identity_registry"`, so nothing ever checked that it is an enrichment pass.
+`breach_timezone` is where that accident fails.
+
+**Exploitability today: none — this is a latent defect, graded as such.**
+`breach_timezone::process()` returns empty on effectively every real scan, as its
+own module doc records: `ModuleContext` exposes no accessor for the accumulated
+entity graph, so it slides a window over the bare `target.value` looking for 5+
+embedded unix timestamps, which a real target value never contains. The module
+doc also names the intended redesign (a correlator rule that DOES see the graph).
+That redesign is exactly when this hole would open for real, which is the reason
+to close it now rather than after.
+
+**Fix.** `is_breach_source` (`src/core/correlator/rules/breach_pii.rs`) now
+returns `false` unconditionally for a deterministic self-enrichment pass, checked
+BEFORE the family lookup — the same shape, and for the same reason, as
+`source_family`'s existing exact-match guard for
+`is_engine_corroboration_source` (which exists because `geo_corroboration`'s name
+contains the `"geo"` needle). A derivation restates data the scan already holds;
+it can never be a leaked record.
+
+Deliberately narrower than the full `is_non_corroborating_source`: the recall and
+cross-scan replays carry data that DID originate in a real corpus, so excluding
+those from record assembly is a separate question with its own regression risk,
+and is not decided here.
+
+**Regression locks.** Two, at different levels.
+
+- `no_self_enrichment_pass_is_ever_a_leaked_record_source`
+  (`src/core/correlator/rules/tests.rs`) asserts the predicate over the WHOLE
+  `ENRICHMENT_ONLY_SOURCES` list rather than the one colliding name, so adding a
+  future `stealer_normalize` to that list fails here instead of silently
+  re-opening the hole.
+- `au093_does_not_assemble_a_locality_from_a_name_colliding_enrichment_pass`
+  (`src/core/correlator/tests/part06.rs`) is the FUNCTIONAL proof, at AU-093 —
+  the rule `is_breach_source`'s own doc comment cites as the reason the
+  allow-list exists. A predicate assertion is not behaviour; this drives the real
+  rule.
+
+**Falsification.** Removing the guard fails both locks, and the behavioural one
+prints the fabricated finding verbatim:
+
+```
+Subject's Australian locality Maleny, QLD 4552 ≈ -26.729,152.755 (offline)
+ — assembled from 1 breach record source(s) (breach_timezone);
+   a suburb-level locality, finer than the bare state/postcode
+```
+
+A `Medium` correlation naming the enrichment pass as its own breach record
+source. With the guard restored, AU-093 returns empty.
+
+**Permanent invariant.** No deterministic self-enrichment pass can be treated as
+a leaked record, whatever its name happens to contain — and the two consumers of
+`is_breach_source` no longer disagree about what the predicate means.

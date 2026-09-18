@@ -486,6 +486,37 @@ fn au101_does_not_count_a_name_intel_permutation_as_a_breach_facet() {
 }
 
 #[test]
+fn au093_does_not_assemble_a_locality_from_a_name_colliding_enrichment_pass() {
+    // The sibling test above holds only INCIDENTALLY: `name_intel` is excluded
+    // because its `source_family` is "identity_registry", not because anything
+    // checked that it is an enrichment pass. `breach_timezone` is the case where
+    // that accident fails — it is equally a listed `ENRICHMENT_ONLY_SOURCE`
+    // (no network call; it DERIVES a region by clustering timestamps to guess a
+    // UTC offset), but its NAME contains "breach", and `source_family`'s needles
+    // are substring-matched, so it classified as "breach" and `is_breach_source`
+    // accepted it.
+    //
+    // AU-093 is the rule `is_breach_source`'s own doc comment cites: its
+    // allow-list exists precisely so a DERIVED locality (`geocode`, `photon`)
+    // is never assembled and announced as "assembled from N breach record
+    // source(s)". A name collision defeated that for this pass, so the
+    // enrichment's own guessed locality could be assembled into the subject's
+    // residential address. It must produce nothing.
+    let mut p = Entity::new(EntityKind::Person, "Cindy Haynes", 0.9, "s");
+    p.add_evidence(
+        Evidence::new("breach_timezone", "inferred UTC offset")
+            .with_attr("suburb", "Maleny")
+            .with_attr("state", "QLD")
+            .with_attr("postcode", "4552"),
+    );
+    let r = super::rules::rule_au_093_au_address_from_breach(&RuleContext::new(&[p]), "s", 0);
+    assert!(
+        r.is_empty(),
+        "a derived enrichment pass must never be assembled as a breach-record locality: {r:?}"
+    );
+}
+
+#[test]
 fn au101_thin_footprint_and_low_confidence_do_not_fire() {
     // Three facets is below the threshold — the single-facet rules' job.
     let person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
