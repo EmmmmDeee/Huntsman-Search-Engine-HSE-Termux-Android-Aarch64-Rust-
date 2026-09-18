@@ -8276,3 +8276,85 @@ struct that decodes every shape cannot gate on "did it decode"; the failure
 shape must be modelled (a `status`/`error` field) and the catch-all must fail
 closed. REQ-INTELX-001 (the phase-2 poll loop swallowing typed errors via bare
 `continue`) is a distinct, still-open defect in the same module.
+
+### REQ-CHAININTEL-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): an unexpected 200 minted a confident "dormant wallet" verdict on BTC/LTC/DOGE
+
+**Module.** `chain_intel` (`src/modules/chain_intel/mod.rs`) — free, keyless
+on-chain enrichment for a `CryptoAddress` (balance / total received / tx count),
+the module that closes the loop on wallet addresses harvested from
+clipboard-hijacker stealer logs.
+
+**Defect.** BTC/LTC are enriched via Esplora (`EsploraAddress { chain_stats,
+mempool_stats }`) and DOGE via BlockCypher (`BlockcypherBalance { balance,
+total_received, n_tx }`). Both structs are `#[derive(Default)] #[serde(default)]`,
+so a 200 body that is a *valid JSON object but not an address response* — a
+rate-limit body, a `{"error":…}`, a `{"message":"Invalid address"}`, a WAF JSON
+interstitial, even an empty `{}` — decodes **without error** to all-zeros. The
+enricher then built an `Enrichment { tx_count: Some(0), balance: 0, … }`, and
+`build_evidence` maps `Some(0) => "dormant"`, so `process()` pushed a
+`confidence::HIGH_PLUSPLUS` (0.85) `CryptoAddress` entity whose evidence reads
+`… on-chain activity: dormant`. A failed lookup on a malware-sourced wallet was
+thus reported as an **affirmative** "this wallet is inactive" finding — worse
+than a false clean, because it asserts a positive fact from garbage.
+
+The SOL path was already immune: `SolBalanceResp` models `result`/`error` and
+`enrich_sol_at` errors on an `error` envelope AND on "neither result nor error",
+with a doc comment stating the exact principle ("there is no legitimate 'neither
+result nor error' response shape"). BTC/LTC/DOGE never received that discipline —
+the same drift as REQ-AUGEO-001 (`qld_cadastre` guarded, `au_geo` not).
+
+**Failure scenario.** A pooled Esplora/BlockCypher host rate-limits or serves a
+WAF page as HTTP 200 with a JSON body. The all-`default` struct decodes it to
+zeros; the address is emitted as a HIGH_PLUSPLUS "dormant" wallet. An
+investigator reads "no on-chain activity" for an address that may be highly
+active — and, being `Ok`, the lookup also records a circuit-breaker success, so
+the systematic upstream failure never surfaces.
+
+**Fix (require the structural key; fail closed; pure seams).** Mirroring SOL and
+the module's own honesty discipline:
+- `EsploraAddress.chain_stats` becomes `Option<EsploraStats>`. A real Esplora
+  address response always carries a `chain_stats` object (zeros for a dormant
+  address); an error/WAF/wrong-shape body carries none. New pure
+  `esplora_enrichment(EsploraAddress, unit) -> Result<Enrichment>` returns `Err`
+  when `chain_stats` is `None`, else builds the enrichment (a genuinely dormant
+  address, `chain_stats: Some(zeros)`, still reads "dormant").
+- `BlockcypherBalance` gains `address: Option<String>` — the queried address
+  BlockCypher echoes in every real balance response but no error body carries.
+  New pure `blockcypher_enrichment(BlockcypherBalance) -> Result<Enrichment>`
+  returns `Err` when the echoed `address` is absent/blank, else builds the
+  enrichment.
+- `enrich_esplora`/`enrich_doge` fetch via `fetch_json` (unchanged typed-error
+  path: transport/non-2xx/BotChallenge) then delegate to the pure helper.
+  `enrich_doge` was split into `enrich_doge_at(ctx, addr, base)` (base
+  parameterized, mirroring `enrich_sol_at`) so the DOGE failure contract is
+  network-testable like its siblings.
+- `Enrichment` gained `#[derive(Debug)]` for `expect_err`.
+
+Only the garbage-body path changes (silent "dormant" → `Err`); every real
+response — funded, dormant, or empty — is preserved bit-for-bit, proven by the
+untouched `enrich_esplora_parses_a_real_shaped_body_into_enrichment` and
+`blockcypher_doge_balance_deserialises_real_response` tests.
+
+**Evidence.** Six new locks. Pure: `esplora_enrichment_fails_closed_on_a_non_
+address_body` (`{"error":…}`, `{"message":…}`, `{}` → `Err`),
+`esplora_enrichment_reads_a_genuinely_dormant_address_as_dormant` (real zeroed
+`chain_stats` → `activity: "dormant"`), and the two BlockCypher analogues. End to
+end over the local one-shot server: `enrich_esplora_fails_closed_on_a_wrong_
+shape_200_body` and `enrich_doge_fails_closed_on_a_wrong_shape_200_body` (a 200
+error body → `Err`, not a dormant hit). `cargo test --lib modules::chain_intel::`
+→ 29 passed.
+
+**Falsification.** Both guards were reverted in place —
+`esplora_enrichment`'s `Some(chain_stats) else Err` → `unwrap_or_default()`, and
+`blockcypher_enrichment`'s fail-closed `if !has_address` early-return removed —
+and the four fail-closed locks were run and observed **FAILING** (all four read
+the garbage body as a dormant verdict), then both guards were restored
+byte-for-byte from a pre-edit backup and the suite went green (29 passed).
+
+**Class.** Same "an all-`default` `#[serde(default)]` response struct decodes an
+unexpected 200 as a (here affirmative) clean result" family as REQ-AUGEO-001 and
+REQ-INTELX-002, both fixed this wave, and still-open REQ-ZOOMEYE-001 /
+REQ-LEAKCHECK-001 / REQ-HUDSONROCK-001. The generalisable rule, now applied three
+times: a struct that decodes every JSON object cannot gate on "did it decode";
+the guard must require a field the real shape always carries and fail closed
+without it.

@@ -469,3 +469,113 @@ async fn enrich_esplora_parses_a_real_shaped_body_into_enrichment() {
     assert_eq!(enr.tx_count, Some(8), "7 chain + 1 mempool");
     assert_eq!(enr.unit, "BTC");
 }
+
+// ── REQ-CHAININTEL-001: an unexpected 200 body must fail CLOSED, never mint a
+// "dormant" verdict ───────────────────────────────────────────────────────────
+//
+// BTC/LTC (Esplora) and DOGE (BlockCypher) wire structs are `#[serde(default)]`,
+// so a rate-limit / "not found" / WAF 200 body that is a valid JSON object but
+// not an address response used to decode to all-zeros → `tx_count = Some(0)` →
+// a `confidence::HIGH_PLUSPLUS` "dormant" reading fabricated from a failed query
+// (SOL already guarded this via its `error`/neither-result-nor-error checks).
+// The pure enrichment helpers now require the structural key that a real
+// response always carries (`chain_stats` / echoed `address`) and fail closed
+// without it, while a genuinely dormant address — a real response full of zeros
+// — still reads as "dormant". Locked at the pure seam AND end-to-end.
+
+#[test]
+fn esplora_enrichment_fails_closed_on_a_non_address_body() {
+    // A rate-limit / error / WAF 200 body: a valid JSON object with no
+    // `chain_stats` — must be an Err, never a zero-balance "dormant" verdict.
+    for body in [r#"{"error":"rate limited"}"#, r#"{"message":"Invalid address"}"#, "{}"] {
+        let a: EsploraAddress =
+            serde_json::from_str(body).expect("a bare JSON object decodes via serde(default)");
+        assert!(a.chain_stats.is_none(), "no chain_stats in {body}");
+        let err = esplora_enrichment(a, "BTC")
+            .expect_err("a body with no chain_stats must fail closed, never a dormant verdict");
+        assert!(matches!(err, crate::core::error::Error::Module { .. }), "{err}");
+        assert!(err.to_string().contains("chain_stats"), "{err}");
+    }
+}
+
+#[test]
+fn esplora_enrichment_reads_a_genuinely_dormant_address_as_dormant() {
+    // A REAL Esplora response for an unused-but-valid address: chain_stats is
+    // present and full of zeros. This is a legitimate "dormant" reading, not an
+    // error — the fix must not turn honest zero-activity into a failure.
+    let a: EsploraAddress = serde_json::from_str(
+        r#"{"chain_stats":{"funded_txo_sum":0,"spent_txo_sum":0,"tx_count":0},
+            "mempool_stats":{"funded_txo_sum":0,"spent_txo_sum":0,"tx_count":0}}"#,
+    )
+    .expect("a real address body decodes");
+    let enr = esplora_enrichment(a, "BTC").expect("a real zeroed address is dormant, not an error");
+    assert_eq!(enr.tx_count, Some(0));
+    assert_eq!(enr.balance, 0);
+    assert_eq!(
+        build_evidence("btc", &enr).attributes.get("activity").expect("activity attr"),
+        "dormant"
+    );
+}
+
+#[test]
+fn blockcypher_enrichment_fails_closed_on_a_non_balance_body() {
+    // BlockCypher's own error body echoes no `address` — must be an Err, never a
+    // zero-balance "dormant" verdict.
+    for body in [r#"{"error":"Address not found."}"#, r#"{"message":"limits"}"#, "{}"] {
+        let b: BlockcypherBalance =
+            serde_json::from_str(body).expect("a bare JSON object decodes via serde(default)");
+        assert!(b.address.is_none(), "no address echoed in {body}");
+        let err = blockcypher_enrichment(b)
+            .expect_err("a body with no echoed address must fail closed, never a dormant verdict");
+        assert!(matches!(err, crate::core::error::Error::Module { .. }), "{err}");
+        assert!(err.to_string().contains("address"), "{err}");
+    }
+}
+
+#[test]
+fn blockcypher_enrichment_reads_a_genuinely_dormant_address_as_dormant() {
+    // A REAL BlockCypher balance response for a zero-activity address still
+    // echoes the address and reports zeros — a legitimate "dormant" reading.
+    let b: BlockcypherBalance = serde_json::from_str(
+        r#"{"address":"DEgDVFa2DoW1533dxeDVdTxQFhMzs1pMke","total_received":0,"balance":0,"n_tx":0}"#,
+    )
+    .expect("a real balance body decodes");
+    let enr =
+        blockcypher_enrichment(b).expect("a real zeroed DOGE address is dormant, not an error");
+    assert_eq!(enr.tx_count, Some(0));
+    assert_eq!(enr.balance, 0);
+    assert_eq!(
+        build_evidence("doge", &enr).attributes.get("activity").expect("activity attr"),
+        "dormant"
+    );
+}
+
+#[tokio::test]
+async fn enrich_esplora_fails_closed_on_a_wrong_shape_200_body() {
+    // End-to-end (real local transport): a 200 whose body is a valid JSON object
+    // but not an address response must surface as Err, not a hollow dormant hit.
+    let addr = serve_once(200, r#"{"error":"Too Many Requests"}"#).await;
+    crate::util::circuit_breaker::record_success("127.0.0.1");
+    let ctx = live_ctx();
+    let out = enrich_esplora(&ctx, &format!("http://{addr}"), "1BTCaddr", "BTC").await;
+    assert!(
+        out.is_err(),
+        "a 200 non-address body from the sole Esplora source must be Err, not a dormant verdict"
+    );
+    crate::util::circuit_breaker::record_success("127.0.0.1");
+}
+
+#[tokio::test]
+async fn enrich_doge_fails_closed_on_a_wrong_shape_200_body() {
+    // Same, over the now-parameterized BlockCypher base: a 200 error body (no
+    // echoed address) must be Err.
+    let addr = serve_once(200, r#"{"error":"Address not found."}"#).await;
+    crate::util::circuit_breaker::record_success("127.0.0.1");
+    let ctx = live_ctx();
+    let out = enrich_doge_at(&ctx, "DEgDVFa2DoW1533dxeDVdTxQFhMzs1pMke", &format!("http://{addr}")).await;
+    assert!(
+        out.is_err(),
+        "a 200 non-balance body from the sole BlockCypher source must be Err, not a dormant verdict"
+    );
+    crate::util::circuit_breaker::record_success("127.0.0.1");
+}
