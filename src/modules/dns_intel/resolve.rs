@@ -838,11 +838,11 @@ pub(super) async fn blocklist_check(target: &Target, ctx: &ModuleContext) -> Res
                     // Spamhaus returns policy codes that must be filtered
                     is_reputation_listing = false;
                     for answer in lookup.as_lookup().answers() {
-                        if let hickory_resolver::proto::rr::RData::A(a) = &answer.data {
-                            if is_spamhaus_abuse_listing(std::net::IpAddr::V4(a.0)) {
-                                is_reputation_listing = true;
-                                break;
-                            }
+                        if let hickory_resolver::proto::rr::RData::A(a) = &answer.data
+                            && is_spamhaus_abuse_listing(std::net::IpAddr::V4(a.0))
+                        {
+                            is_reputation_listing = true;
+                            break;
                         }
                     }
                 }
