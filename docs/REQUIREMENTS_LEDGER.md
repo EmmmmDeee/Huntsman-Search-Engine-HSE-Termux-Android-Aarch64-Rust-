@@ -8194,3 +8194,85 @@ generalisable lesson is recorded for the sibling sweep: a `#[serde(default)]`
 struct with no `deny_unknown_fields` cannot implement a "body did not decode"
 guard, because it decodes *everything*; the guard must inspect a modelled error
 field.
+
+### REQ-INTELX-002 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): the search-start's all-optional struct read an auth/quota failure as a clean "no records"
+
+**Module.** `intelx` (`src/modules/intelx/mod.rs`) — Intelligence X selector
+search, a **paid, keyed** two-phase breach/leak corpus. Phase 1 `POST
+/intelligent/search` returns a search `id` + start `status`; phase 2 polls
+`/intelligent/search/result?id=…` for records.
+
+**Defect.** The phase-1 response is modelled by `StartResp { id: Option<String>,
+status: Option<i32> }`, **both `#[serde(default)]`**. IntelX documents only three
+start statuses — 0 = success, 1 = invalid term, 2 = max concurrent — and the
+code's own comment states the invariant: "there is no 'no results' status for a
+search *start*." Yet the id-selection match ended in a catch-all:
+
+```rust
+let search_id = match (start.id, start.status) {
+    (Some(id), Some(0) | None) if !id.is_empty() => id,
+    (_, Some(1)) => return Ok(ModuleResult::new()), // invalid term
+    (_, Some(2)) => return Err(Error::module(SRC, "max concurrent searches reached")),
+    _ => return Ok(ModuleResult::new()),            // ← the false clean
+};
+```
+
+Because both fields default, an auth/quota failure page, a WAF interstitial, or
+any unexpected 200 JSON shape decodes **without error** to `StartResp { id:
+None, status: None }`. That matches none of the first three arms and falls to
+`_ => Ok(ModuleResult::new())` — an empty result the engine records as a clean
+"no exposure for this subject." The module's own phase-2 comment names this
+class the "most consequential false clean this engine can produce"; here it
+fires at phase 1, on a **paid, keyed** source, so an expired key or a spent
+quota silently becomes a confident all-clear on a person's breach exposure.
+
+**Failure scenario.** A pooled IntelX key expires or the account's quota is
+exhausted. IntelX answers `POST /intelligent/search` with `200` and a
+non-search body (e.g. `{"error":"Invalid or expired API key"}`). `StartResp`
+decodes it to all-`None`; `process()` returns `Ok(empty)`; the dossier records
+"IntelX: no records" for a subject who may be extensively exposed — and, being
+`Ok`, it also counts as a circuit-breaker success, so the failure never
+surfaces.
+
+**Fix (pure, fail-closed seam).** Extracted the decision into
+`classify_start(id, status) -> Result<StartDecision>`:
+- `(Some(id), Some(0) | None) if !id.is_empty())` → `Ok(Proceed(id))` (unchanged
+  success, including IntelX's status-omitted-on-success shape);
+- `(_, Some(1))` → `Ok(InvalidTerm)` → the one genuine clean negative a *start*
+  can mean (the API explicitly rejected the term);
+- `(_, Some(2))` → `Err` "max concurrent searches reached" (unchanged);
+- `_` → **`Err`** — an all-`None` body, a success claim with no id, or an empty
+  id string is an auth/quota failure or an unexpected 200 shape, never a miss.
+
+`process()` becomes `match classify_start(start.id, start.status)? { Proceed(id)
+=> id, InvalidTerm => return Ok(ModuleResult::new()) }`. Only the `_` arm's
+behaviour changes (Ok(empty) → Err); every previously-handled case is preserved
+bit-for-bit. The error message is honest and body-free (mirroring REQ-AUGEO-001:
+no raw serde/body text that could carry credentials or trip the rate-limit text
+match).
+
+**Evidence.** Four new pure locks in `src/modules/intelx/tests.rs`:
+`classify_start_proceeds_only_on_a_usable_id` (status 0 and status-omitted both
+proceed with a non-empty id); `classify_start_invalid_term_is_the_one_clean_
+negative` (status 1 → `InvalidTerm`); `classify_start_max_concurrent_is_an_error`
+(status 2 → `Err`); and the core lock `an_unexpected_start_body_fails_closed_not_
+a_clean_negative` — a realistic `{"error":"Invalid or expired API key"}` body
+decodes to all-`None` and must be `Err` (surfacing "no usable search id"), plus
+the success-with-no-id and empty-id cases also `Err`. `StartDecision` gained
+`#[derive(Debug)]` for `expect_err`. `cargo test --lib modules::intelx::` → 17
+passed.
+
+**Falsification.** The `_` arm was reverted in place to
+`Ok(StartDecision::InvalidTerm)` (the pre-fix clean-negative fall-through) and
+`an_unexpected_start_body_fails_closed_not_a_clean_negative` was run and observed
+**FAILING** (the auth-failure body read as a clean negative), then restored
+byte-for-byte from a pre-edit backup and the suite went green.
+
+**Class.** Same "an all-optional `#[serde(default)]` struct decodes an
+unexpected 200 as a clean negative" family as REQ-AUGEO-001 (fixed this wave),
+and still open in REQ-ZOOMEYE-001, REQ-LEAKCHECK-001, REQ-HUDSONROCK-001 and
+REQ-CHAININTEL-001. The generalisable rule (recorded for the sibling sweep): a
+struct that decodes every shape cannot gate on "did it decode"; the failure
+shape must be modelled (a `status`/`error` field) and the catch-all must fail
+closed. REQ-INTELX-001 (the phase-2 poll loop swallowing typed errors via bare
+`continue`) is a distinct, still-open defect in the same module.

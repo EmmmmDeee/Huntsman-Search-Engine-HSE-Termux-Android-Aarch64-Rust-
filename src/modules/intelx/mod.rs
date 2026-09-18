@@ -76,6 +76,44 @@ pub(crate) struct StartResp {
     pub(crate) status: Option<i32>,
 }
 
+/// The actionable outcome of a search-start response, separated from
+/// [`IntelX::process`] so the fail-closed policy is pure and unit-tested
+/// (REQ-INTELX-002).
+#[derive(Debug)]
+pub(crate) enum StartDecision {
+    /// A usable search id — proceed to the phase-2 poll.
+    Proceed(String),
+    /// The API explicitly rejected the search term (`status` 1) — the one
+    /// genuine clean negative a search *start* can mean.
+    InvalidTerm,
+}
+
+/// Classify a decoded search-start response, failing **closed** on anything that
+/// is neither a usable search id nor a recognised status.
+///
+/// `StartResp`'s fields are both `#[serde(default)]`, so an auth/quota failure
+/// page, a WAF interstitial, or any unexpected 200 JSON shape decodes without
+/// error to `{ id: None, status: None }`. IntelX has no "no results" state for a
+/// search *start* (a start either yields a poll `id` or fails), so such a body
+/// is a failure — an `Err` — never the clean "no exposure for this subject"
+/// negative that the phase-2 comment calls the most consequential false clean
+/// this engine can produce. Previously the `_` arm collapsed it to
+/// `Ok(empty)`; this makes the code keep the promise the surrounding comment
+/// already made (REQ-INTELX-002).
+pub(crate) fn classify_start(id: Option<String>, status: Option<i32>) -> Result<StartDecision> {
+    match (id, status) {
+        (Some(id), Some(0) | None) if !id.is_empty() => Ok(StartDecision::Proceed(id)),
+        (_, Some(1)) => Ok(StartDecision::InvalidTerm),
+        (_, Some(2)) => Err(Error::module(SRC, "max concurrent searches reached")),
+        _ => Err(Error::module(
+            SRC,
+            "search-start returned no usable search id and no recognised status \
+             (an auth/quota failure or an unexpected 200 body); a search start has \
+             no \"no results\" state, so this is a failure, not a clean negative",
+        )),
+    }
+}
+
 // --- Phase 2: result-page response ------------------------------------------
 
 #[derive(Deserialize)]
@@ -342,13 +380,11 @@ impl Module for IntelX {
             return Ok(ModuleResult::new());
         };
         let start: StartResp = crate::util::http::json_decode(SRC, resp).await?;
-        let search_id = match (start.id, start.status) {
-            (Some(id), Some(0) | None) if !id.is_empty() => id,
-            (_, Some(1)) => return Ok(ModuleResult::new()), // invalid term
-            (_, Some(2)) => {
-                return Err(Error::module(SRC, "max concurrent searches reached"));
-            }
-            _ => return Ok(ModuleResult::new()),
+        let search_id = match classify_start(start.id, start.status)? {
+            StartDecision::Proceed(id) => id,
+            // The API explicitly rejected the term — the one clean negative a
+            // search *start* can legitimately mean.
+            StartDecision::InvalidTerm => return Ok(ModuleResult::new()),
         };
 
         // Phase 2 — poll until the search reaches a TERMINAL state (2 finished

@@ -234,3 +234,65 @@ fn record_tolerates_missing_and_human_bucket() {
     assert!(r.records[0].bucket.is_none());
     assert!(r.records[0].date.is_none());
 }
+
+// REQ-INTELX-002 — `classify_start` must fail CLOSED on any search-start body
+// that is neither a usable poll id nor a recognised status. `StartResp`'s
+// fields are both `#[serde(default)]`, so an auth/quota failure, a WAF page, or
+// any unexpected 200 JSON shape decodes without error to all-`None`; a search
+// *start* has no "no results" state, so treating that as a clean negative is
+// the most consequential false clean this engine can produce. These lock the
+// policy at the pure seam (no network).
+
+#[test]
+fn classify_start_proceeds_only_on_a_usable_id() {
+    // status 0 (explicit success) and status omitted both proceed when a
+    // non-empty id is present.
+    match classify_start(Some("abc123".to_string()), Some(0)).expect("status 0 + id proceeds") {
+        StartDecision::Proceed(id) => assert_eq!(id, "abc123"),
+        other => panic!("expected Proceed, got {other:?}"),
+    }
+    match classify_start(Some("abc123".to_string()), None).expect("omitted status + id proceeds") {
+        StartDecision::Proceed(id) => assert_eq!(id, "abc123"),
+        other => panic!("expected Proceed, got {other:?}"),
+    }
+}
+
+#[test]
+fn classify_start_invalid_term_is_the_one_clean_negative() {
+    // status 1 = the API explicitly rejected the term: a genuine clean negative.
+    assert!(matches!(
+        classify_start(None, Some(1)).expect("invalid term is Ok(InvalidTerm)"),
+        StartDecision::InvalidTerm
+    ));
+}
+
+#[test]
+fn classify_start_max_concurrent_is_an_error() {
+    let err = classify_start(None, Some(2)).expect_err("max concurrent must be an error");
+    assert!(
+        matches!(err, crate::core::error::Error::Module { .. }),
+        "{err}"
+    );
+    assert!(err.to_string().contains("max concurrent"), "{err}");
+}
+
+#[test]
+fn an_unexpected_start_body_fails_closed_not_a_clean_negative() {
+    // The core REQ-INTELX-002 lock: an auth/quota failure or unexpected 200
+    // decodes to all-`None` and MUST be an error, never a clean negative.
+    let start: StartResp = serde_json::from_str(r#"{"error":"Invalid or expired API key"}"#)
+        .expect("all-optional StartResp decodes any JSON object without error");
+    assert!(start.id.is_none() && start.status.is_none());
+    let err = classify_start(start.id, start.status)
+        .expect_err("an unexpected-shape start body must fail closed, never a clean negative");
+    assert!(
+        matches!(err, crate::core::error::Error::Module { .. }),
+        "{err}"
+    );
+    assert!(err.to_string().contains("no usable search id"), "{err}");
+
+    // A success status with no id, and a present-but-empty id, are equally
+    // unusable — both fail closed rather than proceed or read as a miss.
+    assert!(classify_start(None, Some(0)).is_err());
+    assert!(classify_start(Some(String::new()), Some(0)).is_err());
+}

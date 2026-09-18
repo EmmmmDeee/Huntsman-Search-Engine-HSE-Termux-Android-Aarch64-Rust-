@@ -204,10 +204,16 @@ this wave: the SSRF gate closures (REQ-SSRF-001/002), stolen-credential pool
 hygiene (REQ-KEYPOOL-001), the PGP forged-UID correlation (REQ-PGP-001), the
 sanctions-linked mis-designation (REQ-OPENSANCTIONS-001), the cert_intel
 dead-probe fabricated-certificate finding (REQ-CERTINTEL-001), the au_geo
-ArcGIS-error-envelope guard that never failed closed (REQ-AUGEO-001), plus the
-abuseipdb/phone_au/email-canon fabrication fixes. Open high-stakes items remain
-queued (namesake fabrications, ambiguity-discarded geo, truncation-silent
-providers, key-header replay).
+ArcGIS-error-envelope guard that never failed closed (REQ-AUGEO-001), the intelx
+search-start that read an auth/quota failure as a clean "no records"
+(REQ-INTELX-002), plus the abuseipdb/phone_au/email-canon fabrication fixes.
+REQ-AUGEO-001 and REQ-INTELX-002 are the same recurring family — an all-optional
+`#[serde(default)]` response struct decoding an unexpected 200 as a clean
+negative; the sibling sweep (REQ-ZOOMEYE-001, REQ-LEAKCHECK-001,
+REQ-HUDSONROCK-001, REQ-CHAININTEL-001) is queued and now has a proven fix
+pattern (model the failure shape, make the catch-all fail closed). Open
+high-stakes items remain queued (namesake fabrications, ambiguity-discarded geo,
+truncation-silent providers, key-header replay).
 
 **T2 — Universal canonicalisation (priority).** One canonical form and one
 authority per concept, everywhere. Every remaining "same bug, sibling module"
