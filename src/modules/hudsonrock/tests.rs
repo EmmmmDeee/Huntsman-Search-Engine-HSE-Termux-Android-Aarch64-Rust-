@@ -348,3 +348,30 @@ use super::*;
             "email without '@' must not fire the HTTP request"
         );
     }
+
+    #[test]
+    fn unexpected_response_shape_fails_deserialization() {
+        // A 2xx response with an unexpected shape (e.g., `{"error": "..."}` from
+        // a rate-limit or auth failure) must fail deserialization, not silently
+        // decode as `{"stealers": []}` and report a clean negative
+        // (REQ-HUDSONROCK-001). Pre-fix: `#[serde(default)]` on `stealers`
+        // silently defaulted a missing field to `vec![]`, so any 2xx error
+        // envelope read as "no records found".
+        //
+        // Post-fix: removing `#[serde(default)]` makes deserialization fail,
+        // so the JSON decode error surfaces as a real ModuleError, never silent.
+        let error_envelope = r#"{"error":"rate limit exceeded"}"#;
+        let result: serde_json::Result<CavalierResp> = serde_json::from_str(error_envelope);
+        assert!(
+            result.is_err(),
+            "an error envelope with no `stealers` field must fail to deserialize; \
+             got a successful parse: {result:?}"
+        );
+        // A real empty response still works.
+        let empty_response = r#"{"stealers":[]}"#;
+        let result: serde_json::Result<CavalierResp> = serde_json::from_str(empty_response);
+        assert!(
+            result.is_ok(),
+            "a valid empty response must deserialize: {result:?}"
+        );
+    }
