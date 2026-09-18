@@ -42,7 +42,6 @@ pub mod c99;
 pub mod cell_intel;
 pub mod cell_local;
 pub mod censys;
-pub mod device_cell;
 pub mod cert_intel;
 pub mod certspotter;
 pub mod chain_intel;
@@ -61,6 +60,7 @@ pub mod crossref_search;
 pub mod crtsh;
 pub mod data_gov_au;
 pub mod dehashed;
+pub mod device_cell;
 pub mod device_sensors;
 // Shared Termux `termux-location` fix primitives (the `Fix` shape +
 // confidence ladder) — a `pub(crate)` HELPER (no `Module` impl), consumed by

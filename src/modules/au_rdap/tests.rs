@@ -506,7 +506,12 @@ fn statutory_masking_and_privacy_proxies_are_rejected() {
 
     // Legitimate registrant name must survive
     assert!(
-        find(&ents, &EntityKind::Organisation, "Legitimate Company Pty Ltd").is_some(),
+        find(
+            &ents,
+            &EntityKind::Organisation,
+            "Legitimate Company Pty Ltd"
+        )
+        .is_some(),
         "legitimate registrant name must not be filtered"
     );
 
@@ -521,8 +526,12 @@ fn statutory_masking_and_privacy_proxies_are_rejected() {
     // present as a legitimate registrar or absent — either way the filtering
     // of the placeholder is what matters here. The actual count should be 1
     // (only the legitimate company).
-    let org_count = ents.iter()
+    let org_count = ents
+        .iter()
         .filter(|e| e.kind == EntityKind::Organisation)
         .count();
-    assert_eq!(org_count, 1, "only the legitimate organisation should be emitted");
+    assert_eq!(
+        org_count, 1,
+        "only the legitimate organisation should be emitted"
+    );
 }
