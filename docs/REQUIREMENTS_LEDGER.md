@@ -8655,3 +8655,62 @@ this page" is not the same finding as "the detector catches this wall". The
 generalisable rule: a challenge-page fixture proves nothing about the vendor it
 is named for unless the OTHER vendors' markers are removed from it first. Every
 existing wall fixture is now a candidate for the same subtractive re-check.
+
+### REQ-HTML-002 (**new, Pass 33 — AUDIT CLEAN, DISCIPLINE MADE SELF-ENFORCING**): the subtractive re-check applied to every wall fixture, then frozen as a test so the REQ-HTML-001 defect cannot recur
+
+**Question.** REQ-HTML-001 proved AHPRA's F5 wall was classified only via
+`/cdn-cgi/challenge-platform`, a marker belonging to a DIFFERENT vendor that its
+page happens to carry. The existing test asserted "this page is a wall" and
+passed, so the gap was invisible. Every other checked-in fixture was a candidate
+for the same defect, and a hand audit answers that once while leaving the next
+fixture unguarded.
+
+**Audit (method: enumerate every signature that matches each fixture, then strip
+the foreign ones and re-test).** The tables hold 27 vendor signatures and 15
+phrase sets; 5 fixtures exist. Result, after the REQ-HTML-001 fix:
+
+| fixture | carried by | foreign-marker dependency |
+|---|---|---|
+| `cloudflare_block_anubis_2026-09-15` | `["attention required","cloudflare"]` | none (1 signature, its own) |
+| `cloudflare_challenge_austlii_2026-09-15` | `/cdn-cgi/challenge-platform` + `["attention required","cloudflare"]` | none (2 signatures, both Cloudflare's) |
+| `wall_akamai_acma_403_2026-09-15` | `["your request has been blocked","reference number"]` | none (1 signature, its own) |
+| `wall_ahpra_200_2026-09-15` / `2026-09-18` | `/cdn-cgi/challenge-platform` + the F5 set | **was** the only case; fixed by REQ-HTML-001 |
+
+So the audit is a genuine NEGATIVE: no remaining fixture depends on a foreign
+vendor's marker. The method is not vacuous — the same procedure found the AHPRA
+case, which is what prompted it.
+
+**Permanent mechanism.** A hand audit does not survive the next fixture, so the
+discipline is now a test rather than a finding.
+`every_wall_fixture_is_carried_by_its_own_vendors_markers`
+(`src/util/html/tests.rs`) carries a table of `(fixture, body, own-tokens)`.
+For each entry it asserts the capture is a wall, asserts at least one DECLARED
+own token is actually present (so a stale declaration cannot make the next
+assertion vacuous), then rewrites out every signature token in
+`CHALLENGE_VENDOR_SIGNATURES` and `CHALLENGE_PHRASE_SETS` that is not the
+capture's own and asserts it is STILL a wall. A capture added here whose vendor
+has no signature in the table now fails with "classified only via ANOTHER
+vendor's marker — its own vendor needs a signature in the table", instead of
+silently riding on a neighbour's.
+
+**Falsification.** With the two F5 AND-sets deleted (the exact pre-REQ-HTML-001
+state) the new test was observed **FAILING** on `wall_ahpra_200_2026-09-15` with
+that message, confirming it detects the real historical defect and not a
+synthetic one. Restored byte-for-byte; all 29 `util::html` tests pass.
+
+**Gate.** `cargo fmt --all`; `cargo clippy --all-targets --features dep-cooldown
+-- -D warnings` → clean; `cargo test --lib` → 7,477 passed, 0 failed; `cargo
+test --doc` → 77 passed, 0 failed.
+
+**Residual (recorded, not silently dropped).** 42 signatures exist but only 5
+have a real capture behind them, so ~37 remain unverified against any observed
+wall — a signature with a typo, or naming a string its vendor does not actually
+emit, would be indistinguishable from a working one. That is a coverage gap, not
+a defect: it cannot be closed by writing fixtures, only by capturing the walls
+live as they are encountered. The new test makes every future capture pay for
+itself, which is the reachable half.
+
+**Class.** Structural prevention over repeated detection. The generalisable
+rule: when an audit finds a defect class, the deliverable is the mechanism that
+makes the class unrepeatable, not the audit's answer — an answer decays with the
+next commit, a test does not.

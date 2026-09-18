@@ -469,6 +469,95 @@ mod prop {
         ));
     }
 
+    /// Every checked-in wall capture must be classified by the markers of the
+    /// vendor it is NAMED for — not by another vendor's marker that happens to
+    /// be on the same page.
+    ///
+    /// This is the discipline REQ-HTML-001 established the hard way. Both AHPRA
+    /// captures were classified solely via `/cdn-cgi/challenge-platform`, a
+    /// CLOUDFLARE marker their page carries because the register also fronts
+    /// with Cloudflare; F5 BIG-IP ASM, the appliance actually serving the wall,
+    /// had no signature in the table at all. The existing test asserted "this
+    /// page is a wall" and passed, so the gap was invisible: a fixture proves
+    /// nothing about its vendor until the OTHER vendors' markers are removed
+    /// from it first.
+    ///
+    /// So each fixture declares which signature tokens are its own, and is
+    /// re-tested with every foreign token rewritten out. A future capture added
+    /// here without its vendor being in the table fails this test instead of
+    /// silently riding on a neighbour's marker.
+    #[test]
+    fn every_wall_fixture_is_carried_by_its_own_vendors_markers() {
+        // (fixture, the tokens belonging to the vendor this capture is OF)
+        const FIXTURES: &[(&str, &str, &[&str])] = &[
+            (
+                "cloudflare_block_anubis_2026-09-15",
+                include_str!("testdata/cloudflare_block_anubis_2026-09-15.html"),
+                &["attention required", "cloudflare"],
+            ),
+            (
+                "cloudflare_challenge_austlii_2026-09-15",
+                include_str!("testdata/cloudflare_challenge_austlii_2026-09-15.html"),
+                &[
+                    "attention required",
+                    "cloudflare",
+                    "/cdn-cgi/challenge-platform",
+                ],
+            ),
+            (
+                "wall_akamai_acma_403_2026-09-15",
+                include_str!("testdata/wall_akamai_acma_403_2026-09-15.html"),
+                &["your request has been blocked", "reference number"],
+            ),
+            (
+                "wall_ahpra_200_2026-09-15",
+                include_str!("testdata/wall_ahpra_200_2026-09-15.html"),
+                &["enable javascript to view the page content", "support id"],
+            ),
+            (
+                "wall_ahpra_200_2026-09-18",
+                include_str!("testdata/wall_ahpra_200_2026-09-18.html"),
+                &["enable javascript to view the page content", "support id"],
+            ),
+        ];
+
+        // Rewrite out every signature token that is NOT this capture's own. The
+        // detector matches ASCII-case-insensitively, so lowercasing first is
+        // behaviour-preserving and lets the strip be a plain literal replace.
+        fn strip_foreign_markers(body: &str, own: &[&str]) -> String {
+            let mut out = body.to_ascii_lowercase();
+            let foreign = CHALLENGE_VENDOR_SIGNATURES
+                .iter()
+                .copied()
+                .chain(CHALLENGE_PHRASE_SETS.iter().flat_map(|s| s.iter().copied()))
+                .filter(|tok| !own.contains(tok));
+            for tok in foreign {
+                out = out.replace(tok, "x");
+            }
+            out
+        }
+
+        for (name, body, own) in FIXTURES {
+            assert!(
+                is_challenge_document(body),
+                "{name}: the capture must be a wall to begin with"
+            );
+            // The declared owner must really be present — a stale declaration
+            // would make the strip below vacuously easy to pass.
+            assert!(
+                own.iter()
+                    .any(|tok| crate::util::str_util::find_ascii_ci(body, tok).is_some()),
+                "{name}: none of its declared own markers are in the capture"
+            );
+            let alone = strip_foreign_markers(body, own);
+            assert!(
+                is_challenge_document(&alone),
+                "{name}: classified only via ANOTHER vendor's marker — its own \
+                 vendor needs a signature in the table"
+            );
+        }
+    }
+
     #[test]
     fn is_challenge_document_recognises_the_ahpra_200_wall() {
         const WALL: &str = include_str!("testdata/wall_ahpra_200_2026-09-15.html");
