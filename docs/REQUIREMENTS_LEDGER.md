@@ -9231,3 +9231,72 @@ threads) and REQ-CI-004 (two `core::engine` `skip_reason` tests that pass only
 under `--test-threads=1`). The shared lesson: a test that counts completed
 asynchronous round-trips must not put a serialising component in the path of the
 concurrency the code under test legitimately uses.
+
+---
+
+### REQ-DEHASHED-001 (**new, Pass 34 — FIXED, FALSIFIED**): a provider capture sentinel in a hash field was minted as a password hash, becoming an AU-105 credential-reuse link key
+
+**Defect.** `extract_records` (`src/modules/dehashed/build.rs`) has two sibling
+credential loops that did NOT agree on what a secret is.
+
+The plaintext loop routes every `password` value through
+`crate::util::extract::classify_credential_field` and drops a capture sentinel
+outright — its own comment states the rule: *"A capture sentinel ([fail],
+UPGRADE_TO_SEE…) is not a secret — drop it."* It further recovers an email
+mis-stored in the password slot as an Email lead rather than a secret,
+explicitly so `dehashed`/`oathnet_pro`/`see_know` "don't drift on this quirk".
+
+The hash loop, immediately above it and iterating
+`["hashed_password", "password_hash", "hash"]`, applied **no classification at
+all** — its only gate was `h.len() >= 8`. Every sentinel of eight or more
+characters was therefore minted as a `Password` entity at
+`confidence::MEDIUM_HIGH`, tagged `password-hash`.
+
+**Why this is worse than one bogus entity.** The module's own header documents
+that the hash becomes *"the `hashed_password` attribute the hash-reuse identity
+linker (`AU-105`) groups on, so the same hash across two accounts (or two
+providers) links them."* A withheld-access placeholder is by construction
+IDENTICAL across every row the provider withheld — so one sentinel repeated
+across rows fused unrelated accounts into "these accounts share a credential".
+The fabrication is a cross-identity LINK, not just a stray node. Same family as
+REQ-TARGETMATCH-001 and REQ-CORRELATOR-004: a shared artifact mistaken for a
+shared secret.
+
+**Why it stayed hidden.** The eight-character floor excludes the sentinels
+anyone would think to test — `[fail]` (6) and `<empty>` (7) never reached it.
+Only the longer forms do: `UPGRADE_TO_SEE_xxxx` (19) and `[NOT_SAVED]` (11),
+both of which appear in `classify_credential_field`'s own test set.
+
+**Fix.** The hash loop now calls the SAME authority its sibling already used,
+proceeding only on `CredentialField::Secret`. A `CredentialField::Email` in a
+hash slot is likewise not a digest and is skipped; the record's own `email`
+field and the shared `breach_rich` pass already surface identity, so declining
+to recover it from the hash slot loses nothing.
+
+**Regression lock.**
+`a_capture_sentinel_in_a_hash_field_is_never_minted_as_a_password_hash`
+(`src/modules/dehashed/tests.rs`) drives the real `extract_records` over both
+sentinels, across both `hashed_password` and `password_hash`, and asserts no
+`Password` entity carries the sentinel value. It also asserts the
+non-regression: a real MD5 digest is still a first-class hash node, still
+cracked offline to its plaintext, still carrying its algorithm tags.
+
+**Falsification.** Removing the classifier gate fails the lock with its own
+message — *"`UPGRADE_TO_SEE_xxxx` is a provider capture sentinel, not a digest —
+minting it as a password hash makes it an AU-105 reuse link key shared by every
+account the provider withheld"* — and restoring it passes, with all 24 dehashed
+tests green.
+
+**Sibling audit (recorded, deliberately not changed).** `see_know` has no
+hash-field handling, so it is out of scope. `oathnet_pro`
+(`src/modules/oathnet_pro/breach.rs:731`) has the same SHAPE of gap — admission
+gated on `ph.len() >= 32` alone, with `identify_password_hash` called only to
+derive tags, never to gate — but it is not demonstrably defective: no sentinel
+in the known set reaches 32 characters, and it emits an `ApiKey` seed rather
+than a `Password`, so it is not an AU-105 reuse key. Filed as REQ-OATHNET-002
+(VERIFY-FIRST) with the capture needed to settle it, rather than changed on
+speculation.
+
+**Permanent invariant.** Both of `dehashed`'s credential loops now answer "is
+this a secret?" with the same predicate, so a provider artifact cannot enter the
+graph through the hash door after being refused at the plaintext one.

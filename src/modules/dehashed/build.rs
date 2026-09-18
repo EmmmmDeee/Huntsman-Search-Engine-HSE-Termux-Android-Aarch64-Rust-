@@ -431,6 +431,29 @@ pub(super) fn extract_records(
         for hash_field in ["hashed_password", "password_hash", "hash"] {
             for h in field_strings(item, hash_field) {
                 let h = h.trim();
+                // The SAME authority the plaintext `password` loop below uses.
+                // A digest classifies as `Secret`; a provider capture sentinel
+                // (`UPGRADE_TO_SEE_…`, `[NOT_SAVED]`, `<empty>`, `[fail]`) does
+                // not. This loop previously gated on `len() >= 8` alone, so
+                // every sentinel of eight or more characters was minted as a
+                // `Password` at MEDIUM_HIGH tagged `password-hash`.
+                //
+                // That is not merely one bogus entity: the hash value is AU-105's
+                // hash-reuse LINK KEY, so a single withheld-access placeholder
+                // repeated across rows fused unrelated accounts into "these
+                // accounts share a credential". The shorter sentinels never
+                // cleared the length gate, which is why the hole stayed hidden.
+                //
+                // A `CredentialField::Email` in a hash slot is likewise not a
+                // digest and is skipped; the record's own `email` field and the
+                // shared `breach_rich` pass already surface identity, so nothing
+                // is lost by declining to recover it from here.
+                if !matches!(
+                    crate::util::extract::classify_credential_field(h),
+                    crate::util::extract::CredentialField::Secret
+                ) {
+                    continue;
+                }
                 if h.len() >= 8 && seen.insert(format!("@pwhash:{}", h.to_lowercase())) {
                     // Offline hash intelligence ("hashcat-lite"): algorithm,
                     // crackability, appended salt, and an offline reverse-lookup of
