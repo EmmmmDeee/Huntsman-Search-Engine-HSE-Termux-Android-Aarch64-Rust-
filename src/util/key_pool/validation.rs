@@ -10,7 +10,22 @@ use crate::util::service_defs::{KeyPlacement, ServiceDef, find_service};
 /// If valid, marks it Active and stores it. If invalid, marks it Invalid
 /// but still stores it (won't be used by next_key).
 /// Returns true if the key is valid and was stored.
-pub async fn add_and_validate(service: &str, key_value: &str, notes: Option<String>) -> bool {
+///
+/// `discovered_by` is the credential's provenance — `None` for a key the
+/// operator supplied deliberately, `Some(source)` for one auto-harvested from
+/// scanned content or breach/stealer material (REQ-KEYPOOL-001). It is stamped
+/// onto the pooled entry's `discovered_by`, which is the sole signal
+/// [`KeyEntry::is_harvested`] and therefore the
+/// [`KeyPool::next_key_excluding`](super::pool::KeyPool::next_key_excluding)
+/// auth chokepoint use to keep such a credential out of HSE's own outbound
+/// authenticated requests. A required parameter, not an `Option`-with-default,
+/// so every call site is forced to state where the key came from.
+pub async fn add_and_validate(
+    service: &str,
+    key_value: &str,
+    notes: Option<String>,
+    discovered_by: Option<String>,
+) -> bool {
     let pool = super::global_pool();
 
     // Validate once: if the pool already holds this exact key with a settled
@@ -26,36 +41,70 @@ pub async fn add_and_validate(service: &str, key_value: &str, notes: Option<Stri
         }
     }
 
-    let mut entry = KeyEntry::new(key_value);
-    entry.notes = notes;
+    let validation = validate_key(service, key_value).await;
+    let entry = build_validated_entry(key_value, notes, discovered_by, validation);
 
     // `add_and_validate` is itself `pub async fn`, already run on a tokio worker
     // — persist off the runtime (`persist_off_thread`) rather than the blocking
     // `save_pool_best_effort` directly, so a validation call never stalls the
     // executor other concurrently-dispatched modules share.
-    if let Some(valid) = validate_key(service, key_value).await {
-        if valid {
-            entry.status = KeyStatus::Active;
-            entry.last_validated = Some(crate::core::entity::unix_now());
+    match validation {
+        Some(true) => {
             let added = pool.add(service, entry);
             if added {
                 super::persistence::persist_off_thread(pool);
                 tracing::info!(service, "validated and stored API key");
             }
             true
-        } else {
-            entry.status = KeyStatus::Invalid;
-            entry.last_validated = Some(crate::core::entity::unix_now());
+        }
+        Some(false) => {
             pool.add(service, entry);
             super::persistence::persist_off_thread(pool);
             tracing::warn!(service, "API key failed validation — stored as invalid");
             false
         }
-    } else {
-        pool.add(service, entry);
-        super::persistence::persist_off_thread(pool);
-        false
+        None => {
+            pool.add(service, entry);
+            super::persistence::persist_off_thread(pool);
+            false
+        }
     }
+}
+
+/// Build the [`KeyEntry`] to pool for a validation outcome — the single
+/// construction authority [`add_and_validate`] routes every branch through,
+/// so the provenance stamp below is exercised by production, not a test-only
+/// parallel implementation. Split out so it can be unit-tested directly
+/// without a live validation round-trip.
+fn build_validated_entry(
+    key_value: &str,
+    notes: Option<String>,
+    discovered_by: Option<String>,
+    validation: Option<bool>,
+) -> KeyEntry {
+    let mut entry = KeyEntry::new(key_value);
+    entry.notes = notes;
+    // REQ-KEYPOOL-001: stamp provenance for EVERY outcome, before the entry is
+    // ever pooled. `is_harvested()` — and the `next_key_excluding` auth
+    // exclusion it drives — reads only `discovered_by`, and an Untested/Invalid
+    // harvested entry can be re-validated to Active on a later call, so a
+    // valid-branch-only stamp would leave a stealer-sourced key that first
+    // probed Indeterminate and later settled Active auth-eligible in between.
+    // `None` here (an operator-supplied key) correctly leaves it auth-eligible.
+    entry.discovered_by = discovered_by;
+    // Only a settled verdict writes a status: `None` (indeterminate — a
+    // transient probe failure, timeout, 429, 5xx) deliberately leaves the
+    // `KeyEntry::new` default `Untested`, so a later re-probe can settle it
+    // rather than a transient outage writing a sticky verdict.
+    if let Some(valid) = validation {
+        entry.status = if valid {
+            KeyStatus::Active
+        } else {
+            KeyStatus::Invalid
+        };
+        entry.last_validated = Some(crate::core::entity::unix_now());
+    }
+    entry
 }
 
 pub async fn validate_key(service: &str, key: &str) -> Option<bool> {
@@ -227,6 +276,82 @@ pub fn merge_pool_into_env(pool: &KeyPool, keys: &mut std::collections::HashMap<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stealer_sourced_key_is_stamped_harvested_for_every_validation_outcome() {
+        // REQ-KEYPOOL-001. The stealer-log import path
+        // (`app::import::json`) is the only production caller of
+        // `add_and_validate`, and it passes the key it recovered from an
+        // infostealer dump. That credential does not belong to the operator,
+        // so it must NEVER authenticate HSE's own outbound requests — the
+        // `next_key_excluding` chokepoint enforces that by excluding any entry
+        // whose `discovered_by` is set (`is_harvested()`). Before this fix
+        // `add_and_validate` set `notes` (whose own text literally said "from
+        // stealer data") but never `discovered_by`, so `is_harvested()` read
+        // false and the stolen key was fully auth-eligible.
+        //
+        // The stamp must hold for EVERY outcome, not just the Active one: an
+        // Untested/Invalid harvested key can be re-validated to Active on a
+        // later import, so a valid-branch-only stamp would leave a stealer key
+        // that first probed Indeterminate (None) and later settled Active
+        // auth-eligible in the window between.
+        for validation in [Some(true), Some(false), None] {
+            let entry = build_validated_entry(
+                "recovered-from-a-stealer-log",
+                Some("Import: shodan key from stealer data".to_string()),
+                Some("stealer_import:shodan".to_string()),
+                validation,
+            );
+            assert_eq!(
+                entry.discovered_by.as_deref(),
+                Some("stealer_import:shodan"),
+                "a stealer-sourced key must carry its provenance for validation={validation:?}",
+            );
+            assert!(
+                entry.is_harvested(),
+                "is_harvested() (the sole next_key_excluding signal) must be true \
+                 for validation={validation:?}, or the stolen key stays auth-eligible",
+            );
+        }
+    }
+
+    #[test]
+    fn an_operator_supplied_key_is_not_stamped_harvested() {
+        // Guard for the fix above: a key with no provenance (the operator
+        // added it deliberately) must stay auth-eligible. The fix must not
+        // over-reach into marking every validated key harvested, which would
+        // silently make the pool refuse to authenticate with keys the operator
+        // legitimately configured.
+        for validation in [Some(true), Some(false), None] {
+            let entry = build_validated_entry("operator-configured-key", None, None, validation);
+            assert_eq!(entry.discovered_by, None);
+            assert!(
+                !entry.is_harvested(),
+                "an operator-supplied key must remain auth-eligible for validation={validation:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn build_validated_entry_maps_the_validation_outcome_to_status() {
+        // The refactor that introduced `build_validated_entry` must preserve
+        // the original per-outcome status mapping: valid -> Active,
+        // rejected -> Invalid, indeterminate -> Untested (the KeyEntry::new
+        // default, left untouched so a transient probe failure never writes a
+        // sticky verdict).
+        assert_eq!(
+            build_validated_entry("k", None, None, Some(true)).status,
+            KeyStatus::Active
+        );
+        assert_eq!(
+            build_validated_entry("k", None, None, Some(false)).status,
+            KeyStatus::Invalid
+        );
+        assert_eq!(
+            build_validated_entry("k", None, None, None).status,
+            KeyStatus::Untested
+        );
+    }
 
     // A service with no registered `body_rejects_key` check — the common
     // case (48+ of the 49 registered services). Named distinctly from

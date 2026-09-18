@@ -7773,3 +7773,105 @@ the opposite one. The allowlist is a judgement call about provider behaviour
 and will need extending as providers change; it is one named constant with a
 doc comment stating the evidentiary standard for adding to it, so the
 decision is reviewable rather than buried in a `split('+')`.
+
+### REQ-KEYPOOL-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a stealer-log-sourced API key entered the pool auth-eligible
+
+**Lead.** Wave 8 hunt into `src/util/key_pool/`, then a full call-site trace
+and personal re-read of every function on the path.
+
+**Verified from source.** `add_and_validate`
+(`src/util/key_pool/validation.rs`) constructed its entry with
+`KeyEntry::new(key_value)` and set only `.notes`, `.status` and
+`.last_validated` — never `.discovered_by`. `KeyEntry::new`
+(`types.rs:114`) defaults `discovered_by: None`, and nothing in the
+function overrode it in any of its three `pool.add` branches (valid,
+invalid, probe-failed). `is_harvested()` (`types.rs:156`) is exactly
+`self.discovered_by.is_some()`, and it is the SOLE signal
+`next_key_excluding` (`pool.rs`) uses to keep a harvested credential out of
+HSE's own outbound authenticated requests — its doc comment names "a breach
+record" explicitly as a category that must never be auth-eligible this way.
+
+The gap is not theoretical. The ONLY production caller of
+`add_and_validate` in the entire tree is `src/app/import/json.rs:298`,
+inside the stealer-log / infostealer-dump import path (it scans a dumped
+record's `password` field via `detect_and_create_api_key_entity(pw, &sid,
+"import:oathnet")`). That call's own `notes` argument literally read
+`Some(format!("Import: {svc} key from stealer data"))` — the code
+documented, in human-readable text, that the credential came from stealer
+material — yet that provenance only ever reached `.notes` (free text), never
+`.discovered_by`. Every OTHER key-pooling path in the codebase
+(`key_harvest::emit`, `engine::enrich`, `http::keys`, the per-module harvest
+paths, and the CLI TSV importer) stamps `discovered_by` before pooling;
+`add_and_validate` was the one that didn't, and it was specifically the
+stealer-import path.
+
+**Failure scenario.** A stealer log carries a still-live third-party API
+key in a password field. `add_and_validate` probes it, gets a successful
+validation, marks it `Active` and pools it with `discovered_by = None`.
+`is_harvested()` now reads `false`, so `next_key_excluding` — whose entire
+documented purpose is refusing exactly this — has no signal to exclude it,
+and HSE can authenticate its own outbound requests with a credential
+recovered from a stealer log that does not belong to the operator,
+indistinguishable in the pool from a legitimately-owned key.
+
+**Fix.** `add_and_validate` gains a required `discovered_by: Option<String>`
+parameter (required, not defaulted, so every call site is forced to state
+the key's origin), and entry construction is routed through one new
+`build_validated_entry` helper that stamps `entry.discovered_by` for EVERY
+validation outcome before the entry is pooled. Not just the `Active` branch:
+an `Untested`/`Invalid` harvested entry can be re-validated to `Active` on a
+later import, so a valid-branch-only stamp would leave a stealer key that
+first probed `Indeterminate` (`None`) and later settled `Active`
+auth-eligible in the window between. The sole production caller
+(`app::import::json`) now passes `Some(format!("stealer_import:{svc}"))`.
+The per-branch `pool.add`/persist/log behaviour of the three arms is
+preserved exactly — the refactor changed construction, not the side
+effects.
+
+**Evidence.** Three new locks in `util::key_pool::validation::tests`:
+`a_stealer_sourced_key_is_stamped_harvested_for_every_validation_outcome`
+(all of `Some(true)`/`Some(false)`/`None` → `discovered_by` set AND
+`is_harvested()` true); `an_operator_supplied_key_is_not_stamped_harvested`
+(a `None`-provenance key stays auth-eligible for every outcome — the fix must
+not over-reach into marking legitimately-configured keys harvested); and
+`build_validated_entry_maps_the_validation_outcome_to_status` (the refactor
+preserves valid→Active, rejected→Invalid, indeterminate→Untested). The
+downstream half — that a `discovered_by`-tagged entry is refused by both
+`next_key` and `next_key_excluding` — was already locked by the pre-existing
+`harvested_keys_are_pooled_but_never_authenticate`, so the two together
+cover the whole path: `add_and_validate` now stamps the tag, and a tagged
+entry is excluded from auth.
+
+`build_validated_entry` is the real construction authority `add_and_validate`
+routes through, not a test-only parallel implementation, so exercising it in
+a unit test exercises production. This deliberately avoids driving
+`add_and_validate` end-to-end through the process-global pool, whose
+parallel-test contention is the subject of REQ-CI-003 / the open REQ-CI-004
+observation — a global-pool test here would reintroduce exactly that flake
+into a security lock, the one place it must not live.
+
+**Falsification.** Test-first in the new structure: the helper was written
+with the `discovered_by` param accepted but the stamp line omitted (the bug
+reproduced in the refactored shape), and the lock was run and observed
+FAILING before the stamp was added:
+
+```
+[stamp omitted] -> LOCK FAILS (expected)
+    util::key_pool::validation::tests::a_stealer_sourced_key_is_stamped_harvested_for_every_validation_outcome --- FAILED
+    "a stealer-sourced key must carry its provenance for validation=Some(true)"
+    test result: FAILED. 11 passed; 1 failed; 0 ignored; 7401 filtered out
+```
+
+`an_operator_supplied_key_is_not_stamped_harvested` PASSED in that same
+pre-stamp run, proving the lock is not vacuously green from the stamp being
+applied unconditionally. After adding `entry.discovered_by = discovered_by;`:
+`util::key_pool` 60 passed, 0 failed; `key_harvest` 171 passed; fmt clean.
+
+**Residual.** REQ-KEYPOOL-002 (task, separate) — re-validating an
+already-pooled unsettled key discards the fresh result — is a distinct
+defect in the same function's early-return and is not addressed here. The
+required-parameter signature means any future caller of `add_and_validate`
+must consciously decide provenance; that is the intended forcing function,
+not a residual. `hse keys add` and the CLI TSV import do not route through
+`add_and_validate` (verified: the only caller is the stealer-import path),
+so no operator-supplied-key path is affected by the new stamp.
