@@ -7527,3 +7527,72 @@ REQ-CI-003, NOT a product defect and not caused by this change — recorded
 here so the observation is not lost, and filed separately rather than
 folded into this fix. `Phone` and `Username` remain correctly outside the
 gate: neither carries a dialable host.
+
+### REQ-ABUSEIPDB-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a clean AbuseIPDB verdict still marked the IP known-bad
+
+**Lead.** Wave 9 module audit (the `abuseipdb` entry), then verified from
+source and cross-checked against every sibling that applies the same tag.
+
+**Verified from source.** `build_entities` tagged
+`crate::core::tags::THREAT_INTEL` unconditionally, on the line BEFORE the
+`if abuse_score >= 80 { … } else if abuse_score >= 40 { … }` branch that
+actually reflects AbuseIPDB's graded verdict. So an IP AbuseIPDB itself
+reports as 0/100 confidence with 0 total reports — its own clean answer —
+was still tagged known-bad purely because it had been looked up.
+
+That tag is not cosmetic. It is one of exactly three `ADJACENCY_BAD_TAGS`
+(`core::correlator::rules`, beside `MALICIOUS` and `VULNERABLE`), which
+AU-031 "malicious adjacency" reads to raise a **High**-severity finding on
+any entity one hop from a tag-bearing node, and it is also the filter in
+`rules/infra.rs`'s threat-intel pass. Concretely: a clean IP queried via
+abuseipdb caused every domain resolving to it to be reported "adjacent to
+known-bad infrastructure" — a High-severity escalation fabricated from a
+NEGATIVE signal.
+
+Every sibling module that applies this tag gates it on a real positive
+verdict, so the convention was already established and abuseipdb was the
+single outlier: `virustotal` only when `malicious > 0` (and pins the
+negative case in its own tests, `!e.has_tag(THREAT_INTEL)`); `chain_intel`
+only on the source's own flag, with the explicit comment "never when [it]
+is absent or false, so a source that doesn't report a verdict can't be
+mistaken for a clean bill of health"; `onyphe` only inside a named
+threat-list match; `pulsedive` returns early when nothing is linked.
+
+**Fix.** The tag is now gated on the module's own existing first positive
+band, hoisted into named constants (`SUSPICIOUS_SCORE = 40`,
+`MALICIOUS_SCORE = 80`) so the threshold has one authority instead of two
+magic numbers. A score that already earned `suspicious` still feeds
+adjacency analysis exactly as before; a clean or below-band answer no
+longer does. `MALICIOUS`/`high-risk` gating is untouched.
+
+**Evidence.** Three new locks in `modules::abuseipdb::tests`:
+`a_clean_verdict_is_never_tagged_threat_intel` (0/100, 0 reports → none of
+`THREAT_INTEL`/`MALICIOUS`/`suspicious`/`high-risk`, while the IP entity
+itself is still emitted, so the fix suppresses the false claim without
+losing the observation); `a_real_positive_verdict_still_carries_threat_intel`
+(40, 79, 80, 100 all keep the tag, and `MALICIOUS` still flips only at 80 —
+proving the gate did not overreach into silencing the provider entirely);
+`a_score_below_the_suspicious_band_is_not_threat_intel` (1, 10, 39 stay
+clean — the boundary the fix rests on).
+
+**Falsification.** Test-first. Both "must be clean" locks were written and
+run BEFORE the fix:
+
+```
+[unconditional tag] -> LOCKS FAIL (expected)
+    modules::abuseipdb::tests::a_clean_verdict_is_never_tagged_threat_intel --- FAILED
+    "a 0%/0-report clean verdict must not mark the IP known-bad, got tags ["threat-intel"]"
+    modules::abuseipdb::tests::a_score_below_the_suspicious_band_is_not_threat_intel --- FAILED
+    test result: FAILED. 13 passed; 2 failed; 0 ignored; 7389 filtered out
+```
+
+`a_real_positive_verdict_still_carries_threat_intel` PASSED in that same
+pre-fix run, proving the guard is not vacuously green from the fix
+suppressing the tag everywhere. Post-fix: `15 passed; 0 failed`, plus the
+full correlator suite (617 passed, 0 failed) and the adjacency tests
+(4 passed) confirming no consumer depended on the old unconditional tag.
+
+**Residual.** The `THREAT_INTEL_SOURCES` allowlist in
+`core::correlator::rules` is a separate mechanism (which *sources* count as
+threat intel) and is unaffected. `is_tor`, `usage_type`/hosting and the
+whitelist flag keep their own independent gating.
