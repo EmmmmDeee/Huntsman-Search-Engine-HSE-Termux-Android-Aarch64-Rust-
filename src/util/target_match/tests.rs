@@ -142,3 +142,46 @@ fn short_non_ascii_target_stays_exact_only() {
     let tm = TargetMatch::new("ян");
     assert!(!tm.matches(&json!({ "full_name": "янина петрова" })));
 }
+
+#[test]
+fn ip_target_rejects_a_different_ip_sharing_octet_digits() {
+    // REQ-TARGETMATCH-001: an IP address is an ordered, positional identifier, not
+    // a bag of octets. 192.168.1.10 and 192.168.10.1 are DIFFERENT hosts. The
+    // whole-word token predicate is order/position-blind, so it accepted any field
+    // whose words are a superset of the target's octets — attributing a stranger's
+    // breach row (their real credentials, at their real IP) to the subject.
+    let tm = TargetMatch::new("192.168.1.10");
+    assert!(
+        tm.matches(&json!({ "ip_address": "192.168.1.10" })),
+        "the exact IP is the subject"
+    );
+    assert!(
+        !tm.matches(&json!({ "ip_address": "192.168.10.1" })),
+        "a different host with the octets reordered must not be the subject"
+    );
+    assert!(
+        !tm.matches(&json!({ "last_ip": "10.1.168.192" })),
+        "the reversed IP is a different host, not the subject"
+    );
+    // The set-membership bug fired on ANY field carrying the octet digits as
+    // words, not only IP fields.
+    assert!(
+        !tm.matches(&json!({ "full_name": "unit 10 of 192 168 1 street" })),
+        "octet digits scattered in prose are not an IP match"
+    );
+
+    // IPv6 is ordered too, and canonical equality collapses formatting.
+    let v6 = TargetMatch::new("2001:db8::1");
+    assert!(
+        v6.matches(&json!({ "ip": "2001:db8::1" })),
+        "the exact IPv6 address is the subject"
+    );
+    assert!(
+        v6.matches(&json!({ "ip": "2001:0db8:0000:0000:0000:0000:0000:0001" })),
+        "a canonically-equal expanded IPv6 form is the same host"
+    );
+    assert!(
+        !v6.matches(&json!({ "ip": "db8:2001::1" })),
+        "a different IPv6 group order is a different host"
+    );
+}

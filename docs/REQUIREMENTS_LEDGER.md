@@ -8447,3 +8447,79 @@ that same field must route through the same redactor — audit the sanitizer's
 call sites against **all** emitters of the value it protects, not just the one
 that motivated it. Here the raw archive was guarded and the five human-facing
 and API renderings of the identical evidence were not.
+
+---
+
+### REQ-TARGETMATCH-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): the subject-attribution matcher was order/position-blind on IP-address targets — a different host sharing the octet digits was minted as the subject
+
+**Subsystem.** `util::target_match` (`src/util/target_match/mod.rs`) — the single
+canonical authority that decides whether a broad breach/stealer row identifies
+the scan subject, so a parser can quarantine strangers (`Entity::demote_to_candidate`)
+instead of minting them at full confidence. Shared by `dehashed`, `oathnet_pro`
+and `see_know`, i.e. the credential/breach-attribution path for three modules.
+
+**Defect.** `TargetMatch::new` splits the target value on non-alphanumeric
+characters and, when 2+ tokens result, selects `Mode::AllTokensWholeWord`, which
+delegates to `str_util::whole_word_token_match` — a **set-membership** predicate:
+true iff every target token appears as a whole word *somewhere* in one field,
+**order- and position-independent**. That is correct for a personal name (`"Ali
+Kareem"` ↔ `"Kareem, Ali"`), but an IP address splits on its dots into octet
+tokens: `192.168.1.10` → `{192, 168, 1, 10}`. A **different host** whose octets
+are a superset in any order — `192.168.10.1`, `10.1.168.192` — therefore matched,
+as did any field merely carrying those digits as words (`"unit 10 of 192 168 1
+street"`). Because the matcher gates `demote_to_candidate`, the consequence was
+the worst class in this codebase: a stranger's row — their real leaked
+credentials, at their real IP — minted onto the subject at full confidence, not
+merely a missed finding. IPv6 targets (`2001:db8::1` → `{2001, db8, 1}`) were
+order-blind the same way. The module's own IP regression (`ip_target_matches_ip_fields`)
+only asserted against a fully-disjoint IP (`5.6.7.8`, no shared octets), so it
+never exercised the shared-octet case that triggers the bug.
+
+**Authoritative layer.** The matcher itself is the one authority (already
+consolidated for `dehashed`/`oathnet_pro`/`see_know`), so the fix belongs in
+`TargetMatch::new`/`matches` — not in any caller. An IP is an ordered,
+positional, atomic identifier; the correct canonical comparison is
+`std::net::IpAddr` equality, which the standard library already owns
+(order-strict, and it collapses formatting — IPv6 zero-group compression and
+hex case).
+
+**Fix.** Added `Mode::IpExact(std::net::IpAddr)`. `TargetMatch::new` now parses
+`target_value.trim()` as an `IpAddr` **before** the token-count decision (an IP
+has 2+ tokens and would otherwise fall into `AllTokensWholeWord`); on success the
+target is `IpExact`. `matches` compares a field by parsing it as an `IpAddr` and
+requiring canonical equality (`v.trim().parse::<IpAddr>().is_ok_and(|a| a == addr)`),
+so a different host, a reordered/reversed IP, an IP embedded in prose, or a
+non-IP field can never match, while a canonically-equal but differently-formatted
+form (an expanded IPv6 address) still does. The existing exact-string
+short-circuit still fires first, so an identically-spelled field is unaffected.
+Non-IP targets (names, handles, phones, emails) never reach the new branch and
+are byte-for-byte unchanged.
+
+**Regression lock.** `ip_target_rejects_a_different_ip_sharing_octet_digits`
+(`src/util/target_match/tests.rs`): target `192.168.1.10` matches the exact IP
+but must NOT match `192.168.10.1` (reordered), `10.1.168.192` (reversed), or
+`"unit 10 of 192 168 1 street"` (octet digits as prose words); target
+`2001:db8::1` matches the exact and the canonically-equal expanded
+`2001:0db8:…:0001`, but not the reordered `db8:2001::1`. The pre-existing
+`ip_target_matches_ip_fields` (exact IP across the ip/last_ip spellings; disjoint
+`5.6.7.8` rejected) stays green, proving the true-positive path is preserved.
+
+**Falsification.** Test-first: the lock was added and observed **FAILING** on
+baseline at the reordered-octet assertion (`test result: FAILED. 11 passed; 1
+failed`). After the fix all 12 pass. The fix was then falsified in place by
+disabling the IP detection in `new` (so an IP target falls back to
+`AllTokensWholeWord`) and the lock was observed **FAILING** again (`0 passed; 1
+failed`), then restored byte-for-byte from a pre-edit backup (`grep -c FALSIFY`
+→ 0).
+
+**Gate.** `cargo fmt --all` (scope: the two `target_match` files only); `cargo
+clippy --all-targets --locked -- -D warnings` → clean; `cargo test --locked
+--all-targets` → pass; `cargo test --doc` → 77 passed, 0 failed.
+
+**Class.** A canonical-comparison defect: a shared attribution primitive applied
+the wrong equality (unordered token-set) to an identifier whose meaning is
+ordered and positional. The generalisable rule (recorded for the sibling sweep):
+an identifier with internal structure and order — an IP, a coordinate pair, a
+version, a hash split on delimiters — must be compared by its own canonical
+type, never by tokenising it into an order-blind bag. Sibling attribution/relevance
+gates that tokenise a structured identifier are the next audit surface.

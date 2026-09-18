@@ -211,7 +211,11 @@ search-start that read an auth/quota failure as a clean "no records"
 export renderers that leaked the operator's own configured API keys when a
 provider echoed them back into entity evidence — the secret redactor was wired
 into the raw archive but not the five human-facing/API export paths
-(REQ-EXPORT-001), plus the abuseipdb/phone_au/email-canon fabrication fixes. REQ-AUGEO-001,
+(REQ-EXPORT-001), the `TargetMatch` subject-attribution primitive that was
+order/position-blind on IP-address targets — a different host sharing the
+octet digits was minted as the subject across `dehashed`/`oathnet_pro`/`see_know`,
+fixed by canonical `IpAddr` equality (REQ-TARGETMATCH-001), plus the
+abuseipdb/phone_au/email-canon fabrication fixes. REQ-AUGEO-001,
 REQ-INTELX-002 and REQ-CHAININTEL-001 are the same recurring family — an
 all-`default` `#[serde(default)]` response struct decoding an unexpected 200 as a
 clean (or, for chain_intel, affirmative "dormant") result; three fixed so far,
@@ -220,7 +224,11 @@ REQ-HUDSONROCK-001) have a proven fix pattern (require a field the real shape
 always carries; make the catch-all fail closed). REQ-EXPORT-001 is a distinct
 class — a correct sanitizer wired into one serialized copy (the raw archive) but
 not the parallel renderings of the same field; its rule is to audit a redactor's
-call sites against *all* emitters of the value it guards. Open high-stakes items remain
+call sites against *all* emitters of the value it guards. REQ-TARGETMATCH-001 is
+a canonicalisation debt of a third kind — a structured, ordered identifier (an IP)
+compared by an order-blind token set instead of its own canonical type; its rule
+is that an identifier with internal order (IP, coordinate pair, version, split
+hash) is compared by its canonical type, never tokenised into a bag. Open high-stakes items remain
 queued (namesake fabrications, ambiguity-discarded geo, truncation-silent
 providers, key-header replay).
 
