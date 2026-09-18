@@ -387,6 +387,9 @@ fn is_error_response(v: &Value) -> bool {
     if v.get("success").and_then(serde_json::Value::as_bool) == Some(false) {
         return true;
     }
+    if v.get("valid").and_then(serde_json::Value::as_bool) == Some(false) {
+        return true;
+    }
     false
 }
 
