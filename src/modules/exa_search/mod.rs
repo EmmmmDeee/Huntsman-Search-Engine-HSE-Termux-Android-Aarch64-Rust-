@@ -307,7 +307,14 @@ impl Module for ExaSearch {
             // appear in the result text; FullName/Username/Org/TrackingId skip
             // extraction (too risky for namesake/alias collision).
             if let Some(text) = &r.text {
-                mine_snippet(text, &ctx.scan_id, &r.url, &target.kind, &target.value, &mut result);
+                mine_snippet(
+                    text,
+                    &ctx.scan_id,
+                    &r.url,
+                    &target.kind,
+                    &target.value,
+                    &mut result,
+                );
             }
         }
 
