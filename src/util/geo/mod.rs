@@ -509,8 +509,9 @@ pub fn confidence_for_accuracy_m(metres: Option<f64>) -> f64 {
         _ => 5000.0,
     };
     match metres as u64 {
-        0..=200 => confidence::VERY_HIGH,
-        201..=1000 => confidence::HIGH,
+        0..=50 => confidence::HIGH_PLUSPLUS_PLUS,
+        51..=300 => confidence::VERY_HIGH,
+        301..=1000 => confidence::HIGH,
         1001..=5000 => confidence::MEDIUM,
         _ => confidence::TENTATIVE,
     }
