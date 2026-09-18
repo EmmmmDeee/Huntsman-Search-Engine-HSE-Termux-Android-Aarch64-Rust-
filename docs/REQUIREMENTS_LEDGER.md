@@ -9770,3 +9770,52 @@ against a case-folded value (REQ-OATHNET-001), and a line number read without
 the assertion values beside it (REQ-CI-005). What ended it was refusing to ship
 a fourth guess — instrumenting the runner to print the discriminating facts, and
 controlling the cache variable before calling one green run a proof.
+
+### REQ-CI-008 — RETRACTED: the closure above was premature; `cargo clean -p` is not the fix
+
+The entry immediately above closed this on one green run. **That closure is
+withdrawn.** Run 35401155417 on `a47485de` — a commit whose only change is 50
+lines of this very Markdown file — failed with the identical signature: the
+canonical doctest reported at line 88, `left: 0.85` against `right: 0.75`.
+
+| Run | head | Cache restored | HEAD correct | Fence | `doctestbins` | `cargo clean -p` | Result |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 35400143489 | `2b2eca65` | yes (478 MB) | yes | 138 | (none) | yes | green |
+| 35401155417 | `a47485de` | yes (493 MB) | yes | 138 | (none) | yes | **FAIL** |
+
+Every instrumented variable is identical and the outcomes differ. So the
+failure is **non-deterministic**, `cargo clean -p` does not fix it, and
+`2b2eca65`'s green was coincidence.
+
+**The error in the closure was methodological, and it is the same error as the
+three before it.** Controlling for the cold-cache confound was necessary but not
+sufficient: a single green run cannot distinguish "fixed" from "did not happen
+to fire this time" for a defect whose base rate is roughly one in six. The
+honest bar for an intermittent fault is repetition, and it was not met. Four
+refuted hypotheses now: stale merge ref, restored doc-test bundle, duplicate
+source/second target, and cargo-fresh artifact.
+
+**What is still solid.** The tree is correct: a clean local build of the same
+commits passes both doctests every time, and `cargo test --doc -- --list`
+locally names them at 138 and 492. Whatever CI is doing, the branch is not
+wrong.
+
+**Two changes, shipped together, neither claiming a mechanism.**
+
+1. *Measurement.* `cargo test --doc … -- --list` runs before the suite. `--list`
+   makes rustdoc **collect and name** every doc-test without executing one. If
+   the collector is reading stale content, the list prints `canonical.rs -
+   … (line 88)` — a line this tree does not contain — naming the fault before
+   any assertion runs, and an `md5sum` pins what is on disk at that instant.
+   This converts "which tree does rustdoc see?" from inference into a printed
+   fact.
+2. *Isolation.* Doc-tests now run under `CARGO_TARGET_DIR=target-doctests`,
+   which the cache never populates, so no restored artifact can reach rustdoc
+   regardless of which mechanism produced the stale collection. Unit and
+   integration tests keep the cached dir via `--lib --bins --tests`. This costs
+   a compile instead of a cache hit; a blocking gate that intermittently
+   verifies the wrong source is not worth the minutes saved.
+
+**This is not closed.** It closes when the doc-tests pass on several
+consecutive runs, or when the `--list` output identifies the collector's source
+and that is fixed at its root. One green run will not close it again.

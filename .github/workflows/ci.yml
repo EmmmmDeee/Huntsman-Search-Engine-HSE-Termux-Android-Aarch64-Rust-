@@ -21,22 +21,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # Check out the PR's ACTUAL head, not GitHub's `refs/pull/N/merge`.
-      # The checkout action defaults to that server-computed merge ref on a
-      # `pull_request` event, and GitHub recomputes it asynchronously — for a
-      # run started right after a push it is routinely served STALE, so CI
-      # compiles a tree that is not the branch. Observed repeatedly on this
-      # repo: runs reporting doctest failures at source lines the branch does
-      # not have (`canonical.rs` line 88 when the branch's doctest is at 139),
-      # with `origin/main` already an ancestor of HEAD — i.e. nothing to merge,
-      # so an accurate merge ref would have been byte-identical to the head.
-      # The result is a red X on a green branch, and, worse, real regressions
-      # masked by results from an older tree.
       #
-      # Nothing is lost by not testing the merge commit here: `push` above is
-      # scoped to `main`, so the merged result IS verified — by the push run
-      # that fires when the PR lands. This trigger's job is to verify what the
-      # author actually wrote, which until now it never reliably did, because a
-      # feature branch gets no `push` run at all.
+      # HONEST SCOPE: this pin was originally added on the theory that a stale
+      # merge ref explained this branch's doctest failures. That theory is
+      # REFUTED — pinning changed nothing, and the failures continued (see
+      # REQ-CI-005/REQ-CI-008 in docs/REQUIREMENTS_LEDGER.md). The pin is kept
+      # on its own merits, not that one:
+      #
+      #   - `refs/pull/N/merge` is server-computed and recomputed
+      #     asynchronously, so a run started right after a push can be served a
+      #     merge ref that predates the push.
+      #   - `push` above is scoped to `main`, so a feature branch otherwise
+      #     never gets its own tip verified by anything.
+      #   - a credential scanner reading a stale tree is its own hazard.
+      #
+      # Nothing is lost by not testing the merge commit: the merged result IS
+      # verified by the `push` run that fires when the PR lands.
       #
       # The `|| github.sha` fallback keeps every non-PR event (push, schedule,
       # workflow_dispatch) on exactly the ref it used before: outside a
@@ -76,16 +76,25 @@ jobs:
           echo "restored target/ doc-test artifacts, if any:"
           ls -la target/debug/doctestbins 2>/dev/null || echo "  (none)"
 
-      # Force OUR crate's artifacts to be rebuilt from the checked-out source,
-      # keeping every dependency cached (so this costs one crate's build, not a
-      # cold start). The diagnostic above established that the checkout, the
-      # source on disk and the absence of a restored doc-test bundle are all
-      # correct, yet the doc-tests still executed main's doc comments — so the
-      # stale text has to be reaching rustdoc through an artifact cargo
-      # considered fresh. This is the remaining variable, and isolating it is
-      # what makes the next run's result mean something either way.
-      - name: Rebuild this crate from source (drop restored artifacts)
-        run: cargo clean -p huntsman-search-engine 2>/dev/null || true
+      # `cargo clean -p` was tried here and is NOT the fix: run 35400143489
+      # (2b2eca65) passed with it and run 35401155417 (a47485de) failed with
+      # it, on a commit whose only change was a Markdown file. Both runs
+      # restored a cache, both had the right HEAD, both showed the fence at
+      # 138, neither had a doctestbins dir. The failure is non-deterministic
+      # and nothing instrumented so far distinguishes the two runs.
+      #
+      # So this step no longer guesses; it MEASURES. `--list` makes rustdoc
+      # collect and name every doc-test without running it. If the collector
+      # is reading stale content, the list itself prints `canonical.rs - ...
+      # (line 88)` — a line this tree does not have — and names the culprit
+      # before any assertion runs. The checksum pins what is actually on disk
+      # at that moment.
+      - name: What does rustdoc actually collect? (diagnostic)
+        run: |
+          md5sum src/util/canonical.rs src/util/geo/mod.rs
+          echo "--- doc-tests as rustdoc names them ---"
+          cargo test --doc --locked --features dep-cooldown -- --list 2>&1 \
+            | grep -E 'canonical|confidence_for_accuracy' || echo "  (neither listed)"
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -119,8 +128,19 @@ jobs:
         # lets it be lowered as items get documented.
         run: scripts/doc_coverage.sh
 
-      - name: Test
-        run: cargo test --all --locked --features dep-cooldown
+      # Unit + integration tests, from the cached target dir (fast).
+      # `--lib --bins --tests` deliberately EXCLUDES doc-tests, which run below
+      # under their own CARGO_TARGET_DIR.
+      - name: Test (unit + integration)
+        run: cargo test --all --locked --features dep-cooldown --lib --bins --tests
+
+      # Doc-tests build into a target dir the cache never populates, so
+      # rustdoc cannot be handed a restored artifact no matter which
+      # mechanism produced the stale collection. This costs a compile rather
+      # than a cache hit; a blocking gate that intermittently verifies the
+      # wrong source is worth more than the minutes saved.
+      - name: Doc-tests (isolated target dir, no restored artifacts)
+        run: CARGO_TARGET_DIR=target-doctests cargo test --doc --locked --features dep-cooldown
 
   sibling-crates:
     # hse-core and wasm-ui are path dependencies of the root crate but
