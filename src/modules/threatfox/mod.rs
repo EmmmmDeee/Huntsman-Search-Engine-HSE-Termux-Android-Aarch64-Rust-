@@ -79,7 +79,23 @@ pub(super) fn build_ioc_entity(
 ) -> Entity {
     use std::collections::BTreeSet;
 
-    let mut entity = Entity::new(kind, term, confidence::AUTHORITATIVE, scan_id);
+    // Map ThreatFox confidence_level (0-100 vendor scale) to HSE confidence tier.
+    // ThreatFox's own 0-100 scale is hand-curated analyst confidence; a 75 means
+    // 75% likely to be malicious per abuse.ch. Bins: 0-50→HIGH, 51-75→VERY_HIGH,
+    // 76-90→HIGH_PLUSPLUS, 91-100→VERY_HIGH_PLUS (just below AUTHORITATIVE, which
+    // is reserved for authoritative sources like government registries).
+    let conf = iocs
+        .iter()
+        .filter_map(|ioc| ioc.confidence_level)
+        .max()
+        .unwrap_or(0);
+    let tier = match conf {
+        0..=50 => confidence::HIGH,
+        51..=75 => confidence::VERY_HIGH,
+        76..=90 => confidence::HIGH_PLUSPLUS,
+        _ => confidence::VERY_HIGH_PLUS,
+    };
+    let mut entity = Entity::new(kind, term, tier, scan_id);
     entity.tag("threatfox");
     entity.tag(crate::core::tags::THREAT_INTEL);
     entity.tag(crate::core::tags::MALICIOUS);
