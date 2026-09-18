@@ -7974,3 +7974,73 @@ name for it) and inherent to any unauthenticated keyserver source; it is tagged
 verifying a UID would require downloading the key and checking self-signatures,
 which the HKP machine-readable index does not carry; that is a separate,
 larger capability, not this fix.
+
+### REQ-OPENSANCTIONS-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a party merely LINKED to a sanctioned entity fired the Critical "sanctions designation" claim
+
+**Lead.** Hybrid module sweep + personal re-read of the producer arm, the tag
+definition, and the correlator rule the tag drives.
+
+**Verified from source.** `result_to_entity`
+(`src/modules/opensanctions/entity_builders.rs`) matched a definitive result's
+`topics` and folded BOTH `"sanction"` and `"sanction.linked"` into the same
+`tags::SANCTIONED`. That tag's own doc (`hse-core/src/tags.rs`) defines it as
+"Listed on a sanctions list (OFAC SDN, UN, EU, DFAT, …)" — a listing claim —
+and it is the sole tag `rule_au_114_sanctions_exposure`
+(`src/core/correlator/rules/org.rs`) grades `Severity::Critical` "matches a
+sanctions designation". OpenSanctions' `sanction.linked` topic is a DISTINCT,
+documented taxonomy value: an entity merely LINKED to a designated party (a
+relative, business partner, or majority-owned company), NOT itself designated.
+Nothing between the producer and the correlator distinguished the two — same
+tag, same evidence shape, same Critical severity — and no test exercised a
+`sanction.linked`-only record. `tags::SANCTIONED` had exactly two readers in the
+tree: this producer arm and AU-114 (confirmed by grep), so the fix's blast
+radius is precisely those two.
+
+**Failure scenario.** OpenSanctions returns a definitive match for a person who
+is the spouse or business partner of a sanctioned individual, `topics:
+["sanction.linked"]`. The old arm tagged the Person `tags::SANCTIONED`, and
+AU-114 fired a `Severity::Critical` "Person '…' matches a sanctions
+designation" — a false, reputationally and legally severe claim that a real
+person is on a sanctions list, when the underlying record only ever asserted an
+association. The single highest-stakes false-positive category in the OSINT
+domain, produced from a mere link.
+
+**Fix.** A new `hse-core` tag `tags::SANCTIONS_LINKED` ("sanctions-linked"),
+documented as an association with a designated party — not a designation. The
+producer arm is split: `"sanction"` → `SANCTIONED` (Critical designation),
+`"sanction.linked"` → `SANCTIONS_LINKED`. AU-114 grades the new tag
+`Severity::Medium` "is linked to a sanctioned party (elevated due diligence — an
+association, not a designation)" — placed, by the rule's OWN taxonomy, in the
+same "elevated due-diligence signal, not a determination" tier as the PEP
+role-flag, never the Critical tier reserved for a determination against the
+subject. The linked party is still SURFACED as a ranked finding (AU-114's whole
+purpose), just never as a designation. The precedence order (sanctioned >
+debarred > sanctions-linked > pep) means a record carrying several flags is
+still graded by its strongest, and every present flag is enumerated in the
+description.
+
+**Evidence.** New module lock
+`opensanctions::tests::a_sanction_linked_only_record_is_not_tagged_sanctioned`
+(a `sanction.linked`-only definitive match is NOT tagged `SANCTIONED` and IS
+tagged `SANCTIONS_LINKED`) and correlator lock
+`part13::au114_sanctions_linked_only_fires_medium_not_critical` (Medium, never
+"matches a sanctions designation", framed as a lead). The pre-existing
+`definitive_match_carries_sanction_and_debarment_tags_and_evidence` (real
+`"sanction"` topic → `SANCTIONED`) still passes, proving the literal-designation
+path is untouched.
+
+**Falsification.** Test-first: the module lock was written and observed FAILING
+on the un-split producer — `panicked at src/modules/opensanctions/tests.rs:202:
+a merely-linked record must NOT be tagged as a designated party` (the
+`sanction.linked` record was still carrying `SANCTIONED`). After the split:
+`opensanctions` 13 passed / 0 failed; AU-114 correlator locks 6 passed / 0
+failed; `cargo fmt --check` clean; `cargo clippy --all-targets --locked -- -D
+warnings` exit 0.
+
+**Note on taxonomy.** No live OpenSanctions API access was available to
+re-confirm the topic strings this session; the finding rests on OpenSanctions'
+documented `topics` enum (which distinguishes `sanction` from `sanction.linked`
+precisely on the designated-vs-associated axis) and on the code already
+hard-coding `"sanction.linked"` as a match arm — strong internal evidence it is
+a real value the implementer met from the live API. The fix (splitting the two
+cases) is correct and safe regardless of the exact wording of the weaker tier.
