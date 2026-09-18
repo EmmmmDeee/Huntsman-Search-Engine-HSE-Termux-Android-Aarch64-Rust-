@@ -20,12 +20,28 @@ fn index_by_source<'a>(ents: &[&'a Entity]) -> HashMap<&'a str, Vec<&'a Entity>>
 /// Entities in `idx` sharing ANY corroborating source with `w`, deduped by
 /// uid — exactly the set `ents.iter().filter(|e| shares_corroborating_source(w,
 /// e))` would collect, just reached via the source index instead of a rescan.
-fn anchors_for<'a>(w: &Entity, idx: &HashMap<&str, Vec<&'a Entity>>) -> Vec<&'a Entity> {
+///
+/// A shared source is a shared MODULE NAME, not a shared record: one stealer-log
+/// provider returns MANY victims, and every one of them carries that module's
+/// name. So the source test alone anchored a wallet to every identity the dump
+/// mentioned, not the owner of the row the wallet came from — the "mere
+/// co-existence in the same scan" the rule's own docstring rules out
+/// (REQ-CORRELATOR-004). `records` additionally requires the module's own
+/// record-identifying attributes to agree, rejecting only pairs it can PROVE
+/// came from different records.
+fn anchors_for<'a>(
+    w: &Entity,
+    idx: &HashMap<&str, Vec<&'a Entity>>,
+    records: &same_record::RecordIndex<'_>,
+) -> Vec<&'a Entity> {
     let mut seen: HashSet<&str> = HashSet::new();
     let mut v: Vec<&Entity> = Vec::new();
     for s in w.corroborating_sources() {
         if let Some(candidates) = idx.get(s) {
             for &c in candidates {
+                if !records.same_record(w, c) {
+                    continue;
+                }
                 if seen.insert(c.uid.as_str()) {
                     v.push(c);
                 }
@@ -83,14 +99,15 @@ pub(in crate::core::correlator) fn rule_au_039_wallet_identity(
 
     let persons_by_source = index_by_source(&persons);
     let emails_by_source = index_by_source(&emails);
+    let records = same_record::RecordIndex::new(entities);
 
     let mut out = Vec::new();
     for w in wallets {
         // Person preferred over Email: only fall back to email anchors when no
         // person is tied to this wallet by a shared source.
-        let mut tied = anchors_for(w, &persons_by_source);
+        let mut tied = anchors_for(w, &persons_by_source, &records);
         if tied.is_empty() {
-            tied = anchors_for(w, &emails_by_source);
+            tied = anchors_for(w, &emails_by_source, &records);
         }
         // Deterministic order for the (same-rule_id) tie-break downstream.
         tied.sort_by(|a, b| a.uid.cmp(&b.uid));

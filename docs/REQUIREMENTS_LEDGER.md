@@ -8714,3 +8714,100 @@ itself, which is the reachable half.
 rule: when an audit finds a defect class, the deliverable is the mechanism that
 makes the class unrepeatable, not the audit's answer — an answer decays with the
 next commit, a test does not.
+
+### REQ-CORRELATOR-002 / REQ-CORRELATOR-004 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a shared MODULE NAME was read as a shared RECORD, so AU-046 fused a stranger into an alias's identity and AU-039 anchored a wallet to a different victim of the same dump
+
+**Defect (one root cause, two rules).** `Entity::corroborating_sources()`
+returns `ev.source` — MODULE NAMES (`hse-core/src/lib.rs:1110`). Both
+attribution rules gate on that set intersecting:
+
+- **AU-046** (`identity/cluster.rs`): `platform_identifiers.filter(|(_, srcs)|
+  !alias_srcs.is_disjoint(srcs))`.
+- **AU-039** (`crypto.rs::anchors_for`): the wallet's sources probed against a
+  `source → candidates` index.
+
+A module name is not an account and not a record. The modules feeding these
+rules routinely surface many unrelated people per scan by design: `npm_author`
+walks every maintainer of every package it touches, `github_user` every profile
+queried, a stealer-log provider every victim in the dump. Two strangers in one
+such response share the module name and nothing else — which is exactly the
+"mere co-existence in the same scan" **both docstrings already say must not be
+enough**. AU-046's claims "a co-author's email, another alias's identifiers, or
+an unrelated breach-dump stranger can't be fused in"; AU-039's claims
+"Attribution requires a real co-location tie". Neither was true. A prior fix had
+narrowed each from "the whole scan" to "the same module", which is better and
+still not a record.
+
+Consequence: AU-046 emits `Severity::High` "Alias X resolves to N real-world
+identifier(s) via its platform accounts" naming a stranger's real email;
+AU-039 emits `Severity::High` "Wallet W co-occurs with identity P — possible
+attribution" naming a bystander from another row of the dump.
+
+**Fix — one shared authority.** New `rules::same_record::RecordIndex`. What
+identifies a record is already in the evidence attributes the modules stamp
+(`npm_author` → `package`; `github_user` → `github_login` / `profile_url` /
+`github_id`; the stealer-log modules → the victim's `username`), but there is no
+cross-module registry of which key that is and hard-coding one would rot. So the
+discriminator is derived from the scan: **a key discriminates within a module
+when it takes MORE THAN ONE value across that module's evidence in this scan.**
+Boilerplate (`npm_author`'s `source = npm_registry`, identical everywhere)
+identifies nothing and drops out; `package` varying across packages identifies
+the record. Self-tuning, and no module has to be taught anything.
+
+Values are compared WITHOUT their keys, because one module legitimately names
+the same record under different keys on different evidence lines (`github_user`
+stamps `github_id` + `profile_url` on the profile evidence but `github_login` on
+the company/location evidence — all three name one account); key-matching would
+split a genuine same-account tie.
+
+`same_record` returns false ONLY when every shared module proved the two came
+from different records (both sides carry discriminating values, none match).
+When either side carries none the answer is UNKNOWN and counts as same-record —
+the pre-existing behaviour. The fix therefore removes exactly the fabrications
+it can prove, and a module that stamps no discriminator keeps producing exactly
+the links it did before. Both rules call the one predicate.
+
+**Regression lock.** Two tests in `src/core/correlator/tests/part07.rs`.
+`au046_does_not_fuse_a_stranger_surfaced_by_the_same_module_into_the_alias`:
+alias `kylo4kylo` (npm + reddit) with its own maintainer email on package
+`kylo-cli` and a co-maintainer's email on `unrelated-lib` — the own email must
+still resolve, the stranger must not.
+`au039_does_not_anchor_a_wallet_to_a_different_victim_from_the_same_dump`: one
+`oathnet` dump carrying the wallet and owner under `username = ghost_91` and a
+bystander under `nightcrawler` — the owner must still anchor, the bystander must
+not. Both assert the true-positive half, so a fix that simply stopped emitting
+would fail them.
+
+**Falsification.** Written test-first and observed **FAILING** on baseline with
+the exact messages "a co-maintainer on a DIFFERENT package is a stranger — the
+same module name is not the same account" and "a different victim in the same
+dump is not a wallet-attribution lead". After the fix both pass. The fix was
+then falsified in place by deleting the two `same_record` calls (leaving the
+predicate compiled but unused) and both were observed **FAILING** again; both
+files were restored byte-for-byte from pre-edit backups.
+
+**No-regression evidence.** The whole 618-test correlator suite is green with
+the gate in — including the pre-existing AU-046 and AU-039 coverage tests, whose
+fixtures stamp no discriminating attribute and so travel the UNKNOWN path
+unchanged. Full suite 7,479 passed / 0 failed (up from 7,477: the two new
+locks).
+
+**Gate.** `cargo fmt --all`; `cargo clippy --all-targets --features dep-cooldown
+-- -D warnings` → clean; `cargo test --lib` → 7,479 passed, 0 failed; `cargo
+test --doc` → 77 passed, 0 failed.
+
+**Recorded residual.** A module that stamps no varying attribute is still
+undeterminable, so its pairs link as before — the honest limit of what the
+evidence supports, not a silently-accepted fabrication. Closing it means having
+modules stamp a record identity, which is a separate, larger change. The
+remaining `shares_corroborating_source`-style gates elsewhere in the correlator
+are the next audit surface, and `same_record` is now the primitive to migrate
+them onto.
+
+**Class.** The prior test's blindness is the reusable lesson: AU-046's coverage
+test used a scan with exactly ONE alias and ONE email, so a module-name gate and
+a true account gate were indistinguishable and the rule looked correct for as
+long as the fixture stayed small. The generalisable rule: a test for an
+ATTRIBUTION gate must contain at least two candidates that differ only in the
+thing the gate is supposed to discriminate on — otherwise it proves the rule
+emits something, never that it emits the RIGHT something.

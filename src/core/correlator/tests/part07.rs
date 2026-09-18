@@ -801,3 +801,85 @@ fn au047_links_on_reused_plaintext_password_and_session_token() {
         "an untagged hex digest must not link (unsalted-hash collision risk)"
     );
 }
+
+// ── REQ-CORRELATOR-002 / -004: a shared MODULE NAME is not a shared RECORD ────
+
+#[test]
+fn au046_does_not_fuse_a_stranger_surfaced_by_the_same_module_into_the_alias() {
+    // npm_author genuinely surfaces the maintainers of EVERY package it walks,
+    // so one scan carries several unrelated people all stamped `npm_author`.
+    // The alias's own account published `k@example.com` (package `kylo-cli`);
+    // `stranger@example.com` is a co-maintainer on a DIFFERENT package and is
+    // not this person. Both share the module name, so the module-name gate
+    // fuses the stranger's real email into the alias's identity at High.
+    let mut handle = Entity::new(EntityKind::Username, "kylo4kylo", 0.6, "scan");
+    handle.add_evidence(
+        Evidence::new("npm_author", "npm maintainer (package kylo-cli)").with_attr("package", "kylo-cli"),
+    );
+    handle.add_evidence(Evidence::new("reddit_user", "confirmed account"));
+
+    let mut own = Entity::new(EntityKind::Email, "k@example.com", 0.7, "scan");
+    own.add_evidence(
+        Evidence::new("npm_author", "npm maintainer email (package kylo-cli)")
+            .with_attr("package", "kylo-cli"),
+    );
+
+    let mut stranger = Entity::new(EntityKind::Email, "stranger@example.com", 0.7, "scan");
+    stranger.add_evidence(
+        Evidence::new("npm_author", "npm maintainer email (package unrelated-lib)")
+            .with_attr("package", "unrelated-lib"),
+    );
+
+    let hits = super::rules::rule_au_046_cross_platform_identity_resolution(
+        &RuleContext::new(&[handle.clone(), own.clone(), stranger.clone()]),
+        "scan",
+        0,
+    );
+    assert_eq!(hits.len(), 1, "the alias still resolves to its OWN identifier");
+    assert!(
+        hits[0].entity_uids.contains(&own.uid),
+        "the identifier the alias's own package published must resolve"
+    );
+    assert!(
+        !hits[0].entity_uids.contains(&stranger.uid),
+        "a co-maintainer on a DIFFERENT package is a stranger — the same module \
+         name is not the same account"
+    );
+}
+
+#[test]
+fn au039_does_not_anchor_a_wallet_to_a_different_victim_from_the_same_dump() {
+    // One stealer-log module returns MANY victims. The wallet belongs to the
+    // record for victim `ghost_91`; `Unrelated Bystander` is a different row of
+    // the same dump. Sharing the module name is not sharing the record — the
+    // pre-fix rule reported the bystander as a possible wallet owner at High.
+    let mut wallet = Entity::new(
+        EntityKind::CryptoAddress,
+        "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+        0.7,
+        "scan",
+    );
+    wallet.add_evidence(Evidence::new("oathnet", "stealer log").with_attr("username", "ghost_91"));
+
+    let mut owner = Entity::new(EntityKind::Person, "Real Owner", 0.7, "scan");
+    owner.add_evidence(Evidence::new("oathnet", "stealer log").with_attr("username", "ghost_91"));
+
+    let mut bystander = Entity::new(EntityKind::Person, "Unrelated Bystander", 0.7, "scan");
+    bystander
+        .add_evidence(Evidence::new("oathnet", "stealer log").with_attr("username", "nightcrawler"));
+
+    let hits = super::rules::rule_au_039_wallet_identity(
+        &RuleContext::new(&[wallet.clone(), owner.clone(), bystander.clone()]),
+        "scan",
+        0,
+    );
+    let linked: Vec<&String> = hits.iter().flat_map(|h| h.entity_uids.iter()).collect();
+    assert!(
+        linked.contains(&&owner.uid),
+        "the victim whose own record carries the wallet must still be anchored"
+    );
+    assert!(
+        !linked.contains(&&bystander.uid),
+        "a different victim in the same dump is not a wallet-attribution lead"
+    );
+}

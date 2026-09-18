@@ -623,6 +623,7 @@ mod payid;
 mod resolved;
 mod reuse_closure;
 mod robust;
+mod same_record;
 mod sim;
 mod template;
 mod transitive;

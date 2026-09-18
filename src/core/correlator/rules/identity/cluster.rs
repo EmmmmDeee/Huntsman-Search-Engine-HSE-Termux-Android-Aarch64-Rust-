@@ -231,6 +231,7 @@ pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolutio
     if platform_identifiers.is_empty() {
         return Vec::new();
     }
+    let records = super::super::same_record::RecordIndex::new(entities);
 
     aliases
         .iter()
@@ -243,10 +244,21 @@ pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolutio
             // stranger from a different platform account were all mis-attributed as
             // this person's identity. Requiring a shared source scopes the resolution
             // to the alias's own accounts, which is what the docstring already claims.
+            //
+            // A shared source is a shared MODULE NAME, not a shared account:
+            // `npm_author` surfaces every maintainer of every package it walks,
+            // `github_user` every profile queried. So the source test alone still
+            // fused a co-maintainer on an unrelated package, or a different
+            // victim of the same dump, into this alias's identity — the very
+            // thing the paragraph above says must not happen
+            // (REQ-CORRELATOR-002). `records.same_record` additionally requires
+            // that the module's own record-identifying attributes agree, and
+            // rejects only pairs it can PROVE came from different records.
             let alias_srcs: HashSet<&str> = alias.corroborating_sources();
             let mut resolved_uids: Vec<String> = platform_identifiers
                 .iter()
                 .filter(|(_, srcs)| !alias_srcs.is_disjoint(srcs))
+                .filter(|(e, _)| records.same_record(alias, e))
                 .map(|(e, _)| e.uid.clone())
                 .collect();
             if resolved_uids.is_empty() {
