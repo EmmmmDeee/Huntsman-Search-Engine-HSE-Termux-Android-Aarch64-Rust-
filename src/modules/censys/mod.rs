@@ -163,7 +163,7 @@ impl Module for Censys {
 ///
 /// Returns empty when the host carries neither services nor a location (the
 /// caller previously short-circuited on this). The Coordinates AND the
-/// city/country Address are BOTH gated on the shared [`is_valid_coords`] check:
+/// city/country Address are BOTH gated on valid coordinates:
 /// a `0,0` location is Censys's "unknown" sentinel, where the city/country are
 /// equally unreliable, so it yields neither — keeping placeholder junk out of the
 /// graph (false positives are worse than a missed lead here).
