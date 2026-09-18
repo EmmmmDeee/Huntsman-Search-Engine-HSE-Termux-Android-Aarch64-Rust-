@@ -76,11 +76,16 @@ jobs:
           echo "restored target/ doc-test artifacts, if any:"
           ls -la target/debug/doctestbins 2>/dev/null || echo "  (none)"
 
-      # Doc-tests are the one step observed reading a tree older than the
-      # checkout, so they start from a clean slate rather than from whatever
-      # the cache restored. Costs a rustdoc re-run, not a full rebuild.
-      - name: Drop any restored doc-test artifacts
-        run: rm -rf target/debug/doctestbins target/doc
+      # Force OUR crate's artifacts to be rebuilt from the checked-out source,
+      # keeping every dependency cached (so this costs one crate's build, not a
+      # cold start). The diagnostic above established that the checkout, the
+      # source on disk and the absence of a restored doc-test bundle are all
+      # correct, yet the doc-tests still executed main's doc comments — so the
+      # stale text has to be reaching rustdoc through an artifact cargo
+      # considered fresh. This is the remaining variable, and isolating it is
+      # what makes the next run's result mean something either way.
+      - name: Rebuild this crate from source (drop restored artifacts)
+        run: cargo clean -p huntsman-search-engine 2>/dev/null || true
 
       - name: Format
         run: cargo fmt --all -- --check
