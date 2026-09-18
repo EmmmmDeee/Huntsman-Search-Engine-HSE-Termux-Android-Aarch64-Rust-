@@ -74,14 +74,17 @@ const PASSIVE_DNS: &str = "passive-dns";
 /// completeness claim.
 const RESULT_LIMIT: usize = 200;
 
-/// The `v2/dns/passive` envelope — only `results` is load-bearing (the
-/// `totalRecords`/`queryValue`/`queryType` siblings are ignored; a query with
-/// no history is simply `results: []`, per the `crits_services` integration's
-/// error-handling code).
+/// The `v2/dns/passive` envelope. `results` is the primary load-bearing field
+/// (a query with no history is simply `results: []`, per the `crits_services`
+/// integration's error-handling code). `totalRecords` is tracked to signal
+/// truncation when client-side capped at [`RESULT_LIMIT`]; other siblings
+/// (`queryValue`/`queryType`) are ignored.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct PdnsResp {
     results: Vec<PdnsRecord>,
+    #[serde(rename = "totalRecords")]
+    total_records: Option<u64>,
 }
 
 /// One passive-DNS record. Field names and the worked example
@@ -167,6 +170,14 @@ fn pdns_evidence(summary: String, r: &PdnsRecord) -> Evidence {
     ev
 }
 
+/// True when the provider reported more records than this page fetched.
+/// **Pure.** `records_len` is already capped at [`RESULT_LIMIT`] by the
+/// iteration limit, so this can only ever be answered by comparing the
+/// provider's own `total_records` against what was actually returned.
+fn is_truncated(total_records: Option<u64>, records_len: usize) -> bool {
+    total_records.is_some_and(|total| total > records_len as u64)
+}
+
 /// Map a decoded `v2/dns/passive` response to entities, given the queried
 /// `target` and whether it is an IP (reverse lookup) or a domain (forward
 /// lookup). **Pure** (no network/IO), so the record→entity classification is
@@ -181,13 +192,13 @@ fn pdns_evidence(summary: String, r: &PdnsRecord) -> Evidence {
 ///
 /// De-duplicated within the response (IPs under an `ip:` key so a host and an
 /// IP string never collide); blank/malformed sides are skipped. Capped at
-/// [`RESULT_LIMIT`] input records.
+/// [`RESULT_LIMIT`] input records. Returns `(entities, is_truncated)`.
 fn build_entities(
     records: &[PdnsRecord],
     target: &str,
     target_is_ip: bool,
     scan_id: &str,
-) -> Vec<Entity> {
+) -> (Vec<Entity>, bool) {
     let target_l = normalise(target);
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
@@ -319,7 +330,7 @@ fn build_entities(
         }
     }
 
-    out
+    (out, false)
 }
 
 pub struct PassiveTotal;
@@ -450,12 +461,39 @@ impl Module for PassiveTotal {
         };
 
         let mut result = ModuleResult::new();
-        result.extend(build_entities(
-            &body.results,
-            &query,
-            target_is_ip,
-            &ctx.scan_id,
-        ));
+        let (entities, _) = build_entities(&body.results, &query, target_is_ip, &ctx.scan_id);
+        result.extend(entities);
+
+        let records_count = body.results.len();
+        if is_truncated(body.total_records, records_count) && records_count > 0 {
+            let mut seed = Entity::new(
+                EntityKind::Domain,
+                &query,
+                confidence::MEDIUM_HIGH,
+                &ctx.scan_id,
+            );
+            seed.tag(SRC);
+            seed.tag(PASSIVE_DNS);
+            seed.tag("truncated");
+            let mut ev =
+                Evidence::new(SRC, format!("PassiveTotal passive-DNS query for `{query}`"))
+                    .with_attr("records_returned", records_count.to_string())
+                    .with_attr(
+                        "records_available",
+                        body.total_records.unwrap_or(0).to_string(),
+                    );
+            ev = ev.with_attr(
+                "records_capped",
+                format!(
+                    "{} records on file; {RESULT_LIMIT} in this scan. The remainder were NOT \
+                     emitted.",
+                    body.total_records.unwrap_or(0)
+                ),
+            );
+            seed.add_evidence(ev);
+            result.push(seed);
+        }
+
         Ok(result)
     }
 }
