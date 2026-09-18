@@ -59,6 +59,14 @@ pub(crate) const PLATFORM_HOSTS: &[&str] = &[
     "x.com",
 ];
 
+/// Check whether a host is a known platform (REQ-URLEXTRACT-001). Strips the
+/// "www." prefix before matching so both `github.com` and `www.github.com`
+/// are excluded identically. **Pure**.
+pub(crate) fn is_platform_host(host: &str) -> bool {
+    let normalized = host.strip_prefix("www.").unwrap_or(host);
+    PLATFORM_HOSTS.contains(&normalized)
+}
+
 /// Resolve a canonical profile URL: prefer the API-provided link when it is an
 /// absolute `http(s)` URL (with any trailing slash trimmed); otherwise fall
 /// back to a constructed URL. The "filter the supplied link, else construct
@@ -108,7 +116,7 @@ pub(crate) fn website_url_and_domain(
     let mut out = vec![Entity::new(EntityKind::Url, site, url_confidence, scan_id)];
     if let Some(host) = crate::util::url_util::host_from_url(site)
         && host.contains('.')
-        && !PLATFORM_HOSTS.contains(&host.as_str())
+        && !is_platform_host(&host)
         && !crate::core::validation::is_placeholder_entity(&EntityKind::Domain, &host)
     {
         out.push(Entity::new(

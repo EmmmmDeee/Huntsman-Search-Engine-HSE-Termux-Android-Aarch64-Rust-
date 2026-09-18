@@ -95,6 +95,38 @@ fn website_excludes_platform_host_domain_but_keeps_url() {
 }
 
 #[test]
+fn website_excludes_www_prefixed_platform_host_domain() {
+    // REQ-URLEXTRACT-001: both github.com and www.github.com are platform hosts
+    // and must be excluded identically. A www.-prefixed platform link is never
+    // a personal domain.
+    let ents = website_url_and_domain(
+        "https://www.github.com/alice",
+        confidence::HIGH_PLUS,
+        0.62,
+        SCAN,
+    );
+    assert_eq!(ents.len(), 1);
+    assert_eq!(ents[0].kind, EntityKind::Url);
+    assert_eq!(ents[0].value, "https://www.github.com/alice");
+}
+
+#[test]
+fn is_platform_host_matches_exact_and_www_prefixed() {
+    // REQ-URLEXTRACT-001: normalizes www. prefix before matching.
+    assert!(is_platform_host("github.com"));
+    assert!(is_platform_host("www.github.com"));
+    assert!(is_platform_host("twitter.com"));
+    assert!(is_platform_host("www.twitter.com"));
+}
+
+#[test]
+fn is_platform_host_rejects_non_platform() {
+    // Non-platform third-party domains must not be excluded.
+    assert!(!is_platform_host("alice.dev"));
+    assert!(!is_platform_host("www.alice.dev"));
+}
+
+#[test]
 fn website_returns_empty_for_non_http() {
     assert!(
         website_url_and_domain("ftp://alice.dev", confidence::HIGH_PLUS, 0.62, SCAN).is_empty()
