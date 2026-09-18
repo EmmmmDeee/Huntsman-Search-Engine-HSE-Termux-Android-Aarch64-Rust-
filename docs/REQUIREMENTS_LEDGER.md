@@ -9375,3 +9375,98 @@ load-bearing and precisely scoped, not a blanket widening of the layering rule.
 **Permanent invariant.** A provider's capture sentinel is not a secret at either
 layer — the parser will not mint it, and the correlator will not link on it —
 and both decisions are made by one shared predicate.
+
+### REQ-OATHNET-001 (**new, Pass 35 — FIXED, FALSIFIED**): three social-handle emitters admitted absence sentinels as real handles, minting live lookup pivots from `\N`
+
+**Defect.** `extract_breach_entities` (`src/modules/oathnet_pro/breach.rs`)
+defines its own absence authority at the top of the file:
+
+```rust
+fn is_absent(s: &str) -> bool {
+    crate::util::json::is_null_sentinel(s) || crate::util::extract::is_placeholder_secret(s)
+}
+```
+
+Its doc comment already states the full contract — *"a value that is really an
+absence sentinel (`\N`, `NULL`, an empty/whitespace string, a redaction
+placeholder), not a datum"* — and warns precisely about the consequence:
+a breach page where many rows carry `\N` mints *"one shared node that fuses all
+those unrelated strangers together — a false positive, the worst kind for an
+evidentiary tool."*
+
+Four emitters applied it (country, two location sites, organisation). **Three
+social-handle emitters did not:**
+
+| Site | Guard before | Admitted |
+| --- | --- | --- |
+| `instagram` | **none** | `\N`, `[NOT_SAVED]`, `UPGRADE_TO_SEE_…` |
+| `linkedin` | **none** | `\N`, `[NOT_SAVED]`, `UPGRADE_TO_SEE_…` |
+| extra-social loop (`telegram`/`twitter`/`snapchat`/`facebook`/`github`/`tiktok`/`reddit`) | `is_redacted_sentinel` | `\N`, `[NOT_SAVED]` |
+
+`is_redacted_sentinel` (`validate.rs`) matched only `UPGRADE_TO_SEE` and
+`REDACTED` — a **strict subset** of `is_absent`, because
+`is_placeholder_secret`'s own first branch already covers both of those
+spellings. Everything the narrower predicate added was nothing; everything it
+omitted — the SQL-dump NULL `\N` and every bracketed form (`[NOT_SAVED]`,
+`[fail]`, `<empty>`, `[NULL]`, `[N/A]`) — sailed through. `\N` is length 2, so
+it sits inside the loop's own `(2..=64)` window.
+
+**Why this is worse than a stray node.** The loop's own comment states the
+amplification: each handle *"unlocks username_search / search_engines for
+free"*. A minted sentinel is therefore dispatched to live per-platform
+lookups, and any presence found for that garbage string is attributed to the
+subject. `linkedin`'s bare-handle branch is worse still — it prefixes the
+value, producing `linkedin:\N`, which reads as a real LinkedIn identity and
+unlocks the paid proxycurl enrichment leg.
+
+**Reproduction (observed, not argued).** A dump of the real extraction path
+across 3 sentinels × 5 fields showed **13 of 15 combinations minting a
+`Username` entity** tagged `breach` / `oathnet-pro` / `<platform>`, carrying
+`raw_value: "\N"` and the sentinel echoed in evidence attributes. The only
+three that did not mint were the extra-social loop's `UPGRADE_TO_SEE_xxxx`
+case — exactly the subset `is_redacted_sentinel` covered, confirming the guard
+map above.
+
+**A vacuous first cut, recorded.** The first version of the regression test
+PASSED against the defective baseline. Its filter compared the minted value
+against the sentinel case-sensitively, but `Entity::new`'s `Username` arm
+case-folds, so it was searching for `[NOT_SAVED]` in a value that reads
+`[not_saved]`. The assertion could not observe the positive it existed to
+catch. This is the same lesson already recorded for the `--depth 0` scan under
+REQ-SOURCEFAMILY-001: **a clean negative observed without a control that can
+produce the positive is not evidence.** The corrected test folds the needle and
+fails on baseline.
+
+**Fix — one absence authority, three sites wired, the weaker one deleted.**
+`instagram` and `linkedin` now gate on `is_absent`; the extra-social loop
+replaces `is_redacted_sentinel` with `is_absent`. Because that was
+`is_redacted_sentinel`'s only production caller, the predicate is **removed**
+from `validate.rs` rather than left dormant — a second, weaker absence
+authority in the same module is exactly what a future site would reach for by
+mistake. A comment records why it is gone. Absence is now decided in one place
+for this module.
+
+**Regression lock.**
+`a_placeholder_in_a_social_field_is_never_minted_as_a_handle`
+(`src/modules/oathnet_pro/tests.rs`) drives the real extraction path over all
+3 × 5 combinations and asserts nothing is minted, then asserts the
+non-regression: a genuine handle (`jordan_m`) still mints in all five fields,
+including `linkedin`'s prefixed form. All 58 pre-existing `oathnet_pro` tests
+continue to pass, the characterization test among them.
+
+**Falsification — three independent reversions.**
+
+| Reversion | Result |
+| --- | --- |
+| Drop the `instagram` guard | FAILED — mints `Username` `\n` (`raw_value: "\N"`), tags `["breach","oathnet-pro","instagram","candidate"]` |
+| Drop the `linkedin` guard | FAILED — mints `Username` `linkedin:\n` (`raw_value: "linkedin:\N"`), tags `[…,"linkedin","candidate"]` |
+| Revert the loop to `is_redacted_sentinel` semantics | FAILED — mints `Username` `\n` under `github` |
+
+Each site is load-bearing on its own; none is carried by another. The third
+reversion is the one that proves the consolidation was a real widening rather
+than a rename.
+
+**Permanent invariant.** A provider's absence marker is never a social handle,
+and never becomes a pivot dispatched to a live lookup. One predicate decides
+absence for every emitter in this module, and no weaker sibling remains for a
+future site to reach for.

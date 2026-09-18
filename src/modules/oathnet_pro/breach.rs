@@ -626,6 +626,12 @@ pub(super) fn extract_breach_entities_with(
     }
 
     if let Some(ig) = val_str(item, "instagram")
+        // Absence gate — the same `is_absent` the country / location /
+        // organisation emitters in this file already apply. It was never wired
+        // here, so a `\N` or `[NOT_SAVED]` column minted a Username entity that
+        // the engine then dispatches to username_search / search_engines as a
+        // live pivot.
+        && !is_absent(&ig)
         // A bare `.to_lowercase()` doesn't strip a leading `@` sigil or
         // wrapping quote the way `Entity::new` does internally, so "@jordan"
         // and "jordan" each earned their own dedup slot despite colliding on
@@ -647,7 +653,10 @@ pub(super) fn extract_breach_entities_with(
     // LinkedIn handle — unlocks proxycurl (paid LinkedIn enrichment).
     // The field may contain a URL or a bare handle. Emit as Url if it
     // looks like a URL, else as Username with a linkedin: prefix.
-    if let Some(li) = val_str(item, "linkedin") {
+    // Absence-gated for the same reason as `instagram` above: without it the
+    // bare-handle branch minted `linkedin:\N` / `linkedin:[not_saved]`, which
+    // reads as a real LinkedIn identity and unlocks the paid proxycurl leg.
+    if let Some(li) = val_str(item, "linkedin").filter(|s| !is_absent(s)) {
         let lower = li.to_lowercase();
         if lower.contains("linkedin.com") {
             if seen.insert(format!("@li:{lower}")) {
@@ -892,8 +901,14 @@ pub(super) fn extract_breach_entities_with(
             // does internally via `normalise`'s Username arm, so a dirty and a
             // clean spelling of the same handle each earned their own dedup
             // slot despite colliding on the same uid once constructed.
+            // `is_absent`, not the narrower `is_redacted_sentinel` this used to
+            // call: the latter matched only `UPGRADE_TO_SEE` / `REDACTED`, a
+            // STRICT SUBSET (`is_placeholder_secret`'s own first branch covers
+            // both), so the SQL-dump NULL `\N` — length 2, inside the window
+            // below — and every bracketed form (`[NOT_SAVED]`, `[fail]`,
+            // `<empty>`) minted a handle. One absence authority for the file.
             if (2..=64).contains(&h.len())
-                && !is_redacted_sentinel(h)
+                && !is_absent(h)
                 && seen.insert(format!(
                     "@{platform}:{}",
                     crate::core::entity::normalise(&EntityKind::Username, h)
