@@ -79,10 +79,30 @@ fn deserialises_matches() {
 }
 
 #[test]
-fn error_body_deserialises_to_empty_matches() {
-    let resp: ZoomResp =
-        serde_json::from_str(r#"{"error":"invalid key","status":401}"#).expect("should succeed");
-    assert!(resp.matches.is_empty());
+fn unexpected_response_shape_fails_deserialization() {
+    // A 2xx response with an unexpected shape (e.g., `{"error": "..."}` from
+    // an auth failure, quota exceeded, or WAF block) must fail deserialization,
+    // not silently decode as `{"matches": []}` and report a clean "no results"
+    // (REQ-ZOOMEYE-001). Pre-fix: `#[serde(default)]` on `matches` silently
+    // defaulted a missing field to `vec![]`, so any 2xx error envelope read as
+    // "nothing indexed".
+    //
+    // Post-fix: removing `#[serde(default)]` makes deserialization fail, so the
+    // JSON decode error surfaces as a real ModuleError, never silent.
+    let error_envelope = r#"{"error":"invalid key","status":401}"#;
+    let result: serde_json::Result<ZoomResp> = serde_json::from_str(error_envelope);
+    assert!(
+        result.is_err(),
+        "an error envelope with no `matches` field must fail to deserialize; \
+         got a successful parse: {result:?}"
+    );
+    // A real empty response still works.
+    let empty_response = r#"{"matches":[]}"#;
+    let result: serde_json::Result<ZoomResp> = serde_json::from_str(empty_response);
+    assert!(
+        result.is_ok(),
+        "a valid empty response must deserialize: {result:?}"
+    );
 }
 
 #[test]

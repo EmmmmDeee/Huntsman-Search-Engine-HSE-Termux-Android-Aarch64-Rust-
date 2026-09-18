@@ -58,11 +58,17 @@ const MAX_PORTS: usize = 32;
 /// Cap hosting IPs emitted for a domain dork.
 const MAX_IPS: usize = 32;
 
-#[derive(Deserialize, Default)]
+/// ZoomEye search response. The `matches` field marks a real successful API
+/// response; an auth/quota-failure or error 2xx body has no `matches` field
+/// and must fail closed (REQ-ZOOMEYE-001).
+#[derive(Debug, Deserialize, Default)]
 struct ZoomResp {
-    /// ZoomEye returns `matches` on success; an auth/quota error returns a
-    /// `{"error": …}` body with no matches, which deserialises to empty here.
-    #[serde(default)]
+    /// Presence of this field indicates a genuine API response shape. Real
+    /// responses always include it (possibly empty); error envelopes never do.
+    /// With `#[serde(default)]` it would silently decode a 2xx error body as
+    /// `matches: vec![]` — an empty hit list, never an error. Omitting the
+    /// attribute makes deserialization fail on `{"error": ...}` shapes,
+    /// which are then caught and surfaced as a real ModuleError.
     matches: Vec<Value>,
 }
 
