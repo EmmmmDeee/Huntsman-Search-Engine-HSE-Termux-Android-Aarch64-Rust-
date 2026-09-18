@@ -474,6 +474,49 @@ mod prop {
         const WALL: &str = include_str!("testdata/wall_ahpra_200_2026-09-15.html");
         assert!(is_challenge_document(WALL), "a 200 interstitial is a wall");
         assert!(WALL.len() < 8 * 1024);
+        // The same wall re-captured live three days later (2026-09-18): F5
+        // rotates the obfuscated payload and the support ID on every request,
+        // so the two captures differ byte-for-byte and in length (6,983 vs
+        // 7,553 B). The detector must key on the wall's STABLE prose, not on
+        // the rotating body — otherwise it decays silently into reading this
+        // 200 as "the subject is not a registered health practitioner".
+        const WALL_LATER: &str = include_str!("testdata/wall_ahpra_200_2026-09-18.html");
+        assert_ne!(WALL, WALL_LATER, "the payload rotates per request");
+        assert!(
+            is_challenge_document(WALL_LATER),
+            "a re-rolled F5 interstitial is still a wall"
+        );
+        // Both captures also carry `/cdn-cgi/challenge-platform`, because the
+        // register fronts with Cloudflare as well — so detecting them proves
+        // nothing about F5 itself. Strip that one incidental marker and the
+        // page must STILL be a wall, on its own F5 prose. Without this the
+        // whole F5 ASM family is invisible the moment a walled host does not
+        // happen to sit behind Cloudflare too.
+        for capture in [WALL, WALL_LATER] {
+            let f5_only = capture.replace("/cdn-cgi/challenge-platform", "/assets/app");
+            assert!(
+                !f5_only.contains("cdn-cgi"),
+                "the Cloudflare marker must be gone for this to prove anything"
+            );
+            assert!(
+                is_challenge_document(&f5_only),
+                "an F5 ASM support-ID wall is a wall without any Cloudflare marker"
+            );
+        }
+        // F5's other standard block body, and the two false positives the
+        // AND-sets exist to avoid: either marker ALONE is not a wall.
+        assert!(is_challenge_document(
+            "<!DOCTYPE html><html><body>The requested URL was rejected. Please consult with \
+             your administrator.<br>Your support ID is: 123456789</body></html>"
+        ));
+        assert!(!is_challenge_document(
+            "<!DOCTYPE html><html><body><noscript>Please enable JavaScript to view the page \
+             content.</noscript><table><tr><td>Jane Smith</td></tr></table></body></html>"
+        ));
+        assert!(!is_challenge_document(
+            "<!DOCTYPE html><html><body><h1>Contact us</h1><p>Quote your support ID is: \
+             4471 when you call.</p></body></html>"
+        ));
         // A genuine register page that merely names the register is not.
         assert!(!is_challenge_document(
             "<!DOCTYPE html><html><head><title>Register of practitioners</title></head>\

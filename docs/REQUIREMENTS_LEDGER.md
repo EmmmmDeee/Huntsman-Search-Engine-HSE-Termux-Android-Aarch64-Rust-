@@ -8523,3 +8523,135 @@ an identifier with internal structure and order — an IP, a coordinate pair, a
 version, a hash split on delimiters — must be compared by its own canonical
 type, never by tokenising it into an order-blind bag. Sibling attribution/relevance
 gates that tokenise a structured identifier are the next audit surface.
+
+### REQ-AHPRA-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): every parsed AHPRA row was minted as the subject at HIGH_PLUS, and two namesake practitioners fused into one composite health registration that does not exist
+
+**Defect.** `build_practitioner_entities` (`src/modules/ahpra/mod.rs`) turned
+EVERY row of the national health-practitioner register's result table into a
+`Person` entity at `confidence::HIGH_PLUS` (0.70) with the summary "AHPRA
+registered practitioner: {name}" and no qualification of any kind. Three
+distinct faults compounded:
+
+1. **No relevance gate.** The `FullName` leg queries the register's surname
+   field, whose matching is fuzzy, so the table can carry practitioners who are
+   not the subject at all. Every such stranger's real health registration was
+   minted as the subject's. Thirteen-plus sibling modules — `asic_persons`
+   among them, against the *same* class of AU register — already gate rows on
+   `util::str_util::whole_word_token_match`; this module had no gate.
+2. **Confidence above its own anchor.** 0.70 sits ABOVE the
+   `confidence::MEDIUM_PLUS` (0.60) the AU registers use for a single-source
+   name hit, for strictly weaker evidence: AHPRA publishes no date of birth, so
+   a row says "a registered practitioner has this name", never "the subject is
+   a registered practitioner". `sanctions_ofac` calibrates against that anchor
+   by name.
+3. **Namesake fusion — active fabrication.** The entity value IS the name, so
+   when the register returned the same name twice (positive proof the name does
+   not identify one person) `core::entity::dedup_merge_entities` fused the two
+   rows into ONE `Person` carrying BOTH registration numbers and BOTH
+   professions: a composite practitioner who does not exist, presented at 0.70
+   with no ambiguity signal.
+
+**Fix.** `build_practitioner_entities` takes `name_seed: Option<&str>` —
+`Some(value)` for a `FullName` target, `None` for `Organisation` (whose
+practitioners legitimately have names of their own, so gating there would
+discard every genuine row). Rows are filtered on `whole_word_token_match`
+against the seed. A name held by more than one row IN THIS RESULT SET is
+detected and scored `confidence::MEDIUM` (0.50), strictly below the 0.60
+single-hit anchor, and tagged `ambiguous-name`; every surviving row carries
+`needs-identity-verification` and an evidence `caution` — `NAME_ONLY_CAUTION`
+naming what would settle identity (registration number, profession, principal
+place of practice), or the sharper `MULTI_HOLDER_CAUTION` stating that the
+register returned more than one holder and the numbers belong to different
+practitioners. The merged entity now describes its own ambiguity instead of
+reading as one confident registration. This is the advisory contract
+(`needs-identity-verification` + `caution`) the sibling name-matched registers
+use, NOT the enforced `tags::CANDIDATE` quarantine — the two are distinct and
+not interchangeable, and a test locks the distinction.
+
+**Regression lock.** Four tests in `src/modules/ahpra/tests.rs`:
+`a_row_whose_name_is_not_the_seed_is_never_emitted` (a `Robert Nguyen` row is
+dropped from a `Jane Smith` search);
+`an_organisation_search_is_not_gated_on_the_seed_name` (the `None` path keeps
+its practitioners); `a_name_only_row_sits_at_the_au_register_anchor_and_says_it_is_unverified`
+(MEDIUM_PLUS + tag + caution); `two_practitioners_sharing_a_name_are_marked_as_a_proven_collision`
+(both rows below the anchor, `ambiguous-name`, multi-holder caution). The
+pre-existing `build_practitioner_entities_emits_every_parsed_row_not_just_20`
+was moved onto the gated path with a 25-row same-seed cohort, proving the gate
+suppresses strangers and never the subject's own common-surname cohort.
+
+**Falsification.** The three new defect locks were observed **FAILING** against
+a build with the gate, the two-tier confidence and the tags/cautions reverted
+in place (`test result: FAILED. 4 passed; 3 failed`; the collision test reported
+`a provably multi-holder name must score BELOW a single hit, got 0.7`). The
+module was then restored byte-for-byte from a pre-edit backup and all 7 pass.
+`an_organisation_search_is_not_gated_on_the_seed_name` passes on baseline too,
+by design — it is an over-correction guard, not a defect lock.
+
+**Reachability (live, 2026-09-18).** `GET
+https://www.ahpra.gov.au/Registration/Registers-of-Practitioners.aspx?Spousesurname=Smith`
+answers **HTTP 200, 7,584 B**, whose entire visible text is "Please enable
+JavaScript to view the page content. Your support ID is: 9997982116099451436."
+— an F5 BIG-IP ASM wall, zero `<table>`, zero `<tr>`. The module's
+`read_body_capped_or_fail` → `fetch::document_or_challenge` seam does catch it
+as `Error::BotChallenge` rather than reporting a clean "not a registered health
+practitioner" — see REQ-HTML-001 below for why that was holding by accident.
+
+**Class.** The namesake-fusion family (`REQ-ASICPERSONS-001`,
+`REQ-OPENCORPORATES-001`, `REQ-GLEIF-001`, `REQ-WIKIDATA-001`): whenever an
+entity's VALUE is a human or company name and the source is searched BY that
+name, `dedup_merge_entities` will fuse two different real subjects into one
+composite record. The generalisable rule: a module whose result set can contain
+the same name twice must detect that collision in its own result set and score
+and label it, because the merge downstream cannot tell a duplicate from a
+collision.
+
+### REQ-HTML-001 (**new, Pass 33 — VERIFIED LIVE, FIXED, FALSIFIED**): the F5 BIG-IP ASM wall family had no signature — AHPRA's was caught only by an incidental Cloudflare asset reference on the same page
+
+**Defect.** `util::html::CHALLENGE_VENDOR_SIGNATURES` and
+`CHALLENGE_PHRASE_SETS` covered Cloudflare, reCAPTCHA, hCaptcha, DataDome,
+PerimeterX, Arkose, Yandex, Imperva, Akamai, Radware and Reddit — but nothing
+for F5 BIG-IP ASM, whose support-ID interstitial is one of the most widely
+deployed 200-bodied walls there is. Both AHPRA captures (2026-09-15 and the
+2026-09-18 re-capture taken this pass) were classified as walls ONLY because
+the register also fronts with Cloudflare and its page happens to reference
+`/cdn-cgi/challenge-platform`. Measured: stripping that one incidental marker
+from either capture made `is_challenge_document` return **false** — the wall
+then read as the document, which for `ahpra` means "the subject is not a
+registered health practitioner", and for any other module behind an F5-walled
+host without a Cloudflare front means whatever that module's empty parse
+implies. The detection was holding by coincidence, on a marker belonging to a
+different vendor.
+
+**Fix.** Two AND-sets added to `CHALLENGE_PHRASE_SETS`, covering F5 ASM's two
+standard block bodies: `["enable javascript to view the page content",
+"support id"]` and `["the requested url was rejected", "support id"]`. Each
+pairs two independent F5 markers, per the table's stated convention — a real
+page may carry a `<noscript>` telling the reader to enable JavaScript, or quote
+a support ID, but not both. No vendor signature was added, because F5's block
+body carries no vendor string at all.
+
+**Regression lock.** `is_challenge_document_recognises_the_ahpra_200_wall`
+(`src/util/html/tests.rs`) extended: the 2026-09-18 capture is checked in
+alongside the 2026-09-15 one and asserted to DIFFER from it (F5 rotates the
+obfuscated payload and the support ID per request: 6,983 vs 7,584 B), so a
+detector keyed on the rotating body cannot pass. Both captures are then
+re-tested with `/cdn-cgi/challenge-platform` rewritten out — the assertion that
+makes the lock about F5 rather than Cloudflare. F5's other block body is
+checked, and the two false positives the AND-sets exist to prevent (a
+`<noscript>` enable-JavaScript notice above a real results table; a contact
+page quoting a support ID) are asserted NOT to be walls.
+
+**Falsification.** With both AND-sets deleted the test was observed **FAILING**
+at the Cloudflare-stripped assertion (`tests.rs:473`, `0 passed; 1 failed`),
+then restored byte-for-byte from a pre-edit backup; all 28 `util::html` tests
+pass.
+
+**Gate.** `cargo fmt --check` → clean; `cargo clippy --all-targets --features
+dep-cooldown -- -D warnings` → clean; `cargo test --lib` → 7,476 passed, 0
+failed; `cargo test --doc` → 77 passed, 0 failed.
+
+**Class.** An accidental-coverage defect, and the reason "the detector catches
+this page" is not the same finding as "the detector catches this wall". The
+generalisable rule: a challenge-page fixture proves nothing about the vendor it
+is named for unless the OTHER vendors' markers are removed from it first. Every
+existing wall fixture is now a candidate for the same subtractive re-check.
