@@ -8379,7 +8379,7 @@ report (`build_scan_report`), and the two HTTP export endpoints
 `redact_credentials`. Upstream OSINT providers routinely reflect the request URL
 or a keyed error string back into their response body, and HSE files that body
 into an entity's evidence — e.g. an attribute `via_endpoint =
-https://api.x.io/lookup?api_key=OPERATORKEY12345`, or a summary quoting a
+https://api.x.io/lookup?api_key=EXAMPLE-OPERATOR-KEY`, or a summary quoting a
 `{"error":"Invalid key <KEY>"}` page. The operator's **own live credential** was
 therefore written into the exported dossier, the CSV/GEXF a case is shared as,
 and the HTTP export response body. The redactor was already applied to the
@@ -8413,14 +8413,14 @@ already-archived string is a no-op.
 **Regression locks.** Two, at both boundaries:
 - Pure seam (`src/util/redact.rs`,
   `redact_operator_secrets_masks_an_echoed_key_but_leaves_findings`): an entity
-  whose evidence carries `?api_key=OPERATORKEY12345` in both the summary and a
+  whose evidence carries `?api_key=EXAMPLE-OPERATOR-KEY` in both the summary and a
   `via_endpoint` attribute **and** a `username = victim_handle` attribute →
   after the call the key is gone (`api_key=***`) from both summary and
   attribute, and `victim_handle` is still present verbatim.
 - End to end (`src/app/export/tests.rs`,
   `render_full_masks_an_operator_key_echoed_in_evidence`): a real `Store` →
   `Scan` → `Entity` with the same evidence, rendered through `render_full`, whose
-  output must **not** contain `OPERATORKEY12345`, **must** contain `api_key=***`,
+  output must **not** contain `EXAMPLE-OPERATOR-KEY`, **must** contain `api_key=***`,
   and **must** still contain `username = victim_handle`.
 
 Both pre-existing "dumps every field and provenance, unredacted" contract tests

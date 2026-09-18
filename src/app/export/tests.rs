@@ -212,7 +212,7 @@ fn render_full_masks_an_operator_key_echoed_in_evidence() {
         Evidence::new("some_provider", "resolved via the provider API")
             .with_attr(
                 "via_endpoint",
-                "https://api.x.io/lookup?api_key=OPERATORKEY12345",
+                "https://api.x.io/lookup?api_key=EXAMPLE-OPERATOR-KEY",
             )
             .with_attr("username", "victim_handle"),
     );
@@ -220,7 +220,7 @@ fn render_full_masks_an_operator_key_echoed_in_evidence() {
 
     let out = render_full(&store, "scan-op").expect("should succeed");
     assert!(
-        !out.contains("OPERATORKEY12345"),
+        !out.contains("EXAMPLE-OPERATOR-KEY"),
         "the operator's own key must not survive into the dossier: {out}"
     );
     assert!(

@@ -428,11 +428,11 @@ mod tests {
         e.add_evidence(
             Evidence::new(
                 "some_provider",
-                "looked up via https://api.x.io/q?api_key=OPERATORKEY12345",
+                "looked up via https://api.x.io/q?api_key=EXAMPLE-OPERATOR-KEY",
             )
             .with_attr(
                 "via_endpoint",
-                "https://api.x.io/q?api_key=OPERATORKEY12345",
+                "https://api.x.io/q?api_key=EXAMPLE-OPERATOR-KEY",
             )
             .with_attr("username", "victim_handle"),
         );
@@ -440,13 +440,13 @@ mod tests {
         redact_operator_secrets(&mut list);
         let ev = &list[0].evidence[0];
         assert!(
-            !ev.summary.contains("OPERATORKEY12345") && ev.summary.contains("api_key=***"),
+            !ev.summary.contains("EXAMPLE-OPERATOR-KEY") && ev.summary.contains("api_key=***"),
             "summary still leaks: {}",
             ev.summary
         );
         let endpoint = ev.attributes.get("via_endpoint").expect("via_endpoint");
         assert!(
-            !endpoint.contains("OPERATORKEY12345") && endpoint.contains("api_key=***"),
+            !endpoint.contains("EXAMPLE-OPERATOR-KEY") && endpoint.contains("api_key=***"),
             "endpoint still leaks: {endpoint}"
         );
         // The subject finding is untouched.
