@@ -8811,3 +8811,124 @@ long as the fixture stayed small. The generalisable rule: a test for an
 ATTRIBUTION gate must contain at least two candidates that differ only in the
 thing the gate is supposed to discriminate on — otherwise it proves the rule
 emits something, never that it emits the RIGHT something.
+
+### REQ-CORRELATOR-007 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): AU-019 called a SINGLE breach record a "potential coordinated compromise", because it counted entity fragments instead of breach events
+
+**Defect.** `rule_au_019_temporal_breach_cluster` (`src/core/correlator/rules/breach.rs`)
+collected `(entity, day)` pairs from breach evidence, de-duplicated them **by
+entity uid**, and fired `Severity::High` "N breach entities clustered within 30
+days — potential coordinated compromise" once a 30-day window held 3 distinct
+uids.
+
+One breach row is not one entity. An ordinary leak of one service on one date
+yields an Email, a Password, a Username and often an IP — three or more
+`breach`-tagged entities, each carrying the SAME `breach_date` from the SAME
+provider. The uid de-dup does nothing about that, so a single, entirely routine
+breach hit cleared the 3-member floor on its own and minted a High
+"coordinated compromise" finding. "Coordinated" is a claim about more than one
+compromise; the rule could not count compromises at all.
+
+**Fix.** Each date-bearing evidence record now also yields a breach-EVENT key,
+and the 3-member floor is applied to distinct events rather than entities. The
+key is the provider's own `breach_name` where it stamps one (`seon`), otherwise
+`source|day` — the strongest discriminator available. That fallback merges two
+same-day unnamed breaches from one provider into a single event, an
+UNDER-count, which is the safe direction for a claim at this severity
+(CONFIDENCE ≤ SUPPORTING EVIDENCE). The uid set still de-dupes the reported
+entity list, so the operator still sees every exposed entity; only the
+threshold changed. The description now reads "N distinct breaches within 30
+days (M exposed entities) — potential coordinated compromise", so the count in
+the text is the count the claim rests on.
+
+**Regression lock.** Two tests in `src/core/correlator/tests/part11.rs`.
+`au019_does_not_call_a_single_breach_record_a_coordinated_compromise`: one
+`dehashed` row (`breach_name = AcmeCorp`, `breach_date = 2024-03-01`) expanded
+into Email + Password + Username must produce NO correlation.
+`au019_still_fires_for_three_genuinely_distinct_breaches_on_one_day`: three
+DIFFERENT named breaches disclosed the same day — the sharpest true positive,
+and the one an event-count could plausibly have lost — must still fire.
+
+**Falsification.** The defect lock was written first and observed **FAILING** on
+baseline, with the fabricated correlation printed verbatim: `"3 breach entities
+clustered within 30 days — potential coordinated compromise"` over the three
+fragment uids. After the fix all 6 AU-019 tests pass. The fix was then falsified
+in place by reverting the two floor checks from `current_events.len()` to
+`current.len()`: exactly the new lock failed (`5 passed; 1 failed`) and both
+true positives stayed green. Restored byte-for-byte from a pre-edit backup.
+
+**No-regression evidence.** The two pre-existing AU-019 tests
+(`au019_fires_for_three_breach_dates_within_30_days`,
+`au019_ignores_a_certificate_transparency_date_on_a_breach_tagged_domain`) and
+the two module-side tests that depend on AU-019's `breach_date` stamping
+(`hudsonrock`, `oathnet_pro`) all stay green.
+
+**Gate.** `cargo fmt --all`; `cargo clippy --all-targets --features dep-cooldown
+-- -D warnings` → clean; `cargo test --lib` → **7,481 passed, 0 failed** (7,479
+baseline + the 2 new locks); `cargo test --doc` → 77 passed, 0 failed.
+
+**Class.** Third member of the same family as REQ-CORRELATOR-002/-004: a rule
+whose CLAIM is about records counting something else (entities, module names)
+because that is what was cheap to reach. The generalisable rule: when a
+correlation's severity rests on a COUNT, the thing counted must be the thing the
+sentence names — count breaches for a breach cluster, accounts for an account
+cluster, records for a co-occurrence.
+
+### Pass 33 — full-repository inventory (N = 1312 → 0)
+
+An exhaustive accounting of every tracked file, to establish that no capability
+is unreachable and no dead weight is carried. Result: **zero dead files.**
+
+| category | n | disposition | evidence |
+|---|---|---|---|
+| Rust `.rs` | 1136 | KEEP | module-tree resolver from the 33 crate roots reached **1136/1136**; 0 unreachable |
+| web JS | 42 | KEEP | **42/42** referenced from `spa.html`/router; 0 dead, 0 missing |
+| docs `.md` | 56 | KEEP | governing + reference |
+| test fixtures | 17 | KEEP | each referenced by ≥1 test |
+| CI workflows | 10 | KEEP | active by location |
+| scripts | 13 | KEEP | each referenced 1–32× |
+| manifests / locks | 13 | KEEP | build inputs |
+| wasm-ui, run/, proptest-regressions, other | 25 | KEEP | incl. two X.509 **certificates** (no private key material), the IEEE OUI table, the generated wasm bundle |
+
+Three apparent orphans were resolver artifacts, each verified by inspection:
+`src/modules/breach_rich_tests.rs` is reached by `include!` rather than `mod`;
+`tests/common` and `tests/reconciler_harness` resolve relative to `tests/`, not
+to the declaring file's directory; and the two `mod tests;` in
+`tests/architecture_parts/architecture_part6.rs` are inside `r#"…"#` fixture
+strings, not real declarations.
+
+**Recorded, not acted on.**
+`HUNTSMAN_UNIVERSAL_CODING_AGENT_DIRECTIVE_CLAUDE_CODE_OPTIMIZED-1.txt` (64 KB)
+sits at the repository root referenced by nothing — no code, doc, script,
+workflow or governing file. It was added by `d7c13ceb` ("Add files via upload
+(#638)"), a deliberate owner upload, so it is CLASSIFIED rather than removed;
+moving it under `docs/` or dropping it is the owner's call.
+
+### Pass 33 — capability delta vs `origin/main`
+
+`origin/main` at `d7c13ceb` carries two silent reversions of landed work, both
+repaired on this branch and restored on merge:
+
+- **REQ-EMAILCANON-001** — `origin/main`'s `src/util/canonical.rs` contains
+  **zero** occurrences of `PLUS_ADDRESSING_DOMAINS`; this branch has the
+  allowlist. Without it `+tag` is stripped for every domain, fusing two
+  different people's mailboxes at proven-equivalent confidence.
+- **`confidence_for_accuracy_m` ladder** — `origin/main` has the 4-rung
+  `0..=200 => VERY_HIGH`; this branch has the 5-rung ladder with the
+  doorway-grade `0..=50 => HIGH_PLUSPLUS_PLUS` top rung.
+
+**These reversions also explain PR #637's red CI, which is NOT a defect in this
+branch.** The failing run built merge ref `4ef5ab57`, which git had textually
+spliced: main's doc comment over this branch's function body. Under that
+spliced file `confidence_for_accuracy_m(Some(25.0))` returns `0.85` (this
+branch's ladder) while the assertion carried over from main expects
+`VERY_HIGH = 0.75` — precisely the `left: 0.85, right: 0.75` in the CI log, and
+the same mechanism for the `canonical_email_mailbox` doctest. GitHub has since
+recomputed the merge ref to `f2d34835`, whose tree is **byte-identical to this
+branch's HEAD** (`git diff --stat HEAD origin/pr637merge` empty) — the tree
+measured green at 7,481 lib / 77 doctests, 0 failed.
+
+**Standing hazard.** A bulk "Add files via upload" commit that rewrites files
+this branch also edits produces exactly this splice, and the spliced tree is
+internally inconsistent in ways neither side's tests can catch in isolation. The
+durable mitigation is that main is now an ancestor of this branch (0 commits
+ahead), so no further splice is possible for this PR.
