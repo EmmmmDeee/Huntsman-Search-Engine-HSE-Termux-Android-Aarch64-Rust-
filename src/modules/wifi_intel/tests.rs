@@ -220,3 +220,30 @@ fn detail_resp_handles_failure() {
     let r: types::DetailResp = serde_json::from_str(json).expect("should succeed");
     assert_eq!(r.success, Some(false));
 }
+
+#[test]
+fn near_null_island_jitter_coordinates_are_rejected() {
+    // REQ-WIFIINTEL-001: WiGLE is a coarse location provider and must reject the
+    // near-null-island jitter band (0.001 to 0.01) that geolocation APIs emit as
+    // an "unknown" placeholder. A DetailResp with (0.005, 0.005) should deserialize
+    // successfully (the JSON is valid) but those coordinates must be rejected during
+    // entity building so no Coordinates entity is minted.
+    let json = r#"{
+        "success": true,
+        "results": [{
+            "trilat": 0.005,
+            "trilong": 0.005,
+            "ssid": "Unknown",
+            "city": "Unknown",
+            "region": "Unknown",
+            "country": "ZZ"
+        }]
+    }"#;
+    let r: types::DetailResp = serde_json::from_str(json).expect("should succeed");
+    assert_eq!(r.results.len(), 1);
+    let net = &r.results[0];
+    assert_eq!(net.trilat, Some(0.005));
+    assert_eq!(net.trilong, Some(0.005));
+    // Deserializes fine, but will be rejected during entity building by
+    // is_plausible_provider_coord in the process() function.
+}

@@ -25,7 +25,7 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::modules::termux_sensor;
-use crate::util::geo::is_valid_coords;
+use crate::util::geo::is_plausible_provider_coord;
 
 // ── WiGLE credentials ──────────────────────────────────────────────────
 
@@ -202,8 +202,11 @@ impl Module for WifiIntel {
             if let Some(detail) = detail
                 && let (Some(lat), Some(lon)) = (detail.trilat, detail.trilong)
             {
-                // Shared validator: Null Island + out-of-range + non-finite.
-                if !is_valid_coords(lat, lon) {
+                // REQ-WIFIINTEL-001: WiGLE is a coarse location provider and must
+                // reject the near-null-island jitter band (0.001 to 0.01) that geolocation
+                // APIs emit as an "unknown" placeholder. The stricter is_plausible_provider_coord
+                // gate is required, not the weaker is_valid_coords.
+                if !is_plausible_provider_coord(lat, lon) {
                     continue;
                 }
 
