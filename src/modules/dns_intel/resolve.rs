@@ -781,6 +781,28 @@ impl BlocklistTally {
     }
 }
 
+/// Spamhaus ZEN return codes: classify as reputation-grade listing or policy-code non-listing.
+/// Only 127.0.0.2 (SBL), 127.0.0.3 (CSS), 127.0.0.4 (DROP), 127.0.0.9 (SBL+CSS)
+/// are actual abuse listings; 127.0.0.5/10/11 (PBL variants) are policy-zone membership
+/// without reputation implication and must not fabricate an abuse finding.
+/// Pure, independently unit-tested.
+pub(super) fn is_spamhaus_abuse_listing(addr: std::net::IpAddr) -> bool {
+    if let std::net::IpAddr::V4(ipv4) = addr {
+        let octets = ipv4.octets();
+        if octets[0..3] == [127, 0, 0] {
+            match octets[3] {
+                2 | 3 | 4 | 9 => true, // SBL, CSS, DROP, SBL|CSS
+                5 | 10 | 11 => false,  // PBL variants (policy, not reputation)
+                _ => false,            // Unknown code: conservative non-listing
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
+
 /// DNSBL reputation check against 8 blocklists.
 pub(super) async fn blocklist_check(target: &Target, ctx: &ModuleContext) -> Result<Vec<Entity>> {
     use super::constants::BLOCKLISTS;
@@ -808,8 +830,25 @@ pub(super) async fn blocklist_check(target: &Target, ctx: &ModuleContext) -> Res
         let query = format!("{reversed}.{zone}");
         match resolver.lookup_ip(query.as_str()).await {
             // A DNSBL publishes an A record (127.0.0.x) for a listed address.
-            Ok(_) => {
-                listed_on.push(label);
+            // Spamhaus ZEN requires filtering: only abuse-grade codes (SBL/CSS/DROP)
+            // count as listings, not policy codes (PBL).
+            Ok(lookup) => {
+                let mut is_reputation_listing = true;
+                if *zone == "zen.spamhaus.org" {
+                    // Spamhaus returns policy codes that must be filtered
+                    is_reputation_listing = false;
+                    for answer in lookup.as_lookup().answers() {
+                        if let hickory_resolver::proto::rr::RData::A(a) = &answer.data {
+                            if is_spamhaus_abuse_listing(std::net::IpAddr::V4(a.0)) {
+                                is_reputation_listing = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if is_reputation_listing {
+                    listed_on.push(label);
+                }
                 tally.answered += 1;
             }
             // The zone authoritatively said "no such record" — NXDOMAIN, or

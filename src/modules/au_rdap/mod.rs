@@ -435,7 +435,9 @@ impl Module for AuRdap {
             if response_lower != query_lower {
                 return Err(crate::core::error::Error::module(
                     SRC,
-                    format!("response ldhName {response_domain} does not match queried domain {domain}"),
+                    format!(
+                        "response ldhName {response_domain} does not match queried domain {domain}"
+                    ),
                 ));
             }
         }
