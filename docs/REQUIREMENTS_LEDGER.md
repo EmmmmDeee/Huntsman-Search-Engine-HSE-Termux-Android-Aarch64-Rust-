@@ -9032,6 +9032,47 @@ rejects. Neither side can rot.
 | Add `hibp` (a graded corpus) to the exclusion set | FAILED — "is listed as a deliberate NON-corpus yet `is_breach_source` accepts it — the two classifications contradict each other" |
 | Restored | ok |
 
+**Operational verification (live `hse scan`, with a positive control).** Same
+command both times, only the four changed non-test source files differing:
+
+```
+hse scan -v iana.org -m ahmia,stolen_tax,hibp --depth 1
+```
+
+| Binary | exit | occurrences of the warning | text |
+| --- | --- | --- | --- |
+| baseline (`HEAD~1` source) | 0 | **1** | `"modules":"stolen_tax,ahmia"` |
+| fixed (committed `HEAD`) | 0 | **0** | — |
+
+The positive control matters and was not a formality. The first attempt at this
+comparison used `--depth 0` and produced zero warnings on BOTH binaries — the
+"fixed" run looked like success but was vacuous, because `--depth 0` is a
+single-round scan that never reaches the expansion leg the sweep hangs off, so
+`breach_sweep_modules` was never called at all. Only re-running the baseline
+under the identical command exposed that; at `--depth 1` the baseline reproduces
+the exact live symptom on demand and the fixed build does not. A clean negative
+observed without a control that can produce the positive is not evidence
+(`ZERO RESULTS ≠ EVIDENCE OF ABSENCE`).
+
+**Adversarial re-attack (finding recorded, not fixed here).** The registry walk
+locks one direction only: every `ModuleCategory::Breach` module is deliberately
+classified. It does NOT lock the converse — that everything `source_family`
+classes `"breach"` is actually a corpus. The needles are substring-matched, and
+the baseline allow-list printed during falsification exposes the consequence:
+
+```
+["see_know","hudsonrock","comb_search","xposed_or_not","xposed_or_not_domain",
+ "osintcat","leakcheck_public","oathnet_pro","niamonx","hibp","dehashed",
+ "intelx","pwned_passwords","leakix","breachdirectory","breach_timezone"]
+```
+
+`breach_timezone` declares `ModuleCategory::Geo`, makes no network calls, and
+emits `Address`/`Coordinates` by INFERENCE (clustering timestamp windows to
+guess a UTC offset) — yet the bare `"breach"` needle matches its NAME, so
+`is_breach_source` accepts it and it is counted as an attesting breach corpus.
+That is the same defect class as the `geo_corroboration` hijack closed by
+`is_engine_corroboration_source`. Filed as REQ-SOURCEFAMILY-002.
+
 **Permanent invariant.** Every module that declares `ModuleCategory::Breach` is
 classified deliberately — graded as a corpus, or recorded as a non-corpus with
 its reason — and the classification is checked against the live registry rather
