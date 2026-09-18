@@ -9300,3 +9300,78 @@ speculation.
 **Permanent invariant.** Both of `dehashed`'s credential loops now answer "is
 this a secret?" with the same predicate, so a provider artifact cannot enter the
 graph through the hash door after being refused at the plaintext one.
+
+---
+
+### REQ-CORRELATOR-003 (**new, Pass 34 — FIXED, FALSIFIED**): AU-105 read a provider's withheld-access placeholder as a reused credential and fired a High account-takeover claim
+
+**Defect.** `rule_au_105_credential_reuse` groups a secret by value across
+distinct breach corpora and fires when the same secret spans two or more. It
+already refuses two kinds of false link, and its doc comment names both: a
+mis-stored email (`!s.contains('@')`) and a common-password digest collision
+(`is_common_collision` — "the same `md5("password")` recurs for unrelated
+people, so it is a collision, not a reuse link").
+
+It had no guard for the provider's own **capture sentinel**, and that is the
+strongest false "same secret" signal of the three. A withheld-access placeholder
+is IDENTICAL by construction in every row the provider withheld — so two corpora
+each carrying `[fail]` grouped as one reused secret and fired:
+
+```
+Severity::High — "A password is reused across 2 distinct breaches
+ (adobe.com, linkedin.com) — the subject reuses credentials, so one cracked
+  secret opens every account (the credential-stuffing / account-takeover
+  surface). MITRE T1110.004"
+```
+
+Both passes were exposed, at different floors. The plaintext pass gates on
+`s.len() >= 4`, which admits even the short `[fail]` (6) → **High**. The hash
+pass gates on `s.len() >= 8`, which admits `[NOT_SAVED]` (11) and
+`UPGRADE_TO_SEE_xxxx` (19) → **Medium**. `is_common_collision` does not help:
+it rejects a COMMON PASSWORD's digest, which says nothing about a value that is
+not a digest at all.
+
+**Relationship to REQ-DEHASHED-001.** They are the same defect class at two
+layers, and fixing the module side did NOT fix this one. AU-105 reads
+`ev.attributes`, not `Password` entities, and the breach parsers attach the raw
+record fields to evidence regardless of what they mint — the dehashed header
+says so explicitly ("Both also ride on the per-record evidence above"). So the
+sentinel still reached the correlator after the module stopped minting it. Two
+independent gates were required, which is why both were fixed.
+
+**Fix.** Both passes now consult `util::extract::is_placeholder_secret` — the
+same predicate the breach PARSERS use (`classify_credential_field` delegates its
+`Sentinel` arm to it), so the module and correlator sides cannot drift on what
+counts as a secret.
+
+**Architecture note.** `core` may not import `util` except through a scoped
+allow-list of pure leaf helpers in `tests/architecture.rs`. This adds
+`util::extract::is_placeholder_secret` to it, with the same justification and
+the same per-function scoping as the three `util::hashcat` predicates already
+listed directly above — which this very rule already uses. The predicate
+qualifies: an ASCII-uppercase copy, two substring tests and a bracket-trimmed
+match against a const list. No I/O, no state, no upward dependency.
+
+**Regression lock.**
+`au105_does_not_call_a_withheld_access_placeholder_a_reused_credential`
+(`src/core/correlator/tests/part06.rs`) drives the real rule over three
+(field, sentinel) pairs spanning both passes — `password`/`[fail]`,
+`hashed_password`/`UPGRADE_TO_SEE_xxxx`, `password_hash`/`[NOT_SAVED]` — and
+asserts the rule stays silent. It also asserts the non-regression: a genuine
+reused plaintext across two corpora still fires at High. All six pre-existing
+AU-105 tests continue to pass unchanged.
+
+**Falsification — three independent reversions.**
+
+| Reversion | Result |
+| --- | --- |
+| Drop the plaintext sentinel guard | FAILED — fires `Severity::High` "A password is reused across 2 distinct breaches" from `[fail]` |
+| Drop the hash sentinel guard | FAILED — fires `Severity::Medium` "A password hash is reused across 2 distinct breaches" from `UPGRADE_TO_SEE_xxxx` |
+| Drop the `tests/architecture.rs` allow-list entry | FAILED — `core_does_not_import_util_directly` reports "core/ must not import util/" and names BOTH call sites by line |
+
+The third reversion matters on its own: it proves the allow-list addition is
+load-bearing and precisely scoped, not a blanket widening of the layering rule.
+
+**Permanent invariant.** A provider's capture sentinel is not a secret at either
+layer — the parser will not mint it, and the correlator will not link on it —
+and both decisions are made by one shared predicate.

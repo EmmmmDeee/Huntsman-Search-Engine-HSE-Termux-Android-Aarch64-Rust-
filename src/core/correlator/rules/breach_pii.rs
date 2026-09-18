@@ -1697,7 +1697,16 @@ pub(in crate::core::correlator) fn rule_au_105_credential_reuse(
             for k in PLAINTEXT_PW_KEYS {
                 if let Some(v) = ev.attributes.get(*k) {
                     let s = v.trim();
-                    if s.len() >= 4 && !s.contains('@') {
+                    // A provider capture sentinel is not a secret. It is the
+                    // STRONGEST possible false reuse signal, because a
+                    // withheld-access placeholder is identical by construction in
+                    // every row the provider withheld — so two corpora each
+                    // carrying `[fail]` grouped as one reused password and fired
+                    // High. The 4-character floor admitted even the short forms.
+                    if s.len() >= 4
+                        && !s.contains('@')
+                        && !crate::util::extract::is_placeholder_secret(s)
+                    {
                         let entry = by_secret.entry(format!("p:{s}")).or_insert((
                             true,
                             BTreeSet::new(),
@@ -1740,7 +1749,15 @@ pub(in crate::core::correlator) fn rule_au_105_credential_reuse(
             for k in HASH_PW_KEYS {
                 if let Some(v) = ev.attributes.get(*k) {
                     let s = v.trim();
-                    if s.len() < 8 || s.contains('@') {
+                    // Same sentinel guard as the plaintext pass. `is_common_collision`
+                    // below rejects a COMMON PASSWORD's digest, which is a different
+                    // problem — it says nothing about a value that is not a digest at
+                    // all. The 8-character floor admitted the longer capture
+                    // sentinels (`UPGRADE_TO_SEE_…`, `[NOT_SAVED]`).
+                    if s.len() < 8
+                        || s.contains('@')
+                        || crate::util::extract::is_placeholder_secret(s)
+                    {
                         continue;
                     }
                     let lower = s.to_lowercase();

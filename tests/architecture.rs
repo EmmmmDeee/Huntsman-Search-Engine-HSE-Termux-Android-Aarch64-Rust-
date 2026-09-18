@@ -1041,6 +1041,23 @@ fn core_does_not_import_util_directly() {
                 && !line.contains("util::hashcat::is_common_password")
                 && !line.contains("util::hashcat::digests_of")
                 && !line.contains("util::hashcat::is_common_collision")
+                // Pure, offline, dependency-free capture-sentinel predicate (an
+                // ASCII-uppercase copy, two substring tests and a bracket-trimmed
+                // match against a const list; no I/O, no state, no upward deps) —
+                // the same leaf category as the three `util::hashcat` predicates
+                // directly above, and used by the SAME rule. AU-105 must not read
+                // a provider's withheld-access placeholder as a reused secret: the
+                // placeholder is identical by construction in every row the
+                // provider withheld, so it is the strongest possible false "same
+                // secret" signal and fired a High account-takeover claim from data
+                // that is not a secret at all. It lives in `util` rather than
+                // `core` precisely so it is the SAME predicate the breach PARSERS
+                // apply when deciding what to mint (`dehashed`'s two credential
+                // loops, `oathnet_pro`, `see_know`), and the module and correlator
+                // sides can never drift on what counts as a secret. Scoped to the
+                // single function rather than the whole module so the guard stays
+                // precise if `util::extract` ever grows a non-pure item.
+                && !line.contains("util::extract::is_placeholder_secret")
                 // Pure, dependency-free disjoint-set / union-find primitive (a
                 // flat parent `Vec<usize>` with path-halving; no state, no I/O,
                 // no deps), same leaf category as `util::geometry`. The

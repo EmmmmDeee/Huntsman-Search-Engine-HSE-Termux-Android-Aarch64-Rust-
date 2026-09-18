@@ -651,6 +651,55 @@ fn au105_flags_plaintext_password_reused_across_breaches() {
 }
 
 #[test]
+fn au105_does_not_call_a_withheld_access_placeholder_a_reused_credential() {
+    // AU-105 already refuses two kinds of false reuse link — a mis-stored email
+    // (`!s.contains('@')`) and a common-password digest collision
+    // (`is_common_collision`) — but had no guard for the provider's own capture
+    // sentinel. A withheld-access placeholder is by construction IDENTICAL in
+    // every row the provider withheld, so it is the strongest possible false
+    // "same secret" signal: two distinct breach corpora each carrying
+    // `[fail]` grouped as one reused secret and fired
+    // `Severity::High` — "the subject reuses credentials, so one cracked secret
+    // opens every account" — from data that is not a secret at all.
+    //
+    // Both passes were exposed. The plaintext floor is `len() >= 4`, so even the
+    // short `[fail]` (6) qualified; the hash floor is 8, which the longer
+    // `UPGRADE_TO_SEE_xxxx` (19) clears.
+    for (key, sentinel) in [
+        ("password", "[fail]"),
+        ("hashed_password", "UPGRADE_TO_SEE_xxxx"),
+        ("password_hash", "[NOT_SAVED]"),
+    ] {
+        let mut email = Entity::new(EntityKind::Email, "j@x.com", 0.9, "s");
+        for db in ["linkedin.com", "adobe.com"] {
+            email.add_evidence(
+                Evidence::new("see_know", "breach")
+                    .with_attr("source_db", db)
+                    .with_attr(key, sentinel),
+            );
+        }
+        let r = super::rules::rule_au_105_credential_reuse(&RuleContext::new(&[email]), "s", 0);
+        assert!(
+            r.is_empty(),
+            "`{sentinel}` in `{key}` is a provider capture sentinel, not a secret — the same \
+             placeholder across two corpora is not credential reuse: {r:?}"
+        );
+    }
+    // Non-regression: a genuine reused plaintext still fires at High.
+    let mut email = Entity::new(EntityKind::Email, "j@x.com", 0.9, "s");
+    for db in ["linkedin.com", "adobe.com"] {
+        email.add_evidence(
+            Evidence::new("see_know", "breach")
+                .with_attr("source_db", db)
+                .with_attr("password", "reused-pw-9931"),
+        );
+    }
+    let r = super::rules::rule_au_105_credential_reuse(&RuleContext::new(&[email]), "s", 0);
+    assert_eq!(r.len(), 1, "a real reused secret must still fire");
+    assert_eq!(r[0].severity, Severity::High);
+}
+
+#[test]
 fn au105_reads_the_see_know_source_db_breach_name() {
     // SeekNow (`see_know`) records carry the breach DB name in a raw `source`
     // field, which the extractor renames to `source_db` (so it can't clobber the
