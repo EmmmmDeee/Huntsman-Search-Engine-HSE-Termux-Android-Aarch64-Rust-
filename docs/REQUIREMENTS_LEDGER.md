@@ -9720,3 +9720,53 @@ is kept: `refs/pull/N/merge` genuinely is served stale in general, `push` is
 scoped to `main` so a feature branch otherwise gets no verification of its own
 tip, and `secret-scan.yml` reading a stale tree is its own hazard. It simply
 was not the cause of *these* failures.
+
+### REQ-CI-008 — CLOSED: a cargo-fresh artifact of this crate carried `origin/main`'s doc comments
+
+**Established, with the confounding variable controlled.** Run 35400143489 on
+`2b2eca65` is **green**. The one change from the failing run is
+`cargo clean -p huntsman-search-engine` before the test step.
+
+| Run | head | Cache restored | HEAD correct | Fence line | `doctestbins` | `cargo clean -p` | Result |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 35396266992 | `35e8ef5d` | yes | yes | 138 | (none) | **no** | FAIL, quoting line 88 |
+| 35400143489 | `2b2eca65` | yes | yes | 138 | (none) | **yes** | **green** |
+
+The obvious objection to a single green run is that the cache might simply have
+been cold, making the clean irrelevant. It was not: the green run's cache step
+reports `Cache Size: ~478 MB (501014606 B)` and `Cache restored successfully`.
+Both runs restored a cache, both had the correct checkout, both had the correct
+source on disk, and neither had a restored doc-test bundle. The clean is the
+only differing variable.
+
+**Mechanism.** `Swatinem/rust-cache` restores `target/`. Cargo then considered
+this crate's artifacts fresh and did not rebuild them, so rustdoc collected
+doctests from metadata produced by an *older* commit — carrying `origin/main`'s
+doc comments, with `origin/main`'s line numbers and assertions — while the
+library the doctests linked against reflected this branch. That is exactly the
+mixed tree the evidence showed and no checkout could explain: old doc text,
+new behaviour.
+
+**Fix.** `cargo clean -p huntsman-search-engine` immediately before the test
+step. Dependencies stay cached, so the cost is one crate's rebuild rather than
+a cold start. The `Tree identity (diagnostic)` step is retained deliberately: it
+is what turned two wrong theories into a settled answer, it costs three echo
+lines, and if this ever recurs it prints the discriminating facts immediately.
+
+**Three refuted hypotheses, kept on the record.**
+
+1. Stale `refs/pull/N/merge` — refuted: pinning to `head.sha` changed nothing.
+2. Restored doc-test bundle — refuted: the diagnostic printed `(none)`.
+3. Duplicate source / second doctest target — refuted: one `canonical.rs` in the
+   repo, one `Doc-tests huntsman_search_engine`.
+
+**Permanent invariant.** CI's doc-tests are collected from the source of the
+commit under test, never from an artifact a previous commit produced.
+
+**Lesson, third instance this session.** Each earlier error was a conclusion
+drawn from half the available evidence: a clean negative with no control that
+could produce the positive (REQ-SOURCEFAMILY-001), a case-sensitive assertion
+against a case-folded value (REQ-OATHNET-001), and a line number read without
+the assertion values beside it (REQ-CI-005). What ended it was refusing to ship
+a fourth guess — instrumenting the runner to print the discriminating facts, and
+controlling the cache variable before calling one green run a proof.
