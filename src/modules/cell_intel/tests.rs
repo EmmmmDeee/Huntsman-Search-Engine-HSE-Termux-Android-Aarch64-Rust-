@@ -47,7 +47,7 @@ fn module_max_timeout() {
 #[test]
 fn parses_mcc_as_string_or_number() {
     let json = br#"[
-        {"type":"lte","registered":true,"cid":12345,"tac":54321,
+        {"type":"lte","registered":true,"ci":12345,"tac":54321,
          "mcc":"505","mnc":"01","dbm":-75,"asu":30,"level":4,"pci":100},
         {"type":"gsm","registered":true,"cid":99,"lac":42,
          "mcc":505,"mnc":1,"dbm":-90,"asu":10,"level":2}
@@ -92,7 +92,7 @@ fn malformed_json_no_ops() {
 #[test]
 fn entity_tags_include_cell_tower_and_radio_type() {
     let json = br#"[
-        {"type":"lte","registered":true,"cid":5678,"tac":1234,
+        {"type":"lte","registered":true,"ci":5678,"tac":1234,
          "mcc":"310","mnc":"260","dbm":-85,"asu":25,"level":3,"pci":42}
     ]"#;
     let r = parse_cells_survey(json, "scan-x");
@@ -131,7 +131,7 @@ fn evidence_attributes_populated() {
 
 #[test]
 fn lac_falls_back_to_tac_for_lte() {
-    let json = br#"[{"type":"lte","cid":999,"tac":555,"mcc":"310","mnc":"410"}]"#;
+    let json = br#"[{"type":"lte","ci":999,"tac":555,"mcc":"310","mnc":"410"}]"#;
     let r = parse_cells_survey(json, "test");
     assert_eq!(r.entities[0].value, "310-410-555-999");
 }
@@ -145,7 +145,7 @@ fn lac_preferred_over_tac_when_both_present() {
 
 #[test]
 fn skips_cell_with_zero_cid() {
-    let json = br#"[{"type":"lte","cid":0,"tac":123,"mcc":"310","mnc":"260"}]"#;
+    let json = br#"[{"type":"lte","ci":0,"tac":123,"mcc":"310","mnc":"260"}]"#;
     let r = parse_cells_survey(json, "test");
     assert_eq!(r.entities.len(), 0);
 }
