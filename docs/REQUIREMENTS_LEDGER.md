@@ -8932,3 +8932,108 @@ this branch also edits produces exactly this splice, and the spliced tree is
 internally inconsistent in ways neither side's tests can catch in isolation. The
 durable mitigation is that main is now an ancestor of this branch (0 commits
 ahead), so no further splice is possible for this PR.
+
+---
+
+### REQ-SOURCEFAMILY-001 (**new, Pass 34 — LIVE-OBSERVED, FIXED, FALSIFIED**): a paid breach corpus was excluded from the sweep and from consensus grading, behind a warning that had been crying wolf about a module that was correctly excluded
+
+**Observation.** The restart/recovery scan on `b986e614` emitted, from
+`Engine::breach_sweep_modules` (`src/core/engine/mod.rs`):
+
+```
+WARN "breach-category modules unknown to the corpus classifier — their findings
+      would not be graded by the consensus audit, so they are excluded from the
+      sweep; add them to `source_family`'s breach set"
+      modules="stolen_tax,ahmia"
+```
+
+**Defect.** The engine asserted one implication — *declares
+`ModuleCategory::Breach` ⟹ must be recognised by `is_breach_source`* — that is
+false, and the falsity was hiding a real omission behind a permanent false
+alarm. The two predicates answer different questions:
+
+- `ModuleCategory::Breach` is an **intel-domain** label. Its own doc reads
+  "breach corpora, paste exposure, stealer logs, leaked credentials" — what a
+  module goes looking at.
+- `is_breach_source` is a far narrower **evidentiary** claim: that a finding
+  from this source is a leaked RECORD, whose PII attributes may be assembled
+  into a person (~15 gates in `breach_pii.rs`) and whose presence counts as an
+  independent corpus attestation in `core::breach_consensus`.
+
+Of the two modules named, exactly one was a defect:
+
+- **`stolen_tax` — a real omission.** A paid, key-gated breach-lookup API
+  emitting `Email`/`Username`/`Credential`; its own `category()` comment reads
+  "Breach corpora, same as hibp/dehashed/niamonx/osintcat" and its cache TTL
+  follows "the dehashed/see_know/oathnet_pro/intelx paid-breach-module
+  convention". Its name carries no generic breach token, so it fell through
+  `source_family`'s needles to `"other"` — the catch-all excluded from
+  cross-family diversity. Consequences, all three real: it never entered the
+  final breach sweep's dispatch allow-list (a corpus the operator pays for was
+  never asked the questions the sweep exists to ask), its findings were never
+  graded by the consensus audit, and it could not be a family the gap analysis
+  reported missing.
+- **`ahmia` — the warning's premise was wrong.** A full-text search engine over
+  Tor, not a record corpus. It produces only `EntityKind::Url` at
+  `confidence::LOW_MEDIUM`, tags every hit `needs-identity-verification`, and
+  carries its own caution that "the target term appears somewhere on this onion
+  page … not necessarily as the subject's own data". Admitting it — the
+  `see_know`-shaped special case the warning literally proposes — would let one
+  unverified keyword hit attest a PII value alongside HIBP and DeHashed,
+  manufacturing the very corroboration the consensus pass exists to measure.
+  `NOT A DEFECT`: the exclusion was correct; only its silence was not.
+
+The two therefore appeared in the same warning string on every scan, one
+actionable and one not, which is what made the actionable one invisible.
+
+**Fix (authoritative, two halves).**
+
+1. `stolen_tax` added to `source_family`'s breach needle set
+   (`src/core/correlator/rules/mod.rs`) — it is a corpus, so it is classified as
+   one, and all three downstream consequences reverse at once.
+2. `NON_CORPUS_BREACH_MODULES` added beside `is_breach_source`
+   (`src/core/correlator/rules/breach_pii.rs`), an authoritative, per-module
+   justified record of breach-category modules that are deliberately NOT graded
+   corpora — currently `["ahmia"]`, with the reason. `breach_sweep_modules` now
+   consults it and excludes those modules **silently**, because warning about a
+   deliberate decision trains the operator to ignore the warning, which is
+   precisely how `stolen_tax` stayed invisible. Anything neither recognised nor
+   listed still warns.
+
+Note what was NOT done: `ahmia`'s category was not changed to suppress the
+warning. `Breach`'s own definition covers a paste/leak index, so relabelling it
+would misdescribe the module and move the defect rather than eliminate it.
+
+**Regression lock.** `source_family_covers_every_breach_category_module`
+(`src/core/correlator/rules/tests.rs`) was replaced. The old version was a
+hand-maintained literal list of 11 module names — **structurally incapable** of
+detecting an omission, because the list was simultaneously the input and the
+expectation; its own comment conceded a registry walk was thought impossible and
+accepted the runtime warning as the substitute. It passed for the entire period
+`stolen_tax` was unclassified.
+
+The new test walks the **live registry** (`crate::modules::registry()`, reachable
+from a `#[cfg(test)]` module inside `core` — the same precedent
+`core::dependency::reachability`'s tests already set, and exempt from
+`tests/architecture.rs`'s `core_does_not_import_modules` lint, which drops
+`#[cfg(test)]`-attributed items) and enforces the invariant in both directions:
+every `ModuleCategory::Breach` module must be either graded or explicitly
+recorded as a non-corpus; and every entry in `NON_CORPUS_BREACH_MODULES` must
+still be a registered breach-category module that `is_breach_source` still
+rejects. Neither side can rot.
+
+**Falsification (four independent reversions, each rebuilt and re-run).**
+
+| Reversion | Result |
+| --- | --- |
+| Remove `stolen_tax` from the breach needles | FAILED — ``classified by neither `is_breach_source` nor `NON_CORPUS_BREACH_MODULES`: ["stolen_tax"]`` |
+| Remove `ahmia` from `NON_CORPUS_BREACH_MODULES` | FAILED — same assertion, `["ahmia"]` |
+| Add an unregistered name to the exclusion set | FAILED — "is listed in NON_CORPUS_BREACH_MODULES but is not a registered breach-category module — stale entry" |
+| Add `hibp` (a graded corpus) to the exclusion set | FAILED — "is listed as a deliberate NON-corpus yet `is_breach_source` accepts it — the two classifications contradict each other" |
+| Restored | ok |
+
+**Permanent invariant.** Every module that declares `ModuleCategory::Breach` is
+classified deliberately — graded as a corpus, or recorded as a non-corpus with
+its reason — and the classification is checked against the live registry rather
+than against a copy of itself. A newly registered breach module fails the build
+until someone decides which it is.

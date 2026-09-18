@@ -153,6 +153,40 @@ pub(in crate::core) fn is_breach_source(name: &str) -> bool {
         || name.eq_ignore_ascii_case("see-know")
 }
 
+/// The modules that self-declare [`crate::core::ModuleCategory::Breach`] but are
+/// deliberately NOT graded corpora — i.e. [`is_breach_source`] returns `false`
+/// for them *on purpose*, not by omission.
+///
+/// The category and this predicate answer two different questions, and
+/// conflating them is the defect this constant exists to close. `Breach` is an
+/// *intel-domain* label ("breach corpora, paste exposure, stealer logs, leaked
+/// credentials") describing what a module goes looking at. `is_breach_source` is
+/// a far narrower *evidentiary* claim: that a finding from this source is a
+/// leaked RECORD, whose PII attributes may be assembled into a person
+/// ([`breach_pii`](self)) and whose presence counts as an independent corpus
+/// attestation in [`crate::core::breach_consensus`]. A full-text index over leak
+/// sites satisfies the first and not the second.
+///
+/// Membership here is a standing decision that must be justified per module:
+///
+/// - `ahmia` — a full-text search engine over Tor, not a record corpus. It
+///   produces only [`crate::core::EntityKind::Url`] at
+///   [`crate::core::confidence::LOW_MEDIUM`], tagged `needs-identity-verification`,
+///   and carries its own caution that "the target term appears somewhere on this
+///   onion page … not necessarily as the subject's own data". Admitting it would
+///   let one unverified keyword hit attest a PII value alongside HIBP and
+///   DeHashed — manufacturing the very corroboration the consensus pass exists to
+///   measure.
+///
+/// Anything NOT listed here and not recognised by [`is_breach_source`] is an
+/// unclassified corpus: a real hole that silently drops a breach source out of
+/// cross-family diversity, out of the gap analysis, and out of the sweep's
+/// dispatch allow-list. `source_family_covers_every_breach_category_module`
+/// walks the live registry and fails on exactly that, and on a stale entry here
+/// (a name no longer registered, or one that became a graded corpus), so neither
+/// side of the reconciliation can rot.
+pub(in crate::core) const NON_CORPUS_BREACH_MODULES: &[&str] = &["ahmia"];
+
 // ── AU-073 — Subject date of birth ───────────────────────────────────────────
 
 /// The canonical DOB evidence-attribute-key vocabulary — also the single

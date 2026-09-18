@@ -5610,6 +5610,51 @@ fn tracked_entity_map_into_inner_yields_every_entity_regardless_of_dirty_state()
 
 // ── Final breach sweep + autonomous audit ───────────────────────────────────
 
+/// The sweep's dispatch allow-list, built over the REAL registry.
+///
+/// The correlator's `source_family_covers_every_breach_category_module` proves
+/// every breach-category module is deliberately classified; this proves the
+/// classification actually reaches the dispatch decision. A corpus that is
+/// classified but never dispatched is still a corpus the sweep never asks —
+/// implementation is not reachability, and these are different code paths.
+///
+/// `stolen_tax` is the regression this pins: a paid, key-gated breach API that
+/// fell through `source_family`'s needles to `"other"` and was therefore absent
+/// from this list entirely, observed live as `breach-category modules unknown to
+/// the corpus classifier … modules="stolen_tax,ahmia"`. `ahmia` is the opposite
+/// case in the same warning — a full-text Tor index, not a record corpus — and
+/// must stay OUT, silently (see `NON_CORPUS_BREACH_MODULES`).
+#[tokio::test]
+async fn the_breach_sweep_allow_list_admits_every_graded_corpus_and_no_non_corpus() {
+    // `ScanEngine::new` spawns the DB-writer actor, so a runtime must be live.
+    use crate::core::test_support::InMemoryStore;
+
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(16);
+    let engine = ScanEngine::new(crate::modules::registry(), store, bus);
+    let allow = engine.breach_sweep_modules("reachability-check");
+
+    assert!(
+        allow.iter().any(|m| m == "stolen_tax"),
+        "stolen_tax is a graded breach corpus but never reaches the sweep's dispatch \
+         allow-list: {allow:?}"
+    );
+    for excluded in crate::core::correlator::NON_CORPUS_BREACH_MODULES {
+        assert!(
+            !allow.iter().any(|m| m == excluded),
+            "`{excluded}` is recorded as a deliberate non-corpus yet the sweep dispatches it"
+        );
+    }
+    // Sanity: the allow-list is the real thing, not an empty vec that would
+    // satisfy the exclusion half vacuously.
+    for corpus in ["hibp", "dehashed", "see_know"] {
+        assert!(
+            allow.iter().any(|m| m == corpus),
+            "{corpus} missing from the sweep allow-list: {allow:?}"
+        );
+    }
+}
+
 /// A stand-in breach corpus. Its NAME is what matters: `source_family` classes
 /// anything containing "breach" into the breach family, so
 /// `is_breach_source` recognises it, the engine admits it to the sweep's

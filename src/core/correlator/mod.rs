@@ -347,7 +347,7 @@ pub(in crate::core) use rules::is_generic_handle;
 // exactly with the correlator on which sources those are — a second, drifting
 // list would let the consensus pass certify agreement the rules never saw.
 pub(in crate::core) use rules::breach_pii::{
-    DOB_KEYS, breach_corpus_key, is_breach_source, normalise_dob,
+    DOB_KEYS, NON_CORPUS_BREACH_MODULES, breach_corpus_key, is_breach_source, normalise_dob,
 };
 use rules::*;
 

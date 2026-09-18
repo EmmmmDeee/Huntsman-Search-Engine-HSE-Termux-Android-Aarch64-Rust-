@@ -60,37 +60,71 @@ use crate::core::entity::Evidence;
 
     #[test]
     fn source_family_covers_every_breach_category_module() {
-        // Every module that self-declares `ModuleCategory::Breach` in the
-        // registry, by exact name. `core` may not import `modules`, so the two
-        // classifications cannot be reconciled by a direct registry walk — this
-        // literal list is the reconciliation, and the engine's sweep allow-list
-        // warns at runtime if a Breach-category module ever appears that this
-        // list has not caught up with.
+        // Walks the LIVE registry, so a newly added breach corpus is caught the
+        // moment it is registered. The previous version of this test was a
+        // hand-maintained literal list of module names, which could not detect
+        // an omission by construction — the list was both the input and the
+        // expectation. It passed while `stolen_tax` (a paid credential corpus)
+        // sat unclassified, and the engine's runtime warning it delegated to
+        // was firing on every scan with nobody reading it.
         //
-        // A miss here is not cosmetic: `"other"` is excluded from cross-family
-        // diversity, so an unclassified breach corpus silently stops counting
-        // toward corroboration and stops being a family the gap analysis can
-        // find missing.
-        for m in [
-            "comb_search",
-            "dehashed",
-            "hibp",
-            "hudsonrock",
-            "intelx",
-            "leakcheck_public",
-            "leakix",
-            "niamonx",
-            "osintcat",
-            "pwned_passwords",
-            "xposed_or_not",
-        ] {
-            assert_eq!(source_family(m), "breach", "{m} is not classed as breach");
+        // A miss is not cosmetic: `"other"` is excluded from cross-family
+        // diversity, so an unclassified corpus silently stops counting toward
+        // corroboration, stops being a family the gap analysis can find
+        // missing, and is dropped from the breach sweep's dispatch allow-list.
+        let breach_modules: Vec<&'static str> = crate::modules::registry()
+            .iter()
+            .filter(|m| m.category() == crate::core::ModuleCategory::Breach)
+            .map(|m| m.name())
+            .collect();
+        assert!(
+            !breach_modules.is_empty(),
+            "registry walk found no breach-category modules at all — the walk itself is broken"
+        );
+
+        let unclassified: Vec<&&str> = breach_modules
+            .iter()
+            .filter(|n| !super::breach_pii::is_breach_source(n))
+            .filter(|n| !super::breach_pii::NON_CORPUS_BREACH_MODULES.contains(n))
+            .collect();
+        assert!(
+            unclassified.is_empty(),
+            "breach-category modules classified by neither `is_breach_source` nor \
+             `NON_CORPUS_BREACH_MODULES`: {unclassified:?} — add the corpus to \
+             `source_family`'s breach needles, or record it as a deliberate non-corpus \
+             with its reason"
+        );
+
+        // The exclusion set cannot rot either: every name in it must still be a
+        // registered breach-category module, and must not have quietly become a
+        // graded corpus (which would make the entry a contradiction rather than
+        // a decision).
+        for excluded in super::breach_pii::NON_CORPUS_BREACH_MODULES {
+            assert!(
+                breach_modules.contains(excluded),
+                "`{excluded}` is listed in NON_CORPUS_BREACH_MODULES but is not a registered \
+                 breach-category module — stale entry"
+            );
+            assert!(
+                !super::breach_pii::is_breach_source(excluded),
+                "`{excluded}` is listed as a deliberate NON-corpus yet `is_breach_source` \
+                 accepts it — the two classifications contradict each other"
+            );
         }
+
+        // `stolen_tax` is the corpus the registry walk caught: a paid,
+        // key-gated breach API emitting Email/Username/Credential whose name
+        // carries no generic breach token.
+        assert_eq!(source_family("stolen_tax"), "breach");
         // `see_know` is a breach-category module whose name has no breach token
         // and whose family is deliberately NOT "breach" (it is a people-search
         // aggregator). `is_breach_source` special-cases it instead, so the
         // consensus pass still counts it as an attesting corpus.
+        assert_ne!(source_family("see_know"), "breach");
         assert!(super::breach_pii::is_breach_source("see_know"));
+        // `ahmia` is the opposite case: breach-category, but a full-text Tor
+        // index rather than a record corpus, so it must NOT attest anything.
+        assert!(!super::breach_pii::is_breach_source("ahmia"));
     }
 
     #[test]

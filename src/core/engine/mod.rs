@@ -1748,8 +1748,18 @@ impl ScanEngine {
     ///
     /// A module that self-declares [`crate::core::ModuleCategory::Breach`] but is not
     /// recognised is exactly that hole, so it is named in a warning rather than
-    /// quietly dispatched — `core` cannot import the module registry, so this
-    /// call site is the only place the two classifications are both visible.
+    /// quietly dispatched.
+    ///
+    /// Two different questions are being asked, and only the second gates the
+    /// sweep: the category is an *intel-domain* label, while `is_breach_source`
+    /// is the narrower claim that a finding is a leaked RECORD the consensus
+    /// pass can grade. The modules where those answers legitimately differ are
+    /// named in [`crate::core::correlator::NON_CORPUS_BREACH_MODULES`] with the
+    /// reason, and are excluded SILENTLY — warning about a deliberate decision
+    /// trains the operator to ignore the warning, which is what made the real
+    /// omission (`stolen_tax`, a paid corpus) invisible beside it in the live
+    /// log. Anything neither recognised nor listed is still a genuine hole and
+    /// still warns.
     fn breach_sweep_modules(&self, scan_id: &str) -> Vec<String> {
         let mut allow = Vec::new();
         let mut ungraded: Vec<&str> = Vec::new();
@@ -1758,7 +1768,9 @@ impl ScanEngine {
             let recognised = crate::core::correlator::is_breach_source(name);
             if recognised {
                 allow.push(name.to_string());
-            } else if m.info().category == crate::core::ModuleCategory::Breach {
+            } else if m.info().category == crate::core::ModuleCategory::Breach
+                && !crate::core::correlator::NON_CORPUS_BREACH_MODULES.contains(&name)
+            {
                 ungraded.push(name);
             }
         }
