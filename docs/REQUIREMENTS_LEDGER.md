@@ -8044,3 +8044,68 @@ precisely on the designated-vs-associated axis) and on the code already
 hard-coding `"sanction.linked"` as a match arm — strong internal evidence it is
 a real value the implementer met from the live API. The fix (splitting the two
 cases) is correct and safe regardless of the exact wording of the weaker tier.
+
+### REQ-CERTINTEL-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a per-scan fabricated "TLS certificate" from a permanently-dead probe leg
+
+**Lead.** Wave-9 hunt (group A), then a personal re-read of `cert_intel`'s
+`process()` and a whole-tree grep for `tls_info`.
+
+**Verified from source.** `cert_intel::process()`'s live-TLS-probe leg
+(`src/modules/cert_intel/mod.rs`) reads
+`resp.extensions().get::<reqwest::tls::TlsInfo>()` to get the peer certificate
+DER for `parse_certificate` (SAN/issuer/subject/serial extraction — the module's
+documented "merged former ssl_probe" capability). `TlsInfo` is populated by
+reqwest ONLY when the client was built with `.tls_info(true)`. Grep across the
+whole `src/` tree confirmed `tls_info` appears **only** at cert_intel's two
+consumer lines — the shared hardened client builder
+(`util::http::ssrf::client_builder`) never enabled it. So
+`resp.extensions().get::<TlsInfo>()` was `None` on every request, the
+`if let Some(info) … peer_certificate()` guard could never be true, and
+`parse_certificate` never fired — silently, on every scan, forever.
+
+Yet `process()` still unconditionally built `target.to_entity(confidence::EXPERT,
+…)` (0.88) tagged `"tls"` with evidence titled `"TLS certificate for {domain}"`
+and pushed it on ANY successful HTTPS HEAD, with zero certificate fields ever
+populated. Every domain that merely answered HTTPS minted a near-max-confidence
+"TLS certificate confirmed" entity that examined no certificate at all, while
+half the module's advertised capability was inert. The module's tests exercised
+only the pure DER-scanner helpers on byte fixtures — the real HTTP path was
+never covered, which is why it survived.
+
+**Failure scenario.** Every scan reaching an HTTPS server mints this
+fabricated-looking EXPERT entity — a very high blast radius, since a successful
+HTTPS HEAD is one of the most common outcomes in a scan.
+
+**Fix (both root causes).**
+1. **Restore the dead capability**: enable `.tls_info(true)` on the single
+   hardened `client_builder()` so `TlsInfo` (the peer's leaf-cert DER) is
+   captured for the client every module already uses — no new client path (zero
+   SSRF-mirroring risk), and the ~1–4 KB DER retained per response is negligible.
+2. **Gate the finding on an actually-captured certificate**: entity construction
+   moves into a pure `build_tls_entity(target, domain, scan_id, cert_der,
+   http_status, hsts, …)` helper. `cert_der: Some` → `confidence::EXPERT` "TLS
+   certificate for {domain}" with the parsed SANs/issuer/subject/serial;
+   `cert_der: None` → a modest `confidence::MEDIUM` "HTTPS service responding …
+   (no certificate captured)" observation that still records the real HSTS/
+   http_status signal. A bare HTTPS HEAD can no longer mint a certificate finding
+   that examined nothing. Post-fix, `Some` is the normal path (the capability is
+   restored) and `None` is the honest fallback for the edge case.
+
+**Evidence.** Two new locks:
+`cert_intel::tests::a_probe_with_no_certificate_is_not_an_expert_tls_finding`
+(`None` → MEDIUM, evidence must not say "TLS certificate for", HSTS still kept,
+no SAN subdomains fabricated) and `…::a_captured_certificate_is_an_expert_tls_
+finding` (a minimal DER SAN fragment → EXPERT "TLS certificate for example.com"
+with the SAN parsed into a discovered subdomain — the restored capability). The
+pure helper is the testable seam the original bug slipped through. `real_cert_*`
+fixtures still pass, proving `parse_certificate` is unchanged.
+
+**Falsification.** The gate was reverted in place (`if cert_der.is_some()` →
+`if true`, the old always-EXPERT behaviour) and the no-certificate lock was run
+and observed FAILING (MEDIUM ≠ EXPERT), then restored byte-for-byte. After the
+fix: `cert_intel` 32 passed, `util::http` 76 passed, `cargo fmt --check` clean,
+`cargo clippy --all-targets --locked -- -D warnings` exit 0.
+
+**Note.** `.tls_info(true)` is now on for every request. Only `cert_intel` reads
+`TlsInfo` today, but any future TLS-aware module gets the capture for free — the
+capability is now reachable rather than dead.

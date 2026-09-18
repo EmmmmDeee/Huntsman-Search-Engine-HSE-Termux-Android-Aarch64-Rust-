@@ -208,6 +208,16 @@ pub(super) fn client_builder() -> reqwest::ClientBuilder {
         // is why compression is enabled unconditionally on this path but only for
         // trusted hosts on the curl path.
         .gzip(true)
+        // Capture the peer's leaf certificate (DER) into each response's type-map
+        // extensions so a TLS-aware module can read it back via
+        // `reqwest::tls::TlsInfo`. `cert_intel`'s live-TLS probe is the sole
+        // consumer; without this switch the capture is never enabled, so its
+        // whole certificate-parsing leg was dead code that still minted an
+        // EXPERT "TLS certificate" finding having examined no certificate at all
+        // (REQ-CERTINTEL-001). Cost: the ~1–4 KB leaf DER is retained on a
+        // response for its lifetime and dropped with it — negligible on this
+        // tool's request volume.
+        .tls_info(true)
         // Per-read inactivity backstop (NOT a total timeout — streaming bodies
         // are deliberately unbounded): a server that connects then stalls
         // mid-response can no longer hang an `await` forever. Generous (30 s) so
