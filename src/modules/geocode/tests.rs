@@ -75,14 +75,22 @@ fn forward_geocode_shapes_confidence_by_au_relevance() {
     // candidate that won't be expanded or counted as confirmed. No address
     // breakdown (None) falls back to the offline bounding box, same as
     // au_relevance's own None arm.
-    let au = build_forward_entity(-27.4766, 153.0166, "-27.476600,153.016600", None, "scan");
+    let au = build_forward_entity(
+        -27.4766,
+        153.0166,
+        "-27.476600,153.016600",
+        None,
+        "scan",
+        false,
+    );
     assert!((au.confidence - confidence::HIGH_PLUS).abs() < 1e-9);
     assert!(au.has_tag("au-relevant"));
     assert!(au.has_tag("au-state:QLD")); // Brisbane
     assert!(au.has_tag("geocoded"));
     assert!(!au.has_tag("candidate"));
 
-    let foreign = build_forward_entity(51.5074, -0.1278, "51.507400,-0.127800", None, "scan");
+    let foreign =
+        build_forward_entity(51.5074, -0.1278, "51.507400,-0.127800", None, "scan", false);
     assert!((foreign.confidence - confidence::LOW).abs() < 1e-9);
     assert!(foreign.has_tag("off-region"));
     assert!(foreign.has_tag("candidate"));
@@ -104,6 +112,7 @@ fn forward_geocode_prefers_the_authoritative_country_code_over_the_crude_box() {
         "-10.900000,123.000000",
         Some(&indonesia_addr),
         "scan",
+        false,
     );
     assert!(
         (e.confidence - confidence::LOW).abs() < 1e-9,
@@ -123,6 +132,7 @@ fn forward_geocode_prefers_the_authoritative_country_code_over_the_crude_box() {
         "-10.900000,123.000000",
         Some(&au_addr),
         "scan",
+        false,
     );
     assert!((e.confidence - confidence::HIGH_PLUS).abs() < 1e-9);
     assert!(e.has_tag("au-relevant"));

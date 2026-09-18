@@ -49,7 +49,7 @@ fn build_forward_emits_coordinates_with_name_and_osm() {
                           "osm_key":"amenity","osm_value":"theatre"}}"#,
     )
     .expect("should succeed");
-    let e = build_forward("opera house sydney", &feature, "s").expect("should succeed");
+    let e = build_forward("opera house sydney", &feature, false, "s").expect("should succeed");
     assert_eq!(e.kind, EntityKind::Coordinates);
     assert_eq!(e.value, "-33.856800,151.215300");
     assert!(e.has_tag("geocoded") && e.has_tag("country:AU"));
@@ -77,10 +77,10 @@ fn build_forward_emits_coordinates_with_name_and_osm() {
 fn build_forward_without_geometry_is_none() {
     let feature: Feature =
         serde_json::from_str(r#"{"properties":{"name":"X"}}"#).expect("should succeed");
-    assert!(build_forward("x", &feature, "s").is_none());
+    assert!(build_forward("x", &feature, false, "s").is_none());
     let no_coords: Feature =
         serde_json::from_str(r#"{"geometry":{"coordinates":[1.0]}}"#).expect("should succeed");
-    assert!(build_forward("x", &no_coords, "s").is_none());
+    assert!(build_forward("x", &no_coords, false, "s").is_none());
 }
 
 #[test]
@@ -95,7 +95,7 @@ fn build_forward_prefers_the_authoritative_country_code_over_the_crude_box() {
             "properties":{"name":"Rote","countrycode":"id"}}"#,
     )
     .expect("should succeed");
-    let e = build_forward("rote island", &feature, "s").expect("should succeed");
+    let e = build_forward("rote island", &feature, false, "s").expect("should succeed");
     assert!(e.has_tag("country:ID"));
     assert!(
         !e.has_tag("country:AU"),
@@ -117,10 +117,10 @@ fn build_forward_rejects_out_of_range_and_null_island() {
     // a high-confidence false fix). Longitude is `coordinates[0]`.
     let oob: Feature = serde_json::from_str(r#"{"geometry":{"coordinates":[999.0,500.0]}}"#)
         .expect("should succeed");
-    assert!(build_forward("x", &oob, "s").is_none());
+    assert!(build_forward("x", &oob, false, "s").is_none());
     let null_island: Feature =
         serde_json::from_str(r#"{"geometry":{"coordinates":[0.0,0.0]}}"#).expect("should succeed");
-    assert!(build_forward("x", &null_island, "s").is_none());
+    assert!(build_forward("x", &null_island, false, "s").is_none());
 }
 
 // ── Reverse: Address with name folded in + OSM classification ────────

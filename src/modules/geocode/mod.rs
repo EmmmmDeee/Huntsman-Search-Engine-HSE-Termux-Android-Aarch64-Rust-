@@ -154,7 +154,7 @@ impl Geocode {
         }
 
         let url = format!(
-            "https://nominatim.openstreetmap.org/search?q={}&format=json&limit=1&addressdetails=1",
+            "https://nominatim.openstreetmap.org/search?q={}&format=json&limit=5&addressdetails=1",
             urlencode(addr)
         );
 
@@ -222,8 +222,15 @@ impl Geocode {
             && crate::util::geo::is_valid_coords(lat, lon)
         {
             let coords = format!("{lat:.6},{lon:.6}");
-            let mut e =
-                build_forward_entity(lat, lon, &coords, first.address.as_ref(), &ctx.scan_id);
+            let is_ambiguous = results.len() > 1;
+            let mut e = build_forward_entity(
+                lat,
+                lon,
+                &coords,
+                first.address.as_ref(),
+                &ctx.scan_id,
+                is_ambiguous,
+            );
             let mut ev = Evidence::new(SRC, format!("Geocoded \"{addr}\" \u{2192} {coords}"))
                 .with_attr("input_address", addr)
                 .with_attr("latitude", lat_str)
@@ -236,6 +243,9 @@ impl Geocode {
             }
             if let Some(addr) = &first.address {
                 ev = fold_address_attrs(ev, addr);
+            }
+            if is_ambiguous {
+                ev = ev.with_attr("candidates_count", results.len().to_string());
             }
             e.add_evidence(ev);
             result.push(e);
@@ -312,7 +322,10 @@ fn decode_forward_body(body: &str) -> Option<Vec<NominatimResult>> {
 /// a candidate (confidence::LOW, `off-region` + `candidate`) so it sits below
 /// the confidence::MEDIUM expansion floor and is quarantined from confirmed
 /// correlations — an ambiguous address string can't drag an AU-focused scan
-/// off-region. Pure (no I/O); the caller attaches evidence.
+/// off-region. When multiple candidates exist (ambiguity detected), the
+/// unambiguous confidence is downgraded: an AU-relevant fix drops from
+/// HIGH_PLUS to MEDIUM_HIGH (still on-region but marked ambiguous), and
+/// off-region stays at LOW. Pure (no I/O); the caller attaches evidence.
 #[must_use]
 pub(super) fn build_forward_entity(
     lat: f64,
@@ -320,12 +333,13 @@ pub(super) fn build_forward_entity(
     coords: &str,
     addr: Option<&NominatimAddr>,
     scan_id: &str,
+    is_ambiguous: bool,
 ) -> Entity {
     let in_au = au_relevance(lat, lon, addr) == AuRelevance::InAustralia;
-    let confidence = if in_au {
-        confidence::HIGH_PLUS
-    } else {
-        confidence::LOW
+    let confidence = match (in_au, is_ambiguous) {
+        (true, true) => confidence::MEDIUM_HIGH,
+        (true, false) => confidence::HIGH_PLUS,
+        (false, _) => confidence::LOW,
     };
     let mut e = Entity::new(EntityKind::Coordinates, coords, confidence, scan_id);
     e.tag("geocoded");
@@ -333,6 +347,9 @@ pub(super) fn build_forward_entity(
         e.tag("au-relevant");
         if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
             e.tag(format!("au-state:{state}"));
+        }
+        if is_ambiguous {
+            e.tag("ambiguous");
         }
     } else {
         e.tag("off-region");

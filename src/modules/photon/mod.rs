@@ -89,7 +89,7 @@ impl Photon {
         }
 
         let url = format!(
-            "https://photon.komoot.io/api/?q={}&limit=1",
+            "https://photon.komoot.io/api/?q={}&limit=5",
             urlencode(addr),
         );
 
@@ -110,7 +110,7 @@ impl Photon {
 
         let mut result = ModuleResult::new();
         if let Some(feature) = body.features.first()
-            && let Some(e) = build_forward(addr, feature, &ctx.scan_id)
+            && let Some(e) = build_forward(addr, feature, body.features.len() > 1, &ctx.scan_id)
         {
             result.push(e);
         }
