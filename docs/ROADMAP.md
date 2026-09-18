@@ -230,21 +230,28 @@ error never constructed — each is either wired or removed.
 ## 5. Cleanup & consolidation register (T3 — living)
 
 The tracked tree carries **no** editor/backup/patch/output junk (verified via
-`git ls-files`), and build artifacts (`target/`) are correctly gitignored. The
-outstanding cleanup is in `docs/`, which accreted point-in-time autonomous-run
-reports. Disposition (to be actioned as its own commit, conservatively, never
-bundled with a code fix):
+`git ls-files`), and build artifacts (`target/`) are correctly gitignored — so
+there is no unsafe-to-keep junk to delete. The `docs/` directory accreted
+point-in-time autonomous-run reports; their disposition, **after verification**
+(2026-09-18), is:
 
-| Path | Status | Action |
+| Path | Verified status | Action |
 |---|---|---|
-| `docs/*_2026-08-27_czrqs1.md` (AUTONOMOUS_DECISIONS, BENCHMARK_RESULTS, CREDENTIAL_AUDIT, DEPENDENCY_GRAPH, EXCEPTION_LEDGER, FINAL_REPORT, ISSUE_LEDGER, RUST_MIGRATION_AUDIT) | Stale point-in-time run reports | Assess for archival/removal once confirmed unreferenced by code or governing docs |
-| `docs/CREDENTIAL_AUDIT_2026-08-27.md` vs `…_czrqs1.md`; `docs/RUST_MIGRATION_AUDIT_2026-08-27.md` vs `…_czrqs1.md` | Duplicate pairs | Consolidate to one, delete the redundant copy |
-| `docs/OATHNET_API_GUIDE.txt` | `.txt` amid `.md` | Normalise to `.md` or fold into `OSINT_API_REFERENCE.md` |
+| `docs/*_2026-08-27{,_czrqs1}.md` (AUTONOMOUS_DECISIONS, BENCHMARK_RESULTS, CREDENTIAL_AUDIT, DEPENDENCY_GRAPH, EXCEPTION_LEDGER, FINAL_REPORT, ISSUE_LEDGER, RUST_MIGRATION_AUDIT) | **Referenced** by README, CHANGELOG, PROBLEM_TREE, REQUIREMENTS_LEDGER, gap_register, `.gitleaks.toml`, `.agent/state.json`, and some module source | **Retain.** Not junk — a referenced historical audit trail. Do not delete. |
+| `CREDENTIAL_AUDIT_2026-08-27.md` vs `…_czrqs1.md`; `RUST_MIGRATION_AUDIT_2026-08-27.md` vs `…_czrqs1.md` | **Not** identical (182 / 606 differing lines) — two distinct reports, both referenced | **Retain both.** The "duplicate pair" hypothesis was falsified; merging would lose content and break references. |
+| `docs/OATHNET_API_GUIDE.txt` | `.txt` amid `.md`; referenced by the `oathnet` provider source | Normalise to `.md` only as part of a reference-updating pass, not a bare rename. |
 
-**Rule for this register:** a doc is removed only after confirming nothing in
-the build, the code, or the governing docs references it — deletion is
-outward-facing and irreversible, so it is verified first and done in a
-clearly-scoped commit the user can review.
+**Outcome of the reassessment:** there is no safe, high-value doc deletion or
+consolidation available right now — the cleanup dividend is small and the
+reference-breakage risk real. Effort is therefore directed to the correctness
+and canonicalisation tracks (T1/T2), where permanent value is created, and this
+register is revisited only if a deliberate doc-index refactor is undertaken with
+its references updated atomically.
+
+**Rule for this register:** a doc is removed or moved only after confirming
+every reference (build, code, governing docs, tooling config) is updated in the
+same change — deletion/renaming is outward-facing and irreversible, so it is
+verified first and done in a clearly-scoped commit the user can review.
 
 ---
 
