@@ -100,3 +100,60 @@ use super::*;
         assert!(EmailCanonical.is_passive());
         assert_eq!(EmailCanonical.category(), ModuleCategory::Email);
     }
+
+#[test]
+fn an_unknown_domain_keeps_its_plus_tag() {
+    // REQ-EMAILCANON-001. `+tag` subaddressing is a per-mail-server opt-in
+    // (RFC 5233), not a property of the address string, so folding it for
+    // EVERY domain fused two potentially DIFFERENT real people onto one
+    // identity — and this module emits the fold as a new Email entity at
+    // `CANON_CONF` (0.80, deliberately above the expansion floor), calling it
+    // "a proven-equivalent address (not a guess)", so the scan then pivots the
+    // whole email pipeline onto the fabricated link.
+    //
+    // Concretely: `bob+x@smallbiz.example` and `bob@smallbiz.example` on a
+    // domain that never enabled subaddressing may be two different mailboxes
+    // (or one held and one undeliverable). An unrecognised domain must
+    // therefore keep its tag — a missed merge is recoverable, a false merge
+    // silently corrupts an identity.
+    //
+    // The old behaviour was not an oversight but an active belief: the shared
+    // helper's own doctest asserted `jane+promo@corp.com` → `jane@corp.com`
+    // on a plainly generic domain.
+    for arbitrary in [
+        "bob+x@smallbiz.example",
+        "jane+promo@corp.com",
+        "user+tag@selfhosted.dev",
+        "a+b@some-company.com.au",
+    ] {
+        assert_eq!(
+            canonicalise(arbitrary).as_deref(),
+            None,
+            "{arbitrary} has no canonical form distinct from itself, so no \
+             entity may be minted claiming equivalence",
+        );
+    }
+}
+
+#[test]
+fn a_known_subaddressing_provider_still_folds_its_plus_tag() {
+    // Guard for the fix above: the allowlisted providers' tags must still
+    // fold, or the fix has traded a false merge for a missed one across every
+    // major consumer mailbox. Each of these is documented default-on.
+    for (tagged, want) in [
+        ("jane+promo@outlook.com", "jane@outlook.com"),
+        ("jane+promo@hotmail.com", "jane@hotmail.com"),
+        ("jane+promo@live.com", "jane@live.com"),
+        ("jane+promo@fastmail.com", "jane@fastmail.com"),
+        ("jane+promo@proton.me", "jane@proton.me"),
+        ("jane+promo@protonmail.com", "jane@protonmail.com"),
+        ("jane+promo@icloud.com", "jane@icloud.com"),
+        ("jane+promo@me.com", "jane@me.com"),
+    ] {
+        assert_eq!(
+            canonicalise(tagged).as_deref(),
+            Some(want),
+            "{tagged} is a documented subaddressing provider and must still fold",
+        );
+    }
+}

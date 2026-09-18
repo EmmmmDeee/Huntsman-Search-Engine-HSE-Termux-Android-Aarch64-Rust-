@@ -7679,3 +7679,97 @@ than a fabricated fact — a materially different severity from a 0.80
 returning `+61…` embeds a country claim in the entity VALUE on the import
 path, where no jurisdiction gate applies at all — is genuinely wider than
 this fix and is recorded as its own queue item rather than folded in here.
+
+### REQ-EMAILCANON-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): `+tag` folding for every domain fused two different people's mailboxes
+
+**Lead.** Wave 9 module audit (`email_canonical`), then verified against the
+shared helper and both of its other consumers.
+
+**Verified from source.** `util::canonical::canonical_email_mailbox` stripped
+the `+tag` suffix from the local-part UNCONDITIONALLY — the
+`local.split('+').next()` ran before the Gmail-only branch, for every domain.
+`modules::email_canonical` then emitted the folded address as a NEW `Email`
+entity at `CANON_CONF = confidence::HIGH_PLUSPLUS` (0.80), tagged
+`canonical`, with the module's own doc calling it "a proven-equivalent
+address (not a guess)" and deliberately setting confidence "above the
+expansion floor… a `--depth 1+` scan pivots the whole email pipeline onto
+it".
+
+Plus-addressing is RFC 5233 Sieve subaddressing: a **per-mail-server opt-in
+convention, not a property of the address string**. It is reliable for the
+providers the helper's own doc named (Gmail, Outlook/Microsoft, Fastmail,
+Proton, iCloud) and NOT guaranteed for an arbitrary corporate or self-hosted
+domain — a Microsoft 365/Exchange Online tenant, for instance, requires an
+administrator to enable it explicitly.
+
+This was an active (mistaken) design belief, not an overlooked edge case, and
+three separate artefacts encoded it:
+* the helper's own doctest asserted
+  `canonical_email_mailbox("jane+promo@corp.com")` → `"jane@corp.com"` on a
+  plainly generic domain;
+* `util::canonical::tests::non_gmail_keeps_dots_but_strips_plus_tag` pinned
+  the same `corp.com` fold;
+* `core::resolve::tests::non_gmail_plus_tag_is_stripped_so_those_group`
+  pinned it at the resolver layer with the comment "`+tag` IS stripped
+  everywhere (widely-supported subaddressing)".
+
+Failure scenario: `bob+x@smallbiz.example` and `bob@smallbiz.example` on a
+domain that never enabled subaddressing are two potentially DIFFERENT real
+people (or one held address and one undeliverable). They were fused into one
+high-confidence "proven" identity, and the scan then actively pivoted and
+expanded on that fabricated link.
+
+**Fix.** A new `PLUS_ADDRESSING_DOMAINS` allowlist beside the existing
+`GMAIL_DOMAINS`, gating the strip. Deliberately conservative and limited to
+providers whose support is documented and default-on (RULE.md: no assumed
+contract) — Google, Microsoft consumer, Fastmail, Proton, Apple iCloud, with
+their alias domains. Yahoo is deliberately absent: it offers disposable
+addresses rather than `+tag` subaddressing. An unrecognised domain now KEEPS
+its tag, because the fail-safe direction is to leave two addresses separate
+when equivalence is unproven: a missed merge is recoverable, a false merge
+silently corrupts an identity.
+
+**Test-oracle correction.** The two pre-existing tests above failed against
+the fix, as expected — they asserted the defect. Each was corrected rather
+than deleted, preserving its genuine intent (off-Gmail: the tag is
+insignificant, dots are significant) by moving it onto `outlook.com`, a
+domain where that is actually true, and each gained a companion asserting
+the arbitrary-domain case is NOT folded (and, at the resolve layer, NOT
+grouped). The helper's doctest was likewise corrected to show both halves of
+the rule. The old assertions' comments are quoted in the new tests so the
+reason for the change is legible at the failure site.
+
+**Evidence.** Two new locks in `modules::email_canonical::tests`
+(`an_unknown_domain_keeps_its_plus_tag` across four arbitrary domains;
+`a_known_subaddressing_provider_still_folds_its_plus_tag` across all eight
+allowlisted consumer domains), plus
+`util::canonical::tests::an_arbitrary_domain_keeps_its_plus_tag` (including
+an `assert_ne!` that the two spellings do not collapse onto one key) and
+`core::resolve::tests::an_arbitrary_domains_plus_tag_does_not_group`.
+
+**Falsification.** The fix landed before its test here, so the pre-fix
+failure was reproduced explicitly by reverting the gate to the unconditional
+strip (file backed up, restored byte-identical afterwards):
+
+```
+[gate reverted to unconditional strip] -> LOCK FAILS (expected)
+    modules::email_canonical::tests::an_unknown_domain_keeps_its_plus_tag --- FAILED
+    "bob+x@smallbiz.example has no canonical form distinct from itself, so no
+     entity may be minted claiming equivalence"
+    test result: FAILED. 11 passed; 1 failed; 0 ignored; 7396 filtered out
+```
+
+`a_known_subaddressing_provider_still_folds_its_plus_tag` PASSED in that
+reverted run, proving it is not vacuously green from the allowlist. Restored:
+`util::canonical` 86 passed, `core::resolve` 203 passed, `email_canonical` 12
+passed, all doctests 77 passed, 0 failed.
+
+**Residual.** Two other modules strip a `+tag` independently —
+`email_parse` (deriving a Username from the local part) and
+`username_variants` (generating handle permutations). Both are deliberately
+left alone: they derive a low-confidence *username candidate*, not a claim
+that two mailboxes are the same person, so the fail-safe direction there is
+the opposite one. The allowlist is a judgement call about provider behaviour
+and will need extending as providers change; it is one named constant with a
+doc comment stating the evidentiary standard for adding to it, so the
+decision is reviewable rather than buried in a `split('+')`.
