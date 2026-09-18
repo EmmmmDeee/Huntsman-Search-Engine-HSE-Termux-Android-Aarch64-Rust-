@@ -52,7 +52,7 @@ pub(super) fn parse_cells(cellinfo: &[u8], scan_id: &str) -> Result<ModuleResult
         }
         let lac = cell.area_code();
 
-        let tower_id = format!("{mcc}-{mnc}-{lac}-{cid}");
+        let tower_id = crate::util::cell::tower_id(&mcc, &mnc, lac, cid);
         let tech = tech_tag(cell.cell_type.as_deref());
         let registered = cell.registered.unwrap_or(false);
 

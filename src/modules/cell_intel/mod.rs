@@ -146,8 +146,13 @@ impl Module for CellIntel {
                 e.tag(format!("radio:{}", key.ctype.to_lowercase()));
                 crate::util::geo::tag_au_state(&mut e, lat, lon);
                 e.add_evidence(
+                    // Attributed to OpenCelliD, not to this module: the fix comes
+                    // out of OpenCelliD's corpus, which the `opencellid` module
+                    // also serves. Stamping `cell_intel` on it would let the same
+                    // row retrieved by both count as two independent sources and
+                    // buy `source_count` a corroboration boost it never earned.
                     Evidence::new(
-                        SRC,
+                        crate::modules::opencellid::SRC,
                         format!("Cell tower {radio} {} -> {coords}", key.tower_id),
                     )
                     .with_attr("tower_id", &key.tower_id)

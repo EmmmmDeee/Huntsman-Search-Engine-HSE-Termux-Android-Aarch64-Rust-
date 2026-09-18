@@ -43,7 +43,7 @@ impl<'a> TowerKey<'a> {
         let mnc = cell.mnc_str();
         let lac = cell.area_code();
         let ctype = cell.cell_type.as_deref().unwrap_or("unknown");
-        let tower_id = format!("{mcc}-{mnc}-{lac}-{cid}");
+        let tower_id = crate::util::cell::tower_id(&mcc, &mnc, lac, cid);
         Some(Self {
             mcc,
             mnc,
