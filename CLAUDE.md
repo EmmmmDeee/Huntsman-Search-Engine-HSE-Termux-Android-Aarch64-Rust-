@@ -22,3 +22,12 @@ established Australian support — see `src/util/domain_vn` and
 The repository's own governing rules and specifications continue to apply:
 [`RULE.md`](RULE.md) and
 [`docs/OPERATIONAL_CONSTITUTION.md`](docs/OPERATIONAL_CONSTITUTION.md).
+
+## Roadmap & optimal file structure
+
+[`docs/ROADMAP.md`](docs/ROADMAP.md) is the single, living map of HSE's optimal
+file structure, the codependencies and pivot pathways between its parts, and the
+route to completion. It is maintained continuously — re-assessed and realigned
+on each iteration — and is the map that `REQUIREMENTS_LEDGER.md` (the correctness
+transcripts) and the module registry (`src/modules/mod.rs`, the catalogue) hang
+off. Read it to understand where a change fits before making it.
