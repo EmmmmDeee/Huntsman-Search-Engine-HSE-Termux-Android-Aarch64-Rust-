@@ -8109,3 +8109,88 @@ fix: `cert_intel` 32 passed, `util::http` 76 passed, `cargo fmt --check` clean,
 **Note.** `.tls_info(true)` is now on for every request. Only `cert_intel` reads
 `TlsInfo` today, but any future TLS-aware module gets the capture for free — the
 capability is now reachable rather than dead.
+
+### REQ-AUGEO-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a fail-closed comment that never failed closed — the ArcGIS error envelope decoded as an empty miss
+
+**Module.** `au_geo` (`src/modules/au_geo/mod.rs`) — Australian ASGS geography
+for a coordinate, resolved against the ABS's public ArcGIS boundary service by
+querying each of ~11 layers (POA/SAL/LGA/CED/SED/RA/SA2/SA4/…) point-in-polygon.
+
+**Defect.** ArcGIS/Esri REST characteristically returns *logical* errors (a bad
+parameter, an expired token, a throttle, a WAF interstitial) as **HTTP 200**
+carrying an `{"error":{"code":…,"message":…}}` envelope rather than a feature
+set. `query_layer` carried a long comment stating exactly the right policy — "a
+200 whose body is not a decodable `QueryResp` is NOT 'point not in this layer';
+collapsing it to `Ok(None)` fails OPEN … Decode FAILURE ⇒ `Err` (fail closed)" —
+and a guard `if serde_json::from_str::<QueryResp>(&body).is_err() { return Err(…) }`.
+But `QueryResp` deserialized a single field, `features: Vec<Feature>`, under
+`#[derive(Deserialize, Default)] #[serde(default)]`. With `#[serde(default)]` and
+no `#[serde(deny_unknown_fields)]`, serde **silently drops** any key it does not
+recognise — so the error envelope did not fail to decode: it decoded
+*successfully* to `QueryResp { features: [] }`. The `is_err()`-only guard could
+therefore never fire on the one shape it was written to catch. The comment
+described a fail-closed guard the code could not implement.
+
+**Failure scenario.** A layer whose upstream answers `200 {"error":{"code":400,
+"message":"Invalid or missing input parameters."}}` (or a WAF page that happens
+to parse as an object) decodes to empty `features`, `parse_feature` returns
+`None`, and `query_layer` returns `Ok(None)` — read as a genuine "the point is
+not in this layer" miss. That fails OPEN twice over:
+1. the coordinate silently reports as having **no** Australian geography for that
+   layer (a false clean negative on data that does exist), and
+2. the layer query records a **circuit-breaker success**, so a *systematic*
+   upstream 200-error is indistinguishable from a real miss — the breaker never
+   trips, outage detection never fires, and the module's own "every layer
+   failed" safety net (which turns a total failure into a `ModuleError`) is
+   never reached because each failed layer is counted as a clean success.
+
+**Fix (at the authoritative decode seam).**
+1. `QueryResp` gains `error: Option<ArcgisError>` (with a new
+   `struct ArcgisError { code: i64, message: String }`), so the envelope's error
+   key is now *observed* rather than dropped — mirroring the sibling
+   `qld_cadastre::QueryResp`, which already carried this exact field and a
+   `features_or_error` helper. (`au_geo` was the drifted copy.)
+2. The `is_err()`-only guard is replaced by a pure
+   `decode_layer_body(body: &str) -> Result<QueryResp>` that fails **closed** on
+   BOTH failure shapes: an undecodable body (WAF HTML / truncated JSON) ⇒ `Err`,
+   and a *present* `error` envelope ⇒ `Err` carrying the provider's own
+   `code`/`message.trim()` for triage. Only a genuinely decoded feature response
+   (empty or not) returns `Ok`; a genuinely empty `features` list stays the real
+   miss it always was (`parse_feature`'s `None`).
+   The raw serde error is still deliberately **not** interpolated on the
+   undecodable path (a serde column number could trip the engine's `429`/`402`
+   rate-limit text match, and serde quotes offending values into the unredacted
+   `ModuleError` event) — but the *structured* envelope's fields are safe to
+   surface. `parse_feature` is unchanged: the guard runs first, so an undecodable
+   body never reaches it, and its four existing tests stay valid.
+   The template sibling `qld_cadastre` was confirmed already correct; no drift
+   the other way.
+
+**Evidence.** Three new locks in `src/modules/au_geo/tests.rs`, all exercising
+the pure `decode_layer_body` with no network:
+`an_arcgis_error_envelope_fails_closed` — the literal reproduced envelope
+`{"error":{"code":400,"message":"Invalid or missing input parameters."}}` must be
+`Err` (a `Module` error surfacing `400` and the message, not the raw body);
+`a_genuine_empty_layer_is_a_miss_not_an_error` — `{"features":[]}` must be `Ok`
+with empty features and no error (the fix must not turn honest misses into
+failures); `a_waf_page_fails_closed` — `<html>Access denied</html>` must be `Err`
+("did not decode"). `QueryResp`/`ArcgisError`/`Feature` gained `Debug` so
+`expect_err` can report. `cargo test --lib modules::au_geo::` → 9 passed, 1
+ignored (the live ABS probe).
+
+**Falsification.** The new guard was neutered in place
+(`if let Some(err) = resp.error` → `if let Some(err) = Option::<ArcgisError>::None`,
+simulating the pre-fix dropped-field behaviour) and
+`an_arcgis_error_envelope_fails_closed` was run and observed **FAILING** — the
+envelope decoded to an `Ok` empty miss exactly as it did before the fix — then
+the guard was restored byte-for-byte (from a pre-edit backup) and the suite went
+green again. This proves the lock binds the fix, not incidental state.
+
+**Class.** This is the same "an unexpected-shape 200 decodes as a clean negative"
+defect family as REQ-INTELX-002, REQ-ZOOMEYE-001, REQ-LEAKCHECK-001 and
+REQ-HUDSONROCK-001 (all still open) — but distinguished by an explicit in-source
+comment asserting the fail-closed behaviour the struct made impossible. The
+generalisable lesson is recorded for the sibling sweep: a `#[serde(default)]`
+struct with no `deny_unknown_fields` cannot implement a "body did not decode"
+guard, because it decodes *everything*; the guard must inspect a modelled error
+field.

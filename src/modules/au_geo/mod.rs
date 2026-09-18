@@ -153,13 +153,27 @@ const LAYERS: &[LayerSpec] = &[
 
 pub struct AuGeo;
 
-#[derive(Deserialize, Default)]
+#[derive(Debug, Deserialize, Default)]
 #[serde(default)]
 struct QueryResp {
     features: Vec<Feature>,
+    /// REQ-AUGEO-001: ArcGIS/Esri REST returns logical errors as HTTP 200 with an
+    /// `{"error":{"code":…,"message":…}}` envelope. Without this field serde
+    /// silently dropped the unrecognized `error` key and the envelope decoded to
+    /// an empty-`features` miss — defeating the fail-closed guard in
+    /// `query_layer`. Mirrors `qld_cadastre::QueryResp::error`.
+    error: Option<ArcgisError>,
 }
 
-#[derive(Deserialize, Default)]
+/// The ArcGIS/Esri REST HTTP-200 error envelope (see [`QueryResp::error`]).
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct ArcgisError {
+    code: i64,
+    message: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
 #[serde(default)]
 struct Feature {
     attributes: Map<String, Value>,
@@ -275,25 +289,48 @@ async fn query_layer(
         return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
     let body = read_text(SRC, resp).await?;
-    // ArcGIS/Esri REST characteristically returns errors as HTTP 200 with a
-    // `{"error":{…}}` envelope (a WAF interstitial can too), so a 200 whose body
-    // is not a decodable `QueryResp` is NOT "point not in this layer": collapsing
-    // it to `Ok(None)` fails OPEN — the point reports as having no Australian
-    // geography AND records a circuit-breaker success, so a systematic upstream
-    // 200-error becomes indistinguishable from a genuine miss and never trips
-    // outage detection. Decode FAILURE ⇒ `Err` (fail closed, mirroring `geocode`);
-    // decode-success-but-no-feature stays a real miss (`parse_feature`'s `Ok(None)`).
-    // The serde error is deliberately NOT interpolated: a column number could trip
-    // the engine's `429`/`402` rate-limit text match, and serde quotes offending
+    // Fail closed on BOTH an undecodable body (WAF page / truncated JSON) AND the
+    // Esri HTTP-200 `{"error":{…}}` envelope (REQ-AUGEO-001). Collapsing either to
+    // `Ok(None)` fails OPEN — the point reports as having no Australian geography
+    // AND records a circuit-breaker success, so a systematic upstream 200-error is
+    // indistinguishable from a genuine miss and never trips outage detection. A
+    // genuine empty feature list stays a real miss (`parse_feature`'s `None`).
+    decode_layer_body(&body)?;
+    Ok(parse_feature(&body, spec.name_field, spec.code_field))
+}
+
+/// Decode an ArcGIS layer-query body, failing **closed** on both an undecodable
+/// body and the Esri HTTP-200 `{"error":{…}}` envelope, so neither can
+/// masquerade as a "no coverage" miss. Pure, so both fail-closed paths are
+/// unit-tested without a network — REQ-AUGEO-001, mirroring
+/// `qld_cadastre::features_or_error`.
+fn decode_layer_body(body: &str) -> Result<QueryResp> {
+    // A truly undecodable body (WAF HTML, truncated JSON) fails closed. The serde
+    // error is deliberately NOT interpolated: a column number could trip the
+    // engine's `429`/`402` rate-limit text match, and serde quotes offending
     // values into the unredacted `ModuleError` event.
-    if serde_json::from_str::<QueryResp>(&body).is_err() {
-        return Err(crate::core::error::Error::module(
+    let resp: QueryResp = serde_json::from_str(body).map_err(|_| {
+        crate::core::error::Error::module(
             SRC,
             "ArcGIS layer query returned a success status whose body did not decode \
-             as a feature response (error envelope or WAF page)",
+             as a feature response (WAF page or truncated body)",
+        )
+    })?;
+    // Before `QueryResp::error` existed, serde silently dropped the unrecognized
+    // `error` key and this envelope decoded to an empty-`features` miss — the
+    // exact fail-OPEN the guard comment claimed to prevent but the old
+    // `is_err()`-only check never could catch.
+    if let Some(err) = resp.error {
+        return Err(crate::core::error::Error::module(
+            SRC,
+            format!(
+                "ArcGIS layer query error [{}]: {}",
+                err.code,
+                err.message.trim()
+            ),
         ));
     }
-    Ok(parse_feature(&body, spec.name_field, spec.code_field))
+    Ok(resp)
 }
 
 /// Extract `(name, code, state)` from a layer-query response's first feature.

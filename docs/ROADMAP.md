@@ -202,7 +202,9 @@ backlog to zero. Each fix is test-first (lock observed failing on the baseline),
 falsified (revert reproduces), and recorded in `REQUIREMENTS_LEDGER.md`. Shipped
 this wave: the SSRF gate closures (REQ-SSRF-001/002), stolen-credential pool
 hygiene (REQ-KEYPOOL-001), the PGP forged-UID correlation (REQ-PGP-001), the
-sanctions-linked mis-designation (REQ-OPENSANCTIONS-001), plus the
+sanctions-linked mis-designation (REQ-OPENSANCTIONS-001), the cert_intel
+dead-probe fabricated-certificate finding (REQ-CERTINTEL-001), the au_geo
+ArcGIS-error-envelope guard that never failed closed (REQ-AUGEO-001), plus the
 abuseipdb/phone_au/email-canon fabrication fixes. Open high-stakes items remain
 queued (namesake fabrications, ambiguity-discarded geo, truncation-silent
 providers, key-header replay).

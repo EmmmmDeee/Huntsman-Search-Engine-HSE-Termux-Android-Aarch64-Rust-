@@ -27,6 +27,52 @@ fn parse_feature_reads_name_code_and_state() {
     assert_eq!(parse_feature("not json", "x", "y"), None);
 }
 
+// REQ-AUGEO-001 — `decode_layer_body` must fail CLOSED on the ArcGIS/Esri
+// HTTP-200 `{"error":{…}}` envelope and on any undecodable body, so neither can
+// masquerade as a "no coverage" miss. A miss both mislabels the point as having
+// no Australian geography AND records a false circuit-breaker success, so a
+// systematic upstream 200-error would never trip outage detection. Before
+// `QueryResp::error` existed, serde silently dropped the unrecognized `error`
+// key and the envelope decoded to an empty-`features` miss — these lock that
+// exact regression at the pure decode boundary (no network).
+
+/// The literal envelope from the REQ-AUGEO-001 reproduction: an HTTP-200 whose
+/// body is an Esri error, not a feature set, is an `Err`, never an empty miss.
+#[test]
+fn an_arcgis_error_envelope_fails_closed() {
+    let err =
+        decode_layer_body(r#"{"error":{"code":400,"message":"Invalid or missing input parameters."}}"#)
+            .expect_err("an Esri HTTP-200 error envelope must fail closed, never read as a clean miss");
+    assert!(matches!(err, crate::core::error::Error::Module { .. }), "{err}");
+    let msg = err.to_string();
+    // The upstream code and message are surfaced for triage.
+    assert!(
+        msg.contains("400") && msg.contains("Invalid or missing input parameters"),
+        "{msg}"
+    );
+}
+
+/// A genuinely empty feature list is a real "point not in this layer" miss, not
+/// an error — the fix must not turn honest misses into failures.
+#[test]
+fn a_genuine_empty_layer_is_a_miss_not_an_error() {
+    let resp = decode_layer_body(r#"{"features":[]}"#)
+        .expect("an empty feature list is a genuine miss, not an error");
+    assert!(resp.features.is_empty());
+    assert!(resp.error.is_none());
+}
+
+/// A WAF interstitial / truncated body is undecodable and must also fail closed.
+/// The serde error text (which could carry rate-limit-like digits or the raw
+/// body) is deliberately not interpolated into the surfaced message.
+#[test]
+fn a_waf_page_fails_closed() {
+    let err = decode_layer_body("<html>Access denied</html>")
+        .expect_err("an undecodable body (WAF page / truncated JSON) must fail closed");
+    assert!(matches!(err, crate::core::error::Error::Module { .. }), "{err}");
+    assert!(err.to_string().contains("did not decode"), "{err}");
+}
+
 /// A fully-resolved point (aligned with LAYERS: POA, SAL, LGA, CED, SED, RA,
 /// SA2, SA4).
 fn full_resolution() -> Vec<Option<(String, String, Option<String>)>> {
