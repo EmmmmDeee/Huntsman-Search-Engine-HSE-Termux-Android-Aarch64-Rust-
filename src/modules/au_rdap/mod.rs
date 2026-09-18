@@ -115,6 +115,8 @@ struct RdapEntity {
 
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct RdapResponse {
+    #[serde(default, rename = "ldhName")]
+    ldh_name: Option<String>,
     #[serde(default)]
     entities: Vec<RdapEntity>,
     #[serde(default)]
@@ -422,6 +424,21 @@ impl Module for AuRdap {
             // not an error.
             return Ok(ModuleResult::new());
         };
+
+        // Validate that the response actually corresponds to the queried domain.
+        // RFC 9083 requires RDAP domain responses to include ldhName. If present,
+        // it must match the queried domain (case-insensitive). A mismatch signals
+        // server misconfiguration or an attack, not a legitimate "no data" state.
+        if let Some(response_domain) = data.ldh_name.as_deref() {
+            let response_lower = response_domain.to_ascii_lowercase();
+            let query_lower = domain.to_ascii_lowercase();
+            if response_lower != query_lower {
+                return Err(crate::core::error::Error::module(
+                    SRC,
+                    format!("response ldhName {response_domain} does not match queried domain {domain}"),
+                ));
+            }
+        }
 
         let mut result = ModuleResult::new();
         result.entities = build_entities(&data, &domain, &ctx.scan_id);

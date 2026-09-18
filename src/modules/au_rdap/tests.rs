@@ -535,3 +535,23 @@ fn statutory_masking_and_privacy_proxies_are_rejected() {
         "only the legitimate organisation should be emitted"
     );
 }
+
+#[test]
+fn rdap_response_deserializes_ldh_name_field() {
+    // REQ-AURDAP-002: the RdapResponse must capture ldhName so process() can
+    // validate that the response actually corresponds to the queried domain.
+    // RFC 9083 requires RDAP domain responses to include ldhName; a mismatch
+    // signals misconfiguration or attack, not "no data".
+    let with_ldh = resp(r#"{"ldhName":"example.com.au"}"#);
+    assert_eq!(with_ldh.ldh_name.as_deref(), Some("example.com.au"));
+
+    let without_ldh = resp(r#"{}"#);
+    assert_eq!(without_ldh.ldh_name, None);
+
+    // Build_entities still works when ldhName is present or absent — the
+    // validation happens at the process() layer where we can return a typed
+    // error instead of silently accepting mismatched data.
+    let both = resp(r#"{"ldhName":"example.com.au","auData_eligibility":[]}"#);
+    let ents = build_entities(&both, "example.com.au", "s");
+    assert_eq!(ents.len(), 0);
+}
