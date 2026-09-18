@@ -251,11 +251,15 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
         // `City, Region, Country` `Address`. Both are IP-infrastructure geo, so
         // they carry `geoint` and stay at modest confidence — the ASN operator's
         // registered location, not proof of the subject's whereabouts.
+        // REQ-CRIMINALIP-001: Criminal IP is a coarse IP-geo provider and must
+        // reject the near-null-island jitter band (0.001 to 0.01) those APIs emit
+        // as an "unknown" placeholder. The stricter is_plausible_provider_coord gate
+        // is required, not the weaker is_valid_coords.
         // REQ-CRIMINALIP-002: derived geo entities inherit the same VPN/proxy/Tor
         // tags as the subject IP so that a VPN exit point's geo is correctly
         // marked as infrastructure, not the subject.
         if let (Some(lat), Some(lon)) = (w.latitude, w.longitude)
-            && crate::util::geo::is_valid_coords(lat, lon)
+            && crate::util::geo::is_plausible_provider_coord(lat, lon)
             && geo_trusted
         {
             let coord_val = format!("{lat:.4},{lon:.4}");

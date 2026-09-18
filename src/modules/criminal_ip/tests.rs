@@ -219,6 +219,28 @@ fn null_island_whois_coords_are_rejected_but_city_still_maps() {
 }
 
 #[test]
+fn near_null_island_jitter_coordinates_yield_no_coords_entity() {
+    // REQ-CRIMINALIP-001: Criminal IP is a coarse IP-geo provider and must reject
+    // the near-null-island jitter band (0.001 to 0.01) those APIs emit as an
+    // "unknown" placeholder. The stricter is_plausible_provider_coord gate is
+    // required, not the weaker is_valid_coords. A (0.005, 0.005) jitter
+    // coordinate must not become a Coordinates entity.
+    let body = report(
+        r#"{
+            "status": 200,
+            "whois": { "data": [
+                { "org_country_code": "us", "city": "Unknown", "latitude": 0.005, "longitude": 0.005 }
+            ] }
+        }"#,
+    );
+    let ents = build_entities(&body, &ip_target("1.2.3.4"), "s");
+    assert!(
+        of_kind(&ents, EntityKind::Coordinates).is_none(),
+        "near-null-island jitter coordinates (0.005, 0.005) must be rejected"
+    );
+}
+
+#[test]
 fn derived_geo_entities_carry_vpn_proxy_tags() {
     // REQ-CRIMINALIP-002: Coordinates and Address derived from whois geo
     // must inherit the VPN/proxy/Tor tags so a VPN exit's geo is correctly
