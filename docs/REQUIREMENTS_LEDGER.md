@@ -10675,3 +10675,96 @@ make.
 - **`ipinfo` and `ipquery` do not tag their Address `geoint`**, while the other
   six do. Left alone here: adding the tag changes correlator reach and belongs in
   its own measured cycle, not folded into a confidence fix.
+
+---
+
+## REQ-DOCPARSE-001 — An EXIF GPS fix is worth one thing, wherever the file came from
+
+### What was measured
+
+`util::exif`'s own module header says its two consumers "must agree on what a
+coordinate means":
+
+- `modules::exif_geo` — images discovered during a scan, fetched over the network
+- `util::document_parse::image_geolocation` — local files handed to `hse ingest`
+
+Both call the same `util::exif::extract_gps` on the same GPS IFD. They then
+disagreed on what that reading is worth by **0.15**:
+
+| path | rung | value |
+|---|---|---|
+| `exif_geo` (network) | `HIGH_PLUSPLUS` | **0.80** |
+| `hse ingest` (local file) | `VERY_HIGH_PLUSPLUS` | **0.95** |
+
+0.95 is above two things it must not be above:
+
+- `AUTHORITATIVE` (0.92) — a government register
+- `HIGH_PLUSPLUS_PLUS` (0.85) — WiGLE multi-observation consensus, which
+  `exif_geo`'s own comment says an EXIF fix must sit **below**
+
+...for a field whose own doc comment at the 0.95 site called it "trivially
+editable". A tag anyone can rewrite with `exiftool` outranked a statutory
+register.
+
+The ingest coordinate is not inert. Its call site in `cli/ingest` says so:
+it "enters the emitted output and (with `--auto-scan`) the persisted scan,
+seeding Coordinates expansion and the geo correlators like any other
+coordinate." At 0.95 it was the strongest geolocation claim the engine could
+hold.
+
+**Two authorities, one datum.** The 0.80 was argued against its neighbours on
+the ladder; the 0.95 was argued only downward ("not `CERTAIN`") and never
+against what it outranked.
+
+### The correction
+
+`util::exif::GPS_FIX_CONFIDENCE`, beside the `extract_gps` both paths call,
+set to the reasoned 0.80. Both emitters use it; the reasoning lives once.
+
+### Falsification — two baselines, because the two failures are different
+
+```
+A — ingest keeps its own 0.95, exif_geo stays 0.80:
+      end_to_end_reads_gps_from_a_real_jpeg_on_disk ... FAILED
+        the ingest path must not choose its own rung for a tag exif_geo
+        reads with the same extract_gps
+      (a_gps_fix_sits_where_the_ladder_says_it_does PASSES — correctly: the
+       shared const is still on the ladder. Each test has its own job.)
+
+B — the shared const itself moved to 0.95:
+      a_gps_fix_sits_where_the_ladder_says_it_does ... FAILED
+        0.95 must rank BELOW WiGLE consensus (HIGH_PLUSPLUS_PLUS) (0.85)
+        0.95 must rank BELOW a government register (AUTHORITATIVE) (0.92)
+      end_to_end_reads_gps_from_a_real_jpeg_on_disk ... FAILED
+        an exiftool-rewritable tag (0.95) must not outrank a government
+        register (0.92)
+
+C — exif_geo picks its own rung again (the structural lock):
+      an_exif_gps_fix_uses_the_one_shared_confidence ... FAILED
+        src/modules/exif_geo/mod.rs: reads the EXIF GPS IFD but never names
+        util::exif::GPS_FIX_CONFIDENCE — it is choosing a second answer to
+        what a GPS tag is worth
+```
+
+### Regression mechanisms
+
+- `util::exif::gps_confidence_tests::a_gps_fix_sits_where_the_ladder_says_it_does`
+  — the ordering `exif_geo` stated in prose, made executable: below WiGLE
+  consensus, below a government register, below `CERTAIN`, above single-source
+  IP-geo. Failures are collected so one run names every violated bound.
+- The `hse ingest` end-to-end test (a real JPEG with a GPS IFD on disk) now
+  asserts the emitted coordinate carries the shared constant, and separately
+  that it ranks under `AUTHORITATIVE` — two different failures, not one
+  restated.
+- `tests/architecture.rs::an_exif_gps_fix_uses_the_one_shared_confidence` —
+  a file that reads the GPS IFD must name the shared constant. Its limit is
+  stated in its own doc comment rather than implied: it checks that such a file
+  reaches for the constant, not that every coordinate in it is stamped with the
+  constant; the two runtime locks cover the values.
+
+### Follow-up recorded, not done
+
+`ImageGeolocationMetadata::geolocation_confidence` has no consumer outside its
+own file — the field is computed and serialised but nothing reads it. Either
+wire it or drop it; not folded in here because it is a reachability question,
+not a calibration one.

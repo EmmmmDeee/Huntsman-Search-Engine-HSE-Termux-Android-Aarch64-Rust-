@@ -1324,3 +1324,84 @@ fn a_composed_provider_address_is_born_through_the_shared_emitter() {
         violations.join("\n  ")
     );
 }
+
+/// An EXIF GPS fix is worth one thing, wherever the file came from
+/// (REQ-DOCPARSE-001).
+///
+/// `util::exif`'s own header says its two consumers — `modules::exif_geo` for
+/// images found during a scan, `util::document_parse::image_geolocation` for
+/// files handed to `hse ingest` — "must agree on what a coordinate means".
+/// They read the identical GPS IFD through the identical `extract_gps` and then
+/// disagreed on its worth by 0.15: 0.80 over the network, 0.95 on disk. The
+/// 0.95 outranked `AUTHORITATIVE` (0.92, a government register) and the WiGLE
+/// consensus rung its own sibling's comment says an EXIF fix must sit below —
+/// for a tag anyone can rewrite with `exiftool`.
+///
+/// `util::exif::GPS_FIX_CONFIDENCE` is now the single answer. This holds the
+/// third path to it. Its limit, stated rather than implied: it checks that a
+/// file reaching for the GPS IFD names the shared constant, not that every
+/// coordinate in that file is stamped with it — a file could reference it and
+/// still hand a Coordinates entity some other rung. The runtime locks in
+/// `image_geolocation` and the ladder test in `util::exif` cover the values
+/// themselves.
+#[test]
+fn an_exif_gps_fix_uses_the_one_shared_confidence() {
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    walk(&root.join("src"), &mut files);
+
+    let mut readers = Vec::new();
+    let mut violations = Vec::new();
+    for path in files {
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        // The definition site itself, and test code building fixtures.
+        if rel == "src/util/exif.rs"
+            || path.components().any(|c| c.as_os_str() == "tests")
+            || path.file_name().is_some_and(|n| n == "tests.rs")
+        {
+            continue;
+        }
+        let src = production_source(&fs::read_to_string(&path).unwrap());
+        if !src.contains("extract_gps(") {
+            continue;
+        }
+        readers.push(rel.clone());
+        if !src.contains("GPS_FIX_CONFIDENCE") {
+            violations.push(format!(
+                "{rel}: reads the EXIF GPS IFD but never names \
+                 util::exif::GPS_FIX_CONFIDENCE — it is choosing a second \
+                 answer to what a GPS tag is worth"
+            ));
+        }
+    }
+
+    assert!(
+        readers.len() >= 2,
+        "exif_geo and image_geolocation both read the GPS IFD; found {} ({}) — \
+         has extract_gps been renamed?",
+        readers.len(),
+        readers.join(", ")
+    );
+    assert!(
+        violations.is_empty(),
+        "an EXIF GPS fix must carry the one shared confidence ({} of {}):\n  {}",
+        violations.len(),
+        readers.len(),
+        violations.join("\n  ")
+    );
+}
