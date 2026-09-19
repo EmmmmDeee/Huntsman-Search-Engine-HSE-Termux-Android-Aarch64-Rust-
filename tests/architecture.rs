@@ -1552,3 +1552,62 @@ fn wigle_trilateration_uses_the_strict_provider_gate() {
         violations.join("\n  ")
     );
 }
+
+/// REQ-LIBRAVATAR-001. `is_image_content_type` is a pure helper, so its own
+/// unit tests prove only that the *classifier* is correct — not that `process`
+/// consults it. A refactor that dropped the call would leave those tests green
+/// while restoring the defect: every 200 read as an avatar again.
+///
+/// This locks the wiring. The call must sit between the point the 2xx is
+/// admitted (`ok_or_absent`) and the point the finding is minted
+/// (`build_avatar_result`), because a check after the emit guards nothing.
+///
+/// Anchored on the three **constructions**, never on bare names: the module's
+/// own explanatory comment beside the gate names `is_image_content_type`, and
+/// an earlier architecture test in this file was defeated by exactly that —
+/// matching the prose it had just been given rather than the code. Comments and
+/// string literals are blanked first for the same reason.
+#[test]
+fn a_libravatar_presence_is_gated_on_the_response_being_an_image() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let raw = fs::read_to_string(root.join("src/modules/libravatar/mod.rs"))
+        .expect("libravatar module must exist");
+
+    // Blank `//` comments and string literals so prose naming the helper
+    // cannot satisfy the check.
+    let mut src = String::with_capacity(raw.len());
+    for line in raw.lines() {
+        let code = line.split("//").next().unwrap_or("");
+        let mut in_str = false;
+        for ch in code.chars() {
+            match ch {
+                '"' => {
+                    in_str = !in_str;
+                    src.push('"');
+                }
+                _ if in_str => src.push(' '),
+                _ => src.push(ch),
+            }
+        }
+        src.push('\n');
+    }
+
+    let admit = src
+        .find("ok_or_absent(SRC, resp, &[404])")
+        .expect("process must still admit a 2xx via ok_or_absent");
+    let emit = src
+        .find("Ok(build_avatar_result(")
+        .expect("process must still mint the avatar via build_avatar_result");
+    let gate = src.find("is_image_content_type(content_type)").expect(
+        "libravatar must gate the finding on the response being an image \
+         (REQ-LIBRAVATAR-001): a 200 alone cannot tell an avatar from an \
+         anti-bot wall, and this module's finding is a claim about a person",
+    );
+
+    assert!(
+        admit < gate && gate < emit,
+        "the image-type gate must sit between admitting the 2xx ({admit}) and \
+         minting the finding ({emit}), but is at {gate} — a check that does not \
+         precede the emit guards nothing"
+    );
+}

@@ -1,4 +1,4 @@
-use super::{Libravatar, SRC, build_avatar_result};
+use super::{Libravatar, SRC, build_avatar_result, is_image_content_type};
 use crate::core::{
     entity::EntityKind,
     module::Module,
@@ -59,5 +59,74 @@ fn hash_matches_gravatar_compatible_md5_of_normalised_email() {
     assert!(
         h.chars()
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    );
+}
+
+/// REQ-LIBRAVATAR-001. Presence was decided by the status line alone — the
+/// module's own comment said so: *"The body is never read — presence is decided
+/// by the status line alone."* With `d=404` a genuine miss is a 404, but a 200
+/// is not necessarily an avatar: an anti-bot interstitial, a CDN error page or
+/// a consent wall is served 200 with an HTML body, and each minted a
+/// `public-profile` `Url` claiming the address has a public web presence.
+///
+/// Every non-image type is checked and survivors are collected, so a partial
+/// gate is named rather than masked by whichever case runs first.
+#[test]
+fn a_200_that_is_not_an_image_is_not_an_avatar() {
+    let mut admitted: Vec<&str> = Vec::new();
+    for wall in [
+        "text/html",
+        "text/html; charset=utf-8",
+        "TEXT/HTML",
+        "application/json",
+        "text/plain",
+        "application/xhtml+xml",
+        // A missing or unreadable header — `process` substitutes "" — must fail
+        // closed: a real CDN image response always declares its type.
+        "",
+        // Near-misses that must not satisfy a `contains("image")` shortcut.
+        "text/html; x-note=image/png",
+        "application/imagemagick",
+        "multipart/form-data; boundary=image/png",
+    ] {
+        if is_image_content_type(wall) {
+            admitted.push(wall);
+        }
+    }
+    assert!(
+        admitted.is_empty(),
+        "non-image 200 content types accepted as an avatar: {admitted:?}"
+    );
+}
+
+/// The control, and what makes the gate safe to assert: every shape a real
+/// avatar response actually declares still passes. Passes on the baseline and
+/// on the fix, so it proves the gate keys on the media type rather than having
+/// simply disabled the emitter.
+#[test]
+fn real_avatar_content_types_still_count_as_a_presence() {
+    let mut refused: Vec<&str> = Vec::new();
+    for ok in [
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+        "image/avif",
+        "image/svg+xml",
+        // Parameters and casing are carried by real responses and must not
+        // change the answer (RFC 9110: the media type is case-insensitive and
+        // parameters are not part of it).
+        "image/png; charset=binary",
+        "IMAGE/PNG",
+        "  image/jpeg  ",
+        "image/jpeg ;q=1",
+    ] {
+        if !is_image_content_type(ok) {
+            refused.push(ok);
+        }
+    }
+    assert!(
+        refused.is_empty(),
+        "real avatar content types refused: {refused:?}"
     );
 }

@@ -11642,3 +11642,119 @@ recurring shape is an emitter that reports on work it did not verify was done �
 here the counter proving it was done sat one struct field away, already
 maintained, and was only ever printed into the evidence string rather than
 consulted.
+
+## REQ-LIBRAVATAR-001 — A 200 is not an avatar
+
+### What was measured
+
+`libravatar` probes `GET https://seccdn.libravatar.org/avatar/<md5>?d=404` and,
+on anything that is not a 404, mints a `Url` entity at `MEDIUM_PLUS` tagged
+`libravatar` / `avatar` / **`public-profile`**, with evidence *"Libravatar
+federated avatar (present)"*.
+
+The module stated the mechanism in its own comment:
+
+> `d=404` makes a missing avatar a clean 404 instead of the default butterfly
+> placeholder. **The body is never read — presence is decided by the status line
+> alone.**
+
+That is true of a cooperating CDN and false of the real internet. An anti-bot
+interstitial, a CDN error page and a consent wall are all served **200 with an
+HTML body**. Each was read as "this address has a published avatar", and the
+finding is a claim about a *person* — `public-profile`, a public web presence —
+so a wall minted one from nothing.
+
+`process` bound the admitted response to `_resp` and discarded it: not even the
+`Content-Type` header was consulted.
+
+### Scope — one site, checked
+
+The sibling `gravatar` does not share the defect: it has no `d=404` /
+`ok_or_absent` status-only path. Verified before widening, so this stays a
+one-module fix rather than a speculative sweep.
+
+### The correction
+
+After `ok_or_absent` admits the 2xx, the response's `Content-Type` must declare
+an image. A new pure `is_image_content_type` compares only the media type,
+discarding parameters (`image/png; charset=binary`) and matching
+case-insensitively as RFC 9110 requires.
+
+The check is on the **header**, not the body: one header lookup and no read, so
+the module keeps the cheapness that made reading the body undesirable in the
+first place. No shared helper for this existed in `util` (checked), so a small
+pure local one is the right grain rather than a fourth hand-rolled copy of
+something central.
+
+**Fails closed on an absent or unreadable header.** A real CDN image response
+always declares its type, so a 200 that does not is not evidence of an avatar;
+`""` (what `process` substitutes) returns false.
+
+### Stated limit, not overclaimed
+
+This is not proof the bytes decode as an image. A wall that lies about its
+content type still passes. What it removes is every *honest* misclassification —
+which is what was actually happening — and it is recorded in the code comment so
+the next reader does not mistake the gate for a stronger guarantee than it is.
+
+### Falsification
+
+The helper is new, so reverting it is not the baseline. The baseline's semantics
+were *"every 200 is an avatar"* — exactly `is_image_content_type` returning
+`true` unconditionally. Neutered to that:
+
+```
+a_200_that_is_not_an_image_is_not_an_avatar ... FAILED
+  non-image 200 content types accepted as an avatar:
+  ["text/html", "text/html; charset=utf-8", "TEXT/HTML", "application/json",
+   "text/plain", "application/xhtml+xml", "",
+   "text/html; x-note=image/png", "application/imagemagick",
+   "multipart/form-data; boundary=image/png"]
+```
+
+All ten collected in one run. The last three are near-misses that would satisfy
+a lazy `contains("image")` implementation and must not: a parameter that merely
+mentions an image type is not a media type of one.
+
+### The control
+
+`real_avatar_content_types_still_count_as_a_presence` passes on the baseline and
+on the fix: ten real shapes (`image/png` … `image/svg+xml`, plus parameters,
+casing and surrounding whitespace). It is what proves the gate keys on the media
+type rather than having quietly disabled the emitter.
+
+### The vacuity this fix had to close in its own tests
+
+Both tests above exercise the **helper**. Neither proves `process` consults it —
+a refactor dropping the call would leave them green while restoring the defect.
+That is the Law's `IMPLEMENTATION ≠ REACHABILITY` in miniature, inside the fix's
+own regression suite.
+
+`tests/architecture.rs::a_libravatar_presence_is_gated_on_the_response_being_an_image`
+locks the wiring: the call must sit **between** the point the 2xx is admitted
+(`ok_or_absent`) and the point the finding is minted (`build_avatar_result`),
+because a check after the emit guards nothing.
+
+It is anchored on those three **constructions**, never on bare names, and blanks
+comments and string literals first — because the module's own explanatory
+comment beside the gate names `is_image_content_type`, and an earlier
+architecture test in this file was defeated by precisely that, matching the
+prose it had just been given instead of the code.
+
+Verified by unwiring the gate while *keeping* the helper and the comment:
+
+```
+a_libravatar_presence_is_gated_on_the_response_being_an_image ... FAILED
+  libravatar must gate the finding on the response being an image
+  (REQ-LIBRAVATAR-001): a 200 alone cannot tell an avatar from an anti-bot
+  wall, and this module's finding is a claim about a person
+```
+
+### Class
+
+`REQ-PROBE-004` (a Radware captcha 200 minted as a verified social profile),
+`REQ-CERTINTEL-001` (an EXPERT certificate finding from a probe leg that parsed
+nothing) and `REQ-WEBCRAWLER-001` (a `crawled` attestation with zero pages read)
+are the same defect: a finding minted from an observation that never happened.
+The recurring tell is a success signal — a status code, a counter, a reached
+line — standing in for the substance it was supposed to certify.
