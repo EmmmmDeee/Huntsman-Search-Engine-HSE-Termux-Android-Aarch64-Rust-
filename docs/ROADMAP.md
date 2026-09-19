@@ -18,7 +18,7 @@
 > (`src/core/module/provider.rs`) — machine-readable and canonical, so this
 > document points at it rather than copying it.
 
-Last realigned: **2026-09-18**.
+Last realigned: **2026-09-19**.
 
 ---
 
@@ -80,7 +80,20 @@ The reusable primitives every module leans on. Key sub-areas:
 - `util/http/` — the shared client, `send_tagged`, `read_body_capped_or_fail`
   (fail-closed body reads), `http_status_error` (typed 404/429/BotChallenge/…),
   `json_body_error` (credential-redacting), the DNS-level `SsrfResolver`, url
-  encoders. **The single outbound-request authority.**
+  encoders. **The single outbound-request authority.** The outage discipline
+  lives here too: `breaker_gate` (refuse before dialling a tripped endpoint) and
+  `record_breaker_outcome` (the typed `BreakerOutcome::{RateLimited, Failure,
+  Success}` decision — a 429 opens on the server's own `Retry-After` window, a
+  5xx accumulates, anything else clears). A module that dials by hand and
+  re-implements either half is a defect, not a variation: that was exactly
+  REQ-HTTP-005 (`util::wigle` kept three hand-rolled copies) and
+  REQ-DOHRESOLVER-001 (the primary DNS transport had none).
+- `util/circuit_breaker/` — per-endpoint outage state. `endpoint_of` is the
+  **key authority**: host plus `port_or_known_default()`, so `https://h` and
+  `https://h:443` cannot split into two breakers and two loopback servers cannot
+  collide into one. The key's shape is a structural property, not a convention —
+  sixteen hand-written cross-test resets existed only because it was wrong
+  (REQ-BREAKER-001).
 - `util/preflight/` — the SSRF predicate family (`is_private_ip`,
   `is_private_ip_host`, `url_host_is_private`, `email_host_is_private`,
   `is_local_domain`, `unbracket_host`). Consumed by the engine's dispatch gate.
@@ -162,7 +175,14 @@ correlations they unlock, not by count.
 
 ### Layer 5 — verification & release scaffolding
 - `tests/` (integration: `smoke.rs` engine-boundary locks, `api.rs`,
-  `install_invariants.rs`), `benches/`, `fuzz/`, `proptest-regressions/`.
+  `install_invariants.rs`, `architecture.rs` wiring locks), `benches/`, `fuzz/`,
+  `proptest-regressions/`.
+- `tests/doc_drift.rs` — the guards that keep **documentation from drifting off
+  the code and off itself**. Numeric claims (SeekNow credit costs, the MSRV
+  pinned in `ci.yml`) are compared to their source of truth; and the three
+  organising documents are locked to each other: this map may not cite a
+  `REQ-…` the ledger does not record under a heading of its own, and
+  `CHANGELOG.md` must account for every requirement the ledger holds. See §6.
 - `build.rs`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `deny.toml`,
   `dep-cooldown.toml` — reproducible build & supply-chain policy.
 - `install.sh`, `Dockerfile`, `docker-entrypoint.sh`, `railway.json`,
@@ -183,9 +203,18 @@ seed Target ─▶ engine::dispatch (skip_reason: SSRF gate, applicability)
 ```
 Every arrow is a contract. The high-leverage seams — the ones worth the most
 future-proofing — are: the **dispatch gate** (one place to refuse a target),
-the **tag/evidence emission** (the only channel from module to correlator), the
-**expansion floor** (what becomes a new pivot), and the **redaction boundary**
-(what leaves the tool).
+the **outbound chokepoint** (`util::http`: one place that types a provider's
+answer and records its outage state, so every module inherits the same 429 /
+challenge / 5xx discipline instead of re-deriving it), the **tag/evidence
+emission** (the only channel from module to correlator), the **expansion
+floor** (what becomes a new pivot), and the **redaction boundary** (what leaves
+the tool).
+
+A module that reaches the network *around* the outbound chokepoint is outside
+every one of those disciplines at once — it cannot be rate-limit-aware, cannot
+trip or respect the breaker, and reports a wall as a fault. Auditing for that is
+now a standing T2 task, not an observation: `doh_resolver`, the engine's primary
+DNS transport, was found entirely outside it (REQ-DOHRESOLVER-001).
 
 ---
 
@@ -228,9 +257,37 @@ call sites against *all* emitters of the value it guards. REQ-TARGETMATCH-001 is
 a canonicalisation debt of a third kind — a structured, ordered identifier (an IP)
 compared by an order-blind token set instead of its own canonical type; its rule
 is that an identifier with internal order (IP, coordinate pair, version, split
-hash) is compared by its canonical type, never tokenised into a bag. Open high-stakes items remain
-queued (namesake fabrications, ambiguity-discarded geo, truncation-silent
-providers, key-header replay).
+hash) is compared by its canonical type, never tokenised into a bag.
+
+**The fail-open family is now closed.** All five members ship: REQ-AUGEO-001,
+REQ-INTELX-002, REQ-CHAININTEL-001, and the last three siblings —
+REQ-ZOOMEYE-001, REQ-LEAKCHECK-001, REQ-HUDSONROCK-001. *This paragraph called
+those three "still open" for fourteen cycles after they shipped*, which is the
+defect this document's own header warns about; §6 now carries the mechanism that
+makes the claim checkable rather than remembered.
+
+Open high-stakes items remain queued (namesake fabrications, ambiguity-discarded
+geo, truncation-silent providers).
+
+**Three recurring shapes now have names, and finding the next instance starts
+by looking for them rather than reading modules at random:**
+1. *A guard applied to one consumer but not its neighbour.* Six instances
+   (REQ-AURDAP-001, REQ-EXPORT-001, REQ-BUILTWITH-001, REQ-WEBBANNER-001,
+   REQ-HTTP-005, REQ-WIGLE-001). Its rule: a guard's call sites are audited
+   against every emitter of the value it protects, not the one that motivated it.
+2. *The rule computes a relation, then discards which side related to which.*
+   Five correlator instances (AU-046/REQ-CORRELATOR-002,
+   AU-039/REQ-CORRELATOR-004, AU-105/REQ-CORRELATOR-003,
+   AU-019/REQ-CORRELATOR-007, AU-016/REQ-CORRELATOR-006). Its rule: **when a
+   correlator rule filters one collection using another, the filter's own
+   decision IS the finding** — recomputing either side afterwards loses it, and
+   loses it silently, because the rule still fires on genuine evidence with the
+   wrong entities attached.
+3. *A repeated manual procedure standing in for a structural property.* The
+   sixteen breaker resets (REQ-BREAKER-001) and the hand-maintained currency of
+   this document (§6). Its rule: prefer structural prevention over remembered
+   detection — if a discipline is enforced by everyone remembering it, it has
+   already drifted somewhere you have not looked.
 
 **T2 — Universal canonicalisation (priority).** One canonical form and one
 authority per concept, everywhere. Every remaining "same bug, sibling module"
@@ -297,3 +354,42 @@ A change that improves a pivot pathway or removes a duplicate authority updates
 §3 and §2; a shipped fix updates the `REQUIREMENTS_LEDGER.md` (detail) and, if
 it changed a contract, §2 here (structure). This file holds the *map*; the
 ledger holds the *transcripts*; the registry holds the *catalogue*.
+
+### Steps 1–5 are a procedure; these two parts of them are now properties
+
+Step 5 was purely remembered, and it drifted: between 2026-09-18 and 2026-09-19
+fourteen requirements shipped while this document stood still, and §4 went on
+naming three *fixed* defects as open siblings. A repeated manual procedure
+standing in for a structural property is the third recurring shape in §4, and
+the answer is the same one applied to the sixteen breaker resets — make the
+drift fail the suite.
+
+Two guards in `tests/doc_drift.rs` now hold the organising documents to each
+other, with **`REQUIREMENTS_LEDGER.md` as the single authority** for what a
+requirement is:
+
+| Guard | What it refuses |
+|---|---|
+| `the_map_never_cites_a_requirement_the_ledger_does_not_record` | A `REQ-…` cited in this file or `CHANGELOG.md` with no ledger entry of its own — a claim with no transcript behind it. This is what let §4 describe three shipped fixes as open: none of the three had a ledger entry at all. |
+| `every_requirement_the_ledger_records_is_accounted_for_in_the_changelog` | A ledger entry `CHANGELOG.md` never mentions. One line per requirement is the whole cost, and it makes the changelog impossible to leave behind. Refuted and measured-only leads count: *"we looked and changed nothing"* is an answer, not an omission. |
+
+Both are backed by `the_requirement_id_scanner_reads_the_shapes_the_documents_use`,
+which pins the identifier shapes the corpus actually contains — without it, a
+scanner that silently stopped matching would make both guards pass on any pair
+of documents.
+
+What the guards deliberately do **not** check is the part that cannot be
+mechanised: whether §2's structure claims, §3's seams and §4's ranking still
+describe the code. That judgement stays in step 5 — but it is now the only part
+of it that does, and a stale citation can no longer hide underneath it.
+
+They have one further blind spot, stated here rather than discovered later: a
+shipped fix that has **no ledger entry and is cited nowhere** is invisible to
+both. Guard one only sees what the map cites; guard two only sees what the
+ledger defines. `REQ-AURDAP-001` surfaced the moment §4 cited it as a recurring-
+shape instance, but its sibling `REQ-AURDAP-002` had shipped equally unrecorded
+and was found only by looking — it was entered at the same time. Closing that
+gap properly would mean reading commit history, which is not reproducible from a
+source tarball and so does not belong in the test suite. It stays a step-2
+("re-map authority") obligation: when a module is touched, check that the
+requirements it already shipped are recorded.

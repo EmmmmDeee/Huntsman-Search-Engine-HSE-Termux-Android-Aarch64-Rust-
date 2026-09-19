@@ -12655,3 +12655,270 @@ one collection using another, the filter's own decision is the finding.**
 Recomputing either side independently afterwards loses it, and the loss is
 silent because the rule still fires on genuine evidence — just with the wrong
 entities attached.
+
+---
+
+## The `#[serde(default)]` fail-open family — the last three siblings, recorded
+
+These three shipped on 2026-09-18 (`1c2b7447`, `0fb6c2ac`, `444a8f3b`) but were
+never entered here, so the ledger — the authority for what a requirement *is* —
+had no record of them while `docs/ROADMAP.md` went on naming all three as the
+"still-open siblings" of `REQ-AUGEO-001`. That gap is the reason
+`tests/doc_drift.rs` now refuses a map citation with no ledger entry behind it.
+
+The entries below are written from the tree as it stands, not from the commit
+messages: each fix was re-read in the current source before being recorded.
+
+The family, for the record, is a wire struct whose every field carries
+`#[serde(default)]`, so an unexpected HTTP 200 — an auth failure, a spent quota,
+a WAF interstitial — deserialises *successfully* into an all-empty value that
+the module then reports as a clean negative. Five members are now closed:
+`REQ-AUGEO-001`, `REQ-INTELX-002`, `REQ-CHAININTEL-001`, and these three. The
+rule they share: **require a field the real response always carries, and let the
+catch-all fail closed.** A struct that can decode anything cannot implement a
+"the body did not decode" guard, so the guard has to be a field.
+
+### REQ-ZOOMEYE-001 — a dead key was indistinguishable from "nothing indexed"
+
+`ZoomResp` carried `#[serde(default)]` on `matches`, the one field a genuine
+ZoomEye search response always sends. A 2xx error envelope (auth failure, quota
+exceeded) has no `matches` key at all, so it decoded to `matches: vec![]` and the
+module reported a clean "nothing indexed" for a host it had never actually
+searched. Because ZoomEye is keyed, the failure mode was permanent rather than
+transient: a revoked or exhausted key reads as an empty internet, forever, with
+no signal anywhere.
+
+Fixed by removing the attribute, so an unexpected-shape 2xx fails serde
+deserialisation and surfaces as a real `ModuleError`. Verified in the tree today:
+`src/modules/zoomeye/mod.rs` declares `matches: Vec<Value>` with no `default`,
+and the doc comment on the field states the contract it is holding.
+
+Locked by `unexpected_response_shape_fails_deserialization`
+(`src/modules/zoomeye/tests.rs:82`), which replaced a test whose own name
+recorded the defect as intended behaviour —
+`error_body_deserialises_to_empty_matches`. The inversion is the point: the
+lock now asserts `{"error": …}` fails to decode, and keeps the control that
+`{"matches": []}` — a genuine empty hit — still parses, so the fix cannot have
+been achieved by breaking honest empties.
+
+### REQ-HUDSONROCK-001 — the same defect, against stealer logs
+
+`CavalierResp.stealers` carried `#[serde(default)]`, so an auth/quota failure or
+WAF block decoded to `stealers: vec![]` — a clean "no infostealer records" for a
+subject whose logs were never consulted. The module's own documentation already
+demanded the opposite; nothing enforced it.
+
+Fixed identically: `stealers: Vec<Stealer>` now has no `default`
+(`src/modules/hudsonrock/mod.rs:40`), while `Stealer.credentials` keeps its
+`#[serde(default)]` — that one is a genuinely optional field on a real record,
+not the response's structural key, and conflating the two is how the defect
+class propagates. Locked by `unexpected_response_shape_fails_deserialization`
+(`src/modules/hudsonrock/tests.rs:353`) with the same error-body /
+genuine-empty pair.
+
+### REQ-LEAKCHECK-001 — a fail-closed contract that fell through its own guard
+
+LeakCheck's public API signals an ordinary miss with `success:false` plus an
+`error` naming it. The module documented that only `"Not found"` and `"No results
+found"` are clean negatives and everything else must error — but the check lived
+in a conditional guard, and `error` was `#[serde(default)]`. So the one shape the
+contract most needed to catch, `success:false` with **no** `error` field at all,
+matched no arm and fell through to `Ok(empty)`: a silent false exoneration on a
+breach lookup.
+
+Fixed by extracting the decision into a pure, total function —
+`classify_failure(error_text: Option<&str>) -> Result<()>`
+(`src/modules/leakcheck_public/mod.rs:136`) — which matches the two known-clean
+texts and returns `Err` for every other `Some`, **and** for `None`. `build_result`
+calls it whenever `success` is false, so no shape can reach the empty return
+unclassified. Making it total is what closes the hole: a `match` with an arm per
+possibility cannot fall through the way a guard can.
+
+Locked by `success_false_with_no_error_field_fails_closed`
+(`src/modules/leakcheck_public/tests.rs:200`).
+
+### Why this is recorded rather than quietly back-filled
+
+A ledger entry written from a commit message would assert whatever the message
+asserted. Each of the three was instead re-derived from the current tree — the
+struct definitions, the absence of the attribute, the line the lock sits on —
+because the question the ledger answers is "what does the code do now", not
+"what did a commit claim". The commit hashes are provenance, not evidence.
+
+---
+
+## `au_rdap` — two shipped fixes that had no entry either
+
+Found by the same guard, on its first run against the realigned map: §4's
+recurring-shape register cites `REQ-AURDAP-001` as an instance of "a guard
+applied to one consumer but not its neighbour", and the ledger had no record of
+it. `REQ-AURDAP-002` shipped in the same wave and was equally unrecorded; it is
+entered here rather than left for the next citation to surface, since the two
+are the same module and the same audit.
+
+Both are re-derived from the tree as it stands (`0a09c336`), not from their
+commit messages (`b0bc3227`, `32a01987`).
+
+### REQ-AURDAP-001 — a .au statutory-masking placeholder minted as a real Organisation
+
+`.au`'s registrant *eligibility* rules mean its RDAP records carry redaction and
+privacy-proxy markers in the very fields the module reads as identity —
+"Domains By Proxy, LLC", "Private Registration", "REDACTED FOR PRIVACY". Both
+sites emitted them verbatim as `Organisation` entities: the registrant-name
+eligibility field at `confidence::HIGH_PLUSPLUS`, and the registrar vCard `fn`
+at `HIGH_PLUS`. A registrar's redaction boilerplate therefore became a named
+organisation attached to the subject's domain, at a confidence high enough to
+pivot on.
+
+The guard already existed and was already correct — `validation::
+is_whois_privacy_placeholder`, applied by both `whois` and `whoisxml`. It was
+simply never called here. That is the first recurring shape exactly: **a guard's
+call sites must be audited against every emitter of the value it protects, not
+only the one that motivated writing it.** `REQ-BUILTWITH-001` is the same guard,
+missed at a third emitter, found later.
+
+Verified in the tree: `is_whois_privacy_placeholder` is imported at
+`src/modules/au_rdap/mod.rs:72` and called at both emitters — line 159
+(registrant name) and line 258 (registrar organisation). Locked by
+`statutory_masking_and_privacy_proxies_are_rejected`
+(`src/modules/au_rdap/tests.rs:471`), which keeps a legitimate organisation name
+in the same fixture as its control, so the fix cannot have been achieved by
+rejecting everything.
+
+### REQ-AURDAP-002 — the response was never checked to be about the domain queried
+
+`au_rdap` accepted whatever the RDAP server returned as an answer about the
+domain it had asked for. Its `RdapResponse` did not even deserialise `ldhName`,
+the field RFC 9083 requires a domain response to carry — so a misdirected,
+misconfigured or hostile server's record for a *different* domain was parsed as
+the subject's registration, registrant and registrar. The sibling
+`rdap_domain` already performed exactly this check; `au_rdap` did not.
+
+Verified in the tree: `ldh_name: Option<String>`
+(`src/modules/au_rdap/mod.rs:101`) is now deserialised, and the check at line
+432 compares it case-insensitively against the queried domain, returning
+`Error::module` on a mismatch rather than a "no data" state — the distinction
+matters, because a mismatch is a server fault or an attack and must not read as
+an absence. The comparison is skipped when the field is absent, which keeps the
+module working against servers that omit it while refusing any server that
+contradicts itself.
+
+Locked by `rdap_response_deserializes_ldh_name_field`
+(`src/modules/au_rdap/tests.rs:540`), which asserts both that a present field is
+read and that an absent one stays `None`.
+
+---
+
+## REQ-DOCS-001 — The map's currency was a remembered procedure, so it drifted
+
+`docs/ROADMAP.md` §6 has always said the document is realigned on **each**
+iteration, and `CLAUDE.md` repeats it as a standing obligation. The roadmap's own
+header goes further: *"a claim here that the code does not honour is a defect in
+this document."* Nothing enforced any of it, so it was a repeated manual
+procedure standing in for a structural property — the third recurring shape in
+§4, the same one that produced the sixteen hand-written breaker resets
+(REQ-BREAKER-001).
+
+### Measured
+
+On `0a09c336`, `git log -1 -- docs/ROADMAP.md CHANGELOG.md` puts both documents'
+last change at `d1fbce90` (2026-09-18), with ~90 commits and 14 shipped
+requirements since. Counting requirement identifiers across the three organising
+documents:
+
+```
+ledger headings ................ 113
+named in CHANGELOG.md ..........  62   (51 unaccounted for)
+cited in ROADMAP.md but with
+  no ledger entry ..............   3   REQ-ZOOMEYE-001, REQ-LEAKCHECK-001,
+                                       REQ-HUDSONROCK-001
+```
+
+The three dangling citations are the material defect, not the counts. §4's T1
+paragraph described that trio as the *"still-open siblings"* of the
+`REQ-AUGEO-001` fail-open family. All three had shipped the previous day
+(`1c2b7447`, `0fb6c2ac`, `444a8f3b`), verified against the current source rather
+than their commit messages. A reader ranking the next cycle from this map would
+have re-attacked three closed defects.
+
+### The expected permanent invariant
+
+`REQUIREMENTS_LEDGER.md` is the single authority for what a requirement is.
+From it, two properties follow, and both are now checkable:
+
+1. **The map may not cite a requirement the ledger does not record.** A citation
+   with no transcript behind it is a claim nothing can check — which is exactly
+   how three shipped fixes stayed described as open.
+2. **The changelog must account for every requirement the ledger records.** One
+   line each; refuted and measured-only leads included, because *"we looked and
+   changed nothing"* is an answer a reader needs, not an omission.
+
+### Implemented
+
+Three tests in `tests/doc_drift.rs`, the file that already exists for exactly
+this class ("documentation claims that assert a NUMBER the code also defines
+must be checked against the code, not maintained by hand" — its own header):
+
+* `the_map_never_cites_a_requirement_the_ledger_does_not_record`
+* `every_requirement_the_ledger_records_is_accounted_for_in_the_changelog`
+* `the_requirement_id_scanner_reads_the_shapes_the_documents_use`
+
+The first collects across **both** documents before asserting. The first cut
+asserted per document inside a loop, so the roadmap's failure hid whatever the
+changelog's would have been — the same "collect the survivors, do not assert one
+at a time" discipline the falsification passes use, and it was corrected before
+the guard was trusted.
+
+The scanner is hand-written, like the rest of the file. The corpus constrains
+it: `AREA` is itself hyphenated in places (`REQ-AU-UNCLAIMED-001`,
+`REQ-DEVICE-CELL-001`), carries digits (`REQ-IP2LOCATION-002`), sits against
+punctuation and appears several times per line. The suffix is always exactly
+three digits, and that is what makes a token an identifier.
+
+### Falsified
+
+Baseline, before any document was touched — each guard failing for its own
+reason:
+
+```
+the_map_never_cites_…            FAILED — REQ-HUDSONROCK-001, REQ-LEAKCHECK-001,
+                                          REQ-ZOOMEYE-001
+every_requirement_…changelog     FAILED — 51 recorded requirements unmentioned
+```
+
+Then three mutations against the corrected tree:
+
+| Mutation | Result |
+|---|---|
+| Add `REQ-PHANTOM-999` to `ROADMAP.md` | **only** `the_map_never_cites_…` fails |
+| Rewrite `REQ-WIGLE-001` in `CHANGELOG.md` so the id no longer appears | **only** `every_requirement_…changelog` fails |
+| Break the scanner (require a four-digit suffix) | the scanner test fails **and both guards fail on their vacuity asserts** — a scanner that silently stopped matching cannot make either guard pass on any pair of documents |
+
+The third mutation is the one that matters. A consistency guard whose input
+parser returns nothing is not a passing guard, it is an absent one; the vacuity
+asserts turn that into a failure rather than a green tick.
+
+One vacuity assert was itself wrong on the first cut and is worth recording: the
+changelog guard asserted `logged.len() > 100`, which tripped on the very
+62-of-113 shortfall it existed to report. The quantity under test can never gate
+the assertion — the vacuity guard belongs on the *ledger* scan, whose emptiness
+is what would make the check toothless.
+
+### Found by the guard, on its first run
+
+The changelog backfill omitted `REQ-APPLINKS-001`; the second guard named it.
+Realigning §4 to name the recurring shapes then cited `REQ-AURDAP-001`, which
+had shipped with no ledger entry — the first guard named that too. Its sibling
+`REQ-AURDAP-002` was found by looking, not by the guard, and both are now
+recorded above. That blind spot (a shipped fix with no entry *and* no citation
+is invisible to both guards) is stated in §6 rather than left to be rediscovered:
+closing it would require reading commit history, which is not reproducible from a
+source tarball and so does not belong in the suite.
+
+### What this does not do
+
+The guards check referential integrity between the three documents, not truth.
+Whether §2's structure claims, §3's seams and §4's ranking still describe the
+code remains a judgement, made in step 5 of the §6 process. What changed is that
+it is now the *only* part that is remembered, and a stale citation can no longer
+hide underneath it.
