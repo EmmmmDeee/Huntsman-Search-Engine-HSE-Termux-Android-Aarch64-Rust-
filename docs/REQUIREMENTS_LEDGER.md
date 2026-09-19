@@ -9946,3 +9946,50 @@ responses needs intelx's `BASE` injected as a parameter — which sibling
 intelx hardcodes at three call sites. That injection is the next step for this
 module and would make the whole poll loop testable against
 `util::http::test_server`; it is recorded here rather than claimed as done.
+
+### REQ-HTTP-004 — a keyed throttle or wall is typed, not a generic provider fault
+
+`keyed_ok_or_404` is the chokepoint every keyed module funnels a non-2xx
+through. It hand-built `Error::module(module, format!("HTTP {status}: {snippet}"))`
+for **every** non-2xx, so for `emailrep`, `europeana` and `fullcontact` a 429
+throttle and a WAF interstitial were indistinguishable from a provider defect:
+the breaker counted each as a fault, and the live sweep reported "unreachable"
+for a provider that was alive and merely asking for less, or refusing this
+client.
+
+Its sibling `http_status_error`, twelve lines above, already did the
+classification correctly. The two could not simply be merged because
+`keyed_ok_or_404` must consume the body itself — it disambiguates an
+auth-shaped 400 before deciding whether to burn the key — and so cannot hand
+the `Response` over.
+
+**Fix.** The classification is now `classify_status_error(module, status, body)`,
+called by both. `keyed_ok_or_404` reads the raw body once and derives the
+summary from it, so the key-burn decision keeps exactly the input it had while
+the typed classification gets what it needs.
+
+**The wrinkle that would have made this vacuous.** `error_body`'s own doc says
+it: *"This raw text, not the one-line `snippet_of` summary, is what a classifier
+needs: a challenge page's vendor fingerprint is a `<script>` URL in its head,
+which the summary (the page title) drops."* `keyed_ok_or_404` had been calling
+`error_snippet`, which discards that. Passing the summary into the shared
+classifier would have compiled, read correctly, and left the `BotChallenge` arm
+**structurally unable to fire** — a sixth vacuous guard. The raw body is
+threaded through deliberately.
+
+**Falsified per arm, with a control.** Reverting only the `keyed_ok_or_404` call
+site:
+
+```
+a 429 must be the typed RateLimited,             got Module { "HTTP 429 Too Many Requests: {"error":"rate limit exceeded"}" }
+a challenge page must be the typed BotChallenge, got Module { "HTTP 403 Forbidden: Just a moment..." }
+keyed_ok_or_404_leaves_a_plain_refusal_a_module_fault ... ok
+```
+
+The first attempt put all three assertions in ONE test, which stopped at the
+429 and left the wall arm unverified — the same masking already hit in
+REQ-OSINTCAT-001. They are three separate `#[tokio::test]`s for that reason.
+The third passes on the unfixed code, which is what makes the other two
+attributable to the missing typing rather than to the test failing
+indiscriminately. All are driven through the loopback server, so the real
+status and body path runs.

@@ -776,7 +776,24 @@ pub fn note_keyed_error(
 pub async fn http_status_error(module: &str, resp: reqwest::Response) -> Error {
     let status = resp.status();
     let body = error_body(resp).await;
-    let snippet = snippet_of(body.as_deref());
+    classify_status_error(module, status, body.as_deref())
+}
+
+/// Classify an already-read error response into the typed [`Error`].
+///
+/// Split out of [`http_status_error`] because [`keyed_ok_or_404`] must consume
+/// the body itself (it disambiguates an auth-shaped 400 before deciding whether
+/// to burn the key) and so cannot hand the `Response` over. Before this split it
+/// hand-built `Error::module` for EVERY non-2xx, so a 429 and a WAF
+/// interstitial reached `emailrep`, `europeana` and `fullcontact` as untyped
+/// provider faults (REQ-HTTP-004).
+///
+/// `body` is the RAW capped body, never the one-line summary: a challenge page's
+/// vendor fingerprint is a `<script>` URL in its head, which [`snippet_of`]
+/// drops. Passing the summary here would leave the `BotChallenge` arm unable to
+/// fire at all.
+fn classify_status_error(module: &str, status: reqwest::StatusCode, body: Option<&str>) -> Error {
+    let snippet = snippet_of(body);
     // A throttle is its own class of outcome — the provider is alive and
     // answering, and only asks for less — so it is the typed `RateLimited`:
     // the breaker trips on the variant rather than on a "429" token in the
@@ -792,10 +809,7 @@ pub async fn http_status_error(module: &str, resp: reqwest::Response) -> Error {
     // `403 Attention Required! | Cloudflare` and austlii's `Just a moment...`
     // as the providers being down). Classified on the raw capped body — the
     // vendor fingerprint is a `<script>` URL the one-line snippet drops.
-    if body
-        .as_deref()
-        .is_some_and(crate::util::html::is_challenge_page)
-    {
+    if body.is_some_and(crate::util::html::is_challenge_page) {
         return Error::BotChallenge(format!("{module}: HTTP {status}: {snippet}"));
     }
     Error::module(module, format!("HTTP {status}: {snippet}"))
@@ -873,11 +887,19 @@ pub async fn keyed_ok_or_404(
         // is what disambiguates a 400: some providers (Netlas) answer a dead key with
         // 400 + an auth message, not 401, so an auth-shaped 400 must burn the key like
         // a 401 would (otherwise the pool never rotates past the dead key).
-        let snippet = error_snippet(resp).await;
+        // Read the RAW body, not just its summary: the key-burn decision below
+        // needs the summary, but the typed classification needs the raw text
+        // (a challenge page's fingerprint is a `<script>` URL the summary
+        // drops). Reading once serves both.
+        let body = error_body(resp).await;
+        let snippet = snippet_of(body.as_deref());
         if is_keyed_error_status(code) || (code == 400 && is_auth_failure_400_body(&snippet)) {
             ctx.report_key_exhausted(module, key, code);
         }
-        return Err(Error::module(module, format!("HTTP {status}: {snippet}")));
+        // Was a hand-built `Error::module` for every non-2xx, so a throttle and
+        // a WAF block were indistinguishable from a provider defect for every
+        // keyed caller (REQ-HTTP-004).
+        return Err(classify_status_error(module, status, body.as_deref()));
     }
     Ok(Some(resp))
 }

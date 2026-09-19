@@ -1960,3 +1960,90 @@ async fn json_scanned_types_a_challenge_page_and_redacts_a_credential_in_the_dec
         "the decode error must name the module and never quote the credential: {msg}"
     );
 }
+
+/// REQ-HTTP-004. `keyed_ok_or_404` hand-built `Error::module` for every non-2xx,
+/// so a throttle and an anti-bot wall reached `emailrep`, `europeana` and
+/// `fullcontact` as generic provider faults — the breaker counted each as a
+/// defect and the live sweep read them as "unreachable".
+///
+/// Three SEPARATE tests, not one with three assertions: a single test stops at
+/// its first failure, so the throttle arm would mask whether the wall arm holds.
+/// Each of these fails on the unfixed code for its own reason, and the third
+/// passes on it — the control that makes the other two attributable.
+fn keyed_test_ctx() -> crate::core::module::ModuleContext {
+    use std::collections::HashMap;
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    crate::core::module::ModuleContext {
+        scan_id: "test".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    }
+}
+
+#[tokio::test]
+async fn keyed_ok_or_404_types_a_429_as_the_typed_rate_limit() {
+    use super::test_server::{Canned, serve};
+    let base = serve(vec![Canned::json(
+        429,
+        r#"{"error":"rate limit exceeded"}"#,
+    )])
+    .await;
+    let ctx = keyed_test_ctx();
+    let resp = reqwest::Client::new()
+        .get(&base)
+        .send()
+        .await
+        .expect("loopback");
+    let err = keyed_ok_or_404("m", "k", &ctx, resp)
+        .await
+        .expect_err("429 must be an error");
+    assert!(
+        matches!(err, crate::core::error::Error::RateLimited(_)),
+        "a 429 must be the typed RateLimited, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn keyed_ok_or_404_types_a_challenge_page_as_the_typed_wall() {
+    // Classified on the RAW body: the fingerprint is a `<script>` URL that the
+    // one-line summary drops, so routing the summary here instead would leave
+    // this arm structurally unable to fire.
+    use super::test_server::{Canned, serve};
+    let base = serve(vec![Canned::html(403, CF_CHALLENGE_PAGE)]).await;
+    let ctx = keyed_test_ctx();
+    let resp = reqwest::Client::new()
+        .get(&base)
+        .send()
+        .await
+        .expect("loopback");
+    let err = keyed_ok_or_404("m", "k", &ctx, resp)
+        .await
+        .expect_err("challenge page must be an error");
+    assert!(
+        matches!(err, crate::core::error::Error::BotChallenge(_)),
+        "a challenge page must be the typed BotChallenge, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn keyed_ok_or_404_leaves_a_plain_refusal_a_module_fault() {
+    // CONTROL: passes on the unfixed code too. A plain 403 is not a wall, and
+    // over-typing it would be its own defect.
+    use super::test_server::{Canned, serve};
+    let base = serve(vec![Canned::text(403, "Forbidden")]).await;
+    let ctx = keyed_test_ctx();
+    let resp = reqwest::Client::new()
+        .get(&base)
+        .send()
+        .await
+        .expect("loopback");
+    let err = keyed_ok_or_404("m", "k", &ctx, resp)
+        .await
+        .expect_err("403 must be an error");
+    assert!(
+        matches!(err, crate::core::error::Error::Module { .. }),
+        "a plain 403 stays a module fault, got {err:?}"
+    );
+}
