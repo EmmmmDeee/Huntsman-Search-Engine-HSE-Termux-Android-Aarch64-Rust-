@@ -60,16 +60,119 @@ pub static IPV6_CANDIDATE: LazyLock<Regex> =
 pub static HEX_TOKEN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b[0-9a-fA-F]+\b").expect("valid hex regex"));
 
+#[cfg(test)]
+mod email_validity_tests {
+    use super::{EntityKind, extract_by_patterns};
+
+    fn emails(text: &str) -> Vec<String> {
+        extract_by_patterns(text)
+            .into_iter()
+            .filter(|e| matches!(e.kind, EntityKind::Email))
+            .map(|e| e.value)
+            .collect()
+    }
+
+    /// REQ-EXTRACTOR-001. Every value carrying the `email_rfc5322` /
+    /// "RFC 5322 compliant format" stamp must actually satisfy the crate's own
+    /// syntactic authority. These three shapes were measured being admitted
+    /// under that stamp before the arm validated anything; collected rather
+    /// than asserted one at a time so one failure names all of them.
+    #[test]
+    fn nothing_carries_the_rfc_stamp_without_earning_it() {
+        let overlong = format!("mail {}@example.com here", "a".repeat(69));
+        let cases: Vec<(&str, String)> = vec![
+            (
+                "consecutive dots in local",
+                "contact a..b@example.com now".into(),
+            ),
+            (
+                "trailing dot in local",
+                "write alice.@example.com ok".into(),
+            ),
+            ("local part over 64 chars", overlong),
+        ];
+        let admitted: Vec<String> = cases
+            .iter()
+            .flat_map(|(why, text)| {
+                emails(text)
+                    .into_iter()
+                    .filter(|v| !crate::core::validation::validate_email_syntax(v).valid)
+                    .map(move |v| format!("{why}: {v:?}"))
+            })
+            .collect();
+        assert!(
+            admitted.is_empty(),
+            "stamped \"RFC 5322 compliant format\" without being valid:\n  {}",
+            admitted.join("\n  ")
+        );
+    }
+
+    /// The stamp itself, asserted rather than assumed — a future arm that
+    /// validated but dropped the label would pass the test above vacuously.
+    #[test]
+    fn a_real_address_is_still_extracted_and_still_labelled() {
+        let got = extract_by_patterns("good alice.smith+tag@example.com z");
+        let email = got
+            .iter()
+            .find(|e| matches!(e.kind, EntityKind::Email))
+            .expect("a well-formed address must still be extracted");
+        assert_eq!(email.value, "alice.smith+tag@example.com");
+        assert_eq!(email.source_pattern, "email_rfc5322");
+        assert_eq!(
+            email.boost_reason.as_deref(),
+            Some("RFC 5322 compliant format")
+        );
+    }
+
+    /// Control — passes before the fix too. The locator already trims a leading
+    /// dot and a trailing domain dot out of the match, so those never reached
+    /// the stamp and the fix is not credited with them.
+    #[test]
+    fn the_locator_already_trimmed_these_edges_before_the_fix() {
+        assert_eq!(
+            emails("mail .alice@example.com here"),
+            ["alice@example.com"]
+        );
+        assert_eq!(emails("to alice@example.com. end"), ["alice@example.com"]);
+    }
+}
+
 /// Extract entities from text using pattern matching.
 pub fn extract_by_patterns(text: &str) -> Vec<ExtractedEntity> {
     let mut entities = Vec::new();
 
-    // Email extraction
+    // Email extraction. The locator is a SCANNER pattern, not a validator —
+    // `util::extract`'s own header says so ("Pragmatic, ASCII-only,
+    // scanner-grade — NOT an RFC 5322 validator"). This arm nonetheless stamped
+    // every raw match `source_pattern: "email_rfc5322"` with the boost reason
+    // "RFC 5322 compliant format" at 0.85, having checked nothing. Measured
+    // against the crate's own `validate_email_syntax`, three shapes were
+    // admitted under that untrue stamp:
+    //
+    //   "a..b@example.com"          consecutive dots in the local part
+    //   "alice.@example.com"        trailing dot in the local part
+    //   69-char local part          over RFC 5321's 64-octet limit
+    //
+    // This is the same defect the IPv4 arm below already carries the scar of —
+    // its comment records an arm that "stamped it 'Valid IPv4 range' ... under a
+    // boost reason that was untrue" until it was made to parse through
+    // `Ipv4Addr`. Email was the remaining unbacked claim (REQ-EXTRACTOR-001).
+    //
+    // Validate through the ONE syntactic authority, exactly as the IPv4 and IPv6
+    // arms validate through their parsers, and drop what does not conform — so
+    // the stamp means what it says. Not a second local copy of the rules: the
+    // admission gate (`core::validation::is_fragment_value`) delegates to the
+    // same function, so the extractor and the gate cannot disagree about what an
+    // email is.
     for cap in EMAIL_PATTERN.find_iter(text) {
+        let value = cap.as_str().to_lowercase();
+        if !crate::core::validation::validate_email_syntax(&value).valid {
+            continue;
+        }
         entities.push(ExtractedEntity {
             kind: EntityKind::Email,
-            value: cap.as_str().to_lowercase(),
-            confidence: 0.85, // RFC 5322 validation high confidence
+            value,
+            confidence: 0.85, // syntax-validated above, so the stamp is earned
             context: extract_context(text, cap.start()),
             source_pattern: "email_rfc5322".to_string(),
             boost_reason: Some("RFC 5322 compliant format".to_string()),

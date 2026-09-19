@@ -10308,3 +10308,66 @@ shape. A probe over seven candidate hosts established that `attacker-corp.net`
 is not a placeholder domain, and the vectors were corrected. Had the draft
 vector been kept, the regression test would have passed for the wrong reason and
 locked nothing.
+
+### REQ-EXTRACTOR-001 — the `email_rfc5322` stamp is earned now, not asserted
+
+`entity_extractor::patterns`'s Email arm emitted every raw locator match as
+
+```rust
+confidence: 0.85,                    // "RFC 5322 validation high confidence"
+source_pattern: "email_rfc5322",
+boost_reason: Some("RFC 5322 compliant format"),
+```
+
+having validated nothing. `util::extract`'s own module header says what the
+locator is: "Pragmatic, ASCII-only, scanner-grade — **NOT an RFC 5322
+validator**."
+
+**Measured, not argued.** A probe comparing the arm's output against the crate's
+own `validate_email_syntax` found three shapes admitted under that stamp:
+
+```
+"contact a..b@example.com now"     -> ["a..b@example.com"]       syntax_valid=[false]
+"write alice.@example.com ok"      -> ["alice.@example.com"]     syntax_valid=[false]
+69-char local part                 -> [<69 chars>@example.com]   syntax_valid=[false]
+```
+
+and three where the locator already behaves (a leading dot and a trailing domain
+dot are trimmed out of the match; a two-`@` run yields only the valid prefix).
+Those three are kept as a control test so the fix is not credited with them.
+
+**This is a scar the file already carries.** The IPv4 arm twelve lines below
+records exactly the same defect being fixed: "The old arm trusted the raw match
+… and stamped it 'Valid IPv4 range' — emitting values that `Ipv4Addr::from_str`,
+and therefore any downstream scanner, rejects, under a boost reason that was
+untrue." IPv4 and IPv6 were made to parse through their validators. Email was the
+remaining unbacked claim.
+
+**Fix.** The arm validates through `validate_email_syntax` and drops what does
+not conform, exactly as the IPv4/IPv6 arms parse through theirs. Deliberately the
+SAME function the admission gate delegates to (REQ-VALIDATION-002), not a second
+local copy of the rules — so the extractor and the gate cannot disagree about
+what an email is. That is the third and last copy of "is this a valid email"
+folded onto one authority.
+
+**Falsified.** Removing the check and leaving the stamp:
+
+```
+nothing_carries_the_rfc_stamp_without_earning_it ... FAILED
+  stamped "RFC 5322 compliant format" without being valid:
+    consecutive dots in local: "a..b@example.com"
+    trailing dot in local: "alice.@example.com"
+    local part over 64 chars: "aaaa…(69)@example.com"
+test result: FAILED. 34 passed; 1 failed
+```
+
+One failure names all three rather than stopping at the first. Two controls pass
+on that baseline: the locator-already-trims one above, and one asserting a real
+address is still extracted AND still labelled — without which an arm that
+validated but dropped the label would satisfy the first test vacuously.
+
+**Observed, not claimed.** On `jordan@example.com@attacker-corp.net` the locator
+emits only `jordan@example.com` — syntactically valid, but a DIFFERENT address
+from the one in the text. That is its own question (a truncating locator silently
+re-attributing a spoofed address), distinct from the stamp, and is recorded here
+rather than folded into this fix.
