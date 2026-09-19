@@ -145,7 +145,8 @@ impl Module for ExaSearch {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let Some(key) = ctx.key_opt(KEY_ENV).filter(|k| !k.is_empty()) else {
-            return Ok(ModuleResult::new());
+            // PROVIDER FAILURE != ZERO EVIDENCE — see REQ-KEYSKIP-001.
+            return Err(crate::core::error::Error::MissingKey(KEY_ENV.into()));
         };
 
         // Per-target query templates — phrased to maximise semantic match

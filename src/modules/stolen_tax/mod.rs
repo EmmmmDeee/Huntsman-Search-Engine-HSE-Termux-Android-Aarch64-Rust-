@@ -160,7 +160,10 @@ impl Module for StolenTax {
         let mut result = ModuleResult::new();
 
         let Some(initial_key) = ctx.key_opt("HUNTSMAN_STOLEN_TAX_KEY") else {
-            return Ok(result);
+            // PROVIDER FAILURE != ZERO EVIDENCE — see REQ-KEYSKIP-001.
+            return Err(crate::core::error::Error::MissingKey(
+                "HUNTSMAN_STOLEN_TAX_KEY".into(),
+            ));
         };
         let query_param = crate::util::http::urlencode(&target.value);
         let endpoint = match target.kind {

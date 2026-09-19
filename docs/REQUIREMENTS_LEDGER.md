@@ -10046,3 +10046,62 @@ so the next session starts from it rather than rediscovering it.
 had to be retracted, and roughly two hours. The control that settled it —
 three echo lines printing `--list` output and an md5 — should have been the
 first move, not the fifth.
+
+### REQ-KEYSKIP-001 — 20 keyed modules reported a clean negative for a provider never asked
+
+Started as REQ-FULLHUNT-001 (fullhunt's missing-key path returns `Ok(empty)`).
+fullhunt turned out to be one of **twenty**.
+
+**How it was found.** `src/modules/keyed_tests.rs` already enforced the right
+invariant — "a keyed module without its key is a MissingKey skip, not a clean
+negative" — over a **hand-written list of fifteen modules**. The registry holds
+**49** modules declaring `requires_key`. A registry-driven probe returned, in
+0.01 s and with `PROBE_ERR_OTHER=0` (no module even attempted a request):
+
+```
+PROBE_CHECKED=49
+PROBE_OK_OFFENDERS=20
+  stolen_tax exa_search censys breachdirectory intelx leakix criminal_ip
+  onyphe zoomeye binaryedge c99 fullhunt pulsedive passivetotal ipqs
+  proxycurl threatfox opencellid abn_lookup hlr_cnam
+```
+
+**Why it matters, in the module's own words.** Dispatch records `Ok(empty)` as
+`ModuleDone { found: 0 }`; coverage aggregates that to `CleanNegative` —
+"queried, holds nothing on this subject", the one outcome the design treats as
+a real negative. `coverage_verdict` then leaves those providers out of
+`unavailable_count`, and `is_exhaustive()` can report a sweep nobody made. On
+any scan where the operator had not configured these twenty keys — which is
+most scans — twenty providers were counted as having searched and found
+nothing.
+
+**The invariant was never the problem. The ENUMERATION was.** A module could be
+keyed and simply never listed, and fifteen of forty-nine were. So the fix is
+not "add the missing twenty to the list": the list is gone. The test now walks
+`registry()` and checks every module whose descriptor declares `requires_key`,
+so a new keyed module is covered the moment it is registered, with nothing for
+anyone to remember. It also asserts `checked >= 45`, so the enumeration cannot
+quietly collapse to nothing if `requires_key` stops being populated.
+
+**Nineteen modules fixed**, each returning `Error::MissingKey` with its own env
+var. Three needed individual handling rather than the common `match` shape:
+`stolen_tax` and `exa_search` use `let-else`, and `opencellid` / `abn_lookup`
+wrap the lookup in `util::keys::resolve_key`.
+
+**One exemption, stated rather than silent.** `proxycurl` is exempt because the
+vendor sunset the whole API and the module never dispatches, key or no key, so
+there is no keyed call to skip. Its `Ok(empty)` is nonetheless its own false
+clean negative — it reports that Proxycurl searched and found nothing for a
+provider that no longer exists. That is recorded here as a follow-up, not
+fixed, and the exemption carries its reason in the code.
+
+**Falsified.** Reverting only fullhunt:
+
+```
+keyed modules that do not refuse without a key (1 of 48):
+  fullhunt on Domain: expected Err(MissingKey(..)), got Ok(0 entities)
+    — a clean negative for a provider never asked
+```
+
+"1 of 48" is itself the check on the enumeration: the test really is walking
+every non-exempt keyed module, not a subset.

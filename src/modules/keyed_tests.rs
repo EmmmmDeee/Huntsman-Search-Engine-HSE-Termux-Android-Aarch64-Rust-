@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 
 use crate::core::error::Error;
-use crate::core::module::{Module, ModuleContext};
+use crate::core::module::ModuleContext;
 use crate::core::scan::{Target, TargetKind};
 
 fn keyless_ctx() -> ModuleContext {
@@ -44,82 +44,58 @@ fn probe_value(kind: TargetKind) -> &'static str {
     }
 }
 
+/// Modules exempt from the invariant, each with the reason it cannot hold.
+///
+/// Keep this list empty unless a module genuinely cannot honour the contract.
+/// An entry here is a claim that must stay true, not a way to silence a
+/// failure.
+const EXEMPT: &[(&str, &str)] = &[(
+    "proxycurl",
+    "vendor sunset the whole API; the module never dispatches, key or no key,      so there is no keyed call to skip. Its Ok(empty) is its own false clean      negative and is tracked separately (REQ-KEYSKIP-001 follow-up).",
+)];
+
+/// Every key-gated module in the REGISTRY — not a hand-written list.
+///
+/// The predecessor of this test enumerated fifteen modules by hand. The
+/// registry carried forty-nine that declare `requires_key`, and **twenty** of
+/// the remainder returned `Ok(empty)` without a key: stolen_tax, exa_search,
+/// censys, breachdirectory, intelx, leakix, criminal_ip, onyphe, zoomeye,
+/// binaryedge, c99, fullhunt, pulsedive, passivetotal, ipqs, proxycurl,
+/// threatfox, opencellid, abn_lookup, hlr_cnam. The invariant was real and
+/// enforced; the ENUMERATION was the hole, so a module could be keyed and
+/// simply never listed.
+///
+/// Driving it from `registry()` closes that permanently: a new keyed module is
+/// covered the moment it is registered, with nothing to remember.
 #[tokio::test]
-async fn a_keyed_module_without_its_key_is_a_missing_key_skip_not_a_clean_negative() {
-    let cases: Vec<(Box<dyn Module>, &str)> = vec![
-        (
-            Box::new(crate::modules::builtwith::BuiltWith),
-            "HUNTSMAN_BUILTWITH_KEY",
-        ),
-        (
-            Box::new(crate::modules::dehashed::DeHashed),
-            "HUNTSMAN_DEHASHED_KEY",
-        ),
-        (
-            Box::new(crate::modules::emailrep::EmailRep),
-            "HUNTSMAN_EMAILREP_KEY",
-        ),
-        (
-            Box::new(crate::modules::epieos::Epieos),
-            "HUNTSMAN_EPIEOS_KEY",
-        ),
-        (Box::new(crate::modules::fofa::Fofa), "HUNTSMAN_FOFA_KEY"),
-        (
-            Box::new(crate::modules::fullcontact::FullContact),
-            "HUNTSMAN_FULLCONTACT_KEY",
-        ),
-        (
-            Box::new(crate::modules::hunter_io::HunterIo),
-            "HUNTSMAN_HUNTER_KEY",
-        ),
-        (
-            Box::new(crate::modules::netlas::Netlas),
-            "HUNTSMAN_NETLAS_KEY",
-        ),
-        (
-            Box::new(crate::modules::numverify::NumVerify),
-            "HUNTSMAN_NUMVERIFY_KEY",
-        ),
-        (
-            Box::new(crate::modules::opensanctions::OpenSanctions),
-            "HUNTSMAN_OPENSANCTIONS_KEY",
-        ),
-        (
-            Box::new(crate::modules::securitytrails::SecurityTrails),
-            "HUNTSMAN_SECTRAILS_KEY",
-        ),
-        (Box::new(crate::modules::seon::Seon), "HUNTSMAN_SEON_KEY"),
-        (
-            Box::new(crate::modules::trove_au::TroveAu),
-            "HUNTSMAN_TROVE_KEY",
-        ),
-        (
-            Box::new(crate::modules::whoisxml::WhoisXml),
-            "HUNTSMAN_WHOISXML_KEY",
-        ),
-        (
-            Box::new(crate::modules::contact_enrich::ContactEnrich),
-            "HUNTSMAN_NUMVERIFY_KEY",
-        ),
-    ];
+async fn every_keyed_module_in_the_registry_refuses_without_its_key() {
     let ctx = keyless_ctx();
     let mut wrong = Vec::new();
-    for (module, env) in &cases {
-        // contact_enrich is keyed only on its phone path; every other module
-        // is keyed on everything it consumes.
+    let mut checked = 0usize;
+    for module in crate::modules::registry() {
+        if !module.provider_descriptor().requires_key {
+            continue;
+        }
+        if let Some((_, why)) = EXEMPT.iter().find(|(n, _)| *n == module.name()) {
+            assert!(!why.is_empty(), "an exemption must carry its reason");
+            continue;
+        }
+        // contact_enrich is keyed only on its phone path; every other module is
+        // keyed on everything it consumes.
         let kind = if module.name() == "contact_enrich" {
             TargetKind::Phone
         } else {
-            *module
-                .consumes()
-                .first()
-                .expect("a keyed module consumes something")
+            match module.consumes().first() {
+                Some(k) => *k,
+                None => continue,
+            }
         };
         let target = Target::new(kind, probe_value(kind));
+        checked += 1;
         match module.process(&target, &ctx).await {
-            Err(Error::MissingKey(k)) if k == *env => {}
+            Err(Error::MissingKey(_)) => {}
             other => wrong.push(format!(
-                "{} on {kind:?}: expected Err(MissingKey({env})), got {}",
+                "{} on {kind:?}: expected Err(MissingKey(..)), got {}",
                 module.name(),
                 match &other {
                     Ok(r) => format!(
@@ -132,8 +108,14 @@ async fn a_keyed_module_without_its_key_is_a_missing_key_skip_not_a_clean_negati
         }
     }
     assert!(
+        checked >= 45,
+        "the registry should yield ~49 keyed modules; got {checked} — has the \
+         descriptor's requires_key stopped being populated?"
+    );
+    assert!(
         wrong.is_empty(),
-        "keyed modules that misreport a missing credential as a result:\n{}",
-        wrong.join("\n")
+        "keyed modules that do not refuse without a key ({} of {checked}):\n  {}",
+        wrong.len(),
+        wrong.join("\n  ")
     );
 }
