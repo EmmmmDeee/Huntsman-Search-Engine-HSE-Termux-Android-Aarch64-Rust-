@@ -216,10 +216,18 @@ fn evidence_role_matches_the_field_the_person_actually_came_from() {
     let bob = by_value(EntityKind::Username, "bob");
     assert!(bob.has_tag("co-maintainer"), "bob came from `maintainers`");
 
-    let carol_url = by_value(EntityKind::Url, "https://carol.dev");
-    assert_eq!(carol_url.evidence[0].summary, "npm publisher URL (pkg)");
-    let dave_url = by_value(EntityKind::Url, "https://dave.dev");
-    assert_eq!(dave_url.evidence[0].summary, "npm author URL (pkg)");
+    // REQ-NPMAUTHOR-001. Carol and Dave are strangers to `alice`, and this
+    // test used to require their homepages be emitted as `Url` entities on her
+    // scan — with nothing on the entity marking them as someone else's, unlike
+    // the `co-*`-tagged usernames above. The line the module draws: a
+    // co-maintainer's HANDLE is a fact about the package and is kept, tagged
+    // `co-*`; their EMAIL and HOMEPAGE are their own contact data and are not
+    // the subject's.
+    let urls = values(&ents, EntityKind::Url);
+    assert!(
+        !urls.iter().any(|u| *u == "https://carol.dev" || *u == "https://dave.dev"),
+        "a stranger's homepage is not the subject's URL, got {urls:?}"
+    );
 
     let alice_email = by_value(EntityKind::Email, "alice@example.com");
     assert_eq!(
@@ -267,15 +275,26 @@ fn blank_package_name_drops_the_dangling_suffix_and_attribute() {
 }
 
 #[test]
-fn usernameless_record_email_is_kept() {
-    // A record with an email but no username is treated as the subject's.
+fn usernameless_record_email_is_not_the_subjects() {
+    // REQ-NPMAUTHOR-001. This test previously read
+    // `usernameless_record_email_is_kept` and asserted the opposite, with the
+    // comment "A record with an email but no username is treated as the
+    // subject's" — the defect pinned as a contract, argued nowhere. It is
+    // inverted rather than deleted so the change of mind stays on the record.
+    //
+    // Nothing ties an unattributed record to the queried handle. npm's `author`
+    // block is free text copied from `package.json`; it routinely names a
+    // fork's original author, an ex-employee, or a company alias rather than
+    // whoever maintains the package now.
     let body = search(
         r#"{"objects":[{"package":{"name":"pkg",
                 "author":{"email":"author@example.com"}}}],"total":1}"#,
     );
     let ents = build_entities(&body, "alice", "s");
-    let emails = values(&ents, EntityKind::Email);
-    assert_eq!(emails, vec!["author@example.com"]);
+    assert!(
+        values(&ents, EntityKind::Email).is_empty(),
+        "an email attached to no npm account is nobody's confirmed contact"
+    );
 }
 
 #[test]
@@ -344,4 +363,70 @@ fn every_returned_package_is_emitted() {
     let ents = build_entities(&search(&json), "alice", "s");
     // One Url per package — every returned package, none dropped.
     assert_eq!(of_kind(&ents, EntityKind::Url).len(), count);
+}
+
+/// REQ-NPMAUTHOR-001. The queried handle is the ONLY thing tying any record in
+/// this response to the person being scanned. A record carrying no username is
+/// not evidence about them — and npm's `author` block is exactly that shape,
+/// free text copied from `package.json` that routinely names someone other than
+/// whoever maintains the package now.
+///
+/// The email arm read `is_subject || person.username.is_none()`, admitting the
+/// unattributed address outright. Separate tests, because the first failure
+/// would otherwise mask the second.
+#[test]
+fn an_unattributed_author_email_is_not_the_subjects() {
+    let body = search(
+        r#"{"objects":[{"package":{"name":"pkg",
+                "author":{"name":"Someone Else","email":"stranger@othercorp.example"},
+                "publisher":{"username":"alice","email":"alice@example.com"},
+                "maintainers":[{"username":"alice","email":"alice@example.com"}]}}],"total":1}"#,
+    );
+    let ents = build_entities(&body, "alice", "s");
+    let emails = values(&ents, EntityKind::Email);
+    assert_eq!(
+        emails,
+        vec!["alice@example.com"],
+        "a package.json author block with no npm username is not the subject's contact"
+    );
+}
+
+/// REQ-NPMAUTHOR-001, the other half. The URL arm had no attribution check at
+/// all — not a weak one, none — so any person record's homepage became a `Url`
+/// entity on the subject's scan. Live 2026-09-19, 1,129 of 2,352 person
+/// records on this endpoint (48%) belong to someone other than the queried
+/// subject.
+#[test]
+fn a_co_maintainers_url_is_not_the_subjects() {
+    let body = search(
+        r#"{"objects":[{"package":{"name":"pkg",
+                "maintainers":[
+                    {"username":"alice","email":"alice@example.com","url":"https://alice.example"},
+                    {"username":"bob","email":"bob@example.com","url":"https://bob.example"}
+                ]}}],"total":1}"#,
+    );
+    let ents = build_entities(&body, "alice", "s");
+    let urls = values(&ents, EntityKind::Url);
+    assert_eq!(
+        urls,
+        vec!["https://alice.example"],
+        "a co-maintainer's homepage is their URL, not the subject's"
+    );
+}
+
+/// The control, and it PASSES on the baseline: tightening attribution must not
+/// cost the subject their own record. Every live publisher and maintainer
+/// carries a username (500/500 and 1852/1852 on 2026-09-19), so the subject's
+/// own email and URL still arrive by the matching path.
+#[test]
+fn the_subjects_own_record_still_comes_through() {
+    let body = search(
+        r#"{"objects":[{"package":{"name":"pkg",
+                "publisher":{"username":"Alice","email":"alice@example.com","url":"https://alice.example"},
+                "maintainers":[{"username":"alice","email":"alice@example.com"}]}}],"total":1}"#,
+    );
+    let ents = build_entities(&body, "alice", "s");
+    // Case-insensitively, too: npm's publisher casing need not match the query.
+    assert_eq!(values(&ents, EntityKind::Email), vec!["alice@example.com"]);
+    assert_eq!(values(&ents, EntityKind::Url), vec!["https://alice.example"]);
 }

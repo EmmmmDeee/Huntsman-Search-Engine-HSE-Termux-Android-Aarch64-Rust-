@@ -10768,3 +10768,114 @@ C — exif_geo picks its own rung again (the structural lock):
 own file — the field is computed and serialised but nothing reads it. Either
 wire it or drop it; not folded in here because it is a reachability question,
 not a calibration one.
+
+---
+
+## REQ-NPMAUTHOR-001 — The queried handle is the only thing tying a record to the subject
+
+### What was measured, live
+
+`npm_author` queries `registry.npmjs.org/-/v1/search?text=maintainer:{handle}`
+and mines the person records on each returned package. Measured 2026-09-19
+across five queries, **500 packages / 2,352 person records**:
+
+| fact | count |
+|---|---|
+| publisher records carrying `username` AND `email` | 500 / 500 |
+| maintainer records carrying `username` AND `email` | 1852 / 1852 |
+| records whose email belongs to someone **other** than the queried subject | **1129** (48%) |
+| package-level `author` blocks | **0** |
+| `url` on any person record | **0** |
+
+Package keys actually returned: `name`, `sanitized_name`, `version`,
+`description`, `keywords`, `license`, `date`, `links`, `publisher`,
+`maintainers`. The module's header documented an `author` block that the
+endpoint no longer sends.
+
+Nearly half the person records on this endpoint belong to a third party — a
+co-maintainer, or a publisher who is not the queried handle (`brace-expansion`
+under `maintainer:isaacs` is published by `juliangruber`). The `is_subject`
+username match is what excludes all 1,129 of them.
+
+### The two holes
+
+```rust
+let is_subject = person.username.as_deref()
+    .is_some_and(|u| u.eq_ignore_ascii_case(handle));
+
+if let Some(email) = person.email.as_deref()
+    && (is_subject || person.username.is_none())   // ← admitted unattributed
+{ … }
+
+if let Some(u) = person.url.as_deref()
+    && crate::util::url_util::is_absolute_http_url(u)   // ← no check at all
+{ … }
+```
+
+**Email**: `|| person.username.is_none()` admitted any record with no npm
+account attached. npm's `author` block is exactly that shape — free text copied
+from `package.json`, routinely naming a fork's original author, an ex-employee,
+or a company alias rather than whoever maintains the package now.
+
+**URL**: no attribution check whatsoever. A co-maintainer's homepage became a
+`Url` entity on the subject's scan, carrying only a `npm` tag — nothing marking
+it as a third party's, unlike the `co-*`-tagged usernames emitted three lines
+below.
+
+The module's own `build_entities` doc comment promised "a co-maintainer's
+address isn't mis-attributed". That was true of the username-bearing records
+and false of the rest.
+
+### Reachability, stated honestly
+
+Both holes are **latent, not live**: neither an `author` block nor a person
+`url` appeared once in the 2,352-record sample, so `pkg.author` is always
+`None` and `person.url` is always `None` against today's endpoint. Latent is
+not closed. The fields are still decoded, npm has changed this response before,
+and the module's stated contract should be true of the code rather than of the
+provider's current omissions. The `author`/`url` fields are kept (forward
+compatible, free under `#[serde(default)]`) and the header now records the
+observed shape with its date and sample size.
+
+### The line the module draws, now stated
+
+A co-maintainer's **handle** is a fact about the package: kept, emitted as its
+own `Username` entity tagged `co-publisher` / `co-author` / `co-maintainer`.
+Their **email and homepage** are their own contact data and are not the
+subject's: dropped.
+
+### Falsification — two baselines, two gates
+
+```
+A — email arm back to `is_subject || person.username.is_none()`:
+      an_unattributed_author_email_is_not_the_subjects   ... FAILED
+        a package.json author block with no npm username is not the
+        subject's contact
+      usernameless_record_email_is_not_the_subjects      ... FAILED
+        an email attached to no npm account is nobody's confirmed contact
+      (the URL tests and the control PASS — the URL gate still stands)
+
+B — URL arm back to no attribution check:
+      a_co_maintainers_url_is_not_the_subjects           ... FAILED
+        a stranger's homepage is not the subject's URL, got
+        ["https://carol.dev", "https://dave.dev"]
+      evidence_role_matches_the_field_the_person_actually_came_from ... FAILED
+```
+
+`the_subjects_own_record_still_comes_through` PASSES on both baselines and on
+the fix — it is the control, and it is not vacuous: every live publisher and
+maintainer carries a username, so tightening attribution costs the subject
+nothing.
+
+### Two existing tests asserted the defect, and were inverted rather than deleted
+
+- `usernameless_record_email_is_kept` — comment: *"A record with an email but
+  no username is treated as the subject's."* The defect pinned as a contract,
+  argued nowhere. Renamed and inverted in place, with the old name and its
+  claim quoted in the new test so the change of mind stays on the record.
+- `evidence_role_matches_the_field_the_person_actually_came_from` — its real
+  subject is the role labelling (`co-publisher` vs `co-author` vs
+  `co-maintainer`, and the role-specific evidence text), which is sound and
+  kept. Two of its assertions required Carol's and Dave's homepages to be
+  emitted on Alice's scan; those are replaced by an assertion that they are
+  not, turning the same fixture into a control for the fix.

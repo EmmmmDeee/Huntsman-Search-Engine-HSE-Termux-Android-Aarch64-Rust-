@@ -3,14 +3,28 @@
 //!
 //! Endpoint: `GET https://registry.npmjs.org/-/v1/search?text=maintainer:{name}`
 //! (documented at <https://github.com/npm/registry/blob/master/docs/REGISTRY-API.md>).
-//! Returns the packages a username maintains, each carrying the author/publisher/
+//! Returns the packages a username maintains, each carrying publisher and
 //! maintainer records:
 //!
 //! ```json
 //! {"objects":[{"package":{"name":"foo","links":{"homepage":"…"},
-//!   "author":{"name":"…","email":"…"},
+//!   "publisher":{"username":"kylo4kylo","email":"k@example.com"},
 //!   "maintainers":[{"username":"kylo4kylo","email":"k@example.com"}]}}],"total":1}
 //! ```
+//!
+//! **Observed wire shape, 2026-09-19** (500 packages across five queries,
+//! 2,352 person records). Package keys: `name`, `sanitized_name`, `version`,
+//! `description`, `keywords`, `license`, `date`, `links`, `publisher`,
+//! `maintainers`. Person keys: `username` and `email` on every single record
+//! (500/500 publishers, 1852/1852 maintainers).
+//!
+//! Two fields this module still decodes did **not** appear even once in that
+//! sample: a package-level `author` block, and a `url` on any person record.
+//! Both are kept in [`Package`]/[`Person`] rather than deleted — npm has
+//! changed this response before, the `author` block is still part of a
+//! package's own manifest, and `#[serde(default)]` makes their absence free.
+//! What is NOT kept is the assumption that an unattributed record is the
+//! subject's: see the attribution comment in [`build_entities`].
 //!
 //! Why it earns a place in the keyless-API set: it both confirms a handle on a
 //! code-hosting/registry platform (the `code` provider family, independent of
@@ -224,16 +238,38 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
             .flatten()
             .chain(pkg.maintainers.iter().map(|p| ("maintainer", p)))
         {
+            // A record with NO username is not evidence about the subject.
+            // `is_subject` is the whole attribution: the queried handle is the
+            // only thing tying any of these records to the person being
+            // scanned. The email arm used to read `is_subject ||
+            // person.username.is_none()`, which admitted an unattributed
+            // record's address outright — and npm's `author` block is exactly
+            // that shape, free text copied from `package.json`, routinely
+            // naming someone other than whoever maintains the package now
+            // (a fork's original author, an ex-employee, a company alias).
+            // The URL arm had no attribution check at all (REQ-NPMAUTHOR-001).
+            //
+            // Measured against the live endpoint 2026-09-19 over 500 packages
+            // / 2,352 person records: 1,129 of those records (48%) carry an
+            // email belonging to someone whose username is NOT the queried
+            // subject. `is_subject` is what excludes all 1,129. Neither an
+            // `author` block nor a person `url` appeared even once in that
+            // sample, so both of these holes are latent rather than live — see
+            // the wire-shape note in this module's header. Latent is not
+            // closed: the fields are still decoded, and this module's own
+            // promise that "a co-maintainer's address isn't mis-attributed"
+            // should be true of the code, not of npm's current omissions.
             let is_subject = person
                 .username
                 .as_deref()
                 .is_some_and(|u| u.eq_ignore_ascii_case(handle));
             if let Some(email) = person.email.as_deref()
-                && (is_subject || person.username.is_none())
+                && is_subject
             {
                 push_email(&mut result, &mut seen_emails, email, pkg_name, role);
             }
             if let Some(u) = person.url.as_deref()
+                && is_subject
                 && crate::util::url_util::is_absolute_http_url(u)
                 && seen_urls.insert(u.to_string())
             {
