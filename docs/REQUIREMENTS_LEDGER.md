@@ -11976,3 +11976,148 @@ than implied, so the next reader knows which half carries a lock.
 `REQ-INTELX-001` exactly — a bare catch-all discarding typed errors that a
 shared layer had already classified, replacing everything with a weaker answer.
 There the arm was `continue`; here it is `_ => Answered`.
+
+---
+
+## REQ-WIFIINTEL-002 — The one refusal that had nowhere to go
+
+`wifi_intel` asks WiGLE where the strongest access points it just heard on the
+air are. When WiGLE refused — a revoked token, a spent quota, a WAF, a schema
+change — the typed error went into a `tracing::debug!` line and the loop broke:
+
+```rust
+let detail = match wigle::query_wigle_detail(&ctx.http, user, token, &ap.bssid).await {
+    Ok(found) => found,
+    Err(e) => {
+        tracing::debug!(
+            error = %e,
+            "wifi_intel: WiGLE refused — stopping this dispatch's BSSID lookups"
+        );
+        break;
+    }
+};
+```
+
+`process` then returned `Ok(result)`. `result` was not empty — Phase 1 had
+already emitted a `MacAddress` for every AP the radio heard — so the dispatch
+was recorded as `ModuleDone { found: N }` and `provider_coverage_from_events`
+read the provider as `Observed`. A revoked WiGLE token produced byte-for-byte
+the output a working WiGLE that holds no position for those APs produces.
+
+### Why both of the usual answers are wrong here
+
+The codebase already has two in-band answers for a provider that would not
+speak, and this module can use neither.
+
+`ModuleResult::or_hard_failure` is the shared fold whose own doc says a total
+outage *"must never be indistinguishable from a clean negative"*. It fires only
+on an **empty** result — deliberately, so *"a partial outage can never discard a
+genuine finding"*. Phase 1 fills the result before Phase 2 runs, so here it is
+structurally unreachable: it can never fire whatever WiGLE does.
+
+Returning `Err` directly would fire, and would be worse. The `MacAddress`
+entities are the operator's own radio readings — seeing an AP on the air owes
+nothing to WiGLE — and `Err` carries no entities. Failing the module to report a
+WiGLE problem would throw away real local sensor data. That moves the defect; it
+does not fix it.
+
+`Error::Skipped` is an early return, taken before any work; by the time the
+refusal is known the findings already exist.
+
+### The correction
+
+The module now says, for every AP it was willing to ask WiGLE about, what
+became of that question — and reports a refusal to the one consumer whose whole
+job is this distinction.
+
+A `Lookup` outcome is recorded per BSSID: `Answered` (WiGLE spoke — a `None`
+answer here IS a real negative), `Refused(String)` (carrying the typed error's
+own message), or `NotAttempted(&'static str)`. When the leg stops, every AP in
+the top-N window it never reached inherits the reason it stopped, because their
+missing coordinates have exactly the same cause.
+
+Two consumers then read it, both pure decisions and both unit-tested:
+
+* `disclose_lookups` writes a `wigle_lookup` attribute onto each AP's own
+  `MacAddress` evidence for every outcome that was **not** an answer. An
+  answered lookup gets nothing — that absence is the signal that the negative
+  is real.
+* `leg_failure` produces the coverage-ledger reason, and `process` publishes it
+  as an `EventKind::ModuleError` on the scan's bus while still returning
+  `Ok(result)`.
+
+That pairing is not a new mechanism. `core::coverage` already locks exactly this
+shape in `a_partial_outage_dominates_the_findings_it_sits_beside`: a
+`ModuleDone { found: 5 }` and a `ModuleError` for the same module collapse to
+`ProviderOutcome::Failed { reason }` with the five findings still counted,
+because the aggregation is failure-dominant. Its doc gives the reason — the
+question coverage answers is not *"did it find anything"* but *"is this
+module's silence about the rest trustworthy"*. It is not. The event makes the
+engine's own ledger say so without costing a single entity.
+
+**Only a provider refusal is reported.** A leg stopped by this module's own
+shared `BSSID_BUDGET`, by scan cancellation, or by a BSSID the sensor mangled is
+not WiGLE failing. Reporting one as a provider outage would put a fabricated
+cause in the coverage report and in `scraper_health` — the same error as the
+silence this fix removes, pointing the other way. Those cases are disclosed on
+the entity and stop there.
+
+### Falsification
+
+Baseline is `f4b41200`. The architecture lock, run against the baseline module
+with the new tests reverted, fails on the first anchor:
+
+```
+test a_wifi_intel_wigle_refusal_is_never_discarded ... FAILED
+  the WiGLE error must be CAPTURED where it is observed (REQ-WIFIINTEL-002):
+  logging it and breaking leaves a revoked token indistinguishable from a
+  corpus that holds nothing
+```
+
+Each mechanism was then removed on its own, and each test failed for its own
+reason with the other still passing:
+
+| mutation | failed | still passed |
+|---|---|---|
+| `Refused` discloses nothing | `an_unanswered_lookup_is_disclosed_on_the_access_points_own_entity` — *left no trace … : ["11:22:33:44:55:66"]* | `an_answered_lookup_carries_no_disclosure` |
+| `Answered` is stamped too | `an_answered_lookup_carries_no_disclosure` — *a missing coordinate here IS the negative* | `an_unanswered_lookup_is_disclosed…` |
+| `NotAttempted` reported as a provider failure | `only_a_provider_refusal_reaches_the_coverage_ledger` — all four fabricated outages listed, incl. *"refused after 0 of 1 BSSID lookups: scan cancelled"* | — |
+
+The second row is the vacuity guard that matters: without it, a "fix" that
+stamped every entity unconditionally would pass the regression while destroying
+the very distinction the regression exists to draw.
+
+### Coverage stated honestly
+
+`process` cannot be unit-tested: it needs a live `termux-wifi-scaninfo` and a
+`ModuleContext`. The three unit tests therefore cover the pure decisions
+(`Lookup::disclosure`, `disclose_lookups`, `leg_failure`) against a built
+`ModuleResult`, and `tests/architecture.rs` carries the wiring lock — capture →
+disclose → decide → publish → return, in that order, anchored on constructions
+with comments and string literals blanked, because this module's header prose
+now names `ModuleError`, `wigle_lookup` and `or_hard_failure` and an earlier
+lock in that file was once defeated by matching exactly such prose.
+
+Two boundaries are deliberate and untested rather than implied:
+
+* A leg cut short by the shared BSSID budget still reads as `Observed` in the
+  coverage ledger. That is the correct verdict for *this* module's own governor
+  refusing, not WiGLE's, and it is disclosed on each affected entity — but it
+  means a budget-capped scan's coverage row does not distinguish itself from a
+  complete one. Encoding it would mean emitting a `ModuleSkipped` beside the
+  `ModuleDone`, which is a separate change.
+* `MAX_BSSIDS = 5` caps the geolocation leg for a scan that may have heard far
+  more APs. That cap is declared in the module header and is a designed
+  contract, not a concealed failure, so APs outside the window carry no
+  `wigle_lookup` note. It remains the smaller sibling defect of the same family
+  as `REQ-PASSIVETOTAL-001`.
+
+### Class
+
+The family of `REQ-GEOINTEL-001` and `REQ-RIPESTAT-001` — a provider's failure
+discarded into a clean negative — but with the twist that makes it its own
+entry: the module had **genuine findings to protect**, so the shared
+`or_hard_failure` fold was structurally unreachable and the usual `Err` was
+actively harmful. The answer was not a new mechanism but the one
+`core::coverage` was already built and tested for, which no module had yet
+reached for.

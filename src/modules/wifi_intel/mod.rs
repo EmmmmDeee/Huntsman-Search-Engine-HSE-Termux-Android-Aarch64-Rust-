@@ -8,6 +8,37 @@
 //!
 //! Auth: HTTP Basic — `HUNTSMAN_WIGLE_USER` / `HUNTSMAN_WIGLE_TOKEN`, both
 //! required, same as the `wigle` module. No credential is embedded in the build.
+//!
+//! ## A missing coordinate always says why
+//!
+//! The two phases have different failure semantics and must not be collapsed.
+//! Phase 1 is the operator's own radio: seeing an AP on the air is this
+//! module's observation and owes nothing to WiGLE. Phase 2 asks WiGLE where
+//! each of the strongest APs is, and that question can go unanswered for
+//! reasons that have nothing to do with the AP — a revoked token, a spent
+//! quota, a WAF, a schema change.
+//!
+//! Because Phase 1 always produces entities whenever any AP was heard, the
+//! result is never empty, so [`ModuleResult::or_hard_failure`] — the shared
+//! fold that turns a total outage into a real `ModuleError` — can never fire
+//! here, and returning `Err` would throw away genuine local sensor readings to
+//! report a WiGLE problem. Both of the usual answers are therefore wrong for
+//! this module.
+//!
+//! What it does instead, per `core::coverage`'s standing rule that PROVIDER
+//! FAILURE ≠ ZERO EVIDENCE:
+//!
+//! * every AP the geolocation leg was willing to ask about carries a
+//!   `wigle_lookup` attribute on its own `MacAddress` evidence whenever WiGLE
+//!   did **not** answer, naming the refusal or why it was never asked; and
+//! * a refusal is additionally reported to the scan's event log as a
+//!   `ModuleError`, beside the `ModuleDone` the engine emits for the findings
+//!   that were kept, so `provider_coverage_from_events` reads this provider as
+//!   `Failed` rather than `Observed`.
+//!
+//! Without both, an AP with no `Coordinates` beside it reads as "WiGLE holds
+//! no position for this access point" — a clean negative the module was in no
+//! position to make.
 
 mod types;
 mod wigle;
@@ -21,6 +52,7 @@ use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
+    event::{Event, EventKind},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -38,6 +70,10 @@ const MAX_BSSIDS: usize = 5;
 
 /// Evidence source tag used throughout this module.
 pub(super) const SOURCE: &str = "wifi_intel";
+
+/// Evidence attribute naming what became of an AP's WiGLE geolocation lookup.
+/// Present only when WiGLE did not answer — its absence means it did.
+const LOOKUP_ATTR: &str = "wigle_lookup";
 
 // ── Module implementation ──────────────────────────────────────────────
 
@@ -163,12 +199,25 @@ impl Module for WifiIntel {
         }));
 
         // ── Phase 2: WiGLE geolocation for top-N strongest APs ─────────
+        //
+        // `outcomes` records what became of each lookup, in the order they were
+        // taken. Phase 3 writes it onto the AP's own entity and Phase 4 reports
+        // a refusal to the scan's coverage ledger — see the module header: the
+        // silence left by an unanswered lookup is not WiGLE saying no.
+        let mut outcomes: Vec<(&str, Lookup)> = Vec::with_capacity(MAX_BSSIDS);
+        // What every remaining AP in the window inherits once the leg stops.
+        // `None` while it is still running.
+        let mut stopped: Option<Lookup> = None;
         for ap in aps.iter().take(MAX_BSSIDS) {
             if ctx.cancel.is_cancelled() {
+                stopped = Some(Lookup::NotAttempted("scan cancelled"));
                 break;
             }
 
             if ap.bssid.len() < 12 {
+                // Per-AP and not a WiGLE outcome at all: the sensor handed us
+                // something that is not a BSSID, so nothing was asked about it.
+                outcomes.push((ap.bssid.as_str(), Lookup::NotAttempted("malformed BSSID")));
                 continue;
             }
 
@@ -179,6 +228,9 @@ impl Module for WifiIntel {
             // loop could otherwise spend five requests per dispatch, invisibly,
             // and radar now pivots without a depth restriction.
             if !crate::modules::wigle::BSSID_BUDGET.try_increment() {
+                stopped = Some(Lookup::NotAttempted(
+                    "shared WiGLE BSSID budget spent for this scan",
+                ));
                 break;
             }
 
@@ -189,12 +241,19 @@ impl Module for WifiIntel {
             // burning all five on one rate-limited dispatch. A miss (`Ok(None)`)
             // is per-BSSID and does keep the loop going.
             let detail = match wigle::query_wigle_detail(&ctx.http, user, token, &ap.bssid).await {
-                Ok(found) => found,
+                Ok(found) => {
+                    // WiGLE spoke about this BSSID. `None` here is a real
+                    // negative — the corpus holds no position for it — and is
+                    // the ONE case that needs no disclosure.
+                    outcomes.push((ap.bssid.as_str(), Lookup::Answered));
+                    found
+                }
                 Err(e) => {
                     tracing::debug!(
                         error = %e,
                         "wifi_intel: WiGLE refused — stopping this dispatch's BSSID lookups"
                     );
+                    stopped = Some(Lookup::Refused(e.to_string()));
                     break;
                 }
             };
@@ -321,8 +380,132 @@ impl Module for WifiIntel {
             }
         }
 
+        // Every AP the leg would have asked about but never reached inherits
+        // the reason it stopped — including the one it was refused on. Their
+        // absence of a coordinate has exactly the same cause.
+        if let Some(stopped) = stopped {
+            let asked: std::collections::HashSet<&str> = outcomes.iter().map(|(b, _)| *b).collect();
+            let unreached: Vec<(&str, Lookup)> = aps
+                .iter()
+                .take(MAX_BSSIDS)
+                .map(|a| a.bssid.as_str())
+                .filter(|b| !asked.contains(b))
+                .map(|b| (b, stopped.clone()))
+                .collect();
+            outcomes.extend(unreached);
+        }
+
+        // ── Phase 3: every unanswered lookup says so on its own entity ──
+        disclose_lookups(&mut result, &outcomes);
+
+        // ── Phase 4: a refusal reaches the scan's coverage ledger ───────
+        if let Some(reason) = leg_failure(&outcomes) {
+            // PROVIDER FAILURE ≠ ZERO EVIDENCE (`core::coverage`). This event
+            // sits beside the `ModuleDone` the engine emits for the Phase 1
+            // findings, which are kept: `provider_coverage_from_events` is
+            // failure-dominant, so the pair reads as `Failed { reason }` with
+            // the findings still counted — the shape
+            // `a_partial_outage_dominates_the_findings_it_sits_beside` locks.
+            // Returning `Err` instead would discard real local sensor readings
+            // to report a WiGLE problem, and `or_hard_failure` cannot fire on
+            // a result Phase 1 has already filled.
+            let _ = ctx.bus.send(Event::new(
+                ctx.scan_id.as_str(),
+                EventKind::ModuleError {
+                    module: SOURCE.to_string(),
+                    error: reason,
+                },
+            ));
+        }
+
         Ok(result)
     }
+}
+
+/// What became of one access point's WiGLE geolocation lookup.
+///
+/// The distinction this type exists to keep is between WiGLE *answering* and
+/// WiGLE *not being heard from*. Only the first can make a missing coordinate
+/// mean "no position on record"; every other variant leaves the AP's position
+/// simply unknown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Lookup {
+    /// WiGLE answered about this BSSID. A `None` answer, or one rejected by
+    /// [`is_plausible_provider_coord`], is a genuine negative.
+    Answered,
+    /// WiGLE refused to answer — auth, quota, transport or schema. Carries the
+    /// typed error's own message.
+    Refused(String),
+    /// Never asked, and why. Not a provider failure: these are this module's
+    /// own governors (the shared BSSID budget, scan cancellation) or bad sensor
+    /// input, so they are disclosed on the entity but never reported against
+    /// WiGLE.
+    NotAttempted(&'static str),
+}
+
+impl Lookup {
+    /// The [`LOOKUP_ATTR`] value for this outcome, or `None` when WiGLE
+    /// answered and the entity needs no disclosure.
+    fn disclosure(&self) -> Option<String> {
+        match self {
+            Self::Answered => None,
+            Self::Refused(why) => Some(format!("refused: {why}")),
+            Self::NotAttempted(why) => Some(format!("not attempted: {why}")),
+        }
+    }
+}
+
+/// Record on each AP's own `MacAddress` evidence what became of its WiGLE
+/// lookup, for every outcome that was not a real answer.
+///
+/// Matched on `raw_value`, which is the BSSID exactly as the sensor reported
+/// it; `Entity::value` is the normalised form and need not be byte-equal.
+/// **Pure** — no network, no context — so the disclosure is unit-testable
+/// against a built result.
+fn disclose_lookups(result: &mut ModuleResult, outcomes: &[(&str, Lookup)]) {
+    for (bssid, outcome) in outcomes {
+        let Some(note) = outcome.disclosure() else {
+            continue;
+        };
+        let Some(entity) = result
+            .entities
+            .iter_mut()
+            .find(|e| e.kind == EntityKind::MacAddress && e.raw_value == *bssid)
+        else {
+            continue;
+        };
+        let Some(ev) = entity.evidence.iter_mut().find(|ev| ev.source == SOURCE) else {
+            continue;
+        };
+        ev.attributes.insert(LOOKUP_ATTR.to_string(), note);
+    }
+}
+
+/// The reason a cut-short geolocation leg reports to the scan's coverage
+/// ledger, or `None` when WiGLE answered everything it was asked.
+///
+/// ONLY a provider refusal qualifies. A leg stopped by this module's own shared
+/// BSSID budget, by scan cancellation, or by a BSSID the sensor mangled is not
+/// WiGLE failing: reporting it as one would put a fabricated outage in the
+/// coverage report and in module health, which is the same class of error —
+/// a cause asserted that was never observed — as the silence this whole
+/// mechanism exists to prevent. Those cases are disclosed on the entity and
+/// stop there.
+///
+/// **Pure**, so the decision is unit-testable without a radio or a network.
+fn leg_failure(outcomes: &[(&str, Lookup)]) -> Option<String> {
+    let refused = outcomes.iter().find_map(|(_, o)| match o {
+        Lookup::Refused(why) => Some(why.as_str()),
+        Lookup::Answered | Lookup::NotAttempted(_) => None,
+    })?;
+    let answered = outcomes
+        .iter()
+        .filter(|(_, o)| *o == Lookup::Answered)
+        .count();
+    Some(format!(
+        "WiGLE geolocation refused after {answered} of {} BSSID lookups: {refused}",
+        outcomes.len()
+    ))
 }
 
 // ── Standalone AP parser ───────────────────────────────────────────────

@@ -1611,3 +1611,73 @@ fn a_libravatar_presence_is_gated_on_the_response_being_an_image() {
          precede the emit guards nothing"
     );
 }
+
+/// REQ-WIFIINTEL-002. `leg_failure` and `disclose_lookups` are pure, so their
+/// unit tests prove only that the *decisions* are right — not that `process`
+/// takes them. The defect being locked out was precisely a `process` that
+/// reached the right information and threw it away: the WiGLE error was
+/// formatted into a `tracing::debug!` line and dropped, and `Ok(result)`
+/// returned as though the provider had answered.
+///
+/// This lock pins the whole path, in order. The refusal must be captured where
+/// it is observed; the disclosure must be written onto the entities BEFORE the
+/// result is returned (a note added after the return reaches nobody); the
+/// ledger decision must be taken from the recorded outcomes rather than from
+/// whatever happened to be in scope; and the `ModuleError` must be published
+/// before `Ok(result)`.
+///
+/// Anchored on **constructions**, never on bare names: this module's header
+/// prose names `ModuleError`, `wigle_lookup` and `or_hard_failure`, and an
+/// earlier architecture test in this file was defeated by matching exactly such
+/// prose. Comments and string literals are blanked first for the same reason.
+#[test]
+fn a_wifi_intel_wigle_refusal_is_never_discarded() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let raw = fs::read_to_string(root.join("src/modules/wifi_intel/mod.rs"))
+        .expect("wifi_intel module must exist");
+
+    // Blank `//` comments (including the `//!` header) and string literals, so
+    // prose naming the mechanism cannot satisfy the check.
+    let mut src = String::with_capacity(raw.len());
+    for line in raw.lines() {
+        let code = line.split("//").next().unwrap_or("");
+        let mut in_str = false;
+        for ch in code.chars() {
+            match ch {
+                '"' => {
+                    in_str = !in_str;
+                    src.push('"');
+                }
+                _ if in_str => src.push(' '),
+                _ => src.push(ch),
+            }
+        }
+        src.push('\n');
+    }
+
+    let capture = src.find("Lookup::Refused(e.to_string())").expect(
+        "the WiGLE error must be CAPTURED where it is observed \
+         (REQ-WIFIINTEL-002): logging it and breaking leaves a revoked token \
+         indistinguishable from a corpus that holds nothing",
+    );
+    let disclose = src
+        .find("disclose_lookups(&mut result, &outcomes)")
+        .expect("every unanswered lookup must be written onto its own AP entity");
+    let decide = src
+        .find("leg_failure(&outcomes)")
+        .expect("the coverage-ledger decision must be taken from the recorded outcomes");
+    let publish = src
+        .find("EventKind::ModuleError {")
+        .expect("a refusal must reach the scan's event log as a ModuleError");
+    let ret = src
+        .find("Ok(result)")
+        .expect("process must still return its kept findings");
+
+    assert!(
+        capture < disclose && disclose < decide && decide < publish && publish < ret,
+        "the refusal path must run capture ({capture}) → disclose ({disclose}) \
+         → decide ({decide}) → publish ({publish}) → return ({ret}); anything \
+         after the return is unreachable and anything before the capture is \
+         deciding on information that has not been gathered yet"
+    );
+}
