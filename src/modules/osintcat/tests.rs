@@ -294,7 +294,78 @@ fn emit_email_osint_skips_nulls_and_adds_non_null_fields() {
     emit_email_osint(&raw, &mut entity);
     assert_eq!(entity.evidence.len(), 1);
     let ev = &entity.evidence[0];
-    assert!(ev.attributes.contains_key("score"));
-    assert!(ev.attributes.contains_key("label"));
+    // Assert the VALUES, not merely that the keys are present. The presence-only
+    // form of this test passed while `label` was stored as `"\"risky\""` —
+    // JSON-quoted — because `contains_key` cannot observe the defect it looks
+    // like it covers (REQ-OSINTCAT-001).
+    assert_eq!(ev.attributes.get("score").map(String::as_str), Some("42"));
+    assert_eq!(ev.attributes.get("label").map(String::as_str), Some("risky"));
     assert!(!ev.attributes.contains_key("null_field"), "null fields skipped");
+}
+
+#[test]
+fn emit_email_osint_does_not_json_quote_string_values() {
+    // `Value::to_string()` renders a JSON string WITH its surrounding quotes.
+    // `emit_email_osint` used it directly, so every string attribute carried
+    // literal `"` characters into evidence text. Its sibling `emit_footprint`
+    // had been fixed for exactly this; this endpoint never was.
+    let raw = json!({"city": "New York"});
+    let target = Target::new(TargetKind::Email, "x@y.com");
+    let mut entity = target.to_entity(0.5, "s");
+    emit_email_osint(&raw, &mut entity);
+    let ev = &entity.evidence[0];
+    assert_eq!(ev.attributes.get("city").map(String::as_str), Some("New York"));
+}
+
+#[test]
+fn emit_email_osint_skips_nested_object_and_array_values() {
+    // A nested structure is not a fact, and stringifying it dumps raw JSON into
+    // Evidence, which is documented as carrying normalized text rather than the
+    // raw data itself.
+    let raw = json!({
+        "ok": "yes",
+        "nested": {"inner": "secret"},
+        "list": [1, 2, 3]
+    });
+    let target = Target::new(TargetKind::Email, "x@y.com");
+    let mut entity = target.to_entity(0.5, "s");
+    emit_email_osint(&raw, &mut entity);
+    let ev = &entity.evidence[0];
+    // Guard assertions FIRST: on the unfixed code every one of these tests also
+    // trips the quoting defect, which would mask whether the guard itself holds.
+    assert!(!ev.attributes.contains_key("nested"), "nested object must not be stringified");
+    assert!(!ev.attributes.contains_key("list"), "array must not be stringified");
+    assert_eq!(ev.attributes.get("ok").map(String::as_str), Some("yes"));
+}
+
+#[test]
+fn emit_email_osint_skips_absent_marker_values() {
+    // A provider redaction placeholder is not platform data. Minting it as an
+    // attribute reads as a real finding about the subject.
+    let raw = json!({"real": "value", "password": "REDACTED", "handle": "\\N"});
+    let target = Target::new(TargetKind::Email, "x@y.com");
+    let mut entity = target.to_entity(0.5, "s");
+    emit_email_osint(&raw, &mut entity);
+    let ev = &entity.evidence[0];
+    // Guard assertions FIRST, so baseline failure is attributable to the missing
+    // absence-marker check rather than to the quoting defect.
+    assert!(!ev.attributes.contains_key("password"), "redaction placeholder skipped");
+    assert!(!ev.attributes.contains_key("handle"), "SQL NULL sentinel skipped");
+    assert_eq!(ev.attributes.get("real").map(String::as_str), Some("value"));
+}
+
+#[test]
+fn emit_email_osint_skips_overlong_values() {
+    // The same cap `emit_footprint` applies, so one blob cannot dominate an
+    // entity's evidence.
+    let blob = "a".repeat(MAX_EXTRA_VALUE_LEN + 1);
+    let raw = json!({"short": "ok", "blob": blob});
+    let target = Target::new(TargetKind::Email, "x@y.com");
+    let mut entity = target.to_entity(0.5, "s");
+    emit_email_osint(&raw, &mut entity);
+    let ev = &entity.evidence[0];
+    // Guard assertion FIRST, so baseline failure is attributable to the missing
+    // length cap rather than to the quoting defect.
+    assert!(!ev.attributes.contains_key("blob"), "overlong value skipped");
+    assert_eq!(ev.attributes.get("short").map(String::as_str), Some("ok"));
 }

@@ -174,6 +174,13 @@ pub const PEP: &str = "pep";
 /// Debarred from public contracting (World Bank, IDB, and similar
 /// multilateral debarment lists).
 pub const DEBARRED: &str = "debarred";
+/// Associated with a sanctioned party (a relative, business partner, or
+/// majority-owned company) via OpenSanctions' `sanction.linked` topic — **not**
+/// itself listed. A materially weaker signal than [`SANCTIONED`] (a
+/// designation): the entity is *linked to* a designated party, not designated.
+/// The correlator grades it as an elevated due-diligence signal, never a
+/// Critical "designation" (REQ-OPENSANCTIONS-001).
+pub const SANCTIONS_LINKED: &str = "sanctions-linked";
 
 // Identity
 /// The entity is a **social-media or community profile** — a platform account

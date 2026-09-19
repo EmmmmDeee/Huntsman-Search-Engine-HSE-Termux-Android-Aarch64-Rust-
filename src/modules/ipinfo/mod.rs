@@ -121,7 +121,16 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
     let country = data.country.as_deref().unwrap_or("");
     if !city.is_empty() && !suppress_geo {
         let addr = crate::util::geo::compose_address(city, region, country);
-        let mut ae = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM_PLUS, scan_id);
+        // Matches the sibling Coordinates above (MEDIUM_SOLID), which is built
+        // from the same single provider fix. Was MEDIUM_PLUS — 0.02 ABOVE the
+        // coordinates it derives from (REQ-IPINFO-001).
+        let fix = out.iter().rev().find(|e| e.kind == EntityKind::Coordinates);
+        let mut ae = crate::util::geo::coarse_provider_address(
+            &addr,
+            confidence::MEDIUM_SOLID,
+            fix,
+            scan_id,
+        );
         ae.tag("ipinfo");
         // Postal/ZIP narrows the address below city granularity — surface it as
         // evidence (it refines, but does not redefine, the address identity).

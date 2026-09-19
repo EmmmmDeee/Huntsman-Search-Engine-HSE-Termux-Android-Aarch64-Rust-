@@ -303,9 +303,10 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         if let Some(geo) = &data.geo
             && geo_val.is_none()
             && let (Some(lat), Some(lon)) = (geo.latitude, geo.longitude)
-            // Shared validator: finite, in-range, not Null Island — replaces the
-            // ad-hoc 0.001 band that let out-of-range / near-(0,0) junk through.
-            && crate::util::geo::is_valid_coords(lat, lon)
+            // Shared validator for IP-geo providers: rejects finite/in-range ✓,
+            // Null Island (0,0), and the near-null-island jitter band those APIs
+            // emit as an "unknown" placeholder. Netlas is a coarse IP-geo source.
+            && crate::util::geo::is_plausible_provider_coord(lat, lon)
         {
             geo_val = Some((
                 lat,

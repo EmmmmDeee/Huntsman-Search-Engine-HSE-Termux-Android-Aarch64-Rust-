@@ -305,14 +305,19 @@ impl Module for ExifGeo {
             )
         };
 
-        // 1. Coordinates — GPS IFD. Empirically reliable to ~10–50 m; base confidence::HIGH_PLUSPLUS,
-        //    above single-source IP-geo (confidence::MEDIUM_HIGH–confidence::MEDIUM_PLUS), below WiGLE consensus (confidence::HIGH_PLUSPLUS_PLUS).
+        // 1. Coordinates — GPS IFD. Empirically reliable to ~10–50 m; above
+        //    single-source IP-geo (confidence::MEDIUM_HIGH–confidence::MEDIUM_PLUS),
+        //    below WiGLE consensus (confidence::HIGH_PLUSPLUS_PLUS). That
+        //    reasoning now lives on `util::exif::GPS_FIX_CONFIDENCE`, beside the
+        //    `extract_gps` this and `hse ingest` both call, because the two
+        //    paths read the identical tag and had drifted 0.15 apart
+        //    (REQ-DOCPARSE-001).
         if let Some((lat, lon)) = gps {
             let coord_str = format!("{lat:.6},{lon:.6}");
             let mut e = Entity::new(
                 EntityKind::Coordinates,
                 &coord_str,
-                confidence::HIGH_PLUSPLUS,
+                crate::util::exif::GPS_FIX_CONFIDENCE,
                 &ctx.scan_id,
             );
             e.tag("geoint");

@@ -195,3 +195,26 @@ fn malformed_source_date_is_filtered_from_earliest() {
         Some("2018-08")
     );
 }
+
+#[test]
+fn success_false_with_no_error_field_fails_closed() {
+    // A `success:false` body with a missing `error` field (decoded as None due to
+    // `#[serde(default)]`) is NOT a known-clean "Not found" — it is an
+    // unexpected shape that may indicate a backend failure, throttle, or
+    // WAF block. This MUST fail closed as a real ModuleError, never silent
+    // (REQ-LEAKCHECK-001). An undocumented `success:false` with no error reason
+    // is not a subject exoneration.
+    let resp = PublicResp {
+        success: false,
+        found: None,
+        fields: None,
+        sources: None,
+        error: None,
+    };
+    let target = Target::new(TargetKind::Email, "test@example.com");
+    let err = build_result(&resp, &target, "s").expect_err("unexpected success:false must error");
+    assert!(
+        format!("{err}").contains("unexpected"),
+        "error must name the defect"
+    );
+}

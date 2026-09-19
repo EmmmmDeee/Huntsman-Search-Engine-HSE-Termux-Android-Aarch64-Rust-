@@ -148,30 +148,51 @@ impl Module for AppLinks {
         let (android, ios) =
             tokio::join!(fetch_text(ctx, &android_url), fetch_text(ctx, &ios_url),);
 
-        let mut transport_failures = 0usize;
-        match android {
-            FetchOutcome::Body(body) => parse_assetlinks(&body, &domain, &ctx.scan_id, &mut result),
+        // Legs that were PREVENTED from answering — a transport failure or a
+        // wall. Either way the site never told us whether it publishes app
+        // links, so neither can support a clean negative.
+        let mut prevented = 0usize;
+        let mut wall: Option<Error> = None;
+        let mut take = |outcome: FetchOutcome, parse: &mut dyn FnMut(&str)| match outcome {
+            FetchOutcome::Body(body) => parse(&body),
             FetchOutcome::Answered => {}
-            FetchOutcome::TransportFailed => transport_failures += 1,
-        }
-        match ios {
-            FetchOutcome::Body(body) => parse_aasa(&body, &domain, &ctx.scan_id, &mut result),
-            FetchOutcome::Answered => {}
-            FetchOutcome::TransportFailed => transport_failures += 1,
-        }
+            FetchOutcome::TransportFailed => prevented += 1,
+            FetchOutcome::Blocked(e) => {
+                prevented += 1;
+                if wall.is_none() {
+                    wall = Some(e);
+                }
+            }
+        };
+        take(android, &mut |b| {
+            parse_assetlinks(b, &domain, &ctx.scan_id, &mut result);
+        });
+        take(ios, &mut |b| {
+            parse_aasa(b, &domain, &ctx.scan_id, &mut result);
+        });
 
-        // Both well-knowns failing at the transport level (unreachable host,
-        // TLS failure, timeout — not a 404) is a real outage, not the ordinary
-        // "site doesn't publish app links" clean miss; surface it rather than
-        // read as a silent zero-yield.
-        if transport_failures == 2 && result.entities.is_empty() {
-            return Err(Error::module(
-                SRC,
-                format!(
-                    "both app-linkage well-knowns failed at the transport level for {domain} \
-                     — cannot determine whether it publishes app links"
-                ),
-            ));
+        // Neither well-known produced a usable answer and nothing was found:
+        // a real outage or a block, not the ordinary "site doesn't publish app
+        // links" clean miss. Surface it rather than read as a silent
+        // zero-yield.
+        //
+        // The threshold stays at BOTH legs, as it was for transport failures
+        // alone: a site that answers one well-known has demonstrably been
+        // reached, so its genuine 404 on the other still supports the negative.
+        // Walls simply join the count, because a 200 challenge page is exactly
+        // as uninformative as a refused connection. A typed wall is preferred
+        // over the generic outage message when one is present — it names what
+        // actually happened.
+        if prevented == 2 && result.entities.is_empty() {
+            return Err(wall.unwrap_or_else(|| {
+                Error::module(
+                    SRC,
+                    format!(
+                        "both app-linkage well-knowns failed at the transport level for {domain} \
+                         — cannot determine whether it publishes app links"
+                    ),
+                )
+            }));
         }
         Ok(result)
     }
@@ -188,6 +209,11 @@ enum FetchOutcome {
     Body(String),
     Answered,
     TransportFailed,
+    /// The edge refused to serve the well-known — an anti-bot / WAF challenge
+    /// page or a rate limit, already typed by [`read_text`]'s shared
+    /// `document_or_challenge`. Distinct from `Answered` because the site did
+    /// NOT tell us it has no app links; it told us nothing. (REQ-APPLINKS-001.)
+    Blocked(Error),
 }
 
 /// Text GET classified into a [`FetchOutcome`]. Only a genuine `send()`
@@ -204,7 +230,23 @@ async fn fetch_text(ctx: &ModuleContext, url: &str) -> FetchOutcome {
     }
     match read_text(SRC, resp).await {
         Ok(body) if !body.is_empty() => FetchOutcome::Body(body),
-        _ => FetchOutcome::Answered,
+        // An empty 2xx really is the ordinary negative.
+        Ok(_) => FetchOutcome::Answered,
+        // A WALL is not an answer. `read_text` already types a 2xx anti-bot /
+        // WAF page as `Error::BotChallenge` (that is what its shared
+        // `document_or_challenge` exists for) and a throttle as
+        // `Error::RateLimited` — and this arm used to be a bare `_` that
+        // collapsed both into `Answered`, the value documented above as "an
+        // ordinary site's expected negative". A walled domain therefore
+        // reported "publishes no app links", and because the wall arrives as a
+        // 200 the `transport_failures` guard never saw it.
+        // (REQ-APPLINKS-001; the same discarded-typed-error shape as
+        // REQ-INTELX-001's bare `continue`.)
+        Err(e) if matches!(e, Error::BotChallenge(_) | Error::RateLimited(_)) => {
+            FetchOutcome::Blocked(e)
+        }
+        // An unreadable body stays the ordinary negative, as documented.
+        Err(_) => FetchOutcome::Answered,
     }
 }
 

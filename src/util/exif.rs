@@ -83,6 +83,36 @@ pub fn dms_to_decimal(value: &Value) -> Option<f64> {
     Some(d + m / 60.0 + s / 3600.0)
 }
 
+/// What a GPS fix read out of the EXIF GPS IFD is worth — for **both**
+/// subsystems, because it is the same tag read by the same [`extract_gps`]
+/// whichever way the file arrived (REQ-DOCPARSE-001).
+///
+/// This module's own header says the two consumers "must agree on what a
+/// coordinate means". They read it identically and then disagreed on its
+/// worth by 0.15: `modules::exif_geo` stamped `HIGH_PLUSPLUS` (0.80) for an
+/// image fetched during a scan, while `util::document_parse::image_geolocation`
+/// stamped `VERY_HIGH_PLUSPLUS` (0.95) for the same tag in a file handed to
+/// `hse ingest`.
+///
+/// 0.80 is the reasoned rung and the one kept. `exif_geo` argues it against its
+/// neighbours on the ladder — "empirically reliable to ~10–50 m; above
+/// single-source IP-geo, **below WiGLE consensus**
+/// ([`HIGH_PLUSPLUS_PLUS`](crate::core::confidence::HIGH_PLUSPLUS_PLUS), 0.85)"
+/// — and `a_gps_fix_sits_where_the_ladder_says_it_does` makes that ordering an
+/// executed fact rather than prose. 0.95 was argued only downward, as "not
+/// [`CERTAIN`](crate::core::confidence::CERTAIN)", and landed *above*
+/// [`AUTHORITATIVE`](crate::core::confidence::AUTHORITATIVE) (0.92, a
+/// government register) and above the WiGLE consensus its sibling says an EXIF
+/// fix must sit under — for a field that same doc comment calls "trivially
+/// editable". A tag anyone can rewrite with `exiftool` does not outrank a
+/// statutory register.
+///
+/// The ingest path's coordinate is not inert: it enters the emitted output and,
+/// under `--auto-scan`, the persisted scan, "seeding Coordinates expansion and
+/// the geo correlators like any other coordinate" (its own call site). At 0.95
+/// it was the strongest geolocation claim the engine could hold.
+pub const GPS_FIX_CONFIDENCE: f64 = crate::core::confidence::HIGH_PLUSPLUS;
+
 /// Extract `(lat, lon)` from the EXIF GPS IFD, honouring the
 /// N/S/E/W reference tags. Returns `None` if either coordinate is
 /// missing or unparseable.
@@ -305,5 +335,61 @@ mod tests {
         exif::Reader::new()
             .read_raw(buf.into_inner())
             .expect("parse EXIF container")
+    }
+}
+
+#[cfg(test)]
+mod gps_confidence_tests {
+    use super::GPS_FIX_CONFIDENCE;
+    use crate::core::confidence;
+
+    /// REQ-DOCPARSE-001. `exif_geo`'s comment placed an EXIF GPS fix on the
+    /// ladder in prose — above single-source IP-geo, below WiGLE consensus.
+    /// The `hse ingest` path sat at 0.95, which violated the upper bound AND
+    /// outranked a government register, and nothing executed noticed. The
+    /// ordering is the invariant, so it is asserted rather than described.
+    #[test]
+    fn a_gps_fix_sits_where_the_ladder_says_it_does() {
+        let mut wrong = Vec::new();
+        // Upper bounds — an EXIF tag is rewritable with `exiftool`.
+        for (name, rung) in [
+            (
+                "WiGLE consensus (HIGH_PLUSPLUS_PLUS)",
+                confidence::HIGH_PLUSPLUS_PLUS,
+            ),
+            (
+                "a government register (AUTHORITATIVE)",
+                confidence::AUTHORITATIVE,
+            ),
+            ("CERTAIN", confidence::CERTAIN),
+        ] {
+            if GPS_FIX_CONFIDENCE >= rung {
+                wrong.push(format!(
+                    "{GPS_FIX_CONFIDENCE:.2} must rank BELOW {name} ({rung:.2})"
+                ));
+            }
+        }
+        // Lower bound — a camera's own fix beats a single IP-geo lookup.
+        for (name, rung) in [
+            (
+                "single-source IP-geo (MEDIUM_HIGH)",
+                confidence::MEDIUM_HIGH,
+            ),
+            (
+                "single-source IP-geo (MEDIUM_PLUS)",
+                confidence::MEDIUM_PLUS,
+            ),
+        ] {
+            if GPS_FIX_CONFIDENCE <= rung {
+                wrong.push(format!(
+                    "{GPS_FIX_CONFIDENCE:.2} must rank ABOVE {name} ({rung:.2})"
+                ));
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "an EXIF GPS fix is off the ladder its own modules describe:\n  {}",
+            wrong.join("\n  ")
+        );
     }
 }

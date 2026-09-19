@@ -48,8 +48,15 @@ pub(super) fn osm_attrs(ev: Evidence, entity: &mut Entity, props: &Props) -> Evi
 /// self-contradicting `country:ID` + `country:AU` + `au-state:WA` on the
 /// same entity, and (b) sit at a flat confidence regardless of region, so an
 /// unrelated foreign address could anchor an AU-focused scan as if
-/// corroborated.
-pub(super) fn build_forward(addr: &str, feature: &Feature, scan_id: &str) -> Option<Entity> {
+/// corroborated. When multiple candidates exist (ambiguity detected), the
+/// unambiguous confidence is downgraded: an AU-relevant fix drops from
+/// MEDIUM_PLUS to MEDIUM_HIGH, and off-region stays at LOW.
+pub(super) fn build_forward(
+    addr: &str,
+    feature: &Feature,
+    is_ambiguous: bool,
+    scan_id: &str,
+) -> Option<Entity> {
     let geom = feature.geometry.as_ref()?;
     if geom.coordinates.len() < 2 {
         return None;
@@ -68,10 +75,10 @@ pub(super) fn build_forward(addr: &str, feature: &Feature, scan_id: &str) -> Opt
         Some(cc) => cc.eq_ignore_ascii_case("au"),
         None => crate::util::geo::is_in_australia(lat, lon),
     };
-    let confidence = if in_au {
-        confidence::MEDIUM_PLUS
-    } else {
-        confidence::LOW
+    let confidence = match (in_au, is_ambiguous) {
+        (true, true) => confidence::MEDIUM_HIGH,
+        (true, false) => confidence::MEDIUM_PLUS,
+        (false, _) => confidence::LOW,
     };
 
     let mut e = Entity::new(EntityKind::Coordinates, &coords, confidence, scan_id);
@@ -81,6 +88,9 @@ pub(super) fn build_forward(addr: &str, feature: &Feature, scan_id: &str) -> Opt
         .with_attr("input_address", addr)
         .with_attr("latitude", format!("{lat:.6}"))
         .with_attr("longitude", format!("{lon:.6}"));
+    if is_ambiguous {
+        ev = ev.with_attr("ambiguity_detected", "true");
+    }
     if let Some(props) = &feature.properties {
         if let Some(name) = nonempty(&props.name) {
             ev = ev.with_attr("place_name", name);
@@ -96,6 +106,9 @@ pub(super) fn build_forward(addr: &str, feature: &Feature, scan_id: &str) -> Opt
     }
     if in_au {
         crate::util::geo::tag_au_state(&mut e, lat, lon);
+        if is_ambiguous {
+            e.tag("ambiguous");
+        }
     } else {
         e.tag("off-region");
         e.tag("candidate");

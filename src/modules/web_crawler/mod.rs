@@ -480,8 +480,29 @@ fn build_entities(
         is_url_target,
         shared_profile_host,
     } = seed;
-    // For URL targets, emit the URL entity itself with crawl results
-    if is_url_target {
+    // Both attestations below — the seed `Url` and the site `Domain` — are
+    // stamped VERY_HIGH_PLUS and tagged `CRAWLED`, i.e. "this page/site was
+    // fetched and examined". The crawl loop `continue`s past every failure
+    // (non-2xx, a non-HTML content type, a body read that returns None), so a
+    // domain that is entirely unreachable, WAF-walled, or serves no HTML
+    // reaches here with `pages_fetched == 0` and used to emit both anyway —
+    // a 0.90 "crawled" claim whose own evidence string reads "0 pages".
+    // Nothing was observed, so nothing is attested. (REQ-WEBCRAWLER-001; same
+    // class as REQ-CERTINTEL-001, a finding minted from a probe leg that never
+    // actually examined anything.)
+    //
+    // Everything else these two blocks carry — the tech stack, page types,
+    // link counts, subdomains, image leads — is read out of page BODIES, so it
+    // is empty at zero pages and costs nothing to withhold. The one signal
+    // that can survive is the security-header audit (it runs on the first 2xx,
+    // before the content-type gate), and it is deliberately dropped with the
+    // rest: a header reading taken from a response the crawler could not use
+    // is not a crawl, and surfacing it would need its own entity at its own
+    // rung rather than riding a `crawled` attestation.
+    //
+    // Subject data found ON pages (emails, phones, hydration) is emitted
+    // further down, outside both blocks, and is unaffected.
+    if is_url_target && state.pages_fetched > 0 {
         let mut url_entity = Entity::new(
             EntityKind::Url,
             seed_url,
@@ -521,7 +542,7 @@ fn build_entities(
     // subject, so the whole section is skipped. Subject data observed ON
     // the page (emails, phones, hydration values) is emitted below either
     // way — that is what a profile crawl is actually for.
-    if !shared_profile_host {
+    if !shared_profile_host && state.pages_fetched > 0 {
         // Main domain entity with crawl summary
         let mut entity = Entity::new(
             EntityKind::Domain,

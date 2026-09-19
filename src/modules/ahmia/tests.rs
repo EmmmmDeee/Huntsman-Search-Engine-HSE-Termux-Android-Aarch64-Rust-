@@ -132,11 +132,13 @@ fn accepts_only_asset_exposure_kinds() {
 }
 
 #[test]
-fn module_metadata_is_a_free_passive_breach_sensor() {
+fn module_metadata_is_a_free_active_breach_sensor() {
     let m = Ahmia;
     assert_eq!(m.name(), "ahmia");
     assert!(matches!(m.cost(), ModuleCost::Free));
-    assert!(m.is_passive());
+    // Ahmia makes a live HTTPS GET to https://ahmia.fi/search/?q=<query>, so it is
+    // active, not passive. It is incompatible with --passive-only scan mode.
+    assert!(!m.is_passive());
     assert!(matches!(
         m.category(),
         crate::core::module::ModuleCategory::Breach

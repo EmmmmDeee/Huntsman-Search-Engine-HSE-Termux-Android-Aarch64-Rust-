@@ -6,7 +6,9 @@ use super::fetch::{
     retry_after_secs,
 };
 use super::redact::{pool_secret_values, redact_credentials, redact_literal_secrets};
-use super::ssrf::{filter_public, redirect_to_private_ip};
+use super::ssrf::{
+    MAX_REDIRECT_HOPS, RedirectVerdict, filter_public, redirect_to_private_ip, redirect_verdict,
+};
 use super::url::json_decode;
 use super::url::{RequestBuilderExt, urlencode};
 use crate::util::found_keys::{is_key_delimiter, key_tokens};
@@ -355,7 +357,6 @@ async fn client_transparently_decompresses_a_gzip_encoded_response() {
     });
 
     let client = build_client();
-    crate::util::circuit_breaker::record_success("127.0.0.1"); // isolate from parallel breaker state
     let v: serde_json::Value = fetch_json(&client, "test_gzip", &format!("http://{addr}/"))
         .await
         .expect("fetch_json must transparently decode a Content-Encoding: gzip body");
@@ -364,7 +365,6 @@ async fn client_transparently_decompresses_a_gzip_encoded_response() {
         "reqwest must decompress the gzip response body before parsing"
     );
     assert_eq!(v["n"], 42);
-    crate::util::circuit_breaker::record_success("127.0.0.1");
 }
 
 #[tokio::test]
@@ -397,7 +397,6 @@ async fn fetch_json_or_absent_maps_400_to_none_while_or_404_still_errors() {
 
     // fetch_json_or_absent: a 400 "not found" is a clean negative (Ok(None)) — a
     // non-existent Bluesky handle no longer trips the module breaker.
-    crate::util::circuit_breaker::record_success("127.0.0.1"); // isolate from parallel tests
     let addr = serve_one_400().await;
     let absent: crate::core::error::Result<Option<serde_json::Value>> =
         fetch_json_or_absent(&client, "test_absent", &format!("http://{addr}/")).await;
@@ -407,7 +406,6 @@ async fn fetch_json_or_absent_maps_400_to_none_while_or_404_still_errors() {
     );
 
     // fetch_json_or_404: a 400 is NOT a 404, so it stays a visible module error.
-    crate::util::circuit_breaker::record_success("127.0.0.1");
     let addr = serve_one_400().await;
     let errored: crate::core::error::Result<Option<serde_json::Value>> =
         fetch_json_or_404(&client, "test_404", &format!("http://{addr}/")).await;
@@ -449,17 +447,15 @@ async fn fetch_json_propagates_a_non_2xx_status_as_err_not_a_silent_default() {
     });
 
     let client = build_client();
-    crate::util::circuit_breaker::record_success("127.0.0.1"); // isolate from parallel tests
     let result: crate::core::error::Result<serde_json::Value> =
         fetch_json(&client, "test_plain", &format!("http://{addr}/")).await;
     assert!(
         result.is_err(),
         "fetch_json must propagate a non-2xx status as Err, got {result:?}"
     );
-    // The 500 response above recorded a breaker failure for "127.0.0.1" —
-    // reset it so this test doesn't nudge an unrelated later test toward the
-    // shared host's FAILURE_THRESHOLD, symmetric with the isolation reset above.
-    crate::util::circuit_breaker::record_success("127.0.0.1");
+    // No breaker reset needed: REQ-BREAKER-001 keys the breaker on host AND
+    // port, so this server's 500 lands on its own ephemeral endpoint and cannot
+    // reach a sibling test's server on 127.0.0.1.
 }
 
 #[tokio::test]
@@ -501,7 +497,6 @@ async fn fetch_json_or_404_maps_404_to_none_but_propagates_5xx_as_err() {
     let client = build_client();
 
     // 404 → Ok(None): the genuine "not on this platform" clean miss stays a miss.
-    crate::util::circuit_breaker::record_success("127.0.0.1"); // isolate from parallel tests
     let addr = serve_once(404, "Not Found").await;
     let miss: crate::core::error::Result<Option<serde_json::Value>> =
         fetch_json_or_404(&client, "test_404_miss", &format!("http://{addr}/")).await;
@@ -511,7 +506,6 @@ async fn fetch_json_or_404_maps_404_to_none_but_propagates_5xx_as_err() {
     );
 
     // 503 → Err: a real outage must NOT masquerade as the clean miss.
-    crate::util::circuit_breaker::record_success("127.0.0.1");
     let addr = serve_once(503, "Service Unavailable").await;
     let outage: crate::core::error::Result<Option<serde_json::Value>> =
         fetch_json_or_404(&client, "test_404_outage", &format!("http://{addr}/")).await;
@@ -519,9 +513,9 @@ async fn fetch_json_or_404_maps_404_to_none_but_propagates_5xx_as_err() {
         outage.is_err(),
         "a 503 must propagate as Err, not Ok(None), got {outage:?}"
     );
-    // The 503 recorded a breaker failure for the shared loopback host — reset it
-    // so this test can't nudge a later parallel test toward FAILURE_THRESHOLD.
-    crate::util::circuit_breaker::record_success("127.0.0.1");
+    // Each `serve_once` above bound its own port, so the 404 and the 503 keyed
+    // separate breakers and neither can reach a parallel test's server
+    // (REQ-BREAKER-001). No reset needed.
 }
 
 #[test]
@@ -674,6 +668,248 @@ async fn build_client_with_timeout_refuses_a_redirect_to_a_private_ip() {
         internal_hits.load(std::sync::atomic::Ordering::SeqCst),
         0,
         "the private-IP redirect target must never be reached"
+    );
+}
+
+// ── REQ-HTTP-003: a credential must not replay to a destination the caller
+// did not choose ──────────────────────────────────────────────────────────
+//
+// reqwest copies the original request's headers onto every followed hop, and
+// HSE's providers authenticate with headers (`x-api-key`, `Authorization`, …).
+// Before this, the policy judged only the private-IP arm, so any endpoint HSE
+// queries could answer `302 Location: https://attacker.example/collect` and be
+// handed the live provider key.
+//
+// These judge `redirect_verdict` directly rather than through a client. They
+// have to: the private-IP arm refuses every loopback address, so a test server
+// on 127.0.0.1 is stopped before the credential arms are reached — a
+// client-level test of those arms passes identically on a build with them
+// deleted, and proves nothing. (That the closure runs at all is covered by
+// `build_client_with_timeout_refuses_a_redirect_to_a_private_ip` above; the
+// closure has no logic of its own beyond translating this verdict.)
+
+fn u(s: &str) -> url::Url {
+    url::Url::parse(s).expect("test URL parses")
+}
+
+#[test]
+fn redirect_verdict_follows_a_same_host_hop() {
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://api.example.com/v1/lookup")],
+            &u("https://api.example.com/v2/lookup")
+        ),
+        RedirectVerdict::Follow,
+        "a provider moving its own endpoint is the ordinary case and must still work"
+    );
+}
+
+#[test]
+fn redirect_verdict_follows_a_same_host_hop_on_a_different_port_or_upgraded_scheme() {
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://api.example.com/v1")],
+            &u("https://api.example.com:8443/v1")
+        ),
+        RedirectVerdict::Follow,
+        "another port on the same host is the same operator — not a leak"
+    );
+    assert_eq!(
+        redirect_verdict(
+            &[u("http://api.example.com/v1")],
+            &u("https://api.example.com/v1")
+        ),
+        RedirectVerdict::Follow,
+        "http -> https is an upgrade; refusing it would break plain-http entry points"
+    );
+}
+
+#[test]
+fn redirect_verdict_stops_a_hop_to_a_different_host() {
+    // The defect itself: the baseline returned Follow here and replayed the
+    // caller's `x-api-key` to attacker.example.
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://api.example.com/v1/lookup")],
+            &u("https://attacker.example/collect")
+        ),
+        RedirectVerdict::Stop,
+        "a 3xx to a host the caller never chose must not carry the caller's key"
+    );
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://api.example.com/v1")],
+            &u("https://api.example.com.attacker.example/v1")
+        ),
+        RedirectVerdict::Stop,
+        "a suffix-extended look-alike host is a different registrable domain"
+    );
+}
+
+#[test]
+fn redirect_verdict_follows_the_apex_to_www_hop_real_sites_depend_on() {
+    // Measured, not assumed: of ten real sites HSE fetches, five serve their
+    // content only through a cross-HOST redirect. Judging by host instead of by
+    // registrable domain would have broken all five to close a hole that only
+    // exists for credentialed requests — the credential stays inside the same
+    // registrant's namespace on every one of these.
+    for (from, to) in [
+        (
+            "https://reddit.com/robots.txt",
+            "https://www.reddit.com/robots.txt",
+        ),
+        (
+            "https://nytimes.com/robots.txt",
+            "https://www.nytimes.com/robots.txt",
+        ),
+        (
+            "https://bbc.com/robots.txt",
+            "https://www.bbc.com/robots.txt",
+        ),
+        (
+            "https://amazon.com/robots.txt",
+            "https://www.amazon.com/robots.txt",
+        ),
+        (
+            "https://wikipedia.org/robots.txt",
+            "https://en.wikipedia.org/robots.txt",
+        ),
+    ] {
+        assert_eq!(
+            redirect_verdict(&[u(from)], &u(to)),
+            RedirectVerdict::Follow,
+            "{from} -> {to} is a real, observed hop within one registrant's namespace"
+        );
+    }
+    // The same-site rule holds under a multi-label public suffix too.
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://example.com.au/a")],
+            &u("https://www.example.com.au/a")
+        ),
+        RedirectVerdict::Follow,
+        "example.com.au and www.example.com.au are one registrable domain"
+    );
+}
+
+#[test]
+fn redirect_verdict_compares_ip_literals_exactly_never_by_registrable_domain() {
+    // `registrable_domain` is a name helper: its last-two-labels rule reads
+    // 10.20.30.40 and 99.88.30.40 as the same "site" (30.40). Routing IP
+    // literals through it would reopen the leak between two unrelated public
+    // addresses, so they are compared exactly.
+    // Both public — a private literal would be refused by the SSRF arm first
+    // and would not exercise the site comparison at all.
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://93.184.216.34/v1")],
+            &u("https://8.8.216.34/v1")
+        ),
+        RedirectVerdict::Stop,
+        "two unrelated public IPs share trailing octets (216.34) but are not one site"
+    );
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://93.184.216.34/v1")],
+            &u("https://93.184.216.34/v2")
+        ),
+        RedirectVerdict::Follow,
+        "the same IP literal is the same site"
+    );
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://93.184.216.34/v1")],
+            &u("https://example.com/v1")
+        ),
+        RedirectVerdict::Stop,
+        "an IP literal and a name are never the same site, even if the name resolves there"
+    );
+}
+
+#[test]
+fn redirect_verdict_judges_the_original_request_host_not_the_previous_hop() {
+    // Laundering attempt: hop within the provider's own host, then off it. The
+    // comparison is against `previous[0]` — the request whose headers the caller
+    // chose — so the last hop is still judged against api.example.com.
+    let chain = [
+        u("https://api.example.com/v1"),
+        u("https://api.example.com/v2"),
+    ];
+    assert_eq!(
+        redirect_verdict(&chain, &u("https://api.example.com/v3")),
+        RedirectVerdict::Follow,
+        "several hops within the provider's own host stay legitimate"
+    );
+    assert_eq!(
+        redirect_verdict(&chain, &u("https://attacker.example/collect")),
+        RedirectVerdict::Stop,
+        "an intermediate same-host hop must not launder a later cross-host one"
+    );
+}
+
+#[test]
+fn redirect_verdict_stops_an_https_to_http_downgrade_on_the_same_host() {
+    // Same host, so the host arm allows it — but following would put the same
+    // live key on the wire in plaintext for any on-path observer.
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://api.example.com/v1")],
+            &u("http://api.example.com/v1")
+        ),
+        RedirectVerdict::Stop,
+        "a transport downgrade leaks the key to any on-path observer"
+    );
+}
+
+#[test]
+fn redirect_verdict_stops_a_hop_to_a_private_ip() {
+    // The pre-existing SSRF arm, at the layer that now owns the decision.
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://api.example.com/v1")],
+            &u("http://169.254.169.254/latest/meta-data/")
+        ),
+        RedirectVerdict::Stop,
+        "cloud-metadata redirect hop"
+    );
+    assert_eq!(
+        redirect_verdict(&[u("https://api.example.com/v1")], &u("http://[::1]/")),
+        RedirectVerdict::Stop,
+        "IPv6 loopback literal, brackets and all"
+    );
+}
+
+#[test]
+fn redirect_verdict_errors_past_the_hop_cap() {
+    let chain: Vec<url::Url> = (0..MAX_REDIRECT_HOPS)
+        .map(|i| u(&format!("https://api.example.com/hop{i}")))
+        .collect();
+    assert_eq!(
+        redirect_verdict(&chain, &u("https://api.example.com/hop-next")),
+        RedirectVerdict::TooManyHops,
+        "the cap is an error, not a silent stop — a redirect loop must be visible"
+    );
+    assert_eq!(
+        redirect_verdict(
+            &chain[..MAX_REDIRECT_HOPS - 1],
+            &u("https://api.example.com/x")
+        ),
+        RedirectVerdict::Follow,
+        "one hop below the cap is still followed"
+    );
+}
+
+#[test]
+fn redirect_verdict_stops_a_hop_that_has_no_host_at_all() {
+    // Fail closed. `data:`/`file:` have no host, so they can never match the
+    // origin's — the comparison must not treat "no host" as "same host".
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://api.example.com/v1")],
+            &u("data:text/plain,leak")
+        ),
+        RedirectVerdict::Stop,
+        "a hostless hop is never the origin host"
     );
 }
 
@@ -1714,5 +1950,213 @@ async fn json_scanned_types_a_challenge_page_and_redacts_a_credential_in_the_dec
     assert!(
         msg.contains("test_mod") && !msg.contains("SECRETVALUE99"),
         "the decode error must name the module and never quote the credential: {msg}"
+    );
+}
+
+/// REQ-HTTP-004. `keyed_ok_or_404` hand-built `Error::module` for every non-2xx,
+/// so a throttle and an anti-bot wall reached `emailrep`, `europeana` and
+/// `fullcontact` as generic provider faults — the breaker counted each as a
+/// defect and the live sweep read them as "unreachable".
+///
+/// Three SEPARATE tests, not one with three assertions: a single test stops at
+/// its first failure, so the throttle arm would mask whether the wall arm holds.
+/// Each of these fails on the unfixed code for its own reason, and the third
+/// passes on it — the control that makes the other two attributable.
+fn keyed_test_ctx() -> crate::core::module::ModuleContext {
+    use std::collections::HashMap;
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    crate::core::module::ModuleContext {
+        scan_id: "test".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    }
+}
+
+#[tokio::test]
+async fn keyed_ok_or_404_types_a_429_as_the_typed_rate_limit() {
+    use super::test_server::{Canned, serve};
+    let base = serve(vec![Canned::json(
+        429,
+        r#"{"error":"rate limit exceeded"}"#,
+    )])
+    .await;
+    let ctx = keyed_test_ctx();
+    let resp = reqwest::Client::new()
+        .get(&base)
+        .send()
+        .await
+        .expect("loopback");
+    let err = keyed_ok_or_404("m", "k", &ctx, resp)
+        .await
+        .expect_err("429 must be an error");
+    assert!(
+        matches!(err, crate::core::error::Error::RateLimited(_)),
+        "a 429 must be the typed RateLimited, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn keyed_ok_or_404_types_a_challenge_page_as_the_typed_wall() {
+    // Classified on the RAW body: the fingerprint is a `<script>` URL that the
+    // one-line summary drops, so routing the summary here instead would leave
+    // this arm structurally unable to fire.
+    use super::test_server::{Canned, serve};
+    let base = serve(vec![Canned::html(403, CF_CHALLENGE_PAGE)]).await;
+    let ctx = keyed_test_ctx();
+    let resp = reqwest::Client::new()
+        .get(&base)
+        .send()
+        .await
+        .expect("loopback");
+    let err = keyed_ok_or_404("m", "k", &ctx, resp)
+        .await
+        .expect_err("challenge page must be an error");
+    assert!(
+        matches!(err, crate::core::error::Error::BotChallenge(_)),
+        "a challenge page must be the typed BotChallenge, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn keyed_ok_or_404_leaves_a_plain_refusal_a_module_fault() {
+    // CONTROL: passes on the unfixed code too. A plain 403 is not a wall, and
+    // over-typing it would be its own defect.
+    use super::test_server::{Canned, serve};
+    let base = serve(vec![Canned::text(403, "Forbidden")]).await;
+    let ctx = keyed_test_ctx();
+    let resp = reqwest::Client::new()
+        .get(&base)
+        .send()
+        .await
+        .expect("loopback");
+    let err = keyed_ok_or_404("m", "k", &ctx, resp)
+        .await
+        .expect_err("403 must be an error");
+    assert!(
+        matches!(err, crate::core::error::Error::Module { .. }),
+        "a plain 403 stays a module fault, got {err:?}"
+    );
+}
+
+// ── REQ-HTTP-005: a 429 is not a 5xx, to the breaker either ───────────
+
+/// REQ-HTTP-005. The shared chokepoint folded a 429 in with the 5xx via one
+/// `is_breaker_failure_status` predicate, so a throttle took
+/// `FAILURE_THRESHOLD` (5) consecutive round-trips to back off and then used
+/// the local `COOLDOWN_SECS` guess. `Breaker::on_rate_limited`'s own doc rules
+/// that out: *"A 429 is the server stating its own contract… There is nothing
+/// to accumulate evidence about, so this opens the breaker on the first one and
+/// uses the server's window rather than the local COOLDOWN_SECS guess."*
+///
+/// Every status is swept and mismatches collected, so a partial rule is named
+/// rather than masked by whichever case is asserted first.
+#[test]
+fn a_429_is_its_own_breaker_outcome_never_folded_in_with_a_5xx() {
+    use super::fetch::{BreakerOutcome, breaker_outcome_for};
+    let mut wrong: Vec<(u16, BreakerOutcome)> = Vec::new();
+    let expected: &[(u16, BreakerOutcome)] = &[
+        (429, BreakerOutcome::RateLimited),
+        // Server-side faults: evidence, not a contract.
+        (500, BreakerOutcome::Failure),
+        (502, BreakerOutcome::Failure),
+        (503, BreakerOutcome::Failure),
+        (504, BreakerOutcome::Failure),
+        // Definitive client answers — the host is up and answering.
+        (200, BreakerOutcome::Success),
+        (204, BreakerOutcome::Success),
+        (301, BreakerOutcome::Success),
+        (400, BreakerOutcome::Success),
+        (401, BreakerOutcome::Success),
+        (403, BreakerOutcome::Success),
+        (404, BreakerOutcome::Success),
+        (418, BreakerOutcome::Success),
+        (451, BreakerOutcome::Success),
+    ];
+    for (code, want) in expected {
+        let got =
+            breaker_outcome_for(reqwest::StatusCode::from_u16(*code).expect("a valid status code"));
+        if got != *want {
+            wrong.push((*code, got));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "these statuses are classified wrongly for the breaker: {wrong:?}"
+    );
+}
+
+/// The same rule at the seam that actually bit — driven through the real
+/// `fetch_json_or_404` path against a loopback server, so the production
+/// classification, decoding and breaker wiring all execute.
+///
+/// This test is only possible because `REQ-BREAKER-001` keys the breaker on
+/// host AND port: under the old host-only key, opening `127.0.0.1` here for the
+/// server's 90-second window would have short-circuited every other loopback
+/// test running in parallel in this process.
+#[tokio::test]
+async fn one_429_opens_the_breaker_for_the_servers_own_window() {
+    use super::test_server::{Canned, serve};
+    use crate::util::circuit_breaker::{allow_host, endpoint_of};
+
+    let base = serve(vec![
+        Canned::json(429, r#"{"error":"slow down"}"#).header("Retry-After", "90"),
+    ])
+    .await;
+    let endpoint = endpoint_of(&base).expect("a loopback URL keys an endpoint");
+    let t0 = crate::core::entity::unix_now();
+
+    let out: crate::core::error::Result<Option<serde_json::Value>> =
+        fetch_json_or_404(&reqwest::Client::new(), "test_429_breaker", &base).await;
+    assert!(
+        matches!(out, Err(crate::core::error::Error::RateLimited(_))),
+        "a 429 is the typed rate limit, not a generic fault: {out:?}"
+    );
+
+    assert!(
+        !allow_host(&endpoint, t0),
+        "ONE 429 must open the breaker — not FAILURE_THRESHOLD of them, which is \
+         what let an observed radar sweep issue eight consecutive 429s"
+    );
+    assert!(
+        !allow_host(&endpoint, t0 + 89),
+        "…and hold for the server's own 90s Retry-After window, not the local \
+         60s COOLDOWN_SECS guess"
+    );
+    assert!(
+        allow_host(&endpoint, t0 + 95),
+        "…then release, so a throttle is never a permanent outage"
+    );
+    // Close it. The assertions above drove the breaker with explicit future
+    // `now` values, so in real time it is still open for ~90s on a port the
+    // server has now released — a later test handed the same ephemeral port
+    // would be short-circuited by a breaker it never opened. This is cleanup
+    // for state this test deliberately created, not the shared-key workaround
+    // REQ-BREAKER-001 removed.
+    crate::util::circuit_breaker::record_success(&endpoint);
+}
+
+/// The control, and what keeps the rule above honest: a single 5xx must NOT
+/// open the breaker. It is a guess about health — one bad node, one unlucky
+/// socket — and takes `FAILURE_THRESHOLD` of them to settle.
+///
+/// Passes on the baseline and on the fix, so it proves the change is specific
+/// to the 429 rather than having made every fault instant.
+#[tokio::test]
+async fn a_single_5xx_does_not_open_the_breaker() {
+    use super::test_server::{Canned, serve};
+    use crate::util::circuit_breaker::{allow_host, endpoint_of};
+
+    let base = serve(vec![Canned::json(503, r#"{"error":"boom"}"#)]).await;
+    let endpoint = endpoint_of(&base).expect("a loopback URL keys an endpoint");
+    let t0 = crate::core::entity::unix_now();
+
+    let out: crate::core::error::Result<Option<serde_json::Value>> =
+        fetch_json_or_404(&reqwest::Client::new(), "test_5xx_breaker", &base).await;
+    assert!(out.is_err(), "a 503 is still a real error: {out:?}");
+    assert!(
+        allow_host(&endpoint, t0),
+        "one 5xx is evidence, not a contract — the endpoint stays reachable"
     );
 }

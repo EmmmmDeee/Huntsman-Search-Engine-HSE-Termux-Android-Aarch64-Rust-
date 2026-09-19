@@ -27,11 +27,12 @@ use std::collections::HashSet;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::dns::soa_rname_to_email as shared_soa_rname_to_email;
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "doh_resolver";
 
@@ -48,7 +49,8 @@ struct DohResp {
     status: i32,
 }
 
-#[derive(Deserialize)]
+// `Debug` so a test asserting a refusal can name the unexpected answer it got.
+#[derive(Debug, Deserialize)]
 struct DohRecord {
     #[serde(default)]
     name: String,
@@ -752,7 +754,13 @@ impl Module for DohResolver {
 
         // DMARC lives at `_dmarc.{domain}` (RFC 7489 §6.6.3), not at the apex.
         // Query it separately so the parser sees the correct subdomain context.
-        if !ctx.cancel.is_cancelled() {
+        //
+        // Gated on `dns_wholly_unreachable` like the loop above, which it was
+        // not: the `i == 1` break guarded only `RECORD_TYPES`, so this pass and
+        // the two below ran REGARDLESS — three more lookups, six more requests
+        // across the two providers, all to resolvers this dispatch had already
+        // proved unreachable (REQ-DOHRESOLVER-001).
+        if !ctx.cancel.is_cancelled() && !dns_wholly_unreachable(&outcomes) {
             let dmarc_domain = format!("_dmarc.{domain}");
             let dmarc = query_doh(&dmarc_domain, "TXT", &ctx.http).await;
             result.entities.extend(records_for_type(
@@ -772,7 +780,7 @@ impl Module for DohResolver {
         // owns CAA over port-53) is routinely unreachable, so without this the
         // domain's authorised CAs and its published security/abuse contact are
         // lost on the exact platform HSE targets.
-        if !ctx.cancel.is_cancelled() {
+        if !ctx.cancel.is_cancelled() && !dns_wholly_unreachable(&outcomes) {
             let caa = query_doh(&domain, "CAA", &ctx.http).await;
             result
                 .entities
@@ -784,7 +792,7 @@ impl Module for DohResolver {
         // DMARC at `_dmarc.`. Its `rua=` names a published mail-security contact
         // (Email or https endpoint) — another pivot lost on Termux without a DoH
         // path, since the hickory transport that would resolve it is blocked.
-        if !ctx.cancel.is_cancelled() {
+        if !ctx.cancel.is_cancelled() && !dns_wholly_unreachable(&outcomes) {
             let tlsrpt_domain = format!("_smtp._tls.{domain}");
             let tlsrpt = query_doh(&tlsrpt_domain, "TXT", &ctx.http).await;
             result
@@ -806,18 +814,12 @@ impl Module for DohResolver {
         // the network. The zero-query case is already excluded inside
         // `dns_wholly_unreachable`; this covers the partial-then-cancelled case.
         if !ctx.cancel.is_cancelled() && dns_wholly_unreachable(&outcomes) {
-            return Err(crate::core::error::Error::module(
-                SRC,
-                format!(
-                    "no DoH resolver answered for {domain}: both cloudflare-dns.com and \
-                     dns.google were unreachable or undecodable across {} quer{}. \
-                     Reporting this rather than an empty result, because zero records \
-                     from an unanswered query is indistinguishable from a domain that \
-                     genuinely has none.",
-                    outcomes.len(),
-                    if outcomes.len() == 1 { "y" } else { "ies" }
-                ),
-            ));
+            // Typed by `outage_error`, so a throttled resolver reaches the
+            // breaker, the doctor and the live-drift sweep as `RateLimited` and
+            // a WAF interstitial as `BotChallenge`. The old text said
+            // "unreachable or undecodable" for all three, which the sweep files
+            // as a dead canary.
+            return Err(outage_error(&domain, &outcomes));
         }
         Ok(result)
     }
@@ -842,9 +844,13 @@ enum DohOutcome {
     /// empty answer would recreate the exact conflation this type exists to
     /// prevent, one layer down.
     Answered(Vec<DohRecord>),
-    /// Neither Cloudflare nor Google could be reached, or neither reply decoded.
-    /// Nothing was established about the domain.
-    Unreachable,
+    /// Neither Cloudflare nor Google gave an answer. Nothing was established
+    /// about the domain.
+    ///
+    /// Carries the most telling refusal of the two (see [`refusal_rank`]), so a
+    /// throttled resolver and a dead one are still distinguishable when the
+    /// sweep reports the outage. `None` only if no query ran at all.
+    Unreachable(Option<Error>),
 }
 
 impl DohOutcome {
@@ -854,7 +860,7 @@ impl DohOutcome {
     fn records(&self) -> &[DohRecord] {
         match self {
             Self::Answered(r) => r,
-            Self::Unreachable => &[],
+            Self::Unreachable(_) => &[],
         }
     }
 }
@@ -873,7 +879,59 @@ fn dns_wholly_unreachable(outcomes: &[DohOutcome]) -> bool {
     !outcomes.is_empty()
         && outcomes
             .iter()
-            .all(|o| matches!(o, DohOutcome::Unreachable))
+            .all(|o| matches!(o, DohOutcome::Unreachable(_)))
+}
+
+/// How much a refusal explains. A provider stating its own contract — a
+/// throttle, or a wall against this client — is actionable; a transport
+/// failure or a schema fault says only that no answer arrived.
+///
+/// Used twice: to keep the more telling of two providers' refusals, and to pick
+/// the one a wholly-unanswered sweep reports. **Pure.**
+fn refusal_rank(e: &Error) -> u8 {
+    match e {
+        Error::RateLimited(_) => 3,
+        Error::BotChallenge(_) => 2,
+        _ => 1,
+    }
+}
+
+/// The error a wholly-unanswered sweep reports for `domain`.
+///
+/// Preserves the TYPE of the most telling refusal. Before this, every outcome
+/// collapsed into one `Error::module` reading "unreachable or undecodable", so
+/// a throttled Cloudflare and a dead resolver were the same thing to the
+/// operator, the circuit breaker, the doctor and the live-drift sweep — which
+/// then files a throttled resolver as a dead canary. Cycles E and F established
+/// that rule; this module never received it.
+///
+/// **Pure**, so the classification is unit-testable without a resolver.
+fn outage_error(domain: &str, outcomes: &[DohOutcome]) -> Error {
+    let tally = format!(
+        "no DoH resolver answered for {domain}: neither cloudflare-dns.com nor \
+         dns.google gave an answer across {} quer{}. Reporting this rather than \
+         an empty result, because zero records from an unanswered query is \
+         indistinguishable from a domain that genuinely has none.",
+        outcomes.len(),
+        if outcomes.len() == 1 { "y" } else { "ies" }
+    );
+    let telling = outcomes
+        .iter()
+        .filter_map(|o| match o {
+            DohOutcome::Unreachable(e) => e.as_ref(),
+            DohOutcome::Answered(_) => None,
+        })
+        .max_by_key(|e| refusal_rank(e));
+    match telling {
+        Some(Error::RateLimited(inner)) => {
+            Error::RateLimited(format!("{SRC}: {tally} Most telling refusal: {inner}"))
+        }
+        Some(Error::BotChallenge(inner)) => {
+            Error::BotChallenge(format!("{SRC}: {tally} Most telling refusal: {inner}"))
+        }
+        Some(other) => Error::module(SRC, format!("{tally} Most telling refusal: {other}")),
+        None => Error::module(SRC, tally),
+    }
 }
 
 /// A decoded DoH reply's DNS `Status`, classified into "the resolver answered"
@@ -895,51 +953,92 @@ fn classify_status(status: i32, answer: Vec<DohRecord>) -> Option<Vec<DohRecord>
     }
 }
 
-/// Decode one DoH provider's HTTP response into DNS records, or `None` when the
-/// provider gave no usable answer and the caller should fail over.
+/// Query ONE DoH provider and decode its answer, or the typed reason it gave
+/// none.
 ///
-/// A non-2xx (Cloudflare/Google 400/429/5xx) is a resolver FAILURE, not a DNS
-/// answer. Without the status gate `json_decode` parses the error body, and
-/// because `DohResp`'s fields are all `#[serde(default)]` it yields
-/// `{status:0, answer:[]}` → `classify_status` → `Some([])` — a FALSE
-/// authoritative "no such record" that would skip the failover and the
-/// `Unreachable` machinery, so a Cloudflare hiccup reads as "this domain has no
-/// A record." DoH signals a real miss as HTTP 200 + Status 3 (NXDOMAIN), never
-/// as a non-2xx, so gating on success loses no answer. Takes the raw send
-/// result so a transport error is also `None` (fail over). Testable against
-/// synthetic responses without a resolver.
-async fn answer_from_response(resp: reqwest::Result<reqwest::Response>) -> Option<Vec<DohRecord>> {
-    let r = resp.ok()?;
-    if !r.status().is_success() {
-        return None;
-    }
-    let data = crate::util::http::json_decode::<DohResp>(SRC, r)
-        .await
-        .ok()?;
-    classify_status(data.status, data.answer)
-}
-
-async fn query_doh(domain: &str, rtype: &str, http: &reqwest::Client) -> DohOutcome {
-    let cf_url = format!("https://cloudflare-dns.com/dns-query?name={domain}&type={rtype}");
-    let resp = http
-        .get(&cf_url)
+/// Wired to the shared HTTP discipline this module previously bypassed with a
+/// raw `.send()` whose result was reduced to `Option` (`REQ-DOHRESOLVER-001`):
+///
+/// * [`crate::util::http::breaker_gate`] short-circuits a resolver still inside
+///   its own backoff window — no socket opened. DoH is the PRIMARY DNS
+///   transport on Termux and one dispatch issues up to eleven lookups across
+///   two providers, so re-asking a resolver that already said no is the
+///   429-storm shape `util::wigle::get` records as measured.
+/// * [`crate::util::http::record_breaker_outcome`] feeds the answer back, so a
+///   single 429 backs every later dispatch in the scan off that resolver for
+///   the window IT asked for.
+/// * a non-2xx becomes the TYPED error, so a throttle is `RateLimited` and a
+///   WAF interstitial is `BotChallenge` instead of all three collapsing into
+///   "unreachable".
+///
+/// The status gate itself is load-bearing and predates this change: without it
+/// `json_decode` parses the error body, and because `DohResp`'s fields are all
+/// `#[serde(default)]` it yields `{status:0, answer:[]}` → `classify_status` →
+/// `Some([])` — a FALSE authoritative "no such record". A real DoH miss is HTTP
+/// 200 + `Status` 3 (NXDOMAIN), never a non-2xx, so failing closed on the
+/// status loses no answer.
+async fn doh_lookup(http: &reqwest::Client, url: &str) -> Result<Vec<DohRecord>> {
+    let endpoint = crate::util::http::breaker_gate(SRC, url)?;
+    let resp = match http
+        .get(url)
         .header("Accept", "application/dns-json")
         .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await;
-    if let Some(records) = answer_from_response(resp).await {
-        return DohOutcome::Answered(records);
+        .send_tagged(SRC)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            // A transport failure never reaches `record_breaker_outcome`, which
+            // only ever sees an answered round-trip. Record it here: on Termux a
+            // blocked resolver fails exactly this way, with no status at all,
+            // and that is the case the breaker most needs to learn.
+            if let Some(h) = endpoint.as_deref() {
+                crate::util::circuit_breaker::record_failure(h, crate::core::entity::unix_now());
+            }
+            return Err(e);
+        }
+    };
+    crate::util::http::record_breaker_outcome(endpoint.as_deref(), &resp);
+    if !resp.status().is_success() {
+        return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
-    let google_url = format!("https://dns.google/resolve?name={domain}&type={rtype}");
-    let resp = http
-        .get(&google_url)
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await;
-    if let Some(records) = answer_from_response(resp).await {
-        return DohOutcome::Answered(records);
+    let data: DohResp = crate::util::http::json_decode(SRC, resp).await?;
+    classify_status(data.status, data.answer).ok_or_else(|| {
+        Error::module(
+            SRC,
+            format!(
+                "resolver answered DNS Status {} — a failure to resolve, not a negative existence proof",
+                data.status
+            ),
+        )
+    })
+}
+
+/// Ask Cloudflare, then Google, and keep the more telling refusal if neither
+/// answers.
+async fn query_doh(domain: &str, rtype: &str, http: &reqwest::Client) -> DohOutcome {
+    let mut refusal: Option<Error> = None;
+    for url in [
+        format!("https://cloudflare-dns.com/dns-query?name={domain}&type={rtype}"),
+        format!("https://dns.google/resolve?name={domain}&type={rtype}"),
+    ] {
+        match doh_lookup(http, &url).await {
+            Ok(records) => return DohOutcome::Answered(records),
+            Err(e) => {
+                tracing::debug!(error = %e, "DoH provider gave no answer — failing over");
+                // Keep the refusal that explains most: a throttle or a wall
+                // outranks a bare transport failure, whichever provider it came
+                // from, so the outage the module reports names the real cause.
+                if refusal
+                    .as_ref()
+                    .is_none_or(|held| refusal_rank(&e) > refusal_rank(held))
+                {
+                    refusal = Some(e);
+                }
+            }
+        }
     }
-    DohOutcome::Unreachable
+    DohOutcome::Unreachable(refusal)
 }
 
 #[cfg(test)]

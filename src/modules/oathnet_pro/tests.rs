@@ -708,6 +708,84 @@ use crate::core::confidence;
     }
 
     #[test]
+    fn a_placeholder_in_a_social_field_is_never_minted_as_a_handle() {
+        use serde_json::json;
+        // `breach.rs` defines its own `is_absent` — `is_null_sentinel ||
+        // is_placeholder_secret` — and applies it to country, location and
+        // organisation. Three social-handle sites never got it:
+        //
+        //   * `instagram` and `linkedin` had NO absence guard at all;
+        //   * the extra-social loop (github/tiktok/reddit/…) guarded with
+        //     `is_redacted_sentinel`, which matches only `UPGRADE_TO_SEE` and
+        //     `REDACTED` — a STRICT SUBSET of `is_absent`, so the SQL-dump NULL
+        //     `\N` and every bracketed form (`[NOT_SAVED]`, `[fail]`, `<empty>`)
+        //     sailed through its `(2..=64)` length window.
+        //
+        // These are not inert nodes: the loop's own comment says each handle
+        // "unlocks username_search / search_engines for free", so a minted
+        // sentinel is dispatched to live per-platform lookups, and any presence
+        // found for that garbage string is attributed to the subject.
+        for sentinel in ["\\N", "[NOT_SAVED]", "UPGRADE_TO_SEE_xxxx"] {
+            for field in ["instagram", "linkedin", "github", "tiktok", "reddit"] {
+                let item = json!({ field: sentinel, "source": "DB1" });
+                let mut seen = HashSet::new();
+                let mut result = ModuleResult::new();
+                extract_breach_entities(
+                    &item,
+                    "unrelated",
+                    "scan",
+                    "oathnet.org:test",
+                    &mut seen,
+                    &mut result,
+                );
+                // `Entity::new`'s Username arm CASE-FOLDS, so the minted value
+                // is `[not_saved]` / `\n`, not the spelling the provider sent.
+                // Comparing case-sensitively made the first cut of this test
+                // pass against a baseline that mints all three — a clean
+                // negative from an assertion that could not observe the
+                // positive is not evidence, so the needle is folded too.
+                let needle = sentinel.trim_start_matches('\\').to_lowercase();
+                let minted: Vec<&Entity> = result
+                    .entities
+                    .iter()
+                    .filter(|e| {
+                        matches!(e.kind, EntityKind::Username | EntityKind::Url)
+                            && e.value.to_lowercase().contains(&needle)
+                    })
+                    .collect();
+                assert!(
+                    minted.is_empty(),
+                    "`{sentinel}` in `{field}` is a provider absence marker, not a handle — \
+                     minting it creates a pivot that is dispatched to live lookups: {minted:?}"
+                );
+            }
+        }
+        // Non-regression: a real handle in each of those fields still mints.
+        // `linkedin` is included: its bare-handle branch prefixes the value
+        // (`linkedin:jordan_m`), which `contains` still sees.
+        for field in ["instagram", "linkedin", "github", "tiktok", "reddit"] {
+            let item = json!({ field: "jordan_m", "source": "DB1" });
+            let mut seen = HashSet::new();
+            let mut result = ModuleResult::new();
+            extract_breach_entities(
+                &item,
+                "unrelated",
+                "scan",
+                "oathnet.org:test",
+                &mut seen,
+                &mut result,
+            );
+            assert!(
+                result
+                    .entities
+                    .iter()
+                    .any(|e| e.kind == EntityKind::Username && e.value.contains("jordan_m")),
+                "a genuine `{field}` handle must still be minted"
+            );
+        }
+    }
+
+    #[test]
     fn a_quote_wrapped_and_a_clean_spelling_of_the_same_telegram_handle_dedup_to_one_entity() {
         use serde_json::json;
         // Regression: `h.to_lowercase()` doesn't strip a wrapping quote (a
@@ -1324,14 +1402,18 @@ use crate::core::confidence;
         assert!(!is_public_ip("1234567")); // not an IP at all
         assert!(!is_public_ip("UPGRADE_TO_SEE"));
 
-        // Digit gate, email structure, redaction sentinel.
+        // Digit gate, email structure.
         assert!(has_min_digits("15551234567", 7));
         assert!(!has_min_digits("UPGRADE_TO_SEE", 7));
         assert!(looks_like_email("jane.doe@example.com"));
         assert!(!looks_like_email("UPGRADE_TO_SEE@x"));
         assert!(!looks_like_email("nobody"));
-        assert!(is_redacted_sentinel("UPGRADE_TO_SEE_FULL"));
-        assert!(!is_redacted_sentinel("realhandle"));
+        // The redaction-sentinel assertions that stood here tested the
+        // now-removed `is_redacted_sentinel` predicate directly. Their coverage
+        // is not lost: `a_placeholder_in_a_social_field_is_never_minted_as_a_handle`
+        // asserts the same `UPGRADE_TO_SEE` rejection — plus the `\N` and
+        // bracketed forms that predicate never caught — through the real
+        // extraction path, which is the boundary that actually matters.
     }
 
     #[test]

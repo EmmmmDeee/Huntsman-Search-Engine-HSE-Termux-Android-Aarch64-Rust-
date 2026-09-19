@@ -343,6 +343,32 @@ fn build_entities_rejects_out_of_range_coordinates() {
 }
 
 #[test]
+fn build_entities_rejects_near_null_island_jitter() {
+    use crate::core::entity::EntityKind;
+    // REQ-NETLAS-001: Netlas is a coarse IP-geo provider and must reject the
+    // near-null-island jitter band (0.001 to 0.01) those APIs emit as an
+    // "unknown" placeholder. The stricter is_plausible_provider_coord gate is
+    // required, not the weaker is_valid_coords. A (0.005, 0.005) jitter
+    // coordinate must not become a Coordinates entity.
+    let body: super::NetlasResp = serde_json::from_value(serde_json::json!({
+        "items": [{ "data": {
+            "ip": "203.0.113.10",
+            "geo": { "latitude": 0.005, "longitude": 0.005, "country": "Unknown", "city": "Null" }
+        }}]
+    }))
+    .expect("should succeed");
+    let r = super::build_entities(&body, "203.0.113.10", "scan");
+    assert!(
+        !r.entities.iter().any(|e| e.kind == EntityKind::Coordinates),
+        "near-null-island jitter coordinates (0.005, 0.005) must be rejected"
+    );
+    assert!(
+        !r.entities.iter().any(|e| e.kind == EntityKind::Address),
+        "no Address when coordinates are rejected"
+    );
+}
+
+#[test]
 fn netlas_query_by_kind() {
     use super::netlas_query;
     use crate::core::scan::Target;

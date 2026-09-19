@@ -311,6 +311,30 @@ fn au114_pep_only_fires_medium_and_frames_as_a_lead() {
 }
 
 #[test]
+fn au114_sanctions_linked_only_fires_medium_not_critical() {
+    // REQ-OPENSANCTIONS-001: a party merely LINKED to a designated one (a
+    // relative, business partner, majority-owned company) is not itself listed.
+    // It must never grade Critical "matches a sanctions designation" — that is a
+    // false, reputationally severe claim about a real person. It is an
+    // association, an elevated due-diligence signal, framed as a lead.
+    let e = flagged_person(
+        "Associated Relative",
+        0.60,
+        crate::core::tags::SANCTIONS_LINKED,
+    );
+    let r = rule_au_114_sanctions_exposure(&RuleContext::new(&[e]), "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    assert!(
+        !r[0].description.contains("matches a sanctions designation"),
+        "a merely-linked party must never read as a designation: {:?}",
+        r[0].description
+    );
+    assert!(r[0].description.contains("linked to a sanctioned party"));
+    assert!(r[0].description.contains("not a legal determination"));
+}
+
+#[test]
 fn au114_takes_the_strongest_flag_when_several_are_present() {
     // A subject both sanctioned AND debarred is graded by the strongest flag
     // (Critical), with every flag enumerated in the description.

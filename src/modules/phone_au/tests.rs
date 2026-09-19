@@ -154,6 +154,68 @@ fn rejects_non_au_numbers() {
     assert!(au_national("202-555-0100").is_none());
 }
 
+#[test]
+fn rejects_a_marker_less_nine_digit_national_number() {
+    // REQ-PHONEAU-001. The policy the sibling test above already states — "a
+    // bare national number with no country marker is ambiguous → not
+    // claimed" — was only ever exercised against a 10-digit value, which
+    // `normalise_phone` happens to reject for other reasons. The 9-digit
+    // shape silently violated it: `util::address_au::normalise_phone`'s
+    // bare-9-digit branch accepts ANY 9 digits whose first is one of
+    // 2/3/4/5/7/8 (6 of 10 possible leads) with no `+`, no `61`, and no
+    // leading trunk `0`, and canonicalises it to `+61…`. So phone_au minted
+    // a confirmed Australian mobile — `au-phone`, `line:mobile`, an
+    // `au-region:*` geographic claim — at confidence 0.80 from a string
+    // carrying zero evidence of being Australian.
+    //
+    // This is the same fabrication class as the already-fixed phone_geo
+    // defect (a bare national number read country-first put 817-555-1234 in
+    // Kyoto): a country inferred for an ambiguous national-format number
+    // before confirming it could only be that country. A foreign local
+    // number stored as bare digits — routine when a source keeps phones as
+    // integers and drops the leading 0 — lands squarely in this branch.
+    for ambiguous in [
+        "412345678",   // would-be AU mobile lead, no marker
+        "298765432",   // would-be Sydney landline, no marker
+        "412 345 678", // same, spaced
+        "87654321",    // 8 digits — already rejected, pinned so it stays
+        "512345678",   // lead 5
+        "712345678",   // lead 7
+        "812345678",   // lead 8
+        "312345678",   // lead 3
+    ] {
+        assert!(
+            au_national(ambiguous).is_none(),
+            "{ambiguous} carries no AU country signal and must not be claimed as Australian",
+        );
+    }
+}
+
+#[test]
+fn still_accepts_every_shape_that_does_carry_an_au_signal() {
+    // Guard for the fix above: the gate must reject only the marker-less
+    // case. Every shape that genuinely signals Australia — an explicit
+    // international marker, the domestic trunk `0`, or an AU-specific
+    // service-number prefix — must still be claimed, or the module has
+    // traded a fabrication for silence on real AU numbers.
+    for (input, want) in [
+        ("+61 4 1234 5678", "412345678"),
+        ("0061412345678", "412345678"),
+        ("+61298765432", "298765432"),
+        ("0412 345 678", "412345678"),   // domestic trunk 0
+        ("(02) 9876 5432", "298765432"), // domestic trunk 0, punctuated
+        ("0298765432", "298765432"),
+        ("1300975707", "1300975707"), // AU-specific service prefix
+        ("1800931678", "1800931678"),
+    ] {
+        assert_eq!(
+            au_national(input).as_deref(),
+            Some(want),
+            "{input} carries an AU signal and must still be claimed",
+        );
+    }
+}
+
 // ── End-to-end module behaviour ───────────────────────────────────────────────
 
 fn test_ctx() -> ModuleContext {

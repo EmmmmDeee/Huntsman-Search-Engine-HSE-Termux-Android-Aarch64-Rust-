@@ -628,6 +628,54 @@ fn weak_hash_is_cracked_offline_to_its_plaintext() {
 }
 
 #[test]
+fn a_capture_sentinel_in_a_hash_field_is_never_minted_as_a_password_hash() {
+    // The plaintext `password` loop routes EVERY value through
+    // `classify_credential_field` and drops a capture sentinel — its own comment
+    // says "a capture sentinel ([fail], UPGRADE_TO_SEE…) is not a secret". The
+    // sibling hash loop gated on nothing but `len() >= 8`, so any sentinel of 8+
+    // characters was minted as a `Password` at MEDIUM_HIGH tagged
+    // `password-hash`.
+    //
+    // That is worse than one bogus entity: the hash value is an AU-105
+    // hash-reuse LINK KEY, so the SAME provider placeholder appearing on two
+    // unrelated accounts fused them into "these accounts share a credential".
+    // Both sentinels below clear the 8-character gate (`UPGRADE_TO_SEE_xxxx` is
+    // 19, `[NOT_SAVED]` is 11) — the shorter `[fail]`/`<empty>` forms never did,
+    // which is why the hole stayed invisible.
+    for sentinel in ["UPGRADE_TO_SEE_xxxx", "[NOT_SAVED]"] {
+        let entries = vec![
+            json!({"email": ["a@b.com"], "hashed_password": [sentinel], "database_name": ["X"]}),
+            json!({"email": ["a@b.com"], "password_hash": [sentinel], "database_name": ["Y"]}),
+        ];
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_records(&entries, "a@b.com", "fp", "s", &mut seen, &mut result);
+        assert!(
+            !has(&result, EntityKind::Password, sentinel),
+            "`{sentinel}` is a provider capture sentinel, not a digest — minting it as a \
+             password hash makes it an AU-105 reuse link key shared by every account the \
+             provider withheld"
+        );
+    }
+    // Non-regression: a real digest is still a first-class hash node, still
+    // cracked offline, still carrying its algorithm tags.
+    let entries = vec![json!({
+        "email": ["a@b.com"],
+        "hashed_password": ["5f4dcc3b5aa765d61d8327deb882cf99"],
+        "database_name": ["X"]
+    })];
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_records(&entries, "a@b.com", "fp", "s", &mut seen, &mut result);
+    assert!(has(
+        &result,
+        EntityKind::Password,
+        "5f4dcc3b5aa765d61d8327deb882cf99"
+    ));
+    assert!(has(&result, EntityKind::Password, "password"));
+}
+
+#[test]
 fn multi_value_fields_surface_every_value() {
     // v2 can return several emails/passwords in one record's arrays; each must
     // become its own entity, none collapsed to the first.

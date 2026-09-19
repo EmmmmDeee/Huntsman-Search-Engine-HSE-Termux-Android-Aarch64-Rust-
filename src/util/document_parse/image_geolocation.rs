@@ -15,13 +15,16 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use super::DocumentResult;
-use crate::core::confidence;
 
 /// Confidence assigned to a coordinate read straight out of the GPS IFD.
 ///
-/// Not `CERTAIN`: consumer GPS is accurate to roughly ±50 m at the point of
-/// capture, and EXIF is trivially editable — high trust, never absolute.
-const EXIF_GPS_CONFIDENCE: f64 = confidence::VERY_HIGH_PLUSPLUS;
+/// Not a rung of this path's own choosing: the same tag, read by the same
+/// `util::exif::extract_gps`, is worth the same whether the file arrived over
+/// the network (`modules::exif_geo`) or on disk (`hse ingest`). This was a
+/// local `VERY_HIGH_PLUSPLUS` (0.95) against the sibling's 0.80 —
+/// above `AUTHORITATIVE` (0.92), a government register, for a field the old
+/// comment here itself called "trivially editable" (REQ-DOCPARSE-001).
+const EXIF_GPS_CONFIDENCE: f64 = crate::util::exif::GPS_FIX_CONFIDENCE;
 
 /// Geographic coordinates extracted from image metadata.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -389,6 +392,24 @@ mod tests {
             coords.longitude
         );
         assert_eq!(metadata.geolocation_confidence, EXIF_GPS_CONFIDENCE);
+        // REQ-DOCPARSE-001. The rung this path emits is the shared one, not a
+        // local choice — the `hse ingest` coordinate enters the emitted output
+        // and, under --auto-scan, the persisted scan, so a rung of its own here
+        // is a second authority on what an EXIF tag is worth. It was 0.95,
+        // ABOVE the 0.92 a government register earns.
+        assert_eq!(
+            coords.confidence,
+            crate::util::exif::GPS_FIX_CONFIDENCE,
+            "the ingest path must not choose its own rung for a tag exif_geo \
+             reads with the same extract_gps"
+        );
+        assert!(
+            coords.confidence < crate::core::confidence::AUTHORITATIVE,
+            "an exiftool-rewritable tag ({:.2}) must not outrank a government \
+             register ({:.2})",
+            coords.confidence,
+            crate::core::confidence::AUTHORITATIVE
+        );
     }
 
     #[test]

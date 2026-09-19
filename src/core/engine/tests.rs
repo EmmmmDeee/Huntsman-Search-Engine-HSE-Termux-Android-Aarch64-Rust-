@@ -1935,8 +1935,161 @@ fn skip_reason_rejects_local_domain_for_external_module() {
     let opts = ScanOptions::default();
     assert_eq!(
         skip_reason(&m, &local, &opts, false, 0),
-        Some("local/reserved domain — external API would reject")
+        Some("local/reserved domain or private IP — external API would reject (SSRF gate)")
     );
+}
+
+#[test]
+fn skip_reason_rejects_ip_literal_domain_ssrf_gate() {
+    // SSRF gate: a Domain target whose VALUE is itself an IP literal
+    // (not caught by is_local_domain, which only matches reserved
+    // NAMES) must not reach external-API modules. Without this,
+    // `{"kind":"domain","value":"169.254.169.254"}` reached
+    // web_crawler with no guard at all — the cloud-metadata endpoint,
+    // named explicitly because it is the highest-value real target
+    // this gap exposed.
+    let m = free_active();
+    let opts = ScanOptions::default();
+    for hostile in [
+        "169.254.169.254", // cloud-metadata endpoint
+        "127.0.0.1",
+        "10.0.0.1",
+        "192.168.1.1",
+        "::1",
+    ] {
+        let t = Target::new(TargetKind::Domain, hostile);
+        let reason = skip_reason(&m, &t, &opts, false, 0);
+        assert!(
+            reason.is_some_and(|r| r.contains("SSRF") || r.contains("private")),
+            "Domain {hostile} should be SSRF-rejected, got {reason:?}",
+        );
+    }
+}
+
+#[test]
+fn skip_reason_lets_public_domain_through() {
+    // Regression guard for the fix above: a genuine public domain must
+    // still pass — the new is_private_ip check must not overreach.
+    let m = free_active();
+    let opts = ScanOptions::default();
+    for benign in ["example.com", "github.com", "abc.net.au"] {
+        let t = Target::new(TargetKind::Domain, benign);
+        assert!(
+            skip_reason(&m, &t, &opts, false, 0).is_none(),
+            "Domain {benign} should pass through",
+        );
+    }
+}
+
+#[test]
+fn skip_reason_rejects_encoded_ip_literal_domain_ssrf_bypass() {
+    // Adversarial follow-up to skip_reason_rejects_ip_literal_domain_ssrf_gate
+    // (caught live by a Copilot review on that very fix): std::net::IpAddr's
+    // strict parser rejects shorthand-dotted, decimal, hex, and octal IPv4
+    // forms, but Target::validate's Domain branch admits every one of them
+    // (a dot + alnum/-/_ charset), and the URL host parser web_crawler's own
+    // request path uses (via reqwest/url) canonicalizes each to the exact
+    // private address it dials. The gate must canonicalize before judging,
+    // not parse strictly, or every one of these reaches loopback/metadata
+    // unguarded.
+    let m = free_active();
+    let opts = ScanOptions::default();
+    for hostile in [
+        "127.1",        // shorthand-dotted -> 127.0.0.1
+        "127.0.1",      // shorthand-dotted -> 127.0.0.1
+        "2130706433",   // decimal -> 127.0.0.1
+        "0x7f000001",   // hex -> 127.0.0.1
+        "017700000001", // octal -> 127.0.0.1
+        "0177.0.0.1",   // octal first octet -> 127.0.0.1
+    ] {
+        let t = Target::new(TargetKind::Domain, hostile);
+        let reason = skip_reason(&m, &t, &opts, false, 0);
+        assert!(
+            reason.is_some_and(|r| r.contains("SSRF") || r.contains("private")),
+            "Domain {hostile} (canonicalizes to a private IP) should be SSRF-rejected, got {reason:?}",
+        );
+    }
+}
+
+#[test]
+fn skip_reason_rejects_private_email_domain_ssrf_gate() {
+    // REQ-SSRF-002. The Domain arm above closed the IP-literal hole for
+    // Domain-kind targets, but the gate's own comment asserted "there's no
+    // concept of a 'private email'" and let every Email-kind target fall
+    // through untouched. That assumption is false: `employer_pivot` and
+    // `fediverse` both derive a bare hostname from the email's domain part
+    // and dial it directly (`https://{domain}/…`,
+    // `https://{domain}/.well-known/webfinger?…`) with no guard of their
+    // own, so an Email target is a second, fully-open route to the exact
+    // internal addresses the Domain arm now refuses. The DNS-level SSRF
+    // resolver cannot help — an IP-literal host is dialled with no lookup.
+    let m = free_active();
+    let opts = ScanOptions::default();
+    for hostile in [
+        "finance@169.254.169.254", // cloud-metadata endpoint
+        "x@127.0.0.1",
+        "user@10.0.0.1",
+        "user@192.168.1.1",
+        "user@127.1",         // shorthand-dotted -> 127.0.0.1
+        "user@2130706433",    // decimal -> 127.0.0.1
+        "user@0x7f000001",    // hex -> 127.0.0.1
+        "user@[::1]",         // RFC 5321 address literal, loopback
+        "user@[IPv6:::1]",    // RFC 5321 tagged IPv6 literal form
+        "admin@router.local", // IANA reserved name
+        "postmaster@localhost",
+        "a@svc.internal",
+    ] {
+        let t = Target::new(TargetKind::Email, hostile);
+        let reason = skip_reason(&m, &t, &opts, false, 0);
+        assert!(
+            reason.is_some_and(|r| r.contains("SSRF") || r.contains("private")),
+            "Email {hostile} should be SSRF-rejected, got {reason:?}",
+        );
+    }
+}
+
+#[test]
+fn skip_reason_lets_public_email_domain_through() {
+    // Regression guard for REQ-SSRF-002: an ordinary email must still reach
+    // every email-accepting module — the new gate must not overreach. A
+    // local part that merely CONTAINS an `@`-adjacent private-looking token
+    // is not the host and must not trip the gate either.
+    let m = free_active();
+    let opts = ScanOptions::default();
+    for benign in [
+        "jane@example.com",
+        "j.citizen@abc.net.au",
+        "dns@cloudflare.com",
+        "127.0.0.1@example.com", // the LOCAL part is IP-shaped, the host is public
+        "user@8.8.8.8",          // public IP literal as the host
+    ] {
+        let t = Target::new(TargetKind::Email, benign);
+        assert!(
+            skip_reason(&m, &t, &opts, false, 0).is_none(),
+            "Email {benign} should pass through",
+        );
+    }
+}
+
+#[test]
+fn skip_reason_lets_encoded_public_ip_domain_through() {
+    // Regression guard for the bypass fix above: a Domain value that merely
+    // LOOKS numeric but canonicalizes to a PUBLIC address must still pass —
+    // the canonicalizing check must not overreach into treating every
+    // digit-only Domain value as hostile.
+    let m = free_active();
+    let opts = ScanOptions::default();
+    for benign in [
+        "8.8.8.8",   // already-canonical public IP as a Domain value
+        "134744072", // decimal -> 8.8.8.8 (public)
+        "1.1",       // shorthand-dotted -> 1.0.0.1 (public)
+    ] {
+        let t = Target::new(TargetKind::Domain, benign);
+        assert!(
+            skip_reason(&m, &t, &opts, false, 0).is_none(),
+            "Domain {benign} (canonicalizes to a public IP) should pass through",
+        );
+    }
 }
 
 #[test]
@@ -5010,6 +5163,50 @@ fn admission_rejection_covers_every_drop_filter_and_order() {
         admission_rejection(seed, None, &ent(EntityKind::Phone, "+1240893", 0.9)),
         Some("implausible_phone"),
     );
+    // REQ-VALIDATION-001: the kinds homograph spoofing actually targets. A
+    // `pаypal.com` whose `a` is Cyrillic was admitted here, then expanded and
+    // correlated like any real domain.
+    assert_eq!(
+        admission_rejection(
+            seed,
+            None,
+            &ent(EntityKind::Domain, "p\u{0430}ypal.com", 0.9)
+        ),
+        Some("confusable_homoglyph"),
+    );
+    assert_eq!(
+        admission_rejection(
+            seed,
+            None,
+            &ent(EntityKind::Email, "victim@p\u{0430}ypal.com", 0.9)
+        ),
+        Some("confusable_homoglyph"),
+    );
+    assert_eq!(
+        admission_rejection(
+            seed,
+            None,
+            &ent(EntityKind::Url, "https://p\u{0430}ypal.com/login", 0.9)
+        ),
+        Some("confusable_homoglyph"),
+    );
+    // And the false positive the per-label check exists to avoid: a whole
+    // Cyrillic label under an ASCII TLD is a real internationalised domain. The
+    // FLAT predicate calls this a spoof, so wiring the existing check straight
+    // in would have dropped it at admission.
+    assert_eq!(
+        admission_rejection(
+            seed,
+            None,
+            &ent(
+                EntityKind::Domain,
+                "\u{043C}\u{043E}\u{0441}\u{043A}\u{0432}\u{0430}.com",
+                0.9
+            )
+        ),
+        None,
+        "a legitimate internationalised domain must still be admitted",
+    );
     assert_eq!(
         admission_rejection(
             seed,
@@ -5456,6 +5653,51 @@ fn tracked_entity_map_into_inner_yields_every_entity_regardless_of_dirty_state()
 }
 
 // ── Final breach sweep + autonomous audit ───────────────────────────────────
+
+/// The sweep's dispatch allow-list, built over the REAL registry.
+///
+/// The correlator's `source_family_covers_every_breach_category_module` proves
+/// every breach-category module is deliberately classified; this proves the
+/// classification actually reaches the dispatch decision. A corpus that is
+/// classified but never dispatched is still a corpus the sweep never asks —
+/// implementation is not reachability, and these are different code paths.
+///
+/// `stolen_tax` is the regression this pins: a paid, key-gated breach API that
+/// fell through `source_family`'s needles to `"other"` and was therefore absent
+/// from this list entirely, observed live as `breach-category modules unknown to
+/// the corpus classifier … modules="stolen_tax,ahmia"`. `ahmia` is the opposite
+/// case in the same warning — a full-text Tor index, not a record corpus — and
+/// must stay OUT, silently (see `NON_CORPUS_BREACH_MODULES`).
+#[tokio::test]
+async fn the_breach_sweep_allow_list_admits_every_graded_corpus_and_no_non_corpus() {
+    // `ScanEngine::new` spawns the DB-writer actor, so a runtime must be live.
+    use crate::core::test_support::InMemoryStore;
+
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(16);
+    let engine = ScanEngine::new(crate::modules::registry(), store, bus);
+    let allow = engine.breach_sweep_modules("reachability-check");
+
+    assert!(
+        allow.iter().any(|m| m == "stolen_tax"),
+        "stolen_tax is a graded breach corpus but never reaches the sweep's dispatch \
+         allow-list: {allow:?}"
+    );
+    for excluded in crate::core::correlator::NON_CORPUS_BREACH_MODULES {
+        assert!(
+            !allow.iter().any(|m| m == excluded),
+            "`{excluded}` is recorded as a deliberate non-corpus yet the sweep dispatches it"
+        );
+    }
+    // Sanity: the allow-list is the real thing, not an empty vec that would
+    // satisfy the exclusion half vacuously.
+    for corpus in ["hibp", "dehashed", "see_know"] {
+        assert!(
+            allow.iter().any(|m| m == corpus),
+            "{corpus} missing from the sweep allow-list: {allow:?}"
+        );
+    }
+}
 
 /// A stand-in breach corpus. Its NAME is what matters: `source_family` classes
 /// anything containing "breach" into the breach family, so

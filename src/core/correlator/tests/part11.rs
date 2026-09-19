@@ -785,3 +785,62 @@ fn au019_ignores_a_certificate_transparency_date_on_a_breach_tagged_domain() {
         "a CT module's not_before date must not complete a breach cluster: {r:?}"
     );
 }
+
+// ── REQ-CORRELATOR-007: one breach RECORD is one event, not three ─────────────
+
+#[test]
+fn au019_does_not_call_a_single_breach_record_a_coordinated_compromise() {
+    // A breach row is a ROW: one leak of one service on one date yields an
+    // Email, a Password and a Username — three entities, one event. AU-019
+    // deduped by entity uid only, so those three fragments of the SAME record
+    // satisfied its 3-member floor and minted a High "potential coordinated
+    // compromise" from a single, entirely ordinary breach hit. "Coordinated"
+    // requires more than one compromise.
+    let mk = |k: EntityKind, v: &str| {
+        let mut e = Entity::new(k, v, 0.8, "s");
+        e.tag("breach");
+        e.add_evidence(
+            Evidence::new("dehashed", "one row")
+                .with_attr("breach_date", "2024-03-01")
+                .with_attr("breach_name", "AcmeCorp"),
+        );
+        e
+    };
+    let ents = vec![
+        mk(EntityKind::Email, "victim@x.com"),
+        mk(EntityKind::Password, "hunter2"),
+        mk(EntityKind::Username, "victim91"),
+    ];
+    let r = rule_au_019_temporal_breach_cluster(&RuleContext::new(&ents), "s", 0);
+    assert!(
+        r.is_empty(),
+        "three fragments of ONE breach record are one event, not a cluster: {r:?}"
+    );
+}
+
+#[test]
+fn au019_still_fires_for_three_genuinely_distinct_breaches_on_one_day() {
+    // The true-positive the fix must preserve, and the sharpest case for it:
+    // three DIFFERENT named breaches disclosed the same day is exactly the
+    // coordinated-compromise pattern the rule exists to surface. Counting
+    // events rather than entities must not lose it — the pre-existing
+    // three-distinct-dates test covers the spread-out shape.
+    let mk = |v: &str, breach: &str| {
+        let mut e = Entity::new(EntityKind::Email, v, 0.8, "s");
+        e.tag("breach");
+        e.add_evidence(
+            Evidence::new("dehashed", "row")
+                .with_attr("breach_date", "2024-03-01")
+                .with_attr("breach_name", breach),
+        );
+        e
+    };
+    let ents = vec![
+        mk("a@x.com", "AcmeCorp"),
+        mk("b@x.com", "BetaLtd"),
+        mk("c@x.com", "GammaInc"),
+    ];
+    let r = rule_au_019_temporal_breach_cluster(&RuleContext::new(&ents), "s", 0);
+    assert_eq!(r.len(), 1, "three distinct breaches is a real cluster");
+    assert_eq!(r[0].entity_uids.len(), 3);
+}

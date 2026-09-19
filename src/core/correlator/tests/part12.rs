@@ -124,16 +124,16 @@ fn au041_fires_for_ens_tagged_username() {
 }
 
 #[test]
-fn au042_does_not_fire_for_a_single_pgp_linked_email() {
-    // A lone pgp-linked email is not multi-email same-owner evidence — a "links 1
-    // email to one owner" assertion is degenerate and must not fire (the rule's
-    // contract is "two or more addresses bound to the same key").
-    let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.6, "s");
-    e.tag("pgp-linked");
+fn au042_does_not_fire_for_a_single_pgp_unverified_uid_email() {
+    // A lone co-resident-UID email is not multi-email same-owner evidence — a
+    // "links 1 email to one owner" assertion is degenerate and must not fire
+    // (the rule's contract is "two or more addresses on the same key").
+    let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.35, "s");
+    e.tag("pgp-unverified-uid");
     e.add_evidence(Evidence::new("pgp", "uid").with_attr("key_fingerprint", "DEADBEEF00000000"));
     assert!(
         rule_au_042_pgp_email_identity(&RuleContext::new(&[e]), "s", 0).is_empty(),
-        "one email bound to a key is not a multi-email identity link"
+        "one email on a key is not a multi-email identity link"
     );
 }
 

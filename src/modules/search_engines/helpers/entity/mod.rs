@@ -164,7 +164,9 @@ pub(in crate::modules::search_engines) fn score_username(
     // Signals 3/5 don't count — they're driven by the same surname text the
     // business page legitimately contains about itself, not independent
     // evidence the candidate is a personal handle. A genuine "brett_lawnton" is
-    // unaffected either way (no foreign part).
+    // unaffected (no foreign part). For common surnames in controls ("John Smith"),
+    // a bare surname anchor must pair with independent corroboration to prevent
+    // collisions with unrelated business names ("smith_engineering").
     let has_foreign_part = signal1
         && parts.iter().any(|p| {
             !terms.iter().any(|t| {

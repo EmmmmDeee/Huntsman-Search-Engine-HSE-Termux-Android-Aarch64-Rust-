@@ -9,7 +9,7 @@ use super::{
         VERIFICATION_VENDORS, reverse_ip, soa_rname_to_email, unescape_dns_label,
         verification_vendor,
     },
-    resolve::{iodef_entities, tlsrpt_entities},
+    resolve::{iodef_entities, is_spamhaus_abuse_listing, tlsrpt_entities},
 };
 
 // -- DnsIntel accepts --------------------------------------------------
@@ -562,4 +562,72 @@ fn no_answers_means_no_verdict_however_the_sweep_ended() {
     let nothing_ran = BlocklistTally::default();
     assert!(!nothing_ran.supports_a_verdict());
     assert!(!nothing_ran.is_wholly_unresolved());
+}
+
+// -- Spamhaus policy-code filtering -----------------------------------------------
+
+#[test]
+fn spamhaus_abuse_listing_accepts_sbl() {
+    let sbl = std::net::IpAddr::from([127, 0, 0, 2]);
+    assert!(is_spamhaus_abuse_listing(sbl));
+}
+
+#[test]
+fn spamhaus_abuse_listing_accepts_css() {
+    let css = std::net::IpAddr::from([127, 0, 0, 3]);
+    assert!(is_spamhaus_abuse_listing(css));
+}
+
+#[test]
+fn spamhaus_abuse_listing_accepts_drop() {
+    let drop = std::net::IpAddr::from([127, 0, 0, 4]);
+    assert!(is_spamhaus_abuse_listing(drop));
+}
+
+#[test]
+fn spamhaus_abuse_listing_accepts_sbl_css_combined() {
+    let combined = std::net::IpAddr::from([127, 0, 0, 9]);
+    assert!(is_spamhaus_abuse_listing(combined));
+}
+
+#[test]
+fn spamhaus_abuse_listing_rejects_pbl_isp() {
+    let pbl = std::net::IpAddr::from([127, 0, 0, 5]);
+    assert!(!is_spamhaus_abuse_listing(pbl));
+}
+
+#[test]
+fn spamhaus_abuse_listing_rejects_pbl_variant_10() {
+    let pbl = std::net::IpAddr::from([127, 0, 0, 10]);
+    assert!(!is_spamhaus_abuse_listing(pbl));
+}
+
+#[test]
+fn spamhaus_abuse_listing_rejects_pbl_dialup() {
+    let pbl = std::net::IpAddr::from([127, 0, 0, 11]);
+    assert!(!is_spamhaus_abuse_listing(pbl));
+}
+
+#[test]
+fn spamhaus_abuse_listing_rejects_unknown_codes() {
+    let unknown = std::net::IpAddr::from([127, 0, 0, 1]);
+    assert!(!is_spamhaus_abuse_listing(unknown));
+
+    let unknown2 = std::net::IpAddr::from([127, 0, 0, 99]);
+    assert!(!is_spamhaus_abuse_listing(unknown2));
+}
+
+#[test]
+fn spamhaus_abuse_listing_rejects_non_127() {
+    let non_127 = std::net::IpAddr::from([192, 168, 1, 1]);
+    assert!(!is_spamhaus_abuse_listing(non_127));
+
+    let non_127_second = std::net::IpAddr::from([127, 0, 1, 2]);
+    assert!(!is_spamhaus_abuse_listing(non_127_second));
+}
+
+#[test]
+fn spamhaus_abuse_listing_rejects_ipv6() {
+    let ipv6 = std::net::IpAddr::from([0, 0, 0, 0, 0, 0, 0, 1]);
+    assert!(!is_spamhaus_abuse_listing(ipv6));
 }

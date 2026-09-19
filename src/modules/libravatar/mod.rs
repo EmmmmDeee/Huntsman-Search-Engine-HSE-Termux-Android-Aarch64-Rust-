@@ -94,11 +94,59 @@ impl Module for Libravatar {
         let probe = format!("{BASE}{hash}?d=404&s=80");
         let resp = ctx.http.get(&probe).send_tagged(SRC).await?;
         // 404 → no avatar (clean empty); any other non-2xx → real ModuleError.
-        let Some(_resp) = ok_or_absent(SRC, resp, &[404]).await? else {
+        let Some(resp) = ok_or_absent(SRC, resp, &[404]).await? else {
             return Ok(ModuleResult::new());
         };
+        // A 200 is a presence only if what came back is actually an IMAGE.
+        // The status line alone cannot tell an avatar from an anti-bot
+        // interstitial, a CDN error page or a consent wall — all of which are
+        // served 200 with an HTML body — and this module's finding is a claim
+        // about a PERSON (`public-profile`, "this address has a public web
+        // presence"), so a wall minted one from nothing. (REQ-LIBRAVATAR-001;
+        // same class as REQ-PROBE-004, where a Radware captcha 200 became a
+        // verified social profile.)
+        //
+        // The check is on the CONTENT-TYPE HEADER, not the body: it costs one
+        // header lookup and no read, so the module keeps the cheapness that
+        // made reading the body undesirable in the first place. It is not a
+        // proof the bytes decode as an image — a wall that lies about its
+        // content type still passes — but it removes every honest
+        // misclassification, which is what was actually happening.
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !is_image_content_type(content_type) {
+            tracing::debug!(
+                module = SRC,
+                content_type,
+                "200 from the avatar CDN is not an image — not a presence"
+            );
+            return Ok(ModuleResult::new());
+        }
         Ok(build_avatar_result(&hash, &ctx.scan_id))
     }
+}
+
+/// True when a `Content-Type` header value declares an image.
+///
+/// Compares only the media type, discarding any parameters (`image/png;
+/// charset=binary`) and matching case-insensitively, as RFC 9110 requires.
+///
+/// **Fails closed on an absent or unreadable header**: a real CDN image
+/// response always declares its type, so a 200 that does not is not evidence
+/// of an avatar. `""` (the `unwrap_or` for a missing header) therefore returns
+/// false. **Pure**, so the classification is unit-tested without a live server
+/// — the same discipline [`build_avatar_result`] follows.
+fn is_image_content_type(value: &str) -> bool {
+    value
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with("image/")
 }
 
 /// Emit the avatar `Url` for a confirmed-present Libravatar. Pure of I/O so it

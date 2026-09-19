@@ -342,12 +342,18 @@ pub(super) fn merge_records(
 /// `Address` built from the lodged postcode when present (so geocode/coords can
 /// pivot on it), otherwise an `unclaimed_money` finding so the record is never
 /// dropped. Each carries owner / amount / sender / date / reference as evidence.
+///
+/// For Organisation targets, only company names matching the seed exactly are
+/// emitted (avoiding false attribution via corporate form words like "CORP").
+/// For FullName targets, the existing surname-broadening and person-parsing
+/// logic applies.
 pub(super) fn records_to_entities(
     records: &[Map<String, Value>],
     total: u64,
     seed: &str,
     query: &str,
     broadened: bool,
+    target_kind: TargetKind,
     scan_id: &str,
 ) -> Vec<Entity> {
     let mut out = Vec::new();
@@ -357,7 +363,14 @@ pub(super) fn records_to_entities(
         // name, the row is about an unrelated party and nothing on it — address,
         // Person, Organisation, or money finding — belongs in this scan. See
         // [`owner_matches_query`] for the measured impact.
-        if !owner_matches_query(&owner, query) {
+        //
+        // For Organisation targets, apply strict exactness: only accept records where
+        // the owner exactly matches the seed, not merely shares a token — prevents
+        // false attribution via corporate form words (e.g., "ABC CORP" vs "DEF CORP").
+        let is_org_seed = matches!(target_kind, TargetKind::Organisation);
+        if !owner_matches_query(&owner, query)
+            || (is_org_seed && !owner_matches_full_name(&owner, seed))
+        {
             continue;
         }
         // The exact-vs-family split only has meaning when the query was
@@ -535,9 +548,35 @@ pub(super) fn records_to_entities(
         // `Organisation` per individually-resolvable company name so the engine's
         // expansion pivots each into abn_lookup / opencorporates and resolves its
         // ABN/ACN, connecting the unclaimed-money graph to the business registry.
+        //
+        // For Organisation targets, apply exactness: only emit companies that match
+        // the seed exactly (whole-word token match), not merely those sharing a
+        // corporate form word like "CORP" — this prevents false attribution of
+        // stranger's unclaimed-money records via corporate-form-word collisions.
+        let org_is_seed = matches!(target_kind, TargetKind::Organisation);
+        let companies = crate::util::abn::company_names(&owner);
+
+        // When this is an Organisation seed, emit the owner itself as an
+        // organisation if it matches exactly AND no extracted companies are present.
+        // This handles simplified names like "ABC CORP" that lack legal-form suffixes
+        // while avoiding duplicates when the owner itself has legal form (e.g.,
+        // "ABC CORP PTY LTD" which is extracted as a company name).
+        if org_is_seed && companies.is_empty() && owner_matches_full_name(&owner, seed) {
+            let mut org = Entity::new(EntityKind::Organisation, &owner, find_conf, scan_id);
+            org.tag(SRC);
+            org.tag("unclaimed-money");
+            org.tag("country:AU");
+            org.tag("company-owner");
+            let oev = Evidence::new(SRC, format!("Company owed unclaimed money: {owner}"))
+                .with_attr("register", "QLD Public Trustee unclaimed monies");
+            org.add_evidence(oev);
+            out.push(org);
+        }
+
         out.extend(
-            crate::util::abn::company_names(&owner)
+            companies
                 .into_iter()
+                .filter(|company| !org_is_seed || owner_matches_full_name(company, seed))
                 .map(|company| {
                     let mut org =
                         Entity::new(EntityKind::Organisation, &company, find_conf, scan_id);
@@ -566,10 +605,14 @@ pub(super) fn records_to_entities(
         // exactly like the owner, so the payer enters the graph and pivots into
         // abn_lookup / opencorporates, linking the subject to the business behind
         // the money.
+        //
+        // For Organisation targets, apply the same exactness gate: only emit senders
+        // that match the seed, to prevent false attribution via corporate form words.
         if let Some(sender) = &sender {
             out.extend(
                 crate::util::abn::company_names(sender)
                     .into_iter()
+                    .filter(|company| !org_is_seed || owner_matches_full_name(company, seed))
                     .map(|company| {
                         let mut org =
                             Entity::new(EntityKind::Organisation, &company, find_conf, scan_id);

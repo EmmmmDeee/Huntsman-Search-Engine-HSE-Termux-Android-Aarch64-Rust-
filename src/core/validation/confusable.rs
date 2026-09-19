@@ -181,6 +181,30 @@ pub fn is_confusable_mixed_script(value: &str) -> bool {
     false
 }
 
+/// True when any single DNS LABEL of `host` carries the homograph-spoof
+/// signature — the host-shaped counterpart to [`is_confusable_mixed_script`].
+///
+/// Per label, and that is the whole point. Applying the flat string check to a
+/// host flags a legitimate internationalised domain, because the ASCII TLD
+/// supplies the "genuine ASCII Latin" half of the mix. Measured:
+///
+/// ```text
+/// аpple.com   (Cyrillic а + ASCII "pple")  flat=true   per-label=true   spoof
+/// pаypal.com  (Cyrillic а inside "paypal") flat=true   per-label=true   spoof
+/// москва.com  (Cyrillic label, ASCII TLD)  flat=TRUE   per-label=false  legitimate
+/// пример.рф   (all-Cyrillic IDN)           flat=false  per-label=false  legitimate
+/// ```
+///
+/// A whole Cyrillic label under `.com` is ordinary IDN usage; a single label
+/// that mixes Cyrillic and ASCII Latin is the attack. Splitting on `.` is what
+/// separates them, so the check can be applied to the kinds homograph spoofing
+/// actually targets without dropping real internationalised domains
+/// (REQ-VALIDATION-001).
+#[must_use]
+pub fn host_label_is_confusable(host: &str) -> bool {
+    host.split('.').any(is_confusable_mixed_script)
+}
+
 /// True when a `Person` value looks like a **random/gibberish string** rather
 /// than a real name — the `ZonJZRJHHWD GvkJCJRWHWD`-style junk that breach
 /// co-occurrence dumps mint as "names".

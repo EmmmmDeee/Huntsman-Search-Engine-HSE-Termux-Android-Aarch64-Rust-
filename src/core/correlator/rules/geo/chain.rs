@@ -19,30 +19,51 @@ pub(in crate::core::correlator) fn rule_au_016_breach_ip_geo_chain(
     if breach_ips.is_empty() || coords.is_empty() {
         return Vec::new();
     }
-    let linked: Vec<&Entity> = coords
-        .iter()
-        .filter(|c| {
-            c.evidence.iter().any(|ev| {
-                breach_ips
-                    .iter()
-                    .any(|ip| text_mentions_ip(&ev.summary, &ip.value))
-            })
-        })
-        .copied()
-        .collect();
-    if linked.is_empty() {
+    // Pair them up. A breach IP and a coordinate belong in this chain only when
+    // THAT coordinate's evidence names THAT IP.
+    //
+    // REQ-CORRELATOR-006: the two sides used to be computed independently —
+    // coordinates whose evidence mentioned *some* breach IP, and then EVERY
+    // breach IP in the scan. With five breach IPs of which one was actually
+    // geolocated, this minted a `Severity::High` claim reading "5 breach IP(s)
+    // resolved to 1 coordinate(s)" and put all five in the uid set, implicating
+    // four on no evidence at all. The relation was computed and then thrown
+    // away — the same shape as AU-046, AU-039, AU-105 and AU-019.
+    //
+    // `BTreeSet` rather than `HashSet` so the uid list is uid-sorted and
+    // identical entity sets always produce an identical correlation: the live
+    // and finalise passes feed entities in randomised order, and AU-017 below
+    // records what non-determinism there costs (two persisted rows for one
+    // finding).
+    let mut chained_ips: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut chained_coords: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for ip in &breach_ips {
+        for c in &coords {
+            if c.evidence
+                .iter()
+                .any(|ev| text_mentions_ip(&ev.summary, &ip.value))
+            {
+                chained_ips.insert(ip.uid.as_str());
+                chained_coords.insert(c.uid.as_str());
+            }
+        }
+    }
+    if chained_coords.is_empty() {
         return Vec::new();
     }
-    let mut uids: Vec<String> = breach_ips.iter().map(|e| e.uid.clone()).collect();
-    uids.extend(linked.iter().map(|e| e.uid.clone()));
+    let uids: Vec<String> = chained_ips
+        .iter()
+        .chain(chained_coords.iter())
+        .map(|u| (*u).to_string())
+        .collect();
     vec![Correlation::new(
         "AU-016",
         "Breach IP → geolocation chain",
         Severity::High,
         format!(
             "{} breach IP(s) resolved to {} coordinate(s) via geolocation pipeline",
-            breach_ips.len(),
-            linked.len()
+            chained_ips.len(),
+            chained_coords.len()
         ),
         uids,
         scan_id,

@@ -187,7 +187,23 @@ fn build_entities(data: &IpApiResp, ip: &str, scan_id: &str) -> Vec<Entity> {
     let country = data.country.as_deref().unwrap_or("");
     if geo_trusted && !is_datacenter && !city.is_empty() && !country.is_empty() {
         let addr = crate::util::geo::compose_address(city, region, country);
-        let mut ae = Entity::new(EntityKind::Address, &addr, confidence::HIGH, scan_id);
+        // The SAME `geo_conf` the Coordinates above carry, not a flat
+        // `confidence::HIGH`. This module deliberately grades an IP fix down to
+        // MEDIUM for a mobile IP — the comment at `geo_conf` records why: "a
+        // single overstated IP-geo hit was outranking a corroborated WiGLE WiFi
+        // fix". That recalibration was applied to the Coordinates and not to
+        // the Address DERIVED FROM THE SAME FIX, which stayed a flat 0.65: 0.15
+        // above its own coordinates on a mobile IP and 0.05 on a residential
+        // one, blind to the grading entirely. (A hosting/proxy IP grades to
+        // TENTATIVE but suppresses the Address outright via `is_datacenter`
+        // below, so that rung is not reachable here.) A city string is strictly
+        // coarser than the lat/lon it was composed from, so it can never be the
+        // more confident of the two (REQ-IPGEO-001).
+        let fix = result
+            .iter()
+            .rev()
+            .find(|e| e.kind == EntityKind::Coordinates);
+        let mut ae = crate::util::geo::coarse_provider_address(&addr, geo_conf, fix, scan_id);
         ae.tag("geoint");
         ae.add_evidence(Evidence::new(SRC, format!("IP address for {ip}")));
         result.push(ae);

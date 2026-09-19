@@ -24,6 +24,32 @@
 /// ```
 #[must_use]
 pub fn is_onion_url(value: &str) -> bool {
+    let host = host_of(value);
+    host.len() > ".onion".len() && host.ends_with(".onion")
+}
+
+/// The HOST of a URL-ish value: scheme, userinfo, port, path, query, fragment
+/// and any trailing root dot removed, lowercased. A bare host passes through
+/// unchanged, so the same call works on a `Domain` value and a full `Url`.
+///
+/// Named rather than left inline inside [`is_onion_url`], which is where this
+/// logic lived. `core` may not reach into `util::url_util` (the architecture
+/// test `core_does_not_import_util_directly` enforces that, and its allow-list
+/// is a deliberate, individually-argued one), so the admission gate's
+/// homograph check needed a host and `core` already had the parse — unnamed,
+/// and usable by exactly one caller. Extracting it gives `core` ONE definition
+/// of "the host of this value" instead of a second inline copy written for the
+/// second caller (REQ-VALIDATION-001).
+///
+/// ```
+/// use huntsman_search_engine::core::validation::host_of;
+///
+/// assert_eq!(host_of("https://user@Example.COM:8443/a?b#c"), "example.com");
+/// assert_eq!(host_of("example.com."), "example.com");
+/// assert_eq!(host_of("  EXAMPLE.com "), "example.com");
+/// ```
+#[must_use]
+pub fn host_of(value: &str) -> String {
     let v = value.trim();
     // Drop a scheme, then take the authority up to the first path/query/fragment
     // delimiter, then drop any userinfo and :port so only the host remains.
@@ -34,6 +60,5 @@ pub fn is_onion_url(value: &str) -> bool {
         .unwrap_or(after_scheme);
     let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
     let host = host_port.split(':').next().unwrap_or(host_port);
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    host.len() > ".onion".len() && host.ends_with(".onion")
+    host.trim_end_matches('.').to_ascii_lowercase()
 }

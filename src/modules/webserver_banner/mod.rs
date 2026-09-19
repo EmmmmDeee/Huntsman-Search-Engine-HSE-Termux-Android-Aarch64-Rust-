@@ -119,11 +119,28 @@ impl Module for WebserverBanner {
         };
 
         let port_suffix = port.map_or(String::new(), |p| format!(":{p}"));
+        // Whether ANY scheme got a response at all, and the first transport
+        // failure if none did. Without this the `continue` below discarded
+        // every transport error and the loop fell through to `Ok(empty)` —
+        // making "the host is unreachable / TLS failed / the proxy refused"
+        // indistinguishable from "the host answered and published no
+        // fingerprint headers". Those are opposite facts, and the second is a
+        // real negative finding while the first is no observation at all.
+        // (REQ-WEBBANNER-001.)
+        let mut answered = false;
+        let mut first_failure: Option<crate::core::error::Error> = None;
         for scheme in ["https", "http"] {
             let url = format!("{scheme}://{host}{port_suffix}/");
-            let Ok(resp) = ctx.http.head(&url).send_tagged(SRC).await else {
-                continue;
+            let resp = match ctx.http.head(&url).send_tagged(SRC).await {
+                Ok(r) => r,
+                Err(e) => {
+                    if first_failure.is_none() {
+                        first_failure = Some(e);
+                    }
+                    continue;
+                }
             };
+            answered = true;
             let status = resp.status();
             let captured = capture_headers(resp.headers());
             // Surface any API keys leaked in response headers (credentials are
@@ -160,6 +177,13 @@ impl Module for WebserverBanner {
             let mut result = ModuleResult::new();
             result.push(entity);
             return Ok(result);
+        }
+        // Both schemes failed at transport: nothing was observed, so there is
+        // no negative to report. Propagating the first failure lets the
+        // breaker, the doctor and the live-drift sweep read "unreachable"
+        // instead of banking a clean negative for a host never reached.
+        if !answered && let Some(e) = first_failure {
+            return Err(e);
         }
         Ok(ModuleResult::new())
     }
@@ -242,12 +266,27 @@ fn capture_headers(h: &reqwest::header::HeaderMap) -> Vec<(String, String)> {
 }
 
 fn apply_stack_tags(e: &mut Entity, headers: &[(String, String)]) {
-    // Lower-case every header value and join them into one searchable blob.
+    // Only IDENTIFYING_HEADERS values feed the blob. Its own doc already says
+    // why: the rest are "purely security-posture / caching headers present on
+    // countless unrelated stacks and confirm nothing distinctive by
+    // themselves" — but that distinction was applied to `banner_confidence`
+    // and NOT here, in the function that makes the actual vendor claims.
+    //
+    // `content-security-policy` is the pointed one: a CSP ENUMERATES OTHER
+    // PEOPLE'S DOMAINS by design. Any site that loads a script from
+    // `cdnjs.cloudflare.com` — routine — named Cloudflare in its CSP and was
+    // tagged `cloudflare`, asserting a CDN in front of a site that may have
+    // none. `strict-transport-security` and `x-frame-options` are the same
+    // class of non-evidence. (REQ-WEBBANNER-001.)
     let blob: String = headers
         .iter()
+        .filter(|(h, _)| IDENTIFYING_HEADERS.contains(&h.as_str()))
         .map(|(_, v)| v.to_ascii_lowercase())
         .collect::<Vec<_>>()
         .join("|");
+    // Name-presence checks stay on the full capture: they assert a header
+    // EXISTS rather than reading a value, and each one used below
+    // (`cf-ray`, `x-amz-cf-id`, `x-served-by`) is itself identifying.
     let names: Vec<&str> = headers.iter().map(|(n, _)| n.as_str()).collect();
     if blob.contains("nginx") {
         e.tag("nginx");
@@ -264,7 +303,11 @@ fn apply_stack_tags(e: &mut Entity, headers: &[(String, String)]) {
     if names.contains(&"x-amz-cf-id") {
         e.tag("aws-cloudfront");
     }
-    if names.contains(&"x-served-by") || names.contains(&"x-cache") {
+    // `x-served-by` only. `x-cache` is named in IDENTIFYING_HEADERS' own doc as
+    // a generic caching header, and it is emitted by Varnish, CloudFront,
+    // Akamai and nginx's proxy cache among others — naming Fastly from it
+    // asserts one vendor from a signal shared by its competitors.
+    if names.contains(&"x-served-by") {
         e.tag("fastly");
     }
     if blob.contains("wordpress") {

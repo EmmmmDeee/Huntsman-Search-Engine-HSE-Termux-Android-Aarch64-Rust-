@@ -145,7 +145,8 @@ impl Module for ExaSearch {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let Some(key) = ctx.key_opt(KEY_ENV).filter(|k| !k.is_empty()) else {
-            return Ok(ModuleResult::new());
+            // PROVIDER FAILURE != ZERO EVIDENCE — see REQ-KEYSKIP-001.
+            return Err(crate::core::error::Error::MissingKey(KEY_ENV.into()));
         };
 
         // Per-target query templates — phrased to maximise semantic match
@@ -301,9 +302,20 @@ impl Module for ExaSearch {
             }
 
             // Mine the snippet text for emails + phones — Exa returns up
-            // to 1000 chars per result.
+            // to 1000 chars per result. Gate extraction on subject relevance:
+            // Email/Domain targets see extracted emails only if they match the
+            // seed's domain; Phone targets see extracted phones only if they
+            // appear in the result text; FullName/Username/Org/TrackingId skip
+            // extraction (too risky for namesake/alias collision).
             if let Some(text) = &r.text {
-                mine_snippet(text, &ctx.scan_id, &r.url, &mut result);
+                mine_snippet(
+                    text,
+                    &ctx.scan_id,
+                    &r.url,
+                    &target.kind,
+                    &target.value,
+                    &mut result,
+                );
             }
         }
 
@@ -311,36 +323,108 @@ impl Module for ExaSearch {
     }
 }
 
-/// Lightweight email + phone extraction from snippet text. Re-uses HSE's
-/// existing entity emitters indirectly by producing the standard kinds.
-fn mine_snippet(text: &str, scan_id: &str, source_url: &str, result: &mut ModuleResult) {
-    // Email regex — same shape as web_crawler::extract_emails.
-    for cap in EMAIL_RE.find_iter(text) {
-        let email = cap.as_str().to_lowercase();
-        let mut e = Entity::new(EntityKind::Email, &email, confidence::MEDIUM_PLUS, scan_id);
-        e.tag("exa-search");
-        e.tag("web-scraped");
-        e.add_evidence(
-            Evidence::new(SRC, "Email extracted from Exa snippet")
-                .with_attr("source_url", source_url),
-        );
-        result.push(e);
-    }
-    // International phone — at least 7 digits with optional + prefix.
-    for cap in PHONE_RE.find_iter(text) {
-        let raw = cap.as_str();
-        let digits = crate::util::str_util::ascii_digits_and_plus(raw);
-        if digits.chars().filter(char::is_ascii_digit).count() < 7 {
-            continue;
+/// Extract emails plausibly belonging to a seed from result text. Inline helper
+/// mirroring search_engines::relevance::email_plausibly_belongs_to_seed.
+fn email_matches_seed(email: &str, target_kind: &TargetKind, target_value: &str) -> bool {
+    let email_domain = match email.rsplit_once('@') {
+        Some((_, d)) => d.to_lowercase(),
+        None => return false,
+    };
+    match target_kind {
+        TargetKind::Email => {
+            let seed_domain = match target_value.rsplit_once('@') {
+                Some((_, d)) => d.to_lowercase(),
+                None => return false,
+            };
+            email_domain == seed_domain
+                || crate::util::domains::is_proper_subdomain_of(&email_domain, &seed_domain)
         }
-        let mut p = Entity::new(EntityKind::Phone, &digits, confidence::MEDIUM_HIGH, scan_id);
-        p.tag("exa-search");
-        p.tag("web-scraped");
-        p.add_evidence(
-            Evidence::new(SRC, "Phone extracted from Exa snippet")
-                .with_attr("source_url", source_url),
-        );
-        result.push(p);
+        TargetKind::Domain => {
+            let seed_domain = target_value.to_lowercase();
+            email_domain == seed_domain
+                || crate::util::domains::is_proper_subdomain_of(&email_domain, &seed_domain)
+        }
+        _ => false,
+    }
+}
+
+/// Check if a phone number's trailing subscriber digits appear in text. Inline
+/// helper mirroring search_engines::relevance::result_mentions_phone.
+fn phone_in_text(text: &str, seed_phone: &str) -> bool {
+    let seed_digits = crate::util::str_util::ascii_digits(seed_phone);
+    // 9 trailing digits cover AU / UK / US subscriber numbers; fewer than 7 is too short.
+    let sig_len = seed_digits.len().min(9);
+    if sig_len < 7 {
+        return false;
+    }
+    let significant = &seed_digits[seed_digits.len() - sig_len..];
+    let hay_digits = crate::util::str_util::ascii_digits(text);
+    hay_digits.contains(significant)
+}
+
+/// Lightweight email + phone extraction from snippet text with subject-relevance
+/// gates. Only emits PII that plausibly belongs to the search target:
+/// - Email targets: extracted emails from the same domain or subdomains
+/// - Domain targets: extracted emails from that domain or subdomains
+/// - Phone targets: extracted phones that appear in the result
+/// - Other targets: skip extraction (FullName/Username/Organisation/TrackingId
+///   skip to prevent extracting strangers' PII from namesake / alias collision
+///   results)
+fn mine_snippet(
+    text: &str,
+    scan_id: &str,
+    source_url: &str,
+    target_kind: &TargetKind,
+    target_value: &str,
+    result: &mut ModuleResult,
+) {
+    // Email extraction — gated on domain matching for Email/Domain seeds only.
+    // For other target kinds, a result about a namesake could mention unrelated
+    // people's emails, so skip extraction entirely to avoid mining strangers'
+    // PII into the scan.
+    let should_extract_email = matches!(target_kind, TargetKind::Email | TargetKind::Domain);
+    if should_extract_email {
+        for cap in EMAIL_RE.find_iter(text) {
+            let email = cap.as_str().to_lowercase();
+            // Email domain must match the seed's domain (exact or subdomain).
+            if !email_matches_seed(&email, target_kind, target_value) {
+                continue;
+            }
+            let mut e = Entity::new(EntityKind::Email, &email, confidence::MEDIUM_PLUS, scan_id);
+            e.tag("exa-search");
+            e.tag("web-scraped");
+            e.add_evidence(
+                Evidence::new(SRC, "Email extracted from Exa snippet")
+                    .with_attr("source_url", source_url),
+            );
+            result.push(e);
+        }
+    }
+
+    // Phone extraction — gated on the phone appearing in the result text for
+    // Phone seeds only. For other targets, an Exa result about a namesake could
+    // mention unrelated people's phone numbers.
+    if matches!(target_kind, TargetKind::Phone) {
+        for cap in PHONE_RE.find_iter(text) {
+            let raw = cap.as_str();
+            let digits = crate::util::str_util::ascii_digits_and_plus(raw);
+            if digits.chars().filter(char::is_ascii_digit).count() < 7 {
+                continue;
+            }
+            // Phone number must plausibly match the seed (trailing subscriber
+            // digits appear in the text in any format).
+            if !phone_in_text(text, target_value) {
+                continue;
+            }
+            let mut p = Entity::new(EntityKind::Phone, &digits, confidence::MEDIUM_HIGH, scan_id);
+            p.tag("exa-search");
+            p.tag("web-scraped");
+            p.add_evidence(
+                Evidence::new(SRC, "Phone extracted from Exa snippet")
+                    .with_attr("source_url", source_url),
+            );
+            result.push(p);
+        }
     }
 }
 

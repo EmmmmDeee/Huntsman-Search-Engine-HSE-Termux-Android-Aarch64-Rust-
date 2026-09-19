@@ -165,3 +165,51 @@ fn domain_seed_that_is_a_subdomain_matches_the_victim_apex() {
             .any(|e| e.kind == EntityKind::Domain && e.value == "seasiainfotech.com")
     );
 }
+
+#[test]
+fn org_seed_substring_match_within_word_is_rejected() {
+    // REQ-RANSOMWARE-001: substring containment that is NOT a whole-word boundary
+    // must NOT match. An Organisation seed "red" must not match a victim named
+    // "Mildred Inc" — the old code had (name.contains(needle) || needle.contains(&name))
+    // which would incorrectly match this. The new whole-word-token gate requires the
+    // needle to appear as a complete token.
+    let victims = vec![victim("Mildred Inc", "mildred.example", "lockbit")];
+    let target = Target::new(TargetKind::Organisation, "red");
+    let r = build_result(&victims, &target, "s");
+    assert_eq!(
+        r.entities.len(),
+        0,
+        "substring 'red' within 'Mildred' must not match"
+    );
+
+    // Reverse direction: seed contains the name but as a substring only.
+    let victims = vec![victim("Corp", "corp.example", "thegentlemen")];
+    let target = Target::new(TargetKind::Organisation, "Incorporated Corp");
+    let r = build_result(&victims, &target, "s");
+    assert_eq!(
+        r.entities.len(),
+        0,
+        "substring 'Corp' (from 'Incorporated Corp') alone must not match victim 'Corp' when other tokens are required"
+    );
+}
+
+#[test]
+fn org_seed_whole_word_token_match_succeeds() {
+    // Positive control: when all tokens of the seed are present as whole words
+    // in the victim name, the match succeeds. "Seasia Infotech" as a seed matches
+    // a victim "Seasia Infotech Corp" because both tokens "seasia" and "infotech"
+    // are present as whole words in the victim name.
+    let victims = vec![victim(
+        "Seasia Infotech Corp",
+        "seasiacorp.com",
+        "thegentlemen",
+    )];
+    let target = Target::new(TargetKind::Organisation, "Seasia Infotech");
+    let r = build_result(&victims, &target, "s");
+    assert!(
+        r.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Organisation),
+        "whole-word tokens 'Seasia' + 'Infotech' must match victim 'Seasia Infotech Corp'"
+    );
+}

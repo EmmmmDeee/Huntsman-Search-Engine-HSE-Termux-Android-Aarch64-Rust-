@@ -274,6 +274,58 @@ use super::*;
         assert_eq!(conf, confidence::MEDIUM_HIGH);
     }
 
+    #[test]
+    fn score_username_common_surname_without_independent_signal_stays_candidate() {
+        // Regression (Cycle AM): a FullName control with a common surname like
+        // "John Smith" must not match unrelated handles that happen to contain
+        // "smith" without an independent signal. The bare surname anchor is too weak
+        // for common names — "smith_engineering" for "John Smith" is a business name
+        // that happens to contain a popular surname, not a personal handle for John.
+        // Without independent corroboration (people-search host or site: query),
+        // Signal 1 alone must not clear the PROBABLE gate.
+        let terms = vec!["john".to_string(), "smith".to_string()];
+        let r = sr(
+            "Smith Engineering",
+            "business profile",
+            "https://business.com/smith_engineering",
+            "john smith",
+        );
+        let (score, conf) = score_username("smith_engineering", "business.com", &terms, &r);
+        assert!(
+            score < 3,
+            "common surname without independent signal must not reach PROBABLE: {score}"
+        );
+        assert_eq!(conf, 0.30);
+
+        // With a site: query targeting the platform, the surname anchor clears the gate
+        let r_with_site = sr(
+            "Smith Engineering",
+            "business profile",
+            "https://github.com/smith_engineering",
+            "site:github.com john smith",
+        );
+        let (score_site, conf_site) = score_username("smith_engineering", "github.com", &terms, &r_with_site);
+        assert!(
+            score_site >= 3,
+            "surname anchor + platform-targeted query must reach PROBABLE: {score_site}"
+        );
+        assert_eq!(conf_site, confidence::MEDIUM_HIGH);
+
+        // With people-search provenance, the surname anchor clears the gate
+        let r_people_search = sr(
+            "John Smith",
+            "public record",
+            "https://whitepages.com/smith_engineering",
+            "john smith",
+        );
+        let (score_ps, conf_ps) = score_username("smith_engineering", "whitepages.com", &terms, &r_people_search);
+        assert!(
+            score_ps >= 3,
+            "surname anchor + people-search host must reach PROBABLE: {score_ps}"
+        );
+        assert_eq!(conf_ps, confidence::MEDIUM_HIGH);
+    }
+
     // ── normalise_address_key ────────────────────────────────────────────────
 
     #[test]

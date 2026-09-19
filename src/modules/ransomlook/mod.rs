@@ -38,6 +38,7 @@ use crate::core::{
 };
 use crate::util::domains::is_or_subdomain_of;
 use crate::util::http::{fetch_json_or_404, urlencode};
+use crate::util::str_util::whole_word_token_match;
 
 /// Stable evidence-source string.
 pub(crate) const SRC: &str = "ransomlook";
@@ -165,7 +166,7 @@ fn classify(title: &str, needle: &str, target: &Target) -> Option<Match> {
             if title == needle {
                 return Some(Match::Strong);
             }
-            (title.contains(needle) || needle.contains(&title)).then_some(Match::Partial)
+            whole_word_token_match(&title, needle).then_some(Match::Partial)
         }
         _ => None,
     }

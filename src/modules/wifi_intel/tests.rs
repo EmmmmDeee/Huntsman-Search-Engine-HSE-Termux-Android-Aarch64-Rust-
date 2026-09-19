@@ -220,3 +220,203 @@ fn detail_resp_handles_failure() {
     let r: types::DetailResp = serde_json::from_str(json).expect("should succeed");
     assert_eq!(r.success, Some(false));
 }
+
+#[test]
+fn near_null_island_jitter_coordinates_are_rejected() {
+    // REQ-WIFIINTEL-001: WiGLE is a coarse location provider and must reject the
+    // near-null-island jitter band (0.001 to 0.01) that geolocation APIs emit as
+    // an "unknown" placeholder. A DetailResp with (0.005, 0.005) should deserialize
+    // successfully (the JSON is valid) but those coordinates must be rejected during
+    // entity building so no Coordinates entity is minted.
+    let json = r#"{
+        "success": true,
+        "results": [{
+            "trilat": 0.005,
+            "trilong": 0.005,
+            "ssid": "Unknown",
+            "city": "Unknown",
+            "region": "Unknown",
+            "country": "ZZ"
+        }]
+    }"#;
+    let r: types::DetailResp = serde_json::from_str(json).expect("should succeed");
+    assert_eq!(r.results.len(), 1);
+    let net = &r.results[0];
+    assert_eq!(net.trilat, Some(0.005));
+    assert_eq!(net.trilong, Some(0.005));
+    // Deserializes fine, but will be rejected during entity building by
+    // is_plausible_provider_coord in the process() function.
+}
+
+// ── REQ-WIFIINTEL-002: an unanswered lookup never reads as a negative ──
+
+/// Three APs, strongest first — the shape `process` hands the geolocation leg.
+const THREE_APS: &[u8] = br#"[
+    {"bssid":"aa:bb:cc:dd:ee:ff","ssid":"HomeNet","frequency":2437,"rssi":-42,"timestamp":100},
+    {"bssid":"11:22:33:44:55:66","ssid":"Office5G","frequency":5745,"rssi":-68,"timestamp":200},
+    {"bssid":"de:ad:be:ef:ca:fe","ssid":"CafeWifi","frequency":2462,"rssi":-55,"timestamp":300}
+]"#;
+
+/// The `wigle_lookup` note on the AP whose BSSID is `bssid`, or `None` when it
+/// carries no disclosure.
+fn lookup_note(r: &ModuleResult, bssid: &str) -> Option<String> {
+    r.entities
+        .iter()
+        .find(|e| e.kind == EntityKind::MacAddress && e.raw_value == bssid)
+        .and_then(|e| e.evidence.iter().find(|ev| ev.source == SOURCE))
+        .and_then(|ev| ev.attributes.get(LOOKUP_ATTR).cloned())
+}
+
+/// REQ-WIFIINTEL-002. The defect: a WiGLE refusal was a `tracing::debug!` line
+/// and a `break`, and `process` returned `Ok` regardless. Phase 1 had already
+/// emitted a `MacAddress` for every AP, so the result was never empty — a
+/// revoked token produced exactly the output a WiGLE that holds nothing
+/// produces, with nothing anywhere to tell them apart.
+///
+/// Each AP whose lookup did not get an answer must now say so on its own
+/// evidence. Every outcome is checked and survivors collected, so a partial
+/// disclosure is named rather than masked by whichever case is asserted first.
+#[test]
+fn an_unanswered_lookup_is_disclosed_on_the_access_points_own_entity() {
+    let mut r = parse_aps(THREE_APS, "scan-1").expect("fixture parses");
+    disclose_lookups(
+        &mut r,
+        &[
+            ("aa:bb:cc:dd:ee:ff", Lookup::Answered),
+            (
+                "11:22:33:44:55:66",
+                Lookup::Refused("HTTP 401 Unauthorized".to_string()),
+            ),
+            (
+                "de:ad:be:ef:ca:fe",
+                Lookup::NotAttempted("shared WiGLE BSSID budget spent for this scan"),
+            ),
+        ],
+    );
+
+    let mut silent: Vec<&str> = Vec::new();
+    for (bssid, must_contain) in [
+        ("11:22:33:44:55:66", "HTTP 401 Unauthorized"),
+        ("de:ad:be:ef:ca:fe", "budget spent"),
+    ] {
+        match lookup_note(&r, bssid) {
+            Some(note) if note.contains(must_contain) => {}
+            _ => silent.push(bssid),
+        }
+    }
+    assert!(
+        silent.is_empty(),
+        "these APs' unanswered WiGLE lookups left no trace on their own \
+         evidence, so a missing coordinate reads as a clean negative: {silent:?}"
+    );
+}
+
+/// The control, and the vacuity guard for the test above: an AP WiGLE actually
+/// answered about carries NO disclosure, because a `None` answer from WiGLE IS
+/// a real negative. Without this, a fix that stamped every entity
+/// unconditionally would pass the regression while destroying the very
+/// distinction it exists to draw.
+///
+/// It also pins that the disclosure is additive — the AP's own sensor readings
+/// are untouched — and that it lands on the addressed entity alone.
+#[test]
+fn an_answered_lookup_carries_no_disclosure() {
+    let mut r = parse_aps(THREE_APS, "scan-1").expect("fixture parses");
+    disclose_lookups(
+        &mut r,
+        &[
+            ("aa:bb:cc:dd:ee:ff", Lookup::Answered),
+            (
+                "11:22:33:44:55:66",
+                Lookup::Refused("HTTP 429 Too Many Requests".to_string()),
+            ),
+        ],
+    );
+
+    assert_eq!(
+        lookup_note(&r, "aa:bb:cc:dd:ee:ff"),
+        None,
+        "WiGLE answered about this AP — a missing coordinate here IS the \
+         negative, and disclosing it would erase the distinction"
+    );
+    assert_eq!(
+        lookup_note(&r, "de:ad:be:ef:ca:fe"),
+        None,
+        "no outcome was recorded for this AP, so nothing may be claimed about it"
+    );
+    // Additive: the sensor's own reading of the refused AP survives intact.
+    let ev = &r.entities[1].evidence[0];
+    assert_eq!(
+        ev.attributes.get("ssid").map(String::as_str),
+        Some("Office5G")
+    );
+    assert_eq!(
+        ev.attributes.get("rssi_dbm").map(String::as_str),
+        Some("-68")
+    );
+}
+
+/// The second half of REQ-WIFIINTEL-002: a refusal must also reach the scan's
+/// coverage ledger, where `provider_coverage_from_events` turns it into
+/// `ProviderOutcome::Failed` instead of letting the kept Phase 1 findings read
+/// as a provider that answered cleanly (PROVIDER FAILURE ≠ ZERO EVIDENCE).
+///
+/// And the boundary that keeps that honest: this module's OWN governors are
+/// not WiGLE failing. Reporting a spent budget, a cancelled scan or a BSSID the
+/// sensor mangled as a provider outage would fabricate a cause that was never
+/// observed — the same error, in the opposite direction, as the silence the
+/// disclosure above removes. Every non-refusal shape is swept and survivors
+/// collected.
+#[test]
+fn only_a_provider_refusal_reaches_the_coverage_ledger() {
+    let reported: Vec<String> = [
+        vec![("aa:bb:cc:dd:ee:ff", Lookup::Answered)],
+        vec![
+            ("aa:bb:cc:dd:ee:ff", Lookup::Answered),
+            ("11:22:33:44:55:66", Lookup::Answered),
+        ],
+        vec![(
+            "aa:bb:cc:dd:ee:ff",
+            Lookup::NotAttempted("shared WiGLE BSSID budget spent for this scan"),
+        )],
+        vec![("aa:bb:cc:dd:ee:ff", Lookup::NotAttempted("scan cancelled"))],
+        vec![("aa:bb:cc:dd:ee:ff", Lookup::NotAttempted("malformed BSSID"))],
+        vec![
+            ("aa:bb:cc:dd:ee:ff", Lookup::Answered),
+            ("11:22:33:44:55:66", Lookup::NotAttempted("scan cancelled")),
+        ],
+        // Nothing was asked at all — there is no provider outcome to report.
+        vec![],
+    ]
+    .iter()
+    .filter_map(|outcomes| leg_failure(outcomes))
+    .collect();
+    assert!(
+        reported.is_empty(),
+        "these legs blamed WiGLE for something WiGLE never did: {reported:?}"
+    );
+
+    // …and the case that must be reported names the typed error verbatim, plus
+    // how much of the leg actually ran — an operator deciding whether to re-run
+    // needs both.
+    let reason = leg_failure(&[
+        ("aa:bb:cc:dd:ee:ff", Lookup::Answered),
+        (
+            "11:22:33:44:55:66",
+            Lookup::Refused("HTTP 401 Unauthorized: invalid API token".to_string()),
+        ),
+        (
+            "de:ad:be:ef:ca:fe",
+            Lookup::Refused("HTTP 401 Unauthorized: invalid API token".to_string()),
+        ),
+    ])
+    .expect("a WiGLE refusal is a provider failure and must be reported");
+    assert!(
+        reason.contains("HTTP 401 Unauthorized: invalid API token"),
+        "the reason must carry the typed error, not a generic label: {reason}"
+    );
+    assert!(
+        reason.contains("1 of 3"),
+        "the reason must say how much of the leg ran: {reason}"
+    );
+}

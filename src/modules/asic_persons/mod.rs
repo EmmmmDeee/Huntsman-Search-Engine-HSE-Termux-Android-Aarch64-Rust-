@@ -53,6 +53,44 @@ const CREDIT_RES: &str = "999d9e92-df2c-4d6d-b580-321dcd205292";
 /// genuine register hit is omitted (directive: never omit an API-derived AU
 /// government result); the per-row name classifier still gates quality.
 const MAX_HITS: usize = 100;
+/// The identity caution carried by every row this module surfaces.
+///
+/// ASIC's three people registers are matched on NAME ALONE — the CKAN query is
+/// full-text and [`record_name_matches`] only requires the row to share the
+/// seed's whole-word tokens. None of the three publishes a date of birth, so a
+/// hit says "someone with this name is on this register", never "the subject
+/// is". A national register makes that collision ordinary rather than exotic:
+/// there are many real people named e.g. "John Smith", and the adverse ones
+/// here (a ban, a disqualification, a disciplinary action) are exactly the
+/// findings a wrong attribution damages a real person with.
+///
+/// Wording and mechanism follow [`crate::modules::sanctions_ofac`], whose own
+/// rationale calibrates itself explicitly against this module, and the sibling
+/// name-matched registers (`openarch`, `austlii`, `trove_au`, `europeana`).
+const NAME_ONLY_CAUTION: &str = "Name-only match against a national ASIC register — these datasets publish no date of \
+     birth, so verify identity (the registered locality/state, the ASIC document number, the \
+     authorisation dates) before treating this as the subject; common names collide.";
+
+/// Tag of the "matched by name, identity not established" contract. Bare string
+/// literal to match the six sibling modules that already carry it
+/// (`sanctions_ofac`, `openarch`, `austlii`, `trove_au`, `europeana`, `ahmia`);
+/// it is deliberately NOT `tags::CANDIDATE`, which this codebase reserves for a
+/// known non-match / off-region / synthetic value and which caps confidence.
+const NEEDS_ID_VERIFICATION: &str = "needs-identity-verification";
+
+/// Stamp the name-only-match contract on every entity the module produced.
+///
+/// Applied in ONE place, over the whole result, rather than per-emitter: every
+/// entity this module yields — the Person, the registered Address, the
+/// licensee Organisation, its AbnAcn, the controller and authorised-rep rows —
+/// descends from the same single name match, so each is exactly as identified
+/// as that match was. Doing it here means a future emitter inherits the
+/// contract instead of having to remember it. **Pure.**
+fn flag_name_only_match(result: &mut ModuleResult) {
+    for e in &mut result.entities {
+        e.tag(NEEDS_ID_VERIFICATION);
+    }
+}
 
 pub struct AsicPersons;
 
@@ -167,6 +205,10 @@ impl Module for AsicPersons {
             }
         }
 
+        // Every row above was selected by `record_name_matches` alone, so the
+        // whole result set is name-matched, not identified. Stamped before the
+        // merge so a row that dedups into another still carries the contract.
+        flag_name_only_match(&mut result);
         crate::core::entity::dedup_merge_entities(&mut result.entities);
         result.or_hard_failure(hard_failure)
     }
@@ -276,7 +318,8 @@ fn emit_banned(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleResul
 
     let mut ev = Evidence::new(SRC, format!("ASIC banned/disqualified: {person_name}"))
         .with_attr("register", "ASIC Banned & Disqualified Persons")
-        .with_attr("matched_name", &raw_name);
+        .with_attr("matched_name", &raw_name)
+        .with_attr("caution", NAME_ONLY_CAUTION);
     for (key, attr) in [
         ("BD_PER_TYPE", "ban_type"),
         ("BD_PER_START_DT", "ban_start"),
@@ -325,7 +368,8 @@ fn emit_adviser(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleResu
 
     let mut ev = Evidence::new(SRC, format!("ASIC financial adviser: {person_name}"))
         .with_attr("register", "ASIC Financial Advisers")
-        .with_attr("matched_name", &raw_name);
+        .with_attr("matched_name", &raw_name)
+        .with_attr("caution", NAME_ONLY_CAUTION);
     for (key, attr) in [
         ("ADV_ROLE", "adviser_role"),
         ("OVERALL_REGISTRATION_STATUS", "registration_status"),
@@ -491,7 +535,8 @@ fn emit_credit_rep(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleR
 
     let mut ev = Evidence::new(SRC, format!("ASIC credit representative: {person_name}"))
         .with_attr("register", "ASIC Credit Representatives")
-        .with_attr("matched_name", &raw_name);
+        .with_attr("matched_name", &raw_name)
+        .with_attr("caution", NAME_ONLY_CAUTION);
     for (key, attr) in [
         ("CRED_REP_NUM", "credit_rep_number"),
         ("CRED_LIC_NUM", "credit_licence_no"),
@@ -579,9 +624,14 @@ fn push_address(
         a.tag(format!("au-state:{s}"));
     }
     a.add_evidence(
+        // The register's address belongs to whoever the matched row is about.
+        // On a namesake match that is a STRANGER'S home locality, attributed to
+        // the subject — the most invasive thing this module can get wrong, so it
+        // carries the same caution as the finding it came from.
         Evidence::new(SRC, format!("Registered address for {person}"))
             .with_attr("address", &addr)
-            .with_attr("source", "asic-register"),
+            .with_attr("source", "asic-register")
+            .with_attr("caution", NAME_ONLY_CAUTION),
     );
     result.push(a);
 

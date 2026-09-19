@@ -7289,3 +7289,5636 @@ exhaustion message) keep the breaker's string path; the dispatcher's
 is reported, not escalated — a canary throttled on every weekly run is
 visible in the table but does not fail the sweep.
 
+## Pass 32 findings
+
+Baseline `origin/main` at `37e5c624` (#636); branch `claude/charming-meitner-85h3aj`
+restarted from it (squash-merge, zero content drift confirmed against the
+prior branch head). Discovery this pass was driven by systematic source
+audit rather than observed production behaviour: bounded parallel read-only
+hunters swept `src/modules/` and shared `core`/`util` infrastructure area by
+area, each self-refuting before reporting, followed in every case by
+personal `Read`/`Grep`/`Bash` re-verification of every cited file:line
+against live source before a finding was trusted. Ranked by the method's
+precedence, the first shipped fix is the one finding this pass surfaced that
+is not an OSINT-fabrication defect at all, but a genuine SSRF vulnerability.
+
+### REQ-SSRF-001 (**new, Pass 32 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a Domain target that is itself an IP literal skipped the SSRF gate
+
+**Lead.** Source audit of the engine's universal pre-dispatch preflight
+(`core::engine::dispatch::module_skip_reason`) against its own documented
+contract, cross-checked against `util::preflight::url_host_is_private`'s doc
+comment and `util::http::ssrf::SsrfResolver`'s doc comment (which names the
+engine's target check as the authoritative backstop for IP-literal SSRF).
+
+**Verified from source.** The gate's `TargetKind::Domain` arm called only
+`preflight::is_local_domain` (IANA-reserved *names* — `.local`, `.internal`,
+`.lan`, …); the `TargetKind::Url` arm called `url_host_is_private`, which is
+`is_private_ip(host) || is_local_domain(host)`. The Domain arm never got the
+first half. A Domain-kind target whose *value* is a bare private/reserved IP
+string (`169.254.169.254`, `127.0.0.1`, `10.0.0.1`, …) is not a reserved
+*name*, so it passed the gate untouched. `Target::validate()`'s Domain
+branch (dot present, alnum/`.`/`-`/`_` charset, not a placeholder domain)
+does not reject an IP-shaped value either. `web_crawler` — a
+Domain-accepting external module, not on the `LOCAL_PASSIVE_MODULES`
+exemption list — dials whatever domain string it receives (`resolve_seed`,
+`fetch_robots`, `probe_config_leaks`) with no guard of its own beyond the
+engine's gate, exactly as `SsrfResolver`'s own doc comment says the engine's
+target check is meant to own for an IP-literal URL (which bypasses the
+DNS-resolver-level filter entirely, since hyper dials an IP literal without
+a lookup).
+
+**Fix.** The `Domain` arm now also calls `preflight::is_private_ip_host`,
+mirroring the `Url` arm's own SSRF gate rather than adding a new mechanism —
+applied to the value shape it was missing. This shipped first (PR #637) as
+a narrower `preflight::is_private_ip` call (`std::net::IpAddr`'s strict
+parser); a GitHub Copilot automated review on that PR caught it incomplete,
+flagging that `127.1` — a Domain-kind value `Target::validate()`'s
+dot-plus-alnum/`-`/`_` charset admits — canonicalizes to `127.0.0.1` under
+the WHATWG host-parsing algorithm `web_crawler`'s own request path applies
+(the `url` crate), but `IpAddr`'s strict parser rejects the string outright
+and so never flags it. Independently reproducing the claim (a throwaway
+scratch Rust project, not just trusting the review comment) showed it
+understated the bypass: the identical gap also admits pure-decimal
+(`2130706433`), hex (`0x7f000001`) and octal (`017700000001` /
+`0177.0.0.1`) encodings, every one canonicalizing to the same private
+address. The new `is_private_ip_host` (`util::preflight`) closes all four
+forms by trying the strict `is_private_ip` first — which alone still
+correctly catches every *bare* IPv6 form (`::1`, `fe80::1`) that the WHATWG
+parser requires brackets for and would otherwise miss — and, only if that
+fails, falling back to `url::Host::parse`-based canonicalization, which
+catches every non-canonical IPv4 encoding the strict parser misses. Neither
+parser is sufficient alone; both run.
+
+**Evidence.** `core::engine::tests::skip_reason_rejects_ip_literal_domain_ssrf_gate`
+(a Domain target of `169.254.169.254`, `127.0.0.1`, `10.0.0.1`,
+`192.168.1.1`, `::1` must all be SSRF-rejected);
+`core::engine::tests::skip_reason_lets_public_domain_through` (`example.com`,
+`github.com`, `abc.net.au` must still pass — the new check must not
+overreach); `core::engine::tests::skip_reason_rejects_local_domain_for_external_module`
+updated to the arm's new combined rejection message;
+`core::engine::tests::skip_reason_rejects_encoded_ip_literal_domain_ssrf_bypass`
+(`127.1`, `127.0.1`, `2130706433`, `0x7f000001`, `017700000001`,
+`0177.0.0.1` must all still be SSRF-rejected once canonicalized — the
+Copilot-flagged case plus the three encodings its own comment didn't name);
+`core::engine::tests::skip_reason_lets_encoded_public_ip_domain_through`
+(`8.8.8.8`, `134744072`, `1.1` — decimal and shorthand-dotted encodings of a
+*public* address — must still pass, proving the fallback does not overreach
+into rejecting a legitimate domain). Every canonicalization claim behind
+these assertions (which numeric string maps to which address, under which
+parser) was independently reproduced in a throwaway scratch Rust project
+against the pinned `url` crate before being trusted, not read off the
+review comment or the crate's own test output alone.
+
+**Falsification.** Two independent rounds, both against the eventual
+combined fix. First, before the Copilot review, `dispatch.rs`'s
+`is_private_ip` check reverted alone (new tests kept):
+
+```
+[Domain arm is_private_ip check] reverted -> LOCK FAILS (expected)
+    core::engine::tests::skip_reason_rejects_ip_literal_domain_ssrf_gate --- FAILED
+    "Domain 169.254.169.254 should be SSRF-rejected, got None"
+    core::engine::tests::skip_reason_rejects_local_domain_for_external_module --- FAILED
+    (message mismatch — the arm's old, narrower wording)
+    test result: FAILED. 3 passed; 2 failed; 0 ignored; 0 measured; 7378 filtered out; finished in 0.37s
+ALL LOCKS SENSITIVE
+```
+
+Second, after `is_private_ip_host` replaced the plain `is_private_ip` call
+in `dispatch.rs`, its entire definition was stashed out of
+`util::preflight::mod` to confirm the new call is a real, load-bearing
+dependency rather than dead code the compiler would silently tolerate:
+
+```
+[is_private_ip_host definition] stashed -> COMPILE FAILS (expected)
+    error[E0425]: cannot find function `is_private_ip_host` in module `preflight`
+      --> src/core/engine/dispatch.rs
+ALL LOCKS SENSITIVE
+```
+
+Restored (`git stash pop`), diffed byte-identical against the pre-stash
+tree. A third attempt — locally weakening `is_private_ip_host` back to a
+bare `is_private_ip(ip)` to drive the two encoding-bypass tests red through
+the running suite rather than through a compile error — was itself refused
+by the environment's own security-weaken guardrail (an SSRF predicate is
+security-sensitive code, live-under-test or not); the change was reverted
+immediately without attempting to route around the refusal. Restored: all 7
+targeted tests, the full 192-test `core::engine` suite, and the 24-test
+`util::preflight` suite pass, 0 failed.
+
+**Residual.** `resolve_seed`/`fetch_robots`/`probe_config_leaks` (the three
+functions that actually perform `web_crawler`'s earliest egress) are
+`pub(super)`, and their only callers already pass exclusively
+gate-vetted `target.value`-derived data within one `process()` call — so the
+dispatch-layer fix alone is sufficient; a considered defense-in-depth
+addition directly inside those three functions was reverted after it broke
+two existing hermetic tests that legitimately dial loopback to stand up a
+mock server, and adds no protection beyond what the now-fixed gate already
+gives their only reachable input. Checked whether the strict-vs-canonicalizing
+parser asymmetry that caused the encoding bypass reopens at any other
+`is_private_ip` call site: `util::preflight::url_host_is_private` receives
+an already-`Url::parse`'d `host_str()` (canonicalized by construction before
+`is_private_ip` ever sees it), and `Target::validate()`'s `IpAddress` branch
+requires a strict `IpAddr` parse to construct such a target at all, so
+neither can carry an un-canonicalized numeric string past the check the way
+a `Domain`-kind value could; `see_know` and `oathnet_pro`'s own
+`is_private_ip(v)` guards on `TargetKind::IpAddress` inputs are the same
+already-strict-validated case. Both exemptions are now recorded on
+`is_private_ip_host`'s own doc comment so the asymmetry cannot silently
+reopen unnoticed at a future `is_private_ip` call site that lacks either
+guarantee.
+
+
+### REQ-SSRF-002 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): Email-kind targets bypassed the SSRF gate entirely
+
+**Lead.** Adversarial re-attack on REQ-SSRF-001. That fix closed the
+IP-literal hole for `TargetKind::Domain`, so the natural next question is
+which OTHER target kind carries a dialable host. The gate's own comment
+answered it — and asserted the wrong thing.
+
+**Verified from source.** `core::engine::dispatch::module_skip_reason`'s
+universal preflight match stated verbatim: "Modules with non-IP/Domain
+accepts (Email, Phone, Username, etc.) fall through the `_` arm and run
+normally — there's no concept of a 'private email'." That premise is false
+for `Email`, because two registered modules derive a bare hostname from the
+address's domain part and dial it directly with no guard of their own:
+
+* `employer_pivot` (`accepts` admits `TargetKind::Email`) takes the domain
+  via `domain_for_target()` (`t.value.rsplit_once('@')`), then builds
+  `format!("https://{domain}{path}")` for up to eight paths and issues a
+  live `ctx.http.get(&url)`. Its only pre-fetch guards are `is_freemail` /
+  `is_social_platform` / `is_role_email_local` — none of which has any
+  notion of a private IP or a reserved name.
+* `fediverse` takes `email.split_once('@')`, checks only
+  `domain_worth_probing()` (a freemail exclusion), then fetches
+  `https://{domain}/.well-known/webfinger?resource=…` through
+  `fetch_json_probe`, which performs no host validation either. It has no
+  role-localpart exception, so it is reachable with an ordinary local part.
+
+Neither the client's DNS-level `SsrfResolver` nor `Target::validate()`
+closes it: an IP-literal host is dialled with no DNS lookup (the resolver
+never sees it — the same documented gap REQ-SSRF-001 turned on), and
+`validate()`'s Email branch only requires the host part to contain a dot.
+So `finance@169.254.169.254` was a second, fully-open route to the exact
+cloud-metadata endpoint the `Domain` arm had just been taught to refuse.
+
+**Fix.** `util::preflight::email_host_is_private` — the Email-kind
+counterpart to `url_host_is_private`, added beside it as one more predicate
+on the same authoritative layer rather than a new mechanism — plus a
+`TargetKind::Email` arm in `module_skip_reason` that calls it. Deliberate
+choices, each mirroring a lesson already paid for:
+
+* Splits on the **last** `@` (`rsplit_once`), so a local part that itself
+  contains one, or is merely IP-shaped (`127.0.0.1@example.com`), cannot
+  shift the host boundary — the same discipline as `util::url_util::host_only`'s
+  userinfo strip and `employer_pivot`'s own `domain_for_target`.
+* Unwraps RFC 5321 address literals (`user@[192.168.1.1]`, `user@[::1]`,
+  and the tagged `user@[IPv6:::1]` form) before judging.
+* Uses the canonicalizing `is_private_ip_host`, never the strict
+  `is_private_ip` — an Email target's domain part has no more
+  canonicalization guarantee than a `Domain` value, so the identical
+  numeric-encoding bypass (`user@2130706433`, `user@0x7f000001`) applies.
+  This is REQ-SSRF-001's Copilot-caught lesson applied up front rather than
+  after review.
+
+Fixing it at the dispatch layer covers every current AND future
+Email-accepting module centrally, which is the same argument (and the same
+layer) REQ-SSRF-001 settled on, instead of patching `employer_pivot` and
+`fediverse` separately and leaving the next such module unguarded.
+
+**Evidence.** Two new locks in `core::engine::tests`:
+`skip_reason_rejects_private_email_domain_ssrf_gate` (twelve hostile hosts:
+the metadata endpoint, loopback, RFC1918, the shorthand-dotted / decimal /
+hex encodings, both bracketed-IPv6 literal forms, and the `.local` /
+`localhost` / `.internal` reserved names) and
+`skip_reason_lets_public_email_domain_through` (five benign addresses,
+including `127.0.0.1@example.com` — IP-shaped LOCAL part, public host — and
+`user@8.8.8.8`, proving the gate reads the host and does not overreach).
+
+**Falsification.** Test-first, so the pre-fix failure is the primary
+evidence rather than a reconstruction — the lock was written and run
+BEFORE the gate arm or the predicate existed:
+
+```
+[no Email arm, no predicate] -> LOCK FAILS (expected)
+    core::engine::tests::skip_reason_rejects_private_email_domain_ssrf_gate --- FAILED
+    "Email finance@169.254.169.254 should be SSRF-rejected, got None"
+    test result: FAILED. 26 passed; 1 failed; 0 ignored; 7374 filtered out
+```
+
+The guard test (`..._lets_public_email_domain_through`) passed in that same
+pre-fix run, proving it is not vacuously green from the gate rejecting
+everything. After the fix: `test result: ok. 27 passed; 0 failed`.
+
+One intermediate failure is worth recording, because the lock caught a real
+defect in the fix itself: the first implementation stripped the RFC 5321
+`IPv6:` tag with a case-SENSITIVE `strip_prefix`, and an Email target's
+value arrives already lowercased by the entity normaliser, so
+`user@[IPv6:::1]` still passed the gate. Only that one case of twelve
+failed, which is exactly the kind of single-encoding hole the
+REQ-SSRF-001 review found; the tag match is now `eq_ignore_ascii_case`.
+
+**Residual.** Two pre-existing, unrelated flaky tests were observed while
+verifying this (`skip_reason_in_allowlist_passes` and
+`skip_reason_lets_encoded_public_ip_domain_through` each failed once, in
+different runs, under cargo's default parallel harness; both pass
+deterministically under `--test-threads=1`, and the full suite is green).
+That is process-global test-state contention of the same family as
+REQ-CI-003, NOT a product defect and not caused by this change — recorded
+here so the observation is not lost, and filed separately rather than
+folded into this fix. `Phone` and `Username` remain correctly outside the
+gate: neither carries a dialable host.
+
+### REQ-ABUSEIPDB-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a clean AbuseIPDB verdict still marked the IP known-bad
+
+**Lead.** Wave 9 module audit (the `abuseipdb` entry), then verified from
+source and cross-checked against every sibling that applies the same tag.
+
+**Verified from source.** `build_entities` tagged
+`crate::core::tags::THREAT_INTEL` unconditionally, on the line BEFORE the
+`if abuse_score >= 80 { … } else if abuse_score >= 40 { … }` branch that
+actually reflects AbuseIPDB's graded verdict. So an IP AbuseIPDB itself
+reports as 0/100 confidence with 0 total reports — its own clean answer —
+was still tagged known-bad purely because it had been looked up.
+
+That tag is not cosmetic. It is one of exactly three `ADJACENCY_BAD_TAGS`
+(`core::correlator::rules`, beside `MALICIOUS` and `VULNERABLE`), which
+AU-031 "malicious adjacency" reads to raise a **High**-severity finding on
+any entity one hop from a tag-bearing node, and it is also the filter in
+`rules/infra.rs`'s threat-intel pass. Concretely: a clean IP queried via
+abuseipdb caused every domain resolving to it to be reported "adjacent to
+known-bad infrastructure" — a High-severity escalation fabricated from a
+NEGATIVE signal.
+
+Every sibling module that applies this tag gates it on a real positive
+verdict, so the convention was already established and abuseipdb was the
+single outlier: `virustotal` only when `malicious > 0` (and pins the
+negative case in its own tests, `!e.has_tag(THREAT_INTEL)`); `chain_intel`
+only on the source's own flag, with the explicit comment "never when [it]
+is absent or false, so a source that doesn't report a verdict can't be
+mistaken for a clean bill of health"; `onyphe` only inside a named
+threat-list match; `pulsedive` returns early when nothing is linked.
+
+**Fix.** The tag is now gated on the module's own existing first positive
+band, hoisted into named constants (`SUSPICIOUS_SCORE = 40`,
+`MALICIOUS_SCORE = 80`) so the threshold has one authority instead of two
+magic numbers. A score that already earned `suspicious` still feeds
+adjacency analysis exactly as before; a clean or below-band answer no
+longer does. `MALICIOUS`/`high-risk` gating is untouched.
+
+**Evidence.** Three new locks in `modules::abuseipdb::tests`:
+`a_clean_verdict_is_never_tagged_threat_intel` (0/100, 0 reports → none of
+`THREAT_INTEL`/`MALICIOUS`/`suspicious`/`high-risk`, while the IP entity
+itself is still emitted, so the fix suppresses the false claim without
+losing the observation); `a_real_positive_verdict_still_carries_threat_intel`
+(40, 79, 80, 100 all keep the tag, and `MALICIOUS` still flips only at 80 —
+proving the gate did not overreach into silencing the provider entirely);
+`a_score_below_the_suspicious_band_is_not_threat_intel` (1, 10, 39 stay
+clean — the boundary the fix rests on).
+
+**Falsification.** Test-first. Both "must be clean" locks were written and
+run BEFORE the fix:
+
+```
+[unconditional tag] -> LOCKS FAIL (expected)
+    modules::abuseipdb::tests::a_clean_verdict_is_never_tagged_threat_intel --- FAILED
+    "a 0%/0-report clean verdict must not mark the IP known-bad, got tags ["threat-intel"]"
+    modules::abuseipdb::tests::a_score_below_the_suspicious_band_is_not_threat_intel --- FAILED
+    test result: FAILED. 13 passed; 2 failed; 0 ignored; 7389 filtered out
+```
+
+`a_real_positive_verdict_still_carries_threat_intel` PASSED in that same
+pre-fix run, proving the guard is not vacuously green from the fix
+suppressing the tag everywhere. Post-fix: `15 passed; 0 failed`, plus the
+full correlator suite (617 passed, 0 failed) and the adjacency tests
+(4 passed) confirming no consumer depended on the old unconditional tag.
+
+**Residual.** The `THREAT_INTEL_SOURCES` allowlist in
+`core::correlator::rules` is a separate mechanism (which *sources* count as
+threat intel) and is unaffected. `is_tor`, `usage_type`/hosting and the
+whitelist flag keep their own independent gating.
+
+### REQ-PHONEAU-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): phone_au claimed Australia for a marker-less national number
+
+**Lead.** Wave 9 module audit (`phone_au`), checked against the already-fixed
+`phone_geo` defect it repeats.
+
+**Verified from source.** `phone_au::au_national` tries an explicit
+international marker first (`phone_intl::international_digits`, filtered on
+`61`) and otherwise falls back to `core::validation::to_e164_au` →
+`util::address_au::normalise_phone`. That function's bare-9-digit branch
+accepts ANY 9-digit numeral whose first digit is one of 2/3/4/5/7/8 — six of
+ten possible leads — with no `+`, no `61`, and no leading trunk `0`, and
+canonicalises it to `+61…`. `phone_au` then stamps `au-phone`, a `line:*`
+type and (for a geographic lead) an `au-region:*` attribute plus the
+`geographic` tag, on a re-emitted `+61…` Phone entity at confidence 0.80.
+
+So the input `412345678` — a string carrying zero evidence of being
+Australian — became a confirmed Australian mobile with a region claim. This
+is the same fabrication class as the already-fixed `phone_geo` defect (a
+bare national number read country-first placed `817-555-1234` in Kyoto): a
+country inferred for an ambiguous national-format number before confirming
+it could only be that country. The realistic trigger is routine — a source
+that stores phone numbers as integers drops the leading `0`, so a foreign
+9-digit local number lands squarely in this branch.
+
+The module's own test suite already stated the correct policy in a comment —
+"A bare national number with no country marker is ambiguous → not claimed" —
+but only ever exercised it against `202-555-0100`, a 10-digit value
+`normalise_phone` rejects for unrelated reasons. The 9-digit shape silently
+violated the module's own documented contract.
+
+**Fix, and why at this layer.** `to_e164_au`/`normalise_phone` has ten-plus
+callers, six of them import paths (`app::import::{csv, sql_dump,
+oathnet_report, dossier, combined}`) that canonicalise a breach dump's phone
+column so the same number written any other way dedups to one entity, plus
+`hlr_cnam` and `payid`. Dropping the bare-9-digit branch there would trade
+this fabrication for real import data loss on AU-sourced dumps — the very
+reason the branch exists (its own test pins the 9- and 10-digit spellings of
+one number agreeing).
+
+The fabrication is the *jurisdiction claim*, not the canonicalisation. So
+the gate went where the claim is made: `au_national` now requires the raw
+value to carry a domestic AU signal — a leading trunk `0`, or an
+AU-specific `1300`/`1800` service prefix — before it will trust the
+`to_e164_au` fallback. An explicit `+61`/`0061` marker still short-circuits
+ahead of it. `phone_intl` already applies exactly this discipline in the
+other direction (no country attribution without an explicit `+`/`00`
+marker), so this makes the two consistent. Every other `to_e164_au` caller
+is untouched by construction.
+
+**Evidence.** Two new locks in `modules::phone_au::tests`:
+`rejects_a_marker_less_nine_digit_national_number` (all six accepted lead
+digits, spaced and unspaced, plus the 8-digit case pinned so it stays
+rejected) and `still_accepts_every_shape_that_does_carry_an_au_signal`
+(`+61`/`0061` markers, punctuated and bare trunk-`0` forms, and the
+`1300`/`1800` service prefixes — eight shapes that must all still resolve).
+
+**Falsification.** Test-first:
+
+```
+[no domestic-signal gate] -> LOCK FAILS (expected)
+    modules::phone_au::tests::rejects_a_marker_less_nine_digit_national_number --- FAILED
+    "412345678 carries no AU country signal and must not be claimed as Australian"
+    test result: FAILED. 14 passed; 1 failed; 0 ignored; 7391 filtered out
+```
+
+`still_accepts_every_shape_that_does_carry_an_au_signal` PASSED in that same
+pre-fix run, so it is not vacuously green from the gate rejecting
+everything. Post-fix: `phone_au` 15 passed, and the three suites sharing the
+helper are unchanged — `phone_intl` 6, `address_au` 32, `payid` 12, all 0
+failed.
+
+**Residual.** `payid` (`mod.rs:178`) still reaches the lenient
+`normalise_phone` when classifying a Phone target as PayID-eligible, so a
+marker-less 9-digit value can still make it *suggest* an AU banking
+confirm-payee lookup. Left as-is deliberately: `payid` is a pure offline
+annotator capped at `confidence::SPECULATIVE` (0.30) that never raises an
+entity's confidence tier, so the harm is a wasted manual suggestion rather
+than a fabricated fact — a materially different severity from a 0.80
+`au-phone`/`au-region` claim. The deeper question — that `to_e164_au`
+returning `+61…` embeds a country claim in the entity VALUE on the import
+path, where no jurisdiction gate applies at all — is genuinely wider than
+this fix and is recorded as its own queue item rather than folded in here.
+
+### REQ-EMAILCANON-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): `+tag` folding for every domain fused two different people's mailboxes
+
+**Lead.** Wave 9 module audit (`email_canonical`), then verified against the
+shared helper and both of its other consumers.
+
+**Verified from source.** `util::canonical::canonical_email_mailbox` stripped
+the `+tag` suffix from the local-part UNCONDITIONALLY — the
+`local.split('+').next()` ran before the Gmail-only branch, for every domain.
+`modules::email_canonical` then emitted the folded address as a NEW `Email`
+entity at `CANON_CONF = confidence::HIGH_PLUSPLUS` (0.80), tagged
+`canonical`, with the module's own doc calling it "a proven-equivalent
+address (not a guess)" and deliberately setting confidence "above the
+expansion floor… a `--depth 1+` scan pivots the whole email pipeline onto
+it".
+
+Plus-addressing is RFC 5233 Sieve subaddressing: a **per-mail-server opt-in
+convention, not a property of the address string**. It is reliable for the
+providers the helper's own doc named (Gmail, Outlook/Microsoft, Fastmail,
+Proton, iCloud) and NOT guaranteed for an arbitrary corporate or self-hosted
+domain — a Microsoft 365/Exchange Online tenant, for instance, requires an
+administrator to enable it explicitly.
+
+This was an active (mistaken) design belief, not an overlooked edge case, and
+three separate artefacts encoded it:
+* the helper's own doctest asserted
+  `canonical_email_mailbox("jane+promo@corp.com")` → `"jane@corp.com"` on a
+  plainly generic domain;
+* `util::canonical::tests::non_gmail_keeps_dots_but_strips_plus_tag` pinned
+  the same `corp.com` fold;
+* `core::resolve::tests::non_gmail_plus_tag_is_stripped_so_those_group`
+  pinned it at the resolver layer with the comment "`+tag` IS stripped
+  everywhere (widely-supported subaddressing)".
+
+Failure scenario: `bob+x@smallbiz.example` and `bob@smallbiz.example` on a
+domain that never enabled subaddressing are two potentially DIFFERENT real
+people (or one held address and one undeliverable). They were fused into one
+high-confidence "proven" identity, and the scan then actively pivoted and
+expanded on that fabricated link.
+
+**Fix.** A new `PLUS_ADDRESSING_DOMAINS` allowlist beside the existing
+`GMAIL_DOMAINS`, gating the strip. Deliberately conservative and limited to
+providers whose support is documented and default-on (RULE.md: no assumed
+contract) — Google, Microsoft consumer, Fastmail, Proton, Apple iCloud, with
+their alias domains. Yahoo is deliberately absent: it offers disposable
+addresses rather than `+tag` subaddressing. An unrecognised domain now KEEPS
+its tag, because the fail-safe direction is to leave two addresses separate
+when equivalence is unproven: a missed merge is recoverable, a false merge
+silently corrupts an identity.
+
+**Test-oracle correction.** The two pre-existing tests above failed against
+the fix, as expected — they asserted the defect. Each was corrected rather
+than deleted, preserving its genuine intent (off-Gmail: the tag is
+insignificant, dots are significant) by moving it onto `outlook.com`, a
+domain where that is actually true, and each gained a companion asserting
+the arbitrary-domain case is NOT folded (and, at the resolve layer, NOT
+grouped). The helper's doctest was likewise corrected to show both halves of
+the rule. The old assertions' comments are quoted in the new tests so the
+reason for the change is legible at the failure site.
+
+**Evidence.** Two new locks in `modules::email_canonical::tests`
+(`an_unknown_domain_keeps_its_plus_tag` across four arbitrary domains;
+`a_known_subaddressing_provider_still_folds_its_plus_tag` across all eight
+allowlisted consumer domains), plus
+`util::canonical::tests::an_arbitrary_domain_keeps_its_plus_tag` (including
+an `assert_ne!` that the two spellings do not collapse onto one key) and
+`core::resolve::tests::an_arbitrary_domains_plus_tag_does_not_group`.
+
+**Falsification.** The fix landed before its test here, so the pre-fix
+failure was reproduced explicitly by reverting the gate to the unconditional
+strip (file backed up, restored byte-identical afterwards):
+
+```
+[gate reverted to unconditional strip] -> LOCK FAILS (expected)
+    modules::email_canonical::tests::an_unknown_domain_keeps_its_plus_tag --- FAILED
+    "bob+x@smallbiz.example has no canonical form distinct from itself, so no
+     entity may be minted claiming equivalence"
+    test result: FAILED. 11 passed; 1 failed; 0 ignored; 7396 filtered out
+```
+
+`a_known_subaddressing_provider_still_folds_its_plus_tag` PASSED in that
+reverted run, proving it is not vacuously green from the allowlist. Restored:
+`util::canonical` 86 passed, `core::resolve` 203 passed, `email_canonical` 12
+passed, all doctests 77 passed, 0 failed.
+
+**Residual.** Two other modules strip a `+tag` independently —
+`email_parse` (deriving a Username from the local part) and
+`username_variants` (generating handle permutations). Both are deliberately
+left alone: they derive a low-confidence *username candidate*, not a claim
+that two mailboxes are the same person, so the fail-safe direction there is
+the opposite one. The allowlist is a judgement call about provider behaviour
+and will need extending as providers change; it is one named constant with a
+doc comment stating the evidentiary standard for adding to it, so the
+decision is reviewable rather than buried in a `split('+')`.
+
+### REQ-KEYPOOL-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a stealer-log-sourced API key entered the pool auth-eligible
+
+**Lead.** Wave 8 hunt into `src/util/key_pool/`, then a full call-site trace
+and personal re-read of every function on the path.
+
+**Verified from source.** `add_and_validate`
+(`src/util/key_pool/validation.rs`) constructed its entry with
+`KeyEntry::new(key_value)` and set only `.notes`, `.status` and
+`.last_validated` — never `.discovered_by`. `KeyEntry::new`
+(`types.rs:114`) defaults `discovered_by: None`, and nothing in the
+function overrode it in any of its three `pool.add` branches (valid,
+invalid, probe-failed). `is_harvested()` (`types.rs:156`) is exactly
+`self.discovered_by.is_some()`, and it is the SOLE signal
+`next_key_excluding` (`pool.rs`) uses to keep a harvested credential out of
+HSE's own outbound authenticated requests — its doc comment names "a breach
+record" explicitly as a category that must never be auth-eligible this way.
+
+The gap is not theoretical. The ONLY production caller of
+`add_and_validate` in the entire tree is `src/app/import/json.rs:298`,
+inside the stealer-log / infostealer-dump import path (it scans a dumped
+record's `password` field via `detect_and_create_api_key_entity(pw, &sid,
+"import:oathnet")`). That call's own `notes` argument literally read
+`Some(format!("Import: {svc} key from stealer data"))` — the code
+documented, in human-readable text, that the credential came from stealer
+material — yet that provenance only ever reached `.notes` (free text), never
+`.discovered_by`. Every OTHER key-pooling path in the codebase
+(`key_harvest::emit`, `engine::enrich`, `http::keys`, the per-module harvest
+paths, and the CLI TSV importer) stamps `discovered_by` before pooling;
+`add_and_validate` was the one that didn't, and it was specifically the
+stealer-import path.
+
+**Failure scenario.** A stealer log carries a still-live third-party API
+key in a password field. `add_and_validate` probes it, gets a successful
+validation, marks it `Active` and pools it with `discovered_by = None`.
+`is_harvested()` now reads `false`, so `next_key_excluding` — whose entire
+documented purpose is refusing exactly this — has no signal to exclude it,
+and HSE can authenticate its own outbound requests with a credential
+recovered from a stealer log that does not belong to the operator,
+indistinguishable in the pool from a legitimately-owned key.
+
+**Fix.** `add_and_validate` gains a required `discovered_by: Option<String>`
+parameter (required, not defaulted, so every call site is forced to state
+the key's origin), and entry construction is routed through one new
+`build_validated_entry` helper that stamps `entry.discovered_by` for EVERY
+validation outcome before the entry is pooled. Not just the `Active` branch:
+an `Untested`/`Invalid` harvested entry can be re-validated to `Active` on a
+later import, so a valid-branch-only stamp would leave a stealer key that
+first probed `Indeterminate` (`None`) and later settled `Active`
+auth-eligible in the window between. The sole production caller
+(`app::import::json`) now passes `Some(format!("stealer_import:{svc}"))`.
+The per-branch `pool.add`/persist/log behaviour of the three arms is
+preserved exactly — the refactor changed construction, not the side
+effects.
+
+**Evidence.** Three new locks in `util::key_pool::validation::tests`:
+`a_stealer_sourced_key_is_stamped_harvested_for_every_validation_outcome`
+(all of `Some(true)`/`Some(false)`/`None` → `discovered_by` set AND
+`is_harvested()` true); `an_operator_supplied_key_is_not_stamped_harvested`
+(a `None`-provenance key stays auth-eligible for every outcome — the fix must
+not over-reach into marking legitimately-configured keys harvested); and
+`build_validated_entry_maps_the_validation_outcome_to_status` (the refactor
+preserves valid→Active, rejected→Invalid, indeterminate→Untested). The
+downstream half — that a `discovered_by`-tagged entry is refused by both
+`next_key` and `next_key_excluding` — was already locked by the pre-existing
+`harvested_keys_are_pooled_but_never_authenticate`, so the two together
+cover the whole path: `add_and_validate` now stamps the tag, and a tagged
+entry is excluded from auth.
+
+`build_validated_entry` is the real construction authority `add_and_validate`
+routes through, not a test-only parallel implementation, so exercising it in
+a unit test exercises production. This deliberately avoids driving
+`add_and_validate` end-to-end through the process-global pool, whose
+parallel-test contention is the subject of REQ-CI-003 / the open REQ-CI-004
+observation — a global-pool test here would reintroduce exactly that flake
+into a security lock, the one place it must not live.
+
+**Falsification.** Test-first in the new structure: the helper was written
+with the `discovered_by` param accepted but the stamp line omitted (the bug
+reproduced in the refactored shape), and the lock was run and observed
+FAILING before the stamp was added:
+
+```
+[stamp omitted] -> LOCK FAILS (expected)
+    util::key_pool::validation::tests::a_stealer_sourced_key_is_stamped_harvested_for_every_validation_outcome --- FAILED
+    "a stealer-sourced key must carry its provenance for validation=Some(true)"
+    test result: FAILED. 11 passed; 1 failed; 0 ignored; 7401 filtered out
+```
+
+`an_operator_supplied_key_is_not_stamped_harvested` PASSED in that same
+pre-stamp run, proving the lock is not vacuously green from the stamp being
+applied unconditionally. After adding `entry.discovered_by = discovered_by;`:
+`util::key_pool` 60 passed, 0 failed; `key_harvest` 171 passed; fmt clean.
+
+**Residual.** REQ-KEYPOOL-002 (task, separate) — re-validating an
+already-pooled unsettled key discards the fresh result — is a distinct
+defect in the same function's early-return and is not addressed here. The
+required-parameter signature means any future caller of `add_and_validate`
+must consciously decide provenance; that is the intended forcing function,
+not a residual. `hse keys add` and the CLI TSV import do not route through
+`add_and_validate` (verified: the only caller is the stealer-import path),
+so no operator-supplied-key path is affected by the new stamp.
+
+### REQ-PGP-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a self-certified co-resident UID fabricated the engine's strongest correlation
+
+**Lead.** Wave-8 hunt into `src/modules/{chain_intel,pgp,payid}/`, then a full
+read of the `pgp` module's gate, mint loop and Credential-binding loop plus the
+two correlator rules the Credential and the linked emails feed.
+
+**Verified from source.** `extract()` (`src/modules/pgp/mod.rs`) gates a whole
+keyserver-returned key on whether ANY of its UIDs names the queried email
+(`key_matches_query`), then — once that per-KEY gate passes — minted a `Person`
+(`confidence::HIGH`) from EVERY UID's name and an `Email`
+(`confidence::HIGH_PLUS`, tagged `pgp-linked`) from every OTHER UID's email,
+and bound EVERY UID email (queried + all co-resident) into one correlatable
+`Credential` `pgp:<fp>` (`confidence::HIGH_PLUSPLUS_PLUS`, tagged `pgp-key`).
+Nothing distinguished the UID that actually matched the query from any other
+UID riding on the same key. `keyserver.ubuntu.com` — this module's deliberate
+choice, precisely because keys.openpgp.org hides unverified UIDs — performs NO
+ownership check on a UID: anyone can self-certify any `Name <email>` onto their
+own key and upload it. The gate's own doc comment reasoned only about the
+wrong-KEY threat (an unrelated `pub:` block), never the same-key-different-UID
+threat.
+
+The Credential is exactly what AU-048
+(`src/core/correlator/rules/identity/account/key.rs`) reads: its
+`rule_au_048_shared_public_key` collects the distinct `email` (and
+`github_login`/`username`) evidence attrs a key-tagged Credential carries and,
+on `≥ 2` distinct controller accounts, fires a `Severity::Critical` "a reused
+public key proves one person controls N accounts (same private key)" — the doc
+comment calls it "the strongest cross-account link in the engine." The
+co-resident `pgp-linked` emails separately fed AU-042
+(`rule_au_042_pgp_email_identity`, `Severity::High` "PGP key binds multiple
+emails to one identity").
+
+**Failure scenario (trivially weaponizable, no compromise of anything).** An
+attacker runs `gpg --quick-generate-key`, adds two self-certified UIDs —
+`Real Owner <victim@example.com>` and `Attacker Alias <alt@attacker.tld>` — and
+uploads the key. Any later HSE scan of `victim@example.com` finds the key,
+passes `key_matches_query` on UID 1, and mints a `Person` "Attacker Alias" at
+`HIGH`, an `Email` `alt@attacker.tld` at `HIGH_PLUS` tagged `pgp-linked`, and a
+Credential binding BOTH addresses — so AU-048 fires a Critical "cryptographic
+proof of control" between the victim and an identity the attacker invented from
+nothing. Standard, unauthenticated protocol action; zero sophistication beyond
+`gpg`.
+
+**Fix (authoritative layer = the module that mints the evidence).**
+`key_matches_query` only proves SOME UID names the query; it says nothing about
+the OTHER UIDs. So `extract()` now precomputes the names carried by a
+query-matching UID (`query_names`) and:
+
+- mints a first-class `Person` (`HIGH`, tag `pgp`) only for a name a
+  query-matching UID carries; a name riding only on a non-matching UID is minted
+  at `confidence::TENTATIVE` tagged `pgp-unverified-uid` — a clearly-labelled
+  lead the identity correlators cannot read as corroborated fact;
+- mints an alternate `Email` at `TENTATIVE` tagged `pgp-unverified-uid` (never
+  `pgp-linked`), so AU-042 no longer reads it as verified same-owner evidence;
+- binds ONLY the query-matched email into the `pgp:<fp>` Credential's `email`
+  evidence. A single key's unverified co-resident UIDs therefore bind one
+  controller and AU-048 cannot fire from them. Genuine cross-account linkage is
+  preserved: when a SEPARATE seed independently matches this same key on its own
+  address, the fingerprinted Credential dedups the two matched controllers and
+  AU-048 fires on real convergence.
+
+AU-042 was consolidated onto the new reality: it now reads `pgp-unverified-uid`
+and fires at `Severity::Low` with honest "self-asserts N co-resident email
+address(es) (keyserver UID, unverified)" wording — the multi-email-owner lead is
+preserved at the tier a bare keyserver index actually supports, not the old
+`High` "proven same owner". `TENTATIVE` (0.35) sits below the `0.40`
+cross-scan-history gate (`is_cross_scan_candidate`), so an attacker-chosen
+alternate address is a within-scan lead, never a persisted cross-investigation
+identity bridge.
+
+**Evidence.** New lock
+`modules::pgp::tests::a_forged_co_resident_uid_never_produces_corroborated_identity`
+feeds a two-UID key whose second UID names `alt@attacker.tld` and asserts the
+attacker Person/Email are down-tiered + `pgp-unverified-uid` (not `pgp-linked`)
+and the Credential's `email` set contains the queried address but NOT
+`alt@attacker.tld`. `extract_mints_correlatable_pgp_key_credential` and
+`extract_pulls_name_and_alternate_emails` were corrected (not deleted) to the
+new contract, each keeping its genuine intent — the legitimate multi-email owner
+still surfaces, now as a labelled tentative lead. AU-042's three correlator
+tests moved to `pgp-unverified-uid` + `Severity::Low`.
+
+**Falsification.** Test-first: the lock was written and observed FAILING on the
+unfixed module — `panicked at src/modules/pgp/tests.rs:195: an unverified
+co-resident UID name must be down-tiered, got 0.65` (the attacker's Person
+minted at `confidence::HIGH`), and the Credential-binding assertion would have
+failed identically. After the fix: `modules::pgp` 8 passed / 0 failed;
+`core::correlator` 615 passed / 0 failed (the three AU-042 tests among them);
+`cargo fmt --check` clean; `cargo clippy --all-targets --locked -- -D warnings`
+exit 0.
+
+**Residual.** An attacker can still self-certify the QUERY UID's own name
+(`Defamatory Name <victim@example.com>`), which is minted `HIGH` — this is the
+module's irreducible premise (a keyserver key naming an address asserts an owner
+name for it) and inherent to any unauthenticated keyserver source; it is tagged
+`pgp` so its provenance is explicit, and it never crosses identities. Truly
+verifying a UID would require downloading the key and checking self-signatures,
+which the HKP machine-readable index does not carry; that is a separate,
+larger capability, not this fix.
+
+### REQ-OPENSANCTIONS-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a party merely LINKED to a sanctioned entity fired the Critical "sanctions designation" claim
+
+**Lead.** Hybrid module sweep + personal re-read of the producer arm, the tag
+definition, and the correlator rule the tag drives.
+
+**Verified from source.** `result_to_entity`
+(`src/modules/opensanctions/entity_builders.rs`) matched a definitive result's
+`topics` and folded BOTH `"sanction"` and `"sanction.linked"` into the same
+`tags::SANCTIONED`. That tag's own doc (`hse-core/src/tags.rs`) defines it as
+"Listed on a sanctions list (OFAC SDN, UN, EU, DFAT, …)" — a listing claim —
+and it is the sole tag `rule_au_114_sanctions_exposure`
+(`src/core/correlator/rules/org.rs`) grades `Severity::Critical` "matches a
+sanctions designation". OpenSanctions' `sanction.linked` topic is a DISTINCT,
+documented taxonomy value: an entity merely LINKED to a designated party (a
+relative, business partner, or majority-owned company), NOT itself designated.
+Nothing between the producer and the correlator distinguished the two — same
+tag, same evidence shape, same Critical severity — and no test exercised a
+`sanction.linked`-only record. `tags::SANCTIONED` had exactly two readers in the
+tree: this producer arm and AU-114 (confirmed by grep), so the fix's blast
+radius is precisely those two.
+
+**Failure scenario.** OpenSanctions returns a definitive match for a person who
+is the spouse or business partner of a sanctioned individual, `topics:
+["sanction.linked"]`. The old arm tagged the Person `tags::SANCTIONED`, and
+AU-114 fired a `Severity::Critical` "Person '…' matches a sanctions
+designation" — a false, reputationally and legally severe claim that a real
+person is on a sanctions list, when the underlying record only ever asserted an
+association. The single highest-stakes false-positive category in the OSINT
+domain, produced from a mere link.
+
+**Fix.** A new `hse-core` tag `tags::SANCTIONS_LINKED` ("sanctions-linked"),
+documented as an association with a designated party — not a designation. The
+producer arm is split: `"sanction"` → `SANCTIONED` (Critical designation),
+`"sanction.linked"` → `SANCTIONS_LINKED`. AU-114 grades the new tag
+`Severity::Medium` "is linked to a sanctioned party (elevated due diligence — an
+association, not a designation)" — placed, by the rule's OWN taxonomy, in the
+same "elevated due-diligence signal, not a determination" tier as the PEP
+role-flag, never the Critical tier reserved for a determination against the
+subject. The linked party is still SURFACED as a ranked finding (AU-114's whole
+purpose), just never as a designation. The precedence order (sanctioned >
+debarred > sanctions-linked > pep) means a record carrying several flags is
+still graded by its strongest, and every present flag is enumerated in the
+description.
+
+**Evidence.** New module lock
+`opensanctions::tests::a_sanction_linked_only_record_is_not_tagged_sanctioned`
+(a `sanction.linked`-only definitive match is NOT tagged `SANCTIONED` and IS
+tagged `SANCTIONS_LINKED`) and correlator lock
+`part13::au114_sanctions_linked_only_fires_medium_not_critical` (Medium, never
+"matches a sanctions designation", framed as a lead). The pre-existing
+`definitive_match_carries_sanction_and_debarment_tags_and_evidence` (real
+`"sanction"` topic → `SANCTIONED`) still passes, proving the literal-designation
+path is untouched.
+
+**Falsification.** Test-first: the module lock was written and observed FAILING
+on the un-split producer — `panicked at src/modules/opensanctions/tests.rs:202:
+a merely-linked record must NOT be tagged as a designated party` (the
+`sanction.linked` record was still carrying `SANCTIONED`). After the split:
+`opensanctions` 13 passed / 0 failed; AU-114 correlator locks 6 passed / 0
+failed; `cargo fmt --check` clean; `cargo clippy --all-targets --locked -- -D
+warnings` exit 0.
+
+**Note on taxonomy.** No live OpenSanctions API access was available to
+re-confirm the topic strings this session; the finding rests on OpenSanctions'
+documented `topics` enum (which distinguishes `sanction` from `sanction.linked`
+precisely on the designated-vs-associated axis) and on the code already
+hard-coding `"sanction.linked"` as a match arm — strong internal evidence it is
+a real value the implementer met from the live API. The fix (splitting the two
+cases) is correct and safe regardless of the exact wording of the weaker tier.
+
+### REQ-CERTINTEL-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a per-scan fabricated "TLS certificate" from a permanently-dead probe leg
+
+**Lead.** Wave-9 hunt (group A), then a personal re-read of `cert_intel`'s
+`process()` and a whole-tree grep for `tls_info`.
+
+**Verified from source.** `cert_intel::process()`'s live-TLS-probe leg
+(`src/modules/cert_intel/mod.rs`) reads
+`resp.extensions().get::<reqwest::tls::TlsInfo>()` to get the peer certificate
+DER for `parse_certificate` (SAN/issuer/subject/serial extraction — the module's
+documented "merged former ssl_probe" capability). `TlsInfo` is populated by
+reqwest ONLY when the client was built with `.tls_info(true)`. Grep across the
+whole `src/` tree confirmed `tls_info` appears **only** at cert_intel's two
+consumer lines — the shared hardened client builder
+(`util::http::ssrf::client_builder`) never enabled it. So
+`resp.extensions().get::<TlsInfo>()` was `None` on every request, the
+`if let Some(info) … peer_certificate()` guard could never be true, and
+`parse_certificate` never fired — silently, on every scan, forever.
+
+Yet `process()` still unconditionally built `target.to_entity(confidence::EXPERT,
+…)` (0.88) tagged `"tls"` with evidence titled `"TLS certificate for {domain}"`
+and pushed it on ANY successful HTTPS HEAD, with zero certificate fields ever
+populated. Every domain that merely answered HTTPS minted a near-max-confidence
+"TLS certificate confirmed" entity that examined no certificate at all, while
+half the module's advertised capability was inert. The module's tests exercised
+only the pure DER-scanner helpers on byte fixtures — the real HTTP path was
+never covered, which is why it survived.
+
+**Failure scenario.** Every scan reaching an HTTPS server mints this
+fabricated-looking EXPERT entity — a very high blast radius, since a successful
+HTTPS HEAD is one of the most common outcomes in a scan.
+
+**Fix (both root causes).**
+1. **Restore the dead capability**: enable `.tls_info(true)` on the single
+   hardened `client_builder()` so `TlsInfo` (the peer's leaf-cert DER) is
+   captured for the client every module already uses — no new client path (zero
+   SSRF-mirroring risk), and the ~1–4 KB DER retained per response is negligible.
+2. **Gate the finding on an actually-captured certificate**: entity construction
+   moves into a pure `build_tls_entity(target, domain, scan_id, cert_der,
+   http_status, hsts, …)` helper. `cert_der: Some` → `confidence::EXPERT` "TLS
+   certificate for {domain}" with the parsed SANs/issuer/subject/serial;
+   `cert_der: None` → a modest `confidence::MEDIUM` "HTTPS service responding …
+   (no certificate captured)" observation that still records the real HSTS/
+   http_status signal. A bare HTTPS HEAD can no longer mint a certificate finding
+   that examined nothing. Post-fix, `Some` is the normal path (the capability is
+   restored) and `None` is the honest fallback for the edge case.
+
+**Evidence.** Two new locks:
+`cert_intel::tests::a_probe_with_no_certificate_is_not_an_expert_tls_finding`
+(`None` → MEDIUM, evidence must not say "TLS certificate for", HSTS still kept,
+no SAN subdomains fabricated) and `…::a_captured_certificate_is_an_expert_tls_
+finding` (a minimal DER SAN fragment → EXPERT "TLS certificate for example.com"
+with the SAN parsed into a discovered subdomain — the restored capability). The
+pure helper is the testable seam the original bug slipped through. `real_cert_*`
+fixtures still pass, proving `parse_certificate` is unchanged.
+
+**Falsification.** The gate was reverted in place (`if cert_der.is_some()` →
+`if true`, the old always-EXPERT behaviour) and the no-certificate lock was run
+and observed FAILING (MEDIUM ≠ EXPERT), then restored byte-for-byte. After the
+fix: `cert_intel` 32 passed, `util::http` 76 passed, `cargo fmt --check` clean,
+`cargo clippy --all-targets --locked -- -D warnings` exit 0.
+
+**Note.** `.tls_info(true)` is now on for every request. Only `cert_intel` reads
+`TlsInfo` today, but any future TLS-aware module gets the capture for free — the
+capability is now reachable rather than dead.
+
+### REQ-AUGEO-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a fail-closed comment that never failed closed — the ArcGIS error envelope decoded as an empty miss
+
+**Module.** `au_geo` (`src/modules/au_geo/mod.rs`) — Australian ASGS geography
+for a coordinate, resolved against the ABS's public ArcGIS boundary service by
+querying each of ~11 layers (POA/SAL/LGA/CED/SED/RA/SA2/SA4/…) point-in-polygon.
+
+**Defect.** ArcGIS/Esri REST characteristically returns *logical* errors (a bad
+parameter, an expired token, a throttle, a WAF interstitial) as **HTTP 200**
+carrying an `{"error":{"code":…,"message":…}}` envelope rather than a feature
+set. `query_layer` carried a long comment stating exactly the right policy — "a
+200 whose body is not a decodable `QueryResp` is NOT 'point not in this layer';
+collapsing it to `Ok(None)` fails OPEN … Decode FAILURE ⇒ `Err` (fail closed)" —
+and a guard `if serde_json::from_str::<QueryResp>(&body).is_err() { return Err(…) }`.
+But `QueryResp` deserialized a single field, `features: Vec<Feature>`, under
+`#[derive(Deserialize, Default)] #[serde(default)]`. With `#[serde(default)]` and
+no `#[serde(deny_unknown_fields)]`, serde **silently drops** any key it does not
+recognise — so the error envelope did not fail to decode: it decoded
+*successfully* to `QueryResp { features: [] }`. The `is_err()`-only guard could
+therefore never fire on the one shape it was written to catch. The comment
+described a fail-closed guard the code could not implement.
+
+**Failure scenario.** A layer whose upstream answers `200 {"error":{"code":400,
+"message":"Invalid or missing input parameters."}}` (or a WAF page that happens
+to parse as an object) decodes to empty `features`, `parse_feature` returns
+`None`, and `query_layer` returns `Ok(None)` — read as a genuine "the point is
+not in this layer" miss. That fails OPEN twice over:
+1. the coordinate silently reports as having **no** Australian geography for that
+   layer (a false clean negative on data that does exist), and
+2. the layer query records a **circuit-breaker success**, so a *systematic*
+   upstream 200-error is indistinguishable from a real miss — the breaker never
+   trips, outage detection never fires, and the module's own "every layer
+   failed" safety net (which turns a total failure into a `ModuleError`) is
+   never reached because each failed layer is counted as a clean success.
+
+**Fix (at the authoritative decode seam).**
+1. `QueryResp` gains `error: Option<ArcgisError>` (with a new
+   `struct ArcgisError { code: i64, message: String }`), so the envelope's error
+   key is now *observed* rather than dropped — mirroring the sibling
+   `qld_cadastre::QueryResp`, which already carried this exact field and a
+   `features_or_error` helper. (`au_geo` was the drifted copy.)
+2. The `is_err()`-only guard is replaced by a pure
+   `decode_layer_body(body: &str) -> Result<QueryResp>` that fails **closed** on
+   BOTH failure shapes: an undecodable body (WAF HTML / truncated JSON) ⇒ `Err`,
+   and a *present* `error` envelope ⇒ `Err` carrying the provider's own
+   `code`/`message.trim()` for triage. Only a genuinely decoded feature response
+   (empty or not) returns `Ok`; a genuinely empty `features` list stays the real
+   miss it always was (`parse_feature`'s `None`).
+   The raw serde error is still deliberately **not** interpolated on the
+   undecodable path (a serde column number could trip the engine's `429`/`402`
+   rate-limit text match, and serde quotes offending values into the unredacted
+   `ModuleError` event) — but the *structured* envelope's fields are safe to
+   surface. `parse_feature` is unchanged: the guard runs first, so an undecodable
+   body never reaches it, and its four existing tests stay valid.
+   The template sibling `qld_cadastre` was confirmed already correct; no drift
+   the other way.
+
+**Evidence.** Three new locks in `src/modules/au_geo/tests.rs`, all exercising
+the pure `decode_layer_body` with no network:
+`an_arcgis_error_envelope_fails_closed` — the literal reproduced envelope
+`{"error":{"code":400,"message":"Invalid or missing input parameters."}}` must be
+`Err` (a `Module` error surfacing `400` and the message, not the raw body);
+`a_genuine_empty_layer_is_a_miss_not_an_error` — `{"features":[]}` must be `Ok`
+with empty features and no error (the fix must not turn honest misses into
+failures); `a_waf_page_fails_closed` — `<html>Access denied</html>` must be `Err`
+("did not decode"). `QueryResp`/`ArcgisError`/`Feature` gained `Debug` so
+`expect_err` can report. `cargo test --lib modules::au_geo::` → 9 passed, 1
+ignored (the live ABS probe).
+
+**Falsification.** The new guard was neutered in place
+(`if let Some(err) = resp.error` → `if let Some(err) = Option::<ArcgisError>::None`,
+simulating the pre-fix dropped-field behaviour) and
+`an_arcgis_error_envelope_fails_closed` was run and observed **FAILING** — the
+envelope decoded to an `Ok` empty miss exactly as it did before the fix — then
+the guard was restored byte-for-byte (from a pre-edit backup) and the suite went
+green again. This proves the lock binds the fix, not incidental state.
+
+**Class.** This is the same "an unexpected-shape 200 decodes as a clean negative"
+defect family as REQ-INTELX-002, REQ-ZOOMEYE-001, REQ-LEAKCHECK-001 and
+REQ-HUDSONROCK-001 (all still open) — but distinguished by an explicit in-source
+comment asserting the fail-closed behaviour the struct made impossible. The
+generalisable lesson is recorded for the sibling sweep: a `#[serde(default)]`
+struct with no `deny_unknown_fields` cannot implement a "body did not decode"
+guard, because it decodes *everything*; the guard must inspect a modelled error
+field.
+
+### REQ-INTELX-002 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): the search-start's all-optional struct read an auth/quota failure as a clean "no records"
+
+**Module.** `intelx` (`src/modules/intelx/mod.rs`) — Intelligence X selector
+search, a **paid, keyed** two-phase breach/leak corpus. Phase 1 `POST
+/intelligent/search` returns a search `id` + start `status`; phase 2 polls
+`/intelligent/search/result?id=…` for records.
+
+**Defect.** The phase-1 response is modelled by `StartResp { id: Option<String>,
+status: Option<i32> }`, **both `#[serde(default)]`**. IntelX documents only three
+start statuses — 0 = success, 1 = invalid term, 2 = max concurrent — and the
+code's own comment states the invariant: "there is no 'no results' status for a
+search *start*." Yet the id-selection match ended in a catch-all:
+
+```rust
+let search_id = match (start.id, start.status) {
+    (Some(id), Some(0) | None) if !id.is_empty() => id,
+    (_, Some(1)) => return Ok(ModuleResult::new()), // invalid term
+    (_, Some(2)) => return Err(Error::module(SRC, "max concurrent searches reached")),
+    _ => return Ok(ModuleResult::new()),            // ← the false clean
+};
+```
+
+Because both fields default, an auth/quota failure page, a WAF interstitial, or
+any unexpected 200 JSON shape decodes **without error** to `StartResp { id:
+None, status: None }`. That matches none of the first three arms and falls to
+`_ => Ok(ModuleResult::new())` — an empty result the engine records as a clean
+"no exposure for this subject." The module's own phase-2 comment names this
+class the "most consequential false clean this engine can produce"; here it
+fires at phase 1, on a **paid, keyed** source, so an expired key or a spent
+quota silently becomes a confident all-clear on a person's breach exposure.
+
+**Failure scenario.** A pooled IntelX key expires or the account's quota is
+exhausted. IntelX answers `POST /intelligent/search` with `200` and a
+non-search body (e.g. `{"error":"Invalid or expired API key"}`). `StartResp`
+decodes it to all-`None`; `process()` returns `Ok(empty)`; the dossier records
+"IntelX: no records" for a subject who may be extensively exposed — and, being
+`Ok`, it also counts as a circuit-breaker success, so the failure never
+surfaces.
+
+**Fix (pure, fail-closed seam).** Extracted the decision into
+`classify_start(id, status) -> Result<StartDecision>`:
+- `(Some(id), Some(0) | None) if !id.is_empty())` → `Ok(Proceed(id))` (unchanged
+  success, including IntelX's status-omitted-on-success shape);
+- `(_, Some(1))` → `Ok(InvalidTerm)` → the one genuine clean negative a *start*
+  can mean (the API explicitly rejected the term);
+- `(_, Some(2))` → `Err` "max concurrent searches reached" (unchanged);
+- `_` → **`Err`** — an all-`None` body, a success claim with no id, or an empty
+  id string is an auth/quota failure or an unexpected 200 shape, never a miss.
+
+`process()` becomes `match classify_start(start.id, start.status)? { Proceed(id)
+=> id, InvalidTerm => return Ok(ModuleResult::new()) }`. Only the `_` arm's
+behaviour changes (Ok(empty) → Err); every previously-handled case is preserved
+bit-for-bit. The error message is honest and body-free (mirroring REQ-AUGEO-001:
+no raw serde/body text that could carry credentials or trip the rate-limit text
+match).
+
+**Evidence.** Four new pure locks in `src/modules/intelx/tests.rs`:
+`classify_start_proceeds_only_on_a_usable_id` (status 0 and status-omitted both
+proceed with a non-empty id); `classify_start_invalid_term_is_the_one_clean_
+negative` (status 1 → `InvalidTerm`); `classify_start_max_concurrent_is_an_error`
+(status 2 → `Err`); and the core lock `an_unexpected_start_body_fails_closed_not_
+a_clean_negative` — a realistic `{"error":"Invalid or expired API key"}` body
+decodes to all-`None` and must be `Err` (surfacing "no usable search id"), plus
+the success-with-no-id and empty-id cases also `Err`. `StartDecision` gained
+`#[derive(Debug)]` for `expect_err`. `cargo test --lib modules::intelx::` → 17
+passed.
+
+**Falsification.** The `_` arm was reverted in place to
+`Ok(StartDecision::InvalidTerm)` (the pre-fix clean-negative fall-through) and
+`an_unexpected_start_body_fails_closed_not_a_clean_negative` was run and observed
+**FAILING** (the auth-failure body read as a clean negative), then restored
+byte-for-byte from a pre-edit backup and the suite went green.
+
+**Class.** Same "an all-optional `#[serde(default)]` struct decodes an
+unexpected 200 as a clean negative" family as REQ-AUGEO-001 (fixed this wave),
+and still open in REQ-ZOOMEYE-001, REQ-LEAKCHECK-001, REQ-HUDSONROCK-001 and
+REQ-CHAININTEL-001. The generalisable rule (recorded for the sibling sweep): a
+struct that decodes every shape cannot gate on "did it decode"; the failure
+shape must be modelled (a `status`/`error` field) and the catch-all must fail
+closed. REQ-INTELX-001 (the phase-2 poll loop swallowing typed errors via bare
+`continue`) is a distinct, still-open defect in the same module.
+
+### REQ-CHAININTEL-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): an unexpected 200 minted a confident "dormant wallet" verdict on BTC/LTC/DOGE
+
+**Module.** `chain_intel` (`src/modules/chain_intel/mod.rs`) — free, keyless
+on-chain enrichment for a `CryptoAddress` (balance / total received / tx count),
+the module that closes the loop on wallet addresses harvested from
+clipboard-hijacker stealer logs.
+
+**Defect.** BTC/LTC are enriched via Esplora (`EsploraAddress { chain_stats,
+mempool_stats }`) and DOGE via BlockCypher (`BlockcypherBalance { balance,
+total_received, n_tx }`). Both structs are `#[derive(Default)] #[serde(default)]`,
+so a 200 body that is a *valid JSON object but not an address response* — a
+rate-limit body, a `{"error":…}`, a `{"message":"Invalid address"}`, a WAF JSON
+interstitial, even an empty `{}` — decodes **without error** to all-zeros. The
+enricher then built an `Enrichment { tx_count: Some(0), balance: 0, … }`, and
+`build_evidence` maps `Some(0) => "dormant"`, so `process()` pushed a
+`confidence::HIGH_PLUSPLUS` (0.85) `CryptoAddress` entity whose evidence reads
+`… on-chain activity: dormant`. A failed lookup on a malware-sourced wallet was
+thus reported as an **affirmative** "this wallet is inactive" finding — worse
+than a false clean, because it asserts a positive fact from garbage.
+
+The SOL path was already immune: `SolBalanceResp` models `result`/`error` and
+`enrich_sol_at` errors on an `error` envelope AND on "neither result nor error",
+with a doc comment stating the exact principle ("there is no legitimate 'neither
+result nor error' response shape"). BTC/LTC/DOGE never received that discipline —
+the same drift as REQ-AUGEO-001 (`qld_cadastre` guarded, `au_geo` not).
+
+**Failure scenario.** A pooled Esplora/BlockCypher host rate-limits or serves a
+WAF page as HTTP 200 with a JSON body. The all-`default` struct decodes it to
+zeros; the address is emitted as a HIGH_PLUSPLUS "dormant" wallet. An
+investigator reads "no on-chain activity" for an address that may be highly
+active — and, being `Ok`, the lookup also records a circuit-breaker success, so
+the systematic upstream failure never surfaces.
+
+**Fix (require the structural key; fail closed; pure seams).** Mirroring SOL and
+the module's own honesty discipline:
+- `EsploraAddress.chain_stats` becomes `Option<EsploraStats>`. A real Esplora
+  address response always carries a `chain_stats` object (zeros for a dormant
+  address); an error/WAF/wrong-shape body carries none. New pure
+  `esplora_enrichment(EsploraAddress, unit) -> Result<Enrichment>` returns `Err`
+  when `chain_stats` is `None`, else builds the enrichment (a genuinely dormant
+  address, `chain_stats: Some(zeros)`, still reads "dormant").
+- `BlockcypherBalance` gains `address: Option<String>` — the queried address
+  BlockCypher echoes in every real balance response but no error body carries.
+  New pure `blockcypher_enrichment(BlockcypherBalance) -> Result<Enrichment>`
+  returns `Err` when the echoed `address` is absent/blank, else builds the
+  enrichment.
+- `enrich_esplora`/`enrich_doge` fetch via `fetch_json` (unchanged typed-error
+  path: transport/non-2xx/BotChallenge) then delegate to the pure helper.
+  `enrich_doge` was split into `enrich_doge_at(ctx, addr, base)` (base
+  parameterized, mirroring `enrich_sol_at`) so the DOGE failure contract is
+  network-testable like its siblings.
+- `Enrichment` gained `#[derive(Debug)]` for `expect_err`.
+
+Only the garbage-body path changes (silent "dormant" → `Err`); every real
+response — funded, dormant, or empty — is preserved bit-for-bit, proven by the
+untouched `enrich_esplora_parses_a_real_shaped_body_into_enrichment` and
+`blockcypher_doge_balance_deserialises_real_response` tests.
+
+**Evidence.** Six new locks. Pure: `esplora_enrichment_fails_closed_on_a_non_
+address_body` (`{"error":…}`, `{"message":…}`, `{}` → `Err`),
+`esplora_enrichment_reads_a_genuinely_dormant_address_as_dormant` (real zeroed
+`chain_stats` → `activity: "dormant"`), and the two BlockCypher analogues. End to
+end over the local one-shot server: `enrich_esplora_fails_closed_on_a_wrong_
+shape_200_body` and `enrich_doge_fails_closed_on_a_wrong_shape_200_body` (a 200
+error body → `Err`, not a dormant hit). `cargo test --lib modules::chain_intel::`
+→ 29 passed.
+
+**Falsification.** Both guards were reverted in place —
+`esplora_enrichment`'s `Some(chain_stats) else Err` → `unwrap_or_default()`, and
+`blockcypher_enrichment`'s fail-closed `if !has_address` early-return removed —
+and the four fail-closed locks were run and observed **FAILING** (all four read
+the garbage body as a dormant verdict), then both guards were restored
+byte-for-byte from a pre-edit backup and the suite went green (29 passed).
+
+**Class.** Same "an all-`default` `#[serde(default)]` response struct decodes an
+unexpected 200 as a (here affirmative) clean result" family as REQ-AUGEO-001 and
+REQ-INTELX-002, both fixed this wave, and still-open REQ-ZOOMEYE-001 /
+REQ-LEAKCHECK-001 / REQ-HUDSONROCK-001. The generalisable rule, now applied three
+times: a struct that decodes every JSON object cannot gate on "did it decode";
+the guard must require a field the real shape always carries and fail closed
+without it.
+
+---
+
+### REQ-EXPORT-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): the operator's own API keys leaked into every export because the secret redactor was wired into the raw archive but not the evidence renderers
+
+**Subsystem.** `export` — the entity-evidence rendering path shared by the CLI
+renderers (`src/app/export/renderers.rs`) and the HTTP export API
+(`src/api/scan_export/mod.rs`). The operator-secret redactor lives in
+`src/util/http/redact.rs` (`redact_credentials`): a boundary-gated masker that
+turns credential query-params (`?api_key=`, `apiKey=`, `access_token=`,
+`token=`, `auth=`, `key=`, …) into `***` and masks any literal value matching
+the operator's configured `HUNTSMAN_*` env secrets or the global key pool.
+
+**Defect.** Every export surface dumps `Evidence.summary` and every evidence
+attribute value **verbatim**: the CLI `json`/`csv`/`gexf` renderers (through
+`confirmed_entities`), the operator dossier (`render_full`), the structured scan
+report (`build_scan_report`), and the two HTTP export endpoints
+(`scan_entities_csv`, `scan_export_gexf`). None of those paths ran
+`redact_credentials`. Upstream OSINT providers routinely reflect the request URL
+or a keyed error string back into their response body, and HSE files that body
+into an entity's evidence — e.g. an attribute `via_endpoint =
+https://api.x.io/lookup?api_key=EXAMPLE-OPERATOR-KEY`, or a summary quoting a
+`{"error":"Invalid key <KEY>"}` page. The operator's **own live credential** was
+therefore written into the exported dossier, the CSV/GEXF a case is shared as,
+and the HTTP export response body. The redactor was already applied to the
+**raw-archive copy** embedded in the very same report, so the identical evidence
+string appeared scrubbed in the archive and in clear in the human-facing
+rendering beside it — proof the protection existed and was simply never wired
+onto the parallel output path.
+
+**Authoritative layer.** The redactor (`http::redact_credentials`) is
+authoritative and correct; the gap is a **missing edge in the call graph** — the
+sanitizer that guards the serialized raw-archive copy of an evidence string was
+never routed onto the independent renderings of that same string. The fix
+belongs at the export path's entry to the entity list, not inside any one
+renderer's formatting code (which would duplicate authority across five sites).
+
+**Fix.** Added one pure function `redact::redact_operator_secrets(&mut [Entity])`
+(`src/util/redact.rs`) that walks every entity's evidence and runs the existing
+`http::redact_credentials` over each summary and each attribute value, writing
+back only when the mask changed the string. Wired it at all five always-on
+export seams: `confirmed_entities` (covers CLI `json`/`csv`/`gexf`),
+`render_full` (dossier), `build_scan_report` (report), `scan_entities_csv`, and
+`scan_export_gexf` (API). Because it delegates to `redact_credentials`, it masks
+**only** operator secrets — credential params and configured env/pool values —
+so a *subject* finding (a breached password, a username, a token belonging to
+the target of the investigation) is left byte-for-byte intact. Redaction here
+removes the investigator's credentials, never the investigation's evidence,
+preserving the operator-local dossier's "nothing omitted" contract for findings.
+The mask is idempotent (`***` is not itself a secret), so the extra pass over an
+already-archived string is a no-op.
+
+**Regression locks.** Two, at both boundaries:
+- Pure seam (`src/util/redact.rs`,
+  `redact_operator_secrets_masks_an_echoed_key_but_leaves_findings`): an entity
+  whose evidence carries `?api_key=EXAMPLE-OPERATOR-KEY` in both the summary and a
+  `via_endpoint` attribute **and** a `username = victim_handle` attribute →
+  after the call the key is gone (`api_key=***`) from both summary and
+  attribute, and `victim_handle` is still present verbatim.
+- End to end (`src/app/export/tests.rs`,
+  `render_full_masks_an_operator_key_echoed_in_evidence`): a real `Store` →
+  `Scan` → `Entity` with the same evidence, rendered through `render_full`, whose
+  output must **not** contain `EXAMPLE-OPERATOR-KEY`, **must** contain `api_key=***`,
+  and **must** still contain `username = victim_handle`.
+
+Both pre-existing "dumps every field and provenance, unredacted" contract tests
+(`render_full_dumps_every_field_and_provenance`,
+`render_entity_prints_full_unredacted_evidence`) remain green, proving subject
+findings are untouched — the change subtracts only operator secrets.
+
+**Falsification.** The helper body was neutered in place to `let _ = entities;`
+(a no-op) and the two new locks were run and observed **FAILING** (`test result:
+FAILED. 0 passed; 2 failed` — both read the operator key straight into the
+export), then `src/util/redact.rs` was restored byte-for-byte from a pre-edit
+backup (`grep -c FALSIFY` → 0) and the suite went green.
+
+**Gate.** `cargo fmt --all` (scope unchanged: the four REQ-EXPORT-001 files);
+`cargo clippy --all-targets --locked -- -D warnings` → clean; `cargo test
+--locked --all-targets` → pass; `cargo test --doc` → 77 passed, 0 failed (the
+doctest leg CI runs and the local `--all-targets` gate omits — now standing).
+
+**Class.** Distinct from the `#[serde(default)]`-swallows-a-200 family that
+dominates this wave: this is a **sanitizer wired into one output path but not a
+parallel one**. The generalisable rule (recorded for the sibling sweep): when a
+redactor guards a *serialized copy* of a field, every independent rendering of
+that same field must route through the same redactor — audit the sanitizer's
+call sites against **all** emitters of the value it protects, not just the one
+that motivated it. Here the raw archive was guarded and the five human-facing
+and API renderings of the identical evidence were not.
+
+---
+
+### REQ-TARGETMATCH-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): the subject-attribution matcher was order/position-blind on IP-address targets — a different host sharing the octet digits was minted as the subject
+
+**Subsystem.** `util::target_match` (`src/util/target_match/mod.rs`) — the single
+canonical authority that decides whether a broad breach/stealer row identifies
+the scan subject, so a parser can quarantine strangers (`Entity::demote_to_candidate`)
+instead of minting them at full confidence. Shared by `dehashed`, `oathnet_pro`
+and `see_know`, i.e. the credential/breach-attribution path for three modules.
+
+**Defect.** `TargetMatch::new` splits the target value on non-alphanumeric
+characters and, when 2+ tokens result, selects `Mode::AllTokensWholeWord`, which
+delegates to `str_util::whole_word_token_match` — a **set-membership** predicate:
+true iff every target token appears as a whole word *somewhere* in one field,
+**order- and position-independent**. That is correct for a personal name (`"Ali
+Kareem"` ↔ `"Kareem, Ali"`), but an IP address splits on its dots into octet
+tokens: `192.168.1.10` → `{192, 168, 1, 10}`. A **different host** whose octets
+are a superset in any order — `192.168.10.1`, `10.1.168.192` — therefore matched,
+as did any field merely carrying those digits as words (`"unit 10 of 192 168 1
+street"`). Because the matcher gates `demote_to_candidate`, the consequence was
+the worst class in this codebase: a stranger's row — their real leaked
+credentials, at their real IP — minted onto the subject at full confidence, not
+merely a missed finding. IPv6 targets (`2001:db8::1` → `{2001, db8, 1}`) were
+order-blind the same way. The module's own IP regression (`ip_target_matches_ip_fields`)
+only asserted against a fully-disjoint IP (`5.6.7.8`, no shared octets), so it
+never exercised the shared-octet case that triggers the bug.
+
+**Authoritative layer.** The matcher itself is the one authority (already
+consolidated for `dehashed`/`oathnet_pro`/`see_know`), so the fix belongs in
+`TargetMatch::new`/`matches` — not in any caller. An IP is an ordered,
+positional, atomic identifier; the correct canonical comparison is
+`std::net::IpAddr` equality, which the standard library already owns
+(order-strict, and it collapses formatting — IPv6 zero-group compression and
+hex case).
+
+**Fix.** Added `Mode::IpExact(std::net::IpAddr)`. `TargetMatch::new` now parses
+`target_value.trim()` as an `IpAddr` **before** the token-count decision (an IP
+has 2+ tokens and would otherwise fall into `AllTokensWholeWord`); on success the
+target is `IpExact`. `matches` compares a field by parsing it as an `IpAddr` and
+requiring canonical equality (`v.trim().parse::<IpAddr>().is_ok_and(|a| a == addr)`),
+so a different host, a reordered/reversed IP, an IP embedded in prose, or a
+non-IP field can never match, while a canonically-equal but differently-formatted
+form (an expanded IPv6 address) still does. The existing exact-string
+short-circuit still fires first, so an identically-spelled field is unaffected.
+Non-IP targets (names, handles, phones, emails) never reach the new branch and
+are byte-for-byte unchanged.
+
+**Regression lock.** `ip_target_rejects_a_different_ip_sharing_octet_digits`
+(`src/util/target_match/tests.rs`): target `192.168.1.10` matches the exact IP
+but must NOT match `192.168.10.1` (reordered), `10.1.168.192` (reversed), or
+`"unit 10 of 192 168 1 street"` (octet digits as prose words); target
+`2001:db8::1` matches the exact and the canonically-equal expanded
+`2001:0db8:…:0001`, but not the reordered `db8:2001::1`. The pre-existing
+`ip_target_matches_ip_fields` (exact IP across the ip/last_ip spellings; disjoint
+`5.6.7.8` rejected) stays green, proving the true-positive path is preserved.
+
+**Falsification.** Test-first: the lock was added and observed **FAILING** on
+baseline at the reordered-octet assertion (`test result: FAILED. 11 passed; 1
+failed`). After the fix all 12 pass. The fix was then falsified in place by
+disabling the IP detection in `new` (so an IP target falls back to
+`AllTokensWholeWord`) and the lock was observed **FAILING** again (`0 passed; 1
+failed`), then restored byte-for-byte from a pre-edit backup (`grep -c FALSIFY`
+→ 0).
+
+**Gate.** `cargo fmt --all` (scope: the two `target_match` files only); `cargo
+clippy --all-targets --locked -- -D warnings` → clean; `cargo test --locked
+--all-targets` → pass; `cargo test --doc` → 77 passed, 0 failed.
+
+**Class.** A canonical-comparison defect: a shared attribution primitive applied
+the wrong equality (unordered token-set) to an identifier whose meaning is
+ordered and positional. The generalisable rule (recorded for the sibling sweep):
+an identifier with internal structure and order — an IP, a coordinate pair, a
+version, a hash split on delimiters — must be compared by its own canonical
+type, never by tokenising it into an order-blind bag. Sibling attribution/relevance
+gates that tokenise a structured identifier are the next audit surface.
+
+### REQ-AHPRA-001 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): every parsed AHPRA row was minted as the subject at HIGH_PLUS, and two namesake practitioners fused into one composite health registration that does not exist
+
+**Defect.** `build_practitioner_entities` (`src/modules/ahpra/mod.rs`) turned
+EVERY row of the national health-practitioner register's result table into a
+`Person` entity at `confidence::HIGH_PLUS` (0.70) with the summary "AHPRA
+registered practitioner: {name}" and no qualification of any kind. Three
+distinct faults compounded:
+
+1. **No relevance gate.** The `FullName` leg queries the register's surname
+   field, whose matching is fuzzy, so the table can carry practitioners who are
+   not the subject at all. Every such stranger's real health registration was
+   minted as the subject's. Thirteen-plus sibling modules — `asic_persons`
+   among them, against the *same* class of AU register — already gate rows on
+   `util::str_util::whole_word_token_match`; this module had no gate.
+2. **Confidence above its own anchor.** 0.70 sits ABOVE the
+   `confidence::MEDIUM_PLUS` (0.60) the AU registers use for a single-source
+   name hit, for strictly weaker evidence: AHPRA publishes no date of birth, so
+   a row says "a registered practitioner has this name", never "the subject is
+   a registered practitioner". `sanctions_ofac` calibrates against that anchor
+   by name.
+3. **Namesake fusion — active fabrication.** The entity value IS the name, so
+   when the register returned the same name twice (positive proof the name does
+   not identify one person) `core::entity::dedup_merge_entities` fused the two
+   rows into ONE `Person` carrying BOTH registration numbers and BOTH
+   professions: a composite practitioner who does not exist, presented at 0.70
+   with no ambiguity signal.
+
+**Fix.** `build_practitioner_entities` takes `name_seed: Option<&str>` —
+`Some(value)` for a `FullName` target, `None` for `Organisation` (whose
+practitioners legitimately have names of their own, so gating there would
+discard every genuine row). Rows are filtered on `whole_word_token_match`
+against the seed. A name held by more than one row IN THIS RESULT SET is
+detected and scored `confidence::MEDIUM` (0.50), strictly below the 0.60
+single-hit anchor, and tagged `ambiguous-name`; every surviving row carries
+`needs-identity-verification` and an evidence `caution` — `NAME_ONLY_CAUTION`
+naming what would settle identity (registration number, profession, principal
+place of practice), or the sharper `MULTI_HOLDER_CAUTION` stating that the
+register returned more than one holder and the numbers belong to different
+practitioners. The merged entity now describes its own ambiguity instead of
+reading as one confident registration. This is the advisory contract
+(`needs-identity-verification` + `caution`) the sibling name-matched registers
+use, NOT the enforced `tags::CANDIDATE` quarantine — the two are distinct and
+not interchangeable, and a test locks the distinction.
+
+**Regression lock.** Four tests in `src/modules/ahpra/tests.rs`:
+`a_row_whose_name_is_not_the_seed_is_never_emitted` (a `Robert Nguyen` row is
+dropped from a `Jane Smith` search);
+`an_organisation_search_is_not_gated_on_the_seed_name` (the `None` path keeps
+its practitioners); `a_name_only_row_sits_at_the_au_register_anchor_and_says_it_is_unverified`
+(MEDIUM_PLUS + tag + caution); `two_practitioners_sharing_a_name_are_marked_as_a_proven_collision`
+(both rows below the anchor, `ambiguous-name`, multi-holder caution). The
+pre-existing `build_practitioner_entities_emits_every_parsed_row_not_just_20`
+was moved onto the gated path with a 25-row same-seed cohort, proving the gate
+suppresses strangers and never the subject's own common-surname cohort.
+
+**Falsification.** The three new defect locks were observed **FAILING** against
+a build with the gate, the two-tier confidence and the tags/cautions reverted
+in place (`test result: FAILED. 4 passed; 3 failed`; the collision test reported
+`a provably multi-holder name must score BELOW a single hit, got 0.7`). The
+module was then restored byte-for-byte from a pre-edit backup and all 7 pass.
+`an_organisation_search_is_not_gated_on_the_seed_name` passes on baseline too,
+by design — it is an over-correction guard, not a defect lock.
+
+**Reachability (live, 2026-09-18).** `GET
+https://www.ahpra.gov.au/Registration/Registers-of-Practitioners.aspx?Spousesurname=Smith`
+answers **HTTP 200, 7,584 B**, whose entire visible text is "Please enable
+JavaScript to view the page content. Your support ID is: 9997982116099451436."
+— an F5 BIG-IP ASM wall, zero `<table>`, zero `<tr>`. The module's
+`read_body_capped_or_fail` → `fetch::document_or_challenge` seam does catch it
+as `Error::BotChallenge` rather than reporting a clean "not a registered health
+practitioner" — see REQ-HTML-001 below for why that was holding by accident.
+
+**Class.** The namesake-fusion family (`REQ-ASICPERSONS-001`,
+`REQ-OPENCORPORATES-001`, `REQ-GLEIF-001`, `REQ-WIKIDATA-001`): whenever an
+entity's VALUE is a human or company name and the source is searched BY that
+name, `dedup_merge_entities` will fuse two different real subjects into one
+composite record. The generalisable rule: a module whose result set can contain
+the same name twice must detect that collision in its own result set and score
+and label it, because the merge downstream cannot tell a duplicate from a
+collision.
+
+### REQ-HTML-001 (**new, Pass 33 — VERIFIED LIVE, FIXED, FALSIFIED**): the F5 BIG-IP ASM wall family had no signature — AHPRA's was caught only by an incidental Cloudflare asset reference on the same page
+
+**Defect.** `util::html::CHALLENGE_VENDOR_SIGNATURES` and
+`CHALLENGE_PHRASE_SETS` covered Cloudflare, reCAPTCHA, hCaptcha, DataDome,
+PerimeterX, Arkose, Yandex, Imperva, Akamai, Radware and Reddit — but nothing
+for F5 BIG-IP ASM, whose support-ID interstitial is one of the most widely
+deployed 200-bodied walls there is. Both AHPRA captures (2026-09-15 and the
+2026-09-18 re-capture taken this pass) were classified as walls ONLY because
+the register also fronts with Cloudflare and its page happens to reference
+`/cdn-cgi/challenge-platform`. Measured: stripping that one incidental marker
+from either capture made `is_challenge_document` return **false** — the wall
+then read as the document, which for `ahpra` means "the subject is not a
+registered health practitioner", and for any other module behind an F5-walled
+host without a Cloudflare front means whatever that module's empty parse
+implies. The detection was holding by coincidence, on a marker belonging to a
+different vendor.
+
+**Fix.** Two AND-sets added to `CHALLENGE_PHRASE_SETS`, covering F5 ASM's two
+standard block bodies: `["enable javascript to view the page content",
+"support id"]` and `["the requested url was rejected", "support id"]`. Each
+pairs two independent F5 markers, per the table's stated convention — a real
+page may carry a `<noscript>` telling the reader to enable JavaScript, or quote
+a support ID, but not both. No vendor signature was added, because F5's block
+body carries no vendor string at all.
+
+**Regression lock.** `is_challenge_document_recognises_the_ahpra_200_wall`
+(`src/util/html/tests.rs`) extended: the 2026-09-18 capture is checked in
+alongside the 2026-09-15 one and asserted to DIFFER from it (F5 rotates the
+obfuscated payload and the support ID per request: 6,983 vs 7,584 B), so a
+detector keyed on the rotating body cannot pass. Both captures are then
+re-tested with `/cdn-cgi/challenge-platform` rewritten out — the assertion that
+makes the lock about F5 rather than Cloudflare. F5's other block body is
+checked, and the two false positives the AND-sets exist to prevent (a
+`<noscript>` enable-JavaScript notice above a real results table; a contact
+page quoting a support ID) are asserted NOT to be walls.
+
+**Falsification.** With both AND-sets deleted the test was observed **FAILING**
+at the Cloudflare-stripped assertion (`tests.rs:473`, `0 passed; 1 failed`),
+then restored byte-for-byte from a pre-edit backup; all 28 `util::html` tests
+pass.
+
+**Gate.** `cargo fmt --check` → clean; `cargo clippy --all-targets --features
+dep-cooldown -- -D warnings` → clean; `cargo test --lib` → 7,476 passed, 0
+failed; `cargo test --doc` → 77 passed, 0 failed.
+
+**Class.** An accidental-coverage defect, and the reason "the detector catches
+this page" is not the same finding as "the detector catches this wall". The
+generalisable rule: a challenge-page fixture proves nothing about the vendor it
+is named for unless the OTHER vendors' markers are removed from it first. Every
+existing wall fixture is now a candidate for the same subtractive re-check.
+
+### REQ-HTML-002 (**new, Pass 33 — AUDIT CLEAN, DISCIPLINE MADE SELF-ENFORCING**): the subtractive re-check applied to every wall fixture, then frozen as a test so the REQ-HTML-001 defect cannot recur
+
+**Question.** REQ-HTML-001 proved AHPRA's F5 wall was classified only via
+`/cdn-cgi/challenge-platform`, a marker belonging to a DIFFERENT vendor that its
+page happens to carry. The existing test asserted "this page is a wall" and
+passed, so the gap was invisible. Every other checked-in fixture was a candidate
+for the same defect, and a hand audit answers that once while leaving the next
+fixture unguarded.
+
+**Audit (method: enumerate every signature that matches each fixture, then strip
+the foreign ones and re-test).** The tables hold 27 vendor signatures and 15
+phrase sets; 5 fixtures exist. Result, after the REQ-HTML-001 fix:
+
+| fixture | carried by | foreign-marker dependency |
+|---|---|---|
+| `cloudflare_block_anubis_2026-09-15` | `["attention required","cloudflare"]` | none (1 signature, its own) |
+| `cloudflare_challenge_austlii_2026-09-15` | `/cdn-cgi/challenge-platform` + `["attention required","cloudflare"]` | none (2 signatures, both Cloudflare's) |
+| `wall_akamai_acma_403_2026-09-15` | `["your request has been blocked","reference number"]` | none (1 signature, its own) |
+| `wall_ahpra_200_2026-09-15` / `2026-09-18` | `/cdn-cgi/challenge-platform` + the F5 set | **was** the only case; fixed by REQ-HTML-001 |
+
+So the audit is a genuine NEGATIVE: no remaining fixture depends on a foreign
+vendor's marker. The method is not vacuous — the same procedure found the AHPRA
+case, which is what prompted it.
+
+**Permanent mechanism.** A hand audit does not survive the next fixture, so the
+discipline is now a test rather than a finding.
+`every_wall_fixture_is_carried_by_its_own_vendors_markers`
+(`src/util/html/tests.rs`) carries a table of `(fixture, body, own-tokens)`.
+For each entry it asserts the capture is a wall, asserts at least one DECLARED
+own token is actually present (so a stale declaration cannot make the next
+assertion vacuous), then rewrites out every signature token in
+`CHALLENGE_VENDOR_SIGNATURES` and `CHALLENGE_PHRASE_SETS` that is not the
+capture's own and asserts it is STILL a wall. A capture added here whose vendor
+has no signature in the table now fails with "classified only via ANOTHER
+vendor's marker — its own vendor needs a signature in the table", instead of
+silently riding on a neighbour's.
+
+**Falsification.** With the two F5 AND-sets deleted (the exact pre-REQ-HTML-001
+state) the new test was observed **FAILING** on `wall_ahpra_200_2026-09-15` with
+that message, confirming it detects the real historical defect and not a
+synthetic one. Restored byte-for-byte; all 29 `util::html` tests pass.
+
+**Gate.** `cargo fmt --all`; `cargo clippy --all-targets --features dep-cooldown
+-- -D warnings` → clean; `cargo test --lib` → 7,477 passed, 0 failed; `cargo
+test --doc` → 77 passed, 0 failed.
+
+**Residual (recorded, not silently dropped).** 42 signatures exist but only 5
+have a real capture behind them, so ~37 remain unverified against any observed
+wall — a signature with a typo, or naming a string its vendor does not actually
+emit, would be indistinguishable from a working one. That is a coverage gap, not
+a defect: it cannot be closed by writing fixtures, only by capturing the walls
+live as they are encountered. The new test makes every future capture pay for
+itself, which is the reachable half.
+
+**Class.** Structural prevention over repeated detection. The generalisable
+rule: when an audit finds a defect class, the deliverable is the mechanism that
+makes the class unrepeatable, not the audit's answer — an answer decays with the
+next commit, a test does not.
+
+### REQ-CORRELATOR-002 / REQ-CORRELATOR-004 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): a shared MODULE NAME was read as a shared RECORD, so AU-046 fused a stranger into an alias's identity and AU-039 anchored a wallet to a different victim of the same dump
+
+**Defect (one root cause, two rules).** `Entity::corroborating_sources()`
+returns `ev.source` — MODULE NAMES (`hse-core/src/lib.rs:1110`). Both
+attribution rules gate on that set intersecting:
+
+- **AU-046** (`identity/cluster.rs`): `platform_identifiers.filter(|(_, srcs)|
+  !alias_srcs.is_disjoint(srcs))`.
+- **AU-039** (`crypto.rs::anchors_for`): the wallet's sources probed against a
+  `source → candidates` index.
+
+A module name is not an account and not a record. The modules feeding these
+rules routinely surface many unrelated people per scan by design: `npm_author`
+walks every maintainer of every package it touches, `github_user` every profile
+queried, a stealer-log provider every victim in the dump. Two strangers in one
+such response share the module name and nothing else — which is exactly the
+"mere co-existence in the same scan" **both docstrings already say must not be
+enough**. AU-046's claims "a co-author's email, another alias's identifiers, or
+an unrelated breach-dump stranger can't be fused in"; AU-039's claims
+"Attribution requires a real co-location tie". Neither was true. A prior fix had
+narrowed each from "the whole scan" to "the same module", which is better and
+still not a record.
+
+Consequence: AU-046 emits `Severity::High` "Alias X resolves to N real-world
+identifier(s) via its platform accounts" naming a stranger's real email;
+AU-039 emits `Severity::High` "Wallet W co-occurs with identity P — possible
+attribution" naming a bystander from another row of the dump.
+
+**Fix — one shared authority.** New `rules::same_record::RecordIndex`. What
+identifies a record is already in the evidence attributes the modules stamp
+(`npm_author` → `package`; `github_user` → `github_login` / `profile_url` /
+`github_id`; the stealer-log modules → the victim's `username`), but there is no
+cross-module registry of which key that is and hard-coding one would rot. So the
+discriminator is derived from the scan: **a key discriminates within a module
+when it takes MORE THAN ONE value across that module's evidence in this scan.**
+Boilerplate (`npm_author`'s `source = npm_registry`, identical everywhere)
+identifies nothing and drops out; `package` varying across packages identifies
+the record. Self-tuning, and no module has to be taught anything.
+
+Values are compared WITHOUT their keys, because one module legitimately names
+the same record under different keys on different evidence lines (`github_user`
+stamps `github_id` + `profile_url` on the profile evidence but `github_login` on
+the company/location evidence — all three name one account); key-matching would
+split a genuine same-account tie.
+
+`same_record` returns false ONLY when every shared module proved the two came
+from different records (both sides carry discriminating values, none match).
+When either side carries none the answer is UNKNOWN and counts as same-record —
+the pre-existing behaviour. The fix therefore removes exactly the fabrications
+it can prove, and a module that stamps no discriminator keeps producing exactly
+the links it did before. Both rules call the one predicate.
+
+**Regression lock.** Two tests in `src/core/correlator/tests/part07.rs`.
+`au046_does_not_fuse_a_stranger_surfaced_by_the_same_module_into_the_alias`:
+alias `kylo4kylo` (npm + reddit) with its own maintainer email on package
+`kylo-cli` and a co-maintainer's email on `unrelated-lib` — the own email must
+still resolve, the stranger must not.
+`au039_does_not_anchor_a_wallet_to_a_different_victim_from_the_same_dump`: one
+`oathnet` dump carrying the wallet and owner under `username = ghost_91` and a
+bystander under `nightcrawler` — the owner must still anchor, the bystander must
+not. Both assert the true-positive half, so a fix that simply stopped emitting
+would fail them.
+
+**Falsification.** Written test-first and observed **FAILING** on baseline with
+the exact messages "a co-maintainer on a DIFFERENT package is a stranger — the
+same module name is not the same account" and "a different victim in the same
+dump is not a wallet-attribution lead". After the fix both pass. The fix was
+then falsified in place by deleting the two `same_record` calls (leaving the
+predicate compiled but unused) and both were observed **FAILING** again; both
+files were restored byte-for-byte from pre-edit backups.
+
+**No-regression evidence.** The whole 618-test correlator suite is green with
+the gate in — including the pre-existing AU-046 and AU-039 coverage tests, whose
+fixtures stamp no discriminating attribute and so travel the UNKNOWN path
+unchanged. Full suite 7,479 passed / 0 failed (up from 7,477: the two new
+locks).
+
+**Gate.** `cargo fmt --all`; `cargo clippy --all-targets --features dep-cooldown
+-- -D warnings` → clean; `cargo test --lib` → 7,479 passed, 0 failed; `cargo
+test --doc` → 77 passed, 0 failed.
+
+**Recorded residual.** A module that stamps no varying attribute is still
+undeterminable, so its pairs link as before — the honest limit of what the
+evidence supports, not a silently-accepted fabrication. Closing it means having
+modules stamp a record identity, which is a separate, larger change. The
+remaining `shares_corroborating_source`-style gates elsewhere in the correlator
+are the next audit surface, and `same_record` is now the primitive to migrate
+them onto.
+
+**Class.** The prior test's blindness is the reusable lesson: AU-046's coverage
+test used a scan with exactly ONE alias and ONE email, so a module-name gate and
+a true account gate were indistinguishable and the rule looked correct for as
+long as the fixture stayed small. The generalisable rule: a test for an
+ATTRIBUTION gate must contain at least two candidates that differ only in the
+thing the gate is supposed to discriminate on — otherwise it proves the rule
+emits something, never that it emits the RIGHT something.
+
+### REQ-CORRELATOR-007 (**new, Pass 33 — VERIFIED FROM SOURCE, FIXED, FALSIFIED**): AU-019 called a SINGLE breach record a "potential coordinated compromise", because it counted entity fragments instead of breach events
+
+**Defect.** `rule_au_019_temporal_breach_cluster` (`src/core/correlator/rules/breach.rs`)
+collected `(entity, day)` pairs from breach evidence, de-duplicated them **by
+entity uid**, and fired `Severity::High` "N breach entities clustered within 30
+days — potential coordinated compromise" once a 30-day window held 3 distinct
+uids.
+
+One breach row is not one entity. An ordinary leak of one service on one date
+yields an Email, a Password, a Username and often an IP — three or more
+`breach`-tagged entities, each carrying the SAME `breach_date` from the SAME
+provider. The uid de-dup does nothing about that, so a single, entirely routine
+breach hit cleared the 3-member floor on its own and minted a High
+"coordinated compromise" finding. "Coordinated" is a claim about more than one
+compromise; the rule could not count compromises at all.
+
+**Fix.** Each date-bearing evidence record now also yields a breach-EVENT key,
+and the 3-member floor is applied to distinct events rather than entities. The
+key is the provider's own `breach_name` where it stamps one (`seon`), otherwise
+`source|day` — the strongest discriminator available. That fallback merges two
+same-day unnamed breaches from one provider into a single event, an
+UNDER-count, which is the safe direction for a claim at this severity
+(CONFIDENCE ≤ SUPPORTING EVIDENCE). The uid set still de-dupes the reported
+entity list, so the operator still sees every exposed entity; only the
+threshold changed. The description now reads "N distinct breaches within 30
+days (M exposed entities) — potential coordinated compromise", so the count in
+the text is the count the claim rests on.
+
+**Regression lock.** Two tests in `src/core/correlator/tests/part11.rs`.
+`au019_does_not_call_a_single_breach_record_a_coordinated_compromise`: one
+`dehashed` row (`breach_name = AcmeCorp`, `breach_date = 2024-03-01`) expanded
+into Email + Password + Username must produce NO correlation.
+`au019_still_fires_for_three_genuinely_distinct_breaches_on_one_day`: three
+DIFFERENT named breaches disclosed the same day — the sharpest true positive,
+and the one an event-count could plausibly have lost — must still fire.
+
+**Falsification.** The defect lock was written first and observed **FAILING** on
+baseline, with the fabricated correlation printed verbatim: `"3 breach entities
+clustered within 30 days — potential coordinated compromise"` over the three
+fragment uids. After the fix all 6 AU-019 tests pass. The fix was then falsified
+in place by reverting the two floor checks from `current_events.len()` to
+`current.len()`: exactly the new lock failed (`5 passed; 1 failed`) and both
+true positives stayed green. Restored byte-for-byte from a pre-edit backup.
+
+**No-regression evidence.** The two pre-existing AU-019 tests
+(`au019_fires_for_three_breach_dates_within_30_days`,
+`au019_ignores_a_certificate_transparency_date_on_a_breach_tagged_domain`) and
+the two module-side tests that depend on AU-019's `breach_date` stamping
+(`hudsonrock`, `oathnet_pro`) all stay green.
+
+**Gate.** `cargo fmt --all`; `cargo clippy --all-targets --features dep-cooldown
+-- -D warnings` → clean; `cargo test --lib` → **7,481 passed, 0 failed** (7,479
+baseline + the 2 new locks); `cargo test --doc` → 77 passed, 0 failed.
+
+**Class.** Third member of the same family as REQ-CORRELATOR-002/-004: a rule
+whose CLAIM is about records counting something else (entities, module names)
+because that is what was cheap to reach. The generalisable rule: when a
+correlation's severity rests on a COUNT, the thing counted must be the thing the
+sentence names — count breaches for a breach cluster, accounts for an account
+cluster, records for a co-occurrence.
+
+### Pass 33 — full-repository inventory (N = 1312 → 0)
+
+An exhaustive accounting of every tracked file, to establish that no capability
+is unreachable and no dead weight is carried. Result: **zero dead files.**
+
+| category | n | disposition | evidence |
+|---|---|---|---|
+| Rust `.rs` | 1136 | KEEP | module-tree resolver from the 33 crate roots reached **1136/1136**; 0 unreachable |
+| web JS | 42 | KEEP | **42/42** referenced from `spa.html`/router; 0 dead, 0 missing |
+| docs `.md` | 56 | KEEP | governing + reference |
+| test fixtures | 17 | KEEP | each referenced by ≥1 test |
+| CI workflows | 10 | KEEP | active by location |
+| scripts | 13 | KEEP | each referenced 1–32× |
+| manifests / locks | 13 | KEEP | build inputs |
+| wasm-ui, run/, proptest-regressions, other | 25 | KEEP | incl. two X.509 **certificates** (no private key material), the IEEE OUI table, the generated wasm bundle |
+
+Three apparent orphans were resolver artifacts, each verified by inspection:
+`src/modules/breach_rich_tests.rs` is reached by `include!` rather than `mod`;
+`tests/common` and `tests/reconciler_harness` resolve relative to `tests/`, not
+to the declaring file's directory; and the two `mod tests;` in
+`tests/architecture_parts/architecture_part6.rs` are inside `r#"…"#` fixture
+strings, not real declarations.
+
+**Recorded, not acted on.**
+`HUNTSMAN_UNIVERSAL_CODING_AGENT_DIRECTIVE_CLAUDE_CODE_OPTIMIZED-1.txt` (64 KB)
+sits at the repository root referenced by nothing — no code, doc, script,
+workflow or governing file. It was added by `d7c13ceb` ("Add files via upload
+(#638)"), a deliberate owner upload, so it is CLASSIFIED rather than removed;
+moving it under `docs/` or dropping it is the owner's call.
+
+### Pass 33 — capability delta vs `origin/main`
+
+`origin/main` at `d7c13ceb` carries two silent reversions of landed work, both
+repaired on this branch and restored on merge:
+
+- **REQ-EMAILCANON-001** — `origin/main`'s `src/util/canonical.rs` contains
+  **zero** occurrences of `PLUS_ADDRESSING_DOMAINS`; this branch has the
+  allowlist. Without it `+tag` is stripped for every domain, fusing two
+  different people's mailboxes at proven-equivalent confidence.
+- **`confidence_for_accuracy_m` ladder** — `origin/main` has the 4-rung
+  `0..=200 => VERY_HIGH`; this branch has the 5-rung ladder with the
+  doorway-grade `0..=50 => HIGH_PLUSPLUS_PLUS` top rung.
+
+**These reversions also explain PR #637's red CI, which is NOT a defect in this
+branch.** The failing run built merge ref `4ef5ab57`, which git had textually
+spliced: main's doc comment over this branch's function body. Under that
+spliced file `confidence_for_accuracy_m(Some(25.0))` returns `0.85` (this
+branch's ladder) while the assertion carried over from main expects
+`VERY_HIGH = 0.75` — precisely the `left: 0.85, right: 0.75` in the CI log, and
+the same mechanism for the `canonical_email_mailbox` doctest. GitHub has since
+recomputed the merge ref to `f2d34835`, whose tree is **byte-identical to this
+branch's HEAD** (`git diff --stat HEAD origin/pr637merge` empty) — the tree
+measured green at 7,481 lib / 77 doctests, 0 failed.
+
+**Standing hazard.** A bulk "Add files via upload" commit that rewrites files
+this branch also edits produces exactly this splice, and the spliced tree is
+internally inconsistent in ways neither side's tests can catch in isolation. The
+durable mitigation is that main is now an ancestor of this branch (0 commits
+ahead), so no further splice is possible for this PR.
+
+---
+
+### REQ-SOURCEFAMILY-001 (**new, Pass 34 — LIVE-OBSERVED, FIXED, FALSIFIED**): a paid breach corpus was excluded from the sweep and from consensus grading, behind a warning that had been crying wolf about a module that was correctly excluded
+
+**Observation.** The restart/recovery scan on `b986e614` emitted, from
+`Engine::breach_sweep_modules` (`src/core/engine/mod.rs`):
+
+```
+WARN "breach-category modules unknown to the corpus classifier — their findings
+      would not be graded by the consensus audit, so they are excluded from the
+      sweep; add them to `source_family`'s breach set"
+      modules="stolen_tax,ahmia"
+```
+
+**Defect.** The engine asserted one implication — *declares
+`ModuleCategory::Breach` ⟹ must be recognised by `is_breach_source`* — that is
+false, and the falsity was hiding a real omission behind a permanent false
+alarm. The two predicates answer different questions:
+
+- `ModuleCategory::Breach` is an **intel-domain** label. Its own doc reads
+  "breach corpora, paste exposure, stealer logs, leaked credentials" — what a
+  module goes looking at.
+- `is_breach_source` is a far narrower **evidentiary** claim: that a finding
+  from this source is a leaked RECORD, whose PII attributes may be assembled
+  into a person (~15 gates in `breach_pii.rs`) and whose presence counts as an
+  independent corpus attestation in `core::breach_consensus`.
+
+Of the two modules named, exactly one was a defect:
+
+- **`stolen_tax` — a real omission.** A paid, key-gated breach-lookup API
+  emitting `Email`/`Username`/`Credential`; its own `category()` comment reads
+  "Breach corpora, same as hibp/dehashed/niamonx/osintcat" and its cache TTL
+  follows "the dehashed/see_know/oathnet_pro/intelx paid-breach-module
+  convention". Its name carries no generic breach token, so it fell through
+  `source_family`'s needles to `"other"` — the catch-all excluded from
+  cross-family diversity. Consequences, all three real: it never entered the
+  final breach sweep's dispatch allow-list (a corpus the operator pays for was
+  never asked the questions the sweep exists to ask), its findings were never
+  graded by the consensus audit, and it could not be a family the gap analysis
+  reported missing.
+- **`ahmia` — the warning's premise was wrong.** A full-text search engine over
+  Tor, not a record corpus. It produces only `EntityKind::Url` at
+  `confidence::LOW_MEDIUM`, tags every hit `needs-identity-verification`, and
+  carries its own caution that "the target term appears somewhere on this onion
+  page … not necessarily as the subject's own data". Admitting it — the
+  `see_know`-shaped special case the warning literally proposes — would let one
+  unverified keyword hit attest a PII value alongside HIBP and DeHashed,
+  manufacturing the very corroboration the consensus pass exists to measure.
+  `NOT A DEFECT`: the exclusion was correct; only its silence was not.
+
+The two therefore appeared in the same warning string on every scan, one
+actionable and one not, which is what made the actionable one invisible.
+
+**Fix (authoritative, two halves).**
+
+1. `stolen_tax` added to `source_family`'s breach needle set
+   (`src/core/correlator/rules/mod.rs`) — it is a corpus, so it is classified as
+   one, and all three downstream consequences reverse at once.
+2. `NON_CORPUS_BREACH_MODULES` added beside `is_breach_source`
+   (`src/core/correlator/rules/breach_pii.rs`), an authoritative, per-module
+   justified record of breach-category modules that are deliberately NOT graded
+   corpora — currently `["ahmia"]`, with the reason. `breach_sweep_modules` now
+   consults it and excludes those modules **silently**, because warning about a
+   deliberate decision trains the operator to ignore the warning, which is
+   precisely how `stolen_tax` stayed invisible. Anything neither recognised nor
+   listed still warns.
+
+Note what was NOT done: `ahmia`'s category was not changed to suppress the
+warning. `Breach`'s own definition covers a paste/leak index, so relabelling it
+would misdescribe the module and move the defect rather than eliminate it.
+
+**Regression lock.** `source_family_covers_every_breach_category_module`
+(`src/core/correlator/rules/tests.rs`) was replaced. The old version was a
+hand-maintained literal list of 11 module names — **structurally incapable** of
+detecting an omission, because the list was simultaneously the input and the
+expectation; its own comment conceded a registry walk was thought impossible and
+accepted the runtime warning as the substitute. It passed for the entire period
+`stolen_tax` was unclassified.
+
+The new test walks the **live registry** (`crate::modules::registry()`, reachable
+from a `#[cfg(test)]` module inside `core` — the same precedent
+`core::dependency::reachability`'s tests already set, and exempt from
+`tests/architecture.rs`'s `core_does_not_import_modules` lint, which drops
+`#[cfg(test)]`-attributed items) and enforces the invariant in both directions:
+every `ModuleCategory::Breach` module must be either graded or explicitly
+recorded as a non-corpus; and every entry in `NON_CORPUS_BREACH_MODULES` must
+still be a registered breach-category module that `is_breach_source` still
+rejects. Neither side can rot.
+
+**Falsification (four independent reversions, each rebuilt and re-run).**
+
+| Reversion | Result |
+| --- | --- |
+| Remove `stolen_tax` from the breach needles | FAILED — ``classified by neither `is_breach_source` nor `NON_CORPUS_BREACH_MODULES`: ["stolen_tax"]`` |
+| Remove `ahmia` from `NON_CORPUS_BREACH_MODULES` | FAILED — same assertion, `["ahmia"]` |
+| Add an unregistered name to the exclusion set | FAILED — "is listed in NON_CORPUS_BREACH_MODULES but is not a registered breach-category module — stale entry" |
+| Add `hibp` (a graded corpus) to the exclusion set | FAILED — "is listed as a deliberate NON-corpus yet `is_breach_source` accepts it — the two classifications contradict each other" |
+| Restored | ok |
+
+**Operational verification (live `hse scan`, with a positive control).** Same
+command both times, only the four changed non-test source files differing:
+
+```
+hse scan -v iana.org -m ahmia,stolen_tax,hibp --depth 1
+```
+
+| Binary | exit | occurrences of the warning | text |
+| --- | --- | --- | --- |
+| baseline (`HEAD~1` source) | 0 | **1** | `"modules":"stolen_tax,ahmia"` |
+| fixed (committed `HEAD`) | 0 | **0** | — |
+
+The positive control matters and was not a formality. The first attempt at this
+comparison used `--depth 0` and produced zero warnings on BOTH binaries — the
+"fixed" run looked like success but was vacuous, because `--depth 0` is a
+single-round scan that never reaches the expansion leg the sweep hangs off, so
+`breach_sweep_modules` was never called at all. Only re-running the baseline
+under the identical command exposed that; at `--depth 1` the baseline reproduces
+the exact live symptom on demand and the fixed build does not. A clean negative
+observed without a control that can produce the positive is not evidence
+(`ZERO RESULTS ≠ EVIDENCE OF ABSENCE`).
+
+**Adversarial re-attack (finding recorded, not fixed here).** The registry walk
+locks one direction only: every `ModuleCategory::Breach` module is deliberately
+classified. It does NOT lock the converse — that everything `source_family`
+classes `"breach"` is actually a corpus. The needles are substring-matched, and
+the baseline allow-list printed during falsification exposes the consequence:
+
+```
+["see_know","hudsonrock","comb_search","xposed_or_not","xposed_or_not_domain",
+ "osintcat","leakcheck_public","oathnet_pro","niamonx","hibp","dehashed",
+ "intelx","pwned_passwords","leakix","breachdirectory","breach_timezone"]
+```
+
+`breach_timezone` declares `ModuleCategory::Geo`, makes no network calls, and
+emits `Address`/`Coordinates` by INFERENCE (clustering timestamp windows to
+guess a UTC offset) — yet the bare `"breach"` needle matches its NAME, so
+`is_breach_source` accepts it and it is counted as an attesting breach corpus.
+That is the same defect class as the `geo_corroboration` hijack closed by
+`is_engine_corroboration_source`. Filed as REQ-SOURCEFAMILY-002.
+
+**Permanent invariant.** Every module that declares `ModuleCategory::Breach` is
+classified deliberately — graded as a corpus, or recorded as a non-corpus with
+its reason — and the classification is checked against the live registry rather
+than against a copy of itself. A newly registered breach module fails the build
+until someone decides which it is.
+
+---
+
+### REQ-SOURCEFAMILY-002 (**new, Pass 34 — ADVERSARIAL RE-ATTACK ON REQ-SOURCEFAMILY-001, FIXED, FALSIFIED**): a self-enrichment pass was admitted as a leaked-record source because its NAME contains "breach"
+
+**How it was found.** Not by a new search: the falsification run for REQ-SOURCEFAMILY-001
+printed the engine's real breach-sweep allow-list, and `breach_timezone` was in
+it. The lock shipped in that entry enforces one direction only — every
+`ModuleCategory::Breach` module is deliberately classified — and says nothing
+about the converse, that everything `source_family` calls `"breach"` is
+actually a corpus. This is that converse.
+
+**Defect.** `source_family`'s breach needles are SUBSTRING-matched, including the
+bare token `"breach"`. `breach_timezone` matches on its name alone. It is not a
+corpus by any reading: it declares `ModuleCategory::Geo`, makes no network call,
+and DERIVES `Address`/`Coordinates` by clustering timestamps to guess a UTC
+offset. It is the first entry in
+[`ENRICHMENT_ONLY_SOURCES`](hse-core/src/lib.rs) — the codebase's own register of
+deterministic self-enrichment passes.
+
+**Scope, established before fixing (and narrower than first assumed).**
+`core::breach_consensus`'s `breach_sources_of` was ALREADY protected: it pairs
+the predicate with the guard explicitly —
+`is_breach_source(&ev.source) && !is_non_corroborating_source(&ev.source)` — and
+its doc comment states the reason. So the corpus COUNT never miscounted this
+pass, and an initial reading of this defect that claimed otherwise was wrong.
+The hole is in the other consumer: `breach_pii` contains **zero** occurrences of
+that guard across its ~15 record gates, all of which call `is_breach_source`
+bare. The guard therefore protected the tally while leaving open the assembly —
+the half whose entire purpose is to keep a DERIVED locality out of an assembled
+person.
+
+Checked all 17 `ENRICHMENT_ONLY_SOURCES` against every breach needle: exactly one
+collides (`name_intel` does **not** match the `intelx` needle). The pre-existing
+test `au101_does_not_count_a_name_intel_permutation_as_a_breach_facet` asserts
+that `name_intel` — "exactly the source `is_breach_source` exists to exclude" —
+is rejected, but it passes only INCIDENTALLY: `name_intel`'s family is
+`"identity_registry"`, so nothing ever checked that it is an enrichment pass.
+`breach_timezone` is where that accident fails.
+
+**Exploitability today: none — this is a latent defect, graded as such.**
+`breach_timezone::process()` returns empty on effectively every real scan, as its
+own module doc records: `ModuleContext` exposes no accessor for the accumulated
+entity graph, so it slides a window over the bare `target.value` looking for 5+
+embedded unix timestamps, which a real target value never contains. The module
+doc also names the intended redesign (a correlator rule that DOES see the graph).
+That redesign is exactly when this hole would open for real, which is the reason
+to close it now rather than after.
+
+**Fix.** `is_breach_source` (`src/core/correlator/rules/breach_pii.rs`) now
+returns `false` unconditionally for a deterministic self-enrichment pass, checked
+BEFORE the family lookup — the same shape, and for the same reason, as
+`source_family`'s existing exact-match guard for
+`is_engine_corroboration_source` (which exists because `geo_corroboration`'s name
+contains the `"geo"` needle). A derivation restates data the scan already holds;
+it can never be a leaked record.
+
+Deliberately narrower than the full `is_non_corroborating_source`: the recall and
+cross-scan replays carry data that DID originate in a real corpus, so excluding
+those from record assembly is a separate question with its own regression risk,
+and is not decided here.
+
+**Regression locks.** Two, at different levels.
+
+- `no_self_enrichment_pass_is_ever_a_leaked_record_source`
+  (`src/core/correlator/rules/tests.rs`) asserts the predicate over the WHOLE
+  `ENRICHMENT_ONLY_SOURCES` list rather than the one colliding name, so adding a
+  future `stealer_normalize` to that list fails here instead of silently
+  re-opening the hole.
+- `au093_does_not_assemble_a_locality_from_a_name_colliding_enrichment_pass`
+  (`src/core/correlator/tests/part06.rs`) is the FUNCTIONAL proof, at AU-093 —
+  the rule `is_breach_source`'s own doc comment cites as the reason the
+  allow-list exists. A predicate assertion is not behaviour; this drives the real
+  rule.
+
+**Falsification.** Removing the guard fails both locks, and the behavioural one
+prints the fabricated finding verbatim:
+
+```
+Subject's Australian locality Maleny, QLD 4552 ≈ -26.729,152.755 (offline)
+ — assembled from 1 breach record source(s) (breach_timezone);
+   a suburb-level locality, finer than the bare state/postcode
+```
+
+A `Medium` correlation naming the enrichment pass as its own breach record
+source. With the guard restored, AU-093 returns empty.
+
+**Permanent invariant.** No deterministic self-enrichment pass can be treated as
+a leaked record, whatever its name happens to contain — and the two consumers of
+`is_breach_source` no longer disagree about what the predicate means.
+
+---
+
+### REQ-CI-006 (**new, Pass 34 — CI-OBSERVED, ROOT-CAUSED, FIXED, FALSIFIED**): a test's loopback server serialised 16 concurrent clients behind head-of-line blocking, so its exact-count assertion was timing-dependent
+
+**Observation.** CI run 35372461257, job 105692239329, head `439af234`:
+
+```
+src/modules/web_crawler/crawl_util/tests.rs:744
+assertion `left == right` failed: every probe must reach the seed's port —
+none may be sent to the default port for the scheme
+  left: 98   right: 100
+```
+
+`config_leak_probes_target_the_seed_port_not_just_the_host` passed locally under
+`scripts/gate.sh` and had passed in earlier CI runs. Two of 100 probes went
+unaccounted for.
+
+**Root cause — the harness, not the invariant.** The code under test,
+`probe_config_leaks`, spawns every `CONFIG_LEAK_PATHS` entry into a `JoinSet`
+gated by `Semaphore::new(16)` — 16 requests in flight, ~7 waves — each with a
+`Duration::from_millis(3000)` per-request timeout. The test's server was a
+SINGLE sequential accept loop that performed a connection's full read and write
+before accepting the next. The 16 concurrent clients therefore queued in the
+listen backlog behind one another; on a loaded runner the tail of a wave
+exceeded the 3 s client timeout, the client abandoned those requests, and the
+connections were consequently never accepted — so `hits` was never incremented
+for them.
+
+Nothing about the invariant under test requires a sequential server. What the
+assertion exists to catch is probes sent to the SCHEME'S DEFAULT PORT instead of
+the seed's ephemeral one, and that failure yields **zero** hits (the listener is
+on an ephemeral port, unreachable on port 80), never a near-miss like 98/100.
+A count just short of the total could therefore only ever mean harness lag.
+
+**Fix.** Each accepted connection is now served on its own task, so the accept
+loop never blocks on I/O and drains the backlog as fast as the kernel delivers
+it. The assertion is UNCHANGED and still exact (`== CONFIG_LEAK_PATHS.len()`).
+No test was skipped, relaxed, quarantined or made conditional.
+
+The sibling `a_cancelled_scan_stops_probing_for_config_leaks` shares the
+sequential-loop shape but asserts `hits == 0` (the sweep is cancelled before the
+call), so the mechanism cannot affect it; it is deliberately left untouched.
+
+**Falsification — the mechanism reproduced on demand.** A 200 ms delay injected
+into the per-connection handler, with everything else identical:
+
+| Configuration | Result |
+| --- | --- |
+| concurrent handler, no injected delay, 5 consecutive runs | ok (0.01 s each) |
+| 200 ms delay, **concurrent** handler | ok (1.42 s) |
+| 200 ms delay, **sequential** handler (the pre-fix shape) | **FAILED — `left: 94  right: 100`** (19.13 s) |
+
+The pre-fix shape reproduces CI's failure signature (a count just short of the
+total) deliberately and locally; the fixed shape is immune to the same injected
+lag. That is the mechanism demonstrated, not inferred.
+
+**Family.** Third recorded instance of "a test harness that cannot keep up under
+CI parallelism", after REQ-CI-003 (a process-global key pool reset by parallel
+threads) and REQ-CI-004 (two `core::engine` `skip_reason` tests that pass only
+under `--test-threads=1`). The shared lesson: a test that counts completed
+asynchronous round-trips must not put a serialising component in the path of the
+concurrency the code under test legitimately uses.
+
+---
+
+### REQ-DEHASHED-001 (**new, Pass 34 — FIXED, FALSIFIED**): a provider capture sentinel in a hash field was minted as a password hash, becoming an AU-105 credential-reuse link key
+
+**Defect.** `extract_records` (`src/modules/dehashed/build.rs`) has two sibling
+credential loops that did NOT agree on what a secret is.
+
+The plaintext loop routes every `password` value through
+`crate::util::extract::classify_credential_field` and drops a capture sentinel
+outright — its own comment states the rule: *"A capture sentinel ([fail],
+UPGRADE_TO_SEE…) is not a secret — drop it."* It further recovers an email
+mis-stored in the password slot as an Email lead rather than a secret,
+explicitly so `dehashed`/`oathnet_pro`/`see_know` "don't drift on this quirk".
+
+The hash loop, immediately above it and iterating
+`["hashed_password", "password_hash", "hash"]`, applied **no classification at
+all** — its only gate was `h.len() >= 8`. Every sentinel of eight or more
+characters was therefore minted as a `Password` entity at
+`confidence::MEDIUM_HIGH`, tagged `password-hash`.
+
+**Why this is worse than one bogus entity.** The module's own header documents
+that the hash becomes *"the `hashed_password` attribute the hash-reuse identity
+linker (`AU-105`) groups on, so the same hash across two accounts (or two
+providers) links them."* A withheld-access placeholder is by construction
+IDENTICAL across every row the provider withheld — so one sentinel repeated
+across rows fused unrelated accounts into "these accounts share a credential".
+The fabrication is a cross-identity LINK, not just a stray node. Same family as
+REQ-TARGETMATCH-001 and REQ-CORRELATOR-004: a shared artifact mistaken for a
+shared secret.
+
+**Why it stayed hidden.** The eight-character floor excludes the sentinels
+anyone would think to test — `[fail]` (6) and `<empty>` (7) never reached it.
+Only the longer forms do: `UPGRADE_TO_SEE_xxxx` (19) and `[NOT_SAVED]` (11),
+both of which appear in `classify_credential_field`'s own test set.
+
+**Fix.** The hash loop now calls the SAME authority its sibling already used,
+proceeding only on `CredentialField::Secret`. A `CredentialField::Email` in a
+hash slot is likewise not a digest and is skipped; the record's own `email`
+field and the shared `breach_rich` pass already surface identity, so declining
+to recover it from the hash slot loses nothing.
+
+**Regression lock.**
+`a_capture_sentinel_in_a_hash_field_is_never_minted_as_a_password_hash`
+(`src/modules/dehashed/tests.rs`) drives the real `extract_records` over both
+sentinels, across both `hashed_password` and `password_hash`, and asserts no
+`Password` entity carries the sentinel value. It also asserts the
+non-regression: a real MD5 digest is still a first-class hash node, still
+cracked offline to its plaintext, still carrying its algorithm tags.
+
+**Falsification.** Removing the classifier gate fails the lock with its own
+message — *"`UPGRADE_TO_SEE_xxxx` is a provider capture sentinel, not a digest —
+minting it as a password hash makes it an AU-105 reuse link key shared by every
+account the provider withheld"* — and restoring it passes, with all 24 dehashed
+tests green.
+
+**Sibling audit (recorded, deliberately not changed).** `see_know` has no
+hash-field handling, so it is out of scope. `oathnet_pro`
+(`src/modules/oathnet_pro/breach.rs:731`) has the same SHAPE of gap — admission
+gated on `ph.len() >= 32` alone, with `identify_password_hash` called only to
+derive tags, never to gate — but it is not demonstrably defective: no sentinel
+in the known set reaches 32 characters, and it emits an `ApiKey` seed rather
+than a `Password`, so it is not an AU-105 reuse key. Filed as REQ-OATHNET-002
+(VERIFY-FIRST) with the capture needed to settle it, rather than changed on
+speculation.
+
+**Permanent invariant.** Both of `dehashed`'s credential loops now answer "is
+this a secret?" with the same predicate, so a provider artifact cannot enter the
+graph through the hash door after being refused at the plaintext one.
+
+---
+
+### REQ-CORRELATOR-003 (**new, Pass 34 — FIXED, FALSIFIED**): AU-105 read a provider's withheld-access placeholder as a reused credential and fired a High account-takeover claim
+
+**Defect.** `rule_au_105_credential_reuse` groups a secret by value across
+distinct breach corpora and fires when the same secret spans two or more. It
+already refuses two kinds of false link, and its doc comment names both: a
+mis-stored email (`!s.contains('@')`) and a common-password digest collision
+(`is_common_collision` — "the same `md5("password")` recurs for unrelated
+people, so it is a collision, not a reuse link").
+
+It had no guard for the provider's own **capture sentinel**, and that is the
+strongest false "same secret" signal of the three. A withheld-access placeholder
+is IDENTICAL by construction in every row the provider withheld — so two corpora
+each carrying `[fail]` grouped as one reused secret and fired:
+
+```
+Severity::High — "A password is reused across 2 distinct breaches
+ (adobe.com, linkedin.com) — the subject reuses credentials, so one cracked
+  secret opens every account (the credential-stuffing / account-takeover
+  surface). MITRE T1110.004"
+```
+
+Both passes were exposed, at different floors. The plaintext pass gates on
+`s.len() >= 4`, which admits even the short `[fail]` (6) → **High**. The hash
+pass gates on `s.len() >= 8`, which admits `[NOT_SAVED]` (11) and
+`UPGRADE_TO_SEE_xxxx` (19) → **Medium**. `is_common_collision` does not help:
+it rejects a COMMON PASSWORD's digest, which says nothing about a value that is
+not a digest at all.
+
+**Relationship to REQ-DEHASHED-001.** They are the same defect class at two
+layers, and fixing the module side did NOT fix this one. AU-105 reads
+`ev.attributes`, not `Password` entities, and the breach parsers attach the raw
+record fields to evidence regardless of what they mint — the dehashed header
+says so explicitly ("Both also ride on the per-record evidence above"). So the
+sentinel still reached the correlator after the module stopped minting it. Two
+independent gates were required, which is why both were fixed.
+
+**Fix.** Both passes now consult `util::extract::is_placeholder_secret` — the
+same predicate the breach PARSERS use (`classify_credential_field` delegates its
+`Sentinel` arm to it), so the module and correlator sides cannot drift on what
+counts as a secret.
+
+**Architecture note.** `core` may not import `util` except through a scoped
+allow-list of pure leaf helpers in `tests/architecture.rs`. This adds
+`util::extract::is_placeholder_secret` to it, with the same justification and
+the same per-function scoping as the three `util::hashcat` predicates already
+listed directly above — which this very rule already uses. The predicate
+qualifies: an ASCII-uppercase copy, two substring tests and a bracket-trimmed
+match against a const list. No I/O, no state, no upward dependency.
+
+**Regression lock.**
+`au105_does_not_call_a_withheld_access_placeholder_a_reused_credential`
+(`src/core/correlator/tests/part06.rs`) drives the real rule over three
+(field, sentinel) pairs spanning both passes — `password`/`[fail]`,
+`hashed_password`/`UPGRADE_TO_SEE_xxxx`, `password_hash`/`[NOT_SAVED]` — and
+asserts the rule stays silent. It also asserts the non-regression: a genuine
+reused plaintext across two corpora still fires at High. All six pre-existing
+AU-105 tests continue to pass unchanged.
+
+**Falsification — three independent reversions.**
+
+| Reversion | Result |
+| --- | --- |
+| Drop the plaintext sentinel guard | FAILED — fires `Severity::High` "A password is reused across 2 distinct breaches" from `[fail]` |
+| Drop the hash sentinel guard | FAILED — fires `Severity::Medium` "A password hash is reused across 2 distinct breaches" from `UPGRADE_TO_SEE_xxxx` |
+| Drop the `tests/architecture.rs` allow-list entry | FAILED — `core_does_not_import_util_directly` reports "core/ must not import util/" and names BOTH call sites by line |
+
+The third reversion matters on its own: it proves the allow-list addition is
+load-bearing and precisely scoped, not a blanket widening of the layering rule.
+
+**Permanent invariant.** A provider's capture sentinel is not a secret at either
+layer — the parser will not mint it, and the correlator will not link on it —
+and both decisions are made by one shared predicate.
+
+### REQ-OATHNET-001 (**new, Pass 35 — FIXED, FALSIFIED**): three social-handle emitters admitted absence sentinels as real handles, minting live lookup pivots from `\N`
+
+**Defect.** `extract_breach_entities` (`src/modules/oathnet_pro/breach.rs`)
+defines its own absence authority at the top of the file:
+
+```rust
+fn is_absent(s: &str) -> bool {
+    crate::util::json::is_null_sentinel(s) || crate::util::extract::is_placeholder_secret(s)
+}
+```
+
+Its doc comment already states the full contract — *"a value that is really an
+absence sentinel (`\N`, `NULL`, an empty/whitespace string, a redaction
+placeholder), not a datum"* — and warns precisely about the consequence:
+a breach page where many rows carry `\N` mints *"one shared node that fuses all
+those unrelated strangers together — a false positive, the worst kind for an
+evidentiary tool."*
+
+Four emitters applied it (country, two location sites, organisation). **Three
+social-handle emitters did not:**
+
+| Site | Guard before | Admitted |
+| --- | --- | --- |
+| `instagram` | **none** | `\N`, `[NOT_SAVED]`, `UPGRADE_TO_SEE_…` |
+| `linkedin` | **none** | `\N`, `[NOT_SAVED]`, `UPGRADE_TO_SEE_…` |
+| extra-social loop (`telegram`/`twitter`/`snapchat`/`facebook`/`github`/`tiktok`/`reddit`) | `is_redacted_sentinel` | `\N`, `[NOT_SAVED]` |
+
+`is_redacted_sentinel` (`validate.rs`) matched only `UPGRADE_TO_SEE` and
+`REDACTED` — a **strict subset** of `is_absent`, because
+`is_placeholder_secret`'s own first branch already covers both of those
+spellings. Everything the narrower predicate added was nothing; everything it
+omitted — the SQL-dump NULL `\N` and every bracketed form (`[NOT_SAVED]`,
+`[fail]`, `<empty>`, `[NULL]`, `[N/A]`) — sailed through. `\N` is length 2, so
+it sits inside the loop's own `(2..=64)` window.
+
+**Why this is worse than a stray node.** The loop's own comment states the
+amplification: each handle *"unlocks username_search / search_engines for
+free"*. A minted sentinel is therefore dispatched to live per-platform
+lookups, and any presence found for that garbage string is attributed to the
+subject. `linkedin`'s bare-handle branch is worse still — it prefixes the
+value, producing `linkedin:\N`, which reads as a real LinkedIn identity and
+unlocks the paid proxycurl enrichment leg.
+
+**Reproduction (observed, not argued).** A dump of the real extraction path
+across 3 sentinels × 5 fields showed **13 of 15 combinations minting a
+`Username` entity** tagged `breach` / `oathnet-pro` / `<platform>`, carrying
+`raw_value: "\N"` and the sentinel echoed in evidence attributes. The only
+three that did not mint were the extra-social loop's `UPGRADE_TO_SEE_xxxx`
+case — exactly the subset `is_redacted_sentinel` covered, confirming the guard
+map above.
+
+**A vacuous first cut, recorded.** The first version of the regression test
+PASSED against the defective baseline. Its filter compared the minted value
+against the sentinel case-sensitively, but `Entity::new`'s `Username` arm
+case-folds, so it was searching for `[NOT_SAVED]` in a value that reads
+`[not_saved]`. The assertion could not observe the positive it existed to
+catch. This is the same lesson already recorded for the `--depth 0` scan under
+REQ-SOURCEFAMILY-001: **a clean negative observed without a control that can
+produce the positive is not evidence.** The corrected test folds the needle and
+fails on baseline.
+
+**Fix — one absence authority, three sites wired, the weaker one deleted.**
+`instagram` and `linkedin` now gate on `is_absent`; the extra-social loop
+replaces `is_redacted_sentinel` with `is_absent`. Because that was
+`is_redacted_sentinel`'s only production caller, the predicate is **removed**
+from `validate.rs` rather than left dormant — a second, weaker absence
+authority in the same module is exactly what a future site would reach for by
+mistake. A comment records why it is gone. Absence is now decided in one place
+for this module.
+
+**Regression lock.**
+`a_placeholder_in_a_social_field_is_never_minted_as_a_handle`
+(`src/modules/oathnet_pro/tests.rs`) drives the real extraction path over all
+3 × 5 combinations and asserts nothing is minted, then asserts the
+non-regression: a genuine handle (`jordan_m`) still mints in all five fields,
+including `linkedin`'s prefixed form. All 58 pre-existing `oathnet_pro` tests
+continue to pass, the characterization test among them.
+
+**Falsification — three independent reversions.**
+
+| Reversion | Result |
+| --- | --- |
+| Drop the `instagram` guard | FAILED — mints `Username` `\n` (`raw_value: "\N"`), tags `["breach","oathnet-pro","instagram","candidate"]` |
+| Drop the `linkedin` guard | FAILED — mints `Username` `linkedin:\n` (`raw_value: "linkedin:\N"`), tags `[…,"linkedin","candidate"]` |
+| Revert the loop to `is_redacted_sentinel` semantics | FAILED — mints `Username` `\n` under `github` |
+
+Each site is load-bearing on its own; none is carried by another. The third
+reversion is the one that proves the consolidation was a real widening rather
+than a rename.
+
+**Permanent invariant.** A provider's absence marker is never a social handle,
+and never becomes a pivot dispatched to a live lookup. One predicate decides
+absence for every emitter in this module, and no weaker sibling remains for a
+future site to reach for.
+
+### REQ-CI-005 (**new, Pass 35 — FIXED**): every `pull_request` workflow checked out GitHub's stale merge ref, so CI verified a tree that was not the branch
+
+**Defect.** All five `pull_request`-triggered workflows used a bare
+`actions/checkout` with no `ref:`. On a `pull_request` event that action
+defaults to `refs/pull/N/merge` — a merge commit GitHub computes **server-side
+and asynchronously**. A workflow run that starts moments after a push is
+routinely handed the PREVIOUS merge commit, so CI compiles a tree that is not
+the branch.
+
+**Reproduction (observed twice, on two different heads).** Run 35384005747 on
+head `f8329e59` failed two doctests:
+
+| Doctest | CI says | Branch actually has |
+| --- | --- | --- |
+| `util::canonical::canonical_email_mailbox` | line 88, `Some("jane+promo@corp.com")` | line 139, `Some("jane@corp.com")` |
+| `util::geo::confidence_for_accuracy_m` | `left: 0.85  right: 0.75` | passes locally |
+
+Line 88 on this branch is inside a Proton domain list (`"protonmail.ch"`) — not
+a doctest at all. And `git merge-base --is-ancestor origin/main HEAD` answers
+YES (`origin/main` = `d7c13ceb`), so there was **nothing to merge**: an accurate
+merge ref would have been byte-identical to the head. The tree CI compiled was
+the pre-REQ-EMAILCANON-001 tree, whose `+tag` expectation this branch had
+already changed. Failure rate: 5 of 6 pushes.
+
+**Why this was worse than a red X on a green branch.** `push` in `ci.yml` is
+scoped to `branches: [main]`, so a feature branch gets **no push run at all**.
+The `pull_request` run was its only CI signal — and that signal was reading a
+stale tree. The branch tip was therefore never reliably verified by CI in the
+first place, which means a real regression could be masked by a pass from an
+older tree just as easily as a pass could be masked by a phantom failure. The
+same defect in `secret-scan.yml` is its own hazard: a credential scanner reading
+a stale tree can miss the very commit that introduced the secret.
+
+**Fix.** Every `pull_request` checkout is pinned to the PR's real head:
+
+```yaml
+with:
+  ref: ${{ github.event.pull_request.head.sha || github.sha }}
+```
+
+Applied to `ci.yml` (5 sites), `audit.yml`, `rust-clippy.yml` and
+`secret-scan.yml` — the complete set of `pull_request` workflows that check out
+code (`copilot-setup-steps.yml` has no checkout). The repo already established
+this mechanism: `release.yml` sets an explicit `ref:` for the same class of
+reason.
+
+**Nothing is lost by not testing the merge commit here.** `push` is scoped to
+`main`, so the merged result *is* verified — by the push run that fires when the
+PR lands. The division is now coherent and complete: the `pull_request` run
+verifies what the author wrote, the `push` run verifies what landed. Before this
+change, neither was reliably true for a feature branch.
+
+**Non-PR events are byte-for-byte unchanged.** Outside a `pull_request` event
+`github.event.pull_request` is null, so the `|| github.sha` fallback resolves to
+exactly the ref those runs (push, schedule, `workflow_dispatch`) used before.
+
+**Verification.** All four workflows re-parse as valid YAML with their job sets
+intact. This change cannot be exercised by `scripts/gate.sh` — it is CI
+configuration, and only a real run on the runner can confirm it. The next push
+to this branch is that run, and the evidence is specific and falsifiable: the
+two doctests above must pass, having failed on 5 of the last 6 pushes.
+
+**Permanent invariant.** CI verifies the commit the author actually pushed. A
+green branch is never failed, and a broken branch is never passed, by a tree
+neither the author nor the reviewer can see.
+
+### REQ-CI-005 — correction and outcome (the first fix attempt broke the gate outright)
+
+The verification paragraph above said the next push would confirm the fix. It
+did not: it exposed that **the fix commit itself broke `ci.yml`**. Recording the
+correction rather than quietly amending the entry, because the mechanism is the
+lesson.
+
+**What happened.** The patch was applied by a script that ran two
+`str.replace` passes over `ci.yml` — one for the first checkout (full comment)
+and one for the remaining four (short comment). The second pass matched the
+checkout line *inside the text the first pass had already inserted*, producing a
+step with two `with:` keys:
+
+```yaml
+      - uses: actions/checkout@… # v4
+        with:
+          ref: ${{ … }}
+        with:
+```
+
+**Why the validation missed it.** The change was checked with
+`yaml.safe_load`, which **silently accepts duplicate mapping keys** and keeps
+the last. GitHub's workflow schema rejects them. So the check reported VALID for
+a file GitHub would refuse — a validator that could not observe the defect it
+existed to catch. That is the same failure this session already recorded twice:
+the vacuous `--depth 0` scan (REQ-SOURCEFAMILY-001) and the case-sensitive
+assertion against a case-folded value (REQ-OATHNET-001).
+
+**What the breakage looked like, and why it is dangerous.** Run 35387662085 on
+`7cd696ce` reported `event: push`, conclusion `failure`, with `created_at`,
+`run_started_at` and `updated_at` all identical — zero seconds, no job executed.
+That is a GitHub **startup failure**. On the blocking `check` job it is visually
+indistinguishable from "CI has not started yet", so the entire test gate was
+silent and the branch merely looked slow. Scope was established by observation,
+not inference: `audit.yml`, `rust-clippy.yml` and `secret-scan.yml` each took a
+single `replace` call, and all three demonstrably *ran* on that same head
+(cargo-audit, clippy and gitleaks all reported), so the damage was confined to
+`ci.yml`.
+
+**Fix.** `ci.yml` was restored from `f8329e59` and re-patched by splitting on the
+checkout line and rejoining — replacement text is never re-scanned, so a comment
+containing the word "checkout" cannot be matched again. All 8 `pull_request`
+checkouts across the 4 workflows are pinned, verified structurally.
+
+---
+
+### REQ-CI-007 (**new, Pass 35 — FIXED, FALSIFIED**): nothing could see a workflow file GitHub would reject
+
+**Defect.** The repo had no check on `.github/workflows/*.yml` at all. Neither
+`scripts/gate.sh` nor CI parsed them, so a workflow GitHub's schema refuses
+reached `main`'s history with every local check green — and announced itself
+only as a zero-second run with no job, which on the blocking gate reads as "not
+started yet". REQ-CI-005's correction above is that failure actually happening.
+
+**Fix.** `scripts/check_workflows.py`, wired into `scripts/gate.sh` (guarded on
+`python3`) and into `ci.yml`'s existing cheap `install-script` job. It asserts
+two invariants, both learned from real breakage here:
+
+1. **No duplicate mapping keys**, via a loader that refuses them. This is the
+   half `yaml.safe_load` structurally cannot do.
+2. **Every `pull_request` checkout is pinned to the PR's real head.** This is
+   REQ-CI-005's regression lock: the pin cannot be silently dropped again.
+
+**Falsification.** Re-introducing the exact shipped defect (the duplicate
+`with:`) into `ci.yml`:
+
+| Checker | Verdict |
+| --- | --- |
+| `yaml.safe_load` (what was used before) | **VALID** — vacuous, cannot see it |
+| `check_workflows.py` (strict) | **REJECTED** — `DUPLICATE KEY 'with' at line 47` |
+
+The contrast is the point: the new check is load-bearing precisely where the old
+one was blind, and it names the line.
+
+**Permanent invariant.** A workflow file GitHub would reject fails the gate on
+the contributor's machine, and a `pull_request` checkout cannot silently revert
+to the stale merge ref.
+
+---
+
+### REQ-DEPS-001 (**new, Pass 35 — FIXED**): a RustSec advisory sat unseen because the audit workflow's path filter never let it run on this PR
+
+**Defect.** `cargo audit` reported on `7cd696ce`:
+
+```
+Crate:    rustls
+Version:  0.23.43
+Title:    TLS 1.3 handshake messages incorrectly accepted across encryption level boundaries
+Date:     2026-09-14
+ID:       RUSTSEC-2026-0285
+Severity: 5.3 (medium)
+Solution: Upgrade to >=0.23.45
+```
+
+**Why it had been invisible.** `audit.yml` is path-filtered to
+`**/Cargo.toml`, `**/Cargo.lock`, `deny.toml` and `.github/workflows/audit.yml`.
+This PR had touched none of them, so the workflow had never fired on it, and
+`scripts/gate.sh` mirrors the same filter and skipped it locally for the same
+reason. The advisory surfaced only because REQ-CI-005 edited `audit.yml` itself
+— the filter's last clause — which is an accident, not a control. A dependency
+advisory published mid-PR is invisible to a branch that happens not to touch a
+manifest, for as long as that branch lives.
+
+**Fix.** `cargo update -p rustls` → `0.23.43` → `0.23.45`, exactly the
+advisory's stated minimum; one package changed, a lockfile-only patch bump.
+`rustls` is transitive via `reqwest`'s `rustls-tls` feature, so no manifest
+constraint needed changing. This matters more than usual for HSE: the tool makes
+TLS connections on nearly every module path, and `rustls` is its only TLS stack
+by an explicit architectural invariant recorded in `Cargo.toml`.
+
+**Verification.** The bumped `rustls 0.23.45` compiles and the full gate passes.
+`cargo-audit` is not installed in this sandbox, so the advisory's clearance
+itself is CI's to confirm — the lockfile now records `0.23.45`, which is the
+exact fact the advisory keys on, and the audit job re-runs on this push because
+`Cargo.lock` changed.
+
+**Residual, recorded not fixed.** The path filter remains the reason an
+advisory can go unobserved on a long-lived branch. Left as-is deliberately: the
+weekly schedule (`cron: 0 6 * * 1`) does cover `main`, and widening the filter to
+every PR trades a real cost (a ~2-minute `cargo-audit` build on every push) for a
+gap the schedule already partly closes. Filed here so the trade-off is a decision
+on the record rather than an oversight.
+
+### REQ-CI-005 — the stated mechanism was WRONG; retained as REQ-CI-008 (open)
+
+The stale-merge-ref mechanism asserted above is **falsified**. Recording it
+rather than editing it away, because the refutation is the useful part.
+
+**What was claimed.** That CI checked out a stale `refs/pull/637/merge`, so it
+compiled an older tree — evidenced by CI reporting `canonical.rs`'s doctest at
+line 88 where the branch has it at 139.
+
+**What refutes it.** After pinning every `pull_request` checkout to
+`github.event.pull_request.head.sha`, run 35394046160 on `56b32d33` failed with
+**exactly the same two doctests at exactly the same lines**. The pin changed
+nothing, and `origin/main` was already an ancestor of HEAD, so a correct merge
+ref would have equalled the head anyway.
+
+**What is actually happening — established by four observations.**
+
+| Tree | `canonical.rs` doctest | Asserts | `confidence_for_accuracy_m` | Self-consistent? |
+| --- | --- | --- | --- | --- |
+| `origin/main` (`d7c13ceb`) | line 88 | `Some("jane@corp.com")` | `0..=200 => VERY_HIGH` (0.75) | yes — passes |
+| this branch (`56b32d33`) | line 138 | `Some("jane+promo@corp.com")` | `0..=50 => HIGH_PLUSPLUS_PLUS` (0.85) | yes — passes |
+
+CI reported line **88** with `left: Some("jane+promo@corp.com")` (this branch's
+behaviour) and `right: Some("jane@corp.com")` (main's expectation); and
+`left: 0.85` (this branch's body) against `right: 0.75` (main's expectation).
+
+So CI evaluated **`origin/main`'s doc comments against this branch's compiled
+library** — a mixed tree. No single checkout can produce that pairing: each
+tree is internally consistent and passes on its own. The local control confirms
+it, on a clean build of `56b32d33`:
+
+```
+test src/util/canonical.rs - util::canonical::canonical_email_mailbox (line 138) ... ok
+test src/util/geo/mod.rs - util::geo::confidence_for_accuracy_m (line 492) ... ok
+test result: ok. 77 passed; 0 failed; 3 ignored
+```
+
+**Why the original inference was wrong.** Line 88 *is* `origin/main`'s line —
+that observation was correct. The error was jumping from "CI quotes main's line
+number" to "CI checked out main's tree", without checking the other half: the
+values in the assertion. Those show the library is current. One half of the
+evidence was read; the half that would have refuted the conclusion was not.
+Third vacuous-inference failure of this session, and the first where the flawed
+conclusion was asserted as established fact in a commit message.
+
+**Status: REQ-CI-008, open.** The remaining hypothesis — the job uses
+`Swatinem/rust-cache`, and a restored doc-test artifact is reused while the
+library is rebuilt — is consistent with every observation, including the 5-of-6
+failure rate (cache hit vs miss) and why re-running sometimes cleared it. It is
+**not yet verified**, so it is not being asserted. Two changes go out together:
+a diagnostic step printing the checked-out SHA, the actual doctest fence lines
+and any restored doc-test artifacts; and a step dropping those artifacts before
+the run. The next run either goes green (hypothesis supported) or prints exactly
+which tree it holds (hypothesis refuted, with the data to re-diagnose).
+
+**What stands from REQ-CI-005.** The checkout pin itself is still correct and
+is kept: `refs/pull/N/merge` genuinely is served stale in general, `push` is
+scoped to `main` so a feature branch otherwise gets no verification of its own
+tip, and `secret-scan.yml` reading a stale tree is its own hazard. It simply
+was not the cause of *these* failures.
+
+### REQ-CI-008 — CLOSED: a cargo-fresh artifact of this crate carried `origin/main`'s doc comments
+
+**Established, with the confounding variable controlled.** Run 35400143489 on
+`2b2eca65` is **green**. The one change from the failing run is
+`cargo clean -p huntsman-search-engine` before the test step.
+
+| Run | head | Cache restored | HEAD correct | Fence line | `doctestbins` | `cargo clean -p` | Result |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 35396266992 | `35e8ef5d` | yes | yes | 138 | (none) | **no** | FAIL, quoting line 88 |
+| 35400143489 | `2b2eca65` | yes | yes | 138 | (none) | **yes** | **green** |
+
+The obvious objection to a single green run is that the cache might simply have
+been cold, making the clean irrelevant. It was not: the green run's cache step
+reports `Cache Size: ~478 MB (501014606 B)` and `Cache restored successfully`.
+Both runs restored a cache, both had the correct checkout, both had the correct
+source on disk, and neither had a restored doc-test bundle. The clean is the
+only differing variable.
+
+**Mechanism.** `Swatinem/rust-cache` restores `target/`. Cargo then considered
+this crate's artifacts fresh and did not rebuild them, so rustdoc collected
+doctests from metadata produced by an *older* commit — carrying `origin/main`'s
+doc comments, with `origin/main`'s line numbers and assertions — while the
+library the doctests linked against reflected this branch. That is exactly the
+mixed tree the evidence showed and no checkout could explain: old doc text,
+new behaviour.
+
+**Fix.** `cargo clean -p huntsman-search-engine` immediately before the test
+step. Dependencies stay cached, so the cost is one crate's rebuild rather than
+a cold start. The `Tree identity (diagnostic)` step is retained deliberately: it
+is what turned two wrong theories into a settled answer, it costs three echo
+lines, and if this ever recurs it prints the discriminating facts immediately.
+
+**Three refuted hypotheses, kept on the record.**
+
+1. Stale `refs/pull/N/merge` — refuted: pinning to `head.sha` changed nothing.
+2. Restored doc-test bundle — refuted: the diagnostic printed `(none)`.
+3. Duplicate source / second doctest target — refuted: one `canonical.rs` in the
+   repo, one `Doc-tests huntsman_search_engine`.
+
+**Permanent invariant.** CI's doc-tests are collected from the source of the
+commit under test, never from an artifact a previous commit produced.
+
+**Lesson, third instance this session.** Each earlier error was a conclusion
+drawn from half the available evidence: a clean negative with no control that
+could produce the positive (REQ-SOURCEFAMILY-001), a case-sensitive assertion
+against a case-folded value (REQ-OATHNET-001), and a line number read without
+the assertion values beside it (REQ-CI-005). What ended it was refusing to ship
+a fourth guess — instrumenting the runner to print the discriminating facts, and
+controlling the cache variable before calling one green run a proof.
+
+### REQ-CI-008 — RETRACTED: the closure above was premature; `cargo clean -p` is not the fix
+
+The entry immediately above closed this on one green run. **That closure is
+withdrawn.** Run 35401155417 on `a47485de` — a commit whose only change is 50
+lines of this very Markdown file — failed with the identical signature: the
+canonical doctest reported at line 88, `left: 0.85` against `right: 0.75`.
+
+| Run | head | Cache restored | HEAD correct | Fence | `doctestbins` | `cargo clean -p` | Result |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 35400143489 | `2b2eca65` | yes (478 MB) | yes | 138 | (none) | yes | green |
+| 35401155417 | `a47485de` | yes (493 MB) | yes | 138 | (none) | yes | **FAIL** |
+
+Every instrumented variable is identical and the outcomes differ. So the
+failure is **non-deterministic**, `cargo clean -p` does not fix it, and
+`2b2eca65`'s green was coincidence.
+
+**The error in the closure was methodological, and it is the same error as the
+three before it.** Controlling for the cold-cache confound was necessary but not
+sufficient: a single green run cannot distinguish "fixed" from "did not happen
+to fire this time" for a defect whose base rate is roughly one in six. The
+honest bar for an intermittent fault is repetition, and it was not met. Four
+refuted hypotheses now: stale merge ref, restored doc-test bundle, duplicate
+source/second target, and cargo-fresh artifact.
+
+**What is still solid.** The tree is correct: a clean local build of the same
+commits passes both doctests every time, and `cargo test --doc -- --list`
+locally names them at 138 and 492. Whatever CI is doing, the branch is not
+wrong.
+
+**Two changes, shipped together, neither claiming a mechanism.**
+
+1. *Measurement.* `cargo test --doc … -- --list` runs before the suite. `--list`
+   makes rustdoc **collect and name** every doc-test without executing one. If
+   the collector is reading stale content, the list prints `canonical.rs -
+   … (line 88)` — a line this tree does not contain — naming the fault before
+   any assertion runs, and an `md5sum` pins what is on disk at that instant.
+   This converts "which tree does rustdoc see?" from inference into a printed
+   fact.
+2. *Isolation.* Doc-tests now run under `CARGO_TARGET_DIR=target-doctests`,
+   which the cache never populates, so no restored artifact can reach rustdoc
+   regardless of which mechanism produced the stale collection. Unit and
+   integration tests keep the cached dir via `--lib --bins --tests`. This costs
+   a compile instead of a cache hit; a blocking gate that intermittently
+   verifies the wrong source is not worth the minutes saved.
+
+**This is not closed.** It closes when the doc-tests pass on several
+consecutive runs, or when the `--list` output identifies the collector's source
+and that is fixed at its root. One green run will not close it again.
+
+### REQ-CI-008 (cont.) — the line number was never evidence; merged-doctest run output mis-reports it
+
+Run 35406016795 on `08b3586b` is green, and it printed something far more
+useful than a pass: **the same job reported two different line numbers for the
+same doc-test.**
+
+| Step | Target dir | `canonical_email_mailbox` | `name_word_tokens` |
+| --- | --- | --- | --- |
+| 6, `cargo test --doc -- --list` | cached `target/` | **line 138** | **line 216** |
+| 13, `cargo test --doc` (run) | fresh `target-doctests` | **line 88** | **line 153** |
+
+One commit, one source file (`md5 b6c14fd09b8284370dfa15144e3961b3`), one job —
+and the executing run names lines the file does not contain, for *two different*
+doc-tests, with **non-constant** offsets (50 and 63). All 77 doc-tests passed in
+that same step.
+
+**So the reported source line in merged-doctest RUN output is unreliable on
+toolchain 1.98.0 (`doctest_bundle_2024`), while `--list` reports it correctly.**
+
+This retroactively invalidates the reasoning behind **all four** refuted
+hypotheses. Every one of them was inferred from "CI says line 88, the branch
+has 138, therefore CI compiled a different tree." That premise was false: the
+line number is not a reliable statement about the compiled source at all. The
+table above is the control that should have existed before the first hypothesis,
+and it took four refutations to go and build it.
+
+**What this does and does not establish.**
+
+- **Established:** the line number carries no information about which tree was
+  compiled. Never reason from it again. `--list` is the trustworthy projection.
+- **Established:** doc-tests pass in an isolated target dir on this run.
+- **NOT established:** that the isolation fixed the intermittent
+  `left: 0.85 / right: 0.75` failure. That is **one** green run. The base rate
+  is roughly one in six, so one green is weak evidence — exactly the mistake
+  made when this was closed prematurely the first time. Green count: **1**.
+- **Open:** what genuinely failed. An assertion really did compare 0.85 against
+  0.75, and with the name/line mapping proven unreliable, the failing doc-test
+  may never have been the one named. Identifying it needs the failure to recur
+  *with* `--list` output alongside it — which the diagnostic now guarantees.
+
+**Permanent value regardless of the outcome.** The diagnostic stays. It cost
+three lines and converted a class of reasoning this session got wrong four
+times into a printed fact, and it is the only reason the mis-mapping was ever
+visible.
+
+### REQ-OSINTCAT-001 — `emit_email_osint` dumped raw JSON into Evidence; one helper now serves both emitters
+
+`emit_email_osint` built attributes with `ev.with_attr(k, v.to_string())`, where
+`v` is `serde_json::Value`. Three defects, all of which its sibling
+`emit_footprint` had already fixed seventy lines above:
+
+1. **JSON quoting.** `Value`'s `Display` renders a string *with* its quotes, so
+   `{"city": "New York"}` stored `"\"New York\""` — raw JSON syntax in text
+   documented as normalized.
+2. **Nested structures stringified.** `Object`/`Array` were dumped as raw JSON
+   blobs, which is precisely what `Evidence` is documented not to carry.
+3. **No absence guard, no length cap.** A provider's `"REDACTED"` or SQL `\N`
+   became an attribute reading as real platform data, and an arbitrarily long
+   blob could dominate an entity's evidence.
+
+Fixed at the authoritative layer: one `scalar_attr_value` helper now performs
+the scalar match, the emptiness/length cap and the `is_absent_marker` check, and
+**both** emitters call it. The inline copy in `emit_footprint` is gone, so a
+third endpoint cannot reintroduce the gap by copying the wrong sibling.
+
+**The test that hid it.** `emit_email_osint_skips_nulls_and_adds_non_null_fields`
+asserted only `attributes.contains_key(...)`. It passed for as long as the defect
+existed, because `contains_key` structurally cannot observe a value's content.
+Fifth vacuous assertion this session. It now asserts the values.
+
+**Falsified per guard, not merely in aggregate.** Reverting only
+`emit_email_osint` fails all five tests. On the first attempt every one failed on
+the *quoting* assertion, which masked whether the other three guards held — so
+the guard assertions were reordered to run first. Re-falsified, each now fails
+for its own reason: `redaction placeholder skipped`, `nested object must not be
+stringified`, `overlong value skipped`, and the two quoting mismatches
+(`Some("\"New York\"")` vs `Some("New York")`). Restored: 21/21 pass, including
+all four pre-existing `emit_footprint` tests, so the shared helper did not
+regress the sibling.
+
+### REQ-INTELX-001 — a throttled, blocked or drifted poll is no longer an untyped module fault
+
+intelx's phase-2 poll loop had three failure arms, and all three `continue`d past
+their error and dropped it:
+
+| Arm | Was | Lost |
+| --- | --- | --- |
+| transport | `Err(_) => continue` | the transport reason |
+| non-2xx | read `status().as_u16()`, then `continue` | the whole typed classification |
+| JSON decode | `Err(_) => continue` | `BotChallenge` / contract-drift typing |
+
+When the loop then ended without a terminal state, REQ-INTELX-002's fail-closed
+check replaced everything with one generic `Error::module`. So an exhausted
+quota, an anti-bot wall and a response-contract drift were **indistinguishable**:
+the breaker counted each as a plain provider fault, and the live sweep read every
+one as "unreachable". That is exactly the defect already fixed for hibp
+(REQ-DRIFT-006) and for the three GitHub callers (REQ-DRIFT-007) — unfixed here.
+
+**Fix.** The loop keeps the most recent typed failure in `last_poll_err`. The
+non-2xx arm now calls `http_status_error`, which is what types a 429 as
+`RateLimited` and a WAF page as `BotChallenge` (the headers needed for
+`Retry-After` are read *before* it consumes the response). The JSON arm keeps the
+error `json_scanned` already typed. The terminal decision moved into
+`poll_failure_error`, which returns the typed error when the loop saw one and the
+generic module fault only when every poll genuinely succeeded.
+
+**Falsified.** Reverting `poll_failure_error` to discard `last` fails the two
+typed tests with the precise substitution:
+
+```
+a throttle must stay RateLimited, got Module { module: "intelx",
+  message: "search abc-123 never reached a terminal state within 3 polls" }
+a wall must stay BotChallenge,   got Module { ... }
+```
+
+The third test — generic fault when no typed error was seen — **still passes on
+that baseline**, which is the control showing the two failures are attributable
+to the discarded typing rather than to the tests failing indiscriminately.
+
+**Stated limit of the coverage.** These lock the *selection rule*, not the loop's
+capture of each arm. An end-to-end test driving real 429 / challenge / drift
+responses needs intelx's `BASE` injected as a parameter — which sibling
+`github_user` already does (`fetch_profile(ctx, USERS_BASE, …)`), and which
+intelx hardcodes at three call sites. That injection is the next step for this
+module and would make the whole poll loop testable against
+`util::http::test_server`; it is recorded here rather than claimed as done.
+
+**Limit closed (follow-up commit).** The injection is done, and the stated limit
+above stands as the record of what the coverage was, not as a claim about what it
+is now. Phase 2 — the poll loop, the server-side terminate and the fail-closed
+decision — is one function, `poll_search(ctx, plan, key, search_id)`, taking a
+`PollPlan { base, interval, attempts }`. `IntelX::process` passes
+`PollPlan::live()` (IntelX's own host, the 1.5 s cadence, three attempts); the
+tests pass a loopback base and `Duration::ZERO`.
+
+The SCHEDULE rides in the plan deliberately. Keeping the live cadence would cost
+4.5 s per case, and the usual dodge — a second, faster loop for tests — is
+exactly the duplicated authority that lets the tested path and the production
+path drift apart. One loop, two plans; the six tests run in 0.01 s.
+
+Six tests through `util::http::test_server`: three that fail on the
+pre-REQ-INTELX-001 code and three that pass on it. Reverting the LOOP'S CAPTURE
+this time (not `poll_failure_error` — that was the earlier falsification): the
+non-2xx arm dropping `http_status_error`, the JSON arm back to
+`Err(_) => continue`.
+
+```
+a_wall_in_front_of_the_poll_surfaces_as_the_typed_block ... FAILED
+  an anti-bot wall must reach the breaker as BotChallenge, got
+  Module { module: "intelx", message: "search sid-wall never reached a
+  terminal state within 2 polls" }
+a_throttled_poll_surfaces_as_the_typed_rate_limit ... FAILED
+  a throttle must reach the breaker as RateLimited, got
+  Module { ... "search sid-429 never reached a terminal state ..." }
+a_drifted_poll_body_stays_a_decode_fault_not_the_generic_message ... FAILED
+  the decode fault must survive the loop rather than being replaced by the
+  generic message: [intelx] search sid-drift never reached a terminal state
+test result: FAILED. 23 passed; 3 failed
+```
+
+Each fails for its OWN reason, showing the exact substitution at its own arm.
+The three controls pass on that same baseline: the generic fault when every poll
+genuinely succeeded (status 1 throughout), terminal status 3 as the authoritative
+empty, and record accumulation across batches where a non-terminal status 1 sits
+in the middle. That last one is not decoration — an earlier revision of this
+module broke out of the loop on status 1, which made a slow search look empty.
+
+Two deliberate choices in the fixtures, stated so they are not mistaken for
+carelessness: the wall is served `503` (Cloudflare's classic challenge status)
+and the throttle runs a two-attempt plan, because `401`/`403`/`429` past the
+retry budget also report the key to the PROCESS-GLOBAL key pool — a side effect
+belonging to a different requirement, and the hazard that produced REQ-CI-003.
+The wall fixture is the real captured interstitial
+(`util/html/testdata/cloudflare_block_anubis_2026-09-15.html`), not a hand-written
+approximation of one.
+
+### REQ-HTTP-004 — a keyed throttle or wall is typed, not a generic provider fault
+
+`keyed_ok_or_404` is the chokepoint every keyed module funnels a non-2xx
+through. It hand-built `Error::module(module, format!("HTTP {status}: {snippet}"))`
+for **every** non-2xx, so for `emailrep`, `europeana` and `fullcontact` a 429
+throttle and a WAF interstitial were indistinguishable from a provider defect:
+the breaker counted each as a fault, and the live sweep reported "unreachable"
+for a provider that was alive and merely asking for less, or refusing this
+client.
+
+Its sibling `http_status_error`, twelve lines above, already did the
+classification correctly. The two could not simply be merged because
+`keyed_ok_or_404` must consume the body itself — it disambiguates an
+auth-shaped 400 before deciding whether to burn the key — and so cannot hand
+the `Response` over.
+
+**Fix.** The classification is now `classify_status_error(module, status, body)`,
+called by both. `keyed_ok_or_404` reads the raw body once and derives the
+summary from it, so the key-burn decision keeps exactly the input it had while
+the typed classification gets what it needs.
+
+**The wrinkle that would have made this vacuous.** `error_body`'s own doc says
+it: *"This raw text, not the one-line `snippet_of` summary, is what a classifier
+needs: a challenge page's vendor fingerprint is a `<script>` URL in its head,
+which the summary (the page title) drops."* `keyed_ok_or_404` had been calling
+`error_snippet`, which discards that. Passing the summary into the shared
+classifier would have compiled, read correctly, and left the `BotChallenge` arm
+**structurally unable to fire** — a sixth vacuous guard. The raw body is
+threaded through deliberately.
+
+**Falsified per arm, with a control.** Reverting only the `keyed_ok_or_404` call
+site:
+
+```
+a 429 must be the typed RateLimited,             got Module { "HTTP 429 Too Many Requests: {"error":"rate limit exceeded"}" }
+a challenge page must be the typed BotChallenge, got Module { "HTTP 403 Forbidden: Just a moment..." }
+keyed_ok_or_404_leaves_a_plain_refusal_a_module_fault ... ok
+```
+
+The first attempt put all three assertions in ONE test, which stopped at the
+429 and left the wall arm unverified — the same masking already hit in
+REQ-OSINTCAT-001. They are three separate `#[tokio::test]`s for that reason.
+The third passes on the unfixed code, which is what makes the other two
+attributable to the missing typing rather than to the test failing
+indiscriminately. All are driven through the loopback server, so the real
+status and body path runs.
+
+### REQ-CI-008 — CLOSED (contained, not fully root-caused)
+
+Four consecutive green `Check & test` runs since the doc-test isolation landed:
+
+| Run | head |
+| --- | --- |
+| 35406016795 | `08b3586b` |
+| 35408783499 | `1132adc8` |
+| 35411216191 | `5ec1b78d` |
+| 35413644777 | `6de161e4` |
+
+The last failure was 35401155417 on `a47485de`, **before** the isolation. Four
+is the bar set when the first closure was retracted, and it is met. Against a
+base rate near one in six, four consecutive greens is meaningful evidence where
+one was not.
+
+**The fix is the isolated doc-test step.** Doc-tests run under
+`CARGO_TARGET_DIR=target-doctests`, which the cache never populates; unit and
+integration tests keep the cached dir via `--lib --bins --tests`. It is **not**
+`cargo clean -p huntsman-search-engine`, which was tried and refuted.
+
+**What is NOT explained, stated plainly.** An assertion really did compare
+`0.85` against `0.75` on the failing runs. Because merged-doctest RUN output
+mis-reports source lines on 1.98.0, the doc-test that actually failed may never
+have been the one named, and isolating the target dir made it stop without ever
+identifying it. **This is a containment, not a root cause.** If it recurs, the
+`--list` diagnostic now prints the trustworthy names alongside the failure,
+which is the evidence needed to finish the job.
+
+**Five hypotheses, four refuted, one standing.**
+
+| # | Hypothesis | Verdict |
+| --- | --- | --- |
+| 1 | Stale `refs/pull/N/merge` | REFUTED — pinning to `head.sha` changed nothing |
+| 2 | Restored doc-test bundle | REFUTED — diagnostic printed `(none)` |
+| 3 | Duplicate source / second doctest target | REFUTED — one `canonical.rs`, one `Doc-tests` target |
+| 4 | Cargo-fresh artifact (`cargo clean -p`) | REFUTED — same failure WITH the clean, on a Markdown-only commit |
+| 5 | Something the isolated target dir excludes | STANDING — four greens, mechanism unidentified |
+
+**The finding that outlives this entry.** Hypotheses 1–4 were each inferred from
+"CI says line 88, the branch has 138, therefore CI compiled a different tree."
+Run 35406016795 printed, in ONE job on ONE file (`md5
+b6c14fd09b8284370dfa15144e3961b3`): `--list` → lines 138 and 216; the executing
+run → 88 and 153, non-constant offsets, all 77 passing. The premise was false.
+A doc-test's reported line in RUN output says nothing about which tree was
+compiled. `--list` is the trustworthy projection. This is recorded in CLAUDE.md
+so the next session starts from it rather than rediscovering it.
+
+**Cost of getting there:** four refuted hypotheses, one premature closure that
+had to be retracted, and roughly two hours. The control that settled it —
+three echo lines printing `--list` output and an md5 — should have been the
+first move, not the fifth.
+
+### REQ-KEYSKIP-001 — 20 keyed modules reported a clean negative for a provider never asked
+
+Started as REQ-FULLHUNT-001 (fullhunt's missing-key path returns `Ok(empty)`).
+fullhunt turned out to be one of **twenty**.
+
+**How it was found.** `src/modules/keyed_tests.rs` already enforced the right
+invariant — "a keyed module without its key is a MissingKey skip, not a clean
+negative" — over a **hand-written list of fifteen modules**. The registry holds
+**49** modules declaring `requires_key`. A registry-driven probe returned, in
+0.01 s and with `PROBE_ERR_OTHER=0` (no module even attempted a request):
+
+```
+PROBE_CHECKED=49
+PROBE_OK_OFFENDERS=20
+  stolen_tax exa_search censys breachdirectory intelx leakix criminal_ip
+  onyphe zoomeye binaryedge c99 fullhunt pulsedive passivetotal ipqs
+  proxycurl threatfox opencellid abn_lookup hlr_cnam
+```
+
+**Why it matters, in the module's own words.** Dispatch records `Ok(empty)` as
+`ModuleDone { found: 0 }`; coverage aggregates that to `CleanNegative` —
+"queried, holds nothing on this subject", the one outcome the design treats as
+a real negative. `coverage_verdict` then leaves those providers out of
+`unavailable_count`, and `is_exhaustive()` can report a sweep nobody made. On
+any scan where the operator had not configured these twenty keys — which is
+most scans — twenty providers were counted as having searched and found
+nothing.
+
+**The invariant was never the problem. The ENUMERATION was.** A module could be
+keyed and simply never listed, and fifteen of forty-nine were. So the fix is
+not "add the missing twenty to the list": the list is gone. The test now walks
+`registry()` and checks every module whose descriptor declares `requires_key`,
+so a new keyed module is covered the moment it is registered, with nothing for
+anyone to remember. It also asserts `checked >= 45`, so the enumeration cannot
+quietly collapse to nothing if `requires_key` stops being populated.
+
+**Nineteen modules fixed**, each returning `Error::MissingKey` with its own env
+var. Three needed individual handling rather than the common `match` shape:
+`stolen_tax` and `exa_search` use `let-else`, and `opencellid` / `abn_lookup`
+wrap the lookup in `util::keys::resolve_key`.
+
+**One exemption, stated rather than silent.** `proxycurl` is exempt because the
+vendor sunset the whole API and the module never dispatches, key or no key, so
+there is no keyed call to skip. Its `Ok(empty)` is nonetheless its own false
+clean negative — it reports that Proxycurl searched and found nothing for a
+provider that no longer exists. That is recorded here as a follow-up, not
+fixed, and the exemption carries its reason in the code.
+
+**Falsified.** Reverting only fullhunt:
+
+```
+keyed modules that do not refuse without a key (1 of 48):
+  fullhunt on Domain: expected Err(MissingKey(..)), got Ok(0 entities)
+    — a clean negative for a provider never asked
+```
+
+"1 of 48" is itself the check on the enumeration: the test really is walking
+every non-exempt keyed module, not a subset.
+
+### REQ-KEYPOOL-002 — a re-validated pooled key kept its fresh verdict
+
+`add_and_validate` short-circuits only the SETTLED statuses:
+
+```rust
+KeyStatus::Active            => return true,
+KeyStatus::Invalid | Revoked => return false,
+KeyStatus::Untested | Exhausted | RateLimited => {}   // fall through, re-probe
+```
+
+so every key reaching the live probe is an unsettled one that the pool ALREADY
+HOLDS. And `KeyPool::add` refuses a value the service already holds and leaves
+the existing entry untouched:
+
+```rust
+if entries.iter().any(|e| e.value == key.value) { return false; }
+```
+
+The freshly-built entry — carrying the verdict the call just spent a live
+provider request to obtain — was therefore dropped on the floor. The status
+never moved, `last_validated` was never stamped, and the next call re-spent the
+provider's quota to discard the same answer, defeating the "validate once"
+policy the early return exists to enforce. The function returned `true` to its
+caller while the pool went on saying `Untested`.
+
+**The consequence that bites.** A `RateLimited` entry whose cooldown has elapsed
+is still `is_usable()`, and `next_key_excluding` PROMOTES it back to `Active` on
+selection (`pool.rs`, the cooldown-elapsed branch). So while the verdict was
+being dropped, the pool kept handing providers a credential a probe had already
+proven rejected, collecting 401s on every scan, instead of marking it `Invalid`.
+
+**Fix.** The store decision is now `store_verdict`, which returns a three-way
+`Stored { Added, Resettled, Unchanged }` rather than a bool, because "nothing
+changed" has two unrelated causes. `KeyPool::mark_validated` — the authoritative
+settler, which already existed and was simply never called from here — now
+reports whether it found an entry, and that answer is what separates "already
+pooled, now settled" from "this service is not poolable at all", two outcomes
+`add`'s `false` conflates. Persistence and the log lines are gated on `Stored`,
+so a store that did not happen is neither written nor logged as one; previously
+every branch persisted unconditionally, rewriting the file byte-for-byte on a
+duplicate add.
+
+**Falsified.** Reverting `store_verdict` to drop the entry (the pre-fix
+behaviour) fails three of the six new tests, each on its OWN consequence:
+
+```
+a_revalidated_pooled_key_is_promoted_instead_of_dropped ... FAILED
+  a live probe proving the key good must settle the pooled entry
+  left: Some(Untested)   right: Some(Active)
+a_pooled_key_the_probe_proves_dead_is_marked_invalid ... FAILED
+  a definitive 401/403 must settle the pooled entry, not vanish
+  left: Some(Untested)   right: Some(Invalid)
+a_throttled_key_proven_dead_stops_being_handed_to_providers ... FAILED
+  once proven dead the pool must stop offering it
+  left: Some("sk_live_pooled_0123456789")   right: None
+test result: FAILED. 15 passed; 3 failed
+```
+
+The third is the live consequence demonstrated end to end: `next_key` still
+offers the credential. The first attempt asserted the `Stored` enum before the
+state, and all three then failed identically on that one line, leaving each
+test's actual point unverified — the same masking as REQ-OSINTCAT-001 and
+REQ-HTTP-004. The assertions were reordered state-first and re-falsified.
+
+Three controls pass on that same baseline: an indeterminate probe leaves a
+pooled key unsettled (`validate_key`'s documented policy, so `Unchanged` is
+correct there), a key the pool does not hold is still added with its verdict,
+and a non-poolable service records nothing and says `Unchanged` rather than
+reading like a duplicate.
+
+**Two things found while tracing, recorded rather than folded in.**
+
+1. `KeyStatus::Exhausted` is never CONSTRUCTED anywhere in production — only
+   read (the counters, `is_usable`, `health_score`). It is the one status
+   `is_usable()` refuses that has no recovery path at all, so had anything set
+   it, a key whose quota later renewed would have been permanently unreachable.
+   Nothing does, so that starvation is not live and is not claimed as fixed.
+   Same class as REQ-DOCPARSE-002's never-constructed `FileTooLarge`.
+2. Provenance on an EXISTING entry is deliberately left alone. The only
+   production caller of `add_and_validate` (`app::import::json`, the oathnet
+   stealer path) always passes `Some("stealer_import:…")`, so if the operator
+   had earlier added the same value deliberately, stamping it would strip the
+   auth-eligibility they configured — while NOT stamping it leaves a key known
+   to appear in a stealer dump auth-eligible. Both directions are defensible and
+   neither is what this entry recorded, so the question is named here as its own
+   follow-up rather than decided silently.
+
+### REQ-VALIDATION-002 — a double-`@` address walked through the admission gate
+
+The engine's admission gate (`core::engine::dispatch::skip_reason`) runs exactly
+two predicates over an Email entity, and they split the address on OPPOSITE `@`
+occurrences:
+
+| Gate | Split | On `jordan@example.com@attacker-corp.net` |
+| --- | --- | --- |
+| `is_placeholder_entity` | `rsplit_once` (LAST `@`) | local `jordan@example.com` matches no template; host `attacker-corp.net` is not a documentation domain → **passes** |
+| `is_fragment_value` | `split_once` (FIRST `@`) | local `jordan` non-empty; domain `example.com@attacker-corp.net` contains a dot → **passes** |
+
+Each gate catches the single-`@` form. The second `@` made each one look at the
+wrong half, and **nothing else on the admission path checks email syntax** — so
+the address entered the graph. The reach is wider than the gate: ten import
+paths (stealer, sql_dump, csv, oathnet_report, dossier, combined) use
+`is_fragment_value` ALONE as their whole email check.
+
+**Root cause, and it is duplicated authority rather than a split-direction bug.**
+`is_fragment_value`'s Email arm hand-rolled "must be local@domain.tld — reject
+`@gmail`, `matthew@`, `a@b`", which is a strict SUBSET of the crate's own
+`validate_email_syntax` — the subset that omits its explicit second-`@` guard.
+That guard exists, is documented, has its own test using the same vector shape
+(`alice@example.com@evil.invalid`), and is already used by `web_crawler`. The
+weaker copy simply never picked it up.
+
+**Fix.** The arm delegates: `EntityKind::Email => !validate_email_syntax(v).valid`.
+Every shape the hand-rolled version rejected is still rejected, so it is a strict
+tightening, and there is now ONE definition of "is this even an email" for the
+engine gate and all ten import paths at once.
+
+The placeholder arm's `rsplit_once` is deliberately left alone, with the reason
+in the code. Flipping it to `split_once` would not be an improvement — on the
+mirrored `evil@attacker-corp.net@example.com` it is the LAST-`@` split that spots
+the placeholder host — so neither split is "the right one" and the malformed
+shape is rejected as malformed instead. `email_syntax_is_what_closes_the_double_at_bypass`
+pins that co-dependency.
+
+**Falsified.** Restoring the hand-rolled arm:
+
+```
+a_double_at_address_is_rejected_as_malformed ... FAILED
+  an address with two `@` is not a deliverable mailbox and must never reach the graph
+email_syntax_is_what_closes_the_double_at_bypass ... FAILED
+  the admission gate must defer to the one syntactic authority (6 vector(s) disagree)
+the_syntax_delegation_also_catches_what_the_hand_rolled_arm_missed ... FAILED
+  admitted as a valid email despite: two `@`; local part over 64 chars;
+  consecutive dots in local; leading dot in local; trailing dot in local;
+  trailing dot in domain; consecutive dots in domain
+test result: FAILED. 44 passed; 3 failed
+```
+
+The third collects its cases instead of asserting them one at a time, so ONE
+failure names all seven admitted shapes rather than masking six of them.
+
+Two controls pass on that baseline: `neither_placeholder_split_sees_a_double_at_address`
+(the mechanism — and the reason the fix belongs in the syntax gate rather than in
+either split) and `a_well_formed_address_is_still_admitted_after_the_delegation`
+(the tightening is not a change of policy).
+
+**Measured, not assumed.** The first draft used `jordan@example.com@evil.tld`
+and the control test failed: `.tld` and `.invalid` are THEMSELVES placeholder
+TLDs, so the gate caught that vector by luck rather than by seeing the malformed
+shape. A probe over seven candidate hosts established that `attacker-corp.net`
+is not a placeholder domain, and the vectors were corrected. Had the draft
+vector been kept, the regression test would have passed for the wrong reason and
+locked nothing.
+
+### REQ-EXTRACTOR-001 — the `email_rfc5322` stamp is earned now, not asserted
+
+`entity_extractor::patterns`'s Email arm emitted every raw locator match as
+
+```rust
+confidence: 0.85,                    // "RFC 5322 validation high confidence"
+source_pattern: "email_rfc5322",
+boost_reason: Some("RFC 5322 compliant format"),
+```
+
+having validated nothing. `util::extract`'s own module header says what the
+locator is: "Pragmatic, ASCII-only, scanner-grade — **NOT an RFC 5322
+validator**."
+
+**Measured, not argued.** A probe comparing the arm's output against the crate's
+own `validate_email_syntax` found three shapes admitted under that stamp:
+
+```
+"contact a..b@example.com now"     -> ["a..b@example.com"]       syntax_valid=[false]
+"write alice.@example.com ok"      -> ["alice.@example.com"]     syntax_valid=[false]
+69-char local part                 -> [<69 chars>@example.com]   syntax_valid=[false]
+```
+
+and three where the locator already behaves (a leading dot and a trailing domain
+dot are trimmed out of the match; a two-`@` run yields only the valid prefix).
+Those three are kept as a control test so the fix is not credited with them.
+
+**This is a scar the file already carries.** The IPv4 arm twelve lines below
+records exactly the same defect being fixed: "The old arm trusted the raw match
+… and stamped it 'Valid IPv4 range' — emitting values that `Ipv4Addr::from_str`,
+and therefore any downstream scanner, rejects, under a boost reason that was
+untrue." IPv4 and IPv6 were made to parse through their validators. Email was the
+remaining unbacked claim.
+
+**Fix.** The arm validates through `validate_email_syntax` and drops what does
+not conform, exactly as the IPv4/IPv6 arms parse through theirs. Deliberately the
+SAME function the admission gate delegates to (REQ-VALIDATION-002), not a second
+local copy of the rules — so the extractor and the gate cannot disagree about
+what an email is. That is the third and last copy of "is this a valid email"
+folded onto one authority.
+
+**Falsified.** Removing the check and leaving the stamp:
+
+```
+nothing_carries_the_rfc_stamp_without_earning_it ... FAILED
+  stamped "RFC 5322 compliant format" without being valid:
+    consecutive dots in local: "a..b@example.com"
+    trailing dot in local: "alice.@example.com"
+    local part over 64 chars: "aaaa…(69)@example.com"
+test result: FAILED. 34 passed; 1 failed
+```
+
+One failure names all three rather than stopping at the first. Two controls pass
+on that baseline: the locator-already-trims one above, and one asserting a real
+address is still extracted AND still labelled — without which an arm that
+validated but dropped the label would satisfy the first test vacuously.
+
+**Observed, not claimed.** On `jordan@example.com@attacker-corp.net` the locator
+emits only `jordan@example.com` — syntactically valid, but a DIFFERENT address
+from the one in the text. That is its own question (a truncating locator silently
+re-attributing a spoofed address), distinct from the stamp, and is recorded here
+rather than folded into this fix.
+
+### REQ-GEODOMAIN-001 — the Email affiliation path reaches Vietnam now
+
+`CLAUDE.md` records Vietnam as HSE's permanent operating jurisdiction and names
+`.vn` a first-class jurisdiction **via this exact module** and
+`src/util/domain_vn`. Measured on the Email path before this change:
+
+```
+@unimelb.edu.au -> ["Coordinates:-37.8136,144.9631", "Address:Melbourne, Australia"]
+@hcmus.edu.vn   -> []
+@vnu.edu.vn     -> []
+@mof.gov.vn     -> []
+@ox.ac.uk       -> []
+@gmail.com      -> []        (correct — the institutional gate)
+```
+
+So the gap was real, and **wider than Vietnam**: the Email branch ran only
+`classify_au_jurisdiction_domain` then `classify_by_known_service`, both AU-heavy,
+and deliberately skipped the ccTLD table. Every institution outside those two
+tables geolocated to nothing.
+
+**The unreachable capability was already written.** The `.vn` registrant tagging
+(`vn-registrant:{category}`, the VNNIC evidence line) sits inside
+`if let Some(geo) = classification`. With no classification ever produced on the
+Email path, that block could not run — the module and `util::domain_vn` were
+wired to each other exactly as CLAUDE.md describes, through a branch nothing
+could reach.
+
+**Fix.** The Email branch now runs the same three classifiers in the same order
+as Domain/Url — jurisdiction → known service → ccTLD — still behind the
+institutional gate. The stale comment claiming the ccTLD grain is "deliberately
+skipped for emails" is corrected rather than left contradicting the code.
+
+Why this is safe where the original objection was sound: that objection was "an
+`@x.com` is not in the United States", and the institutional gate already
+excludes `@x.com`. What the skip also excluded was every non-AU institution. A
+`@hcmus.edu.vn` address genuinely does place its holder at a Vietnamese
+institution — the affiliation signal this module exists to read. It lands at the
+ccTLD classifier's `LOW_MEDIUM`, strictly below the state-grain `NOTABLE` the AU
+jurisdiction path earns, so a country is never weighted like a city. The
+country-grain "Australia" is still dropped by the existing filter, which now also
+catches an `.edu.au` that misses both AU tables.
+
+**Falsified.** Removing the ccTLD fallback:
+
+```
+a_vietnamese_institutional_email_places_its_holder_in_vietnam ... FAILED
+  someone@hcmus.edu.vn must place its holder somewhere
+a_non_australian_academic_email_is_no_longer_silent ... FAILED
+  left: None   right: Some("United Kingdom")
+test result: FAILED. 27 passed; 2 failed
+```
+
+Three controls pass on that baseline: freemail and generic corporate addresses
+still yield nothing (the gate is what makes admitting the country grain safe at
+all), the precise AU city still beats the ccTLD country, and an unlisted
+`.edu.au` still yields no "Australia".
+
+**One test is a guard, not a control, and is labelled as such here.**
+`the_country_grain_never_mints_a_coordinate` also passes on the baseline — but
+vacuously, because the baseline emits nothing at all. It is non-vacuous only on
+the fixed path, where it holds the new country-grain Address to the same rule the
+module already applies to whole-state classifications: a country is not a point,
+so no `Coordinates` entity is derived from it.
+
+### REQ-EXTRACTOR-002 — a decimal run is not a digest
+
+`entity_extractor::patterns`'s Hash arm classified a token by LENGTH alone, and
+`0-9` are hex digits, so any decimal run of a digest width was certified a
+cryptographic hash. Measured against that arm:
+
+```
+"txn 1234…(32 digits)"  -> hash_md5    0.85  "128-bit hex hash"
+"acct 1234…(40 digits)" -> hash_sha1   0.90  "160-bit hex hash"
+"blob 999…(64 digits)"  -> hash_sha256 0.95  "256-bit hex hash"
+"blob 111…(128 digits)" -> hash_sha512 0.97  "512-bit hex hash"
+```
+
+A transaction id, an account number, a concatenated timestamp or a numeric column
+out of a breach dump entered the graph as a cryptographic hash at up to **0.97**.
+
+**Not the "authority exists, unused" shape — checked before assuming it.**
+`util::hashcat::identify_hash` is the crate's hash authority and OathNet's
+classifier delegates to it, so the obvious move was to delegate here too. Reading
+it shows it classifies a bare hex digest by leading-hex-run length in exactly the
+same way, so delegating would have consolidated the blind spot rather than closed
+it. The fix has to add the discriminator, not re-point the call.
+
+**Fix, and where it belongs.** The arm requires at least one `a`-`f`. It is
+deliberately NOT pushed down into `identify_hash`: that function classifies a
+value which arrived in a hash-typed FIELD (a breach row's `password_hash`), where
+provenance already establishes the value is a digest and an all-decimal one
+should still read as one. This arm scans arbitrary prose with no provenance at
+all, so the same string carries a different prior. The guard belongs where the
+prior is weak.
+
+**Cost, stated rather than glossed.** A genuine digest whose every nibble happens
+to land in `0-9` has probability (10/16)^n — about 1.2e-7 for a 32-char MD5, and
+4e-27 for a 128-char SHA-512. Free text contains decimal runs of these lengths far
+more often than that.
+
+**Falsified.** Removing the guard:
+
+```
+a_decimal_run_is_never_certified_a_cryptographic_hash ... FAILED
+  a run of decimal digits is not a digest:
+    32-digit transaction id: hash_md5 at 0.85
+    40-digit account run: hash_sha1 at 0.9
+    64-digit numeric blob: hash_sha256 at 0.95
+    128-digit numeric blob: hash_sha512 at 0.97
+test result: FAILED. 2 passed; 1 failed
+```
+
+One failure names all four widths. Two controls pass on that baseline: every real
+digest width is still classified at its own confidence (so the guard is a
+discriminator, not a blanket refusal), and the guard is about the ALPHABET rather
+than the width — an unrecognised width was already declined, and a single hex
+letter makes a 32-char run a candidate again.
+
+### REQ-VALIDATION-001 — homograph spoofing, on the kinds it actually targets
+
+The engine's admission gate applied `is_confusable_mixed_script` to exactly four
+kinds:
+
+```rust
+EntityKind::Person | EntityKind::Address | EntityKind::Username | EntityKind::Organisation
+```
+
+— the kinds where a Cyrillic lookalike is a NUISANCE — and left out `Domain`,
+`Email` and `Url`, where it is the attack. The predicate's own doc comment gives
+the canonical example as "a `paypal.com` whose `a` is Cyrillic `а`": a DOMAIN.
+So a spoofed domain was admitted, expanded and correlated like any real one.
+
+**The obvious fix is wrong, and it was measured rather than assumed.** Adding the
+existing predicate to those three kinds flags a legitimate internationalised
+domain, because the ASCII TLD supplies the "genuine ASCII Latin" half of the mix:
+
+```
+аpple.com   (Cyrillic а + ASCII "pple")   flat=true    spoof
+pаypal.com  (Cyrillic а inside "paypal")  flat=true    spoof
+москва.com  (Cyrillic label, ASCII TLD)   flat=TRUE    legitimate  <- false positive
+пример.рф   (all-Cyrillic IDN)            flat=false   legitimate
+```
+
+**Fix.** A new `host_label_is_confusable` splits on `.` and applies the existing
+predicate PER LABEL. A whole Cyrillic label under `.com` is ordinary IDN usage; a
+single label mixing Cyrillic and ASCII Latin is the deception. The gate extracts
+the host per kind — the value for `Domain`, the part after `@` for `Email`,
+`host_from_url` for `Url` — and reuses the existing `confusable_homoglyph` reason
+so the drop taxonomy does not grow a synonym.
+
+**Falsified against TWO baselines**, which is the point of this entry:
+
+```
+A — no gate on the spoofable kinds (the defect):
+    admission_rejection_covers_every_drop_filter_and_order ... FAILED
+      left: None   right: Some("confusable_homoglyph")
+
+B — the naive wiring, existing flat predicate on the host (the obvious fix):
+    admission_rejection_covers_every_drop_filter_and_order ... FAILED
+      a legitimate internationalised domain must still be admitted
+      left: Some("confusable_homoglyph")   right: None
+```
+
+The suite rejects the original defect AND the plausible wrong fix. A test that
+only covered A would have passed happily on B while silently dropping every
+Cyrillic-label domain the engine ever saw.
+
+`a_host_is_judged_per_label_not_as_one_string` locks the distinction at the
+predicate layer too, including an explicit control asserting that the FLAT check
+IS fooled by the ASCII TLD — so the reason the per-label predicate exists is
+recorded as an executable fact rather than only as a comment.
+
+**An architecture invariant caught the first draft, and the resolution is the
+point.** The Url arm originally called `util::url_util::host_from_url`, which
+trips `core_does_not_import_util_directly` — a deliberate test whose allow-list
+argues each entry individually and whose own closing comment quotes
+AUTONOMY_CHARTER INV-3: a tripped invariant is a design decision to raise, not
+silence. `core` already had the parse, unnamed, inside
+`validation::domain::is_onion_url`. Naming it as `host_of` and using it from
+both places was better than either available shortcut: no new `core → util`
+edge, no widened allow-list, and one fewer inline copy of "the host of this
+value" — `is_onion_url` and the homograph gate now share it.
+
+---
+
+## REQ-IPGEO-001 — An address is a rounding-off of the fix, so it can never outrank it
+
+**Closes:** REQ-IPGEO-001, REQ-IPINFO-001, REQ-IPQUERY-001 (one class, five live
+inversions, one authority).
+
+### What was measured
+
+Eight modules compose a `"City, Region, Country"` address from an IP/whois
+geolocation reading and emit it beside the `Coordinates` built from that same
+reading. Each of the eight chose the `Address` confidence by hand. Nothing tied
+that number to the fix it derives from, and five had drifted above it:
+
+| module | Coordinates | Address | gap |
+|---|---|---|---|
+| `ip_geo` | 0.50 mobile / 0.60 residential | 0.65 flat | **+0.15** |
+| `shodan` (country-centroid path) | 0.45 | 0.55 | **+0.10** |
+| `criminal_ip` | 0.45 | 0.50 | **+0.05** |
+| `ipquery` | 0.58 | 0.62 | **+0.04** |
+| `ipinfo` | 0.58 | 0.60 | **+0.02** |
+| `censys` | 0.65 | 0.60 | −0.05 (sound) |
+| `shodan` (real-fix path) | 0.60 | 0.55 | −0.05 (sound) |
+| `ip2location` | 0.62 | 0.62 | 0 (fixed in an earlier pass) |
+
+An address composed from a fix is *strictly coarser* than the fix:
+`"Brisbane, Queensland, Australia"` is what you get by rounding off
+`-27.4679,153.0281`. It can never be the more confident of the two.
+
+`ip_geo` is the sharpest case and shows why it matters. That module deliberately
+grades a fix DOWN for a mobile IP, and its own comment records the reason: *"a
+single overstated IP-geo hit was outranking a corroborated WiGLE WiFi fix"*. The
+recalibration reached the Coordinates and not the Address derived from the same
+reading, so the exact overstatement it was written to stop walked back in
+through the city string. Same shape at `ipquery`, whose Coordinates carry a
+`// Confidence recalibrated 0.68 → 0.58` note four lines above an Address that
+ignored it.
+
+**The two sound modules were sound by coincidence, not by construction.** That
+is the actual defect: the rule lived in eight heads, not in one function.
+
+### The correction
+
+`util::geo::coarse_provider_address(address, confidence, fix, scan_id)` — the
+sibling of the existing `coarse_provider_coords`. It takes the module's own rung
+and the sibling `Coordinates` **entity**, and emits at `min(rung, fix)`.
+
+The ceiling is taken from the entity rather than from a second `f64` parameter
+precisely so a caller cannot pass the wrong number — there is no number to pass.
+It only ever removes an inversion: `censys` and `shodan`'s real-fix path keep
+their deliberate sub-fix rungs untouched. `None` (no fix emitted for this
+reading — an implausible null-island lat/lon, a provider publishing a city and
+no coordinates) leaves the caller's rung standing, because the address is then
+the provider's own city string rather than a coarsening of a fix this module
+published.
+
+All eight call sites route through it. `ip2location` additionally dropped a
+hand-rolled `format!("{city}, {region}, {country}")` that re-inlined
+`compose_address` — in a comment that pointed at `compose_address` while
+duplicating it three lines below.
+
+### Falsification — three baselines, because two mechanisms are at work
+
+The call-site rungs were corrected (`ip_geo` HIGH → `geo_conf`, `ipinfo`
+MEDIUM_PLUS → MEDIUM_SOLID, `ipquery` NOTABLE → MEDIUM_SOLID) *and* the cap was
+added. Each was falsified separately, so neither is decoration:
+
+```
+A — original rungs, cap disabled (the true pre-change behaviour):
+    ip_geo      FAILED  residential: Address 0.65 > Coordinates 0.60
+                        mobile:      Address 0.65 > Coordinates 0.50
+    ipinfo      FAILED  Address 0.60 outranks the Coordinates 0.58 …
+    ipquery     FAILED  Address 0.62 outranks the Coordinates 0.58 …
+    criminal_ip FAILED  Address 0.50 outranks the whois Coordinates 0.45 …
+    shodan      FAILED  centroid, city present: Address 0.55 > Coordinates 0.45
+                        centroid, country alone: Address 0.55 > Coordinates 0.45
+    util::geo   FAILED  (the property test, on 30 of 100 rung pairs)
+
+B — original rungs, cap ON:            all 5 pass  → the cap alone closes all five
+C — corrected rungs, cap disabled:     criminal_ip and shodan STILL FAIL
+                                       → the cap is load-bearing, not belt-and-braces
+```
+
+Every module's failure named its own gap. The first draft of the `ip_geo` and
+`shodan` tests failed on their own vacuity guard instead — `ip_geo` suppresses
+the Address entirely for a hosting/proxy IP (so the 0.35 rung is unreachable and
+the real maximum gap is 0.15, not 0.30), and no bare country name resolves
+through `city_coords`, so `shodan`'s centroid fixture had to put a tabulated city
+in `country_name` exactly as its sibling test already documents. Both tests now
+assert a minimum comparison count, and `ip_geo` asserts the hosting/proxy
+suppression as a control rather than counting it as a comparison it could not
+make.
+
+### Regression mechanisms
+
+- `util::geo::a_provider_address_is_never_more_confident_than_its_fix` — the
+  property, swept across the whole 10-rung ladder (100 pairs), both directions:
+  never above the fix, and never silently rewriting a rung already below it.
+- Five per-module runtime locks at each builder — the correct architectural
+  boundary, since each module owns its own emission.
+- `tests/architecture.rs::a_composed_provider_address_is_born_through_the_shared_emitter`
+  — the structural half. A file under `src/modules/` that calls
+  `compose_address` may not call `Entity::new(EntityKind::Address, ..)` with a
+  constant of its own, and must reach `coarse_provider_address`. Falsified by
+  reintroducing the direct birth in `ipinfo`: both arms fire, naming the file and
+  the remedy. Without this the invariant would hold only for the eight modules
+  that exist today, and the ninth would be free to reintroduce it — which is
+  exactly how the first five arrived.
+
+### Follow-ups recorded, not done
+
+- **`shodan`'s country-centroid fallback is effectively dead.** It calls
+  `city_coords(country_name)`, and `city_coords` is a CITY table — no bare
+  country name resolves, as its own sibling test
+  (`country_centroid_fallback_coordinates_carry_the_originating_ip_too`) already
+  states in prose. The branch is reachable only with a city in the country field.
+  Either give it a real country-centroid table or retire it honestly.
+- **`ipinfo` and `ipquery` do not tag their Address `geoint`**, while the other
+  six do. Left alone here: adding the tag changes correlator reach and belongs in
+  its own measured cycle, not folded into a confidence fix.
+
+---
+
+## REQ-DOCPARSE-001 — An EXIF GPS fix is worth one thing, wherever the file came from
+
+### What was measured
+
+`util::exif`'s own module header says its two consumers "must agree on what a
+coordinate means":
+
+- `modules::exif_geo` — images discovered during a scan, fetched over the network
+- `util::document_parse::image_geolocation` — local files handed to `hse ingest`
+
+Both call the same `util::exif::extract_gps` on the same GPS IFD. They then
+disagreed on what that reading is worth by **0.15**:
+
+| path | rung | value |
+|---|---|---|
+| `exif_geo` (network) | `HIGH_PLUSPLUS` | **0.80** |
+| `hse ingest` (local file) | `VERY_HIGH_PLUSPLUS` | **0.95** |
+
+0.95 is above two things it must not be above:
+
+- `AUTHORITATIVE` (0.92) — a government register
+- `HIGH_PLUSPLUS_PLUS` (0.85) — WiGLE multi-observation consensus, which
+  `exif_geo`'s own comment says an EXIF fix must sit **below**
+
+...for a field whose own doc comment at the 0.95 site called it "trivially
+editable". A tag anyone can rewrite with `exiftool` outranked a statutory
+register.
+
+The ingest coordinate is not inert. Its call site in `cli/ingest` says so:
+it "enters the emitted output and (with `--auto-scan`) the persisted scan,
+seeding Coordinates expansion and the geo correlators like any other
+coordinate." At 0.95 it was the strongest geolocation claim the engine could
+hold.
+
+**Two authorities, one datum.** The 0.80 was argued against its neighbours on
+the ladder; the 0.95 was argued only downward ("not `CERTAIN`") and never
+against what it outranked.
+
+### The correction
+
+`util::exif::GPS_FIX_CONFIDENCE`, beside the `extract_gps` both paths call,
+set to the reasoned 0.80. Both emitters use it; the reasoning lives once.
+
+### Falsification — two baselines, because the two failures are different
+
+```
+A — ingest keeps its own 0.95, exif_geo stays 0.80:
+      end_to_end_reads_gps_from_a_real_jpeg_on_disk ... FAILED
+        the ingest path must not choose its own rung for a tag exif_geo
+        reads with the same extract_gps
+      (a_gps_fix_sits_where_the_ladder_says_it_does PASSES — correctly: the
+       shared const is still on the ladder. Each test has its own job.)
+
+B — the shared const itself moved to 0.95:
+      a_gps_fix_sits_where_the_ladder_says_it_does ... FAILED
+        0.95 must rank BELOW WiGLE consensus (HIGH_PLUSPLUS_PLUS) (0.85)
+        0.95 must rank BELOW a government register (AUTHORITATIVE) (0.92)
+      end_to_end_reads_gps_from_a_real_jpeg_on_disk ... FAILED
+        an exiftool-rewritable tag (0.95) must not outrank a government
+        register (0.92)
+
+C — exif_geo picks its own rung again (the structural lock):
+      an_exif_gps_fix_uses_the_one_shared_confidence ... FAILED
+        src/modules/exif_geo/mod.rs: reads the EXIF GPS IFD but never names
+        util::exif::GPS_FIX_CONFIDENCE — it is choosing a second answer to
+        what a GPS tag is worth
+```
+
+### Regression mechanisms
+
+- `util::exif::gps_confidence_tests::a_gps_fix_sits_where_the_ladder_says_it_does`
+  — the ordering `exif_geo` stated in prose, made executable: below WiGLE
+  consensus, below a government register, below `CERTAIN`, above single-source
+  IP-geo. Failures are collected so one run names every violated bound.
+- The `hse ingest` end-to-end test (a real JPEG with a GPS IFD on disk) now
+  asserts the emitted coordinate carries the shared constant, and separately
+  that it ranks under `AUTHORITATIVE` — two different failures, not one
+  restated.
+- `tests/architecture.rs::an_exif_gps_fix_uses_the_one_shared_confidence` —
+  a file that reads the GPS IFD must name the shared constant. Its limit is
+  stated in its own doc comment rather than implied: it checks that such a file
+  reaches for the constant, not that every coordinate in it is stamped with the
+  constant; the two runtime locks cover the values.
+
+### Follow-up recorded, not done
+
+`ImageGeolocationMetadata::geolocation_confidence` has no consumer outside its
+own file — the field is computed and serialised but nothing reads it. Either
+wire it or drop it; not folded in here because it is a reachability question,
+not a calibration one.
+
+---
+
+## REQ-NPMAUTHOR-001 — The queried handle is the only thing tying a record to the subject
+
+### What was measured, live
+
+`npm_author` queries `registry.npmjs.org/-/v1/search?text=maintainer:{handle}`
+and mines the person records on each returned package. Measured 2026-09-19
+across five queries, **500 packages / 2,352 person records**:
+
+| fact | count |
+|---|---|
+| publisher records carrying `username` AND `email` | 500 / 500 |
+| maintainer records carrying `username` AND `email` | 1852 / 1852 |
+| records whose email belongs to someone **other** than the queried subject | **1129** (48%) |
+| package-level `author` blocks | **0** |
+| `url` on any person record | **0** |
+
+Package keys actually returned: `name`, `sanitized_name`, `version`,
+`description`, `keywords`, `license`, `date`, `links`, `publisher`,
+`maintainers`. The module's header documented an `author` block that the
+endpoint no longer sends.
+
+Nearly half the person records on this endpoint belong to a third party — a
+co-maintainer, or a publisher who is not the queried handle (`brace-expansion`
+under `maintainer:isaacs` is published by `juliangruber`). The `is_subject`
+username match is what excludes all 1,129 of them.
+
+### The two holes
+
+```rust
+let is_subject = person.username.as_deref()
+    .is_some_and(|u| u.eq_ignore_ascii_case(handle));
+
+if let Some(email) = person.email.as_deref()
+    && (is_subject || person.username.is_none())   // ← admitted unattributed
+{ … }
+
+if let Some(u) = person.url.as_deref()
+    && crate::util::url_util::is_absolute_http_url(u)   // ← no check at all
+{ … }
+```
+
+**Email**: `|| person.username.is_none()` admitted any record with no npm
+account attached. npm's `author` block is exactly that shape — free text copied
+from `package.json`, routinely naming a fork's original author, an ex-employee,
+or a company alias rather than whoever maintains the package now.
+
+**URL**: no attribution check whatsoever. A co-maintainer's homepage became a
+`Url` entity on the subject's scan, carrying only a `npm` tag — nothing marking
+it as a third party's, unlike the `co-*`-tagged usernames emitted three lines
+below.
+
+The module's own `build_entities` doc comment promised "a co-maintainer's
+address isn't mis-attributed". That was true of the username-bearing records
+and false of the rest.
+
+### Reachability, stated honestly
+
+Both holes are **latent, not live**: neither an `author` block nor a person
+`url` appeared once in the 2,352-record sample, so `pkg.author` is always
+`None` and `person.url` is always `None` against today's endpoint. Latent is
+not closed. The fields are still decoded, npm has changed this response before,
+and the module's stated contract should be true of the code rather than of the
+provider's current omissions. The `author`/`url` fields are kept (forward
+compatible, free under `#[serde(default)]`) and the header now records the
+observed shape with its date and sample size.
+
+### The line the module draws, now stated
+
+A co-maintainer's **handle** is a fact about the package: kept, emitted as its
+own `Username` entity tagged `co-publisher` / `co-author` / `co-maintainer`.
+Their **email and homepage** are their own contact data and are not the
+subject's: dropped.
+
+### Falsification — two baselines, two gates
+
+```
+A — email arm back to `is_subject || person.username.is_none()`:
+      an_unattributed_author_email_is_not_the_subjects   ... FAILED
+        a package.json author block with no npm username is not the
+        subject's contact
+      usernameless_record_email_is_not_the_subjects      ... FAILED
+        an email attached to no npm account is nobody's confirmed contact
+      (the URL tests and the control PASS — the URL gate still stands)
+
+B — URL arm back to no attribution check:
+      a_co_maintainers_url_is_not_the_subjects           ... FAILED
+        a stranger's homepage is not the subject's URL, got
+        ["https://carol.dev", "https://dave.dev"]
+      evidence_role_matches_the_field_the_person_actually_came_from ... FAILED
+```
+
+`the_subjects_own_record_still_comes_through` PASSES on both baselines and on
+the fix — it is the control, and it is not vacuous: every live publisher and
+maintainer carries a username, so tightening attribution costs the subject
+nothing.
+
+### Two existing tests asserted the defect, and were inverted rather than deleted
+
+- `usernameless_record_email_is_kept` — comment: *"A record with an email but
+  no username is treated as the subject's."* The defect pinned as a contract,
+  argued nowhere. Renamed and inverted in place, with the old name and its
+  claim quoted in the new test so the change of mind stays on the record.
+- `evidence_role_matches_the_field_the_person_actually_came_from` — its real
+  subject is the role labelling (`co-publisher` vs `co-author` vs
+  `co-maintainer`, and the role-specific evidence text), which is sound and
+  kept. Two of its assertions required Carol's and Dave's homepages to be
+  emitted on Alice's scan; those are replaced by an assertion that they are
+  not, turning the same fixture into a control for the fix.
+
+---
+
+## REQ-ENGINE-001 — Nothing mutates an entity after its durable event is emitted
+
+### What was measured
+
+`core::engine::dispatch`'s admission block ran three finalisation passes over a
+surviving entity and emitted its durable `EventKind::EntityFound` in the middle
+of them:
+
+```rust
+super::tag_breach_sector(&mut entity);     // "Before the emit so the event log
+super::tag_platform_infra(&mut entity);    //  (and the recovery rebuild) carry it too."
+self.emit(cx.scan_id, EventKind::EntityFound { entity: entity.clone() });
+super::scan_entity_for_keys(&entity, …);
+super::enrich_geospatial(&mut entity);     // ← after
+```
+
+Two of the three passes carry a comment stating the exact rule the third
+breaks. `enrich_geospatial` is the geohash / timezone / country / hemisphere
+pass — deterministic and offline (`util::geohash`, no network), so there was
+nothing to gain by deferring it.
+
+### Why it matters — the consequence is at the recovery boundary
+
+`Store::entities_for_scan` falls back to `Store::entities_from_events` when the
+`entities` table is empty, which its own comment explains happens when a scan
+"never finalised (a module hung / the process was killed before the entities
+table was written)" — described elsewhere in the codebase as **routine on
+Termux/Android, where the OS reclaims backgrounded processes**. That is this
+project's primary platform.
+
+`entities_from_events` folds the logged `EntityFound` entities, canonicalises
+their order and returns them. It applies **no enrichment of its own** — its doc
+comment lists what a recovered read lacks ("no address-locality consolidation,
+geo-family promotion, or cross-scan history") and geohash/timezone/country is
+not on that list, because the author believed the event already carried it.
+
+So on every non-finalised scan, each `Coordinates` and `Address` came back with
+no `geo_normalize` evidence at all: no geohash (so no proximity matching at any
+precision), no timezone, no country_iso, no hemisphere. The geo correlation
+rules that read those attributes saw nothing, silently.
+
+A live finalised scan was unaffected — the finalise path re-enriches — which is
+why this survived: the defect is invisible from every read path except the one
+that matters when a scan dies.
+
+### The correction
+
+One line moved: `enrich_geospatial` now runs with its two siblings, above the
+emit. The three comments are replaced by one statement of the rule at the top
+of the block.
+
+### Falsification
+
+```
+Baseline (enrichment restored to after the emit):
+
+  a_recovered_scan_keeps_its_geospatial_enrichment ... FAILED
+    no geo_normalize evidence survived recovery — enrichment ran after the
+    durable emit. Evidence sources present: []
+
+  entity_mutations_precede_the_durable_emit ... FAILED
+    these mutate the entity AFTER its durable EntityFound event, so a
+    recovered scan never sees the change — move them above the emit:
+      super::enrich_geospatial(&mut entity);
+```
+
+The runtime failure reports an entity with **no evidence at all**, not merely a
+missing attribute — the fixture module attaches none of its own, so
+`geo_normalize` was the only source and its absence is total. Non-vacuous by
+construction.
+
+### Regression mechanisms
+
+- `tests/smoke.rs::a_recovered_scan_keeps_its_geospatial_enrichment` — a real
+  engine run with a module emitting a real Brisbane fix, read back **through
+  the recovery path**. Reading through `entities_for_scan` on a finalised scan
+  would have passed on the defect, because finalisation re-enriches; the test
+  is at the boundary where the failure actually lands. It asserts the
+  `hemisphere` attribute is `southern`, so the enrichment must have run on this
+  fix rather than be a stale default.
+- `tests/architecture.rs::entity_mutations_precede_the_durable_emit` — the
+  general form on purpose: not "these three passes are in this order", which a
+  fourth pass added below the emit would walk straight past, but "no
+  `&mut entity` appears between the emit and the end of the admission block".
+  It also asserts the three known passes really are above it, so the check
+  cannot pass by finding an empty tail.
+
+**The first draft of that architecture test failed on itself.** It anchored the
+split point on the string `EventKind::EntityFound`, and the explanatory comment
+newly written above the emit mentions that name too — so `find` matched the
+comment and put the split above the very passes being checked. It now anchors
+on the construction `EventKind::EntityFound {`, with the reason recorded in the
+test.
+
+---
+
+## REQ-WIGLE-001 — The same provider, the same two fields, two different answers
+
+### What was measured
+
+`is_valid_coords` rejects `(0,0)` and out-of-range values.
+`is_plausible_provider_coord` additionally rejects the near-null-island **jitter
+band** just outside it — which is what WiGLE emits for "no fix", and the entire
+reason the stricter predicate exists.
+
+`wigle` gates `trilat`/`trilong` at four sites:
+
+| site | gate | emits |
+|---|---|---|
+| `emit.rs` BSSID emitter | **strict** | Coordinates |
+| `emit.rs` SSID emitter | **strict** | Coordinates |
+| `emit.rs` cell-tower top-3 | weak | Coordinates |
+| `mod.rs` `wifi_ap_entities` | weak | Coordinates |
+
+Same provider, same two fields, opposite answers. The module knew the rule and
+applied it to half its sites.
+
+Both weak sites emit a first-class `geoint` `Coordinates` entity:
+
+- The cell-tower list is "top-3 tower positions (closest to target)". A
+  placeholder not only entered that list, it was **ranked by a distance
+  computed from the placeholder**.
+- `wifi_ap_entities`'s own doc comment promises that "a record with no usable
+  position ... yields no phantom `Coordinates` node". Under the weak gate a
+  placeholder IS a usable position, so the phantom node it promises not to emit
+  was emitted — as an access point's own observed location.
+
+This is the same provider and the same band `REQ-WIFIINTEL-001` closed in
+`wifi_intel`. `REQ-CRIMINALIP-001` and `REQ-NETLAS-001`/`REQ-CENSYS-001` each
+fixed the identical confusion in their own module. Four fixes of one rule, with
+nothing added to stop the fifth.
+
+### The correction
+
+Both weak sites use `is_plausible_provider_coord`. A rejected position still
+falls back to the query centre for *ranking* in `wifi_ap_entities` — that is
+what its existing `None` arm already does — so refusing the placeholder costs
+the access point nothing but its fabricated location.
+
+### Falsification — one baseline per site, no masking
+
+```
+A — cell-tower site back on the weak gate:
+      a_jitter_band_tower_is_not_a_top_three_position ... FAILED
+        a jitter-band placeholder is not a tower position, got
+        ["-27.476600,153.028000", "0.001000,0.001000"]
+      (the AP test PASSES — its site is untouched)
+
+B — AP site back on the weak gate:
+      an_ap_in_the_null_island_jitter_band_yields_no_phantom_position ... FAILED
+        a jitter-band placeholder is not an AP position, got
+        ["0.001000,0.001000"]
+      (the tower test PASSES)
+      wigle_trilateration_uses_the_strict_provider_gate ... FAILED
+        src/modules/wigle/mod.rs:623: (Some(t), Some(g)) if
+        crate::util::geo::is_valid_coords(t, g) => Some((t, g)),
+```
+
+Each test fails for its own reason and neither masks the other.
+
+### Regression mechanisms
+
+- Two runtime locks, one per site, each with a non-vacuous control: the AP test
+  asserts the BSSID pivot still survives (rejecting the POSITION must not drop
+  the access point), and the tower test asserts the real tower beside the
+  placeholder still comes through (the gate rejects one row, not the list).
+- `tests/architecture.rs::wigle_trilateration_uses_the_strict_provider_gate` —
+  no `is_valid_coords` in `src/modules/wigle/` production source, with an empty,
+  documented exemption list.
+
+**Scoped to `src/modules/wigle/` on purpose.** `is_valid_coords` is correct
+elsewhere — an on-device GPS fix (`device_fix`), a Wikidata claim, a geocoder
+result — because those sources do not emit the band as a placeholder. The rule
+is about PROVIDER-trilaterated data, not about coordinates in general, and a
+blanket ban would be wrong.
+
+### Follow-up recorded, not done
+
+The same question is open for the other bulk-observation providers still on the
+weak gate: `wifidb`, `mylnikov`, `beacondb`, `cell_intel`, `cell_local`. Each
+needs its own check of whether that provider emits a no-fix placeholder in the
+band before its gate is changed — not a blanket sweep.
+
+---
+
+## REQ-ENGINE-002 — Measured, not yet changed: a gate skip on a discovered target is permanent
+
+Recorded here **without a code change**, because the measurement is complete
+enough to state the defect and not complete enough to design the fix safely.
+Writing it down now so the next cycle starts from evidence rather than from the
+original one-line claim.
+
+### Confirmed from source (`src/core/engine/dispatch.rs`, `mod.rs`)
+
+1. `dispatch.rs` computes `let target_sources = target_distinct_sources(state.entity_map, cx.target);`
+   **once, before the module loop.** Its comment presents this as an
+   optimisation — "computed once per target, not per module" — and says nothing
+   about what it costs.
+2. Every gate check inside the loop reads that loop-invariant snapshot:
+   `gate_skips(cx, &**module, target_sources, state.stats)`. Both gates that use
+   it are therefore frozen at the pre-loop value: the high-value-API
+   cross-correlation gate (`CROSS_CORRELATION_MIN_SOURCES = 2`, guarding
+   `oathnet_pro`) and the WiGLE geo-corroboration finaliser gate.
+3. A gate skip does **not** consume the dispatch key — the `continue` in
+   `gate_skips` precedes `state.dispatched.insert(dispatch_key(..))` — so the
+   module is not marked dispatched and *could* be retried.
+4. It never is. A target is visited exactly once:
+   `if visited.contains(&visit_key(&target))` guards the candidate loop, and
+   `visited.insert(visit_key(&target))` follows. A discovered target is
+   dispatched in exactly one round.
+
+(3) and (4) together are the defect, independent of any same-round mechanics:
+**corroboration that arrives for a target after its own dispatch round can never
+re-open the gate.** The gate's stated purpose — "a discovered entity must reach
+real cross-correlation ... before the heaviest paid modules fire on it" — is
+evaluated once, at the earliest moment it possibly could be, and never again.
+
+### Not yet verified — the same-round layer
+
+Whether a target's own `corroborating_sources` count actually grows *during its
+own dispatch loop* (a module re-emitting the target with fresh evidence)
+remains unmeasured; `corroborating_sources` lives in the `hse-core` crate.
+It is not assumed here. The `REQ-IP2LOCATION-002` refutation earlier in this
+same session came from exactly that kind of unverified premise.
+
+### The design question, stated rather than guessed
+
+Recomputing the count per module would make the gate's answer depend on module
+ORDER within the loop. That is deterministic in the sequential path and **not**
+deterministic in the two concurrent dispatch phases, where module completions
+interleave — and this repository treats forensic determinism as a requirement
+(`C7 (forensic determinism)`, `src/storage/tests.rs`). A naive per-module
+recompute would move the defect rather than remove it, which this ledger's own
+standard rejects.
+
+The candidate that avoids it is a **round barrier**: re-evaluate gate-deferred
+high-value modules once at the end of the target's round, when the entity map
+has settled. Deterministic, and it addresses both layers. Falsifying it needs a
+harness that does not exist yet — a two-round expansion with one free module
+that re-confirms the target and one `is_high_value_only` module — so that is
+the next step, not a patch.
+
+---
+
+## REQ-EMAILHEADERGEO-001 — A brand token must span whole labels, not just begin one
+
+### What was measured
+
+`email_header_geo` maps an email domain to a region by regional-ISP brand
+(`bigpond` → Telstra/Australia). `domain_has_label_prefix` checked the **left**
+label boundary only, and said so in its own doc comment: *"the match stays
+substring-based but must start a label."*
+
+The left boundary was itself an earlier fix, for the mid-label false positives a
+plain `contains` produced (`campbell.net` is not `bell.net`, `platt.net` is not
+`att.net`). It left the mirror image open at the other end. Verified against
+`REGIONAL_PROVIDERS`, every one of whose 24 entries is a complete label or
+label-sequence, so the matching right boundary costs nothing:
+
+| domain | matched as | region asserted |
+|---|---|---|
+| `bigpondxyz.com` | Telstra BigPond | Australia |
+| `charterhouse.com` | Spectrum/Charter | United States |
+| `chartered-accountants.com` | Spectrum/Charter | United States |
+| `comcastic.example` | Comcast | United States |
+| `tpg.company.com` | TPG | Australia |
+| `iinetworking.com.au` | iiNet | Australia |
+| `mail.bigpondish.com` | Telstra BigPond | Australia |
+
+`charterhouse.com` and `chartered-accountants.com` are the pointed ones: both
+are plausible real firms, and an employee's email at either was geolocated to
+the wrong continent as a Spectrum/Charter subscriber, off a brand token the
+domain merely begins with.
+
+### The correction
+
+Require the right boundary too — the pattern must end at a label separator or
+the end of the host. `bigpond.com.au`, `bigpond.net.au` and the
+`mail.bigpond.com` subdomain form all still match, which is the point of the
+substring approach.
+
+### Residual, stated rather than left implicit
+
+A host that embeds the whole brand label-sequence as a subdomain of something
+else — `bigpond.com.evil.tld` — still matches, because its labels genuinely are
+there. Closing that needs registrable-domain (PSL) logic rather than a boundary
+check, and would also have to keep the legitimate `mail.bigpond.com` case. Out
+of scope here, and recorded in the function's doc comment so the next reader
+does not mistake it for an oversight. The emitted entity is `confidence::LOW` /
+`SPECULATIVE` and tagged `email-provider-inferred`.
+
+### Falsification
+
+```
+Baseline (left boundary only, as before):
+  rejects_a_brand_token_that_only_begins_a_longer_label ... FAILED
+    a brand token must span whole labels, not just begin one:
+    ["bigpondxyz.com", "charterhouse.com", "chartered-accountants.com",
+     "comcastic.example", "tpg.company.com", "iinetworking.com.au",
+     "mail.bigpondish.com"]
+```
+
+All seven survive on the baseline, collected in one run rather than stopping at
+the first. `real_provider_domains_still_match` PASSES on the baseline and on the
+fix — it is the control, and it is what makes the change safe to assert: eight
+real provider shapes, including both AU ccTLD forms, the subdomain form and a
+multi-label pattern, none of which the right boundary costs.
+
+### The third of its class
+
+`REQ-URLEXTRACT-001` (exact-match missing every `www.` prefix) and
+`REQ-SOCIALLOC-001` (substring containment instead of a host-boundary match)
+were the same defect in different clothes. This one is the half-fixed variant:
+one boundary checked, the other forgotten.
+
+## REQ-DISCORDSNOWFLAKE-001 — A snowflake's issuer is not recoverable from the number
+
+### What was measured
+
+`discord_snowflake` is a pure offline decoder: `created_ms = (id >> 22) +
+DISCORD_EPOCH`. Its header carried a safety claim — *"a number that isn't a
+real Discord snowflake yields **nothing** rather than a fabricated date"* —
+resting on two gates: a 17–20 digit shape check, and a Steam ID64 exclusion
+(17 digits beginning `7656119`).
+
+The claim was false. The snowflake layout (`timestamp << 22 | worker |
+sequence`) is not Discord's alone — Twitter/X, Instagram and Mastodon issue
+64-bit IDs in the same shape. Only the epoch constant differs, and **the epoch
+is not encoded in the number**. Decoding a foreign snowflake with Discord's
+epoch therefore does not fail; it returns a wrong date that still looks right.
+
+Computed offline, no network. Twitter/X's epoch is `1288834974657`
+(2010-11-04); Discord's is `1420070400000` (2015-01-01). The gap is a constant
+**+131,235,425,343 ms = +1518.93 days ≈ 4.16 years**, applied to every Twitter
+ID read as a Discord one:
+
+| tweet date | digits | tweet id | decoded "created" | accepted by baseline |
+|---|---|---|---|---|
+| 2010-12-01 | 16 | `9758573982646272` | 2015-01-27 | no — 16 digits |
+| 2011-01-01 | 17 | `20992597816246272` | 2015-02-27 | **yes** |
+| 2012-06-01 | 18 | `208347124331446272` | 2016-07-28 | **yes** |
+| 2013-06-01 | 18 | `340618695275446272` | 2017-07-28 | **yes** |
+| 2016-06-01 | 18 | `737795795973046272` | 2020-07-28 | **yes** |
+| 2018-06-01 | 19 | `1002338937861046272` | 2022-07-28 | **yes** |
+| 2019-06-01 | 19 | `1134610508805046272` | 2023-07-28 | **yes** |
+| 2021-01-01 | 19 | `1344795470853046272` | 2025-02-27 | **yes** |
+| 2022-07-01 | 19 | `1542659245470646272` | 2026-08-27 | **yes** |
+| 2022-09-01 | 19 | `1565127293137846272` | 2026-10-28 | no — past `now` |
+| 2024-01-01 | 19 | `1741610183685046272` | 2028-02-27 | no — past `now` |
+
+Solving the window boundaries exactly: **every Twitter/X ID issued between
+2010-11-04 and 2022-07-24** decodes inside the module's `[2015-01-01, now]`
+plausibility range, at 17–20 digits with no leading zero. That is the bulk of
+Twitter's snowflake era, and the upper bound *advances a day per day* as `now`
+does. The Steam carve-out does not help: it works only because `7656119` is a
+literal constant prefix, and Twitter has no equivalent to exclude on.
+
+Each such value minted a `Username` entity at `MEDIUM_PLUS` (0.60), tagged
+`discord` / `derived` / `account-age`, with evidence reading *"Discord account
+created 2026-08-27 (decoded from snowflake)"* and attributes
+`discord_created_date` / `discord_created_unix_ms` — a fabricated fact in the
+graph's own date fields, not a hedged guess.
+
+### Reachability — the entry point, not just the helper
+
+Traced through `TargetKind::detect` (`src/core/scan/mod.rs:182`, shapes in
+`src/core/scan/detect.rs`): a bare 17–20 digit run is **`TargetKind::Username`**
+by the final fallback. It is too long for `is_phone_shaped` (7–15 digits), has
+no dot for `is_domain_shaped`, is not CIDR / MAC / ASN / ABN / DeviceId /
+tracking-ID / crypto shaped, and is a single whitespace-free token. So
+`hse scan 1542659245470646272` — a real Twitter status ID, exactly the kind of
+value an operator pastes from a URL — dispatched straight into this module.
+
+`EntityKind::Username → TargetKind::Username` (`TargetKind::from_entity_kind`)
+means any bare numeric handle already in the graph reaches it too.
+
+### The correction — require the context the number cannot carry
+
+There is no discriminator to add: Discord and Twitter snowflakes are
+structurally identical, so no shape rule can separate them. The only evidence
+of issuer is *context*, and context arrives as the `discord:` prefix.
+
+`snowflake_candidate` now takes that prefix as mandatory and returns
+`Option<u64>` (was `Option<(u64, bool)>` — the bool distinguished prefixed from
+bare). `BARE_CONF` is gone with the path it served; `PREFIXED_CONF` becomes
+`DISCORD_ID_CONF` since there is nothing left to contrast it with. The Steam
+carve-out is deleted as **subsumed, not lost** — every bare number is refused
+now, Steam's included — with the reasoning kept in the header, because it is
+the concrete illustration of why a prefix-constant works and a shape rule does
+not.
+
+### The capability is retained where evidence for it exists
+
+Verified before removing the path, so the module is not stranded. Both
+production emitters of `discord:<id>` read an **explicitly named Discord field**
+from a record — not a guess from digits:
+
+- `src/modules/see_know/extract/mod.rs:272` — `val_str_or_coerce(item,
+  &["discord_id", "discordid"])` → `format!("discord:{did}")`
+- `src/modules/oathnet_pro/breach.rs:589` — `val_str_coerce(item, "discordid")`
+  → `format!("discord:{did}")`
+
+`see_know/pivots`'s `discover_discord_pivots` consumes the same prefixed form.
+So the decode still fires on every Discord ID that arrives with provenance, and
+that is precisely the population it is sound for. A `discord:`-prefixed value is
+trusted even when its body looks like a Steam ID64 — the prefix is evidence, the
+shape is not.
+
+The `[2015-01-01, now]` window is kept: it now guards a corrupt or truncated
+`discord_id` field rather than pretending to identify an issuer.
+
+`accepts()` stays kind-only (`TargetKind::Username`), as its own comment
+requires, so the dispatch index built from `consumes()` stays consistent with
+it. A bare value is still dispatched — it simply yields nothing.
+
+### Falsification
+
+Restoring the bare path (`strip_prefix` back to an `Option` fallback, Steam
+carve-out reinstated):
+
+```
+cross_issuer_snowflakes_are_never_decoded ... FAILED
+  180 Twitter/X IDs were accepted as Discord snowflakes, e.g.
+  [("20992597816246272", "2015-02-27"), ("32022551983030272", "2015-03-30"),
+   ("43052506149814272", "2015-04-29"), ("54082460316598272", "2015-05-30"),
+   ("65112414483382272", "2015-06-29")]
+
+process_emits_nothing_for_a_bare_cross_issuer_snowflake ... FAILED
+  bare Twitter/X IDs minted Discord findings:
+  [("20992597816246272", 1), ("340618695275446272", 1),
+   ("737795795973046272", 1), ("1134610508805046272", 1),
+   ("1542659245470646272", 1)]
+
+candidate_requires_explicit_discord_context ... FAILED
+  assertion failed: snowflake_candidate("175928847299117063").is_none()
+```
+
+Three independent failures, each for its own reason: the era sweep, the
+end-to-end `process` surface, and the direct helper assertion. The sweep
+collects **every** survivor rather than stopping at the first, so a partial
+re-admission (a digit-length rule, a narrower carve-out, a tightened range) is
+named rather than masked.
+
+All 180 sampled IDs clear the helper, not just the 127 whose decoded date also
+lands in the window: `snowflake_candidate` gates on **shape**, and the
+`[2015-01-01, now]` range is applied later in `process`. That split is why the
+end-to-end test is carried separately — it is the one that proves a *finding*
+was minted, not merely that a value was admitted.
+
+### Controls that pass on baseline and on the fix
+
+- `process_enriches_discord_id_with_creation_date` — a `discord:`-prefixed ID
+  still decodes to `2020-01-01`, and the emitted entity keeps the seed's exact
+  prefixed value so the GREATEST-merge lands on the extractor's own entity
+  rather than forking a second handle.
+- `snowflake_candidate("discord:76561197960265728").is_some()` — the prefix
+  still overrides a Steam-looking body.
+- `decode_round_trips_a_known_date` / `utc_date_matches_known_unix_dates` — the
+  arithmetic is untouched.
+
+### Vacuity guards
+
+The shape rejects (16 digits, 21 digits, leading zero, non-digit) were asserted
+on **bare** values. Under the fix those pass on the missing prefix alone and the
+shape gate would go entirely unchecked — the exact trap this ledger has recorded
+before. They are re-asserted on `discord:`-prefixed bodies, and extended with
+`discord:` (empty body), `Discord:` (case) and `discord :` (not the marker).
+
+`cross_issuer_snowflakes_are_never_decoded` carries two of its own: the sweep
+must yield ≥150 snowflake-shaped Twitter IDs, and ≥100 of them must land inside
+the plausibility window. Without the second, "none decoded" would prove nothing
+if the window ever drifted away from the Twitter era. Both bounds hold with
+margin today — 180 checked, 127 in window — and the in-window count only grows
+as `now` advances.
+
+### Two assertions inverted in place, old claim quoted
+
+`candidate_gates_shape_and_excludes_steam` asserted the defect:
+`assert!(snowflake_candidate("175928847299117063").is_some()); // 18-digit ID`.
+Renamed to `candidate_requires_explicit_discord_context`, inverted, with the old
+line quoted in the comment beside it. `is_free_passive_social`'s
+`accepts(Username, "175928847299117063")` still holds — `accepts` is kind-only —
+and its trailing comment now says so explicitly rather than pointing at a Steam
+exclusion that no longer exists.
+
+### The codebase already knew
+
+`structured_id` — the sibling offline decoder, whose header names
+`crate::modules::discord_snowflake` as the pattern it extends — states the
+principle outright:
+
+> These formats are unambiguous by shape (hyphenated 36-char UUID with a `1`
+> version nibble; bare 24-hex ObjectID; 26-char Crockford-base32 ULID; 27-char
+> base62 KSUID), so — **unlike a bare decimal snowflake** — there is no platform
+> ambiguity.
+
+It goes further, scaling confidence to how strong a filter its plausibility
+window actually is, and naming the residual false-match rates it cannot remove
+(~20% for ObjectID's and ~9% for KSUID's second-resolution timestamps). So the
+ambiguity was recorded, in the module that cites this one, while this one
+carried the opposite claim. The discipline `structured_id` applied — state what
+the shape can and cannot establish, and price the output accordingly — is what
+was missing here; the difference is that for a bare snowflake the shape
+establishes *nothing* about the issuer, so there is no rung to price it at.
+
+### Class
+
+Same family as `REQ-EXTRACTOR-002` (a pure-decimal digit run of 32/40/64/128
+chars certified a cryptographic hash by **length alone**). Both inferred a
+type-of-thing from a shape that the thing shares with unrelated things. Here the
+inference also carried a *platform attribution*, which is what made the output a
+named false fact rather than a mislabelled blob.
+
+## REQ-BUILTWITH-001 — The proxy guard was applied one field over
+
+### What was measured
+
+`builtwith`'s `build_entities` walks each `Results[]` entry's **Meta** block and
+emits, in one loop, an `Organisation` from the registrant company name, `Email`s
+from the contact block, and `Phone`s from the telephones.
+
+The Email arm already knew what this data is, and said so in a comment that
+names the exact prior fix:
+
+> A registrant contact block is dominated by automation and role desks —
+> `abuse@`, `hostmaster@`, the registrar's own privacy-proxy mailbox — not the
+> subject's mail. Emitting those as `Email` attributes a provider's helpdesk to
+> the person under investigation, which is precisely the leakage #351 removed
+> from `cert_intel`, `crtsh`, `ip_registry` and `doh_resolver`.
+
+The **Organisation** arm, 27 lines above it in the same loop over the same
+block, applied no guard at all — and the registrant *company name* field is
+precisely where `Domains By Proxy, LLC` lands. Every such value was minted as a
+`confidence::HIGH` Organisation: the proxy service's corporate identity
+attributed to the subject.
+
+The authoritative guard already exists and already has callers.
+`util::domains::is_proxy_registrant(value, is_email)` (mod.rs:684) is
+`core::validation::is_whois_privacy_placeholder(value) || (is_email &&
+is_infrastructure_email(value))`, and its own doc records the consolidation it
+came from:
+
+> this used to maintain its own separate marker list, which had quietly
+> diverged in both directions … so a genuine privacy-proxy registrant could pass
+> one check and fail the other purely by which code path evaluated it. Called by
+> both the `core::correlator` (AU-061) and `core::relation` builders
+> (`derive_co_ownership`).
+
+Two callers named; `builtwith` is a third site that needed it and did not call
+it. The same class as `REQ-AURDAP-001` (au_rdap missing the masking guard its
+`whois`/`whoisxml` siblings apply), except that here the sibling arm is in the
+*same function*.
+
+### The email arm was a real gap too, not a redundancy
+
+Routing the Email arm onto `is_proxy_registrant` is not a cosmetic
+consolidation. The proxy brands are deliberately absent from
+`INFRA_PROVIDER_ROOTS` and `INFRA_MAIL_ONLY` — those hold CDN, cloud, DNS and
+registrar *control-plane* roots (`cloudflare.com`, `secureserver.net`,
+`markmonitor.com`, …), not privacy-proxy brands. Verified against both tables:
+`domainsbyproxy.com`, `whoisguard.com` and `contactprivacy.com` appear in
+neither.
+
+So a proxy mailbox whose local part is **not** a role desk cleared every check:
+
+| mailbox | `is_role_localpart` | `is_freemail` | in infra roots | `is_infrastructure_email` | emitted |
+|---|---|---|---|---|---|
+| `jane.doe@domainsbyproxy.com` | no | no | no | **false** | **yes** |
+| `k.nguyen@whoisguard.com` | no | no | no | **false** | **yes** |
+| `customer0123456789@contactprivacy.com` | no | no | no | **false** | **yes** |
+
+Each was emitted as the subject's own `Email` at `MEDIUM_PLUS` — the leakage the
+arm's own comment exists to prevent, from the one source of it the check could
+not see.
+
+### The correction
+
+Both arms take `is_proxy_registrant`. On the Organisation side the guard sits
+**inside** the selection rather than after it:
+
+```rust
+let is_registrant = |s: &str| !crate::util::domains::is_proxy_registrant(s, false);
+let org_name = meta.company_name.as_deref().map(str::trim)
+    .filter(|s| !s.is_empty() && is_registrant(s))
+    …
+    .or_else(|| { /* first `names[]` entry that is also a real registrant */ });
+```
+
+A post-filter would have been wrong in the common case: WHOIS routinely carries
+the proxy as `CompanyName` while the genuine party survives as a `Name` entry,
+so filtering after selection would emit nothing and trade one wrong answer for
+no answer. Inside the selection, the proxy is skipped over and the real
+registrant still surfaces.
+
+The Phone arm is deliberately unchanged; its own comment already states there is
+no phone-side counterpart to gate on and that inventing one on a guess would be
+worse than the honest low rung. That reasoning still holds.
+
+### Falsification
+
+Reverting both arms:
+
+```
+a_privacy_proxy_is_never_the_registrant_organisation ... FAILED
+  privacy-proxy brands minted as the registrant Organisation:
+  [("Domains By Proxy, LLC", …), ("DomainsByProxy.com", …),
+   ("REDACTED FOR PRIVACY", …), ("Whoisguard, Inc.", …),
+   ("Contact Privacy Inc. Customer 0123456789", …),
+   ("Withheld for Privacy ehf", …), ("Identity Protection Service", …),
+   ("Private Registration", …), ("Statutory Masking Enabled", …),
+   ("GDPR Masked", …), ("Data Protected", …),
+   ("Domain Protection Services, Inc.", …)]
+
+a_proxy_registrant_mailbox_is_not_the_subjects_email ... FAILED
+  privacy-proxy mailboxes attributed to the subject:
+  ["customer0123456789@contactprivacy.com", "jane.doe@domainsbyproxy.com",
+   "k.nguyen@whoisguard.com"]
+
+a_proxy_company_name_does_not_shadow_a_real_registrant_name ... FAILED
+  the real registrant behind the proxy must still surface
+```
+
+All **12 of 12** brands survive on the baseline, collected in one run rather
+than stopping at the first, so a partial gate (one marker wired, the rest
+missed) would be named. Three failures for three distinct reasons: the
+Organisation arm, the Email arm, and the shadowing behaviour of where the guard
+is placed.
+
+### Vacuity guard
+
+`a_proxy_registrant_mailbox_is_not_the_subjects_email` first asserts each of its
+three mailboxes is **not** already caught by `is_infrastructure_email`. Without
+that, the test would pass on the baseline and prove nothing about the
+placeholder half of the gate — it would only be re-testing the check that was
+already there.
+
+### Controls that pass on baseline and on the fix
+
+`genuine_registrant_details_still_survive_the_proxy_gate`: `Acme Pty Ltd` is
+still the Organisation, `j.smith@acme.com` is still emitted while
+`info@acme.com` is still gated as a role desk, and the `names[]` fallback still
+yields `Jane Roe Holdings` when no company name is present. The eight
+pre-existing `builtwith` tests pass unchanged — the gate costs no genuine
+registrant detail.
+
+## REQ-WEBCRAWLER-001 — A crawl that read nothing still attested "crawled"
+
+### What was measured
+
+`web_crawler::build_entities` emits two **attestations** about the site it was
+pointed at:
+
+| line | entity | confidence | tags |
+|---|---|---|---|
+| ~488 | the seed `Url` (URL targets) | `VERY_HIGH_PLUS` 0.90 | `web`, `crawled` |
+| ~526 | the site `Domain` | `VERY_HIGH_PLUS` 0.90 | `web`, `crawled` |
+
+Both claim the page/site was fetched and examined. Neither checked whether a
+single page was ever read.
+
+The crawl loop `continue`s past every failure mode it meets — a non-2xx status,
+a content type outside `text/html` / `text/plain` / `application/xhtml`, and a
+`read_body_capped` that returns `None`. Only after all three does it reach
+`state.pages_fetched += 1`. So a domain that is unreachable, WAF-walled, or
+serves no HTML at its root arrives at `build_entities` with
+`pages_fetched == 0`, and both entities were emitted anyway — carrying their own
+refutation in the evidence string:
+
+```
+Crawled example.com: 0 pages, 0 internal links, 0 external links
+  pages_crawled=0  internal_links=0  external_links=0
+```
+
+A 0.90 attestation whose own text says nothing was read.
+
+### The near-miss that is not a guard
+
+`mod.rs:388` already reads `if state.pages_fetched == 0 { … }`, which looks like
+the missing check but is not: it is the **first-page** condition for
+`audit_security_headers`, running *before* the content-type gate. Nothing
+downstream consults the count.
+
+### The correction
+
+Both attestation blocks are gated on `state.pages_fetched > 0`. Nothing was
+observed, so nothing is attested.
+
+Everything else those two blocks carry — the tech stack, page types, link
+counts, subdomains, image leads — is read out of page **bodies**, so at zero
+pages it is all empty and costs nothing to withhold.
+
+### The one signal deliberately dropped, stated rather than hidden
+
+`state.security_headers` **can** be populated at `pages_fetched == 0`: the audit
+runs on the first 2xx response, before the content-type gate rejects it. That
+reading is now withheld with the rest.
+
+This is a deliberate trade, not an oversight: a header reading taken from a
+response the crawler could not use is not a crawl, and the only way it reached
+the operator was by riding a 0.90 `crawled` attestation that claims far more
+than a header glance. Surfacing it honestly needs its own entity at its own
+rung, which is a capability question rather than a correctness one and is not
+opened here. Recorded in the code comment beside the gate so the next reader
+does not mistake it for something missed.
+
+Subject data found ON pages (emails at `:678`, phones at `:720`, hydration
+values) is emitted outside both blocks and is untouched — and at zero pages
+there is none of it either.
+
+### Falsification
+
+Reverting both gates:
+
+```
+crawl_attestations_need_a_page_that_was_actually_read ... FAILED
+  a crawl that read zero pages still attested `crawled`:
+  [(true,  "https://example.com", 0.9, ["web", "crawled"]),
+   (true,  "example.com",         0.9, ["web", "crawled"]),
+   (false, "example.com",         0.9, ["web", "crawled"])]
+```
+
+Three survivors across both seed shapes, collected in one run rather than
+stopping at the first, so a half-fix — one block gated and the other not — is
+named rather than masked by whichever assertion happens to run first. The sweep
+covers `is_url_target` both ways, which is what separates the two emitters.
+
+### The control
+
+`a_single_read_page_is_enough_to_attest_the_crawl` passes on the baseline **and**
+on the fix: with `pages_fetched = 1` both attestations stand. It is what proves
+the gate keys on the page count rather than having simply disabled the emitters.
+
+### A fixture that had to be corrected, not worked around
+
+`empty_state()` — the shared "everything empty" `CrawlState` helper — set
+`pages_fetched: 0`, and four tests built on it (MAC dedup, image-lead total, the
+cap flag, image leads) call `build_entities` expecting site-ownership entities.
+Under the fix those would all have gone vacuous.
+
+The fixture was corrected at its root to `pages_fetched: 1` rather than patching
+four call sites, because 1 is the *truthful* value: every one of those tests
+exercises what a crawl emits from page **content** (MACs, image leads, link
+counts), which by construction is only reachable once at least one page was
+read. A zero there described a state none of them meant. The doc comment now
+says so and points at the test that owns the zero case.
+
+The correction is not load-bearing for the lock: all four pass on the baseline
+with the new fixture too, so it hides nothing — the three failures above come
+from the gate alone.
+
+### Class
+
+`REQ-CERTINTEL-001` (an EXPERT "TLS certificate" minted on every HTTPS scan from
+a probe leg that never parsed a cert) and `REQ-PROBE-002` (a status-only
+presence whose control could not be read is not a profile) are the same defect:
+a high-confidence finding minted from an observation that never happened. The
+recurring shape is an emitter that reports on work it did not verify was done —
+here the counter proving it was done sat one struct field away, already
+maintained, and was only ever printed into the evidence string rather than
+consulted.
+
+## REQ-LIBRAVATAR-001 — A 200 is not an avatar
+
+### What was measured
+
+`libravatar` probes `GET https://seccdn.libravatar.org/avatar/<md5>?d=404` and,
+on anything that is not a 404, mints a `Url` entity at `MEDIUM_PLUS` tagged
+`libravatar` / `avatar` / **`public-profile`**, with evidence *"Libravatar
+federated avatar (present)"*.
+
+The module stated the mechanism in its own comment:
+
+> `d=404` makes a missing avatar a clean 404 instead of the default butterfly
+> placeholder. **The body is never read — presence is decided by the status line
+> alone.**
+
+That is true of a cooperating CDN and false of the real internet. An anti-bot
+interstitial, a CDN error page and a consent wall are all served **200 with an
+HTML body**. Each was read as "this address has a published avatar", and the
+finding is a claim about a *person* — `public-profile`, a public web presence —
+so a wall minted one from nothing.
+
+`process` bound the admitted response to `_resp` and discarded it: not even the
+`Content-Type` header was consulted.
+
+### Scope — one site, checked
+
+The sibling `gravatar` does not share the defect: it has no `d=404` /
+`ok_or_absent` status-only path. Verified before widening, so this stays a
+one-module fix rather than a speculative sweep.
+
+### The correction
+
+After `ok_or_absent` admits the 2xx, the response's `Content-Type` must declare
+an image. A new pure `is_image_content_type` compares only the media type,
+discarding parameters (`image/png; charset=binary`) and matching
+case-insensitively as RFC 9110 requires.
+
+The check is on the **header**, not the body: one header lookup and no read, so
+the module keeps the cheapness that made reading the body undesirable in the
+first place. No shared helper for this existed in `util` (checked), so a small
+pure local one is the right grain rather than a fourth hand-rolled copy of
+something central.
+
+**Fails closed on an absent or unreadable header.** A real CDN image response
+always declares its type, so a 200 that does not is not evidence of an avatar;
+`""` (what `process` substitutes) returns false.
+
+### Stated limit, not overclaimed
+
+This is not proof the bytes decode as an image. A wall that lies about its
+content type still passes. What it removes is every *honest* misclassification —
+which is what was actually happening — and it is recorded in the code comment so
+the next reader does not mistake the gate for a stronger guarantee than it is.
+
+### Falsification
+
+The helper is new, so reverting it is not the baseline. The baseline's semantics
+were *"every 200 is an avatar"* — exactly `is_image_content_type` returning
+`true` unconditionally. Neutered to that:
+
+```
+a_200_that_is_not_an_image_is_not_an_avatar ... FAILED
+  non-image 200 content types accepted as an avatar:
+  ["text/html", "text/html; charset=utf-8", "TEXT/HTML", "application/json",
+   "text/plain", "application/xhtml+xml", "",
+   "text/html; x-note=image/png", "application/imagemagick",
+   "multipart/form-data; boundary=image/png"]
+```
+
+All ten collected in one run. The last three are near-misses that would satisfy
+a lazy `contains("image")` implementation and must not: a parameter that merely
+mentions an image type is not a media type of one.
+
+### The control
+
+`real_avatar_content_types_still_count_as_a_presence` passes on the baseline and
+on the fix: ten real shapes (`image/png` … `image/svg+xml`, plus parameters,
+casing and surrounding whitespace). It is what proves the gate keys on the media
+type rather than having quietly disabled the emitter.
+
+### The vacuity this fix had to close in its own tests
+
+Both tests above exercise the **helper**. Neither proves `process` consults it —
+a refactor dropping the call would leave them green while restoring the defect.
+That is the Law's `IMPLEMENTATION ≠ REACHABILITY` in miniature, inside the fix's
+own regression suite.
+
+`tests/architecture.rs::a_libravatar_presence_is_gated_on_the_response_being_an_image`
+locks the wiring: the call must sit **between** the point the 2xx is admitted
+(`ok_or_absent`) and the point the finding is minted (`build_avatar_result`),
+because a check after the emit guards nothing.
+
+It is anchored on those three **constructions**, never on bare names, and blanks
+comments and string literals first — because the module's own explanatory
+comment beside the gate names `is_image_content_type`, and an earlier
+architecture test in this file was defeated by precisely that, matching the
+prose it had just been given instead of the code.
+
+Verified by unwiring the gate while *keeping* the helper and the comment:
+
+```
+a_libravatar_presence_is_gated_on_the_response_being_an_image ... FAILED
+  libravatar must gate the finding on the response being an image
+  (REQ-LIBRAVATAR-001): a 200 alone cannot tell an avatar from an anti-bot
+  wall, and this module's finding is a claim about a person
+```
+
+### Class
+
+`REQ-PROBE-004` (a Radware captcha 200 minted as a verified social profile),
+`REQ-CERTINTEL-001` (an EXPERT certificate finding from a probe leg that parsed
+nothing) and `REQ-WEBCRAWLER-001` (a `crawled` attestation with zero pages read)
+are the same defect: a finding minted from an observation that never happened.
+The recurring tell is a success signal — a status code, a counter, a reached
+line — standing in for the substance it was supposed to certify.
+
+## REQ-WEBBANNER-001 — Two defects, both where the module already knew better
+
+`webserver_banner` HEADs a host over HTTPS then HTTP and emits a banner entity
+from the fingerprint headers it captures. Two independent defects, each one a
+distinction the module had already drawn and then failed to apply.
+
+### 1 — Vendor claims made from headers the module calls non-evidence
+
+`IDENTIFYING_HEADERS` exists precisely to separate real fingerprints from noise,
+and its doc says so:
+
+> The rest (`x-frame-options`, `content-security-policy`,
+> `strict-transport-security`, `via`, `x-cache`) are purely security-posture /
+> caching headers present on countless unrelated stacks and **confirm nothing
+> distinctive by themselves**. Used by `banner_confidence` …
+
+Used by `banner_confidence` — and by nothing else. `apply_stack_tags`, the
+function that makes the actual factual claims (`nginx`, `apache`, `cloudflare`,
+`wordpress`, `php`, `drupal`, `iis`, `aspnet`), joined **every** captured value
+into one blob and substring-searched it.
+
+`content-security-policy` is the pointed one, because a CSP **enumerates other
+people's domains by design**. A site loading a script from
+`cdnjs.cloudflare.com` — entirely routine — put "cloudflare" in the blob and was
+tagged as Cloudflare-fronted though it may have no CDN at all. Measured, every
+one of these tagged on the baseline:
+
+| header | value | tag minted |
+|---|---|---|
+| `content-security-policy` | `… script-src https://cdnjs.cloudflare.com` | `cloudflare` |
+| `content-security-policy` | `script-src https://s.w.org https://wordpress.example/wp.js` | `wordpress` |
+| `content-security-policy` | `form-action https://legacy.example/login.php` | `php` |
+| `content-security-policy` | `frame-ancestors https://portal.drupal.org` | `drupal` |
+| `strict-transport-security` | `max-age=31536000; nginx` | `nginx` |
+| `x-frame-options` | `ALLOW-FROM https://apache.example` | `apache` |
+| `via` | `1.1 cloudflare` | `cloudflare` |
+| `x-cache` | `MISS from nginx-edge` | `nginx` |
+
+A third instance sat in the tag rules themselves: `x-cache` alone raised
+`fastly`. `x-cache` is in the doc's own non-identifying list and is emitted by
+Varnish, CloudFront, Akamai and nginx's proxy cache — naming one vendor from a
+signal shared by its competitors.
+
+**Correction.** The value blob is filtered to `IDENTIFYING_HEADERS`. The
+name-presence checks stay on the full capture, because they assert a header
+*exists* rather than reading a value, and each one used (`cf-ray`,
+`x-amz-cf-id`, `x-served-by`) is itself identifying. `x-cache` is dropped from
+the Fastly rule.
+
+### 2 — Both transports failing read as a clean negative
+
+The scheme loop discarded every transport error:
+
+```rust
+let Ok(resp) = ctx.http.head(&url).send_tagged(SRC).await else { continue; };
+```
+
+With both schemes failing, the loop fell through to `Ok(ModuleResult::new())` —
+byte-identical to the result for a host that answered and published no
+fingerprint headers. Those are **opposite facts**: the second is a real negative
+finding, the first is no observation at all, and banking it as clean hides a
+dead host from the breaker, the doctor and the live-drift sweep.
+
+**Correction.** Track whether any scheme answered and keep the first failure; if
+none answered, return it. A partial failure is unaffected — HTTPS refused but
+HTTP answering with no headers still yields the honest empty result, because the
+host *was* reached.
+
+### Falsification
+
+Reverting all three changes fails four tests, each for its own reason:
+
+```
+a_csp_naming_someone_elses_cdn_is_not_this_sites_stack ... FAILED
+  a generic header's value was read as this site's stack:
+  [all 8 rows of the table above]
+
+an_identifying_header_still_fingerprints_beside_a_noisy_generic_one ... FAILED
+  (the adjacent CSP tagged `cloudflare` beside a real nginx banner)
+
+apply_stack_tags_covers_full_signature_set ... FAILED
+  assertion failed: !tags_for(&[("x-cache", "HIT")]).has_tag("fastly")
+
+both_transports_failing_is_not_a_clean_negative ... FAILED
+  both transports refused must surface as an error, got Ok(0)
+```
+
+Eleven tests pass throughout — the pre-existing `apply_stack_tags_*` and
+`banner_confidence_*` suites, untouched by the fix, which are the genuine
+always-green controls.
+
+The transport test is driven against a **closed local port** (a listener bound
+to `127.0.0.1:0`, its port read, then dropped): a deterministic
+connection-refused with no DNS and no external network, so it runs in CI rather
+than being `#[ignore]`d.
+
+### A defect-asserting test, inverted in place
+
+`apply_stack_tags_covers_full_signature_set` contained
+`assert!(tags_for(&[("x-cache", "HIT")]).has_tag("fastly"));` — asserting
+exactly the wrong rule. Inverted with the old line quoted beside it, not
+deleted. Its neighbouring comment *"CMS fingerprints in any header value"* stated
+the defect too and was corrected to name the identifying carrier.
+
+### A correction to this fix's own test documentation
+
+`an_identifying_header_still_fingerprints_beside_a_noisy_generic_one` was first
+written with a doc comment calling it a control that "passes on the baseline and
+on the fix". That was wrong: it also asserts the adjacent CSP does *not* tag, so
+it fails on the baseline for that reason. The comment now says which half is the
+both-sides claim and points at the pre-existing suites as the real controls.
+Recorded because a test that misdescribes its own falsification behaviour is the
+same species of defect as the ones above — a claim outrunning what was checked.
+
+### Class
+
+Defect 1 is `REQ-BUILTWITH-001` exactly: a guard that exists, is documented, and
+is applied to one consumer but not the neighbouring one that needed it more.
+Defect 2 is `REQ-GEOINTEL-001` / `REQ-WEBCRAWLER-001`: a failure to observe
+recorded as an observation of nothing.
+
+## REQ-APPLINKS-001 — A wall discarded at the one place it was already typed
+
+### The recorded premise was half-closed; the live mechanism is different
+
+The backlog entry read "app_links swallows a real anti-bot/WAF challenge-page
+error into the same bucket as 'domain doesn't publish app links'". Checked
+first, and the module already had most of the machinery:
+
+- a three-way `FetchOutcome { Body, Answered, TransportFailed }`, whose doc
+  explicitly separates "answered, nothing here" from "a real transport failure";
+- a guard returning `Err` when **both** well-knowns fail at transport.
+
+So the *transport* half was closed. But a WAF challenge is a **200 with an HTML
+body** — it takes neither of those arms.
+
+### What was actually wrong
+
+`read_text` **already types it**. Its shared `document_or_challenge` returns
+`Error::BotChallenge` for a 2xx anti-bot page — the authority built for exactly
+this, whose own doc names the modules reading through it. `app_links` then threw
+that away:
+
+```rust
+match read_text(SRC, resp).await {
+    Ok(body) if !body.is_empty() => FetchOutcome::Body(body),
+    _ => FetchOutcome::Answered,          // <- swallowed Err(BotChallenge)
+}
+```
+
+The bare `_` collapsed a typed wall into the value the module's own doc defines
+as *"a genuine 'answered, nothing here' … an ordinary site's expected
+negative"*. A walled domain therefore reported "publishes no app links", and
+because the wall arrives as a **200**, `transport_failures` stayed 0 and the
+outage guard never saw it.
+
+The guard existed, the typing existed, and one catch-all arm stood between them.
+
+### The correction
+
+A fourth outcome, `Blocked(Error)`, carrying the typed error. `fetch_text`'s
+arms are now explicit: a non-empty 2xx body is `Body`; an empty 2xx is
+`Answered`; `BotChallenge` / `RateLimited` are `Blocked`; an unreadable body
+stays `Answered`, as that doc already promised.
+
+`process` counts legs that were **prevented** from answering — a transport
+failure or a wall — and, with nothing found, returns the typed wall in
+preference to the generic outage message.
+
+**The threshold deliberately stays at both legs**, as it already was for
+transport failures alone: a site that answered one well-known has demonstrably
+been reached, so its genuine 404 on the other still supports the negative. Walls
+simply join the count, because a 200 challenge page is exactly as uninformative
+as a refused connection.
+
+### Falsification
+
+Neutering only the new arm — `Err(e) if false => Blocked(e)` — restores the old
+behaviour exactly:
+
+```
+a_wall_is_not_an_answer_about_app_links ... FAILED
+  a 200 anti-bot wall must be Blocked, never the ordinary negative
+```
+
+Seven tests pass throughout.
+
+The test runs through the **real HTTP path** against the loopback `Canned`
+server, so the module's own status classification and body decoding execute and
+`document_or_challenge` is genuinely exercised — no mock of the client. The
+fixture is the Cloudflare interstitial as the runner received it (the title
+phrase plus the `/cdn-cgi/challenge-platform` loader), the same one
+`util::http`'s own wall tests use, so it cannot pass by keying on something the
+detector does not.
+
+Its three controls are the ordinary negatives that must **not** become
+`Blocked` — a 404, an empty 2xx — plus a real `ASSETLINKS` body proving the
+happy path is still reachable. It also asserts the error stays typed as
+`BotChallenge` rather than being re-wrapped generically, since that is what lets
+the breaker and the live-drift sweep read "blocked" instead of "down".
+
+### Coverage stated honestly
+
+The test covers `fetch_text`, which is where the defect was. The
+`prevented == 2` aggregation in `process` is **not** newly tested: `process`
+builds its URLs from the target domain (`https://{domain}/.well-known/…`), so
+the loopback server cannot be pointed at it without making the well-known base
+injectable — a testability change wider than this fix. The pre-existing
+`transport_failures == 2` rule was likewise untested; this change alters its
+shape (a counter and an `Option<Error>`) but not its threshold. Recorded rather
+than implied, so the next reader knows which half carries a lock.
+
+### Class
+
+`REQ-INTELX-001` exactly — a bare catch-all discarding typed errors that a
+shared layer had already classified, replacing everything with a weaker answer.
+There the arm was `continue`; here it is `_ => Answered`.
+
+---
+
+## REQ-WIFIINTEL-002 — The one refusal that had nowhere to go
+
+`wifi_intel` asks WiGLE where the strongest access points it just heard on the
+air are. When WiGLE refused — a revoked token, a spent quota, a WAF, a schema
+change — the typed error went into a `tracing::debug!` line and the loop broke:
+
+```rust
+let detail = match wigle::query_wigle_detail(&ctx.http, user, token, &ap.bssid).await {
+    Ok(found) => found,
+    Err(e) => {
+        tracing::debug!(
+            error = %e,
+            "wifi_intel: WiGLE refused — stopping this dispatch's BSSID lookups"
+        );
+        break;
+    }
+};
+```
+
+`process` then returned `Ok(result)`. `result` was not empty — Phase 1 had
+already emitted a `MacAddress` for every AP the radio heard — so the dispatch
+was recorded as `ModuleDone { found: N }` and `provider_coverage_from_events`
+read the provider as `Observed`. A revoked WiGLE token produced byte-for-byte
+the output a working WiGLE that holds no position for those APs produces.
+
+### Why both of the usual answers are wrong here
+
+The codebase already has two in-band answers for a provider that would not
+speak, and this module can use neither.
+
+`ModuleResult::or_hard_failure` is the shared fold whose own doc says a total
+outage *"must never be indistinguishable from a clean negative"*. It fires only
+on an **empty** result — deliberately, so *"a partial outage can never discard a
+genuine finding"*. Phase 1 fills the result before Phase 2 runs, so here it is
+structurally unreachable: it can never fire whatever WiGLE does.
+
+Returning `Err` directly would fire, and would be worse. The `MacAddress`
+entities are the operator's own radio readings — seeing an AP on the air owes
+nothing to WiGLE — and `Err` carries no entities. Failing the module to report a
+WiGLE problem would throw away real local sensor data. That moves the defect; it
+does not fix it.
+
+`Error::Skipped` is an early return, taken before any work; by the time the
+refusal is known the findings already exist.
+
+### The correction
+
+The module now says, for every AP it was willing to ask WiGLE about, what
+became of that question — and reports a refusal to the one consumer whose whole
+job is this distinction.
+
+A `Lookup` outcome is recorded per BSSID: `Answered` (WiGLE spoke — a `None`
+answer here IS a real negative), `Refused(String)` (carrying the typed error's
+own message), or `NotAttempted(&'static str)`. When the leg stops, every AP in
+the top-N window it never reached inherits the reason it stopped, because their
+missing coordinates have exactly the same cause.
+
+Two consumers then read it, both pure decisions and both unit-tested:
+
+* `disclose_lookups` writes a `wigle_lookup` attribute onto each AP's own
+  `MacAddress` evidence for every outcome that was **not** an answer. An
+  answered lookup gets nothing — that absence is the signal that the negative
+  is real.
+* `leg_failure` produces the coverage-ledger reason, and `process` publishes it
+  as an `EventKind::ModuleError` on the scan's bus while still returning
+  `Ok(result)`.
+
+That pairing is not a new mechanism. `core::coverage` already locks exactly this
+shape in `a_partial_outage_dominates_the_findings_it_sits_beside`: a
+`ModuleDone { found: 5 }` and a `ModuleError` for the same module collapse to
+`ProviderOutcome::Failed { reason }` with the five findings still counted,
+because the aggregation is failure-dominant. Its doc gives the reason — the
+question coverage answers is not *"did it find anything"* but *"is this
+module's silence about the rest trustworthy"*. It is not. The event makes the
+engine's own ledger say so without costing a single entity.
+
+**Only a provider refusal is reported.** A leg stopped by this module's own
+shared `BSSID_BUDGET`, by scan cancellation, or by a BSSID the sensor mangled is
+not WiGLE failing. Reporting one as a provider outage would put a fabricated
+cause in the coverage report and in `scraper_health` — the same error as the
+silence this fix removes, pointing the other way. Those cases are disclosed on
+the entity and stop there.
+
+### Falsification
+
+Baseline is `f4b41200`. The architecture lock, run against the baseline module
+with the new tests reverted, fails on the first anchor:
+
+```
+test a_wifi_intel_wigle_refusal_is_never_discarded ... FAILED
+  the WiGLE error must be CAPTURED where it is observed (REQ-WIFIINTEL-002):
+  logging it and breaking leaves a revoked token indistinguishable from a
+  corpus that holds nothing
+```
+
+Each mechanism was then removed on its own, and each test failed for its own
+reason with the other still passing:
+
+| mutation | failed | still passed |
+|---|---|---|
+| `Refused` discloses nothing | `an_unanswered_lookup_is_disclosed_on_the_access_points_own_entity` — *left no trace … : ["11:22:33:44:55:66"]* | `an_answered_lookup_carries_no_disclosure` |
+| `Answered` is stamped too | `an_answered_lookup_carries_no_disclosure` — *a missing coordinate here IS the negative* | `an_unanswered_lookup_is_disclosed…` |
+| `NotAttempted` reported as a provider failure | `only_a_provider_refusal_reaches_the_coverage_ledger` — all four fabricated outages listed, incl. *"refused after 0 of 1 BSSID lookups: scan cancelled"* | — |
+
+The second row is the vacuity guard that matters: without it, a "fix" that
+stamped every entity unconditionally would pass the regression while destroying
+the very distinction the regression exists to draw.
+
+### Coverage stated honestly
+
+`process` cannot be unit-tested: it needs a live `termux-wifi-scaninfo` and a
+`ModuleContext`. The three unit tests therefore cover the pure decisions
+(`Lookup::disclosure`, `disclose_lookups`, `leg_failure`) against a built
+`ModuleResult`, and `tests/architecture.rs` carries the wiring lock — capture →
+disclose → decide → publish → return, in that order, anchored on constructions
+with comments and string literals blanked, because this module's header prose
+now names `ModuleError`, `wigle_lookup` and `or_hard_failure` and an earlier
+lock in that file was once defeated by matching exactly such prose.
+
+Two boundaries are deliberate and untested rather than implied:
+
+* A leg cut short by the shared BSSID budget still reads as `Observed` in the
+  coverage ledger. That is the correct verdict for *this* module's own governor
+  refusing, not WiGLE's, and it is disclosed on each affected entity — but it
+  means a budget-capped scan's coverage row does not distinguish itself from a
+  complete one. Encoding it would mean emitting a `ModuleSkipped` beside the
+  `ModuleDone`, which is a separate change.
+* `MAX_BSSIDS = 5` caps the geolocation leg for a scan that may have heard far
+  more APs. That cap is declared in the module header and is a designed
+  contract, not a concealed failure, so APs outside the window carry no
+  `wigle_lookup` note. It remains the smaller sibling defect of the same family
+  as `REQ-PASSIVETOTAL-001`.
+
+### Class
+
+The family of `REQ-GEOINTEL-001` and `REQ-RIPESTAT-001` — a provider's failure
+discarded into a clean negative — but with the twist that makes it its own
+entry: the module had **genuine findings to protect**, so the shared
+`or_hard_failure` fold was structurally unreachable and the usual `Err` was
+actively harmful. The answer was not a new mechanism but the one
+`core::coverage` was already built and tested for, which no module had yet
+reached for.
+
+---
+
+## REQ-BREAKER-001 — Sixteen hand-written resets, and the key that made them necessary
+
+`circuit_breaker::host_of` keyed the per-host breaker on the URL's host alone:
+
+```rust
+pub fn host_of(url: &str) -> Option<String> {
+    url::Url::parse(url.trim())
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+}
+```
+
+`url::Url::host_str` does not include the port, so every service on one machine
+shared one breaker. The breaker's subject is an **endpoint**, not a machine: one
+wedged service saying nothing about another on the same host is the whole reason
+a per-host breaker is safe to have at all.
+
+### What made it more than theoretical
+
+The suite had already paid for it, sixteen times. Every loopback server binds
+`127.0.0.1` on its own ephemeral port, so the entire test process — across every
+test cargo runs in parallel — collapsed into the single breaker key
+`"127.0.0.1"`. Two test files carried sixteen hand-written
+`circuit_breaker::record_success("127.0.0.1")` calls whose own comments say
+exactly what they were for:
+
+> `// isolate from parallel tests`
+>
+> `// The 503 recorded a breaker failure for the shared loopback host — reset it`
+> `// so this test can't nudge a later parallel test toward FAILURE_THRESHOLD.`
+
+Nine in `util::http::tests`, seven in `modules::chain_intel::tests`. A repeated
+manual procedure standing in for a structural property is the definition of a
+workaround, and this one was load-bearing: without it the suite's own comments
+concede that an unrelated later test could be short-circuited.
+
+It also **blocked** the sibling fix. `REQ-HTTP-005` makes a single 429 open the
+breaker for the server's own `Retry-After` window instead of needing
+`FAILURE_THRESHOLD` (5) consecutive failures. Under a host-only key, one test
+serving a 429 through `fetch_json_inner` would have backed every other loopback
+test in the process off for up to 120 s, and no amount of manual resetting fixes
+a race. The keying had to come first.
+
+### The correction
+
+`host_of` becomes `endpoint_of` — the name is part of the fix, because the value
+is no longer a host — and keys on host **and** port:
+
+```rust
+pub fn endpoint_of(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url.trim()).ok()?;
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    match parsed.port_or_known_default() {
+        Some(port) => Some(format!("{host}:{port}")),
+        None => Some(host),
+    }
+}
+```
+
+`port_or_known_default` rather than `port`, deliberately: the scheme's implicit
+port is written out, so `https://api.example.com` and
+`https://api.example.com:443` — the same endpoint — cannot split into two
+breakers. **Every ordinary provider URL therefore keeps exactly the
+one-breaker-per-host behaviour it had**; only a genuinely distinct port
+separates. That is what keeps this a precision change rather than a behaviour
+change, and it is asserted.
+
+All sixteen manual resets are deleted, and the two comments that described them
+now say why none is needed.
+
+### Falsification
+
+Baseline is `da4f6934`. Reverting only the keying (`endpoint_of` returning the
+bare host) fails all three tests, and the two isolation tests fail by showing
+the collapse itself:
+
+```
+endpoint_key_carries_the_port_and_lowercases_the_host ... FAILED
+  left: Some("example.com")  right: Some("example.com:443")
+two_ports_on_one_host_are_two_breakers ... FAILED
+  left: "cb-test-ports.example"  right: "cb-test-ports.example"
+loopback_servers_on_different_ports_do_not_share_a_breaker ... FAILED
+  left: "127.0.0.1"  right: "127.0.0.1"
+```
+
+A key-shape assertion failing is weaker evidence than a behaviour one, so a
+**second** mutation relaxed those two `assert_ne!`s on top of the reverted
+keying. The failures then land on the property, which is what the tests are
+actually for:
+
+```
+two_ports_on_one_host_are_two_breakers ... FAILED
+  the service on the same host that never failed must still be reachable
+loopback_servers_on_different_ports_do_not_share_a_breaker ... FAILED
+  a sibling test's server must not be short-circuited by this one's outage
+```
+
+All fifteen pre-existing breaker tests pass throughout both mutations — the
+state machine is untouched, which is the point: the defect was in the KEY, and
+no state-machine test could have seen it.
+
+On the fixed tree with all sixteen resets deleted, `util::http::tests` and
+`modules::chain_intel::tests` run **105 passed, 0 failed** — the workaround is
+genuinely unnecessary, not merely tolerated.
+
+### The defect-asserting test, inverted in place
+
+`host_of_extracts_and_lowercases_host` pinned the defect:
+
+```rust
+assert_eq!(host_of("http://api.example.org:8443/x"), Some("api.example.org".to_owned()));
+```
+
+It is inverted where it stands, with the old line quoted in the comment above it,
+and gains the `:443`-equals-implicit assertion that pins the no-behaviour-change
+half.
+
+### What the gate caught, and why it counts
+
+The first gate run failed one test —
+`util::wigle::tests::a_rate_limited_host_short_circuits_the_next_get` — and the
+failure was real, not disk noise (7.4 GB free at the time).
+
+That test seeded the breaker with a literal bare host and then called `get`,
+which keys via `endpoint_of(url)`. Once the key gained the port, the breaker the
+test opened and the breaker `get` consults were no longer the same one, so the
+gate under test never fired and the request was attempted. The test had
+**re-implemented the key construction instead of deriving it**, which is the same
+class of defect as the thing being fixed: a second place that decides what an
+endpoint is.
+
+It now derives the key with `endpoint_of`, the exact function production calls,
+so it cannot drift again. A test that duplicates the logic it is testing will
+eventually disagree with it, and silently — the assertion still ran, it just
+stopped testing the gate.
+
+### Scope stated honestly
+
+This is the **keying**. The production consequence — an admin service on a
+non-default port opening the breaker for the main API on the same host — is real
+but has **no observed instance**; the evidence that carried this cycle is the
+sixteen resets and the blocked sibling fix. Recorded that way rather than
+claiming a production outage nobody has seen.
+
+`REQ-HTTP-005` (the 429 rule at the shared chokepoint) is the fix this unblocks
+and is next.
+
+### Class
+
+"Replace repeated workarounds with authoritative mechanisms", and its tell: when
+the same manual step appears sixteen times with a comment explaining itself, the
+comment is describing a missing structural property. Closest sibling is
+`REQ-CI-003` — a process-global shared by cargo's parallel harness, fixed by
+making the sharing impossible rather than by remembering to undo it.
+
+---
+
+## REQ-HTTP-005 — The breaker's own 429 rule, applied by one caller and ignored by the rest
+
+`circuit_breaker::Breaker::on_rate_limited` states the rule, and states why:
+
+> Distinct from `on_failure` in both triggers and timing, because a 429 is a
+> different kind of evidence. A 5xx or a transport error is a guess about health
+> — one bad node, one unlucky socket — so it takes `FAILURE_THRESHOLD` of them
+> before we conclude the host is down. **A 429 is the server stating its own
+> contract**: further requests *will* be refused, and `Retry-After` says for how
+> long. There is nothing to accumulate evidence about, so this opens the breaker
+> on the first one and uses the server's window rather than the local
+> `COOLDOWN_SECS` guess.
+
+The shared HTTP chokepoint contradicted it. `record_breaker_outcome` took only
+the status and routed a 429 through a single predicate into `record_failure`:
+
+```rust
+fn is_breaker_failure_status(status: reqwest::StatusCode) -> bool {
+    status.is_server_error() || status.as_u16() == 429
+}
+```
+
+Concretely, with `FAILURE_THRESHOLD = 5` and `COOLDOWN_SECS = 60`: a 429 needed
+**five consecutive throttles** to open the breaker, and then backed off for the
+local 60-second guess with the server's `Retry-After` **discarded entirely**.
+That is both breaker-wired request paths — `fetch_json_inner` (every keyless
+JSON module) and `fetch_keyed_json` (every keyed provider, which is where quota
+429s actually live).
+
+### The one caller that did it right had hand-rolled it
+
+`util::wigle::get` carried the correct version — `record_rate_limited(h, now,
+retry_after_secs(headers, 60, 120))` — and its own doc records what the wrong
+one costs:
+
+> an eight-sweep `hse radar` session was observed issuing eight consecutive
+> 429s roughly 330 ms apart, five from one `wifi_intel` dispatch and three more
+> from a pivot 25 s later, **each one logging a 60 s backoff that never
+> happened**.
+
+So the repository held two contradictory authorities for one decision, and the
+correct one was the local copy.
+
+This is also the unfinished half of cycle E. `classify_status_error` already
+types a 429 as `Error::RateLimited` (`REQ-DRIFT-006`); the **error** was fixed
+and the **breaker** was left behind — and `wigle::get` had not even had the
+error half applied, still hand-building `Error::module(src, "rate-limited
+(429)")` for its own 429.
+
+### The correction
+
+One authority, and a typed classification rather than a boolean:
+
+```rust
+enum BreakerOutcome { RateLimited, Failure, Success }
+
+fn breaker_outcome_for(status: reqwest::StatusCode) -> BreakerOutcome {
+    if status.as_u16() == 429 { BreakerOutcome::RateLimited }
+    else if status.is_server_error() { BreakerOutcome::Failure }
+    else { BreakerOutcome::Success }
+}
+```
+
+`record_breaker_outcome` now takes the whole `Response` — the `Retry-After` is
+the window to honour, and taking only the status was structurally why it was
+discarded — and routes a 429 to `record_rate_limited` with
+`retry_after_secs(headers, 60, 120)`, the values `wigle` already used. The
+`tracing::warn!` that named the backoff moves here too, so **every** caller gets
+it rather than only WiGLE.
+
+`util::wigle::get` then drops all three of its hand-rolled copies: the pre-send
+gate becomes the shared `breaker_gate`, the round-trip recording becomes the
+shared `record_breaker_outcome`, and its non-2xx tail becomes
+`http_status_error` — which types its 429 as `RateLimited` and a WAF
+interstitial as `BotChallenge` instead of the generic module fault it built by
+hand.
+
+One message deliberately changed rather than being preserved. WiGLE's
+short-circuit said `"rate-limited (429) — backing off, request not sent"`, but
+**the breaker does not record why it opened**, so a gate opened by a 5xx read as
+a rate limit. The shared wording (`"request short-circuited by circuit
+breaker"`) is less specific and more honest; the test asserting the old string
+is updated with that reason recorded.
+
+### Falsification
+
+Baseline is `c028f70c`. The two halves of the rule were reverted separately, and
+each failed only its own assertion.
+
+**(A) 429 folded back in with the 5xx** — the pure classifier names the exact
+regression, the end-to-end lock fails on the first-hit rule, and the control
+holds:
+
+```
+a_429_is_its_own_breaker_outcome_never_folded_in_with_a_5xx ... FAILED
+  these statuses are classified wrongly for the breaker: [(429, Failure)]
+one_429_opens_the_breaker_for_the_servers_own_window ... FAILED
+  ONE 429 must open the breaker — not FAILURE_THRESHOLD of them
+a_single_5xx_does_not_open_the_breaker ... ok
+```
+
+**(B) 429 opens immediately, but `Retry-After` discarded for the local default**
+— the classifier now passes, the control still passes, and only the window
+assertion fails:
+
+```
+a_429_is_its_own_breaker_outcome_never_folded_in_with_a_5xx ... ok
+a_single_5xx_does_not_open_the_breaker ... ok
+one_429_opens_the_breaker_for_the_servers_own_window ... FAILED
+  …and hold for the server's own 90s Retry-After window, not the local 60s
+  COOLDOWN_SECS guess
+```
+
+`a_single_5xx_does_not_open_the_breaker` passes on the baseline and on the fix.
+That is the control that matters: without it, a "fix" that simply made every
+fault instant would satisfy the regression while destroying the distinction the
+breaker's doc draws between evidence and a contract.
+
+### What REQ-BREAKER-001 unblocked
+
+`one_429_opens_the_breaker_for_the_servers_own_window` drives the **real**
+`fetch_json_or_404` path against a loopback server — production classification,
+decoding and breaker wiring all execute. That test is only possible because
+`REQ-BREAKER-001` keys the breaker on host **and** port. Under the old host-only
+key, opening `127.0.0.1` here for the server's 90-second window would have
+short-circuited every other loopback test running in parallel in the process.
+The keying fix was not a detour; it was the precondition.
+
+### Class
+
+`REQ-AURDAP-001` / `REQ-EXPORT-001` / `REQ-BUILTWITH-001` / `REQ-WEBBANNER-001`
+— a guard that exists, is documented, and is applied to one consumer but not its
+neighbour. What distinguishes this one is that the **correct** implementation was
+the local hand-rolled copy and the **shared** one was wrong, so the usual
+"consolidate onto the shared helper" instinct would have propagated the defect.
+The authority had to be fixed before it could be consolidated onto.
+
+---
+
+## REQ-DOHRESOLVER-001 — The primary DNS transport, outside every shared discipline
+
+The backlog entry read: *"doh_resolver discards the HTTP status entirely on a
+non-2xx DoH response, so a 429/challenge page never becomes typed
+RateLimited/BotChallenge."* True, and the smallest of three things — the entry
+was a lower bound, as they keep being.
+
+What is **already right** and was not touched: `DohOutcome` keeps `Answered`
+distinct from unanswered, `classify_status` keeps `NXDOMAIN` (a genuine
+negative) distinct from `SERVFAIL`/`REFUSED` (a resolver failing), and
+`dns_wholly_unreachable` turns a total outage into a real `ModuleError` rather
+than an empty result. The false-clean-negative half of this module was closed
+already. The three defects are elsewhere.
+
+### 1. The outage was re-discovered, three more times, inside one dispatch
+
+The early break
+
+```rust
+if i == 1 && dns_wholly_unreachable(&outcomes) { break; }
+```
+
+guards **only** the `RECORD_TYPES` loop. The DMARC (`_dmarc.`), CAA and TLSRPT
+(`_smtp._tls.`) passes that follow were gated on cancellation alone, so they ran
+regardless — three more lookups, **six more HTTP requests** across the two
+providers, every one of them to resolvers the same dispatch had just proved
+unreachable. A total-outage dispatch issued ten requests, six of them after the
+answer was known.
+
+### 2. The outage was re-discovered on every later dispatch
+
+`grep -c circuit_breaker src/modules/doh_resolver/mod.rs` was **0**. `query_doh`
+used a raw `.send()`, so neither `cloudflare-dns.com` nor `dns.google` was ever
+gated or recorded, and Cloudflare's own `Retry-After` was discarded. Every
+subsequent dispatch in the scan re-asked a resolver that had already refused.
+That is precisely the shape `util::wigle::get` documents as measured — eight
+consecutive 429s ~330 ms apart in one radar sweep — and DoH is the **primary DNS
+transport on Termux**, where the system resolver is routinely blocked.
+
+### 3. A throttle, a wall and a dead resolver were one thing
+
+`answer_from_response` reduced every outcome to `Option`:
+
+```rust
+let r = resp.ok()?;
+if !r.status().is_success() { return None; }
+```
+
+so the module's outage error said *"unreachable or undecodable"* for all three.
+The live-drift sweep files that as a **dead canary**. Cycles E and F established
+that a throttled provider is never a dead one; DoH never received the rule.
+
+### The correction
+
+`answer_from_response` becomes `doh_lookup`, wired to the shared discipline the
+module had been bypassing: `breaker_gate` before the send, `send_tagged`,
+`record_breaker_outcome` on the answer, and `http_status_error` for a non-2xx so
+a 429 is `RateLimited` and a WAF interstitial is `BotChallenge`. A transport
+failure records a breaker failure explicitly, because `record_breaker_outcome`
+only ever sees an answered round-trip — and on Termux a blocked resolver fails
+exactly that way, with no status at all.
+
+`DohOutcome::Unreachable` now carries `Option<Error>`, and two pure helpers
+decide what a wholly-unanswered sweep reports: `refusal_rank` (a provider
+stating its own contract outranks a bare transport failure) and `outage_error`,
+which preserves the **variant** of the most telling refusal, not just its text
+— the variant being what the breaker, the doctor and the sweep actually read.
+
+The three dedicated passes now carry the same guard the loop breaks on.
+
+**This cycle is a consumer of `REQ-HTTP-005`, not a fourth hand-rolled copy.**
+Had it landed first it would have inherited the shared recorder's own defect —
+five round-trips to open on a 429, and the server's window discarded.
+
+### Falsification
+
+Baseline is `2737e154`. Each of the three defects was reverted on its own, and
+each failed only its own lock:
+
+| mutation | failed | held |
+|---|---|---|
+| the three passes ungated | `doh_resolvers_proved_unreachable_are_not_asked_three_more_times` — *found 0 such guards, so 3 pass(es) still query resolvers this dispatch already proved unreachable* | — |
+| non-2xx untyped again | `a_throttle_and_a_wall_keep_their_own_types` — *`[doh_resolver] HTTP 429 Too Many Requests`* | `a_non_2xx_doh_response_is_never_read_as_an_answer` |
+| `outage_error` untyped again | `a_wholly_unanswered_sweep_reports_the_most_telling_refusal_with_its_type` | `a_contract_refusal_outranks_a_bare_failure` |
+| the refusal never reaches the breaker | `a_throttle_and_a_wall_keep_their_own_types` — *one 429 must back this resolver off for the window it asked for* | the 200 answer paths |
+
+The controls are the load-bearing half. `a_non_2xx_doh_response_is_never_read_as_an_answer`
+and the two 200 tests pass on the baseline and on the fix, so a change that
+merely made every response an error would satisfy the regressions while
+destroying the status gate they exist to protect.
+
+### The four tests that were rewritten, not replaced
+
+`answer_from_response`'s four tests fed a synthetic `reqwest::Response` to a
+function that no longer exists. Rather than delete the behaviour they covered —
+the status gate, the NXDOMAIN case, the record carrying — they now drive the
+**real** `doh_lookup` against a loopback server, so the breaker gate, the status
+typing and the body decoding all execute. That became possible only because
+`REQ-BREAKER-001` keys the breaker on host **and** port: each server binds its
+own port, so a 429 in one test cannot short-circuit a sibling. A fifth was added
+for the `SERVFAIL`/`REFUSED` line `classify_status` draws.
+
+### Coverage stated honestly
+
+`process` needs a live network and a `ModuleContext`, so the control-flow half —
+defect 1 — has no unit test and carries a `tests/architecture.rs` wiring lock
+instead: all three guards must exist, and all three must sit between the loop
+that establishes the outage and the point it is reported. Anchored on the
+construction with comments and string literals blanked, because this module's
+prose now names `dns_wholly_unreachable` several times.
+
+`REQ-DOHRESOLVER-002` (the DoH-JSON `TC` truncation flag) is untouched and
+remains VERIFY-FIRST — it needs a live capture, not a reading of this file.
+
+### One flake class introduced, and closed
+
+Driving the breaker through a loopback server leaves it **open on an ephemeral
+port the server then releases**. A later test handed the same port by the OS
+would be short-circuited by a breaker it never opened — an intermittent failure
+of exactly the `REQ-CI-003` class, and one this cycle's own
+`a_throttle_and_a_wall_keep_their_own_types` would have introduced along with
+`REQ-HTTP-005`'s `one_429_opens_the_breaker_for_the_servers_own_window`, which
+leaves a 90-second window.
+
+Both now close the breaker they opened. That is **not** a return of the sixteen
+resets `REQ-BREAKER-001` deleted: those existed because the key was shared *by
+construction* and no test could avoid it, whereas these clean up state the test
+deliberately created on a key it owns. The distinction is written into both
+comments so the next reader does not mistake one for the other.
+
+### Class
+
+The `REQ-DRIFT-005` / `REQ-HTTP-004` family — a module outside the shared HTTP
+layer, re-deriving its own weaker answer. What makes this one worth its own
+entry is the ordering: it is the first cycle to consume `REQ-HTTP-005`'s
+corrected breaker authority, and doing it in the other order would have spread
+the defect rather than the fix.
+
+---
+
+## REQ-CORRELATOR-006 — A relation computed, then thrown away
+
+AU-016 ("Breach IP → geolocation chain", `Severity::High`) worked out which
+coordinates were geolocated from a breach IP, and then attached **every breach
+IP in the scan** to the finding:
+
+```rust
+let linked: Vec<&Entity> = coords.iter().filter(|c| {
+    c.evidence.iter().any(|ev| breach_ips.iter().any(|ip| text_mentions_ip(&ev.summary, &ip.value)))
+}).copied().collect();
+...
+let mut uids: Vec<String> = breach_ips.iter().map(|e| e.uid.clone()).collect();  // ALL of them
+uids.extend(linked.iter().map(|e| e.uid.clone()));
+```
+
+The two sides were computed **independently**: coordinates whose evidence names
+*some* breach IP, and separately the whole scan's breach-IP population. The
+summary compounds it, counting `breach_ips.len()`.
+
+So a scan carrying five breach IPs of which one was actually geolocated minted a
+High claim reading *"5 breach IP(s) resolved to 1 coordinate(s) via geolocation
+pipeline"*, with all five in `entity_uids`. Four were implicated — in an
+operator-facing geolocation finding — on no evidence whatsoever.
+
+`text_mentions_ip` itself is sound and well tested (whole-address boundaries for
+v4 and v6, including the `11.2.3.45` / `1.2.3.4` substring trap and the v6
+hex-extension cases). The predicate was never the problem; what it decided was
+discarded.
+
+### Why the existing tests could not see it
+
+All three pre-existing AU-016 tests use **one** breach IP. With a single IP the
+independent computation and the paired one are indistinguishable — every IP in
+the scan *is* the linked one. The defect lives entirely in the plural case, and
+no fixture had it.
+
+### The correction
+
+Pair them up: a breach IP and a coordinate belong in the chain only when *that*
+coordinate's evidence names *that* IP. Only the IPs that survive enter `uids`,
+and the summary counts those rather than the scan's population.
+
+`BTreeSet` rather than `HashSet`, deliberately: the live and finalise passes feed
+entities in randomised order, and the AU-017 rule immediately below records what
+non-determinism costs there — two persisted rows for one finding. A uid-sorted
+set makes identical entity sets produce an identical correlation.
+
+### Falsification
+
+Baseline is `bc2389b1`. Two mutations, and they fail **opposite** tests — which
+is what pins the fix from both directions:
+
+**(A) the two sides computed independently again** (the baseline):
+
+```
+rule_016_implicates_only_the_breach_ips_a_coordinate_actually_names ... FAILED
+  breach IPs no coordinate ever named were implicated in a High geolocation
+  claim: ["3a8c7664…", "5b1eeb64…"]
+rule_016_chains_every_pair_a_coordinate_does_name ... ok
+```
+
+**(B) the chain narrowed to a single pair** — the obvious over-correction:
+
+```
+rule_016_chains_every_pair_a_coordinate_does_name ... FAILED
+  a genuinely chained pair was dropped: ["3a8c7664…", "aa0145d1…"]
+rule_016_implicates_only_the_breach_ips_a_coordinate_actually_names ... ok
+```
+
+The control is doing real work here. A "fix" that simply emitted the first
+matching pair would satisfy the regression completely while silently dropping
+genuine chains — and (B) is exactly that fix, caught. All three pre-existing
+AU-016 tests pass under both mutations, because none of them has more than one
+breach IP.
+
+### Class
+
+The fifth instance of one correlator defect, and they share a single sentence:
+**the rule computes a relation, then discards which side related to which.**
+
+* `REQ-CORRELATOR-002` (AU-046) — fused identities that shared a *module name*
+  anywhere in the scan, not the same account.
+* `REQ-CORRELATOR-004` (AU-039) — wallet attribution on bare module-name
+  overlap, not same-record co-occurrence.
+* `REQ-CORRELATOR-003` (AU-105) — credential reuse from a provider's own
+  withheld-access placeholder.
+* `REQ-CORRELATOR-007` (AU-019) — counted entity-kind fragments from one breach
+  row as distinct records.
+* This one — coordinates paired with every breach IP rather than the one named.
+
+Worth stating as a rule for the next reader: **when a correlator rule filters
+one collection using another, the filter's own decision is the finding.**
+Recomputing either side independently afterwards loses it, and the loss is
+silent because the rule still fires on genuine evidence — just with the wrong
+entities attached.
+
+---
+
+## The `#[serde(default)]` fail-open family — the last three siblings, recorded
+
+These three shipped on 2026-09-18 (`1c2b7447`, `0fb6c2ac`, `444a8f3b`) but were
+never entered here, so the ledger — the authority for what a requirement *is* —
+had no record of them while `docs/ROADMAP.md` went on naming all three as the
+"still-open siblings" of `REQ-AUGEO-001`. That gap is the reason
+`tests/doc_drift.rs` now refuses a map citation with no ledger entry behind it.
+
+The entries below are written from the tree as it stands, not from the commit
+messages: each fix was re-read in the current source before being recorded.
+
+The family, for the record, is a wire struct whose every field carries
+`#[serde(default)]`, so an unexpected HTTP 200 — an auth failure, a spent quota,
+a WAF interstitial — deserialises *successfully* into an all-empty value that
+the module then reports as a clean negative. Five members are now closed:
+`REQ-AUGEO-001`, `REQ-INTELX-002`, `REQ-CHAININTEL-001`, and these three. The
+rule they share: **require a field the real response always carries, and let the
+catch-all fail closed.** A struct that can decode anything cannot implement a
+"the body did not decode" guard, so the guard has to be a field.
+
+### REQ-ZOOMEYE-001 — a dead key was indistinguishable from "nothing indexed"
+
+`ZoomResp` carried `#[serde(default)]` on `matches`, the one field a genuine
+ZoomEye search response always sends. A 2xx error envelope (auth failure, quota
+exceeded) has no `matches` key at all, so it decoded to `matches: vec![]` and the
+module reported a clean "nothing indexed" for a host it had never actually
+searched. Because ZoomEye is keyed, the failure mode was permanent rather than
+transient: a revoked or exhausted key reads as an empty internet, forever, with
+no signal anywhere.
+
+Fixed by removing the attribute, so an unexpected-shape 2xx fails serde
+deserialisation and surfaces as a real `ModuleError`. Verified in the tree today:
+`src/modules/zoomeye/mod.rs` declares `matches: Vec<Value>` with no `default`,
+and the doc comment on the field states the contract it is holding.
+
+Locked by `unexpected_response_shape_fails_deserialization`
+(`src/modules/zoomeye/tests.rs:82`), which replaced a test whose own name
+recorded the defect as intended behaviour —
+`error_body_deserialises_to_empty_matches`. The inversion is the point: the
+lock now asserts `{"error": …}` fails to decode, and keeps the control that
+`{"matches": []}` — a genuine empty hit — still parses, so the fix cannot have
+been achieved by breaking honest empties.
+
+### REQ-HUDSONROCK-001 — the same defect, against stealer logs
+
+`CavalierResp.stealers` carried `#[serde(default)]`, so an auth/quota failure or
+WAF block decoded to `stealers: vec![]` — a clean "no infostealer records" for a
+subject whose logs were never consulted. The module's own documentation already
+demanded the opposite; nothing enforced it.
+
+Fixed identically: `stealers: Vec<Stealer>` now has no `default`
+(`src/modules/hudsonrock/mod.rs:40`), while `Stealer.credentials` keeps its
+`#[serde(default)]` — that one is a genuinely optional field on a real record,
+not the response's structural key, and conflating the two is how the defect
+class propagates. Locked by `unexpected_response_shape_fails_deserialization`
+(`src/modules/hudsonrock/tests.rs:353`) with the same error-body /
+genuine-empty pair.
+
+### REQ-LEAKCHECK-001 — a fail-closed contract that fell through its own guard
+
+LeakCheck's public API signals an ordinary miss with `success:false` plus an
+`error` naming it. The module documented that only `"Not found"` and `"No results
+found"` are clean negatives and everything else must error — but the check lived
+in a conditional guard, and `error` was `#[serde(default)]`. So the one shape the
+contract most needed to catch, `success:false` with **no** `error` field at all,
+matched no arm and fell through to `Ok(empty)`: a silent false exoneration on a
+breach lookup.
+
+Fixed by extracting the decision into a pure, total function —
+`classify_failure(error_text: Option<&str>) -> Result<()>`
+(`src/modules/leakcheck_public/mod.rs:136`) — which matches the two known-clean
+texts and returns `Err` for every other `Some`, **and** for `None`. `build_result`
+calls it whenever `success` is false, so no shape can reach the empty return
+unclassified. Making it total is what closes the hole: a `match` with an arm per
+possibility cannot fall through the way a guard can.
+
+Locked by `success_false_with_no_error_field_fails_closed`
+(`src/modules/leakcheck_public/tests.rs:200`).
+
+### Why this is recorded rather than quietly back-filled
+
+A ledger entry written from a commit message would assert whatever the message
+asserted. Each of the three was instead re-derived from the current tree — the
+struct definitions, the absence of the attribute, the line the lock sits on —
+because the question the ledger answers is "what does the code do now", not
+"what did a commit claim". The commit hashes are provenance, not evidence.
+
+---
+
+## `au_rdap` — two shipped fixes that had no entry either
+
+Found by the same guard, on its first run against the realigned map: §4's
+recurring-shape register cites `REQ-AURDAP-001` as an instance of "a guard
+applied to one consumer but not its neighbour", and the ledger had no record of
+it. `REQ-AURDAP-002` shipped in the same wave and was equally unrecorded; it is
+entered here rather than left for the next citation to surface, since the two
+are the same module and the same audit.
+
+Both are re-derived from the tree as it stands (`0a09c336`), not from their
+commit messages (`b0bc3227`, `32a01987`).
+
+### REQ-AURDAP-001 — a .au statutory-masking placeholder minted as a real Organisation
+
+`.au`'s registrant *eligibility* rules mean its RDAP records carry redaction and
+privacy-proxy markers in the very fields the module reads as identity —
+"Domains By Proxy, LLC", "Private Registration", "REDACTED FOR PRIVACY". Both
+sites emitted them verbatim as `Organisation` entities: the registrant-name
+eligibility field at `confidence::HIGH_PLUSPLUS`, and the registrar vCard `fn`
+at `HIGH_PLUS`. A registrar's redaction boilerplate therefore became a named
+organisation attached to the subject's domain, at a confidence high enough to
+pivot on.
+
+The guard already existed and was already correct — `validation::
+is_whois_privacy_placeholder`, applied by both `whois` and `whoisxml`. It was
+simply never called here. That is the first recurring shape exactly: **a guard's
+call sites must be audited against every emitter of the value it protects, not
+only the one that motivated writing it.** `REQ-BUILTWITH-001` is the same guard,
+missed at a third emitter, found later.
+
+Verified in the tree: `is_whois_privacy_placeholder` is imported at
+`src/modules/au_rdap/mod.rs:72` and called at both emitters — line 159
+(registrant name) and line 258 (registrar organisation). Locked by
+`statutory_masking_and_privacy_proxies_are_rejected`
+(`src/modules/au_rdap/tests.rs:471`), which keeps a legitimate organisation name
+in the same fixture as its control, so the fix cannot have been achieved by
+rejecting everything.
+
+### REQ-AURDAP-002 — the response was never checked to be about the domain queried
+
+`au_rdap` accepted whatever the RDAP server returned as an answer about the
+domain it had asked for. Its `RdapResponse` did not even deserialise `ldhName`,
+the field RFC 9083 requires a domain response to carry — so a misdirected,
+misconfigured or hostile server's record for a *different* domain was parsed as
+the subject's registration, registrant and registrar. The sibling
+`rdap_domain` already performed exactly this check; `au_rdap` did not.
+
+Verified in the tree: `ldh_name: Option<String>`
+(`src/modules/au_rdap/mod.rs:101`) is now deserialised, and the check at line
+432 compares it case-insensitively against the queried domain, returning
+`Error::module` on a mismatch rather than a "no data" state — the distinction
+matters, because a mismatch is a server fault or an attack and must not read as
+an absence. The comparison is skipped when the field is absent, which keeps the
+module working against servers that omit it while refusing any server that
+contradicts itself.
+
+Locked by `rdap_response_deserializes_ldh_name_field`
+(`src/modules/au_rdap/tests.rs:540`), which asserts both that a present field is
+read and that an absent one stays `None`.
+
+---
+
+## REQ-DOCS-001 — The map's currency was a remembered procedure, so it drifted
+
+`docs/ROADMAP.md` §6 has always said the document is realigned on **each**
+iteration, and `CLAUDE.md` repeats it as a standing obligation. The roadmap's own
+header goes further: *"a claim here that the code does not honour is a defect in
+this document."* Nothing enforced any of it, so it was a repeated manual
+procedure standing in for a structural property — the third recurring shape in
+§4, the same one that produced the sixteen hand-written breaker resets
+(REQ-BREAKER-001).
+
+### Measured
+
+On `0a09c336`, `git log -1 -- docs/ROADMAP.md CHANGELOG.md` puts both documents'
+last change at `d1fbce90` (2026-09-18), with ~90 commits and 14 shipped
+requirements since. Counting requirement identifiers across the three organising
+documents:
+
+```
+ledger headings ................ 113
+named in CHANGELOG.md ..........  62   (51 unaccounted for)
+cited in ROADMAP.md but with
+  no ledger entry ..............   3   REQ-ZOOMEYE-001, REQ-LEAKCHECK-001,
+                                       REQ-HUDSONROCK-001
+```
+
+The three dangling citations are the material defect, not the counts. §4's T1
+paragraph described that trio as the *"still-open siblings"* of the
+`REQ-AUGEO-001` fail-open family. All three had shipped the previous day
+(`1c2b7447`, `0fb6c2ac`, `444a8f3b`), verified against the current source rather
+than their commit messages. A reader ranking the next cycle from this map would
+have re-attacked three closed defects.
+
+### The expected permanent invariant
+
+`REQUIREMENTS_LEDGER.md` is the single authority for what a requirement is.
+From it, two properties follow, and both are now checkable:
+
+1. **The map may not cite a requirement the ledger does not record.** A citation
+   with no transcript behind it is a claim nothing can check — which is exactly
+   how three shipped fixes stayed described as open.
+2. **The changelog must account for every requirement the ledger records.** One
+   line each; refuted and measured-only leads included, because *"we looked and
+   changed nothing"* is an answer a reader needs, not an omission.
+
+### Implemented
+
+Three tests in `tests/doc_drift.rs`, the file that already exists for exactly
+this class ("documentation claims that assert a NUMBER the code also defines
+must be checked against the code, not maintained by hand" — its own header):
+
+* `the_map_never_cites_a_requirement_the_ledger_does_not_record`
+* `every_requirement_the_ledger_records_is_accounted_for_in_the_changelog`
+* `the_requirement_id_scanner_reads_the_shapes_the_documents_use`
+
+The first collects across **both** documents before asserting. The first cut
+asserted per document inside a loop, so the roadmap's failure hid whatever the
+changelog's would have been — the same "collect the survivors, do not assert one
+at a time" discipline the falsification passes use, and it was corrected before
+the guard was trusted.
+
+The scanner is hand-written, like the rest of the file. The corpus constrains
+it: `AREA` is itself hyphenated in places (`REQ-AU-UNCLAIMED-001`,
+`REQ-DEVICE-CELL-001`), carries digits (`REQ-IP2LOCATION-002`), sits against
+punctuation and appears several times per line. The suffix is always exactly
+three digits, and that is what makes a token an identifier.
+
+### Falsified
+
+Baseline, before any document was touched — each guard failing for its own
+reason:
+
+```
+the_map_never_cites_…            FAILED — REQ-HUDSONROCK-001, REQ-LEAKCHECK-001,
+                                          REQ-ZOOMEYE-001
+every_requirement_…changelog     FAILED — 51 recorded requirements unmentioned
+```
+
+Then three mutations against the corrected tree:
+
+| Mutation | Result |
+|---|---|
+| Add `REQ-PHANTOM-999` to `ROADMAP.md` | **only** `the_map_never_cites_…` fails |
+| Rewrite `REQ-WIGLE-001` in `CHANGELOG.md` so the id no longer appears | **only** `every_requirement_…changelog` fails |
+| Break the scanner (require a four-digit suffix) | the scanner test fails **and both guards fail on their vacuity asserts** — a scanner that silently stopped matching cannot make either guard pass on any pair of documents |
+
+The third mutation is the one that matters. A consistency guard whose input
+parser returns nothing is not a passing guard, it is an absent one; the vacuity
+asserts turn that into a failure rather than a green tick.
+
+One vacuity assert was itself wrong on the first cut and is worth recording: the
+changelog guard asserted `logged.len() > 100`, which tripped on the very
+62-of-113 shortfall it existed to report. The quantity under test can never gate
+the assertion — the vacuity guard belongs on the *ledger* scan, whose emptiness
+is what would make the check toothless.
+
+### Found by the guard, on its first run
+
+The changelog backfill omitted `REQ-APPLINKS-001`; the second guard named it.
+Realigning §4 to name the recurring shapes then cited `REQ-AURDAP-001`, which
+had shipped with no ledger entry — the first guard named that too. Its sibling
+`REQ-AURDAP-002` was found by looking, not by the guard, and both are now
+recorded above. That blind spot (a shipped fix with no entry *and* no citation
+is invisible to both guards) is stated in §6 rather than left to be rediscovered:
+closing it would require reading commit history, which is not reproducible from a
+source tarball and so does not belong in the suite.
+
+### What this does not do
+
+The guards check referential integrity between the three documents, not truth.
+Whether §2's structure claims, §3's seams and §4's ranking still describe the
+code remains a judgement, made in step 5 of the §6 process. What changed is that
+it is now the *only* part that is remembered, and a stale citation can no longer
+hide underneath it.

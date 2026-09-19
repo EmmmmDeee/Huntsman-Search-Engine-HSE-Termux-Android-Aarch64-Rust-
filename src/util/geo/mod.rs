@@ -493,7 +493,10 @@ pub fn tag_flags(entity: &mut crate::core::entity::Entity, flags: &[(Option<bool
 /// use huntsman_search_engine::util::geo::confidence_for_accuracy_m;
 /// use huntsman_search_engine::core::confidence;
 ///
-/// assert_eq!(confidence_for_accuracy_m(Some(25.0)), confidence::VERY_HIGH);
+/// // A doorway-grade fix (<= 50 m) sits at the top of the ladder.
+/// assert_eq!(confidence_for_accuracy_m(Some(25.0)), confidence::HIGH_PLUSPLUS_PLUS);
+/// // A block-grade one (51..=300 m) one rung below it.
+/// assert_eq!(confidence_for_accuracy_m(Some(150.0)), confidence::VERY_HIGH);
 /// assert_eq!(confidence_for_accuracy_m(Some(2_000.0)), confidence::MEDIUM);
 /// // A 25 km IP-derived radius is not a wireless fix.
 /// assert_eq!(confidence_for_accuracy_m(Some(25_000.0)), 0.35);
@@ -509,8 +512,9 @@ pub fn confidence_for_accuracy_m(metres: Option<f64>) -> f64 {
         _ => 5000.0,
     };
     match metres as u64 {
-        0..=200 => confidence::VERY_HIGH,
-        201..=1000 => confidence::HIGH,
+        0..=50 => confidence::HIGH_PLUSPLUS_PLUS,
+        51..=300 => confidence::VERY_HIGH,
+        301..=1000 => confidence::HIGH,
         1001..=5000 => confidence::MEDIUM,
         _ => confidence::TENTATIVE,
     }
@@ -590,6 +594,85 @@ pub fn coarse_provider_coords(
         e.tag("off-region");
     }
     Some(e)
+}
+
+/// Build the coarse provider-reported `Address` entity that sits beside a
+/// [`coarse_provider_coords`] fix — and hold the one invariant those two share.
+///
+/// **An address composed from a geolocation fix is strictly coarser than the
+/// fix**: `"Brisbane, Queensland, Australia"` is what you get by rounding off
+/// `-27.4679,153.0281`, so it can never be the more confident of the two. Eight
+/// modules each chose an `Address` rung by hand with nothing tying it to the
+/// fix beside it, and five of them drifted above it:
+///
+/// | module | Coordinates | Address | gap |
+/// |---|---|---|---|
+/// | `ip_geo` | 0.50 mobile / 0.60 residential | 0.65 flat | **+0.15** |
+/// | `shodan` (country-centroid path) | 0.45 | 0.55 | **+0.10** |
+/// | `criminal_ip` | 0.45 | 0.50 | **+0.05** |
+/// | `ipquery` | 0.58 | 0.62 | **+0.04** |
+/// | `ipinfo` | 0.58 | 0.60 | **+0.02** |
+///
+/// `ip_geo` is the sharpest case and shows why the drift matters: that module
+/// deliberately grades a fix DOWN to 0.50 for a mobile IP (and 0.35 for a
+/// hosting/proxy one, where it suppresses the Address altogether, which is why
+/// the reachable gap is 0.15 and not 0.30), and its own comment records the
+/// reason — "a single overstated IP-geo hit was outranking a corroborated WiGLE
+/// WiFi fix". The recalibration reached the Coordinates and not the Address
+/// derived from the same fix, so the exact overstatement it was written to stop
+/// walked straight back in through the city string.
+///
+/// `fix` is the sibling Coordinates entity for this same reading, when one was
+/// emitted; the returned confidence is `min(confidence, fix.confidence)`. The
+/// ceiling is taken FROM THE ENTITY rather than from a second `f64` parameter
+/// precisely so a caller cannot pass the wrong number — there is no number to
+/// pass. Modules that deliberately sit below their fix (`censys` 0.60 under
+/// 0.65, `shodan`'s real-fix path 0.55 under 0.60) keep their own rung
+/// untouched; the ceiling only ever removes an inversion.
+///
+/// Pass `None` when no fix was emitted for this reading — an implausible
+/// null-island lat/lon, a provider that returns a city and no coordinates at
+/// all. The caller's rung then stands, because the address is no longer a
+/// coarsening of a fix this module published: it is the provider's own city
+/// string, a separate datum.
+///
+/// The caller keeps its own presence gate (the modules disagree legitimately on
+/// whether a blank country still yields an address), its provider tag, and its
+/// evidence. **Pure** (no IO).
+///
+/// ```
+/// use huntsman_search_engine::core::entity::{Entity, EntityKind};
+/// use huntsman_search_engine::util::geo::coarse_provider_address;
+///
+/// let fix = Entity::new(EntityKind::Coordinates, "-27.4679,153.0281", 0.35, "s");
+/// // A hosting IP: the fix was graded down, so the address it was composed
+/// // from is graded down with it.
+/// let addr = coarse_provider_address("Brisbane, Australia", 0.65, Some(&fix), "s");
+/// assert!((addr.confidence - 0.35).abs() < 1e-9);
+///
+/// // A module that deliberately sits below its fix keeps its own rung.
+/// let fix = Entity::new(EntityKind::Coordinates, "-27.4679,153.0281", 0.65, "s");
+/// let addr = coarse_provider_address("Brisbane, Australia", 0.60, Some(&fix), "s");
+/// assert!((addr.confidence - 0.60).abs() < 1e-9);
+///
+/// // No fix published for this reading: the caller's rung stands.
+/// let addr = coarse_provider_address("Brisbane, Australia", 0.50, None, "s");
+/// assert!((addr.confidence - 0.50).abs() < 1e-9);
+/// ```
+#[must_use]
+pub fn coarse_provider_address(
+    address: &str,
+    confidence: f64,
+    fix: Option<&crate::core::entity::Entity>,
+    scan_id: &str,
+) -> crate::core::entity::Entity {
+    let capped = fix.map_or(confidence, |f| confidence.min(f.confidence));
+    crate::core::entity::Entity::new(
+        crate::core::entity::EntityKind::Address,
+        address,
+        capped,
+        scan_id,
+    )
 }
 
 /// Build the `Asn` entity shared verbatim by every IP-geo provider module

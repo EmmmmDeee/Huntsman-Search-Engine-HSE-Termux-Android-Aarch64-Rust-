@@ -219,10 +219,95 @@ fn null_island_whois_coords_are_rejected_but_city_still_maps() {
 }
 
 #[test]
+fn near_null_island_jitter_coordinates_yield_no_coords_entity() {
+    // REQ-CRIMINALIP-001: Criminal IP is a coarse IP-geo provider and must reject
+    // the near-null-island jitter band (0.001 to 0.01) those APIs emit as an
+    // "unknown" placeholder. The stricter is_plausible_provider_coord gate is
+    // required, not the weaker is_valid_coords. A (0.005, 0.005) jitter
+    // coordinate must not become a Coordinates entity.
+    let body = report(
+        r#"{
+            "status": 200,
+            "whois": { "data": [
+                { "org_country_code": "us", "city": "Unknown", "latitude": 0.005, "longitude": 0.005 }
+            ] }
+        }"#,
+    );
+    let ents = build_entities(&body, &ip_target("1.2.3.4"), "s");
+    assert!(
+        of_kind(&ents, EntityKind::Coordinates).is_none(),
+        "near-null-island jitter coordinates (0.005, 0.005) must be rejected"
+    );
+}
+
+#[test]
+fn derived_geo_entities_carry_vpn_proxy_tags() {
+    // REQ-CRIMINALIP-002: Coordinates and Address derived from whois geo
+    // must inherit the VPN/proxy/Tor tags so a VPN exit's geo is correctly
+    // marked as infrastructure, not potential subject location.
+    let body = report(
+        r#"{
+            "status": 200,
+            "issues": { "is_vpn": true, "is_proxy": true, "is_tor": false },
+            "whois": { "data": [
+                { "org_country_code": "nl",
+                  "city": "Amsterdam", "region": "North Holland", "latitude": 52.37, "longitude": 4.89 }
+            ] }
+        }"#,
+    );
+    let ents = build_entities(&body, &ip_target("1.2.3.4"), "s");
+
+    let coord = of_kind(&ents, EntityKind::Coordinates).expect("should have Coordinates");
+    assert!(
+        coord.has_tag("vpn") && coord.has_tag("proxy"),
+        "Coordinates must inherit VPN/proxy tags"
+    );
+    assert!(
+        !coord.has_tag("tor"),
+        "false flags must not tag"
+    );
+
+    let addr = of_kind(&ents, EntityKind::Address).expect("should have Address");
+    assert!(
+        addr.has_tag("vpn") && addr.has_tag("proxy"),
+        "Address must inherit VPN/proxy tags"
+    );
+    assert!(
+        !addr.has_tag("tor"),
+        "false flags must not tag"
+    );
+}
+
+#[test]
 fn nonblank_filters_empty_and_whitespace_only() {
     assert_eq!(nonblank(Some("  AS13335 ")), Some("AS13335"));
     assert_eq!(nonblank(Some("x")), Some("x"));
     assert_eq!(nonblank(Some("")), None);
     assert_eq!(nonblank(Some("   ")), None);
     assert_eq!(nonblank(None), None);
+}
+
+/// REQ-IPGEO-001. This module rates a whois fix LOW_MEDIUM (0.45) — it is a
+/// registration record's coordinates, not a measurement — while the Address
+/// composed from the same record's city/region/country carried MEDIUM (0.50).
+#[test]
+fn whois_address_never_outranks_the_fix_it_was_composed_from() {
+    let body = report(
+        r#"{
+            "status": 200,
+            "whois": { "data": [
+                { "as_no": 4766, "org_name": "KT Corp", "org_country_code": "kr",
+                  "city": "Seoul", "region": "Seoul", "latitude": 37.5665, "longitude": 126.978 }
+            ] }
+        }"#,
+    );
+    let ents = build_entities(&body, &ip_target("1.2.3.4"), "s");
+    let coord = of_kind(&ents, EntityKind::Coordinates).expect("Coordinates");
+    let addr = of_kind(&ents, EntityKind::Address).expect("Address");
+    assert!(
+        addr.confidence <= coord.confidence,
+        "Address {:.2} outranks the whois Coordinates {:.2} it was composed from",
+        addr.confidence,
+        coord.confidence
+    );
 }

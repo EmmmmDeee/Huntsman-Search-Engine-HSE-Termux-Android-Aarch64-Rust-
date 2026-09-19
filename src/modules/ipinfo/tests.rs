@@ -223,3 +223,24 @@ use super::*;
         let ents = build_entities("1.2.3.4", &data(r#"{"hostname":"localhost"}"#), "s");
         assert!(one(&ents, EntityKind::Domain).is_none());
     }
+
+    /// REQ-IPGEO-001. `"Sydney, NSW, AU"` is what you get by rounding off
+    /// `-33.8688,151.2093`, so it can never be the more confident of the two.
+    /// The Address carried MEDIUM_PLUS (0.60) against Coordinates at
+    /// MEDIUM_SOLID (0.58) built from the same single fix.
+    #[test]
+    fn the_address_never_outranks_the_fix_it_was_composed_from() {
+        let ents = build_entities(
+            "1.2.3.4",
+            &data(r#"{"loc":"-33.8688,151.2093","city":"Sydney","region":"NSW","country":"AU"}"#),
+            "s",
+        );
+        let coords = one(&ents, EntityKind::Coordinates).expect("Coordinates entity");
+        let addr = one(&ents, EntityKind::Address).expect("Address entity");
+        assert!(
+            addr.confidence <= coords.confidence,
+            "Address {:.2} outranks the Coordinates {:.2} it was composed from",
+            addr.confidence,
+            coords.confidence
+        );
+    }

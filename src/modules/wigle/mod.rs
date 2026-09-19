@@ -609,8 +609,20 @@ fn wifi_ap_entities(
         .iter()
         .filter_map(|n| {
             let mac = n.netid.as_deref()?;
+            // The STRICT provider gate — `is_plausible_provider_coord`, as the
+            // BSSID/SSID emitters in `emit.rs` use on these same fields. This
+            // function's own doc comment promises that "a record with no usable
+            // position ... yields no phantom `Coordinates` node"; under
+            // `is_valid_coords` a WiGLE no-fix placeholder in the near-null-
+            // island jitter band IS a usable position, so the phantom node it
+            // promises not to emit was emitted — as a first-class `geoint`
+            // Coordinates for an access point (REQ-WIGLE-001). A rejected
+            // position still falls back to the query centre for RANKING, which
+            // is what the `None` arm already does.
             let ap = match (n.trilat, n.trilong) {
-                (Some(t), Some(g)) if crate::util::geo::is_valid_coords(t, g) => Some((t, g)),
+                (Some(t), Some(g)) if crate::util::geo::is_plausible_provider_coord(t, g) => {
+                    Some((t, g))
+                }
                 _ => None,
             };
             let (alat, alon) = ap.unwrap_or((qlat, qlon));

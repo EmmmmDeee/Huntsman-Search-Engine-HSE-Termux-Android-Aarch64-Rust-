@@ -382,3 +382,227 @@ fn ci_msrv_job_pins_the_version_cargo_toml_declares() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The organising documents: ledger ⇄ map ⇄ changelog
+// ---------------------------------------------------------------------------
+//
+// The same defect as the credit tables above, one level up. Three documents
+// make claims about each other's contents and nothing checked them:
+//
+//   * `docs/REQUIREMENTS_LEDGER.md` is the authority — the transcript of what
+//     each requirement IS and what happened to it.
+//   * `docs/ROADMAP.md` is the living map. `CLAUDE.md` requires it to be
+//     "re-assessed and realigned on each iteration", and its own header says a
+//     claim it makes that the code does not honour is a defect in it.
+//   * `CHANGELOG.md` is the per-release record a reader consults to find out
+//     what happened to a given fix.
+//
+// Realignment was a remembered procedure, so it drifted. On `0a09c336` the map
+// still named REQ-ZOOMEYE-001, REQ-LEAKCHECK-001 and REQ-HUDSONROCK-001 as the
+// "still-open siblings" of the REQ-AUGEO-001 fail-open family — all three had
+// shipped (`1c2b7447`, `0fb6c2ac`, `444a8f3b`) and none had a ledger entry at
+// all — while the changelog was silent on 51 recorded requirements.
+//
+// A repeated manual procedure standing in for a structural property is exactly
+// what these guards replace: the ledger defines the vocabulary, the map may not
+// cite outside it, and the changelog must account for every entry it holds.
+
+const LEDGER_DOC: &str = "docs/REQUIREMENTS_LEDGER.md";
+const ROADMAP_DOC: &str = "docs/ROADMAP.md";
+const CHANGELOG_DOC: &str = "CHANGELOG.md";
+
+fn read_doc(rel: &str) -> String {
+    fs::read_to_string(doc_path(rel)).unwrap_or_else(|e| panic!("{rel} must be readable: {e}"))
+}
+
+/// Every `REQ-<AREA>-<NNN>` identifier in `text`.
+///
+/// Hand-scanned rather than regex-matched, like the rest of this file. The
+/// shapes the documents actually use are the constraint: `AREA` is itself
+/// hyphenated in places (`REQ-AU-UNCLAIMED-001`, `REQ-DEVICE-CELL-001`) and may
+/// carry digits, ids sit against punctuation (`REQ-CI-008.`, `A / B`), and the
+/// suffix is always exactly three digits. Anything not ending in `-NNN` is not
+/// an identifier — `REQ-` on its own, or a trailing hyphen, yields nothing.
+fn req_ids(text: &str) -> std::collections::BTreeSet<String> {
+    const PREFIX: &str = "REQ-";
+    let bytes = text.as_bytes();
+    let mut out = std::collections::BTreeSet::new();
+    let mut cursor = 0usize;
+
+    while let Some(offset) = text[cursor..].find(PREFIX) {
+        let start = cursor + offset;
+        // `XREQ-CI-001` is not an identifier: the prefix must start a token.
+        let joined_to_a_word = start > 0
+            && (bytes[start - 1].is_ascii_alphanumeric()
+                || bytes[start - 1] == b'_'
+                || bytes[start - 1] == b'-');
+        if joined_to_a_word {
+            cursor = start + PREFIX.len();
+            continue;
+        }
+
+        let mut end = start;
+        while end < bytes.len()
+            && (bytes[end].is_ascii_uppercase()
+                || bytes[end].is_ascii_digit()
+                || bytes[end] == b'-')
+        {
+            end += 1;
+        }
+        // A trailing hyphen is punctuation ("the REQ-CI- family"), not part of
+        // the identifier.
+        let mut trimmed = end;
+        while trimmed > start && bytes[trimmed - 1] == b'-' {
+            trimmed -= 1;
+        }
+
+        let candidate = &text[start..trimmed];
+        let suffix = candidate.rsplit('-').next().unwrap_or_default();
+        let well_formed = candidate.matches('-').count() >= 2
+            && suffix.len() == 3
+            && suffix.bytes().all(|b| b.is_ascii_digit());
+        if well_formed {
+            out.insert(candidate.to_string());
+        }
+        cursor = end.max(start + PREFIX.len());
+    }
+    out
+}
+
+/// The identifiers the ledger *defines* — those introduced by one of its own
+/// section headings. An id that appears only in another entry's prose is a
+/// cross-reference, not a record: REQ-ZOOMEYE-001 was cited four times in the
+/// ledger and defined nowhere, which is precisely the hole the first guard
+/// below now refuses.
+fn ledger_defined_ids(ledger: &str) -> std::collections::BTreeSet<String> {
+    ledger
+        .lines()
+        .filter(|line| line.starts_with('#'))
+        .flat_map(req_ids)
+        .collect()
+}
+
+/// Vacuity guard for the two guards below: a scanner that silently stopped
+/// matching would make both of them pass on any pair of documents. Pins the
+/// exact shapes the corpus contains, and the near-misses it must reject.
+#[test]
+fn the_requirement_id_scanner_reads_the_shapes_the_documents_use() {
+    let found = req_ids(
+        "### REQ-CORRELATOR-002 / REQ-AU-UNCLAIMED-001 (fixed), REQ-CI-008. \
+         `REQ-DEVICE-CELL-001` and REQ-IP2LOCATION-002's sibling.",
+    );
+    assert_eq!(
+        found.iter().map(String::as_str).collect::<Vec<_>>(),
+        [
+            "REQ-AU-UNCLAIMED-001",
+            "REQ-CI-008",
+            "REQ-CORRELATOR-002",
+            "REQ-DEVICE-CELL-001",
+            "REQ-IP2LOCATION-002",
+        ],
+        "the scanner must read hyphenated and digit-bearing areas, ids against \
+         punctuation, and several ids on one line"
+    );
+
+    // Near-misses that must NOT be admitted, each for its own reason.
+    for not_an_id in [
+        "REQ-",               // the bare prefix
+        "the REQ-CI- family", // trailing hyphen is punctuation
+        "REQ-CI-05",          // two-digit suffix
+        "REQ-CI-0051",        // four-digit suffix
+        "PREQ-CI-001",        // prefix joined to a preceding word
+        "REQ-ci-001",         // lowercase area
+    ] {
+        assert!(
+            req_ids(not_an_id).is_empty(),
+            "`{not_an_id}` is not a requirement id, but the scanner read one"
+        );
+    }
+}
+
+/// **The map may not cite a requirement the ledger does not record.**
+///
+/// A citation outside the ledger is a claim with no transcript behind it —
+/// which is how the roadmap came to describe three shipped fixes as still open.
+/// Either the requirement earns a ledger entry or the map stops naming it.
+#[test]
+fn the_map_never_cites_a_requirement_the_ledger_does_not_record() {
+    let ledger = read_doc(LEDGER_DOC);
+    let defined = ledger_defined_ids(&ledger);
+    assert!(
+        defined.len() > 100,
+        "the ledger defines only {} requirement ids — the heading scan broke, \
+         and this guard would pass vacuously",
+        defined.len()
+    );
+
+    // Both documents are scanned before anything is asserted. Asserting per
+    // document reports only the first one's dangling citations and hides the
+    // other's behind the panic — the same "collect the survivors" discipline
+    // the falsification passes use, for the same reason: one run should name
+    // every instance, not the first.
+    let dangling: Vec<String> = [ROADMAP_DOC, CHANGELOG_DOC]
+        .iter()
+        .flat_map(|doc| {
+            let cited = req_ids(&read_doc(doc));
+            cited
+                .into_iter()
+                .filter(|id| !defined.contains(id))
+                .map(|id| format!("{id}  (cited in {doc})"))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        dangling.is_empty(),
+        "{} requirement citation(s) have no entry of their own in {LEDGER_DOC}:\n  {}\n\
+         Give each one a ledger entry (it is the authority for what a \
+         requirement is), or stop citing it.",
+        dangling.len(),
+        dangling.join("\n  ")
+    );
+}
+
+/// **The changelog must account for every requirement the ledger records.**
+///
+/// The ledger holds the transcript; the changelog is where a reader looks to
+/// find out whether a given requirement shipped. One line per requirement is
+/// the whole cost, and it makes the changelog impossible to leave behind: a new
+/// ledger entry fails the suite until the changelog names it. Refuted and
+/// measured-but-unchanged requirements count too — "we looked and changed
+/// nothing" is an answer the reader needs, not an omission.
+#[test]
+fn every_requirement_the_ledger_records_is_accounted_for_in_the_changelog() {
+    let ledger = read_doc(LEDGER_DOC);
+    let defined = ledger_defined_ids(&ledger);
+    let changelog = read_doc(CHANGELOG_DOC);
+    let logged = req_ids(&changelog);
+
+    // Vacuity guard on the LEDGER scan, not on the changelog: an empty
+    // `defined` makes `missing` empty and this guard silently toothless. The
+    // changelog's own count is the quantity under test, so it must not gate the
+    // assertion — the first cut asserted `logged.len() > 100` and tripped on the
+    // very 62-of-113 shortfall it was meant to report.
+    assert!(
+        defined.len() > 100,
+        "{LEDGER_DOC} defines only {} requirement ids — the heading scan broke, \
+         and this guard would pass vacuously",
+        defined.len()
+    );
+
+    let missing: Vec<&str> = defined
+        .iter()
+        .filter(|id| !logged.contains(*id))
+        .map(String::as_str)
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "{LEDGER_DOC} records {} requirement(s) {CHANGELOG_DOC} never mentions:\n  {}\n\
+         Add one line per requirement under the matching heading — `Fixed` for a \
+         shipped correction, `Added` for new capability, `Investigated (no code \
+         change)` for a refuted or measured-only lead — naming the defect and \
+         pointing at the ledger for the transcript.",
+        missing.len(),
+        missing.join("\n  ")
+    );
+}

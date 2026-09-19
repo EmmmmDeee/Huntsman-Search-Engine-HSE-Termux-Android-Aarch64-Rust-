@@ -126,7 +126,7 @@ impl Module for UrlExtract {
             return Ok(result);
         };
         // Skip known platform/hosting domains — they are not the subject's infrastructure.
-        if !is_ip && super::profile_kit::PLATFORM_HOSTS.contains(&host.as_str()) {
+        if !is_ip && super::profile_kit::is_platform_host(&host) {
             return Ok(result);
         }
         let kind = if is_ip {

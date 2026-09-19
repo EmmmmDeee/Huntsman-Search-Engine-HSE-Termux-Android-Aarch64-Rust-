@@ -144,7 +144,17 @@ pub(super) fn extract_cell_intel(
         .filter_map(|n| {
             let lat = n.trilat?;
             let lon = n.trilong?;
-            if !crate::util::geo::is_valid_coords(lat, lon) {
+            // The STRICT provider gate, as the BSSID and SSID emitters below
+            // already use on these same two WiGLE fields. `is_valid_coords`
+            // only rejects (0,0) and out-of-range; WiGLE's own no-fix
+            // placeholder is the near-null-island JITTER BAND just outside it
+            // (0.001-ish), which sailed through and became one of the "top-3
+            // tower positions closest to target" — ranked by a distance
+            // computed from a placeholder (REQ-WIGLE-001). This is the same
+            // provider and the same band REQ-WIFIINTEL-001 closed in
+            // `wifi_intel`; this module knew the rule and applied it to two of
+            // its four trilat/trilong sites.
+            if !crate::util::geo::is_plausible_provider_coord(lat, lon) {
                 return None;
             }
             let dist = target_coords.map_or(0.0, |(t_lat, t_lon)| {

@@ -39,7 +39,17 @@ fn result_to_entity(query_name: &str, result: &MatchResult, scan_id: &str) -> En
 
     for topic in &result.properties.topics {
         match topic.as_str() {
-            "sanction" | "sanction.linked" => entity.tag(tags::SANCTIONED),
+            // A LISTED party — the entity is itself designated. Drives AU-114's
+            // Critical "matches a sanctions designation".
+            "sanction" => entity.tag(tags::SANCTIONED),
+            // REQ-OPENSANCTIONS-001: `sanction.linked` is a DISTINCT, weaker
+            // OpenSanctions topic — the entity is merely ASSOCIATED with a
+            // designated party (a relative, business partner, or majority-owned
+            // company), not designated itself. Folding it into `SANCTIONED` (as
+            // this arm once did) fabricated a Critical "designation" claim about
+            // a real person from a mere association. It carries its own weaker
+            // tag, which AU-114 grades as an elevated due-diligence signal.
+            "sanction.linked" => entity.tag(tags::SANCTIONS_LINKED),
             t if t.starts_with("role.pep") => entity.tag(tags::PEP),
             "debarment" => entity.tag(tags::DEBARRED),
             _ => {}

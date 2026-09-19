@@ -163,7 +163,12 @@ impl Module for OpenCellId {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let api_key = match crate::util::keys::resolve_key(ctx.key_opt(KEY_ENV)) {
             Some(k) => k,
-            None => return Ok(ModuleResult::new()),
+            // PROVIDER FAILURE != ZERO EVIDENCE: returning Ok(empty) here made
+            // dispatch record ModuleDone { found: 0 }, which coverage reads as a
+            // CleanNegative -- "queried, holds nothing on this subject" -- for a
+            // provider that was never asked. Error::MissingKey is the contract
+            // (REQ-KEYSKIP-001).
+            None => return Err(crate::core::error::Error::MissingKey(KEY_ENV.into())),
         };
         match target.kind {
             TargetKind::Coordinates => process_area(target, ctx, api_key).await,

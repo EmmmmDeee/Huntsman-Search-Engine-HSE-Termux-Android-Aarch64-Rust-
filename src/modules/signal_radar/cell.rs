@@ -1,7 +1,12 @@
-//! Cell tower scanner for signal_radar — reads `termux-telephony-cellinfo`,
-//! which already carries per-cell `dbm`/signal data (see [`Cell::dbm`]).
-
-use serde::Deserialize;
+//! Cell tower scanner for signal_radar — the entity mapping around the
+//! canonical `termux-telephony-cellinfo` shape in
+//! [`crate::modules::device_cell`], shared with `cell_intel`.
+//!
+//! The wire shape, the per-radio identity key (`cid` / `ci` / `nci`), the
+//! `Integer.MAX_VALUE` sentinel rules and the DeviceId segment rule all live
+//! there, single-sourced — both consumers of this tool had independently
+//! written the same wrong rule for reading it, so fixing either copy alone
+//! would have left the other silently blind to every LTE and 5G cell.
 
 use crate::core::{
     confidence,
@@ -9,21 +14,9 @@ use crate::core::{
     error::Result,
     module::ModuleResult,
 };
+use crate::modules::device_cell::{Cell, is_numeric_segment};
 
 use super::SRC;
-
-#[derive(Deserialize)]
-pub(super) struct Cell {
-    #[serde(rename = "type")]
-    pub(super) cell_type: Option<String>,
-    pub(super) registered: Option<bool>,
-    pub(super) dbm: Option<i64>,
-    pub(super) cid: Option<i64>,
-    pub(super) lac: Option<i64>,
-    pub(super) tac: Option<i64>,
-    pub(super) mcc: Option<serde_json::Value>,
-    pub(super) mnc: Option<serde_json::Value>,
-}
 
 fn tech_tag(cell_type: Option<&str>) -> &'static str {
     match cell_type.map(str::to_lowercase).as_deref() {
@@ -46,20 +39,18 @@ pub(super) fn parse_cells(cellinfo: &[u8], scan_id: &str) -> Result<ModuleResult
     let mut result = ModuleResult::with_capacity(cells.len());
 
     for cell in cells {
-        // Single-sourced from `util::cell` — the documented sole home of the
-        // DeviceId tower-id/dedup key. All four producers MUST format it
-        // identically or one physical tower forks into two entities; `mcc_mnc_str`
-        // also borrows the common JSON-string case, sparing an allocation per
-        // cellinfo record on the Termux hot path (byte-identical to the former
-        // local `json_to_str`, which `into_owned`ed the same value).
-        let mcc = crate::util::cell::mcc_mnc_str(&cell.mcc);
-        let mnc = crate::util::cell::mcc_mnc_str(&cell.mnc);
-        let cid = cell.cid.unwrap_or(0);
-        let lac = crate::util::cell::resolve_lac(cell.lac, cell.tac);
-
-        if mcc.is_empty() || cid == 0 {
+        let mcc = cell.mcc_str();
+        let mnc = cell.mnc_str();
+        let Some(cid) = cell.identity() else {
+            continue;
+        };
+        // Every segment must be numeric and non-empty, or the emitted value is
+        // a DeviceId that `Target::validate` would reject. An absent `mnc` is
+        // the common case this catches.
+        if !is_numeric_segment(&mcc) || !is_numeric_segment(&mnc) {
             continue;
         }
+        let lac = cell.area_code();
 
         let tower_id = crate::util::cell::tower_id(&mcc, &mnc, lac, cid);
         let tech = tech_tag(cell.cell_type.as_deref());
@@ -77,9 +68,6 @@ pub(super) fn parse_cells(cellinfo: &[u8], scan_id: &str) -> Result<ModuleResult
             e.tag("registered");
         }
 
-        // A signal reading the tool omitted stays absent: `dbm=0` would be
-        // an unphysically strong signal asserted as measured (the class fixed
-        // for the Wi-Fi sensors in backlog #16).
         let mut ev = Evidence::new(SRC, format!("Cell tower: {tower_id}"))
             .with_attr("tower_id", &tower_id)
             .with_attr("mcc", mcc.as_ref())
@@ -88,7 +76,8 @@ pub(super) fn parse_cells(cellinfo: &[u8], scan_id: &str) -> Result<ModuleResult
             .with_attr("cid", cid.to_string())
             .with_attr("tech", tech)
             .with_attr("registered", registered.to_string());
-        if let Some(dbm) = cell.dbm {
+        // Recorded only when it is a real reading — see `Cell::usable_dbm`.
+        if let Some(dbm) = cell.usable_dbm() {
             ev = ev.with_attr("dbm", dbm.to_string());
         }
         e.add_evidence(ev);

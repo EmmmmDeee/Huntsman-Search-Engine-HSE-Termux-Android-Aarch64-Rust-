@@ -166,6 +166,39 @@ pub(super) fn admission_rejection(
     {
         return Some("confusable_homoglyph");
     }
+    // The same gate for the kinds homograph spoofing actually TARGETS. The list
+    // above covers the kinds where a Cyrillic lookalike is a nuisance and left
+    // out Domain / Email / Url, where it is the attack itself — a `pаypal.com`
+    // whose `a` is Cyrillic was admitted, expanded and correlated like any real
+    // domain (REQ-VALIDATION-001).
+    //
+    // Per LABEL, via `host_label_is_confusable`, not the flat string check used
+    // above. Measured: the flat check calls `москва.com` a spoof, because the
+    // ASCII TLD supplies the "genuine ASCII Latin" half of the mix — so wiring
+    // the existing predicate straight in would have dropped legitimate
+    // internationalised domains at admission. A whole Cyrillic label under
+    // `.com` is ordinary IDN usage; one label mixing Cyrillic and ASCII Latin is
+    // the deception.
+    //
+    // The host comes from `validation::host_of`, which is `core`'s own parse —
+    // `core` may not reach into `util::url_util` (the architecture test
+    // `core_does_not_import_util_directly` enforces that, and the gate's first
+    // draft tripped it). `host_of` was already here, unnamed, inside
+    // `is_onion_url`; naming it was the right resolution rather than widening a
+    // deliberate allow-list or writing a second inline parse.
+    let spoofable_host = match entity.kind {
+        EntityKind::Domain | EntityKind::Url => Some(validation::host_of(&entity.value)),
+        // The domain part; admission already requires exactly one `@`
+        // (REQ-VALIDATION-002 runs above via `is_fragment_value`).
+        EntityKind::Email => entity
+            .value
+            .rsplit_once('@')
+            .map(|(_, host)| validation::host_of(host)),
+        _ => None,
+    };
+    if spoofable_host.is_some_and(|h| validation::host_label_is_confusable(&h)) {
+        return Some("confusable_homoglyph");
+    }
     if entity.kind == EntityKind::Person && validation::looks_like_gibberish_name(&entity.value) {
         return Some("gibberish_value");
     }
@@ -455,9 +488,10 @@ pub(super) fn module_skip_reason(
     // service" so we save its quota / suppress its "HTTP 400 invalid
     // IP" responses before the dispatch even fires.
     //
-    // Modules with non-IP/Domain accepts (Email, Phone, Username, etc.)
-    // fall through the `_` arm and run normally — there's no concept
-    // of a "private email".
+    // Phone/Username/etc. still fall through the `_` arm — none of them
+    // carries a dialable host. `Email` DOES, and used to fall through on
+    // the assumption that "there's no concept of a 'private email'"; see
+    // the `Email` arm below (REQ-SSRF-002) for why that was false.
     if !super::LOCAL_PASSIVE_MODULES.contains(&name) {
         use crate::util::preflight;
         match target.kind {
@@ -473,10 +507,33 @@ pub(super) fn module_skip_reason(
                     "private/reserved IP — external API would reject",
                 ));
             }
-            TargetKind::Domain if preflight::is_local_domain(&target.value) => {
+            // SSRF gate: a Domain value that is itself an IP-literal
+            // string (`169.254.169.254`, `127.0.0.1`, …) is NOT caught
+            // by `is_local_domain` — that only matches IANA reserved
+            // *names* (`.local`, `.internal`, …), never an IP-shaped
+            // value. Without `is_private_ip_host` here too, a Domain-kind
+            // target of a private/reserved IP literal sailed past this
+            // gate untouched and reached web_crawler (and any other
+            // Domain-accepting external module), which dials it as a
+            // plain hostname with no further check. Mirrors the Url
+            // arm's own SSRF gate below — same risk, same fix, just a
+            // different `TargetKind` shape for the identical value.
+            //
+            // `is_private_ip_host`, not the stricter `is_private_ip`:
+            // `Target::validate`'s Domain branch admits any dotted
+            // alnum/`-`/`_` string, including shorthand-dotted (`127.1`),
+            // decimal (`2130706433`), hex, and octal IPv4 forms that
+            // `std::net::IpAddr`'s strict parser rejects but the URL host
+            // parser `web_crawler`'s own request path uses canonicalizes
+            // to the exact private address they dial — a bypass a
+            // Copilot review on this fix caught live (REQ-SSRF-001).
+            TargetKind::Domain
+                if preflight::is_local_domain(&target.value)
+                    || preflight::is_private_ip_host(&target.value) =>
+            {
                 return Some((
                     SkipClass::NotApplicable,
-                    "local/reserved domain — external API would reject",
+                    "local/reserved domain or private IP — external API would reject (SSRF gate)",
                 ));
             }
             // SSRF gate: a URL whose host is a private IP or local
@@ -489,6 +546,27 @@ pub(super) fn module_skip_reason(
                 return Some((
                     SkipClass::NotApplicable,
                     "URL with private host — external API would reject (SSRF gate)",
+                ));
+            }
+            // SSRF gate (REQ-SSRF-002): an Email whose DOMAIN part is a
+            // private/reserved IP literal or a local domain. Several
+            // Email-accepting modules derive a bare hostname from that
+            // domain and dial it directly with no guard of their own —
+            // `employer_pivot` fetches `https://{domain}/` plus seven
+            // more paths, `fediverse` fetches
+            // `https://{domain}/.well-known/webfinger?…` — so
+            // `finance@169.254.169.254` was a second, fully-open route to
+            // the cloud-metadata endpoint the Domain arm above already
+            // refuses. Neither module validated the derived host, and the
+            // client's DNS-level SSRF resolver never sees an IP literal
+            // (dialled with no lookup), so the only layer that can close
+            // this for every current and future Email-accepting module is
+            // this one — the same argument, and the same authoritative
+            // layer, as REQ-SSRF-001's Domain arm.
+            TargetKind::Email if preflight::email_host_is_private(&target.value) => {
+                return Some((
+                    SkipClass::NotApplicable,
+                    "email domain is a local/reserved name or private IP — external API would reject (SSRF gate)",
                 ));
             }
             _ => {}
@@ -729,17 +807,35 @@ impl super::ScanEngine {
                     for id in crate::core::attack::techniques_for_entity_kind(&entity.kind) {
                         entity.tag(format!("attack:{id}"));
                     }
+                    // ── Every mutation of `entity` happens HERE, before the
+                    //    emit ────────────────────────────────────────────────
+                    // `EventKind::EntityFound` is the DURABLE record. A scan
+                    // killed before it finalises — routine on Termux/Android,
+                    // where the OS reclaims backgrounded processes — is rebuilt
+                    // from these events alone by `Store::entities_from_events`,
+                    // which applies no enrichment of its own. Whatever is not on
+                    // the entity at this line does not exist for a recovered
+                    // scan. `entity_mutations_precede_the_durable_emit` holds
+                    // the ordering (REQ-ENGINE-001).
+                    //
                     // Universal breach-sector wiring: stamp the source's sector
                     // (`sector:real-estate`, …) on every breach finding — one
                     // chokepoint connects EVERY pool to `util::breach_sector`.
-                    // Before the emit so the event log (and the recovery rebuild)
-                    // carries it too.
                     super::tag_breach_sector(&mut entity);
                     // Categorise shared/third-party infrastructure (cloud buckets,
                     // hosting/CDN endpoints, analytics ids) as platform-infra so the
-                    // default report shows only subject-owned entities. Before the
-                    // emit so the event log + recovery rebuild carry the tag too.
+                    // default report shows only subject-owned entities.
                     super::tag_platform_infra(&mut entity);
+                    // Geohash / timezone / country / hemisphere on a Coordinates
+                    // or Address. Deterministic and offline (`util::geohash`, no
+                    // network), so there is nothing to gain by deferring it — and
+                    // it used to run AFTER the emit, which meant every recovered
+                    // scan's geo entities came back untagged and the geo
+                    // correlation rules that read those tags saw nothing. The two
+                    // passes above carried "Before the emit so the event log (and
+                    // the recovery rebuild) carries it too" in their own comments;
+                    // this one was the exception that broke the rule they state.
+                    super::enrich_geospatial(&mut entity);
                     self.emit(
                         cx.scan_id,
                         EventKind::EntityFound {
@@ -747,7 +843,6 @@ impl super::ScanEngine {
                         },
                     );
                     super::scan_entity_for_keys(&entity, self.module_runtime.as_ref());
-                    super::enrich_geospatial(&mut entity);
                     if let Some(existing) = state.entity_map.get_mut(&entity.uid) {
                         existing.merge(entity);
                     } else {

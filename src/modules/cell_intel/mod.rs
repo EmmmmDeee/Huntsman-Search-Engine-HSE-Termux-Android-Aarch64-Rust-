@@ -32,10 +32,7 @@ use crate::core::{
 };
 use crate::modules::termux_sensor;
 
-use helpers::{
-    OPENCELLID_BASE, build_opencellid_coordinate, build_tower_device, mcc_to_centroid,
-    query_opencellid,
-};
+use helpers::{accuracy_to_confidence, build_tower_device, mcc_to_centroid, query_opencellid};
 use types::TowerKey;
 
 const OPENCELLID_KEY_ENV: &str = "HUNTSMAN_OPENCELLID_KEY";
@@ -116,7 +113,7 @@ impl Module for CellIntel {
             termux_sensor::unparseable_for(SRC, termux_sensor::Sensor::CellInfo, &e)
         })?;
 
-        let api_key = crate::util::keys::resolve_key(ctx.key_opt(OPENCELLID_KEY_ENV));
+        let api_key = ctx.key_opt(OPENCELLID_KEY_ENV);
         let mut result = ModuleResult::new();
         let mut seen = HashSet::new();
 
@@ -138,37 +135,37 @@ impl Module for CellIntel {
 
             let radio = key.radio_code();
 
-            // A failed keyed lookup (transport, non-2xx, rejected key, an
-            // unreadable body) is not a miss: the centroid fallback below is
-            // still emitted — it is offline and honest at country grain — but
-            // its evidence says the precise lookup FAILED, so a coarse fix can
-            // never pass for "OpenCelliD does not know this tower".
-            let mut opencellid_failure: Option<String> = None;
-            if let Some(api) = api_key {
-                match query_opencellid(ctx, OPENCELLID_BASE, api, &key, radio).await {
-                    Ok(Some((lat, lon, range))) => {
-                        result.push(build_opencellid_coordinate(
-                            cell,
-                            &key,
-                            radio,
-                            lat,
-                            lon,
-                            range,
-                            &ctx.scan_id,
-                        ));
-                        continue;
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        tracing::warn!(
-                            target: "module.cell_intel",
-                            tower = %key.tower_id,
-                            error = %e,
-                            "OpenCelliD lookup failed; falling back to the country centroid"
-                        );
-                        opencellid_failure = Some(e.to_string());
-                    }
-                }
+            if let Some(api) = api_key
+                && let Some((lat, lon, range)) = query_opencellid(ctx, api, &key, radio).await
+            {
+                let coords = format!("{lat:.6},{lon:.6}");
+                let confidence = accuracy_to_confidence(range);
+                let mut e = Entity::new(EntityKind::Coordinates, &coords, confidence, &ctx.scan_id);
+                e.tag("geoint");
+                e.tag(crate::core::tags::CELL_TOWER);
+                e.tag(format!("radio:{}", key.ctype.to_lowercase()));
+                crate::util::geo::tag_au_state(&mut e, lat, lon);
+                e.add_evidence(
+                    // Attributed to OpenCelliD, not to this module: the fix comes
+                    // out of OpenCelliD's corpus, which the `opencellid` module
+                    // also serves. Stamping `cell_intel` on it would let the same
+                    // row retrieved by both count as two independent sources and
+                    // buy `source_count` a corroboration boost it never earned.
+                    Evidence::new(
+                        crate::modules::opencellid::SRC,
+                        format!("Cell tower {radio} {} -> {coords}", key.tower_id),
+                    )
+                    .with_attr("tower_id", &key.tower_id)
+                    .with_attr("radio", radio)
+                    .with_attr("mcc", key.mcc.as_ref())
+                    .with_attr("mnc", key.mnc.as_ref())
+                    .with_attr("range_m", range.to_string())
+                    .with_attr("source", "OpenCelliD")
+                    .with_attr("dbm", cell.dbm.unwrap_or(0).to_string())
+                    .with_attr("registered", cell.registered.unwrap_or(false).to_string()),
+                );
+                result.push(e);
+                continue;
             }
 
             // Fallback: MCC -> country centroid (coarse but free, offline)
@@ -189,19 +186,17 @@ impl Module for CellIntel {
                 {
                     e.tag(format!("au-state:{state}"));
                 }
-                let mut ev = Evidence::new(
-                    SRC,
-                    format!("Cell tower MCC {} -> {country} (country centroid)", key.mcc),
-                )
-                .with_attr("tower_id", &key.tower_id)
-                .with_attr("mcc", key.mcc.as_ref())
-                .with_attr("country", country)
-                .with_attr("source", "mcc-centroid")
-                .with_attr("accuracy", "country-level");
-                if let Some(why) = &opencellid_failure {
-                    ev = ev.with_attr("opencellid_lookup", format!("failed: {why}"));
-                }
-                e.add_evidence(ev);
+                e.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("Cell tower MCC {} -> {country} (country centroid)", key.mcc),
+                    )
+                    .with_attr("tower_id", &key.tower_id)
+                    .with_attr("mcc", key.mcc.as_ref())
+                    .with_attr("country", country)
+                    .with_attr("source", "mcc-centroid")
+                    .with_attr("accuracy", "country-level"),
+                );
                 result.push(e);
             }
         }

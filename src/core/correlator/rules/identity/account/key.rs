@@ -128,16 +128,22 @@ pub(in crate::core::correlator) fn rule_au_048_shared_public_key(
     out
 }
 
-/// AU-042 — two or more email addresses bound to the **same** PGP key (`pgp`
-/// module): strong same-owner evidence (the key holder asserted these are theirs).
-/// `High`. One firing PER KEY, over the emails that key binds.
+/// AU-042 — two or more email addresses self-asserted on the **same** PGP key
+/// (`pgp` module): a keyserver-UNVERIFIED same-owner lead. keyserver.ubuntu.com
+/// performs no ownership check on a UID, so co-residence on one key is the key
+/// uploader's say-so, not proof — `Low`, and clearly labelled. One firing PER
+/// KEY, over the co-resident UID addresses that key carries.
 ///
-/// Partitioned by the key fingerprint each `pgp-linked` email carries (the
-/// `key_fingerprint` evidence attribute the `pgp` module attaches): emails bound
-/// to DIFFERENT keys are separate assertions — possibly different people — so they
-/// must never be fused into one owner, and a key binding only ONE address is not
-/// multi-email evidence, so it does not fire (the rule's "two or more" contract).
-/// An email with no fingerprint can't be attributed to a key and is excluded.
+/// Partitioned by the key fingerprint each `pgp-unverified-uid` email carries
+/// (the `key_fingerprint` evidence attribute the `pgp` module attaches): emails
+/// on DIFFERENT keys are separate assertions — possibly different people — so
+/// they must never be fused into one owner, and a key carrying only ONE
+/// co-resident address is not multi-email evidence, so it does not fire (the
+/// rule's "two or more" contract). An email with no fingerprint can't be
+/// attributed to a key and is excluded. REQ-PGP-001: this was `High` "proven
+/// same owner" over `pgp-linked` emails until the `pgp` module stopped treating
+/// an unverified co-resident UID as corroborated; the tag it reads and the
+/// severity it fires now match what a bare keyserver index can actually support.
 pub(in crate::core::correlator) fn rule_au_042_pgp_email_identity(
     context: &RuleContext,
     scan_id: &str,
@@ -148,7 +154,7 @@ pub(in crate::core::correlator) fn rule_au_042_pgp_email_identity(
     // fingerprint -> (address -> emitting uid). BTreeMaps keep the output
     // deterministic (fingerprint order, then address order) with no HashMap leak.
     let mut by_key: BTreeMap<&str, BTreeMap<&str, String>> = BTreeMap::new();
-    for e in entities_of_kind_with_tag(entities, EntityKind::Email, "pgp-linked") {
+    for e in entities_of_kind_with_tag(entities, EntityKind::Email, "pgp-unverified-uid") {
         // An email merged from several keyserver hits can carry more than one
         // fingerprint; it legitimately belongs to each key that bound it.
         let fingerprints: BTreeSet<&str> = e
@@ -175,9 +181,10 @@ pub(in crate::core::correlator) fn rule_au_042_pgp_email_identity(
             Correlation::new(
                 "AU-042",
                 "PGP key binds multiple emails to one identity",
-                Severity::High,
+                Severity::Low,
                 format!(
-                    "PGP key {fpr} links {} email address(es) to one owner: {}",
+                    "PGP key {fpr} self-asserts {} co-resident email address(es) \
+                     (keyserver UID, unverified): {}",
                     addr_list.len(),
                     addr_list.join(", ")
                 ),

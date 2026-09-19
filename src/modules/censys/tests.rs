@@ -392,3 +392,29 @@ fn blank_country_code_adds_no_tag_but_keeps_other_geo_attrs() {
         Some("Sydney")
     );
 }
+
+#[test]
+fn near_null_island_jitter_coordinates_yield_no_coords_entity() {
+    // REQ-CENSYS-001: Censys is a coarse IP-geo provider and must reject the
+    // near-null-island jitter band (0.001 to 0.01) those APIs emit as an
+    // "unknown" placeholder. The stricter is_plausible_provider_coord gate is
+    // required, not the weaker is_valid_coords. A (0.005, 0.005) jitter
+    // coordinate must not become a Coordinates entity, and Address is gated on it.
+    let ents = build_entities(
+        &host(
+            r#"{ "result": { "services": [],
+                "location": { "coordinates": { "latitude": 0.005, "longitude": 0.005 },
+                              "country": "Unknown", "city": "Null" } } }"#,
+        ),
+        "1.2.3.4",
+        "s",
+    );
+    assert!(
+        of_kind(&ents, EntityKind::Coordinates).is_none(),
+        "near-null-island jitter coordinates (0.005, 0.005) must be rejected"
+    );
+    assert!(
+        of_kind(&ents, EntityKind::Address).is_none(),
+        "no Address when coordinates are rejected"
+    );
+}

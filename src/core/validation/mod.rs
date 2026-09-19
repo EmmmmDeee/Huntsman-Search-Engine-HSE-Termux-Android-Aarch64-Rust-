@@ -42,9 +42,10 @@ mod report;
 mod tests;
 
 pub use confusable::{
-    is_confusable_mixed_script, looks_like_gibberish_name, skeleton, strip_invisible,
+    host_label_is_confusable, is_confusable_mixed_script, looks_like_gibberish_name, skeleton,
+    strip_invisible,
 };
-pub use domain::is_onion_url;
+pub use domain::{host_of, is_onion_url};
 pub use email::{email_local, is_role_mailbox, validate_email_syntax};
 pub use ip::{is_bogus_ip, is_cdn_edge_ip, is_non_routable_ip, untrusted_ip_geo_reason};
 pub use phone::{to_e164_au, validate_phone_e164};

@@ -127,27 +127,36 @@ fn confidence_for_sources(n: usize) -> f64 {
     }
 }
 
+/// Classify a `success:false` response into success (clean negative) or error. A
+/// `success:false` body is LeakCheck's own signal for an ordinary clean miss only
+/// when the `error` field explicitly names it (`"Not found"` / `"No results
+/// found"`). Any OTHER case — a missing `error` field, an unexpected error text,
+/// a backend failure — must fail closed as a real `ModuleError` rather than
+/// masquerade as an exoneration (REQ-LEAKCHECK-001).
+fn classify_failure(error_text: Option<&str>) -> Result<()> {
+    match error_text {
+        Some(err) if err.eq_ignore_ascii_case("not found") => Ok(()),
+        Some(err) if err.eq_ignore_ascii_case("no results found") => Ok(()),
+        Some(err) => Err(Error::module(
+            SRC,
+            format!("LeakCheck public API error: {err}"),
+        )),
+        None => Err(Error::module(
+            SRC,
+            "unexpected LeakCheck response: success:false with no error reason",
+        )),
+    }
+}
+
 /// Turn a parsed public-API response into entities. Pure of I/O so it is
 /// unit-tested against fixtures; `process` stays a thin network adapter.
-///
-/// A `success:false` body is LeakCheck's own signal: `error == "Not found"` is
-/// the ordinary clean negative (empty success); any OTHER error text (rate
-/// limit, malformed query) is a genuine failure that must propagate as a real
-/// `ModuleError` rather than a false "clean", so a throttled scan is never read
-/// as an exoneration.
 fn build_result(resp: &PublicResp, target: &Target, scan_id: &str) -> Result<ModuleResult> {
     let mut result = ModuleResult::new();
 
     let sources = resp.sources.as_deref().unwrap_or(&[]);
     if !resp.success || sources.is_empty() {
-        if let Some(err) = resp.error.as_deref()
-            && !err.eq_ignore_ascii_case("not found")
-            && !err.eq_ignore_ascii_case("no results found")
-        {
-            return Err(Error::module(
-                SRC,
-                format!("LeakCheck public API error: {err}"),
-            ));
+        if !resp.success {
+            classify_failure(resp.error.as_deref())?;
         }
         return Ok(result);
     }

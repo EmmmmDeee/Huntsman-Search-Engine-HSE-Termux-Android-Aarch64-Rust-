@@ -4,9 +4,15 @@
 //! public SKS-style keyserver. The index returns colon-delimited `pub:`/`uid:`
 //! records — no OpenPGP packet parsing required, no key download — and each
 //! User ID is a `Name <email>` string. From one email that resolves to a key we
-//! recover the owner's **real name** and **every other email** bound to the same
-//! key: a pure, free identity-graph edge that strongly corroborates breach /
-//! social / gravatar findings (cross-correlation), with zero credentials.
+//! recover the owner's **real name** and surface **every other UID** on the key
+//! as a lead: a pure, free identity-graph edge, with zero credentials.
+//!
+//! The index is unverified: keyserver.ubuntu.com does no ownership check on a
+//! UID, so anyone can self-certify any name/email onto their own key. Only the
+//! UID whose email matches the query is trusted as a first-class attribution;
+//! co-resident UIDs are minted as clearly-labelled tentative leads
+//! (`pgp-unverified-uid`) and never bound into the cross-account
+//! "proof of control" Credential (REQ-PGP-001).
 //!
 //! Endpoint: `https://keyserver.ubuntu.com/pks/lookup?op=index&options=mr&search=<email>`
 //! (SKS-style `op=index` is used over keys.openpgp.org, which hides UIDs by
@@ -170,6 +176,29 @@ fn extract(body: &str, query_email: &str, scan_id: &str, result: &mut ModuleResu
             continue;
         }
 
+        // REQ-PGP-001: `key_matches_query` only proves that SOME UID on this key
+        // names the queried address — it says nothing about the key's OTHER
+        // UIDs. keyserver.ubuntu.com performs no ownership check on a UID, so
+        // anyone can self-certify `Victim <victim@x>` beside `Alias <alt@y>` on
+        // their own key and upload it. Only a UID whose OWN email is the queried
+        // one is a trusted attribution; every other co-resident UID is an
+        // unverified self-assertion that must never be minted first-class, bound
+        // into the AU-048 "cryptographic proof of control" Credential, or tagged
+        // `pgp-linked` for AU-042 — otherwise an attacker fabricates a Critical
+        // link from an invented identity to the victim. Precompute the names a
+        // query-matching UID carries so a name genuinely shared with the real
+        // owner still surfaces at full confidence regardless of UID order.
+        let query_names: std::collections::HashSet<String> = decoded
+            .iter()
+            .filter(|(_, email, _)| {
+                email
+                    .as_deref()
+                    .is_some_and(|e| e.to_lowercase() == query_lower)
+            })
+            .filter_map(|(name, _, _)| name.as_deref())
+            .map(|n| n.trim().to_lowercase())
+            .collect();
+
         for (name, email, uid) in &decoded {
             let ev = || {
                 let mut e = Evidence::new(SRC, "PGP keyserver User ID");
@@ -181,30 +210,52 @@ fn extract(body: &str, query_email: &str, scan_id: &str, result: &mut ModuleResu
 
             if let Some(name) = name
                 && name.trim().contains(' ')
-                && seen_person.insert(name.to_lowercase())
+                && seen_person.insert(name.trim().to_lowercase())
             {
-                let mut e = Entity::new(EntityKind::Person, name.trim(), confidence::HIGH, scan_id);
+                // Full confidence only for a name a query-matching UID carries;
+                // an unrelated co-resident UID's name is a keyserver-unverified
+                // self-assertion, minted as a clearly-labelled tentative lead the
+                // identity correlators cannot read as corroborated fact.
+                let verified = query_names.contains(&name.trim().to_lowercase());
+                let conf = if verified {
+                    confidence::HIGH
+                } else {
+                    confidence::TENTATIVE
+                };
+                let mut e = Entity::new(EntityKind::Person, name.trim(), conf, scan_id);
                 e.tag(SRC);
+                if !verified {
+                    e.tag("pgp-unverified-uid");
+                }
                 e.add_evidence(ev());
                 result.push(e);
             }
             if let Some(email) = email {
                 let lower = email.to_lowercase();
-                if lower.contains('@') && !fingerprint.is_empty() {
-                    // Bind EVERY UID email (including the queried one) to the
-                    // key, so the Credential carries the full controller set.
+                // Bind ONLY the queried email — the one this lookup actually
+                // matched — to the key's controller set. A co-resident UID's
+                // OTHER email is an unverified self-assertion, not proof the same
+                // person controls it, so it must not enter the AU-048 binding.
+                // Genuine cross-account linkage still fires when a SEPARATE seed
+                // independently matches this same key: its own query email binds
+                // then, and the fingerprinted `pgp:<fp>` Credential dedups the
+                // two matched controllers together.
+                if lower == query_lower && lower.contains('@') && !fingerprint.is_empty() {
                     key_emails
                         .entry(fingerprint.clone())
                         .or_default()
                         .insert(lower.clone());
                 }
-                // Alternate emails bound to the same key are the high-value
-                // pivot; the queried email itself adds nothing new standalone.
+                // An alternate address on the matched key is a lead worth
+                // surfacing, but a keyserver UID is unverified: mint it low and
+                // tagged `pgp-unverified-uid` (never `pgp-linked`) so AU-042 and
+                // AU-048 cannot read it as independently corroborated same-owner
+                // evidence.
                 if lower.contains('@') && lower != query_lower && seen_email.insert(lower) {
                     let mut e =
-                        Entity::new(EntityKind::Email, email, confidence::HIGH_PLUS, scan_id);
+                        Entity::new(EntityKind::Email, email, confidence::TENTATIVE, scan_id);
                     e.tag(SRC);
-                    e.tag("pgp-linked");
+                    e.tag("pgp-unverified-uid");
                     e.add_evidence(ev());
                     result.push(e);
                 }
@@ -214,10 +265,12 @@ fn extract(body: &str, query_email: &str, scan_id: &str, result: &mut ModuleResu
 
     // Mint each key as a fingerprinted, CORRELATABLE Credential — value
     // `pgp:<fp>` so the SAME key recovered for two different seeds dedups to one
-    // artifact carrying both controllers' emails, which AU-048 then links (the
-    // exact mechanism github_user's `ssh:<fp>` artifact uses). The queried email
-    // is always bound (the key matched it), so a key whose UIDs name a second,
-    // distinct identity fires the link even within a single scan.
+    // artifact carrying both matched controllers' emails, which AU-048 then
+    // links (the exact mechanism github_user's `ssh:<fp>` artifact uses). Only a
+    // QUERY-MATCHED email is bound here (see REQ-PGP-001 above): the link fires
+    // when two independent seeds each match this key on their own address —
+    // genuine convergence — never from a single key's unverified co-resident
+    // UIDs, which any uploader can forge.
     for (fp, emails) in key_emails {
         if fp.is_empty() {
             continue;

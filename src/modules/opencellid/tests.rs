@@ -26,13 +26,18 @@ async fn placeholder_key_is_a_clean_skip_not_a_forwarded_credential() {
         cancel: crate::core::cancel::CancelHandle::new(),
     };
     let target = Target::new(TargetKind::Coordinates, "-27.47,153.02");
-    let result = OpenCellId
+    // "Treated as no key configured" is now the TYPED skip: an unedited
+    // template placeholder means the provider was never asked, and Ok(empty)
+    // would be recorded as a CleanNegative -- "queried, holds nothing"
+    // (REQ-KEYSKIP-001). The original concern is unchanged: the placeholder is
+    // still never forwarded as a credential.
+    let err = OpenCellId
         .process(&target, &ctx)
         .await
-        .expect("must not error");
+        .expect_err("a placeholder key is no key, so this must be a MissingKey skip");
     assert!(
-        result.entities.is_empty(),
-        "an unedited template placeholder must be treated as no key configured"
+        matches!(err, crate::core::error::Error::MissingKey(ref k) if k == KEY_ENV),
+        "expected MissingKey({KEY_ENV}), got {err:?}"
     );
 }
 

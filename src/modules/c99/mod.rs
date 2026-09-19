@@ -157,7 +157,12 @@ impl Module for C99 {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let initial_key = match ctx.key_opt(KEY_ENV) {
             Some(k) => k,
-            None => return Ok(ModuleResult::new()),
+            // PROVIDER FAILURE != ZERO EVIDENCE: returning Ok(empty) here made
+            // dispatch record ModuleDone { found: 0 }, which coverage reads as a
+            // CleanNegative -- "queried, holds nothing on this subject" -- for a
+            // provider that was never asked. Error::MissingKey is the contract
+            // (REQ-KEYSKIP-001).
+            None => return Err(crate::core::error::Error::MissingKey(KEY_ENV.into())),
         };
         let domain = target.value.trim().trim_end_matches('.');
         if domain.is_empty() {

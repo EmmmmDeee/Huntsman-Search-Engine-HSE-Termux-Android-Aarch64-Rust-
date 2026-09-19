@@ -20,7 +20,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::geo::is_valid_coords;
+use crate::util::geo::is_plausible_provider_coord;
 use crate::util::http::RequestBuilderExt;
 use crate::util::http::{handle_keyed_error, urlencode};
 
@@ -91,7 +91,12 @@ impl Module for Censys {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let api_id = match ctx.key_opt(ID_ENV) {
             Some(v) => v,
-            None => return Ok(ModuleResult::new()),
+            // PROVIDER FAILURE != ZERO EVIDENCE: returning Ok(empty) here made
+            // dispatch record ModuleDone { found: 0 }, which coverage reads as a
+            // CleanNegative -- "queried, holds nothing on this subject" -- for a
+            // provider that was never asked. Error::MissingKey is the contract
+            // (REQ-KEYSKIP-001).
+            None => return Err(crate::core::error::Error::MissingKey(ID_ENV.into())),
         };
         let api_secret = match ctx.key_opt(SECRET_ENV) {
             Some(v) => v,
@@ -163,7 +168,7 @@ impl Module for Censys {
 ///
 /// Returns empty when the host carries neither services nor a location (the
 /// caller previously short-circuited on this). The Coordinates AND the
-/// city/country Address are BOTH gated on the shared [`is_valid_coords`] check:
+/// city/country Address are BOTH gated on valid coordinates:
 /// a `0,0` location is Censys's "unknown" sentinel, where the city/country are
 /// equally unreliable, so it yields neither — keeping placeholder junk out of the
 /// graph (false positives are worse than a missed lead here).
@@ -255,11 +260,10 @@ fn build_entities(host: &HostResult, ip: &str, scan_id: &str) -> Vec<Entity> {
     if let Some(loc) = &host.location
         && let Some(coords) = &loc.coordinates
         && let (Some(lat), Some(lon)) = (coords.latitude, coords.longitude)
-        // Shared validator: finite + in-range + not-Null-Island. Censys
-        // (and data-centre geo APIs generally) emit 0,0 as an
-        // "unknown location" placeholder, which the prior range-only
-        // check let through as a false Coordinates entity.
-        && is_valid_coords(lat, lon)
+        // Shared validator for IP-geo providers: rejects Null Island (0,0),
+        // near-null-island jitter band that data-centre/IP-geo APIs emit as
+        // "unknown" placeholders (0.001, etc), and out-of-range/non-finite values.
+        && is_plausible_provider_coord(lat, lon)
         // Suppressed when the host IP is a CDN/anycast edge (the geo is the
         // datacentre, not the subject) — parity with the sibling IP-geo
         // modules (ipinfo/ip2location/ip_whois_geo/ipquery/netlas/geo_intel).
@@ -304,7 +308,19 @@ fn build_entities(host: &HostResult, ip: &str, scan_id: &str) -> Vec<Entity> {
         let country = loc.country.as_deref().unwrap_or("");
         if !city.is_empty() && !country.is_empty() {
             let addr = crate::util::geo::compose_address(city, province, country);
-            let mut ae = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM_PLUS, scan_id);
+            // Already below its own fix (0.60 under Coordinates' 0.65); routed
+            // through the shared emitter so it stays there (REQ-IPGEO-001).
+            let fix = result
+                .entities
+                .iter()
+                .rev()
+                .find(|e| e.kind == EntityKind::Coordinates);
+            let mut ae = crate::util::geo::coarse_provider_address(
+                &addr,
+                confidence::MEDIUM_PLUS,
+                fix,
+                scan_id,
+            );
             ae.tag("censys");
             ae.tag("geoint");
             ae.add_evidence(Evidence::new(SRC, format!("Censys location for {ip}")));

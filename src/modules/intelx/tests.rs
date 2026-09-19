@@ -234,3 +234,294 @@ fn record_tolerates_missing_and_human_bucket() {
     assert!(r.records[0].bucket.is_none());
     assert!(r.records[0].date.is_none());
 }
+
+// REQ-INTELX-002 — `classify_start` must fail CLOSED on any search-start body
+// that is neither a usable poll id nor a recognised status. `StartResp`'s
+// fields are both `#[serde(default)]`, so an auth/quota failure, a WAF page, or
+// any unexpected 200 JSON shape decodes without error to all-`None`; a search
+// *start* has no "no results" state, so treating that as a clean negative is
+// the most consequential false clean this engine can produce. These lock the
+// policy at the pure seam (no network).
+
+#[test]
+fn classify_start_proceeds_only_on_a_usable_id() {
+    // status 0 (explicit success) and status omitted both proceed when a
+    // non-empty id is present.
+    match classify_start(Some("abc123".to_string()), Some(0)).expect("status 0 + id proceeds") {
+        StartDecision::Proceed(id) => assert_eq!(id, "abc123"),
+        other => panic!("expected Proceed, got {other:?}"),
+    }
+    match classify_start(Some("abc123".to_string()), None).expect("omitted status + id proceeds") {
+        StartDecision::Proceed(id) => assert_eq!(id, "abc123"),
+        other => panic!("expected Proceed, got {other:?}"),
+    }
+}
+
+#[test]
+fn classify_start_invalid_term_is_the_one_clean_negative() {
+    // status 1 = the API explicitly rejected the term: a genuine clean negative.
+    assert!(matches!(
+        classify_start(None, Some(1)).expect("invalid term is Ok(InvalidTerm)"),
+        StartDecision::InvalidTerm
+    ));
+}
+
+#[test]
+fn classify_start_max_concurrent_is_an_error() {
+    let err = classify_start(None, Some(2)).expect_err("max concurrent must be an error");
+    assert!(
+        matches!(err, crate::core::error::Error::Module { .. }),
+        "{err}"
+    );
+    assert!(err.to_string().contains("max concurrent"), "{err}");
+}
+
+#[test]
+fn an_unexpected_start_body_fails_closed_not_a_clean_negative() {
+    // The core REQ-INTELX-002 lock: an auth/quota failure or unexpected 200
+    // decodes to all-`None` and MUST be an error, never a clean negative.
+    let start: StartResp = serde_json::from_str(r#"{"error":"Invalid or expired API key"}"#)
+        .expect("all-optional StartResp decodes any JSON object without error");
+    assert!(start.id.is_none() && start.status.is_none());
+    let err = classify_start(start.id, start.status)
+        .expect_err("an unexpected-shape start body must fail closed, never a clean negative");
+    assert!(
+        matches!(err, crate::core::error::Error::Module { .. }),
+        "{err}"
+    );
+    assert!(err.to_string().contains("no usable search id"), "{err}");
+
+    // A success status with no id, and a present-but-empty id, are equally
+    // unusable — both fail closed rather than proceed or read as a miss.
+    assert!(classify_start(None, Some(0)).is_err());
+    assert!(classify_start(Some(String::new()), Some(0)).is_err());
+}
+
+#[test]
+fn poll_failure_error_preserves_a_typed_rate_limit() {
+    // REQ-INTELX-001. A poll loop that spent its attempts on 429s must surface
+    // the THROTTLE, not a generic module fault: the breaker treats a fault as a
+    // provider defect and the live sweep reads it as "unreachable", so a
+    // throttled key would be indistinguishable from a dead endpoint.
+    let typed = Error::RateLimited("intelx: HTTP 429 Too Many Requests".to_string());
+    let out = poll_failure_error(Some(typed), "abc-123", POLL_ATTEMPTS);
+    assert!(
+        matches!(out, Error::RateLimited(_)),
+        "a throttle must stay RateLimited, got {out:?}"
+    );
+}
+
+#[test]
+fn poll_failure_error_preserves_a_typed_bot_challenge() {
+    // Same for an anti-bot interstitial: `Blocked` is its own operator-visible
+    // state and must not collapse into a module fault.
+    let typed = Error::BotChallenge("intelx: challenge page".to_string());
+    let out = poll_failure_error(Some(typed), "abc-123", POLL_ATTEMPTS);
+    assert!(
+        matches!(out, Error::BotChallenge(_)),
+        "a wall must stay BotChallenge, got {out:?}"
+    );
+}
+
+#[test]
+fn poll_failure_error_falls_back_to_a_module_fault_only_when_no_error_was_seen() {
+    // Every poll succeeded yet the search never reached a terminal state. There
+    // is no typed failure to report, so the generic fault IS the right answer —
+    // and it must still name the search and the attempt ceiling.
+    let out = poll_failure_error(None, "abc-123", POLL_ATTEMPTS);
+    assert!(
+        matches!(out, Error::Module { .. }),
+        "no typed error seen => module fault, got {out:?}"
+    );
+    let msg = out.to_string();
+    assert!(msg.contains("abc-123"), "must name the search id: {msg}");
+    assert!(
+        msg.contains(&POLL_ATTEMPTS.to_string()),
+        "must name the attempt ceiling: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 end to end, against a loopback.
+//
+// The three `poll_failure_error` tests above lock the SELECTION rule — given a
+// typed error, report it — and the REQ-INTELX-001 ledger entry said so plainly
+// rather than claiming more: nothing exercised each arm's CAPTURE, because the
+// endpoint was a hardcoded `const` and no test could put a 429, a wall or a
+// drifted body in front of the real classification. `PollPlan` closes that.
+//
+// Every test below runs the REAL loop — status classification, `Retry-After`
+// reading, body decoding, terminal-state logic, the server-side terminate and
+// the fail-closed decision — against a status the test chooses. The first
+// three fail on the pre-REQ-INTELX-001 code (the arms that `continue`d past
+// their error); the last three pass on it, which is what makes the first
+// three attributable to the discarded typing rather than to tests that fail
+// indiscriminately.
+// ---------------------------------------------------------------------------
+
+/// A context whose client can reach a loopback. `build_client()` filters
+/// loopback by design, so the shared engine client cannot be used here.
+fn loopback_ctx() -> crate::core::module::ModuleContext {
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    crate::core::module::ModuleContext {
+        scan_id: "intelx-poll".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    }
+}
+
+fn plan_for(base: &str, attempts: u32) -> PollPlan<'_> {
+    PollPlan {
+        base,
+        // The live 1.5 s cadence would cost seconds per case. Collapsing it is
+        // the reason the SCHEDULE is part of the plan: the alternative — a
+        // separate fast loop for tests — is the duplicated authority that lets
+        // the tested path and the production path drift apart.
+        interval: Duration::ZERO,
+        attempts,
+    }
+}
+
+#[tokio::test]
+async fn a_throttled_poll_surfaces_as_the_typed_rate_limit() {
+    use crate::util::http::test_server::{Canned, serve};
+    // `Retry-After: 0` drives the real backoff branch instantly instead of
+    // skipping it. Two attempts, not three: on the third the 429 arm also
+    // reports the key to the process-global key pool, and this test is about
+    // the typed capture, not about that side effect.
+    let base = serve(vec![
+        Canned::json(429, r#"{"error":"rate limit exceeded"}"#).header("Retry-After", "0"),
+        Canned::json(429, r#"{"error":"rate limit exceeded"}"#).header("Retry-After", "0"),
+        // The loop ends unfinished, so it terminates the search server-side.
+        Canned::text(200, ""),
+    ])
+    .await;
+    let err = poll_search(&loopback_ctx(), plan_for(&base, 2), "k", "sid-429")
+        .await
+        .expect_err("an exhausted quota is never a clean negative");
+    assert!(
+        matches!(err, Error::RateLimited(_)),
+        "a throttle must reach the breaker as RateLimited, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_wall_in_front_of_the_poll_surfaces_as_the_typed_block() {
+    use crate::util::http::test_server::{Canned, serve};
+    // A real captured interstitial, served with the 503 Cloudflare's classic
+    // challenge uses — 401/403/429 would additionally burn the key in the
+    // process-global pool, which is a different requirement's concern.
+    const WALL: &str =
+        include_str!("../../util/html/testdata/cloudflare_block_anubis_2026-09-15.html");
+    let base = serve(vec![
+        Canned::html(503, WALL),
+        Canned::html(503, WALL),
+        Canned::text(200, ""),
+    ])
+    .await;
+    let err = poll_search(&loopback_ctx(), plan_for(&base, 2), "k", "sid-wall")
+        .await
+        .expect_err("a wall is never a clean negative");
+    assert!(
+        matches!(err, Error::BotChallenge(_)),
+        "an anti-bot wall must reach the breaker as BotChallenge, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_drifted_poll_body_stays_a_decode_fault_not_the_generic_message() {
+    use crate::util::http::test_server::{Canned, serve};
+    // A 200 whose shape contradicts `ResultResp`: `status` is not an integer
+    // and `records` is not an array. `#[serde(default)]` cannot rescue a field
+    // that is PRESENT and wrongly typed, so this is a genuine contract drift.
+    let drift = r#"{"status":"finished","records":"none"}"#;
+    let base = serve(vec![
+        Canned::json(200, drift),
+        Canned::json(200, drift),
+        Canned::text(200, ""),
+    ])
+    .await;
+    let err = poll_search(&loopback_ctx(), plan_for(&base, 2), "k", "sid-drift")
+        .await
+        .expect_err("an undecodable body is never a clean negative");
+    let msg = err.to_string();
+    assert!(
+        !msg.contains("never reached a terminal state"),
+        "the decode fault must survive the loop rather than being replaced by \
+         the generic message: {msg}"
+    );
+    assert!(msg.contains(SRC), "the fault must name the module: {msg}");
+    // Non-vacuous on the baseline too: the generic message also names the
+    // module, so this second assertion has to be about the decode itself.
+    assert!(
+        msg.contains("JSON") || msg.contains("json") || msg.contains("expected"),
+        "the fault must say the body did not decode: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn every_poll_succeeding_without_a_terminal_state_is_the_generic_fault() {
+    use crate::util::http::test_server::{Canned, serve};
+    // Status 1 = "no results yet, still running". Nothing went wrong, so there
+    // is no typed error to report and the generic module fault is correct.
+    // This one passes on the baseline — it is the control for the three above.
+    let running = r#"{"status":1,"records":[]}"#;
+    let base = serve(vec![
+        Canned::json(200, running),
+        Canned::json(200, running),
+        Canned::text(200, ""),
+    ])
+    .await;
+    let err = poll_search(&loopback_ctx(), plan_for(&base, 2), "k", "sid-slow")
+        .await
+        .expect_err("a search that never finished is not an authoritative empty");
+    let msg = err.to_string();
+    assert!(matches!(err, Error::Module { .. }), "{err:?}");
+    assert!(
+        msg.contains("sid-slow") && msg.contains("never reached a terminal state"),
+        "{msg}"
+    );
+}
+
+#[tokio::test]
+async fn a_terminal_none_available_is_the_authoritative_empty() {
+    use crate::util::http::test_server::{Canned, serve};
+    // Status 3 = "no results available" — terminal, and the ONE empty phase 2
+    // may legitimately report. No terminate call: the search finished.
+    let base = serve(vec![Canned::json(200, r#"{"status":3,"records":[]}"#)]).await;
+    let records = poll_search(&loopback_ctx(), plan_for(&base, 3), "k", "sid-empty")
+        .await
+        .expect("a terminal none-available is a real clean negative");
+    assert!(records.is_empty());
+}
+
+#[tokio::test]
+async fn records_accumulate_across_batches_and_status_one_is_never_terminal() {
+    use crate::util::http::test_server::{Canned, serve};
+    // An earlier revision broke out of the loop on status 1, which made a slow
+    // search look empty. Batch, then "still running", then the terminal batch.
+    let base = serve(vec![
+        Canned::json(
+            200,
+            r#"{"status":0,"records":[{"bucket":"leaks.public.general","media":24}]}"#,
+        ),
+        Canned::json(200, r#"{"status":1,"records":[]}"#),
+        Canned::json(
+            200,
+            r#"{"status":2,"records":[{"bucket":"pastes","media":1}]}"#,
+        ),
+    ])
+    .await;
+    let records = poll_search(&loopback_ctx(), plan_for(&base, 3), "k", "sid-batched")
+        .await
+        .expect("a finished search with records is not a failure");
+    assert_eq!(
+        records.len(),
+        2,
+        "both batches must survive; status 1 is not terminal"
+    );
+    assert_eq!(records[0].bucket.as_deref(), Some("leaks.public.general"));
+    assert_eq!(records[1].bucket.as_deref(), Some("pastes"));
+}
