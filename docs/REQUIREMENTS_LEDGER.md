@@ -11064,3 +11064,62 @@ The same question is open for the other bulk-observation providers still on the
 weak gate: `wifidb`, `mylnikov`, `beacondb`, `cell_intel`, `cell_local`. Each
 needs its own check of whether that provider emits a no-fix placeholder in the
 band before its gate is changed — not a blanket sweep.
+
+---
+
+## REQ-ENGINE-002 — Measured, not yet changed: a gate skip on a discovered target is permanent
+
+Recorded here **without a code change**, because the measurement is complete
+enough to state the defect and not complete enough to design the fix safely.
+Writing it down now so the next cycle starts from evidence rather than from the
+original one-line claim.
+
+### Confirmed from source (`src/core/engine/dispatch.rs`, `mod.rs`)
+
+1. `dispatch.rs` computes `let target_sources = target_distinct_sources(state.entity_map, cx.target);`
+   **once, before the module loop.** Its comment presents this as an
+   optimisation — "computed once per target, not per module" — and says nothing
+   about what it costs.
+2. Every gate check inside the loop reads that loop-invariant snapshot:
+   `gate_skips(cx, &**module, target_sources, state.stats)`. Both gates that use
+   it are therefore frozen at the pre-loop value: the high-value-API
+   cross-correlation gate (`CROSS_CORRELATION_MIN_SOURCES = 2`, guarding
+   `oathnet_pro`) and the WiGLE geo-corroboration finaliser gate.
+3. A gate skip does **not** consume the dispatch key — the `continue` in
+   `gate_skips` precedes `state.dispatched.insert(dispatch_key(..))` — so the
+   module is not marked dispatched and *could* be retried.
+4. It never is. A target is visited exactly once:
+   `if visited.contains(&visit_key(&target))` guards the candidate loop, and
+   `visited.insert(visit_key(&target))` follows. A discovered target is
+   dispatched in exactly one round.
+
+(3) and (4) together are the defect, independent of any same-round mechanics:
+**corroboration that arrives for a target after its own dispatch round can never
+re-open the gate.** The gate's stated purpose — "a discovered entity must reach
+real cross-correlation ... before the heaviest paid modules fire on it" — is
+evaluated once, at the earliest moment it possibly could be, and never again.
+
+### Not yet verified — the same-round layer
+
+Whether a target's own `corroborating_sources` count actually grows *during its
+own dispatch loop* (a module re-emitting the target with fresh evidence)
+remains unmeasured; `corroborating_sources` lives in the `hse-core` crate.
+It is not assumed here. The `REQ-IP2LOCATION-002` refutation earlier in this
+same session came from exactly that kind of unverified premise.
+
+### The design question, stated rather than guessed
+
+Recomputing the count per module would make the gate's answer depend on module
+ORDER within the loop. That is deterministic in the sequential path and **not**
+deterministic in the two concurrent dispatch phases, where module completions
+interleave — and this repository treats forensic determinism as a requirement
+(`C7 (forensic determinism)`, `src/storage/tests.rs`). A naive per-module
+recompute would move the defect rather than remove it, which this ledger's own
+standard rejects.
+
+The candidate that avoids it is a **round barrier**: re-evaluate gate-deferred
+high-value modules once at the end of the target's round, when the entity map
+has settled. Deterministic, and it addresses both layers. Falsifying it needs a
+harness that does not exist yet — a two-round expansion with one free module
+that re-confirms the target and one `is_high_value_only` module — so that is
+the next step, not a patch.
