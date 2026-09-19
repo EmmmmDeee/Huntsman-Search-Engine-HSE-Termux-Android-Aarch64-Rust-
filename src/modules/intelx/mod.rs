@@ -100,6 +100,30 @@ pub(crate) enum StartDecision {
 /// this engine can produce. Previously the `_` arm collapsed it to
 /// `Ok(empty)`; this makes the code keep the promise the surrounding comment
 /// already made (REQ-INTELX-002).
+/// Which error a poll loop that ended WITHOUT a terminal state should report.
+///
+/// `last` is the most recent typed failure the loop saw, if any. When the loop
+/// saw one it is returned unchanged, so a 429 stays [`Error::RateLimited`] and a
+/// WAF interstitial stays [`Error::BotChallenge`] all the way through to the
+/// breaker, the doctor projection and the live-drift sweep. Only when every poll
+/// genuinely succeeded — and the search still never reached a terminal state —
+/// is the generic module fault correct, because then nothing else went wrong to
+/// report.
+///
+/// Before this, all three failure arms of the poll loop `continue`d past their
+/// error and dropped it, so an exhausted quota, an anti-bot wall and a
+/// response-contract drift all surfaced as the same untyped `Error::module`
+/// (REQ-INTELX-001) — the defect already fixed for hibp in REQ-DRIFT-006 and for
+/// the three GitHub callers in REQ-DRIFT-007.
+pub(crate) fn poll_failure_error(last: Option<Error>, search_id: &str, attempts: u32) -> Error {
+    last.unwrap_or_else(|| {
+        Error::module(
+            SRC,
+            format!("search {search_id} never reached a terminal state within {attempts} polls"),
+        )
+    })
+}
+
 pub(crate) fn classify_start(id: Option<String>, status: Option<i32>) -> Result<StartDecision> {
     match (id, status) {
         (Some(id), Some(0) | None) if !id.is_empty() => Ok(StartDecision::Proceed(id)),
@@ -396,6 +420,15 @@ impl Module for IntelX {
         let mut all_records: Vec<Record> = Vec::with_capacity(MAX_RESULTS as usize);
         let mut finished = false;
         let mut poll_retries = 0u32;
+        // The most recent TYPED failure seen while polling. Every arm below used
+        // to `continue` past its error and drop it, so a throttle, an anti-bot
+        // wall and a schema drift all arrived at the fail-closed check below as
+        // the same untyped `Error::module` — the breaker counted each as a plain
+        // fault and the live sweep read every one as "unreachable"
+        // (REQ-INTELX-001, the pattern already fixed for hibp in REQ-DRIFT-006).
+        // Keeping the last typed error lets the real classification survive the
+        // loop.
+        let mut last_poll_err: Option<Error> = None;
         for _ in 0..POLL_ATTEMPTS {
             // Honor scan cancellation for faster abort latency (issue #23).
             if ctx.cancel.is_cancelled() {
@@ -411,23 +444,38 @@ impl Module for IntelX {
                 .await
             {
                 Ok(r) => r,
-                Err(_) => continue,
+                Err(e) => {
+                    last_poll_err =
+                        Some(Error::module(SRC, format!("poll transport failure: {e}")));
+                    continue;
+                }
             };
             if !resp.status().is_success() {
                 let code = resp.status().as_u16();
-                if code == 429 && poll_retries < 2 {
-                    let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 4, 4);
-                    poll_retries += 1;
-                    tokio::time::sleep(Duration::from_secs(retry_secs)).await;
-                }
+                // Read what the headers are needed for BEFORE `http_status_error`
+                // consumes the response.
+                let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 4, 4);
                 if code != 429 || poll_retries >= 2 {
                     crate::util::http::note_keyed_error(code, SRC, &key, ctx);
+                }
+                // `http_status_error` is what types a 429 as `RateLimited` and a
+                // WAF page as `BotChallenge`; previously only the status code was
+                // read and the classification thrown away.
+                last_poll_err = Some(crate::util::http::http_status_error(SRC, resp).await);
+                if code == 429 && poll_retries < 2 {
+                    poll_retries += 1;
+                    tokio::time::sleep(Duration::from_secs(retry_secs)).await;
                 }
                 continue;
             }
             let r: ResultResp = match crate::util::http::json_scanned(resp, SRC).await {
                 Ok(x) => x,
-                Err(_) => continue,
+                Err(e) => {
+                    // `json_scanned` already types a 2xx anti-bot page as
+                    // `BotChallenge` and a contract drift as a decode fault.
+                    last_poll_err = Some(e);
+                    continue;
+                }
             };
             all_records.extend(r.records);
             // Terminal states only: 2 = finished, 3 = none available.
@@ -464,12 +512,13 @@ impl Module for IntelX {
             // Cancellation is excluded: the caller stopped the work and already knows
             // why, so an error there is noise rather than a finding.
             if !finished && !ctx.cancel.is_cancelled() {
-                return Err(Error::module(
-                    SRC,
-                    format!(
-                        "search {search_id} never reached a terminal state within {POLL_ATTEMPTS} polls"
-                    ),
-                ));
+                // Surface the LAST TYPED failure when the loop saw one, so a
+                // throttle stays `RateLimited` and a wall stays `BotChallenge`
+                // all the way to the breaker, the doctor and the live sweep. The
+                // generic message is only for the case where every poll
+                // genuinely succeeded but the search never reached a terminal
+                // state — which is a real module fault (REQ-INTELX-001).
+                return Err(poll_failure_error(last_poll_err, &search_id, POLL_ATTEMPTS));
             }
             return Ok(ModuleResult::new());
         }

@@ -9899,3 +9899,50 @@ stringified`, `overlong value skipped`, and the two quoting mismatches
 (`Some("\"New York\"")` vs `Some("New York")`). Restored: 21/21 pass, including
 all four pre-existing `emit_footprint` tests, so the shared helper did not
 regress the sibling.
+
+### REQ-INTELX-001 — a throttled, blocked or drifted poll is no longer an untyped module fault
+
+intelx's phase-2 poll loop had three failure arms, and all three `continue`d past
+their error and dropped it:
+
+| Arm | Was | Lost |
+| --- | --- | --- |
+| transport | `Err(_) => continue` | the transport reason |
+| non-2xx | read `status().as_u16()`, then `continue` | the whole typed classification |
+| JSON decode | `Err(_) => continue` | `BotChallenge` / contract-drift typing |
+
+When the loop then ended without a terminal state, REQ-INTELX-002's fail-closed
+check replaced everything with one generic `Error::module`. So an exhausted
+quota, an anti-bot wall and a response-contract drift were **indistinguishable**:
+the breaker counted each as a plain provider fault, and the live sweep read every
+one as "unreachable". That is exactly the defect already fixed for hibp
+(REQ-DRIFT-006) and for the three GitHub callers (REQ-DRIFT-007) — unfixed here.
+
+**Fix.** The loop keeps the most recent typed failure in `last_poll_err`. The
+non-2xx arm now calls `http_status_error`, which is what types a 429 as
+`RateLimited` and a WAF page as `BotChallenge` (the headers needed for
+`Retry-After` are read *before* it consumes the response). The JSON arm keeps the
+error `json_scanned` already typed. The terminal decision moved into
+`poll_failure_error`, which returns the typed error when the loop saw one and the
+generic module fault only when every poll genuinely succeeded.
+
+**Falsified.** Reverting `poll_failure_error` to discard `last` fails the two
+typed tests with the precise substitution:
+
+```
+a throttle must stay RateLimited, got Module { module: "intelx",
+  message: "search abc-123 never reached a terminal state within 3 polls" }
+a wall must stay BotChallenge,   got Module { ... }
+```
+
+The third test — generic fault when no typed error was seen — **still passes on
+that baseline**, which is the control showing the two failures are attributable
+to the discarded typing rather than to the tests failing indiscriminately.
+
+**Stated limit of the coverage.** These lock the *selection rule*, not the loop's
+capture of each arm. An end-to-end test driving real 429 / challenge / drift
+responses needs intelx's `BASE` injected as a parameter — which sibling
+`github_user` already does (`fetch_profile(ctx, USERS_BASE, …)`), and which
+intelx hardcodes at three call sites. That injection is the next step for this
+module and would make the whole poll loop testable against
+`util::http::test_server`; it is recorded here rather than claimed as done.

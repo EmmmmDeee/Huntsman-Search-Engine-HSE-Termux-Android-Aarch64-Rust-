@@ -296,3 +296,47 @@ fn an_unexpected_start_body_fails_closed_not_a_clean_negative() {
     assert!(classify_start(None, Some(0)).is_err());
     assert!(classify_start(Some(String::new()), Some(0)).is_err());
 }
+
+#[test]
+fn poll_failure_error_preserves_a_typed_rate_limit() {
+    // REQ-INTELX-001. A poll loop that spent its attempts on 429s must surface
+    // the THROTTLE, not a generic module fault: the breaker treats a fault as a
+    // provider defect and the live sweep reads it as "unreachable", so a
+    // throttled key would be indistinguishable from a dead endpoint.
+    let typed = Error::RateLimited("intelx: HTTP 429 Too Many Requests".to_string());
+    let out = poll_failure_error(Some(typed), "abc-123", POLL_ATTEMPTS);
+    assert!(
+        matches!(out, Error::RateLimited(_)),
+        "a throttle must stay RateLimited, got {out:?}"
+    );
+}
+
+#[test]
+fn poll_failure_error_preserves_a_typed_bot_challenge() {
+    // Same for an anti-bot interstitial: `Blocked` is its own operator-visible
+    // state and must not collapse into a module fault.
+    let typed = Error::BotChallenge("intelx: challenge page".to_string());
+    let out = poll_failure_error(Some(typed), "abc-123", POLL_ATTEMPTS);
+    assert!(
+        matches!(out, Error::BotChallenge(_)),
+        "a wall must stay BotChallenge, got {out:?}"
+    );
+}
+
+#[test]
+fn poll_failure_error_falls_back_to_a_module_fault_only_when_no_error_was_seen() {
+    // Every poll succeeded yet the search never reached a terminal state. There
+    // is no typed failure to report, so the generic fault IS the right answer —
+    // and it must still name the search and the attempt ceiling.
+    let out = poll_failure_error(None, "abc-123", POLL_ATTEMPTS);
+    assert!(
+        matches!(out, Error::Module { .. }),
+        "no typed error seen => module fault, got {out:?}"
+    );
+    let msg = out.to_string();
+    assert!(msg.contains("abc-123"), "must name the search id: {msg}");
+    assert!(
+        msg.contains(&POLL_ATTEMPTS.to_string()),
+        "must name the attempt ceiling: {msg}"
+    );
+}
