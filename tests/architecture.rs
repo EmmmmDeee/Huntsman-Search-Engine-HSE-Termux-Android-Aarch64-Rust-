@@ -1405,3 +1405,70 @@ fn an_exif_gps_fix_uses_the_one_shared_confidence() {
         violations.join("\n  ")
     );
 }
+
+/// Nothing mutates a discovered entity after its durable event is emitted
+/// (REQ-ENGINE-001).
+///
+/// `EventKind::EntityFound` is the record a scan is rebuilt from when it never
+/// finalises — routine on Termux/Android, where the OS reclaims backgrounded
+/// processes. `Store::entities_for_scan` falls back to
+/// `Store::entities_from_events`, which merges the logged entities, canonicalises
+/// their order and returns them, applying no enrichment of its own. Whatever is
+/// not on the entity at the emit does not exist for that scan, ever.
+///
+/// Two of the three finalisation passes already said so in their own comments —
+/// "Before the emit so the event log (and the recovery rebuild) carries it too"
+/// — while `enrich_geospatial` ran after it, so every recovered scan's
+/// Coordinates and Address came back with no geohash, timezone, country or
+/// hemisphere tag, and the geo correlation rules that read those tags saw
+/// nothing.
+///
+/// The check is the general form on purpose: not "these three passes are in
+/// this order", which a fourth pass added below the emit would walk straight
+/// past, but "no `&mut entity` appears between the emit and the end of the
+/// admission block".
+#[test]
+fn entity_mutations_precede_the_durable_emit() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let src = fs::read_to_string(root.join("src/core/engine/dispatch.rs")).expect("dispatch.rs");
+
+    // The construction, not the name: the explanatory comment above the emit
+    // mentions `EventKind::EntityFound` too, and matching that instead would
+    // put the split point above the very passes this test is checking — a
+    // self-inflicted false positive, which is exactly what it did first time.
+    let emit = src
+        .find("EventKind::EntityFound {")
+        .expect("the EntityFound emit — has it been renamed or moved?");
+    // The admission block ends when the surviving entity is counted.
+    let block_end = src[emit..]
+        .find("found += 1;")
+        .map(|i| emit + i)
+        .expect("`found += 1;` closes the admission block");
+    let tail = &src[emit..block_end];
+
+    let offenders: Vec<&str> = tail
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with("//") && l.contains("&mut entity"))
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "these mutate the entity AFTER its durable EntityFound event, so a \
+         recovered scan never sees the change — move them above the emit:\n  {}",
+        offenders.join("\n  ")
+    );
+
+    // Not vacuous: the passes that must run before the emit are really there.
+    let head = &src[..emit];
+    for pass in [
+        "tag_breach_sector(&mut entity)",
+        "tag_platform_infra(&mut entity)",
+        "enrich_geospatial(&mut entity)",
+    ] {
+        assert!(
+            head.contains(pass),
+            "{pass} must run before the durable emit; it is not in the block above it"
+        );
+    }
+}

@@ -2810,3 +2810,106 @@ async fn persisted_corroboration_never_exceeds_the_observations_that_produced_it
             .collect::<Vec<_>>()
     );
 }
+
+/// Emits one Coordinates fix, so the engine's geospatial enrichment has
+/// something real to act on (REQ-ENGINE-001).
+struct GeoFixModule;
+
+#[async_trait]
+impl Module for GeoFixModule {
+    fn name(&self) -> &'static str {
+        "geo_fix"
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn description(&self) -> &'static str {
+        "test-only Coordinates emitter"
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        // Brisbane. A real, plausible fix — the enrichment rejects Null Island
+        // and out-of-range values, so a placeholder would make this vacuous.
+        let mut e = Entity::new(
+            EntityKind::Coordinates,
+            "-27.467900,153.028100",
+            0.80,
+            &ctx.scan_id,
+        );
+        e.tag("geoint");
+        r.push(e);
+        Ok(r)
+    }
+}
+
+/// REQ-ENGINE-001. A scan killed before it finalises is rebuilt from the
+/// `EntityFound` event log alone — routine on Termux/Android, where the OS
+/// reclaims backgrounded processes, and the reason `entities_for_scan` falls
+/// back to `entities_from_events` at all. That rebuild applies no enrichment of
+/// its own, so whatever is not on the entity when the event is emitted is gone
+/// for that scan permanently.
+///
+/// `enrich_geospatial` used to run immediately AFTER the emit, so every
+/// recovered scan's Coordinates came back with no `geo_normalize` evidence: no
+/// geohash, no timezone, no country, no hemisphere — and the geo correlation
+/// rules that read those attributes saw nothing. The two sibling passes
+/// (`tag_breach_sector`, `tag_platform_infra`) each carried a comment saying
+/// they run before the emit "so the event log (and the recovery rebuild)
+/// carries it too"; this one was the exception to the rule they state.
+///
+/// Read back through the recovery path on purpose. The finalised read is not
+/// the boundary where this fails — finalisation re-enriches, so a test against
+/// `entities_for_scan` on a finalised scan would pass on the defect.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_recovered_scan_keeps_its_geospatial_enrichment() {
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(GeoFixModule)],
+        "geo_recovery",
+        TargetKind::Email,
+        "alice@contoso.com",
+    );
+    let scan = Scan::new(sid.clone(), target.clone());
+    engine.run(scan, target, ctx).await.unwrap();
+
+    let recovered = store.entities_from_events(&sid).unwrap();
+    let coords = recovered
+        .iter()
+        .find(|e| e.kind == EntityKind::Coordinates)
+        .expect("the event log must carry the Coordinates fix at all");
+
+    let geo = coords
+        .evidence
+        .iter()
+        .find(|ev| ev.source == "geo_normalize")
+        .unwrap_or_else(|| {
+            panic!(
+                "no geo_normalize evidence survived recovery — enrichment ran after \
+                 the durable emit. Evidence sources present: {:?}",
+                coords
+                    .evidence
+                    .iter()
+                    .map(|e| e.source.as_str())
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    let mut missing = Vec::new();
+    for key in ["geohash", "timezone", "lat", "lon", "hemisphere"] {
+        if !geo.attributes.contains_key(key) {
+            missing.push(key);
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "recovered Coordinates is missing {missing:?} — present: {:?}",
+        geo.attributes.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        geo.attributes.get("hemisphere").map(String::as_str),
+        Some("southern"),
+        "the enrichment must have run on THIS fix, not be a stale default"
+    );
+}

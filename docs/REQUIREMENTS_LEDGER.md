@@ -10879,3 +10879,99 @@ nothing.
   kept. Two of its assertions required Carol's and Dave's homepages to be
   emitted on Alice's scan; those are replaced by an assertion that they are
   not, turning the same fixture into a control for the fix.
+
+---
+
+## REQ-ENGINE-001 — Nothing mutates an entity after its durable event is emitted
+
+### What was measured
+
+`core::engine::dispatch`'s admission block ran three finalisation passes over a
+surviving entity and emitted its durable `EventKind::EntityFound` in the middle
+of them:
+
+```rust
+super::tag_breach_sector(&mut entity);     // "Before the emit so the event log
+super::tag_platform_infra(&mut entity);    //  (and the recovery rebuild) carry it too."
+self.emit(cx.scan_id, EventKind::EntityFound { entity: entity.clone() });
+super::scan_entity_for_keys(&entity, …);
+super::enrich_geospatial(&mut entity);     // ← after
+```
+
+Two of the three passes carry a comment stating the exact rule the third
+breaks. `enrich_geospatial` is the geohash / timezone / country / hemisphere
+pass — deterministic and offline (`util::geohash`, no network), so there was
+nothing to gain by deferring it.
+
+### Why it matters — the consequence is at the recovery boundary
+
+`Store::entities_for_scan` falls back to `Store::entities_from_events` when the
+`entities` table is empty, which its own comment explains happens when a scan
+"never finalised (a module hung / the process was killed before the entities
+table was written)" — described elsewhere in the codebase as **routine on
+Termux/Android, where the OS reclaims backgrounded processes**. That is this
+project's primary platform.
+
+`entities_from_events` folds the logged `EntityFound` entities, canonicalises
+their order and returns them. It applies **no enrichment of its own** — its doc
+comment lists what a recovered read lacks ("no address-locality consolidation,
+geo-family promotion, or cross-scan history") and geohash/timezone/country is
+not on that list, because the author believed the event already carried it.
+
+So on every non-finalised scan, each `Coordinates` and `Address` came back with
+no `geo_normalize` evidence at all: no geohash (so no proximity matching at any
+precision), no timezone, no country_iso, no hemisphere. The geo correlation
+rules that read those attributes saw nothing, silently.
+
+A live finalised scan was unaffected — the finalise path re-enriches — which is
+why this survived: the defect is invisible from every read path except the one
+that matters when a scan dies.
+
+### The correction
+
+One line moved: `enrich_geospatial` now runs with its two siblings, above the
+emit. The three comments are replaced by one statement of the rule at the top
+of the block.
+
+### Falsification
+
+```
+Baseline (enrichment restored to after the emit):
+
+  a_recovered_scan_keeps_its_geospatial_enrichment ... FAILED
+    no geo_normalize evidence survived recovery — enrichment ran after the
+    durable emit. Evidence sources present: []
+
+  entity_mutations_precede_the_durable_emit ... FAILED
+    these mutate the entity AFTER its durable EntityFound event, so a
+    recovered scan never sees the change — move them above the emit:
+      super::enrich_geospatial(&mut entity);
+```
+
+The runtime failure reports an entity with **no evidence at all**, not merely a
+missing attribute — the fixture module attaches none of its own, so
+`geo_normalize` was the only source and its absence is total. Non-vacuous by
+construction.
+
+### Regression mechanisms
+
+- `tests/smoke.rs::a_recovered_scan_keeps_its_geospatial_enrichment` — a real
+  engine run with a module emitting a real Brisbane fix, read back **through
+  the recovery path**. Reading through `entities_for_scan` on a finalised scan
+  would have passed on the defect, because finalisation re-enriches; the test
+  is at the boundary where the failure actually lands. It asserts the
+  `hemisphere` attribute is `southern`, so the enrichment must have run on this
+  fix rather than be a stale default.
+- `tests/architecture.rs::entity_mutations_precede_the_durable_emit` — the
+  general form on purpose: not "these three passes are in this order", which a
+  fourth pass added below the emit would walk straight past, but "no
+  `&mut entity` appears between the emit and the end of the admission block".
+  It also asserts the three known passes really are above it, so the check
+  cannot pass by finding an empty tail.
+
+**The first draft of that architecture test failed on itself.** It anchored the
+split point on the string `EventKind::EntityFound`, and the explanatory comment
+newly written above the emit mentions that name too — so `find` matched the
+comment and put the split above the very passes being checked. It now anchors
+on the construction `EventKind::EntityFound {`, with the reason recorded in the
+test.

@@ -807,17 +807,35 @@ impl super::ScanEngine {
                     for id in crate::core::attack::techniques_for_entity_kind(&entity.kind) {
                         entity.tag(format!("attack:{id}"));
                     }
+                    // ── Every mutation of `entity` happens HERE, before the
+                    //    emit ────────────────────────────────────────────────
+                    // `EventKind::EntityFound` is the DURABLE record. A scan
+                    // killed before it finalises — routine on Termux/Android,
+                    // where the OS reclaims backgrounded processes — is rebuilt
+                    // from these events alone by `Store::entities_from_events`,
+                    // which applies no enrichment of its own. Whatever is not on
+                    // the entity at this line does not exist for a recovered
+                    // scan. `entity_mutations_precede_the_durable_emit` holds
+                    // the ordering (REQ-ENGINE-001).
+                    //
                     // Universal breach-sector wiring: stamp the source's sector
                     // (`sector:real-estate`, …) on every breach finding — one
                     // chokepoint connects EVERY pool to `util::breach_sector`.
-                    // Before the emit so the event log (and the recovery rebuild)
-                    // carries it too.
                     super::tag_breach_sector(&mut entity);
                     // Categorise shared/third-party infrastructure (cloud buckets,
                     // hosting/CDN endpoints, analytics ids) as platform-infra so the
-                    // default report shows only subject-owned entities. Before the
-                    // emit so the event log + recovery rebuild carry the tag too.
+                    // default report shows only subject-owned entities.
                     super::tag_platform_infra(&mut entity);
+                    // Geohash / timezone / country / hemisphere on a Coordinates
+                    // or Address. Deterministic and offline (`util::geohash`, no
+                    // network), so there is nothing to gain by deferring it — and
+                    // it used to run AFTER the emit, which meant every recovered
+                    // scan's geo entities came back untagged and the geo
+                    // correlation rules that read those tags saw nothing. The two
+                    // passes above carried "Before the emit so the event log (and
+                    // the recovery rebuild) carries it too" in their own comments;
+                    // this one was the exception that broke the rule they state.
+                    super::enrich_geospatial(&mut entity);
                     self.emit(
                         cx.scan_id,
                         EventKind::EntityFound {
@@ -825,7 +843,6 @@ impl super::ScanEngine {
                         },
                     );
                     super::scan_entity_for_keys(&entity, self.module_runtime.as_ref());
-                    super::enrich_geospatial(&mut entity);
                     if let Some(existing) = state.entity_map.get_mut(&entity.uid) {
                         existing.merge(entity);
                     } else {
