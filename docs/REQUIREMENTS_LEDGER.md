@@ -9947,6 +9947,55 @@ intelx hardcodes at three call sites. That injection is the next step for this
 module and would make the whole poll loop testable against
 `util::http::test_server`; it is recorded here rather than claimed as done.
 
+**Limit closed (follow-up commit).** The injection is done, and the stated limit
+above stands as the record of what the coverage was, not as a claim about what it
+is now. Phase 2 — the poll loop, the server-side terminate and the fail-closed
+decision — is one function, `poll_search(ctx, plan, key, search_id)`, taking a
+`PollPlan { base, interval, attempts }`. `IntelX::process` passes
+`PollPlan::live()` (IntelX's own host, the 1.5 s cadence, three attempts); the
+tests pass a loopback base and `Duration::ZERO`.
+
+The SCHEDULE rides in the plan deliberately. Keeping the live cadence would cost
+4.5 s per case, and the usual dodge — a second, faster loop for tests — is
+exactly the duplicated authority that lets the tested path and the production
+path drift apart. One loop, two plans; the six tests run in 0.01 s.
+
+Six tests through `util::http::test_server`: three that fail on the
+pre-REQ-INTELX-001 code and three that pass on it. Reverting the LOOP'S CAPTURE
+this time (not `poll_failure_error` — that was the earlier falsification): the
+non-2xx arm dropping `http_status_error`, the JSON arm back to
+`Err(_) => continue`.
+
+```
+a_wall_in_front_of_the_poll_surfaces_as_the_typed_block ... FAILED
+  an anti-bot wall must reach the breaker as BotChallenge, got
+  Module { module: "intelx", message: "search sid-wall never reached a
+  terminal state within 2 polls" }
+a_throttled_poll_surfaces_as_the_typed_rate_limit ... FAILED
+  a throttle must reach the breaker as RateLimited, got
+  Module { ... "search sid-429 never reached a terminal state ..." }
+a_drifted_poll_body_stays_a_decode_fault_not_the_generic_message ... FAILED
+  the decode fault must survive the loop rather than being replaced by the
+  generic message: [intelx] search sid-drift never reached a terminal state
+test result: FAILED. 23 passed; 3 failed
+```
+
+Each fails for its OWN reason, showing the exact substitution at its own arm.
+The three controls pass on that same baseline: the generic fault when every poll
+genuinely succeeded (status 1 throughout), terminal status 3 as the authoritative
+empty, and record accumulation across batches where a non-terminal status 1 sits
+in the middle. That last one is not decoration — an earlier revision of this
+module broke out of the loop on status 1, which made a slow search look empty.
+
+Two deliberate choices in the fixtures, stated so they are not mistaken for
+carelessness: the wall is served `503` (Cloudflare's classic challenge status)
+and the throttle runs a two-attempt plan, because `401`/`403`/`429` past the
+retry budget also report the key to the PROCESS-GLOBAL key pool — a side effect
+belonging to a different requirement, and the hazard that produced REQ-CI-003.
+The wall fixture is the real captured interstitial
+(`util/html/testdata/cloudflare_block_anubis_2026-09-15.html`), not a hand-written
+approximation of one.
+
 ### REQ-HTTP-004 — a keyed throttle or wall is typed, not a generic provider fault
 
 `keyed_ok_or_404` is the chokepoint every keyed module funnels a non-2xx
