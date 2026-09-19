@@ -11758,3 +11758,124 @@ nothing) and `REQ-WEBCRAWLER-001` (a `crawled` attestation with zero pages read)
 are the same defect: a finding minted from an observation that never happened.
 The recurring tell is a success signal — a status code, a counter, a reached
 line — standing in for the substance it was supposed to certify.
+
+## REQ-WEBBANNER-001 — Two defects, both where the module already knew better
+
+`webserver_banner` HEADs a host over HTTPS then HTTP and emits a banner entity
+from the fingerprint headers it captures. Two independent defects, each one a
+distinction the module had already drawn and then failed to apply.
+
+### 1 — Vendor claims made from headers the module calls non-evidence
+
+`IDENTIFYING_HEADERS` exists precisely to separate real fingerprints from noise,
+and its doc says so:
+
+> The rest (`x-frame-options`, `content-security-policy`,
+> `strict-transport-security`, `via`, `x-cache`) are purely security-posture /
+> caching headers present on countless unrelated stacks and **confirm nothing
+> distinctive by themselves**. Used by `banner_confidence` …
+
+Used by `banner_confidence` — and by nothing else. `apply_stack_tags`, the
+function that makes the actual factual claims (`nginx`, `apache`, `cloudflare`,
+`wordpress`, `php`, `drupal`, `iis`, `aspnet`), joined **every** captured value
+into one blob and substring-searched it.
+
+`content-security-policy` is the pointed one, because a CSP **enumerates other
+people's domains by design**. A site loading a script from
+`cdnjs.cloudflare.com` — entirely routine — put "cloudflare" in the blob and was
+tagged as Cloudflare-fronted though it may have no CDN at all. Measured, every
+one of these tagged on the baseline:
+
+| header | value | tag minted |
+|---|---|---|
+| `content-security-policy` | `… script-src https://cdnjs.cloudflare.com` | `cloudflare` |
+| `content-security-policy` | `script-src https://s.w.org https://wordpress.example/wp.js` | `wordpress` |
+| `content-security-policy` | `form-action https://legacy.example/login.php` | `php` |
+| `content-security-policy` | `frame-ancestors https://portal.drupal.org` | `drupal` |
+| `strict-transport-security` | `max-age=31536000; nginx` | `nginx` |
+| `x-frame-options` | `ALLOW-FROM https://apache.example` | `apache` |
+| `via` | `1.1 cloudflare` | `cloudflare` |
+| `x-cache` | `MISS from nginx-edge` | `nginx` |
+
+A third instance sat in the tag rules themselves: `x-cache` alone raised
+`fastly`. `x-cache` is in the doc's own non-identifying list and is emitted by
+Varnish, CloudFront, Akamai and nginx's proxy cache — naming one vendor from a
+signal shared by its competitors.
+
+**Correction.** The value blob is filtered to `IDENTIFYING_HEADERS`. The
+name-presence checks stay on the full capture, because they assert a header
+*exists* rather than reading a value, and each one used (`cf-ray`,
+`x-amz-cf-id`, `x-served-by`) is itself identifying. `x-cache` is dropped from
+the Fastly rule.
+
+### 2 — Both transports failing read as a clean negative
+
+The scheme loop discarded every transport error:
+
+```rust
+let Ok(resp) = ctx.http.head(&url).send_tagged(SRC).await else { continue; };
+```
+
+With both schemes failing, the loop fell through to `Ok(ModuleResult::new())` —
+byte-identical to the result for a host that answered and published no
+fingerprint headers. Those are **opposite facts**: the second is a real negative
+finding, the first is no observation at all, and banking it as clean hides a
+dead host from the breaker, the doctor and the live-drift sweep.
+
+**Correction.** Track whether any scheme answered and keep the first failure; if
+none answered, return it. A partial failure is unaffected — HTTPS refused but
+HTTP answering with no headers still yields the honest empty result, because the
+host *was* reached.
+
+### Falsification
+
+Reverting all three changes fails four tests, each for its own reason:
+
+```
+a_csp_naming_someone_elses_cdn_is_not_this_sites_stack ... FAILED
+  a generic header's value was read as this site's stack:
+  [all 8 rows of the table above]
+
+an_identifying_header_still_fingerprints_beside_a_noisy_generic_one ... FAILED
+  (the adjacent CSP tagged `cloudflare` beside a real nginx banner)
+
+apply_stack_tags_covers_full_signature_set ... FAILED
+  assertion failed: !tags_for(&[("x-cache", "HIT")]).has_tag("fastly")
+
+both_transports_failing_is_not_a_clean_negative ... FAILED
+  both transports refused must surface as an error, got Ok(0)
+```
+
+Eleven tests pass throughout — the pre-existing `apply_stack_tags_*` and
+`banner_confidence_*` suites, untouched by the fix, which are the genuine
+always-green controls.
+
+The transport test is driven against a **closed local port** (a listener bound
+to `127.0.0.1:0`, its port read, then dropped): a deterministic
+connection-refused with no DNS and no external network, so it runs in CI rather
+than being `#[ignore]`d.
+
+### A defect-asserting test, inverted in place
+
+`apply_stack_tags_covers_full_signature_set` contained
+`assert!(tags_for(&[("x-cache", "HIT")]).has_tag("fastly"));` — asserting
+exactly the wrong rule. Inverted with the old line quoted beside it, not
+deleted. Its neighbouring comment *"CMS fingerprints in any header value"* stated
+the defect too and was corrected to name the identifying carrier.
+
+### A correction to this fix's own test documentation
+
+`an_identifying_header_still_fingerprints_beside_a_noisy_generic_one` was first
+written with a doc comment calling it a control that "passes on the baseline and
+on the fix". That was wrong: it also asserts the adjacent CSP does *not* tag, so
+it fails on the baseline for that reason. The comment now says which half is the
+both-sides claim and points at the pre-existing suites as the real controls.
+Recorded because a test that misdescribes its own falsification behaviour is the
+same species of defect as the ones above — a claim outrunning what was checked.
+
+### Class
+
+Defect 1 is `REQ-BUILTWITH-001` exactly: a guard that exists, is documented, and
+is applied to one consumer but not the neighbouring one that needed it more.
+Defect 2 is `REQ-GEOINTEL-001` / `REQ-WEBCRAWLER-001`: a failure to observe
+recorded as an observation of nothing.
