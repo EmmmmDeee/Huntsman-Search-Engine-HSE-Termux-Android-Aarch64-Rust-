@@ -735,3 +735,41 @@ fn a_well_formed_address_is_still_admitted_after_the_delegation() {
         );
     }
 }
+
+// ── REQ-VALIDATION-001: homograph spoofing on the kinds it targets ──────────
+
+/// The per-label predicate exists because the flat one cannot be used on a
+/// host. Both halves are asserted here so the distinction is locked, not just
+/// described in a comment.
+#[test]
+fn a_host_is_judged_per_label_not_as_one_string() {
+    // Cyrillic `а` (U+0430) inside an otherwise-ASCII label — the attack.
+    for spoof in [
+        "\u{0430}pple.com",
+        "p\u{0430}ypal.com",
+        "mail.g\u{043E}ogle.com",
+    ] {
+        assert!(
+            host_label_is_confusable(spoof),
+            "{spoof} mixes scripts within one label"
+        );
+    }
+    // A whole Cyrillic label under an ASCII TLD is ordinary IDN usage. The FLAT
+    // check calls it a spoof — which is exactly why the gate needed a per-label
+    // predicate rather than the existing one.
+    let idn_under_ascii_tld = "\u{043C}\u{043E}\u{0441}\u{043A}\u{0432}\u{0430}.com";
+    assert!(
+        is_confusable_mixed_script(idn_under_ascii_tld),
+        "control: the flat check is fooled by the ASCII TLD"
+    );
+    assert!(
+        !host_label_is_confusable(idn_under_ascii_tld),
+        "a Cyrillic label under .com is a real internationalised domain, not a spoof"
+    );
+    // All-Cyrillic IDN: neither check flags it.
+    let all_cyrillic = "\u{043F}\u{0440}\u{0438}\u{043C}\u{0435}\u{0440}.\u{0440}\u{0444}";
+    assert!(!host_label_is_confusable(all_cyrillic));
+    assert!(!is_confusable_mixed_script(all_cyrillic));
+    // Plain ASCII is untouched.
+    assert!(!host_label_is_confusable("example.com"));
+}

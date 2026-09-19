@@ -5163,6 +5163,50 @@ fn admission_rejection_covers_every_drop_filter_and_order() {
         admission_rejection(seed, None, &ent(EntityKind::Phone, "+1240893", 0.9)),
         Some("implausible_phone"),
     );
+    // REQ-VALIDATION-001: the kinds homograph spoofing actually targets. A
+    // `pаypal.com` whose `a` is Cyrillic was admitted here, then expanded and
+    // correlated like any real domain.
+    assert_eq!(
+        admission_rejection(
+            seed,
+            None,
+            &ent(EntityKind::Domain, "p\u{0430}ypal.com", 0.9)
+        ),
+        Some("confusable_homoglyph"),
+    );
+    assert_eq!(
+        admission_rejection(
+            seed,
+            None,
+            &ent(EntityKind::Email, "victim@p\u{0430}ypal.com", 0.9)
+        ),
+        Some("confusable_homoglyph"),
+    );
+    assert_eq!(
+        admission_rejection(
+            seed,
+            None,
+            &ent(EntityKind::Url, "https://p\u{0430}ypal.com/login", 0.9)
+        ),
+        Some("confusable_homoglyph"),
+    );
+    // And the false positive the per-label check exists to avoid: a whole
+    // Cyrillic label under an ASCII TLD is a real internationalised domain. The
+    // FLAT predicate calls this a spoof, so wiring the existing check straight
+    // in would have dropped it at admission.
+    assert_eq!(
+        admission_rejection(
+            seed,
+            None,
+            &ent(
+                EntityKind::Domain,
+                "\u{043C}\u{043E}\u{0441}\u{043A}\u{0432}\u{0430}.com",
+                0.9
+            )
+        ),
+        None,
+        "a legitimate internationalised domain must still be admitted",
+    );
     assert_eq!(
         admission_rejection(
             seed,

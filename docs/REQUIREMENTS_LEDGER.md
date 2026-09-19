@@ -10489,3 +10489,68 @@ digest width is still classified at its own confidence (so the guard is a
 discriminator, not a blanket refusal), and the guard is about the ALPHABET rather
 than the width — an unrecognised width was already declined, and a single hex
 letter makes a 32-char run a candidate again.
+
+### REQ-VALIDATION-001 — homograph spoofing, on the kinds it actually targets
+
+The engine's admission gate applied `is_confusable_mixed_script` to exactly four
+kinds:
+
+```rust
+EntityKind::Person | EntityKind::Address | EntityKind::Username | EntityKind::Organisation
+```
+
+— the kinds where a Cyrillic lookalike is a NUISANCE — and left out `Domain`,
+`Email` and `Url`, where it is the attack. The predicate's own doc comment gives
+the canonical example as "a `paypal.com` whose `a` is Cyrillic `а`": a DOMAIN.
+So a spoofed domain was admitted, expanded and correlated like any real one.
+
+**The obvious fix is wrong, and it was measured rather than assumed.** Adding the
+existing predicate to those three kinds flags a legitimate internationalised
+domain, because the ASCII TLD supplies the "genuine ASCII Latin" half of the mix:
+
+```
+аpple.com   (Cyrillic а + ASCII "pple")   flat=true    spoof
+pаypal.com  (Cyrillic а inside "paypal")  flat=true    spoof
+москва.com  (Cyrillic label, ASCII TLD)   flat=TRUE    legitimate  <- false positive
+пример.рф   (all-Cyrillic IDN)            flat=false   legitimate
+```
+
+**Fix.** A new `host_label_is_confusable` splits on `.` and applies the existing
+predicate PER LABEL. A whole Cyrillic label under `.com` is ordinary IDN usage; a
+single label mixing Cyrillic and ASCII Latin is the deception. The gate extracts
+the host per kind — the value for `Domain`, the part after `@` for `Email`,
+`host_from_url` for `Url` — and reuses the existing `confusable_homoglyph` reason
+so the drop taxonomy does not grow a synonym.
+
+**Falsified against TWO baselines**, which is the point of this entry:
+
+```
+A — no gate on the spoofable kinds (the defect):
+    admission_rejection_covers_every_drop_filter_and_order ... FAILED
+      left: None   right: Some("confusable_homoglyph")
+
+B — the naive wiring, existing flat predicate on the host (the obvious fix):
+    admission_rejection_covers_every_drop_filter_and_order ... FAILED
+      a legitimate internationalised domain must still be admitted
+      left: Some("confusable_homoglyph")   right: None
+```
+
+The suite rejects the original defect AND the plausible wrong fix. A test that
+only covered A would have passed happily on B while silently dropping every
+Cyrillic-label domain the engine ever saw.
+
+`a_host_is_judged_per_label_not_as_one_string` locks the distinction at the
+predicate layer too, including an explicit control asserting that the FLAT check
+IS fooled by the ASCII TLD — so the reason the per-label predicate exists is
+recorded as an executable fact rather than only as a comment.
+
+**An architecture invariant caught the first draft, and the resolution is the
+point.** The Url arm originally called `util::url_util::host_from_url`, which
+trips `core_does_not_import_util_directly` — a deliberate test whose allow-list
+argues each entry individually and whose own closing comment quotes
+AUTONOMY_CHARTER INV-3: a tripped invariant is a design decision to raise, not
+silence. `core` already had the parse, unnamed, inside
+`validation::domain::is_onion_url`. Naming it as `host_of` and using it from
+both places was better than either available shortcut: no new `core → util`
+edge, no widened allow-list, and one fewer inline copy of "the host of this
+value" — `is_onion_url` and the homograph gate now share it.

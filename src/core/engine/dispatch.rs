@@ -166,6 +166,39 @@ pub(super) fn admission_rejection(
     {
         return Some("confusable_homoglyph");
     }
+    // The same gate for the kinds homograph spoofing actually TARGETS. The list
+    // above covers the kinds where a Cyrillic lookalike is a nuisance and left
+    // out Domain / Email / Url, where it is the attack itself — a `pаypal.com`
+    // whose `a` is Cyrillic was admitted, expanded and correlated like any real
+    // domain (REQ-VALIDATION-001).
+    //
+    // Per LABEL, via `host_label_is_confusable`, not the flat string check used
+    // above. Measured: the flat check calls `москва.com` a spoof, because the
+    // ASCII TLD supplies the "genuine ASCII Latin" half of the mix — so wiring
+    // the existing predicate straight in would have dropped legitimate
+    // internationalised domains at admission. A whole Cyrillic label under
+    // `.com` is ordinary IDN usage; one label mixing Cyrillic and ASCII Latin is
+    // the deception.
+    //
+    // The host comes from `validation::host_of`, which is `core`'s own parse —
+    // `core` may not reach into `util::url_util` (the architecture test
+    // `core_does_not_import_util_directly` enforces that, and the gate's first
+    // draft tripped it). `host_of` was already here, unnamed, inside
+    // `is_onion_url`; naming it was the right resolution rather than widening a
+    // deliberate allow-list or writing a second inline parse.
+    let spoofable_host = match entity.kind {
+        EntityKind::Domain | EntityKind::Url => Some(validation::host_of(&entity.value)),
+        // The domain part; admission already requires exactly one `@`
+        // (REQ-VALIDATION-002 runs above via `is_fragment_value`).
+        EntityKind::Email => entity
+            .value
+            .rsplit_once('@')
+            .map(|(_, host)| validation::host_of(host)),
+        _ => None,
+    };
+    if spoofable_host.is_some_and(|h| validation::host_label_is_confusable(&h)) {
+        return Some("confusable_homoglyph");
+    }
     if entity.kind == EntityKind::Person && validation::looks_like_gibberish_name(&entity.value) {
         return Some("gibberish_value");
     }
