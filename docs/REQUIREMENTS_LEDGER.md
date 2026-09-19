@@ -11123,3 +11123,76 @@ has settled. Deterministic, and it addresses both layers. Falsifying it needs a
 harness that does not exist yet — a two-round expansion with one free module
 that re-confirms the target and one `is_high_value_only` module — so that is
 the next step, not a patch.
+
+---
+
+## REQ-EMAILHEADERGEO-001 — A brand token must span whole labels, not just begin one
+
+### What was measured
+
+`email_header_geo` maps an email domain to a region by regional-ISP brand
+(`bigpond` → Telstra/Australia). `domain_has_label_prefix` checked the **left**
+label boundary only, and said so in its own doc comment: *"the match stays
+substring-based but must start a label."*
+
+The left boundary was itself an earlier fix, for the mid-label false positives a
+plain `contains` produced (`campbell.net` is not `bell.net`, `platt.net` is not
+`att.net`). It left the mirror image open at the other end. Verified against
+`REGIONAL_PROVIDERS`, every one of whose 24 entries is a complete label or
+label-sequence, so the matching right boundary costs nothing:
+
+| domain | matched as | region asserted |
+|---|---|---|
+| `bigpondxyz.com` | Telstra BigPond | Australia |
+| `charterhouse.com` | Spectrum/Charter | United States |
+| `chartered-accountants.com` | Spectrum/Charter | United States |
+| `comcastic.example` | Comcast | United States |
+| `tpg.company.com` | TPG | Australia |
+| `iinetworking.com.au` | iiNet | Australia |
+| `mail.bigpondish.com` | Telstra BigPond | Australia |
+
+`charterhouse.com` and `chartered-accountants.com` are the pointed ones: both
+are plausible real firms, and an employee's email at either was geolocated to
+the wrong continent as a Spectrum/Charter subscriber, off a brand token the
+domain merely begins with.
+
+### The correction
+
+Require the right boundary too — the pattern must end at a label separator or
+the end of the host. `bigpond.com.au`, `bigpond.net.au` and the
+`mail.bigpond.com` subdomain form all still match, which is the point of the
+substring approach.
+
+### Residual, stated rather than left implicit
+
+A host that embeds the whole brand label-sequence as a subdomain of something
+else — `bigpond.com.evil.tld` — still matches, because its labels genuinely are
+there. Closing that needs registrable-domain (PSL) logic rather than a boundary
+check, and would also have to keep the legitimate `mail.bigpond.com` case. Out
+of scope here, and recorded in the function's doc comment so the next reader
+does not mistake it for an oversight. The emitted entity is `confidence::LOW` /
+`SPECULATIVE` and tagged `email-provider-inferred`.
+
+### Falsification
+
+```
+Baseline (left boundary only, as before):
+  rejects_a_brand_token_that_only_begins_a_longer_label ... FAILED
+    a brand token must span whole labels, not just begin one:
+    ["bigpondxyz.com", "charterhouse.com", "chartered-accountants.com",
+     "comcastic.example", "tpg.company.com", "iinetworking.com.au",
+     "mail.bigpondish.com"]
+```
+
+All seven survive on the baseline, collected in one run rather than stopping at
+the first. `real_provider_domains_still_match` PASSES on the baseline and on the
+fix — it is the control, and it is what makes the change safe to assert: eight
+real provider shapes, including both AU ccTLD forms, the subdomain form and a
+multi-label pattern, none of which the right boundary costs.
+
+### The third of its class
+
+`REQ-URLEXTRACT-001` (exact-match missing every `www.` prefix) and
+`REQ-SOCIALLOC-001` (substring containment instead of a host-boundary match)
+were the same defect in different clothes. This one is the half-fixed variant:
+one boundary checked, the other forgotten.
