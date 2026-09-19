@@ -286,3 +286,28 @@ fn nonblank_filters_empty_and_whitespace_only() {
     assert_eq!(nonblank(Some("   ")), None);
     assert_eq!(nonblank(None), None);
 }
+
+/// REQ-IPGEO-001. This module rates a whois fix LOW_MEDIUM (0.45) — it is a
+/// registration record's coordinates, not a measurement — while the Address
+/// composed from the same record's city/region/country carried MEDIUM (0.50).
+#[test]
+fn whois_address_never_outranks_the_fix_it_was_composed_from() {
+    let body = report(
+        r#"{
+            "status": 200,
+            "whois": { "data": [
+                { "as_no": 4766, "org_name": "KT Corp", "org_country_code": "kr",
+                  "city": "Seoul", "region": "Seoul", "latitude": 37.5665, "longitude": 126.978 }
+            ] }
+        }"#,
+    );
+    let ents = build_entities(&body, &ip_target("1.2.3.4"), "s");
+    let coord = of_kind(&ents, EntityKind::Coordinates).expect("Coordinates");
+    let addr = of_kind(&ents, EntityKind::Address).expect("Address");
+    assert!(
+        addr.confidence <= coord.confidence,
+        "Address {:.2} outranks the whois Coordinates {:.2} it was composed from",
+        addr.confidence,
+        coord.confidence
+    );
+}

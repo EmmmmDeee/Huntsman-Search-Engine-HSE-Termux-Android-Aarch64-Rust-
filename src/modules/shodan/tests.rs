@@ -275,3 +275,59 @@ async fn internetdb_failures_are_the_modules_error_and_only_a_404_is_the_clean_n
         "the PTR hostname becomes a Domain pivot"
     );
 }
+
+/// REQ-IPGEO-001. Both of this module's coordinate paths, because only one of
+/// them was wrong and a test that exercised the other would pass vacuously.
+///
+/// On the real-fix path the module already sat below its own fix (0.55 under
+/// 0.60). On the country-centroid FALLBACK it did not: 0.55 against a centroid
+/// deliberately graded down to 0.45 — and with no city in the body the Address
+/// is literally the same country string the centroid was looked up from, so
+/// the two are the same datum at two different confidences.
+#[test]
+fn the_address_never_outranks_the_fix_it_was_composed_from() {
+    // The centroid fixtures put a tabulated CITY in `country_name` for the same
+    // reason `country_centroid_fallback_coordinates_carry_the_originating_ip_too`
+    // does: `city_coords` is a city table, no bare country name resolves, and
+    // this is the only way to reach that branch with a real fixture at all.
+    let cases = [
+        (
+            "real per-host fix",
+            r#"{"ports":[443],"country_name":"Australia","latitude":-27.4679,"longitude":153.0281,"city":"Brisbane"}"#,
+        ),
+        (
+            "country-centroid fallback, city present",
+            r#"{"ports":[443],"country_name":"Brisbane","city":"Ipswich"}"#,
+        ),
+        (
+            "country-centroid fallback, country alone",
+            r#"{"ports":[443],"country_name":"Brisbane"}"#,
+        ),
+    ];
+    let mut inverted = Vec::new();
+    for (why, json) in cases {
+        let ents = build_paid_entities("1.2.3.4", host(json), "s");
+        let coords = of_kind(&ents, EntityKind::Coordinates);
+        let addrs = of_kind(&ents, EntityKind::Address);
+        // A vacuous pass is the failure mode this test exists to avoid.
+        if coords.is_empty() || addrs.is_empty() {
+            inverted.push(format!(
+                "{why}: no Coordinates/Address pair emitted ({} coords, {} addrs)",
+                coords.len(),
+                addrs.len()
+            ));
+            continue;
+        }
+        if addrs[0].confidence > coords[0].confidence {
+            inverted.push(format!(
+                "{why}: Address {:.2} > Coordinates {:.2}",
+                addrs[0].confidence, coords[0].confidence
+            ));
+        }
+    }
+    assert!(
+        inverted.is_empty(),
+        "an Address is coarser than the fix it was composed from:\n  {}",
+        inverted.join("\n  ")
+    );
+}

@@ -10554,3 +10554,124 @@ silence. `core` already had the parse, unnamed, inside
 both places was better than either available shortcut: no new `core → util`
 edge, no widened allow-list, and one fewer inline copy of "the host of this
 value" — `is_onion_url` and the homograph gate now share it.
+
+---
+
+## REQ-IPGEO-001 — An address is a rounding-off of the fix, so it can never outrank it
+
+**Closes:** REQ-IPGEO-001, REQ-IPINFO-001, REQ-IPQUERY-001 (one class, five live
+inversions, one authority).
+
+### What was measured
+
+Eight modules compose a `"City, Region, Country"` address from an IP/whois
+geolocation reading and emit it beside the `Coordinates` built from that same
+reading. Each of the eight chose the `Address` confidence by hand. Nothing tied
+that number to the fix it derives from, and five had drifted above it:
+
+| module | Coordinates | Address | gap |
+|---|---|---|---|
+| `ip_geo` | 0.50 mobile / 0.60 residential | 0.65 flat | **+0.15** |
+| `shodan` (country-centroid path) | 0.45 | 0.55 | **+0.10** |
+| `criminal_ip` | 0.45 | 0.50 | **+0.05** |
+| `ipquery` | 0.58 | 0.62 | **+0.04** |
+| `ipinfo` | 0.58 | 0.60 | **+0.02** |
+| `censys` | 0.65 | 0.60 | −0.05 (sound) |
+| `shodan` (real-fix path) | 0.60 | 0.55 | −0.05 (sound) |
+| `ip2location` | 0.62 | 0.62 | 0 (fixed in an earlier pass) |
+
+An address composed from a fix is *strictly coarser* than the fix:
+`"Brisbane, Queensland, Australia"` is what you get by rounding off
+`-27.4679,153.0281`. It can never be the more confident of the two.
+
+`ip_geo` is the sharpest case and shows why it matters. That module deliberately
+grades a fix DOWN for a mobile IP, and its own comment records the reason: *"a
+single overstated IP-geo hit was outranking a corroborated WiGLE WiFi fix"*. The
+recalibration reached the Coordinates and not the Address derived from the same
+reading, so the exact overstatement it was written to stop walked back in
+through the city string. Same shape at `ipquery`, whose Coordinates carry a
+`// Confidence recalibrated 0.68 → 0.58` note four lines above an Address that
+ignored it.
+
+**The two sound modules were sound by coincidence, not by construction.** That
+is the actual defect: the rule lived in eight heads, not in one function.
+
+### The correction
+
+`util::geo::coarse_provider_address(address, confidence, fix, scan_id)` — the
+sibling of the existing `coarse_provider_coords`. It takes the module's own rung
+and the sibling `Coordinates` **entity**, and emits at `min(rung, fix)`.
+
+The ceiling is taken from the entity rather than from a second `f64` parameter
+precisely so a caller cannot pass the wrong number — there is no number to pass.
+It only ever removes an inversion: `censys` and `shodan`'s real-fix path keep
+their deliberate sub-fix rungs untouched. `None` (no fix emitted for this
+reading — an implausible null-island lat/lon, a provider publishing a city and
+no coordinates) leaves the caller's rung standing, because the address is then
+the provider's own city string rather than a coarsening of a fix this module
+published.
+
+All eight call sites route through it. `ip2location` additionally dropped a
+hand-rolled `format!("{city}, {region}, {country}")` that re-inlined
+`compose_address` — in a comment that pointed at `compose_address` while
+duplicating it three lines below.
+
+### Falsification — three baselines, because two mechanisms are at work
+
+The call-site rungs were corrected (`ip_geo` HIGH → `geo_conf`, `ipinfo`
+MEDIUM_PLUS → MEDIUM_SOLID, `ipquery` NOTABLE → MEDIUM_SOLID) *and* the cap was
+added. Each was falsified separately, so neither is decoration:
+
+```
+A — original rungs, cap disabled (the true pre-change behaviour):
+    ip_geo      FAILED  residential: Address 0.65 > Coordinates 0.60
+                        mobile:      Address 0.65 > Coordinates 0.50
+    ipinfo      FAILED  Address 0.60 outranks the Coordinates 0.58 …
+    ipquery     FAILED  Address 0.62 outranks the Coordinates 0.58 …
+    criminal_ip FAILED  Address 0.50 outranks the whois Coordinates 0.45 …
+    shodan      FAILED  centroid, city present: Address 0.55 > Coordinates 0.45
+                        centroid, country alone: Address 0.55 > Coordinates 0.45
+    util::geo   FAILED  (the property test, on 30 of 100 rung pairs)
+
+B — original rungs, cap ON:            all 5 pass  → the cap alone closes all five
+C — corrected rungs, cap disabled:     criminal_ip and shodan STILL FAIL
+                                       → the cap is load-bearing, not belt-and-braces
+```
+
+Every module's failure named its own gap. The first draft of the `ip_geo` and
+`shodan` tests failed on their own vacuity guard instead — `ip_geo` suppresses
+the Address entirely for a hosting/proxy IP (so the 0.35 rung is unreachable and
+the real maximum gap is 0.15, not 0.30), and no bare country name resolves
+through `city_coords`, so `shodan`'s centroid fixture had to put a tabulated city
+in `country_name` exactly as its sibling test already documents. Both tests now
+assert a minimum comparison count, and `ip_geo` asserts the hosting/proxy
+suppression as a control rather than counting it as a comparison it could not
+make.
+
+### Regression mechanisms
+
+- `util::geo::a_provider_address_is_never_more_confident_than_its_fix` — the
+  property, swept across the whole 10-rung ladder (100 pairs), both directions:
+  never above the fix, and never silently rewriting a rung already below it.
+- Five per-module runtime locks at each builder — the correct architectural
+  boundary, since each module owns its own emission.
+- `tests/architecture.rs::a_composed_provider_address_is_born_through_the_shared_emitter`
+  — the structural half. A file under `src/modules/` that calls
+  `compose_address` may not call `Entity::new(EntityKind::Address, ..)` with a
+  constant of its own, and must reach `coarse_provider_address`. Falsified by
+  reintroducing the direct birth in `ipinfo`: both arms fire, naming the file and
+  the remedy. Without this the invariant would hold only for the eight modules
+  that exist today, and the ninth would be free to reintroduce it — which is
+  exactly how the first five arrived.
+
+### Follow-ups recorded, not done
+
+- **`shodan`'s country-centroid fallback is effectively dead.** It calls
+  `city_coords(country_name)`, and `city_coords` is a CITY table — no bare
+  country name resolves, as its own sibling test
+  (`country_centroid_fallback_coordinates_carry_the_originating_ip_too`) already
+  states in prose. The branch is reachable only with a city in the country field.
+  Either give it a real country-centroid table or retire it honestly.
+- **`ipinfo` and `ipquery` do not tag their Address `geoint`**, while the other
+  six do. Left alone here: adding the tag changes correlator reach and belongs in
+  its own measured cycle, not folded into a confidence fix.

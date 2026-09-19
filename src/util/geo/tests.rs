@@ -269,3 +269,51 @@ use super::*;
         assert!(!is_plausible_provider_coord(f64::INFINITY, f64::INFINITY));
         assert!(!is_plausible_provider_coord(f64::NAN, 10.0));
     }
+
+    /// REQ-IPGEO-001. The property, not another worked example: for every
+    /// (rung, fix) pair the emitted Address is at or below the fix it was
+    /// composed from, and never above it. Swept across the whole rung ladder
+    /// so a future rung cannot slip through a gap between hand-picked cases.
+    #[test]
+    fn a_provider_address_is_never_more_confident_than_its_fix() {
+        use crate::core::entity::{Entity, EntityKind};
+        let rungs = [0.35, 0.45, 0.50, 0.55, 0.58, 0.60, 0.62, 0.65, 0.80, 0.92];
+        let mut violations = Vec::new();
+        for &fix_conf in &rungs {
+            let fix = Entity::new(EntityKind::Coordinates, "-27.4679,153.0281", fix_conf, "s");
+            for &rung in &rungs {
+                let ae = coarse_provider_address("Brisbane, Australia", rung, Some(&fix), "s");
+                if ae.confidence > fix.confidence {
+                    violations.push(format!(
+                        "rung {rung:.2} under fix {fix_conf:.2} emitted {:.2}",
+                        ae.confidence
+                    ));
+                }
+                // The ceiling only ever removes an inversion: a rung already at
+                // or below the fix must come through untouched, or the helper
+                // would be silently rewriting sound module tuning.
+                if rung <= fix_conf && (ae.confidence - rung).abs() > 1e-9 {
+                    violations.push(format!(
+                        "rung {rung:.2} under fix {fix_conf:.2} was rewritten to {:.2}",
+                        ae.confidence
+                    ));
+                }
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "coarse_provider_address broke the coarser-than-its-fix invariant:\n  {}",
+            violations.join("\n  ")
+        );
+    }
+
+    /// No fix published for this reading → the caller's rung stands, because
+    /// the address is the provider's own city string rather than a coarsening
+    /// of a lat/lon this module put its name to (REQ-IPGEO-001).
+    #[test]
+    fn a_provider_address_with_no_fix_keeps_its_own_rung() {
+        let ae = coarse_provider_address("Brisbane, Australia", 0.60, None, "s");
+        assert!((ae.confidence - 0.60).abs() < 1e-9);
+        assert_eq!(ae.kind, crate::core::entity::EntityKind::Address);
+        assert_eq!(ae.value, "Brisbane, Australia");
+    }

@@ -544,10 +544,20 @@ fn build_paid_entities(ip: &str, body: HostResp, scan_id: &str) -> Vec<Entity> {
             Some(city) => crate::util::geo::compose_address(city, "", country),
             None => country.clone(),
         };
-        let mut addr = Entity::new(
-            EntityKind::Address,
+        // Never above the fix just emitted for this same host. On the real-fix
+        // path the module already sits below it (0.55 under 0.60); on the
+        // country-centroid FALLBACK path it did not — 0.55 against a centroid
+        // graded 0.45, a 0.10 inversion, and in the no-city case the Address is
+        // literally the same country string the centroid was looked up from
+        // (REQ-IPGEO-001).
+        let fix = result
+            .iter()
+            .rev()
+            .find(|e| e.kind == EntityKind::Coordinates);
+        let mut addr = crate::util::geo::coarse_provider_address(
             &addr_val,
             confidence::MEDIUM_HIGH,
+            fix,
             scan_id,
         );
         addr.tag("shodan");

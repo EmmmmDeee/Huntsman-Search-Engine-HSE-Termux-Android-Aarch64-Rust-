@@ -308,7 +308,19 @@ fn build_entities(host: &HostResult, ip: &str, scan_id: &str) -> Vec<Entity> {
         let country = loc.country.as_deref().unwrap_or("");
         if !city.is_empty() && !country.is_empty() {
             let addr = crate::util::geo::compose_address(city, province, country);
-            let mut ae = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM_PLUS, scan_id);
+            // Already below its own fix (0.60 under Coordinates' 0.65); routed
+            // through the shared emitter so it stays there (REQ-IPGEO-001).
+            let fix = result
+                .entities
+                .iter()
+                .rev()
+                .find(|e| e.kind == EntityKind::Coordinates);
+            let mut ae = crate::util::geo::coarse_provider_address(
+                &addr,
+                confidence::MEDIUM_PLUS,
+                fix,
+                scan_id,
+            );
             ae.tag("censys");
             ae.tag("geoint");
             ae.add_evidence(Evidence::new(SRC, format!("Censys location for {ip}")));

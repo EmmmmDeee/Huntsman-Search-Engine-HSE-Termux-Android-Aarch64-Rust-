@@ -131,3 +131,27 @@ use super::*;
              person_login_ip_coords can recognise this as a login-IP fix"
         );
     }
+
+    /// REQ-IPGEO-001. The Address carried NOTABLE (0.62) against Coordinates
+    /// at MEDIUM_SOLID (0.58) — and the "recalibrated 0.68 → 0.58" note that
+    /// produced the 0.58 sat on the Coordinates only, four lines above the
+    /// Address that ignored it.
+    #[test]
+    fn the_address_never_outranks_the_fix_it_was_composed_from() {
+        let d = resp(RESIDENTIAL);
+        let es = build_geo_isp_entities("203.0.113.9", &d, "t");
+        let coords = es
+            .iter()
+            .find(|e| e.kind == EntityKind::Coordinates)
+            .expect("coords");
+        let addr = es
+            .iter()
+            .find(|e| e.kind == EntityKind::Address)
+            .expect("address");
+        assert!(
+            addr.confidence <= coords.confidence,
+            "Address {:.2} outranks the Coordinates {:.2} it was composed from",
+            addr.confidence,
+            coords.confidence
+        );
+    }

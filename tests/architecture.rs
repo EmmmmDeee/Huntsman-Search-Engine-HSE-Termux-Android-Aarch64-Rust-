@@ -1226,3 +1226,101 @@ include!("architecture_parts/architecture_part4.rs");
 include!("architecture_parts/architecture_part5.rs");
 include!("architecture_parts/architecture_part6.rs");
 include!("architecture_parts/architecture_part7.rs");
+
+/// A provider address is born through one emitter, so its confidence can never
+/// drift above the fix it was composed from again (REQ-IPGEO-001).
+///
+/// Eight modules composed a city/region/country address from a geolocation
+/// reading and then each chose an `Address` confidence by hand, with nothing
+/// tying that number to the sibling `Coordinates` built from the same reading.
+/// Five had drifted above it — `ip_geo` by 0.15 on a mobile IP, `shodan` by
+/// 0.10 on its country-centroid fallback, `criminal_ip` by 0.05, `ipquery` by
+/// 0.04, `ipinfo` by 0.02 — and the two that were sound were sound by
+/// coincidence, not by construction. An address is a *rounding off* of the fix,
+/// so it is strictly coarser and can never be the more confident of the two.
+///
+/// This is the structural half of the fix: `util::geo::coarse_provider_address`
+/// takes the sibling fix and caps against it, and a module that composes an
+/// address must go through it rather than calling `Entity::new` with a constant
+/// of its own. Without this check the invariant would hold only for the eight
+/// modules that exist today, and the ninth would be free to reintroduce it —
+/// exactly how the first five arrived.
+#[test]
+fn a_composed_provider_address_is_born_through_the_shared_emitter() {
+    /// Modules exempt from the rule, each with the reason it cannot hold.
+    ///
+    /// Keep this list empty unless a module genuinely composes an address it
+    /// never births as an entity (evidence text only, say). An entry here is a
+    /// claim that must stay true, not a way to silence a failure.
+    const EXEMPT: &[(&str, &str)] = &[];
+
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs")
+                // Test code builds Address fixtures freely; the rule is about
+                // production emission.
+                && !path.components().any(|c| c.as_os_str() == "tests")
+                && path.file_name().is_some_and(|n| n != "tests.rs")
+            {
+                out.push(path);
+            }
+        }
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    walk(&root.join("src/modules"), &mut files);
+
+    let mut composing = 0usize;
+    let mut violations = Vec::new();
+    for path in files {
+        let raw = fs::read_to_string(&path).unwrap();
+        let src = production_source(&raw);
+        if !src.contains("compose_address(") {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        if let Some((_, why)) = EXEMPT.iter().find(|(f, _)| rel.contains(f)) {
+            assert!(!why.is_empty(), "an exemption must carry its reason");
+            continue;
+        }
+        composing += 1;
+        // `Entity::new(` and its first argument are routinely split across lines
+        // by rustfmt, so the check is on a whitespace-collapsed copy.
+        let flat: String = src.split_whitespace().collect::<Vec<_>>().join(" ");
+        if flat.contains("Entity::new( EntityKind::Address") {
+            violations.push(format!(
+                "{rel}: composes an address and then calls Entity::new(EntityKind::Address, ..) \
+                 with a confidence of its own — use util::geo::coarse_provider_address, which \
+                 caps against the sibling Coordinates fix"
+            ));
+        }
+        if !src.contains("coarse_provider_address(") {
+            violations.push(format!(
+                "{rel}: composes an address but never reaches coarse_provider_address — if the \
+                 composed string is never born as an Address entity, add it to EXEMPT with that \
+                 reason"
+            ));
+        }
+    }
+
+    assert!(
+        composing >= 8,
+        "eight modules compose a provider address; found {composing} — has compose_address been \
+         renamed, or the walk stopped reaching src/modules?"
+    );
+    assert!(
+        violations.is_empty(),
+        "a composed provider address must be born through the shared emitter \
+         ({} of {composing}):\n  {}",
+        violations.len(),
+        violations.join("\n  ")
+    );
+}

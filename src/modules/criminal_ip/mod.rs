@@ -288,7 +288,14 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
                 .map(str::to_uppercase)
                 .unwrap_or_default();
             let addr = crate::util::geo::compose_address(city, region, &country);
-            let mut ae = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM, scan_id);
+            // Never above the whois fix it was composed from: this module rates
+            // that fix LOW_MEDIUM (0.45) while the Address beside it carried
+            // MEDIUM (0.50) — a 0.05 inversion (REQ-IPGEO-001 class). When the
+            // fix was suppressed as implausible, the provider's own city string
+            // is a separate datum and MEDIUM stands.
+            let fix = out.iter().rev().find(|e| e.kind == EntityKind::Coordinates);
+            let mut ae =
+                crate::util::geo::coarse_provider_address(&addr, confidence::MEDIUM, fix, scan_id);
             ae.tag("criminal_ip");
             ae.tag("geoint");
             if let Some(issues) = &body.issues {

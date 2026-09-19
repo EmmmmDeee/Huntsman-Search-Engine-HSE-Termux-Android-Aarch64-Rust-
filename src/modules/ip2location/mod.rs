@@ -220,18 +220,20 @@ fn build_entities(data: &Resp, ip: &str, skip_geo: bool, scan_id: &str) -> Vec<E
         // location rung (item 24). The postcode is retained as the network-derived
         // `postal` attribute on the Coordinates above; the Address keeps
         // suburb/state grain. (ipquery already composes its address this way.)
-        let addr = if !region.is_empty() {
-            format!("{city}, {region}, {country}")
-        } else {
-            format!("{city}, {country}")
-        };
-        // Matches ipquery's Address confidence for the identical
-        // city/region/country composition (see that module's `compose_address`
-        // call site) — was a stale bare `0.68` left un-recalibrated when the
+        // The shared join, whose own doc says it "lives here once rather than
+        // re-inlined per module" — this module re-inlined it anyway, in a
+        // comment that pointed at `compose_address` while hand-rolling the
+        // identical `format!` beside it (REQ-IPGEO-001).
+        let addr = crate::util::geo::compose_address(city, region, country);
+        // NOTABLE matches ipquery's rung for the identical city/region/country
+        // composition — was a stale bare `0.68` left un-recalibrated when the
         // sibling Coordinates entity above was recalibrated 0.72 → 0.62,
         // leaving Address confidence HIGHER than the Coordinates it derives
-        // from.
-        let mut ae = Entity::new(EntityKind::Address, &addr, confidence::NOTABLE, scan_id);
+        // from. Level with its own fix since that earlier inversion fix, and
+        // now routed through the shared emitter so it stays level.
+        let fix = out.iter().rev().find(|e| e.kind == EntityKind::Coordinates);
+        let mut ae =
+            crate::util::geo::coarse_provider_address(&addr, confidence::NOTABLE, fix, scan_id);
         ae.tag("ip2location");
         ae.tag(tags::GEOINT);
         // An anonymiser/VPN exit's city is not the subject's location — tag it so

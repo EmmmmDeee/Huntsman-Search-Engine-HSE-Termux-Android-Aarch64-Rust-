@@ -256,7 +256,15 @@ fn build_entities(kind: EntityKind, value: &str, body: &InfoResp, scan_id: &str)
         if let (Some(city), Some(country)) = (nonempty(&geo.city), nonempty(&geo.country)) {
             let region = nonempty(&geo.region).unwrap_or("");
             let addr = crate::util::geo::compose_address(city, region, country);
-            let mut ae = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM_PLUS, scan_id);
+            // Pulsedive publishes no coordinates, so there is no fix to be
+            // coarser than and the module's own rung stands (REQ-IPGEO-001).
+            let fix = out.iter().rev().find(|e| e.kind == EntityKind::Coordinates);
+            let mut ae = crate::util::geo::coarse_provider_address(
+                &addr,
+                confidence::MEDIUM_PLUS,
+                fix,
+                scan_id,
+            );
             ae.tag("pulsedive");
             ae.tag(crate::core::tags::GEOINT);
             ae.add_evidence(Evidence::new(
