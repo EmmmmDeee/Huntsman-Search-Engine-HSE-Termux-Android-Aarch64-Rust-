@@ -43,31 +43,93 @@ pub async fn add_and_validate(
 
     let validation = validate_key(service, key_value).await;
     let entry = build_validated_entry(key_value, notes, discovered_by, validation);
+    let stored = store_verdict(&pool, service, key_value, entry, validation);
 
     // `add_and_validate` is itself `pub async fn`, already run on a tokio worker
     // — persist off the runtime (`persist_off_thread`) rather than the blocking
     // `save_pool_best_effort` directly, so a validation call never stalls the
-    // executor other concurrently-dispatched modules share.
-    match validation {
-        Some(true) => {
-            let added = pool.add(service, entry);
-            if added {
-                super::persistence::persist_off_thread(pool);
-                tracing::info!(service, "validated and stored API key");
-            }
-            true
+    // executor other concurrently-dispatched modules share. And only when the
+    // pool actually changed: every branch used to persist unconditionally, so a
+    // duplicate add rewrote the file byte-for-byte.
+    if stored != Stored::Unchanged {
+        super::persistence::persist_off_thread(pool);
+    }
+    // Each line states what actually happened, so a store that did not occur is
+    // never logged as one.
+    match (validation, stored) {
+        (Some(true), Stored::Added) => tracing::info!(service, "validated and stored API key"),
+        (Some(true), Stored::Resettled) => {
+            tracing::info!(service, "re-validated a pooled key — now active");
         }
-        Some(false) => {
-            pool.add(service, entry);
-            super::persistence::persist_off_thread(pool);
+        (Some(false), Stored::Added) => {
             tracing::warn!(service, "API key failed validation — stored as invalid");
-            false
         }
-        None => {
-            pool.add(service, entry);
-            super::persistence::persist_off_thread(pool);
-            false
+        (Some(false), Stored::Resettled) => {
+            tracing::warn!(
+                service,
+                "a pooled key now fails validation — marked invalid"
+            );
         }
+        _ => {}
+    }
+    matches!(validation, Some(true))
+}
+
+/// What [`store_verdict`] did to the pool. Three outcomes rather than a bool,
+/// because "nothing changed" has two very different causes and the caller must
+/// not log or persist as though either were a store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stored {
+    /// The service did not hold this value; the freshly-built entry was inserted.
+    Added,
+    /// The service already held this value; the EXISTING entry now carries this
+    /// call's verdict.
+    Resettled,
+    /// The pool is unchanged — an indeterminate probe on an already-pooled key
+    /// (there is no verdict to record), or a service the pool will not hold.
+    Unchanged,
+}
+
+/// Put this call's verdict into the pool, whether or not the key is new.
+///
+/// [`KeyPool::add`] REFUSES a value the service already holds and leaves the
+/// existing entry untouched, so the freshly-built `entry` — carrying the verdict
+/// this call just spent a live provider request to obtain — was simply dropped.
+/// The early return in [`add_and_validate`] short-circuits only the SETTLED
+/// statuses, so the keys that reach here are exactly the unsettled ones
+/// (`Untested` / `Exhausted` / `RateLimited`), and for those the discard was
+/// total: the status never moved, `last_validated` was never stamped, and every
+/// later call re-spent the provider's quota to throw away the same answer —
+/// defeating the "validate once" policy the early return exists to enforce.
+///
+/// The consequence that bites is a key the probe proves DEAD. A `RateLimited`
+/// entry whose cooldown has elapsed is still `is_usable()`, and
+/// [`KeyPool::next_key_excluding`] promotes it back to `Active` on selection —
+/// so the pool kept handing providers a credential it had already proven
+/// rejected, collecting 401s, instead of marking it `Invalid` (REQ-KEYPOOL-002).
+///
+/// Split out of [`add_and_validate`] so the store decision is testable against a
+/// real [`KeyPool`] without a live validation round-trip — the same reason
+/// [`build_validated_entry`] is its own function.
+fn store_verdict(
+    pool: &KeyPool,
+    service: &str,
+    key_value: &str,
+    entry: KeyEntry,
+    validation: Option<bool>,
+) -> Stored {
+    if pool.add(service, entry) {
+        return Stored::Added;
+    }
+    // `add`'s `false` means either "already pooled" or "not a poolable service".
+    // `mark_validated` reports which, by saying whether it found an entry, so
+    // the two are never conflated.
+    match validation {
+        Some(valid) if pool.mark_validated(service, key_value, valid) => Stored::Resettled,
+        // An indeterminate probe (transport failure, timeout, 429, 5xx) has no
+        // verdict to record. Leaving the entry unsettled for a later re-probe is
+        // the documented policy — see `validate_key` — not a dropped result.
+        _ => Stored::Unchanged,
     }
 }
 
@@ -477,5 +539,128 @@ mod tests {
             classify_probe_response("criminal_ip", "not json", "200"),
             ProbeOutcome::Valid
         );
+    }
+
+    // ── REQ-KEYPOOL-002: a re-validated pooled key keeps the fresh verdict ──
+    //
+    // `KeyPool::add` refuses a value the service already holds, so every
+    // verdict `add_and_validate` obtained for an ALREADY-POOLED key was
+    // dropped: the status never moved off `Untested`/`RateLimited`,
+    // `last_validated` was never stamped, and the next call re-spent the
+    // provider's quota to discard the same answer. These drive `store_verdict`
+    // against a real `KeyPool`, so the whole store decision runs — no live
+    // probe needed, and no parallel test-only reimplementation of it.
+
+    /// A poolable service and a value that reads as a real configured
+    /// credential (not an unedited `insert_..._here` template slot, which the
+    /// auth chokepoint rejects on sight).
+    const SVC: &str = "shodan";
+    const KEY: &str = "sk_live_pooled_0123456789";
+
+    fn pooled(status: KeyStatus) -> KeyPool {
+        let pool = KeyPool::new();
+        let mut entry = KeyEntry::new(KEY);
+        entry.status = status;
+        assert!(
+            pool.add(SVC, entry),
+            "fixture must start with the key pooled"
+        );
+        pool
+    }
+
+    fn revalidate(pool: &KeyPool, validation: Option<bool>) -> Stored {
+        let entry = build_validated_entry(KEY, None, None, validation);
+        store_verdict(pool, SVC, KEY, entry, validation)
+    }
+
+    #[test]
+    fn a_revalidated_pooled_key_is_promoted_instead_of_dropped() {
+        let pool = pooled(KeyStatus::Untested);
+        let stored = revalidate(&pool, Some(true));
+        // State first, outcome second: asserting the enum first would trip on
+        // every one of these tests and mask each one's own consequence — the
+        // masking already hit REQ-OSINTCAT-001 and REQ-HTTP-004.
+        assert_eq!(
+            pool.entry_status(SVC, KEY),
+            Some(KeyStatus::Active),
+            "a live probe proving the key good must settle the pooled entry"
+        );
+        assert_eq!(stored, Stored::Resettled);
+    }
+
+    #[test]
+    fn a_pooled_key_the_probe_proves_dead_is_marked_invalid() {
+        let pool = pooled(KeyStatus::Untested);
+        let stored = revalidate(&pool, Some(false));
+        assert_eq!(
+            pool.entry_status(SVC, KEY),
+            Some(KeyStatus::Invalid),
+            "a definitive 401/403 must settle the pooled entry, not vanish"
+        );
+        assert_eq!(stored, Stored::Resettled);
+    }
+
+    #[test]
+    fn a_throttled_key_proven_dead_stops_being_handed_to_providers() {
+        // The consequence that actually bites. A `RateLimited` entry whose
+        // cooldown has elapsed is still `is_usable()`, and `next_key` promotes
+        // it back to `Active` on selection — so while the verdict was being
+        // dropped the pool kept serving a credential it had already proven
+        // rejected, collecting 401s from the provider on every scan.
+        let pool = KeyPool::new();
+        let mut entry = KeyEntry::new(KEY);
+        entry.status = KeyStatus::RateLimited;
+        entry.rate_limit_reset = Some(crate::core::entity::unix_now().saturating_sub(1));
+        assert!(pool.add(SVC, entry));
+        assert_eq!(
+            pool.next_key(SVC).as_deref(),
+            Some(KEY),
+            "control: an elapsed cooldown makes the key servable, which is why \
+             dropping a rejection matters"
+        );
+
+        let stored = revalidate(&pool, Some(false));
+        assert_eq!(
+            pool.next_key(SVC),
+            None,
+            "once proven dead the pool must stop offering it"
+        );
+        assert_eq!(pool.entry_status(SVC, KEY), Some(KeyStatus::Invalid));
+        assert_eq!(stored, Stored::Resettled);
+    }
+
+    #[test]
+    fn an_indeterminate_probe_leaves_a_pooled_key_unsettled() {
+        // A transport failure, timeout, 429 or 5xx is not a rejection. Leaving
+        // the entry for a later re-probe is `validate_key`'s documented policy,
+        // so "unchanged" here is the correct outcome rather than a dropped one.
+        let pool = pooled(KeyStatus::Untested);
+        let stored = revalidate(&pool, None);
+        assert_eq!(pool.entry_status(SVC, KEY), Some(KeyStatus::Untested));
+        assert_eq!(stored, Stored::Unchanged);
+    }
+
+    #[test]
+    fn a_key_the_pool_does_not_hold_is_still_added_with_its_verdict() {
+        let pool = KeyPool::new();
+        let stored = revalidate(&pool, Some(true));
+        assert_eq!(pool.entry_status(SVC, KEY), Some(KeyStatus::Active));
+        assert_eq!(stored, Stored::Added);
+    }
+
+    #[test]
+    fn a_non_poolable_service_records_nothing_and_says_so() {
+        // `add` returns false here for a completely different reason than a
+        // duplicate value, and the two must not read alike: there is no entry
+        // to settle, so the outcome is `Unchanged` and nothing is persisted or
+        // logged as a store. `generic_hex` is the catch-all the pool refuses by
+        // design (it would otherwise bloat with harvested blobs).
+        let pool = KeyPool::new();
+        let entry = build_validated_entry(KEY, None, None, Some(true));
+        assert_eq!(
+            store_verdict(&pool, "generic_hex", KEY, entry, Some(true)),
+            Stored::Unchanged
+        );
+        assert_eq!(pool.entry_status("generic_hex", KEY), None);
     }
 }

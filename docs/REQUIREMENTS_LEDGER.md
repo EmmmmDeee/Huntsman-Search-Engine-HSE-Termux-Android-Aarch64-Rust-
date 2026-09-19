@@ -10154,3 +10154,90 @@ keyed modules that do not refuse without a key (1 of 48):
 
 "1 of 48" is itself the check on the enumeration: the test really is walking
 every non-exempt keyed module, not a subset.
+
+### REQ-KEYPOOL-002 — a re-validated pooled key kept its fresh verdict
+
+`add_and_validate` short-circuits only the SETTLED statuses:
+
+```rust
+KeyStatus::Active            => return true,
+KeyStatus::Invalid | Revoked => return false,
+KeyStatus::Untested | Exhausted | RateLimited => {}   // fall through, re-probe
+```
+
+so every key reaching the live probe is an unsettled one that the pool ALREADY
+HOLDS. And `KeyPool::add` refuses a value the service already holds and leaves
+the existing entry untouched:
+
+```rust
+if entries.iter().any(|e| e.value == key.value) { return false; }
+```
+
+The freshly-built entry — carrying the verdict the call just spent a live
+provider request to obtain — was therefore dropped on the floor. The status
+never moved, `last_validated` was never stamped, and the next call re-spent the
+provider's quota to discard the same answer, defeating the "validate once"
+policy the early return exists to enforce. The function returned `true` to its
+caller while the pool went on saying `Untested`.
+
+**The consequence that bites.** A `RateLimited` entry whose cooldown has elapsed
+is still `is_usable()`, and `next_key_excluding` PROMOTES it back to `Active` on
+selection (`pool.rs`, the cooldown-elapsed branch). So while the verdict was
+being dropped, the pool kept handing providers a credential a probe had already
+proven rejected, collecting 401s on every scan, instead of marking it `Invalid`.
+
+**Fix.** The store decision is now `store_verdict`, which returns a three-way
+`Stored { Added, Resettled, Unchanged }` rather than a bool, because "nothing
+changed" has two unrelated causes. `KeyPool::mark_validated` — the authoritative
+settler, which already existed and was simply never called from here — now
+reports whether it found an entry, and that answer is what separates "already
+pooled, now settled" from "this service is not poolable at all", two outcomes
+`add`'s `false` conflates. Persistence and the log lines are gated on `Stored`,
+so a store that did not happen is neither written nor logged as one; previously
+every branch persisted unconditionally, rewriting the file byte-for-byte on a
+duplicate add.
+
+**Falsified.** Reverting `store_verdict` to drop the entry (the pre-fix
+behaviour) fails three of the six new tests, each on its OWN consequence:
+
+```
+a_revalidated_pooled_key_is_promoted_instead_of_dropped ... FAILED
+  a live probe proving the key good must settle the pooled entry
+  left: Some(Untested)   right: Some(Active)
+a_pooled_key_the_probe_proves_dead_is_marked_invalid ... FAILED
+  a definitive 401/403 must settle the pooled entry, not vanish
+  left: Some(Untested)   right: Some(Invalid)
+a_throttled_key_proven_dead_stops_being_handed_to_providers ... FAILED
+  once proven dead the pool must stop offering it
+  left: Some("sk_live_pooled_0123456789")   right: None
+test result: FAILED. 15 passed; 3 failed
+```
+
+The third is the live consequence demonstrated end to end: `next_key` still
+offers the credential. The first attempt asserted the `Stored` enum before the
+state, and all three then failed identically on that one line, leaving each
+test's actual point unverified — the same masking as REQ-OSINTCAT-001 and
+REQ-HTTP-004. The assertions were reordered state-first and re-falsified.
+
+Three controls pass on that same baseline: an indeterminate probe leaves a
+pooled key unsettled (`validate_key`'s documented policy, so `Unchanged` is
+correct there), a key the pool does not hold is still added with its verdict,
+and a non-poolable service records nothing and says `Unchanged` rather than
+reading like a duplicate.
+
+**Two things found while tracing, recorded rather than folded in.**
+
+1. `KeyStatus::Exhausted` is never CONSTRUCTED anywhere in production — only
+   read (the counters, `is_usable`, `health_score`). It is the one status
+   `is_usable()` refuses that has no recovery path at all, so had anything set
+   it, a key whose quota later renewed would have been permanently unreachable.
+   Nothing does, so that starvation is not live and is not claimed as fixed.
+   Same class as REQ-DOCPARSE-002's never-constructed `FileTooLarge`.
+2. Provenance on an EXISTING entry is deliberately left alone. The only
+   production caller of `add_and_validate` (`app::import::json`, the oathnet
+   stealer path) always passes `Some("stealer_import:…")`, so if the operator
+   had earlier added the same value deliberately, stamping it would strip the
+   auth-eligibility they configured — while NOT stamping it leaves a key known
+   to appear in a stealer dump auth-eligible. Both directions are defensible and
+   neither is what this entry recorded, so the question is named here as its own
+   follow-up rather than decided silently.
