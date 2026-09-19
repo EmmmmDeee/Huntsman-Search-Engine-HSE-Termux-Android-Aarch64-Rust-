@@ -317,3 +317,45 @@ use super::*;
         assert_eq!(ae.kind, crate::core::entity::EntityKind::Address);
         assert_eq!(ae.value, "Brisbane, Australia");
     }
+
+/// `coarse_provider_coords` stamps `tags::GEOINT` centrally, so no caller can
+/// forget it. Its sibling `coarse_provider_address` did not, leaving the stamp
+/// to each of eight callers — and three of them (`ipinfo`, `ipquery`,
+/// `ip2location`) never applied it. Two helpers born to standardise the same
+/// pair of entities disagreed about who was responsible for the tag, which is
+/// the definition of a drifting authority (REQ-IPGEO-002).
+#[test]
+fn both_provider_geo_helpers_stamp_geoint_centrally() {
+    let fix = coarse_provider_coords(-27.4766, 153.0166, 0.58, "s").expect("a plausible fix");
+    assert!(
+        fix.has_tag(crate::core::tags::GEOINT),
+        "the coords helper's central stamp is the contract the address helper must match"
+    );
+
+    let addr = coarse_provider_address("Brisbane, Australia", 0.60, Some(&fix), "s");
+    assert!(
+        addr.has_tag(crate::core::tags::GEOINT),
+        "the address helper must stamp GEOINT centrally too, so none of its \
+         eight callers can forget it; got tags {:?}",
+        addr.tags
+    );
+
+    // …and with no companion fix, which is the `ip2location` / `criminal_ip`
+    // call shape.
+    let bare = coarse_provider_address("Brisbane, Australia", 0.60, None, "s");
+    assert!(bare.has_tag(crate::core::tags::GEOINT));
+}
+
+#[test]
+fn the_central_stamp_does_not_disturb_the_confidence_contract() {
+    // CONTROL — passes on the baseline AND the fix. Adding a tag must not touch
+    // the coarser-than-its-fix capping the helper exists for.
+    let fix = coarse_provider_coords(-27.4766, 153.0166, 0.58, "s").expect("a plausible fix");
+    let addr = coarse_provider_address("Brisbane, Australia", 0.90, Some(&fix), "s");
+    assert!(
+        addr.confidence <= fix.confidence,
+        "an address may never outrank the fix it was derived from"
+    );
+    let uncapped = coarse_provider_address("Brisbane, Australia", 0.60, None, "s");
+    assert!((uncapped.confidence - 0.60).abs() < f64::EPSILON);
+}

@@ -667,12 +667,19 @@ pub fn coarse_provider_address(
     scan_id: &str,
 ) -> crate::core::entity::Entity {
     let capped = fix.map_or(confidence, |f| confidence.min(f.confidence));
-    crate::core::entity::Entity::new(
+    let mut e = crate::core::entity::Entity::new(
         crate::core::entity::EntityKind::Address,
         address,
         capped,
         scan_id,
-    )
+    );
+    // Stamped HERE, not by the caller — matching the sibling
+    // `coarse_provider_coords`, which has always done so. Leaving it to each of
+    // the eight callers is what let `ipinfo`, `ipquery` and `ip2location` drift
+    // without it: two helpers born to standardise the same pair of entities
+    // disagreed about who owned the tag (REQ-IPGEO-002).
+    e.tag(crate::core::tags::GEOINT);
+    e
 }
 
 /// Build the `Asn` entity shared verbatim by every IP-geo provider module

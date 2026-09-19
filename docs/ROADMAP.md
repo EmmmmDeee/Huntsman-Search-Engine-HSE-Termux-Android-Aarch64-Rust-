@@ -316,6 +316,14 @@ by looking for them rather than reading modules at random:**
    found that way and is the shape at its most unambiguous: six sibling profile
    modules called `profile_kit::location_address`/`location_coordinates`, and
    the seventh had an inline copy with no cap at all.
+
+   A consolidation can also drift *internally*. `util::geo::coarse_provider_coords`
+   and `coarse_provider_address` were unified emitters for the same pair of
+   entities, and disagreed about who stamped `geoint`: the first did it
+   centrally, the second left it to eight callers and three forgot
+   (REQ-IPGEO-002). **A guard each caller must remember is one every future
+   caller can forget** — when two helpers standardise a pair, check they agree
+   on who owns each stamp, not merely that both exist.
 2. *The rule computes a relation, then discards which side related to which.*
    Five correlator instances (AU-046/REQ-CORRELATOR-002,
    AU-039/REQ-CORRELATOR-004, AU-105/REQ-CORRELATOR-003,

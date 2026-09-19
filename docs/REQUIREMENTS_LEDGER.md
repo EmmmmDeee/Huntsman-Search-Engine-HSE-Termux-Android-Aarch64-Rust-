@@ -13486,3 +13486,105 @@ shared authority, as a grain-negating-qualifier guard benefiting every caller
 (`social_location`, `keybase`, the six profile modules, breach records, search
 snippets) — not in `social_location` alone. Left queued at its true, smaller
 size instead of being written up as the larger defect it was filed as.
+
+---
+
+## REQ-IPGEO-002 — The harm was nil; the drifting authority was real
+
+An unusual entry: the defect as filed has **no demonstrable consequence**, and
+the fix still earns its place — for a reason worth separating out, because
+"low impact" and "not worth fixing" are not the same judgement.
+
+### Measured, and the filed claim corrected twice
+
+The backlog read: *"`ipinfo` and `ipquery` are the only two of eight geo modules
+that do not tag their Address `geoint`."*
+
+* **The count is wrong.** `ip2location` does not tag it either — three, not two.
+  The DOHRESOLVER-001 pattern again: a backlog entry is a LOWER bound.
+* **The harm is nil.** `geoint` has exactly two readers, and neither is hurt:
+  * `core::engine::enrich.rs:188` uses it only to lower a confidence gate from
+    0.45 to 0.40, and only in combination with `professional-address` or
+    `social-profile` — tags an IP-geo address never carries. It cannot fire
+    either way.
+  * `correlator::rules::geo::chain.rs:267` computes
+    `addr_has_geo_tag` and `coords_has_geo_tag` and returns early only when
+    **both** are false. `util::geo::coarse_provider_coords` stamps
+    `tags::GEOINT` centrally, so every one of these modules emits a `geoint`
+    Coordinates entity alongside its Address — `coords_has_geo_tag` is already
+    true and the guard never fires on the Address's account.
+
+So no finding is lost, no rule is suppressed, and no scan behaves differently.
+Stated plainly because the temptation with a tidy-looking inconsistency is to
+imply a consequence it does not have.
+
+### What is real
+
+The two helpers born to standardise the same pair of entities **disagreed about
+who owned the tag**. `coarse_provider_coords` stamps `GEOINT` itself;
+`coarse_provider_address` left it to each of eight callers — and three of them
+drifted without it. That is a duplicated-authority defect of the kind ROADMAP §4
+shape 1 names, sitting *inside a consolidation that had already happened*
+(REQ-IPGEO-001 unified these very emitters).
+
+A guard that each caller must remember is one every future caller can forget.
+There are eight today; the ninth has nothing to stop it.
+
+### Implemented
+
+One line: `coarse_provider_address` stamps `crate::core::tags::GEOINT` before
+returning, exactly as its sibling always has. No caller changes; the three that
+drifted are corrected by construction and the ninth cannot drift at all.
+
+### Falsified
+
+| Mutation | Result |
+|---|---|
+| the address helper stops stamping centrally | the helper lock **and** the `ipinfo` reachability lock fail |
+| the confidence cap is dropped | **the control** `the_central_stamp_does_not_disturb_the_confidence_contract` fails, alongside the pre-existing `a_provider_address_is_never_more_confident_than_its_fix` |
+
+A third mutation was attempted — "move the stamp back to the caller" — and is
+**not** recorded as distinct: the script removed the central stamp without
+adding a caller-side one, so it was M1 wearing a different name and produced an
+identical failure set. Counting it separately would have overstated the evidence.
+
+The `ipinfo` lock is the transitive-wiring half: `ipinfo` was one of the three
+that never stamped, so asserting the tag arrives through its real
+`build_entities` path proves the central stamp actually reaches the graph, not
+merely the helper's return value.
+
+---
+
+## REQ-EPIEOS-001 — Premise refuted: epieos is the majority, not the outlier
+
+The backlog read: *"`epieos` tags arbitrary venue/location text as an AU
+jurisdiction fact via the promiscuous `state_code()` helper — its
+`ANCHORING_GEO_SOURCES` siblings use the safer `single_state_code()` for the
+identical decision."*
+
+The comparison is the wrong way round. Counted across the tree:
+
+* `single_state_code` has **one** non-test caller in any module —
+  `phone_geo/mod.rs:159` — plus a doc reference in `util::city_coords`.
+* `state_code` is called by roughly **thirteen** modules: `epieos`, `keybase`,
+  `gleif_lei`, `opencorporates`, `acnc_charities`, `abn_lookup` (×4),
+  `asic_director` (×2), `asic_persons`, `proxycurl` (×2), `email_header_geo`.
+
+`epieos` is not the outlier. There is no sibling convention it departs from, so
+the finding as filed does not exist.
+
+The two helpers differ genuinely — `state_code` takes the LAST state token (an
+AU address ends "SUBURB STATE POSTCODE", so the trailing one is the address's
+own), while `single_state_code` returns `None` when the text names two different
+states. For a **structured address field** — which is what most of those
+thirteen callers pass — `state_code` is the correct choice and
+`single_state_code` would be strictly worse.
+
+A narrower question survives and is NOT claimed as a defect here: a handful of
+callers pass **free text** rather than an address (`epieos`'s venue strings,
+`keybase`'s self-reported location, `social_location`'s bio text), where a
+value spanning two states is possible and `single_state_code` would be the safer
+read. That is a design question about which fields are addresses, not a bug with
+a reproducible wrong answer, and it is left unfiled rather than dressed up as
+one. `keybase`'s exposure narrowed independently under REQ-KEYBASE-001, whose
+100-character cap now bounds what can reach the helper at all.

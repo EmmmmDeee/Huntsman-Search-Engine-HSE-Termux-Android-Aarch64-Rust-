@@ -244,3 +244,32 @@ use super::*;
             coords.confidence
         );
     }
+
+    /// Reachability, not just the helper in isolation: `ipinfo` was one of the
+    /// three callers that never stamped `geoint` on its Address, so the central
+    /// stamp has to actually arrive through the real build path
+    /// (REQ-IPGEO-002).
+    #[test]
+    fn the_address_reaches_the_graph_carrying_geoint() {
+        let d: IpInfoResp = serde_json::from_str(
+            r#"{"ip":"1.1.1.1","city":"Brisbane","region":"Queensland","country":"AU",
+                "loc":"-27.4766,153.0166","org":"AS13335 Cloudflare"}"#,
+        )
+        .expect("fixture");
+        let ents = build_entities("1.1.1.1", &d, "s");
+        let addr = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Address)
+            .expect("ipinfo emits an Address");
+        assert!(
+            addr.has_tag(crate::core::tags::GEOINT),
+            "the Address must reach the graph stamped; got tags {:?}",
+            addr.tags
+        );
+        // CONTROL: the sibling Coordinates was always stamped and still is.
+        let coord = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Coordinates)
+            .expect("ipinfo emits Coordinates");
+        assert!(coord.has_tag(crate::core::tags::GEOINT));
+    }
