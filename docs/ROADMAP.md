@@ -106,9 +106,18 @@ The reusable primitives every module leans on. Key sub-areas:
   (`AMBIGUOUS_CEILING`, `mark_ambiguous`). Keyed on `derive_uid`/`normalise`
   themselves, so it answers "will the engine fuse these rows?" exactly rather
   than by imitation. Consumed by `ahpra` (practitioners), `gleif_lei` and
-  `opencorporates` (legal names, and officer names). Its shared-ness is
-  demonstrated, not assumed: neutering `is_shared` breaks ten controls across
-  all three consumers and none of the locks.
+  `opencorporates` (legal names, and officer names) and `wikidata` (item
+  labels). Its shared-ness is demonstrated, not assumed: making
+  `NameCollisions::of` keep every name breaks **thirteen controls across all
+  four consumers** and none of the locks.
+
+  Two distinct harms answer to the same question, which is why one authority is
+  the right shape. In `gleif_lei` / `opencorporates` / `ahpra` a fused composite
+  *claims* more than the evidence supports. In `wikidata` the module already had
+  the correct safeguard and the engine's merge **erased** it — `absorb` takes
+  `f64::max(confidence)`, so a deliberately sub-floor candidate was absorbed
+  into the primary and pivoted. A demotion applied to an entity that is about to
+  fuse with a higher-confidence twin is not a demotion at all.
 - `util/html`, `util/probe`, `util/target_match`, `util/canonical`,
   `util/address_au`, `util/domains`, `util/domain_vn`, `util/geo`,
   `util/extract`, `util/gravatar` — challenge-page detection, presence

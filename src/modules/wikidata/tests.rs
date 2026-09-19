@@ -442,3 +442,180 @@ fn a_normal_search_response_has_no_error_envelope() {
         "a normal search response passes the gate"
     );
 }
+
+/// The module's own promise (module doc, `mod.rs`):
+///
+/// > up to `MAX_CANDIDATES` further same-name items are surfaced as
+/// > low-confidence candidates … that stay **below the expansion floor so a
+/// > namesake can't pivot**.
+///
+/// `candidate_entity_is_sub_floor_and_named` above asserts that on the entity
+/// **in isolation**, which is where the promise is true and where it does not
+/// matter. Two Wikidata items that are namesakes share a label by definition —
+/// that is what makes them namesakes — and an entity valued on a name derives
+/// its uid from that name, so the primary and the candidate are ONE entity as
+/// far as the engine is concerned. `Entity::absorb` takes
+/// `f64::max(confidence)`, so the deliberate demotion is erased by the very
+/// thing it was written to protect against.
+#[test]
+fn a_namesake_candidate_does_not_smuggle_the_primary_s_confidence() {
+    let primary = primary_entities(
+        "Q1",
+        "John Smith",
+        &serde_json::json!({
+            "labels": {"en": {"value": "John Smith"}},
+            "claims": {"P31": [{"mainsnak": {"datavalue": {"value": {"entity-type": "item", "id": "Q5"}}}}]}
+        }),
+        TargetKind::FullName,
+        "s",
+    );
+    let candidate = candidate_entity(
+        &SearchHit {
+            id: "Q2".into(),
+            label: Some("John Smith".into()),
+            description: Some("a different, unrelated John Smith".into()),
+        },
+        TargetKind::FullName,
+        "s",
+    );
+
+    // Precondition, asserted rather than assumed: these really are one entity
+    // to the engine. If this ever stops holding the test below is vacuous.
+    let head = primary.first().expect("a primary must be built");
+    assert_eq!(
+        head.uid, candidate.uid,
+        "two same-label Wikidata items must share a uid — otherwise this \
+         regression cannot occur and this test proves nothing"
+    );
+
+    let mut all = primary;
+    all.push(candidate);
+    // The page-level judgement `process` makes, at its pure seam.
+    super::builder::mark_shared_labels(
+        &mut all,
+        TargetKind::FullName,
+        &["John Smith", "John Smith"],
+    );
+    crate::core::entity::dedup_merge_entities(&mut all);
+
+    let merged = all
+        .iter()
+        .find(|e| e.value == "John Smith" && e.kind == EntityKind::Person)
+        .expect("the fused person must survive");
+    assert!(
+        merged.confidence < confidence::MEDIUM,
+        "a name two Wikidata items hold does not identify one person, so the \
+         fused entity must stay below the expansion floor and must not pivot; \
+         got {} with tags {:?}",
+        merged.confidence,
+        merged.tags
+    );
+}
+
+#[test]
+fn a_single_wikidata_match_still_pivots_at_full_confidence() {
+    // CONTROL — passes on the baseline AND the fix. One item, no namesake: the
+    // primary keeps its full confidence and its fan-out.
+    let primary = primary_entities(
+        "Q1",
+        "Linus Torvalds",
+        &torvalds_entity(),
+        TargetKind::FullName,
+        "s",
+    );
+    let head = primary.first().expect("a primary must be built");
+    assert!((head.confidence - PERSON_PRIMARY).abs() < f64::EPSILON);
+    assert!(head.tags.iter().any(|t| t == "exact-name-match"));
+    assert!(!head.tags.iter().any(|t| t == "ambiguous-name"));
+}
+
+#[test]
+fn an_ambiguous_primary_does_not_leave_its_handles_pivot_eligible() {
+    // The fan-out read from the primary item alone — its website, its GitHub
+    // handle — rests on the same unresolved name. Demoting the Person while
+    // leaving those at HANDLE_CONF/DOMAIN_CONF would move the defect rather
+    // than remove it: the handle would still pivot, still attributed to a
+    // subject who may be the OTHER holder of the name.
+    let mut all = primary_entities(
+        "Q1",
+        "Linus Torvalds",
+        &torvalds_entity(),
+        TargetKind::FullName,
+        "s",
+    );
+    let fan_out = all.len();
+    assert!(
+        fan_out > 1,
+        "the fixture must produce a claims fan-out, or this test is vacuous"
+    );
+    all.push(candidate_entity(
+        &SearchHit {
+            id: "Q2".into(),
+            label: Some("Linus Torvalds".into()),
+            description: Some("a different person with the same name".into()),
+        },
+        TargetKind::FullName,
+        "s",
+    ));
+    super::builder::mark_shared_labels(
+        &mut all,
+        TargetKind::FullName,
+        &["Linus Torvalds", "Linus Torvalds"],
+    );
+
+    for e in &all {
+        assert!(
+            e.confidence < confidence::MEDIUM,
+            "{:?} entity {:?} still pivots at {} on an unresolved name",
+            e.kind,
+            e.value,
+            e.confidence
+        );
+        assert!(
+            e.tags.iter().any(|t| t == "ambiguous-name"),
+            "{:?} entity {:?} escaped the ambiguity marking",
+            e.kind,
+            e.value
+        );
+    }
+}
+
+#[test]
+fn a_differently_labelled_candidate_leaves_the_primary_alone() {
+    // CONTROL and boundary: a candidate whose label merely CONTAINS the seed
+    // tokens ("Linus Torvalds Jr") is a different value, gets a different uid,
+    // never fuses, and so erases nothing. The primary keeps full confidence.
+    let mut all = primary_entities(
+        "Q1",
+        "Linus Torvalds",
+        &torvalds_entity(),
+        TargetKind::FullName,
+        "s",
+    );
+    all.push(candidate_entity(
+        &SearchHit {
+            id: "Q2".into(),
+            label: Some("Linus Torvalds Jr".into()),
+            description: None,
+        },
+        TargetKind::FullName,
+        "s",
+    ));
+    super::builder::mark_shared_labels(
+        &mut all,
+        TargetKind::FullName,
+        &["Linus Torvalds", "Linus Torvalds Jr"],
+    );
+
+    let head = all.first().expect("primary");
+    assert!((head.confidence - PERSON_PRIMARY).abs() < f64::EPSILON);
+    assert!(!head.tags.iter().any(|t| t == "ambiguous-name"));
+    // …and the genuinely distinct candidate keeps its own sub-floor demotion,
+    // which was never at risk because it never fused.
+    let cand = all
+        .iter()
+        .find(|e| e.value == "Linus Torvalds Jr")
+        .expect("candidate");
+    assert!(cand.confidence < confidence::MEDIUM);
+    assert!(!cand.tags.iter().any(|t| t == "ambiguous-name"));
+}

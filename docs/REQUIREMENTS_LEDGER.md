@@ -13164,3 +13164,106 @@ rather than asserted.
 Two of those controls exist specifically to keep the judgements apart:
 `a_stranger_in_the_officer_index_is_quarantined_not_flagged_ambiguous` and
 `the_subject_match_gate_still_demotes_a_stranger_on_the_page`.
+
+---
+
+## REQ-WIKIDATA-001 — A safety demotion, erased by the merge it was written for
+
+The sharpest member of the namesake family, because here nothing is fabricated
+out of thin air: a correct, deliberate, documented safety demotion is silently
+undone by the engine.
+
+### The premise was refuted as written, and something worse was underneath
+
+The backlog read: *"wikidata mints a namesake's entire biography at
+pivot-eligible confidence regardless of resolution ambiguity."* Read against
+source, `wikidata` already has the discipline the entry says is missing — and
+says so in its own module doc:
+
+> the top such match is fanned out, and up to `MAX_CANDIDATES` further same-name
+> items are surfaced as low-confidence candidates (with their Wikidata id +
+> description in evidence) that stay **below the expansion floor so a namesake
+> can't pivot**.
+
+`candidate_entity` really does stamp `CANDIDATE` (`confidence::LOW`) and
+`name-candidate`, and `mark_candidate_truncation` really does signal an
+incomplete candidate list. A test — `candidate_entity_is_sub_floor_and_named` —
+already asserted the demotion.
+
+**That test checks the entity in isolation, which is the one place the promise
+holds and the one place it does not matter.** Two Wikidata items are namesakes
+precisely because they share a label. Both the primary and the candidate are
+built with that label as the entity *value*, both under the same kind whenever
+`classify` agrees with `seed_kind` (a `FullName` seed against a human item:
+`P31 = Q5` → `Person`, and `seed_kind(FullName)` → `Person`). One value, one
+kind, one uid. `Entity::absorb` then takes `f64::max(confidence)`.
+
+So the candidate does not stay below the floor at all. It is absorbed into the
+primary, and what reaches the graph is a single entity at `PERSON_PRIMARY`
+(`confidence::ATTRIBUTED`). Reproduced exactly, as the first run of the new
+lock:
+
+```
+a_namesake_candidate_does_not_smuggle_the_primary_s_confidence
+  FAILED — "a name two Wikidata items hold does not identify one person, so the
+            fused entity must stay below the expansion floor and must not pivot;
+            got 0.72 with tags
+            ["wikidata", "Q1", "exact-name-match", "Q2", "name-candidate"]"
+```
+
+0.72 against an expansion floor of 0.50, holding two different QIDs and
+simultaneously claiming `exact-name-match` **and** `name-candidate`. The
+module's stated protection was not merely weak in this case — it was **inert in
+exactly the case it was written for**, and no test could see it because every
+test looked at the entity before the merge.
+
+### Implemented
+
+A fourth consumer of `util::namesake`, and the one that proves the authority
+generalises: the first three (`ahpra`, `gleif_lei`, `opencorporates`) were
+stopping a fabricated composite from *claiming* too much, while this one is
+stopping an existing safeguard from being *erased*. Same question — does this
+answer hold one name twice? — different harm.
+
+`builder::mark_shared_labels` is pure and is keyed on each entity's own
+`(kind, value)`, the identity the engine actually merges on. A primary that
+`classify` placed in a different kind from the candidates is therefore left
+alone: it never fuses with them, so nothing of its confidence is erased and
+demoting it would be a false positive.
+
+When the **primary's own** label is shared, the claims fan-out read from that
+one item — website, handles, coordinates — is marked too. Demoting the person
+while leaving their GitHub handle at `HANDLE_CONF` would move the defect rather
+than remove it: the handle would still pivot, still attributed to a subject who
+may be the other holder of the name.
+
+### The seam had to be extracted, and the first cut was wrong
+
+The fix initially went into `process`, where the page-level judgement naturally
+lives — and the lock kept failing, because `process` needs a network round trip
+and the test calls the builders directly. That is the same trap
+REQ-OPENCORPORATES-001 had just documented, walked into one cycle later. The
+logic moved to the pure `mark_shared_labels`, which `process` now calls and the
+tests exercise directly. Recorded because the lesson clearly did not stick the
+first time: **when a judgement is page-level, give it a pure seam before
+writing it, not after the lock refuses to pass.**
+
+### Falsified
+
+| Mutation | Result |
+|---|---|
+| `mark_shared_labels` becomes a no-op | **only** the two wikidata locks fail |
+| the primary's fan-out is left unmarked (`primary_shared = false`) | **only** `an_ambiguous_primary_does_not_leave_its_handles_pivot_eligible` fails |
+| `is_shared` returns true for every name | ten controls fail across the other three consumers; **no wikidata control does**, because `mark_shared_labels` returns early when no label actually repeats |
+| `NameCollisions::of` keeps every name (`n > 0`) | **thirteen CONTROLS fail and no lock does**, now including `a_differently_labelled_candidate_leaves_the_primary_alone` |
+
+The third and fourth together are the honest result. The third leaves wikidata's
+boundary control untouched, which would have left it looking decorative; the
+fourth reaches past the early return and fails it, confirming it is
+load-bearing. Four modules and the shared helper move together under one edit.
+
+### Not fixed here
+
+`REQ-WIKIDATA-002` (claim extraction ignores Wikidata's own `deprecated` rank)
+is a different question about a single item's claims, not about which item the
+subject is. Left to its own cycle.
