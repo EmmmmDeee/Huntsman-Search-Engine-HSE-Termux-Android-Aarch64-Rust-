@@ -12417,3 +12417,143 @@ neighbour. What distinguishes this one is that the **correct** implementation wa
 the local hand-rolled copy and the **shared** one was wrong, so the usual
 "consolidate onto the shared helper" instinct would have propagated the defect.
 The authority had to be fixed before it could be consolidated onto.
+
+---
+
+## REQ-DOHRESOLVER-001 — The primary DNS transport, outside every shared discipline
+
+The backlog entry read: *"doh_resolver discards the HTTP status entirely on a
+non-2xx DoH response, so a 429/challenge page never becomes typed
+RateLimited/BotChallenge."* True, and the smallest of three things — the entry
+was a lower bound, as they keep being.
+
+What is **already right** and was not touched: `DohOutcome` keeps `Answered`
+distinct from unanswered, `classify_status` keeps `NXDOMAIN` (a genuine
+negative) distinct from `SERVFAIL`/`REFUSED` (a resolver failing), and
+`dns_wholly_unreachable` turns a total outage into a real `ModuleError` rather
+than an empty result. The false-clean-negative half of this module was closed
+already. The three defects are elsewhere.
+
+### 1. The outage was re-discovered, three more times, inside one dispatch
+
+The early break
+
+```rust
+if i == 1 && dns_wholly_unreachable(&outcomes) { break; }
+```
+
+guards **only** the `RECORD_TYPES` loop. The DMARC (`_dmarc.`), CAA and TLSRPT
+(`_smtp._tls.`) passes that follow were gated on cancellation alone, so they ran
+regardless — three more lookups, **six more HTTP requests** across the two
+providers, every one of them to resolvers the same dispatch had just proved
+unreachable. A total-outage dispatch issued ten requests, six of them after the
+answer was known.
+
+### 2. The outage was re-discovered on every later dispatch
+
+`grep -c circuit_breaker src/modules/doh_resolver/mod.rs` was **0**. `query_doh`
+used a raw `.send()`, so neither `cloudflare-dns.com` nor `dns.google` was ever
+gated or recorded, and Cloudflare's own `Retry-After` was discarded. Every
+subsequent dispatch in the scan re-asked a resolver that had already refused.
+That is precisely the shape `util::wigle::get` documents as measured — eight
+consecutive 429s ~330 ms apart in one radar sweep — and DoH is the **primary DNS
+transport on Termux**, where the system resolver is routinely blocked.
+
+### 3. A throttle, a wall and a dead resolver were one thing
+
+`answer_from_response` reduced every outcome to `Option`:
+
+```rust
+let r = resp.ok()?;
+if !r.status().is_success() { return None; }
+```
+
+so the module's outage error said *"unreachable or undecodable"* for all three.
+The live-drift sweep files that as a **dead canary**. Cycles E and F established
+that a throttled provider is never a dead one; DoH never received the rule.
+
+### The correction
+
+`answer_from_response` becomes `doh_lookup`, wired to the shared discipline the
+module had been bypassing: `breaker_gate` before the send, `send_tagged`,
+`record_breaker_outcome` on the answer, and `http_status_error` for a non-2xx so
+a 429 is `RateLimited` and a WAF interstitial is `BotChallenge`. A transport
+failure records a breaker failure explicitly, because `record_breaker_outcome`
+only ever sees an answered round-trip — and on Termux a blocked resolver fails
+exactly that way, with no status at all.
+
+`DohOutcome::Unreachable` now carries `Option<Error>`, and two pure helpers
+decide what a wholly-unanswered sweep reports: `refusal_rank` (a provider
+stating its own contract outranks a bare transport failure) and `outage_error`,
+which preserves the **variant** of the most telling refusal, not just its text
+— the variant being what the breaker, the doctor and the sweep actually read.
+
+The three dedicated passes now carry the same guard the loop breaks on.
+
+**This cycle is a consumer of `REQ-HTTP-005`, not a fourth hand-rolled copy.**
+Had it landed first it would have inherited the shared recorder's own defect —
+five round-trips to open on a 429, and the server's window discarded.
+
+### Falsification
+
+Baseline is `2737e154`. Each of the three defects was reverted on its own, and
+each failed only its own lock:
+
+| mutation | failed | held |
+|---|---|---|
+| the three passes ungated | `doh_resolvers_proved_unreachable_are_not_asked_three_more_times` — *found 0 such guards, so 3 pass(es) still query resolvers this dispatch already proved unreachable* | — |
+| non-2xx untyped again | `a_throttle_and_a_wall_keep_their_own_types` — *`[doh_resolver] HTTP 429 Too Many Requests`* | `a_non_2xx_doh_response_is_never_read_as_an_answer` |
+| `outage_error` untyped again | `a_wholly_unanswered_sweep_reports_the_most_telling_refusal_with_its_type` | `a_contract_refusal_outranks_a_bare_failure` |
+| the refusal never reaches the breaker | `a_throttle_and_a_wall_keep_their_own_types` — *one 429 must back this resolver off for the window it asked for* | the 200 answer paths |
+
+The controls are the load-bearing half. `a_non_2xx_doh_response_is_never_read_as_an_answer`
+and the two 200 tests pass on the baseline and on the fix, so a change that
+merely made every response an error would satisfy the regressions while
+destroying the status gate they exist to protect.
+
+### The four tests that were rewritten, not replaced
+
+`answer_from_response`'s four tests fed a synthetic `reqwest::Response` to a
+function that no longer exists. Rather than delete the behaviour they covered —
+the status gate, the NXDOMAIN case, the record carrying — they now drive the
+**real** `doh_lookup` against a loopback server, so the breaker gate, the status
+typing and the body decoding all execute. That became possible only because
+`REQ-BREAKER-001` keys the breaker on host **and** port: each server binds its
+own port, so a 429 in one test cannot short-circuit a sibling. A fifth was added
+for the `SERVFAIL`/`REFUSED` line `classify_status` draws.
+
+### Coverage stated honestly
+
+`process` needs a live network and a `ModuleContext`, so the control-flow half —
+defect 1 — has no unit test and carries a `tests/architecture.rs` wiring lock
+instead: all three guards must exist, and all three must sit between the loop
+that establishes the outage and the point it is reported. Anchored on the
+construction with comments and string literals blanked, because this module's
+prose now names `dns_wholly_unreachable` several times.
+
+`REQ-DOHRESOLVER-002` (the DoH-JSON `TC` truncation flag) is untouched and
+remains VERIFY-FIRST — it needs a live capture, not a reading of this file.
+
+### One flake class introduced, and closed
+
+Driving the breaker through a loopback server leaves it **open on an ephemeral
+port the server then releases**. A later test handed the same port by the OS
+would be short-circuited by a breaker it never opened — an intermittent failure
+of exactly the `REQ-CI-003` class, and one this cycle's own
+`a_throttle_and_a_wall_keep_their_own_types` would have introduced along with
+`REQ-HTTP-005`'s `one_429_opens_the_breaker_for_the_servers_own_window`, which
+leaves a 90-second window.
+
+Both now close the breaker they opened. That is **not** a return of the sixteen
+resets `REQ-BREAKER-001` deleted: those existed because the key was shared *by
+construction* and no test could avoid it, whereas these clean up state the test
+deliberately created on a key it owns. The distinction is written into both
+comments so the next reader does not mistake one for the other.
+
+### Class
+
+The `REQ-DRIFT-005` / `REQ-HTTP-004` family — a module outside the shared HTTP
+layer, re-deriving its own weaker answer. What makes this one worth its own
+entry is the ordering: it is the first cycle to consume `REQ-HTTP-005`'s
+corrected breaker authority, and doing it in the other order would have spread
+the defect rather than the fix.

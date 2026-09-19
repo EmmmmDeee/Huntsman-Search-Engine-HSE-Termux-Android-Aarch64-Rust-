@@ -1681,3 +1681,69 @@ fn a_wifi_intel_wigle_refusal_is_never_discarded() {
          deciding on information that has not been gathered yet"
     );
 }
+
+/// REQ-DOHRESOLVER-001. `dns_wholly_unreachable` is a pure predicate, and its
+/// unit tests prove only that it classifies correctly — not that the three
+/// dedicated passes consult it. They did not: the `i == 1` early break guarded
+/// only the `RECORD_TYPES` loop, so the DMARC, CAA and TLSRPT passes ran
+/// regardless, issuing three more lookups — six more HTTP requests across the
+/// two providers — to resolvers the same dispatch had already proved
+/// unreachable.
+///
+/// That is invisible to every unit test, because `process` needs a live network
+/// and a `ModuleContext`. This locks the wiring instead: all three guards must
+/// exist, and all three must sit between the record-type loop that establishes
+/// the outage and the point the outage is reported.
+///
+/// Anchored on the **construction**, with comments and string literals blanked
+/// first: this module's own prose now names `dns_wholly_unreachable` several
+/// times, and an earlier architecture test in this file was defeated by
+/// matching exactly such prose.
+#[test]
+fn doh_resolvers_proved_unreachable_are_not_asked_three_more_times() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let raw = fs::read_to_string(root.join("src/modules/doh_resolver/mod.rs"))
+        .expect("doh_resolver module must exist");
+
+    let mut src = String::with_capacity(raw.len());
+    for line in raw.lines() {
+        let code = line.split("//").next().unwrap_or("");
+        let mut in_str = false;
+        for ch in code.chars() {
+            match ch {
+                '"' => {
+                    in_str = !in_str;
+                    src.push('"');
+                }
+                _ if in_str => src.push(' '),
+                _ => src.push(ch),
+            }
+        }
+        src.push('\n');
+    }
+
+    const GUARD: &str = "!ctx.cancel.is_cancelled() && !dns_wholly_unreachable(&outcomes)";
+    let guards: Vec<usize> = src.match_indices(GUARD).map(|(i, _)| i).collect();
+    assert_eq!(
+        guards.len(),
+        3,
+        "each of the DMARC, CAA and TLSRPT passes must skip once no resolver \
+         has answered (REQ-DOHRESOLVER-001); found {} such guards, so {} pass(es) \
+         still query resolvers this dispatch already proved unreachable",
+        guards.len(),
+        3_usize.saturating_sub(guards.len())
+    );
+
+    let loop_start = src
+        .find("for (i, rtype) in RECORD_TYPES.iter().enumerate()")
+        .expect("the record-type loop must still establish the outage first");
+    let report = src
+        .find("outage_error(&domain, &outcomes)")
+        .expect("a wholly-unanswered sweep must still report its typed outage");
+    assert!(
+        guards.iter().all(|g| *g > loop_start && *g < report),
+        "the three guards must sit between the loop that establishes the outage \
+         ({loop_start}) and the point it is reported ({report}); one outside that \
+         span is either deciding on outcomes not yet gathered or unreachable"
+    );
+}

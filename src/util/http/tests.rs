@@ -2128,6 +2128,13 @@ async fn one_429_opens_the_breaker_for_the_servers_own_window() {
         allow_host(&endpoint, t0 + 95),
         "…then release, so a throttle is never a permanent outage"
     );
+    // Close it. The assertions above drove the breaker with explicit future
+    // `now` values, so in real time it is still open for ~90s on a port the
+    // server has now released — a later test handed the same ephemeral port
+    // would be short-circuited by a breaker it never opened. This is cleanup
+    // for state this test deliberately created, not the shared-key workaround
+    // REQ-BREAKER-001 removed.
+    crate::util::circuit_breaker::record_success(&endpoint);
 }
 
 /// The control, and what keeps the rule above honest: a single 5xx must NOT

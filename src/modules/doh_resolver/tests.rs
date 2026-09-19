@@ -715,7 +715,7 @@ fn an_unreachable_resolver_is_not_the_same_as_a_domain_with_no_records() {
 
     // Every query failed to reach a resolver: nothing was established.
     assert!(
-        dns_wholly_unreachable(&[DohOutcome::Unreachable, DohOutcome::Unreachable]),
+        dns_wholly_unreachable(&[DohOutcome::Unreachable(None), DohOutcome::Unreachable(None)]),
         "all-unreachable must be reported, not rendered as an empty success"
     );
 
@@ -730,9 +730,9 @@ fn an_unreachable_resolver_is_not_the_same_as_a_domain_with_no_records() {
     // so the empties are genuine negatives.
     assert!(
         !dns_wholly_unreachable(&[
-            DohOutcome::Unreachable,
+            DohOutcome::Unreachable(None),
             DohOutcome::Answered(Vec::new()),
-            DohOutcome::Unreachable,
+            DohOutcome::Unreachable(None),
         ]),
         "a single successful answer proves DNS worked"
     );
@@ -747,7 +747,7 @@ fn an_unreachable_resolver_is_not_the_same_as_a_domain_with_no_records() {
     // `records()` must expose Unreachable as carrying nothing, so entity
     // extension can treat both arms alike while the aggregate check still sees
     // the difference.
-    assert!(DohOutcome::Unreachable.records().is_empty());
+    assert!(DohOutcome::Unreachable(None).records().is_empty());
     assert!(DohOutcome::Answered(Vec::new()).records().is_empty());
 }
 
@@ -806,68 +806,214 @@ fn a_resolver_failure_is_not_a_negative_and_must_fail_over() {
     }
 }
 
-// ── answer_from_response: a non-2xx is a resolver failure, never an answer ────
+// ── doh_lookup: a non-2xx is a resolver failure, never an answer ─────────────
 // A DoH provider signals a real miss as HTTP 200 + Status 3 (NXDOMAIN); a
 // non-2xx is an outage/throttle. Because DohResp's fields are all
 // #[serde(default)], a decoded error body collapses to {Status:0, Answer:[]},
 // which without the status gate reads as a FALSE authoritative "no such record".
+//
+// These drive the REAL `doh_lookup` against a loopback server rather than a
+// synthetic `reqwest::Response`, so the breaker gate, the status typing and the
+// body decoding all execute. That became possible only once `REQ-BREAKER-001`
+// keyed the breaker on host AND port: each server binds its own port, so a
+// 429 here cannot short-circuit a sibling test.
 
-fn doh_response(status: u16, body: &str) -> reqwest::Response {
-    reqwest::Response::from(
-        http::Response::builder()
-            .status(status)
-            .body(body.to_string())
-            .expect("response builds"),
-    )
-}
+/// Cloudflare's managed-challenge interstitial, as `util::html::is_challenge_page`
+/// fingerprints it — the title phrase plus the `/cdn-cgi/challenge-platform` loader.
+const CHALLENGE_PAGE: &str = "<!DOCTYPE html><html lang=\"en-US\"><head>\
+    <title>Just a moment...</title></head><body>\
+    <noscript>Enable JavaScript and cookies to continue</noscript>\
+    <script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1\"></script>\
+    </body></html>";
 
 #[tokio::test]
 async fn a_non_2xx_doh_response_is_never_read_as_an_answer() {
+    use crate::util::http::test_server::{Canned, serve};
+    let mut admitted: Vec<u16> = Vec::new();
     for code in [400u16, 429, 500, 502, 503] {
-        let resp = doh_response(code, r#"{"error":"upstream failure"}"#);
-        assert!(
-            answer_from_response(Ok(resp)).await.is_none(),
-            "HTTP {code} must fail over (None), not become a clean 'no record' answer"
-        );
+        let base = serve(vec![Canned::json(code, r#"{"error":"upstream failure"}"#)]).await;
+        if doh_lookup(&reqwest::Client::new(), &base).await.is_ok() {
+            admitted.push(code);
+        }
     }
+    assert!(
+        admitted.is_empty(),
+        "these non-2xx statuses became a clean 'no record' answer: {admitted:?}"
+    );
+}
+
+/// REQ-DOHRESOLVER-001. The refusal must keep its TYPE. Before this the status
+/// was discarded entirely — `answer_from_response` returned `None` for every
+/// non-2xx — so a throttled Cloudflare, a WAF wall and a dead resolver were one
+/// undifferentiated `Unreachable`, and the module's outage error said
+/// "unreachable or undecodable" for all three. The live-drift sweep files that
+/// as a dead canary; cycles E and F established the rule, and DoH — the primary
+/// DNS transport on Termux — never received it.
+#[tokio::test]
+async fn a_throttle_and_a_wall_keep_their_own_types() {
+    use crate::core::error::Error;
+    use crate::util::http::test_server::{Canned, serve};
+
+    let throttled = serve(vec![
+        Canned::json(429, r#"{"error":"slow down"}"#).header("Retry-After", "30"),
+    ])
+    .await;
+    let err = doh_lookup(&reqwest::Client::new(), &throttled)
+        .await
+        .expect_err("a 429 is a refusal, not an answer");
+    assert!(
+        matches!(err, Error::RateLimited(_)),
+        "a throttled resolver must be RateLimited, never a generic fault: {err}"
+    );
+    // …and the second half of the same defect: the refusal must reach the
+    // BREAKER, so every later lookup in the scan short-circuits instead of
+    // re-asking a resolver that already said no. `query_doh` used a raw
+    // `.send()` with no breaker anywhere in the module, and one dispatch issues
+    // up to eleven lookups across two providers.
+    let endpoint = crate::util::circuit_breaker::endpoint_of(&throttled)
+        .expect("a loopback URL keys an endpoint");
+    assert!(
+        !crate::util::circuit_breaker::allow_host(&endpoint, crate::core::entity::unix_now()),
+        "one 429 must back this resolver off for the window it asked for"
+    );
+    // Close it again. Unlike the sixteen resets REQ-BREAKER-001 deleted — which
+    // existed because the key was shared BY CONSTRUCTION and no test could avoid
+    // it — this one cleans up state this test deliberately created: the server's
+    // ephemeral port is released when it stops, and a later test handed the same
+    // port would otherwise be short-circuited by a breaker it never opened.
+    crate::util::circuit_breaker::record_success(&endpoint);
+
+    let walled = serve(vec![Canned::html(403, CHALLENGE_PAGE)]).await;
+    let err = doh_lookup(&reqwest::Client::new(), &walled)
+        .await
+        .expect_err("a challenge page is a refusal, not an answer");
+    assert!(
+        matches!(err, Error::BotChallenge(_)),
+        "a WAF interstitial must be BotChallenge, never a generic fault: {err}"
+    );
 }
 
 #[tokio::test]
 async fn a_transport_failure_is_never_read_as_an_answer() {
-    let err = reqwest::Client::new()
-        .get("ftp://doh.invalid/")
-        .send()
-        .await;
+    // `ftp://` is a scheme error, so this fails in transport with no network.
     assert!(
-        err.is_err(),
-        "the scheme error sets up the transport-failure case"
-    );
-    assert!(
-        answer_from_response(err).await.is_none(),
-        "a transport failure must fail over (None), not become an answer"
+        doh_lookup(&reqwest::Client::new(), "ftp://doh.invalid/")
+            .await
+            .is_err(),
+        "a transport failure must be an Err, not an answer"
     );
 }
 
 #[tokio::test]
 async fn a_200_nxdomain_is_an_authoritative_empty_answer() {
     // The one case that legitimately resolves with zero records — a 200 body
-    // carrying NXDOMAIN — must stay an answer, not a failover.
-    let resp = doh_response(200, r#"{"Status":3,"Answer":[]}"#);
-    let ans = answer_from_response(Ok(resp)).await;
-    assert!(
-        matches!(ans, Some(ref v) if v.is_empty()),
-        "NXDOMAIN over HTTP 200 must be an authoritative empty answer, not a failover"
-    );
+    // carrying NXDOMAIN — must stay an answer, not a failover. This is the
+    // control for the status gate above: it proves the gate keys on the HTTP
+    // status rather than having simply made every empty answer a failure.
+    use crate::util::http::test_server::{Canned, serve};
+    let base = serve(vec![Canned::json(200, r#"{"Status":3,"Answer":[]}"#)]).await;
+    let ans = doh_lookup(&reqwest::Client::new(), &base)
+        .await
+        .expect("NXDOMAIN over HTTP 200 is an authoritative empty answer");
+    assert!(ans.is_empty(), "NXDOMAIN carries no records");
 }
 
 #[tokio::test]
 async fn a_200_noerror_carries_its_records() {
-    let resp = doh_response(
+    use crate::util::http::test_server::{Canned, serve};
+    let base = serve(vec![Canned::json(
         200,
         r#"{"Status":0,"Answer":[{"name":"x.com.","type":1,"data":"1.2.3.4"}]}"#,
-    );
-    let ans = answer_from_response(Ok(resp))
+    )])
+    .await;
+    let ans = doh_lookup(&reqwest::Client::new(), &base)
         .await
         .expect("a 200 NOERROR with records resolves");
     assert_eq!(ans.len(), 1, "the answer record is carried through");
+}
+
+/// A resolver answering `SERVFAIL`/`REFUSED` has failed to resolve — it is not
+/// a negative existence proof — so it must fail over rather than resolve empty.
+/// `classify_status` already drew that line; this pins that `doh_lookup` turns
+/// its `None` into a real `Err` instead of an empty answer.
+#[tokio::test]
+async fn a_200_servfail_is_a_failure_not_an_empty_answer() {
+    use crate::util::http::test_server::{Canned, serve};
+    let mut resolved: Vec<i32> = Vec::new();
+    for status in [1i32, 2, 5, 9] {
+        let base = serve(vec![Canned::json(
+            200,
+            format!(r#"{{"Status":{status},"Answer":[]}}"#),
+        )])
+        .await;
+        if doh_lookup(&reqwest::Client::new(), &base).await.is_ok() {
+            resolved.push(status);
+        }
+    }
+    assert!(
+        resolved.is_empty(),
+        "these DNS failure statuses resolved as empty answers: {resolved:?}"
+    );
+}
+
+// ── the outage a wholly-unanswered sweep reports ─────────────────────────────
+
+/// REQ-DOHRESOLVER-001. `refusal_rank` decides which of several refusals the
+/// module reports. A provider stating its own contract outranks a bare
+/// transport failure, so the outage names the real cause rather than whichever
+/// provider happened to be asked last.
+#[test]
+fn a_contract_refusal_outranks_a_bare_failure() {
+    use crate::core::error::Error;
+    let throttle = Error::RateLimited("429".into());
+    let wall = Error::BotChallenge("403 wall".into());
+    let generic = Error::module(SRC, "connection reset");
+    assert!(refusal_rank(&throttle) > refusal_rank(&wall));
+    assert!(refusal_rank(&wall) > refusal_rank(&generic));
+}
+
+/// The typed half, end to end through `outage_error`: the reported outage keeps
+/// the VARIANT of the most telling refusal, not just its text, because that
+/// variant is what the breaker, the doctor and the live-drift sweep read.
+///
+/// Every shape is checked and survivors collected, so a partial fix is named.
+#[test]
+fn a_wholly_unanswered_sweep_reports_the_most_telling_refusal_with_its_type() {
+    use crate::core::error::Error;
+    let mut wrong: Vec<&str> = Vec::new();
+
+    // A throttle among plain failures must surface as the throttle.
+    let mixed = [
+        DohOutcome::Unreachable(Some(Error::module(SRC, "connection reset"))),
+        DohOutcome::Unreachable(Some(Error::RateLimited("doh: HTTP 429: slow down".into()))),
+        DohOutcome::Unreachable(Some(Error::module(SRC, "connection reset"))),
+    ];
+    let err = outage_error("example.com", &mixed);
+    if !matches!(err, Error::RateLimited(_)) {
+        wrong.push("a throttle among plain failures");
+    }
+    assert!(
+        err.to_string().contains("example.com") && err.to_string().contains("slow down"),
+        "the outage must name the domain and carry the refusal: {err}"
+    );
+
+    // A wall, with no throttle present, surfaces as the wall.
+    let walled = [
+        DohOutcome::Unreachable(Some(Error::module(SRC, "connection reset"))),
+        DohOutcome::Unreachable(Some(Error::BotChallenge("doh: HTTP 403: wall".into()))),
+    ];
+    if !matches!(outage_error("example.com", &walled), Error::BotChallenge(_)) {
+        wrong.push("a wall among plain failures");
+    }
+
+    // …and the control: with nothing typed, it stays the generic module fault,
+    // so the typing cannot be an unconditional relabelling.
+    let plain = [
+        DohOutcome::Unreachable(Some(Error::module(SRC, "connection reset"))),
+        DohOutcome::Unreachable(None),
+    ];
+    if !matches!(outage_error("example.com", &plain), Error::Module { .. }) {
+        wrong.push("plain failures must stay a module fault");
+    }
+    assert!(wrong.is_empty(), "outage_error mis-typed: {wrong:?}");
 }
