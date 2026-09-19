@@ -26,7 +26,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::core::entity::{EntityKind, derive_uid, normalise};
+use crate::core::confidence;
+use crate::core::entity::{Entity, EntityKind, derive_uid, normalise};
 
 /// The tag stamped on an entity whose name this provider's own answer shows is
 /// held by more than one party.
@@ -36,6 +37,33 @@ use crate::core::entity::{EntityKind, derive_uid, normalise};
 /// name is the opposite problem — the records genuinely match, and there is
 /// more than one of them. The operator must see them all, flagged.
 pub const AMBIGUOUS_NAME: &str = "ambiguous-name";
+
+/// The ceiling a proven-collision row's entities are capped at.
+///
+/// Below the noisy-OR expansion floor (`confidence::MEDIUM`), so nothing built
+/// on an ambiguous name can pivot and seed new targets.
+///
+/// Deliberately the same tier a module gives a loose, non-matching candidate
+/// rather than a bespoke number in between: the epistemic status is identical —
+/// this row does not identify one party. *Why* it is sub-floor is carried by
+/// [`AMBIGUOUS_NAME`] and an evidence caution, where an operator can read it,
+/// not by a constant nobody can interpret.
+pub const AMBIGUOUS_CEILING: f64 = confidence::LOW_MEDIUM;
+
+/// Cap and flag one entity a proven-collision row produced.
+///
+/// Apply it to **every** entity the row yielded, not only the named one. A
+/// company row's registration number, registered address and derived
+/// coordinates all rest on the single claim "the subject is this party", so
+/// they inherit that claim's ambiguity; demoting the `Organisation` while
+/// leaving its `AbnAcn` at `confidence::EXPERT` moves the defect rather than
+/// removing it, because the number still pivots.
+///
+/// Idempotent — the tag de-dupes and the cap is a `min`.
+pub fn mark_ambiguous(entity: &mut Entity) {
+    entity.tag(AMBIGUOUS_NAME);
+    entity.confidence = entity.confidence.min(AMBIGUOUS_CEILING);
+}
 
 /// The names a single result set holds more than once.
 ///

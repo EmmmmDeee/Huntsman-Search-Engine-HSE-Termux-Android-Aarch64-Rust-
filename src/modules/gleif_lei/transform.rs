@@ -3,10 +3,10 @@
 use crate::core::confidence;
 use crate::core::entity::{Entity, EntityKind, Evidence};
 
-use crate::util::namesake::{AMBIGUOUS_NAME, NameCollisions};
+use crate::util::namesake::{NameCollisions, mark_ambiguous};
 
 use super::{
-    ABN_CONF, ADDR_CONF, MAX_RECORDS, ORG_AMBIGUOUS, ORG_CANDIDATE, ORG_EXACT, SRC,
+    ABN_CONF, ADDR_CONF, MAX_RECORDS, ORG_CANDIDATE, ORG_EXACT, SRC,
     helpers::{au_abn_acn, locality, name_matches_query, record_evidence},
     types::GleifResp,
 };
@@ -67,21 +67,6 @@ pub(super) fn exact_seeds(resp: &GleifResp, query: &str) -> Vec<(String, String)
             .then_some((lei, name))
         })
         .collect()
-}
-
-/// Cap and flag everything one proven-collision row produced.
-///
-/// The Organisation and its whole fan-out — the AbnAcn, the registered Address,
-/// the inline Coordinates — all rest on the single claim "the subject is this
-/// company", so they inherit the ambiguity of that claim. Leaving the AbnAcn at
-/// `ABN_CONF` (`confidence::EXPERT`) while demoting only the Organisation would
-/// move the defect rather than remove it: the ACN would still pivot, still
-/// attributed to a subject who may be the *other* company.
-///
-/// Idempotent — the tag de-dupes and the cap is a `min`.
-fn mark_ambiguous(e: &mut Entity) {
-    e.tag(AMBIGUOUS_NAME);
-    e.confidence = e.confidence.min(ORG_AMBIGUOUS);
 }
 
 /// Pure transform: GLEIF records → entities. Every row yields an `Organisation`

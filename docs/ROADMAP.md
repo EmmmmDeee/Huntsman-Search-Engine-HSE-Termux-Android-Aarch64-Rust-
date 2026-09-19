@@ -102,9 +102,13 @@ The reusable primitives every module leans on. Key sub-areas:
   keeps harvested/breach-sourced credentials out of HSE's own requests),
   `add_and_validate` (provenance-stamped).
 - `util/namesake/` — whether one provider's own answer proves a name is held by
-  more than one party. Keyed on `derive_uid`/`normalise` themselves, so it
-  answers "will the engine fuse these rows?" exactly rather than by imitation.
-  Consumed by `ahpra` (practitioners) and `gleif_lei` (legal names).
+  more than one party, plus the ceiling and the marking rule for when it does
+  (`AMBIGUOUS_CEILING`, `mark_ambiguous`). Keyed on `derive_uid`/`normalise`
+  themselves, so it answers "will the engine fuse these rows?" exactly rather
+  than by imitation. Consumed by `ahpra` (practitioners), `gleif_lei` and
+  `opencorporates` (legal names, and officer names). Its shared-ness is
+  demonstrated, not assumed: neutering `is_shared` breaks ten controls across
+  all three consumers and none of the locks.
 - `util/html`, `util/probe`, `util/target_match`, `util/canonical`,
   `util/address_au`, `util/domains`, `util/domain_vn`, `util/geo`,
   `util/extract`, `util/gravatar` — challenge-page detection, presence
@@ -283,7 +287,10 @@ by looking for them rather than reading modules at random:**
    the neighbour is *missing* the guard entirely rather than missing one call
    site, the fix is to lift the mechanism into a shared authority both consume
    — `ahpra` held the only copy of the namesake-collision rule, inline, and
-   `util::namesake` is now where it lives.
+   `util::namesake` is now where it lives, with `gleif_lei` and
+   `opencorporates` joined to it (REQ-GLEIF-001, REQ-OPENCORPORATES-001). The
+   consolidation is only real once the *originating* module's copy is deleted
+   too; a shared helper beside an untouched inline original is two authorities.
 2. *The rule computes a relation, then discards which side related to which.*
    Five correlator instances (AU-046/REQ-CORRELATOR-002,
    AU-039/REQ-CORRELATOR-004, AU-105/REQ-CORRELATOR-003,

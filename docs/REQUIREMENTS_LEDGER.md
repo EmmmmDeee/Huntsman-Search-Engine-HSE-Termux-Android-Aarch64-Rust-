@@ -13073,3 +13073,94 @@ again.
 than a collision between identical ones. They do not fuse, so no composite is
 fabricated. It is the REQ-WIKIDATA-001 / REQ-GEO-001 "ambiguity discarded"
 family and is left to that cycle rather than folded in here.
+
+---
+
+## REQ-OPENCORPORATES-001 — The same collision, on the register that searches 140 jurisdictions
+
+Recorded immediately after REQ-GLEIF-001 because it is the same finding one
+module over, and finishing it is what turns `util::namesake` from a helper with
+a single caller into an actual shared authority.
+
+### The premise was refuted, then re-scoped, then confirmed
+
+The backlog read: *"two different real companies that share an identical name
+are merged into one Organisation entity with an incoherent, self-contradicting
+tag union (simultaneously active AND dissolved, wrong country)."* Checked
+against source at `0a09c336`:
+
+* **Refuted as written.** `opencorporates` *does* apply `demote_to_candidate`,
+  at `mod.rs:601` (officer search) and `:638` (company search), whenever a row's
+  own name fails `officer_matches_query` / `company_matches_query`. The
+  "stranger's record" half was closed long ago.
+* **Confirmed once re-scoped.** That gate asks *"is this row about the subject?"*
+  Two companies holding the **identical** name both answer yes. Both keep
+  `confidence::VERY_HIGH`, both mint an `Organisation` whose value is the name,
+  so they share a uid and the engine fuses them — one entity tagged
+  `country:AU` **and** `active` **and** `inactive` **and** `dissolved`. The
+  symptom the backlog described was real; only its stated cause was wrong.
+
+This is materially worse here than in `gleif_lei`. `build_search_url` appends
+`jurisdiction_code=au` **only** for an `AbnAcn` target; an `Organisation` or
+`FullName` search runs across all ~140 jurisdictions OpenCorporates indexes. A
+cross-jurisdiction namesake is therefore the *ordinary* result, not an edge
+case — and the officer index is worse still, since a common personal name
+returns several unrelated real directors by design.
+
+### The seam did not exist, and that was its own defect
+
+Both judgements lived inline in `process`, inside a `flat_map` over the
+response — unreachable to a test without a network round trip. The codebase had
+already noticed: `two_companies_geocoding_to_the_same_point_dedup_to_one_…`
+carries the apology in its own comment —
+
+> `process()`'s live OpenCorporates fetch isn't independently testable here, so
+> this calls the same pure `build_company_entities` `process()`'s `flat_map`
+> calls per company, followed by the same `dedup_merge_entities` call
+> `process()` now makes before returning.
+
+A test that re-implements the loop it is testing verifies the loop it wrote,
+not the one that ships. So the page-level logic was extracted into two pure
+functions, `build_company_page` and `build_officer_page`, and `process` became
+the thin network adapter the rest of this codebase uses. Both judgements are now
+testable at the boundary where they are actually made.
+
+### Implemented
+
+* `util::namesake` gained `AMBIGUOUS_CEILING` and `mark_ambiguous`, so the
+  ceiling and the marking rule are defined once rather than per module.
+  `gleif_lei`'s local copies (`ORG_AMBIGUOUS`, its own `mark_ambiguous`) were
+  deleted in favour of them — the consolidation completed, not just started.
+* `build_company_page` / `build_officer_page` apply the two judgements in
+  order, and the ordering is the design: a row that is **not** about the subject
+  is quarantined as a `CANDIDATE`; only a row that **is** about the subject can
+  be *ambiguously* so. They are different claims and must not collapse into one
+  tag — a stranger's record wearing `ambiguous-name` would sit in the operator's
+  full-confidence view, and `CANDIDATE` is filtered from exports while
+  `ambiguous-name` deliberately is not.
+
+### Falsified
+
+An honest note on method: because the pure seam did not exist on the baseline,
+the locks could not be observed failing against unmodified `origin/main` the way
+REQ-GLEIF-001's were. The equivalent evidence is by mutation of the integrated
+tree, and each mutation was chosen to sever exactly one decision:
+
+| Mutation | Result |
+|---|---|
+| `build_company_page` stops marking collisions | **only** `a_company_name_two_registries_hold_is_not_one_confident_company` fails |
+| `build_officer_page` stops marking collisions | **only** `an_officer_name_two_people_hold_is_not_one_confident_person` fails |
+| the subject-match gate is dropped in the extraction | **only** `the_subject_match_gate_still_demotes_a_stranger_on_the_page` fails |
+| the `AbnAcn` exemption is dropped | **only** `an_abn_acn_lookup_is_exact_so_the_match_gate_does_not_apply` fails |
+| `is_shared` returns true for every name | **ten CONTROLS fail and no lock does** |
+
+The last one is the load-bearing result, and not only as the
+pin-from-the-other-direction. The ten it breaks span `ahpra`, `gleif_lei`,
+`opencorporates` **and** `util::namesake`'s own tests — one edit to the shared
+authority moves all three consumers at once. That is the difference between a
+shared authority and three copies that happen to agree today, demonstrated
+rather than asserted.
+
+Two of those controls exist specifically to keep the judgements apart:
+`a_stranger_in_the_officer_index_is_quarantined_not_flagged_ambiguous` and
+`the_subject_match_gate_still_demotes_a_stranger_on_the_page`.
