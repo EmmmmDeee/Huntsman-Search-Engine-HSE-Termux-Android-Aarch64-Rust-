@@ -48,6 +48,40 @@ fn is_absent_marker(s: &str) -> bool {
     is_null_sentinel(s) || is_placeholder_secret(s)
 }
 
+/// The single place a provider-controlled JSON value becomes attribute or
+/// [`Evidence`] text, for every OsintCat endpoint.
+///
+/// Returns `None` for anything that is not a presentable scalar fact:
+///
+/// - `Null`, `Array`, `Object` — a nested structure is not a fact, and
+///   `Value`'s `Display` would dump raw JSON into text documented as "not the
+///   raw data itself".
+/// - a `String` whose content is an absence/redaction marker ([`is_absent_marker`]),
+///   so `"REDACTED"` or a SQL `NULL` sentinel never reads as real platform data.
+/// - anything empty or longer than [`MAX_EXTRA_VALUE_LEN`], so one stray blob
+///   cannot dominate an entity's evidence list.
+///
+/// Critically, a `String` yields its *underlying* Rust string, never
+/// `to_string()` — `Value`'s `Display` renders a JSON string WITH its
+/// surrounding quotes, which would bake `"..."` into normalized evidence text.
+///
+/// This exists because `emit_email_osint` open-coded `v.to_string()` and
+/// carried none of these guards, while `emit_footprint` applied all of them
+/// inline seventy lines above (REQ-OSINTCAT-001). One helper, both callers, so
+/// a third endpoint cannot reintroduce the gap by copying the wrong sibling.
+fn scalar_attr_value(v: &Value) -> Option<String> {
+    let val = match v {
+        Value::Null | Value::Array(_) | Value::Object(_) => return None,
+        Value::String(s) => s.clone(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+    };
+    if val.is_empty() || val.len() > MAX_EXTRA_VALUE_LEN || is_absent_marker(&val) {
+        return None;
+    }
+    Some(val)
+}
+
 pub struct OsintCat;
 
 // ── Response types ─────────────────────────────────────────────────────────────
@@ -299,15 +333,9 @@ fn emit_footprint(fp: &OcFootprintResponse, entity: &mut Entity, result: &mut Mo
                 // than stringify it. A `Value::String` is also filtered for the
                 // absence/redaction markers providers use in place of a real
                 // value, same as `breach_rich.rs`'s own raw-field catch-all.
-                let val = match v {
-                    Value::Null | Value::Array(_) | Value::Object(_) => continue,
-                    Value::String(s) => s.clone(),
-                    Value::Bool(b) => b.to_string(),
-                    Value::Number(n) => n.to_string(),
-                };
-                if val.is_empty() || val.len() > MAX_EXTRA_VALUE_LEN || is_absent_marker(&val) {
+                let Some(val) = scalar_attr_value(v) else {
                     continue;
-                }
+                };
                 entity.add_evidence(
                     Evidence::new(SRC, format!("[{}] {k}: {val}", r.domain))
                         .with_attr("platform", &r.domain)
@@ -382,10 +410,13 @@ fn emit_email_osint(raw: &Value, entity: &mut Entity) {
     let Some(obj) = raw.as_object() else { return };
     let mut ev = Evidence::new(SRC, "OsintCat email-osint deep findings".to_string());
     for (k, v) in obj {
-        if v.is_null() {
+        // Same normalization as `emit_footprint`: this endpoint's body is just
+        // as provider-controlled, so it gets the identical guards rather than
+        // `v.to_string()`, which quoted every string and dumped nested JSON.
+        let Some(val) = scalar_attr_value(v) else {
             continue;
-        }
-        ev = ev.with_attr(k, v.to_string());
+        };
+        ev = ev.with_attr(k, val);
     }
     entity.add_evidence(ev);
 }

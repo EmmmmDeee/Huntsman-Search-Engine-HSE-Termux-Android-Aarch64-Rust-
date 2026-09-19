@@ -9819,3 +9819,83 @@ wrong.
 **This is not closed.** It closes when the doc-tests pass on several
 consecutive runs, or when the `--list` output identifies the collector's source
 and that is fixed at its root. One green run will not close it again.
+
+### REQ-CI-008 (cont.) — the line number was never evidence; merged-doctest run output mis-reports it
+
+Run 35406016795 on `08b3586b` is green, and it printed something far more
+useful than a pass: **the same job reported two different line numbers for the
+same doc-test.**
+
+| Step | Target dir | `canonical_email_mailbox` | `name_word_tokens` |
+| --- | --- | --- | --- |
+| 6, `cargo test --doc -- --list` | cached `target/` | **line 138** | **line 216** |
+| 13, `cargo test --doc` (run) | fresh `target-doctests` | **line 88** | **line 153** |
+
+One commit, one source file (`md5 b6c14fd09b8284370dfa15144e3961b3`), one job —
+and the executing run names lines the file does not contain, for *two different*
+doc-tests, with **non-constant** offsets (50 and 63). All 77 doc-tests passed in
+that same step.
+
+**So the reported source line in merged-doctest RUN output is unreliable on
+toolchain 1.98.0 (`doctest_bundle_2024`), while `--list` reports it correctly.**
+
+This retroactively invalidates the reasoning behind **all four** refuted
+hypotheses. Every one of them was inferred from "CI says line 88, the branch
+has 138, therefore CI compiled a different tree." That premise was false: the
+line number is not a reliable statement about the compiled source at all. The
+table above is the control that should have existed before the first hypothesis,
+and it took four refutations to go and build it.
+
+**What this does and does not establish.**
+
+- **Established:** the line number carries no information about which tree was
+  compiled. Never reason from it again. `--list` is the trustworthy projection.
+- **Established:** doc-tests pass in an isolated target dir on this run.
+- **NOT established:** that the isolation fixed the intermittent
+  `left: 0.85 / right: 0.75` failure. That is **one** green run. The base rate
+  is roughly one in six, so one green is weak evidence — exactly the mistake
+  made when this was closed prematurely the first time. Green count: **1**.
+- **Open:** what genuinely failed. An assertion really did compare 0.85 against
+  0.75, and with the name/line mapping proven unreliable, the failing doc-test
+  may never have been the one named. Identifying it needs the failure to recur
+  *with* `--list` output alongside it — which the diagnostic now guarantees.
+
+**Permanent value regardless of the outcome.** The diagnostic stays. It cost
+three lines and converted a class of reasoning this session got wrong four
+times into a printed fact, and it is the only reason the mis-mapping was ever
+visible.
+
+### REQ-OSINTCAT-001 — `emit_email_osint` dumped raw JSON into Evidence; one helper now serves both emitters
+
+`emit_email_osint` built attributes with `ev.with_attr(k, v.to_string())`, where
+`v` is `serde_json::Value`. Three defects, all of which its sibling
+`emit_footprint` had already fixed seventy lines above:
+
+1. **JSON quoting.** `Value`'s `Display` renders a string *with* its quotes, so
+   `{"city": "New York"}` stored `"\"New York\""` — raw JSON syntax in text
+   documented as normalized.
+2. **Nested structures stringified.** `Object`/`Array` were dumped as raw JSON
+   blobs, which is precisely what `Evidence` is documented not to carry.
+3. **No absence guard, no length cap.** A provider's `"REDACTED"` or SQL `\N`
+   became an attribute reading as real platform data, and an arbitrarily long
+   blob could dominate an entity's evidence.
+
+Fixed at the authoritative layer: one `scalar_attr_value` helper now performs
+the scalar match, the emptiness/length cap and the `is_absent_marker` check, and
+**both** emitters call it. The inline copy in `emit_footprint` is gone, so a
+third endpoint cannot reintroduce the gap by copying the wrong sibling.
+
+**The test that hid it.** `emit_email_osint_skips_nulls_and_adds_non_null_fields`
+asserted only `attributes.contains_key(...)`. It passed for as long as the defect
+existed, because `contains_key` structurally cannot observe a value's content.
+Fifth vacuous assertion this session. It now asserts the values.
+
+**Falsified per guard, not merely in aggregate.** Reverting only
+`emit_email_osint` fails all five tests. On the first attempt every one failed on
+the *quoting* assertion, which masked whether the other three guards held — so
+the guard assertions were reordered to run first. Re-falsified, each now fails
+for its own reason: `redaction placeholder skipped`, `nested object must not be
+stringified`, `overlong value skipped`, and the two quoting mismatches
+(`Some("\"New York\"")` vs `Some("New York")`). Restored: 21/21 pass, including
+all four pre-existing `emit_footprint` tests, so the shared helper did not
+regress the sibling.
