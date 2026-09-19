@@ -79,10 +79,157 @@ fn au031_aggregates_high_fanout_shared_infra() {
     assert_eq!(r[0].description, r2[0].description);
     assert_eq!(r[0].entity_uids, r2[0].entity_uids);
 
-    // Control: a flagged node with few neighbours stays per-neighbour/High.
+    // Control: a flagged node with few neighbours still fires PER-NEIGHBOUR.
+    // That is what the cap decides, and it is unchanged.
+    //
+    // This block used to assert `all(|c| c.severity == Severity::High)` under
+    // the comment "a flagged node with few neighbours stays per-neighbour/High".
+    // Read together with the Medium asserted twenty lines above, that pinned one
+    // `vulnerable` IP at High with three domains resolving to it and Medium with
+    // thirty: the grade moved with a fan-out count that measures shared hosting,
+    // not badness. The cap governs row SHAPE; `adjacency_severity` governs the
+    // grade, and it reads only the reason (plus whether the link is shared).
     let r3 = rule_au_031_malicious_adjacency(&RuleContext::new(&entities[..4]), &rels[..3], "s", 0);
-    assert_eq!(r3.len(), 3);
-    assert!(r3.iter().all(|c| c.severity == Severity::High));
+    assert_eq!(r3.len(), 3, "\u{2264} cap still fires one row per neighbour");
+    assert!(
+        r3.iter().all(|c| c.severity == Severity::Medium),
+        "a `vulnerable` anchor is a VICTIM, not known-bad infrastructure \u{2014} it must \
+         grade the same at three neighbours as at thirty; got {:?}",
+        r3.iter().map(|c| c.severity).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn au031_grades_a_vulnerable_anchor_the_same_at_every_fanout() {
+    use crate::core::relation::{Relation, RelationKind};
+    // The reproduced shape: `shodan` tags a CVE-bearing host `vulnerable`, and
+    // `derive_resolution` links every domain that resolves to it. A five-domain
+    // company and a thirty-domain company have the SAME host with the SAME tag
+    // on the SAME edge kind, so they must earn the same grade. Only the row
+    // shape (per-neighbour vs one aggregate) may differ.
+    let grade_at = |n: usize| -> Severity {
+        let bad = tagged(
+            EntityKind::IpAddress,
+            "198.51.100.7",
+            &[crate::core::tags::VULNERABLE],
+        );
+        let mut entities = vec![bad.clone()];
+        let mut rels = Vec::new();
+        for i in 0..n {
+            let d = tagged(EntityKind::Domain, &format!("host{i}.acme.example"), &[]);
+            rels.push(Relation::new(
+                d.uid.clone(),
+                bad.uid.clone(),
+                RelationKind::ResolvesTo,
+                0.8,
+                "s",
+            ));
+            entities.push(d);
+        }
+        let r = rule_au_031_malicious_adjacency(&RuleContext::new(&entities), &rels, "s", 0);
+        assert!(!r.is_empty(), "{n}-neighbour case must still fire");
+        let first = r[0].severity;
+        assert!(
+            r.iter().all(|c| c.severity == first),
+            "one anchor must grade its rows uniformly"
+        );
+        first
+    };
+
+    let dedicated = grade_at(5);
+    let shared = grade_at(30);
+    assert_eq!(
+        dedicated, shared,
+        "the same vulnerable host graded {dedicated:?} at five neighbours and {shared:?} at \
+         thirty \u{2014} a fan-out count measures shared hosting, not how bad the anchor is"
+    );
+    assert_eq!(
+        dedicated,
+        Severity::Medium,
+        "one hop from a victim is a lateral-movement lead, not a High-severity \
+         adjacency to known-bad infrastructure"
+    );
+}
+
+#[test]
+fn au031_does_not_call_a_victim_known_bad_infrastructure() {
+    use crate::core::relation::{Relation, RelationKind};
+    // `subdomain_takeover` tags the dangling subdomain `vulnerable`; the apex is
+    // the target's own domain. Headlining that row "Adjacency to known-bad
+    // infrastructure" inverts who is at fault: the anchor is the victim's asset,
+    // and AU-028 already reports the takeover itself at Critical.
+    let victim = tagged(
+        EntityKind::Domain,
+        "stale.acme.example",
+        &[crate::core::tags::VULNERABLE],
+    );
+    let apex = tagged(EntityKind::Domain, "acme.example", &[]);
+    let rel = Relation::new(
+        victim.uid.clone(),
+        apex.uid.clone(),
+        RelationKind::SubdomainOf,
+        0.8,
+        "s",
+    );
+    let r = rule_au_031_malicious_adjacency(
+        &RuleContext::new(&[victim.clone(), apex.clone()]),
+        &[rel],
+        "s",
+        0,
+    );
+    assert_eq!(r.len(), 1, "the adjacency itself is still reported");
+    assert!(
+        !r[0].rule_name.contains("known-bad"),
+        "a `vulnerable` anchor is a victim, not known-bad infrastructure; got title {:?}",
+        r[0].rule_name
+    );
+    assert_eq!(r[0].rule_name, "Adjacency to a vulnerable asset");
+    assert_eq!(r[0].severity, Severity::Medium);
+    // Nothing is concealed: the anchor and the neighbour are both still named.
+    assert!(r[0].entity_uids.contains(&victim.uid));
+    assert!(r[0].entity_uids.contains(&apex.uid));
+}
+
+#[test]
+fn au031_threat_intel_is_high_when_dedicated_and_medium_on_shared_infra() {
+    use crate::core::relation::{Relation, RelationKind};
+    // The axis the fan-out cap legitimately carries, kept intact by the same
+    // single authority: an adjudicated feed verdict (`abuseipdb` at or above its
+    // suspicious score) on a DEDICATED link is a real lead and stays High; the
+    // same verdict on infrastructure thirty unrelated sites touch is co-tenancy.
+    let grade_at = |n: usize| -> Severity {
+        let bad = tagged(
+            EntityKind::IpAddress,
+            "203.0.113.9",
+            &[crate::core::tags::THREAT_INTEL],
+        );
+        let mut entities = vec![bad.clone()];
+        let mut rels = Vec::new();
+        for i in 0..n {
+            let d = tagged(EntityKind::Domain, &format!("n{i}.example"), &[]);
+            rels.push(Relation::new(
+                d.uid.clone(),
+                bad.uid.clone(),
+                RelationKind::ResolvesTo,
+                0.8,
+                "s",
+            ));
+            entities.push(d);
+        }
+        let r = rule_au_031_malicious_adjacency(&RuleContext::new(&entities), &rels, "s", 0);
+        assert!(!r.is_empty(), "{n}-neighbour case must still fire");
+        r[0].severity
+    };
+    assert_eq!(
+        grade_at(3),
+        Severity::High,
+        "a dedicated link to a threat-intel-flagged node stays a High lead"
+    );
+    assert_eq!(
+        grade_at(30),
+        Severity::Medium,
+        "the same verdict on shared infrastructure is co-tenancy, not a link"
+    );
 }
 
 #[test]

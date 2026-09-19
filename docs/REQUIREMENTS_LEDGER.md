@@ -13669,3 +13669,140 @@ early return) and REQ-KEYBASE-001 (a fixture that did not survive `trim()`) —
 and the first in the verification *tooling* rather than in a test. The rule
 generalises: **a check that can only report failure must separately prove it
 ran.**
+
+## REQ-CLOUDSTORAGE-001 — One judgement had two definitions, and the wrong one ran in the common case
+
+### Confirmed as filed, then found to be wider than the bucket
+
+The backlog read: *"AU-031 assigns unconditional `Severity::High` for a bare
+'vulnerable' bucket-name guess in the common ≤8-neighbour case — the exact
+'vulnerable ≠ malicious' downgrade already exists one branch down, just not
+here."* Both halves hold, and they hold **inside one function**.
+
+`rule_au_031_malicious_adjacency` has two emission branches chosen by
+`FANOUT_CAP = 8`. The aggregate branch (> cap) derived its severity from the
+reason:
+
+```rust
+let agg_sev = if reason == "malicious" { Severity::High } else { Severity::Medium };
+```
+
+The per-neighbour branch (≤ cap) hardcoded `Severity::High` and never looked at
+the reason at all. So the grade for one anchor had **two definitions**, and
+which one ran was decided by a neighbour count.
+
+The reproduction does not need `cloud_storage` at all, and is stronger without
+it. `shodan` tags a CVE-bearing host `tags::VULNERABLE` (`shodan/mod.rs:223`);
+`derive_resolution` (`relation/builders.rs:169`) mints a `ResolvesTo` edge from
+every Domain entity whose evidence names it. Same host, same tag, same edge
+kind:
+
+| domains resolving to the flagged host | AU-031 emits |
+|---|---|
+| 5 | 5 × **High** "Adjacency to known-bad infrastructure" |
+| 30 | 1 × **Medium** "likely shared hosting/CDN" |
+
+A five-domain company and a thirty-domain company differ in nothing that bears
+on how bad the host is. The cap measures shared hosting. It was grading badness,
+and grading it **backwards** — loudest on the case it understood best.
+
+The `cloud_storage` path the backlog named is narrower than filed. Its bucket
+URLs are `https://<bucket>.s3.amazonaws.com/…`, and `derive_structural` only
+mints a `HostedOn` edge when a Domain entity matching that host is present in
+the same scan — which it is not, since the target is `acme.com`. The bucket
+therefore rarely anchors an adjacency at all. `subdomain_takeover` and `shodan`
+do, reliably, and `dns_axfr` with them.
+
+### The third witness was already in the tree
+
+`abuseipdb/mod.rs:116` carries a comment from REQ-ABUSEIPDB-001 explaining that
+`THREAT_INTEL` is "one of only three `ADJACENCY_BAD_TAGS`, which AU-031
+'malicious adjacency' reads to raise a High-severity finding on any entity one
+hop from a tag-bearing node — so tagging it unconditionally turned this
+provider's own CLEAN answer into a High-severity escalation".
+
+That cycle fixed the **emitter**: it gated the tag. Correct as far as it went,
+and it is the shape the standing method names as a workaround standing in for a
+source fix — each emitter taught to withhold a tag because the consumer
+over-escalates whatever it receives. The consumer is the authority. This entry
+fixes the consumer.
+
+### Implemented
+
+Two pure seams, each the single authority for one output, read by **both**
+branches:
+
+```rust
+fn adjacency_severity(reason: &str, shared_infra: bool) -> Severity {
+    match reason {
+        crate::core::tags::MALICIOUS => Severity::High,
+        crate::core::tags::THREAT_INTEL if !shared_infra => Severity::High,
+        _ => Severity::Medium,
+    }
+}
+
+fn adjacency_title(reason: &str) -> &'static str { … }
+```
+
+The `shared_infra` axis is **kept, not flattened**. It carries real information
+for `THREAT_INTEL`: a dedicated link to an adjudicated feed verdict is a lead;
+the same verdict on infrastructure thirty unrelated entities touch is
+co-tenancy. What changes is that the axis is now one parameter of one function
+instead of the difference between a branch that grades and a branch that does
+not.
+
+`VULNERABLE` grades `Medium` at every fan-out, because it is not a claim about
+the anchor's conduct. It marks a **victim** — an AXFR-open zone, a public
+bucket, a dangling CNAME, a CVE-bearing host — and usually the target's own
+asset. The vulnerability itself is already reported by the rule that owns it:
+AU-028 and AU-029 both fire `Critical`. AU-031 was adding a High-severity
+restatement with the fault inverted.
+
+Which is also why the headline changed. `adjacency_title` gives a `VULNERABLE`
+anchor "Adjacency to a vulnerable asset"; calling the target's own misconfigured
+bucket "known-bad infrastructure" reads as an accusation the finding cannot
+support. Same class as REQ-TYPOSQUAT-001 one cycle earlier: the mechanism was
+sound, the sentence was not.
+
+**Nothing is suppressed.** Row shape is unchanged — a ≤ cap anchor still fires
+one row per neighbour, both endpoints still appear in `entity_uids`, and the
+`flagged-{reason}` description is untouched. Only the grade and the headline
+moved, and only for the reasons that never earned them.
+
+### A defect-asserting control, inverted in place
+
+`au031_aggregates_high_fanout_shared_infra` asserted **both** halves of the
+contradiction, twenty lines apart, on the same `vulnerable` IP:
+
+```rust
+assert_eq!(r[0].severity, Severity::Medium);          // 30 neighbours
+…
+// Control: a flagged node with few neighbours stays per-neighbour/High.
+assert!(r3.iter().all(|c| c.severity == Severity::High));   // 3 neighbours
+```
+
+Inverted in place with the old claim quoted in the comment, per standing
+method. The coverage it genuinely provided — that a ≤ cap anchor still fires
+one row per neighbour — is re-homed as an explicit `r3.len() == 3` assertion,
+and mutation M5 below exists to prove that assertion is load-bearing.
+
+### Falsified
+
+| Variant | Result |
+|---|---|
+| **BASELINE** (per-neighbour hardcodes High, aggregate grades) | all **three** locks fail, each on its own claim: `[High, High, High]` at three neighbours; `High at five … and Medium at thirty`; title `"Adjacency to known-bad infrastructure"` |
+| M1 `malicious` downgraded to Medium | the two malicious controls fail (`au031_fires_on_edge_to_malicious_node`, `au031_benign_infra_verdict_vetoes_adjacency`) plus the dedicated-threat-intel control |
+| M2 `shared_infra` axis ignored | **only** `au031_threat_intel_is_high_when_dedicated_and_medium_on_shared_infra` fails — the parameter is load-bearing, not decoration |
+| M3 `vulnerable` graded `Low` | the three vulnerable locks fail on the exact grade, not merely on "not High" |
+| M4 title claims known-bad for every reason | **only** `au031_does_not_call_a_victim_known_bad_infrastructure` fails — the headline is pinned independently of the severity |
+| M5 `vulnerable` per-neighbour rows suppressed | the row-shape controls fail — a fix that quietly stopped reporting would not pass |
+
+The controls that pass on **both** baseline and fix are the load-bearing half:
+the malicious grade at either fan-out, the benign-infra veto, both
+no-fire guards, the missing-endpoint guard, and — deliberately — the
+threat-intel axis, which proves the `shared_infra` distinction was preserved
+rather than flattened away while fixing the reason axis.
+
+The harness asserts `test result:` is present in every run and reports `VOID`
+otherwise, per the rule REQ-TYPOSQUAT-001 established. All six variants
+reported `OK`; none was void.

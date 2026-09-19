@@ -146,7 +146,13 @@ re-implemented per module.
 - `core/correlator/` — the `AU-*` rule registry (identity/account/key, org,
   breach, geo, infra, …) and `Severity` (Low/Medium/High/Critical). This is
   HSE's edge over a flat graph: findings derived across entities, each graded
-  and framed as "a signal, not a determination".
+  and framed as "a signal, not a determination". A rule that emits more than one
+  row shape keeps the grade in one place, apart from the shape: AU-031's
+  `adjacency_severity`/`adjacency_title` (`rules/infra.rs`) are the worked
+  example — `ADJACENCY_BAD_TAGS` are three different claims (`malicious`
+  asserts conduct; `threat-intel` is an unadjudicated sighting; `vulnerable`
+  marks a VICTIM, usually the target's own asset), and a rule that flattens them
+  headlines an exposure as an accusation (REQ-CLOUDSTORAGE-001).
 - `core/resolve/`, `core/validation/`, `core/intelligence/`, `core/coverage/`,
   `core/roi/`, `core/entity_extractor`, `core/diff/` — entity resolution &
   grouping, admission validation (homograph/placeholder gates), provider-outcome
@@ -236,6 +242,15 @@ very entity the geo fusion weighs, and the fusion read the source's name instead
 value with no reader is cheaper than auditing for a missing guard, and it found
 a fix that needed no module change at all.
 
+The tag/evidence seam has the mirror-image failure: a signal **read** by a
+consumer that flattens what it means. `ADJACENCY_BAD_TAGS` carries three
+distinct claims into AU-031, which graded all three `High` in its common branch;
+because the seam is the only channel from module to correlator, the only fix
+available at the module end is to stop emitting the tag — which is what
+REQ-ABUSEIPDB-001 had to do. Correcting the consumer restored the signal
+(REQ-CLOUDSTORAGE-001). When several emitters are being taught to withhold the
+same tag, the reader is the thing that is wrong.
+
 A module that reaches the network *around* the outbound chokepoint is outside
 every one of those disciplines at once — it cannot be rate-limit-aware, cannot
 trip or respect the breaker, and reports a wall as a fault. Auditing for that is
@@ -295,7 +310,7 @@ makes the claim checkable rather than remembered.
 Open high-stakes items remain queued (namesake fabrications, ambiguity-discarded
 geo, truncation-silent providers).
 
-**Three recurring shapes now have names, and finding the next instance starts
+**Four recurring shapes now have names, and finding the next instance starts
 by looking for them rather than reading modules at random:**
 1. *A guard applied to one consumer but not its neighbour.* Seven instances
    (REQ-AURDAP-001, REQ-EXPORT-001, REQ-BUILTWITH-001, REQ-WEBBANNER-001,
@@ -337,6 +352,28 @@ by looking for them rather than reading modules at random:**
    this document (§6). Its rule: prefer structural prevention over remembered
    detection — if a discipline is enforced by everyone remembering it, it has
    already drifted somewhere you have not looked.
+4. *One judgement with two definitions, in one function.* AU-031 chose between
+   a per-neighbour branch and an aggregate branch on a fan-out count, and only
+   the aggregate branch derived its severity from the reason — the other
+   hardcoded `Severity::High`. The same flagged host therefore graded High with
+   five domains resolving to it and Medium with thirty (REQ-CLOUDSTORAGE-001).
+   This is shape 1's cousin, and harder to see: there is no sibling module to
+   compare against, because both copies live inside the function you are
+   reading, and the graded one *looks* like the whole story. Its rule: **when a
+   function branches on shape, every branch reads the same authority for every
+   judgement that is not about shape.** A count that decides how to PRESENT
+   rows must not also decide what they CLAIM.
+
+   Two tells make it findable. A literal severity, confidence or threshold
+   sitting in one arm of a branch while another arm computes the same quantity
+   is the first. The second is a comment that states the graded rule — AU-031's
+   said "weaker reasons (vulnerable/threat-intel on shared infra) are Medium" —
+   which is where the judgement was written down once and then applied once.
+
+   It also explains a class of *emitter* fix: REQ-ABUSEIPDB-001 gated a tag at
+   its source because AU-031 escalated everything it received. That was right,
+   and it was a workaround for this defect. **When several emitters are being
+   taught to withhold a signal, suspect the consumer.**
 
 **T2 — Universal canonicalisation (priority).** One canonical form and one
 authority per concept, everywhere. Every remaining "same bug, sibling module"

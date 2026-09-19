@@ -397,11 +397,60 @@ pub(in crate::core::correlator) fn rule_au_124_ransomware_victim_exposure(
     )]
 }
 
+/// The severity an AU-031 adjacency finding earns, from the two things that
+/// actually bear on it: WHAT the anchor is flagged as, and whether the link is
+/// a dedicated one or shared-hosting co-tenancy. The single authority both of
+/// the rule's branches read.
+///
+/// Only [`crate::core::tags::MALICIOUS`] asserts hostility, so only it stays
+/// High on shared infrastructure. [`crate::core::tags::THREAT_INTEL`] is an
+/// adjudicated feed verdict (`abuseipdb` at or above its suspicious score,
+/// `virustotal` on `malicious > 0`): High on a dedicated link, Medium when the
+/// anchor is shared infrastructure millions of unrelated sites also touch.
+///
+/// [`crate::core::tags::VULNERABLE`] is not a claim about the anchor's conduct
+/// at all — it marks a VICTIM: an AXFR-open zone (`dns_axfr`), a publicly
+/// readable bucket (`cloud_storage`), a dangling CNAME (`subdomain_takeover`),
+/// a CVE-bearing host (`shodan`). It is usually the target's OWN asset, and it
+/// is already reported by the rule that owns it — AU-028 and AU-029 both fire
+/// Critical. One hop from a victim is a lateral-movement lead, not adjacency to
+/// known-bad infrastructure, so it grades Medium at every fan-out.
+///
+/// Before this function existed the grade had two definitions: the aggregate
+/// branch derived it from `reason` while the per-neighbour branch hardcoded
+/// `Severity::High`. One `vulnerable` host was therefore High with three
+/// domains resolving to it and Medium with thirty — the grade moved with a
+/// count that measures shared hosting rather than badness, and moved the wrong
+/// way, shouting loudest on the case it understood best.
+fn adjacency_severity(reason: &str, shared_infra: bool) -> Severity {
+    match reason {
+        crate::core::tags::MALICIOUS => Severity::High,
+        crate::core::tags::THREAT_INTEL if !shared_infra => Severity::High,
+        _ => Severity::Medium,
+    }
+}
+
+/// The headline an AU-031 finding carries, from the same `reason`.
+///
+/// A [`crate::core::tags::VULNERABLE`] anchor gets its own: describing the
+/// target's own misconfigured bucket or takeover-prone subdomain as "known-bad
+/// infrastructure" inverts who is at fault, and an operator triaging the row
+/// reads an accusation where the finding only supports an exposure.
+fn adjacency_title(reason: &str) -> &'static str {
+    if reason == crate::core::tags::VULNERABLE {
+        "Adjacency to a vulnerable asset"
+    } else {
+        "Adjacency to known-bad infrastructure"
+    }
+}
+
 /// AU-031 — Malicious adjacency (graph-aware). Surfaces a *benign* entity that
-/// is one relation-edge away from a known-bad entity (tagged malicious /
+/// is one relation-edge away from a flagged one (tagged malicious /
 /// threat-intel / vulnerable): a subdomain of a malicious apex, an entity
 /// derived from a flagged node during expansion, or coordinates co-located with
-/// bad infra.
+/// bad infra. The three tags do not make the same claim — see
+/// [`adjacency_severity`] and [`adjacency_title`], which are what grade and
+/// headline every row this rule emits.
 ///
 /// **Ground-truth veto, then fan-out backstop.** Most "shared infrastructure"
 /// is identified explicitly in the data — a CDN/cloud edge IP carries a GreyNoise
@@ -410,11 +459,11 @@ pub(in crate::core::correlator) fn rule_au_124_ransomware_victim_exposure(
 /// shared parents) cannot start. For shared infra that LACKS such a verdict
 /// (e.g. a flagged ESP/mail *domain*), a fan-out backstop applies: a bad node
 /// with more than `FANOUT_CAP` distinct benign neighbours collapses to ONE
-/// aggregated finding (Medium, or High when the reason is `malicious` — a
-/// genuine large malicious cluster stays loud) instead of N rows; dedicated
-/// infra (≤ cap) still fires per-neighbour at High. Edges between two
-/// already-flagged nodes are left to AU-004/AU-008/AU-015. Deterministic
-/// (BTreeMap-ordered).
+/// aggregated finding instead of N rows; dedicated infra (≤ cap) still fires
+/// per-neighbour. Row SHAPE is all the cap decides — every row's severity comes
+/// from [`adjacency_severity`], so one anchor cannot grade differently at three
+/// neighbours than at thirty. Edges between two already-flagged nodes are left
+/// to AU-004/AU-008/AU-015. Deterministic (BTreeMap-ordered).
 pub(in crate::core::correlator) fn rule_au_031_malicious_adjacency(
     context: &RuleContext,
     relations: &[Relation],
@@ -481,8 +530,8 @@ pub(in crate::core::correlator) fn rule_au_031_malicious_adjacency(
             for (benign, rkind) in neighbours.values() {
                 out.push(Correlation::new(
                     "AU-031",
-                    "Adjacency to known-bad infrastructure",
-                    Severity::High,
+                    adjacency_title(reason),
+                    adjacency_severity(reason, false),
                     format!(
                         "{} ({}) is {} flagged-{} {} ({})",
                         benign.value, benign.kind, rkind, reason, bad.value, bad.kind
@@ -494,14 +543,11 @@ pub(in crate::core::correlator) fn rule_au_031_malicious_adjacency(
             }
         } else {
             // High fan-out without a benign verdict — shared hosting/ESP. One
-            // aggregate, not N noise rows. A large *malicious* cluster is a real
-            // threat and stays High; weaker reasons (vulnerable/threat-intel on
-            // shared infra) are Medium.
-            let agg_sev = if reason == "malicious" {
-                Severity::High
-            } else {
-                Severity::Medium
-            };
+            // aggregate, not N noise rows. The grade comes from the same
+            // `adjacency_severity` the per-neighbour branch reads, with
+            // `shared_infra` set: a large *malicious* cluster is a real threat
+            // and stays High, while a threat-intel sighting on infrastructure
+            // this many unrelated entities touch is co-tenancy, not a link.
             // Include ALL neighbours in entity_uids per evidence integrity (Rule 0.7
             // priority 2). The description shows the full count; the entity_uids
             // must also be complete so operators can follow up on all linked entities.
@@ -512,8 +558,8 @@ pub(in crate::core::correlator) fn rule_au_031_malicious_adjacency(
             uids.push(bad.uid.clone());
             out.push(Correlation::new(
                 "AU-031",
-                "Adjacency to known-bad infrastructure",
-                agg_sev,
+                adjacency_title(reason),
+                adjacency_severity(reason, true),
                 format!(
                     "{} entities are adjacent to flagged-{} shared infrastructure {} ({}) — likely shared hosting/CDN, not a dedicated link",
                     neighbours.len(),
