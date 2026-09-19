@@ -1550,3 +1550,89 @@ async fn one_bssid_dispatch_is_billed_for_every_corpus_it_probes() {
 
     BSSID_BUDGET.reset_scan();
 }
+
+/// A `Network` carrying only the fields these two tests exercise.
+fn tri_net(ssid: &str, tri: Option<(f64, f64)>) -> Network {
+    Network {
+        ssid: Some(ssid.into()),
+        netid: Some("AA:BB:CC:DD:EE:FF".into()),
+        encryption: None,
+        lastupdt: None,
+        trilat: tri.map(|t| t.0),
+        trilong: tri.map(|t| t.1),
+        city: None,
+        region: None,
+        country: None,
+        postalcode: None,
+    }
+}
+
+/// REQ-WIGLE-001. WiGLE's no-fix placeholder is not `(0,0)` — it is the
+/// near-null-island JITTER BAND just outside it, which `is_valid_coords`
+/// accepts and `is_plausible_provider_coord` exists to reject. This module
+/// gated two of its four `trilat`/`trilong` sites with the strict check and two
+/// with the weak one, on the same provider's same fields.
+///
+/// `wifi_ap_entities`'s own doc comment promises that "a record with no usable
+/// position ... yields no phantom `Coordinates` node". Under the weak gate a
+/// placeholder WAS a usable position, so the phantom node it promises not to
+/// emit was emitted — a first-class `geoint` Coordinates for an access point.
+#[test]
+fn an_ap_in_the_null_island_jitter_band_yields_no_phantom_position() {
+    let (qlat, qlon) = (-27.0, 153.0);
+    let results = vec![tri_net("band", Some((0.001, 0.001)))];
+    let ents = wifi_ap_entities(&results, qlat, qlon, "-27.0,153.0", "scan");
+
+    let coords: Vec<&Entity> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .collect();
+    assert!(
+        coords.is_empty(),
+        "a jitter-band placeholder is not an AP position, got {:?}",
+        coords.iter().map(|e| &e.value).collect::<Vec<_>>()
+    );
+
+    // The control, and it passes on the baseline: the BSSID pivot itself is
+    // still emitted. Rejecting the POSITION must not drop the access point.
+    assert!(
+        ents.iter().any(|e| e.kind == EntityKind::MacAddress),
+        "the BSSID pivot survives — only its placeholder position is refused"
+    );
+}
+
+/// REQ-WIGLE-001, the other weak site. A jitter-band tower passed
+/// `is_valid_coords`, entered the "top-3 tower positions closest to target"
+/// list, and was ranked by a distance computed from a placeholder.
+#[test]
+fn a_jitter_band_tower_is_not_a_top_three_position() {
+    let resp = Resp {
+        success: Some(true),
+        result_count: Some(2),
+        total_results: Some(2),
+        results: vec![
+            tri_net("RealCo Network", Some((-27.4766, 153.0280))),
+            tri_net("RealCo Network", Some((0.001, 0.001))),
+        ],
+    };
+    let mut r = ModuleResult::new();
+    extract_cell_intel(&resp, "-27.5,153.0", "test-scan", &mut r);
+
+    let coords: Vec<&str> = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        !coords.iter().any(|v| v.starts_with("0.0010")),
+        "a jitter-band placeholder is not a tower position, got {coords:?}"
+    );
+    // Not vacuous: the real tower beside it still comes through, so the gate
+    // rejects the placeholder rather than the whole list.
+    assert_eq!(
+        coords.len(),
+        1,
+        "the real tower position survives, got {coords:?}"
+    );
+}

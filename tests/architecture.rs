@@ -1472,3 +1472,83 @@ fn entity_mutations_precede_the_durable_emit() {
         );
     }
 }
+
+/// Every WiGLE-trilaterated coordinate goes through the strict provider gate
+/// (REQ-WIGLE-001).
+///
+/// `is_valid_coords` rejects only `(0,0)` and out-of-range values.
+/// `is_plausible_provider_coord` additionally rejects the near-null-island
+/// JITTER BAND just outside it — which is what WiGLE emits for "no fix", and
+/// the whole reason the stricter predicate exists.
+///
+/// `wigle` gated four `trilat`/`trilong` sites: two with the strict check
+/// (`emit.rs`'s BSSID and SSID emitters) and two with the weak one (the
+/// cell-tower top-3 list, and each AP's own position in `mod.rs`). Same
+/// provider, same two fields, opposite answers — the module knew the rule and
+/// applied it to half its sites. `wifi_intel`, `criminal_ip`, `netlas` and
+/// `censys` each had the same defect fixed one module at a time, with nothing
+/// added to stop the next one; this is that missing piece for the WiGLE family.
+///
+/// Scoped to `src/modules/wigle/` deliberately. `is_valid_coords` is correct
+/// elsewhere — an on-device GPS fix (`device_fix`), a Wikidata claim, a
+/// geocoder result — because those sources do not emit the band as a
+/// placeholder. The rule is about PROVIDER-trilaterated data, not about
+/// coordinates generally.
+#[test]
+fn wigle_trilateration_uses_the_strict_provider_gate() {
+    /// Sites exempt from the rule, each with the reason it cannot hold.
+    ///
+    /// Keep this empty. An entry is a claim that must stay true, not a way to
+    /// silence a failure.
+    const EXEMPT: &[(&str, &str)] = &[];
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = root.join("src/modules/wigle");
+    let mut checked = 0usize;
+    let mut violations = Vec::new();
+
+    for entry in fs::read_dir(&dir).expect("src/modules/wigle") {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "rs")
+            || path.file_name().is_some_and(|n| n == "tests.rs")
+        {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        if let Some((_, why)) = EXEMPT.iter().find(|(f, _)| rel.ends_with(f)) {
+            assert!(!why.is_empty(), "an exemption must carry its reason");
+            continue;
+        }
+        checked += 1;
+        let src = production_source(&fs::read_to_string(&path).unwrap());
+        for (i, line) in src.lines().enumerate() {
+            if line.contains("is_valid_coords(") {
+                violations.push(format!("{rel}:{}: {}", i + 1, line.trim()));
+            }
+        }
+    }
+
+    assert!(
+        checked >= 4,
+        "wigle has account/emit/fetch/mod; scanned only {checked} — has the \
+         module been reorganised?"
+    );
+    // Not vacuous: the strict gate really is what the module reaches for.
+    let emit = fs::read_to_string(dir.join("emit.rs")).expect("emit.rs");
+    assert!(
+        emit.contains("is_plausible_provider_coord("),
+        "emit.rs must use the strict provider gate"
+    );
+    assert!(
+        violations.is_empty(),
+        "WiGLE trilateration must use is_plausible_provider_coord — \
+         is_valid_coords lets WiGLE's own no-fix jitter band through as a real \
+         position ({} site(s)):\n  {}",
+        violations.len(),
+        violations.join("\n  ")
+    );
+}

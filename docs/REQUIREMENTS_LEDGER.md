@@ -10975,3 +10975,92 @@ newly written above the emit mentions that name too — so `find` matched the
 comment and put the split above the very passes being checked. It now anchors
 on the construction `EventKind::EntityFound {`, with the reason recorded in the
 test.
+
+---
+
+## REQ-WIGLE-001 — The same provider, the same two fields, two different answers
+
+### What was measured
+
+`is_valid_coords` rejects `(0,0)` and out-of-range values.
+`is_plausible_provider_coord` additionally rejects the near-null-island **jitter
+band** just outside it — which is what WiGLE emits for "no fix", and the entire
+reason the stricter predicate exists.
+
+`wigle` gates `trilat`/`trilong` at four sites:
+
+| site | gate | emits |
+|---|---|---|
+| `emit.rs` BSSID emitter | **strict** | Coordinates |
+| `emit.rs` SSID emitter | **strict** | Coordinates |
+| `emit.rs` cell-tower top-3 | weak | Coordinates |
+| `mod.rs` `wifi_ap_entities` | weak | Coordinates |
+
+Same provider, same two fields, opposite answers. The module knew the rule and
+applied it to half its sites.
+
+Both weak sites emit a first-class `geoint` `Coordinates` entity:
+
+- The cell-tower list is "top-3 tower positions (closest to target)". A
+  placeholder not only entered that list, it was **ranked by a distance
+  computed from the placeholder**.
+- `wifi_ap_entities`'s own doc comment promises that "a record with no usable
+  position ... yields no phantom `Coordinates` node". Under the weak gate a
+  placeholder IS a usable position, so the phantom node it promises not to emit
+  was emitted — as an access point's own observed location.
+
+This is the same provider and the same band `REQ-WIFIINTEL-001` closed in
+`wifi_intel`. `REQ-CRIMINALIP-001` and `REQ-NETLAS-001`/`REQ-CENSYS-001` each
+fixed the identical confusion in their own module. Four fixes of one rule, with
+nothing added to stop the fifth.
+
+### The correction
+
+Both weak sites use `is_plausible_provider_coord`. A rejected position still
+falls back to the query centre for *ranking* in `wifi_ap_entities` — that is
+what its existing `None` arm already does — so refusing the placeholder costs
+the access point nothing but its fabricated location.
+
+### Falsification — one baseline per site, no masking
+
+```
+A — cell-tower site back on the weak gate:
+      a_jitter_band_tower_is_not_a_top_three_position ... FAILED
+        a jitter-band placeholder is not a tower position, got
+        ["-27.476600,153.028000", "0.001000,0.001000"]
+      (the AP test PASSES — its site is untouched)
+
+B — AP site back on the weak gate:
+      an_ap_in_the_null_island_jitter_band_yields_no_phantom_position ... FAILED
+        a jitter-band placeholder is not an AP position, got
+        ["0.001000,0.001000"]
+      (the tower test PASSES)
+      wigle_trilateration_uses_the_strict_provider_gate ... FAILED
+        src/modules/wigle/mod.rs:623: (Some(t), Some(g)) if
+        crate::util::geo::is_valid_coords(t, g) => Some((t, g)),
+```
+
+Each test fails for its own reason and neither masks the other.
+
+### Regression mechanisms
+
+- Two runtime locks, one per site, each with a non-vacuous control: the AP test
+  asserts the BSSID pivot still survives (rejecting the POSITION must not drop
+  the access point), and the tower test asserts the real tower beside the
+  placeholder still comes through (the gate rejects one row, not the list).
+- `tests/architecture.rs::wigle_trilateration_uses_the_strict_provider_gate` —
+  no `is_valid_coords` in `src/modules/wigle/` production source, with an empty,
+  documented exemption list.
+
+**Scoped to `src/modules/wigle/` on purpose.** `is_valid_coords` is correct
+elsewhere — an on-device GPS fix (`device_fix`), a Wikidata claim, a geocoder
+result — because those sources do not emit the band as a placeholder. The rule
+is about PROVIDER-trilaterated data, not about coordinates in general, and a
+blanket ban would be wrong.
+
+### Follow-up recorded, not done
+
+The same question is open for the other bulk-observation providers still on the
+weak gate: `wifidb`, `mylnikov`, `beacondb`, `cell_intel`, `cell_local`. Each
+needs its own check of whether that provider emits a no-fix placeholder in the
+band before its gate is changed — not a blanket sweep.
