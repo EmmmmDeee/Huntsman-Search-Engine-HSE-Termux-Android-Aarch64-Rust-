@@ -601,12 +601,88 @@ pub(crate) fn entity_locates_subject_directly(e: &Entity) -> bool {
 /// [`is_infrastructure_geo`] gates the fusion candidate set on. `None` when the
 /// entity carries no anchoring source at all.
 pub(in crate::core::correlator) fn best_precision_radius_m(e: &Entity) -> Option<f64> {
+    let coarse_geocode = declared_geocode_grain_m(e);
     e.corroborating_sources()
         .into_iter()
         .filter(|s| is_anchoring_geo_source(s))
-        .map(|s| precision_radius_m(geo_source_class(s)))
+        .map(|s| {
+            let class = geo_source_class(s);
+            let base = precision_radius_m(class);
+            // The geocoder's own account of what it matched refines ITS leg
+            // only. Applying it to the whole entity would let a coarse address
+            // string degrade a GPS fix sitting on the same coordinate, which is
+            // the exact inversion of the `min` above.
+            if class == GeoSourceClass::Geocode {
+                coarse_geocode.map_or(base, |g| base.max(g))
+            } else {
+                base
+            }
+        })
         .fold(None, |acc: Option<f64>, r| {
             Some(acc.map_or(r, |a| a.min(r)))
+        })
+}
+
+/// The radius implied by a geocoder's OWN description of what it matched, or
+/// `None` when it matched something at least as precise as the class default —
+/// or when nothing recognisable was reported.
+///
+/// `geocode` (Nominatim) and `photon` both return a `type` naming the grain of
+/// the hit, and both already write it to the `place_type` evidence attribute of
+/// the very `Coordinates` entity the fusion weighs. Nothing read it, so
+/// [`best_precision_radius_m`] handed back a flat 40 m whether the geocoder
+/// pinpointed a house number or shrugged and returned a state centroid — a
+/// `sqrt(1000/40)` = **5x** fusion multiplier for a point that may be a hundred
+/// kilometres from the subject, pulling harder than a registry address that
+/// really is known to 500 m (REQ-GEO-002).
+///
+/// # Only ever coarsens
+///
+/// Every radius here exceeds `precision_radius_m(GeoSourceClass::Geocode)`, and
+/// the caller takes a `max`, so this can reduce a source's pull and never
+/// increase it. Inventing precision is the one direction that would be
+/// dangerous: it would let a geocoder's self-report override the class anchor
+/// and annihilate genuinely precise sightings. An unrecognised or absent grain
+/// therefore falls back to the class radius unchanged, so a provider adding a
+/// new `type` string degrades to today's behaviour rather than to a guess.
+///
+/// The values are deliberately coarse-grained order-of-magnitude figures, not
+/// false precision: what matters to an inverse-sqrt weight is the decade.
+fn geocode_grain_radius_m(place_type: &str) -> Option<f64> {
+    let radius = match place_type.trim().to_ascii_lowercase().as_str() {
+        "country" => 300_000.0,
+        "state" | "province" | "region" => 100_000.0,
+        "state_district" | "county" | "district" => 30_000.0,
+        "city" | "municipality" => 8_000.0,
+        "postcode" | "postal_code" => 4_000.0,
+        "town" | "island" => 4_000.0,
+        "borough" | "suburb" | "village" | "quarter" | "neighbourhood" | "hamlet" | "locality" => {
+            1_500.0
+        }
+        _ => return None,
+    };
+    debug_assert!(
+        radius > precision_radius_m(GeoSourceClass::Geocode),
+        "this table may only coarsen"
+    );
+    Some(radius)
+}
+
+/// The coarsest grain any geocoding source on this entity admitted to.
+///
+/// Coarsest rather than finest: each geocode evidence row is a separate
+/// geocoder answer, and if one of them only resolved a state then that answer
+/// is a state centroid however confidently a sibling row reports a street. The
+/// `min` in [`best_precision_radius_m`] still lets a genuinely precise
+/// non-geocode source (a GPS fix) set the entity's precision.
+fn declared_geocode_grain_m(e: &Entity) -> Option<f64> {
+    e.evidence
+        .iter()
+        .filter(|ev| geo_source_class(&ev.source) == GeoSourceClass::Geocode)
+        .filter_map(|ev| ev.attributes.get("place_type"))
+        .filter_map(|pt| geocode_grain_radius_m(pt))
+        .fold(None, |acc: Option<f64>, r| {
+            Some(acc.map_or(r, |a: f64| a.max(r)))
         })
 }
 

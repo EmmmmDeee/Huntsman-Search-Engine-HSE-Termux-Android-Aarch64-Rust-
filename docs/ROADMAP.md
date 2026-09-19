@@ -227,6 +227,15 @@ emission** (the only channel from module to correlator), the **expansion
 floor** (what becomes a new pivot), and the **redaction boundary** (what leaves
 the tool).
 
+A seam has a matching failure mode worth naming, because it is not a missing
+guard but a missing *reader*: a value that is captured, carried, persisted and
+exported with no consumer anywhere. CONFIGURATION ≠ CONSUMPTION. `geocode` and
+`photon` had recorded the grain of every match since they were written, on the
+very entity the geo fusion weighs, and the fusion read the source's name instead
+— weighing a state centroid as a rooftop (REQ-GEO-002). Auditing for a recorded
+value with no reader is cheaper than auditing for a missing guard, and it found
+a fix that needed no module change at all.
+
 A module that reaches the network *around* the outbound chokepoint is outside
 every one of those disciplines at once — it cannot be rate-limit-aware, cannot
 trip or respect the breaker, and reports a wall as a fault. Auditing for that is

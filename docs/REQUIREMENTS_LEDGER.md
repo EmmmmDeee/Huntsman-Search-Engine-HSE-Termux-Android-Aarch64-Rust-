@@ -13267,3 +13267,102 @@ load-bearing. Four modules and the shared helper move together under one edit.
 `REQ-WIKIDATA-002` (claim extraction ignores Wikidata's own `deprecated` rank)
 is a different question about a single item's claims, not about which item the
 subject is. Left to its own cycle.
+
+---
+
+## REQ-GEO-002 — The geocoder said what it matched; nobody read it
+
+The last member of the "ambiguity discarded" family, and the one whose backlog
+entry turned out to be **accurate as written** — worth recording after five
+consecutive cycles that corrected a premise, because it is the reason each one
+still has to be checked rather than assumed either way.
+
+### Measured
+
+`best_precision_radius_m` derives an entity's precision from the **source name**:
+
+```
+geo_source_class("geocode" | "photon") -> GeoSourceClass::Geocode
+precision_radius_m(GeoSourceClass::Geocode)  ->  40.0 m
+```
+
+Forty metres is a rooftop. It is applied whether the geocoder pinpointed a house
+number or shrugged and returned a state centroid, because nothing consults what
+was actually matched. Through the fusion weight that is
+`sqrt(1000 / 40)` = **5.0×**: a vague address string pulls the fused location
+five times harder than the 1 km reference, and ten times harder than a registry
+address that genuinely is known to 500 m. A state centroid can be a hundred
+kilometres from the subject.
+
+Reproduced as the first run of the lock:
+
+```
+a_state_centroid_is_not_weighed_as_a_rooftop_fix
+  FAILED — "a geocoder that matched only a STATE must be treated as coarser than
+            a registry address known to 500 m; got 40 m"
+```
+
+### The information was already there
+
+Both providers return a `type` naming the grain of the hit, both structs already
+deserialise it — `NominatimResult.place_type`, `Props.place_type` — and both
+modules already write it to a `place_type` evidence attribute
+(`geocode/mod.rs:241`, `photon/build.rs:102`) on the very `Coordinates` entity
+the fusion weighs.
+
+Nothing has ever read it. This is CONFIGURATION ≠ CONSUMPTION exactly: the value
+is captured, carried, persisted and exported, and no consumer exists. So the fix
+needed **no module change at all** — only the missing reader.
+
+### Implemented
+
+`geocode_grain_radius_m` maps the geocoder's own vocabulary to an
+order-of-magnitude radius, and `declared_geocode_grain_m` takes the **coarsest**
+grain any geocoding evidence row on the entity admitted to. `best_precision_radius_m`
+applies it to the geocode leg only.
+
+Three properties make this safe rather than merely better:
+
+1. **It can only coarsen.** Every entry exceeds the 40 m class default and the
+   caller takes a `max`, so the change can reduce a source's pull and never
+   increase it. Sharpening would let a geocoder's self-report override the class
+   anchor and, through the inverse-sqrt weight, annihilate genuinely precise
+   sightings. Grains at least as precise as the default (`house`, `street`, …)
+   are deliberately absent from the table rather than mapped to a smaller
+   number.
+2. **It refines one leg, not the entity.** The `min` across an entity's sources
+   exists because "a coarser corroborating source confirms the same point
+   without degrading the known precision". Applying the grain to every class
+   would invert exactly that, letting a vague address string degrade a GPS fix
+   sitting on the same coordinate.
+3. **An unknown grain changes nothing.** A provider adding a new `type` string
+   degrades to today's behaviour, not to a guess.
+
+### Falsified
+
+Test-first; both grain locks observed failing on the baseline with the message
+above, while all three controls passed. Then five mutations, each severing one
+property:
+
+| Mutation | Result |
+|---|---|
+| the geocode leg ignores the declared grain | the three grain locks fail; every control passes |
+| the grain is applied to **every** class | **only the control** `a_coarse_geocode_never_degrades_a_precise_sibling_source` fails |
+| an unknown grain is guessed at (`_ => 5_000.0`) instead of falling back | **the two fail-safe controls** plus the coarsen-only invariant fail |
+| the table sharpens a precise grain (`"house" => 5.0`) | `a_house_grain_match_keeps_the_class_default` and the coarsen-only invariant fail |
+| the grain ordering is inverted (country finer than state) | **only** `the_grain_ordering_follows_real_geography` fails |
+
+Two of the five fail **controls rather than locks**, which is what pins the fix
+from the other direction: it cannot be satisfied by coarsening indiscriminately,
+nor by guessing at grains the table does not know.
+
+The coarsen-only property is asserted as a real test rather than left to the
+`debug_assert!` beside it, because release builds drop that assertion and it is
+the single property the whole change rests on.
+
+### Not fixed here
+
+`REQ-SOCIALLOC-002` (`social_location` geocodes state/country-grain text as a
+specific city point) is the *upstream* half of the same story — this cycle stops
+a coarse answer being over-weighted, it does not stop a coarse question being
+asked. They compose, and it is left to its own cycle.

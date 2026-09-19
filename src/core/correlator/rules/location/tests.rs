@@ -558,3 +558,182 @@ use super::*;
         );
         assert!(photo.radius_km < 0.1, "EXIF GPS is ~20 m, got {} km", photo.radius_km);
     }
+
+    // ------------------------------------------- geocoder match grain -----
+
+    fn geocoded_coord(value: &str, place_type: Option<&str>) -> Entity {
+        let mut e = Entity::new(EntityKind::Coordinates, value, 0.80, "s");
+        e.tag("country:AU");
+        let mut ev = Evidence::new("geocode", "Geocoded \"…\" → …");
+        if let Some(pt) = place_type {
+            ev = ev.with_attr("place_type", pt);
+        }
+        e.add_evidence(ev);
+        e
+    }
+
+    /// `geocode` and `photon` both already RECORD what the geocoder actually
+    /// matched — Nominatim's and Photon's own `type` field, written to the
+    /// `place_type` evidence attribute on the very Coordinates entity the
+    /// fusion weighs. Nothing reads it. `best_precision_radius_m` maps the
+    /// SOURCE NAME to `GeoSourceClass::Geocode` and hands back a flat 40 m,
+    /// whether the geocoder pinpointed a house number or shrugged and returned
+    /// a state centroid.
+    ///
+    /// At 40 m the fusion multiplier is `sqrt(1000/40)` = **5.0×**; a state
+    /// centroid honestly deserves well under 1×. A vague address string thus
+    /// pulls the fused location harder than a registry hit that really is
+    /// known to 500 m.
+    #[test]
+    fn a_state_centroid_is_not_weighed_as_a_rooftop_fix() {
+        let coarse = geocoded_coord("-33.8688,151.2093", Some("state"));
+        let radius = best_precision_radius_m(&coarse).expect("an anchoring source");
+        assert!(
+            radius > precision_radius_m(GeoSourceClass::Registry),
+            "a geocoder that matched only a STATE must be treated as coarser \
+             than a registry address known to {} m; got {radius} m",
+            precision_radius_m(GeoSourceClass::Registry)
+        );
+        assert!(
+            precision_weight_multiplier(radius) < 1.0,
+            "a state centroid must pull SOFTER than the 1 km reference, not \
+             5x harder; got {}x",
+            precision_weight_multiplier(radius)
+        );
+    }
+
+    #[test]
+    fn a_city_grain_match_is_coarser_than_the_class_default() {
+        let city = geocoded_coord("-33.8688,151.2093", Some("city"));
+        let radius = best_precision_radius_m(&city).expect("an anchoring source");
+        assert!(
+            radius > precision_radius_m(GeoSourceClass::Geocode),
+            "a city-grain match must be coarser than the geocode class default"
+        );
+    }
+
+    #[test]
+    fn a_house_grain_match_keeps_the_class_default() {
+        // CONTROL — passes on the baseline AND the fix. A precise match is
+        // exactly what the class radius already describes, and the guard must
+        // never SHARPEN a source beyond it: inventing precision is the one
+        // direction this change must not move in.
+        let house = geocoded_coord("-33.8688,151.2093", Some("house"));
+        let radius = best_precision_radius_m(&house).expect("an anchoring source");
+        assert!(
+            (radius - precision_radius_m(GeoSourceClass::Geocode)).abs() < f64::EPSILON,
+            "a rooftop match keeps the class radius; got {radius} m"
+        );
+    }
+
+    #[test]
+    fn an_unrecorded_or_unknown_grain_keeps_the_class_default() {
+        // CONTROL — fail-safe. A provider that sends no `type`, or one this
+        // table does not know, must behave exactly as before rather than being
+        // guessed at in either direction.
+        for pt in [None, Some("some_new_osm_type"), Some("")] {
+            let e = geocoded_coord("-33.8688,151.2093", pt);
+            let radius = best_precision_radius_m(&e).expect("an anchoring source");
+            assert!(
+                (radius - precision_radius_m(GeoSourceClass::Geocode)).abs() < f64::EPSILON,
+                "unknown grain {pt:?} must fall back to the class radius; got {radius} m"
+            );
+        }
+    }
+
+    #[test]
+    fn a_coarse_geocode_never_degrades_a_precise_sibling_source() {
+        // CONTROL and the boundary that matters: `best_precision_radius_m`
+        // takes the MINIMUM across an entity's sources precisely because "a
+        // coarser corroborating source confirms the same point without
+        // degrading the known precision". Coarsening the geocode leg must not
+        // leak into a GPS leg on the same entity.
+        let mut e = geocoded_coord("-33.8688,151.2093", Some("state"));
+        e.add_evidence(Evidence::new("exif_geo", "EXIF GPS"));
+        let radius = best_precision_radius_m(&e).expect("an anchoring source");
+        assert!(
+            (radius - precision_radius_m(GeoSourceClass::PhotoGps)).abs() < f64::EPSILON,
+            "the photo GPS fix still sets the entity's precision; got {radius} m"
+        );
+    }
+
+    #[test]
+    fn the_grain_table_can_only_ever_coarsen() {
+        // The safety property the whole change rests on, asserted rather than
+        // left to a `debug_assert!` that release builds drop. Sharpening would
+        // let a geocoder's own self-report override the class anchor and
+        // annihilate genuinely precise sightings via the inverse-sqrt weight —
+        // the one direction this must never move in.
+        let class_default = precision_radius_m(GeoSourceClass::Geocode);
+        let mut recognised = 0usize;
+        for pt in [
+            "country",
+            "state",
+            "province",
+            "region",
+            "state_district",
+            "county",
+            "district",
+            "city",
+            "municipality",
+            "postcode",
+            "postal_code",
+            "town",
+            "island",
+            "borough",
+            "suburb",
+            "village",
+            "quarter",
+            "neighbourhood",
+            "hamlet",
+            "locality",
+        ] {
+            let r = geocode_grain_radius_m(pt)
+                .unwrap_or_else(|| panic!("{pt} must be recognised by the grain table"));
+            assert!(
+                r > class_default,
+                "{pt} maps to {r} m, which is FINER than the {class_default} m class \
+                 default — the table may only coarsen"
+            );
+            recognised += 1;
+        }
+        assert!(recognised >= 20, "vacuity guard: the table shrank to {recognised} entries");
+
+        // Grains at least as precise as the class default are deliberately not
+        // in the table at all: there is nothing to correct.
+        for pt in ["house", "building", "street", "road", "amenity", ""] {
+            assert!(
+                geocode_grain_radius_m(pt).is_none(),
+                "{pt} is not coarser than the class default and must not be listed"
+            );
+        }
+    }
+
+    #[test]
+    fn the_grain_ordering_follows_real_geography() {
+        // A country is coarser than a state is coarser than a city is coarser
+        // than a suburb. Getting this inverted would weight the vaguest answer
+        // hardest, which is the defect wearing a different hat.
+        let r = |pt: &str| geocode_grain_radius_m(pt).expect("recognised");
+        assert!(r("country") > r("state"));
+        assert!(r("state") > r("county"));
+        assert!(r("county") > r("city"));
+        assert!(r("city") > r("town"));
+        assert!(r("town") > r("suburb"));
+    }
+
+    #[test]
+    fn the_coarsest_geocoder_answer_on_an_entity_wins() {
+        // Two geocoding answers on one coordinate: one resolved a street, the
+        // other only a state. The state answer is still a state centroid, so
+        // the geocode leg is weighed at the coarser of the two.
+        let mut e = geocoded_coord("-33.8688,151.2093", Some("street"));
+        e.add_evidence(
+            Evidence::new("photon", "Photon match").with_attr("place_type", "state"),
+        );
+        let radius = best_precision_radius_m(&e).expect("an anchoring source");
+        assert!(
+            radius >= geocode_grain_radius_m("state").expect("recognised"),
+            "the coarsest geocoder answer must set the geocode leg; got {radius} m"
+        );
+    }
