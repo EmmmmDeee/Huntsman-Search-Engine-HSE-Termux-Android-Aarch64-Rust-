@@ -602,3 +602,136 @@ mod confusable_tests {
         }
     }
 }
+
+// ── REQ-VALIDATION-002: the double-`@` admission bypass ─────────────────────
+//
+// The engine's admission gate (`core::engine::dispatch`) runs exactly two
+// predicates over an Email entity, and they split the address on OPPOSITE `@`
+// occurrences. Nothing else on that path checks email syntax, and the ten
+// import paths (stealer, sql_dump, csv, oathnet_report, dossier, combined) use
+// `is_fragment_value` alone as their whole email check.
+
+/// Control — passes before the fix as well, and is the reason the fix belongs
+/// in the SYNTAX gate rather than in either split. Neither placeholder split
+/// can see this address for what it is.
+#[test]
+fn neither_placeholder_split_sees_a_double_at_address() {
+    const SPOOF: &str = "jordan@example.com@attacker-corp.net";
+    // `is_placeholder_entity` splits on the LAST `@`: local
+    // "jordan@example.com" matches no template, and "attacker-corp.net" is not
+    // a documentation domain. (`evil.tld` / `evil.invalid` would NOT have shown
+    // this: `.tld` and `.invalid` are themselves placeholder TLDs, so the gate
+    // catches those by luck rather than by seeing the malformed shape — checked
+    // rather than assumed.)
+    assert!(
+        !is_placeholder_entity(&EntityKind::Email, SPOOF),
+        "the last-`@` split cannot see the `jordan`/`example.com` placeholder"
+    );
+    // Each HALF is a placeholder on its own, which is what makes the pair of
+    // gates look adequate until the second `@` is present.
+    assert!(is_placeholder_entity(
+        &EntityKind::Email,
+        "jordan@example.com"
+    ));
+}
+
+/// A malformed address is rejected as malformed, rather than being adjudicated
+/// by whichever `@` a given gate happens to split on.
+#[test]
+fn a_double_at_address_is_rejected_as_malformed() {
+    assert!(
+        is_fragment_value(&EntityKind::Email, "jordan@example.com@attacker-corp.net"),
+        "an address with two `@` is not a deliverable mailbox and must never \
+         reach the graph"
+    );
+    // The mirrored ordering too: here the LAST-`@` split is the one that would
+    // have spotted the placeholder host, so neither split is 'the right one'.
+    assert!(is_fragment_value(
+        &EntityKind::Email,
+        "evil@attacker-corp.net@example.com"
+    ));
+}
+
+/// The structural lock. `is_fragment_value`'s Email arm used to hand-roll a
+/// SUBSET of `validate_email_syntax` — the subset that happens to omit the
+/// second-`@` guard — and that omission was the bypass. Pinning the two to
+/// agree exactly means re-inlining a weaker copy fails here rather than
+/// silently reopening it.
+#[test]
+fn email_syntax_is_what_closes_the_double_at_bypass() {
+    const VECTORS: &[&str] = &[
+        "jordan@example.com@attacker-corp.net",
+        "evil@attacker-corp.net@example.com",
+        "alice@example.com",
+        "alice.smith+tag@example.com",
+        "@gmail",
+        "matthew@",
+        "a@b",
+        "x@.com",
+        "notanemail",
+        "a..b@example.com",
+        ".alice@example.com",
+        "alice.@example.com",
+        "alice@example.com.",
+    ];
+    let mut disagreed = Vec::new();
+    for v in VECTORS {
+        let fragment = is_fragment_value(&EntityKind::Email, v);
+        let malformed = !validate_email_syntax(v).valid;
+        if fragment != malformed {
+            disagreed.push(format!(
+                "{v:?}: is_fragment_value={fragment}, !validate_email_syntax={malformed}"
+            ));
+        }
+    }
+    assert!(
+        disagreed.is_empty(),
+        "the admission gate must defer to the one syntactic authority \
+         ({} vector(s) disagree):\n  {}",
+        disagreed.len(),
+        disagreed.join("\n  ")
+    );
+}
+
+/// The shapes the delegation newly rejects, each a genuinely undeliverable
+/// address. Collected rather than asserted one at a time so a single failure
+/// cannot mask the rest.
+#[test]
+fn the_syntax_delegation_also_catches_what_the_hand_rolled_arm_missed() {
+    let overlong = format!("{}@example.com", "a".repeat(65));
+    let cases: Vec<(&str, String)> = vec![
+        ("two `@`", "jordan@example.com@attacker-corp.net".into()),
+        ("local part over 64 chars", overlong),
+        ("consecutive dots in local", "a..b@example.com".into()),
+        ("leading dot in local", ".alice@example.com".into()),
+        ("trailing dot in local", "alice.@example.com".into()),
+        ("trailing dot in domain", "alice@example.com.".into()),
+        ("consecutive dots in domain", "alice@ex..ample.com".into()),
+    ];
+    let missed: Vec<&str> = cases
+        .iter()
+        .filter(|(_, v)| !is_fragment_value(&EntityKind::Email, v))
+        .map(|(why, _)| *why)
+        .collect();
+    assert!(
+        missed.is_empty(),
+        "admitted as a valid email despite: {}",
+        missed.join("; ")
+    );
+}
+
+/// Control — the delegation is a tightening, not a change of policy: a real
+/// address is still admitted.
+#[test]
+fn a_well_formed_address_is_still_admitted_after_the_delegation() {
+    for good in [
+        "alice@example.org",
+        "alice.smith+tag@mail.example.co.uk",
+        "erik.diegmann@huntsman.example",
+    ] {
+        assert!(
+            !is_fragment_value(&EntityKind::Email, good),
+            "{good} is a deliverable address and must not be dropped"
+        );
+    }
+}

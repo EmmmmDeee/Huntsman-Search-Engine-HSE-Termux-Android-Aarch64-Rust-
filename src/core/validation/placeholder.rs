@@ -216,6 +216,15 @@ pub fn is_placeholder_entity(kind: &EntityKind, value: &str) -> bool {
         // Inherently-unique secrets: always kept.
         EntityKind::Password | EntityKind::ApiKey | EntityKind::Credential => false,
         EntityKind::Domain => is_placeholder_domain(value),
+        // `rsplit_once` and `split_once` agree on every WELL-FORMED address, and
+        // a malformed one can no longer reach the graph: `is_fragment_value`'s
+        // Email arm delegates to `validate_email_syntax`, which requires exactly
+        // one `@` (REQ-VALIDATION-002). Flipping this to `split_once` would not
+        // be an improvement — on `evil@x.tld@example.com` the last-`@` split is
+        // the one that spots the placeholder host — so the malformed shape is
+        // rejected as malformed instead of being adjudicated by either split.
+        // `email_syntax_is_what_closes_the_double_at_bypass` pins that
+        // co-dependency so removing the syntax gate cannot silently reopen it.
         EntityKind::Email => value.rsplit_once('@').is_some_and(|(local, host)| {
             is_placeholder_domain(host) || is_placeholder_email_local(local)
         }),
@@ -289,15 +298,32 @@ pub fn is_fragment_value(kind: &EntityKind, value: &str) -> bool {
         return true;
     }
     match kind {
-        EntityKind::Email => {
-            // Must be local@domain.tld — reject "@gmail", "matthew@", "a@b".
-            match v.split_once('@') {
-                Some((local, domain)) => {
-                    local.is_empty() || !domain.contains('.') || domain.starts_with('.')
-                }
-                None => true,
-            }
-        }
+        // Delegates to the one syntactic authority rather than re-deriving a
+        // weaker copy of it. This arm used to hand-roll "must be
+        // local@domain.tld — reject `@gmail`, `matthew@`, `a@b`", which is a
+        // SUBSET of `validate_email_syntax` missing its explicit second-`@`
+        // guard, and that gap was a real admission bypass (REQ-VALIDATION-002):
+        //
+        //   `jordan@example.com@evil.tld`
+        //     is_placeholder_entity  splits on the LAST  `@` => local
+        //       "jordan@example.com", host "evil.tld"  — neither is a
+        //       placeholder, so it passes;
+        //     is_fragment_value      split on the FIRST `@` => local "jordan",
+        //       domain "example.com@evil.tld" — non-empty local, domain has a
+        //       dot, so it passed too.
+        //
+        // Each gate individually catches the single-`@` form; the second `@`
+        // made each one look at the wrong half. Nothing else on the admission
+        // path checks email syntax — the engine gate (`core::engine::dispatch`)
+        // runs exactly these two predicates, and the ten import paths
+        // (stealer, sql_dump, csv, oathnet_report, dossier, combined) use this
+        // one as their whole email check — so the address reached the graph.
+        //
+        // `validate_email_syntax` already rejects every shape this arm did, and
+        // additionally the second `@`, an over-long local part, dot edges and
+        // consecutive dots. Delegating is therefore a strict tightening, and it
+        // leaves ONE definition of "is this even an email" for every caller.
+        EntityKind::Email => !super::email::validate_email_syntax(v).valid,
         // A label with no dot ("gmail" — the "@gmail" fragment in domain form)
         // or shorter than the shortest real registrable domain ("a.b") is a
         // fragment. A COMPLETE freemail provider domain (gmail.com) is

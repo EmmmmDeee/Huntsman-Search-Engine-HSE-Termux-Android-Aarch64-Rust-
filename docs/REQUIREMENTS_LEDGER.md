@@ -10241,3 +10241,70 @@ reading like a duplicate.
    to appear in a stealer dump auth-eligible. Both directions are defensible and
    neither is what this entry recorded, so the question is named here as its own
    follow-up rather than decided silently.
+
+### REQ-VALIDATION-002 — a double-`@` address walked through the admission gate
+
+The engine's admission gate (`core::engine::dispatch::skip_reason`) runs exactly
+two predicates over an Email entity, and they split the address on OPPOSITE `@`
+occurrences:
+
+| Gate | Split | On `jordan@example.com@attacker-corp.net` |
+| --- | --- | --- |
+| `is_placeholder_entity` | `rsplit_once` (LAST `@`) | local `jordan@example.com` matches no template; host `attacker-corp.net` is not a documentation domain → **passes** |
+| `is_fragment_value` | `split_once` (FIRST `@`) | local `jordan` non-empty; domain `example.com@attacker-corp.net` contains a dot → **passes** |
+
+Each gate catches the single-`@` form. The second `@` made each one look at the
+wrong half, and **nothing else on the admission path checks email syntax** — so
+the address entered the graph. The reach is wider than the gate: ten import
+paths (stealer, sql_dump, csv, oathnet_report, dossier, combined) use
+`is_fragment_value` ALONE as their whole email check.
+
+**Root cause, and it is duplicated authority rather than a split-direction bug.**
+`is_fragment_value`'s Email arm hand-rolled "must be local@domain.tld — reject
+`@gmail`, `matthew@`, `a@b`", which is a strict SUBSET of the crate's own
+`validate_email_syntax` — the subset that omits its explicit second-`@` guard.
+That guard exists, is documented, has its own test using the same vector shape
+(`alice@example.com@evil.invalid`), and is already used by `web_crawler`. The
+weaker copy simply never picked it up.
+
+**Fix.** The arm delegates: `EntityKind::Email => !validate_email_syntax(v).valid`.
+Every shape the hand-rolled version rejected is still rejected, so it is a strict
+tightening, and there is now ONE definition of "is this even an email" for the
+engine gate and all ten import paths at once.
+
+The placeholder arm's `rsplit_once` is deliberately left alone, with the reason
+in the code. Flipping it to `split_once` would not be an improvement — on the
+mirrored `evil@attacker-corp.net@example.com` it is the LAST-`@` split that spots
+the placeholder host — so neither split is "the right one" and the malformed
+shape is rejected as malformed instead. `email_syntax_is_what_closes_the_double_at_bypass`
+pins that co-dependency.
+
+**Falsified.** Restoring the hand-rolled arm:
+
+```
+a_double_at_address_is_rejected_as_malformed ... FAILED
+  an address with two `@` is not a deliverable mailbox and must never reach the graph
+email_syntax_is_what_closes_the_double_at_bypass ... FAILED
+  the admission gate must defer to the one syntactic authority (6 vector(s) disagree)
+the_syntax_delegation_also_catches_what_the_hand_rolled_arm_missed ... FAILED
+  admitted as a valid email despite: two `@`; local part over 64 chars;
+  consecutive dots in local; leading dot in local; trailing dot in local;
+  trailing dot in domain; consecutive dots in domain
+test result: FAILED. 44 passed; 3 failed
+```
+
+The third collects its cases instead of asserting them one at a time, so ONE
+failure names all seven admitted shapes rather than masking six of them.
+
+Two controls pass on that baseline: `neither_placeholder_split_sees_a_double_at_address`
+(the mechanism — and the reason the fix belongs in the syntax gate rather than in
+either split) and `a_well_formed_address_is_still_admitted_after_the_delegation`
+(the tightening is not a change of policy).
+
+**Measured, not assumed.** The first draft used `jordan@example.com@evil.tld`
+and the control test failed: `.tld` and `.invalid` are THEMSELVES placeholder
+TLDs, so the gate caught that vector by luck rather than by seeing the malformed
+shape. A probe over seven candidate hosts established that `attacker-corp.net`
+is not a placeholder domain, and the vectors were corrected. Had the draft
+vector been kept, the regression test would have passed for the wrong reason and
+locked nothing.
