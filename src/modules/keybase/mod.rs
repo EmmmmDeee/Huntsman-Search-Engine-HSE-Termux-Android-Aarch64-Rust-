@@ -244,10 +244,25 @@ pub(super) fn build_entities(body: KbResp, query_username: &str, scan_id: &str) 
             result.push(pe);
         }
 
+        // Consolidated onto `profile_kit` (REQ-KEYBASE-001). Both helpers
+        // refuse a value over 100 characters because, in their own words, "a
+        // longer value is a bio mis-mapped to the location field, not a
+        // place." This module built both entities inline and checked only a
+        // MINIMUM length, so a bio sitting in the location field became an
+        // `Address` valued on the whole bio plus a person-anchored
+        // `Coordinates` at `confidence::MEDIUM` — exactly the noisy-OR
+        // expansion floor, so it pivoted. `city_coords` matches whole tokens
+        // anywhere in the string, so any city named in passing anchored the
+        // subject to it. Six sibling profile modules already consumed these
+        // helpers; keybase was the last holdout.
         if let Some(loc) = profile.location.as_deref()
             && loc.len() >= 3
+            && let Some(mut ae) = crate::modules::profile_kit::location_address(
+                loc,
+                confidence::MEDIUM_LIGHT,
+                scan_id,
+            )
         {
-            let mut ae = Entity::new(EntityKind::Address, loc, confidence::MEDIUM_LIGHT, scan_id);
             ae.tag("keybase");
             ae.tag("geoint");
             ae.tag("self-reported");
@@ -261,21 +276,15 @@ pub(super) fn build_entities(body: KbResp, query_username: &str, scan_id: &str) 
             ));
             result.push(ae);
 
-            if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
-                let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(
-                    EntityKind::Coordinates,
-                    &coord_val,
-                    confidence::MEDIUM,
-                    scan_id,
-                );
-                c.tag("addr-derived");
-                c.tag("geoint");
+            if let Some(mut c) =
+                crate::modules::profile_kit::location_coordinates(loc, confidence::MEDIUM, scan_id)
+            {
                 c.tag("keybase");
                 if let Some(sc) = crate::util::address_au::state_code(loc) {
                     c.tag(format!("au-state:{sc}"));
                     c.tag("country:AU");
                 }
+                let coord_val = c.value.clone();
                 c.add_evidence(Evidence::new(
                     SRC,
                     format!("Inline geocode of Keybase location '{loc}' → {coord_val}"),

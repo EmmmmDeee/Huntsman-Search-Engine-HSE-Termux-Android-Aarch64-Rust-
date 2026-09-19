@@ -305,10 +305,17 @@ by looking for them rather than reading modules at random:**
    the neighbour is *missing* the guard entirely rather than missing one call
    site, the fix is to lift the mechanism into a shared authority both consume
    — `ahpra` held the only copy of the namesake-collision rule, inline, and
-   `util::namesake` is now where it lives, with `gleif_lei` and
-   `opencorporates` joined to it (REQ-GLEIF-001, REQ-OPENCORPORATES-001). The
-   consolidation is only real once the *originating* module's copy is deleted
-   too; a shared helper beside an untouched inline original is two authorities.
+   `util::namesake` is now where it lives, with `gleif_lei`,
+   `opencorporates` and `wikidata` joined to it (REQ-GLEIF-001,
+   REQ-OPENCORPORATES-001, REQ-WIKIDATA-001). The consolidation is only real
+   once the *originating* module's copy is deleted too; a shared helper beside
+   an untouched inline original is two authorities.
+
+   The cheapest way to find the next instance is to **count the consumers of an
+   existing shared helper and look for who is missing**. REQ-KEYBASE-001 was
+   found that way and is the shape at its most unambiguous: six sibling profile
+   modules called `profile_kit::location_address`/`location_coordinates`, and
+   the seventh had an inline copy with no cap at all.
 2. *The rule computes a relation, then discards which side related to which.*
    Five correlator instances (AU-046/REQ-CORRELATOR-002,
    AU-039/REQ-CORRELATOR-004, AU-105/REQ-CORRELATOR-003,

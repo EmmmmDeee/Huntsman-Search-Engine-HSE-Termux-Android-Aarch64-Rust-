@@ -13366,3 +13366,123 @@ the single property the whole change rests on.
 specific city point) is the *upstream* half of the same story — this cycle stops
 a coarse answer being over-weighted, it does not stop a coarse question being
 asked. They compose, and it is left to its own cycle.
+
+---
+
+## REQ-KEYBASE-001 — Six modules used the shared cap; the seventh built its own
+
+The cleanest instance yet of ROADMAP §4's first recurring shape, because the
+count is unambiguous: `profile_kit::location_address` and
+`location_coordinates` are the shared authority, **six** sibling profile modules
+already consumed them (`steam_profile`, `codewars_user`, `gitlab_user`,
+`stackoverflow_user`, `codeberg_user`, `dockerhub_user`), and `keybase` was the
+lone holdout with an inline copy.
+
+Both helpers refuse a value over 100 characters, and say why in their own doc
+comment:
+
+> when it is non-empty and ≤100 characters (a longer value is a bio mis-mapped
+> to the location field, not a place)
+
+`keybase` checked `loc.len() >= 3` — a **minimum** and nothing else.
+
+### What that produced
+
+A Keybase profile whose `location` field holds a bio rather than a place
+("Software engineer and occasional speaker. Previously at ACME in Sydney, now
+mostly travelling. Opinions my own, DMs open.") yielded:
+
+* an `Address` entity **whose value is the entire bio**, at
+  `confidence::MEDIUM_LIGHT`, tagged `geoint` and `self-reported`; and
+* a person-anchored `Coordinates` entity at `confidence::MEDIUM` — which *is*
+  the noisy-OR expansion floor, so it pivots and seeds new targets.
+
+`city_coords` matches whole tokens anywhere in the string, so any city named in
+passing anchors the subject to it. "Previously at ACME in Sydney" becomes a
+coordinate in Sydney for someone who says in the same sentence that they no
+longer live there.
+
+Reproduced as the first run of the lock:
+
+```
+a_bio_in_the_location_field_is_not_a_place
+  FAILED — "a 140-character bio is not an Address"
+```
+
+### Implemented
+
+`keybase` now calls the two shared helpers and keeps only its own tagging and
+evidence, exactly as the six siblings do. No new mechanism: the cap, the
+`addr-derived`/`geoint` tags and the `city_coords` lookup all already lived in
+`profile_kit`.
+
+### Falsified
+
+| Mutation | Result |
+|---|---|
+| `keybase` goes back to building the `Address` inline | **only** `a_bio_in_the_location_field_is_not_a_place` fails |
+| the shared cap tightens from `> 100` to `>= 100` | **only** the boundary control `a_location_exactly_at_the_cap_is_still_a_place` fails |
+| the shared cap rejects everything (`> 0`) | **twelve controls fail across seven modules and `profile_kit` itself**, and no lock does |
+
+### The boundary control was vacuous on its first cut, and the mutation caught it
+
+`a_location_exactly_at_the_cap_is_still_a_place` originally built its
+hundred-character fixture as `"Sydney" + " ".repeat(94)`. The helper calls
+`trim()` **before** measuring, so the value collapsed to six characters: the
+assertion passed for the wrong reason, and the `>= 100` mutation sailed straight
+past it — the second mutation above reported *no failures at all* on that run.
+
+This is the lesson REQ-WIKIDATA-001 recorded one cycle earlier, arriving from
+the other direction. There, a mutation failed to reach a control because of an
+early return; here, because the fixture did not survive normalisation. **A
+control is not proven load-bearing by existing — only by a mutation actually
+failing it.** The fixture now pads with non-whitespace and asserts
+`loc.trim().len() == 100` before proceeding.
+
+---
+
+## REQ-SOCIALLOC-002 — Premise refuted; a narrow residual re-scoped, not fixed
+
+Recorded as an investigation rather than a change, because "we looked and
+changed nothing" is an answer the reader needs.
+
+The backlog read: *"`social_location` geocodes state/country-grain text as a
+specific city point — 'New York' (the state) resolves to NYC's coordinate."*
+Probed directly against `util::city_coords::city_coords`:
+
+```
+            New York -> Some((40.7128, -74.006))
+      New York State -> Some((40.7128, -74.006))
+    Upstate New York -> Some((40.7128, -74.006))
+        New York, NY -> Some((40.7128, -74.006))
+          Washington -> None
+    Washington State -> None
+            Victoria -> None
+          Queensland -> None
+           Australia -> None
+     New South Wales -> None
+               Texas -> None
+          California -> None
+              Sydney -> Some((-33.8688, 151.2093))
+```
+
+**The systematic claim is refuted.** `city_coords` is a city table: no AU state,
+no US state and no country name resolves at all. `social_location` already tags
+`au-state:`/`country:AU` for state-grain text (`mod.rs:122`) and simply earns no
+coordinate for it, which is correct. The same fact is recorded independently in
+REQ-SHODAN-002's entry ("`city_coords` is a CITY table, no country name
+resolves").
+
+**A narrow residual is real.** `"New York State"` and `"Upstate New York"` both
+return New York City — roughly 200 km from where the text says. The matcher is
+whole-token and longest-name-wins, so a qualifier that explicitly negates the
+city reading (`state`, `upstate`) is simply another token beside the match. It
+bites on exactly one tabulated entry today, because "new york" is the only
+CITIES name that is also a state name — but nothing prevents the next "Victoria"
+or "Washington" added to the table from inheriting it silently.
+
+Re-scoped rather than fixed here: the correction belongs in `city_coords`, the
+shared authority, as a grain-negating-qualifier guard benefiting every caller
+(`social_location`, `keybase`, the six profile modules, breach records, search
+snippets) — not in `social_location` alone. Left queued at its true, smaller
+size instead of being written up as the larger defect it was filed as.
