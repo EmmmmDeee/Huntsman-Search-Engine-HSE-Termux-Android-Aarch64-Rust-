@@ -9993,3 +9993,56 @@ The third passes on the unfixed code, which is what makes the other two
 attributable to the missing typing rather than to the test failing
 indiscriminately. All are driven through the loopback server, so the real
 status and body path runs.
+
+### REQ-CI-008 — CLOSED (contained, not fully root-caused)
+
+Four consecutive green `Check & test` runs since the doc-test isolation landed:
+
+| Run | head |
+| --- | --- |
+| 35406016795 | `08b3586b` |
+| 35408783499 | `1132adc8` |
+| 35411216191 | `5ec1b78d` |
+| 35413644777 | `6de161e4` |
+
+The last failure was 35401155417 on `a47485de`, **before** the isolation. Four
+is the bar set when the first closure was retracted, and it is met. Against a
+base rate near one in six, four consecutive greens is meaningful evidence where
+one was not.
+
+**The fix is the isolated doc-test step.** Doc-tests run under
+`CARGO_TARGET_DIR=target-doctests`, which the cache never populates; unit and
+integration tests keep the cached dir via `--lib --bins --tests`. It is **not**
+`cargo clean -p huntsman-search-engine`, which was tried and refuted.
+
+**What is NOT explained, stated plainly.** An assertion really did compare
+`0.85` against `0.75` on the failing runs. Because merged-doctest RUN output
+mis-reports source lines on 1.98.0, the doc-test that actually failed may never
+have been the one named, and isolating the target dir made it stop without ever
+identifying it. **This is a containment, not a root cause.** If it recurs, the
+`--list` diagnostic now prints the trustworthy names alongside the failure,
+which is the evidence needed to finish the job.
+
+**Five hypotheses, four refuted, one standing.**
+
+| # | Hypothesis | Verdict |
+| --- | --- | --- |
+| 1 | Stale `refs/pull/N/merge` | REFUTED — pinning to `head.sha` changed nothing |
+| 2 | Restored doc-test bundle | REFUTED — diagnostic printed `(none)` |
+| 3 | Duplicate source / second doctest target | REFUTED — one `canonical.rs`, one `Doc-tests` target |
+| 4 | Cargo-fresh artifact (`cargo clean -p`) | REFUTED — same failure WITH the clean, on a Markdown-only commit |
+| 5 | Something the isolated target dir excludes | STANDING — four greens, mechanism unidentified |
+
+**The finding that outlives this entry.** Hypotheses 1–4 were each inferred from
+"CI says line 88, the branch has 138, therefore CI compiled a different tree."
+Run 35406016795 printed, in ONE job on ONE file (`md5
+b6c14fd09b8284370dfa15144e3961b3`): `--list` → lines 138 and 216; the executing
+run → 88 and 153, non-constant offsets, all 77 passing. The premise was false.
+A doc-test's reported line in RUN output says nothing about which tree was
+compiled. `--list` is the trustworthy projection. This is recorded in CLAUDE.md
+so the next session starts from it rather than rediscovering it.
+
+**Cost of getting there:** four refuted hypotheses, one premature closure that
+had to be retracted, and roughly two hours. The control that settled it —
+three echo lines printing `--list` output and an md5 — should have been the
+first move, not the fifth.

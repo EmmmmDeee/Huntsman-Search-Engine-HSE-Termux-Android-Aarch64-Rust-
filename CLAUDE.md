@@ -31,3 +31,22 @@ route to completion. It is maintained continuously — re-assessed and realigned
 on each iteration — and is the map that `REQUIREMENTS_LEDGER.md` (the correctness
 transcripts) and the module registry (`src/modules/mod.rs`, the catalogue) hang
 off. Read it to understand where a change fits before making it.
+
+## Rust / testing gotchas
+
+**A doc-test's reported source line in RUN output is unreliable** on toolchain
+1.98.0 (edition-2024 merged doc-tests, `doctest_bundle_2024`). Observed in CI
+run 35406016795: within ONE job, on ONE file whose md5 was pinned,
+`cargo test --doc -- --list` named `canonical_email_mailbox` at line 138 and
+`name_word_tokens` at 216, while the executing run named them at 88 and 153 —
+non-constant offsets, with all 77 doc-tests passing.
+
+Never reason from that line number. In particular, "CI reports a line this
+branch does not have, therefore CI compiled a different tree" is **invalid** —
+four hypotheses were built on that premise and all four were refuted
+(REQ-CI-005 / REQ-CI-008 in `docs/REQUIREMENTS_LEDGER.md`). Use
+`cargo test --doc -- --list`, which reports correctly, and identify a failing
+doc-test by its assertion content rather than its position.
+
+CI keeps a `What does rustdoc actually collect?` step that prints exactly this
+for the same reason. Leave it in place.
