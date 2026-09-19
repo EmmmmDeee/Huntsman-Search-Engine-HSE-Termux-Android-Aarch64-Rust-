@@ -12557,3 +12557,101 @@ layer, re-deriving its own weaker answer. What makes this one worth its own
 entry is the ordering: it is the first cycle to consume `REQ-HTTP-005`'s
 corrected breaker authority, and doing it in the other order would have spread
 the defect rather than the fix.
+
+---
+
+## REQ-CORRELATOR-006 — A relation computed, then thrown away
+
+AU-016 ("Breach IP → geolocation chain", `Severity::High`) worked out which
+coordinates were geolocated from a breach IP, and then attached **every breach
+IP in the scan** to the finding:
+
+```rust
+let linked: Vec<&Entity> = coords.iter().filter(|c| {
+    c.evidence.iter().any(|ev| breach_ips.iter().any(|ip| text_mentions_ip(&ev.summary, &ip.value)))
+}).copied().collect();
+...
+let mut uids: Vec<String> = breach_ips.iter().map(|e| e.uid.clone()).collect();  // ALL of them
+uids.extend(linked.iter().map(|e| e.uid.clone()));
+```
+
+The two sides were computed **independently**: coordinates whose evidence names
+*some* breach IP, and separately the whole scan's breach-IP population. The
+summary compounds it, counting `breach_ips.len()`.
+
+So a scan carrying five breach IPs of which one was actually geolocated minted a
+High claim reading *"5 breach IP(s) resolved to 1 coordinate(s) via geolocation
+pipeline"*, with all five in `entity_uids`. Four were implicated — in an
+operator-facing geolocation finding — on no evidence whatsoever.
+
+`text_mentions_ip` itself is sound and well tested (whole-address boundaries for
+v4 and v6, including the `11.2.3.45` / `1.2.3.4` substring trap and the v6
+hex-extension cases). The predicate was never the problem; what it decided was
+discarded.
+
+### Why the existing tests could not see it
+
+All three pre-existing AU-016 tests use **one** breach IP. With a single IP the
+independent computation and the paired one are indistinguishable — every IP in
+the scan *is* the linked one. The defect lives entirely in the plural case, and
+no fixture had it.
+
+### The correction
+
+Pair them up: a breach IP and a coordinate belong in the chain only when *that*
+coordinate's evidence names *that* IP. Only the IPs that survive enter `uids`,
+and the summary counts those rather than the scan's population.
+
+`BTreeSet` rather than `HashSet`, deliberately: the live and finalise passes feed
+entities in randomised order, and the AU-017 rule immediately below records what
+non-determinism costs there — two persisted rows for one finding. A uid-sorted
+set makes identical entity sets produce an identical correlation.
+
+### Falsification
+
+Baseline is `bc2389b1`. Two mutations, and they fail **opposite** tests — which
+is what pins the fix from both directions:
+
+**(A) the two sides computed independently again** (the baseline):
+
+```
+rule_016_implicates_only_the_breach_ips_a_coordinate_actually_names ... FAILED
+  breach IPs no coordinate ever named were implicated in a High geolocation
+  claim: ["3a8c7664…", "5b1eeb64…"]
+rule_016_chains_every_pair_a_coordinate_does_name ... ok
+```
+
+**(B) the chain narrowed to a single pair** — the obvious over-correction:
+
+```
+rule_016_chains_every_pair_a_coordinate_does_name ... FAILED
+  a genuinely chained pair was dropped: ["3a8c7664…", "aa0145d1…"]
+rule_016_implicates_only_the_breach_ips_a_coordinate_actually_names ... ok
+```
+
+The control is doing real work here. A "fix" that simply emitted the first
+matching pair would satisfy the regression completely while silently dropping
+genuine chains — and (B) is exactly that fix, caught. All three pre-existing
+AU-016 tests pass under both mutations, because none of them has more than one
+breach IP.
+
+### Class
+
+The fifth instance of one correlator defect, and they share a single sentence:
+**the rule computes a relation, then discards which side related to which.**
+
+* `REQ-CORRELATOR-002` (AU-046) — fused identities that shared a *module name*
+  anywhere in the scan, not the same account.
+* `REQ-CORRELATOR-004` (AU-039) — wallet attribution on bare module-name
+  overlap, not same-record co-occurrence.
+* `REQ-CORRELATOR-003` (AU-105) — credential reuse from a provider's own
+  withheld-access placeholder.
+* `REQ-CORRELATOR-007` (AU-019) — counted entity-kind fragments from one breach
+  row as distinct records.
+* This one — coordinates paired with every breach IP rather than the one named.
+
+Worth stating as a rule for the next reader: **when a correlator rule filters
+one collection using another, the filter's own decision is the finding.**
+Recomputing either side independently afterwards loses it, and the loss is
+silent because the rule still fires on genuine evidence — just with the wrong
+entities attached.

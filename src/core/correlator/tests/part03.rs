@@ -600,6 +600,106 @@ fn rule_016_breach_ip_geo_chain_fires() {
     assert_eq!(firings[0].rule_id, "AU-016");
 }
 
+/// REQ-CORRELATOR-006. The rule computed the two sides of the chain
+/// INDEPENDENTLY — coordinates whose evidence mentioned *some* breach IP, then
+/// every breach IP in the scan — so a scan carrying several breach IPs of which
+/// one was actually geolocated minted a `Severity::High` claim naming all of
+/// them. The correlator is the layer that mints operator-facing claims, and
+/// this one reads "N breach IP(s) resolved to M coordinate(s)".
+///
+/// Every unlinked IP is checked and survivors collected, so a partial fix is
+/// named rather than masked by whichever one is asserted first.
+#[test]
+fn rule_016_implicates_only_the_breach_ips_a_coordinate_actually_names() {
+    let mut linked_ip = Entity::new(EntityKind::IpAddress, "101.169.42.148", 0.72, "s");
+    linked_ip.tag("breach");
+    let mut stranger_a = Entity::new(EntityKind::IpAddress, "203.0.113.7", 0.72, "s");
+    stranger_a.tag("breach");
+    let mut stranger_b = Entity::new(EntityKind::IpAddress, "198.51.100.22", 0.72, "s");
+    stranger_b.tag("breach");
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.5567,152.2767", 0.65, "s");
+    coord.add_evidence(Evidence::new(
+        "ip_geo",
+        "Geolocation for 101.169.42.148: Gatton, QLD",
+    ));
+
+    let strangers = [stranger_a.uid.clone(), stranger_b.uid.clone()];
+    let linked_uid = linked_ip.uid.clone();
+    let coord_uid = coord.uid.clone();
+    let firings = rule_au_016_breach_ip_geo_chain(
+        &RuleContext::new(&[linked_ip, stranger_a, stranger_b, coord]),
+        "s",
+        0,
+    );
+    assert_eq!(firings.len(), 1, "the one genuine chain still fires");
+    let c = &firings[0];
+
+    let implicated: Vec<&String> = strangers
+        .iter()
+        .filter(|u| c.entity_uids.contains(u))
+        .collect();
+    assert!(
+        implicated.is_empty(),
+        "breach IPs no coordinate ever named were implicated in a High geolocation \
+         claim: {implicated:?}"
+    );
+    assert!(
+        c.entity_uids.contains(&linked_uid) && c.entity_uids.contains(&coord_uid),
+        "the IP the coordinate DOES name, and that coordinate, must both be in the chain"
+    );
+    assert!(
+        c.description.starts_with("1 breach IP(s) resolved to 1 coordinate(s)"),
+        "the claim must count what was chained, not the scan's breach-IP population: {}",
+        c.description
+    );
+}
+
+/// The control, and the vacuity guard for the test above: every IP a coordinate
+/// DOES name is still chained, and two independent pairs still read as two.
+/// Passes on the baseline and on the fix, so it proves the correction narrowed
+/// the chain to the evidence rather than narrowing it to one pair.
+#[test]
+fn rule_016_chains_every_pair_a_coordinate_does_name() {
+    let mut ip_a = Entity::new(EntityKind::IpAddress, "101.169.42.148", 0.72, "s");
+    ip_a.tag("breach");
+    let mut ip_b = Entity::new(EntityKind::IpAddress, "203.0.113.7", 0.72, "s");
+    ip_b.tag("breach");
+    let mut coord_a = Entity::new(EntityKind::Coordinates, "-27.5567,152.2767", 0.65, "s");
+    coord_a.add_evidence(Evidence::new(
+        "ip_geo",
+        "Geolocation for 101.169.42.148: Gatton, QLD",
+    ));
+    let mut coord_b = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.65, "s");
+    coord_b.add_evidence(Evidence::new(
+        "ip_geo",
+        "Geolocation for 203.0.113.7: Sydney, NSW",
+    ));
+
+    let want: Vec<String> = vec![
+        ip_a.uid.clone(),
+        ip_b.uid.clone(),
+        coord_a.uid.clone(),
+        coord_b.uid.clone(),
+    ];
+    let firings = rule_au_016_breach_ip_geo_chain(
+        &RuleContext::new(&[ip_a, ip_b, coord_a, coord_b]),
+        "s",
+        0,
+    );
+    assert_eq!(firings.len(), 1);
+    let c = &firings[0];
+    let missing: Vec<&String> = want.iter().filter(|u| !c.entity_uids.contains(u)).collect();
+    assert!(
+        missing.is_empty(),
+        "a genuinely chained pair was dropped: {missing:?}"
+    );
+    assert!(
+        c.description.starts_with("2 breach IP(s) resolved to 2 coordinate(s)"),
+        "{}",
+        c.description
+    );
+}
+
 #[test]
 fn rule_016_no_fire_without_breach_tag() {
     let ip = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.72, "s");
