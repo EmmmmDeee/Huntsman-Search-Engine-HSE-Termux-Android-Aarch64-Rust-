@@ -253,3 +253,91 @@ fn count_kind(r: &ModuleResult, k: &str) -> usize {
         .filter(|e| e.kind == EntityKind::Other(k.to_string()))
         .count()
 }
+
+/// A Cloudflare interstitial as the runner actually received one — the exact
+/// fingerprints `util::html::is_challenge_document` keys on (the title phrase
+/// and the `/cdn-cgi/challenge-platform` loader).
+const CF_CHALLENGE_PAGE: &str = "<!DOCTYPE html><html lang=\"en-US\"><head>\
+    <title>Just a moment...</title></head><body>\
+    <noscript>Enable JavaScript and cookies to continue</noscript>\
+    <script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1?ray=9d1f2c3b4a5e6f70\"></script>\
+    </body></html>";
+
+/// REQ-APPLINKS-001. `read_text` already types a 2xx anti-bot page as
+/// `Error::BotChallenge` — that is what its shared `document_or_challenge`
+/// exists for. `fetch_text` then threw it away:
+///
+/// ```ignore
+/// match read_text(SRC, resp).await {
+///     Ok(body) if !body.is_empty() => FetchOutcome::Body(body),
+///     _ => FetchOutcome::Answered,          // <- swallowed Err(BotChallenge)
+/// }
+/// ```
+///
+/// `Answered` is documented as "a genuine 'answered, nothing here' … an
+/// ordinary site's expected negative", so a walled domain reported "publishes
+/// no app links". Because a wall arrives as a **200**, the
+/// `transport_failures` guard never saw it either.
+///
+/// Driven through the real HTTP path against the loopback server, so the
+/// module's own status classification and body decoding run — no mock of the
+/// client, and `document_or_challenge` is genuinely exercised.
+#[tokio::test]
+async fn a_wall_is_not_an_answer_about_app_links() {
+    use crate::util::http::test_server::{Canned, serve};
+    let base = serve(vec![
+        // The wall — must become Blocked.
+        Canned::html(200, CF_CHALLENGE_PAGE),
+        // Controls: the ordinary negatives a real site gives.
+        Canned::text(404, "Not Found"),
+        Canned::json(200, ""),
+        // And a real body, so the happy path is proven still reachable.
+        Canned::json(200, ASSETLINKS),
+    ])
+    .await;
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = ModuleContext {
+        scan_id: "t".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+
+    let walled = fetch_text(&ctx, &format!("{base}/.well-known/assetlinks.json")).await;
+    assert!(
+        matches!(walled, FetchOutcome::Blocked(_)),
+        "a 200 anti-bot wall must be Blocked, never the ordinary negative"
+    );
+    // And it must carry the typed error, not a generic one — that is what lets
+    // the breaker and the sweep read "blocked" rather than "down".
+    if let FetchOutcome::Blocked(e) = walled {
+        assert!(
+            matches!(e, Error::BotChallenge(_)),
+            "the wall must stay typed as BotChallenge, got {e:?}"
+        );
+    }
+
+    // Controls — these are the real negatives and must NOT become Blocked.
+    assert!(
+        matches!(
+            fetch_text(&ctx, &format!("{base}/.well-known/assetlinks.json")).await,
+            FetchOutcome::Answered
+        ),
+        "a 404 is the ordinary 'this site publishes no app links'"
+    );
+    assert!(
+        matches!(
+            fetch_text(&ctx, &format!("{base}/.well-known/assetlinks.json")).await,
+            FetchOutcome::Answered
+        ),
+        "an empty 2xx is the ordinary negative too"
+    );
+    assert!(
+        matches!(
+            fetch_text(&ctx, &format!("{base}/.well-known/assetlinks.json")).await,
+            FetchOutcome::Body(_)
+        ),
+        "a real well-known body must still be read"
+    );
+}

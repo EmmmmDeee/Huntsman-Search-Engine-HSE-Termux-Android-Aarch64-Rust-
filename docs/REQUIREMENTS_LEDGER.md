@@ -11879,3 +11879,100 @@ Defect 1 is `REQ-BUILTWITH-001` exactly: a guard that exists, is documented, and
 is applied to one consumer but not the neighbouring one that needed it more.
 Defect 2 is `REQ-GEOINTEL-001` / `REQ-WEBCRAWLER-001`: a failure to observe
 recorded as an observation of nothing.
+
+## REQ-APPLINKS-001 — A wall discarded at the one place it was already typed
+
+### The recorded premise was half-closed; the live mechanism is different
+
+The backlog entry read "app_links swallows a real anti-bot/WAF challenge-page
+error into the same bucket as 'domain doesn't publish app links'". Checked
+first, and the module already had most of the machinery:
+
+- a three-way `FetchOutcome { Body, Answered, TransportFailed }`, whose doc
+  explicitly separates "answered, nothing here" from "a real transport failure";
+- a guard returning `Err` when **both** well-knowns fail at transport.
+
+So the *transport* half was closed. But a WAF challenge is a **200 with an HTML
+body** — it takes neither of those arms.
+
+### What was actually wrong
+
+`read_text` **already types it**. Its shared `document_or_challenge` returns
+`Error::BotChallenge` for a 2xx anti-bot page — the authority built for exactly
+this, whose own doc names the modules reading through it. `app_links` then threw
+that away:
+
+```rust
+match read_text(SRC, resp).await {
+    Ok(body) if !body.is_empty() => FetchOutcome::Body(body),
+    _ => FetchOutcome::Answered,          // <- swallowed Err(BotChallenge)
+}
+```
+
+The bare `_` collapsed a typed wall into the value the module's own doc defines
+as *"a genuine 'answered, nothing here' … an ordinary site's expected
+negative"*. A walled domain therefore reported "publishes no app links", and
+because the wall arrives as a **200**, `transport_failures` stayed 0 and the
+outage guard never saw it.
+
+The guard existed, the typing existed, and one catch-all arm stood between them.
+
+### The correction
+
+A fourth outcome, `Blocked(Error)`, carrying the typed error. `fetch_text`'s
+arms are now explicit: a non-empty 2xx body is `Body`; an empty 2xx is
+`Answered`; `BotChallenge` / `RateLimited` are `Blocked`; an unreadable body
+stays `Answered`, as that doc already promised.
+
+`process` counts legs that were **prevented** from answering — a transport
+failure or a wall — and, with nothing found, returns the typed wall in
+preference to the generic outage message.
+
+**The threshold deliberately stays at both legs**, as it already was for
+transport failures alone: a site that answered one well-known has demonstrably
+been reached, so its genuine 404 on the other still supports the negative. Walls
+simply join the count, because a 200 challenge page is exactly as uninformative
+as a refused connection.
+
+### Falsification
+
+Neutering only the new arm — `Err(e) if false => Blocked(e)` — restores the old
+behaviour exactly:
+
+```
+a_wall_is_not_an_answer_about_app_links ... FAILED
+  a 200 anti-bot wall must be Blocked, never the ordinary negative
+```
+
+Seven tests pass throughout.
+
+The test runs through the **real HTTP path** against the loopback `Canned`
+server, so the module's own status classification and body decoding execute and
+`document_or_challenge` is genuinely exercised — no mock of the client. The
+fixture is the Cloudflare interstitial as the runner received it (the title
+phrase plus the `/cdn-cgi/challenge-platform` loader), the same one
+`util::http`'s own wall tests use, so it cannot pass by keying on something the
+detector does not.
+
+Its three controls are the ordinary negatives that must **not** become
+`Blocked` — a 404, an empty 2xx — plus a real `ASSETLINKS` body proving the
+happy path is still reachable. It also asserts the error stays typed as
+`BotChallenge` rather than being re-wrapped generically, since that is what lets
+the breaker and the live-drift sweep read "blocked" instead of "down".
+
+### Coverage stated honestly
+
+The test covers `fetch_text`, which is where the defect was. The
+`prevented == 2` aggregation in `process` is **not** newly tested: `process`
+builds its URLs from the target domain (`https://{domain}/.well-known/…`), so
+the loopback server cannot be pointed at it without making the well-known base
+injectable — a testability change wider than this fix. The pre-existing
+`transport_failures == 2` rule was likewise untested; this change alters its
+shape (a counter and an `Option<Error>`) but not its threshold. Recorded rather
+than implied, so the next reader knows which half carries a lock.
+
+### Class
+
+`REQ-INTELX-001` exactly — a bare catch-all discarding typed errors that a
+shared layer had already classified, replacing everything with a weaker answer.
+There the arm was `continue`; here it is `_ => Answered`.
