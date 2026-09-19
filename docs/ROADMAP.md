@@ -101,6 +101,10 @@ The reusable primitives every module leans on. Key sub-areas:
   (`discovered_by.is_some()`), `next_key_excluding` (the auth chokepoint that
   keeps harvested/breach-sourced credentials out of HSE's own requests),
   `add_and_validate` (provenance-stamped).
+- `util/namesake/` — whether one provider's own answer proves a name is held by
+  more than one party. Keyed on `derive_uid`/`normalise` themselves, so it
+  answers "will the engine fuse these rows?" exactly rather than by imitation.
+  Consumed by `ahpra` (practitioners) and `gleif_lei` (legal names).
 - `util/html`, `util/probe`, `util/target_match`, `util/canonical`,
   `util/address_au`, `util/domains`, `util/domain_vn`, `util/geo`,
   `util/extract`, `util/gravatar` — challenge-page detection, presence
@@ -271,10 +275,15 @@ geo, truncation-silent providers).
 
 **Three recurring shapes now have names, and finding the next instance starts
 by looking for them rather than reading modules at random:**
-1. *A guard applied to one consumer but not its neighbour.* Six instances
+1. *A guard applied to one consumer but not its neighbour.* Seven instances
    (REQ-AURDAP-001, REQ-EXPORT-001, REQ-BUILTWITH-001, REQ-WEBBANNER-001,
-   REQ-HTTP-005, REQ-WIGLE-001). Its rule: a guard's call sites are audited
-   against every emitter of the value it protects, not the one that motivated it.
+   REQ-HTTP-005, REQ-WIGLE-001, REQ-GLEIF-001). Its rule: a guard's call sites
+   are audited against every emitter of the value it protects, not the one that
+   motivated it. REQ-GLEIF-001 adds a corollary worth stating separately: when
+   the neighbour is *missing* the guard entirely rather than missing one call
+   site, the fix is to lift the mechanism into a shared authority both consume
+   — `ahpra` held the only copy of the namesake-collision rule, inline, and
+   `util::namesake` is now where it lives.
 2. *The rule computes a relation, then discards which side related to which.*
    Five correlator instances (AU-046/REQ-CORRELATOR-002,
    AU-039/REQ-CORRELATOR-004, AU-105/REQ-CORRELATOR-003,

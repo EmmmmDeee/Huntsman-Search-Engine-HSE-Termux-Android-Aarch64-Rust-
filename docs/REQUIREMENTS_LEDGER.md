@@ -12922,3 +12922,154 @@ Whether §2's structure claims, §3's seams and §4's ranking still describe the
 code remains a judgement, made in step 5 of the §6 process. What changed is that
 it is now the *only* part that is remembered, and a stale citation can no longer
 hide underneath it.
+
+---
+
+## REQ-GLEIF-001 — One legal name, two companies, one confident answer
+
+`gleif_lei` searches the Global LEI Index by legal name. Every row whose name
+matched the seed's whole-word tokens was minted as an `Organisation` at
+`ORG_EXACT` (`confidence::HIGH_PLUSPLUS_PLUS`, 0.85), tagged `exact-name-match`,
+and fanned out into an `AbnAcn` (`confidence::EXPERT`), a registered `Address`
+and inline `Coordinates`. Up to `MAX_FAMILY_SEEDS` of them additionally earned a
+three-request Level-2 walk of their corporate family.
+
+None of that asked whether the name identified **one** company.
+
+### Measured, and two premises corrected on the way
+
+The backlog entry read: *"two different real companies in different
+jurisdictions sharing a name merge into one entity with concatenated LEIs,
+jurisdictions, and corporate family trees."* Verified from source, with two
+corrections:
+
+* **The merge is architectural, not a `gleif_lei` defect.** `Entity::new`
+  derives the uid from the value, and `identity_fold` folds case and whitespace
+  for `Person` and `Organisation` specifically, so two rows holding one legal
+  name share a uid **by construction**. No module can opt out of that.
+* **Nothing is lost.** `Entity::absorb` folds evidence on `(source, summary)`
+  and `merge_evidence_attrs` joins a conflicting value as `"a; b"` rather than
+  dropping either — deliberately, so disambiguation rules can see the conflict.
+  An earlier reading of this pass recorded "smaller value wins"; that was wrong
+  and is corrected here. The fused record really does carry
+  `jurisdiction: "AU; DE"`, `entity_status: "ACTIVE; INACTIVE"` and both LEIs.
+
+So the defect is not the fusion and not data loss. It is that the fused entity
+**asserts** a single company at 0.85 — above the noisy-OR expansion floor
+(`confidence::MEDIUM`) that this module's own constants comment names as the
+line between "pivots immediately" and "surfaced but inert". A composite of two
+companies pivoted, seeding new targets from a company that does not exist.
+
+Three harms, one root cause:
+
+| | |
+|---|---|
+| The `Organisation` | 0.85, tagged `exact-name-match`, pivots |
+| Its fan-out | `AbnAcn` at `EXPERT`, `Address`, `Coordinates` — each pivots on its own |
+| The Level-2 walk | `exact_seeds` returned **both** rows, so up to three companies' parents, ultimate parents and children were all attributed to one subject |
+
+The walk is the sharpest of the three, because `exact_seeds`' own doc comment
+already forbade it: *"a walk costs three HTTP requests and, worse, attributes a
+whole corporate family to the operator's subject; doing that off a fuzzy match
+would manufacture a confident graph around the wrong company."* An ambiguous
+**exact** match is that same harm reached *through* the gate rather than around
+it — and worse, because it arrives tagged `exact-name-match`.
+
+### The mechanism already existed, one module over
+
+`ahpra` closed exactly this for practitioners (REQ-AHPRA-001). Its comment:
+
+> A name this very result set holds more than once is a PROVEN collision: two
+> different real practitioners share it, and because the entity value is the
+> name the engine's merge would otherwise fuse them into one composite record
+> carrying both registration numbers. Those rows are scored lower again and say
+> so, so the merged entity describes its own ambiguity instead of fabricating a
+> practitioner who does not exist.
+
+That is the seventh instance of **"a guard applied to one consumer but not its
+neighbour"** (ROADMAP §4). `ahpra` held the only copy, inline, as a `HashMap`
+keyed on `to_ascii_lowercase()`.
+
+### Implemented — as one authority, not a second copy
+
+`src/util/namesake/` is now the single home for "does this result set prove the
+name is held by more than one party", consumed by both `ahpra` and `gleif_lei`.
+
+It keys on **`derive_uid(kind, normalise(kind, name))`** — the two functions
+`Entity::new` itself calls — rather than on a fold that imitates them. The
+question being asked is literally *"will the engine fuse these rows?"*, so
+asking the engine is both exact and un-driftable. It also fixes a latent hole in
+the copy it replaced: `identity_fold` uses full Unicode `to_lowercase`, so
+`"MÜLLER GMBH"` and `"Müller GmbH"` are one identity that `ahpra`'s ASCII-only
+key would have missed.
+
+In `gleif_lei`:
+
+* `collisions(resp)` computes the shared names once per response.
+* A colliding exact row is capped at `ORG_AMBIGUOUS` and tagged
+  `AMBIGUOUS_NAME`, **with its whole fan-out** — leaving the `AbnAcn` at
+  `EXPERT` while demoting only the `Organisation` would move the defect, not
+  remove it.
+* `ORG_AMBIGUOUS` is deliberately the *same* tier as a loose candidate rather
+  than a bespoke number: the epistemic status is identical — this row does not
+  identify one company. Why it is sub-floor is carried by the tag and an
+  evidence `caution`, where an operator reads it, not by a constant nobody can
+  interpret.
+* `exact_seeds` excludes colliding names, so neither company's corporate family
+  is walked.
+
+### Falsified
+
+Test-first. Both locks were written and observed failing on the baseline, each
+for its own reason:
+
+```
+a_legal_name_two_companies_hold_is_not_one_confident_company
+  FAILED — "…must say so, like ahpra's `ambiguous-name`;
+            got tags ["gleif_lei","gleif","lei","country:AU","exact-name-match","active"]"
+an_ambiguous_legal_name_never_seeds_a_corporate_family_walk
+  FAILED — "no corporate family may be attributed to a name two companies hold;
+            got [("AAAA…","Meridian Holdings Limited"),("BBBB…","Meridian Holdings Limited")]"
+```
+
+Then four mutations against the corrected tree:
+
+| Mutation | Result |
+|---|---|
+| `mark_ambiguous` tags but does not cap the confidence | **only** the confidence lock fails |
+| `exact_seeds` drops the `is_shared` check | **only** the two corporate-family locks fail |
+| `NameCollisions` re-implements the fold (ASCII, hand-rolled) instead of calling `derive_uid` | **only** the two delegation locks fail — the `"MÜLLER GMBH"` case is what catches it |
+| `is_shared` returns true for every name | **six CONTROLS fail and no lock does** |
+
+The fourth is the one that pins the fix from the other direction. Every test it
+breaks asserts that an *unambiguous* name keeps its confidence, its fan-out and
+its corporate-family walk, so the guard cannot be satisfied by simply demoting
+everything.
+
+### A pre-existing test was inverted, not deleted
+
+`only_exact_name_matches_with_an_lei_are_walked` asserted:
+
+```rust
+assert_eq!(seeds, vec![("WZE1WSENV6JSZFK0JC28", "BHP GROUP LIMITED")]);
+```
+
+with the comment *"row 3 matches the name but has no LEI, so there is nothing to
+walk from."* True — but it missed what row 3 **is**: a second holder of "BHP
+GROUP LIMITED", in GB. The fixture had encoded a real namesake pair and read it
+as a mere unwalkable row. It is now
+`a_name_two_rows_hold_is_walked_for_neither_of_them`, quoting the old assertion
+in place, and the coverage it *did* provide (no LEI ⇒ nothing to walk from) was
+moved to `a_singly_held_exact_name_without_an_lei_is_still_not_walked` on a
+fixture where no name repeats — with a control querying the row that *does*
+carry an LEI, so the two reasons a row is skipped can never mask each other
+again.
+
+### What this does not fix
+
+`sample()`'s other case — two *different* legal names ("BHP GROUP LIMITED" and
+"BHP Billiton Group Limited") both satisfying one query's tokens, both minted at
+`ORG_EXACT` — is a different shape: ambiguity between distinct candidates rather
+than a collision between identical ones. They do not fuse, so no composite is
+fabricated. It is the REQ-WIKIDATA-001 / REQ-GEO-001 "ambiguity discarded"
+family and is left to that cycle rather than folded in here.

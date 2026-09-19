@@ -106,6 +106,16 @@ pub(super) const MAX_FAMILY_SEEDS: usize = 3;
 // corroborated.
 pub(super) const ORG_EXACT: f64 = confidence::HIGH_PLUSPLUS_PLUS;
 pub(super) const ORG_CANDIDATE: f64 = confidence::LOW_MEDIUM;
+/// An exact name match that GLEIF's own answer shows is held by more than one
+/// company (REQ-GLEIF-001).
+///
+/// Deliberately the SAME tier as a loose candidate, not a bespoke number
+/// between the two: the epistemic status is identical — this row does not
+/// identify one company — so it belongs below the expansion floor and must not
+/// pivot. What differs is *why*, and that is carried by the
+/// `util::namesake::AMBIGUOUS_NAME` tag and the evidence caution, where an
+/// operator can read it, rather than by a magic constant nobody can interpret.
+pub(super) const ORG_AMBIGUOUS: f64 = confidence::LOW_MEDIUM;
 pub(super) const ABN_CONF: f64 = confidence::EXPERT;
 pub(super) const ADDR_CONF: f64 = confidence::MEDIUM_PLUS;
 

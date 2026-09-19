@@ -178,8 +178,6 @@ pub(super) fn build_practitioner_entities(
     name_seed: Option<&str>,
     scan_id: &str,
 ) -> Vec<Entity> {
-    use std::collections::HashMap;
-
     let relevant: Vec<&(String, String, String)> = practitioners
         .iter()
         .filter(|(name, _, _)| {
@@ -187,16 +185,21 @@ pub(super) fn build_practitioner_entities(
         })
         .collect();
 
-    let mut holders: HashMap<String, usize> = HashMap::new();
-    for (name, _, _) in &relevant {
-        *holders.entry(name.to_ascii_lowercase()).or_default() += 1;
-    }
+    // Consolidated onto `util::namesake` (REQ-GLEIF-001): this counting used to
+    // live here as an inline `HashMap` keyed on `to_ascii_lowercase()`, which
+    // only approximated the engine's identity — `identity_fold` uses full
+    // Unicode `to_lowercase` and collapses internal whitespace, so two rows the
+    // engine really does fuse could slip past an ASCII-only key. The shared
+    // authority keys on `derive_uid` itself, and `gleif_lei` now asks the same
+    // question of company names through it.
+    let shared = crate::util::namesake::NameCollisions::of(
+        &EntityKind::Person,
+        relevant.iter().map(|(name, _, _)| name.as_str()),
+    );
 
     let mut out = Vec::with_capacity(relevant.len());
     for (name, profession, reg_no) in relevant {
-        let multi_holder = holders
-            .get(&name.to_ascii_lowercase())
-            .is_some_and(|n| *n > 1);
+        let multi_holder = shared.is_shared(&EntityKind::Person, name);
         let conf = if multi_holder {
             confidence::MEDIUM
         } else {
@@ -207,7 +210,7 @@ pub(super) fn build_practitioner_entities(
         person.tag("health-practitioner");
         person.tag("needs-identity-verification");
         if multi_holder {
-            person.tag("ambiguous-name");
+            person.tag(crate::util::namesake::AMBIGUOUS_NAME);
         }
         if !profession.is_empty() {
             person.tag(format!(
