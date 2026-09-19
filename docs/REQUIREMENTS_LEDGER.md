@@ -11526,3 +11526,119 @@ still the Organisation, `j.smith@acme.com` is still emitted while
 yields `Jane Roe Holdings` when no company name is present. The eight
 pre-existing `builtwith` tests pass unchanged — the gate costs no genuine
 registrant detail.
+
+## REQ-WEBCRAWLER-001 — A crawl that read nothing still attested "crawled"
+
+### What was measured
+
+`web_crawler::build_entities` emits two **attestations** about the site it was
+pointed at:
+
+| line | entity | confidence | tags |
+|---|---|---|---|
+| ~488 | the seed `Url` (URL targets) | `VERY_HIGH_PLUS` 0.90 | `web`, `crawled` |
+| ~526 | the site `Domain` | `VERY_HIGH_PLUS` 0.90 | `web`, `crawled` |
+
+Both claim the page/site was fetched and examined. Neither checked whether a
+single page was ever read.
+
+The crawl loop `continue`s past every failure mode it meets — a non-2xx status,
+a content type outside `text/html` / `text/plain` / `application/xhtml`, and a
+`read_body_capped` that returns `None`. Only after all three does it reach
+`state.pages_fetched += 1`. So a domain that is unreachable, WAF-walled, or
+serves no HTML at its root arrives at `build_entities` with
+`pages_fetched == 0`, and both entities were emitted anyway — carrying their own
+refutation in the evidence string:
+
+```
+Crawled example.com: 0 pages, 0 internal links, 0 external links
+  pages_crawled=0  internal_links=0  external_links=0
+```
+
+A 0.90 attestation whose own text says nothing was read.
+
+### The near-miss that is not a guard
+
+`mod.rs:388` already reads `if state.pages_fetched == 0 { … }`, which looks like
+the missing check but is not: it is the **first-page** condition for
+`audit_security_headers`, running *before* the content-type gate. Nothing
+downstream consults the count.
+
+### The correction
+
+Both attestation blocks are gated on `state.pages_fetched > 0`. Nothing was
+observed, so nothing is attested.
+
+Everything else those two blocks carry — the tech stack, page types, link
+counts, subdomains, image leads — is read out of page **bodies**, so at zero
+pages it is all empty and costs nothing to withhold.
+
+### The one signal deliberately dropped, stated rather than hidden
+
+`state.security_headers` **can** be populated at `pages_fetched == 0`: the audit
+runs on the first 2xx response, before the content-type gate rejects it. That
+reading is now withheld with the rest.
+
+This is a deliberate trade, not an oversight: a header reading taken from a
+response the crawler could not use is not a crawl, and the only way it reached
+the operator was by riding a 0.90 `crawled` attestation that claims far more
+than a header glance. Surfacing it honestly needs its own entity at its own
+rung, which is a capability question rather than a correctness one and is not
+opened here. Recorded in the code comment beside the gate so the next reader
+does not mistake it for something missed.
+
+Subject data found ON pages (emails at `:678`, phones at `:720`, hydration
+values) is emitted outside both blocks and is untouched — and at zero pages
+there is none of it either.
+
+### Falsification
+
+Reverting both gates:
+
+```
+crawl_attestations_need_a_page_that_was_actually_read ... FAILED
+  a crawl that read zero pages still attested `crawled`:
+  [(true,  "https://example.com", 0.9, ["web", "crawled"]),
+   (true,  "example.com",         0.9, ["web", "crawled"]),
+   (false, "example.com",         0.9, ["web", "crawled"])]
+```
+
+Three survivors across both seed shapes, collected in one run rather than
+stopping at the first, so a half-fix — one block gated and the other not — is
+named rather than masked by whichever assertion happens to run first. The sweep
+covers `is_url_target` both ways, which is what separates the two emitters.
+
+### The control
+
+`a_single_read_page_is_enough_to_attest_the_crawl` passes on the baseline **and**
+on the fix: with `pages_fetched = 1` both attestations stand. It is what proves
+the gate keys on the page count rather than having simply disabled the emitters.
+
+### A fixture that had to be corrected, not worked around
+
+`empty_state()` — the shared "everything empty" `CrawlState` helper — set
+`pages_fetched: 0`, and four tests built on it (MAC dedup, image-lead total, the
+cap flag, image leads) call `build_entities` expecting site-ownership entities.
+Under the fix those would all have gone vacuous.
+
+The fixture was corrected at its root to `pages_fetched: 1` rather than patching
+four call sites, because 1 is the *truthful* value: every one of those tests
+exercises what a crawl emits from page **content** (MACs, image leads, link
+counts), which by construction is only reachable once at least one page was
+read. A zero there described a state none of them meant. The doc comment now
+says so and points at the test that owns the zero case.
+
+The correction is not load-bearing for the lock: all four pass on the baseline
+with the new fixture too, so it hides nothing — the three failures above come
+from the gate alone.
+
+### Class
+
+`REQ-CERTINTEL-001` (an EXPERT "TLS certificate" minted on every HTTPS scan from
+a probe leg that never parsed a cert) and `REQ-PROBE-002` (a status-only
+presence whose control could not be read is not a profile) are the same defect:
+a high-confidence finding minted from an observation that never happened. The
+recurring shape is an emitter that reports on work it did not verify was done —
+here the counter proving it was done sat one struct field away, already
+maintained, and was only ever printed into the evidence string rather than
+consulted.
