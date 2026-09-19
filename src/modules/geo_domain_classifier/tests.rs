@@ -418,3 +418,122 @@ fn classifies_known_australian_service() {
         assert!(addr.has_tag("vn-registrant:individual"));
         assert!(addr.has_tag("vn-relevant"));
     }
+
+// ── REQ-GEODOMAIN-001: the Email affiliation path beyond Australia ──────────
+
+/// A context for the no-network path. This module makes zero network calls, so
+/// the client is never used.
+fn geo_ctx() -> crate::core::module::ModuleContext {
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    crate::core::module::ModuleContext {
+        scan_id: "geo-vn".into(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    }
+}
+
+async fn classify_email(value: &str) -> Vec<(EntityKind, String, Vec<String>)> {
+    GeoDomainClassifier
+        .process(&Target::new(TargetKind::Email, value), &geo_ctx())
+        .await
+        .expect("this module makes no network calls")
+        .entities
+        .into_iter()
+        .map(|e| (e.kind, e.value, e.tags.clone()))
+        .collect()
+}
+
+/// CLAUDE.md names `.vn` a first-class jurisdiction *via this module and
+/// `util::domain_vn`*. Measured before the fix, every one of these yielded
+/// nothing: the Email path ran only the two AU-heavy classifiers, so the
+/// `.vn` registrant tagging — which lives inside `if let Some(geo)` — was
+/// unreachable because no classification was ever produced to tag.
+#[tokio::test]
+async fn a_vietnamese_institutional_email_places_its_holder_in_vietnam() {
+    for addr in [
+        "someone@hcmus.edu.vn",
+        "someone@vnu.edu.vn",
+        "someone@mof.gov.vn",
+    ] {
+        let out = classify_email(addr).await;
+        let addr_ent = out
+            .iter()
+            .find(|(k, _, _)| *k == EntityKind::Address)
+            .unwrap_or_else(|| panic!("{addr} must place its holder somewhere"));
+        assert_eq!(addr_ent.1, "Vietnam", "{addr}");
+        assert!(
+            addr_ent.2.iter().any(|t| t == "email-affiliation"),
+            "{addr} must be marked the affiliation signal it is: {:?}",
+            addr_ent.2
+        );
+        assert!(
+            addr_ent.2.iter().any(|t| t.starts_with("vn-registrant:")),
+            "{addr} must carry the VNNIC registrant type — the tagging that was \
+             unreachable on this path: {:?}",
+            addr_ent.2
+        );
+    }
+}
+
+/// The gap was never VN-specific: the Email path had no classifier for ANY
+/// institution outside the AU tables.
+#[tokio::test]
+async fn a_non_australian_academic_email_is_no_longer_silent() {
+    let out = classify_email("someone@ox.ac.uk").await;
+    assert_eq!(
+        out.iter()
+            .find(|(k, _, _)| *k == EntityKind::Address)
+            .map(|(_, v, _)| v.as_str()),
+        Some("United Kingdom"),
+    );
+}
+
+/// A country is not a point. The ccTLD grain must not mint a Coordinates
+/// entity — that would be the precision overstatement this module's own
+/// `au_state` guard already refuses for whole-state classifications.
+#[tokio::test]
+async fn the_country_grain_never_mints_a_coordinate() {
+    for addr in ["someone@hcmus.edu.vn", "someone@ox.ac.uk"] {
+        let out = classify_email(addr).await;
+        assert!(
+            !out.iter().any(|(k, _, _)| *k == EntityKind::Coordinates),
+            "{addr} resolved only to a country and must not carry a point: {out:?}"
+        );
+    }
+}
+
+/// Control — passes before the fix too. The institutional gate still excludes
+/// freemail and generic corporate addresses, which is what makes admitting the
+/// ccTLD grain safe here at all.
+#[tokio::test]
+async fn a_freemail_or_generic_corporate_email_still_yields_nothing() {
+    for addr in ["someone@gmail.com", "someone@acme-corp.com.vn"] {
+        assert!(
+            classify_email(addr).await.is_empty(),
+            "{addr} is not an institutional affiliation"
+        );
+    }
+}
+
+/// Control — passes before the fix too. The precise AU paths still win ahead of
+/// the ccTLD fallback, and the country-grain "Australia" is still dropped.
+#[tokio::test]
+async fn the_precise_australian_paths_are_unchanged() {
+    let out = classify_email("someone@unimelb.edu.au").await;
+    assert_eq!(
+        out.iter()
+            .find(|(k, _, _)| *k == EntityKind::Address)
+            .map(|(_, v, _)| v.as_str()),
+        Some("Melbourne, Australia"),
+        "the known-service city must still beat the ccTLD country"
+    );
+    assert!(
+        !classify_email("someone@not-a-listed-uni.edu.au")
+            .await
+            .iter()
+            .any(|(_, v, _)| v == "Australia"),
+        "an AU scan already assumes Australia; the country grain adds nothing"
+    );
+}

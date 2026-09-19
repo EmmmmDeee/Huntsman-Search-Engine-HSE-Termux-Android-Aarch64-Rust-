@@ -105,16 +105,45 @@ impl Module for GeoDomainClassifier {
         // Domain / Url classify fully (jurisdiction → service → ccTLD). An EMAIL
         // geolocates the person ONLY when its domain is an education / government
         // INSTITUTION — `@uni.edu.au` places a student/staff/alumnus in that
-        // city, `@*.gov.au` a public servant in that jurisdiction — via the
-        // precise jurisdiction + known-service paths. The ccTLD country-grain is
-        // deliberately skipped for emails (an `@x.com` is not "in the United
-        // States") and the country-grain known-service rows ("Australia") add no
-        // location an AU scan doesn't already assume, so a freemail or generic
-        // corporate email yields nothing rather than a misleading fix.
+        // city, `@*.gov.au` a public servant in that jurisdiction, `@hcmus.edu.vn`
+        // someone at a Vietnamese university. It runs the same three classifiers
+        // in the same order, behind the institutional gate, so a freemail or
+        // generic corporate address yields nothing rather than a misleading fix.
+        // The country-grain "Australia" is still dropped: an AU scan already
+        // assumes it, so it adds no location.
         let classification = if target.kind == TargetKind::Email {
             if is_institutional_domain(&domain) {
                 classify_au_jurisdiction_domain(&domain)
                     .or_else(|| classify_by_known_service(&domain))
+                    // ccTLD last, and ONLY inside the institutional gate. The
+                    // country grain was previously skipped for every email, on
+                    // the reasoning that "an `@x.com` is not in the United
+                    // States" — true, and the institutional gate above already
+                    // excludes `@x.com`. What it also excluded was every
+                    // institution outside the AU-heavy tables above. Measured:
+                    //
+                    //   @unimelb.edu.au -> Melbourne, Australia   (known_service)
+                    //   @hcmus.edu.vn   -> (nothing)
+                    //   @mof.gov.vn     -> (nothing)
+                    //   @ox.ac.uk       -> (nothing)
+                    //
+                    // A `@hcmus.edu.vn` address really does place its holder at
+                    // a Vietnamese institution — that is the affiliation signal
+                    // this module exists to read, and CLAUDE.md names `.vn` a
+                    // first-class jurisdiction via this module and
+                    // `util::domain_vn` (REQ-GEODOMAIN-001). Without this the
+                    // `.vn` registrant tagging below was unreachable on the
+                    // Email path: it lives inside `if let Some(geo)`, and no
+                    // classification was ever produced to tag.
+                    //
+                    // It stays at the ccTLD classifier's LOW_MEDIUM, strictly
+                    // below the state-grain NOTABLE the AU jurisdiction path
+                    // earns, so a country is never weighted like a city.
+                    .or_else(|| classify_by_cctld(&domain))
+                    // Unchanged: a scan already assumes Australia, so the
+                    // country-grain "Australia" adds nothing. The filter now
+                    // also catches an `.edu.au` that misses both AU tables and
+                    // would otherwise reach the ccTLD row.
                     .filter(|g| g.location != "Australia")
             } else {
                 None

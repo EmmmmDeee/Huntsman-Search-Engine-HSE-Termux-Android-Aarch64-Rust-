@@ -10371,3 +10371,67 @@ emits only `jordan@example.com` — syntactically valid, but a DIFFERENT address
 from the one in the text. That is its own question (a truncating locator silently
 re-attributing a spoofed address), distinct from the stamp, and is recorded here
 rather than folded into this fix.
+
+### REQ-GEODOMAIN-001 — the Email affiliation path reaches Vietnam now
+
+`CLAUDE.md` records Vietnam as HSE's permanent operating jurisdiction and names
+`.vn` a first-class jurisdiction **via this exact module** and
+`src/util/domain_vn`. Measured on the Email path before this change:
+
+```
+@unimelb.edu.au -> ["Coordinates:-37.8136,144.9631", "Address:Melbourne, Australia"]
+@hcmus.edu.vn   -> []
+@vnu.edu.vn     -> []
+@mof.gov.vn     -> []
+@ox.ac.uk       -> []
+@gmail.com      -> []        (correct — the institutional gate)
+```
+
+So the gap was real, and **wider than Vietnam**: the Email branch ran only
+`classify_au_jurisdiction_domain` then `classify_by_known_service`, both AU-heavy,
+and deliberately skipped the ccTLD table. Every institution outside those two
+tables geolocated to nothing.
+
+**The unreachable capability was already written.** The `.vn` registrant tagging
+(`vn-registrant:{category}`, the VNNIC evidence line) sits inside
+`if let Some(geo) = classification`. With no classification ever produced on the
+Email path, that block could not run — the module and `util::domain_vn` were
+wired to each other exactly as CLAUDE.md describes, through a branch nothing
+could reach.
+
+**Fix.** The Email branch now runs the same three classifiers in the same order
+as Domain/Url — jurisdiction → known service → ccTLD — still behind the
+institutional gate. The stale comment claiming the ccTLD grain is "deliberately
+skipped for emails" is corrected rather than left contradicting the code.
+
+Why this is safe where the original objection was sound: that objection was "an
+`@x.com` is not in the United States", and the institutional gate already
+excludes `@x.com`. What the skip also excluded was every non-AU institution. A
+`@hcmus.edu.vn` address genuinely does place its holder at a Vietnamese
+institution — the affiliation signal this module exists to read. It lands at the
+ccTLD classifier's `LOW_MEDIUM`, strictly below the state-grain `NOTABLE` the AU
+jurisdiction path earns, so a country is never weighted like a city. The
+country-grain "Australia" is still dropped by the existing filter, which now also
+catches an `.edu.au` that misses both AU tables.
+
+**Falsified.** Removing the ccTLD fallback:
+
+```
+a_vietnamese_institutional_email_places_its_holder_in_vietnam ... FAILED
+  someone@hcmus.edu.vn must place its holder somewhere
+a_non_australian_academic_email_is_no_longer_silent ... FAILED
+  left: None   right: Some("United Kingdom")
+test result: FAILED. 27 passed; 2 failed
+```
+
+Three controls pass on that baseline: freemail and generic corporate addresses
+still yield nothing (the gate is what makes admitting the country grain safe at
+all), the precise AU city still beats the ccTLD country, and an unlisted
+`.edu.au` still yields no "Australia".
+
+**One test is a guard, not a control, and is labelled as such here.**
+`the_country_grain_never_mints_a_coordinate` also passes on the baseline — but
+vacuously, because the baseline emits nothing at all. It is non-vacuous only on
+the fixed path, where it holds the new country-grain Address to the same rule the
+module already applies to whole-state classifications: a country is not a point,
+so no `Coordinates` entity is derived from it.
