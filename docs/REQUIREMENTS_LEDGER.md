@@ -10435,3 +10435,57 @@ vacuously, because the baseline emits nothing at all. It is non-vacuous only on
 the fixed path, where it holds the new country-grain Address to the same rule the
 module already applies to whole-state classifications: a country is not a point,
 so no `Coordinates` entity is derived from it.
+
+### REQ-EXTRACTOR-002 — a decimal run is not a digest
+
+`entity_extractor::patterns`'s Hash arm classified a token by LENGTH alone, and
+`0-9` are hex digits, so any decimal run of a digest width was certified a
+cryptographic hash. Measured against that arm:
+
+```
+"txn 1234…(32 digits)"  -> hash_md5    0.85  "128-bit hex hash"
+"acct 1234…(40 digits)" -> hash_sha1   0.90  "160-bit hex hash"
+"blob 999…(64 digits)"  -> hash_sha256 0.95  "256-bit hex hash"
+"blob 111…(128 digits)" -> hash_sha512 0.97  "512-bit hex hash"
+```
+
+A transaction id, an account number, a concatenated timestamp or a numeric column
+out of a breach dump entered the graph as a cryptographic hash at up to **0.97**.
+
+**Not the "authority exists, unused" shape — checked before assuming it.**
+`util::hashcat::identify_hash` is the crate's hash authority and OathNet's
+classifier delegates to it, so the obvious move was to delegate here too. Reading
+it shows it classifies a bare hex digest by leading-hex-run length in exactly the
+same way, so delegating would have consolidated the blind spot rather than closed
+it. The fix has to add the discriminator, not re-point the call.
+
+**Fix, and where it belongs.** The arm requires at least one `a`-`f`. It is
+deliberately NOT pushed down into `identify_hash`: that function classifies a
+value which arrived in a hash-typed FIELD (a breach row's `password_hash`), where
+provenance already establishes the value is a digest and an all-decimal one
+should still read as one. This arm scans arbitrary prose with no provenance at
+all, so the same string carries a different prior. The guard belongs where the
+prior is weak.
+
+**Cost, stated rather than glossed.** A genuine digest whose every nibble happens
+to land in `0-9` has probability (10/16)^n — about 1.2e-7 for a 32-char MD5, and
+4e-27 for a 128-char SHA-512. Free text contains decimal runs of these lengths far
+more often than that.
+
+**Falsified.** Removing the guard:
+
+```
+a_decimal_run_is_never_certified_a_cryptographic_hash ... FAILED
+  a run of decimal digits is not a digest:
+    32-digit transaction id: hash_md5 at 0.85
+    40-digit account run: hash_sha1 at 0.9
+    64-digit numeric blob: hash_sha256 at 0.95
+    128-digit numeric blob: hash_sha512 at 0.97
+test result: FAILED. 2 passed; 1 failed
+```
+
+One failure names all four widths. Two controls pass on that baseline: every real
+digest width is still classified at its own confidence (so the guard is a
+discriminator, not a blanket refusal), and the guard is about the ALPHABET rather
+than the width — an unrecognised width was already declined, and a single hex
+letter makes a 32-char run a candidate again.
