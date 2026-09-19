@@ -11394,3 +11394,135 @@ chars certified a cryptographic hash by **length alone**). Both inferred a
 type-of-thing from a shape that the thing shares with unrelated things. Here the
 inference also carried a *platform attribution*, which is what made the output a
 named false fact rather than a mislabelled blob.
+
+## REQ-BUILTWITH-001 — The proxy guard was applied one field over
+
+### What was measured
+
+`builtwith`'s `build_entities` walks each `Results[]` entry's **Meta** block and
+emits, in one loop, an `Organisation` from the registrant company name, `Email`s
+from the contact block, and `Phone`s from the telephones.
+
+The Email arm already knew what this data is, and said so in a comment that
+names the exact prior fix:
+
+> A registrant contact block is dominated by automation and role desks —
+> `abuse@`, `hostmaster@`, the registrar's own privacy-proxy mailbox — not the
+> subject's mail. Emitting those as `Email` attributes a provider's helpdesk to
+> the person under investigation, which is precisely the leakage #351 removed
+> from `cert_intel`, `crtsh`, `ip_registry` and `doh_resolver`.
+
+The **Organisation** arm, 27 lines above it in the same loop over the same
+block, applied no guard at all — and the registrant *company name* field is
+precisely where `Domains By Proxy, LLC` lands. Every such value was minted as a
+`confidence::HIGH` Organisation: the proxy service's corporate identity
+attributed to the subject.
+
+The authoritative guard already exists and already has callers.
+`util::domains::is_proxy_registrant(value, is_email)` (mod.rs:684) is
+`core::validation::is_whois_privacy_placeholder(value) || (is_email &&
+is_infrastructure_email(value))`, and its own doc records the consolidation it
+came from:
+
+> this used to maintain its own separate marker list, which had quietly
+> diverged in both directions … so a genuine privacy-proxy registrant could pass
+> one check and fail the other purely by which code path evaluated it. Called by
+> both the `core::correlator` (AU-061) and `core::relation` builders
+> (`derive_co_ownership`).
+
+Two callers named; `builtwith` is a third site that needed it and did not call
+it. The same class as `REQ-AURDAP-001` (au_rdap missing the masking guard its
+`whois`/`whoisxml` siblings apply), except that here the sibling arm is in the
+*same function*.
+
+### The email arm was a real gap too, not a redundancy
+
+Routing the Email arm onto `is_proxy_registrant` is not a cosmetic
+consolidation. The proxy brands are deliberately absent from
+`INFRA_PROVIDER_ROOTS` and `INFRA_MAIL_ONLY` — those hold CDN, cloud, DNS and
+registrar *control-plane* roots (`cloudflare.com`, `secureserver.net`,
+`markmonitor.com`, …), not privacy-proxy brands. Verified against both tables:
+`domainsbyproxy.com`, `whoisguard.com` and `contactprivacy.com` appear in
+neither.
+
+So a proxy mailbox whose local part is **not** a role desk cleared every check:
+
+| mailbox | `is_role_localpart` | `is_freemail` | in infra roots | `is_infrastructure_email` | emitted |
+|---|---|---|---|---|---|
+| `jane.doe@domainsbyproxy.com` | no | no | no | **false** | **yes** |
+| `k.nguyen@whoisguard.com` | no | no | no | **false** | **yes** |
+| `customer0123456789@contactprivacy.com` | no | no | no | **false** | **yes** |
+
+Each was emitted as the subject's own `Email` at `MEDIUM_PLUS` — the leakage the
+arm's own comment exists to prevent, from the one source of it the check could
+not see.
+
+### The correction
+
+Both arms take `is_proxy_registrant`. On the Organisation side the guard sits
+**inside** the selection rather than after it:
+
+```rust
+let is_registrant = |s: &str| !crate::util::domains::is_proxy_registrant(s, false);
+let org_name = meta.company_name.as_deref().map(str::trim)
+    .filter(|s| !s.is_empty() && is_registrant(s))
+    …
+    .or_else(|| { /* first `names[]` entry that is also a real registrant */ });
+```
+
+A post-filter would have been wrong in the common case: WHOIS routinely carries
+the proxy as `CompanyName` while the genuine party survives as a `Name` entry,
+so filtering after selection would emit nothing and trade one wrong answer for
+no answer. Inside the selection, the proxy is skipped over and the real
+registrant still surfaces.
+
+The Phone arm is deliberately unchanged; its own comment already states there is
+no phone-side counterpart to gate on and that inventing one on a guess would be
+worse than the honest low rung. That reasoning still holds.
+
+### Falsification
+
+Reverting both arms:
+
+```
+a_privacy_proxy_is_never_the_registrant_organisation ... FAILED
+  privacy-proxy brands minted as the registrant Organisation:
+  [("Domains By Proxy, LLC", …), ("DomainsByProxy.com", …),
+   ("REDACTED FOR PRIVACY", …), ("Whoisguard, Inc.", …),
+   ("Contact Privacy Inc. Customer 0123456789", …),
+   ("Withheld for Privacy ehf", …), ("Identity Protection Service", …),
+   ("Private Registration", …), ("Statutory Masking Enabled", …),
+   ("GDPR Masked", …), ("Data Protected", …),
+   ("Domain Protection Services, Inc.", …)]
+
+a_proxy_registrant_mailbox_is_not_the_subjects_email ... FAILED
+  privacy-proxy mailboxes attributed to the subject:
+  ["customer0123456789@contactprivacy.com", "jane.doe@domainsbyproxy.com",
+   "k.nguyen@whoisguard.com"]
+
+a_proxy_company_name_does_not_shadow_a_real_registrant_name ... FAILED
+  the real registrant behind the proxy must still surface
+```
+
+All **12 of 12** brands survive on the baseline, collected in one run rather
+than stopping at the first, so a partial gate (one marker wired, the rest
+missed) would be named. Three failures for three distinct reasons: the
+Organisation arm, the Email arm, and the shadowing behaviour of where the guard
+is placed.
+
+### Vacuity guard
+
+`a_proxy_registrant_mailbox_is_not_the_subjects_email` first asserts each of its
+three mailboxes is **not** already caught by `is_infrastructure_email`. Without
+that, the test would pass on the baseline and prove nothing about the
+placeholder half of the gate — it would only be re-testing the check that was
+already there.
+
+### Controls that pass on baseline and on the fix
+
+`genuine_registrant_details_still_survive_the_proxy_gate`: `Acme Pty Ltd` is
+still the Organisation, `j.smith@acme.com` is still emitted while
+`info@acme.com` is still gated as a role desk, and the `names[]` fallback still
+yields `Jane Roe Holdings` when no company name is present. The eight
+pre-existing `builtwith` tests pass unchanged — the gate costs no genuine
+registrant detail.

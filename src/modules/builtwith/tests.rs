@@ -264,3 +264,172 @@ fn a_wrong_key_or_exhausted_credits_error_is_a_key_error_not_a_clean_miss() {
     assert!(builtwith_key_error(b.errors.as_deref().unwrap()).is_none());
     assert!(builtwith_key_error(&[]).is_none());
 }
+
+/// Build a Meta-only response with the given registrant fields, so the
+/// privacy-proxy gate is exercised without the tech-profile noise.
+fn meta_only(
+    company_name: Option<&str>,
+    names: Option<Vec<&str>>,
+    emails: Option<Vec<&str>>,
+) -> BwResp {
+    BwResp {
+        results: vec![BwResult {
+            lookup: Some("acme.com".to_string()),
+            result: None,
+            meta: Some(BwMeta {
+                company_name: company_name.map(str::to_string),
+                emails: emails.map(|v| v.into_iter().map(str::to_string).collect()),
+                telephones: None,
+                names: names.map(|v| {
+                    v.into_iter()
+                        .map(|n| BwName {
+                            name: Some(n.to_string()),
+                        })
+                        .collect()
+                }),
+            }),
+        }],
+        errors: None,
+    }
+}
+
+fn orgs(r: &crate::core::module::ModuleResult) -> Vec<&str> {
+    r.entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Organisation)
+        .map(|e| e.value.as_str())
+        .collect()
+}
+
+/// REQ-BUILTWITH-001. A WHOIS privacy proxy is registrar boilerplate, never
+/// the domain owner — but BuiltWith's `CompanyName` is a registrant field, so
+/// it is exactly where those brands land. They were minted as
+/// `confidence::HIGH` Organisation entities: an attribution of the proxy
+/// service's corporate identity to the subject under investigation.
+///
+/// Every brand is checked and survivors are collected, so a partial gate (one
+/// marker wired, the rest missed) is named rather than masked by the first
+/// failure.
+#[test]
+fn a_privacy_proxy_is_never_the_registrant_organisation() {
+    let mut minted: Vec<(&str, Vec<String>)> = Vec::new();
+    for brand in [
+        "Domains By Proxy, LLC",
+        "DomainsByProxy.com",
+        "REDACTED FOR PRIVACY",
+        "Whoisguard, Inc.",
+        "Contact Privacy Inc. Customer 0123456789",
+        "Withheld for Privacy ehf",
+        "Identity Protection Service",
+        "Private Registration",
+        "Statutory Masking Enabled",
+        "GDPR Masked",
+        "Data Protected",
+        "Domain Protection Services, Inc.",
+    ] {
+        let r = build_entities(&meta_only(Some(brand), None, None), "acme.com", "t");
+        let got = orgs(&r);
+        if !got.is_empty() {
+            minted.push((brand, got.iter().map(|s| (*s).to_string()).collect()));
+        }
+    }
+    assert!(
+        minted.is_empty(),
+        "privacy-proxy brands minted as the registrant Organisation: {minted:?}"
+    );
+}
+
+/// The gate lives inside the selection, not after it. WHOIS routinely carries
+/// the proxy as `CompanyName` while the genuine party survives as a `Name`
+/// entry; a post-filter would have thrown both away and reported no registrant
+/// at all, trading one wrong answer for no answer.
+#[test]
+fn a_proxy_company_name_does_not_shadow_a_real_registrant_name() {
+    let r = build_entities(
+        &meta_only(
+            Some("Domains By Proxy, LLC"),
+            Some(vec!["Domains By Proxy, LLC", "Acme Pty Ltd"]),
+            None,
+        ),
+        "acme.com",
+        "t",
+    );
+    assert_eq!(
+        orgs(&r),
+        vec!["Acme Pty Ltd"],
+        "the real registrant behind the proxy must still surface"
+    );
+}
+
+/// REQ-BUILTWITH-001, the email half. The proxy brands are deliberately NOT in
+/// `INFRA_PROVIDER_ROOTS` / `INFRA_MAIL_ONLY` — those hold CDN, cloud and
+/// registrar control-plane roots — so a proxy mailbox whose local part is not a
+/// role desk cleared `is_infrastructure_email` on its own and was emitted as
+/// the subject's own mail at `MEDIUM_PLUS`.
+#[test]
+fn a_proxy_registrant_mailbox_is_not_the_subjects_email() {
+    let personal_looking = [
+        "jane.doe@domainsbyproxy.com",
+        "k.nguyen@whoisguard.com",
+        "customer0123456789@contactprivacy.com",
+    ];
+    // Vacuity guard: these must NOT already be caught by the pre-existing
+    // infrastructure-email check, or this test would pass on the baseline and
+    // prove nothing about the placeholder half of the gate.
+    for e in personal_looking {
+        assert!(
+            !crate::util::domains::is_infrastructure_email(e),
+            "{e} is already infra-mail; pick a case that isolates the placeholder check"
+        );
+    }
+    let r = build_entities(
+        &meta_only(None, None, Some(personal_looking.to_vec())),
+        "acme.com",
+        "t",
+    );
+    let emails: Vec<&str> = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        emails.is_empty(),
+        "privacy-proxy mailboxes attributed to the subject: {emails:?}"
+    );
+}
+
+/// The control, and the reason the gate is safe to assert: a genuine registrant
+/// company, a genuine registrant name and a genuine individual mailbox all
+/// still come through. This passes on the baseline and on the fix.
+#[test]
+fn genuine_registrant_details_still_survive_the_proxy_gate() {
+    let r = build_entities(
+        &meta_only(
+            Some("Acme Pty Ltd"),
+            None,
+            Some(vec!["j.smith@acme.com", "info@acme.com"]),
+        ),
+        "acme.com",
+        "t",
+    );
+    assert_eq!(orgs(&r), vec!["Acme Pty Ltd"]);
+    let emails: Vec<&str> = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert_eq!(
+        emails,
+        vec!["j.smith@acme.com"],
+        "the individual mailbox stays; only the role desk is gated"
+    );
+    // And the Names[] fallback still works when there is no company name.
+    let r2 = build_entities(
+        &meta_only(None, Some(vec!["Jane Roe Holdings"]), None),
+        "acme.com",
+        "t",
+    );
+    assert_eq!(orgs(&r2), vec!["Jane Roe Holdings"]);
+}
