@@ -11196,3 +11196,201 @@ multi-label pattern, none of which the right boundary costs.
 `REQ-SOCIALLOC-001` (substring containment instead of a host-boundary match)
 were the same defect in different clothes. This one is the half-fixed variant:
 one boundary checked, the other forgotten.
+
+## REQ-DISCORDSNOWFLAKE-001 — A snowflake's issuer is not recoverable from the number
+
+### What was measured
+
+`discord_snowflake` is a pure offline decoder: `created_ms = (id >> 22) +
+DISCORD_EPOCH`. Its header carried a safety claim — *"a number that isn't a
+real Discord snowflake yields **nothing** rather than a fabricated date"* —
+resting on two gates: a 17–20 digit shape check, and a Steam ID64 exclusion
+(17 digits beginning `7656119`).
+
+The claim was false. The snowflake layout (`timestamp << 22 | worker |
+sequence`) is not Discord's alone — Twitter/X, Instagram and Mastodon issue
+64-bit IDs in the same shape. Only the epoch constant differs, and **the epoch
+is not encoded in the number**. Decoding a foreign snowflake with Discord's
+epoch therefore does not fail; it returns a wrong date that still looks right.
+
+Computed offline, no network. Twitter/X's epoch is `1288834974657`
+(2010-11-04); Discord's is `1420070400000` (2015-01-01). The gap is a constant
+**+131,235,425,343 ms = +1518.93 days ≈ 4.16 years**, applied to every Twitter
+ID read as a Discord one:
+
+| tweet date | digits | tweet id | decoded "created" | accepted by baseline |
+|---|---|---|---|---|
+| 2010-12-01 | 16 | `9758573982646272` | 2015-01-27 | no — 16 digits |
+| 2011-01-01 | 17 | `20992597816246272` | 2015-02-27 | **yes** |
+| 2012-06-01 | 18 | `208347124331446272` | 2016-07-28 | **yes** |
+| 2013-06-01 | 18 | `340618695275446272` | 2017-07-28 | **yes** |
+| 2016-06-01 | 18 | `737795795973046272` | 2020-07-28 | **yes** |
+| 2018-06-01 | 19 | `1002338937861046272` | 2022-07-28 | **yes** |
+| 2019-06-01 | 19 | `1134610508805046272` | 2023-07-28 | **yes** |
+| 2021-01-01 | 19 | `1344795470853046272` | 2025-02-27 | **yes** |
+| 2022-07-01 | 19 | `1542659245470646272` | 2026-08-27 | **yes** |
+| 2022-09-01 | 19 | `1565127293137846272` | 2026-10-28 | no — past `now` |
+| 2024-01-01 | 19 | `1741610183685046272` | 2028-02-27 | no — past `now` |
+
+Solving the window boundaries exactly: **every Twitter/X ID issued between
+2010-11-04 and 2022-07-24** decodes inside the module's `[2015-01-01, now]`
+plausibility range, at 17–20 digits with no leading zero. That is the bulk of
+Twitter's snowflake era, and the upper bound *advances a day per day* as `now`
+does. The Steam carve-out does not help: it works only because `7656119` is a
+literal constant prefix, and Twitter has no equivalent to exclude on.
+
+Each such value minted a `Username` entity at `MEDIUM_PLUS` (0.60), tagged
+`discord` / `derived` / `account-age`, with evidence reading *"Discord account
+created 2026-08-27 (decoded from snowflake)"* and attributes
+`discord_created_date` / `discord_created_unix_ms` — a fabricated fact in the
+graph's own date fields, not a hedged guess.
+
+### Reachability — the entry point, not just the helper
+
+Traced through `TargetKind::detect` (`src/core/scan/mod.rs:182`, shapes in
+`src/core/scan/detect.rs`): a bare 17–20 digit run is **`TargetKind::Username`**
+by the final fallback. It is too long for `is_phone_shaped` (7–15 digits), has
+no dot for `is_domain_shaped`, is not CIDR / MAC / ASN / ABN / DeviceId /
+tracking-ID / crypto shaped, and is a single whitespace-free token. So
+`hse scan 1542659245470646272` — a real Twitter status ID, exactly the kind of
+value an operator pastes from a URL — dispatched straight into this module.
+
+`EntityKind::Username → TargetKind::Username` (`TargetKind::from_entity_kind`)
+means any bare numeric handle already in the graph reaches it too.
+
+### The correction — require the context the number cannot carry
+
+There is no discriminator to add: Discord and Twitter snowflakes are
+structurally identical, so no shape rule can separate them. The only evidence
+of issuer is *context*, and context arrives as the `discord:` prefix.
+
+`snowflake_candidate` now takes that prefix as mandatory and returns
+`Option<u64>` (was `Option<(u64, bool)>` — the bool distinguished prefixed from
+bare). `BARE_CONF` is gone with the path it served; `PREFIXED_CONF` becomes
+`DISCORD_ID_CONF` since there is nothing left to contrast it with. The Steam
+carve-out is deleted as **subsumed, not lost** — every bare number is refused
+now, Steam's included — with the reasoning kept in the header, because it is
+the concrete illustration of why a prefix-constant works and a shape rule does
+not.
+
+### The capability is retained where evidence for it exists
+
+Verified before removing the path, so the module is not stranded. Both
+production emitters of `discord:<id>` read an **explicitly named Discord field**
+from a record — not a guess from digits:
+
+- `src/modules/see_know/extract/mod.rs:272` — `val_str_or_coerce(item,
+  &["discord_id", "discordid"])` → `format!("discord:{did}")`
+- `src/modules/oathnet_pro/breach.rs:589` — `val_str_coerce(item, "discordid")`
+  → `format!("discord:{did}")`
+
+`see_know/pivots`'s `discover_discord_pivots` consumes the same prefixed form.
+So the decode still fires on every Discord ID that arrives with provenance, and
+that is precisely the population it is sound for. A `discord:`-prefixed value is
+trusted even when its body looks like a Steam ID64 — the prefix is evidence, the
+shape is not.
+
+The `[2015-01-01, now]` window is kept: it now guards a corrupt or truncated
+`discord_id` field rather than pretending to identify an issuer.
+
+`accepts()` stays kind-only (`TargetKind::Username`), as its own comment
+requires, so the dispatch index built from `consumes()` stays consistent with
+it. A bare value is still dispatched — it simply yields nothing.
+
+### Falsification
+
+Restoring the bare path (`strip_prefix` back to an `Option` fallback, Steam
+carve-out reinstated):
+
+```
+cross_issuer_snowflakes_are_never_decoded ... FAILED
+  180 Twitter/X IDs were accepted as Discord snowflakes, e.g.
+  [("20992597816246272", "2015-02-27"), ("32022551983030272", "2015-03-30"),
+   ("43052506149814272", "2015-04-29"), ("54082460316598272", "2015-05-30"),
+   ("65112414483382272", "2015-06-29")]
+
+process_emits_nothing_for_a_bare_cross_issuer_snowflake ... FAILED
+  bare Twitter/X IDs minted Discord findings:
+  [("20992597816246272", 1), ("340618695275446272", 1),
+   ("737795795973046272", 1), ("1134610508805046272", 1),
+   ("1542659245470646272", 1)]
+
+candidate_requires_explicit_discord_context ... FAILED
+  assertion failed: snowflake_candidate("175928847299117063").is_none()
+```
+
+Three independent failures, each for its own reason: the era sweep, the
+end-to-end `process` surface, and the direct helper assertion. The sweep
+collects **every** survivor rather than stopping at the first, so a partial
+re-admission (a digit-length rule, a narrower carve-out, a tightened range) is
+named rather than masked.
+
+All 180 sampled IDs clear the helper, not just the 127 whose decoded date also
+lands in the window: `snowflake_candidate` gates on **shape**, and the
+`[2015-01-01, now]` range is applied later in `process`. That split is why the
+end-to-end test is carried separately — it is the one that proves a *finding*
+was minted, not merely that a value was admitted.
+
+### Controls that pass on baseline and on the fix
+
+- `process_enriches_discord_id_with_creation_date` — a `discord:`-prefixed ID
+  still decodes to `2020-01-01`, and the emitted entity keeps the seed's exact
+  prefixed value so the GREATEST-merge lands on the extractor's own entity
+  rather than forking a second handle.
+- `snowflake_candidate("discord:76561197960265728").is_some()` — the prefix
+  still overrides a Steam-looking body.
+- `decode_round_trips_a_known_date` / `utc_date_matches_known_unix_dates` — the
+  arithmetic is untouched.
+
+### Vacuity guards
+
+The shape rejects (16 digits, 21 digits, leading zero, non-digit) were asserted
+on **bare** values. Under the fix those pass on the missing prefix alone and the
+shape gate would go entirely unchecked — the exact trap this ledger has recorded
+before. They are re-asserted on `discord:`-prefixed bodies, and extended with
+`discord:` (empty body), `Discord:` (case) and `discord :` (not the marker).
+
+`cross_issuer_snowflakes_are_never_decoded` carries two of its own: the sweep
+must yield ≥150 snowflake-shaped Twitter IDs, and ≥100 of them must land inside
+the plausibility window. Without the second, "none decoded" would prove nothing
+if the window ever drifted away from the Twitter era. Both bounds hold with
+margin today — 180 checked, 127 in window — and the in-window count only grows
+as `now` advances.
+
+### Two assertions inverted in place, old claim quoted
+
+`candidate_gates_shape_and_excludes_steam` asserted the defect:
+`assert!(snowflake_candidate("175928847299117063").is_some()); // 18-digit ID`.
+Renamed to `candidate_requires_explicit_discord_context`, inverted, with the old
+line quoted in the comment beside it. `is_free_passive_social`'s
+`accepts(Username, "175928847299117063")` still holds — `accepts` is kind-only —
+and its trailing comment now says so explicitly rather than pointing at a Steam
+exclusion that no longer exists.
+
+### The codebase already knew
+
+`structured_id` — the sibling offline decoder, whose header names
+`crate::modules::discord_snowflake` as the pattern it extends — states the
+principle outright:
+
+> These formats are unambiguous by shape (hyphenated 36-char UUID with a `1`
+> version nibble; bare 24-hex ObjectID; 26-char Crockford-base32 ULID; 27-char
+> base62 KSUID), so — **unlike a bare decimal snowflake** — there is no platform
+> ambiguity.
+
+It goes further, scaling confidence to how strong a filter its plausibility
+window actually is, and naming the residual false-match rates it cannot remove
+(~20% for ObjectID's and ~9% for KSUID's second-resolution timestamps). So the
+ambiguity was recorded, in the module that cites this one, while this one
+carried the opposite claim. The discipline `structured_id` applied — state what
+the shape can and cannot establish, and price the output accordingly — is what
+was missing here; the difference is that for a bare snowflake the shape
+establishes *nothing* about the issuer, so there is no rung to price it at.
+
+### Class
+
+Same family as `REQ-EXTRACTOR-002` (a pure-decimal digit run of 32/40/64/128
+chars certified a cryptographic hash by **length alone**). Both inferred a
+type-of-thing from a shape that the thing shares with unrelated things. Here the
+inference also carried a *platform attribution*, which is what made the output a
+named false fact rather than a mislabelled blob.

@@ -9,13 +9,52 @@
 //! `discord/user` endpoint. No mock: the timestamp is read straight out of the
 //! ID's bit layout.
 //!
-//! ## Safety against mis-attribution
+//! ## Only an explicitly-Discord value is decoded
 //!
-//! A 17-digit Steam ID64 also decodes to a deceptively plausible ~2015
-//! timestamp, so any value that looks like a Steam ID (17 digits, `7656119…`)
-//! is excluded, and every decoded date is range-validated to
-//! `[2015-01-01, now]` before any finding is minted — a number that isn't a
-//! real Discord snowflake yields **nothing** rather than a fabricated date.
+//! The decode needs an ID that is *known* to be Discord's, because the
+//! snowflake layout is not Discord's invention and not Discord's alone:
+//! Twitter/X, Instagram, Mastodon and others issue 64-bit IDs with the **same**
+//! `timestamp << 22 | worker | sequence` shape. Only the epoch constant
+//! differs, and the epoch is not recoverable from the number — so decoding a
+//! foreign snowflake with Discord's epoch does not fail, it silently returns a
+//! **wrong date that still looks right**.
+//!
+//! Measured, for Twitter/X (epoch 2010-11-04, `1288834974657`): reading one of
+//! its IDs with Discord's epoch shifts the answer by a fixed
+//! `DISCORD_EPOCH − TWITTER_EPOCH` = **+1518.93 days** (≈4.16 years). Every
+//! Twitter/X ID issued between **2010-11-04 and 2022-07-24** therefore decodes
+//! into the `[2015-01-01, now]` plausibility window below — 17–20 digits, no
+//! leading zero, dead inside range:
+//!
+//! | tweet date | digits | decoded as "created" |
+//! |---|---|---|
+//! | 2011-01-01 | 17 | 2015-02-27 |
+//! | 2013-06-01 | 18 | 2017-07-28 |
+//! | 2016-06-01 | 18 | 2020-07-28 |
+//! | 2019-06-01 | 19 | 2023-07-28 |
+//! | 2022-07-01 | 19 | 2026-08-27 |
+//!
+//! That is the bulk of Twitter/X's snowflake era, and a bare 17–20 digit run is
+//! `TargetKind::Username` by `detect`'s fallback (too long for
+//! `is_phone_shaped`'s 7–15 digits, no dot for `is_domain_shaped`), so
+//! `hse scan 1542659245470646272` reached this module directly. No shape rule
+//! can separate the two — the Steam ID64 carve-out this module used to carry
+//! worked only because Steam's `7656119…` is a literal constant prefix, and
+//! Twitter/X has no equivalent to exclude on.
+//!
+//! So the value must **arrive already identified as Discord's**: this module
+//! decodes `discord:<snowflake>` and nothing else. That prefix is minted by the
+//! two extractors that read a breach/SeekNow record's explicitly-named
+//! `discord_id` / `discordid` field — [`crate::modules::see_know`]'s extractor
+//! and [`crate::modules::oathnet_pro`]'s breach parser — which is real Discord
+//! context, not a guess from digits. A bare number yields **nothing** rather
+//! than a fabricated date, which is what the safety claim always said and now
+//! is true. (A `discord:`-prefixed value is trusted even when it also looks
+//! like a Steam ID64: the prefix is evidence, the shape is not.)
+//!
+//! Every decoded date is still range-validated to `[2015-01-01, now]` before
+//! any finding is minted, so a corrupt or truncated `discord_id` field yields
+//! nothing too.
 
 use async_trait::async_trait;
 
@@ -30,6 +69,10 @@ use crate::core::{
 
 const SRC: &str = "discord_snowflake";
 
+/// The `discord:` marker an upstream extractor stamps on a value it read from a
+/// record's own Discord-ID field. The one admission ticket into the decode.
+const DISCORD_PREFIX: &str = "discord:";
+
 /// Discord epoch — 2015-01-01T00:00:00 UTC — in milliseconds. Snowflake
 /// timestamps are measured from here.
 const DISCORD_EPOCH_MS: u64 = 1_420_070_400_000;
@@ -38,11 +81,10 @@ const DISCORD_EPOCH_SECS: i64 = 1_420_070_400;
 const DAY_SECS: i64 = 86_400;
 
 /// Confidence for a creation date derived from a value already identified as a
-/// Discord ID upstream (a `discord:`-prefixed handle from the extractor).
-const PREFIXED_CONF: f64 = confidence::HIGH_PLUSPLUS;
-/// Confidence for a bare numeric handle that is a valid, plausible, non-Steam
-/// snowflake — likely Discord, but it carried no explicit Discord context.
-const BARE_CONF: f64 = confidence::MEDIUM_PLUS;
+/// Discord ID upstream (a `discord:`-prefixed handle from the extractor). The
+/// decode itself is exact arithmetic; this rung carries the *attribution* —
+/// how sure we are the number is Discord's — which is what the prefix attests.
+const DISCORD_ID_CONF: f64 = confidence::HIGH_PLUSPLUS;
 
 pub struct DiscordSnowflake;
 
@@ -75,7 +117,7 @@ impl Module for DiscordSnowflake {
     fn accepts(&self, t: &Target) -> bool {
         // Kind-only so the dispatch index (built from `consumes()`) stays
         // consistent with `accepts()` and the module is actually indexed for
-        // Username; the snowflake validation is applied in `process()`.
+        // Username; the `discord:` requirement is applied in `process()`.
         matches!(t.kind, TargetKind::Username)
     }
 
@@ -99,15 +141,15 @@ impl Module for DiscordSnowflake {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
         let v = target.value.trim();
-        let Some((id, prefixed)) = snowflake_candidate(v) else {
+        let Some(id) = snowflake_candidate(v) else {
             return Ok(result);
         };
 
         let created_ms = (id >> 22) + DISCORD_EPOCH_MS;
         let created_secs = (created_ms / 1000) as i64;
         // Plausibility window: a real Discord account is created in
-        // [2015-01-01, now]. A number that isn't a snowflake decodes outside it
-        // — emit nothing rather than a fabricated creation date.
+        // [2015-01-01, now]. A corrupt or truncated `discord_id` decodes
+        // outside it — emit nothing rather than a fabricated creation date.
         let now_secs = unix_now() as i64;
         if created_secs < DISCORD_EPOCH_SECS || created_secs > now_secs + DAY_SECS {
             return Ok(result);
@@ -117,8 +159,7 @@ impl Module for DiscordSnowflake {
         // Enrich the seed Discord-ID Username with its derived creation date.
         // GREATEST-merge means this only ever *adds* the temporal evidence and
         // never lowers an existing higher confidence on the same handle.
-        let conf = if prefixed { PREFIXED_CONF } else { BARE_CONF };
-        let mut e = Entity::new(EntityKind::Username, v, conf, &ctx.scan_id);
+        let mut e = Entity::new(EntityKind::Username, v, DISCORD_ID_CONF, &ctx.scan_id);
         e.tag("discord");
         e.tag("derived");
         e.tag("account-age");
@@ -137,15 +178,16 @@ impl Module for DiscordSnowflake {
     }
 }
 
-/// Returns `(snowflake, was_discord_prefixed)` if `v` is a plausible Discord
-/// snowflake to decode, else `None`. Strips an optional `discord:` prefix.
-/// Rejects Steam ID64s (17 digits, `7656119…`), which also 17-digit-decode to a
-/// deceptively plausible ~2015 date.
-fn snowflake_candidate(v: &str) -> Option<(u64, bool)> {
-    let (digits, prefixed) = match v.strip_prefix("discord:") {
-        Some(rest) => (rest, true),
-        None => (v, false),
-    };
+/// Returns the snowflake to decode if `v` is a `discord:`-prefixed 17–20 digit
+/// ID, else `None`.
+///
+/// The prefix is **mandatory**, not an optional hint: it is the only evidence
+/// that the number is Discord's rather than Twitter/X's, Instagram's or any
+/// other issuer sharing the snowflake layout, and the module header records the
+/// measured Twitter/X window (2010-11-04 → 2022-07-24) that a bare-number rule
+/// admits. A shape gate cannot substitute for it.
+fn snowflake_candidate(v: &str) -> Option<u64> {
+    let digits = v.strip_prefix(DISCORD_PREFIX)?;
     let len = digits.len();
     if !(17..=20).contains(&len)
         || !digits.bytes().all(|b| b.is_ascii_digit())
@@ -153,12 +195,7 @@ fn snowflake_candidate(v: &str) -> Option<(u64, bool)> {
     {
         return None;
     }
-    // Steam ID64 exclusion (only for an unprefixed bare number): a 17-digit
-    // `7656119…` is a Steam account, not Discord.
-    if !prefixed && len == 17 && digits.starts_with("7656119") {
-        return None;
-    }
-    digits.parse::<u64>().ok().map(|id| (id, prefixed))
+    digits.parse::<u64>().ok()
 }
 
 #[cfg(test)]
