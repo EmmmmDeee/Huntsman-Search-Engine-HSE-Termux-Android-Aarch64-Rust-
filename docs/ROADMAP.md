@@ -422,6 +422,17 @@ requirement is:
 | `the_map_never_cites_a_requirement_the_ledger_does_not_record` | A `REQ-…` cited in this file or `CHANGELOG.md` with no ledger entry of its own — a claim with no transcript behind it. This is what let §4 describe three shipped fixes as open: none of the three had a ledger entry at all. |
 | `every_requirement_the_ledger_records_is_accounted_for_in_the_changelog` | A ledger entry `CHANGELOG.md` never mentions. One line per requirement is the whole cost, and it makes the changelog impossible to leave behind. Refuted and measured-only leads count: *"we looked and changed nothing"* is an answer, not an omission. |
 
+A check that can only report failure must separately prove it **ran**. A
+falsification helper that grepped for `FAILED` lines reported four mutations
+survived when the session disk had filled and `cargo test` never built at all —
+absence of failures is indistinguishable from absence of a run
+(REQ-TYPOSQUAT-001). The same shape has now appeared three times in one wave:
+a mutation that could not reach its control past an early return
+(REQ-WIKIDATA-001), a fixture that did not survive `trim()` before the length it
+asserted was measured (REQ-KEYBASE-001), and this one in the verification
+tooling itself. **Vacuity discipline applies to the harness, not only to the
+tests it runs.**
+
 Both are backed by `the_requirement_id_scanner_reads_the_shapes_the_documents_use`,
 which pins the identifier shapes the corpus actually contains — without it, a
 scanner that silently stopped matching would make both guards pass on any pair

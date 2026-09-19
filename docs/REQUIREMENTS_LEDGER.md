@@ -13588,3 +13588,84 @@ read. That is a design question about which fields are addresses, not a bug with
 a reproducible wrong answer, and it is left unfiled rather than dressed up as
 one. `keybase`'s exposure narrowed independently under REQ-KEYBASE-001, whose
 100-character cap now bounds what can reach the helper at all.
+
+---
+
+## REQ-TYPOSQUAT-001 — One technique cannot alter the label, and was worded as if it had
+
+### Confirmed as filed, then narrowed by refuting my own escalation
+
+The backlog read: *"typosquat's tld-swap technique — which by construction
+preserves the exact brand label — mints 'Registered lookalike'/phishing-worded
+findings for an organisation's own legitimate cross-TLD domain, at the same
+confidence as a real homoglyph spoof."* Every clause of that is true. The
+generator is literally `format!("{label}.{tld}")` (`mod.rs:435`), so the label is
+byte-identical and only the namespace differs, while every other technique in
+the dnstwist-grade set rewrites the label into a confusable. And the emission
+was flat: `confidence::MEDIUM_HIGH` and
+`"Registered lookalike of {original} via {technique} → resolves to {ips}"`
+for all of them, under a module doc reading a registered lookalike as "a
+phishing / brand-abuse signal".
+
+I then hypothesised a far worse consequence and **had to refute it**. The
+reasoning was: `AU-118` excludes generated permutations via
+`is_generated_permutation` ("typosquat is the ONLY evidence source"), but an
+organisation's own `.com.au` is exactly the domain a *second* source (crt.sh, a
+crawl) would also discover — which would lift the exclusion and make it eligible
+for a `Severity::High` brand-abuse finding. Plausible, and wrong:
+`util::confusable::is_lookalike` returns `false` when the two labels are equal
+(`confusable.rs:82`), and a TLD swap leaves them equal. AU-118 **cannot** fire on
+this pair, whatever its sources.
+
+So the harm is bounded to the module's own operator-facing output — a dossier
+line calling a company's own domain a registered lookalike at spoof-grade
+confidence. Real, worth fixing, and not the High-severity finding I first
+reached for. Recorded because the escalation was mine, not the backlog's.
+
+### Implemented
+
+`technique_preserves_the_label` names the distinction, and `hit_entity` is a new
+pure seam (the emission was inline in `process` behind DNS — the same trap
+REQ-OPENCORPORATES-001 and REQ-WIKIDATA-001 both recorded, now avoided in
+advance rather than after the lock refused to pass).
+
+A label-preserving hit is **still surfaced with its resolution**, because it may
+genuinely be a third party squatting the same label in another namespace, and
+omitting it would trade a wrong answer for a missing one. What changes is that
+it is worded as what it is — "carries the same label as {original} in a
+different TLD — a related registration, not a spoof: this technique cannot alter
+the label, so it may be the owner's own" — tagged `same-label-other-tld`, and
+graded `confidence::MEDIUM` rather than `MEDIUM_HIGH`. Still at the expansion
+floor, so the domain is enriched like any other: mapping the owner's own
+cross-TLD estate is legitimate recon.
+
+It deliberately **keeps** the `typosquat` tag. `AU-118`'s
+`is_generated_permutation` uses that tag to exclude generated permutations from
+the impersonation rule; dropping it would make the owner's own domain eligible
+for exactly the High finding this fix exists to prevent. A control pins that.
+
+### Falsified
+
+| Mutation | Result |
+|---|---|
+| `tld-swap` treated like every other technique | **only** `a_same_label_different_tld_hit_is_not_called_a_spoof` fails |
+| the label-preserving class loses the `typosquat` tag | **only** the control `every_hit_keeps_the_typosquat_tag_whatever_its_technique` fails |
+| **every** technique treated as label-preserving | **only** the control `a_genuine_spoof_is_still_called_one` fails |
+| the resolution is dropped from the new summary | **only** the "nothing omitted" half of the lock fails |
+
+### The falsification harness was itself vacuous on its first run
+
+The first pass reported **all four mutations green** — no failures anywhere.
+That was false. The session disk had filled, `cargo test` never built, and the
+helper grepped for `FAILED` lines in output that did not exist. Absence of
+failures is indistinguishable from absence of a test run when you only look for
+failures.
+
+The helper now asserts the suite actually ran (`test result:` present) and
+prints `VOID` otherwise, so a mutation that could not be evaluated can never be
+mistaken for one that was survived. This is the **third** vacuity of the session
+after REQ-WIKIDATA-001 (a mutation that could not reach its control past an
+early return) and REQ-KEYBASE-001 (a fixture that did not survive `trim()`) —
+and the first in the verification *tooling* rather than in a test. The rule
+generalises: **a check that can only report failure must separately prove it
+ran.**

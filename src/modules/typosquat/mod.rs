@@ -210,26 +210,13 @@ impl Module for Typosquat {
         let found = hits.len();
 
         for (candidate, technique, ips) in hits {
-            let mut e = Entity::new(
-                EntityKind::Domain,
+            result.push(hit_entity(
+                &original,
                 &candidate,
-                confidence::MEDIUM_HIGH,
+                technique,
+                &ips,
                 &ctx.scan_id,
-            );
-            e.tag("typosquat");
-            e.tag(format!("typosquat:{technique}"));
-            e.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!(
-                        "Registered lookalike of {original} via {technique} → resolves to {ips}"
-                    ),
-                )
-                .with_attr("original", &original)
-                .with_attr("technique", technique)
-                .with_attr("resolved_ips", &ips),
-            );
-            result.push(e);
+            ));
         }
 
         if all_candidates_failed_transport(transport_failures, total_candidates, found) {
@@ -241,6 +228,74 @@ impl Module for Typosquat {
 
         Ok(result)
     }
+}
+
+/// Whether a fuzzer technique **cannot alter the brand label**.
+///
+/// Every other technique in the set rewrites the label into something visually
+/// confusable — `paypa1` for `paypal`, `exmple` for `example`. TLD swap is
+/// `format!("{label}.{tld}")`: the label is byte-identical by construction and
+/// only the namespace differs.
+///
+/// That changes what a hit MEANS. `example.com.au` for a seed of `example.com`
+/// is as likely the owner's own country registration as a third party's, so
+/// calling it a "registered lookalike" — under a module doc that reads a
+/// registered lookalike as "a phishing / brand-abuse signal" — is a
+/// brand-impersonation accusation against an organisation's own domain
+/// (REQ-TYPOSQUAT-001).
+fn technique_preserves_the_label(technique: &str) -> bool {
+    technique == "tld-swap"
+}
+
+/// Build the `Domain` entity for one candidate that resolved.
+///
+/// Pure of I/O so both wordings are testable without DNS; `process` stays the
+/// network adapter. The label-preserving class is surfaced with its resolution
+/// exactly like any other hit — it may well be a real third-party squat on the
+/// same label, and omitting it would trade one wrong answer for a missing one —
+/// but it is worded as what it is and graded below a genuine spoof.
+///
+/// It keeps the `typosquat` tag deliberately: `AU-118`'s
+/// `is_generated_permutation` uses that tag to EXCLUDE generated permutations
+/// from the cross-source impersonation rule. Dropping it here would make the
+/// owner's own domain eligible for a `Severity::High` brand-abuse finding —
+/// the precise opposite of this fix.
+pub(super) fn hit_entity(
+    original: &str,
+    candidate: &str,
+    technique: &str,
+    ips: &str,
+    scan_id: &str,
+) -> Entity {
+    let label_preserving = technique_preserves_the_label(technique);
+    let conf = if label_preserving {
+        // Still at the expansion floor, so the domain is enriched like any
+        // other — mapping the owner's own cross-TLD estate is legitimate recon.
+        // Distinctly below the deceptive class, because the evidence for
+        // impersonation is genuinely weaker: the technique proves nothing about
+        // intent.
+        confidence::MEDIUM
+    } else {
+        confidence::MEDIUM_HIGH
+    };
+    let mut e = Entity::new(EntityKind::Domain, candidate, conf, scan_id);
+    e.tag("typosquat");
+    e.tag(format!("typosquat:{technique}"));
+    let summary = if label_preserving {
+        e.tag("same-label-other-tld");
+        format!(
+            "{candidate} carries the same label as {original} in a different TLD —              a related registration, not a spoof: this technique cannot alter the              label, so it may be the owner's own → resolves to {ips}"
+        )
+    } else {
+        format!("Registered lookalike of {original} via {technique} → resolves to {ips}")
+    };
+    e.add_evidence(
+        Evidence::new(SRC, summary)
+            .with_attr("original", original)
+            .with_attr("technique", technique)
+            .with_attr("resolved_ips", ips),
+    );
+    e
 }
 
 /// The classified outcome of one candidate's DNS resolution attempt.
