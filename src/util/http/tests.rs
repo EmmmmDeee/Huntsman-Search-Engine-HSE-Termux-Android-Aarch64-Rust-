@@ -2039,3 +2039,117 @@ async fn keyed_ok_or_404_leaves_a_plain_refusal_a_module_fault() {
         "a plain 403 stays a module fault, got {err:?}"
     );
 }
+
+// ── REQ-HTTP-005: a 429 is not a 5xx, to the breaker either ───────────
+
+/// REQ-HTTP-005. The shared chokepoint folded a 429 in with the 5xx via one
+/// `is_breaker_failure_status` predicate, so a throttle took
+/// `FAILURE_THRESHOLD` (5) consecutive round-trips to back off and then used
+/// the local `COOLDOWN_SECS` guess. `Breaker::on_rate_limited`'s own doc rules
+/// that out: *"A 429 is the server stating its own contract… There is nothing
+/// to accumulate evidence about, so this opens the breaker on the first one and
+/// uses the server's window rather than the local COOLDOWN_SECS guess."*
+///
+/// Every status is swept and mismatches collected, so a partial rule is named
+/// rather than masked by whichever case is asserted first.
+#[test]
+fn a_429_is_its_own_breaker_outcome_never_folded_in_with_a_5xx() {
+    use super::fetch::{BreakerOutcome, breaker_outcome_for};
+    let mut wrong: Vec<(u16, BreakerOutcome)> = Vec::new();
+    let expected: &[(u16, BreakerOutcome)] = &[
+        (429, BreakerOutcome::RateLimited),
+        // Server-side faults: evidence, not a contract.
+        (500, BreakerOutcome::Failure),
+        (502, BreakerOutcome::Failure),
+        (503, BreakerOutcome::Failure),
+        (504, BreakerOutcome::Failure),
+        // Definitive client answers — the host is up and answering.
+        (200, BreakerOutcome::Success),
+        (204, BreakerOutcome::Success),
+        (301, BreakerOutcome::Success),
+        (400, BreakerOutcome::Success),
+        (401, BreakerOutcome::Success),
+        (403, BreakerOutcome::Success),
+        (404, BreakerOutcome::Success),
+        (418, BreakerOutcome::Success),
+        (451, BreakerOutcome::Success),
+    ];
+    for (code, want) in expected {
+        let got =
+            breaker_outcome_for(reqwest::StatusCode::from_u16(*code).expect("a valid status code"));
+        if got != *want {
+            wrong.push((*code, got));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "these statuses are classified wrongly for the breaker: {wrong:?}"
+    );
+}
+
+/// The same rule at the seam that actually bit — driven through the real
+/// `fetch_json_or_404` path against a loopback server, so the production
+/// classification, decoding and breaker wiring all execute.
+///
+/// This test is only possible because `REQ-BREAKER-001` keys the breaker on
+/// host AND port: under the old host-only key, opening `127.0.0.1` here for the
+/// server's 90-second window would have short-circuited every other loopback
+/// test running in parallel in this process.
+#[tokio::test]
+async fn one_429_opens_the_breaker_for_the_servers_own_window() {
+    use super::test_server::{Canned, serve};
+    use crate::util::circuit_breaker::{allow_host, endpoint_of};
+
+    let base = serve(vec![
+        Canned::json(429, r#"{"error":"slow down"}"#).header("Retry-After", "90"),
+    ])
+    .await;
+    let endpoint = endpoint_of(&base).expect("a loopback URL keys an endpoint");
+    let t0 = crate::core::entity::unix_now();
+
+    let out: crate::core::error::Result<Option<serde_json::Value>> =
+        fetch_json_or_404(&reqwest::Client::new(), "test_429_breaker", &base).await;
+    assert!(
+        matches!(out, Err(crate::core::error::Error::RateLimited(_))),
+        "a 429 is the typed rate limit, not a generic fault: {out:?}"
+    );
+
+    assert!(
+        !allow_host(&endpoint, t0),
+        "ONE 429 must open the breaker — not FAILURE_THRESHOLD of them, which is \
+         what let an observed radar sweep issue eight consecutive 429s"
+    );
+    assert!(
+        !allow_host(&endpoint, t0 + 89),
+        "…and hold for the server's own 90s Retry-After window, not the local \
+         60s COOLDOWN_SECS guess"
+    );
+    assert!(
+        allow_host(&endpoint, t0 + 95),
+        "…then release, so a throttle is never a permanent outage"
+    );
+}
+
+/// The control, and what keeps the rule above honest: a single 5xx must NOT
+/// open the breaker. It is a guess about health — one bad node, one unlucky
+/// socket — and takes `FAILURE_THRESHOLD` of them to settle.
+///
+/// Passes on the baseline and on the fix, so it proves the change is specific
+/// to the 429 rather than having made every fault instant.
+#[tokio::test]
+async fn a_single_5xx_does_not_open_the_breaker() {
+    use super::test_server::{Canned, serve};
+    use crate::util::circuit_breaker::{allow_host, endpoint_of};
+
+    let base = serve(vec![Canned::json(503, r#"{"error":"boom"}"#)]).await;
+    let endpoint = endpoint_of(&base).expect("a loopback URL keys an endpoint");
+    let t0 = crate::core::entity::unix_now();
+
+    let out: crate::core::error::Result<Option<serde_json::Value>> =
+        fetch_json_or_404(&reqwest::Client::new(), "test_5xx_breaker", &base).await;
+    assert!(out.is_err(), "a 503 is still a real error: {out:?}");
+    assert!(
+        allow_host(&endpoint, t0),
+        "one 5xx is evidence, not a contract — the endpoint stays reachable"
+    );
+}

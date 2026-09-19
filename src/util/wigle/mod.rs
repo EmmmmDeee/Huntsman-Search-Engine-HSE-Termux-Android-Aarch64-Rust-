@@ -76,18 +76,12 @@ pub async fn get(
     url: &str,
     src: &'static str,
 ) -> Result<Option<reqwest::Response>> {
-    let host = crate::util::circuit_breaker::endpoint_of(url);
-    let now = crate::core::entity::unix_now();
-    if let Some(h) = host.as_deref()
-        && !crate::util::circuit_breaker::allow_host(h, now)
-    {
-        // Already refused within the server's own backoff window — do not
-        // re-ask. This is the cheap path that the 429 storm above was missing.
-        return Err(Error::module(
-            src,
-            "rate-limited (429) — backing off, request not sent",
-        ));
-    }
+    // The shared pre-send gate: already refused within this endpoint's backoff
+    // window → do not re-ask, no socket opened. This is the cheap path the 429
+    // storm above was missing. The message is deliberately the shared one: the
+    // breaker does not record WHY it opened, so claiming "rate-limited" here
+    // would over-state a breaker opened by a 5xx.
+    let host = crate::util::http::breaker_gate(src, url)?;
 
     let resp = http
         .get(url)
@@ -96,27 +90,16 @@ pub async fn get(
         .send_tagged(src)
         .await?;
 
+    // One authority for what a round-trip does to the endpoint's breaker: a 429
+    // opens it immediately for the server's own Retry-After window, a 5xx counts
+    // toward the failure threshold, and any definitive answer — including the
+    // 404 below and the auth failures after it — proves the host is up and
+    // closes it. This module used to hand-roll that here, correctly, beside a
+    // shared version that got the 429 wrong (REQ-HTTP-005); the shared one is
+    // now the correct one and this is the only copy.
+    crate::util::http::record_breaker_outcome(host.as_deref(), &resp);
+
     let status = resp.status();
-    if status.as_u16() == 429 {
-        let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 60, 120);
-        tracing::warn!(
-            "WiGLE 429 — rate-limited, backing off {retry_secs}s (server's own request)"
-        );
-        if let Some(h) = host.as_deref() {
-            crate::util::circuit_breaker::record_rate_limited(h, now, retry_secs);
-        }
-        return Err(Error::module(src, "rate-limited (429)"));
-    }
-    // Any definitive answer from WiGLE — including the 404 below and the auth
-    // failures after it — proves the host is up, so the breaker closes. Only a
-    // 429 or a server fault backs it off.
-    if let Some(h) = host.as_deref() {
-        if status.is_server_error() {
-            crate::util::circuit_breaker::record_failure(h, now);
-        } else {
-            crate::util::circuit_breaker::record_success(h);
-        }
-    }
     if status.as_u16() == 404 {
         return Ok(None);
     }
@@ -127,13 +110,12 @@ pub async fn get(
         ));
     }
     if !status.is_success() {
-        return Err(Error::module(
-            src,
-            format!(
-                "WiGLE HTTP {status}: {}",
-                crate::util::http::error_snippet(resp).await
-            ),
-        ));
+        // Typed, so a 429 reaches the breaker, the doctor and the live sweep as
+        // `RateLimited` and a WAF interstitial as `BotChallenge` — never the
+        // generic module fault this arm used to build by hand, which is what
+        // made a throttled WiGLE read as a dead one (cycle E's rule, unapplied
+        // here until REQ-HTTP-005).
+        return Err(crate::util::http::http_status_error(src, resp).await);
     }
 
     Ok(Some(resp))
@@ -175,11 +157,18 @@ mod tests {
         let err = get(&reqwest::Client::new(), "user", "token", url, "test_src")
             .await
             .expect_err("a host still inside its 429 backoff must not be requested again");
-        // Surfaced as this module's rate-limit error, and — the load-bearing part
-        // — reached without a network round-trip (the `.invalid` host is
+        // Surfaced as the SHARED breaker short-circuit, and — the load-bearing
+        // part — reached without a network round-trip (the `.invalid` host is
         // unresolvable, so any real send would fail differently).
+        //
+        // The message is the shared one rather than this module's former
+        // "backing off" wording, which over-claimed: the breaker does not
+        // record WHY it opened, so a gate opened by a 5xx would have read as a
+        // rate limit (REQ-HTTP-005 folded the hand-rolled copy into
+        // `util::http::breaker_gate`).
         assert!(
-            err.to_string().contains("backing off"),
+            err.to_string()
+                .contains("short-circuited by circuit breaker"),
             "must short-circuit via the breaker, not attempt the request: {err}"
         );
     }

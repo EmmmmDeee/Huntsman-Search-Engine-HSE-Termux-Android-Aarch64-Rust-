@@ -12278,3 +12278,142 @@ the same manual step appears sixteen times with a comment explaining itself, the
 comment is describing a missing structural property. Closest sibling is
 `REQ-CI-003` — a process-global shared by cargo's parallel harness, fixed by
 making the sharing impossible rather than by remembering to undo it.
+
+---
+
+## REQ-HTTP-005 — The breaker's own 429 rule, applied by one caller and ignored by the rest
+
+`circuit_breaker::Breaker::on_rate_limited` states the rule, and states why:
+
+> Distinct from `on_failure` in both triggers and timing, because a 429 is a
+> different kind of evidence. A 5xx or a transport error is a guess about health
+> — one bad node, one unlucky socket — so it takes `FAILURE_THRESHOLD` of them
+> before we conclude the host is down. **A 429 is the server stating its own
+> contract**: further requests *will* be refused, and `Retry-After` says for how
+> long. There is nothing to accumulate evidence about, so this opens the breaker
+> on the first one and uses the server's window rather than the local
+> `COOLDOWN_SECS` guess.
+
+The shared HTTP chokepoint contradicted it. `record_breaker_outcome` took only
+the status and routed a 429 through a single predicate into `record_failure`:
+
+```rust
+fn is_breaker_failure_status(status: reqwest::StatusCode) -> bool {
+    status.is_server_error() || status.as_u16() == 429
+}
+```
+
+Concretely, with `FAILURE_THRESHOLD = 5` and `COOLDOWN_SECS = 60`: a 429 needed
+**five consecutive throttles** to open the breaker, and then backed off for the
+local 60-second guess with the server's `Retry-After` **discarded entirely**.
+That is both breaker-wired request paths — `fetch_json_inner` (every keyless
+JSON module) and `fetch_keyed_json` (every keyed provider, which is where quota
+429s actually live).
+
+### The one caller that did it right had hand-rolled it
+
+`util::wigle::get` carried the correct version — `record_rate_limited(h, now,
+retry_after_secs(headers, 60, 120))` — and its own doc records what the wrong
+one costs:
+
+> an eight-sweep `hse radar` session was observed issuing eight consecutive
+> 429s roughly 330 ms apart, five from one `wifi_intel` dispatch and three more
+> from a pivot 25 s later, **each one logging a 60 s backoff that never
+> happened**.
+
+So the repository held two contradictory authorities for one decision, and the
+correct one was the local copy.
+
+This is also the unfinished half of cycle E. `classify_status_error` already
+types a 429 as `Error::RateLimited` (`REQ-DRIFT-006`); the **error** was fixed
+and the **breaker** was left behind — and `wigle::get` had not even had the
+error half applied, still hand-building `Error::module(src, "rate-limited
+(429)")` for its own 429.
+
+### The correction
+
+One authority, and a typed classification rather than a boolean:
+
+```rust
+enum BreakerOutcome { RateLimited, Failure, Success }
+
+fn breaker_outcome_for(status: reqwest::StatusCode) -> BreakerOutcome {
+    if status.as_u16() == 429 { BreakerOutcome::RateLimited }
+    else if status.is_server_error() { BreakerOutcome::Failure }
+    else { BreakerOutcome::Success }
+}
+```
+
+`record_breaker_outcome` now takes the whole `Response` — the `Retry-After` is
+the window to honour, and taking only the status was structurally why it was
+discarded — and routes a 429 to `record_rate_limited` with
+`retry_after_secs(headers, 60, 120)`, the values `wigle` already used. The
+`tracing::warn!` that named the backoff moves here too, so **every** caller gets
+it rather than only WiGLE.
+
+`util::wigle::get` then drops all three of its hand-rolled copies: the pre-send
+gate becomes the shared `breaker_gate`, the round-trip recording becomes the
+shared `record_breaker_outcome`, and its non-2xx tail becomes
+`http_status_error` — which types its 429 as `RateLimited` and a WAF
+interstitial as `BotChallenge` instead of the generic module fault it built by
+hand.
+
+One message deliberately changed rather than being preserved. WiGLE's
+short-circuit said `"rate-limited (429) — backing off, request not sent"`, but
+**the breaker does not record why it opened**, so a gate opened by a 5xx read as
+a rate limit. The shared wording (`"request short-circuited by circuit
+breaker"`) is less specific and more honest; the test asserting the old string
+is updated with that reason recorded.
+
+### Falsification
+
+Baseline is `c028f70c`. The two halves of the rule were reverted separately, and
+each failed only its own assertion.
+
+**(A) 429 folded back in with the 5xx** — the pure classifier names the exact
+regression, the end-to-end lock fails on the first-hit rule, and the control
+holds:
+
+```
+a_429_is_its_own_breaker_outcome_never_folded_in_with_a_5xx ... FAILED
+  these statuses are classified wrongly for the breaker: [(429, Failure)]
+one_429_opens_the_breaker_for_the_servers_own_window ... FAILED
+  ONE 429 must open the breaker — not FAILURE_THRESHOLD of them
+a_single_5xx_does_not_open_the_breaker ... ok
+```
+
+**(B) 429 opens immediately, but `Retry-After` discarded for the local default**
+— the classifier now passes, the control still passes, and only the window
+assertion fails:
+
+```
+a_429_is_its_own_breaker_outcome_never_folded_in_with_a_5xx ... ok
+a_single_5xx_does_not_open_the_breaker ... ok
+one_429_opens_the_breaker_for_the_servers_own_window ... FAILED
+  …and hold for the server's own 90s Retry-After window, not the local 60s
+  COOLDOWN_SECS guess
+```
+
+`a_single_5xx_does_not_open_the_breaker` passes on the baseline and on the fix.
+That is the control that matters: without it, a "fix" that simply made every
+fault instant would satisfy the regression while destroying the distinction the
+breaker's doc draws between evidence and a contract.
+
+### What REQ-BREAKER-001 unblocked
+
+`one_429_opens_the_breaker_for_the_servers_own_window` drives the **real**
+`fetch_json_or_404` path against a loopback server — production classification,
+decoding and breaker wiring all execute. That test is only possible because
+`REQ-BREAKER-001` keys the breaker on host **and** port. Under the old host-only
+key, opening `127.0.0.1` here for the server's 90-second window would have
+short-circuited every other loopback test running in parallel in the process.
+The keying fix was not a detour; it was the precondition.
+
+### Class
+
+`REQ-AURDAP-001` / `REQ-EXPORT-001` / `REQ-BUILTWITH-001` / `REQ-WEBBANNER-001`
+— a guard that exists, is documented, and is applied to one consumer but not its
+neighbour. What distinguishes this one is that the **correct** implementation was
+the local hand-rolled copy and the **shared** one was wrong, so the usual
+"consolidate onto the shared helper" instinct would have propagated the defect.
+The authority had to be fixed before it could be consolidated onto.

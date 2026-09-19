@@ -9,16 +9,51 @@ use super::keys::scan_for_api_keys;
 use super::redact::redact_credentials;
 use super::url::RequestBuilderExt;
 
-/// True if an HTTP status is a *server-side* fault that should count against a
-/// host's circuit breaker: any 5xx, or 429 (rate-limited / quota-exhausted).
+/// What a completed round-trip's status means to the endpoint's circuit breaker.
 ///
-/// A 404 — and every other definitive client answer (400/401/403/…) — is a
-/// valid response, not an endpoint fault, so it deliberately does **not** trip
-/// the breaker (gating on those would short-circuit a host that is up and simply
-/// answering "no" / "unauthorised").
-fn is_breaker_failure_status(status: reqwest::StatusCode) -> bool {
-    status.is_server_error() || status.as_u16() == 429
+/// A 429 and a 5xx are **not** the same evidence, and
+/// [`crate::util::circuit_breaker::Breaker::on_rate_limited`] says why: a 5xx is
+/// a guess about health — one bad node, one unlucky socket — so it takes
+/// [`circuit_breaker::FAILURE_THRESHOLD`] of them before concluding the host is
+/// down; a 429 is the server stating its own contract, and `Retry-After` says
+/// for how long. There is nothing to accumulate, so it opens the breaker on the
+/// first one and honours the server's window.
+///
+/// This type exists because the shared fetch chokepoint used to fold the two
+/// together (a single `is_breaker_failure_status` predicate), so a throttle took
+/// five round-trips to back off and then used the local `COOLDOWN_SECS` guess —
+/// the exact behaviour the breaker's own doc rules out. See `REQ-HTTP-005`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BreakerOutcome {
+    /// The server refused as rate-limited: open now, for its own window.
+    RateLimited,
+    /// A server-side fault: evidence toward the failure threshold.
+    Failure,
+    /// A live round-trip the host answered. A 404 — and every other definitive
+    /// client answer (400/401/403/…) — is a valid response, not an endpoint
+    /// fault, so it deliberately does **not** trip the breaker; gating on those
+    /// would short-circuit a host that is up and simply answering "no" /
+    /// "unauthorised".
+    Success,
 }
+
+/// Classify a status for the breaker. **Pure**, so the rule is unit-testable
+/// without a socket.
+pub(super) fn breaker_outcome_for(status: reqwest::StatusCode) -> BreakerOutcome {
+    if status.as_u16() == 429 {
+        BreakerOutcome::RateLimited
+    } else if status.is_server_error() {
+        BreakerOutcome::Failure
+    } else {
+        BreakerOutcome::Success
+    }
+}
+
+/// Default backoff assumed when a 429 carries no usable `Retry-After`, and the
+/// ceiling applied to one that does. These are the values `util::wigle` already
+/// used for the same decision, kept when its hand-rolled copy was folded in.
+const RATE_LIMIT_DEFAULT_SECS: u64 = 60;
+const RATE_LIMIT_MAX_SECS: u64 = 120;
 
 /// Append `chunk` to `buf` but never past `cap` total bytes, returning `true`
 /// once `buf` has reached `cap` (the caller should then stop reading).
@@ -441,7 +476,7 @@ pub async fn fetch_json_probe<T: DeserializeOwned>(
 /// may proceed, or a short-circuit `Err` when the host is in its failure cooldown. A
 /// host-less / unparseable URL is left un-gated (`Ok(None)`). Centralises the gate that
 /// `fetch_json_inner` and `fetch_keyed_json` previously carried verbatim.
-fn breaker_gate(module: &str, url: &str) -> Result<Option<String>> {
+pub(crate) fn breaker_gate(module: &str, url: &str) -> Result<Option<String>> {
     let host = circuit_breaker::endpoint_of(url);
     if let Some(h) = host.as_deref()
         && !circuit_breaker::allow_host(h, crate::core::entity::unix_now())
@@ -457,17 +492,39 @@ fn breaker_gate(module: &str, url: &str) -> Result<Option<String>> {
     Ok(host)
 }
 
-/// Record a completed round-trip's status against the host breaker: a server-side fault
-/// (5xx / 429, per [`is_breaker_failure_status`]) is a failure; any other answer —
-/// including a 404 or a key-rejection 401/403 — is a successful live round-trip. No-op
-/// for a host-less URL.
-fn record_breaker_outcome(host: Option<&str>, status: reqwest::StatusCode) {
-    if let Some(h) = host {
-        if is_breaker_failure_status(status) {
-            circuit_breaker::record_failure(h, crate::core::entity::unix_now());
-        } else {
-            circuit_breaker::record_success(h);
+/// Record a completed round-trip against the endpoint's breaker, per
+/// [`breaker_outcome_for`]. No-op for a host-less URL.
+///
+/// Takes the whole `Response` rather than just its status because a 429's
+/// `Retry-After` is the window to honour, and discarding it was half the defect:
+/// the breaker then fell back to its local `COOLDOWN_SECS` guess, which may be
+/// far shorter than the server asked for.
+///
+/// This is the single authority. `util::wigle::get` previously hand-rolled the
+/// correct version of this beside a shared one that got it wrong, and its own
+/// doc records what the wrong one costs — "an eight-sweep `hse radar` session
+/// was observed issuing eight consecutive 429s roughly 330 ms apart … each one
+/// logging a 60 s backoff that never happened".
+pub(crate) fn record_breaker_outcome(endpoint: Option<&str>, resp: &reqwest::Response) {
+    let Some(h) = endpoint else {
+        return;
+    };
+    let now = crate::core::entity::unix_now();
+    match breaker_outcome_for(resp.status()) {
+        BreakerOutcome::RateLimited => {
+            let retry_secs =
+                retry_after_secs(resp.headers(), RATE_LIMIT_DEFAULT_SECS, RATE_LIMIT_MAX_SECS);
+            // Warned, not debugged: a throttle is the operator's own quota being
+            // spent, and it now backs every other caller off this endpoint too.
+            tracing::warn!(
+                endpoint = h,
+                retry_secs,
+                "rate-limited (429) — backing off for the server's own window"
+            );
+            circuit_breaker::record_rate_limited(h, now, retry_secs);
         }
+        BreakerOutcome::Failure => circuit_breaker::record_failure(h, now),
+        BreakerOutcome::Success => circuit_breaker::record_success(h),
     }
 }
 
@@ -529,7 +586,7 @@ async fn fetch_json_inner<T: DeserializeOwned>(
     match client.get(url).send().await {
         Ok(resp) => {
             let status = resp.status();
-            record_breaker_outcome(host.as_deref(), status);
+            record_breaker_outcome(host.as_deref(), &resp);
             if absent_statuses.contains(&status.as_u16()) {
                 return Ok(None);
             }
@@ -963,7 +1020,7 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
                 }
             }
         };
-        record_breaker_outcome(host.as_deref(), resp.status());
+        record_breaker_outcome(host.as_deref(), &resp);
         let status = resp.status();
         if status.as_u16() == 404 {
             return Ok(None);
