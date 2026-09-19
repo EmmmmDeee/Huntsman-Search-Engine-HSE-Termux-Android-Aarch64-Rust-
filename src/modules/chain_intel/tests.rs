@@ -440,14 +440,12 @@ async fn enrich_esplora_propagates_a_source_error_instead_of_a_silent_none() {
     // Regression for T2.122: previously a 503 became `None`, indistinguishable
     // from an unsupported chain / empty address.
     let addr = serve_once(503, "upstream down").await;
-    crate::util::circuit_breaker::record_success("127.0.0.1"); // isolate from parallel tests
     let ctx = live_ctx();
     let out = enrich_esplora(&ctx, &format!("http://{addr}"), "1BTCaddr", "BTC").await;
     assert!(
         out.is_err(),
         "a 5xx from the sole Esplora source must surface as Err, not a hollow None"
     );
-    crate::util::circuit_breaker::record_success("127.0.0.1"); // reset breaker after the 503
 }
 
 #[tokio::test]
@@ -458,7 +456,6 @@ async fn enrich_esplora_parses_a_real_shaped_body_into_enrichment() {
         "chain_stats":{"funded_txo_count":5,"funded_txo_sum":200000000,"spent_txo_count":3,"spent_txo_sum":50000000,"tx_count":7},
         "mempool_stats":{"funded_txo_count":0,"funded_txo_sum":0,"spent_txo_count":0,"spent_txo_sum":0,"tx_count":1}}"#;
     let addr = serve_once(200, body).await;
-    crate::util::circuit_breaker::record_success("127.0.0.1");
     let ctx = live_ctx();
     let enr = enrich_esplora(&ctx, &format!("http://{addr}"), "1BTCaddr", "BTC")
         .await
@@ -555,14 +552,12 @@ async fn enrich_esplora_fails_closed_on_a_wrong_shape_200_body() {
     // End-to-end (real local transport): a 200 whose body is a valid JSON object
     // but not an address response must surface as Err, not a hollow dormant hit.
     let addr = serve_once(200, r#"{"error":"Too Many Requests"}"#).await;
-    crate::util::circuit_breaker::record_success("127.0.0.1");
     let ctx = live_ctx();
     let out = enrich_esplora(&ctx, &format!("http://{addr}"), "1BTCaddr", "BTC").await;
     assert!(
         out.is_err(),
         "a 200 non-address body from the sole Esplora source must be Err, not a dormant verdict"
     );
-    crate::util::circuit_breaker::record_success("127.0.0.1");
 }
 
 #[tokio::test]
@@ -570,12 +565,10 @@ async fn enrich_doge_fails_closed_on_a_wrong_shape_200_body() {
     // Same, over the now-parameterized BlockCypher base: a 200 error body (no
     // echoed address) must be Err.
     let addr = serve_once(200, r#"{"error":"Address not found."}"#).await;
-    crate::util::circuit_breaker::record_success("127.0.0.1");
     let ctx = live_ctx();
     let out = enrich_doge_at(&ctx, "DEgDVFa2DoW1533dxeDVdTxQFhMzs1pMke", &format!("http://{addr}")).await;
     assert!(
         out.is_err(),
         "a 200 non-balance body from the sole BlockCypher source must be Err, not a dormant verdict"
     );
-    crate::util::circuit_breaker::record_success("127.0.0.1");
 }

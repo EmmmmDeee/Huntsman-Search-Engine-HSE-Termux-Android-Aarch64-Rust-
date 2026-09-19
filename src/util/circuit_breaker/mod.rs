@@ -14,9 +14,13 @@
 //! dispatch layer on a classified error message. This one is keyed by *host* and
 //! lives at the shared HTTP fetch choke point
 //! ([`crate::util::http`]): a single module can touch many hosts and many
-//! modules can share one host, so a dead host is skipped regardless of which
-//! module reaches for it, and a 429 one scan sees backs every other scan off
-//! the same host too.
+//! modules can share one host, so a dead endpoint is skipped regardless of
+//! which module reaches for it, and a 429 one scan sees backs every other scan
+//! off the same endpoint too.
+//!
+//! "Host" throughout this module means the key [`endpoint_of`] derives — the
+//! host together with the port it is reached on — because one machine can serve
+//! several independent upstreams.
 //!
 //! ## Determinism
 //!
@@ -262,18 +266,43 @@ pub fn host_state(host: &str) -> Option<BreakerState> {
     REGISTRY.lock().get(host).map(Breaker::state)
 }
 
-/// Extract the host component of `url` for keying the breaker.
+/// The breaker key for `url`: its lower-cased host **and the port it is
+/// actually reached on**.
 ///
-/// Returns the lower-cased host (IPv6 literals keep their brackets, as
-/// [`url::Url::host_str`] yields them) so `https://Example.COM/a` and
-/// `http://example.com/b` share one breaker. `None` for an unparseable URL or
-/// one without a host (e.g. a bare path), in which case the caller leaves the
-/// request un-instrumented rather than inventing a key.
+/// The port belongs in the key because the breaker's subject is an *endpoint*,
+/// not a machine. Two services on one host are two upstreams: one being wedged
+/// says nothing about the other, and short-circuiting the healthy one wastes
+/// findings to protect a budget that was never at risk.
+///
+/// `port_or_known_default` is used rather than `port`, so the scheme's implicit
+/// port is written out: `https://api.example.com` and
+/// `https://api.example.com:443` are the same endpoint and must not split into
+/// two breakers. Every ordinary provider URL therefore keeps exactly the
+/// one-breaker-per-host behaviour it had; only a genuinely distinct port
+/// separates.
+///
+/// This is also what makes the breaker safe to exercise under test. Every
+/// loopback server in the suite binds `127.0.0.1` on its own port, so a
+/// host-only key put all of them — across every test running in parallel in the
+/// process — into ONE breaker. Sixteen hand-written
+/// `record_success("127.0.0.1")` calls existed solely to undo that, their own
+/// comments reading *"isolate from parallel tests"*; keying on the port removes
+/// the need for every one of them. See `REQ-BREAKER-001`.
+///
+/// IPv6 literals keep their brackets, as [`url::Url::host_str`] yields them, so
+/// the `host:port` join stays unambiguous. `None` for an unparseable URL or one
+/// without a host (a bare path), in which case the caller leaves the request
+/// un-instrumented rather than inventing a key.
 #[must_use]
-pub fn host_of(url: &str) -> Option<String> {
-    url::Url::parse(url.trim())
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+pub fn endpoint_of(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url.trim()).ok()?;
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    // A scheme with no known default and no explicit port (an exotic scheme)
+    // still keys on the bare host rather than losing the breaker entirely.
+    match parsed.port_or_known_default() {
+        Some(port) => Some(format!("{host}:{port}")),
+        None => Some(host),
+    }
 }
 
 #[cfg(test)]

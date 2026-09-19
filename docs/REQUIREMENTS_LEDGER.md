@@ -12121,3 +12121,160 @@ entry: the module had **genuine findings to protect**, so the shared
 actively harmful. The answer was not a new mechanism but the one
 `core::coverage` was already built and tested for, which no module had yet
 reached for.
+
+---
+
+## REQ-BREAKER-001 — Sixteen hand-written resets, and the key that made them necessary
+
+`circuit_breaker::host_of` keyed the per-host breaker on the URL's host alone:
+
+```rust
+pub fn host_of(url: &str) -> Option<String> {
+    url::Url::parse(url.trim())
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+}
+```
+
+`url::Url::host_str` does not include the port, so every service on one machine
+shared one breaker. The breaker's subject is an **endpoint**, not a machine: one
+wedged service saying nothing about another on the same host is the whole reason
+a per-host breaker is safe to have at all.
+
+### What made it more than theoretical
+
+The suite had already paid for it, sixteen times. Every loopback server binds
+`127.0.0.1` on its own ephemeral port, so the entire test process — across every
+test cargo runs in parallel — collapsed into the single breaker key
+`"127.0.0.1"`. Two test files carried sixteen hand-written
+`circuit_breaker::record_success("127.0.0.1")` calls whose own comments say
+exactly what they were for:
+
+> `// isolate from parallel tests`
+>
+> `// The 503 recorded a breaker failure for the shared loopback host — reset it`
+> `// so this test can't nudge a later parallel test toward FAILURE_THRESHOLD.`
+
+Nine in `util::http::tests`, seven in `modules::chain_intel::tests`. A repeated
+manual procedure standing in for a structural property is the definition of a
+workaround, and this one was load-bearing: without it the suite's own comments
+concede that an unrelated later test could be short-circuited.
+
+It also **blocked** the sibling fix. `REQ-HTTP-005` makes a single 429 open the
+breaker for the server's own `Retry-After` window instead of needing
+`FAILURE_THRESHOLD` (5) consecutive failures. Under a host-only key, one test
+serving a 429 through `fetch_json_inner` would have backed every other loopback
+test in the process off for up to 120 s, and no amount of manual resetting fixes
+a race. The keying had to come first.
+
+### The correction
+
+`host_of` becomes `endpoint_of` — the name is part of the fix, because the value
+is no longer a host — and keys on host **and** port:
+
+```rust
+pub fn endpoint_of(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url.trim()).ok()?;
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    match parsed.port_or_known_default() {
+        Some(port) => Some(format!("{host}:{port}")),
+        None => Some(host),
+    }
+}
+```
+
+`port_or_known_default` rather than `port`, deliberately: the scheme's implicit
+port is written out, so `https://api.example.com` and
+`https://api.example.com:443` — the same endpoint — cannot split into two
+breakers. **Every ordinary provider URL therefore keeps exactly the
+one-breaker-per-host behaviour it had**; only a genuinely distinct port
+separates. That is what keeps this a precision change rather than a behaviour
+change, and it is asserted.
+
+All sixteen manual resets are deleted, and the two comments that described them
+now say why none is needed.
+
+### Falsification
+
+Baseline is `da4f6934`. Reverting only the keying (`endpoint_of` returning the
+bare host) fails all three tests, and the two isolation tests fail by showing
+the collapse itself:
+
+```
+endpoint_key_carries_the_port_and_lowercases_the_host ... FAILED
+  left: Some("example.com")  right: Some("example.com:443")
+two_ports_on_one_host_are_two_breakers ... FAILED
+  left: "cb-test-ports.example"  right: "cb-test-ports.example"
+loopback_servers_on_different_ports_do_not_share_a_breaker ... FAILED
+  left: "127.0.0.1"  right: "127.0.0.1"
+```
+
+A key-shape assertion failing is weaker evidence than a behaviour one, so a
+**second** mutation relaxed those two `assert_ne!`s on top of the reverted
+keying. The failures then land on the property, which is what the tests are
+actually for:
+
+```
+two_ports_on_one_host_are_two_breakers ... FAILED
+  the service on the same host that never failed must still be reachable
+loopback_servers_on_different_ports_do_not_share_a_breaker ... FAILED
+  a sibling test's server must not be short-circuited by this one's outage
+```
+
+All fifteen pre-existing breaker tests pass throughout both mutations — the
+state machine is untouched, which is the point: the defect was in the KEY, and
+no state-machine test could have seen it.
+
+On the fixed tree with all sixteen resets deleted, `util::http::tests` and
+`modules::chain_intel::tests` run **105 passed, 0 failed** — the workaround is
+genuinely unnecessary, not merely tolerated.
+
+### The defect-asserting test, inverted in place
+
+`host_of_extracts_and_lowercases_host` pinned the defect:
+
+```rust
+assert_eq!(host_of("http://api.example.org:8443/x"), Some("api.example.org".to_owned()));
+```
+
+It is inverted where it stands, with the old line quoted in the comment above it,
+and gains the `:443`-equals-implicit assertion that pins the no-behaviour-change
+half.
+
+### What the gate caught, and why it counts
+
+The first gate run failed one test —
+`util::wigle::tests::a_rate_limited_host_short_circuits_the_next_get` — and the
+failure was real, not disk noise (7.4 GB free at the time).
+
+That test seeded the breaker with a literal bare host and then called `get`,
+which keys via `endpoint_of(url)`. Once the key gained the port, the breaker the
+test opened and the breaker `get` consults were no longer the same one, so the
+gate under test never fired and the request was attempted. The test had
+**re-implemented the key construction instead of deriving it**, which is the same
+class of defect as the thing being fixed: a second place that decides what an
+endpoint is.
+
+It now derives the key with `endpoint_of`, the exact function production calls,
+so it cannot drift again. A test that duplicates the logic it is testing will
+eventually disagree with it, and silently — the assertion still ran, it just
+stopped testing the gate.
+
+### Scope stated honestly
+
+This is the **keying**. The production consequence — an admin service on a
+non-default port opening the breaker for the main API on the same host — is real
+but has **no observed instance**; the evidence that carried this cycle is the
+sixteen resets and the blocked sibling fix. Recorded that way rather than
+claiming a production outage nobody has seen.
+
+`REQ-HTTP-005` (the 429 rule at the shared chokepoint) is the fix this unblocks
+and is next.
+
+### Class
+
+"Replace repeated workarounds with authoritative mechanisms", and its tell: when
+the same manual step appears sixteen times with a comment explaining itself, the
+comment is describing a missing structural property. Closest sibling is
+`REQ-CI-003` — a process-global shared by cargo's parallel harness, fixed by
+making the sharing impossible rather than by remembering to undo it.

@@ -442,7 +442,7 @@ pub async fn fetch_json_probe<T: DeserializeOwned>(
 /// host-less / unparseable URL is left un-gated (`Ok(None)`). Centralises the gate that
 /// `fetch_json_inner` and `fetch_keyed_json` previously carried verbatim.
 fn breaker_gate(module: &str, url: &str) -> Result<Option<String>> {
-    let host = circuit_breaker::host_of(url);
+    let host = circuit_breaker::endpoint_of(url);
     if let Some(h) = host.as_deref()
         && !circuit_breaker::allow_host(h, crate::core::entity::unix_now())
     {

@@ -357,7 +357,6 @@ async fn client_transparently_decompresses_a_gzip_encoded_response() {
     });
 
     let client = build_client();
-    crate::util::circuit_breaker::record_success("127.0.0.1"); // isolate from parallel breaker state
     let v: serde_json::Value = fetch_json(&client, "test_gzip", &format!("http://{addr}/"))
         .await
         .expect("fetch_json must transparently decode a Content-Encoding: gzip body");
@@ -366,7 +365,6 @@ async fn client_transparently_decompresses_a_gzip_encoded_response() {
         "reqwest must decompress the gzip response body before parsing"
     );
     assert_eq!(v["n"], 42);
-    crate::util::circuit_breaker::record_success("127.0.0.1");
 }
 
 #[tokio::test]
@@ -399,7 +397,6 @@ async fn fetch_json_or_absent_maps_400_to_none_while_or_404_still_errors() {
 
     // fetch_json_or_absent: a 400 "not found" is a clean negative (Ok(None)) — a
     // non-existent Bluesky handle no longer trips the module breaker.
-    crate::util::circuit_breaker::record_success("127.0.0.1"); // isolate from parallel tests
     let addr = serve_one_400().await;
     let absent: crate::core::error::Result<Option<serde_json::Value>> =
         fetch_json_or_absent(&client, "test_absent", &format!("http://{addr}/")).await;
@@ -409,7 +406,6 @@ async fn fetch_json_or_absent_maps_400_to_none_while_or_404_still_errors() {
     );
 
     // fetch_json_or_404: a 400 is NOT a 404, so it stays a visible module error.
-    crate::util::circuit_breaker::record_success("127.0.0.1");
     let addr = serve_one_400().await;
     let errored: crate::core::error::Result<Option<serde_json::Value>> =
         fetch_json_or_404(&client, "test_404", &format!("http://{addr}/")).await;
@@ -451,17 +447,15 @@ async fn fetch_json_propagates_a_non_2xx_status_as_err_not_a_silent_default() {
     });
 
     let client = build_client();
-    crate::util::circuit_breaker::record_success("127.0.0.1"); // isolate from parallel tests
     let result: crate::core::error::Result<serde_json::Value> =
         fetch_json(&client, "test_plain", &format!("http://{addr}/")).await;
     assert!(
         result.is_err(),
         "fetch_json must propagate a non-2xx status as Err, got {result:?}"
     );
-    // The 500 response above recorded a breaker failure for "127.0.0.1" —
-    // reset it so this test doesn't nudge an unrelated later test toward the
-    // shared host's FAILURE_THRESHOLD, symmetric with the isolation reset above.
-    crate::util::circuit_breaker::record_success("127.0.0.1");
+    // No breaker reset needed: REQ-BREAKER-001 keys the breaker on host AND
+    // port, so this server's 500 lands on its own ephemeral endpoint and cannot
+    // reach a sibling test's server on 127.0.0.1.
 }
 
 #[tokio::test]
@@ -503,7 +497,6 @@ async fn fetch_json_or_404_maps_404_to_none_but_propagates_5xx_as_err() {
     let client = build_client();
 
     // 404 → Ok(None): the genuine "not on this platform" clean miss stays a miss.
-    crate::util::circuit_breaker::record_success("127.0.0.1"); // isolate from parallel tests
     let addr = serve_once(404, "Not Found").await;
     let miss: crate::core::error::Result<Option<serde_json::Value>> =
         fetch_json_or_404(&client, "test_404_miss", &format!("http://{addr}/")).await;
@@ -513,7 +506,6 @@ async fn fetch_json_or_404_maps_404_to_none_but_propagates_5xx_as_err() {
     );
 
     // 503 → Err: a real outage must NOT masquerade as the clean miss.
-    crate::util::circuit_breaker::record_success("127.0.0.1");
     let addr = serve_once(503, "Service Unavailable").await;
     let outage: crate::core::error::Result<Option<serde_json::Value>> =
         fetch_json_or_404(&client, "test_404_outage", &format!("http://{addr}/")).await;
@@ -521,9 +513,9 @@ async fn fetch_json_or_404_maps_404_to_none_but_propagates_5xx_as_err() {
         outage.is_err(),
         "a 503 must propagate as Err, not Ok(None), got {outage:?}"
     );
-    // The 503 recorded a breaker failure for the shared loopback host — reset it
-    // so this test can't nudge a later parallel test toward FAILURE_THRESHOLD.
-    crate::util::circuit_breaker::record_success("127.0.0.1");
+    // Each `serve_once` above bound its own port, so the 404 and the 503 keyed
+    // separate breakers and neither can reach a parallel test's server
+    // (REQ-BREAKER-001). No reset needed.
 }
 
 #[test]

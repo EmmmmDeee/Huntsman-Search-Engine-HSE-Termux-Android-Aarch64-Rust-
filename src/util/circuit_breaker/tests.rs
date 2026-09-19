@@ -268,12 +268,97 @@ fn unknown_host_is_allowed() {
 }
 
 #[test]
-fn host_of_extracts_and_lowercases_host() {
-    assert_eq!(host_of("https://Example.COM/path?q=1"), Some("example.com".to_owned()));
-    assert_eq!(host_of("http://api.example.org:8443/x"), Some("api.example.org".to_owned()));
-    // IPv6 literals keep their brackets (as `Url::host_str` yields them) — the
-    // key just has to be stable, not address-normalised.
-    assert_eq!(host_of("http://[2001:db8::1]/y"), Some("[2001:db8::1]".to_owned()));
+fn endpoint_key_carries_the_port_and_lowercases_the_host() {
+    // The scheme's implicit port is written out, so `https://h` and `https://h:443`
+    // — the same endpoint — cannot split into two breakers.
+    assert_eq!(
+        endpoint_of("https://Example.COM/path?q=1"),
+        Some("example.com:443".to_owned())
+    );
+    assert_eq!(
+        endpoint_of("https://example.com:443/path"),
+        Some("example.com:443".to_owned()),
+        "an explicit default port is the same endpoint as the implicit one"
+    );
+    // REQ-BREAKER-001. This assertion was inverted: it previously read
+    // `assert_eq!(host_of("http://api.example.org:8443/x"), Some("api.example.org".to_owned()));`
+    // — pinning that the port was DROPPED, so an admin service on :8443 and the
+    // main API on :80 shared one breaker, and every loopback test server in the
+    // process shared the single key "127.0.0.1".
+    assert_eq!(
+        endpoint_of("http://api.example.org:8443/x"),
+        Some("api.example.org:8443".to_owned())
+    );
+    // IPv6 literals keep their brackets (as `Url::host_str` yields them), which is
+    // also what keeps the `host:port` join unambiguous.
+    assert_eq!(
+        endpoint_of("http://[2001:db8::1]/y"),
+        Some("[2001:db8::1]:80".to_owned())
+    );
     // No host / unparseable → None, so the caller leaves the fetch un-gated.
-    assert_eq!(host_of("not a url"), None);
+    assert_eq!(endpoint_of("not a url"), None);
+}
+
+/// REQ-BREAKER-001, the property the key change exists for: one wedged service
+/// must not short-circuit a healthy one that merely shares its machine.
+///
+/// Driven through the registry rather than the pure state machine, because the
+/// defect was in the KEY, not the transitions — a state-machine test could not
+/// have seen it. The two endpoints are tripped and observed independently, and
+/// the healthy one is checked both before and after the other opens so the pass
+/// cannot come from it having been untouched all along.
+#[test]
+fn two_ports_on_one_host_are_two_breakers() {
+    let wedged = endpoint_of("http://cb-test-ports.example:8443/admin")
+        .expect("a well-formed URL keys an endpoint");
+    let healthy = endpoint_of("http://cb-test-ports.example/api")
+        .expect("a well-formed URL keys an endpoint");
+    assert_ne!(
+        wedged, healthy,
+        "same machine, different service — the breaker's subject is the endpoint"
+    );
+
+    assert!(allow_host(&healthy, T0), "both start closed");
+    for _ in 0..FAILURE_THRESHOLD {
+        record_failure(&wedged, T0);
+    }
+    assert!(
+        !allow_host(&wedged, T0),
+        "the service that actually failed is short-circuited"
+    );
+    assert!(
+        allow_host(&healthy, T0),
+        "the service on the same host that never failed must still be reachable"
+    );
+
+    // And the converse, so the isolation is not one-directional: opening the
+    // second one leaves the first's state alone.
+    for _ in 0..FAILURE_THRESHOLD {
+        record_failure(&healthy, T0);
+    }
+    assert_eq!(host_state(&wedged), Some(BreakerState::Open));
+    assert_eq!(host_state(&healthy), Some(BreakerState::Open));
+}
+
+/// The same property at the seam that actually bit: every loopback test server
+/// binds `127.0.0.1` on its own port, so a host-only key put all of them —
+/// across every test running in parallel in this process — into ONE breaker.
+/// Sixteen hand-written `record_success("127.0.0.1")` calls existed only to undo
+/// that. This pins that they are no longer needed.
+#[test]
+fn loopback_servers_on_different_ports_do_not_share_a_breaker() {
+    let a = endpoint_of("http://127.0.0.1:34567/").expect("loopback URL keys an endpoint");
+    let b = endpoint_of("http://127.0.0.1:34568/").expect("loopback URL keys an endpoint");
+    assert_ne!(a, b);
+    for _ in 0..FAILURE_THRESHOLD {
+        record_failure(&a, T0);
+    }
+    assert!(!allow_host(&a, T0));
+    assert!(
+        allow_host(&b, T0),
+        "a sibling test's server must not be short-circuited by this one's outage"
+    );
+    // Deliberately NOT asserted here: that the bare host `"127.0.0.1"` has no
+    // breaker at all. That would depend on no other test in this process having
+    // touched it — the very cross-test coupling this change exists to remove.
 }
