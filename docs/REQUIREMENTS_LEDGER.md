@@ -13806,3 +13806,123 @@ rather than flattened away while fixing the reason axis.
 The harness asserts `test result:` is present in every run and reports `VOID`
 otherwise, per the rule REQ-TYPOSQUAT-001 established. All six variants
 reported `OK`; none was void.
+
+## REQ-SHODAN-002 — A city gazetteer was asked for a country, and the workaround went into the fixtures
+
+### Confirmed as filed, then found to be a live pathway rather than dead code
+
+The backlog read: *"shodan's country-centroid fallback is unreachable —
+`city_coords` is a CITY table, no country name resolves."* Confirmed exactly.
+`CITIES` (`util/city_coords/mod.rs:470`) holds 143 rows, every one a city name
+— `brisbane` … `christchurch` — and not one is a country, not even a city-state
+such as Singapore or Monaco. `match_tabulated_city` matches a row as a phrase
+inside the input's tokens, so a bare country matches nothing. The other two legs
+cannot fire either: `postcode_au::is_shaped("Germany")` is false and
+`au_postcode_in` finds no digits. `shodan/mod.rs:519` therefore returned `None`
+for every country Shodan can report, and the `Coordinates` entity at
+`confidence::LOW_MEDIUM` was never minted.
+
+"Unreachable" was where the filing stopped. Three lines below the dead lookup,
+the module composes the very string that *does* resolve:
+
+```rust
+let addr_val = match body.city … {
+    Some(city) => compose_address(city, "", country),   // "Brisbane, Australia"
+    None => country.clone(),
+};
+```
+
+Shodan's paid record carries `city`. The module read it, composed it, exported
+it as the `Address` — and handed the geocoder `country` alone. CONFIGURATION ≠
+CONSUMPTION in its purest form, and the reason this is a **completion** rather
+than a deletion: the capability was not missing, it was one argument away.
+
+### The workaround was in the test fixtures
+
+Two tests already knew, and said so:
+
+> *"`city_coords` is a city table, no bare country name resolves, and this is
+> the only way to reach that branch with a real fixture at all."*
+> — `the_address_never_outranks_the_fix_it_was_composed_from`
+
+> *"'Brisbane' as `country_name` is an odd fixture for a 'country' field, but
+> it's what actually resolves through `city_coords` (a CITY table, not a country
+> table) to exercise this fallback branch at all."*
+> — `country_centroid_fallback_coordinates_carry_the_originating_ip_too`
+
+Both fed the module `{"country_name":"Brisbane"}` — a response Shodan cannot
+send — to make a dead branch look alive. The diagnosis was correct and complete;
+the repair went into the fixture instead of the module. That is the
+standing-method failure recorded against REQ-ABUSEIPDB-001 one cycle earlier,
+in a new layer: **when a test needs an impossible input to reach a branch, the
+branch is the defect.**
+
+Both are repaired in place with the old claim quoted, now on shapes Shodan can
+actually send. The third old case — a country with no city — is deliberately
+dropped from the inversion sweep: it emits no fix at all, so "the Address never
+outranks its fix" is *vacuously* true there and the sweep's own emptiness guard
+rightly rejects it. That case is re-homed to
+`a_country_only_record_still_earns_no_coordinate`.
+
+A third test, `real_host_coordinates_are_preferred_over_the_country_centroid`,
+asserted the fallback is "never also planted" beside a real fix. That half was
+vacuous for the same reason — the fallback could not have fired on its fixture
+whatever the suppression did. It is renamed and is now load-bearing.
+
+### REQ-IPGEO-001's guard had never run
+
+`shodan/mod.rs` passes the emitted fix into `coarse_provider_address` so the
+`Address` cannot outrank the centroid it was composed from. Its comment named
+this exact path — *"on the country-centroid FALLBACK path it did not — 0.55
+against a centroid graded 0.45, a 0.10 inversion"*. That guard was built for a
+branch that could not execute, so it has never engaged. Making the branch live
+activates it, and the lock asserts the `Address` now caps from `MEDIUM_HIGH`
+(0.55) to `LOW_MEDIUM` (0.45). Mutation M4 proves it load-bearing.
+
+### The second instance, and why it is deleted rather than wired
+
+`oathnet_pro/breach.rs:443` made the same call — `city_coords(&country)` — with
+a comment resting on *"a country name that happens to double as a tabulated
+city"*. No such row exists, so that leg never fired either. Unlike `shodan`, the
+module already has two legs the gazetteer can answer: a composed street/city/
+state/postcode address and a free-text location. The dead leg is removed, the
+country still becomes an `Address`, and the surviving legs' shared-`seen`
+rationale — which cited the deleted leg — is rewritten to describe the two that
+remain. A control pins both halves of that boundary.
+
+### Structural prevention
+
+A silent `None` is indistinguishable from "no such place", which is how this
+survived review in two modules and was worked around twice in tests. The rule
+now lives where the next caller reads it: `city_coords`' own doc carries a
+**"A bare country name does not resolve"** section with a doc-test contrasting
+`city_coords("Australia") == None` against `city_coords("Brisbane, Australia")`,
+and `a_bare_country_name_never_resolves_but_the_address_it_belongs_to_does`
+sweeps eleven countries plus four city-states. That test is deliberately phrased
+as a boundary, not a prohibition: adding a country-shaped row stays possible, but
+becomes a decision someone must confront rather than discover in production.
+
+### Falsified
+
+| Variant | Result |
+|---|---|
+| **BASELINE** (geocodes the bare country) | three locks fail: no centroid minted at all (`got []`), the IP-attribute lock finds no fallback entity, and the inversion sweep reports `no Coordinates/Address pair emitted` for both live cases |
+| M1 fallback-only gate dropped | the real-fix preference control fails — `2` coordinates for one host |
+| M2 geocodes the city without its country | `a_uk_host_in_a_homonym_city_is_never_placed_in_australia` fails, naming `-32.928300,151.781700` — Newcastle **NSW** for a host Shodan places in the United Kingdom |
+| M3 invents a centroid on a gazetteer miss | `a_country_only_record_still_earns_no_coordinate` fails |
+| M4 `Address` no longer capped by its own fix | both inversion locks fail: `Address 0.55 > Coordinates 0.45` |
+| M5 CDN/anycast geo suppression dropped | `a_cdn_edge_ip_earns_no_geo_even_with_a_tabulated_city` fails |
+
+M2 is the one that matters most, and it **survived the first harness run**. My
+locks all used `Brisbane, Australia`, where geocoding the city alone gives the
+same answer, so nothing distinguished the composed string from one field of it.
+The country is not decoration on the label: `match_tabulated_city` reads it via
+`mentions_non_au_country` to gate Australian rows against overseas ones. Without
+it a UK host in a homonym city lands 17,000 km away, tagged `geoint`, and is fed
+to the geo correlator as a location fix. The added lock asserts the invariant
+rather than the table's current contents — *a host Shodan places in the United
+Kingdom is never geocoded inside Australia* — so it survives a future UK
+Newcastle row being added.
+
+The harness asserts `test result:` is present per the REQ-TYPOSQUAT-001 rule;
+all six variants reported `OK`, none void.

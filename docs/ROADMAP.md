@@ -242,6 +242,14 @@ very entity the geo fusion weighs, and the fusion read the source's name instead
 value with no reader is cheaper than auditing for a missing guard, and it found
 a fix that needed no module change at all.
 
+Its sharpest form so far is a value with a reader *three lines away* that was
+never handed to it: `shodan` read Shodan's `city`, composed `"Brisbane,
+Australia"`, exported it as the `Address` — and passed the geocoder the bare
+`country`, which a gazetteer of cities can never answer (REQ-SHODAN-002). The
+capability was not missing; it was one argument away. So the audit question is
+not only "does this recorded value have a reader?" but "**is the reader being
+handed the whole value, or one field of it?**"
+
 The tag/evidence seam has the mirror-image failure: a signal **read** by a
 consumer that flattens what it means. `ADJACENCY_BAD_TAGS` carries three
 distinct claims into AU-031, which graded all three `High` in its common branch;
@@ -310,7 +318,7 @@ makes the claim checkable rather than remembered.
 Open high-stakes items remain queued (namesake fabrications, ambiguity-discarded
 geo, truncation-silent providers).
 
-**Four recurring shapes now have names, and finding the next instance starts
+**Five recurring shapes now have names, and finding the next instance starts
 by looking for them rather than reading modules at random:**
 1. *A guard applied to one consumer but not its neighbour.* Seven instances
    (REQ-AURDAP-001, REQ-EXPORT-001, REQ-BUILTWITH-001, REQ-WEBBANNER-001,
@@ -374,6 +382,30 @@ by looking for them rather than reading modules at random:**
    its source because AU-031 escalated everything it received. That was right,
    and it was a workaround for this defect. **When several emitters are being
    taught to withhold a signal, suspect the consumer.**
+5. *The workaround went into the test fixture.* `shodan` geocoded a bare
+   country name against `util::city_coords`, a gazetteer whose 143 rows are all
+   cities, so the branch could not execute on any response Shodan can send. Two
+   tests reached it by passing `{"country_name":"Brisbane"}` — an impossible
+   response — under comments stating plainly that "no bare country name
+   resolves, and this is the only way to reach that branch with a real fixture
+   at all" (REQ-SHODAN-002). The diagnosis was complete and correct; the repair
+   went into the fixture instead of the module, and the branch stayed dead for
+   every real scan while the suite stayed green.
+
+   Its rule: **when a test needs an input the provider cannot produce, the
+   branch is the defect, not the fixture.** A fixture is a claim about what the
+   world sends; one that no longer makes that claim has stopped testing
+   anything. The tell is a comment explaining why a fixture is odd — grep the
+   test tree for fixtures whose own comments apologise for them.
+
+   Two corollaries earned the same cycle. A guard written for an unreachable
+   path never runs, so it is dormant in the same way a rule with no producer is:
+   REQ-IPGEO-001's confidence cap had been correct and idle since it was
+   written, and only engaged once the branch it guarded became live. And a
+   *vacuous* assertion hides inside a passing test — "the fallback is never also
+   planted beside a real fix" could not have failed while the fallback could not
+   fire at all. When a branch becomes reachable, re-read every test that
+   mentions it: some were proving nothing.
 
 **T2 — Universal canonicalisation (priority).** One canonical form and one
 authority per concept, everywhere. Every remaining "same bug, sibling module"

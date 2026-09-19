@@ -440,33 +440,15 @@ pub(super) fn extract_breach_entities_with(
         && !is_absent(&country)
         && seen.insert(format!("@country:{country}"))
     {
-        if let Some((lat, lon)) = crate::util::city_coords::city_coords(&country)
-            // `city_coords` is a many-to-one phrase lookup: the country,
-            // composed-address, and free-text-location legs below each gate
-            // on their OWN input text, but two differently-worded strings
-            // (a country name that happens to double as a tabulated city, a
-            // street address vs. a free-text location) can resolve to the
-            // identical centroid — keyed on the RESOLVED coordinate, shared
-            // across all three legs via this same `seen` set, to catch that.
-            && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
-        {
-            let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(
-                EntityKind::Coordinates,
-                &coord_val,
-                confidence::LOW_MEDIUM,
-                scan_id,
-            );
-            c.tag("addr-derived");
-            c.tag("geoint");
-            c.tag("breach");
-            c.tag("oathnet-pro");
-            if !is_target_row {
-                c.demote_to_candidate();
-            }
-            c.add_evidence(ev.clone());
-            result.push(c);
-        }
+        // No centroid is derived from the country. `city_coords` is a gazetteer
+        // of CITIES — its 143 rows are city names and not one is a country, not
+        // even a city-state — so `city_coords(&country)` resolves to nothing for
+        // every country a breach record can carry. This leg existed on the
+        // premise, written into its own comment, of "a country name that happens
+        // to double as a tabulated city"; there is no such row, so it never fired
+        // (REQ-SHODAN-002). The composed-address and free-text-location legs
+        // below geocode strings the gazetteer can actually answer, and they carry
+        // the coordinate for this record. The country still becomes an Address.
         push_oathnet_entity(
             result,
             Entity::new(
@@ -511,10 +493,12 @@ pub(super) fn extract_breach_entities_with(
         .join(", ");
         if addr.len() >= 4 && seen.insert(format!("@addr:{}", addr.to_lowercase())) {
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr)
-                // See the `country` leg above: keyed on the resolved
-                // coordinate (shared `seen` set) so this doesn't mint a
-                // second Coordinates entity for a city the country or
-                // free-text-location leg already resolved.
+                // `city_coords` is a many-to-one phrase lookup: this leg and
+                // the free-text-location leg gate on their OWN input text, but
+                // two differently-worded strings (a street address vs. a
+                // free-text location) can resolve to the identical centroid —
+                // so the dedup is keyed on the RESOLVED coordinate, shared
+                // between both legs via this same `seen` set.
                 && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
             {
                 let coord_val = format!("{lat:.4},{lon:.4}");
@@ -553,10 +537,9 @@ pub(super) fn extract_breach_entities_with(
         if loc.len() >= 4 && !is_absent(loc) && seen.insert(format!("@loc:{}", loc.to_lowercase()))
         {
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc)
-                // See the `country` leg above: keyed on the resolved
-                // coordinate (shared `seen` set) so this doesn't mint a
-                // second Coordinates entity for a city the country or
-                // composed-address leg already resolved.
+                // See the composed-address leg above: keyed on the resolved
+                // coordinate (shared `seen` set) so this doesn't mint a second
+                // Coordinates entity for a city that leg already resolved.
                 && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
             {
                 let coord_val = format!("{lat:.4},{lon:.4}");

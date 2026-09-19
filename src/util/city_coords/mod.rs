@@ -14,6 +14,30 @@
 /// Falls back to [`postcode_coords`] when `addr` is a bare 4-digit AU
 /// postcode (e.g. `"4000"` → Brisbane CBD) so postcode-only addresses from
 /// breach records and search snippets still resolve offline.
+///
+/// # A bare country name does not resolve
+///
+/// [`CITIES`] is a gazetteer of **cities**. Not one of its rows is a country —
+/// not even a city-state such as Singapore or Monaco — so `city_coords("Germany")`
+/// is `None`, and so is every other country name a provider can report. This is
+/// a silent miss, not an error, which is how two modules came to hold geocoding
+/// legs that could never fire (REQ-SHODAN-002).
+///
+/// **Pass the fullest address string you have, not one field of it.** Matching
+/// is phrase-in-tokens, so a composed `"City, Country"` resolves on its city
+/// while the bare country resolves on nothing:
+///
+/// ```
+/// use huntsman_search_engine::util::city_coords::city_coords;
+///
+/// // The country alone: no row to match.
+/// assert_eq!(city_coords("Australia"), None);
+/// assert_eq!(city_coords("Germany"), None);
+/// assert_eq!(city_coords("Singapore"), None);
+///
+/// // The same country, composed with the city the caller already had.
+/// assert!(city_coords("Brisbane, Australia").is_some());
+/// ```
 pub fn city_coords(addr: &str) -> Option<(f64, f64)> {
     let trimmed = addr.trim();
     let lower = trimmed.to_lowercase();

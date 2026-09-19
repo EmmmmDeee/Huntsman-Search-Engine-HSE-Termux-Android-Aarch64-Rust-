@@ -1863,3 +1863,71 @@ use crate::core::confidence;
             "…never as a Password"
         );
     }
+
+    #[test]
+    fn a_breach_rows_country_becomes_an_address_and_never_a_coordinate() {
+        // REQ-SHODAN-002. This module held a geocoding leg that passed the
+        // breach row's `country` into `util::city_coords`, on the premise —
+        // written into its own comment — of "a country name that happens to
+        // double as a tabulated city". There is no such row: CITIES is a
+        // gazetteer of cities and not one of them is a country, not even a
+        // city-state. The leg could not fire and is gone.
+        //
+        // This pins the boundary of that deletion. The country still becomes an
+        // Address (nothing was lost), and the composed-address leg still carries
+        // the coordinate for a row that has one.
+        use serde_json::json;
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &json!({
+                "email": "sam@example.com",
+                "country": "Australia",
+                "source": "TestDB"
+            }),
+            "sam@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Address && e.value == "Australia"),
+            "the country must still surface as an Address"
+        );
+        assert!(
+            !result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Coordinates),
+            "a bare country must never mint a coordinate"
+        );
+
+        // Control: the composed-address leg is untouched and still geocodes.
+        let mut seen2 = HashSet::new();
+        let mut result2 = ModuleResult::new();
+        extract_breach_entities(
+            &json!({
+                "email": "sam@example.com",
+                "country": "Australia",
+                "city": "Brisbane",
+                "address_street": "12 Smith St",
+                "source": "TestDB"
+            }),
+            "sam@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen2,
+            &mut result2,
+        );
+        assert!(
+            result2
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Coordinates),
+            "a row naming a tabulated city must still earn its coordinate"
+        );
+    }

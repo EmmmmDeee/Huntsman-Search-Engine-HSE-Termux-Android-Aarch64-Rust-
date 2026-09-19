@@ -387,3 +387,65 @@ use super::*;
         // alongside the other NSW regional entries.
         assert!(is_tabulated_au_city("port macquarie"));
     }
+
+// ── REQ-SHODAN-002: the gazetteer's contract at its boundary ─────────────────
+
+#[test]
+fn a_bare_country_name_never_resolves_but_the_address_it_belongs_to_does() {
+    // CITIES is a gazetteer of CITIES. Two modules held geocoding legs that
+    // passed a bare country name into it and could therefore never fire: a
+    // silent `None` is indistinguishable from "no such place", so the dead leg
+    // survived review twice and was worked around in test fixtures rather than
+    // fixed (`shodan`, `oathnet_pro`).
+    //
+    // This pins the boundary the callers must respect. It is not a claim that a
+    // country-shaped row could never be added — it is a claim that adding one
+    // would be a DELIBERATE change to what this table means, which this test
+    // makes you confront rather than discover in production.
+    const COUNTRIES: &[&str] = &[
+        // Countries whose centroid a provider's `country` field might name.
+        "Australia",
+        "United States",
+        "United Kingdom",
+        "Germany",
+        "France",
+        "Japan",
+        "China",
+        "India",
+        "Canada",
+        "Brazil",
+        "Vietnam",
+        // City-states, where the country/city distinction is thinnest and the
+        // temptation to rely on a hit is strongest.
+        "Singapore",
+        "Monaco",
+        "Hong Kong",
+        "Luxembourg",
+    ];
+    let resolved: Vec<&str> = COUNTRIES
+        .iter()
+        .copied()
+        .filter(|c| city_coords(c).is_some())
+        .collect();
+    assert!(
+        resolved.is_empty(),
+        "a bare country name resolved through the CITY gazetteer: {resolved:?} — \
+         if this row was added on purpose, update the callers that rely on the \
+         miss (see REQ-SHODAN-002) before relaxing this test"
+    );
+
+    // The converse, and the reason the rule is workable: the same country
+    // composed with the city the caller already had DOES resolve. A caller with
+    // both fields must pass the composed string, not one field of it.
+    for (composed, why) in [
+        ("Brisbane, Australia", "AU capital"),
+        ("Manchester, United Kingdom", "non-AU, foreign-place gate active"),
+        ("Chicago, United States", "non-AU, multi-word country"),
+    ] {
+        assert!(
+            city_coords(composed).is_some(),
+            "{composed} ({why}) must resolve — otherwise the rule this test \
+             teaches has no workable alternative"
+        );
+    }
+}
