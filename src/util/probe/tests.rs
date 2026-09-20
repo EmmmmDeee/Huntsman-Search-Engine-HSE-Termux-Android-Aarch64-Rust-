@@ -295,3 +295,70 @@ fn the_sweeps_control_handle_is_a_second_handle_nobody_holds_distinct_from_the_p
     assert!(sweep.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()), "{sweep}");
     assert_eq!(sweep, sweep_control_handle(), "drawn once per process");
 }
+
+/// REQ-PROBE-005: a control probe that FAILED is not an answer, so it must not
+/// be remembered as one.
+#[tokio::test]
+async fn a_failed_control_probe_is_retried_rather_than_remembered() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // The site's control probe errors the first time and succeeds the second —
+    // an ordinary transient failure.
+    let probes = Arc::new(AtomicUsize::new(0));
+    let control = |site: &'static str| {
+        let probes = Arc::clone(&probes);
+        let url = format!("https://{site}.flaky/u/{}", control_handle());
+        (url, async move {
+            let n = probes.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                ProbeResult::Error
+            } else {
+                ProbeResult::NotFound
+            }
+        })
+    };
+    let first: Vec<(&'static str, ProbeResult)> =
+        vec![("flaky", present("https://flaky.flaky/u/alice"))];
+
+    // First pass: the control could not be read, so the presence is not
+    // controlled. That verdict is correct FOR THIS PASS.
+    let once = control_presences(first.clone(), control).await;
+    assert!(
+        !matches!(once[0].1, ProbeResult::Found { controlled: true, .. }),
+        "a control that errored cannot confirm anything: {:?}",
+        once[0]
+    );
+    assert_eq!(probes.load(Ordering::SeqCst), 1, "the control was probed once");
+
+    // Second pass: the failure must NOT have been cached. Caching it would
+    // mark every future presence on this site uncontrolled for the life of the
+    // process — in `hse serve`, forever — on the strength of one transient
+    // network error. PROVIDER FAILURE != ZERO EVIDENCE, the same doctrine
+    // `core::coverage::ProviderOutcome` states one layer up.
+    let again = control_presences(first.clone(), control).await;
+    assert_eq!(
+        probes.load(Ordering::SeqCst),
+        2,
+        "a failed control must be re-probed, not remembered"
+    );
+    assert!(
+        matches!(again[0].1, ProbeResult::Found { controlled: true, .. }),
+        "the retry succeeded, so the presence is now controlled: {:?}",
+        again[0]
+    );
+
+    // THE CONTROL, and the over-correction guard: a SUCCESSFUL answer is still
+    // remembered. Losing that would re-probe every site for every target and
+    // undo what this cache is for.
+    let third = control_presences(first, control).await;
+    assert_eq!(
+        probes.load(Ordering::SeqCst),
+        2,
+        "a successful control answer is still cached — no third probe"
+    );
+    assert!(matches!(
+        third[0].1,
+        ProbeResult::Found { controlled: true, .. }
+    ));
+}

@@ -206,6 +206,11 @@ pub fn controlled(target: ProbeResult, control: &ProbeResult) -> ProbeResult {
 /// the probe of it, the answers run concurrently, and [`controlled`] is
 /// applied. A control answer is remembered per URL for the process, so a
 /// multi-target scan asks each site about the control handle once.
+///
+/// A control probe that FAILED is not remembered — see the insert below. The
+/// cache is still process-lifetime for successful answers, which is correct
+/// within one scan and stale across scans in a long-lived `hse serve` process;
+/// scoping it to a scan is tracked separately (REQ-PROBE-005).
 pub async fn control_presences<S, Fut>(
     first: Vec<(S, ProbeResult)>,
     control: impl Fn(S) -> (String, Fut),
@@ -237,6 +242,22 @@ where
     let read: Vec<(String, ProbeResult)> = futures::future::join_all(pending).await;
     if let Ok(mut a) = answers.lock() {
         for (url, answer) in &read {
+            // A FAILED control probe is not an answer, so it is not remembered.
+            //
+            // `controlled()` turns a `Found` judged against an `Error` control
+            // into `Uncontrolled`, or into `Found { controlled: false }` — the
+            // field's own doc says "False when the control could not be read".
+            // Caching that verdict made one transient network error mark every
+            // future presence on the site uncontrolled for the life of the
+            // process, which under `hse serve` is indefinitely. The site is
+            // simply re-asked next time (REQ-PROBE-005).
+            //
+            // This is the doctrine `core::coverage::ProviderOutcome` states one
+            // layer up — PROVIDER FAILURE != ZERO EVIDENCE — applied to the
+            // cache that decides whether a presence can be confirmed.
+            if matches!(answer, ProbeResult::Error) {
+                continue;
+            }
             a.insert(url.clone(), answer.clone());
         }
     }

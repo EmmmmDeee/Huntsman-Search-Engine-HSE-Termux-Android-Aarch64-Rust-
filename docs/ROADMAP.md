@@ -452,6 +452,14 @@ by looking for them rather than reading modules at random:**
    remember the race is only how the coupling SHOWS — set the global yourself
    and the failing baseline is deterministic, with no scheduler to win.
 
+   **A cache that stores failures turns a transient fault into a permanent
+   verdict.** `control_presences` remembered `ProbeResult::Error` beside real
+   answers, so one network blip marked every later presence on that site
+   unconfirmable for the life of the process (REQ-PROBE-005). Its rule: **ask of
+   every cache what happens when the value being stored is a failure** — the
+   answer is almost always "re-ask", and the doctrine `ProviderOutcome` states
+   for providers applies to any store that will be read as if it held an answer.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other

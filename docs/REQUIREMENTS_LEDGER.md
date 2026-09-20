@@ -14261,6 +14261,59 @@ mutation that could not reach its control (WIKIDATA-001), a harness that never
 built (TYPOSQUAT-001, AUBUSINESSID-001), and now a comparison whose two sides
 were equal because both were empty.
 
+## REQ-PROBE-005 — a cache that remembered a failure as if it were an answer
+
+**Requirement.** A control probe that could not be read must not be recorded as
+the site's verdict.
+
+**Defect.** `util::probe::control_presences` keeps
+
+```rust
+static ANSWERS: OnceLock<Mutex<HashMap<String, ProbeResult>>>
+```
+
+so a multi-target scan asks each site about the control handle once. The insert
+loop cached **every** answer, `ProbeResult::Error` included.
+
+What that costs is decided by `controlled()`: a presence judged against an
+errored control becomes `Uncontrolled`, or `Found { controlled: false }` — and
+that field's own doc says *"False when the control could not be read."* So one
+transient network failure on one control probe marked every future presence on
+that site unconfirmable **for the life of the process**. In a one-shot `hse
+scan` that is a single run; under `hse serve` it is indefinite.
+
+The codebase already states the principle one layer up, in
+`core::coverage::ProviderOutcome`: *PROVIDER FAILURE ≠ ZERO EVIDENCE* — a
+provider that broke has said nothing, and treating its silence as an answer is
+how a system invents a confident result. The same collapse was happening here,
+in the cache that decides whether a presence can be confirmed at all.
+
+**Fix.** Skip `ProbeResult::Error` on insert. The site is re-asked next time.
+
+**Verification.** Four variants, no survivors:
+
+| Variant | Result |
+|---|---|
+| BASELINE — every answer cached | the retry lock fails (`left: 1, right: 2`) |
+| M1 **over-correction** — nothing cached | 2 fail, incl. the existing cache test |
+| M2 inverted — only errors cached | 2 fail |
+| M3 **over-correction** — `NotFound` also dropped | 2 fail, incl. the existing cache test |
+
+M1 and M3 are what prove the cache still does its job: an answer of *absence*
+is a real answer and must still be remembered, or every site is re-probed for
+every target.
+
+**Remaining, and deliberately not fixed here.** The cache is still
+process-lifetime for successful answers. Within one scan that is what it is for;
+across scans in a long-lived `hse serve` process a site that changes behaviour
+keeps its old verdict. Scoping it to a scan needs a scan-scoped container
+threaded through `username_search` and `streaming_probe`, which is a design
+question rather than a one-line correction, and it is recorded rather than
+half-done. The failure case above is separable, is a defect within a single
+scan, and is fixed.
+
+---
+
 ## REQ-CI-004 — a decision function with one hidden argument, and a flake that was never the point
 
 **Requirement.** The dispatch skip gate must be decidable from its inputs, so a
