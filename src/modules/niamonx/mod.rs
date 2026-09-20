@@ -60,11 +60,12 @@ struct UlpBody<'a> {
 
 // ── Response types — PBS v1 ────────────────────────────────────────────────
 
-#[derive(Deserialize)]
-struct PbsV1Response {
-    success: bool,
-    data: Option<PbsV1Data>,
-}
+/// The response envelope, and the ONE function permitted to open it —
+/// `envelope.rs`, so its fields are unreachable from this file (CONVENTIONS.md
+/// §2 keeps module bodies in their own file; the privacy is the point here).
+mod envelope;
+
+use envelope::{Envelope, payload};
 
 #[derive(Deserialize)]
 struct PbsV1Data {
@@ -105,12 +106,6 @@ struct PbsV1Rate {
 // ── Response types — PBS v2 ────────────────────────────────────────────────
 
 #[derive(Deserialize)]
-struct PbsV2Response {
-    success: bool,
-    data: Option<PbsV2Data>,
-}
-
-#[derive(Deserialize)]
 struct PbsV2Data {
     #[serde(default = "default_true")]
     niamonx_success: bool,
@@ -148,12 +143,6 @@ struct PbsV2Source {
 }
 
 // ── Response types — ULP ─────────────────────────────────────────────────
-
-#[derive(Deserialize)]
-struct UlpResponse {
-    success: bool,
-    data: Option<UlpData>,
-}
 
 #[derive(Deserialize)]
 struct UlpData {
@@ -418,7 +407,7 @@ async fn fetch_pbs_v1(
     key: &str,
     query: &str,
     ctx: &crate::core::module::ModuleContext,
-) -> Result<PbsV1Response> {
+) -> Result<PbsV1Data> {
     let resp = http
         .post(format!("{BASE}/breaches_search"))
         .header("X-API-Key", key)
@@ -430,14 +419,14 @@ async fn fetch_pbs_v1(
     let resp = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp)
         .await?
         .ok_or_else(|| Error::module(SRC, "HTTP 404 from breaches_search"))?;
-    let parsed: PbsV1Response = crate::util::http::json_scanned(resp, SRC).await?;
+    let parsed: Envelope<PbsV1Data> = crate::util::http::json_scanned(resp, SRC).await?;
     check_dataguard_key_failure(
         ctx,
         key,
         "pbs_v1",
-        parsed.data.as_ref().and_then(|d| d.error.as_deref()),
+        parsed.peek().and_then(|d| d.error.as_deref()),
     )?;
-    Ok(parsed)
+    payload("pbs_v1", parsed)
 }
 
 async fn fetch_pbs_v2(
@@ -445,7 +434,7 @@ async fn fetch_pbs_v2(
     key: &str,
     query: &str,
     ctx: &crate::core::module::ModuleContext,
-) -> Result<PbsV2Response> {
+) -> Result<PbsV2Data> {
     let resp = http
         .post(format!("{BASE}/breaches_s_v2"))
         .header("X-API-Key", key)
@@ -460,14 +449,14 @@ async fn fetch_pbs_v2(
     let resp = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp)
         .await?
         .ok_or_else(|| Error::module(SRC, "HTTP 404 from breaches_s_v2"))?;
-    let parsed: PbsV2Response = crate::util::http::json_scanned(resp, SRC).await?;
+    let parsed: Envelope<PbsV2Data> = crate::util::http::json_scanned(resp, SRC).await?;
     check_dataguard_key_failure(
         ctx,
         key,
         "pbs_v2",
-        parsed.data.as_ref().and_then(|d| d.error.as_deref()),
+        parsed.peek().and_then(|d| d.error.as_deref()),
     )?;
-    Ok(parsed)
+    payload("pbs_v2", parsed)
 }
 
 async fn fetch_ulp(
@@ -476,7 +465,7 @@ async fn fetch_ulp(
     query: &str,
     ulp_type: &str,
     ctx: &crate::core::module::ModuleContext,
-) -> Result<UlpResponse> {
+) -> Result<UlpData> {
     let resp = http
         .post(format!("{BASE}/ulp_search"))
         .header("X-API-Key", key)
@@ -494,30 +483,26 @@ async fn fetch_ulp(
     let resp = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp)
         .await?
         .ok_or_else(|| Error::module(SRC, "HTTP 404 from ulp_search"))?;
-    let parsed: UlpResponse = crate::util::http::json_scanned(resp, SRC).await?;
+    let parsed: Envelope<UlpData> = crate::util::http::json_scanned(resp, SRC).await?;
     check_dataguard_key_failure(
         ctx,
         key,
         "ulp_search",
-        parsed.data.as_ref().and_then(|d| d.error.as_deref()),
+        parsed.peek().and_then(|d| d.error.as_deref()),
     )?;
-    Ok(parsed)
+    payload("ulp_search", parsed)
 }
 
 // ── Emitters ──────────────────────────────────────────────────────────────
 
 fn emit_pbs_v1(
-    resp: PbsV1Response,
+    data: PbsV1Data,
     entity: &mut Entity,
     result: &mut ModuleResult,
     query: &str,
     scan_id: &str,
     seen: &mut std::collections::HashSet<String>,
 ) {
-    if !resp.success {
-        return;
-    }
-    let Some(data) = resp.data else { return };
     if let Some(err) = &data.error {
         debug!(reason = %err, "niamonx pbs_v1 dataguard");
         return;
@@ -648,17 +633,13 @@ fn emit_pbs_v1(
 }
 
 fn emit_pbs_v2(
-    resp: PbsV2Response,
+    data: PbsV2Data,
     entity: &mut Entity,
     result: &mut ModuleResult,
     query: &str,
     scan_id: &str,
     seen: &mut std::collections::HashSet<String>,
 ) {
-    if !resp.success {
-        return;
-    }
-    let Some(data) = resp.data else { return };
     if let Some(err) = &data.error {
         debug!(reason = %err, "niamonx pbs_v2 dataguard");
         return;
@@ -802,17 +783,13 @@ fn emit_pbs_v2(
 }
 
 fn emit_ulp(
-    resp: UlpResponse,
+    data: UlpData,
     entity: &mut Entity,
     result: &mut ModuleResult,
     query: &str,
     scan_id: &str,
     seen: &mut std::collections::HashSet<String>,
 ) {
-    if !resp.success {
-        return;
-    }
-    let Some(data) = resp.data else { return };
     if let Some(err) = &data.error {
         debug!(reason = %err, "niamonx ulp dataguard");
         return;

@@ -15845,3 +15845,144 @@ counterpart. That is worth mirroring on its own merits, but it does not gate
 anything — the `cfg(test)` redirect already makes the cascade testable, which is
 what REQ-NIAMONX-001, REQ-OATHNET-002 and REQ-SEON-001 were thought to be
 waiting on.
+
+---
+
+### REQ-NIAMONX-001 — a call the provider said failed, reported as a clean miss
+
+Filed VERIFY-FIRST and parked as "live `success:false` shape not confirmed".
+That blocker asked the wrong question. Knowing WHEN the API sends
+`success: false` was never necessary; knowing what it MEANS was, and this
+repository settles that without a key.
+
+#### What the module did
+
+`fetch_pbs_v1`, `fetch_pbs_v2` and `fetch_ulp` each return `Result`, and
+`process` already has the machinery to use one: an `Err` becomes `hard_failure`,
+`ModuleResult::or_hard_failure` reports it when no endpoint contributed, and a
+batch where all three fail drives the key-rotation cascade. None of that ever
+saw a `success: false`, because the check lived one layer later, in emitters
+that return `()`:
+
+```rust
+fn emit_pbs_v1(resp: PbsV1Response, …) {      // returns ()
+    if !resp.success { return; }              // ← the provider said the call failed
+    let Some(data) = resp.data else { return }; // ← or the body was malformed
+```
+
+An emitter returning `()` cannot report a failure even in principle. So the
+module answered "nothing found" for a call the provider had already said did not
+work — the `core::coverage::ProviderOutcome` prohibition, and the same shape as
+REQ-FOFA-001 one module over.
+
+Reproduced on the unchanged module before anything changed: `success: false`
+with no `data` yields zero entities, zero evidence, and `Ok`.
+
+#### Why `success: false` is a failure and not a miss — four in-repo signals
+
+No live access was needed, and none of this is recalled:
+
+1. **The decisive one.** `emit_pbs_v1`'s `data.status == "not_found"` check —
+   the one its own comment calls *"the documented no-results response"* — sits
+   inside `let Some(data) = resp.data`, and therefore **after** `if !resp.success`.
+   That branch could not be reached at all if a miss arrived as `success: false`.
+2. All three fetches say *"empty results arrive as 200+body"* where they refuse
+   a 404.
+3. `breaches_s_v2` carries **two** flags at two levels — the outer `success` and
+   an inner `data.niamonx_success`. Only the inner one is about results, which
+   leaves the outer one to be about the call. ULP's result-level signal is
+   likewise `stats.total == 0`.
+4. `tests::pbs_v1_skips_not_found_status` — the module's own fixture for a miss —
+   is written `success: true` with `status: "not_found"`. **No fixture in that
+   file sets `success: false`, for any endpoint**, which is also why the case had
+   no coverage.
+
+#### The repair, and why it went past the filing
+
+The filed defect is one silent return; the fix removes the possibility of it.
+Three structurally identical response types (`PbsV1Response`, `PbsV2Response`,
+`UlpResponse` — each `{ success: bool, data: Option<T> }`) became one generic
+`Envelope<T>`, and `Envelope` plus the single function that may open it live in
+a private submodule:
+
+- it is `envelope.rs`, its own file — the first draft wrote it inline and the
+  architecture enforcer rejected that under CONVENTIONS.md §2 before it reached
+  a commit;
+- outside it, `success` cannot be read and `data` cannot be taken;
+- `peek()` lends the payload for the dataguard check without surrendering the
+  flag, and returns a borrow, so no owned `T` escapes that way;
+- an envelope cannot be **constructed** outside the submodule either, so a
+  caller cannot forge a flag the wire never sent.
+
+The only route from a decoded body to a payload is therefore the check itself,
+and the emitters now take the payload — the same "carry what you licensed" move
+REQ-FOFA-001 used for `BodyVerdict::Searchable(rows)`. Six silent returns are
+gone (two per emitter), three near-duplicate structs are gone, and the existing
+`hard_failure` plumbing now receives what it was always built to handle.
+
+The constructor tests need is `#[cfg(test)]`. That is not a loophole worth
+apologising for — it is the same compile-time switch `paths::huntsman_dir_path`
+uses, and the shipped build keeps exactly one route.
+
+#### The over-correction control came for free
+
+"Fail closed" is only a fix while an honest miss still succeeds; a repair that
+errored on every reply would take a working provider offline through the circuit
+breaker. Every fixture in the file now reaches its emitter through
+`payload(…).expect("fixture is a real answer")`, so the pre-existing miss tests —
+`pbs_v1_skips_not_found_status` (`success:true` + `not_found`), the ULP
+`stats.total == 0` cases, the v2 `niamonx_success: false` cases — would **panic
+on that `expect`** rather than quietly pass. The controls are the tests that
+were already there, now routed through the seam.
+
+#### Falsification
+
+Reproduced on the baseline first, then seven mutations of the repair, all killed:
+
+| mutation | killed by |
+| --- | --- |
+| the seam never errors on `success: false` | `a_success_false_body_is_an_error_not_an_empty_answer` |
+| the success flag is ignored entirely | same |
+| the seam always errors | `a_real_answer_passes_through_the_seam`, **and 12 pre-existing tests** |
+| a fetch forges the flag (`Envelope { success: true, … }`) | the compiler — `E0616: field 'data' … is private` |
+| a fetch skips the seam via `.cloned()` | the compiler — but see below |
+| a fetch moves the private field (`parsed.data.unwrap()`) | the compiler — `E0616` |
+| a fetch destructures the envelope | the compiler — `E0451: fields 'success' and 'data' … are private` |
+
+All three compile-error rows were **re-run after** `envelope` moved from an
+inline `mod` to its own file, because the move relocated the very boundary the
+claim rests on. Same three errors, so the seal is a property of the module
+privacy and not of where the braces sat.
+
+Two of those deserve a note rather than a tick.
+
+The **"always errors"** mutation is the one that shows the control was real: it
+broke `a_real_answer_passes_through_the_seam` *and twelve tests written before
+this cycle existed*, `pbs_v1_skips_not_found_status` among them. That is the
+over-correction check doing its job — an honest miss must still succeed — and it
+came from routing the existing fixtures through the seam rather than from
+anything written to catch it.
+
+The **`.cloned()`** mutation was initially recorded as proof that the seam is
+unskippable, and it is not. Its error is `UlpData: Clone is not satisfied` —
+that says the particular bypass I wrote needed a trait the payload lacks, not
+that the field is unreachable. Re-run as a direct field move and as a
+destructuring, the errors are `E0616` and `E0451`, which is the claim actually
+worth making. An incidental compile error is not a structural guarantee, and the
+difference is exactly the kind this ledger exists to keep straight.
+
+#### Assumption and residual, stated rather than buried
+
+The four signals are read off this repository, not observed from the live API.
+If `success: false` turns out to be an ordinary miss, this converts every miss
+into an endpoint error and three of those trip the key cascade. The direction is
+still the safer one — a named failure an operator sees beats a silent "clean"
+verdict — and the message names the endpoint and the flag, so a wrong firing is
+one log line from being diagnosed.
+
+Not swept in, recorded: a **non-key** `data.error` still returns silently from
+each emitter (`if let Some(err) = &data.error { debug!(…); return; }`).
+`check_dataguard_key_failure` errors only for key/quota-shaped messages. Whether
+a "dataguard" message is a failure or a policy answer is not something this
+repository settles, and guessing it is how the filed blocker went wrong in the
+first place.
