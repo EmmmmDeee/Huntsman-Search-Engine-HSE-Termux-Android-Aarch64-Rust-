@@ -721,6 +721,19 @@ pub(super) fn extract_breach_entities_with(
     // confirms whether the hash is in known breach corpora). Emit as a
     // low-confidence ApiKey entity tagged for that module.
     if let Some(ph) = val_str(item, "password_hash")
+        // REQ-OATHNET-002. The gate was `ph.len() >= 32` alone, and the entity's
+        // VALUE is the hash string — so any two rows carrying the same long
+        // placeholder mint one shared node and fuse unrelated strangers, which
+        // `is_absent`'s own doc above calls "a false positive, the worst kind for
+        // an evidentiary tool". That is REQ-DEHASHED-001's harm in the hash slot.
+        //
+        // Reachability is UNOBSERVED, and the honest claim is no stronger: the
+        // longest capture sentinel this repository records is
+        // `UPGRADE_TO_SEE_FULL_DATA` (24 chars), so nothing known clears the
+        // 32-char floor today. This is the same classification the module already
+        // applies to the plaintext `password` field (below, and in `stealer.rs`),
+        // reaching the one field that was gated on length alone.
+        && !is_absent(&ph)
         && ph.len() >= 32
         && seen.insert(format!(
             "@pwhash:{}",

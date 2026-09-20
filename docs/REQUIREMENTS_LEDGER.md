@@ -16045,3 +16045,65 @@ live-API tests `#[ignore]` for that reason. The gap is pre-existing and
 network-bound rather than introduced here, and the mutation is total breakage —
 censys would never work at all — rather than the silent kind this cycle is
 about. Recorded instead of closed, and recorded rather than left unmentioned.
+
+---
+
+### REQ-OATHNET-002 — the hash slot was gated on length, and the length was a coincidence
+
+Filed VERIFY-FIRST with an unusually honest doubt attached: *"same class as
+REQ-DEHASHED-001 but no known sentinel reaches it."* That doubt turns out to be
+**correct**, and saying so is most of this entry.
+
+#### What was measured, both ways
+
+`breach.rs`'s `password_hash` emitter was gated on `ph.len() >= 32` and nothing
+else — no call to `is_absent`, which is defined **at line 20 of the same file**
+as `is_null_sentinel(s) || is_placeholder_secret(s)` and used elsewhere in it,
+and no call to the tree-wide `classify_credential_field`, documented as *"the
+one decision point every credential parser shares"*. The module already applies
+that classification to the plaintext `password` field, here and in `stealer.rs`.
+
+Two things were then measured rather than assumed, and they point in opposite
+directions:
+
+1. **The sentinel cannot reach it today.** Every capture-sentinel string this
+   repository records was enumerated and measured. The longest is
+   `UPGRADE_TO_SEE_FULL_DATA` — 24 characters. Nothing known clears the 32-char
+   floor, so the filed doubt is upheld: this is not a demonstrated live defect.
+2. **The floor drops nothing either.** Every format `identify_password_hash`
+   recognises is ≥ 32 characters: md5 32, sha1 40, mysql 41, bcrypt 60,
+   sha256 64, sha512 128, and the `$`-prefixed KDFs longer still. So the length
+   gate is not silently discarding a real short hash — a DES-crypt-style 13
+   character digest would be dropped, but this module does not classify one.
+
+#### Why it was changed anyway, stated as hardening and not as a bug fix
+
+The harm, unlike the reachability, is **demonstrated**. The emitted entity's
+VALUE is the hash string, so the baseline reproduction shows exactly what a long
+placeholder becomes: `(Password, "UPGRADE_TO_SEE@https://example.com/x")`. Two
+unrelated people whose rows carry the same placeholder mint **one shared node**
+and fuse — which `is_absent`'s own doc, eleven lines above, calls *"a false
+positive, the worst kind for an evidentiary tool"*, and which is precisely
+REQ-DEHASHED-001's defect relocated from the plaintext slot to the hash slot.
+
+So the position is: severity high and demonstrated, reachability unobserved,
+remedy one condition reusing a helper already in the file, false-rejection risk
+effectively nil (a real digest contains neither `UPGRADE_TO_SEE` nor `REDACTED`,
+is not bracketed, and is not a null sentinel). The gate is now the same
+classification the module applies to its other credential fields, instead of a
+length that happened to sit above every sentinel anyone has seen.
+
+**What is NOT claimed:** that any provider sends a ≥32-character sentinel. The
+36-character fixture in the lock is a structurally plausible shape — a sentinel
+with a URL appended — and is labelled in the test as never having been observed
+in this tree.
+
+#### Falsification
+
+Baseline: the lock FAILS, with the defect in its own terms (the Password entity
+above); the control PASSES, because a real MD5 was always emitted. That pairing
+is what makes the lock non-vacuous — a gate that rejected every hash would
+satisfy the lock and destroy the module's strongest credential-exposure signal,
+and the control is what tells those apart. The control deliberately uses a
+32-hex MD5: the narrowest recognised width, and so the value closest to the old
+floor.

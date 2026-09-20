@@ -1544,6 +1544,75 @@ use crate::core::confidence;
         );
     }
 
+    // ── REQ-OATHNET-002: the hash slot was gated on LENGTH alone ───────────
+
+    /// LOCK. A long capture sentinel in `password_hash` must not mint an
+    /// entity. The entity's VALUE is the hash string, so two unrelated people
+    /// whose rows both carry the same placeholder would mint ONE shared node and
+    /// fuse them — the harm `is_absent`'s own doc in `breach.rs` calls "a false
+    /// positive, the worst kind for an evidentiary tool", and REQ-DEHASHED-001's
+    /// defect in the hash slot rather than the plaintext one.
+    ///
+    /// Reachability is UNOBSERVED and this test does not pretend otherwise: the
+    /// longest sentinel this repository records is `UPGRADE_TO_SEE_FULL_DATA`
+    /// (24 chars), which the old `ph.len() >= 32` gate already excluded. The
+    /// fixture below is a 36-character variant — structurally possible for a
+    /// provider that appends a URL, never seen in this tree. The gate is now the
+    /// same classification the module already applies to the plaintext
+    /// `password` field, instead of a length coincidence.
+    #[test]
+    fn a_long_capture_sentinel_in_the_hash_slot_mints_nothing() {
+        use serde_json::json;
+        let sentinel = "UPGRADE_TO_SEE@https://example.com/x";
+        assert!(
+            sentinel.len() >= 32,
+            "the fixture must clear the old length-only gate, or this proves nothing \
+             (len {})",
+            sentinel.len()
+        );
+        let item = json!({
+            "email": "a@b.com",
+            "password_hash": sentinel,
+            "source": "TestDB"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&item, "a@b.com", "scan", "oathnet.org:test", &mut seen, &mut result);
+        assert!(
+            !result.entities.iter().any(|e| e.tags.iter().any(|t| t == "password-hash")),
+            "a capture sentinel must not become a password-hash node: {:?}",
+            result.entities.iter().map(|e| (&e.kind, &e.value)).collect::<Vec<_>>()
+        );
+    }
+
+    /// NON-VACUITY CONTROL for the lock above. A real MD5 — exactly 32 hex, the
+    /// narrowest recognised width and so the value closest to the old floor —
+    /// must still mint its node. Without this, the lock could be satisfied by a
+    /// gate that rejects every hash, which would silently delete the module's
+    /// strongest credential-exposure signal.
+    #[test]
+    fn a_real_md5_in_the_hash_slot_still_mints_its_node() {
+        use serde_json::json;
+        let item = json!({
+            "email": "a@b.com",
+            "password_hash": "0123456789abcdef0123456789abcdef",
+            "source": "TestDB"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&item, "a@b.com", "scan", "oathnet.org:test", &mut seen, &mut result);
+        let node = result
+            .entities
+            .iter()
+            .find(|e| e.tags.iter().any(|t| t == "password-hash"))
+            .expect("a real md5 must still be emitted");
+        assert!(
+            node.tags.iter().any(|t| t == "hash:md5"),
+            "and still classified: {:?}",
+            node.tags
+        );
+    }
+
     #[test]
     fn identify_password_hash_classifies_common_formats() {
         // Fast, unsalted digests by hex width.
