@@ -148,6 +148,36 @@ pub(super) type LeakHit = (String, usize, Vec<(&'static str, String)>);
 /// 103 paths at 16 permits is ~7 waves: without a cancel check, an operator who
 /// pressed Ctrl-C kept generating outbound requests against a third-party host
 /// for the remainder of the sweep.
+/// The `scheme://host[:port]` the config-leak probes are aimed at, derived from
+/// the seed URL. Falls back to `domain` for a URL with no host, and to the
+/// trimmed seed for one that will not parse at all.
+///
+/// **Pure.** The PORT is load-bearing and was previously dropped: `host_str()`
+/// returns the host without it, so a seed of `http://example.com:8080/` probed
+/// `http://example.com/.env` — a different service on a different port, or
+/// nothing at all. Every one of the [`CONFIG_LEAK_PATHS`] probes went to the
+/// wrong endpoint whenever the seed carried a non-default port, so the whole
+/// sweep silently did nothing useful for those targets.
+///
+/// This lives outside [`probe_config_leaks`] so that invariant can be asserted
+/// on a string, with no sockets involved. It was checked before by counting how
+/// many probes arrived at an ephemeral listener, which made a property of the
+/// URL builder depend on 103 concurrent requests all completing inside one
+/// 3-second client timeout — a test that failed CI twice on a loaded runner
+/// while the code under test was correct (REQ-CI-010).
+fn host_root_for(seed_url: &str, domain: &str) -> String {
+    match url::Url::parse(seed_url) {
+        Ok(u) => {
+            let host = u.host_str().unwrap_or(domain);
+            match u.port() {
+                Some(p) => format!("{}://{host}:{p}", u.scheme()),
+                None => format!("{}://{host}", u.scheme()),
+            }
+        }
+        Err(_) => seed_url.trim_end_matches('/').to_string(),
+    }
+}
+
 pub(super) async fn probe_config_leaks(
     http: &reqwest::Client,
     seed_url: &str,
@@ -157,24 +187,7 @@ pub(super) async fn probe_config_leaks(
     use tokio::sync::Semaphore;
     use tokio::task::JoinSet;
 
-    // Always probe at the host root — extract scheme://host[:port] from seed.
-    //
-    // The PORT is load-bearing and was previously dropped: `host_str()` returns
-    // the host without it, so a seed of `http://example.com:8080/` probed
-    // `http://example.com/.env` — a different service on a different port, or
-    // nothing at all. Every one of the 103 probes went to the wrong endpoint
-    // whenever the seed carried a non-default port, so the whole config-leak
-    // sweep silently did nothing useful for those targets.
-    let host_root = match url::Url::parse(seed_url) {
-        Ok(u) => {
-            let host = u.host_str().unwrap_or(domain);
-            match u.port() {
-                Some(p) => format!("{}://{host}:{p}", u.scheme()),
-                None => format!("{}://{host}", u.scheme()),
-            }
-        }
-        Err(_) => seed_url.trim_end_matches('/').to_string(),
-    };
+    let host_root = host_root_for(seed_url, domain);
 
     let timeout = Duration::from_millis(3000);
     let sem = std::sync::Arc::new(Semaphore::new(16));

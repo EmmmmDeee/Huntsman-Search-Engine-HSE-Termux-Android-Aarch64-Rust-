@@ -14261,6 +14261,56 @@ mutation that could not reach its control (WIKIDATA-001), a harness that never
 built (TYPOSQUAT-001, AUBUSINESSID-001), and now a comparison whose two sides
 were equal because both were empty.
 
+## REQ-CI-010 — an invariant about a URL, checked by counting sockets
+
+**Requirement.** The config-leak sweep must probe the seed's own port, and the
+check for that must not depend on how loaded the machine is.
+
+**Defect.** `probe_config_leaks` built `scheme://host[:port]` inline, and the
+only thing asserting the port survived was a socket test requiring **all**
+`CONFIG_LEAK_PATHS` probes to arrive at an ephemeral listener:
+
+```
+assert_eq!(hits, CONFIG_LEAK_PATHS.len())
+```
+
+103 paths fire concurrently behind a 16-permit semaphore with a 3000 ms
+per-request timeout, and `hits` increments on `accept()`. A probe whose client
+times out while still in the listen backlog is never accepted, so the count
+comes up short. The assertion coupled a property of the URL builder to an
+environment property — *every probe completes within 3 s on this runner* — and
+CI failed twice with the code under test correct, once as `left: 98 right: 100`.
+A previous fix (`9b090ab1`, serving each connection on its own task) did not
+hold. ROADMAP shape 3: a repeated manual procedure standing in for a structural
+property.
+
+**Fix.** `host_root_for` is now a pure function, and the invariant is asserted
+on strings — port preserved, explicit default port normalised away, scheme
+preserved, both fallbacks. The socket test keeps only what a socket can prove
+without a race: that the seed's ephemeral port was reached at all.
+
+**Why relaxing the count is safe.** Only because the deterministic lock exists
+first. The test's own comment already made the argument — what it exists to
+catch yields ZERO hits, never a near-miss — and the falsification confirms it:
+dropping the port fails all three locks *including* the relaxed socket test.
+Relaxing the assertion without the pure seam would have traded a flake for
+weaker coverage; doing it in this order does not.
+
+| Variant | Result |
+|---|---|
+| BASELINE — the original defect, port dropped | 3 locks fail, incl. the relaxed socket test |
+| M1 **over-correction** — explicit default port kept | the deterministic lock fails |
+| M2 scheme hardcoded to `http` | the deterministic lock fails |
+| M3 unparseable fallback invents an empty root | the deterministic lock fails |
+
+**On the stress evidence.** The de-raced test passed 20/20 under 8× CPU
+saturation — but so did the original, across 50 runs, so this is consistent
+with the fix rather than proof of it. The flake was never reproduced locally at
+all. What justifies the change is structural, not statistical: the assertion no
+longer names a quantity that timing can reduce.
+
+---
+
 ## REQ-MNEMONIC-001 — a dedup key that namespaced one collision and left two
 
 **Requirement.** Passive-DNS de-duplication must collapse the same assertion

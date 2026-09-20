@@ -432,6 +432,17 @@ by looking for them rather than reading modules at random:**
    collision, enumerate the others it does not.** Ask what two DIFFERENT facts
    could produce the same key, and put whatever distinguishes them into it.
 
+   **A test that strains to reach its invariant is telling you the seam is in
+   the wrong place.** The config-leak port check spent 103 concurrent sockets
+   and a 3-second timeout to assert a property of a URL string, and failed CI
+   twice with the code correct (REQ-CI-010). Its rule: **when a test needs
+   elaborate machinery to observe a simple property, extract the property
+   instead of hardening the machinery** — the previous fix hardened the
+   machinery and did not hold. Then, and only then, relax the expensive
+   assertion to what its machinery can prove without a race; a deterministic
+   lock must exist BEFORE the relaxation, or a flake has been traded for
+   weaker coverage.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other
