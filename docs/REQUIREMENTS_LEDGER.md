@@ -14261,6 +14261,57 @@ mutation that could not reach its control (WIKIDATA-001), a harness that never
 built (TYPOSQUAT-001, AUBUSINESSID-001), and now a comparison whose two sides
 were equal because both were empty.
 
+## REQ-CI-004 — a decision function with one hidden argument, and a flake that was never the point
+
+**Requirement.** The dispatch skip gate must be decidable from its inputs, so a
+test of it cannot be changed by another test in the same binary.
+
+**Defect.** `module_skip_reason` takes the module, target, options, round and
+source count — and read a sixth input from a process global:
+
+```rust
+if super::circuit::is_open(name) { ... }
+```
+
+`super::circuit` keeps `static STATE: OnceLock<Mutex<HashMap<&'static str, Trip>>>`,
+keyed by module NAME. Tests that trip a circuit (`record_rate_limit`,
+`record_soft_failure`, `record_bot_challenge`) therefore change what every other
+test asking about that module sees. Two `skip_reason` tests passed only under
+`--test-threads=1`, and *different* tests failed on identical runs — the
+signature of order dependence rather than of a bug in any one test.
+
+**The flake was not reproducible, and that did not matter.** Eighteen runs on the
+current tree — twelve of `core::engine` in parallel, six of the full suite under
+4× CPU saturation — all passed. Hunting the timing further would have been the
+wrong move: **the race is only how the coupling shows.** The coupling itself is
+deterministic, so it can be demonstrated on purpose: trip the circuit for a
+module, then ask the gate about that module. That is a failing baseline with no
+scheduler involved, and it is what the lock does.
+
+**Fix.** The verdict is injected. `module_skip_reason_with(..., circuit_open)`
+holds the decision; `module_skip_reason` is a thin wrapper that reads the global
+once and delegates. The test helper passes `false` explicitly — *stated, not
+hoped for* — so the ~40 gate assertions that are about allowlists, exclusions,
+scope and focus are no longer coupled to the circuit state at all.
+
+| Variant | Result |
+|---|---|
+| BASELINE — no seam, the gate reads the global | the coupling lock fails |
+| M1 — the wrapper stops consulting the real circuit | 3 fail, incl. `circuit_breaker_trip_skips_the_module_at_the_dispatch_gate` |
+| M2 — the injected verdict inverted | 48 fail |
+
+M1 is the one that matters for safety: it proves the seam did not quietly
+disable circuit breaking in production. The wrapper is still the only caller
+that matters, and it still honours a real trip.
+
+**Family.** Third instance of process-global state leaking into a test, after
+REQ-CI-003 (a key pool reset by parallel threads) and REQ-CI-010 (an invariant
+asserted by counting sockets). The shared lesson is narrower than "tests should
+be isolated": **when a function's behaviour depends on state that is not in its
+signature, its tests are ordered whether or not anyone chose that.**
+
+---
+
 ## REQ-CI-010 — an invariant about a URL, checked by counting sockets
 
 **Requirement.** The config-leak sweep must probe the seed's own port, and the

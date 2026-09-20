@@ -336,6 +336,41 @@ pub(super) fn module_skip_reason(
     is_expansion: bool,
     target_distinct_sources: usize,
 ) -> Option<(SkipClass, &'static str)> {
+    // The ONE place the process-global circuit map is read for this decision.
+    let circuit_open = super::circuit::is_open(module.name());
+    module_skip_reason_with(
+        module,
+        target,
+        opts,
+        is_expansion,
+        target_distinct_sources,
+        circuit_open,
+    )
+}
+
+/// [`module_skip_reason`] with the circuit-breaker verdict **injected**.
+///
+/// Every other input to this decision is an argument; the circuit state was
+/// not, and it is the only one that lives in a process-global
+/// `Mutex<HashMap<&str, Trip>>` keyed by module NAME
+/// ([`super::circuit`]). That made a pure-looking gate order-dependent: any
+/// test that trips a circuit for a module — `record_rate_limit`,
+/// `record_soft_failure`, `record_bot_challenge` — changes what every OTHER
+/// test asking about that module sees, in whichever order the harness happens
+/// to run them. Two `skip_reason` tests passed only under `--test-threads=1`
+/// for exactly that reason (REQ-CI-004), the second recorded instance after a
+/// process-global key pool reset by parallel threads (REQ-CI-003).
+///
+/// The race is only how it SHOWS. The coupling is deterministic, and this seam
+/// is what lets a test state "no circuit is open" as a fact rather than a hope.
+pub(super) fn module_skip_reason_with(
+    module: &dyn Module,
+    target: &Target,
+    opts: &ScanOptions,
+    is_expansion: bool,
+    target_distinct_sources: usize,
+    circuit_open: bool,
+) -> Option<(SkipClass, &'static str)> {
     let name = module.name();
     // The allowlist means "ONLY these modules run" (`hse --help`) — and that
     // must hold on EVERY round, not just the seed. Gating it with `!is_expansion`
@@ -376,7 +411,7 @@ pub(super) fn module_skip_reason(
     // (and extends the ban); skipping it hands that dispatch slot to a source
     // that still works — the budget the alias scan needs to find more. Checked
     // here (not as a hard exclusion) so it auto-recovers when the window passes.
-    if super::circuit::is_open(name) {
+    if circuit_open {
         return Some((
             SkipClass::Unavailable,
             "circuit-open — rate-limited/quota/repeated failure (cooling down)",

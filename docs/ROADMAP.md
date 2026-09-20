@@ -443,6 +443,15 @@ by looking for them rather than reading modules at random:**
    lock must exist BEFORE the relaxation, or a flake has been traded for
    weaker coverage.
 
+   **A hidden argument makes tests ordered whether or not anyone chose that.**
+   `module_skip_reason` took five arguments and read a sixth — the circuit
+   breaker — from a process-global map keyed by module name, so any test that
+   tripped a circuit changed what every other test saw (REQ-CI-004). Its rule:
+   **a decision function's inputs must all be in its signature; inject the
+   global and let the caller read it.** And when the symptom is a flake,
+   remember the race is only how the coupling SHOWS — set the global yourself
+   and the failing baseline is deterministic, with no scheduler to win.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other

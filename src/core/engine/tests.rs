@@ -16,8 +16,22 @@ fn skip_reason(
     is_expansion: bool,
     target_distinct_sources: usize,
 ) -> Option<&'static str> {
-    module_skip_reason(module, target, opts, is_expansion, target_distinct_sources)
-        .map(|(_, reason)| reason)
+    // `circuit_open: false` is STATED, not hoped for. `module_skip_reason`
+    // reads a process-global circuit map keyed by module name, so these
+    // assertions used to depend on whether some other test in the binary had
+    // tripped a circuit for the same module first — which is why two of them
+    // passed only under `--test-threads=1` (REQ-CI-004). None of the gates
+    // pinned below is about the circuit breaker; that gate has its own tests,
+    // which set the state they need explicitly.
+    super::dispatch::module_skip_reason_with(
+        module,
+        target,
+        opts,
+        is_expansion,
+        target_distinct_sources,
+        false,
+    )
+    .map(|(_, reason)| reason)
 }
 
 #[tokio::test]
@@ -1305,6 +1319,11 @@ fn circuit_breaker_trip_skips_the_module_at_the_dispatch_gate() {
     // re-dispatching a dead provider and hands that budget to working sources.
     // A unique module name keeps this independent of the process-global breaker
     // state the circuit unit tests touch.
+    //
+    // This test goes through `module_skip_reason` — the REAL entry point that
+    // reads the global — because the circuit is what it is about. The generic
+    // `skip_reason` helper pins `circuit_open: false` so the ~40 assertions
+    // that are NOT about the circuit stop depending on it (REQ-CI-004).
     let m = StubModule {
         name: "test_circuit_gate",
         cost: ModuleCost::Free,
@@ -1316,14 +1335,16 @@ fn circuit_breaker_trip_skips_the_module_at_the_dispatch_gate() {
 
     // Healthy → not skipped for circuit reasons.
     assert!(
-        skip_reason(&m, &pub_target(), &opts, false, 0).is_none(),
+        module_skip_reason(&m, &pub_target(), &opts, false, 0)
+            .map(|(_, r)| r)
+            .is_none(),
         "a healthy module must not be gated"
     );
 
     // Trip it as a 429/quota response would, then the gate skips it.
     super::circuit::record_rate_limit(m.name());
     assert_eq!(
-        skip_reason(&m, &pub_target(), &opts, false, 0),
+        module_skip_reason(&m, &pub_target(), &opts, false, 0).map(|(_, r)| r),
         Some("circuit-open — rate-limited/quota/repeated failure (cooling down)"),
         "a tripped module must be skipped at the dispatch gate"
     );
@@ -1331,7 +1352,9 @@ fn circuit_breaker_trip_skips_the_module_at_the_dispatch_gate() {
     // A success clears the trip — the gate trusts a recovered provider again.
     super::circuit::record_success(m.name());
     assert!(
-        skip_reason(&m, &pub_target(), &opts, false, 0).is_none(),
+        module_skip_reason(&m, &pub_target(), &opts, false, 0)
+            .map(|(_, r)| r)
+            .is_none(),
         "a recovered module must dispatch again"
     );
 }
@@ -6724,5 +6747,53 @@ async fn an_onion_exposure_url_is_recorded_but_never_fetched() {
     assert!(
         onion_skip,
         "the onion skip must be recorded under its own reason for the audit ledger"
+    );
+}
+
+#[test]
+fn the_skip_gate_reads_the_circuit_only_through_its_argument() {
+    // REQ-CI-004, asserted deterministically rather than by racing the harness.
+    //
+    // `module_skip_reason` consults a PROCESS-GLOBAL circuit map keyed by module
+    // name, so any test that trips a circuit changes what every other test
+    // asking about that module sees, in whichever order the harness runs them.
+    // That is why two `skip_reason` tests passed only under `--test-threads=1`.
+    //
+    // This test deliberately touches NO global state. An earlier draft tripped a
+    // real circuit here to dramatise the point and broke
+    // `circuit_breaker_trip_skips_the_module_at_the_dispatch_gate` — creating
+    // exactly the cross-test coupling this cycle removes. The wrapper's reading
+    // of the real circuit is that test's job; this one's is the seam.
+    let m = StubModule {
+        name: "test_skip_gate_injection",
+        cost: ModuleCost::Free,
+        passive: false,
+        high_value_only: false,
+        requires_geo_corroboration: false,
+    };
+    let opts = ScanOptions::default();
+    let circuit_reason = "circuit-open — rate-limited/quota/repeated failure (cooling down)";
+
+    // The injected verdict decides, in both directions, with the global never
+    // consulted and never written.
+    assert_eq!(
+        super::dispatch::module_skip_reason_with(&m, &pub_target(), &opts, false, 0, true)
+            .map(|(_, r)| r),
+        Some(circuit_reason),
+        "an open circuit must close the gate when it is passed in"
+    );
+    assert_ne!(
+        super::dispatch::module_skip_reason_with(&m, &pub_target(), &opts, false, 0, false)
+            .map(|(_, r)| r),
+        Some(circuit_reason),
+        "a closed circuit must not — the gate reads this ONLY through its argument"
+    );
+
+    // Vacuity guard: the module must otherwise pass the gate, or the assertions
+    // above would hold for a reason that has nothing to do with the circuit.
+    assert!(
+        super::dispatch::module_skip_reason_with(&m, &pub_target(), &opts, false, 0, false)
+            .is_none(),
+        "the stub must be dispatchable when no circuit is open"
     );
 }
