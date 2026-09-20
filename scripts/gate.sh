@@ -46,14 +46,33 @@ set -uo pipefail
 # gate, "because it reports success it did not establish". Reporting a FAILURE
 # it did not establish is the same defect wearing the other sign.
 #
-# It is also convergence with CI, not drift from it: CI is this script's
-# declared source of truth, and CI never reuses incremental state — every runner
-# starts from a fresh disk. The local gate hoarding it was the divergence.
+# It is also convergence with CI, not drift from it — though for a sharper
+# reason than "the runners start clean", which is false: every workflow here
+# restores a cached `target/` via Swatinem/rust-cache. That action sets
+# CARGO_INCREMENTAL=0 itself and keeps incremental artifacts out of its cache,
+# so CI has ALWAYS run with incremental disabled and no workflow had to say so.
+# This script was the only place in the repository that did not.
 export CARGO_INCREMENTAL=0
 
-# Refuse to start without room to finish, and say so in terms of the DISK.
-# Override for a host with a differently-sized volume.
-MIN_FREE_MB="${HSE_GATE_MIN_FREE_MB:-8192}"
+# Two thresholds, because they answer different questions and must not share a
+# constant. Both are measured, and both are overridable for a differently-sized
+# volume.
+#
+#   MIN_FREE_MB  "is there room to START?"  A full run was measured consuming
+#                ~6.4 GiB (13 GiB free -> 6.6 GiB) with incremental already off,
+#                nearly all of it `deps/`. The floor is deliberately BELOW that:
+#                a run that finishes leaves ~6.6 GiB free, and an 8 GiB floor
+#                would refuse the very next run — blocking the common case, a
+#                back-to-back gate. Growth during a run is covered by the
+#                mid-run note below, so this only has to keep the disk off the
+#                floor at the start. Observed failure point was 1.1 GiB / 98%.
+#
+#   LOW_DISK_MB  "could the disk plausibly have CAUSED this failure?" True only
+#                near actual exhaustion. Using MIN_FREE_MB here would print a
+#                disk warning on genuine test failures with gigabytes free —
+#                the same false signal this cycle exists to remove, inverted.
+MIN_FREE_MB="${HSE_GATE_MIN_FREE_MB:-4096}"
+LOW_DISK_MB="${HSE_GATE_LOW_DISK_MB:-1024}"
 
 free_mb() { df -Pk . | awk 'NR==2 {print int($4/1024)}'; }
 
@@ -79,9 +98,9 @@ run() { # run <name> <command...>
         # (REQ-GATE-001). Name the disk here so the next reader does not spend
         # the afternoon bisecting a change that was never at fault.
         local now; now="$(free_mb)"
-        if [ "$now" -lt "$MIN_FREE_MB" ]; then
-            printf '\033[1;31m    !! %s MiB free on this volume (floor %s MiB) — this failure may be DISK EXHAUSTION, not a real defect. Check the log for "No space left on device" / "ld terminated with signal 7" before believing it.\033[0m\n' \
-                "$now" "$MIN_FREE_MB"
+        if [ "$now" -lt "$LOW_DISK_MB" ]; then
+            printf '\033[1;31m    !! %s MiB free on this volume (near-exhaustion line %s MiB) — this failure may be DISK EXHAUSTION, not a real defect. Check the log for "No space left on device" / "ld terminated with signal 7" before believing it.\033[0m\n' \
+                "$now" "$LOW_DISK_MB"
         fi
     fi
 }

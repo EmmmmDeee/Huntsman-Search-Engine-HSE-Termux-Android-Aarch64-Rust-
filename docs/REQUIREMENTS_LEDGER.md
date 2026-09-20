@@ -15222,17 +15222,22 @@ quietly drops a check is worse than no gate, "because it reports success it did
 not establish" — reporting a **failure** it did not establish is the same
 defect wearing the other sign.
 
-This is also convergence with CI, not drift from it. `gate.sh` names
-`.github/workflows/{ci,rust-clippy,fuzz,audit}.yml` its source of truth, and CI
-never reuses incremental state — every runner starts from a fresh disk. The
-local gate hoarding it was the divergence. And the cache buys this script
+This is also convergence with CI, not drift from it — for a sharper reason than
+the one this entry first gave. **"CI never reuses incremental state, every
+runner starts from a fresh disk" was wrong**: every workflow here restores a
+cached `target/` via `Swatinem/rust-cache`. What is true is stronger — that
+action sets `CARGO_INCREMENTAL=0` itself and keeps incremental artifacts out of
+its cache, so CI has always run with incremental disabled and no workflow had to
+say so. `scripts/gate.sh` was the only place in this repository that did not.
+The original reason was asserted from recall rather than read off the workflow
+files; none of the measured evidence below ever depended on it. And the cache buys this script
 almost nothing: it is a full-verification run, not an edit-compile loop, and
 its cargo invocations carry different flags (`check --all-targets`, `clippy`,
 `test`, `test --doc`, plus the `hse-core` and `wasm-ui` workspaces), so each
 gets its own fingerprint.
 
 Fixed in two parts: `export CARGO_INCREMENTAL=0`, and a **preflight** that
-refuses to start below `MIN_FREE_MB` (default 8 GiB, `HSE_GATE_MIN_FREE_MB` to
+refuses to start below `MIN_FREE_MB` (default 4 GiB, `HSE_GATE_MIN_FREE_MB` to
 override) with a message naming the disk, printing the reclaimable directories
 with their real sizes, and warning against blanket-deleting `deps/`. Because a
 preflight cannot cover growth *during* a run, `run()` also re-measures on any
@@ -15251,6 +15256,55 @@ A2 is the load-bearing one: it proves the export is what does the work rather
 than something incidental about the environment. A **single** `cargo check
 --lib` produces 297 MiB; the gate runs roughly ten such invocations across
 profiles and workspaces, which is the 7.6 GiB.
+
+#### Two defects in this change, both found by watching a real run
+
+**The mid-run note cried wolf.** It reused `MIN_FREE_MB` — a *start-of-run*
+requirement — to answer a different question, "could the disk have caused THIS
+failure?". Free space falls ~6.4 GiB over a run as `deps/` grows, so any genuine
+check failure in the second half would have printed a disk warning with
+gigabytes free: the same false signal this cycle exists to remove, pointing the
+other way. Split into `LOW_DISK_MB` (1 GiB, near the observed 1.1 GiB failure
+point); a few hundred MiB is what linking a large binary needs.
+
+**The floor blocked its own next run.** At 8 GiB it refused to start after a
+successful gate, which ends at ~6.6 GiB free — blocking the commonest case, a
+back-to-back run. Lowered to 4 GiB: ~4× the observed failure point, permitting
+a re-run, with growth during the run now covered by the corrected mid-run note.
+
+Neither was visible from the design. Both required measuring the disk *during*
+and *after* a full run — a preflight-only view cannot see them, because the
+whole point is that `deps/` grows after the preflight has already passed.
+
+| Control | Result |
+|---|---|
+| C1 start at 6 721 MiB (under the old floor) | **starts** — the back-to-back regression is gone |
+| C2 floor raised above free space | refuses, exits 1 |
+| C3 failed check with 7 100 MiB free | **no** disk note — correct |
+| C4 failed check with 400 MiB free | disk note printed — correct |
+
+C3 and C4 bracket the threshold from both sides, because a note that never
+fires is as useless as one that always fires.
+
+#### Wall-time was measured, not assumed
+
+Disabling incremental could have traded a disk problem for a latency problem,
+so the transfer was checked rather than asserted:
+
+| stage | incremental ON | OFF |
+|---|---|---|
+| `check` | 3m 10s | 1m 25s |
+| `clippy` | 1m 48s | 1m 28s |
+| `rustdoc lints` | 1m 20s | 1m 01s |
+| `test` | 4m 43s | 2m 45s |
+| `doctests` | 2m 16s | 1m 51s |
+| **total** | **13m 17s** | **8m 30s** |
+
+**Confounded, and stated as such:** the ON run began with `deps/` freshly pruned
+to 2 229 files, the OFF run at ~2 775 — a warmer dependency cache. The
+defensible claim is *no evidence of a wall-time regression, and every comparable
+stage was faster*, not a clean 36% speedup. Not writing 7.6 GiB the gate never
+reads is the plausible mechanism, but it is not isolated here.
 
 Residual: the floor is a constant, not a measurement of what the current tree
 will actually need. It was set from observed usage (~6 GiB for a from-scratch
