@@ -493,6 +493,27 @@ by looking for them rather than reading modules at random:**
    survivors is three authorities, and the next reader cannot tell which is
    canonical.
 
+   **A filter's SHAPE can contradict the thing it filters.**
+   `is_plausible_provider_coord` exists to drop a no-fix placeholder that is a
+   *point* near `0,0`, and was written as "neither component may be near zero"
+   — a cross of two great-circle strips, not a square, so thirteen modules went
+   blind along the whole equator and the whole prime meridian while every
+   comment and every fixture in the tree described the square
+   (REQ-GEOGATE-001). Its rule: **when a guard rejects a region, state the
+   region's shape in the same words as the thing it is rejecting, and test a
+   real value from the difference between them.** The difference here held
+   Greenwich, Pontianak and the Gironde — and two of the three assertions
+   pinning the wrong shape used coordinates that are real inhabited places as
+   their examples of what must be discarded.
+
+   **A fix is only as permanent as its least-locked call site.**
+   REQ-WIGLE-001 applied the band gate to three sites and locked one; two could
+   be reverted with all 52 of the module's tests still green (REQ-GEOGATE-001).
+   The same gap appeared in REQ-ZOOMEYE-002, REQ-DOCPARSE-002 and
+   REQ-SEEKNOW-001 before it. Its rule: **mutate every call site, not the shared
+   helper** — a helper-level lock proves the helper, and says nothing about who
+   calls it.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other

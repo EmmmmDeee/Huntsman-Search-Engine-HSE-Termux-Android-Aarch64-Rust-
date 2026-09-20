@@ -233,12 +233,104 @@ use super::*;
 
     #[test]
     fn plausible_provider_coord_drops_null_island_band() {
-        // The band the IP/WiFi providers emit as "no fix".
+        // The square the IP/WiFi providers emit as "no fix": BOTH components
+        // inside `NULL_ISLAND_BAND`. Every sample any provider in this repo has
+        // been observed emitting has that shape.
         assert!(!is_plausible_provider_coord(0.0, 0.0));
         assert!(!is_plausible_provider_coord(0.001, 0.001));
-        // Either component inside the band is enough to drop it.
-        assert!(!is_plausible_provider_coord(0.005, 120.0));
-        assert!(!is_plausible_provider_coord(45.0, -0.004));
+        assert!(!is_plausible_provider_coord(0.005, 0.005));
+        assert!(!is_plausible_provider_coord(0.004, 0.004));
+        assert!(!is_plausible_provider_coord(0.005, -0.002));
+        assert!(!is_plausible_provider_coord(-0.009, 0.009));
+        // The band edge itself is still inside the square — `> BAND` is the
+        // accept condition, so exactly `0.01` is a placeholder, not a fix.
+        assert!(!is_plausible_provider_coord(
+            NULL_ISLAND_BAND,
+            NULL_ISLAND_BAND
+        ));
+    }
+
+    /// REQ-GEOGATE-001. The band is a **sentinel filter**, not a geographic
+    /// exclusion zone, and nothing else in this suite pins its width — set
+    /// `NULL_ISLAND_BAND` to `1.0` and every other test here still passes while
+    /// the gate silently discards every fix within ~111 km of Null Island.
+    ///
+    /// The widest no-fix sample any provider in this repo has been observed
+    /// emitting is `0.005`. The band sits at `0.01`: twice that, a square ~2.2 km
+    /// on a side. That is wide enough to swallow the jitter and narrow enough that
+    /// the discarded square is open water — the nearest land to Null Island is
+    /// ~570 km north, off Ghana. Widening it trades real fixes for a sentinel
+    /// no provider emits, so the width is a decision, not an implementation
+    /// detail, and changing it has to be deliberate.
+    #[test]
+    fn null_island_band_stays_a_sentinel_filter_not_an_exclusion_zone() {
+        assert!(
+            (NULL_ISLAND_BAND - 0.01).abs() < f64::EPSILON,
+            "NULL_ISLAND_BAND moved to {NULL_ISLAND_BAND}. It is twice the widest \
+             no-fix jitter sample (0.005) any provider here has been observed \
+             emitting, and every coarse-geo module discards anything inside it. \
+             Widening it discards real fixes; narrowing it lets a placeholder \
+             through. Update this test and the constant's doc together, or revert."
+        );
+        // The widest observed placeholder sample stays inside the square.
+        assert!(!is_plausible_provider_coord(0.005, 0.005));
+        // Twice the band out is a fix, not a sentinel — stated as a literal,
+        // because `2.0 * NULL_ISLAND_BAND` would track a widened band and
+        // assert nothing.
+        assert!(
+            is_plausible_provider_coord(0.02, 0.02),
+            "a coordinate twice the declared band away from Null Island is being \
+             treated as a no-fix placeholder — the band has grown into a \
+             geographic exclusion zone"
+        );
+    }
+
+    /// REQ-GEOGATE-001. The gate rejects the Null Island **square**, not the
+    /// cross of two strips `either component is near zero` describes. The cross
+    /// is two ≈2.2 km-wide bands running the entire length of the equator and
+    /// the entire length of the prime meridian, and this gate stands in front of
+    /// thirteen modules — so under it HSE could not report a coordinate at the
+    /// Royal Observatory, in Pontianak, or anywhere else below.
+    ///
+    /// These are inhabited places, not placeholders. Each has ONE component
+    /// inside the band and one unmistakably real, which is exactly the shape no
+    /// provider in this repo has ever been observed emitting as a no-fix
+    /// answer: `0.001,0.001`, `0.005,0.005`, `0.004,0.004`, `0.005,-0.002` all
+    /// put BOTH components inside the square.
+    #[test]
+    fn plausible_provider_coord_keeps_real_places_on_the_equator_and_meridian() {
+        // (name, lat, lon) — every one a real, inhabited place.
+        let places: &[(&str, f64, f64)] = &[
+            ("Royal Observatory, Greenwich", 51.4779, -0.0015),
+            ("Peacehaven, England", 50.7930, -0.0010),
+            ("Villers-sur-Mer, Calvados, France", 49.3236, -0.0022),
+            ("Gironde, France", 45.0000, -0.0040),
+            ("Central Sulawesi, Indonesia", 0.0050, 120.0000),
+            ("Pontianak, Indonesia", 0.0000, 109.3333),
+            ("Nanyuki, Kenya", 0.0000, 37.0730),
+            ("Tema Junction, Ghana", 5.6300, 0.0000),
+        ];
+        // Vacuity guard: the sweep must actually sweep something, and every
+        // entry must genuinely sit in the band on exactly one axis — otherwise
+        // this test could pass without ever exercising the corrected shape.
+        assert!(places.len() >= 8, "the sweep lost its inputs");
+        for (name, lat, lon) in places {
+            let in_band = u8::from(lat.abs() <= NULL_ISLAND_BAND)
+                + u8::from(lon.abs() <= NULL_ISLAND_BAND);
+            assert_eq!(
+                in_band, 1,
+                "{name} is not a one-axis case ({lat}, {lon}) — it cannot \
+                 distinguish the square from the cross"
+            );
+            assert!(
+                is_plausible_provider_coord(*lat, *lon),
+                "REQ-GEOGATE-001: {name} ({lat}, {lon}) is a real inhabited place, \
+                 not a provider's no-fix placeholder. The gate is rejecting the \
+                 CROSS (either component near zero) instead of the SQUARE (the \
+                 point near 0,0), so every coarse-geo module has gone blind along \
+                 the equator and the prime meridian."
+            );
+        }
     }
 
     #[test]

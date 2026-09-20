@@ -73,8 +73,12 @@ use super::*;
         // (is_plausible_provider_coord), not the precise is_valid_coords.
         use crate::util::geo::is_plausible_provider_coord;
         assert!(!is_plausible_provider_coord(0.005, 0.005)); // no-fix jitter
-        assert!(!is_plausible_provider_coord(0.0, 153.0)); // one component in band
         assert!(is_plausible_provider_coord(-27.4766, 153.0166)); // real Brisbane fix
+        // REQ-GEOGATE-001: `0.0, 153.0` is a real equatorial fix — north of
+        // Papua New Guinea, on ipwho.is's own coverage — not a placeholder.
+        // The placeholder is a point near `0,0`; a single component near zero
+        // is the equator or the prime meridian, where people live.
+        assert!(is_plausible_provider_coord(0.0, 153.0));
     }
 
     // ── build_entities (pure extraction) ───────────────────────────────

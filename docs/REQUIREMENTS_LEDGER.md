@@ -14940,3 +14940,222 @@ stakes block, all three mutations fail.
 Two corrections to one assertion, both found by falsification rather than by
 reading it — which is the argument for running the mutations even when the
 assertion looks obviously right.
+
+### REQ-GEOGATE-001 — the coarse-provider gate rejected a cross, not a square
+
+**Filed as:** *"Still on the weak `is_valid_coords`: wifidb, mylnikov, beacondb,
+cell_intel/helpers, cell_local. Each is a bulk wardriving/cell-observation
+database, the same family as WiGLE whose no-fix placeholder is the near-null-island
+jitter band. Each needs its OWN check of whether that provider actually emits a
+placeholder in the band before its gate is changed — NOT a blanket sweep."*
+
+**The premise was refuted for all five, and refuting it found the real defect.**
+
+#### The five, one at a time (as the filing required)
+
+Each of the five has an **explicit, out-of-band no-fix channel**, which is
+precisely why none of them needs a coordinate-shaped placeholder:
+
+| provider | documented no-fix answer | where it is handled | in the band? |
+|---|---|---|---|
+| `beacondb` | `{"accuracy":25000,"fallback":"ipf","location":{"lat":37.79,"lng":-122.40}}` — the **caller's own** IP position, another continent from the AP | `build_location_entity` discards any `fallback` marker; `considerIp:false` on the request | no — a real position 10 000 km away |
+| `mylnikov` | `{"result":404,"data":{},"desc":"Object was not found"}` (observed live 2026-09-15) | `classify` maps 404 → `Ok(None)` **before** the gate is reached | no — no coordinate is emitted at all |
+| `wifidb` | an empty GeoJSON `FeatureCollection` | `build_result` loops zero features | no |
+| `cell_intel` (OpenCelliD) | `status:"error"`, or a body-level `error` on a plain 200 | both checked before `lat`/`lon` are read | no |
+| `cell_local` | not a provider response — an offline SQLite read of an imported corpus | n/a | n/a |
+
+WiGLE is the **outlier**, not the family archetype: its no-fix rides *in the
+coordinate field itself*, which is why `is_plausible_provider_coord` was built
+for it. Tightening the other five would have bought nothing.
+
+#### What the check actually found
+
+Reading the gate to apply it exposed that its **shape** contradicts its own
+stated purpose. The placeholder is a point near `0,0`. The implementation was:
+
+```rust
+is_valid_coords(lat, lon) && lat.abs() > NULL_ISLAND_BAND && lon.abs() > NULL_ISLAND_BAND
+```
+
+— accept only if **both** components clear the band, i.e. reject if **either**
+does. That is not a square around the origin. It is a **cross**: two ≈2.2 km-wide
+strips running the entire length of the equator and the entire length of the
+prime meridian. Thirteen modules stand behind that gate (`censys`,
+`criminal_ip`, `geo_intel`, `ip_geo`, `ip_whois_geo`, `netlas`, `wifi_intel`,
+`wigle` directly; `ip2location`, `ipinfo`, `ipquery`, `onyphe`, `zoomeye` via
+`coarse_provider_coords`), so none of them could report a fix at any of these:
+
+| point | where |
+|---|---|
+| `51.4779, -0.0015` | the Royal Observatory, Greenwich |
+| `50.7930, -0.0010` | Peacehaven, England |
+| `49.3236, -0.0022` | Villers-sur-Mer, Calvados, France |
+| `45.0000, -0.0040` | the Gironde, France |
+| `0.0050, 120.0000` | Central Sulawesi, Indonesia |
+| `0.0000, 109.3333` | Pontianak, Indonesia |
+| `0.0000,  37.0730` | Nanyuki, Kenya |
+| `5.6300,   0.0000` | Tema Junction, Ghana |
+
+The codebase contradicted itself about the same coordinate: `is_valid_coords`'s
+doctest called `(0.0, 153.0)` *"a real equatorial fix is kept"*, while
+`is_plausible_provider_coord`'s doctest and `ip_whois_geo`'s test both asserted
+the identical point must be **rejected** as a placeholder.
+
+Three assertions pinned the wrong shape, and two of them used coordinates that
+are real inhabited places: `(0.005, 120.0)` is Central Sulawesi, `(45.0, -0.004)`
+is the Gironde. Both were written as examples of what must be discarded. (A
+separate `ip_whois_geo` fixture labels a `0.005,0.005` jitter body
+`"city": "Accra"` — that one is correct, both components are inside the square,
+and Accra is simply the nearest large city to Null Island.)
+
+#### The evidence that the cross bought nothing
+
+No provider in this repository is documented or observed emitting a
+**half-placeholder** — one real component beside one near-zero one. Every
+recorded sample puts *both* components inside the square: `0.0000,0.0000`,
+`0.001,0.001`, `0.005,0.005`, `0.004,0.004`, `0.005,-0.002`. Every one of the
+thirteen call-site comments describes the target as "near-null-island", "around
+`(0,0)`", "a sub-degree jitter band around `(0,0)`".
+
+All thirteen were checked for the shape that would make the cross load-bearing
+— a component defaulted to `0.0` when the provider omitted it. The eight direct
+callers each destructure `Option`s (`(Some(lat), Some(lon))`, `.zip()`, `?`) and
+the five reached through `coarse_provider_coords` do the same, `onyphe` and
+`zoomeye` inside their own `coords()` helpers, `ipinfo` via `parse::<f64>()` on
+each half of its `loc` string. A missing component arrives as `None` and never
+reaches the gate — with **one exception**, below.
+
+#### The fix
+
+```rust
+is_valid_coords(lat, lon)
+    && !(lat.abs() <= NULL_ISLAND_BAND && lon.abs() <= NULL_ISLAND_BAND)
+```
+
+Every placeholder sample and every invalid value stays rejected; the band edge
+stays rejected; the eight real places above are kept.
+
+#### The defect the fix would have moved (caught by mutation, not by reading)
+
+`wigle::emit::emit_bssid_entities` bailed on a missing `trilat` and then wrote
+`let lon = net.trilong.unwrap_or(0.0);` — asymmetric, one line apart. The **old
+cross masked it**: a fabricated longitude of `0.0` always fell in the rejected
+strip, so the half-coordinate never became an entity. Correcting the gate to the
+square would have turned `51.4779, 0.0` into a first-class `geoint` fix on the
+prime meridian for a network WiGLE never reported a longitude for. Fixed at the
+root — a missing component is not zero — in the same commit, because shipping
+the gate alone would have *moved* a defect rather than eliminated one.
+
+The check sits at the **coordinate site**, not beside the `trilat` bail. The
+first draft bailed early, symmetric with latitude, and that was wrong for a
+reason the diff review caught: the `Address` built above it comes from
+`city`/`region`/`country` and never touches a coordinate, so an early return
+discarded a perfectly good Address to fix a coordinate defect. The lock asserts
+both halves, and M7b — moving the bail back up — fails on the Address half.
+
+**M7b was vacuous on its first run.** The mutation put the early bail where the
+`if let` already stood, i.e. still *below* the Address block, so it changed no
+behaviour and "survived" while proving nothing. Re-anchored to the line after
+the `trilat` bail, it fails as it should. A surviving mutation is a claim about
+the lock; it has to be checked that the mutation reached the thing the lock
+guards before it is believed.
+
+A sweep for the same shape found exactly one other coordinate zero-default in
+the tree (`open_meteo_geo`'s struct-wide `#[serde(default)]` over bare `f64`
+lat/lon). It is **not** touched here: that module was on `is_valid_coords`
+before and after, so this change neither creates nor worsens it. Filed as
+REQ-OPENMETEO-001 with its own reproduction.
+
+### Falsified
+
+| Mutation | Result |
+|---|---|
+| M1 revert to the cross (`both components must exceed`) | **lock fails**, naming the Royal Observatory |
+| M2 gate removed entirely | 3 controls fail |
+| M3 boundary slip `<=` → `<` | band-edge control fails |
+| M3b `&&` → `\|\|` inside the negation (over-rejects) | **lock fails** |
+| M4 band widened 100× (`0.01` → `1.0`) | sentinel-filter control fails |
+| M5 band narrowed 10× (`0.01` → `0.001`) | lock's vacuity guard fails + 1 control |
+| M6a `wigle` AP-rank gate → weak | `a_jitter_band_tower_is_not_a_top_three_position` |
+| M6b `wigle` BSSID coords emit → weak | `emit_bssid_entities_never_mints_a_jitter_band_placeholder` |
+| M6c `wigle` SSID coords emit → weak | `emit_ssid_entities_never_mints_a_jitter_band_placeholder` |
+| M7a `trilong` back to `unwrap_or(0.0)` | `emit_bssid_entities_never_fabricates_a_missing_longitude` |
+| M7b the `trilong` bail moved back ABOVE the Address block | the same lock's Address half |
+| M7c band gate dropped, `trilong` check kept | `emit_bssid_entities_never_mints_a_jitter_band_placeholder` |
+
+**M4 survived the first run.** Widening `NULL_ISLAND_BAND` a hundredfold — so
+the gate discards every fix within ~111 km of Null Island — killed *nothing*:
+the lock is band-width-agnostic by construction, and every other control uses
+points far outside any plausible band. Nothing in the tree pinned the width. The
+control added for it asserts the constant numerically **and** behaviourally, the
+behavioural half stated as a literal `0.02` rather than `2.0 * NULL_ISLAND_BAND`,
+which would have tracked a widened band and asserted nothing.
+
+#### Residual, recorded rather than dropped
+
+*The direction of the remaining risk has changed, and it is the cheaper
+direction.* The cross discarded real fixes across two great-circle strips — a
+loss that is silent, permanent, and proportional to how much of the world lies
+on the equator and the prime meridian. The square's residual is the opposite
+and much narrower: **if** some provider emits a half-placeholder that nothing
+in this repository documents or has been observed producing — a real longitude
+beside a latitude of exactly `0.0`, or the reverse — it now reaches a
+`geoint` `Coordinates` where the cross would have caught it. That would show
+up as a fix sitting on the equator or the meridian, one line reverts it, and
+the lock states exactly which points it is protecting so the trade is visible
+to whoever revisits it. `is_valid_coords` still rejects exact `0,0`, and the
+square still rejects the whole ±`NULL_ISLAND_BAND` box around the origin.
+
+*The changed branch is not live-exercised.* Every assertion here is against the
+pure predicate and the pure emitters, which is where the decision lives. What
+has **not** been demonstrated is a live provider response carrying a coordinate
+with one component inside the band — that needs a real API to return a fix on
+the equator or the meridian, which cannot be forced from this side, and for
+eleven of the thirteen modules also needs a credential. The claim this entry
+makes is therefore about the predicate and its call sites, not about an
+observed live scan.
+
+**M6b and M6c survived the first run** — the fourth recurrence of this class.
+REQ-WIGLE-001's fix was regression-locked at **one of its three**
+`trilat`/`trilong` sites; downgrading either of the other two to the weak gate
+left all 52 of the module's tests green. Both emitters are pure, so the locks
+assert on the returned entity list, each with a non-vacuity half (a real fix in
+the same call must still come through) so the assertion cannot pass by emitting
+nothing.
+
+All of the above were re-run against the **`cargo fmt`-formatted** source: the formatter collapsed the two-line gate body onto one line, which silently invalidates a mutation anchored on the pre-format text. A "MUTATION DID NOT APPLY" is not a pass.
+
+**M1 was first misread as a compile error** by the harness, which grepped for
+`"error: "` — and `error: test failed, to rerun pass \`--lib\`` matches. Re-run
+alone, it fails at `src/util/geo/tests.rs:290` with its own message naming the
+Royal Observatory. Tree integrity (md5) verified before and after every run.
+
+#### The structural enforcer had the same drift
+
+`tests/architecture.rs::coarse_ip_geo_providers_use_the_provider_coord_gate`
+exists so "a new (or edited) coarse provider can't silently pick the wrong
+validator". Its `COARSE_PROVIDERS` constant listed **the same six names** the
+`is_valid_coords` doc did, against thirteen real call sites — so `censys`,
+`criminal_ip`, `geo_intel`, `netlas`, `wifi_intel`, `onyphe` and `zoomeye` could
+each be downgraded to the weak gate with the enforcer green. Six of the seven
+have a single call site, so listing them is a complete lock for those; `wigle`
+and `geo_intel` have three and two, which is why the per-call-site unit locks
+above also exist.
+
+The list was also **one-directional**: it asserted "every module I name gates",
+never "every module that gates is named", which is precisely how a registry
+decays into a sample. Both directions now run, with a vacuity guard requiring
+the file walk to have found every declared provider.
+
+| Mutation | Result |
+|---|---|
+| A1 `censys` (newly declared) call downgraded to the weak gate | direction 1 fails, naming `censys` |
+| A2 `netlas` removed from `COARSE_PROVIDERS` while still gating | direction 2 fails, naming `netlas` |
+| A3 `beacondb` (no gate) added to `COARSE_PROVIDERS` | direction 1 fails, naming `beacondb` |
+
+**A1 survived direction 1 on the first run.** The check was
+`prod.contains("is_plausible_provider_coord")` — a bare substring, which the
+file's own `use crate::util::geo::is_plausible_provider_coord;` satisfies. With
+the only *call* downgraded, the module still read as gated; the new vacuity
+guard caught it by accident, matching on the call form. Direction 1 now requires
+the trailing `(` too, and A1 fails where it should, naming `censys`.

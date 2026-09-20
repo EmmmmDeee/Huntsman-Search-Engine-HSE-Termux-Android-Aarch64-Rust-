@@ -51,12 +51,14 @@ pub fn parse_coords(value: &str) -> Result<(f64, f64)> {
 ///   - the `0.0, 0.0` "Null Island" sentinel that geo APIs and the Android
 ///     location stack emit when they have no real fix.
 ///
-/// Coarse IP/WiFi-geo providers (`ip_geo`, `ipinfo`, `ip_whois_geo`,
-/// `ip2location`, `ipquery`, `wigle`) want [`is_plausible_provider_coord`]
-/// instead: it
-/// builds on this but additionally drops the near-null-island placeholder
-/// band those APIs emit. Precise sources stay here so a real equatorial fix
-/// isn't discarded.
+/// A provider whose "no fix" answer arrives *as a coordinate* — a `0,0` or a
+/// sub-degree jitter around it — wants [`is_plausible_provider_coord`]
+/// instead: it builds on this and additionally drops the Null Island square
+/// those APIs emit as a placeholder. A provider that says "no fix" out-of-band
+/// (a `fallback` marker, a result code, an empty collection, a
+/// `status:"error"`) has nothing for that gate to catch and belongs here.
+/// The rule decides, not a list of module names: the list drifted to naming
+/// six of the thirteen call sites before it was removed (REQ-GEOGATE-001).
 ///
 /// ```
 /// use huntsman_search_engine::util::geo::is_valid_coords;
@@ -520,37 +522,68 @@ pub fn confidence_for_accuracy_m(metres: Option<f64>) -> f64 {
     }
 }
 
-/// Magnitude (in degrees) below which a *coarse* geolocation provider's
-/// coordinate component is treated as that provider's "no fix" placeholder
-/// rather than a real position. Several IP/WiFi-geo APIs return `0.0000` or a
-/// sub-degree jitter around null island when they have no location.
+/// Half-width (in degrees) of the square centred on Null Island inside which a
+/// *coarse* geolocation provider's answer is treated as that provider's "no
+/// fix" placeholder rather than a real position. Several IP/WiFi-geo APIs
+/// return `0.0000,0.0000`, or a sub-degree jitter around it, when they have no
+/// location.
+///
+/// It bounds a **point**, not a component: both components together must fall
+/// inside the square for the answer to be a placeholder. See
+/// [`is_plausible_provider_coord`] for why that distinction is the whole
+/// behaviour of this constant (REQ-GEOGATE-001).
 pub const NULL_ISLAND_BAND: f64 = 0.01;
 
 /// Validity check for coordinates coming from a *coarse* IP/WiFi-geolocation
-/// provider (`ipinfo`, `ip_whois_geo`, `ip2location`, `ipquery`, `wigle`, …):
-/// [`is_valid_coords`] **and** clear of the near-null-island
-/// [`NULL_ISLAND_BAND`] those providers emit as an "unknown" placeholder (a
-/// `loc` like `0.0000,0.0000` or `0.001,0.001`). Both components must exceed
-/// the band.
+/// provider: [`is_valid_coords`] **and** clear of the Null Island square of
+/// half-width [`NULL_ISLAND_BAND`] that those providers emit as an "unknown"
+/// placeholder (a `loc` like `0.0000,0.0000` or `0.001,0.001`).
+///
+/// Use it wherever the provider's no-fix answer arrives *as a coordinate*.
+/// Providers that signal "no fix" out-of-band — a `fallback` marker
+/// (`beacondb`), a result code (`mylnikov`), an empty collection (`wifidb`),
+/// a `status:"error"` (`opencellid`) — have nothing for this gate to catch and
+/// stay on plain [`is_valid_coords`], which keeps equatorial and prime-meridian
+/// fixes they legitimately hold.
 ///
 /// Prefer this over a bare `lat.abs() > 0.01 && lon.abs() > 0.01`: that idiom
-/// (which had been copied across the five providers above) dropped null
-/// island but *silently accepted out-of-range and non-finite values*, which
-/// then became high-confidence false fixes — precisely what
-/// [`is_valid_coords`] exists to reject. Folding the validity check in keeps
-/// the band heuristic while closing that gap in one place.
+/// (which had been copied across several providers) dropped null island but
+/// *silently accepted out-of-range and non-finite values*, which then became
+/// high-confidence false fixes — precisely what [`is_valid_coords`] exists to
+/// reject. Folding the validity check in keeps the placeholder heuristic while
+/// closing that gap in one place.
+///
+/// # The square, not the cross (REQ-GEOGATE-001)
+///
+/// The placeholder is a *point near `0,0`*, so the rejected region is the
+/// square around the origin — not "either component near zero", which is a
+/// cross: two ≈2.2 km-wide strips running the full length of the equator and
+/// the full length of the prime meridian. That cross ran through Greenwich,
+/// Peacehaven, the Normandy coast, the Gironde, Pontianak, Sulawesi, Nanyuki
+/// and the Ghanaian coast, so thirteen modules could not report a fix at any
+/// of them.
+/// No provider here is recorded emitting a half-placeholder (one real
+/// component beside one near-zero one); every observed sample — `0.001,0.001`,
+/// `0.005,0.005`, `0.004,0.004`, `0.005,-0.002` — has *both* components inside
+/// the square.
 ///
 /// ```
 /// use huntsman_search_engine::util::geo::is_plausible_provider_coord;
 ///
 /// assert!(is_plausible_provider_coord(-27.47, 153.02)); // real fix
 /// assert!(!is_plausible_provider_coord(0.001, 0.001));  // null-island jitter
-/// assert!(!is_plausible_provider_coord(0.0, 153.0));    // a component in the band
 /// assert!(!is_plausible_provider_coord(91.0, 0.0));     // also fails validity
+/// // A real place with one component near zero is NOT a placeholder:
+/// assert!(is_plausible_provider_coord(51.4779, -0.0015)); // Royal Observatory, Greenwich
+/// assert!(is_plausible_provider_coord(0.0, 153.0));       // a real equatorial fix
 /// ```
 #[must_use]
 pub fn is_plausible_provider_coord(lat: f64, lon: f64) -> bool {
-    is_valid_coords(lat, lon) && lat.abs() > NULL_ISLAND_BAND && lon.abs() > NULL_ISLAND_BAND
+    // Reject the SQUARE around Null Island, not the cross of two strips: a
+    // placeholder is a point near `0,0`, and a coordinate with only one
+    // component near zero is a real location on the equator or the prime
+    // meridian (REQ-GEOGATE-001).
+    is_valid_coords(lat, lon) && !(lat.abs() <= NULL_ISLAND_BAND && lon.abs() <= NULL_ISLAND_BAND)
 }
 
 /// Build the coarse IP-geolocation `geoint` Coordinates entity shared by the

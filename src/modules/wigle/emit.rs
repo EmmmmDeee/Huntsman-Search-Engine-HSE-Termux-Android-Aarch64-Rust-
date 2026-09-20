@@ -261,7 +261,6 @@ pub(super) fn emit_bssid_entities(
     let Some(lat) = net.trilat else {
         return result;
     };
-    let lon = net.trilong.unwrap_or(0.0);
     let observation_tag = match kind {
         NetworkKind::Wifi => "bssid-located",
         NetworkKind::Cell => "cell-located",
@@ -302,7 +301,21 @@ pub(super) fn emit_bssid_entities(
         }
         result.push(addr);
     }
-    if crate::util::geo::is_plausible_provider_coord(lat, lon) {
+    // A missing longitude is NOT longitude zero (REQ-GEOGATE-001). This read
+    // `let lon = net.trilong.unwrap_or(0.0);` up beside the `trilat` bail, and
+    // the old cross-shaped gate hid it: a fabricated `0.0` longitude always
+    // fell in the rejected strip, so the half-coordinate never reached an
+    // entity. With the gate corrected to the Null Island *square*, `51.4779,
+    // 0.0` is a valid point on the prime meridian and would have shipped as a
+    // real fix for a network WiGLE never gave a longitude for.
+    //
+    // The check belongs HERE, not up there: the Address block above is built
+    // from `city`/`region`/`country` and has nothing to do with coordinates,
+    // so bailing early would have discarded a perfectly good Address to fix a
+    // coordinate defect.
+    if let Some(lon) = net.trilong
+        && crate::util::geo::is_plausible_provider_coord(lat, lon)
+    {
         let mut e = Entity::new(
             EntityKind::Coordinates,
             format!("{lat:.6},{lon:.6}"),
