@@ -2916,20 +2916,76 @@ async fn a_recovered_scan_keeps_its_geospatial_enrichment() {
 
 // ── REQ-ENGINE-002 groundwork: the cross-correlation gate's safety property ──
 
+/// Corroborating-source count of the discovered `lanhost` Username, read back
+/// through the event log — the same set `target_distinct_sources` gates on.
+///
+/// `entities_from_events` (not `entities_for_scan`) on purpose: finalisation
+/// runs enrichment and promotion passes of its own, so a finalised read could
+/// show a count the DISPATCH gate never saw.
+fn corroborating_sources_of_username(store: &Arc<Store>, sid: &str) -> usize {
+    store
+        .entities_from_events(sid)
+        .unwrap()
+        .iter()
+        .find(|e| e.kind == EntityKind::Username && e.value == "lanhost")
+        .map_or(0, |e| e.corroborating_sources().len())
+}
+
+/// Seed module for the REQ-ENGINE-002 matched pair: emits ONE Username
+/// carrying exactly ONE real corroborating evidence source.
+///
+/// Deliberately NOT `LanPairModule`: that one tags its Username `derived`, and
+/// a derived entity needs TWO real sources before `corroborating_sources()`
+/// admits anything, which would make the pre-round baseline 0 instead of 1 and
+/// leave the lock unable to distinguish "the barrier re-evaluated the gate"
+/// from "the count never moved at all". Here the baseline is exactly 1 — one
+/// short of `CROSS_CORRELATION_MIN_SOURCES` — so a single re-confirmation is
+/// precisely what crosses the threshold, and nothing else can.
+struct SeedsACorroboratableUsername;
+
+#[async_trait]
+impl Module for SeedsACorroboratableUsername {
+    fn name(&self) -> &'static str {
+        "seed_probe"
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        let mut user = Entity::new(EntityKind::Username, "lanhost", 0.95, &ctx.scan_id);
+        // The engine does not stamp evidence on module output — a module that
+        // attaches none contributes no corroborating source at all. This is the
+        // ONE source the username starts the expansion round with.
+        user.add_evidence(Evidence::new("seed_probe", "seed observation"));
+        r.push(user);
+        Ok(r)
+    }
+}
+
 /// A paid, high-value-only module — the `oathnet_pro` shape. On an expansion
 /// target it may fire only once the target has reached
 /// `CROSS_CORRELATION_MIN_SOURCES` (2) distinct evidence sources.
 struct HighValueGated {
+    name: &'static str,
+    /// Set per instance so a test can make the graph's dispatch order
+    /// (priority DESC, then name ASC — `core::dependency`) disagree with plain
+    /// name order. That disagreement is what makes the barrier's sort
+    /// observable rather than incidental.
+    priority: u8,
     calls: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[async_trait]
 impl Module for HighValueGated {
     fn name(&self) -> &'static str {
-        "zz_high_value"
+        self.name
     }
     fn priority(&self) -> u8 {
-        119
+        self.priority
     }
     fn cost(&self) -> huntsman_search_engine::core::module::ModuleCost {
         huntsman_search_engine::core::module::ModuleCost::Paid
@@ -2966,10 +3022,12 @@ async fn an_uncorroborated_target_never_reaches_the_high_value_module() {
     use std::sync::atomic::Ordering;
 
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let (engine, _store, sid, target, ctx) = setup(
+    let (engine, store, sid, target, ctx) = setup(
         vec![
-            Arc::new(LanPairModule),
+            Arc::new(SeedsACorroboratableUsername),
             Arc::new(HighValueGated {
+                name: "zz_high_value",
+                priority: 119,
                 calls: calls.clone(),
             }),
         ],
@@ -2984,7 +3042,20 @@ async fn an_uncorroborated_target_never_reaches_the_high_value_module() {
         ..Default::default()
     };
     let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    let mut rx = engine.bus().subscribe();
     engine.run(scan, target, ctx).await.unwrap();
+
+    // PREMISE GUARD. "Zero calls" is only evidence about the GATE if the
+    // username really did stay below the threshold. Without this the test would
+    // still pass if the seed emitted nothing, if the username were never
+    // expanded, or if its source count were 0 rather than 1 — none of which
+    // exercise the gate at all.
+    assert_eq!(
+        corroborating_sources_of_username(&store, &sid),
+        1,
+        "harness premise broken: the expansion target must carry EXACTLY ONE \
+         corroborating source, one short of the threshold"
+    );
 
     assert_eq!(
         calls.load(Ordering::SeqCst),
@@ -2993,5 +3064,182 @@ async fn an_uncorroborated_target_never_reaches_the_high_value_module() {
          distinct evidence source. The cross-correlation gate exists to stop \
          exactly this: a low-specificity discovered entity triggering paid \
          fan-out."
+    );
+
+    // ACCOUNTING. The REQ-ENGINE-002 barrier re-asks this module's gate after
+    // the round, and the answer is the same — but that re-ask is a
+    // RE-EVALUATION of one decision, not a second dispatch attempt, so it must
+    // stay silent. One skip per module per target, in the event stream and in
+    // `ModuleStats` alike; the coverage reader
+    // (`core::coverage::provider_coverage_from_events`) and every skip tally
+    // are downstream of this.
+    let mut skips = 0usize;
+    while let Ok(ev) = rx.try_recv() {
+        if let huntsman_search_engine::core::event::EventKind::ModuleSkipped { module, .. } =
+            &ev.kind
+            && module == "zz_high_value"
+        {
+            skips += 1;
+        }
+    }
+    assert_eq!(
+        skips, 1,
+        "the gated module was skipped once but reported {skips} times — the \
+         barrier pass double-booked the skip it was only re-examining"
+    );
+}
+
+/// Free module that RE-CONFIRMS a discovered Username, adding a second distinct
+/// evidence source to it during that username's own dispatch round. Stands in
+/// for the real modules that routinely re-emit their own target entity
+/// (`netlas` the target IP, `web_crawler` the target domain).
+struct ReconfirmsTheTarget;
+
+#[async_trait]
+impl Module for ReconfirmsTheTarget {
+    fn name(&self) -> &'static str {
+        "aa_reconfirms"
+    }
+    /// Between the lock's two gated modules (127 and 119), and dispatch order is
+    /// priority DESCENDING (`ScanEngine::new` sorts the module vec that way and
+    /// `ModuleGraph::build` preserves it per bucket). So this module has already
+    /// run — and already lifted the count to 2 — by the time `aa_high_value` is
+    /// considered in the same round, and `aa_high_value` was skipped anyway.
+    /// The frozen snapshot is the cause, not an unlucky ordering.
+    fn priority(&self) -> u8 {
+        120
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Username)
+    }
+    async fn process(&self, t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        // Same uid as the discovered Username, so dispatch merges it into
+        // entity_map and the entity gains THIS module as a second source.
+        let mut u = Entity::new(EntityKind::Username, &t.value, 0.95, &ctx.scan_id);
+        u.tag("reconfirmed");
+        // A SECOND distinct corroborating source, added during the target's own
+        // dispatch round. Not an enrichment/recall/promotion name, so
+        // `corroborating_sources()` counts it: 1 -> 2, the exact
+        // `CROSS_CORRELATION_MIN_SOURCES` condition `is_high_value_only` waits
+        // for.
+        u.add_evidence(Evidence::new("aa_reconfirms", "re-confirmed the target"));
+        r.push(u);
+        Ok(r)
+    }
+}
+
+/// REQ-ENGINE-002: a target that crosses the cross-correlation threshold
+/// **during its own dispatch round** reaches the modules that threshold gates.
+///
+/// The seed emits a Username with one corroborating source. On that username's
+/// expansion round a free module re-confirms it (1 -> 2), which is exactly the
+/// condition `is_high_value_only` waits for, so both gated modules must fire.
+///
+/// They did not, before the round barrier. `target_distinct_sources` is
+/// computed ONCE before the module loop — at all three dispatch sites
+/// (sequential, paid phase, free phase) — and every gate in that round reads
+/// the frozen value, so the crossing could not re-open the gate. Because a
+/// target is visited exactly once (`visited` in `engine::mod`), that skip was
+/// **permanent**, not deferred to a later round. Note the priorities: the
+/// re-confirming module (120) runs *before* `aa_high_value` (119) in the same
+/// round, and `aa_high_value` was skipped anyway — the frozen snapshot is the
+/// cause, not an unlucky ordering.
+///
+/// The defect was CONSERVATIVE — money unspent, not money wasted — so this was
+/// written and left red before the repair, with
+/// `an_uncorroborated_target_never_reaches_the_high_value_module` green beside
+/// it: a repair that fires paid modules which should stay gated is strictly
+/// worse than the defect, and the pair is what tells those two apart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_target_corroborated_during_its_own_round_still_reaches_the_gated_module() {
+    use std::sync::atomic::Ordering;
+
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (engine, store, sid, target, ctx) = setup(
+        vec![
+            Arc::new(SeedsACorroboratableUsername),
+            Arc::new(ReconfirmsTheTarget),
+            // TWO gated modules, with priority DESCENDING opposite to name
+            // ASCENDING. The graph hands the first pass `zz` (127) before `aa`
+            // (119), so the deferral list is built in that order — while the
+            // barrier must dispatch them in NAME order. Keep these priorities
+            // crossed: equalising them makes the ordering assertion below
+            // vacuous.
+            Arc::new(HighValueGated {
+                name: "zz_high_value",
+                priority: 127,
+                calls: calls.clone(),
+            }),
+            Arc::new(HighValueGated {
+                name: "aa_high_value",
+                priority: 119,
+                calls: calls.clone(),
+            }),
+        ],
+        "engine002-barrier",
+        TargetKind::Email,
+        "host@contoso.com",
+    );
+    // depth=1: the seed round emits the Username, expansion round 1 dispatches
+    // against it.
+    let opts = ScanOptions {
+        depth: 1,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    let mut rx = engine.bus().subscribe();
+    engine.run(scan, target, ctx).await.unwrap();
+
+    // PREMISE GUARD, and the reason this lock fails on the baseline FOR ITS OWN
+    // REASON. It pins the antecedent — the target really did cross
+    // `CROSS_CORRELATION_MIN_SOURCES` during its own round — so a failure of the
+    // assertion below can only mean the GATE did not re-read the count. Without
+    // it, "the count never moved" and "the gate ignored the count" are the same
+    // red.
+    assert_eq!(
+        corroborating_sources_of_username(&store, &sid),
+        2,
+        "harness premise broken: the expansion target must actually REACH two \
+         corroborating sources during its own dispatch round"
+    );
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "REQ-ENGINE-002: the discovered Username reached 2 distinct evidence \
+         sources DURING its own dispatch round (the free `aa_reconfirms` module \
+         re-emitted it), which is exactly the cross-correlation condition \
+         `is_high_value_only` waits for — but the gate was decided against the \
+         snapshot taken before the round, so the paid module was skipped. The \
+         target is visited once, so that skip is permanent."
+    );
+
+    // DETERMINISM. The two concurrent phases append to the deferral list in
+    // completion order, which is not reproducible; the barrier sorts by module
+    // name before re-dispatching so its sequence — and therefore the event
+    // stream, the dossier, and anything keyed off dispatch order — does not
+    // inherit that interleaving. HSE's output is reproducible by charter, and a
+    // repair that reintroduced a run-to-run ordering difference would be a
+    // regression dressed as a fix.
+    //
+    // Non-vacuous by construction: `zz_high_value` outranks `aa_high_value` on
+    // priority, so the unsorted order is the REVERSE of what this asserts.
+    let barrier_order: Vec<String> = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|ev| match &ev.kind {
+            huntsman_search_engine::core::event::EventKind::ModuleStart { module }
+                if module.ends_with("_high_value") =>
+            {
+                Some(module.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        barrier_order,
+        vec!["aa_high_value".to_string(), "zz_high_value".to_string()],
+        "the barrier dispatched the deferred modules in the order the round \
+         happened to defer them (priority order) rather than a deterministic \
+         one"
     );
 }

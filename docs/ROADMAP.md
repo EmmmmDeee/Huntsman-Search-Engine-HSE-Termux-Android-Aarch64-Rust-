@@ -523,6 +523,29 @@ by looking for them rather than reading modules at random:**
    helper** — a helper-level lock proves the helper, and says nothing about who
    calls it.
 
+   **A value hoisted out of a loop "for efficiency" freezes every decision the
+   loop makes with it.** `target_distinct_sources` was computed once before the
+   dispatch loop — the comment calls it "computed once per target, not per
+   module" and says nothing about the cost — so a target that crossed the
+   cross-correlation threshold during its own round could not re-open the gate,
+   and since a target is visited exactly once, that skip was permanent
+   (REQ-ENGINE-002). Its rule: **for every loop-invariant hoist, ask what
+   changes inside the loop that the hoisted value was measuring.** If the answer
+   is "the thing itself", the hoist is a stale read, not an optimisation — and
+   the repair is a barrier at the loop's end, not a recompute inside it, because
+   a per-iteration recompute makes the answer depend on an order the concurrent
+   phases do not fix.
+
+   **A test whose premise is not asserted cannot tell you which half failed.**
+   The first version of REQ-ENGINE-002's lock emitted entities with no
+   `Evidence` attached — the engine stamps none of its own — so the count never
+   moved and the lock went red for a reason that had nothing to do with the gate
+   it was written to catch. Its rule: **assert the antecedent before the
+   consequent.** A lock of the form "given P, the system must do Q" needs P
+   asserted first, in the same test, or its red is ambiguous between "P never
+   held" and "Q did not follow" — and the first of those is a broken harness
+   reporting a fixed bug or an unfixed one at random.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other

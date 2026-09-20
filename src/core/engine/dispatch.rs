@@ -975,11 +975,60 @@ impl super::ScanEngine {
         ctx: &mut ModuleContext,
         state: &mut DispatchState<'_>,
     ) -> Result<()> {
-        if cx.opts.max_concurrent == 0 {
-            self.dispatch_target_sequential(cx, ctx, state).await
+        // ── REQ-ENGINE-002: the round barrier ────────────────────────────────
+        // `target_distinct_sources` is a SNAPSHOT taken before the module loop.
+        // Every source-count gate in the round reads that frozen value, so a
+        // target that crosses the cross-correlation threshold DURING its own
+        // round — because a free module in the same round re-confirmed it —
+        // never re-triggers the gate. And a target is visited exactly once
+        // (`visited` in engine::mod), so that skip is permanent, not deferred
+        // to a later round. The result is conservative: a paid, high-value-only
+        // module that had become eligible simply never runs.
+        //
+        // `gate_skips` records those, and only those: a skip is deferrable when
+        // re-asking the same gate with the count saturated admits the module.
+        //
+        // `Some(list)` marks the round's FIRST pass — the one that records a
+        // skip and collects the deferrable ones. `None` marks the barrier pass,
+        // which records nothing: the first pass already accounted for exactly
+        // one decision per module per target, and the barrier re-asks that same
+        // question rather than making a second dispatch attempt. Threading one
+        // `Option` (instead of a bool beside a list) makes that pairing
+        // structural — on the barrier pass there is no list to push into.
+        let mut deferred: Option<Vec<usize>> = Some(Vec::new());
+        let outcome = if cx.opts.max_concurrent == 0 {
+            self.dispatch_target_sequential(cx, ctx, state, &mut deferred, None)
+                .await
         } else {
-            self.dispatch_target_concurrent(cx, ctx, state).await
+            self.dispatch_target_concurrent(cx, ctx, state, &mut deferred)
+                .await
+        };
+        let Some(mut deferred) = deferred else {
+            return outcome;
+        };
+        if deferred.is_empty() {
+            return outcome;
         }
+        // SORTED BY MODULE NAME before re-evaluation. The two concurrent phases
+        // append in completion order, which is not deterministic; sorting makes
+        // the barrier's outcome — and therefore the event stream and the
+        // dossier — independent of that interleaving, which HSE's reproducible
+        // output requires. No dedup: `dispatch_order_for_target` is a
+        // permutation of the target kind's bucket, so each index appears at most
+        // once per pass, and the two phases partition on `ModuleCost::Paid`, so
+        // no module is reached by both.
+        deferred.sort_unstable_by_key(|&i| self.modules.get(i).map_or("", |m| m.name()));
+        // The re-evaluation runs through the sequential path, which recomputes
+        // `target_distinct_sources` at its top — that recompute IS the fix —
+        // and re-runs every gate. A module still short of the threshold is
+        // skipped again — silently, since the first pass already recorded it.
+        // It is handed no deferral list, so it cannot schedule another barrier:
+        // one barrier per round, never a loop.
+        let mut silent: Option<Vec<usize>> = None;
+        let barrier = self
+            .dispatch_target_sequential(cx, ctx, state, &mut silent, Some(&deferred))
+            .await;
+        outcome.and(barrier)
     }
 
     /// Gate check shared by the sequential path and both concurrent phases: if
@@ -992,18 +1041,75 @@ impl super::ScanEngine {
     /// three dispatch loops — toggling a module off is observable in the scan
     /// summary, not just the event stream, and the counting can't drift between
     /// the sequential and the two concurrent phases.
+    ///
+    /// `deferred` carries the round's pass (REQ-ENGINE-002): `Some(list)` is the
+    /// first pass, which records the skip and collects the indices a rising
+    /// source count could still admit; `None` is the barrier re-evaluation,
+    /// which records nothing and defers nothing.
     fn gate_skips(
         &self,
         cx: &DispatchCx<'_>,
         module: &dyn Module,
         target_sources: usize,
         stats: &mut ModuleStats,
+        idx: usize,
+        deferred: &mut Option<Vec<usize>>,
     ) -> bool {
-        if let Some((class, reason)) =
-            module_skip_reason(module, cx.target, cx.opts, cx.is_expansion, target_sources)
-        {
+        // Read the process-global circuit ONCE and inject it into both
+        // evaluations below, so the two answers cannot disagree because the
+        // breaker tripped between them (REQ-CI-004's seam, reused).
+        let circuit_open = super::circuit::is_open(module.name());
+        if let Some((class, reason)) = module_skip_reason_with(
+            module,
+            cx.target,
+            cx.opts,
+            cx.is_expansion,
+            target_sources,
+            circuit_open,
+        ) {
+            // The REQ-ENGINE-002 barrier pass (`deferred: None`) is a
+            // RE-EVALUATION of a decision the first pass already recorded, not a
+            // second dispatch attempt — so a module that stays gated must not
+            // book a second skip or emit a second `Skipped` event. Without this,
+            // one gated module produced two skips in `ModuleStats` and two
+            // events in the coverage stream.
+            let Some(deferred) = deferred.as_mut() else {
+                return true;
+            };
             stats.skipped += 1;
             self.emit_skipped(cx.scan_id, module.name(), reason, class);
+            // REQ-ENGINE-002: was this skip purely a consequence of the
+            // source count? Ask the gate itself, by re-running it with the
+            // count saturated — rather than matching on the reason string or
+            // maintaining a second list of "source-count-dependent" rules that
+            // could drift from the rules themselves. If the module would have
+            // been admitted at a higher count, the skip is DEFERRABLE: the
+            // count may still rise during this very round, and the target is
+            // visited exactly once, so dropping it here is permanent.
+            //
+            // On COST, since `module_skip_reason_with`'s own comment warns
+            // that building a second `ProviderDescriptor` per module per
+            // dispatch is a real allocation and not a style nit: this second
+            // evaluation only reaches that point if the
+            // first one did. A module skipped by an early, cheap gate
+            // (allowlist, `--exclude`, circuit-open, config toggle,
+            // `free_only`) returns before the descriptor in BOTH calls, so the
+            // bulk-skip case — a focused `--modules` scan skipping ~190 modules
+            // per target — costs a handful of string compares twice and nothing
+            // else. The doubled descriptor is paid only for modules that were
+            // already nearly eligible, which is the set this is about.
+            if module_skip_reason_with(
+                module,
+                cx.target,
+                cx.opts,
+                cx.is_expansion,
+                usize::MAX,
+                circuit_open,
+            )
+            .is_none()
+            {
+                deferred.push(idx);
+            }
             return true;
         }
         // Capability-aware dispatch — the cross-scan, persisted counterpart of
@@ -1173,6 +1279,8 @@ impl super::ScanEngine {
         cx: &DispatchCx<'_>,
         ctx: &mut ModuleContext,
         state: &mut DispatchState<'_>,
+        deferred: &mut Option<Vec<usize>>,
+        only: Option<&[usize]>,
     ) -> Result<()> {
         // O(1) dispatch-index lookup replaces the O(M) accepts() scan. Each
         // bucket is pre-sorted — by plain module priority, or (under
@@ -1187,8 +1295,21 @@ impl super::ScanEngine {
         // cross-correlation gate); computed once per target, not per module.
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
         let target_confidence = target_c_effective(state.entity_map, cx.target);
-        let dispatch_order =
-            self.dispatch_order_for_target(cx, target_sources, target_confidence, state.dispatched);
+        // `only` is the REQ-ENGINE-002 barrier pass: a subset of module indices,
+        // already sorted by module name, to re-evaluate now that the round has
+        // finished and the source count may have risen. It reuses this entire
+        // loop body, so a deferred module goes through every gate AGAIN rather
+        // than around them — which is what keeps the barrier from degenerating
+        // into "stopped gating".
+        let dispatch_order: Vec<usize> = match only {
+            Some(subset) => subset.to_vec(),
+            None => self.dispatch_order_for_target(
+                cx,
+                target_sources,
+                target_confidence,
+                state.dispatched,
+            ),
+        };
         for idx in dispatch_order {
             let Some(module) = self.modules.get(idx) else {
                 continue;
@@ -1211,7 +1332,7 @@ impl super::ScanEngine {
             if !module.accepts(cx.target) {
                 continue;
             }
-            if self.gate_skips(cx, &**module, target_sources, state.stats) {
+            if self.gate_skips(cx, &**module, target_sources, state.stats, idx, deferred) {
                 continue;
             }
             self.maybe_emit_dispatch_utility(
@@ -1312,14 +1433,15 @@ impl super::ScanEngine {
         cx: &DispatchCx<'_>,
         ctx: &mut ModuleContext,
         state: &mut DispatchState<'_>,
+        deferred: &mut Option<Vec<usize>>,
     ) -> Result<()> {
         // Key-discovery-first: this target's Paid modules run synchronously first
         // so any keys they discover hot-inject into `ctx` BEFORE the free/key-gated
         // modules are spawned concurrently against a snapshot of it. Both phases
         // share the same O(1) dispatch-index walk (`graph.modules_for`) rather than
         // allocating a per-target `Vec<Arc<dyn Module>>`.
-        self.run_paid_phase(cx, ctx, state).await;
-        self.spawn_free_phase(cx, ctx, state).await
+        self.run_paid_phase(cx, ctx, state, deferred).await;
+        self.spawn_free_phase(cx, ctx, state, deferred).await
     }
 
     /// Phase 1 of the concurrent dispatcher: run this target's **Paid** modules
@@ -1333,6 +1455,7 @@ impl super::ScanEngine {
         cx: &DispatchCx<'_>,
         ctx: &mut ModuleContext,
         state: &mut DispatchState<'_>,
+        deferred: &mut Option<Vec<usize>>,
     ) {
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
         let target_confidence = target_c_effective(state.entity_map, cx.target);
@@ -1362,7 +1485,7 @@ impl super::ScanEngine {
             if !module.accepts(cx.target) {
                 continue;
             }
-            if self.gate_skips(cx, &**module, target_sources, state.stats) {
+            if self.gate_skips(cx, &**module, target_sources, state.stats, idx, deferred) {
                 continue;
             }
             self.maybe_emit_dispatch_utility(
@@ -1433,6 +1556,7 @@ impl super::ScanEngine {
         cx: &DispatchCx<'_>,
         ctx: &mut ModuleContext,
         state: &mut DispatchState<'_>,
+        deferred: &mut Option<Vec<usize>>,
     ) -> Result<()> {
         use tokio::sync::Semaphore;
         use tokio::task::JoinSet;
@@ -1492,7 +1616,7 @@ impl super::ScanEngine {
             if !module.accepts(cx.target) {
                 continue;
             }
-            if self.gate_skips(cx, &**module, target_sources, state.stats) {
+            if self.gate_skips(cx, &**module, target_sources, state.stats, idx, deferred) {
                 continue;
             }
             self.maybe_emit_dispatch_utility(

@@ -11067,7 +11067,14 @@ band before its gate is changed — not a blanket sweep.
 
 ---
 
-## REQ-ENGINE-002 — Measured, not yet changed: a gate skip on a discovered target is permanent
+## REQ-ENGINE-002 — A gate skip on a discovered target was permanent; the round barrier
+
+**Closed by the round barrier.** The two sections below are the original
+measurement, kept as written — including the part it could not verify and the
+design question it refused to guess at. The superseding section at the end
+records what was built, what the unverified premise turned out to be, and how
+the answer to the design question is enforced.
+
 
 Recorded here **without a code change**, because the measurement is complete
 enough to state the defect and not complete enough to design the fix safely.
@@ -11123,6 +11130,116 @@ has settled. Deterministic, and it addresses both layers. Falsifying it needs a
 harness that does not exist yet — a two-round expansion with one free module
 that re-confirms the target and one `is_high_value_only` module — so that is
 the next step, not a patch.
+
+### Superseded — the harness was built, and the open premise is now VERIFIED
+
+The harness the section above described is now `tests/smoke.rs`, built to that
+exact specification: a seed module emitting one Username with one real evidence
+source, a free module (`aa_reconfirms`) that re-emits that Username during its
+own expansion round, and `is_high_value_only` modules gated on the count.
+
+**The unverified premise held.** "Whether a target's own
+`corroborating_sources` count actually grows *during its own dispatch loop* …
+remains unmeasured" — it does. On the UNCHANGED engine, the discovered Username
+ends the scan with exactly **2** corroborating sources, read back through
+`entities_from_events` (not `entities_for_scan`, whose finalisation runs
+enrichment and promotion passes the dispatch gate never saw). That count is a
+premise guard inside the lock, asserted *before* the assertion about the gate —
+so the lock's baseline red is at the gate assertion, past a guard proving the
+antecedent. "The count never moved" and "the gate ignored the count" are
+therefore distinguishable failures, and the observed one is the second.
+
+Getting that premise to hold took one correction to the harness itself. The
+engine stamps **no** `Evidence` of its own anywhere in `src/core/engine` — a
+module that attaches none contributes no corroborating source at all — and the
+first harness emitted bare entities, so its count never left 0 and the lock
+failed for the wrong reason. The seed module also deliberately does not reuse
+the existing `LanPairModule`, which tags its Username `derived`: per
+`Entity::corroborating_sources`, a `derived` entity needs **two** real sources
+before promotion sources are admitted, which would have put the baseline at 0
+rather than 1 and made the threshold crossing unobservable.
+
+### What was built
+
+A **round barrier** in `dispatch_target`, the candidate the section above
+named. `gate_skips` now asks, at each skip, whether the gate would admit this
+module at a saturated source count — by re-running `module_skip_reason_with`
+with `usize::MAX`, not by matching the reason string and not by maintaining a
+second list of "source-count-dependent" rules that could drift from the rules
+themselves. If it would, the index is deferred. After the round's phases
+finish, the deferred set is re-dispatched **through the same sequential loop**,
+which recomputes `target_distinct_sources` at its top — that recompute is the
+fix — and re-runs every gate. A module still short of the threshold is skipped
+again. The barrier is handed no deferral list of its own, so it cannot schedule
+another: one barrier per round, never a loop.
+
+**The design question is answered by sorting, and the sort is locked.** The
+section above correctly refused a naive per-module recompute because module
+ORDER is not deterministic in the two concurrent phases. The deferral list
+inherits that nondeterminism — the phases append in completion order — so the
+barrier sorts it by module name before re-dispatching. The lock pins this with
+two gated modules whose priorities are deliberately crossed against their
+names, so the graph hands the first pass `zz_high_value` (priority 127) before
+`aa_high_value` (119) while the barrier must dispatch them in the reverse,
+name-sorted order. Without the sort the assertion sees the priority order.
+
+That lock earned its place immediately: removing the now-unreachable `dedup()`
+beside the sort deleted the `sort_unstable_by_key` call along with it, and the
+ordering assertion caught it on the next run — `["zz_high_value",
+"aa_high_value"]` against the expected `["aa_high_value", "zz_high_value"]`.
+The `dedup()` is gone on purpose: `dispatch_order_for_target` is a permutation
+of the target kind's bucket, so no index repeats within a pass, and the two
+concurrent phases partition on `ModuleCost::Paid`, so no module is reached by
+both. It could not fire, and unfirable defensive code cannot be falsified.
+
+**The barrier pass records nothing.** A re-evaluation is not a second dispatch
+attempt, so a module that stays gated must not book a second skip in
+`ModuleStats` or emit a second `ModuleSkipped` event into the stream
+`core::coverage::provider_coverage_from_events` reads. The first draft did both.
+The deferral list is now threaded as an `Option`: `Some(list)` is the first
+pass, `None` is the barrier — one value deciding both, so the pairing is
+structural rather than two flags that can disagree. The control asserts exactly
+one `ModuleSkipped` for the gated module.
+
+### Falsification
+
+Baseline (unchanged engine): control GREEN, lock RED at the gate assertion with
+its premise guard passed. Six mutations of the repair, each killed:
+
+| mutation | killed by |
+| --- | --- |
+| barrier bypasses the gate instead of re-running it | control (the paid module fires at 1 source) |
+| barrier never runs | lock (calls assertion) |
+| deferral list not sorted before re-dispatch | lock (ordering assertion) |
+| nothing is ever deferrable (`usize::MAX` → `target_sources`) | lock (calls assertion) |
+| barrier pass double-books the skip it is re-examining | control (skip-count assertion) |
+| barrier re-dispatches the whole module set, not the deferred subset | lock (ordering assertion) |
+
+The first is the one that matters: a repair that "fixed" the lock by weakening
+the gate would fire a paid, high-value-only module on a single-source
+discovered entity — strictly worse than the conservative defect it replaces.
+The control was landed green, before the repair, for exactly that reason.
+
+### Cost, since the gate's own comment warns about it
+
+`module_skip_reason_with` builds a `ProviderDescriptor` (which allocates, via
+`consumes()`), and its comment says building one twice per module per dispatch
+is "a real allocation on a hot path, not just a style nit". The second
+evaluation only reaches that point if the first one did: a module skipped by an
+early, cheap gate — allowlist, `--exclude`, circuit-open, config toggle,
+`free_only` — returns before the descriptor in **both** calls. The bulk-skip
+case, a focused `--modules` scan skipping ~190 modules per target, costs a
+handful of string compares twice. The doubled descriptor is paid only for
+modules that were already nearly eligible, which is the set this is about.
+
+### Scope, stated at the strength the evidence supports
+
+What is demonstrated is the mechanism, end to end, through a real `ScanEngine`
+run: a target that crosses `CROSS_CORRELATION_MIN_SOURCES` during its own round
+now reaches the gated module, and did not before. **No live-scan measurement of
+how often this occurs in the field was taken**, and none is claimed here. The
+gate's own comment describes the live `name="Onur Ada"` scan it was written
+for; that is its evidence, not this cycle's.
 
 ---
 
