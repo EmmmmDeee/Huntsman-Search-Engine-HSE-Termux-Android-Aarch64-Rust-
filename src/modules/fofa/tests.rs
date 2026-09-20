@@ -549,3 +549,92 @@ fn the_uninterpretable_verdict_actually_reaches_the_caller_as_an_error() {
         "and it yields its hit"
     );
 }
+
+/// LOCK for the key cascade — the half of the envelope arm that costs money.
+///
+/// A key/quota-shaped envelope must actually MARK the key, not merely be
+/// classified as key-shaped. Deleting the `if key_shaped { note_keyed_error(…) }`
+/// line passed every other test in this file: the module would keep erroring
+/// correctly while the dead key stayed `Active` in the pool, so every later scan
+/// re-spent on the same exhausted credential.
+///
+/// This test was almost not written, on a chain of reasoning that was WRONG:
+/// `report_key_exhausted` → `global_pool()` → `persist_off_thread`, which saves
+/// inline outside a tokio runtime, looked like it would write to the operator's
+/// real `~/.huntsman/key_pool.json`. It does not. `paths::huntsman_dir_path()`
+/// has a `cfg!(test)` branch returning a pid-scoped temp home, and its doc says
+/// why that form was chosen over an env var: *"a compile-time switch, not a
+/// runtime env mutation, so it needs no unsafe code and can't race a
+/// fire-and-forget `spawn_blocking` persist that outlives the test function."*
+/// Four links of that chain were read and the fifth was assumed.
+///
+/// The key VALUE is unique per process and thread because the pool is a
+/// process-global keyed by (service, value) and the service is fixed at `fofa`;
+/// only the value can keep this assertion from colliding with a parallel test.
+#[test]
+fn a_key_shaped_envelope_actually_marks_the_key_in_the_pool() {
+    use crate::util::key_pool::{KeyEntry, KeyStatus, global_pool};
+
+    let pool = global_pool();
+    let dead = format!("fofa-req-fofa-001-dead-{}", std::process::id());
+    assert!(
+        pool.add("fofa", KeyEntry::new(dead.clone())),
+        "fixture: `fofa` must be a poolable service and this value must be new"
+    );
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = ModuleContext {
+        scan_id: "test-scan".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+
+    let envelope: FofaResp = serde_json::from_str(
+        r#"{"error":true,"errmsg":"[820001] Insufficient credits: the account's F-coin balance is exhausted"}"#,
+    )
+    .expect("an exhausted-credit envelope decodes");
+    handle_body(&envelope, &dead, &ctx).expect_err("an error envelope is the module's error");
+
+    assert_eq!(
+        pool.entry_status("fofa", &dead),
+        Some(KeyStatus::Invalid),
+        "a credit-exhaustion envelope must retire the key, or the cascade keeps \
+         spending on it every scan"
+    );
+}
+
+/// OVER-CORRECTION CONTROL for the lock above. Not every error envelope is a
+/// key problem — FOFA returns `errmsg: "query syntax error"` for a rejected
+/// QUERY, and retiring a perfectly good key over that would take a working
+/// credential out of rotation. The module's own comment draws this distinction
+/// ("rather than a rejected query"); this is what holds it.
+#[test]
+fn a_query_shaped_envelope_leaves_the_key_alone() {
+    use crate::util::key_pool::{KeyEntry, KeyStatus, global_pool};
+
+    let pool = global_pool();
+    let good = format!("fofa-req-fofa-001-good-{}", std::process::id());
+    assert!(pool.add("fofa", KeyEntry::new(good.clone())), "fixture");
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = ModuleContext {
+        scan_id: "test-scan".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+
+    let envelope: FofaResp =
+        serde_json::from_str(r#"{"error":true,"errmsg":"[820004] query syntax error"}"#)
+            .expect("a query-error envelope decodes");
+    handle_body(&envelope, &good, &ctx).expect_err("still the module's error");
+
+    assert_eq!(
+        pool.entry_status("fofa", &good),
+        Some(KeyStatus::Untested),
+        "a rejected QUERY must not retire the key that sent it"
+    );
+}

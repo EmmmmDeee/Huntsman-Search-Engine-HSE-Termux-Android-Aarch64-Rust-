@@ -15766,7 +15766,7 @@ Reproduced on the baseline first, then seven mutations of the repair:
 | sentinel reads `results` alone | `an_error_envelope_arrives_without_a_results_key_and_still_reaches_the_pool` |
 | the wiring swallows the `Uninterpretable` verdict | `the_uninterpretable_verdict_actually_reaches_the_caller_as_an_error` |
 | `error` reverted to a bare `bool` | the compiler (`E0308`) |
-| the wiring drops the key-pool notification | **NOTHING — see below** |
+| the wiring drops the key-pool notification | `a_key_shaped_envelope_actually_marks_the_key_in_the_pool` |
 
 **Two of these survived the first matrix**, and the first is the substance of
 this entry.
@@ -15797,29 +15797,51 @@ constructed `ModuleContext` and no socket. `process` is left with one call that
 purpose: it is the point of the envelope arm, and back in `process` nothing
 could test it.
 
-#### Residual: one mutation is NOT killed, and it is not fixable here
+#### The key-cascade mutation, and the two wrong claims made about it
 
-Deleting the `if key_shaped { note_keyed_error(…) }` call passes every test.
-This row was written into this table as "killed" *before* the matrix was run,
-and the run refuted it; the claim is corrected here rather than the mutation
-being dropped from the list.
+Deleting `if key_shaped { note_keyed_error(…) }` is the mutation that costs
+money: the module keeps erroring correctly while the dead key stays `Active` in
+the pool, so every later scan re-spends on the same exhausted credential.
 
-It is **pre-existing**, not a regression this cycle introduced: the same call
-sat unasserted in `process` before the extraction, which is what made it
-invisible. The classification half IS locked —
-`an_error_envelope_arrives_without_a_results_key_and_still_reaches_the_pool`
-asserts `key_shaped` is true for a real credit-exhaustion message, which is the
-input the arm acts on. What no test covers is the single `if` that acts on it.
+**Two claims were made about it and both were wrong. Both are recorded rather
+than erased, because the pattern is the point.**
 
-It is not closed here because the only observable effect runs through
-`ModuleContext::report_key_exhausted` → `key_pool::global_pool()` →
-`persist_off_thread`, and that path has **no test guard**: outside a tokio
-runtime it saves inline, so a `#[test]` asserting the notification would write
-to the operator's real `~/.huntsman/key_pool.json`. A test with that side effect
-is worse than the gap it closes.
+*Wrong claim 1.* The row above was written into this table as "killed" **before
+the matrix was run**. The run refuted it — nothing killed it. Evidence written
+in advance of the evidence.
 
-The generalisation is the part worth acting on, and it is filed separately: the
-key-cascade path is untestable **tree-wide** for this reason, not just in
-`fofa`. Several currently-unlockable items (REQ-NIAMONX-001, REQ-OATHNET-002,
-REQ-SEON-001) turn on exactly this behaviour, so a test-guarded or injectable
-persistence path would unlock regression locks for all of them at once.
+*Wrong claim 2.* It was then argued to be unclosable, in the commit that landed
+this cycle, on this chain: `report_key_exhausted` → `key_pool::global_pool()` →
+`persist_off_thread`, which "saves inline" outside a tokio runtime, to
+`pool_path()` = `paths::data_file("key_pool.json")` = the operator's real
+`~/.huntsman/key_pool.json` — so a `#[test]` asserting the notification would
+write into it, and a test with that side effect is worse than the gap.
+
+Four links of that chain were read. The fifth was assumed.
+`paths::huntsman_dir_path()` has a `cfg!(test)` branch returning
+`$TMPDIR/huntsman-test-home-<pid>/.huntsman`, and its doc comment states exactly
+why that form was chosen: *"`cfg(test)` is a compile-time switch, not a runtime
+env mutation, so it needs no unsafe code and can't race a fire-and-forget
+`spawn_blocking` persist that outlives the test function."* A library unit test
+writes nothing to the operator's file. The obstacle did not exist.
+
+**So the mutation is killed**, by `a_key_shaped_envelope_actually_marks_the_key_in_the_pool`:
+it pools a process-unique `fofa` key, feeds `handle_body` a real
+credit-exhaustion envelope, and asserts `entry_status` is now `Invalid`. Its
+over-correction control, `a_query_shaped_envelope_leaves_the_key_alone`, feeds
+`errmsg: "[820004] query syntax error"` and asserts the key stays `Untested` —
+the distinction the module's own comment draws between a dead key and a
+rejected query, and the one a careless "retire on any envelope" fix would lose.
+
+The key VALUE is process-unique because the pool is a process-global keyed by
+`(service, value)` and the service is fixed at `fofa`; only the value can keep
+the assertion from colliding under the parallel harness.
+
+**Filed REQ-KEYPOOL-001 is therefore refuted as filed** and demoted. What
+survives it is a much smaller, real asymmetry: the READ side has
+`load_pool_from(path)`, split out precisely "so the read/parse error handling is
+unit-testable against a temp file", while the WRITE side has no `save_pool_to`
+counterpart. That is worth mirroring on its own merits, but it does not gate
+anything — the `cfg(test)` redirect already makes the cascade testable, which is
+what REQ-NIAMONX-001, REQ-OATHNET-002 and REQ-SEON-001 were thought to be
+waiting on.
