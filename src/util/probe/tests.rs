@@ -362,3 +362,72 @@ async fn a_failed_control_probe_is_retried_rather_than_remembered() {
         ProbeResult::Found { controlled: true, .. }
     ));
 }
+
+
+/// REQ-PROBE-005, the remaining half. The control-answer cache was keyed on the
+/// control URL alone and lives in a process-lifetime `static`, so a successful
+/// answer read during one scan was handed to every later scan in the same
+/// process. Correct inside one scan; stale across them, and under `hse serve`
+/// that process runs indefinitely — a site's control answer from days ago
+/// still deciding whether today's presence can be confirmed.
+///
+/// The fix keys the cache on the scan ambient the engine already establishes
+/// (`util::budget::with_scan`, re-applied inside every spawned module dispatch
+/// at `core::engine::dispatch`), rather than growing a second scoping
+/// mechanism — which is what `budget::current_scan`'s own doc asks callers to
+/// do, naming "the provider response caches" as its intended consumer.
+///
+/// The site name is unique to this test: the map is process-global, and a name
+/// shared with another test would let cargo's parallel harness cross them.
+#[tokio::test]
+async fn a_control_answer_is_not_reused_across_scans() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let probes = Arc::new(AtomicUsize::new(0));
+    let control = |site: &'static str| {
+        let probes = Arc::clone(&probes);
+        let url = format!("https://{site}.test/u/{}", control_handle());
+        (url, async move {
+            probes.fetch_add(1, Ordering::SeqCst);
+            ProbeResult::NotFound
+        })
+    };
+    let first: Vec<(&'static str, ProbeResult)> =
+        vec![("req-probe-005-scoping", present("https://req-probe-005-scoping.test/u/alice"))];
+
+    // Scan A asks the site once.
+    let _ = crate::util::budget::with_scan(
+        "scan-A-req-probe-005".to_string(),
+        control_presences(first.clone(), control),
+    )
+    .await;
+    assert_eq!(probes.load(Ordering::SeqCst), 1, "the control was probed once");
+
+    // NON-VACUITY, and the over-correction guard: WITHIN one scan the answer is
+    // still cached. If this fix regressed into "never cache", the assertion
+    // below would pass for entirely the wrong reason.
+    let _ = crate::util::budget::with_scan(
+        "scan-A-req-probe-005".to_string(),
+        control_presences(first.clone(), control),
+    )
+    .await;
+    assert_eq!(
+        probes.load(Ordering::SeqCst),
+        1,
+        "within ONE scan the control answer must still be cached — no second probe"
+    );
+
+    // A DIFFERENT scan must not inherit it.
+    let _ = crate::util::budget::with_scan(
+        "scan-B-req-probe-005".to_string(),
+        control_presences(first, control),
+    )
+    .await;
+    assert_eq!(
+        probes.load(Ordering::SeqCst),
+        2,
+        "REQ-PROBE-005: a second scan inherited the first scan's control answer. \
+         The cache is process-lifetime and keyed on the URL alone, so under \
+         `hse serve` an answer read once decides every later scan's presences."
+    );
+}

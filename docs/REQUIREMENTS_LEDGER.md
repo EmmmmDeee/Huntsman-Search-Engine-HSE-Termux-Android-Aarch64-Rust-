@@ -14527,6 +14527,60 @@ question rather than a one-line correction, and it is recorded rather than
 half-done. The failure case above is separable, is a defect within a single
 scan, and is fixed.
 
+### The second half — and the paragraph above was wrong twice
+
+That closing prediction is **superseded**, and it is worth keeping visible
+rather than editing away, because both halves of it were wrong:
+
+* *"needs a scan-scoped container threaded through..."* — nothing needed
+  threading. `util::budget::current_scan()` already existed, and its own doc
+  asks for exactly this: it is `pub(crate)` *"so per-scan state that lives
+  outside `QuotaBudget` — **the provider response caches** — can namespace
+  itself by the same ambient the engine already establishes ... rather than
+  growing a second, separately-maintained one."* The authority was in place and
+  documented for this consumer; `control_presences` simply did not participate.
+* *"`username_search` and `streaming_probe`"* — there are **three** production
+  callers. `social_probe` was missed.
+
+So this was a wire-up, not a design question. The cache key is now
+`(scan, url)`; nothing was threaded, and no caller changed.
+
+**The ambient was verified present, not assumed.** It is established twice:
+around the whole scan at `core::engine::mod` and **re-applied inside each
+spawned module dispatch** at `core::engine::dispatch` — task-local scopes do
+not survive `spawn`, and the comment there names the exact failure mode if it
+were missing (*"would fall back to the unscoped `""` bucket, shared by every
+concurrently-running `hse serve` scan"*). All three callers are modules, so
+they always run inside it.
+
+`current_scan()` is `""` when unscoped. That bucket stays shared, which is the
+pre-existing behaviour and what the unit tests exercise — they call
+`control_presences` directly. Production is never unscoped, so the thing to
+re-check in future is that the ambient is still applied at both sites, not that
+this key is right.
+
+**Baseline, for its own reason:**
+
+```text
+assertion `left == right` failed: REQ-PROBE-005: a second scan inherited the
+first scan's control answer. ...
+  left: 1
+ right: 2
+```
+
+| Mutation | Result |
+|---|---|
+| M1 scan component dropped from both key sites (revert) | the new lock |
+| M2 never cache (the over-correction) | the new lock's non-vacuity half **+ two pre-existing tests** |
+| M3 cache `Error`s again (undo the first half) | `a_failed_control_probe_is_retried_rather_than_remembered` |
+| M4 lookup scoped, insert not (asymmetric key) | the new lock |
+
+M2 and M3 are the ones that keep this honest. M2 proves the fix did not
+degenerate into "never cache" — which would pass a naive cross-scan assertion
+while destroying what the cache is for. M3 proves the half fixed in `4e7a87d2`
+is still fixed; two halves of one requirement, landed a session apart, can
+easily undo each other.
+
 ---
 
 ## REQ-CI-004 — a decision function with one hidden argument, and a flake that was never the point
