@@ -424,6 +424,14 @@ by looking for them rather than reading modules at random:**
    an argument-correctness problem — verify the latter, or the signal can be
    silently dead while everything passes.
 
+   **A dedup key is a claim about identity**, and a partial namespace is this
+   shape again. `mnemonic_pdns` keyed IPs under `ip:` so a host and an IP could
+   not collide, then let every relationship share one key space — so a host that
+   was both MX and NS, or both a forward answer and an inbound alias, silently
+   kept one of the two (REQ-MNEMONIC-001). Its rule: **when a key namespaces one
+   collision, enumerate the others it does not.** Ask what two DIFFERENT facts
+   could produce the same key, and put whatever distinguishes them into it.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other

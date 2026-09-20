@@ -314,3 +314,145 @@ fn a_capped_page_says_the_total_is_unknown_rather_than_inventing_one() {
         "no invented 'N of M' when the provider reported no total: {reason}"
     );
 }
+
+#[test]
+fn a_host_that_is_both_mx_and_ns_keeps_both_relationships() {
+    // REQ-MNEMONIC-001. The dedup key namespaced IPs against hostnames ("IPs
+    // under an `ip:` key so a host and an IP string never collide") and stopped
+    // there: CNAME/MX/NS shared one key space under the BARE answer hostname,
+    // so whichever record the API listed first won and the other vanished.
+    //
+    // A host serving as both the mail exchanger and the nameserver is a real
+    // and meaningful finding — a small self-hosted setup reads very differently
+    // from separate providers — and each relationship carries its OWN
+    // first/last-seen window, which the module's header promises downstream
+    // consumers can weigh.
+    let ents = build_entities(
+        &[
+            rec("mx", "example.com", "infra.example.net", 9, 1_600_000_000_000, 1_700_000_000_000),
+            rec("ns", "example.com", "infra.example.net", 4, 1_500_000_000_000, 1_650_000_000_000),
+        ],
+        "example.com",
+        false,
+        "scan",
+    );
+    let infra: Vec<&Entity> = ents
+        .iter()
+        .filter(|e| e.value == "infra.example.net")
+        .collect();
+    let tags: Vec<&str> = infra
+        .iter()
+        .flat_map(|e| e.tags.iter().map(String::as_str))
+        .collect();
+    assert!(
+        tags.contains(&"mx"),
+        "the MX relationship must survive: {tags:?}"
+    );
+    assert!(
+        tags.contains(&"ns"),
+        "the NS relationship must survive too — it was dropped by a dedup keyed on the bare \
+         hostname: {tags:?}"
+    );
+
+    // Each relationship keeps its own observation window.
+    let rrtypes: Vec<&str> = infra
+        .iter()
+        .flat_map(|e| e.evidence.iter())
+        .filter_map(|ev| ev.attributes.get("rrtype").map(String::as_str))
+        .collect();
+    assert!(
+        rrtypes.contains(&"mx") && rrtypes.contains(&"ns"),
+        "both evidence records must be present: {rrtypes:?}"
+    );
+}
+
+#[test]
+fn a_forward_answer_and_an_inbound_alias_of_the_same_name_both_survive() {
+    // The same collision in the other axis: the forward branch keyed on
+    // `answer` and the inbound-CNAME branch on `query`, sharing one `seen`.
+    // A host that BOTH receives the target's MX and CNAMEs into the target is
+    // two opposite DNS facts, and the second was silently dropped.
+    let ents = build_entities(
+        &[
+            rec("mx", "example.com", "dual.example.net", 3, 1_600_000_000_000, 1_700_000_000_000),
+            rec("cname", "dual.example.net", "example.com", 5, 1_610_000_000_000, 1_690_000_000_000),
+        ],
+        "example.com",
+        false,
+        "scan",
+    );
+    let summaries: Vec<&str> = ents
+        .iter()
+        .filter(|e| e.value == "dual.example.net")
+        .flat_map(|e| e.evidence.iter().map(|ev| ev.summary.as_str()))
+        .collect();
+    assert!(
+        summaries.iter().any(|s| s.contains("example.com mx → dual.example.net")),
+        "the forward MX fact must survive: {summaries:?}"
+    );
+    assert!(
+        summaries.iter().any(|s| s.contains("dual.example.net cname → example.com")),
+        "the inbound CNAME fact must survive: {summaries:?}"
+    );
+}
+
+#[test]
+fn a_repeated_record_of_the_same_type_is_still_deduped() {
+    // THE OVER-CORRECTION CONTROL. Making the key more specific must not stop
+    // it deduping what it is actually for: two MX records naming the same host
+    // are one relationship, not two, however many times the API repeats them.
+    let ents = build_entities(
+        &[
+            rec("mx", "example.com", "mail.example.net", 9, 1_600_000_000_000, 1_700_000_000_000),
+            rec("mx", "example.com", "mail.example.net", 2, 1_500_000_000_000, 1_550_000_000_000),
+            rec("mx", "example.com", "MAIL.EXAMPLE.NET.", 1, 1_400_000_000_000, 1_450_000_000_000),
+        ],
+        "example.com",
+        false,
+        "scan",
+    );
+    let n = ents.iter().filter(|e| e.value == "mail.example.net").count();
+    assert_eq!(
+        n, 1,
+        "one host, one MX relationship — including a trailing-dot/upper-case spelling of it"
+    );
+}
+
+#[test]
+fn a_cname_in_each_direction_between_the_same_pair_is_two_facts() {
+    // What pins the `in:` namespace specifically, and the reason the direction
+    // has to be in the key rather than relying on the rrtype to separate them.
+    //
+    // `example.com CNAME → alias.example.net` and
+    // `alias.example.net CNAME → example.com` are opposite assertions about the
+    // same pair, and they share an rrtype. Keying the inbound record as
+    // `fwd:cname:{host}` would collide with the forward one and silently drop
+    // whichever arrived second — which is what the bare key did to every pair,
+    // not just this one.
+    let ents = build_entities(
+        &[
+            rec("cname", "example.com", "alias.example.net", 7, 1_600_000_000_000, 1_700_000_000_000),
+            rec("cname", "alias.example.net", "example.com", 2, 1_610_000_000_000, 1_690_000_000_000),
+        ],
+        "example.com",
+        false,
+        "scan",
+    );
+    let summaries: Vec<&str> = ents
+        .iter()
+        .filter(|e| e.value == "alias.example.net")
+        .flat_map(|e| e.evidence.iter().map(|ev| ev.summary.as_str()))
+        .collect();
+    assert!(
+        summaries
+            .iter()
+            .any(|s| s.contains("example.com cname → alias.example.net")),
+        "the outbound alias must survive: {summaries:?}"
+    );
+    assert!(
+        summaries
+            .iter()
+            .any(|s| s.contains("alias.example.net cname → example.com")),
+        "the inbound alias must survive: {summaries:?}"
+    );
+}

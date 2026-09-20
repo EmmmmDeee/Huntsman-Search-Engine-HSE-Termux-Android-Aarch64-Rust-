@@ -14261,6 +14261,60 @@ mutation that could not reach its control (WIKIDATA-001), a harness that never
 built (TYPOSQUAT-001, AUBUSINESSID-001), and now a comparison whose two sides
 were equal because both were empty.
 
+## REQ-MNEMONIC-001 — a dedup key that namespaced one collision and left two
+
+**Requirement.** Passive-DNS de-duplication must collapse the same assertion
+repeated, and nothing else.
+
+**Defect.** `build_entities` kept one `HashSet<String>` whose key was the bare
+hostname for every branch except A/AAAA. Its own doc named the reasoning —
+*"IPs under an `ip:` key so a host and an IP string never collide"* — which is
+half the problem: the `ip:` namespace separates a host from an IP string and
+nothing separates relationships from each other.
+
+Two silent losses, both confirmed against the baseline before the fix:
+
+1. A host that is BOTH the target's **MX and its NS** — `cname | mx | ns` keyed
+   on the bare `answer` — kept only whichever record the API listed first. The
+   surviving entity carried `["mnemonic_pdns", "passive-dns", "mx", "external"]`
+   and no `ns` tag, and the dropped record took its own first/last-seen window
+   with it. That window is the thing the module's header promises downstream
+   consumers can weigh.
+2. A host that both receives the target's MX **and CNAMEs into it** — the
+   forward branch keyed on `answer`, the inbound on `query`, sharing one set —
+   lost one of two opposite DNS facts.
+
+**Fix.** Namespace by what the record asserts: `rev:{query}`, `ip:{canonical}`,
+`fwd:{rrtype}:{host}`, `in:{query}`. The rrtype and the direction are part of
+the assertion.
+
+**Verification.** Five variants, no survivors:
+
+| Variant | Result |
+|---|---|
+| BASELINE (both collisions) | 2 locks fail |
+| M1 rrtype dropped from the key | the MX/NS lock fails |
+| M2 inbound keyed as a forward record | the direction lock fails |
+| M3 **over-correction** — timestamp in the key | the dedup control fails |
+| M4 **over-correction** — dedup disabled | the dedup control fails |
+
+**A mutation was vacuous, and replacing it found the real gap.** M2 first
+reverted the inbound key to a bare hostname and SURVIVED — correctly: with the
+forward key already namespaced, a bare inbound key collides with nothing, so
+that mutation could not introduce a defect. It was vacuity shape 1, a mutation
+that cannot reach its control. The mutation that *can* keys the inbound record
+as `fwd:cname:{host}`, which collides with a forward CNAME to the same host —
+and the existing locks did not cover it either, because both used `mx` on the
+forward side and so never probed two records sharing an rrtype in opposite
+directions. A CNAME-in-each-direction lock was added and M2 now fails.
+
+The lesson is not that the mutation was badly chosen: it is that a surviving
+mutation is a question, not a verdict. Asking why it survived distinguished
+"the guard is missing" from "this configuration has no defect to find", and
+only the second reading was true.
+
+---
+
 ## REQ-ZOOMEYE-002 — a client-side cap with no signal, and the shared guard that could not check its own callers
 
 **Requirement.** A sweep cut short by a client-side cap must say so, and each

@@ -186,8 +186,27 @@ fn forward_infra_domain(
 ///   CNAME/MX/NS yields the related-infrastructure hostname; an inbound CNAME
 ///   whose answer is the target yields the aliasing hostname.
 ///
-/// De-duplicated within the response (IPs under an `ip:` key so a host and an IP
-/// string never collide); blank sides and non-matching records are skipped.
+/// De-duplicated within the response **by RELATIONSHIP, not by bare value**.
+/// Every key is namespaced by what the record asserts:
+///
+/// * `rev:{query}`        — a domain that historically resolved to the target IP
+/// * `ip:{canonical}`     — an address the target resolved to
+/// * `fwd:{rrtype}:{host}` — infrastructure the target's own record points at
+/// * `in:{query}`         — a name that CNAMEs *into* the target
+///
+/// Only the `ip:` namespace existed before, which kept a host and an IP string
+/// apart and let everything else share one key space. Two consequences, both
+/// silent: a host that is BOTH the target's MX and its NS kept only whichever
+/// record the API happened to list first, losing a tag and an observation
+/// window; and a host that both receives the target's MX and CNAMEs into it
+/// lost one of two opposite DNS facts (REQ-MNEMONIC-001).
+///
+/// The rrtype belongs in the key because it is part of the ASSERTION, not
+/// decoration on it. What must still collapse is the same assertion repeated —
+/// two MX records naming one host are one relationship however often the API
+/// repeats them, which the shared `normalise_host` spelling guarantees.
+///
+/// Blank sides and non-matching records are skipped.
 fn build_entities(
     records: &[PdnsRecord],
     target: &str,
@@ -212,7 +231,7 @@ fn build_entities(
             if (rrtype == "a" || rrtype == "aaaa")
                 && ip_eq(&answer, &target_l)
                 && is_hostname(&query)
-                && seen.insert(query.clone())
+                && seen.insert(format!("rev:{query}"))
             {
                 let mut e = Entity::new(EntityKind::Domain, &query, confidence::HIGH, scan_id);
                 e.tag(SRC);
@@ -256,7 +275,9 @@ fn build_entities(
                     ));
                     out.push(e);
                 }
-                "cname" | "mx" | "ns" if is_hostname(&answer) && seen.insert(answer.clone()) => {
+                "cname" | "mx" | "ns"
+                    if is_hostname(&answer) && seen.insert(format!("fwd:{rrtype}:{answer}")) =>
+                {
                     out.extend(forward_infra_domain(
                         &answer, &target_l, &rrtype, r, scan_id, false,
                     ));
@@ -266,7 +287,7 @@ fn build_entities(
         } else if rrtype == "cname"
             && answer == target_l
             && is_hostname(&query)
-            && seen.insert(query.clone())
+            && seen.insert(format!("in:{query}"))
         {
             // A name that CNAMEs *into* our domain — an inbound alias. The
             // record's own subject is `query` (it CNAMEs to `target_l`), the
