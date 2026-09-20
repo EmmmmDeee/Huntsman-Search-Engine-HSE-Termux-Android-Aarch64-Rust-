@@ -14261,6 +14261,56 @@ mutation that could not reach its control (WIKIDATA-001), a harness that never
 built (TYPOSQUAT-001, AUBUSINESSID-001), and now a comparison whose two sides
 were equal because both were empty.
 
+## REQ-DOCPARSE-002 — a cap that existed in the type and nowhere in the code
+
+**Requirement.** A document read whole into memory must have an enforced
+ceiling, and the enforcement must precede the read.
+
+**Defect.** `DocumentParseError::FileTooLarge(usize)` was declared with the
+message `"File size limit exceeded: {0} MiB"`. Grepping the tree for it returned
+**one** line: its own declaration. Never constructed, never matched — the cap
+existed in the type and nowhere in the code.
+
+Meanwhile `parse_pdf`:
+
+```rust
+let data = fs::read(path)?;                  // whole file, no ceiling
+let text = String::from_utf8_lossy(&data);   // a SECOND copy, and larger
+let page_count = text.matches("/Type/Page").count() + ...;
+```
+
+A PDF is binary, so the lossy conversion is essentially always `Cow::Owned`, and
+every invalid byte expands to a three-byte U+FFFD — peak memory is a multiple of
+the file. All of it to count two ASCII needles for a heuristic page count.
+
+**Fix.** `MAX_DOCUMENT_BYTES` (64 MiB) and `size_within_limit(len, limit)`, the
+single constructor of `FileTooLarge`. `parse_pdf` checks `fs::metadata(..).len()`
+**before** `fs::read` — after it, the allocation the cap exists to prevent has
+already happened. The limit is injected (`parse_pdf_with_limit`) so the refusal
+is exercised on a 4 KiB fixture rather than a 64 MiB one. Page markers are
+counted on the bytes; the equivalence is asserted against the lossy conversion
+on inputs that are deliberately *not* valid UTF-8, with a vacuity guard so
+agreeing on zero everywhere cannot pass for evidence.
+
+**Verification.** Five variants, no survivors:
+
+| Variant | Result |
+|---|---|
+| BASELINE — no cap enforced | the refusal lock fails |
+| M1 **over-correction** — everything refused | 2 fail |
+| M2 off-by-one — exactly at the limit refused | the boundary lock fails |
+| M3 MiB rounded DOWN | 2 fail |
+| M4 the spaced `/Type /Page` needle dropped at the call site | **survived** → now 1 fails |
+
+**M4 is the finding, and it is the second time this exact gap has appeared.**
+The equivalence test verifies `count_subslices`; the mutation changed what
+`parse_pdf` *passes* to it. A helper's own tests cannot check its callers'
+arguments — precisely what REQ-ZOOMEYE-002 found when a module handed a shared
+guard the wrong cap. A call-site lock, parsing fixtures that contain each
+spelling alone, closes it.
+
+---
+
 ## REQ-PROBE-005 — a cache that remembered a failure as if it were an answer
 
 **Requirement.** A control probe that could not be read must not be recorded as

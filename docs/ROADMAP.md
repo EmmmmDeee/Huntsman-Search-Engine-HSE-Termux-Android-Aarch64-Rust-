@@ -460,6 +460,14 @@ by looking for them rather than reading modules at random:**
    answer is almost always "re-ask", and the doctrine `ProviderOutcome` states
    for providers applies to any store that will be read as if it held an answer.
 
+   **A declared-but-never-constructed variant is a cap that does not exist.**
+   `DocumentParseError::FileTooLarge` carried a `{0} MiB` message and appeared
+   exactly once in the tree — its own declaration — while `parse_pdf` read
+   unbounded files and copied them again (REQ-DOCPARSE-002). Its rule: **grep
+   every error variant for a construction site; one that has none is
+   documentation, not a guard.** The same question answers "is this limit
+   enforced?" without reading a line of logic.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other

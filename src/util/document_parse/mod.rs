@@ -109,6 +109,38 @@ pub enum DocumentParseError {
     FileTooLarge(usize),
 }
 
+/// Ceiling on a document read whole into memory.
+///
+/// A parser that calls `fs::read` holds the entire file, and anything that then
+/// converts those bytes to text holds a second copy — for binary input that
+/// copy is LARGER, because each invalid byte becomes a three-byte U+FFFD. So
+/// peak cost is a multiple of the file, on input that arrives from outside.
+///
+/// 64 MiB is far above any document this module is meant to read (the PDF path
+/// only counts page markers heuristically) and far below a size that threatens
+/// the process on the Termux target this ships to.
+pub(crate) const MAX_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Whether a file of `len` bytes may be read whole, against `limit`.
+///
+/// **Pure**, and takes the limit rather than reading the constant, so the
+/// enforcement can be exercised on a small fixture instead of a 64 MiB one.
+///
+/// This is the only constructor of [`DocumentParseError::FileTooLarge`]. Before
+/// it existed, that variant was declared, carried a `{0} MiB` message, and was
+/// never built anywhere in the tree — the cap existed in the type and nowhere
+/// in the code (REQ-DOCPARSE-002).
+pub(crate) fn size_within_limit(len: u64, limit: u64) -> DocumentResult<()> {
+    if len > limit {
+        // Reported in MiB, rounded UP, so a file one byte over the ceiling
+        // never reports the ceiling's own size as its own.
+        return Err(DocumentParseError::FileTooLarge(
+            usize::try_from(len.div_ceil(1024 * 1024)).unwrap_or(usize::MAX),
+        ));
+    }
+    Ok(())
+}
+
 /// Result type for document parsing.
 pub type DocumentResult<T> = Result<T, DocumentParseError>;
 
