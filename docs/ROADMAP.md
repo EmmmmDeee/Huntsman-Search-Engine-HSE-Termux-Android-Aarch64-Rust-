@@ -468,6 +468,14 @@ by looking for them rather than reading modules at random:**
    documentation, not a guard.** The same question answers "is this limit
    enforced?" without reading a line of logic.
 
+   **A loop with several exits is several answers wearing one return type.**
+   `see_know`'s pivot walk stopped for four different reasons — one meaning the
+   chain was exhausted, three meaning it was cut short — and returned the same
+   thing for all of them (REQ-SEEKNOW-001). Its rule: **when a loop's doc
+   comment lists its exit conditions, ask whether the caller can tell which one
+   fired.** If the list has more entries than the return type has cases, the
+   difference is being discarded.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other

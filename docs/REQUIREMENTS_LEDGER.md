@@ -14261,6 +14261,67 @@ mutation that could not reach its control (WIKIDATA-001), a harness that never
 built (TYPOSQUAT-001, AUBUSINESSID-001), and now a comparison whose two sides
 were equal because both were empty.
 
+## REQ-SEEKNOW-001 — the filed premise was wrong, and refuting it found the real defect
+
+**The premise as filed.** *"see_know's `/search` truncation is silently
+invisible — the module's own single highest-priority call caps at 500 with zero
+completeness signal."*
+
+**Refuted, on both specifics.** There is no 500-result cap. The `500` cited is
+`500_000`, a *daily-quota estimate ceiling* at `mod.rs:329`; the `total` cited at
+`:367`/`:634` is `items.len()`, a local count of what came back, not a provider
+total. The only caps in the module are `MAX_PIVOT_HOPS = 3`, a `.take(3)` on
+cascade queries per hop, and a `.take(budget)` on emails — none of them a
+per-response result cap.
+
+**And refuting it found the real one.** Those bounds *are* truncations, of the
+walk rather than of a response. `resolve_identity_pivots`'s doc names four
+exits:
+
+> Stops when no new IDs appear, a hop yields no new entities, the per-scan
+> budget is spent, or `MAX_PIVOT_HOPS` is reached.
+
+Only *a hop that surfaced nothing new* is exhaustive — the chain is walked out.
+The others mean the chain was still yielding when something unrelated to the
+subject stopped it, and there is a fourth case the doc does not list: the
+mid-loop `budget_remaining()` guards skip a non-empty Steam or cascade dispatch,
+so even a hop that ran can be partial. Four outcomes, one indistinguishable
+return.
+
+`budget_remaining()` gates five sites in this module. `budget_snapshot()` exists
+but feeds `hse doctor` and `/api/v1/stats` — a process-global diagnostic, not a
+per-result coverage signal.
+
+**Fix.** A `PivotStop` verdict recorded at each exit and a pure
+`pivot_truncation(hops_used, stop)` producing the caveat, applied through
+`mark_truncated`'s unknown-total arm — a pivot chain has no denominator, so
+none is invented. The three incomplete causes read differently: a quota an
+operator can raise is not the same fact as a hop ceiling they cannot.
+
+**Verification.** Four variants, no survivors:
+
+| Variant | Result |
+|---|---|
+| BASELINE — no caveat ever produced | 2 locks fail |
+| M1 **over-correction** — an exhaustive walk flagged too | the exhaustive-exit control fails |
+| M3 — the loop never records the ceiling exit | **survived** → now fails |
+| M4 — the caveat computed and dropped | **survived** → now fails |
+
+**M3 and M4 are the third appearance of one gap.** Both are call-site
+mutations, and both passed every lock over `pivot_truncation` itself — as
+REQ-ZOOMEYE-002's M5 and REQ-DOCPARSE-002's M4 did before them. Here the caller
+dispatches HTTP and cannot be unit-tested, so the lock asserts on the
+function's own source, windowed to its body with a vacuity guard on the window
+length. Narrow needles, because REQ-CI-009's lock failed by matching prose
+instead of the thing it was about.
+
+**A harness note.** One falsification run left `see_know/mod.rs` **empty** — a
+non-atomic `open(w)` truncates before writing, and the content never landed.
+The on-disk backup taken before mutating is what made that a two-minute
+recovery. The harness now writes via a temp file and `os.replace`.
+
+---
+
 ## REQ-DOCPARSE-002 — a cap that existed in the type and nowhere in the code
 
 **Requirement.** A document read whole into memory must have an enforced
