@@ -16107,3 +16107,191 @@ satisfy the lock and destroy the module's strongest credential-exposure signal,
 and the control is what tells those apart. The control deliberately uses a
 32-hex MD5: the narrowest recognised width, and so the value closest to the old
 floor.
+
+---
+
+### REQ-NAMEGATE-001 — the invariant was written down, locked, and then enforced at one site out of six
+
+This is not a newly-suspected defect. `breach_rich.rs` states the rule in a
+source comment — *"A SQL NULL (`\N`) or redaction marker in either name
+component is absence, not a name — never compose a `"\N \N"` (nor a half-real
+`"\N Smith"` / `"REDACTED Smith"`) Person from it"* — and
+`breach_rich_tests.rs` has regression-locked it, half-null case included, for as
+long as that test has existed. The defect is that **five sibling sites that mint
+`Person` from the same dumped-export data never enforced it.**
+
+#### Why the half-null shape is the one that got through
+
+`is_username_derived_name` rejects exactly two shapes: two identical whitespace
+tokens, and a token carrying both a hyphen and a digit. `"\N \N"` is caught, but
+*incidentally* — as a doubled token, not as absence. Nothing in that predicate
+knows what `\N` means. So the moment the two columns differ, the guard has
+nothing to say:
+
+| name | doubled-token rule | minted? |
+| --- | --- | --- |
+| `"\N \N"` | identical tokens → reject | no |
+| `"\N Smith"` | tokens differ, no slug | **yes** |
+| `"Dana \N"` | tokens differ, no slug | **yes** |
+
+A SQL dump nulls each column independently, so the half-real pair is not a
+corner case of the fully-null one; it is the ordinary result of one populated
+column beside one empty one.
+
+#### The six sites, measured
+
+| site | guard before | half-null? |
+| --- | --- | --- |
+| `breach_rich.rs:307` | `is_absent_marker(f)` + `is_absent_marker(l)` + doubled-token | rejected |
+| `see_know/extract/mod.rs:192` | doubled-token only | **minted, `confidence::HIGH`** |
+| `see_know/extract/associates.rs:93` | doubled-token only | **minted, `LOW_MEDIUM`** |
+| `oathnet_pro/breach.rs:396` | doubled-token only | **minted** |
+| `niamonx/mod.rs:590` | doubled-token only | **minted, `confidence::HIGH`** |
+| `dehashed/build.rs:392` | `is_null_sentinel(&name)` + doubled-token | **minted** |
+
+Two of those rows are worth stating precisely, because both look guarded and
+neither is:
+
+* **`dehashed`** did call `is_null_sentinel` on the name — on the **whole
+  string**. `is_null_sentinel` is an exact match on `\N`, so the only value it
+  could ever reject is a bare `"\N"`, which the `contains(' ')` test one line
+  above had already rejected. The call was a no-op for its entire life.
+* **`oathnet_pro/breach.rs`** defines `is_absent` **at line 20 of the same
+  file**, uses it on employer and location fields, and never applies it to the
+  name slot — the same shape as REQ-OATHNET-002, which was the helper sitting
+  unused one screen from the site that needed it.
+
+And **`associates.rs`** is the sharpest case: its `associate_name` composes
+`format!("{} {}", f, l)` from `first_name` + `last_name` — byte-for-byte the
+composition `breach_rich` performs and guards per-component — while its own
+comment claimed it applied *"the SAME guard the subject-name path applies"*.
+That claim was true for `"\N \N"` and false for everything this entry is about.
+The subject-name path it deferred to had no sentinel check either: in all of
+`see_know`, `is_null_sentinel` appears **once**, on `country`.
+
+#### The compounding defect: three copies of the same predicate
+
+`is_null_sentinel(s) || is_placeholder_secret(s)` was defined privately in
+`breach_rich` (`is_absent_marker`), `oathnet_pro::breach` (`is_absent`) and
+`osintcat` (`is_absent_marker`) — each doc-commented as mirroring one of the
+others (*"Mirrors `breach_rich.rs`'s `is_absent_marker`"*, *"the SAME guard
+SeekNow/breach_rich already apply"*). Adding a fourth copy to house the fix
+would have made four places to update the next time a provider invents a
+sentinel. It is now one `pub fn is_absent_marker` in
+`core::validation::placeholder` — the module whose own doc says it exists to
+centralise *"checks that used to live scattered across modules"* — and the three
+copies are deleted.
+
+#### The gate, and why the component is no longer exported
+
+`is_unusable_person_name(name)` is now the single call every name slot makes:
+
+```rust
+name.split_whitespace().any(is_absent_marker) || is_username_derived_name(name)
+```
+
+Per **token**, not per composed string, because a whole-string test sees
+`"\N Smith"` as an ordinary two-word name — which is precisely the no-op
+`dehashed` shipped. Per-token is also strictly stronger than the per-component
+form `breach_rich` used: it additionally catches a component that is itself
+multi-word (`first_name = "\N Jr"`), and it can produce no new false rejection,
+because no real name token is `\N` or contains `REDACTED`.
+
+`is_username_derived_name` is demoted to `pub(super)` and dropped from
+`validation`'s exports. That is the structural half of the fix: while both were
+public, the weaker one was the one every site happened to call, and a new
+extractor would have reached for it too. The repository's own precedent is on
+this side — `validation/mod.rs` records that Pass 25 deleted two zero-caller
+validators rather than *"leave a plausible-looking second authority"*. A second
+authority that is merely **weaker** is worse than one that is unused.
+
+#### Falsification
+
+Baseline (`2c4b59d9`): all five new call-site locks FAIL, each on its own
+rejection assertion — none on a positive control:
+
+```
+see_know associates   ["\n Smith", "Dana \n", "Jane Smith"]   want ["Jane Smith"]
+see_know subject      ["\N Smith"] minted at confidence::HIGH
+niamonx pbs_v1        ["\N Smith", "Dana \N", "Anna Null"]    want ["Anna Null"]
+oathnet_pro           "\N Smith" minted
+dehashed              "\N Smith" minted
+```
+
+Three of those carry a genuine name in the same fixture that survived on
+baseline, so the red cannot be an extractor that emitted nothing.
+
+The positive control across every lock is the real surname **Null**. It is
+load-bearing rather than decorative: it is the reason the underlying sentinel
+test is an exact match on `\N` instead of a fuzzy "looks like null", and a
+repair that rejected it would silently destroy real evidence about real people
+while turning every lock green. `"Somchai Nan"` (the Thai province), `"John N
+Smith"` (a middle initial) and unbracketed `none` / `unknown` are pinned for the
+same reason.
+
+#### Mutation matrix
+
+Run against the gate and the predicate it composes, 12 named tests per run:
+
+| mutation | killed | what it establishes |
+| --- | --- | --- |
+| **M1** drop the per-token absence check (= the pre-fix gate) | all 5 call-site locks + the gate's own test | the change, not the environment, is what turns each site green |
+| **M2** test the WHOLE composed string instead of each token | the same 6 | **per-token specifically** is load-bearing — a whole-string absence check is exactly `dehashed`'s no-op |
+| **M3** drop the username component from the gate | 4, of which **3 are pre-existing tests** | the consolidation carries the old doctrine forward; it did not trade one guard for another |
+| **M4** narrow `is_absent_marker` to the SQL sentinel alone | 4 — precisely the tests whose fixtures carry `REDACTED` | both branches of the disjunction are reached, and by different fixtures |
+
+M4 is the discrimination check: it leaves the three `\N`-only fixtures green,
+which is correct and is what shows the matrix is resolving individual causes
+rather than knocking everything down at once.
+
+**A row of this matrix was wrong when first written, and the error was the kind
+this matrix exists to catch.** `breach_rich`'s pre-existing lock was listed as
+surviving all four mutations — which, had it been true, would have meant its
+invariant was *not* carried by the new gate. It was recorded under the path
+`modules::breach_rich_tests::…`; the real path is
+`modules::breach_rich::tests::…`, because that file is `include!`d into a test
+module rather than declared as one. `cargo test --exact` on a name that matches
+nothing reports no failure, so a mistyped path is indistinguishable from a
+survived mutation. Re-run against the correct path, **M1 and M2 both kill it** —
+which is the load-bearing result of the whole cycle: the only thing keeping
+`breach_rich`'s half-null assertion green is now the shared gate, so replacing
+its per-component check did not weaken the one site that was already right. The
+matrix script now carries a vacuity guard asserting every named test actually
+executed.
+
+#### A fourth same-named function that is deliberately NOT consolidated
+
+`sanctions_ofac::parse::is_absent` shares the name and nothing else: it matches
+OFAC's own CSV null placeholder (`-0-`, with or without the trailing space the
+real file emits) and an empty field. It is a format-specific predicate for one
+provider's file layout, not the SQL-dump/redaction disjunction, so folding it
+into the shared authority would merge two genuinely distinct contracts. It is
+recorded here because a grep for `is_absent` finds it, and the next reader
+should not have to re-derive why it was left alone.
+
+#### One error in building this, caught by reading the diff rather than by a tool
+
+The patch that introduced the two new functions anchored on
+`is_username_derived_name`'s **signature line** and inserted before it — which
+put both new functions *between that function's doc comment and the function
+itself*. The result compiled, passed all 7699 lib tests, passed clippy and
+passed the three denied rustdoc lints: `is_absent_marker` carried
+`is_username_derived_name`'s entire doc comment prepended to its own, and
+`is_username_derived_name` was left with no documentation at all. Nothing in the
+toolchain objects, because a doc comment attaches to whatever item follows it
+and every item still had *a* doc. It was found by reading the rendered region
+before running the gate. Its rule: **anchor a source insertion on the item's doc
+comment, not on its signature** — and read the region you inserted into, because
+a green build says the code is right, never that the documentation is attached
+to the thing it describes.
+
+#### What is NOT claimed
+
+That a provider has been observed sending `"\N Smith"` specifically. What is
+observed is the `\N` token itself — `is_null_sentinel`'s own doc records **303
+occurrences in one real SeekNow export**, in name and city fields — and the
+mixed shape follows from per-column nulling rather than from a sighting. The
+distinction is the same one REQ-OATHNET-002 was shipped under. It carries less
+weight here than there, because this repository does not merely permit the
+shape: it **names it, and locks it**, at `breach_rich`. The residual question
+was never whether the rule is right, only why five sites were exempt from it.

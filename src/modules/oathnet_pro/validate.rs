@@ -26,13 +26,15 @@ pub(super) fn has_min_digits(s: &str, n: usize) -> bool {
 pub(super) use crate::util::extract::looks_like_email;
 
 // `is_redacted_sentinel` lived here and matched only `UPGRADE_TO_SEE` /
-// `REDACTED`. It was a strict subset of `breach::is_absent`
+// `REDACTED`. It was a strict subset of `core::validation::is_absent_marker`
 // (`is_null_sentinel || is_placeholder_secret`, whose first branch already
 // covers both of those spellings), so any site reaching for it silently
 // admitted the SQL-dump NULL `\N` and every bracketed absence form. Its one
-// production caller — the extra-social handle loop — now calls `is_absent`,
-// leaving this file with no second, weaker absence authority to pick up by
-// mistake. Absence is decided in exactly one place for this module.
+// production caller — the extra-social handle loop — now calls
+// `is_absent_marker`, leaving this file with no second, weaker absence
+// authority to pick up by mistake. Since REQ-NAMEGATE-001 that one place is
+// tree-wide, not merely per-module: `breach.rs`'s own private `is_absent` was
+// one of three identical copies, all now deleted.
 
 /// Objective, offline validation of a leaked bank-account number: normalise the
 /// raw `iban` field (drop whitespace, upper-case) and defer to the single-sourced

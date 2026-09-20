@@ -345,7 +345,7 @@ use crate::util::preflight::{is_local_domain, is_placeholder_username, is_privat
 // Rejects a breach `full_name` that is actually the username doubled or
 // slugged (see `breach.rs`'s Person-creation guard) — both oathnet_pro and
 // see_know extract from the same breach-schema fields, so they share this too.
-use crate::core::validation::is_username_derived_name;
+use crate::core::validation::{is_absent_marker, is_unusable_person_name};
 
 /// Stamp entities produced by an INCOMPLETE enumeration so the coverage limit
 /// travels with the data.

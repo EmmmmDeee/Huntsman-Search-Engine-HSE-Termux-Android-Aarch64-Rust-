@@ -81,16 +81,18 @@ pub(super) fn extract_associates(
                 continue;
             };
             // A relationship entry must look like a real person name (a space) and
-            // not be the subject re-listed. Reject a doubled/slug username
-            // masquerading as a name (breach `full_name = "{username} {username}"`)
-            // and the `"\N \N"` SQL-null pair (identical tokens the doubled-token
-            // rule also catches) — the SAME guard the subject-name path applies
+            // not be the subject re-listed, and must clear the shared
+            // name-integrity gate — the SAME one the subject-name path applies
             // (extract/mod.rs), so an associate is held to identical integrity.
+            // That matters most here: `associate_name` composes `first_name` +
+            // `last_name`, exactly as `breach_rich` does, and a SQL dump nulls
+            // each column independently — so a half-real `"\N Smith"` arrives as
+            // readily as the `"\N \N"` pair.
             let name = crate::util::str_util::title_case(&raw);
             if !name.contains(' ')
                 || name.len() < 5
                 || name.eq_ignore_ascii_case(subject)
-                || is_username_derived_name(&name)
+                || is_unusable_person_name(&name)
             {
                 continue;
             }

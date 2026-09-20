@@ -587,7 +587,7 @@ fn emit_pbs_v1(
         // so a slug username is never minted as a fabricated Person.
         for name in meta.names.iter().flatten() {
             if !name.eq_ignore_ascii_case(query)
-                && !crate::core::validation::is_username_derived_name(name)
+                && !crate::core::validation::is_unusable_person_name(name)
                 && seen.insert(format!("{}:{}", EntityKind::Person, name.to_lowercase()))
             {
                 let mut pivot = Entity::new(EntityKind::Person, name, confidence::HIGH, scan_id);

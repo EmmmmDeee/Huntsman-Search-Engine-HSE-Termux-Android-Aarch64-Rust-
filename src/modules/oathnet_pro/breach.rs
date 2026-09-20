@@ -9,16 +9,6 @@ use super::*;
 use crate::core::confidence;
 use crate::util::extract::CredentialField;
 
-/// True for a value that is really an absence sentinel (`\N`, `NULL`, an empty/
-/// whitespace string, a redaction placeholder), not a datum — the SAME guard
-/// SeekNow/breach_rich already apply (`breach_rich::is_absent_marker`). Gating
-/// an emission on it stops a breach page where many rows carry `\N` employer or
-/// `NULL` country/location from minting one shared node that fuses all those
-/// unrelated strangers together — a false positive, the worst kind for an
-/// evidentiary tool.
-fn is_absent(s: &str) -> bool {
-    crate::util::json::is_null_sentinel(s) || crate::util::extract::is_placeholder_secret(s)
-}
 // ─── Entity extraction ─────────────────────────────────────────────────────
 
 pub(super) fn breach_evidence(item: &Value) -> Evidence {
@@ -393,7 +383,7 @@ pub(super) fn extract_breach_entities_with(
         // the graph.
         if t.len() >= 4
             && t.contains(' ')
-            && !is_username_derived_name(t)
+            && !is_unusable_person_name(t)
             && seen.insert(t.to_lowercase())
         {
             // Parity with SeekNow: stamp the record's demographics (DOB / gender
@@ -437,7 +427,7 @@ pub(super) fn extract_breach_entities_with(
     }
 
     if let Some(country) = val_str(item, "country")
-        && !is_absent(&country)
+        && !is_absent_marker(&country)
         && seen.insert(format!("@country:{country}"))
     {
         // No centroid is derived from the country. `city_coords` is a gazetteer
@@ -488,7 +478,7 @@ pub(super) fn extract_breach_entities_with(
         // `state`/`postal` would leave a `", ,"` gap or a trailing `", "` in the
         // composed value and degrade geocoding. Also drop an absence sentinel
         // (`\N`/`NULL`/redaction) part so it can't fuse strangers into one address.
-        .filter(|s| !s.is_empty() && !is_absent(s))
+        .filter(|s| !s.is_empty() && !is_absent_marker(s))
         .collect::<Vec<&str>>()
         .join(", ");
         if addr.len() >= 4 && seen.insert(format!("@addr:{}", addr.to_lowercase())) {
@@ -534,7 +524,9 @@ pub(super) fn extract_breach_entities_with(
     // "US" that are already captured as the `country` evidence attribute.
     if let Some(loc) = val_str(item, "location") {
         let loc = loc.trim();
-        if loc.len() >= 4 && !is_absent(loc) && seen.insert(format!("@loc:{}", loc.to_lowercase()))
+        if loc.len() >= 4
+            && !is_absent_marker(loc)
+            && seen.insert(format!("@loc:{}", loc.to_lowercase()))
         {
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc)
                 // See the composed-address leg above: keyed on the resolved
@@ -609,12 +601,12 @@ pub(super) fn extract_breach_entities_with(
     }
 
     if let Some(ig) = val_str(item, "instagram")
-        // Absence gate — the same `is_absent` the country / location /
+        // Absence gate — the same `is_absent_marker` the country / location /
         // organisation emitters in this file already apply. It was never wired
         // here, so a `\N` or `[NOT_SAVED]` column minted a Username entity that
         // the engine then dispatches to username_search / search_engines as a
         // live pivot.
-        && !is_absent(&ig)
+        && !is_absent_marker(&ig)
         // A bare `.to_lowercase()` doesn't strip a leading `@` sigil or
         // wrapping quote the way `Entity::new` does internally, so "@jordan"
         // and "jordan" each earned their own dedup slot despite colliding on
@@ -639,7 +631,7 @@ pub(super) fn extract_breach_entities_with(
     // Absence-gated for the same reason as `instagram` above: without it the
     // bare-handle branch minted `linkedin:\N` / `linkedin:[not_saved]`, which
     // reads as a real LinkedIn identity and unlocks the paid proxycurl leg.
-    if let Some(li) = val_str(item, "linkedin").filter(|s| !is_absent(s)) {
+    if let Some(li) = val_str(item, "linkedin").filter(|s| !is_absent_marker(s)) {
         let lower = li.to_lowercase();
         if lower.contains("linkedin.com") {
             if seen.insert(format!("@li:{lower}")) {
@@ -686,7 +678,7 @@ pub(super) fn extract_breach_entities_with(
         if let Some(org) = val_str(item, k) {
             let org = org.trim();
             if org.len() >= 2
-                && !is_absent(org)
+                && !is_absent_marker(org)
                 && seen.insert(format!("@org:{}", org.to_ascii_lowercase()))
             {
                 let mut oe =
@@ -724,7 +716,7 @@ pub(super) fn extract_breach_entities_with(
         // REQ-OATHNET-002. The gate was `ph.len() >= 32` alone, and the entity's
         // VALUE is the hash string — so any two rows carrying the same long
         // placeholder mint one shared node and fuse unrelated strangers, which
-        // `is_absent`'s own doc above calls "a false positive, the worst kind for
+        // `is_absent_marker`'s own doc calls "a false positive, the worst kind for
         // an evidentiary tool". That is REQ-DEHASHED-001's harm in the hash slot.
         //
         // Reachability is UNOBSERVED, and the honest claim is no stronger: the
@@ -733,7 +725,7 @@ pub(super) fn extract_breach_entities_with(
         // 32-char floor today. This is the same classification the module already
         // applies to the plaintext `password` field (below, and in `stealer.rs`),
         // reaching the one field that was gated on length alone.
-        && !is_absent(&ph)
+        && !is_absent_marker(&ph)
         && ph.len() >= 32
         && seen.insert(format!(
             "@pwhash:{}",
@@ -897,14 +889,15 @@ pub(super) fn extract_breach_entities_with(
             // does internally via `normalise`'s Username arm, so a dirty and a
             // clean spelling of the same handle each earned their own dedup
             // slot despite colliding on the same uid once constructed.
-            // `is_absent`, not the narrower `is_redacted_sentinel` this used to
+            // `is_absent_marker`, not the narrower `is_redacted_sentinel` this used
             // call: the latter matched only `UPGRADE_TO_SEE` / `REDACTED`, a
             // STRICT SUBSET (`is_placeholder_secret`'s own first branch covers
             // both), so the SQL-dump NULL `\N` — length 2, inside the window
             // below — and every bracketed form (`[NOT_SAVED]`, `[fail]`,
-            // `<empty>`) minted a handle. One absence authority for the file.
+            // `<empty>`) minted a handle. One absence authority, tree-wide
+            // (`core::validation::is_absent_marker`, REQ-NAMEGATE-001).
             if (2..=64).contains(&h.len())
-                && !is_absent(h)
+                && !is_absent_marker(h)
                 && seen.insert(format!(
                     "@{platform}:{}",
                     crate::core::entity::normalise(&EntityKind::Username, h)

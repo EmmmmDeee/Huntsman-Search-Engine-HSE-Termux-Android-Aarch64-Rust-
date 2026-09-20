@@ -13,6 +13,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use tracing::{debug, info, warn};
 
+use crate::core::validation::is_absent_marker;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
@@ -20,11 +21,9 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::extract::is_placeholder_secret;
 use crate::util::http::{
     RequestBuilderExt, fetch_keyed_json, json_scanned, keyed_ok_or_404, urlencode,
 };
-use crate::util::json::is_null_sentinel;
 use crate::util::str_util::slugify;
 
 const SRC: &str = "osintcat";
@@ -38,15 +37,6 @@ const PURPOSE: &str = "Law Enforcement Intelligence";
 /// nested-JSON-as-string) cannot make one footprint hit dominate an entity's
 /// evidence list.
 const MAX_EXTRA_VALUE_LEN: usize = 2000;
-
-/// A value that is an absence/redaction marker, not real platform data — a SQL
-/// NULL sentinel or a provider redaction placeholder. Mirrors
-/// `breach_rich.rs`'s `is_absent_marker`, composed from the same two shared
-/// primitives, so a provider that reports e.g. `"REDACTED"` for a field cannot
-/// mint misleading [`Evidence`] text.
-fn is_absent_marker(s: &str) -> bool {
-    is_null_sentinel(s) || is_placeholder_secret(s)
-}
 
 /// The single place a provider-controlled JSON value becomes attribute or
 /// [`Evidence`] text, for every OsintCat endpoint.

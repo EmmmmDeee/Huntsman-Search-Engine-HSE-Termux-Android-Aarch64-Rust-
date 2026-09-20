@@ -718,3 +718,33 @@ fn username_derived_name_is_not_minted_as_person() {
         "a username-derived name must never be minted as a Person"
     );
 }
+
+/// dehashed already calls `is_null_sentinel` on the name, but on the WHOLE
+/// string — so it rejects a bare `"\\N"` (which the `contains(' ')` check had
+/// already rejected) while passing every composed name that merely CONTAINS a
+/// nulled component.
+#[test]
+fn half_null_name_is_not_minted_as_person() {
+    for name in ["\\N Smith", "Dana \\N", "REDACTED Smith"] {
+        let entries = vec![json!({ "name": name, "database_name": "TestDB" })];
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_records(&entries, "x@y.com", "fp", "scan", &mut seen, &mut result);
+        assert!(
+            !result.entities.iter().any(|e| e.kind == EntityKind::Person),
+            "{name:?} carries an absence marker and must not mint a Person"
+        );
+    }
+    // Positive control: a genuine name on the identical shape still mints.
+    let entries = vec![json!({ "name": "Anna Null", "database_name": "TestDB" })];
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_records(&entries, "x@y.com", "fp", "scan", &mut seen, &mut result);
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Person && e.value == "Anna Null"),
+        "a genuine name must still mint a Person"
+    );
+}

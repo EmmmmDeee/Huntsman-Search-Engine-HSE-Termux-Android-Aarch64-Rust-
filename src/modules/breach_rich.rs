@@ -19,14 +19,14 @@ use std::collections::HashSet;
 
 use serde_json::Value;
 
+use crate::core::validation::is_absent_marker;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
     tags,
 };
-use crate::util::extract::is_placeholder_secret;
-use crate::util::json::{is_null_sentinel, val_str};
+use crate::util::json::val_str;
 
 /// Maximum length of an IEEE 802.11 SSID, in octets. A value in an `ssid` field
 /// longer than this is not a network name (a truncated blob, a joined list), so
@@ -34,16 +34,6 @@ use crate::util::json::{is_null_sentinel, val_str};
 /// [`extract_rich_detail`], which still surfaces such a value rather than
 /// dropping it.
 const MAX_SSID_OCTETS: usize = 32;
-
-/// A value that is an *absence/redaction marker*, not real data: a SQL NULL
-/// sentinel (`\N`, written for an empty column in dumped exports) or a provider
-/// redaction placeholder (`UPGRADE_TO_SEE_FULL`, `REDACTED`, bracketed
-/// `[NULL]`/`[FAIL]`…). Such a value must NEVER mint a graph node — two records
-/// that each carry `\N`/`REDACTED` in, say, `company` would otherwise both yield
-/// an `Organisation("\N")` node and falsely co-occur, poisoning correlation.
-fn is_absent_marker(s: &str) -> bool {
-    is_null_sentinel(s) || is_placeholder_secret(s)
-}
 
 /// A hardware-fingerprint value that is a well-known BIOS/SMBIOS/dmidecode
 /// PLACEHOLDER (or a trivial all-zero / broadcast filler), not a real per-machine
@@ -298,13 +288,13 @@ pub fn extract_rich_detail(
         let full = format!("{} {}", f.trim(), l.trim());
         // A SQL NULL (`\N`) or redaction marker in either name component is
         // absence, not a name — never compose a `"\N \N"` (nor a half-real
-        // `"\N Smith"` / `"REDACTED Smith"`) Person from it.
+        // `"\N Smith"` / `"REDACTED Smith"`) Person from it. The shared gate now
+        // enforces per-TOKEN what this site enforced per-COMPONENT, and also
+        // rejects the doubled/slug username a dump writes when only a handle is
+        // known. Per-token is strictly the stronger test: it additionally catches
+        // a component that is itself multi-word (`first_name = "\N Jr"`).
         if full.len() >= 3
-            && !is_absent_marker(f)
-            && !is_absent_marker(l)
-            // Breach dumps store `full_name = "{username} {username}"` when only a
-            // handle is known; a doubled/slug username is not a real person.
-            && !crate::core::validation::is_username_derived_name(&full)
+            && !crate::core::validation::is_unusable_person_name(&full)
             && seen.insert(format!("@person:{}", full.to_lowercase()))
         {
             push_breach_entity(

@@ -388,12 +388,14 @@ pub(super) fn extract_records(
             .into_iter()
             .chain(field_strings(item, "full_name"))
         {
+            // The shared name-integrity gate: rejects a doubled/slug username
+            // ("rhino-ryno23 rhino-ryno23") AND an absence marker in any token.
+            // The `is_null_sentinel` test this replaces ran on the WHOLE string,
+            // so it only ever rejected a bare `"\N"` — which the `contains(' ')`
+            // test had already rejected — while passing every composed name that
+            // merely CONTAINS a nulled column (`"\N Smith"`).
             if name.trim().contains(' ')
-                && !crate::util::json::is_null_sentinel(&name)
-                // A doubled/slug username ("rhino-ryno23 rhino-ryno23") clears the
-                // space + non-sentinel checks yet is a fabricated Person — the same
-                // guard the oathnet_pro/see_know breach paths apply.
-                && !crate::core::validation::is_username_derived_name(name.trim())
+                && !crate::core::validation::is_unusable_person_name(name.trim())
                 && seen.insert(name.to_lowercase())
             {
                 push_breach_entity(

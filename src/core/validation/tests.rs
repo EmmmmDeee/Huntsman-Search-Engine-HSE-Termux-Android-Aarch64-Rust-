@@ -185,6 +185,7 @@ fn placeholder_entity_filters_artifacts_but_keeps_secrets() {
 
 #[test]
 fn username_derived_name_catches_doubled_and_slug_tokens_not_real_names() {
+    use placeholder::is_username_derived_name;
     // The exact previously-observed live case: a breach DB storing
     // `full_name = "{username} {username}"` when no real name is available.
     assert!(is_username_derived_name("rhino-ryno23 rhino-ryno23"));
@@ -198,6 +199,67 @@ fn username_derived_name_catches_doubled_and_slug_tokens_not_real_names() {
     assert!(!is_username_derived_name("Jordan Avery"));
     assert!(!is_username_derived_name("Mary Smith-Jones"));
     assert!(!is_username_derived_name("John Doe")); // caught by is_placeholder_person instead
+    // This predicate is a COMPONENT, not the gate: it is blind to the absence
+    // markers a SQL dump writes, which is precisely why it is not exported and
+    // why every call site calls `is_unusable_person_name` instead.
+    assert!(!is_username_derived_name("\\N Smith"));
+    assert!(!is_username_derived_name("Dana \\N"));
+}
+
+#[test]
+fn unusable_person_name_rejects_an_absence_marker_in_any_token() {
+    // A SQL dump nulls each column INDEPENDENTLY, so a name reaches an
+    // extractor half-real as readily as fully null. The doubled-token rule
+    // catches `"\N \N"` only incidentally (identical tokens) and a half-null
+    // pair not at all — per-token absence checking is what closes both.
+    assert!(is_unusable_person_name("\\N \\N"));
+    assert!(is_unusable_person_name("\\N Smith"));
+    assert!(is_unusable_person_name("Dana \\N"));
+    // `\N` is matched case-insensitively, which matters because the see_know
+    // associate path title-cases the composed name BEFORE gating it, turning
+    // `"\N"` into `"\n"`.
+    assert!(is_unusable_person_name("\\n Smith"));
+    // Redaction placeholders are the same class of value.
+    assert!(is_unusable_person_name("REDACTED Smith"));
+    assert!(is_unusable_person_name("Dana [NULL]"));
+    // The gate SUBSUMES the username component, so a call site needs one call.
+    assert!(is_unusable_person_name("rhino-ryno23 rhino-ryno23"));
+    assert!(is_unusable_person_name("rhino-ryno23"));
+
+    // ── Real people must survive, or the gate would destroy real evidence. ──
+    // The genuine surname "Null" is the load-bearing case: it is why the
+    // underlying sentinel test is an EXACT match on `\N` and not a fuzzy
+    // "looks like null" test.
+    assert!(!is_unusable_person_name("Anna Null"));
+    assert!(!is_unusable_person_name("Null"));
+    // The Thai province "Nan", a bare "none"/"unknown" surname-shaped token,
+    // and a hyphenated surname are all real values the primitives deliberately
+    // let through (the bracket requirement in `is_placeholder_secret`).
+    assert!(!is_unusable_person_name("Somchai Nan"));
+    assert!(!is_unusable_person_name("Mary Smith-Jones"));
+    assert!(!is_unusable_person_name("Kyle Diegmann"));
+    // A single `N` is not the sentinel — a middle initial must survive.
+    assert!(!is_unusable_person_name("John N Smith"));
+}
+
+#[test]
+fn absent_marker_is_the_one_authority_the_module_copies_replaced() {
+    // The three private copies this replaced (`breach_rich::is_absent_marker`,
+    // `oathnet_pro::breach::is_absent`, `osintcat::is_absent_marker`) were each
+    // exactly this disjunction; pin both branches so a future edit cannot
+    // narrow one of them unnoticed.
+    assert!(is_absent_marker("\\N"));
+    assert!(is_absent_marker("  \\N  "));
+    assert!(is_absent_marker("REDACTED"));
+    assert!(is_absent_marker("UPGRADE_TO_SEE_FULL"));
+    assert!(is_absent_marker("[NULL]"));
+    assert!(is_absent_marker("<empty>"));
+    // Unbracketed ambiguous tokens are real values, not markers.
+    assert!(!is_absent_marker("Null"));
+    assert!(!is_absent_marker("none"));
+    assert!(!is_absent_marker("Nan"));
+    assert!(!is_absent_marker("Diegmann"));
+    assert!(!is_absent_marker(""));
 }
 
 #[test]

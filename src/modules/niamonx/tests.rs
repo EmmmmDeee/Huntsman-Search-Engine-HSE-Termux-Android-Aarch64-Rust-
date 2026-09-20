@@ -114,7 +114,7 @@ fn pbs_v1_found_with_blocks_tags_breach_and_pivots_names() {
 fn pbs_v1_suppresses_username_derived_name_pivots() {
     // A breach `meta.names` entry that is a doubled/slug username
     // ("rhino-ryno23 rhino-ryno23") is not a real person and must never be minted
-    // as a Person pivot — the shared `is_username_derived_name` guard (also used
+    // as a Person pivot — the shared `is_unusable_person_name` gate (also used
     // by see_know/oathnet_pro) suppresses it. A genuine hit is still present
     // (blocks_total > 0), so the guard is what drops the pivot, not an empty hit.
     let resp = Envelope::from_parts(
@@ -687,5 +687,59 @@ fn a_real_answer_passes_through_the_seam() {
             Envelope::from_parts(true, Some(42)),
         ).expect("a real answer is not an error"),
         42
+    );
+}
+
+/// `meta.names` comes from the same dumped-export family as the see_know /
+/// oathnet_pro name slots, so it carries the same SQL-NULL sentinel. The
+/// doubled-token guard catches `"\\N \\N"` only; a half-null pair clears it and
+/// is minted as a Person pivot at confidence::HIGH.
+#[test]
+fn pbs_v1_suppresses_absence_marker_name_pivots() {
+    let names = vec![
+        "\\N Smith".to_string(),
+        "Dana \\N".to_string(),
+        "Anna Null".to_string(),
+    ];
+    let resp = Envelope::from_parts(
+        true,
+        Some(PbsV1Data {
+            status: Some("found".to_string()),
+            error: None,
+            meta: Some(PbsV1Meta {
+                blocks_total: 1,
+                emails: None,
+                names: Some(names),
+                first_seen: None,
+                last_seen: None,
+            }),
+            risk: None,
+            blocks: None,
+            rate: None,
+        }),
+    );
+    let target = Target::new(TargetKind::Email, "x@y.com");
+    let mut entity = target.to_entity(0.80, "s");
+    let mut result = ModuleResult::new();
+    let mut seen = std::collections::HashSet::new();
+    emit_pbs_v1(
+        payload("pbs_v1", resp).expect("fixture is a real answer"),
+        &mut entity,
+        &mut result,
+        "x@y.com",
+        "s",
+        &mut seen,
+    );
+    let minted: Vec<&str> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person)
+        .map(|e| e.value.as_str())
+        .collect();
+    // The genuine name is the positive control: it must survive, proving the
+    // rejections below are the guard and not an empty hit.
+    assert_eq!(
+        minted, vec!["Anna Null"],
+        "only the genuine name may mint a Person pivot; got {minted:?}"
     );
 }

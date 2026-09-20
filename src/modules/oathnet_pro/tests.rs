@@ -710,14 +710,14 @@ use crate::core::confidence;
     #[test]
     fn a_placeholder_in_a_social_field_is_never_minted_as_a_handle() {
         use serde_json::json;
-        // `breach.rs` defines its own `is_absent` — `is_null_sentinel ||
+        // The shared `is_absent_marker` — `is_null_sentinel ||
         // is_placeholder_secret` — and applies it to country, location and
         // organisation. Three social-handle sites never got it:
         //
         //   * `instagram` and `linkedin` had NO absence guard at all;
         //   * the extra-social loop (github/tiktok/reddit/…) guarded with
         //     `is_redacted_sentinel`, which matches only `UPGRADE_TO_SEE` and
-        //     `REDACTED` — a STRICT SUBSET of `is_absent`, so the SQL-dump NULL
+        //     `REDACTED` — a STRICT SUBSET of `is_absent_marker`, so the SQL-dump NULL
         //     `\N` and every bracketed form (`[NOT_SAVED]`, `[fail]`, `<empty>`)
         //     sailed through its `(2..=64)` length window.
         //
@@ -1549,7 +1549,7 @@ use crate::core::confidence;
     /// LOCK. A long capture sentinel in `password_hash` must not mint an
     /// entity. The entity's VALUE is the hash string, so two unrelated people
     /// whose rows both carry the same placeholder would mint ONE shared node and
-    /// fuse them — the harm `is_absent`'s own doc in `breach.rs` calls "a false
+    /// fuse them — the harm `is_absent_marker`'s own doc calls "a false
     /// positive, the worst kind for an evidentiary tool", and REQ-DEHASHED-001's
     /// defect in the hash slot rather than the plaintext one.
     ///
@@ -1998,5 +1998,39 @@ use crate::core::confidence;
                 .iter()
                 .any(|e| e.kind == EntityKind::Coordinates),
             "a row naming a tabulated city must still earn its coordinate"
+        );
+    }
+
+    /// A SQL dump nulls each column independently, so `full_name` rebuilt from a
+    /// nulled component reaches this extractor as a half-real `"\\N Smith"`. The
+    /// doubled-token rule catches only the fully-null `"\\N \\N"` pair; this file
+    /// defined its own `is_absent` for exactly this class of value (one of three
+    /// identical private copies, since consolidated into
+    /// `core::validation::is_absent_marker`) but never applied it to the name slot.
+    #[test]
+    fn half_null_full_name_is_not_minted_as_person() {
+        use serde_json::json;
+        for name in ["\\N Smith", "Dana \\N", "REDACTED Smith"] {
+            let item = json!({ "full_name": name, "source": "TestDB" });
+            let mut seen = HashSet::new();
+            let mut result = ModuleResult::new();
+            extract_breach_entities(&item, "x@y.com", "scan", "oathnet.org:t", &mut seen, &mut result);
+            assert!(
+                !result.entities.iter().any(|e| e.kind == EntityKind::Person),
+                "{name:?} carries an absence marker and must not mint a Person"
+            );
+        }
+        // Positive control: the real surname "Null" still mints, so the loop
+        // above cannot be passing because the extractor mints nothing at all.
+        let item = json!({ "full_name": "Anna Null", "source": "TestDB" });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&item, "x@y.com", "scan", "oathnet.org:t", &mut seen, &mut result);
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Person && e.value == "Anna Null"),
+            "a genuine name must still mint a Person"
         );
     }

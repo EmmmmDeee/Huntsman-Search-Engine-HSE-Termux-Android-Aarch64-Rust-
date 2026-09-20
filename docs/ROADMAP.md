@@ -598,6 +598,46 @@ by looking for them rather than reading modules at random:**
    held" and "Q did not follow" — and the first of those is a broken harness
    reporting a fixed bug or an unfixed one at random.
 
+
+   **A guard that catches a value incidentally stops catching it the moment the
+   value varies.** `is_username_derived_name` rejects `"\N \N"` — but because
+   the two tokens are *identical*, not because it knows what `\N` means; the
+   predicate contains no absence concept at all. Four sites recorded that
+   coincidence in a comment as coverage (*"the `"\N \N"` SQL-null pair
+   (identical tokens the doubled-token rule also catches)"*), and the coverage
+   evaporated the moment one column was populated: `"\N Smith"` has two
+   different tokens, no slug, a space and five characters, so nothing stopped it
+   (REQ-NAMEGATE-001). Its rule: **when a comment credits a guard with catching
+   a value, check WHICH property of the value it matches.** If the guard's
+   reason is not the value's reason, the coverage holds for the exact sample in
+   the comment and nothing else — and a comment that names the sample is what
+   stops anyone re-deriving it.
+
+   **Two public predicates for one decision, and the call sites converge on the
+   weaker.** `is_username_derived_name` and the per-component absence check were
+   both available; six name slots called the first and one called both, so the
+   rule `breach_rich` documents and regression-locks was enforced at one site in
+   six (REQ-NAMEGATE-001). The same pull produced three private copies of
+   `is_null_sentinel || is_placeholder_secret`, each doc-commented as mirroring
+   one of the others. Its rule: **when one decision has more than one callable
+   authority, the weakest is the de-facto rule — so export one gate and make the
+   components unreachable.** `validation/mod.rs` already records the converse
+   case (Pass 25 deleting zero-caller validators rather than leave *"a
+   plausible-looking second authority"*); a second authority that is merely
+   WEAKER is worse than one that is unused, because it has users.
+
+   **A no-op guard reads exactly like an enforced one.** `dehashed` called
+   `is_null_sentinel` on the composed name for its entire life. The predicate is
+   an exact match on `\N`, so the only value it could reject is a bare `"\N"` —
+   which the `contains(' ')` test on the line above had already rejected. It
+   cost nothing, caught nothing, and made the site look guarded to every later
+   reader, including the sweep that first catalogued the six name slots
+   (REQ-NAMEGATE-001). Its rule: **for a guard on a composed or filtered value,
+   ask what reaches it after the preceding conditions** — an exact-match
+   predicate behind a shape test is usually testing a value the shape test made
+   impossible, and the sibling that looks unguarded may be in better shape than
+   the one that looks guarded.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other

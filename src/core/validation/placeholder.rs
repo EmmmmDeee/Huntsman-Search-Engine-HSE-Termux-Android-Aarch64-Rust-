@@ -113,6 +113,68 @@ pub(super) fn url_host_is_placeholder(u: &str) -> bool {
     !host.is_empty() && is_placeholder_domain(host)
 }
 
+/// True for a value that is an **absence / redaction marker** rather than data:
+/// the SQL NULL sentinel (`\N`) a MySQL/Postgres dump writes for an empty
+/// column, or a provider redaction placeholder (`REDACTED`,
+/// `UPGRADE_TO_SEE_FULL`, a bracketed `[NULL]`/`[FAIL]`/`<empty>`).
+///
+/// Such a value must NEVER mint a graph node: two records that each carry `\N`
+/// or `REDACTED` in, say, `company` would otherwise both yield an
+/// `Organisation("\N")` and falsely co-occur, fusing unrelated strangers into
+/// one node — a false positive, the worst kind for an evidentiary tool.
+///
+/// This is the single authority for that question. Three modules
+/// (`breach_rich`, `oathnet_pro::breach`, `osintcat`) each previously defined a
+/// private copy of this exact disjunction, every one of them doc-commented as
+/// "mirrors" one of the others; a fourth copy here would have been a fourth
+/// place to fix a future sentinel. Exactness is delegated to the two
+/// primitives: [`is_null_sentinel`](crate::util::json::is_null_sentinel) matches
+/// `\N` and nothing else (so the real surname *Null* and the Thai province
+/// *Nan* survive), and
+/// [`is_placeholder_secret`](crate::util::extract::is_placeholder_secret)
+/// requires brackets around `NULL`/`NONE`/`FAIL` for the same reason.
+#[must_use]
+pub fn is_absent_marker(s: &str) -> bool {
+    crate::util::json::is_null_sentinel(s) || crate::util::extract::is_placeholder_secret(s)
+}
+
+/// True when `name` must NOT be minted as a `Person`. **The single gate every
+/// dump/breach name slot passes through**, so one decision covers all of them.
+///
+/// Rejects two independent fabrication shapes:
+///
+/// 1. **An absence marker in ANY whitespace token** ([`is_absent_marker`]). A
+///    SQL dump nulls each column independently, so a name rebuilt from
+///    `first_name` + `last_name` — or stored whole by an exporter that did the
+///    same — reaches an extractor as a *half-real* `"\N Smith"` / `"Dana \N"`
+///    just as readily as the fully-null `"\N \N"`. Per-token is what catches
+///    both: a whole-string test sees `"\N Smith"` as an ordinary two-word name,
+///    which is exactly why `dehashed`'s whole-string sentinel test was a no-op.
+/// 2. **A username masquerading as a name** ([`is_username_derived_name`]).
+///
+/// Per-token is also strictly safer than testing the composed string, because
+/// no real name token is `\N` or contains `REDACTED`.
+///
+/// # Examples
+///
+/// ```
+/// use huntsman_search_engine::core::validation::is_unusable_person_name;
+///
+/// // A nulled column, whichever side it lands on.
+/// assert!(is_unusable_person_name("\\N Smith"));
+/// assert!(is_unusable_person_name("Dana \\N"));
+/// assert!(is_unusable_person_name("\\N \\N"));
+/// // A handle stored in the name slot.
+/// assert!(is_unusable_person_name("rhino-ryno23 rhino-ryno23"));
+/// // Real people are untouched — including the genuine surname "Null".
+/// assert!(!is_unusable_person_name("Anna Null"));
+/// assert!(!is_unusable_person_name("Mary Smith-Jones"));
+/// ```
+#[must_use]
+pub fn is_unusable_person_name(name: &str) -> bool {
+    name.split_whitespace().any(is_absent_marker) || is_username_derived_name(name)
+}
+
 /// True if a name string looks like a username masquerading as a real name.
 /// Breach databases sometimes store `full_name = "{username} {username}"` when
 /// only a username is available (previously observed live: a scan seeded on
@@ -124,7 +186,13 @@ pub(super) fn url_host_is_placeholder(u: &str) -> bool {
 /// - A slug-style token that contains **both** a hyphen and a digit
 ///   (e.g. `"rhino-ryno23"`).  Legitimate hyphenated surnames like
 ///   `"Smith-Jones"` never contain digits.
-pub fn is_username_derived_name(name: &str) -> bool {
+///
+/// A **component** of [`is_unusable_person_name`], which is the gate call sites
+/// use — deliberately NOT exported, so no extractor can apply half the
+/// name-integrity doctrine by reaching for this one alone. It knows nothing
+/// about absence markers: it rejects `"\N \N"` only incidentally, as two
+/// identical tokens, and `"\N Smith"` not at all.
+pub(super) fn is_username_derived_name(name: &str) -> bool {
     // Exactly-two-identical-tokens check without collecting a `Vec`: pull the
     // first three whitespace tokens and require the third to be absent.
     let mut parts = name.split_whitespace();
