@@ -27,6 +27,36 @@
 # CI is a defect, not a convenience.
 set -uo pipefail
 
+# ── Disk discipline (REQ-GATE-001) ───────────────────────────────────────────
+# `CARGO_INCREMENTAL=0` is not a micro-optimisation here; it is what keeps this
+# script from defeating itself. Incremental state is never reclaimed, and this
+# is a full-verification script, not an edit-compile loop: it runs a sequence of
+# cargo invocations with DIFFERENT flags (check --all-targets, clippy, test,
+# test --doc, plus the hse-core and wasm-ui workspaces), so each gets its own
+# fingerprint and the cache buys almost nothing. Measured 2026-09-20: one
+# from-scratch run took `target/debug/incremental` from 4.0K to **7.6 GiB**, on
+# top of a ~9.7 GiB `deps/`. An earlier run died mid-`test` at 98% full with
+#
+#     rustc-LLVM ERROR: IO failure on output stream: No space left on device
+#     collect2: fatal error: ld terminated with signal 7 [Bus error]
+#     error: could not compile `huntsman-search-engine` (lib test)
+#
+# which reads exactly like a compiler or linker defect in the change under test.
+# This file's own header says a gate that quietly drops a check is worse than no
+# gate, "because it reports success it did not establish". Reporting a FAILURE
+# it did not establish is the same defect wearing the other sign.
+#
+# It is also convergence with CI, not drift from it: CI is this script's
+# declared source of truth, and CI never reuses incremental state — every runner
+# starts from a fresh disk. The local gate hoarding it was the divergence.
+export CARGO_INCREMENTAL=0
+
+# Refuse to start without room to finish, and say so in terms of the DISK.
+# Override for a host with a differently-sized volume.
+MIN_FREE_MB="${HSE_GATE_MIN_FREE_MB:-8192}"
+
+free_mb() { df -Pk . | awk 'NR==2 {print int($4/1024)}'; }
+
 QUICK=0
 [ "${1:-}" = "--quick" ] && QUICK=1
 
@@ -44,6 +74,15 @@ run() { # run <name> <command...>
     else
         FAIL+=("$name")
         printf '\033[1;31m    FAILED: %s\033[0m\n' "$name"
+        # A preflight cannot cover growth DURING the run, and a full disk
+        # surfaces as a linker/LLVM error that looks like a code defect
+        # (REQ-GATE-001). Name the disk here so the next reader does not spend
+        # the afternoon bisecting a change that was never at fault.
+        local now; now="$(free_mb)"
+        if [ "$now" -lt "$MIN_FREE_MB" ]; then
+            printf '\033[1;31m    !! %s MiB free on this volume (floor %s MiB) — this failure may be DISK EXHAUSTION, not a real defect. Check the log for "No space left on device" / "ld terminated with signal 7" before believing it.\033[0m\n' \
+                "$now" "$MIN_FREE_MB"
+        fi
     fi
 }
 
@@ -63,6 +102,27 @@ skip() { # skip <name> <reason>
 # distinct words `--features dep-cooldown` under `set -u`/shellcheck SC2086
 # rather than relying on unquoted word-splitting.
 DEP_COOLDOWN_FEATURE=(--features dep-cooldown)
+
+# ── Preflight: room to finish (REQ-GATE-001) ─────────────────────────────────
+# Refuse to start rather than die halfway through `test` with a linker error
+# that looks like a code defect. Measured: a from-scratch run needs roughly
+# 6 GiB even with incremental disabled, so the floor is set above that.
+PREFLIGHT_FREE="$(free_mb)"
+if [ "$PREFLIGHT_FREE" -lt "$MIN_FREE_MB" ]; then
+    printf '\n\033[1;31m==> REFUSING TO START: %s MiB free, need %s MiB\033[0m\n' \
+        "$PREFLIGHT_FREE" "$MIN_FREE_MB"
+    printf '    This is the DISK, not the tree. Running anyway would fail partway\n'
+    printf '    through with "No space left on device" surfacing as an LLVM/linker\n'
+    printf '    error that reads like a defect in your change (REQ-GATE-001).\n\n'
+    printf '    Reclaim, largest first:\n'
+    du -sh target/debug/incremental target/debug/deps target/release 2>/dev/null |
+        sed 's/^/      /'
+    printf '\n      rm -rf target/debug/incremental        # pure cache, always safe\n'
+    printf '      find target/debug/deps -maxdepth 1 -type f -mmin +180 -delete\n'
+    printf '\n    NEVER blanket-delete target/debug/deps: the live artifacts are in there.\n'
+    printf '    Override the floor with HSE_GATE_MIN_FREE_MB if this host is sized differently.\n\n'
+    exit 1
+fi
 
 # ── ci.yml: Check & test (Linux x86_64, stable) ──────────────────────────────
 run "fmt"      cargo fmt --all -- --check

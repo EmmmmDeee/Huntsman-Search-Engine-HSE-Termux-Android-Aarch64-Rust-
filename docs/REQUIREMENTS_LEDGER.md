@@ -15194,3 +15194,66 @@ file's own `use crate::util::geo::is_plausible_provider_coord;` satisfies. With
 the only *call* downgraded, the module still read as gated; the new vacuity
 guard caught it by accident, matching on the call form. Direction 1 now requires
 the trailing `(` too, and A1 fails where it should, naming `censys`.
+
+### REQ-GATE-001 — the verification gate was exhausting its own disk, and the failure wore a compiler's face
+
+`scripts/gate.sh` set `CARGO_INCREMENTAL` nowhere, and neither does any
+workflow file or `.cargo/config.toml`. Incremental state is never reclaimed, so
+it accumulated across runs until the volume filled. Measured 2026-09-20: one
+from-scratch run took `target/debug/incremental` from `4.0K` to **7.6 GiB**, on
+top of a ~9.7 GiB `deps/`.
+
+A run then died mid-`test` at 98% full:
+
+```text
+rustc-LLVM ERROR: IO failure on output stream: No space left on device
+error: linking with `cc` failed: exit status: 1
+collect2: fatal error: ld terminated with signal 7 [Bus error]
+error: could not compile `huntsman-search-engine` (lib test)
+Caused by: No space left on device (os error 28)
+    FAILED: test
+```
+
+**The presentation is the defect.** A linker bus error and "could not compile
+(lib test)" read as a fault in whatever change is under test. An earlier
+occurrence produced four red gate checks that were taken for real defects
+before anyone looked at the disk. `gate.sh`'s own header says a gate that
+quietly drops a check is worse than no gate, "because it reports success it did
+not establish" — reporting a **failure** it did not establish is the same
+defect wearing the other sign.
+
+This is also convergence with CI, not drift from it. `gate.sh` names
+`.github/workflows/{ci,rust-clippy,fuzz,audit}.yml` its source of truth, and CI
+never reuses incremental state — every runner starts from a fresh disk. The
+local gate hoarding it was the divergence. And the cache buys this script
+almost nothing: it is a full-verification run, not an edit-compile loop, and
+its cargo invocations carry different flags (`check --all-targets`, `clippy`,
+`test`, `test --doc`, plus the `hse-core` and `wasm-ui` workspaces), so each
+gets its own fingerprint.
+
+Fixed in two parts: `export CARGO_INCREMENTAL=0`, and a **preflight** that
+refuses to start below `MIN_FREE_MB` (default 8 GiB, `HSE_GATE_MIN_FREE_MB` to
+override) with a message naming the disk, printing the reclaimable directories
+with their real sizes, and warning against blanket-deleting `deps/`. Because a
+preflight cannot cover growth *during* a run, `run()` also re-measures on any
+FAILED check and appends an explicit "this may be disk exhaustion, not a real
+defect" note.
+
+### Falsified
+
+| Mutation | Result |
+|---|---|
+| A1 `CARGO_INCREMENTAL=0` present, one `cargo check --lib` | `incremental/` = **4.0K, 0 entries** |
+| A2 export removed (cargo default), same command | `incremental/` = **297 MiB, 1 entry** |
+| B1 floor raised above current free space | gate **refuses to start**, exits 1, names the disk and the reclaimable paths |
+
+A2 is the load-bearing one: it proves the export is what does the work rather
+than something incidental about the environment. A **single** `cargo check
+--lib` produces 297 MiB; the gate runs roughly ten such invocations across
+profiles and workspaces, which is the 7.6 GiB.
+
+Residual: the floor is a constant, not a measurement of what the current tree
+will actually need. It was set from observed usage (~6 GiB for a from-scratch
+run with incremental off) with headroom, and it is overridable. A host whose
+volume is much smaller will trip it spuriously; that is the intended direction
+of the error, since the alternative is the misleading failure above.
