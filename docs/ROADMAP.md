@@ -528,6 +528,20 @@ by looking for them rather than reading modules at random:**
    would be actively wrong); guarding at the use site is the only option when
    the struct has no field a real response guarantees.
 
+   **`cargo clippy` and `cargo test` do not cover rustdoc, so renaming a
+   documented item can pass every check you ran and still break the build.**
+   `uninterpretable` was renamed to `classify` mid-cycle; two `[`…`]` intra-doc
+   links still pointed at the old name. Clippy was clean, `doc_drift` was clean,
+   all 20 module tests passed — and `cargo doc` failed on
+   `rustdoc::broken-intra-doc-links`, which is what CI actually runs
+   (REQ-FOFA-001). Its rule: **after renaming or removing any item that has a
+   doc comment, run `cargo doc --no-deps --document-private-items` before
+   committing** — it is the only check in the set that resolves intra-doc links,
+   and a rename is precisely when they rot. The deeper rule is about the gate:
+   a gate stopped part-way has verified only the steps that ran, so a commit
+   made on "clippy and the tests passed" is a commit made on a subset nobody
+   chose deliberately.
+
    **A fixture built by CONSTRUCTING a struct cannot express an absent key —
    which is the one thing a `#[serde(default)]` defect is about.** `fofa`'s
    eight pre-existing tests all built `FofaResp` with every field set, so none

@@ -37,7 +37,7 @@ pub struct Fofa;
 /// The `v1/search` 200 body.
 ///
 /// REQ-FOFA-001: `error` and `results` are **both** `Option`, and a body
-/// carrying neither is refused by [`uninterpretable`]. `error` was a bare
+/// carrying neither is refused by [`classify`]. `error` was a bare
 /// `bool` under this struct's `#[serde(default)]`, so a 200 body that is valid
 /// JSON but not a FOFA envelope — `{}`, `{"message":"…"}`, an `{"errmsg":…}`
 /// without the flag — decoded to `error: false, results: []` and was handled as
@@ -54,7 +54,7 @@ pub struct Fofa;
 /// on a missing `error` alone would trade a fail-open for a fail-SHUT, breaking
 /// every real search if the flag is omitted on success. Requiring only that the
 /// body carry *something this module can read* is the weakest condition that
-/// still rejects `{}` — see [`uninterpretable`].
+/// still rejects `{}` — see [`classify`].
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct FofaResp {
