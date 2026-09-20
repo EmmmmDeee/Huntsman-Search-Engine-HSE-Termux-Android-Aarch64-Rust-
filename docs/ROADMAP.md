@@ -377,6 +377,17 @@ by looking for them rather than reading modules at random:**
    this document (§6). Its rule: prefer structural prevention over remembered
    detection — if a discipline is enforced by everyone remembering it, it has
    already drifted somewhere you have not looked.
+
+   A **skipped** check is this shape wearing a disguise, because the skip is
+   usually correct. `gate.sh` cannot run the `wasm-ui/pkg` byte-diff without an
+   exactly-pinned toolchain and rightly skips instead of guessing — but it
+   reported the same bland SKIP on two consecutive branches that changed
+   `hse-core/`, which is compiled INTO that bundle, and CI went red both times
+   (REQ-CI-009). Its rule: **a skip's cost is not constant, so a skip should
+   state what THIS change makes it cost.** Where a check can be skipped, ask
+   what input would make the skip load-bearing, and have the skip say so; the
+   answer is rarely "fail instead", because the reason it skips is usually that
+   failing would be wrong.
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other

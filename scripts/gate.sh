@@ -116,24 +116,48 @@ WASM_BINDGEN_PIN="$(grep -m1 '^wasm-bindgen ' wasm-ui/Cargo.toml | sed -E 's/.*"
 # Read from the drift script itself, the one place the binaryen build is pinned.
 WASM_OPT_PIN="$(grep -m1 '^WASM_OPT_PIN=' scripts/wasm_ui_drift_check.sh | cut -d= -f2)"
 WASM_BINDGEN_HAVE="$(wasm-bindgen --version 2>/dev/null | awk '{print $2}')"
+
+# A SKIP of this check is not equally safe on every commit. It is harmless when
+# nothing feeding the browser bundle changed, and load-bearing exactly when
+# something did: `hse-core` is compiled INTO wasm-ui, so a change under either
+# leaves the committed `wasm-ui/pkg/` stale and CI's sibling-crates job goes red
+# on the next push. That happened twice in a row (REQ-AUBUSINESSID-001 added a
+# string to ENRICHMENT_ONLY_SOURCES, REQ-CORRELATOR-005 a tag const) — both gate
+# runs reported a bland SKIP naming a missing tool, and neither said the skip
+# mattered for THAT change.
+#
+# The skip stays a skip: it cannot run reliably without the pinned toolchain
+# (see the header above), and failing here would block contributors who cannot
+# install it. What changes is that its CONSEQUENCE is stated when it applies.
+# Both the working tree and, when the ref resolves, the branch against
+# origin/main are checked — the stale artifact is a property of the branch head
+# CI will build, not only of the edit in front of you.
+WASM_DRIFT_STAKES=""
+if ! git diff --quiet HEAD -- hse-core/ wasm-ui/src/ 2>/dev/null \
+    || { git rev-parse --verify --quiet origin/main >/dev/null 2>&1 \
+         && ! git diff --quiet origin/main...HEAD -- hse-core/ wasm-ui/src/ 2>/dev/null; }; then
+    WASM_DRIFT_STAKES=" — !! THIS BRANCH CHANGES hse-core/ OR wasm-ui/src/, which are compiled into the committed wasm-ui/pkg/: CI WILL FAIL unless pkg/ is regenerated. Install the pinned toolchain above and run scripts/wasm_ui_drift_check.sh --write, or expect the sibling-crates job to go red"
+fi
+skip_wasm_drift() { skip "wasm-ui/pkg drift check" "$1$WASM_DRIFT_STAKES"; }
+
 if [ "$QUICK" = 1 ]; then
-    skip "wasm-ui/pkg drift check" "--quick"
+    skip_wasm_drift "--quick"
 elif ! rustup target list --installed 2>/dev/null | grep -q '^wasm32-unknown-unknown$'; then
-    skip "wasm-ui/pkg drift check" "wasm32-unknown-unknown target not installed — rustup target add wasm32-unknown-unknown"
+    skip_wasm_drift "wasm32-unknown-unknown target not installed — rustup target add wasm32-unknown-unknown"
 elif ! command -v wasm-bindgen >/dev/null 2>&1; then
-    skip "wasm-ui/pkg drift check" "wasm-bindgen-cli not installed — cargo install wasm-bindgen-cli --version $WASM_BINDGEN_PIN --locked"
+    skip_wasm_drift "wasm-bindgen-cli not installed — cargo install wasm-bindgen-cli --version $WASM_BINDGEN_PIN --locked"
 elif [ "$WASM_BINDGEN_HAVE" != "$WASM_BINDGEN_PIN" ]; then
-    skip "wasm-ui/pkg drift check" "installed wasm-bindgen-cli $WASM_BINDGEN_HAVE != wasm-ui/Cargo.toml's pinned $WASM_BINDGEN_PIN (a mismatched CLI produces spurious diffs, not real drift) — cargo install wasm-bindgen-cli --version $WASM_BINDGEN_PIN --locked --force"
+    skip_wasm_drift "installed wasm-bindgen-cli $WASM_BINDGEN_HAVE != wasm-ui/Cargo.toml's pinned $WASM_BINDGEN_PIN (a mismatched CLI produces spurious diffs, not real drift) — cargo install wasm-bindgen-cli --version $WASM_BINDGEN_PIN --locked --force"
 elif ! command -v wasm-opt >/dev/null 2>&1; then
-    skip "wasm-ui/pkg drift check" "wasm-opt (binaryen) not installed — CI is the authority for this check on hosts without it"
+    skip_wasm_drift "wasm-opt (binaryen) not installed — CI is the authority for this check on hosts without it"
 elif ! wasm-opt --version 2>/dev/null | grep -q "version ${WASM_OPT_PIN}\b"; then
-    skip "wasm-ui/pkg drift check" "installed wasm-opt ($(wasm-opt --version 2>/dev/null | head -1)) is not binaryen version_${WASM_OPT_PIN}, the build that produced the committed pkg/ (a different build re-optimises identical input to different bytes — toolchain drift, not source drift) — CI is the authority"
+    skip_wasm_drift "installed wasm-opt ($(wasm-opt --version 2>/dev/null | head -1)) is not binaryen version_${WASM_OPT_PIN}, the build that produced the committed pkg/ (a different build re-optimises identical input to different bytes — toolchain drift, not source drift) — CI is the authority"
 elif ! mkdir -p /tmp/hse-wasm-ui-build-root 2>/dev/null; then
     # The check builds from that ONE fixed absolute path on every host (cargo's
     # metadata hash includes an out-of-workspace path dependency's absolute
     # path, so the same source built from two locations can differ — see the
     # script's header). Termux has no /tmp; CI is the authority there.
-    skip "wasm-ui/pkg drift check" "cannot create the fixed build root /tmp/hse-wasm-ui-build-root on this host — CI is the authority for this check here"
+    skip_wasm_drift "cannot create the fixed build root /tmp/hse-wasm-ui-build-root on this host — CI is the authority for this check here"
 else
     run "wasm-ui/pkg drift check" scripts/wasm_ui_drift_check.sh
 fi

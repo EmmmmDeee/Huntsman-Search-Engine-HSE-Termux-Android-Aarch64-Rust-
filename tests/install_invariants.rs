@@ -1320,3 +1320,90 @@ mod reconciler_transaction {
         assert_eq!(tracked_changes(&fx), "");
     }
 }
+
+#[cfg(unix)]
+/// Every SKIP of the `wasm-ui/pkg drift check` must go through the one helper
+/// that states what the skip costs on a branch touching `hse-core/` or
+/// `wasm-ui/src/`.
+///
+/// That check cannot run without an exactly-pinned toolchain, so `gate.sh`
+/// skips rather than risk a false failure — correct, and documented in its
+/// header. But a skip is harmless only when nothing feeding the browser bundle
+/// changed. `hse-core` is compiled INTO wasm-ui, so on a branch that touches it
+/// the skip is the difference between a green local run and a red
+/// sibling-crates job. Two consecutive cycles shipped exactly that: a bland
+/// "tool not installed" SKIP, then CI red on
+/// `DRIFT: wasm-ui/pkg/hse_wasm_ui_bg.wasm does not match a fresh regeneration`.
+///
+/// The escalation lives in `skip_wasm_drift`. This pins that no branch of the
+/// dispatch can bypass it — a new precondition added to that `if`/`elif` chain
+/// calling bare `skip` would silently restore the quiet failure mode.
+#[test]
+fn every_wasm_drift_skip_states_what_the_skip_costs() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let text = fs::read_to_string(root.join("scripts/gate.sh")).unwrap();
+
+    let mut helper_calls = 0;
+    for (i, line) in text.lines().enumerate().filter(|(_, l)| !is_comment(l)) {
+        // The helper's own definition necessarily contains both spellings.
+        if line.contains("skip_wasm_drift()") {
+            continue;
+        }
+        if line.contains("skip_wasm_drift") {
+            helper_calls += 1;
+        }
+        // A bare `skip "wasm-ui/pkg drift check"` bypasses the escalation.
+        assert!(
+            !line.contains(r#"skip "wasm-ui/pkg drift check""#),
+            "scripts/gate.sh:{}: skip this check via `skip_wasm_drift` so the \
+             branch-touches-hse-core warning is attached: {}",
+            i + 1,
+            line.trim()
+        );
+    }
+    assert!(
+        helper_calls >= 6,
+        "expected every precondition branch to route through skip_wasm_drift, \
+         saw {helper_calls} call(s) — if a branch was removed, confirm it was \
+         not replaced by a bare `skip`"
+    );
+
+    // The escalation must actually CONSULT the paths compiled into the bundle,
+    // or it is a warning that can never fire.
+    //
+    // Scoped to the `git diff` invocations on purpose. Written first as a
+    // substring search over the whole block, this assertion passed while the
+    // paths were deleted from the diff commands \u2014 because the warning PROSE
+    // ("THIS BRANCH CHANGES hse-core/ OR wasm-ui/src/") contains them too. It
+    // was matching the sentence, not the check.
+    // Windowed to the stakes block. A whole-file filter also catches the
+    // manifest-path-filter check further down, whose own `git diff` names
+    // `hse-core/Cargo.toml` but not `wasm-ui/src/` \u2014 an unrelated line failing
+    // an assertion about this one.
+    let stakes_block = {
+        let start = text
+            .find("WASM_DRIFT_STAKES=\"\"")
+            .expect("gate.sh must compute WASM_DRIFT_STAKES");
+        let end = text[start..]
+            .find("skip_wasm_drift()")
+            .expect("the stakes block must be followed by the helper it feeds");
+        &text[start..start + end]
+    };
+    let diff_lines: Vec<&str> = stakes_block
+        .lines()
+        .filter(|l| !is_comment(l) && l.contains("git diff --quiet"))
+        .collect();
+    assert!(
+        diff_lines.len() >= 2,
+        "expected the working-tree and origin/main...HEAD diffs to both test the \
+         bundle's source paths, saw {}",
+        diff_lines.len()
+    );
+    for path in ["hse-core/", "wasm-ui/src/"] {
+        assert!(
+            diff_lines.iter().all(|l| l.contains(path)),
+            "every stakes `git diff` must test {path}, which is compiled into \
+             wasm-ui/pkg/; got {diff_lines:?}"
+        );
+    }
+}

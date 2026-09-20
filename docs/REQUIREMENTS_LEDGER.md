@@ -14260,3 +14260,92 @@ below it proves nothing. This is the third distinct vacuity this session — a
 mutation that could not reach its control (WIKIDATA-001), a harness that never
 built (TYPOSQUAT-001, AUBUSINESSID-001), and now a comparison whose two sides
 were equal because both were empty.
+
+## REQ-CI-009 — The gate skipped the one check the change could break, and said nothing
+
+### Observed, not hypothesised
+
+CI went red on `05058edb`:
+
+```
+DRIFT: wasm-ui/pkg/hse_wasm_ui_bg.wasm does not match a fresh regeneration
+       from source.
+```
+
+`hse-core` is compiled **into** the browser bundle, so a change to it leaves
+the committed `wasm-ui/pkg/` stale. Two consecutive cycles did exactly that —
+REQ-AUBUSINESSID-001 added a string to `ENRICHMENT_ONLY_SOURCES`,
+REQ-CORRELATOR-005 added `tags::ADDR_DERIVED` — and both local gate runs
+reported **18/18 pass** with a bland skip line:
+
+```
+SKIP  wasm-ui/pkg drift check — wasm32-unknown-unknown target not installed
+SKIP  wasm-ui/pkg drift check — wasm-bindgen-cli not installed
+```
+
+Both accurate. Neither said that *this* change was the kind that makes the skip
+matter.
+
+### The skip is correct and stays a skip
+
+`gate.sh`'s design here is deliberate and right: the check is a byte-exact diff,
+and its own header records that a version-mismatched `wasm-bindgen` or a
+different `wasm-opt` build "can legitimately produce different bytes from
+IDENTICAL source — toolchain drift, not source drift, and this script has no way
+to tell the two apart." Guessing would cry wolf; failing would block anyone who
+cannot install a pinned toolchain. Skipping is the honest answer.
+
+What was missing is that a skip's *cost* is not constant. It is free when
+nothing feeding the bundle changed, and it is the difference between a green
+local run and a red CI job when something did. The gate knew which tools were
+missing and never asked what the change touched.
+
+### Implemented
+
+`gate.sh` computes `WASM_DRIFT_STAKES` once — the working tree against `HEAD`,
+**and** the branch against `origin/main` where that ref resolves, because the
+stale artifact is a property of the head CI will build, not only of the edit in
+front of you — and every skip routes through one `skip_wasm_drift` helper that
+appends it. On a branch touching `hse-core/` or `wasm-ui/src/` the summary line
+now carries `!! THIS BRANCH CHANGES … CI WILL FAIL unless pkg/ is regenerated`,
+with the regeneration command.
+
+Locked by `every_wasm_drift_skip_states_what_the_skip_costs`
+(`tests/install_invariants.rs`, beside the existing `bash -n` invariant over the
+same file): no branch of the precondition chain may call bare `skip`, and the
+stakes block's `git diff` commands must name both bundle-source paths.
+
+### Regenerating the artifact, and the order that proved it
+
+The pinned toolchain was reproduced rather than approximated: the wasm32 target,
+`wasm-bindgen-cli` **0.2.127** (the version `wasm-ui/Cargo.toml` pins, which the
+gate's own skip message names), and `wasm-opt` from binaryen **version_108**,
+sha256-verified against the digest `ci.yml` checks.
+
+Then, deliberately, **diff mode first** — which reproduced CI's failure with the
+identical message. That is what established the toolchain matched. Had it passed,
+or failed differently, the regeneration would have been built with a toolchain
+unlike CI's and committing it would have been worse than the drift it replaced.
+Only then `--write`, then diff mode again: `wasm-ui/pkg/ matches a fresh
+regeneration from source — no drift.`
+
+### Falsified
+
+| Mutation | Result |
+|---|---|
+| M1 one precondition branch reverted to a bare `skip` | lock fails, naming the line |
+| M2 `hse-core/` dropped from the stakes `git diff` | lock fails |
+| M3 the stakes block deleted entirely | lock fails |
+
+**M2 survived the first run, and the lock was at fault.** The assertion searched
+a window of text for `"hse-core/"` — which the warning *prose* contains
+("THIS BRANCH CHANGES hse-core/ OR wasm-ui/src/"), so it passed while the paths
+were deleted from the `git diff` commands. It was matching the sentence, not the
+check. Rescoped to the `git diff` lines, it then failed a **different** way: a
+whole-file filter also caught the manifest-path-filter check further down, whose
+own diff names `hse-core/Cargo.toml` but not `wasm-ui/src/`. Windowed to the
+stakes block, all three mutations fail.
+
+Two corrections to one assertion, both found by falsification rather than by
+reading it — which is the argument for running the mutations even when the
+assertion looks obviously right.
