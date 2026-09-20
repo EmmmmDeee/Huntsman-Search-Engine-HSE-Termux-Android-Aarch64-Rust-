@@ -82,6 +82,18 @@ impl Module for AuBusinessId {
         true
     }
 
+    fn is_derivation(&self) -> bool {
+        // Everything this module emits is a function of the identifier it was
+        // handed: the check digits decide company vs non-company, and the ACN
+        // pivot is literally the ABN's own trailing nine digits. It observes
+        // nothing, so its evidence must never count as an independent
+        // corroborating source — arithmetic agreeing with the digits it was
+        // computed from is not a second opinion about whether the entity is
+        // real. `structured_id`, which this module's header calls its analogue,
+        // has declared the same since it was written (REQ-AUBUSINESSID-001).
+        true
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         // Kind-only gate; the checksum decision is made in `process()`.
         matches!(t.kind, TargetKind::AbnAcn)

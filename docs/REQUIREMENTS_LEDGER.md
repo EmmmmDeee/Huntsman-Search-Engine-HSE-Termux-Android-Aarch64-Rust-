@@ -14033,3 +14033,117 @@ distinct assertion it is ("this item has no value for P569" / "has one, unknown"
 Where such a snak sits ahead of a real statement in document order, a
 single-valued read still returns `None` — unchanged from before this cycle, and
 a separate axis from rank.
+
+## REQ-AUBUSINESSID-001 — Two declarations agreed, and both were wrong
+
+### Confirmed as filed
+
+The backlog read: *"`au_business_id` is a pure offline re-derivation but isn't
+marked as one, letting it double-count corroboration for an ABN/ACN already
+confirmed by a live source."* Correct in every part.
+
+The module reads an ABN's own check digits: the checksum decides company vs
+non-company, and the ACN it emits is literally the ABN's trailing nine digits.
+It observes nothing. Its own header calls it *"the ABN/ACN analogue of
+`crate::modules::structured_id`"* — and `structured_id` has been excluded from
+corroboration since it was written.
+
+The harm is not cosmetic. `Entity::corroborating_sources` drives
+`source_count` → `c_effective`, and `c_effective` drives the expansion floor,
+the dispatch cross-correlation gate and every correlator rule that counts
+independent sources. An ABN confirmed once by the ABR and "confirmed" again by
+arithmetic performed on the digits already in hand counted as **two**
+independent observations. The lock states it at that boundary:
+`got {"au_business_id", "abn_lookup"} left: 2 right: 1`.
+
+### The interesting part is the guard that was already there
+
+HSE does not lack a mechanism for this. It has two, and a test that pins them
+to each other:
+
+* `Module::is_derivation()` — the trait declaration, defaulted `false`,
+  overridden by fifteen modules.
+* `hse_core::ENRICHMENT_ONLY_SOURCES` — the runtime authority, evaluated over
+  evidence source *strings* because the browser build ships `hse-core` without
+  the module registry.
+* `derivation_modules_are_exactly_the_enrichment_only_sources`
+  (`tests/architecture_parts/architecture_part2.rs:686`) — asserts the two
+  agree **in both directions** for every registered module, and that a
+  derivation is also `is_passive()`.
+
+That guard is well-built, and it **passed on the baseline**. `au_business_id`
+declared `is_derivation() = false` and was absent from the list, so the two
+declarations were perfectly consistent — consistently wrong. A bidirectional
+consistency guard is blind to an entity missing from *both* sides, because
+agreement is all it can see.
+
+This is the sharpest instance yet of shape 4 in the roadmap's register (one
+judgement with two definitions), with a twist worth recording separately: the
+two definitions had already been reconciled, and reconciling them is not the
+same as grounding them. Neither declaration is derived from what the module
+actually does. Nothing in the tree could have noticed.
+
+What made it findable was not the guard but the module's own prose — a header
+naming a sibling that *is* on the list. That is the "count the consumers of a
+shared helper and look for who is missing" heuristic (shape 1) applied to a
+shared **list** rather than a shared function.
+
+The module already declared `is_passive()` with the comment *"Pure offline
+computation — no network, no I/O, no key"*. It had stated the behaviour and
+never the consequence.
+
+### Implemented
+
+`is_derivation()` returns `true` on the module, and `"au_business_id"` joins
+`ENRICHMENT_ONLY_SOURCES`. Both halves are required: the list is what the
+runtime reads, the trait is what the architecture guard reads, and the guard
+fails if either is changed alone.
+
+Nothing is hidden. `evidence_sources()` still carries the derivation, so the
+offline decode remains visible in the dossier — it is excluded from
+*corroboration*, not from the record. A control pins that.
+
+### An attempted sweep, abandoned
+
+Three attempts to enumerate every other offline module mechanically all
+mis-classified: greping module docs matched "no API **key**" (keylessness, not
+independence, and a keyless network module *is* an independent observer);
+checking for an unused `ModuleContext` found one module; checking for `ctx.`
+used only as `ctx.scan_id` returned `abuseipdb`, `virustotal`, `whois`,
+`geocode` and `photon`, all of which reach the network through a submodule.
+Nor is the property derivable from existing metadata — the fifteen declared
+derivations scatter across `Corporate`/`Social`/`People`/`Web`/`Email` and
+category defaults, with no distinguishing `cost`.
+
+Recorded rather than continued: the audit was producing candidates I could not
+confirm, which is the "broad audit without executable findings" the standing
+method rejects. Derivation is a semantic property — *is this output a function
+of its input?* — that only a reader can judge, so the declaration is
+irreducible and the guard can only keep the two copies honest, not originate
+them.
+
+### Falsified
+
+| Variant | Result |
+|---|---|
+| **BASELINE** (declared in neither place) | both module locks fail — `got {"au_business_id", "abn_lookup"} left: 2 right: 1`, and the self-declaration lock. The architecture guard **passes**, which is the finding |
+| M1 list entry only, trait still `false` | the architecture guard fails (`is_derivation() = false but ENRICHMENT_ONLY_SOURCES lists it`) — a half-fix is caught |
+| M2 trait only, list still omits it | the guard fails the other way, plus both module locks — the runtime exclusion is keyed on the STRING, so the trait alone changes no behaviour |
+| M3 a real live register also excluded (**over-correction**) | `a_live_register_and_a_second_live_register_still_corroborate` fails, `left: 1 right: 2` |
+
+M3 is present because of the rule REQ-WIKIDATA-002 added to the register one
+cycle earlier: without an over-correction mutation, "fewer inflated sources"
+and "fewer sources" are indistinguishable.
+
+### The harness was vacuous on its first run, and said so
+
+The first pass reported **VOID** for two of three variants. Disabling the trait
+override by renaming it left a non-trait method inside `impl Module for
+AuBusinessId` — a compile error, not a behavioural baseline. The variants were
+not "surviving"; they never built.
+
+The `test result:` presence check added in REQ-TYPOSQUAT-001 caught it and
+refused to report a pass. The harness now removes the override outright and
+asserts the text is gone. This is the second time that check has earned itself,
+and the first time it caught a defect in the *mutation* rather than in the
+environment.

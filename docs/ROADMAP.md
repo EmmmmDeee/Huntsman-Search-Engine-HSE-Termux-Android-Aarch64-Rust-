@@ -402,6 +402,25 @@ by looking for them rather than reading modules at random:**
    deciding there is one.** A mutation that over-corrects belongs in the
    falsification set next to the one that under-corrects; without it, "fewer
    wrong values" and "fewer values" are indistinguishable.
+
+   The shape has a third form, and it is the one a maintained codebase reaches
+   last: the two definitions have **already been reconciled**, and reconciling
+   them was mistaken for grounding them. `Module::is_derivation()` and
+   `hse_core::ENRICHMENT_ONLY_SOURCES` are two declarations of one judgement,
+   and a bidirectional architecture guard pins them to each other for every
+   registered module. That guard passed while `au_business_id` — a pure offline
+   decoder of an identifier's own check digits — declared `false` on one side
+   and was absent from the other (REQ-AUBUSINESSID-001). Perfectly consistent,
+   consistently wrong.
+
+   Its rule: **a consistency guard is blind to an entry missing from every side
+   it compares.** Agreement is all such a guard can see, so it keeps copies
+   honest but can never originate the judgement. Ask separately, of each
+   declaration, *what in the tree would notice if this were simply absent?* —
+   and where the answer is "nothing", the finding has to come from reading, not
+   from the suite. Here it came from the module's own header naming a sibling
+   that was on the list: shape 1's "count the consumers and look for who is
+   missing", applied to a shared LIST rather than a shared function.
 5. *The workaround went into the test fixture.* `shodan` geocoded a bare
    country name against `util::city_coords`, a gazetteer whose 143 rows are all
    cities, so the branch could not execute on any response Shodan can send. Two

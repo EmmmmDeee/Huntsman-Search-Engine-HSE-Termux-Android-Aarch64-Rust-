@@ -193,6 +193,7 @@ pub const CANDIDATE_CONF: f64 = 0.25;
 /// (tests/architecture_parts) pins the two declarations to each other in both
 /// directions.
 pub const ENRICHMENT_ONLY_SOURCES: &[&str] = &[
+    "au_business_id",
     "breach_timezone",
     "discord_snowflake",
     "email_canonical",
