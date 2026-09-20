@@ -54,6 +54,16 @@ set -uo pipefail
 # This script was the only place in the repository that did not.
 export CARGO_INCREMENTAL=0
 
+# This export covers THIS SCRIPT only, and that is deliberate — a developer's
+# edit-compile loop genuinely benefits from incremental state, so it does not
+# belong in `.cargo/config.toml`. The consequence is worth knowing before you
+# read anything into a non-empty `target/debug/incremental`: ad-hoc `cargo`
+# runs from your own shell still write it. A session doing gate-style
+# verification (repeated full runs, mutation matrices, nothing reused) should
+# therefore export `CARGO_INCREMENTAL=0` itself. Measured: one bare
+# `cargo check --lib` writes ~300 MiB; a four-mutation matrix plus baselines
+# reached 4.7 GiB and tripped the preflight below.
+
 # Two thresholds, because they answer different questions and must not share a
 # constant. Both are measured, and both are overridable for a differently-sized
 # volume.
