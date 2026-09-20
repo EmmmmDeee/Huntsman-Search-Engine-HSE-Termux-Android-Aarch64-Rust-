@@ -48,6 +48,9 @@ const SRC: &str = "domainsdb";
 /// its hits are keyword coincidences, not target-specific, so they are tagged
 /// `broad-match` and down-weighted.
 const BROAD_MATCH_THRESHOLD: u64 = 200;
+/// Page size the search request asks for. Named rather than inlined so the
+/// truncation notice and the URL can never disagree about what the cap was.
+const PAGE_LIMIT: usize = 20;
 
 #[derive(Deserialize)]
 struct DbResp {
@@ -261,7 +264,7 @@ async fn collect_zones(
             break;
         }
         let url = format!(
-            "{base}?domain={}&zone={zone}&limit=20",
+            "{base}?domain={}&zone={zone}&limit={PAGE_LIMIT}",
             crate::util::http::urlencode(query)
         );
         let resp = http
@@ -299,6 +302,20 @@ async fn collect_zones(
         };
 
         let broad_match = data.total.is_some_and(|t| t > BROAD_MATCH_THRESHOLD);
+        // The provider's own total, read for COMPLETENESS as well as for
+        // `broad_match`. The request carries `limit=20`, so a zone with 21..=200
+        // matches was silently cut to 20: under `BROAD_MATCH_THRESHOLD`, so not
+        // even dampened, and with no signal that the rest exist. `total` was
+        // parsed and spent entirely on one boolean (REQ-COVERAGE-001).
+        if let Some(total) = data.total
+            && usize::try_from(total).is_ok_and(|t| t > data.domains.len())
+        {
+            result.mark_truncated(
+                data.domains.len(),
+                usize::try_from(total).ok(),
+                &format!("the API's `limit={PAGE_LIMIT}` page"),
+            );
+        }
         result.extend(data.domains.iter().filter_map(|entry| {
             if !seen.insert(entry.domain.trim().to_lowercase()) {
                 return None;

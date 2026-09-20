@@ -247,6 +247,7 @@ pub(crate) fn parse_fix(stdout: &[u8], scan_id: &str, src: &'static str) -> Resu
 
     let mut result = ModuleResult {
         entities: Vec::with_capacity(1),
+        truncation: None,
     };
     result.push(e);
     Ok(result)

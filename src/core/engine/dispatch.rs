@@ -856,6 +856,10 @@ impl super::ScanEngine {
                     EventKind::ModuleDone {
                         module: name.into(),
                         found,
+                        // The module's own completeness verdict, carried into
+                        // the durable log so `core::coverage` can tell a short
+                        // answer from a whole one (REQ-COVERAGE-001).
+                        truncated: mr.truncation.take(),
                     },
                 );
                 // `debug!`, not `info!`: the structured `EventKind::ModuleDone`
@@ -901,7 +905,10 @@ impl super::ScanEngine {
         self.finalise_module_result(
             cx,
             name,
-            Ok(Ok(ModuleResult { entities: cached })),
+            Ok(Ok(ModuleResult {
+                entities: cached,
+                truncation: None,
+            })),
             state,
             module.attack_techniques(),
             true,

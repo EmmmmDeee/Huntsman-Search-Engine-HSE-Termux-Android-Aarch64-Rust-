@@ -870,6 +870,7 @@ impl ScanEngine {
                     EventKind::ModuleDone {
                         module: "recall".to_string(),
                         found: n,
+                        truncated: None,
                     },
                 );
             }

@@ -1289,6 +1289,7 @@ fn event_log_round_trips_in_emission_order() {
         EventKind::ModuleDone {
             module: "dns_intel".into(),
             found: 3,
+            truncated: None,
         },
     ]
     .into_iter()
@@ -1349,6 +1350,7 @@ fn recent_module_outcome_events_filters_orders_and_bounds_across_scans() {
             EventKind::ModuleDone {
                 module: "dns_intel".into(),
                 found: 3,
+                truncated: None,
             },
         ),
         (
@@ -1597,6 +1599,7 @@ fn delete_scan_cascades_to_events() {
             EventKind::ModuleDone {
                 module: "dns_intel".into(),
                 found: 1,
+                truncated: None,
             },
         ))
         .expect("should succeed");
@@ -2756,6 +2759,7 @@ fn insert_events_batch_persists_all_in_emission_order() {
             EventKind::ModuleDone {
                 module: "dns_intel".into(),
                 found: 3,
+                truncated: None,
             },
         ),
     ];
@@ -3357,6 +3361,7 @@ fn prune_events_spares_a_live_scans_events_but_not_a_finished_or_zombie_scans() 
                 EventKind::ModuleDone {
                     module: format!("m{i}"),
                     found: i,
+                    truncated: None,
                 },
             );
             ev.ts = first_ts + i as u64;

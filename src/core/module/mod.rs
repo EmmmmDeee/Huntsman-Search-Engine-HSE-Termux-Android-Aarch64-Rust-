@@ -496,6 +496,24 @@ impl ModuleContext {
 pub struct ModuleResult {
     /// The discovered entities, in module-emission order.
     pub entities: Vec<Entity>,
+    /// Set when the module knows its answer was **cut short** — a client-side
+    /// cap, an unfollowed page cursor, a provider total larger than what was
+    /// retrieved. `None` means the module believes it returned everything it
+    /// had to say.
+    ///
+    /// This is the ONE channel for that fact. Before it existed, five modules
+    /// each wrote a private evidence attribute (`sitemap_enumeration_truncated`,
+    /// `historical_subdomains_truncated`, `image_leads_capped`, netlas's bare
+    /// `result_count`, domainsdb's `broad_match` boolean) and not one of them
+    /// had a reader outside its own file — so nothing downstream could ask
+    /// whether a result set was complete. It reaches
+    /// [`crate::core::coverage::ProviderOutcome::Truncated`] through
+    /// `EventKind::ModuleDone`, which is what the coverage derivation actually
+    /// reads (REQ-COVERAGE-001).
+    ///
+    /// Set it with [`ModuleResult::mark_truncated`] rather than by hand, so the
+    /// operator-facing sentence has one spelling.
+    pub truncation: Option<String>,
 }
 
 impl ModuleResult {
@@ -511,7 +529,31 @@ impl ModuleResult {
     pub fn with_capacity(cap: usize) -> Self {
         Self {
             entities: Vec::with_capacity(cap),
+            truncation: None,
         }
+    }
+
+    /// Declare this result **incomplete**, in one canonical sentence.
+    ///
+    /// `emitted` is what the module is returning; `total` is the provider's own
+    /// count of what exists, when it reports one (many do not — a client-side
+    /// cap knows only that it stopped). `cause` names what stopped it, in the
+    /// module's own terms ("the client-side cap of 50", "the `limit=20` page").
+    ///
+    /// The distinction between a known and an unknown total is kept, not
+    /// flattened: "20 of 213" and "20, and the provider did not say how many
+    /// exist" call for different operator actions, and collapsing them into one
+    /// `truncated: true` is what made the previous per-module attributes
+    /// unusable.
+    pub fn mark_truncated(&mut self, emitted: usize, total: Option<usize>, cause: &str) {
+        self.truncation = Some(match total {
+            Some(total) => format!(
+                "{emitted} of {total} retrieved — stopped by {cause}. The remainder were NOT                  retrieved, so absence of a finding here is not evidence of absence."
+            ),
+            None => format!(
+                "{emitted} retrieved — stopped by {cause}, and the provider did not report how                  many exist. Absence of a finding here is not evidence of absence."
+            ),
+        });
     }
 
     /// Append one discovered entity.

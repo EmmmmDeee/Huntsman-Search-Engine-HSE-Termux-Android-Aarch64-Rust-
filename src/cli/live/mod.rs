@@ -221,7 +221,7 @@ fn render_event(kind: &crate::core::event::EventKind) -> String {
             target_value,
         } => format!("scan start   {target_kind}={target_value}"),
         E::ModuleStart { module } => format!("  module {module}: running"),
-        E::ModuleDone { module, found } => {
+        E::ModuleDone { module, found, .. } => {
             if *found > 0 {
                 format!("  module {module}: done, {found} entit{}", plural(*found))
             } else {

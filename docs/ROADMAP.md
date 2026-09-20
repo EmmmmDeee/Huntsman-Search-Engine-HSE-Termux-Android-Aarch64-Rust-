@@ -388,6 +388,24 @@ by looking for them rather than reading modules at random:**
    what input would make the skip load-bearing, and have the skip say so; the
    answer is rarely "fail instead", because the reason it skips is usually that
    failing would be wrong.
+   A **missing state in a shared type** is this shape's deepest form, because
+   it reproduces itself. `core::coverage::ProviderOutcome` had no "answered, but
+   incompletely" variant, so five modules each invented a private evidence
+   attribute for it — and a measured **zero** of those keys had a reader outside
+   its own file (REQ-COVERAGE-001). Nothing could ask "was this complete?"
+   because every module spelled the question differently. Its rule: **when the
+   same private helper keeps appearing in module after module, the defect is the
+   missing state in the type they all report through, not the modules.** Count
+   the spellings before writing a sixth: N ad-hoc implementations of one concept
+   is a type that is missing a case. And the reader is the deliverable — a
+   canonical spelling with no consumer is the same defect one layer up.
+
+   That fix also surfaced this file's shape 4 at the TYPE level: `is_resolved`
+   was answering both "did this provider run?" and "can its silence be trusted?",
+   which a truncated provider answers differently. Before adding a case to an
+   enum, re-read every predicate over it and ask whether the new case splits one
+   of them in two.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other

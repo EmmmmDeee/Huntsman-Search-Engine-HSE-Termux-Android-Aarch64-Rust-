@@ -533,6 +533,7 @@ fn event_log_renders_a_readable_aligned_timeline() {
             EventKind::ModuleDone {
                 module: "dehashed".into(),
                 found: 0,
+                truncated: None,
             },
         ),
         Event::new(
@@ -1566,6 +1567,7 @@ fn render_full_shows_the_live_event_tally_while_a_scan_is_still_running() {
             EventKind::ModuleDone {
                 module: module.into(),
                 found: 2,
+                truncated: None,
             }
         } else {
             EventKind::ModuleError {
@@ -1723,6 +1725,7 @@ fn report_distinguishes_a_clean_sweep_from_one_nobody_answered() {
         EventKind::ModuleDone {
             module: "asked_and_answered".to_string(),
             found: 0,
+            truncated: None,
         },
         EventKind::ModuleError {
             module: "broke".to_string(),

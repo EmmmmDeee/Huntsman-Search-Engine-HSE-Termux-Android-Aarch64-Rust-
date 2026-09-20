@@ -102,7 +102,7 @@ use super::*;
             row(&["https://example.com/"]),         // apex echo — dropped
             row(&["http://unrelated.other.org/x"]), // not a subdomain — dropped
         ];
-        let ents = historical_subdomains(&rows, "example.com", "s");
+        let (ents, _total) = historical_subdomains(&rows, "example.com", "s");
         let hosts: Vec<&str> = ents.iter().map(|e| e.value.as_str()).collect();
         // Distinct, sorted, apex + unrelated dropped, dup collapsed. (A `www.`
         // host is deliberately absent: Entity::new canonicalises `www.x` → `x`,
@@ -125,12 +125,12 @@ use super::*;
 
     #[test]
     fn historical_subdomains_empty_or_header_only_yields_nothing() {
-        assert!(historical_subdomains(&[], "example.com", "s").is_empty());
+        assert!(historical_subdomains(&[], "example.com", "s").0.is_empty());
         let header = [row(&["original"])];
-        assert!(historical_subdomains(&header, "example.com", "s").is_empty());
+        assert!(historical_subdomains(&header, "example.com", "s").0.is_empty());
         // A blank domain never matches.
         let rows = [row(&["original"]), row(&["http://x.example.com/"])];
-        assert!(historical_subdomains(&rows, "", "s").is_empty());
+        assert!(historical_subdomains(&rows, "", "s").0.is_empty());
     }
 
     #[test]
@@ -145,7 +145,7 @@ use super::*;
         for u in &urls {
             rows.push(row(&[u.as_str()]));
         }
-        let ents = historical_subdomains(&rows, "example.com", "s");
+        let (ents, _total) = historical_subdomains(&rows, "example.com", "s");
         assert_eq!(ents.len(), 60, "capped at MAX_HISTORICAL_SUBDOMAINS");
         for e in &ents {
             assert_eq!(attr(e, "historical_subdomains_emitted"), Some("60"));
@@ -164,7 +164,7 @@ use super::*;
             row(&["http://staging.example.com/"]),
             row(&["http://api.example.com/"]),
         ];
-        let ents = historical_subdomains(&rows, "example.com", "s");
+        let (ents, _total) = historical_subdomains(&rows, "example.com", "s");
         assert_eq!(ents.len(), 3);
         for e in &ents {
             assert_eq!(attr(e, "historical_subdomains_emitted"), Some("3"));

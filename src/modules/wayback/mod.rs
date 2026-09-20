@@ -147,10 +147,14 @@ fn build_entity(kind: EntityKind, value: &str, rows: &[Row], scan_id: &str) -> O
 /// domain-match is the canonical way to recover DECOMMISSIONED subdomains no
 /// live source will ever surface — sourced from real archived hostnames, never
 /// synthesised. The first row is the CDX column header and is skipped.
-fn historical_subdomains(rows: &[Row], domain: &str, scan_id: &str) -> Vec<Entity> {
+/// Returns the emitted entities and the TRUE distinct subdomain count the
+/// CDX archive reported, which may exceed [`MAX_HISTORICAL_SUBDOMAINS`]. The
+/// caller needs the total to report provider-level truncation, not only the
+/// per-entity note stamped below (REQ-COVERAGE-001).
+fn historical_subdomains(rows: &[Row], domain: &str, scan_id: &str) -> (Vec<Entity>, usize) {
     let domain = domain.trim().to_lowercase();
     if domain.is_empty() {
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     let suffix = format!(".{domain}");
     let hosts: std::collections::BTreeSet<String> = rows
@@ -189,7 +193,7 @@ fn historical_subdomains(rows: &[Row], domain: &str, scan_id: &str) -> Vec<Entit
     for e in &mut entities {
         note_subdomain_coverage(e, emitted, total);
     }
-    entities
+    (entities, total)
 }
 
 /// Stamp the true CDX-reported subdomain count onto `e`'s evidence, so a
@@ -538,8 +542,20 @@ impl Module for Wayback {
             );
             match fetch_json::<Vec<Row>>(&ctx.http, SRC, &sub_url).await {
                 Ok(sub_rows) => {
-                    for e in historical_subdomains(&sub_rows, &domain, &ctx.scan_id) {
+                    let (subs, total) = historical_subdomains(&sub_rows, &domain, &ctx.scan_id);
+                    let emitted = subs.len();
+                    for e in subs {
                         result.push(e);
+                    }
+                    // The same total the per-entity note carries, reported once
+                    // at the PROVIDER level so coverage can tell a bounded walk
+                    // from an exhaustive one (REQ-COVERAGE-001).
+                    if total > emitted {
+                        result.mark_truncated(
+                            emitted,
+                            Some(total),
+                            "the archived-subdomain walk cap",
+                        );
                     }
                 }
                 Err(e) => {

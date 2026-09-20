@@ -74,11 +74,12 @@ use crate::core::scan::ScanStatus;
         let kind = EventKind::ModuleDone {
             module: "whois".into(),
             found: 7,
-        };
+                        truncated: None,
+                    };
         let json = serde_json::to_string(&kind).expect("should succeed");
         let back: EventKind = serde_json::from_str(&json).expect("should succeed");
         match back {
-            EventKind::ModuleDone { module, found } => {
+            EventKind::ModuleDone { module, found , .. } => {
                 assert_eq!(module, "whois");
                 assert_eq!(found, 7);
             }
@@ -313,7 +314,8 @@ use crate::core::scan::ScanStatus;
             EventKind::ModuleDone {
                 module: "m".into(),
                 found: 1,
-            },
+                        truncated: None,
+                    },
             EventKind::ModuleError {
                 module: "m".into(),
                 error: "e".into(),
@@ -446,7 +448,8 @@ use crate::core::scan::ScanStatus;
             EventKind::ModuleDone {
                 module: "shodan".into(),
                 found: 3,
-            },
+                        truncated: None,
+                    },
         );
         let json = serde_json::to_string(&evt).expect("should succeed");
         let back: Event = serde_json::from_str(&json).expect("should succeed");
@@ -454,7 +457,7 @@ use crate::core::scan::ScanStatus;
         assert_eq!(back.scan_id, evt.scan_id);
         assert_eq!(back.ts, evt.ts);
         match back.kind {
-            EventKind::ModuleDone { module, found } => {
+            EventKind::ModuleDone { module, found , .. } => {
                 assert_eq!(module, "shodan");
                 assert_eq!(found, 3);
             }
@@ -527,7 +530,7 @@ use crate::core::scan::ScanStatus;
         let events = vec![
             ev(EventKind::ModuleStart { module: "a".into() }),
             ev(EventKind::ModuleStart { module: "b".into() }),
-            ev(EventKind::ModuleDone { module: "a".into(), found: 3 }),
+            ev(EventKind::ModuleDone { module: "a".into(), found: 3, truncated: None }),
             ev(EventKind::ModuleError { module: "b".into(), error: "boom".into() }),
             ev(EventKind::ModuleSkipped { module: "c".into(), reason: "no key".into(), class: Some(SkipClass::Unavailable) }),
             // Non-module events must not be counted into any bucket.

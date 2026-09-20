@@ -179,7 +179,9 @@ pub fn aggregate_source_health(events_newest_first: &[Event]) -> Vec<SourceHealt
 
     for ev in events_newest_first {
         let (module, is_success, error, found) = match &ev.kind {
-            EventKind::ModuleDone { module, found } => (module.as_str(), true, None, Some(*found)),
+            EventKind::ModuleDone { module, found, .. } => {
+                (module.as_str(), true, None, Some(*found))
+            }
             EventKind::ModuleError { module, error } => {
                 (module.as_str(), false, Some(error.as_str()), None)
             }
@@ -292,6 +294,7 @@ mod tests {
             kind: EventKind::ModuleDone {
                 module: module.to_string(),
                 found: 1,
+                truncated: None,
             },
         }
     }
@@ -305,6 +308,7 @@ mod tests {
             kind: EventKind::ModuleDone {
                 module: module.to_string(),
                 found,
+                truncated: None,
             },
         }
     }

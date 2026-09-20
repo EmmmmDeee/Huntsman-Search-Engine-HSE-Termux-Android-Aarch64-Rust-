@@ -130,6 +130,15 @@ pub enum EventKind {
     ModuleDone {
         module: String,
         found: usize,
+        /// Set when the module reported its answer was cut short — the
+        /// operator-facing sentence from [`crate::core::module::ModuleResult::mark_truncated`].
+        ///
+        /// `#[serde(default)]` so an event persisted before this field existed
+        /// still decodes: an old log cannot vouch for completeness it never
+        /// recorded, and `None` reads as "nothing was claimed", which is what
+        /// the coverage derivation already treats as complete.
+        #[serde(default)]
+        truncated: Option<String>,
     },
     ModuleError {
         module: String,
@@ -320,7 +329,7 @@ impl EventKind {
                 ("target_value", json!(target_value)),
             ],
             Self::ModuleStart { module } => vec![("module", json!(module))],
-            Self::ModuleDone { module, found } => {
+            Self::ModuleDone { module, found, .. } => {
                 vec![("module", json!(module)), ("found", json!(found))]
             }
             Self::ModuleError { module, error } => {
@@ -461,7 +470,7 @@ impl EventKind {
                 format!("● scan started · {target_kind}={target_value}"),
             ),
             Self::ModuleStart { module } => ("module", format!("▶ {module}")),
-            Self::ModuleDone { module, found } => {
+            Self::ModuleDone { module, found, .. } => {
                 ("module", format!("✓ {module}  ({found} found)"))
             }
             Self::ModuleError { module, error } => ("module", format!("✗ {module}  {error}")),

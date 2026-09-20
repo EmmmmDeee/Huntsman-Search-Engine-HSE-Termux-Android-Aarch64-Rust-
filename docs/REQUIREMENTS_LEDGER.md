@@ -14261,6 +14261,69 @@ mutation that could not reach its control (WIKIDATA-001), a harness that never
 built (TYPOSQUAT-001, AUBUSINESSID-001), and now a comparison whose two sides
 were equal because both were empty.
 
+## REQ-COVERAGE-001 — `ProviderOutcome` had no "answered, but incompletely" state, so five modules each invented a private vocabulary for it that nothing read
+
+**Requirement.** A provider that returns part of its answer must be
+distinguishable, at the coverage layer, from one that returns all of it — and
+its silence must not be usable to close a claim.
+
+**Defect.** `core::coverage::ProviderOutcome` models what each provider did:
+`Observed | CleanNegative | NotAttempted | Failed`. Its own doc states the
+doctrine — *"PROVIDER FAILURE ≠ ZERO EVIDENCE … Collapsing the three is the
+commonest way a system invents a confident clean answer about a hard target"* —
+and it collapsed a fourth state it did not model. A module returning the first
+20 of 213 matches reported `Observed`, byte-identical to one that returned
+everything.
+
+Measured, not assumed: that absence had forced five separate private
+vocabularies, and every one of them was dead on arrival.
+
+| Module | Its private spelling | Readers outside its own file |
+|---|---|---|
+| `sitemap` | `sitemap_enumeration_truncated`, `sitemap_url_cap` | **0** |
+| `wayback` | `historical_subdomains_truncated` / `_emitted` / `_total` | **0** |
+| `web_crawler` | `image_leads_capped` | **0** |
+| `netlas` | bare `result_count` (total, never *whether* truncated) | — |
+| `domainsdb` | parsed `total`, spent entirely on `broad_match = total > 200` | — |
+
+Nothing downstream could ask "was this complete?", because every module spelled
+the question differently. CONFIGURATION ≠ CONSUMPTION, five times over.
+
+**A second judgement was hiding behind one predicate.** `is_resolved` gated two
+different questions: `skip_class` ("did this provider run?") and
+`intelligence::coverage_gaps` → `reject_claim` ("can its silence be trusted?").
+A truncated provider answers **yes** to the first — filing it as unavailable
+would misdescribe a provider that worked — and **no** to the second. One
+predicate could not be right for both, so it was split: `is_resolved` (now
+including `Truncated`) and `settles_absence` (which excludes it).
+
+**Fix.** `ProviderOutcome::Truncated { reason }`; `ModuleResult::mark_truncated`
+as the single module-side declaration; a `#[serde(default)]` field on
+`EventKind::ModuleDone` carrying it to the derivation, which reads events rather
+than entities — which is precisely why five modules writing evidence attributes
+had achieved nothing. Known vs unknown provider total is preserved rather than
+flattened to a boolean. Wired for `domainsdb`, `sitemap`, `wayback`.
+
+**Verification.** Nine locks. Falsified against six variants, no survivors:
+
+| Variant | Result |
+|---|---|
+| BASELINE (truncation never derived) | 3 derivation locks fail |
+| M1 **over-correction** — every observation marked truncated | 2 fail, incl. the complete-provider control |
+| M2 `settles_absence` collapsed into `is_resolved` | ledger + predicate locks fail |
+| M3 `is_resolved` excludes `Truncated` | skip-class + predicate locks fail |
+| M4 a blank caveat counts as a truncation claim | blank-string guard fails |
+| M5 `coverage_gaps` reverted to `is_resolved` | reject-claim lock fails |
+
+M1 is the over-correction mutation: without it, "fewer silent truncations" and
+"everything marked incomplete" are indistinguishable.
+
+**Lifecycle.** An event persisted before the field existed still decodes and
+reads as "nothing claimed" — locked by
+`an_event_logged_before_this_field_existed_still_decodes`.
+
+---
+
 ## REQ-CI-009 — The gate skipped the one check the change could break, and said nothing
 
 ### Observed, not hypothesised

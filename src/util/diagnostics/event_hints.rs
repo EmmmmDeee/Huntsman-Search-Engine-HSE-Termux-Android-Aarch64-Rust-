@@ -47,7 +47,9 @@ fn zero_yield_module_names(events: &[Event]) -> Vec<String> {
     let mut names: Vec<String> = events
         .iter()
         .filter_map(|ev| match &ev.kind {
-            EventKind::ModuleDone { module, found: 0 } => Some(module.clone()),
+            EventKind::ModuleDone {
+                module, found: 0, ..
+            } => Some(module.clone()),
             _ => None,
         })
         .collect();
@@ -148,6 +150,7 @@ mod tests {
             kind: EventKind::ModuleDone {
                 module: module.into(),
                 found,
+                truncated: None,
             },
         }
     }

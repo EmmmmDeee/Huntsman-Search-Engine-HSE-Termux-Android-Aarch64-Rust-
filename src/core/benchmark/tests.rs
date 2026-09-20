@@ -162,7 +162,8 @@ fn a_scorecard_from_a_degraded_run_says_it_is_not_comparable() {
             module_event(EventKind::ModuleDone {
                 module: "answered".to_string(),
                 found: 1,
-            }),
+                        truncated: None,
+                    }),
             module_event(EventKind::ModuleSkipped {
                 module: "unkeyed".to_string(),
                 reason: "needs API key".to_string(),
@@ -188,7 +189,8 @@ fn a_scorecard_from_a_degraded_run_says_it_is_not_comparable() {
         &[module_event(EventKind::ModuleDone {
             module: "answered".to_string(),
             found: 1,
-        })],
+                        truncated: None,
+                    })],
     );
     assert!(
         clean.coverage.expect("coverage was derived").is_exhaustive(),

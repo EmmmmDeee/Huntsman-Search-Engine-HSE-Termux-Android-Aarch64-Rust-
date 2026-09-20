@@ -451,8 +451,27 @@ impl Module for Sitemap {
         }
 
         let mut result = ModuleResult::new();
+        let emitted = entities.len();
         for e in entities {
             result.push(e);
+        }
+        // The same fact the per-entity attributes above carry, reported once at
+        // the PROVIDER level so `core::coverage` can see it. The attributes
+        // annotate an entity in the dossier; this decides whether the provider
+        // counts as having answered completely, which is what stands between a
+        // bounded sweep and a confident clean answer (REQ-COVERAGE-001).
+        if let Some(reason) = truncated {
+            result.mark_truncated(
+                emitted,
+                None,
+                match reason {
+                    TruncationReason::UrlCap => "the URL cap",
+                    TruncationReason::FetchCap => {
+                        "the sitemap-fetch cap, with candidates still queued"
+                    }
+                    TruncationReason::Cancelled => "operator cancellation",
+                },
+            );
         }
         Ok(result)
     }
