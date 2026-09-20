@@ -250,6 +250,14 @@ capability was not missing; it was one argument away. So the audit question is
 not only "does this recorded value have a reader?" but "**is the reader being
 handed the whole value, or one field of it?**"
 
+A third reading is sharper still, because the unread field is the source's own
+verdict on its data. Every Wikidata statement carries a `rank`, and
+`deprecated` means the project has retracted it; all four of `wikidata`'s claim
+readers discarded that field and minted retracted statements as current fact
+(REQ-WIKIDATA-002). When a provider grades, ranks, flags or supersedes its own
+records, that grade is the most load-bearing field in the response — and the
+easiest to drop, because the value beside it looks complete on its own.
+
 The tag/evidence seam has the mirror-image failure: a signal **read** by a
 consumer that flattens what it means. `ADJACENCY_BAD_TAGS` carries three
 distinct claims into AU-031, which graded all three `High` in its common branch;
@@ -382,6 +390,18 @@ by looking for them rather than reading modules at random:**
    its source because AU-031 escalated everything it received. That was right,
    and it was a workaround for this defect. **When several emitters are being
    taught to withhold a signal, suspect the consumer.**
+
+   Its opposite failure is worth naming beside it, because the obvious repair
+   invites it: collapsing several judgements into one authority when they were
+   never the same judgement. `wikidata`'s statement rank says two different
+   things — `deprecated` retracts a statement, `preferred` picks among live ones
+   — and a single "filter to preferred, else normal" seam would have traded a
+   fabrication for a silent deletion, discarding the true second and third
+   occupation of a person who holds several (REQ-WIKIDATA-002). The rule that
+   falls out: **one authority per judgement, and count the judgements before
+   deciding there is one.** A mutation that over-corrects belongs in the
+   falsification set next to the one that under-corrects; without it, "fewer
+   wrong values" and "fewer values" are indistinguishable.
 5. *The workaround went into the test fixture.* `shodan` geocoded a bare
    country name against `util::city_coords`, a gazetteer whose 143 rows are all
    cities, so the branch could not execute on any response Shodan can send. Two

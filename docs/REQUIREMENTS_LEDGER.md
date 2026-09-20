@@ -13926,3 +13926,110 @@ Newcastle row being added.
 
 The harness asserts `test result:` is present per the REQ-TYPOSQUAT-001 rule;
 all six variants reported `OK`, none void.
+
+## REQ-WIKIDATA-002 — The source retracted the claim; HSE republished it
+
+### Confirmed as filed, and it is two defects
+
+The backlog read: *"wikidata claim extraction never checks Wikidata's own
+'deprecated' rank — superseded/wrong claims minted as current fact."* True, and
+the scan of `claims.rs` found **four** readers, none of which touched `rank`:
+
+| Reader | Statements read | Consumers |
+|---|---|---|
+| `claim_p625` | `/claims/P625/**0**/…` | `builder.rs:141` (Coordinates) |
+| `claim_strings` | every one | P856 website, P18 image, all social handles |
+| `claim_entity_ids` | every one | P27, P106, P39, and **P31 via `classify.rs:10`** |
+| `claim_time` | `/claims/{pid}/**0**/…` | P569 birth, P570 death |
+
+Wikidata gives every statement a `rank` of `preferred`, `normal` or
+`deprecated`, and the two ranks carry different instructions:
+
+1. **`deprecated` is a retraction.** It marks a statement the project knows to
+   be wrong or superseded — an erroneous figure, a former name kept for
+   provenance. Wikidata leaves it visible deliberately. Reading it back as a
+   current value republishes an error the source has already withdrawn, which
+   is the fabrication class `RULE.md` forbids, with the aggravation that HSE
+   had the retraction in hand and discarded it.
+2. **`preferred` says which statement is current.** It is how an item records a
+   superseded coordinate or date without deleting the history. Both
+   single-valued readers instead indexed `[0]` — whichever statement happens to
+   serialize first. For an item whose location or date has moved, that is
+   precisely the stale one.
+
+`snaktype` of `novalue`/`somevalue` is already survivable by accident: those
+snaks carry no `datavalue`, so the existing pointer returns `None`. Recorded as
+a residual, not fixed here — it is a different axis.
+
+### The over-correction, and why the fix has two seams rather than one
+
+The obvious repair — "filter to preferred, else normal" everywhere — is wrong,
+and would have traded a fabrication for a silent deletion. P31, P106 and P27 are
+**genuinely multi-valued**: a person really does hold several occupations and
+citizenships, and Wikidata marking one `preferred` does not retract the others.
+Narrowing a multi-valued read to the preferred statement discards true values.
+
+So rank is read by two seams, matching the two things rank actually says:
+
+```rust
+fn live_statements<'a>(entity: &'a Value, pid: &str) -> impl Iterator<Item = &'a Value> + 'a
+fn best_statement<'a>(entity: &'a Value, pid: &str) -> Option<&'a Value>
+```
+
+`live_statements` drops **only** `deprecated` and is what the two multi-valued
+readers use. `best_statement` picks the first `preferred`, else the first
+non-deprecated, and is what the two single-valued readers use. Mutation M2 exists
+solely to pin this split: it narrows the multi-valued readers to preferred-only
+and fails one control, `["Q82594"]` where `["Q82594", "Q5482740"]` was required.
+
+### A missing rank is ordinary, never discarded
+
+The live API always sets `rank`. A trimmed body or a test fixture may not, and
+the safe reading of its absence is "ordinary" — treating it as anything else
+turns a partial response into silent data loss. This is not a hypothetical
+nicety: mutation M3 flips that default and **thirteen** tests fail, nine of them
+predating this cycle. The compatibility is load-bearing across the whole module.
+
+### The classifier was the one place rank could change which entity exists
+
+`classify.rs:10` reads P31 through `claim_entity_ids`, and P31 decides entity
+**kind**, not merely content. This was the risk worth checking before writing
+anything: could dropping a deprecated statement leave an item unclassified?
+
+It can, and that outcome is correct. `classify` already has a defined answer for
+an absent P31 — fall back to the seed's kind — so an item whose *only*
+`instance of` is one Wikidata marks wrong is no longer classified from it. The
+module says "I don't know" instead of asserting a classification the source has
+retracted. A lock pins both halves: the fall-back, and the control that a live
+`Q5` beside a deprecated sibling still classifies as a Person.
+
+### Falsified
+
+| Variant | Result |
+|---|---|
+| **BASELINE** (rank never read, index 0 wins) | four locks fail — the deprecated website/occupation/date/coordinate all surface, index 0 beats `preferred`, the retracted occupation rides along, and a deprecated `Q5` classifies the item as a Person |
+| M1 `preferred` ignored, deprecated still dropped | **only** `a_single_valued_read_takes_the_preferred_statement_not_array_index_zero` fails — `got 51.5074,-0.1278` |
+| M2 multi-valued reads narrowed to preferred only | **only** `a_multi_valued_read_keeps_every_live_statement…` fails — `["Q82594"]` vs `["Q82594", "Q5482740"]` |
+| M3 a missing rank treated as not-ordinary | **thirteen** fail, nine of them pre-existing — the default is load-bearing module-wide |
+| M4 rank filter reverted on `claim_entity_ids` only | three fail — a fix that reached one reader and not its siblings does not pass |
+
+`a_statement_carrying_no_rank_is_read_as_ordinary_not_discarded` is a control
+that passes on **both** baseline and fix; every pre-existing wikidata test is
+another, and all 33 still pass untouched, which is what establishes that the
+rank-less fixtures in this file were never silently reinterpreted.
+
+Each lock uses its **own** fixture — a distinct property, rank order and value
+per assertion — deliberately, after REQ-SHODAN-002's M2 survived a harness run
+because every lock there shared one fixture that could not distinguish the fix
+from the mutation.
+
+The harness asserts `test result:` is present per the REQ-TYPOSQUAT-001 rule;
+all five variants reported `OK`, none void.
+
+### Residual
+
+`snaktype: "novalue"`/`"somevalue"` is still read as absence rather than as the
+distinct assertion it is ("this item has no value for P569" / "has one, unknown").
+Where such a snak sits ahead of a real statement in document order, a
+single-valued read still returns `None` — unchanged from before this cycle, and
+a separate axis from rank.
