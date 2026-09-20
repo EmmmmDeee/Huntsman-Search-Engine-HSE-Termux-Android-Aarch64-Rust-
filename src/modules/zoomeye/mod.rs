@@ -223,6 +223,19 @@ fn extract_entities(body: &ZoomResp, target: &Target, value: &str, scan_id: &str
     }
 
     let mut result = ModuleResult::new();
+    // `.take(MAX_MATCHES)` below is a CLIENT-side cap: ZoomEye is told nothing
+    // about it, so a host with a large service surface is silently cut to the
+    // first 50 matches. `ZoomResp` models only `matches` — deliberately, so an
+    // error envelope fails closed (REQ-ZOOMEYE-001) — and the provider's own
+    // hit count is not among them. Guessing a wire name for it would risk a
+    // field that silently never populates, so the FULL PAGE is the signal and
+    // the total is reported as unknown, which is what is actually known here
+    // (REQ-ZOOMEYE-002).
+    result.mark_truncated_if_capped(
+        body.matches.len(),
+        MAX_MATCHES,
+        &format!("the client-side cap of {MAX_MATCHES} matches"),
+    );
     let mut seen: HashSet<String> = HashSet::new();
     // Distinct exposed ports/services, collected across matches to tag the
     // seed IP once with its full service surface.

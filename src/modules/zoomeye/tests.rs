@@ -395,3 +395,45 @@ fn zoomeye_dork_rejects_unsupported_target_kinds() {
         None
     );
 }
+
+#[test]
+fn the_real_emission_path_marks_a_capped_sweep_and_leaves_a_short_one_alone() {
+    // REQ-ZOOMEYE-002, locked at the module's OWN call site rather than on the
+    // shared helper.
+    //
+    // This exists because a mutation survived without it. `mark_truncated_if_capped`
+    // is verified where it lives, but nothing checked that THIS module hands it
+    // THIS module's real cap: replacing `MAX_MATCHES` with `MAX_MATCHES * 1000`
+    // at the call site passed every other lock while silently disabling the
+    // signal forever. A shared guard cannot check its callers' arguments, so
+    // each caller has to pin its own.
+    let target = Target::new(TargetKind::IpAddress, "8.8.8.8");
+    let host = |n: usize| {
+        (0..n)
+            .map(|i| serde_json::json!({"ip": format!("198.51.100.{}", i % 254 + 1), "portinfo": {"port": 80 + i}}))
+            .collect::<Vec<_>>()
+    };
+
+    let full = ZoomResp {
+        matches: host(MAX_MATCHES),
+    };
+    let r = extract_entities(&full, &target, "8.8.8.8", "scan");
+    let reason = r
+        .truncation
+        .expect("a sweep filling the client-side cap must declare itself bounded");
+    assert!(
+        reason.contains(&MAX_MATCHES.to_string()),
+        "the operator needs the cap that bit: {reason}"
+    );
+
+    // THE OVER-CORRECTION CONTROL: one under the cap is an exhaustive answer.
+    let short = ZoomResp {
+        matches: host(MAX_MATCHES - 1),
+    };
+    assert!(
+        extract_entities(&short, &target, "8.8.8.8", "scan")
+            .truncation
+            .is_none(),
+        "a sweep that did not reach the cap is exhaustive and must not be flagged"
+    );
+}

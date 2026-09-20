@@ -54,19 +54,6 @@ const PASSIVE_DNS: &str = "passive-dns";
 /// relevant* records, never a completeness claim — see the module honesty note.
 const RESULT_LIMIT: u32 = 100;
 
-/// Whether a `limit={RESULT_LIMIT}` request came back with a FULL page, which
-/// is the only completeness signal this envelope affords.
-///
-/// **Pure.** A full page does not prove more records exist — the corpus may
-/// hold exactly [`RESULT_LIMIT`] — but it does mean the answer was bounded by
-/// the cap rather than by the data, so completeness is unknown. That is the
-/// claim `mark_truncated(.., None, ..)` makes, and it is true in both cases.
-/// A SHORT page is the opposite: the provider ran out of records before the cap
-/// did, so the answer is exhaustive and must NOT be marked truncated.
-fn page_was_capped(returned: usize) -> bool {
-    returned >= RESULT_LIMIT as usize
-}
-
 pub struct MnemonicPdns;
 
 /// The `pdns/v3` envelope — only the `data` array is load-bearing (the
@@ -377,13 +364,11 @@ impl Module for MnemonicPdns {
         // anywhere in this repository, and a confidently wrong total is worse
         // than an honest unknown: `mark_truncated`'s `None` arm says the provider
         // did not report how many exist, which is exactly what is known here.
-        if page_was_capped(resp.data.len()) {
-            result.mark_truncated(
-                resp.data.len(),
-                None,
-                &format!("the API's `limit={RESULT_LIMIT}` page, returned full"),
-            );
-        }
+        result.mark_truncated_if_capped(
+            resp.data.len(),
+            RESULT_LIMIT as usize,
+            &format!("the API's `limit={RESULT_LIMIT}` page, returned full"),
+        );
         Ok(result)
     }
 }

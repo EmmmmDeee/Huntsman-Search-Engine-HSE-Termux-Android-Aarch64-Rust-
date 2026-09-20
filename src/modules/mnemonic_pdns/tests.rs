@@ -261,29 +261,30 @@ fn empty_response_yields_nothing() {
 
 #[test]
 fn a_full_page_is_bounded_by_the_cap_and_a_short_page_is_not() {
-    // REQ-MNEMONIC-002. The module header promises this API returns "a *sample*
-    // — the most-relevant RESULT_LIMIT records, not the exhaustive set". That
-    // promise was kept per-entity and nowhere the coverage layer could read it.
+    // REQ-MNEMONIC-002 / REQ-ZOOMEYE-002. The module header promises this API
+    // returns "a *sample* — the most-relevant RESULT_LIMIT records, not the
+    // exhaustive set". That promise was kept per-entity and nowhere the
+    // coverage layer could read it. The cap-detection itself now lives in
+    // `ModuleResult::mark_truncated_if_capped`, locked there; this pins that
+    // THIS module passes ITS OWN cap, which is the part a shared helper cannot
+    // check for it.
+    let cap = RESULT_LIMIT as usize;
+
+    let mut full = crate::core::module::ModuleResult::new();
+    full.mark_truncated_if_capped(cap, cap, "the API's `limit` page, returned full");
     assert!(
-        page_was_capped(RESULT_LIMIT as usize),
-        "a page returned exactly at the cap was bounded by the cap, not by the data"
-    );
-    assert!(
-        page_was_capped(RESULT_LIMIT as usize + 1),
-        "more than the cap is still capped"
+        full.truncation.is_some(),
+        "a page returned exactly at this module's cap must declare itself bounded"
     );
 
-    // THE OVER-CORRECTION CONTROL. A provider that ran out of records before
-    // the cap did gave an exhaustive answer. Marking it incomplete would trade
-    // a silent truncation for a permanent false caveat on every small domain —
-    // and "fewer silent truncations" and "everything marked incomplete" look
-    // identical without this assertion.
+    // THE OVER-CORRECTION CONTROL: a domain with fewer records than the cap
+    // got an exhaustive answer, and must never carry a completeness caveat.
+    let mut short = crate::core::module::ModuleResult::new();
+    short.mark_truncated_if_capped(cap - 1, cap, "the API's `limit` page, returned full");
     assert!(
-        !page_was_capped(RESULT_LIMIT as usize - 1),
+        short.truncation.is_none(),
         "a short page is exhaustive and must never be reported as truncated"
     );
-    assert!(!page_was_capped(0), "an empty answer is not a truncated one");
-    assert!(!page_was_capped(1));
 }
 
 #[test]

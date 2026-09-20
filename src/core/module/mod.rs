@@ -556,6 +556,31 @@ impl ModuleResult {
         });
     }
 
+    /// Declare this result incomplete **when a page came back full against a
+    /// known cap** — the commonest truncation shape, and the only one available
+    /// to a provider that reports no total.
+    ///
+    /// `returned` is what the provider sent; `cap` is the ceiling that was
+    /// asked for (a `limit=` parameter, a client-side `.take(N)`). A full page
+    /// does not prove more records exist — the corpus may hold exactly `cap` —
+    /// but it does mean the answer was bounded by the CAP rather than by the
+    /// DATA, so completeness is unknown. That is the claim
+    /// [`Self::mark_truncated`]'s unknown-total arm makes, and it is true in
+    /// both cases.
+    ///
+    /// A SHORT page is the opposite and is left alone: the provider ran out of
+    /// records before the cap did, so the answer is exhaustive. **That guard
+    /// lives here, once.** It was written per-module first, and two modules is
+    /// where a private spelling starts becoming five — the mistake
+    /// REQ-COVERAGE-001 was about. Marking every page truncated is the easy
+    /// error, and it is indistinguishable from "fewer silent truncations"
+    /// without an assertion on the short-page case.
+    pub fn mark_truncated_if_capped(&mut self, returned: usize, cap: usize, cause: &str) {
+        if returned >= cap {
+            self.mark_truncated(returned, None, cause);
+        }
+    }
+
     /// Append one discovered entity.
     pub fn push(&mut self, entity: Entity) {
         self.entities.push(entity);
@@ -687,4 +712,53 @@ mod truncation_sentence_tests {
 #[cfg(test)]
 mod tests {
     include!("tests.rs");
+}
+
+#[cfg(test)]
+mod capped_page_tests {
+    use super::ModuleResult;
+
+    /// The guard that decides whether a page was bounded by its cap. It lived
+    /// per-module first; this is the one place it is now decided, so this is
+    /// the one place the boundary has to be right.
+    #[test]
+    fn only_a_page_that_reached_its_cap_is_reported_as_bounded() {
+        let cases = [
+            // (returned, cap, expect_truncated)
+            (50, 50, true),  // exactly at the cap: bounded by the cap
+            (51, 50, true),  // over the cap (a provider ignoring `limit`)
+            (49, 50, false), // THE OVER-CORRECTION CASE: exhaustive
+            (1, 50, false),
+            (0, 50, false), // an empty answer is not a truncated one
+        ];
+        for (returned, cap, expect) in cases {
+            let mut r = ModuleResult::new();
+            r.mark_truncated_if_capped(returned, cap, "the cap");
+            assert_eq!(
+                r.truncation.is_some(),
+                expect,
+                "returned={returned} cap={cap}: expected truncated={expect}"
+            );
+        }
+    }
+
+    /// A cap-bounded page knows only that it stopped, so it must take the
+    /// unknown-total arm. Reporting "50 of 50" would assert a total the
+    /// provider never gave — the exact false precision this helper avoids by
+    /// not guessing a wire field name for it.
+    #[test]
+    fn a_cap_bounded_page_never_claims_a_total_it_was_not_given() {
+        let mut r = ModuleResult::new();
+        r.mark_truncated_if_capped(50, 50, "the client-side cap of 50 matches");
+        let reason = r.truncation.expect("a full page declares itself");
+        assert!(
+            reason.contains("did not report how many exist"),
+            "must take the unknown-total arm: {reason}"
+        );
+        assert!(!reason.contains("50 of "), "no invented total: {reason}");
+        assert!(
+            reason.contains("the client-side cap of 50 matches"),
+            "the operator needs the cause that bit: {reason}"
+        );
+    }
 }

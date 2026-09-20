@@ -14261,6 +14261,51 @@ mutation that could not reach its control (WIKIDATA-001), a harness that never
 built (TYPOSQUAT-001, AUBUSINESSID-001), and now a comparison whose two sides
 were equal because both were empty.
 
+## REQ-ZOOMEYE-002 — a client-side cap with no signal, and the shared guard that could not check its own callers
+
+**Requirement.** A sweep cut short by a client-side cap must say so, and each
+module must be held to ITS OWN cap.
+
+**Defect.** `zoomeye` takes `body.matches.iter().take(MAX_MATCHES)` — 50 — and
+told no one. `ZoomResp` models only `matches`, deliberately: omitting
+`#[serde(default)]` is what makes an error envelope fail closed rather than
+decode as an empty hit list (REQ-ZOOMEYE-001). The provider's own hit count is
+not modelled.
+
+**Fix.** The FULL PAGE is the signal, and the total is reported as unknown. A
+wire field name for the provider's total is not established anywhere in this
+repository, and guessing one risks a field that silently never populates —
+which would leave the signal permanently dead while looking wired.
+
+**Consolidation.** This was the SECOND module to need "was this page returned
+full?", after REQ-MNEMONIC-002 wrote it privately. Two is where
+REQ-COVERAGE-001's five private spellings began, so it moved into
+`ModuleResult::mark_truncated_if_capped` before a third appeared, and
+`mnemonic_pdns`'s local copy was deleted.
+
+**A mutation survived, and that was the finding.** M5 — `zoomeye` passing
+`MAX_MATCHES * 1000` instead of its real cap — passed every lock. The shared
+helper is verified where it lives, but **a shared guard cannot check its
+callers' arguments**: a wrong cap disables the signal forever while every test
+still passes. That is CONFIGURATION ≠ CONSUMPTION one layer up, created by the
+consolidation itself. Locked at the module's real emission path
+(`extract_entities`, which is pure), and M5 now fails.
+
+| Variant | Result |
+|---|---|
+| BASELINE (helper never marks) | 3 locks fail |
+| M1 **over-correction** — every page marked | 2 locks fail |
+| M2 off-by-one — a short page counts as capped | 2 locks fail |
+| M3 strictly-greater — an exactly-full page slips through | 3 locks fail |
+| M4 invents a total instead of reporting unknown | 1 lock fails |
+| M5 the module passes the WRONG cap | **survived** → now 1 lock fails |
+
+**Standing rule.** When a guard moves into a shared helper, every caller needs
+its own lock proving it passes its own real arguments. The helper's own tests
+cannot establish it.
+
+---
+
 ## REQ-MNEMONIC-002 — the module's own honesty promise was kept per-entity and nowhere the coverage layer could read it
 
 **Requirement.** A provider that documents itself as returning a *sample* must

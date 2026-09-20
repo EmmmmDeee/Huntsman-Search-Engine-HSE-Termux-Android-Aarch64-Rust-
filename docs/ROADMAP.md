@@ -414,6 +414,16 @@ by looking for them rather than reading modules at random:**
    caveat with no reader is a comment, not a contract.** Grep the honesty
    language in a module header and ask what code enforces each claim.
 
+   **Consolidating a guard creates a new gap above it.** When the second module
+   needed "was this page returned full?", it moved into one helper — and a
+   mutation passing the WRONG cap from a call site then survived every lock,
+   because a shared guard cannot check its callers' arguments
+   (REQ-ZOOMEYE-002). Its rule: **a helper's own tests never establish that its
+   callers pass the right values; each caller needs a lock at its real
+   emission path.** Extracting shared logic converts a duplication problem into
+   an argument-correctness problem — verify the latter, or the signal can be
+   silently dead while everything passes.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other
