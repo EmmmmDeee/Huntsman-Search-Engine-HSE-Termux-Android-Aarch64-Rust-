@@ -15286,6 +15286,47 @@ whole point is that `deps/` grows after the preflight has already passed.
 C3 and C4 bracket the threshold from both sides, because a note that never
 fires is as useless as one that always fires.
 
+#### The preflight fired in production, on a correct commit
+
+Not a control — a real occasion, two cycles later. Running the gate for
+REQ-OPENMETEO-001:
+
+```text
+==> REFUSING TO START: 1949 MiB free, need 4096 MiB
+GATE EXIT: 1
+```
+
+The gate never started. Before this cycle that run would have proceeded, died
+partway through `test`, and reported `could not compile (lib test)` behind
+`ld terminated with signal 7 [Bus error]` — against a commit whose **7 676 lib
+tests had all just passed**. A red gate on a correct change: exactly the false
+signal that once produced four red checks taken for real defects.
+
+Two details worth keeping:
+
+* **The mid-run note stayed silent, correctly.** 1 949 MiB is below the 4 096
+  start floor but above the 1 024 near-exhaustion line, and the run had not
+  begun. Had the two thresholds still shared one constant — as they did before
+  the corrections above — this would *also* have printed a spurious "may be
+  disk exhaustion". The split behaved as intended on its first real encounter.
+* **The cause was a bare `cargo test --lib` from the shell**, which wrote 4.8
+  GiB of incremental outside the script and so outside the export. Precisely
+  the scoping described below, now with a measured cost attached. The lesson is
+  operational, not a code change: a session doing gate-style verification
+  should export `CARGO_INCREMENTAL=0` in its own shell too. The repo-wide
+  setting remains the wrong fix.
+
+A guard observed firing correctly on a real occasion is stronger evidence than
+any control constructed for it.
+
+#### Final consumption, measured
+
+A full 19/19 run of the corrected script consumed **579 MiB** (7 979 → 7 400
+MiB free), with `target/debug/incremental` at 4.0K from start to finish.
+Against 7.6 GiB of incremental alone before this cycle, and ~6.4 GiB for a cold
+run mid-cycle. The 4 GiB floor comfortably admits a back-to-back gate, which
+was the point of lowering it.
+
 #### Why the export is scoped to this script, and why `incremental/` is not empty
 
 `CARGO_INCREMENTAL=0` is exported inside `scripts/gate.sh`, **not** placed in
