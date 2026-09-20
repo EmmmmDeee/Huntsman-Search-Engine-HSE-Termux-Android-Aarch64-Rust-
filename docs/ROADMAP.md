@@ -484,6 +484,15 @@ by looking for them rather than reading modules at random:**
    a value for being too coarse, ask what the next grain down looks like** —
    country, state, region, metro — and whether anything rejects those.
 
+   **A consolidation is not done until the last copy is gone.**
+   REQ-COVERAGE-001 found five private truncation vocabularies and wired three,
+   leaving `web_crawler` and `netlas` — so the ledger described a consolidation
+   the tree did not have (REQ-WEBCRAWLER-003 / REQ-NETLAS-001). Its rule:
+   **when a cycle migrates N of M call sites, record the remainder as an open
+   contradiction and close it**, because a shared authority standing beside two
+   survivors is three authorities, and the next reader cannot tell which is
+   canonical.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other

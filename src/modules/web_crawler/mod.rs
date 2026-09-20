@@ -571,6 +571,7 @@ fn build_entities(
             entity.tag(tags::MISSING_SECURITY_HEADERS);
         }
 
+        let mut capped_images: Option<(usize, usize)> = None;
         let mut ev = Evidence::new(
             SRC,
             format!(
@@ -607,6 +608,14 @@ fn build_entities(
         ev = ev.with_attr("image_leads_emitted", state.image_urls.len().to_string());
         if state.image_urls_seen.len() > state.image_urls.len() {
             ev = ev.with_attr("image_leads_capped", IMAGE_LEADS_CAP.to_string());
+            // The same fact, reported once at the PROVIDER level so
+            // `core::coverage` can see it. `image_leads_capped` annotates an
+            // entity in the dossier and had no reader outside this file — it was
+            // one of the five private truncation vocabularies REQ-COVERAGE-001
+            // found, and this is its migration onto the shared mechanism. The
+            // crawler knows BOTH counts, so the total is stated rather than
+            // reported unknown (REQ-WEBCRAWLER-003).
+            capped_images = Some((state.image_urls.len(), state.image_urls_seen.len()));
         }
 
         if !missing_headers.is_empty() {
@@ -624,6 +633,11 @@ fn build_entities(
 
         entity.add_evidence(ev);
         state.result.push(entity);
+        if let Some((emitted, total)) = capped_images {
+            state
+                .result
+                .mark_truncated(emitted, Some(total), "the image-lead cap");
+        }
 
         // Image URLs — EXIF leads for `modules::exif_geo`, which accepts an image
         // `Url` target and reads the GPS IFD out of it. Emitted as entities because

@@ -521,6 +521,22 @@ use super::*;
             attrs.get("image_leads_capped").map(String::as_str),
             Some(IMAGE_LEADS_CAP.to_string().as_str())
         );
+
+        // REQ-WEBCRAWLER-003: the same fact at the PROVIDER level, where
+        // `core::coverage` can read it. The attribute above annotates an entity
+        // in the dossier and had no reader outside this file — it was one of
+        // the five private truncation vocabularies REQ-COVERAGE-001 found.
+        // Asserted here, at the real emission path, because a call-site
+        // mutation has survived helper-level locks four times in this codebase.
+        let reason = state
+            .result
+            .truncation
+            .as_deref()
+            .expect("a capped crawl must declare itself truncated");
+        assert!(
+            reason.contains(&format!("{IMAGE_LEADS_CAP} of {}", IMAGE_LEADS_CAP * 2)),
+            "the crawler knows BOTH counts, so both must be stated: {reason}"
+        );
     }
 
     #[test]
@@ -556,6 +572,13 @@ use super::*;
         assert_eq!(
             attrs.get("image_leads_found").map(String::as_str),
             Some("2")
+        );
+        // THE OVER-CORRECTION CONTROL at the provider level: a crawl whose
+        // images all fit is COMPLETE and must carry no caveat.
+        assert!(
+            state.result.truncation.is_none(),
+            "nothing was cut short — the provider answer is complete: {:?}",
+            state.result.truncation
         );
         assert!(
             !attrs.contains_key("image_leads_capped"),

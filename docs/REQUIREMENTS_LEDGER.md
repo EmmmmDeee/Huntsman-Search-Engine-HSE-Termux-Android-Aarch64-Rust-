@@ -14261,6 +14261,57 @@ mutation that could not reach its control (WIKIDATA-001), a harness that never
 built (TYPOSQUAT-001, AUBUSINESSID-001), and now a comparison whose two sides
 were equal because both were empty.
 
+## REQ-WEBCRAWLER-003 / REQ-NETLAS-001 — finishing the consolidation REQ-COVERAGE-001 started
+
+**Requirement.** A consolidation is complete only when the superseded
+implementations are gone. REQ-COVERAGE-001 named five private truncation
+vocabularies and migrated three; this closes the remaining two.
+
+**The contradiction being resolved.** REQ-COVERAGE-001's own finding was that
+each of those attribute keys had **zero readers outside its own file**, so
+nothing downstream could ask whether a result set was complete. That fix wired
+`domainsdb`, `sitemap` and `wayback`. `web_crawler`'s `image_leads_capped` and
+`netlas`'s `result_count` were left, which meant the ledger claimed a
+consolidation that the tree did not yet have — recorded at the time as
+"NOT YET MIGRATED" rather than resolved by omission.
+
+**Both are the KNOWN-total case**, which is the stronger arm:
+
+* `web_crawler` already tracks `image_urls_seen` (true discovered total) against
+  `image_urls` (emitted) and guards on `seen > emitted` — exactly the right
+  condition, reported only to an evidence attribute.
+* `netlas` decodes the top-level `count`, and its own comment says why it
+  matters: *"Surfacing it tells an investigator how much of the host's Netlas
+  footprint the returned page represents, i.e. whether the results were
+  truncated."* It surfaced it to an attribute and nowhere else.
+
+So neither needed new knowledge — only a second reporting path, at the provider
+level, where `core::coverage` reads.
+
+**Verification.** Five variants, no survivors:
+
+| Variant | Result |
+|---|---|
+| BASE_NETLAS — netlas never declares truncation | the netlas call-site lock fails |
+| BASE_CRAWLER — the crawler never declares it | the crawler call-site lock fails |
+| M1 **over-correction** — a complete netlas page flagged | the completeness control fails |
+| M2 — netlas's total and emitted swapped | the call-site lock fails |
+| M3 — the crawler's counts swapped | the call-site lock fails |
+
+M2 and M3 matter because both modules pass *two* numbers: a migration that
+reports `"42 of 1"` instead of `"1 of 42"` is wired, compiles, and is wrong.
+
+**Locked at both call sites from the start.** A call-site mutation has survived
+helper-level locks four times in this codebase (REQ-ZOOMEYE-002 M5,
+REQ-DOCPARSE-002 M4, REQ-SEEKNOW-001 M3+M4), so neither module was given the
+benefit of the doubt.
+
+**Scope.** The per-entity attributes are kept. They annotate an entity in the
+dossier, which is a different job from deciding whether the provider answered
+completely; removing them would lose operator-facing detail to gain nothing.
+
+---
+
 ## REQ-SOCIALLOC-002 — the country-centroid defect, one grain down
 
 **Requirement.** A string naming the region around a city must not resolve to

@@ -379,3 +379,62 @@ fn netlas_query_by_kind() {
     let email_q = netlas_query(&Target::new(TargetKind::Email, "a@b.com"));
     assert!(email_q.starts_with("certificate.subject.email:"));
 }
+
+/// REQ-NETLAS-001: the provider's own match count must reach the COVERAGE
+/// layer, not only an evidence attribute nothing outside this file reads.
+///
+/// Locked at the real emission path (`build_entities` is pure), because a
+/// call-site mutation has survived helper-level locks four times in this
+/// codebase (REQ-ZOOMEYE-002, REQ-DOCPARSE-002, REQ-SEEKNOW-001).
+#[test]
+fn a_query_whose_total_exceeds_its_page_declares_itself_truncated() {
+    let body: super::NetlasResp = serde_json::from_value(serde_json::json!({
+        "count": 42,
+        "items": [{ "data": { "ip": "203.0.113.10", "port": 443, "protocol": "tcp" } }]
+    }))
+    .expect("valid");
+    let r = super::build_entities(&body, "203.0.113.10", "scan");
+
+    // Control: the entity was built, so the assertions below are about
+    // truncation and not about an empty result.
+    assert!(!r.entities.is_empty(), "the IP entity must exist");
+
+    let reason = r
+        .truncation
+        .expect("42 matches behind a 1-item page is an incomplete answer");
+    assert!(
+        reason.contains("1 of 42"),
+        "the operator needs both counts: {reason}"
+    );
+}
+
+/// THE OVER-CORRECTION CONTROL: a query whose page holds everything Netlas
+/// matched is COMPLETE, and must carry no caveat. Flagging it would put a
+/// permanent completeness warning on every exhaustive netlas answer.
+#[test]
+fn a_complete_netlas_page_is_not_flagged() {
+    for count in [1, 0] {
+        let body: super::NetlasResp = serde_json::from_value(serde_json::json!({
+            "count": count,
+            "items": [{ "data": { "ip": "203.0.113.10", "port": 443, "protocol": "tcp" } }]
+        }))
+        .expect("valid");
+        let r = super::build_entities(&body, "203.0.113.10", "scan");
+        assert!(
+            r.truncation.is_none(),
+            "count={count} does not exceed the 1-item page — nothing was cut short"
+        );
+    }
+    // A response with no `count` at all states no total, so there is nothing to
+    // compare and no claim to make.
+    let body: super::NetlasResp = serde_json::from_value(serde_json::json!({
+        "items": [{ "data": { "ip": "203.0.113.10", "port": 443, "protocol": "tcp" } }]
+    }))
+    .expect("valid");
+    assert!(
+        super::build_entities(&body, "203.0.113.10", "scan")
+            .truncation
+            .is_none(),
+        "no reported total means no truncation claim"
+    );
+}

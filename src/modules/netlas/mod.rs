@@ -477,6 +477,18 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
     ip_entity.add_evidence(ev);
     result.push(ip_entity);
 
+    // The same fact `result_count` carries per-entity, reported once at the
+    // PROVIDER level so `core::coverage` can see it. The attribute annotates an
+    // entity in the dossier and had no reader outside this file; this decides
+    // whether the provider counts as having answered completely
+    // (REQ-COVERAGE-001 / REQ-NETLAS-001).
+    if let Some(total) = body.count
+        && let Ok(total) = usize::try_from(total)
+        && total > body.items.len()
+    {
+        result.mark_truncated(body.items.len(), Some(total), "the `fields=*` items page");
+    }
+
     // ISP → Organisation entity.
     let isp_lc = isp_val
         .as_deref()
