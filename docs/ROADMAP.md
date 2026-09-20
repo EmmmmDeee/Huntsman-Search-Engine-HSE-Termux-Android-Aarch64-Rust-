@@ -476,6 +476,14 @@ by looking for them rather than reading modules at random:**
    fired.** If the list has more entries than the return type has cases, the
    difference is being discarded.
 
+   **A guard that stops at one grain leaves the same defect at every finer
+   one.** `place_grain::is_bare_country` refuses a country centroid because it
+   "is never a subject's location" — and a city table happily returned Manhattan
+   for `"New York State"`, the identical failure with a smaller radius and more
+   apparent precision (REQ-SOCIALLOC-002). Its rule: **when a predicate rejects
+   a value for being too coarse, ask what the next grain down looks like** —
+   country, state, region, metro — and whether anything rejects those.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other

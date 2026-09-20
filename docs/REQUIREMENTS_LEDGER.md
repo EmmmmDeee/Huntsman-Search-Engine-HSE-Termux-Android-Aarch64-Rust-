@@ -14261,6 +14261,59 @@ mutation that could not reach its control (WIKIDATA-001), a harness that never
 built (TYPOSQUAT-001, AUBUSINESSID-001), and now a comparison whose two sides
 were equal because both were empty.
 
+## REQ-SOCIALLOC-002 — the country-centroid defect, one grain down
+
+**Requirement.** A string naming the region around a city must not resolve to
+that city's coordinates.
+
+**Defect.** `city_coords` matches a tabulated city as a consecutive run of
+WHOLE tokens — correctly, so `"hamilton"` cannot match the suburb `"milton"`.
+But `"New York State"` tokenises to `["new","york","state"]`, which *contains*
+the run `new york`, so it resolved to Manhattan. `"Upstate New York"` —
+`["upstate","new","york"]` — likewise, for a phrase whose whole meaning is *the
+part of the state that is not the city*.
+
+**This is a defect the codebase already names one level up.**
+`util::place_grain` exists because forward-geocoding a bare country name
+returns the country centroid, and its doc says why that matters:
+
+> That is never a subject's location, yet it arrives as a precise-looking
+> `Coordinates` fix and then cascades into the geo-convergence correlations.
+
+A state centroid reached through a city table is the same failure with a
+smaller radius, and it arrives with *more* apparent precision, since a city
+centroid looks like a real place. The guard therefore lives beside
+`is_bare_country` rather than inside the city table: same question, one grain
+down.
+
+**Fix.** `negates_city_grain(s)` — true for a whole leading or trailing
+qualifier that means the region (`state`, `province`, `prefecture`; `upstate`,
+`greater`, `metropolitan`). A comma returns false, because a comma means an
+address naming the city.
+
+**Deliberately narrow, and the falsification is mostly about that.** The
+expensive failure is not a missed region label; it is losing a real location.
+
+| Variant | Result |
+|---|---|
+| BASELINE — the guard never consulted | the call-site lock fails |
+| M1 **over-correction** — a comma makes it a region | 4 fail, incl. **three pre-existing** `city_coords` tests |
+| M2 — substring instead of whole-token | the `"Statenville"` lock fails |
+| M3 — the prefix family dropped | 2 fail |
+| M4 — the suffix family dropped | 2 fail |
+
+M1 is the one that matters: making the guard greedy breaks tests that were in
+the file before this change — the strongest available evidence that the fix
+does not cost real fixes.
+
+**Locked at the call site as well as the helper.** A call-site mutation has now
+survived helper-level locks three times (REQ-ZOOMEYE-002, REQ-DOCPARSE-002,
+REQ-SEEKNOW-001), so `city_coords` carries its own test, and that test resolves
+the city FIRST so its negative assertions cannot pass by the table simply not
+matching.
+
+---
+
 ## REQ-SEEKNOW-001 — the filed premise was wrong, and refuting it found the real defect
 
 **The premise as filed.** *"see_know's `/search` truncation is silently

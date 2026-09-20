@@ -41,6 +41,18 @@
 pub fn city_coords(addr: &str) -> Option<(f64, f64)> {
     let trimmed = addr.trim();
     let lower = trimmed.to_lowercase();
+    // A REGION label must not earn the centroid of the city inside it. The
+    // table matches a tabulated name as a consecutive run of whole tokens, so
+    // "New York State" — tokens ["new","york","state"] — contains the run
+    // `new york` and would resolve to Manhattan, a precise-looking fix on the
+    // one place the string explicitly means to exclude. Same for "Upstate New
+    // York" and "Greater London".
+    //
+    // This is `place_grain::is_bare_country`'s defect one grain down, and the
+    // guard lives beside it for that reason (REQ-SOCIALLOC-002).
+    if crate::util::place_grain::negates_city_grain(trimmed) {
+        return None;
+    }
     if let Some(hit) = match_tabulated_city(&lower) {
         return Some(hit);
     }
@@ -746,5 +758,31 @@ mod geocode_precision_tests {
     fn new_south_wales_is_not_treated_as_foreign() {
         assert!(!mentions_non_au_country("sydney, new south wales"));
         assert!(mentions_non_au_country("cardiff, wales, uk"));
+    }
+
+    /// REQ-SOCIALLOC-002, locked at the REAL emission path.
+    ///
+    /// The predicate is verified in `place_grain`; this proves `city_coords`
+    /// actually consults it. A call-site mutation has survived every
+    /// helper-level lock three times now (REQ-ZOOMEYE-002, REQ-DOCPARSE-002,
+    /// REQ-SEEKNOW-001), so the caller gets its own.
+    #[test]
+    fn a_region_label_earns_no_city_centroid() {
+        // Control FIRST: the city itself resolves, or the assertions below
+        // would hold simply because nothing in this table matches.
+        let city = city_coords("New York").expect("the city must resolve");
+        assert!(
+            city_coords("New York, NY").is_some(),
+            "an address naming the city must still resolve"
+        );
+
+        for region in ["New York State", "Upstate New York", "new york state"] {
+            assert_eq!(
+                city_coords(region),
+                None,
+                "{region} names the region around the city, not the city — it must \
+                 not earn {city:?}"
+            );
+        }
     }
 }
