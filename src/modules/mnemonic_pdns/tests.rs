@@ -258,3 +258,58 @@ fn empty_response_yields_nothing() {
     assert!(build_entities(&[], "github.com", false, "s").is_empty());
     assert!(build_entities(&[], "140.82.114.3", true, "s").is_empty());
 }
+
+#[test]
+fn a_full_page_is_bounded_by_the_cap_and_a_short_page_is_not() {
+    // REQ-MNEMONIC-002. The module header promises this API returns "a *sample*
+    // — the most-relevant RESULT_LIMIT records, not the exhaustive set". That
+    // promise was kept per-entity and nowhere the coverage layer could read it.
+    assert!(
+        page_was_capped(RESULT_LIMIT as usize),
+        "a page returned exactly at the cap was bounded by the cap, not by the data"
+    );
+    assert!(
+        page_was_capped(RESULT_LIMIT as usize + 1),
+        "more than the cap is still capped"
+    );
+
+    // THE OVER-CORRECTION CONTROL. A provider that ran out of records before
+    // the cap did gave an exhaustive answer. Marking it incomplete would trade
+    // a silent truncation for a permanent false caveat on every small domain —
+    // and "fewer silent truncations" and "everything marked incomplete" look
+    // identical without this assertion.
+    assert!(
+        !page_was_capped(RESULT_LIMIT as usize - 1),
+        "a short page is exhaustive and must never be reported as truncated"
+    );
+    assert!(!page_was_capped(0), "an empty answer is not a truncated one");
+    assert!(!page_was_capped(1));
+}
+
+#[test]
+fn a_capped_page_says_the_total_is_unknown_rather_than_inventing_one() {
+    // The `count`/`metaData` siblings this envelope ignores have no semantics
+    // established anywhere in this repository, so the honest report is that the
+    // provider did not say how many exist — not a confidently wrong number.
+    let mut r = crate::core::module::ModuleResult::new();
+    r.mark_truncated(
+        RESULT_LIMIT as usize,
+        None,
+        &format!("the API's `limit={RESULT_LIMIT}` page, returned full"),
+    );
+    let reason = r.truncation.expect("a capped page declares itself truncated");
+    assert!(
+        reason.contains("did not report how many exist"),
+        "an unknown total must be stated as unknown: {reason}"
+    );
+    assert!(
+        reason.contains(&RESULT_LIMIT.to_string()),
+        "the operator needs the cap that bit: {reason}"
+    );
+    // Windowed to the numeric claim: " of " alone also matches the sentence's
+    // own "evidence of absence".
+    assert!(
+        !reason.contains(&format!("{RESULT_LIMIT} of ")),
+        "no invented 'N of M' when the provider reported no total: {reason}"
+    );
+}

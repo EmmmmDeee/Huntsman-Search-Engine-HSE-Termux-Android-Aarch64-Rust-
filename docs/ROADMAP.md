@@ -406,6 +406,14 @@ by looking for them rather than reading modules at random:**
    enum, re-read every predicate over it and ask whether the new case splits one
    of them in two.
 
+   A **promise a module makes about itself** is this shape too. `mnemonic_pdns`
+   documents, under the Operational Constitution, that its API returns a
+   *sample* and not the exhaustive set — and kept that promise per-entity and
+   nowhere a consumer could read it (REQ-MNEMONIC-002). Its rule: **when a
+   module's doc comment states a caveat, find the consumer that acts on it; a
+   caveat with no reader is a comment, not a contract.** Grep the honesty
+   language in a module header and ask what code enforces each claim.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other

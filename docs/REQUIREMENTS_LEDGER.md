@@ -14261,6 +14261,66 @@ mutation that could not reach its control (WIKIDATA-001), a harness that never
 built (TYPOSQUAT-001, AUBUSINESSID-001), and now a comparison whose two sides
 were equal because both were empty.
 
+## REQ-MNEMONIC-002 — the module's own honesty promise was kept per-entity and nowhere the coverage layer could read it
+
+**Requirement.** A provider that documents itself as returning a *sample* must
+report that bound where a consumer can act on it.
+
+**Defect.** `mnemonic_pdns`'s header states, under the Operational Constitution:
+
+> the API returns a *sample* — the most-relevant `RESULT_LIMIT` records, not the
+> exhaustive set
+
+It kept that promise per-entity (first/last-seen dates, observation count) and
+nowhere else. A domain capped at 100 records and a domain with exactly 100
+records to its name produced identical coverage, so absence of a passive-DNS
+edge read as evidence of absence either way. `PdnsResponse` models only `data`,
+explicitly discarding the `count`/`metaData` siblings.
+
+**Fix.** Declared through `ModuleResult::mark_truncated`
+(REQ-COVERAGE-001's mechanism), reaching `ProviderOutcome::Truncated`.
+
+**The signal is the page being FULL, not the discarded `count`.** That is a
+deliberate choice, not an oversight: the semantics of `count`/`metaData`
+(records in this page? matches overall?) are established nowhere in this
+repository, and a confidently wrong total is worse than an honest unknown. The
+unknown-total arm states in as many words that the provider did not report how
+many exist — which is exactly what is known here. A full page does not prove
+more records exist; it proves the answer was bounded by the cap rather than by
+the data, and that is the claim being made.
+
+The decision was extracted out of the network-bound `process` into a pure
+`page_was_capped` seam before it was locked.
+
+**Verification.** Falsified against five variants, no survivors:
+
+| Variant | Result |
+|---|---|
+| BASELINE (never marks truncated) | seam lock fails |
+| M1 **over-correction** — every page marked truncated | seam lock fails on its short-page control |
+| M2 off-by-one — a short page counts as capped | seam lock fails |
+| M3 the whitespace run reintroduced | 3 locks fail, incl. the dedicated guard |
+| M4 an unknown total rendered as a count | 2 locks fail |
+
+**A defect in REQ-COVERAGE-001's own output, caught here.** Both operator-facing
+sentences from `mark_truncated` carried a run of literal spaces — *"did not
+report how&nbsp;…&nbsp;many exist"*. They were written with `\`-continuations
+and `cargo fmt` rejoined them, leaving the indentation in as text. These strings
+ship to an operator through `report.json`, the dossier appendix and
+`/api/v1/scans/{id}/coverage`. Nothing would have caught it: the sentence still
+contained every word a `contains` check might look for, and a whitespace run is
+invisible in a diff of a long line. The guard is on the **shape** of the
+rendered sentence, not its wording.
+
+**Two assertions of mine were wrong before the code was.** Both searched for
+`" of "` to prove no count had been invented, and both matched the sentence's
+own closing phrase, *"evidence of absence"* — firing on prose rather than on the
+number they were about. This is the same error as REQ-CI-009's lock, which
+matched a warning's prose instead of the command it was checking. Window an
+assertion to the thing it is about.
+
+---
+
 ## REQ-COVERAGE-001 — `ProviderOutcome` had no "answered, but incompletely" state, so five modules each invented a private vocabulary for it that nothing read
 
 **Requirement.** A provider that returns part of its answer must be

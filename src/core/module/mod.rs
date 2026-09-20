@@ -548,10 +548,10 @@ impl ModuleResult {
     pub fn mark_truncated(&mut self, emitted: usize, total: Option<usize>, cause: &str) {
         self.truncation = Some(match total {
             Some(total) => format!(
-                "{emitted} of {total} retrieved — stopped by {cause}. The remainder were NOT                  retrieved, so absence of a finding here is not evidence of absence."
+                "{emitted} of {total} retrieved — stopped by {cause}. The remainder were NOT retrieved, so absence of a finding here is not evidence of absence."
             ),
             None => format!(
-                "{emitted} retrieved — stopped by {cause}, and the provider did not report how                  many exist. Absence of a finding here is not evidence of absence."
+                "{emitted} retrieved — stopped by {cause}, and the provider did not report how many exist. Absence of a finding here is not evidence of absence."
             ),
         });
     }
@@ -619,6 +619,68 @@ impl ModuleResult {
             return Err(e);
         }
         Ok(self)
+    }
+}
+
+#[cfg(test)]
+mod truncation_sentence_tests {
+    use super::ModuleResult;
+
+    /// Both arms of `mark_truncated` ship straight to an operator — into
+    /// `report.json`, the dossier appendix and `/api/v1/scans/{id}/coverage`.
+    ///
+    /// Regression: they were written with `\`-continuations across source
+    /// lines, and `cargo fmt` rejoined them leaving the indentation in as
+    /// LITERAL SPACES ("did not report how                  many exist").
+    /// Nothing else would have noticed — the string still contained every word
+    /// a `contains` check might look for, and the defect is invisible in a
+    /// diff of a long line. The guard is therefore on the shape of the rendered
+    /// sentence, not on its wording.
+    #[test]
+    fn neither_operator_facing_sentence_carries_a_whitespace_run() {
+        let mut known = ModuleResult::new();
+        known.mark_truncated(20, Some(213), "the page limit");
+        let mut unknown = ModuleResult::new();
+        unknown.mark_truncated(100, None, "the page limit");
+
+        for (label, r) in [("known total", known), ("unknown total", unknown)] {
+            let sentence = r.truncation.expect("mark_truncated always sets one");
+            assert!(
+                !sentence.contains("  "),
+                "{label}: a run of spaces reached the operator: {sentence:?}"
+            );
+            assert!(
+                !sentence.contains('\n') && !sentence.contains('\t'),
+                "{label}: the sentence is one line: {sentence:?}"
+            );
+        }
+    }
+
+    /// The known/unknown distinction is the reason this is not a
+    /// `truncated: bool`. If both arms rendered the same claim, the field would
+    /// have collapsed back into the boolean it replaced.
+    #[test]
+    fn a_known_total_is_stated_and_an_unknown_one_is_never_invented() {
+        let mut known = ModuleResult::new();
+        known.mark_truncated(20, Some(213), "the page limit");
+        let known = known.truncation.expect("set");
+        assert!(known.contains("20 of 213"), "{known}");
+
+        let mut unknown = ModuleResult::new();
+        unknown.mark_truncated(20, None, "the page limit");
+        let unknown = unknown.truncation.expect("set");
+        assert!(
+            unknown.contains("did not report how many exist"),
+            "{unknown}"
+        );
+        // Windowed to the NUMERIC claim. An earlier version of this assertion
+        // searched for " of " and matched the sentence's own closing phrase,
+        // "evidence of absence" — the assertion firing on prose rather than on
+        // the count it is about.
+        assert!(
+            !unknown.contains("20 of "),
+            "an unknown total must never be rendered as a count: {unknown}"
+        );
     }
 }
 

@@ -54,6 +54,19 @@ const PASSIVE_DNS: &str = "passive-dns";
 /// relevant* records, never a completeness claim — see the module honesty note.
 const RESULT_LIMIT: u32 = 100;
 
+/// Whether a `limit={RESULT_LIMIT}` request came back with a FULL page, which
+/// is the only completeness signal this envelope affords.
+///
+/// **Pure.** A full page does not prove more records exist — the corpus may
+/// hold exactly [`RESULT_LIMIT`] — but it does mean the answer was bounded by
+/// the cap rather than by the data, so completeness is unknown. That is the
+/// claim `mark_truncated(.., None, ..)` makes, and it is true in both cases.
+/// A SHORT page is the opposite: the provider ran out of records before the cap
+/// did, so the answer is exhaustive and must NOT be marked truncated.
+fn page_was_capped(returned: usize) -> bool {
+    returned >= RESULT_LIMIT as usize
+}
+
 pub struct MnemonicPdns;
 
 /// The `pdns/v3` envelope — only the `data` array is load-bearing (the
@@ -350,6 +363,27 @@ impl Module for MnemonicPdns {
             target_is_ip,
             &ctx.scan_id,
         ));
+        // The module header promises, under the Operational Constitution, that
+        // this API returns "a *sample* — the most-relevant RESULT_LIMIT records,
+        // not the exhaustive set". That promise was kept per-entity (first/last
+        // seen, observation count) and nowhere else: a domain capped at 100 and
+        // a domain with exactly 100 records to its name produced indistinguishable
+        // coverage, so absence of a passive-DNS edge read as evidence of absence
+        // either way (REQ-MNEMONIC-002).
+        //
+        // The page being FULL is the signal — deliberately, rather than parsing
+        // the `count`/`metaData` siblings this envelope ignores. Their exact
+        // semantics (records in this page? matches overall?) are not established
+        // anywhere in this repository, and a confidently wrong total is worse
+        // than an honest unknown: `mark_truncated`'s `None` arm says the provider
+        // did not report how many exist, which is exactly what is known here.
+        if page_was_capped(resp.data.len()) {
+            result.mark_truncated(
+                resp.data.len(),
+                None,
+                &format!("the API's `limit={RESULT_LIMIT}` page, returned full"),
+            );
+        }
         Ok(result)
     }
 }
