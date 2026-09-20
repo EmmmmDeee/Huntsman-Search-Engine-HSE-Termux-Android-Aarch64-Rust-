@@ -15986,3 +15986,62 @@ each emitter (`if let Some(err) = &data.error { debug!(…); return; }`).
 a "dataguard" message is a failure or a policy answer is not something this
 repository settles, and guessing it is how the filed blocker went wrong in the
 first place.
+
+---
+
+### REQ-KEYSKIP-002 — REQ-KEYSKIP-001 converted the ID and left the secret two lines below
+
+Censys authenticates with HTTP Basic `api_id:api_secret`. Its own header says
+both are required, and `process` sends them together as
+`basic_auth(api_id, Some(api_secret))`. REQ-KEYSKIP-001 established
+`Error::MissingKey` as the contract for a credential that is absent — because
+`Ok(ModuleResult::new())` makes dispatch record `ModuleDone { found: 0 }`, which
+coverage aggregates to `ProviderOutcome::CleanNegative`, documented as *"the
+only outcome that is a real negative"* and the one `settles_absence` trusts.
+That cycle converted roughly eight modules, `censys`'s `api_id` arm among them.
+
+The `api_secret` arm, **two lines below the converted one**, still read:
+
+```rust
+None => return Ok(ModuleResult::new()),
+```
+
+So a half-configured censys — ID present, secret absent — asserted that censys
+holds nothing on the subject, for a provider it had never contacted.
+
+#### The sweep, because one survivor is a claim about all the others
+
+Every credential lookup in `src/modules` whose miss arm returns an empty `Ok`
+was enumerated, not sampled. Four matched the pattern; three are correct:
+`dehashed` and `fofa` use `ctx.key(KEY_ENV)?`, which propagates `MissingKey`,
+and `github_user` is documented keyless ("Free, no key (uses the public REST
+API)") — its empty return is a profile that does not exist, a genuine clean
+negative. `censys`'s `SECRET_ENV` is the only survivor tree-wide.
+
+#### Reproduced, then locked
+
+On the unchanged module the lock fails with the defect in its own terms:
+`ModuleResult { entities: [], truncation: None }` — the empty result coverage
+reads as a real negative. `key_opt` resolves only from `ctx.keys`, so the test
+is deterministic with no environment to interfere.
+
+The control matters as much as the lock: with **neither** credential the error
+must still name the ID, because it is checked first. A repair that named the
+secret there, or that erred unconditionally, would pass the lock and fail the
+control — which is exactly what the mutation naming the wrong credential does.
+
+#### A surviving mutation, and why it is not bought off
+
+Making the secret arm error **even when the secret is present** passes every
+test. No unit test supplies both credentials, because with both present the
+module proceeds to a real HTTPS call to `api.censys.io`.
+
+It could be killed by asserting that the error is *not* `MissingKey` when both
+keys are set — the module would fail at the transport instead, and the
+assertion is about the variant, not the outcome, so it holds whether the call
+errors or succeeds. That was rejected: it makes a unit test contact a
+third-party API with a fabricated credential, and this repository marks
+live-API tests `#[ignore]` for that reason. The gap is pre-existing and
+network-bound rather than introduced here, and the mutation is total breakage —
+censys would never work at all — rather than the silent kind this cycle is
+about. Recorded instead of closed, and recorded rather than left unmentioned.

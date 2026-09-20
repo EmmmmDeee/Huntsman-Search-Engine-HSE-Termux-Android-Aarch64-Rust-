@@ -100,7 +100,16 @@ impl Module for Censys {
         };
         let api_secret = match ctx.key_opt(SECRET_ENV) {
             Some(v) => v,
-            None => return Ok(ModuleResult::new()),
+            // The SAME contract as the ID two lines up, for the same reason.
+            // REQ-KEYSKIP-001 converted that arm and left this one returning
+            // `Ok(empty)`, which dispatch records as `ModuleDone { found: 0 }`
+            // and coverage reads as a `CleanNegative` — "queried, holds nothing
+            // on this subject" — for a provider that was never contacted. Both
+            // credentials are required (this module's header says so, and line
+            // ~120 sends them together as `basic_auth(api_id, Some(api_secret))`),
+            // so a missing secret means censys was never asked, exactly as a
+            // missing ID does (REQ-KEYSKIP-002).
+            None => return Err(crate::core::error::Error::MissingKey(SECRET_ENV.into())),
         };
 
         let ip = target.value.trim();
