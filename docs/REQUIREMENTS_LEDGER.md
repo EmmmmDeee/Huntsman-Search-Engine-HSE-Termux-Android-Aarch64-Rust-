@@ -14147,3 +14147,116 @@ refused to report a pass. The harness now removes the override outright and
 asserts the text is gone. This is the second time that check has earned itself,
 and the first time it caught a defect in the *mutation* rather than in the
 environment.
+
+## REQ-CORRELATOR-005 — A dormant tag, and the question that decided it
+
+### The filing was wrong twice before it was right
+
+Filed as *"a tag that doesn't match the codebase's actual derivation-exclusion
+string."* There is no mismatched string, because there is no comparison: nothing
+in production reads `addr-derived` at all. A second framing — that the derived
+point self-corroborates — was also wrong: `address_to_coords_pass` deliberately
+**carries the source Address's own sources** onto the derived Coordinates
+(`enrich.rs`), so it invents no new source, and the real corroboration exclusion
+is a source-name list (`ENRICHMENT_ONLY_SOURCES`), a different mechanism
+entirely.
+
+What survived both corrections was one measurable question, and the task was
+left open on it rather than written up on a corrected premise:
+
+> does any rule that counts geo **entities** rather than sources give a
+> different answer if `addr-derived` points were excluded?
+
+### Measured, before anything was changed
+
+The measurement is three lines of fixture. AU-052 requires ≥3 `Coordinates`
+from ≥2 distinct sources; `au052_requires_three_points_and_two_sources` already
+pins that two points from two sources do not fire. Add exactly what
+`address_to_coords_pass` emits for the *same* geocoded address that produced the
+first point — a city centroid, carrying that Address's own `geocode` source,
+tagged `addr-derived`:
+
+```
+MEASUREMENT before=0 after=1
+MEASUREMENT firing: High — 3 coordinates from 2 sources bound a 3-vertex area
+(tight); confidence-weighted centroid -33.8703,151.2114, diameter 0.6 km —
+tight fix on a residence/base
+```
+
+Two observations — one geocoded address, one photo GPS — became a **High**
+"tight fix on a residence/base". A residence fix is among the most consequential
+things this engine asserts.
+
+Neither of the pass's two dedups suppresses it, and both are correct as written:
+`seen_coords` catches two Addresses yielding the same centroid, and
+`contains_key(candidate_uid)` catches an identical `lat,lon`. A city centroid is
+never byte-equal to a rooftop fix, so neither applies. The duplicate is not a
+duplicate *value*; it is a duplicate *observation*.
+
+So the answer is yes, and this is a correctness defect rather than the
+dormant-tag cleanup the task allowed for.
+
+### The rule was already telling the truth in its own output
+
+AU-053's baseline failure prints `Subject's established area is 3 sightings
+around …` — while gating on four **points**. The description had been counting
+one thing and the threshold another, in the same function, for as long as both
+have existed.
+
+### Implemented
+
+One seam, `independent_sighting_count`, read by both rules that gate on a point
+count (AU-052 `< 3`, AU-053 `< 4`):
+
+```rust
+fn independent_sighting_count(parsed: &[(&Entity, (f64, f64))]) -> usize
+```
+
+A derived point counts **only if it introduces a source no direct point
+provides**. That is per-SOURCE, not per-tag, and the distinction is the whole
+design: three modules that each report an address and none of which geocodes
+directly are three independent placements of the subject, and dropping them
+would discard real evidence rather than an artifact. Mutation M1 over-corrects
+exactly that way and fails the control.
+
+The geometry is deliberately untouched — hull, centroid and geometric median
+still see every admissible point. Only "is there enough here to assert a
+footprint at all" changes.
+
+`addr-derived` also becomes `hse_core::tags::ADDR_DERIVED`, beside the
+`NAME_DERIVED` it was always parallel to. That the sibling had a const and four
+production readers while this one had a bare string literal and none is most of
+the story of how it stayed dormant.
+
+### A control that asserted a firing which cannot happen
+
+The over-correction control was first written with `abn_lookup`,
+`social_location` and `email_header_geo` as the three derived-only sources. It
+failed — and the fix was not at fault. `person_anchored_coords` gates on
+`ANCHORING_GEO_SOURCES`, a positive allowlist, so a non-anchoring point is
+dropped **before** the sighting counter ever sees it. The control was vacuous in
+the opposite direction from the usual one: it asserted an outcome unreachable
+for a reason unrelated to the change.
+
+Rewritten with anchoring sources, and the reason recorded in the test. The
+counter only ever arbitrates among points that allowlist has already admitted —
+worth knowing for anyone who extends it.
+
+### Falsified
+
+| Variant | Result |
+|---|---|
+| **BASELINE** (counts points, not sightings) | both locks fail — the residence lock on the High firing, and AU-053 on `Subject's established area is 3 sightings around …` |
+| M1 every derived point dropped (**over-correction**) | **only** `a_derived_point_from_a_source_with_no_direct_fix_is_still_a_sighting` fails, `left: 0 right: 1` |
+| M2 `ADDR_DERIVED` never consulted | both locks fail — the tag is the discriminator, not decoration |
+| M3 fix reverted on AU-053 only | **only** the AU-053 lock fails — it must reach both rules |
+
+M3 **survived the first run**, and the fault was mine. The AU-053 test compared
+firings with and without the derived point on a fixture where neither fired, so
+it passed vacuously. Rebuilt so the derived point is what crosses the threshold,
+and carrying an explicit vacuity guard on the input set: a genuine fourth
+observation from a new source *must* make the same fixture fire, or the lock
+below it proves nothing. This is the third distinct vacuity this session — a
+mutation that could not reach its control (WIKIDATA-001), a harness that never
+built (TYPOSQUAT-001, AUBUSINESSID-001), and now a comparison whose two sides
+were equal because both were empty.

@@ -267,6 +267,15 @@ REQ-ABUSEIPDB-001 had to do. Correcting the consumer restored the signal
 (REQ-CLOUDSTORAGE-001). When several emitters are being taught to withhold the
 same tag, the reader is the thing that is wrong.
 
+And a tag can have **no** reader. `addr-derived` was written so a derived
+coordinate would be "distinguishable from a direct geocode", and nothing ever
+drew the distinction — while the rules that count geo points quietly treated a
+re-geocode of their own input as a third sighting (REQ-CORRELATOR-005). The
+cheap tell is the one that found it: a tag with a bare string literal and no
+`tags::` const, beside a sibling (`NAME_DERIVED`) that has both a const and
+production readers. An emitted signal nobody consumes is not neutral — it is a
+distinction the code believes it is drawing and is not.
+
 A module that reaches the network *around* the outbound chokepoint is outside
 every one of those disciplines at once — it cannot be rate-limit-aware, cannot
 trip or respect the breaker, and reports a wall as a fault. Auditing for that is
@@ -445,6 +454,25 @@ by looking for them rather than reading modules at random:**
    planted beside a real fix" could not have failed while the fallback could not
    fire at all. When a branch becomes reachable, re-read every test that
    mentions it: some were proving nothing.
+
+   **Vacuity has more than one shape, and the session has now hit four.** A
+   mutation that cannot REACH its control past an early return
+   (REQ-WIKIDATA-001). A harness that never BUILT and reported green because it
+   only grepped for failures (REQ-TYPOSQUAT-001, and again in
+   REQ-AUBUSINESSID-001 where the mutation itself would not compile). A FIXTURE
+   that does not survive the transform under test (REQ-KEYBASE-001's
+   whitespace), or that asserts an outcome unreachable for an unrelated reason
+   (REQ-CORRELATOR-005's control used sources a positive allowlist drops before
+   the code under test is reached). And a COMPARISON whose two sides are equal
+   because both are empty (REQ-CORRELATOR-005's first AU-053 test, where a
+   mutation survived because neither side fired).
+
+   The generalisation: **every check must separately establish that it could
+   have failed.** A check that can only report failure must prove it ran; a
+   check that compares two runs must prove at least one of them does something;
+   a fixture must be shown to reach the code it is aimed at. Put the guard on
+   the INPUT SET — "this fixture fires on a genuine fourth observation" — never
+   on the quantity under test, which is what the assertion is for.
 
 **T2 — Universal canonicalisation (priority).** One canonical form and one
 authority per concept, everywhere. Every remaining "same bug, sibling module"

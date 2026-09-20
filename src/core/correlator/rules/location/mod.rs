@@ -178,6 +178,46 @@ fn person_anchored_coords(entities: &[Entity]) -> Vec<(&Entity, (f64, f64))> {
         .collect()
 }
 
+/// How many of `parsed` are INDEPENDENT sightings — the count the rules that
+/// gate on a NUMBER OF POINTS must use, as distinct from how many points the
+/// footprint geometry then draws on.
+///
+/// A [`crate::core::tags::ADDR_DERIVED`] point is not an observation.
+/// `core::engine::enrich`'s address→coordinate pass geocodes an `Address` some
+/// module already reported and carries that Address's own sources onto the
+/// result, so when the same source also produced a direct fix the derived
+/// centroid is the SAME datum at coarser grain. Its value differs from the
+/// direct fix (a city centroid is not a rooftop), so neither of that pass's
+/// dedups suppresses it, and before this function existed AU-052 counted it as a
+/// third sighting: one geocoded address plus one photo GPS bound a 3-vertex
+/// "tight fix on a residence/base" at `High` from **two** observations
+/// (REQ-CORRELATOR-005).
+///
+/// A derived point whose source no direct point provides IS a sighting — three
+/// addresses from three modules, none of which geocoded directly, are three
+/// independent placements of the subject, and excluding them would discard real
+/// evidence rather than an artifact. So the test is per-source, not per-tag.
+///
+/// The geometry is deliberately left alone: the hull, centroid and median still
+/// see every admissible point. Only the "is there enough here to assert a
+/// footprint at all" threshold changes.
+fn independent_sighting_count(parsed: &[(&Entity, (f64, f64))]) -> usize {
+    let direct_sources: std::collections::HashSet<&str> = parsed
+        .iter()
+        .filter(|(e, _)| !e.has_tag(crate::core::tags::ADDR_DERIVED))
+        .flat_map(|(e, _)| e.corroborating_sources())
+        .collect();
+    parsed
+        .iter()
+        .filter(|(e, _)| {
+            !e.has_tag(crate::core::tags::ADDR_DERIVED)
+                || e.corroborating_sources()
+                    .iter()
+                    .any(|s| !direct_sources.contains(s))
+        })
+        .count()
+}
+
 /// AU `Coordinates` that geolocate a person's own **breach/stealer login IP**
 /// (their network connection) rather than infrastructure — parsed to `(lat, lon)`.
 ///
@@ -264,7 +304,9 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
 ) -> Vec<Correlation> {
     let entities = context.entities();
     let parsed = person_anchored_coords(entities);
-    if parsed.len() < 3 {
+    // Count SIGHTINGS, not points: a centroid geocoded from an address whose
+    // own source already supplied a direct fix is the same observation twice.
+    if independent_sighting_count(&parsed) < 3 {
         return Vec::new();
     }
     // Multi-source gate: the points must come from ≥2 distinct corroborating
@@ -343,8 +385,10 @@ pub(in crate::core::correlator) fn rule_au_053_out_of_area_location(
 
     let entities = context.entities();
     let mut parsed = person_anchored_coords(entities);
-    // Need an established area (≥3) plus at least one candidate outlier.
-    if parsed.len() < 4 {
+    // Need an established area (≥3) plus at least one candidate outlier — and
+    // the same sighting/point distinction AU-052 draws, so a derived centroid
+    // cannot manufacture the established area an "out of area" claim rests on.
+    if independent_sighting_count(&parsed) < 4 {
         return Vec::new();
     }
     if distinct_geo_sources(&parsed) < 2 {

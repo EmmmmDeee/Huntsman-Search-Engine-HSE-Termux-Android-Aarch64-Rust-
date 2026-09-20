@@ -243,6 +243,15 @@ pub const RECYCLED: &str = "recycled";
 /// a platform. Gates expansion so an unconfirmed name-permutation guess does not
 /// fan out as though it were a sighting.
 pub const NAME_DERIVED: &str = "name-derived";
+/// A `Coordinates` **geocoded from an Address another module already reported**
+/// (`core::engine::enrich`'s address→coordinate pass), rather than a direct
+/// sighting. The pass carries the Address's own sources onto the result, so the
+/// derived point is the SAME datum at coarser grain whenever that source also
+/// produced a direct fix — a second point, not a second observation. The rules
+/// that gate on a point COUNT read this to avoid treating it as one
+/// (`location::independent_sighting_count`). Deliberately parallel to
+/// [`NAME_DERIVED`], which plays the same role for name-permuted handles.
+pub const ADDR_DERIVED: &str = "addr-derived";
 
 // Document references
 /// A **document in a public corpus** the subject was searched in — a court
