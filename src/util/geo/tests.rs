@@ -299,15 +299,22 @@ use super::*;
     /// put BOTH components inside the square.
     #[test]
     fn plausible_provider_coord_keeps_real_places_on_the_equator_and_meridian() {
-        // (name, lat, lon) — every one a real, inhabited place.
+        // (name, lat, lon). Each is a real place on land, externally checked
+        // against public sources rather than recalled — the first draft of this
+        // list put one entry in open water in the English Channel and another
+        // at a longitude where the equator is in the Gulf of Tomini. Note that
+        // three of these name a MARKER, not a town centre: the equator monument
+        // at Pontianak sits at latitude 0 while the city centre is at 0.0206°S,
+        // and the Nanyuki equator sign likewise, so naming the town would claim
+        // something these coordinates do not carry (REQ-GEOGATE-001).
         let places: &[(&str, f64, f64)] = &[
             ("Royal Observatory, Greenwich", 51.4779, -0.0015),
             ("Peacehaven, England", 50.7930, -0.0010),
             ("Villers-sur-Mer, Calvados, France", 49.3236, -0.0022),
-            ("Gironde, France", 45.0000, -0.0040),
-            ("Central Sulawesi, Indonesia", 0.0050, 120.0000),
-            ("Pontianak, Indonesia", 0.0000, 109.3333),
-            ("Nanyuki, Kenya", 0.0000, 37.0730),
+            ("Puynormand, Gironde, France", 45.0000, -0.0040),
+            ("Tugu Khatulistiwa, Parigi Moutong", 0.0006, 120.0947),
+            ("Equator Monument, Pontianak", 0.0000, 109.3333),
+            ("Equator sign, Nanyuki, Kenya", 0.0000, 37.0730),
             ("Tema Junction, Ghana", 5.6300, 0.0000),
         ];
         // Vacuity guard: the sweep must actually sweep something, and every

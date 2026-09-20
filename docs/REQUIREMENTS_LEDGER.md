@@ -14990,10 +14990,10 @@ prime meridian. Thirteen modules stand behind that gate (`censys`,
 | `51.4779, -0.0015` | the Royal Observatory, Greenwich |
 | `50.7930, -0.0010` | Peacehaven, England |
 | `49.3236, -0.0022` | Villers-sur-Mer, Calvados, France |
-| `45.0000, -0.0040` | the Gironde, France |
-| `0.0050, 120.0000` | Central Sulawesi, Indonesia |
-| `0.0000, 109.3333` | Pontianak, Indonesia |
-| `0.0000,  37.0730` | Nanyuki, Kenya |
+| `45.0000, -0.0040` | Puynormand, Gironde, France |
+| `0.0006, 120.0947` | Tugu Khatulistiwa, Parigi Moutong, Sulawesi |
+| `0.0000, 109.3333` | the Equator Monument, Pontianak |
+| `0.0000,  37.0730` | the equator sign at Nanyuki, Kenya |
 | `5.6300,   0.0000` | Tema Junction, Ghana |
 
 The codebase contradicted itself about the same coordinate: `is_valid_coords`'s
@@ -15090,6 +15090,41 @@ points far outside any plausible band. Nothing in the tree pinned the width. The
 control added for it asserts the constant numerically **and** behaviourally, the
 behavioural half stated as a literal `0.02` rather than `2.0 * NULL_ISLAND_BAND`,
 which would have tracked a widened band and asserted nothing.
+
+#### The place names were re-verified externally, and most of them were wrong
+
+The coordinates above decide nothing on their own — the lock's *logic* needs
+only that each point has exactly one component inside the band, which its
+vacuity guard checks mechanically. But the lock and this entry both **name**
+them, and a name is a claim.
+
+Re-checked against public sources (a channel with lineage genuinely independent
+of this repository, unlike the ledger-versus-source-comment agreement above,
+which shares an author): **of nine coordinates written from recall, five needed
+correction.**
+
+* `50.0400, 0.0050` "Villers-Bocage, Somme" — Villers-Bocage is at `2.31°E`;
+  that point is open water in the English Channel. Caught before the first
+  commit, replaced with Villers-sur-Mer, Calvados (a real meridian town).
+* `0.0050, 120.0000` "Central Sulawesi" — at `120.0°E` the equator is at or
+  near the Gulf of Tomini, and "land" could not be supported. Replaced with the
+  **Tugu Khatulistiwa** equator monument at Siney, Parigi Moutong —
+  `0.0006205, 120.0946626`, a documented land point.
+* `0.0000, 109.3333` "Pontianak" and `0.0000, 37.0730` "Nanyuki" — the
+  coordinates are the **equator markers** and are correct, but both town
+  centres lie *outside* the band (`0.0206°S` and `0.017°N`), so naming the town
+  claimed something the coordinate does not carry. Relabelled to the marker.
+* `45.0000, -0.0040` "Gironde" — correct, sharpened to the commune that
+  actually holds the 45°N 0°E confluence, Puynormand.
+
+Greenwich, Peacehaven, Villers-sur-Mer and Tema checked out as written.
+
+The rule this establishes: **model-recalled geography is HYPOTHESIZED, never
+VERIFIED, however incidental it looks.** These were "just comments" in a test
+and a ledger — they changed no behaviour, every mutation result above is
+unaffected, and the gate was 19/19 with the wrong names in place. That is
+exactly why they would have survived indefinitely. A claim that nothing checks
+is a claim nothing can correct.
 
 #### Residual, recorded rather than dropped
 
