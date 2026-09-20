@@ -15343,3 +15343,74 @@ will actually need. It was set from observed usage (~6 GiB for a from-scratch
 run with incremental off) with headroom, and it is overridable. A host whose
 volume is much smaller will trip it spuriously; that is the intended direction
 of the error, since the alternative is the misleading failure above.
+
+### REQ-OPENMETEO-001 — a missing coordinate is not a coordinate of zero
+
+`open_meteo_geo`'s `GeoResult` carried a struct-wide `#[serde(default)]` over
+two **bare** `f64` coordinates:
+
+```rust
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct GeoResult {
+    name: String,
+    latitude: f64,
+    longitude: f64,
+    elevation: Option<f64>,   // every enrichment field is already Option
+    ...
+}
+```
+
+The attribute is there for the enrichment fields, all of which are `Option` and
+would not need it. It also caught the coordinates, so a hit that simply **omits
+`latitude`** deserialized to `0.0` rather than failing — and `0.0` beside a real
+longitude passes `is_valid_coords` *correctly*, because the equator is a real
+place (REQ-GEOGATE-001). The row became a `Coordinates` entity at a latitude the
+provider never sent.
+
+Reproduced from the wire shape, not a struct literal — the defect **is** the
+deserialization step, so a hand-built `GeoResult` cannot reach it:
+
+```text
+REQ-OPENMETEO-001: a hit with NO latitude produced ["0.000000,151.209300"]
+— the missing component was defaulted to 0.0 and shipped as a position on the equator.
+```
+
+A real Sydney longitude welded to a fabricated equatorial latitude.
+
+Both components are now `Option<f64>` and a hit missing either is skipped, which
+is what every sibling geo module already does (`IpApiCoResp`, `FreeIpApiResp`,
+beaconDB's `Location`, mylnikov's data block, WiGLE's `Network`). The skip sits
+beside the validity check so it costs no `RESULT_LIMIT` budget, exactly as an
+invalid-coordinate row does not. `build_evidence` now takes the validated
+`lat`/`lon` as arguments rather than re-reading them: its own doc promises
+"every field guarded so an absent value is simply omitted, never emitted as a
+fabricated default", and re-reading was the one place left in that function that
+could have broken the promise.
+
+**Not caused by REQ-GEOGATE-001, and not fixed by it.** This module is a forward
+geocoder whose no-fix answer is an empty `results` array — out of band — so the
+weak `is_valid_coords` is the correct gate for it under the selection rule
+REQ-GEOGATE-001 installed, and it is correctly absent from `COARSE_PROVIDERS`.
+It sat on `is_valid_coords` before and after; the defect is purely the serde
+shape. Found while sweeping the blast radius of that cycle and deliberately held
+back from its commit rather than swept in.
+
+### Falsified
+
+| Mutation | Result |
+|---|---|
+| M2 reject on a **zero** component instead of an **absent** one — *the wrong fix* | `an_explicit_zero_latitude_is_a_real_equatorial_fix_and_is_kept` |
+| M3 `continue` → `break` (a skipped row ends the loop) | the cap lock |
+| M4 destructure order swapped (`lat`/`lon`) | the cap lock, the zero-latitude control **and four pre-existing tests** |
+| M5 guard removed, `unwrap_or(0.0)` restored | the missing-latitude lock + the cap lock |
+
+**M2 is the load-bearing one.** The obvious fix — "drop any row with a zero
+component" — passes the missing-latitude lock and is *wrong*: it would
+re-introduce, inside this module, precisely the cross-shaped rejection
+REQ-GEOGATE-001 had just removed from the coarse-provider gate. The control
+exists to make that failure loud, and it does.
+
+**M4 is the strongest signal available**, because it breaks four tests that
+predate this cycle: an over-correction caught by assertions written by someone
+who was not thinking about this defect at all.

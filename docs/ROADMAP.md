@@ -506,6 +506,15 @@ by looking for them rather than reading modules at random:**
    pinning the wrong shape used coordinates that are real inhabited places as
    their examples of what must be discarded.
 
+   **`#[serde(default)]` on a struct is a decision about every field, including
+   the ones you were not thinking about.** `open_meteo_geo` applied it for a
+   dozen optional enrichment fields that were already `Option`, and it silently
+   also covered the two bare `f64` coordinates — so an omitted latitude became
+   `0.0` and shipped as an equatorial fix (REQ-OPENMETEO-001). Its rule: **when
+   a container-level serde attribute is added for one group of fields, list the
+   fields it ALSO reaches** — particularly any non-`Option` primitive, where the
+   default is indistinguishable from a real value.
+
    **A fix is only as permanent as its least-locked call site.**
    REQ-WIGLE-001 applied the band gate to three sites and locked one; two could
    be reverted with all 52 of the module's tests still green (REQ-GEOGATE-001).
