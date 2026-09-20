@@ -15286,6 +15286,38 @@ whole point is that `deps/` grows after the preflight has already passed.
 C3 and C4 bracket the threshold from both sides, because a note that never
 fires is as useless as one that always fires.
 
+#### Why the export is scoped to this script, and why `incremental/` is not empty
+
+`CARGO_INCREMENTAL=0` is exported inside `scripts/gate.sh`, **not** placed in
+`.cargo/config.toml`, and that is the point rather than an oversight. A
+developer's edit-compile loop genuinely benefits from incremental state; the
+gate — run repeatedly, full-verification, never reusing it — does not. A
+repo-wide setting would remove the benefit from the one place it exists to fix
+a problem that place does not have.
+
+The consequence is worth stating, because it is the first thing a future reader
+will cite to claim the fix failed. **`target/debug/incremental` is not empty
+after a gate run.** During the verification run of the corrected script it sat
+at 1.1 GiB the whole time. That is not the gate: the directory was *static* —
+0 KiB growth over 25 s of active compilation — and its subdirectories
+(`doc_drift-*`, `architecture_audit-*`) carried mtimes from before the run
+started. It was written by bare `cargo test` invocations from an interactive
+shell, outside the script and so without the export. Exactly as intended.
+
+The magnitudes settle which term mattered: ~1.1 GiB from a session's worth of
+ad-hoc commands, against **7.6 GiB from a single gate run**.
+
+(I made this misreading myself while verifying the fix, and it cost a check to
+disprove. Hence the note.)
+
+#### The recalibrated floor, observed
+
+The verification run of the corrected script finished at 5.6 GiB free, having
+consumed only ~200 MiB across the ten stages that were measured (5 893 → 5 683
+MiB) — with incremental off and `deps/` warm. Against ~6.4 GiB for the earlier
+cold run, that is the back-to-back case the 4 GiB floor was lowered to permit,
+now measured rather than argued.
+
 #### Wall-time was measured, not assumed
 
 Disabling incremental could have traded a disk problem for a latency problem,
