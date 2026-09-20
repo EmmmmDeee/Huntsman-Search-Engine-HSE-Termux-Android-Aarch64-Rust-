@@ -2913,3 +2913,85 @@ async fn a_recovered_scan_keeps_its_geospatial_enrichment() {
         "the enrichment must have run on THIS fix, not be a stale default"
     );
 }
+
+// ── REQ-ENGINE-002 groundwork: the cross-correlation gate's safety property ──
+
+/// A paid, high-value-only module — the `oathnet_pro` shape. On an expansion
+/// target it may fire only once the target has reached
+/// `CROSS_CORRELATION_MIN_SOURCES` (2) distinct evidence sources.
+struct HighValueGated {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl Module for HighValueGated {
+    fn name(&self) -> &'static str {
+        "zz_high_value"
+    }
+    fn priority(&self) -> u8 {
+        119
+    }
+    fn cost(&self) -> huntsman_search_engine::core::module::ModuleCost {
+        huntsman_search_engine::core::module::ModuleCost::Paid
+    }
+    fn is_high_value_only(&self) -> bool {
+        true
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Username)
+    }
+    async fn process(&self, _t: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(ModuleResult::new())
+    }
+}
+
+/// The cross-correlation gate holds at the ENGINE BOUNDARY: a high-value-only
+/// module must not fire on an expansion target carrying a single distinct
+/// evidence source. That gate exists to stop a low-specificity discovered
+/// entity triggering paid fan-out — on a live scan, a `name=` seed pulled 172
+/// unrelated banking breach records that buried the real findings.
+///
+/// The property was enforced only by unit tests on `module_skip_reason`; this
+/// asserts it through a real `ScanEngine` run, which is the layer that actually
+/// spends the money.
+///
+/// It is also the safety half of REQ-ENGINE-002 (the source-count gate reads a
+/// snapshot taken before the round that would satisfy it). The repair for that
+/// must re-evaluate the gate, not bypass it — and this is the assertion that
+/// tells those two apart. Landed FIRST, and green, so it is a control rather
+/// than something written to fit a change already made.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_uncorroborated_target_never_reaches_the_high_value_module() {
+    use std::sync::atomic::Ordering;
+
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (engine, _store, sid, target, ctx) = setup(
+        vec![
+            Arc::new(LanPairModule),
+            Arc::new(HighValueGated {
+                calls: calls.clone(),
+            }),
+        ],
+        "engine002-safety",
+        TargetKind::Email,
+        "host@contoso.com",
+    );
+    // depth=1: the seed round emits a Username; expansion round 1 dispatches
+    // against it with exactly one distinct evidence source on it.
+    let opts = ScanOptions {
+        depth: 1,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    engine.run(scan, target, ctx).await.unwrap();
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "a high-value-only module fired on an expansion target with only ONE \
+         distinct evidence source. The cross-correlation gate exists to stop \
+         exactly this: a low-specificity discovered entity triggering paid \
+         fan-out."
+    );
+}
