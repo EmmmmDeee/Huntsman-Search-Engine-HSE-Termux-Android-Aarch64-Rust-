@@ -96,9 +96,9 @@ fn fofa_filter_leaves_an_ordinary_value_unescaped() {
 #[test]
 fn build_entities_emits_ip_domain_from_results() {
     let resp = FofaResp {
-        error: false,
+        error: Some(false),
         errmsg: None,
-        results: vec![FofaResult {
+        results: Some(vec![FofaResult {
             host: "1.2.3.4:80".to_string(),
             ip: "1.2.3.4".to_string(),
             port: 80,
@@ -106,10 +106,10 @@ fn build_entities_emits_ip_domain_from_results() {
             title: "Example Site".to_string(),
             domain: "example.com".to_string(),
             os: "Linux".to_string(),
-        }],
+        }]),
     };
 
-    let result = build_entities(&resp, "test-scan");
+    let result = build_entities(resp.results.as_deref().unwrap_or_default(), "test-scan");
     assert!(
         result.entities.len() >= 2,
         "should emit IP and domain entities"
@@ -136,9 +136,9 @@ fn build_entities_dedups_an_expanded_and_a_compressed_ipv6_spelling() {
     // Public DNS) is used, not an RFC 3849 documentation one, purely for
     // realism.
     let resp = FofaResp {
-        error: false,
+        error: Some(false),
         errmsg: None,
-        results: vec![
+        results: Some(vec![
             FofaResult {
                 host: "[2001:4860:4860::8888]:80".to_string(),
                 ip: "2001:4860:4860:0000:0000:0000:0000:8888".to_string(),
@@ -157,9 +157,9 @@ fn build_entities_dedups_an_expanded_and_a_compressed_ipv6_spelling() {
                 domain: String::new(),
                 os: String::new(),
             },
-        ],
+        ]),
     };
-    let result = build_entities(&resp, "test-scan");
+    let result = build_entities(resp.results.as_deref().unwrap_or_default(), "test-scan");
     let ips: Vec<&Entity> = result
         .entities
         .iter()
@@ -181,9 +181,9 @@ fn build_entities_aggregates_multiple_ports_on_one_host_into_one_ip_entity() {
     // own doc comment claims ("attached as evidence attributes on THE IP
     // entity"). The same host's repeated domain must also fold to one entity.
     let resp = FofaResp {
-        error: false,
+        error: Some(false),
         errmsg: None,
-        results: vec![
+        results: Some(vec![
             FofaResult {
                 host: "1.2.3.4:80".to_string(),
                 ip: "1.2.3.4".to_string(),
@@ -211,10 +211,10 @@ fn build_entities_aggregates_multiple_ports_on_one_host_into_one_ip_entity() {
                 domain: "example.com".to_string(),
                 os: "Linux".to_string(),
             },
-        ],
+        ]),
     };
 
-    let result = build_entities(&resp, "test-scan");
+    let result = build_entities(resp.results.as_deref().unwrap_or_default(), "test-scan");
     let ips: Vec<&Entity> = result
         .entities
         .iter()
@@ -275,9 +275,9 @@ fn produces_lists_exactly_the_kinds_build_entities_emits() {
     // Bidirectional: every kind a fully-populated result actually emits must be
     // covered by produces(), so the two can never drift apart again.
     let resp = FofaResp {
-        error: false,
+        error: Some(false),
         errmsg: None,
-        results: vec![FofaResult {
+        results: Some(vec![FofaResult {
             host: "1.2.3.4:443".to_string(),
             ip: "1.2.3.4".to_string(),
             port: 443,
@@ -285,9 +285,9 @@ fn produces_lists_exactly_the_kinds_build_entities_emits() {
             title: "Example".to_string(),
             domain: "example.com".to_string(),
             os: "Linux".to_string(),
-        }],
+        }]),
     };
-    for e in &build_entities(&resp, "s").entities {
+    for e in &build_entities(resp.results.as_deref().unwrap_or_default(), "s").entities {
         assert!(
             declared.contains(&e.kind),
             "build_entities emitted {:?}, which produces() {declared:?} does not list",
@@ -299,12 +299,12 @@ fn produces_lists_exactly_the_kinds_build_entities_emits() {
 #[test]
 fn build_entities_skips_empty_results() {
     let resp = FofaResp {
-        error: false,
+        error: Some(false),
         errmsg: None,
-        results: vec![],
+        results: Some(vec![]),
     };
 
-    let result = build_entities(&resp, "test-scan");
+    let result = build_entities(resp.results.as_deref().unwrap_or_default(), "test-scan");
     assert!(
         result.entities.is_empty(),
         "empty results should produce no entities"
@@ -314,12 +314,12 @@ fn build_entities_skips_empty_results() {
 #[test]
 fn build_entities_handles_error_response() {
     let resp = FofaResp {
-        error: true,
+        error: Some(true),
         errmsg: Some("Invalid query".to_string()),
-        results: vec![],
+        results: Some(vec![]),
     };
 
-    let result = build_entities(&resp, "test-scan");
+    let result = build_entities(resp.results.as_deref().unwrap_or_default(), "test-scan");
     assert!(
         result.entities.is_empty(),
         "error response should produce no entities"
@@ -332,25 +332,220 @@ fn an_error_envelope_is_a_failure_and_a_key_shaped_one_is_flagged_for_the_pool()
     // dead key / unpaid plan / exhausted quota and used to collapse to a clean
     // empty result while the key pool never learnt about it.
     let dead_key = FofaResp {
-        error: true,
+        error: Some(true),
         errmsg: Some(
             "[820001] Insufficient credits: the account's F-coin balance is exhausted".to_string(),
         ),
-        results: vec![],
+        results: Some(vec![]),
     };
-    let (msg, key_shaped) = envelope_failure(&dead_key).expect("an envelope");
+    let BodyVerdict::Envelope { msg, key_shaped } = classify(&dead_key) else {
+        panic!("error:true is an envelope");
+    };
     assert!(msg.contains("Insufficient credits") && key_shaped);
     let bad_query = FofaResp {
-        error: true,
+        error: Some(true),
         errmsg: Some("[820004] query syntax error".to_string()),
-        results: vec![],
+        results: Some(vec![]),
     };
-    let (msg, key_shaped) = envelope_failure(&bad_query).expect("an envelope");
+    let BodyVerdict::Envelope { msg, key_shaped } = classify(&bad_query) else {
+        panic!("error:true is an envelope");
+    };
     assert!(msg.contains("syntax") && !key_shaped);
     let ok = FofaResp {
-        error: false,
+        error: Some(false),
         errmsg: None,
-        results: vec![],
+        results: Some(vec![]),
     };
-    assert!(envelope_failure(&ok).is_none());
+    assert!(matches!(classify(&ok), BodyVerdict::Searchable(_)));
+}
+
+// ── REQ-FOFA-001: a 200 body this module cannot interpret ───────────────────
+//
+// Every construction above sets `error` explicitly, which is exactly why the
+// defect survived: building the struct CANNOT express an ABSENT key. These
+// deserialize from JSON text, which is the only way to reach the case.
+//
+// Mirrors `chain_intel`'s REQ-CHAININTEL-001 pair, including — and especially —
+// its over-correction control: "fail closed" is only a fix if a genuine
+// zero-result answer still succeeds. Otherwise it is "fail always".
+
+/// LOCK. A 200 body of valid JSON carrying neither the `error` flag nor a
+/// `results` array is not a FOFA search response. Before this, it decoded to
+/// `error: false, results: []` and was reported as a successful search that
+/// found nothing — a provider failure laundered into absence of evidence, which
+/// is the `ProviderOutcome` doctrine's central prohibition.
+#[test]
+fn a_body_with_neither_error_nor_results_is_refused() {
+    for raw in [
+        "{}",
+        r#"{"message":"rate limit exceeded"}"#,
+        r#"{"errmsg":"[820001] Insufficient credits"}"#,
+        r#"{"code":429,"detail":"slow down"}"#,
+    ] {
+        let body: FofaResp = serde_json::from_str(raw).unwrap_or_else(|e| {
+            panic!("a bare JSON object decodes via serde(default): {raw} — {e}")
+        });
+        assert!(body.error.is_none(), "no error flag in {raw}");
+        assert!(body.results.is_none(), "no results array in {raw}");
+        assert!(
+            matches!(classify(&body), BodyVerdict::Uninterpretable),
+            "{raw} carries nothing this module can read, so it must be refused — \
+             not reported as a search that found nothing"
+        );
+    }
+}
+
+/// CONTROL, and the one that matters more than the lock. A REAL FOFA answer
+/// with zero hits must stay a successful empty search. A repair that turned
+/// honest "nothing indexed" into a module error would be worse than the
+/// fail-open it replaces: it would take a working provider offline via the
+/// circuit breaker.
+#[test]
+fn a_genuine_empty_search_is_not_refused() {
+    let body: FofaResp =
+        serde_json::from_str(r#"{"error":false,"results":[]}"#).expect("a real empty answer");
+    assert!(
+        matches!(classify(&body), BodyVerdict::Searchable(_)),
+        "an explicit error:false with an empty results array is a real answer, \
+         not an envelope and not uninterpretable"
+    );
+    assert!(
+        build_entities(body.results.as_deref().unwrap_or_default(), "test-scan")
+            .entities
+            .is_empty(),
+        "and it yields no entities, without erroring"
+    );
+}
+
+/// CONTROL, and the reason the guard reads TWO fields rather than just `error`.
+/// This module's header documents no literal response shape, so nothing here
+/// establishes that a successful FOFA response carries the `error` flag. If it
+/// does not, refusing on a missing `error` alone would break every real search.
+/// A body with `results` and no flag is still a search.
+///
+/// Mutating `classify` to read `error` alone — or joining the two with `||`
+/// instead of `&&` — fails HERE and nowhere else.
+#[test]
+fn a_success_body_without_the_error_flag_is_still_a_search() {
+    let body: FofaResp = serde_json::from_str(
+        r#"{"results":[{"host":"1.2.3.4:80","ip":"1.2.3.4","port":80,
+             "protocol":"http","title":"nginx","domain":"example.com","os":"linux"}]}"#,
+    )
+    .expect("a results-only body");
+    assert!(
+        body.error.is_none(),
+        "this body deliberately omits the flag"
+    );
+    assert!(
+        matches!(classify(&body), BodyVerdict::Searchable(_)),
+        "a body carrying results is interpretable whether or not it flags error"
+    );
+    let result = build_entities(body.results.as_deref().unwrap_or_default(), "test-scan");
+    assert!(
+        result.entities.iter().any(|e| e.value == "1.2.3.4"),
+        "the hit must still be emitted — entities: {:?}",
+        result.entities.iter().map(|e| &e.value).collect::<Vec<_>>()
+    );
+}
+
+/// PRE-REGISTERED PREDICTION, recorded before it was run and kept as a test
+/// rather than checked and discarded: `#[serde(default)]` supplies a default
+/// for an ABSENT key but does not suppress a type mismatch on a PRESENT one.
+///
+/// It matters because it bounds what `classify` has to catch. A JSON
+/// error body that reuses the key `error` with a string value — a shape
+/// `chain_intel`'s own fixtures use (`{"error":"rate limited"}`) — is already a
+/// decode failure here, handled by `util::http::json_body_error`. The reachable
+/// case is narrower than that precedent's: bodies with no `error` key at all.
+/// If this ever starts passing, the guard above is under-specified.
+#[test]
+fn a_non_boolean_error_value_is_already_a_decode_failure() {
+    // Turbofish, not an annotation: `use super::*` brings the crate's own
+    // `Result<T>` alias into scope, which takes one parameter.
+    assert!(
+        serde_json::from_str::<FofaResp>(r#"{"error":"rate limited"}"#).is_err(),
+        "a string in a bool field must fail to decode, not default to false"
+    );
+}
+
+/// LOCK for the key-rotation path, and the one that catches a sentinel reading
+/// `results` alone. An error envelope as it ACTUALLY ARRIVES carries no
+/// `results` key at all — only `error` and `errmsg`. Every other envelope test
+/// in this file constructs `FofaResp` directly with `results` present, which
+/// cannot express that, so all of them pass even when a mutated `classify`
+/// sends this body to `Uninterpretable`.
+///
+/// The cost of getting it wrong is not cosmetic: an envelope routed to
+/// `Uninterpretable` never reaches `note_keyed_error`, so a dead key, an unpaid
+/// plan or an exhausted quota stops rotating out of the pool and every later
+/// scan keeps spending on the same dead credential.
+#[test]
+fn an_error_envelope_arrives_without_a_results_key_and_still_reaches_the_pool() {
+    let body: FofaResp =
+        serde_json::from_str(r#"{"error":true,"errmsg":"[820001] Insufficient credits: the account's F-coin balance is exhausted"}"#)
+            .expect("an error envelope decodes");
+    assert!(
+        body.results.is_none(),
+        "the fixture must omit `results` — that absence is the whole point"
+    );
+    let BodyVerdict::Envelope { msg, key_shaped } = classify(&body) else {
+        panic!(
+            "an error:true body with no `results` is an ENVELOPE, not an \
+             uninterpretable body — routing it to Uninterpretable silently \
+             disables key rotation"
+        );
+    };
+    assert!(
+        msg.contains("F-coin"),
+        "the provider's own words survive: {msg}"
+    );
+    assert!(
+        key_shaped,
+        "a credit-exhaustion message must reach the key pool"
+    );
+}
+
+/// LOCK for the WIRING, not the classification. `classify` being right is
+/// useless if the caller ignores it, and until `handle_body` was extracted from
+/// `process` nothing could observe the difference: swapping the
+/// `Uninterpretable` arm for an `Ok` compiled, passed every test in this file,
+/// and silently restored the defect.
+///
+/// `process` itself is not reachable from a unit test — it needs a socket, and
+/// its endpoint is a literal — so the decision was moved to where it can be
+/// called directly rather than the test being built up to reach it
+/// (REQ-CI-010's rule, applied to REQ-FOFA-001).
+#[test]
+fn the_uninterpretable_verdict_actually_reaches_the_caller_as_an_error() {
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = ModuleContext {
+        scan_id: "test-scan".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+
+    let refused: FofaResp = serde_json::from_str(r#"{"message":"rate limit exceeded"}"#)
+        .expect("a bare JSON object decodes");
+    let err = handle_body(&refused, "k", &ctx)
+        .expect_err("an uninterpretable body must reach the caller as an Err");
+    assert!(
+        err.to_string().contains("not a FOFA search response"),
+        "and it must say what arrived, so a wrong firing is diagnosable: {err}"
+    );
+
+    // Over-correction control on the SAME seam: a real answer still succeeds,
+    // so the wiring refuses the uninterpretable case specifically rather than
+    // erroring on everything.
+    let real: FofaResp = serde_json::from_str(
+        r#"{"error":false,"results":[{"host":"1.2.3.4:80","ip":"1.2.3.4","port":80,
+             "protocol":"http","title":"nginx","domain":"example.com","os":"linux"}]}"#,
+    )
+    .expect("a real answer decodes");
+    let out = handle_body(&real, "k", &ctx).expect("a real answer must not error");
+    assert!(
+        out.entities.iter().any(|e| e.value == "1.2.3.4"),
+        "and it yields its hit"
+    );
 }

@@ -15626,3 +15626,200 @@ exists to make that failure loud, and it does.
 **M4 is the strongest signal available**, because it breaks four tests that
 predate this cycle: an over-correction caught by assertions written by someone
 who was not thinking about this defect at all.
+
+---
+
+### REQ-FOFA-001 — the rule REQ-OPENMETEO-001 left behind flags nine sites and seven are correct
+
+REQ-OPENMETEO-001 ended with a rule: *when a container-level serde attribute is
+added for one group of fields, list the fields it ALSO reaches — particularly
+any non-`Option` primitive, where the default is indistinguishable from a real
+value.* That rule was applied here as a sweep rather than left as advice, and
+the sweep is what corrected it.
+
+#### The population, and what reading it did to the rule
+
+Every struct in `src/` and `hse-core/src/` carrying a **container-level**
+`#[serde(default)]` over at least one bare non-`Option` field. Script-enumerated
+(nine), then each one READ at its use sites. Not a sample.
+
+Seven of the nine are correct by design. A rule that fires nine times and is
+right twice is a rule the next reader learns to ignore, so it is replaced:
+
+> A bare field under a container-level `default` is safe iff **either** (a) a
+> CONTAINER-LEVEL sentinel distinguishes "no response" from "a response of
+> zeros" — a sibling `Option` that a real response always carries — **or** (b)
+> EVERY use site guards the default before it becomes a claim. It is a defect
+> only when NEITHER holds.
+
+(a) and (b) are not interchangeable. (a) is the only option when the zeros are
+themselves meaningful data; (b) must be re-established at each new use site, but
+is the only option when the struct has no field a real response guarantees.
+
+| site | safe by | evidence |
+| --- | --- | --- |
+| `au_geo::ArcgisError` | (a) | `error: Option<ArcgisError>` at the container (REQ-AUGEO-001) |
+| `chain_intel::EsploraStats` | (a) | `chain_stats: Option<EsploraStats>` (REQ-CHAININTEL-001) |
+| `chain_intel::BlockcypherBalance` | (a) | `address: Option<String>`, the echoed query (REQ-CHAININTEL-001) |
+| `mnemonic_pdns::PdnsRecord` | (b) | `ymd_utc()` returns `None` for `<= 0`, so a zero timestamp emits no 1970 date; `times > 0`; `is_hostname("")` is false |
+| `europeana::EuResp` | (b) | default `false` → `if !body.success` errors. Fails CLOSED |
+| `leakcheck_public::PublicResp` | (b) | default `false` → clean-miss path, and it already treats `success:false` with no reason as unexpected |
+| `numverify::NvResp` | (b) | default `false` → `if !r.valid` returns empty. Fails CLOSED |
+| `fofa::FofaResp` | **NEITHER** | the defect below |
+| `open_meteo_geo::GeoResult` | **NEITHER** | `name: String` → `place_name: ""`; recorded under REQ-OPENMETEO-001, not fixed here |
+
+`chain_intel` deserves naming as the **exemplar**, because it was this cycle's
+first candidate on the strength of the grep: six bare `i64`/`u64` balance fields,
+where a fabricated zero is a financial claim an operator would act on. Reading it
+refuted that ranking. A genuinely dormant address returns a real `chain_stats`
+object full of zeros, so a zero *inside* is a genuine zero and per-leaf `Option`
+would be actively wrong. The sentinel belongs one level up, and REQ-CHAININTEL-001
+had already put it there. `fofa::FofaResult` — the row type, not the envelope —
+was checked for the same reason and is safe by (b): `port > 0`, and non-empty
+`ip`/`protocol`/`title`/`os`/`domain`.
+
+#### The defect
+
+`FofaResp::error` was a bare `bool` under the struct's `#[serde(default)]`, and
+`envelope_failure` opened `if !body.error { return None }`. Default `false`
+means "no error". So a 200 body that is valid JSON but not a FOFA envelope
+decoded to `error: false, results: []` and was handled as **a successful search
+with zero results** — an upstream failure laundered into absence of evidence,
+which is the `ProviderOutcome` doctrine's central prohibition and the one
+sentence the envelope handler's own comment forbids: *"every error envelope is
+the module's error — never 'FOFA has no indexed infrastructure for this host'".*
+No live-API access was needed to establish it; the contradiction is inside the
+file.
+
+Reproduced on the unchanged module before anything was changed: `{}`,
+`{"message":"rate limit exceeded"}` and `{"errmsg":"[820001] Insufficient
+credits"}` each decode with `error == false`, are not recognised as envelopes,
+and yield zero entities.
+
+#### What is NOT reachable — the premise narrowed twice while being checked
+
+- **An HTML WAF or challenge page.** `util::http::json_decode` performs no
+  content-type check, but `serde_json::from_str` fails on HTML and
+  `json_body_error` turns it into a typed `Error::BotChallenge` /
+  `Error::Module`. Already handled. (REQ-CHAININTEL-001's rationale lists "a WAF
+  page" among its cases; on this reading that part of it is overstated, for the
+  same reason. Its decision stands on the JSON-body cases, which are real.)
+- **A body carrying `"error"` with a non-boolean value**, e.g.
+  `{"error":"rate limited"}` — a shape `chain_intel`'s own fixtures use.
+  `#[serde(default)]` supplies a default for an ABSENT key but does not suppress
+  a type mismatch on a PRESENT one, so this is already a decode failure here.
+  This was written down as a prediction *before* it was run, and is kept as a
+  test rather than checked and discarded, because it is what bounds the guard:
+  if it ever starts passing, the guard is under-specified.
+
+Reachable: a 200 body of valid JSON with **no `error` key at all** — `{}`,
+`{"message":…}`, `{"code":429,…}`, or an `{"errmsg":…}` without the flag.
+
+#### The obvious fix is rejected, and that is the substance of this entry
+
+`error: Option<bool>` with fail-closed-on-`None` mirrors `chain_intel` and
+`au_geo` exactly, and it is **wrong here**. Those two have a sentinel a real
+response demonstrably echoes. `fofa/mod.rs`'s header documents no literal
+response shape — unlike `europeana` and `leakcheck_public`, which quote real
+JSON — so nothing in this repository establishes that a SUCCESSFUL FOFA response
+carries `error` at all. If it omits the flag on success, that fix breaks every
+real search: a fail-open traded for a fail-SHUT, which is worse. Precedent
+transfers only with the fact that made it safe.
+
+Adopted instead: `error` **and** `results` are both `Option`, and only a body
+carrying **neither** is refused — the weakest condition that still rejects `{}`.
+A success without the flag still searches; a present-but-empty `results` still
+reads as a genuine empty search.
+
+**Stated as an assumption, not a verified fact:** a FOFA search response carries
+at least one of `error` / `results`. **Residual risk, not hidden:** if FOFA can
+return a successful *empty* search carrying neither, this turns that into a
+module error. That direction is the safer one — a loud, named failure the
+circuit breaker and the operator both see, against a silent "no infrastructure
+found" that corrupts coverage — but it is a real trade, and the error names
+exactly which fields were absent so a wrong firing is diagnosable from one log
+line.
+
+#### The three outcomes are now one type
+
+The two booleans read in sequence became `BodyVerdict::{Uninterpretable,
+Envelope, Searchable}`, matched exhaustively in `process`. The third outcome had
+no representation at all, so it silently wore the first one's clothes — the
+shape REQ-SEEKNOW-001 named, where a loop's several exits share one return type
+and the difference is discarded. A fourth outcome now cannot be added without
+every caller being made to handle it.
+
+`Searchable` also CARRIES the rows, and `build_entities` takes only those rows,
+so the hits a response yields are reachable *through* the verdict and nowhere
+else: an arm that tried to emit entities for an uninterpretable body has nothing
+to emit them from.
+
+#### Falsification — and the two mutations that survived the first pass
+
+Reproduced on the baseline first, then seven mutations of the repair:
+
+| mutation | killed by |
+| --- | --- |
+| nothing is ever uninterpretable | `a_body_with_neither_error_nor_results_is_refused` |
+| sentinel reads the `error` flag alone | `a_success_body_without_the_error_flag_is_still_a_search` |
+| sentinel joins the two with `\|\|` | same, and the envelope lock |
+| sentinel reads `results` alone | `an_error_envelope_arrives_without_a_results_key_and_still_reaches_the_pool` |
+| the wiring swallows the `Uninterpretable` verdict | `the_uninterpretable_verdict_actually_reaches_the_caller_as_an_error` |
+| `error` reverted to a bare `bool` | the compiler (`E0308`) |
+| the wiring drops the key-pool notification | **NOTHING — see below** |
+
+**Two of these survived the first matrix**, and the first is the substance of
+this entry.
+
+**A sentinel reading `results` alone was indistinguishable on every input the
+first test set contained.** The body that separates them is an error envelope —
+`{"error":true,"errmsg":…}` — which on the wire carries **no `results` key**.
+Under that mutation an envelope becomes `Uninterpretable`, so it never reaches
+`note_keyed_error`, and **a dead key, an unpaid plan or an exhausted quota stops
+rotating out of the pool**: every later scan keeps spending on the same dead
+credential. All eight pre-existing envelope tests construct `FofaResp` directly
+with `results` present, so none of them can see it. That is the same trap this
+entry opens with — *constructing a struct cannot express an absent key* —
+noticed for `error` and then not applied to `results`. The new lock deserializes
+an envelope as it actually arrives.
+
+**The second survivor was the wiring**, and it was predicted: nothing could call
+`process`, which needs a socket and whose endpoint is a literal. Swapping the
+`Uninterpretable` arm for an `Ok` compiled and passed every test in the file.
+`chain_intel` locks its equivalent end-to-end only because `enrich_esplora`
+takes a base URL; widening this module's surface to inject one would be
+production code changed for a test. So REQ-CI-010's rule was applied instead —
+*when a test needs elaborate machinery to observe a simple property, extract the
+property instead of hardening the machinery* — and the whole 200-body decision
+moved out of `process` into `handle_body`, which a test calls directly with a
+constructed `ModuleContext` and no socket. `process` is left with one call that
+`handle_body` fully determines. The key-pool notification moved with it, on
+purpose: it is the point of the envelope arm, and back in `process` nothing
+could test it.
+
+#### Residual: one mutation is NOT killed, and it is not fixable here
+
+Deleting the `if key_shaped { note_keyed_error(…) }` call passes every test.
+This row was written into this table as "killed" *before* the matrix was run,
+and the run refuted it; the claim is corrected here rather than the mutation
+being dropped from the list.
+
+It is **pre-existing**, not a regression this cycle introduced: the same call
+sat unasserted in `process` before the extraction, which is what made it
+invisible. The classification half IS locked —
+`an_error_envelope_arrives_without_a_results_key_and_still_reaches_the_pool`
+asserts `key_shaped` is true for a real credit-exhaustion message, which is the
+input the arm acts on. What no test covers is the single `if` that acts on it.
+
+It is not closed here because the only observable effect runs through
+`ModuleContext::report_key_exhausted` → `key_pool::global_pool()` →
+`persist_off_thread`, and that path has **no test guard**: outside a tokio
+runtime it saves inline, so a `#[test]` asserting the notification would write
+to the operator's real `~/.huntsman/key_pool.json`. A test with that side effect
+is worse than the gap it closes.
+
+The generalisation is the part worth acting on, and it is filed separately: the
+key-cascade path is untestable **tree-wide** for this reason, not just in
+`fofa`. Several currently-unlockable items (REQ-NIAMONX-001, REQ-OATHNET-002,
+REQ-SEON-001) turn on exactly this behaviour, so a test-guarded or injectable
+persistence path would unlock regression locks for all of them at once.

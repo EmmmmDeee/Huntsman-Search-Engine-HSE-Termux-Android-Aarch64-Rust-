@@ -515,6 +515,44 @@ by looking for them rather than reading modules at random:**
    fields it ALSO reaches** — particularly any non-`Option` primitive, where the
    default is indistinguishable from a real value.
 
+   **CORRECTED by applying it.** Swept as a population: nine such structs in the
+   tree, each read at its use sites — and **seven are correct by design**
+   (REQ-FOFA-001). A rule that fires nine times and is right twice is one the
+   next reader learns to ignore. The rule is therefore: **a bare field under a
+   container-level `default` is safe iff EITHER a container-level sentinel
+   distinguishes "no response" from "a response of zeros", OR every use site
+   guards the default before it becomes a claim** — a defect only when neither
+   holds. The two are not interchangeable: a sentinel is the only option when
+   the zeros are themselves meaningful data (`chain_intel`, where a dormant
+   address really does return an object full of zeros, so per-leaf `Option`
+   would be actively wrong); guarding at the use site is the only option when
+   the struct has no field a real response guarantees.
+
+   **A fixture built by CONSTRUCTING a struct cannot express an absent key —
+   which is the one thing a `#[serde(default)]` defect is about.** `fofa`'s
+   eight pre-existing tests all built `FofaResp` with every field set, so none
+   of them could reach the missing-`error` case the defect lived in; and the
+   first repair repeated the mistake one field over, leaving a mutation that
+   read `results` alone alive because no fixture omitted `results` either — the
+   body that exposes it is an error envelope, which on the wire carries no
+   `results` at all (REQ-FOFA-001). Its rule: **test a serde guard by
+   deserializing TEXT, and include the shape each branch actually arrives in.**
+   A struct literal can only express presence, so it silently tests the one
+   scenario the guard does not care about. Note the cost of missing it here was
+   not a wrong entity: an envelope misrouted past `note_keyed_error` stops a
+   dead key rotating out of the pool, so every later scan keeps spending on it.
+
+   **A precedent transfers only with the fact that made it safe.** The same
+   cycle's obvious fix — copy `chain_intel`'s "require the structural key, fail
+   closed without it" — was rejected for `fofa`, because `chain_intel`'s
+   sentinel is a field a real response demonstrably echoes and `fofa`'s module
+   header documents no response shape at all (REQ-FOFA-001). Its rule: **before
+   reusing a fail-closed sentinel, ask what evidence establishes that a SUCCESS
+   carries it.** Without that evidence the repair trades a fail-open for a
+   fail-shut, which is worse; the weakest condition that still rejects the
+   uninterpretable body is the right one, and the assumption it rests on is
+   recorded as an assumption.
+
    **A fix is only as permanent as its least-locked call site.**
    REQ-WIGLE-001 applied the band gate to three sites and locked one; two could
    be reverted with all 52 of the module's tests still green (REQ-GEOGATE-001).
