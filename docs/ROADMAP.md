@@ -749,6 +749,29 @@ by looking for them rather than reading modules at random:**
    than a check that is merely missing: the omission is invisible, the wrong
    reason is believed.
 
+   **A field that may always be absent cannot report its own misspelling.**
+   `ScanOptions`' 30 fields are every one absent-tolerant, and rightly so:
+   omitting a knob has to mean "no preference". But that makes an unknown key
+   and an omitted key the same thing after deserialisation, and for six of those
+   fields the "no preference" default is the PERMISSIVE value — so a one-character
+   slip in `passive_only` ran the active scan the operator forbade, answered
+   `202 Accepted` (REQ-SCANOPTS-001). Its rule: **tolerating absence is a
+   decision about the FIELD; rejecting an unknown name is a decision about the
+   REQUEST, and the first cannot make the second.** Wherever a permissive
+   default means "unconstrained", the key's spelling is part of the control.
+
+   **The same serde strictness is right and wrong on one type, depending on who
+   owns the schema.** `deny_unknown_fields` belongs on operator-supplied
+   configuration — `dep-cooldown.toml` has it, and says why — and must stay OFF
+   provider response structs, where `devto`/`hibp` deliberately lock it out so an
+   upstream field addition cannot break a module. `ScanOptions` is BOTH a request
+   body and the persisted form (`Scan` is serialised whole into `scans.data_json`
+   and read back), so the attribute would have bought input strictness at the
+   price of making a stored scan with a legacy key unreadable. Its rule:
+   **before tightening a serde contract, ask which of the type's readers you are
+   tightening against** — a type with two readers has two contracts, and the
+   check belongs at the seam that has only one.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other

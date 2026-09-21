@@ -11,12 +11,19 @@ use tracing::info;
 use super::super::handlers::{bad_request, internal_error, not_found, ok_list, spawn_scan};
 use crate::api::AppState;
 use crate::core::entity::scan_id;
-use crate::core::scan::{Scan, ScanRequest, Target, TargetKind};
+use crate::core::scan::{Scan, Target, TargetKind};
 
 pub async fn scan_create(
     State(s): State<Arc<AppState>>,
-    Json(req): Json<ScanRequest>,
+    // Decoded as raw JSON, not `Json<ScanRequest>`, so an `options` key that
+    // `ScanOptions` does not define can be REJECTED rather than silently
+    // dropped — see `scan_request_from_json`.
+    Json(raw): Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    let req = match super::scan_request_from_json(raw) {
+        Ok(req) => req,
+        Err(msg) => return bad_request(msg),
+    };
     let (scan, target) = match super::build_scan_from_request(req) {
         Ok(pair) => pair,
         Err(msg) => return bad_request(msg),
@@ -763,7 +770,9 @@ pub async fn scan_import(
 
 pub async fn scan_batch(
     State(s): State<Arc<AppState>>,
-    Json(requests): Json<Vec<ScanRequest>>,
+    // Raw JSON per entry for the same reason as `scan_create`: a batch entry's
+    // misspelled option must be a per-entry error, not a silent default.
+    Json(requests): Json<Vec<serde_json::Value>>,
 ) -> impl IntoResponse {
     if requests.is_empty() {
         return bad_request("empty batch");
@@ -773,7 +782,14 @@ pub async fn scan_batch(
     }
 
     let mut scan_ids = Vec::with_capacity(requests.len());
-    for req in requests {
+    for raw in requests {
+        let req = match super::scan_request_from_json(raw) {
+            Ok(req) => req,
+            Err(msg) => {
+                scan_ids.push(json!({ "error": msg }));
+                continue;
+            }
+        };
         let (scan, target) = match super::build_scan_from_request(req) {
             Ok(pair) => pair,
             Err(msg) => {

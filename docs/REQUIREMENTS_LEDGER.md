@@ -16828,3 +16828,172 @@ NEW guard (HEAD AND origin/main...HEAD):  -> RUNS the audit block
 ```
 
 matching CI, which ran `cargo audit` on every commit of this PR.
+
+---
+
+### REQ-SCANOPTS-001 — a typo in an HTTP scan request turned the operator's scope controls off, silently
+
+`POST /api/v1/scans` takes `Json<ScanRequest>`, whose `options` is a
+`ScanOptions` with 30 fields. **Every one of those fields is absent-tolerant** —
+`Option<T>`, `#[serde(default)]`, or `#[serde(default = "…")]` — which is
+correct and deliberate: omitting a knob means "no preference", so a bare
+`{"value": "…"}` request behaves exactly like an `options` object that omits
+everything. `empty_options_object_matches_product_defaults` locks that.
+
+The consequence nobody had drawn: if every field may be absent, then after
+deserialisation **a misspelled key is indistinguishable from an omitted one**.
+serde discards the unknown key and hands back the default. For most fields that
+is merely a lost preference. For six of them the default is the *permissive*
+value:
+
+| key | default | what a typo does |
+|---|---|---|
+| `passive_only` | `false` | runs an **active** scan the operator forbade |
+| `free_only` | `false` | spends against **paid** APIs |
+| `max_cost_usd` | `None` | **no spend ceiling** |
+| `modules` | `None` | allowlist ignored — **every** module runs |
+| `exclude_modules` | `[]` | the excluded module **runs** |
+| `category_focus` | `[]` | category restriction ignored |
+
+The request is answered `202 Accepted` with a `scan_id`. Nothing in the
+response distinguishes the scan that ran from the scan that was asked for.
+
+#### The rule was already written, twice, and neither copy reached here
+
+`src/bin/dep_cooldown/policy.rs:19` puts `deny_unknown_fields` on
+`dep-cooldown.toml`'s schema and states why in the doc comment: so a typo'd
+field name "fails loudly at parse time instead of being silently ignored and
+**leaving the operator's intended policy unapplied**". That is this defect's
+description, written for a developer-tooling config file, and it is the only
+`deny_unknown_fields` in `src/`.
+
+Closer still: `build_scan_from_request` — the function the request flows
+through — already rejects unknown module *names*, and reasons that over HTTP
+
+> "a non-empty allowlist that matches nothing runs a scan of zero modules and
+> reports it as a narrowed sweep — a false 'nothing found' the client cannot
+> distinguish from a real one."
+
+That argument applies verbatim one level up, to the control's own *name*
+instead of its value, and runs in the opposite direction: a dropped
+`exclude_modules` runs a scan *wider* than requested and reports it as the
+requested one. The check for unknown keys sits eight lines above the check for
+unknown values that motivated it.
+
+This is the **eighth** instance on this branch of a rule written in the file
+that violates it.
+
+#### Why it is a seam check and not `deny_unknown_fields`
+
+`ScanOptions` is not only the wire format. `Scan` embeds it and is serialised
+whole into the `scans.data_json` column (`src/storage/mod.rs:643`) and read
+back. `#[serde(deny_unknown_fields)]` on the shared type would make any stored
+scan carrying a key the running binary does not know **unreadable** — breaking
+rollback and any field removal. Operator input and persisted state are two
+contracts over one type, and only the input side wants strictness. The check
+therefore lives at the request seam, which is also where the sibling
+module-name check already lives.
+
+The distinction is not hypothetical for the module response structs either:
+`devto/tests.rs:41` and `hibp/tests.rs:275` deliberately lock `deny_unknown_fields`
+*out* of wire structs, because an upstream provider adding a field must not
+break the module. Same attribute, opposite correct answer, decided by who owns
+the schema.
+
+#### The fix
+
+Three functions in `src/core/scan/options.rs`, the type's own module:
+
+- `known_option_keys()` — the key set, derived from `ScanOptions`'s own
+  `Serialize` impl via `serde_json::to_value(ScanOptions::default())`, so a
+  field added to the struct is recognised the moment it exists. This is the
+  `unknown_module_names`/`registry()` relationship one level up: one authority,
+  no second list.
+- `unknown_option_keys(&Value)` — the supplied keys that are not in it.
+- `nearest_option_key(&str)` — the intended key, matched on letters and digits
+  alone so `passive-only` / `passiveOnly` / `PASSIVE_ONLY` all resolve to
+  `passive_only`. Deliberately **not** a fuzzy distance: an operator who accepts
+  a wrong guess lands on a different control, which is the defect again.
+
+`scan_request_from_json` in `src/api/scan_handlers/mod.rs` is the one seam both
+entry points use — `scan_create` and `scan_batch` now take raw JSON and call it,
+so neither can drift from the other. The error names the offending key, says the
+option was NOT applied, and either suggests the intended key or, when the key is
+not a transcription of anything, lists the accepted names — from the same
+derived authority, so the message cannot cite a stale set.
+
+The CLI is unaffected: clap already rejects an unknown flag.
+
+#### Reproduced before fixed
+
+```
+thread 'core::scan::tests::repro_unknown_option_key_is_silently_dropped' panicked:
+  a misspelled passive_only must not silently run an ACTIVE scan
+test result: FAILED. 0 passed; 1 failed
+```
+
+with the control — the same request spelled correctly — passing in the same run.
+
+#### Falsification
+
+Five mutations, all killed, each recorded with the assertion that killed it
+rather than the exit code:
+
+| # | mutation | killed by |
+|---|---|---|
+| M1 | seam check neutered (`if false && …`) — authority still correct, nothing calls it | the 3 seam tests only: `a misspelled scope control must not be accepted — left: 202`. The unit tests still pass, which is the point: they test the authority, M1 breaks the wiring |
+| M2 | `unknown_option_keys` always reports nothing unknown | 5 — both unit tests **and** all seam tests |
+| M3 | `nearest_option_key` returns the first known key instead of matching a transcription | `…suggests_only_transcriptions`: `left: Some("allow_live_sensors")`, plus the two seam tests that assert the suggestion's content |
+| M4 | derived key set silently loses `passive_only` (the `skip_serializing_if` hazard the guard exists for) | `derived_key_set_matches_the_struct_fields`, **and** `scan_create_still_accepts_a_correctly_spelled_option` — the hazard's real consequence is a VALID request refused, and that is caught too |
+| M5 | **over-correction**: every supplied key reported unknown | the **controls** only — `a valid request must still be queued` (400, not 202), the batch's good entry, and `a key ScanOptions defines must never be reported as unknown` |
+
+M5 is the load-bearing row. A "fix" that rejected every request would satisfy
+every *rejection* assertion in this cycle while destroying the API; only the
+controls catch it. Its own error text gives it away —
+`passive_only (did you mean passive_only?)`.
+
+M1 and M2 kill disjoint-but-overlapping sets, which establishes that the
+authority tests and the wiring tests are distinct rather than one carrying the
+other.
+
+The vacuity guard on `derived_key_set_matches_the_struct_fields` asserts the
+source-field extraction found at least 25 fields, so a parse that silently
+matched nothing cannot make the comparison trivially true against an empty set.
+
+Tree integrity re-verified by md5 after the matrix: all six touched files match
+their pre-matrix hashes.
+
+#### Scope, honestly
+
+This closes the *input* side. It does not claim anything about whether any
+operator has actually been bitten — no telemetry exists to establish that, and
+the entry does not assert it. What is established from source is that the path
+exists, is reachable over HTTP, and returns `202` with no signal.
+
+The same absent-tolerance question for **provider response** structs is a
+different problem with the opposite answer, already tracked as the
+`#[serde(default)]` fail-open family (`REQ-AUGEO-001`, `REQ-INTELX-002`,
+`REQ-CHAININTEL-001`, `REQ-ZOOMEYE-001`, `REQ-HUDSONROCK-001`,
+`REQ-LEAKCHECK-001`, `REQ-FOFA-001`, `REQ-OPENMETEO-001`). A heuristic source
+scan run for this cycle counted 104 `Deserialize` structs in `src/` that can
+deserialise `{}` and are decoded from JSON somewhere in their own module
+(`.json::<T>()`, `from_str`/`from_slice`/`from_value`, or an annotated binding).
+That is a **measurement of a precondition, not a defect count**: the set
+includes non-HTTP members (`ScanOptions` itself, `dep_cooldown`'s lockfile
+reader, a test fixture), and of the genuine response structs most are guarded
+after decode by an HTTP-status check or a classifier — `au_geo`, `intelx`,
+`chain_intel`, `fofa` and `breachdirectory` all appear in the list *because* the
+struct is permissive and the guard is a separate field, which is the fix
+pattern, not the defect.
+
+Deciding the remainder needs one fact the repository cannot supply: whether a
+given provider answers a dead key or a spent quota with `200` plus an error
+envelope rather than a `4xx`. Four candidates were read directly — `censys`,
+`securitytrails`, `binaryedge`, `exa_search` — and each turned out to gate on
+HTTP status before decoding, so none is claimed as a defect here. **No ninth
+member of that family is asserted.** `binaryedge/types.rs` is worth a note for
+whoever does settle it: its module doc states the fail-open as a *feature*
+("everything is `#[serde(default)]` so an unexpected/renamed upstream field
+degrades to 'not present' rather than a parse failure"), which is the shape
+`REQ-ZOOMEYE-001` and `REQ-HUDSONROCK-001` both had — but the shape is not the
+finding, and it is not recorded as one.

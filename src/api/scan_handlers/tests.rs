@@ -1,7 +1,9 @@
 use super::*;
     use crate::core::scan::TargetKind;
 
-    fn scan_import_router() -> axum::Router {
+    /// The shared in-memory `AppState` every router test builds on. Extracted
+    /// so a second route's test cannot drift from the first one's state.
+    fn test_state() -> std::sync::Arc<AppState> {
         let store: std::sync::Arc<dyn crate::core::StoragePort> =
             std::sync::Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"));
         let (bus, _rx) = tokio::sync::broadcast::channel(16);
@@ -16,7 +18,7 @@ use super::*;
             reqwest::Client::new(),
             Default::default(),
         );
-        let state = std::sync::Arc::new(AppState {
+        std::sync::Arc::new(AppState {
             store,
             engine,
             bus,
@@ -35,10 +37,23 @@ use super::*;
             cells_import: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::api::CellsImportPhase::default(),
             )),
-        });
+        })
+    }
+
+    fn scan_import_router() -> axum::Router {
         axum::Router::new()
             .route("/api/v1/scans/import", axum::routing::post(scan_import))
-            .with_state(state)
+            .with_state(test_state())
+    }
+
+    fn scan_create_router() -> axum::Router {
+        axum::Router::new()
+            .route("/api/v1/scans", axum::routing::post(super::core::scan_create))
+            .route(
+                "/api/v1/scans/batch",
+                axum::routing::post(super::core::scan_batch),
+            )
+            .with_state(test_state())
     }
 
     /// Regression for the web upload path silently dropping a stealer-row
@@ -426,4 +441,131 @@ Victims:
             confine_graph_to_visible(vec![subject, candidate], vec![edge], &params);
         assert_eq!(ents.len(), 2);
         assert_eq!(rels.len(), 1);
+    }
+
+    // ── REQ-SCANOPTS-001: the unknown-option check, through the real route ──
+
+    async fn post_json(router: axum::Router, path: &str, body: &str) -> (u16, String) {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("should succeed"),
+            )
+            .await
+            .expect("should succeed");
+        let status = resp.status().as_u16();
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .expect("should succeed");
+        (status, String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    /// The defect as an operator meets it: a one-character slip in a scope
+    /// control. Pre-fix this returned 202 Accepted and ran a FULL ACTIVE scan
+    /// for an operator who asked for a passive one — indistinguishable, in the
+    /// response, from the scan they requested.
+    #[tokio::test]
+    async fn scan_create_rejects_a_misspelled_scope_control() {
+        let (status, body) = post_json(
+            scan_create_router(),
+            "/api/v1/scans",
+            r#"{"value":"cloudflare.com","options":{"passive-only":true}}"#,
+        )
+        .await;
+        assert_eq!(status, 400, "a misspelled scope control must not be accepted");
+        assert!(
+            body.contains("passive-only"),
+            "the error must name the offending key, got: {body}"
+        );
+        assert!(
+            body.contains("passive_only"),
+            "the error must suggest the intended key, got: {body}"
+        );
+    }
+
+    /// The control: the same request, spelled correctly, is still accepted.
+    /// Without this, the test above would also pass if the seam rejected
+    /// every request.
+    #[tokio::test]
+    async fn scan_create_still_accepts_a_correctly_spelled_option() {
+        let (status, body) = post_json(
+            scan_create_router(),
+            "/api/v1/scans",
+            r#"{"value":"cloudflare.com","options":{"passive_only":true}}"#,
+        )
+        .await;
+        assert_eq!(status, 202, "a valid request must still be queued: {body}");
+    }
+
+    /// And the second control: an `options`-less request — the documented
+    /// "bare `{\"value\": …}` is as thorough as the CLI" shape — is unaffected.
+    #[tokio::test]
+    async fn scan_create_still_accepts_a_request_with_no_options() {
+        let (status, body) = post_json(
+            scan_create_router(),
+            "/api/v1/scans",
+            r#"{"value":"cloudflare.com"}"#,
+        )
+        .await;
+        assert_eq!(status, 202, "an options-less request must still be queued: {body}");
+    }
+
+    /// The batch seam is the same authority: one entry's typo is that entry's
+    /// error, and does not silently run as a default — nor abort its siblings.
+    #[tokio::test]
+    async fn scan_batch_reports_a_misspelled_option_per_entry() {
+        let (status, body) = post_json(
+            scan_create_router(),
+            "/api/v1/scans/batch",
+            r#"[{"value":"cloudflare.com","options":{"free-only":true}},
+                {"value":"mozilla.org","options":{"free_only":true}}]"#,
+        )
+        .await;
+        assert_eq!(status, 202, "the batch itself must still be processed: {body}");
+        assert!(
+            body.contains("free-only"),
+            "the bad entry must report its own key, got: {body}"
+        );
+        assert!(
+            body.contains("scan_id"),
+            "the good entry must still have been queued, got: {body}"
+        );
+    }
+
+    /// A key that is not a transcription of any option gets the full accepted
+    /// list — the only in-band documentation of the option names, since no
+    /// schema route serves them. The suggestible case must NOT carry it: that
+    /// branch exists to keep the common typo's error readable, so both sides
+    /// are asserted rather than just the one that happens to fire.
+    #[tokio::test]
+    async fn an_unsuggestible_option_gets_the_catalogue_and_a_typo_does_not() {
+        let (status, body) = post_json(
+            scan_create_router(),
+            "/api/v1/scans",
+            r#"{"value":"cloudflare.com","options":{"stealth_mode":true}}"#,
+        )
+        .await;
+        assert_eq!(status, 400);
+        assert!(
+            body.contains("Accepted options:") && body.contains("passive_only"),
+            "an unsuggestible key must be answered with the catalogue, got: {body}"
+        );
+
+        let (_, typo_body) = post_json(
+            scan_create_router(),
+            "/api/v1/scans",
+            r#"{"value":"cloudflare.com","options":{"passive-only":true}}"#,
+        )
+        .await;
+        assert!(
+            !typo_body.contains("Accepted options:"),
+            "a suggestible key must NOT drag in the whole catalogue, got: {typo_body}"
+        );
     }

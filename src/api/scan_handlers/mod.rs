@@ -70,6 +70,71 @@ pub const IMPORT_ROUTE_BODY_LIMIT_HEADROOM_BYTES: usize = 1024 * 1024;
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
+/// Decode an operator-supplied scan-request body, rejecting any `options` key
+/// `ScanOptions` does not define.
+///
+/// The seam exists because every `ScanOptions` field is absent-tolerant, so a
+/// misspelled key is indistinguishable from an omitted one after
+/// deserialisation — and omission means "no preference", i.e. the DEFAULT. For
+/// `passive_only`, `free_only`, `max_cost_usd`, `modules`, `exclude_modules`
+/// and `category_focus` that default is the *permissive* value, so a typo runs
+/// a wider, more active or more expensive scan than the operator authorised and
+/// returns it as the scan they asked for. This is the same argument
+/// [`build_scan_from_request`] already makes about unknown module *names* one
+/// level down — an unmatched control "runs a scan … and reports it as a
+/// narrowed sweep … the client cannot distinguish from a real one" — applied to
+/// the control's own name.
+///
+/// Rejecting here rather than with `#[serde(deny_unknown_fields)]` is
+/// deliberate: `ScanOptions` is also the persisted form (a `Scan` is stored as
+/// `data_json` and read back), where an unknown key must stay *readable* so an
+/// older binary can still load a newer scan row. Operator input and stored
+/// state are different contracts over one type.
+///
+/// Scope is the `options` object only. `ScanRequest`'s own three keys need no
+/// such check: `value` has no default, so a typo there is already a
+/// deserialisation error, and a dropped `kind` falls back to
+/// [`crate::core::scan::TargetKind::detect`] — the documented unified-scan
+/// behaviour of a request that omits it, not a disabled control.
+pub(super) fn scan_request_from_json(raw: serde_json::Value) -> Result<ScanRequest, String> {
+    if let Some(options) = raw.get("options") {
+        let unknown = crate::core::scan::unknown_option_keys(options);
+        if !unknown.is_empty() {
+            // Resolved once: `nearest_option_key` rebuilds the key set per call,
+            // and both the per-key detail and the catalogue decision need it.
+            let suggestions: Vec<(String, Option<String>)> = unknown
+                .iter()
+                .map(|k| (k.clone(), crate::core::scan::nearest_option_key(k)))
+                .collect();
+            let detail: Vec<String> = suggestions
+                .iter()
+                .map(|(k, near)| match near {
+                    Some(near) => format!("{k} (did you mean {near}?)"),
+                    None => k.clone(),
+                })
+                .collect();
+            // Spell out the catalogue only when nothing could be suggested —
+            // when the key IS a transcription of a real option, naming that one
+            // option is the whole answer and 30 more is noise. Either way the
+            // names come from the same derived authority as the check itself,
+            // so the error can never cite a stale set.
+            let catalogue = if suggestions.iter().all(|(_, near)| near.is_some()) {
+                String::new()
+            } else {
+                let accepted: Vec<String> =
+                    crate::core::scan::known_option_keys().into_iter().collect();
+                format!(" Accepted options: {}", accepted.join(", "))
+            };
+            return Err(format!(
+                "unrecognised scan option(s): {} — NOT applied, so the scan would \
+                 have run with the default.{catalogue}",
+                detail.join(", "),
+            ));
+        }
+    }
+    serde_json::from_value(raw).map_err(|e| format!("malformed scan request: {e}"))
+}
+
 /// Build a validated, profile-resolved `Scan` (+ its `Target`) from a request,
 /// or a client-facing error message. Shared by `scan_create` and `scan_batch`
 /// so validation, scan-id derivation, and profile→options resolution can't drift.

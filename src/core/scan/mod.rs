@@ -29,7 +29,8 @@ mod options;
 pub(crate) use options::default_scan_options;
 pub use options::{
     DEFAULT_MAX_ENTITIES, DEFAULT_MIN_EXPAND_CONFIDENCE, DEFAULT_SCAN_DEPTH, ExpansionStrategy,
-    MAX_CONCURRENT, MAX_DEPTH, ScanOptions, THROTTLE_CEILING_MS,
+    MAX_CONCURRENT, MAX_DEPTH, ScanOptions, THROTTLE_CEILING_MS, known_option_keys,
+    nearest_option_key, unknown_option_keys,
 };
 // Re-exported so external callers keep using `crate::core::scan::expansion_weight`
 // etc. unchanged after the expansion-economics model moved to `scoring`.
