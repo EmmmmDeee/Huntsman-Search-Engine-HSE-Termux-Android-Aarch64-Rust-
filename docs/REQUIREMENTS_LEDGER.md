@@ -17258,3 +17258,79 @@ async fns, 10 hops) rather than exact counts, so ordinary growth never touches
 them while a parse that silently matches nothing still fires.
 
 Tree integrity re-verified by md5 after the matrix.
+
+---
+
+### REQ-EXPORT-002 — the debug bundle inherits its redaction, and nothing said so
+
+`REQ-EXPORT-001` closed five export seams and left a recorded follow-up, still
+quoted in the pull request: *"the sibling sweep should re-check any other place
+entity evidence is serialized."* Nobody had. This entry is that sweep.
+
+#### The audit, all four paths
+
+| path | verdict |
+|---|---|
+| the five entity-evidence emitters | all redact — `renderers.rs:20` (`confirmed_entities`, feeding CLI json/csv/gexf), `:298` (`render_full`), `:958` (`build_scan_report`), `scan_export:50` (`scan_entities_csv`), `:122` (`scan_export_gexf`) |
+| **`render_debug_bundle`** — the sixth candidate | inherits it: section 1 is `s.push_str(&render_full(store, sid)?)`, and `render_full` redacts. Verified in source, not assumed |
+| the raw-archive copy embedded in the dossier | redacted by `render_raw_response_body`. The on-disk `raw/*.json` is deliberately never touched — that module's own doc calls verbatim retention an operator policy |
+| event / error text | redacted **upstream at construction** in `util::http` (`fetch.rs:269`, `:369`, `:1019`, `curl_client`, `see_know`). `render_event_log` has **no sink-side pass**, so that upstream property is the entire guarantee |
+
+The fourth row was the one worth chasing, because a sink with no guard is only
+as good as every producer upstream of it. Every module-built error that
+interpolates a `url` / `endpoint` was read: `ripestat` and `niamonx` interpolate
+a **path segment** (`"whois"`, not a keyed URL), `sitemap` interpolates the
+**subject's own** crawled URL — which is a finding and must survive — and
+`stolen_tax` builds its request URL into a local variable, never into an error.
+No module bypasses the upstream redactor. The claim in
+`render_raw_response_body`'s doc — "the same `redact_credentials` pass module
+errors already run upstream" — is accurate.
+
+#### The gap
+
+The debug bundle had no leak lock of its own. It is exercised by six tests, none
+about secrets, and it deliberately opts **out** of the default-safe
+provider-name redaction (`download_response_operator`) — which makes it easy to
+read as opting out of redaction altogether. It is also the artifact most likely
+to leave the machine: the web "Debug bundle" button, `hse export --format
+debug`, a file attached to a ticket.
+
+So its safety rested on a delegation that nothing asserted.
+`debug_bundle_masks_an_operator_key_echoed_in_evidence` now asserts it, with the
+subject finding surviving verbatim as the control — the bundle's
+"nothing hidden" contract is what it exists for, and a lock satisfied by
+redacting evidence wholesale would have destroyed that while passing.
+
+#### Falsification
+
+| # | mutation | killed by |
+|---|---|---|
+| E3 | a later-added bundle section dumps evidence attributes without the redactor | **only** `debug_bundle_masks_…`; `render_full_masks_…` stays GREEN |
+| E2 | over-correction — the redactor masks the subject finding too | **both** tests, via the mask and control assertions |
+
+**E3 is the entire case for the new test, executed rather than argued.** The
+pre-existing `render_full` lock cannot see a regression in a sibling section of
+the outer artifact, because it never renders the outer artifact. Its rule: **a
+test at an inner boundary does not cover the artifact that composes it** — and
+the composition, not the component, is what ships to the person reading it.
+
+#### Deliberately not done
+
+No sink-side redactor was added to `render_event_log`. Nothing feeds it an
+unredacted secret today — established above, by reading every producer — and
+adding a second pass on that evidence would be a speculative abstraction. What
+this entry does instead is record **where the guarantee lives**, so the next
+reader checks producers rather than re-deriving that the sink is bare.
+
+#### A name-matching trap, twice in one session
+
+The first run of the new test reported `running 0 tests`, because
+`cargo test --exact` was given a **truncated** name
+(`…_an_operator_key` for `…_an_operator_key_echoed_in_evidence`). `--exact`
+matches nothing and exits 0, so a typo is indistinguishable from a test that
+passed. This is the second instance this session — the first was a
+mutation-matrix row pointing at a module path that did not exist. The standing
+remedy holds and is worth restating: **read the run's own test count, never just
+its exit status**, and confirm a filtered name against `cargo test -- --list`.
+
+Tree integrity re-verified by md5 after the matrix.

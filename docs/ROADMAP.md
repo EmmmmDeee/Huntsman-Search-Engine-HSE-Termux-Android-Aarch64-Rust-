@@ -812,6 +812,25 @@ by looking for them rather than reading modules at random:**
    for is a separate question, answered by mutating the tree, and whether it is
    correct at all is answered by reading it.
 
+   **A test at an inner boundary does not cover the artifact that composes
+   it.** `render_full` had a lock proving it masks an operator key echoed into
+   evidence; the debug bundle, which embeds `render_full`'s output alongside
+   four other sections, had none — and a mutation adding a sixth section that
+   forgets the redactor leaves the inner test green while leaking the key from
+   the outer file (REQ-EXPORT-002). Its rule: **lock the artifact that ships,
+   not only the function that builds part of it.** The composition is what the
+   reader opens, and a component's guarantee says nothing about what was
+   appended after it.
+
+   **A sink with no guard is exactly as good as every producer above it.**
+   `render_event_log` prints event text verbatim; the protection is that
+   `util::http` redacts at error CONSTRUCTION. That is a sound design, but it
+   moves the audit: instead of checking one sink you must check every producer
+   (REQ-EXPORT-002). Its rule: **when protection lives upstream, enumerate the
+   producers and say so where the sink is** — otherwise the next reader sees a
+   bare sink, assumes a hole, and either adds a redundant pass or files a
+   defect that is not one.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other

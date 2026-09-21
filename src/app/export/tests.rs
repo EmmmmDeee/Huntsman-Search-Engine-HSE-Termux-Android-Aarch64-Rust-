@@ -235,6 +235,58 @@ fn render_full_masks_an_operator_key_echoed_in_evidence() {
 }
 
 #[test]
+fn debug_bundle_masks_an_operator_key_echoed_in_evidence() {
+    // REQ-EXPORT-002: the debug bundle is the artifact an operator is most
+    // likely to hand to someone else — the web "Debug bundle" button, `hse
+    // export --format debug`, a bug report attachment. It is also the most
+    // complete one, and it deliberately opts OUT of the default-safe
+    // provider-name redaction (`download_response_operator`), which makes it
+    // easy to read as opting out of redaction altogether.
+    //
+    // It does not: its dossier section delegates to `render_full`, which masks
+    // the operator's own secrets. That delegation is the whole guarantee, and
+    // before this test nothing asserted it — a future refactor that inlined the
+    // dossier rendering, or reordered the sections, would silently ship the
+    // operator's live key inside the file they attach to a ticket.
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let dir = tempfile::tempdir().expect("should succeed");
+    let db = dir.path().join("opsecret_bundle_test.db");
+    let store = Store::open(db.to_str().expect("should succeed")).expect("should succeed");
+    let target = Target::new(TargetKind::Email, "vic@corp.com");
+    let scan = Scan::new("scan-dbg-op", target);
+    store.upsert_scan(&scan).expect("should succeed");
+
+    let mut e = Entity::new(EntityKind::Email, "vic@corp.com", 0.7, "scan-dbg-op");
+    e.add_evidence(
+        Evidence::new("some_provider", "resolved via the provider API")
+            .with_attr(
+                "via_endpoint",
+                "https://api.x.io/lookup?api_key=EXAMPLE-OPERATOR-KEY",
+            )
+            .with_attr("username", "victim_handle"),
+    );
+    store.upsert_entities_batch(&[e]).expect("should succeed");
+
+    let out = render_debug_bundle(&store, "scan-dbg-op").expect("should succeed");
+    assert!(
+        !out.contains("EXAMPLE-OPERATOR-KEY"),
+        "the operator's own key must not survive into the debug bundle: {out}"
+    );
+    assert!(
+        out.contains("api_key=***"),
+        "the key site must show the mask: {out}"
+    );
+    // CONTROL: the bundle's "nothing hidden" contract for SUBJECT findings is
+    // intact — this must not have been achieved by redacting the evidence
+    // wholesale, which would satisfy the assertion above while destroying the
+    // artifact's reason to exist.
+    assert!(
+        out.contains("username = victim_handle"),
+        "the subject finding must survive verbatim: {out}"
+    );
+}
+
+#[test]
 fn render_full_carries_generation_and_every_per_evidence_qualifier() {
     // Regression guard for the "every field, fully unredacted" contract: the
     // ENTITIES section previously dropped the entity's `generation` (pivot
