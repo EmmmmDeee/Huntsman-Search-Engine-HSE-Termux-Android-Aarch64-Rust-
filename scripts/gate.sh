@@ -332,14 +332,21 @@ else
 fi
 
 # ── audit.yml: only fires when a manifest changed, so mirror that ────────────
-# Must match audit.yml's `push.paths` exactly (src/bin/dep_cooldown/** included,
-# and fuzz/Cargo.{toml,lock} plus hse-core/Cargo.{toml,lock} and
-# wasm-ui/Cargo.{toml,lock} because audit.yml's filter is `**/Cargo.{toml,lock}`
-# — each of those crates has its own manifest, which that glob covers and this
-# list must too) — a mismatch here means this script silently SKIPS the check
-# locally on a commit that only touches one of those crates' own manifest,
-# while CI still runs it.
-if git diff --quiet HEAD -- Cargo.toml Cargo.lock deny.toml dep-cooldown.toml src/bin/dep_cooldown fuzz/Cargo.toml fuzz/Cargo.lock hse-core/Cargo.toml hse-core/Cargo.lock wasm-ui/Cargo.toml wasm-ui/Cargo.lock 2>/dev/null; then
+# This list must cover the UNION of audit.yml's path filters across every event,
+# not one event's — `push.paths` and `pull_request.paths` differ there (the PR
+# filter omits `dep-cooldown.toml` and `src/bin/dep_cooldown/**`), so mirroring
+# only one leaves the other's paths unguarded. The union keeps this gate at
+# least as eager as CI, which is the safe direction: running a check CI would
+# have skipped costs seconds, while skipping one CI runs is the silent-omission
+# defect REQ-GATE-002 was about, one section above this.
+#
+# The `**/Cargo.{toml,lock}` entries are expanded per crate (root, fuzz,
+# hse-core, wasm-ui — each keeps its own manifest). That expansion is no longer
+# maintained by hand on trust: `check_workflows.py`'s fourth invariant COMPUTES
+# it against the real tree and fails if this list does not cover it, so adding a
+# ninth crate cannot silently narrow the gate (REQ-GATE-003). The entry that was
+# already missing when that lint was written: `.github/workflows/audit.yml`.
+if git diff --quiet HEAD -- Cargo.toml Cargo.lock deny.toml dep-cooldown.toml src/bin/dep_cooldown fuzz/Cargo.toml fuzz/Cargo.lock hse-core/Cargo.toml hse-core/Cargo.lock wasm-ui/Cargo.toml wasm-ui/Cargo.lock .github/workflows/audit.yml 2>/dev/null; then
     skip "cargo-audit / deny / machete / dep-cooldown" "no manifest change (audit.yml path filter)"
 else
     for t in cargo-audit cargo-deny cargo-machete; do

@@ -16654,3 +16654,93 @@ producing *"only 0 pull_request job(s) discovered … this check proves nothing"
 The rule this re-teaches, after the mistyped test path earlier on this branch:
 **a mutation that dies on the way to the control has tested the path, not the
 control.**
+
+---
+
+### REQ-GATE-003 — the same silent-omission class, one section below where it was just fixed
+
+REQ-GATE-002 converted `gate.sh`'s *"if CI gains a check, add it here in the
+same commit"* from an instruction into a lint. The very next block down carried
+another instruction of the same kind:
+
+> Must match audit.yml's `push.paths` exactly … a mismatch here means this
+> script silently SKIPS the check locally on a commit that only touches one of
+> those crates' own manifest, while CI still runs it.
+
+Nothing enforced it, and it had already drifted.
+
+#### Found by generalising the previous cycle, and the sweep refuted more than it found
+
+A tree-wide sweep for instructions telling a future editor to keep two
+artefacts in step — *"in the same commit"*, *"must match"*, *"mirrored by"*,
+*"keep in sync"* — returned 87 hits across 70 files. Nearly all are test
+**assertion messages**, not editor instructions; the phrase-based search finds
+the wrong grammatical mood far more often than the right one. Two were genuine
+cross-artefact mirrors:
+
+* **`termux_sensor.rs:145` — REFUTED, and the exemplar.** Its comment names its
+  own enforcer: *"`shell_side_core_tool_lists_match_this_definition` below
+  holds all three in lockstep so none can drift."* A Rust `const`,
+  `install.sh`'s shell array and `reconcile.sh`'s array are pinned by one test.
+  Mechanism, not wish. It is what the other site should look like.
+* **`gate.sh:335` — real**, below.
+
+#### Two divergences, and only one of them mattered
+
+1. **The unsafe direction, already live.** `.github/workflows/audit.yml` is in
+   `audit.yml`'s own path filter — editing the workflow re-runs the audit — but
+   was absent from `gate.sh`'s list. A commit touching only that file ran the
+   audit in CI and was skipped locally.
+2. **The wrong filter was being mirrored.** The comment said `push.paths`, but
+   the job gating a PR is governed by `pull_request.paths`, which is *narrower*
+   here (no `dep-cooldown.toml`, no `src/bin/dep_cooldown/**`). Mirroring one
+   event leaves the other's paths unguarded. The gate now compares against the
+   **union** of every event's filter, which keeps it *at least as eager as CI*
+   — running a check CI would have skipped costs seconds; skipping one CI runs
+   is the defect.
+
+Measured and found **correct**: the hand-expanded `**/Cargo.{toml,lock}`. The
+tree holds exactly eight manifests (root, `fuzz`, `hse-core`, `wasm-ui` ×
+toml/lock) and all eight were listed. That is why the lint **computes** the
+expansion against the real tree rather than comparing two hand-written lists —
+a list that is correct today drifts the moment a ninth crate appears, and a
+lint that only diffs two hand-maintained lists relocates the maintenance
+instead of removing it.
+
+#### Severity, stated plainly
+
+**Low, and lower than REQ-GATE-002's.** CI remains the authority and still runs
+the audit; the cost of the miss is meeting the failure in CI rather than
+locally — a round trip, not a disclosure. It was built because it was the only
+*unblocked* item left (every higher-severity candidate is key-blocked) and
+because the mechanism to enforce it already existed from the previous cycle.
+
+#### Falsification
+
+Baseline red on the **unmodified** tree — the divergence was live, not
+manufactured:
+
+```
+audit paths: `.github/workflows/audit.yml` is in audit.yml's path filter but not
+in scripts/gate.sh's audit skip-list — a commit touching only that path would
+run the audit in CI and be SKIPPED locally, which is the looser direction
+```
+
+and nothing else, which independently confirms the eight-manifest expansion was
+complete.
+
+| mutation | killed by the intended assertion? |
+| --- | --- |
+| **M1** drop `hse-core/Cargo.lock` from the gate list | yes |
+| **M2** a **ninth crate** appears in the tree | yes — the computed expansion demands it |
+| **M3** rename `deny.toml` in `audit.yml` | yes |
+| **M4** point the reader at `bench-smoke.yml` | **NO — wrong assertion** |
+| **M4b** point it at `secret-scan.yml`, which has no `paths:` at all | yes |
+
+M4 is the lesson from REQ-GATE-002's own M4, applied prospectively and paying
+off immediately: `bench-smoke.yml` *has* a path filter, so it fired the ordinary
+missing-path check and never reached the vacuity guard. Only a workflow with no
+`paths:` at all produces *"only 0 path(s) expanded … this check proves
+nothing"*. The matrix now records, per row, **which** assertion did the killing
+— because a row that merely says KILLED is compatible with the guard under test
+never running.

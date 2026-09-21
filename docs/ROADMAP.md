@@ -718,6 +718,25 @@ by looking for them rather than reading modules at random:**
    If the answer is "nothing, until someone notices", the comment is a wish;
    convert it into a check that both sides must satisfy, in both directions.
 
+   **Record WHICH assertion killed each mutation, not just that one died.**
+   REQ-GATE-003's matrix applied REQ-GATE-002's lesson prospectively and it paid
+   off on the first run: the vacuity mutation pointed the path reader at
+   `bench-smoke.yml`, was duly KILLED, and had never reached the guard it was
+   written for — that workflow has its own `paths:` filter, so the ordinary
+   missing-path assertion fired first. Only a workflow with no filter at all
+   reaches the vacuity guard. Its rule: **a matrix row that says only KILLED is
+   compatible with the guard under test never running.** Assert the expected
+   failure MESSAGE, not the exit code.
+
+   **A lint that compares two hand-written lists has relocated the maintenance,
+   not removed it.** `gate.sh` carried `**/Cargo.{toml,lock}` hand-expanded into
+   eight literal paths — correct on the day it was written, and silently wrong
+   the moment a ninth crate appears. The fix computes the expansion against the
+   real tree, so a new crate fails the lint instead of quietly narrowing the
+   gate (REQ-GATE-003). Its rule: **when enforcing that a derived list matches
+   its source, DERIVE it** — otherwise the check is only as fresh as whoever
+   last edited both sides, which is the condition it was supposed to end.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other

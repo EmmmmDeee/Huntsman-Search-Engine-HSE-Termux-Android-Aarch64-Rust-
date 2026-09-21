@@ -51,6 +51,7 @@ Exits non-zero, naming the file and the reason, when any invariant breaks.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -146,6 +147,102 @@ def _triggers_on_pull_request(doc: dict) -> bool:
     if isinstance(triggers, list):
         return "pull_request" in triggers
     return triggers == "pull_request"
+
+
+AUDIT_WORKFLOW = WORKFLOW_DIR / "audit.yml"
+
+# The `git diff --quiet HEAD -- …` line in gate.sh that mirrors audit.yml's path
+# filter. Anchored on the first path so a reordering does not silently match a
+# different `git diff` call in the same script (there is more than one).
+AUDIT_SKIP_RE = re.compile(r"git diff --quiet HEAD -- (Cargo\.toml[^\n]*?) 2>/dev/null")
+
+
+def _expand_workflow_path(pattern: str) -> set[str]:
+    """Expand one workflow path filter against the REAL tree.
+
+    Computing the expansion is the point. `gate.sh` carried `**/Cargo.{toml,lock}`
+    hand-expanded into eight literal paths, which was correct on the day it was
+    written and silently wrong the moment a ninth crate appears. A lint that
+    compared two hand-written lists would just relocate the hand-maintenance.
+    """
+    if "*" not in pattern:
+        return {pattern.rstrip("/")}
+    # `src/bin/dep_cooldown/**` — a directory subtree. gate.sh names the
+    # directory, which `git diff -- <dir>` already covers recursively.
+    if pattern.endswith("/**"):
+        return {pattern[: -len("/**")]}
+    # `**/Cargo.toml` — every such file in the tree, excluding build output.
+    if pattern.startswith("**/"):
+        leaf = pattern[len("**/") :]
+        return {
+            str(q) for q in Path(".").rglob(leaf) if "target" not in q.parts
+        } | {leaf}
+    return {pattern}
+
+
+def _check_audit_paths() -> list[str]:
+    """Invariant 4 — `gate.sh`'s audit skip-list must cover audit.yml's filter.
+
+    `gate.sh` skips the cargo-audit / deny / machete / dep-cooldown block when
+    no manifest changed, mirroring `audit.yml`'s own path filter by hand. Its
+    comment states the consequence of drift: "a mismatch here means this script
+    silently SKIPS the check locally ... while CI still runs it" — the same
+    silent-omission class as REQ-GATE-002, one section below it, and equally
+    unenforced until now.
+
+    The gate must be **at least as eager as CI**, never looser: it is compared
+    against the UNION of every event's `paths`, because a developer running the
+    gate wants to know about anything CI will run, and it is harmless for the
+    local gate to run a check CI would have skipped. `push` and `pull_request`
+    carry DIFFERENT filters here (the PR one omits `dep-cooldown.toml` and
+    `src/bin/dep_cooldown/**`), so mirroring only one of them — as the comment
+    said it did — leaves the other's paths unguarded (REQ-GATE-003).
+    """
+    problems: list[str] = []
+    try:
+        doc = yaml.load(AUDIT_WORKFLOW.read_text(), Loader=StrictLoader)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        return [f"audit paths: cannot read {AUDIT_WORKFLOW} — {exc}"]
+
+    triggers = doc.get("on", doc.get(True, {}))
+    if not isinstance(triggers, dict):
+        return [f"audit paths: {AUDIT_WORKFLOW} has no mapping `on:` to read filters from"]
+
+    required: set[str] = set()
+    for event, block in triggers.items():
+        if isinstance(block, dict):
+            for pattern in block.get("paths") or []:
+                required |= _expand_workflow_path(pattern)
+
+    # Vacuity guard: a filter that expanded to nothing would satisfy every
+    # assertion below while proving nothing (REQ-GATE-002's M4b lesson).
+    if len(required) < 4:
+        return [
+            f"audit paths: only {len(required)} path(s) expanded from "
+            f"{AUDIT_WORKFLOW} — the filter is not being read, so this check "
+            f"proves nothing"
+        ]
+
+    try:
+        gate_src = GATE_SCRIPT.read_text()
+    except OSError as exc:
+        return [f"audit paths: cannot read {GATE_SCRIPT} — {exc}"]
+
+    match = AUDIT_SKIP_RE.search(gate_src)
+    if not match:
+        return [
+            f"audit paths: no `git diff --quiet HEAD -- Cargo.toml …` line found in "
+            f"{GATE_SCRIPT} — the audit skip-list this check exists to verify is gone"
+        ]
+    listed = {p.rstrip("/") for p in match.group(1).split()}
+
+    for path in sorted(required - listed):
+        problems.append(
+            f"audit paths: `{path}` is in {AUDIT_WORKFLOW.name}'s path filter but not in "
+            f"{GATE_SCRIPT}'s audit skip-list — a commit touching only that path would "
+            f"run the audit in CI and be SKIPPED locally, which is the looser direction"
+        )
+    return problems
 
 
 def _check_gate_coverage(pr_jobs: list[str]) -> list[str]:
@@ -252,6 +349,7 @@ def main() -> int:
                     )
 
     problems.extend(_check_gate_coverage(pr_jobs))
+    problems.extend(_check_audit_paths())
 
     if problems:
         print("check_workflows: FAILED", file=sys.stderr)
