@@ -75,8 +75,9 @@ const SRC: &str = "c99";
 /// "not present" rather than a parse failure.
 #[derive(Deserialize)]
 struct SubdomainFinderResp {
+    /// `Option`, not a defaulted `bool`: see [`classify`].
     #[serde(default)]
-    success: bool,
+    success: Option<bool>,
     #[serde(default)]
     subdomains: Vec<SubdomainEntry>,
     /// Whether this answer was served from C99's own cache rather than a
@@ -191,14 +192,75 @@ impl Module for C99 {
         };
         let body: SubdomainFinderResp = json_decode(SRC, resp).await?;
 
-        if !body.success || body.subdomains.is_empty() {
-            return Ok(ModuleResult::new());
+        match classify(&body) {
+            BodyVerdict::Uninterpretable => Err(crate::core::error::Error::module(
+                SRC,
+                "200 body is not a C99 subdomainfinder response (no `success`, no \
+                 `subdomains`) — refusing to report it as 'no subdomains indexed'",
+            )),
+            BodyVerdict::ProviderFailed => Err(crate::core::error::Error::module(
+                SRC,
+                "provider answered success:false — this is a failed lookup, not evidence \
+                 that the zone has no indexed subdomains",
+            )),
+            BodyVerdict::CleanMiss => Ok(ModuleResult::new()),
+            BodyVerdict::Rows => {
+                let mut result = ModuleResult::new();
+                result.extend(build_entities(domain, &body, &ctx.scan_id));
+                Ok(result)
+            }
         }
-
-        let mut result = ModuleResult::new();
-        result.extend(build_entities(domain, &body, &ctx.scan_id));
-        Ok(result)
     }
+}
+
+/// What a decoded C99 subdomainfinder body actually says. Three of these previously
+/// collapsed into one `Ok(empty)` — and dispatch records an empty result as
+/// `ModuleDone { found: 0 }`, which `core::coverage` aggregates to
+/// [`ProviderOutcome::CleanNegative`](crate::core::coverage::ProviderOutcome::CleanNegative),
+/// "the only outcome that is a real negative" and the one `settles_absence()`
+/// trusts. For a subdomain enumeration that asserts the zone has no discoverable subdomains — a recon gap the operator cannot see.
+///
+/// This module already states the doctrine on its credential path, thirty lines
+/// above where the fused branch was: *"PROVIDER FAILURE != ZERO EVIDENCE ...
+/// Error::MissingKey is the contract (REQ-KEYSKIP-001)"*. It was applied there
+/// and not to the response path (REQ-SUCCESSFLAG-001).
+enum BodyVerdict {
+    /// The body carried neither modelled signal — not this API's shape at all
+    /// (a gateway notice, a quota page). `success` is `Option<bool>` precisely
+    /// so this is distinguishable: as a `#[serde(default)] bool` an absent key
+    /// decoded to `false`, making an unreadable body indistinguishable from the
+    /// API *saying* it failed (REQ-FOFA-001's shape).
+    Uninterpretable,
+    /// The API said `success: false`. It answered, and the answer was failure.
+    ProviderFailed,
+    /// `success` was not false and there are no rows — the ONE real negative.
+    CleanMiss,
+    /// Rows to build from.
+    Rows,
+}
+
+/// Classify a decoded body. **Pure**, so every arm is unit-tested off JSON text
+/// without a socket — and off TEXT rather than a constructed struct, because a
+/// struct literal cannot express an ABSENT key, which is the whole subject here.
+///
+/// Refusal uses the weakest condition that still rejects `{}`: only a body
+/// carrying NEITHER signal is uninterpretable. Requiring `success` outright
+/// would trade a fail-open for a fail-shut, which REQ-FOFA-001 rejected for
+/// exactly this class — a fail-closed sentinel needs evidence that a SUCCESS
+/// carries it. **Recorded as an assumption:** that a real C99 subdomainfinder answer always
+/// carries `success` or at least one row. The module has keyed on `success`
+/// since it was written, which is evidence the author saw it, not proof.
+fn classify(body: &SubdomainFinderResp) -> BodyVerdict {
+    if body.success.is_none() && body.subdomains.is_empty() {
+        return BodyVerdict::Uninterpretable;
+    }
+    if body.success == Some(false) {
+        return BodyVerdict::ProviderFailed;
+    }
+    if body.subdomains.is_empty() {
+        return BodyVerdict::CleanMiss;
+    }
+    BodyVerdict::Rows
 }
 
 /// True when `ip` names a real, parseable address rather than being absent or

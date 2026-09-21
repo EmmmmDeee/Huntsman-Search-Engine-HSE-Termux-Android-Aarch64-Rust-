@@ -16431,3 +16431,127 @@ definition, and "I did it correctly in the sibling file" is not evidence that I
 did it here** — only `cargo doc` with the denied lints is. `clippy` and
 `cargo test` do not resolve intra-doc links, so nothing short of the gate was
 going to say so.
+
+---
+
+### REQ-SUCCESSFLAG-001 — both modules state the doctrine thirty lines above the defect
+
+`breachdirectory` and `c99` each decided with one expression:
+
+```rust
+if !body.success || body.result.is_empty()     { return Ok(ModuleResult::new()); }
+if !body.success || body.subdomains.is_empty() { return Ok(ModuleResult::new()); }
+```
+
+One branch, three realities, and dispatch records every one as
+`ModuleDone { found: 0 }` — which `core::coverage` aggregates to
+`CleanNegative`, "the only outcome that is a real negative" and the one
+`settles_absence()` trusts:
+
+1. **The provider said it failed** (`success: false`, reason discarded).
+2. **The body was never this API's shape.** `success` was a `#[serde(default)]
+   bool`, so an unrecognisable 200 — a RapidAPI quota notice, a gateway page —
+   decodes to `success: false` and lands in the same branch. REQ-FOFA-001's
+   shape, compounded: here the default's *direction* does not matter, because
+   the fused branch destroys the distinction either way.
+3. **A genuine miss** (`success: true`, empty vector) — the only one that is a
+   clean negative.
+
+For `breachdirectory` that asserts the identifier appears in **no known
+breach**; for `c99`, that a zone has no discoverable subdomains.
+
+#### The doctrine was already in both files
+
+Each module's `key_opt` arm, thirty lines above the fused branch, carries:
+
+> PROVIDER FAILURE != ZERO EVIDENCE: returning `Ok(empty)` here made dispatch
+> record `ModuleDone { found: 0 }`, which coverage reads as a CleanNegative —
+> "queried, holds nothing on this subject" — for a provider that was never
+> asked. `Error::MissingKey` is the contract (REQ-KEYSKIP-001).
+
+REQ-KEYSKIP-001 applied it to the *credential* path. Neither module carried it
+to the *response* path, where the same sentence is true word for word. This is
+the third instance of the same shape on this branch: REQ-OATHNET-002 (`is_absent`
+defined at line 20 of the file that never called it on the name slot),
+REQ-NAMEGATE-001 (`breach_rich` documenting and locking a rule five siblings did
+not apply), and now a doctrine comment sitting a screen above its own violation.
+
+`breachdirectory`'s builder doc had absorbed the defect outright: *"Caller
+guarantees `body.result` is non-empty (an empty/`success:false` response is this
+module's **clean-miss case**, handled before this is called)"*. It is not a
+clean-miss case. It is the provider failing.
+
+#### The population was swept, and it refuted half the hypothesis
+
+Every `if !X.success` guard in `src/modules`, classified by whether it
+propagates:
+
+| verdict | site |
+| --- | --- |
+| PROPAGATES | `europeana:149` |
+| PROPAGATES | `leakcheck_public:157` |
+| **`Ok(empty)`** | `breachdirectory:246` |
+| **`Ok(empty)`** | `c99:194` |
+
+`leakcheck_public` is the sibling that already does it right, and its shape is
+the one adopted rather than an invented one:
+
+```rust
+if !resp.success || sources.is_empty() {
+    if !resp.success { classify_failure(resp.error.as_deref())?; }
+    return Ok(result);
+}
+```
+
+It splits the fused condition and propagates the provider's own error text
+first, so only a genuine miss reaches `Ok`.
+
+#### `success: Option<bool>`, and the weakest condition
+
+Refusal fires only when the body carries **neither** modelled signal. Requiring
+`success` outright would trade a fail-open for a fail-shut, which REQ-FOFA-001
+rejected for exactly this class — *a fail-closed sentinel needs evidence that a
+SUCCESS carries it.* **Recorded as an assumption, not a finding:** that a real
+answer always carries `success` or at least one row. Both modules have keyed on
+`success` since they were written, which is evidence the author saw it, not
+proof.
+
+The classification is a pure `classify` returning an exhaustively-matched
+`BodyVerdict`, tested off JSON **text** rather than constructed structs — a
+struct literal can only express presence, and an absent `success` is the whole
+subject (REQ-FOFA-001's rule).
+
+#### Falsification
+
+Baseline red, using only the pre-existing API so the failure is the defect and
+not a missing function:
+
+```
+assertion `left != right` failed: the provider SAYING it failed and the provider
+finding nothing must not produce the same decision
+  left: true   right: true
+```
+
+| mutation | killed |
+| --- | --- |
+| **M1** collapse `ProviderFailed` back into `CleanMiss` | `breachdirectory` only |
+| **M2** drop the `Uninterpretable` arm | `breachdirectory` only |
+| **M3** OVER-CORRECT: refuse whenever `success != Some(true)` | `breachdirectory` only |
+| **M4** the same fusion in `c99` | `c99` only |
+
+M4 is why the matrix is worth running twice: it proves the second call site is
+independently locked, not carried by the first. **M3 is the one that matters
+most** — it is the *over-correction*, and a repair that turned every empty
+answer into an error would have satisfied every rejection assertion while
+destroying each module's ability to report an honest absence. That is strictly
+worse than the defect, and the control is what tells them apart.
+
+#### One oracle corrected, not deleted
+
+`deserializes_a_response_with_no_result_field_at_all` failed on the type change.
+Its **name is still right** — the gateway's quota body must decode rather than
+fail to parse — but its comment drew the wrong conclusion: *"so `process()` can
+treat it as a clean miss instead of a decode error."* A quota notice is not a
+clean miss. The assertion is now `assert_eq!(b.success, None)`, which is the
+stronger statement the old `bool` could not make: the key was **absent**, not
+false.

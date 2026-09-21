@@ -673,6 +673,30 @@ by looking for them rather than reading modules at random:**
    its own intent, and the correction belongs in the assertion (REQ-EMAILCANON-001
    set the same precedent with three oracles).
 
+   **A doctrine comment protects the line it sits on, and nothing else.**
+   `breachdirectory` and `c99` each carry "PROVIDER FAILURE != ZERO EVIDENCE ...
+   Error::MissingKey is the contract (REQ-KEYSKIP-001)" on their credential
+   path, and each violated that exact sentence thirty lines below on their
+   response path (REQ-SUCCESSFLAG-001). It is the third instance of the shape on
+   this branch — REQ-OATHNET-002 (`is_absent` defined at line 20 of the file
+   that never called it on the name slot) and REQ-NAMEGATE-001 (`breach_rich`
+   documenting AND locking a rule five siblings ignored) are the others. Its
+   rule: **when a cycle applies a doctrine at one path, grep the same FILE for
+   the other paths that decide the same thing.** The comment explaining why is
+   the best search key available, and finding it already written is evidence the
+   site was reached and skipped, not that it was considered and excused.
+
+   **An over-correction passes every rejection test.** REQ-SUCCESSFLAG-001's
+   most valuable mutation was not the pre-fix fusion but the fail-shut: refusing
+   whenever `success != Some(true)` satisfies every assertion about failures and
+   unreadable bodies, and destroys the module's ability to report an honest
+   absence. Its rule: **for every guard that converts a quiet outcome into an
+   error, write the control that the QUIET outcome still happens** — and mutate
+   toward the over-correction, not only away from it. REQ-OPENMETEO-001 and
+   REQ-GEOGATE-001 needed the same control for the same reason; a gate that
+   rejects everything is indistinguishable from a gate that works, on rejection
+   evidence alone.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other

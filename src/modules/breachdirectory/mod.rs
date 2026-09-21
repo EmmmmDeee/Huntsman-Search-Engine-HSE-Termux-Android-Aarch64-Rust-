@@ -78,8 +78,9 @@ struct ResultRow {
 
 #[derive(Deserialize)]
 struct BreachDirResp {
+    /// `Option`, not a defaulted `bool`: see [`classify`].
     #[serde(default)]
-    success: bool,
+    success: Option<bool>,
     /// The API's own reported hit count. Cosmetic only — `result.len()` (what
     /// was actually returned) is the source of truth this module builds from,
     /// so a mismatch between the two can't under- or over-report the evidence.
@@ -87,6 +88,56 @@ struct BreachDirResp {
     found: u64,
     #[serde(default)]
     result: Vec<ResultRow>,
+}
+
+/// What a decoded BreachDirectory body actually says. Three of these previously
+/// collapsed into one `Ok(empty)` — and dispatch records an empty result as
+/// `ModuleDone { found: 0 }`, which `core::coverage` aggregates to
+/// [`ProviderOutcome::CleanNegative`](crate::core::coverage::ProviderOutcome::CleanNegative),
+/// "the only outcome that is a real negative" and the one `settles_absence()`
+/// trusts. In a BREACH module that asserts the identifier appears in no known breach, which is the costliest direction for this provider to be wrong in.
+///
+/// This module already states the doctrine on its credential path, thirty lines
+/// above where the fused branch was: *"PROVIDER FAILURE != ZERO EVIDENCE ...
+/// Error::MissingKey is the contract (REQ-KEYSKIP-001)"*. It was applied there
+/// and not to the response path (REQ-SUCCESSFLAG-001).
+enum BodyVerdict {
+    /// The body carried neither modelled signal — not this API's shape at all
+    /// (a gateway notice, a quota page). `success` is `Option<bool>` precisely
+    /// so this is distinguishable: as a `#[serde(default)] bool` an absent key
+    /// decoded to `false`, making an unreadable body indistinguishable from the
+    /// API *saying* it failed (REQ-FOFA-001's shape).
+    Uninterpretable,
+    /// The API said `success: false`. It answered, and the answer was failure.
+    ProviderFailed,
+    /// `success` was not false and there are no rows — the ONE real negative.
+    CleanMiss,
+    /// Rows to build from.
+    Rows,
+}
+
+/// Classify a decoded body. **Pure**, so every arm is unit-tested off JSON text
+/// without a socket — and off TEXT rather than a constructed struct, because a
+/// struct literal cannot express an ABSENT key, which is the whole subject here.
+///
+/// Refusal uses the weakest condition that still rejects `{}`: only a body
+/// carrying NEITHER signal is uninterpretable. Requiring `success` outright
+/// would trade a fail-open for a fail-shut, which REQ-FOFA-001 rejected for
+/// exactly this class — a fail-closed sentinel needs evidence that a SUCCESS
+/// carries it. **Recorded as an assumption:** that a real BreachDirectory answer always
+/// carries `success` or at least one row. The module has keyed on `success`
+/// since it was written, which is evidence the author saw it, not proof.
+fn classify(body: &BreachDirResp) -> BodyVerdict {
+    if body.success.is_none() && body.result.is_empty() {
+        return BodyVerdict::Uninterpretable;
+    }
+    if body.success == Some(false) {
+        return BodyVerdict::ProviderFailed;
+    }
+    if body.result.is_empty() {
+        return BodyVerdict::CleanMiss;
+    }
+    BodyVerdict::Rows
 }
 
 /// Build the breach-exposure entity from a non-empty, successful BreachDirectory
@@ -243,18 +294,29 @@ impl Module for BreachDirectory {
         // scan the raw body, same as every other breach module.
         let body: BreachDirResp = crate::util::http::json_scanned(resp, SRC).await?;
 
-        if !body.success || body.result.is_empty() {
-            return Ok(ModuleResult::new());
+        match classify(&body) {
+            BodyVerdict::Uninterpretable => Err(crate::core::error::Error::module(
+                SRC,
+                "200 body is not a BreachDirectory response (no `success`, no `result`) — \
+                 refusing to report it as 'no breach records for this identifier'",
+            )),
+            BodyVerdict::ProviderFailed => Err(crate::core::error::Error::module(
+                SRC,
+                "provider answered success:false — this is a failed lookup, not evidence \
+                 that the identifier is absent from every breach corpus",
+            )),
+            BodyVerdict::CleanMiss => Ok(ModuleResult::new()),
+            BodyVerdict::Rows => {
+                let mut result = ModuleResult::new();
+                result.push(build_breach_entity(
+                    target.kind.to_entity_kind(),
+                    value,
+                    &body,
+                    &ctx.scan_id,
+                ));
+                Ok(result)
+            }
         }
-
-        let mut result = ModuleResult::new();
-        result.push(build_breach_entity(
-            target.kind.to_entity_kind(),
-            value,
-            &body,
-            &ctx.scan_id,
-        ));
-        Ok(result)
     }
 }
 
