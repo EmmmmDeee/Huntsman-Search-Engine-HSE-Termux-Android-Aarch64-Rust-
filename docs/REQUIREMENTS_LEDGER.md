@@ -17176,3 +17176,85 @@ check` and a green test run did not, and the first where what it caught was a
 design error rather than a lint: **an allowlist you qualify for is not an
 allowlist you belong on.** Read the exception's stated reason, not just its
 membership criteria.
+
+---
+
+### REQ-REACTOR-001 — an invariant that held by inspection, enforced by nothing
+
+`src/api/scan_handlers/mod.rs` says that routing every full-graph read through
+`entities_and_relations` means "a new one cannot reintroduce a raw
+`spawn_blocking` copy or, worse, **forget the hop and block a worker**".
+
+The first half is true. The second was a hope: `grep -rn
+"offload_store\|spawn_blocking" tests/` returned nothing. The sentence relied on
+being read.
+
+#### Why the invariant matters
+
+`StoragePort` is synchronous SQLite under a global connection mutex, and the
+server runs a deliberately small async worker pool — this is a phone, not a
+datacentre. A store call left inline on the async reactor stalls a worker for
+the whole query, and **no other test can see it**: the handler still returns
+the correct answer, just on the wrong thread. It is a defect with no failing
+assertion anywhere, which is precisely the kind a source-level invariant is for.
+
+#### The state of the tree
+
+A paren-matched scan of every `async fn` under `src/api` found **zero**
+un-hopped `store.…()` calls. The discipline was fully held; this cycle adds no
+fix, only the mechanism that keeps it held. That is the honest framing — it is
+prevention, not a repair, and the entry does not claim otherwise.
+
+The check deliberately accepts a **raw `spawn_blocking`** as well as
+`offload_store`, because `scan_batch` uses the raw form on purpose: a per-entry
+persist failure records that entry's error and lets the batch continue, where
+`offload_store` would abort the whole batch with a 500. The invariant is "off
+the reactor", not "through one helper", and a lint that demanded the helper
+would have been wrong about working code.
+
+#### The line-window version of this check is worthless
+
+The first attempt classified a call as hopped if `spawn_blocking` / `move ||`
+appeared within three lines above it. It reported **eight violations, all
+false** — `entity_get` among them, where the `move ||` sits four lines above the
+first `store.…()` call inside a correctly-hopped read group. Had that heuristic
+been trusted, this cycle would have "fixed" eight already-correct handlers.
+
+The rule: **a containment question needs a containment test.** "Is this call
+inside the closure" is answered by matching parentheses, never by counting
+lines — proximity is not containment, and a window wide enough to avoid false
+positives is wide enough to create false negatives.
+
+#### A test that passed for the wrong reason, caught by reading it
+
+The first `blocking_hop_spans` searched
+`find("offload_store(").or_else(|| find("spawn_blocking("))`. That returns the
+first `offload_store` if one exists **anywhere** ahead, so every
+`spawn_blocking` preceding the last `offload_store` is stepped over — the span
+list comes out short, and short spans invent violations.
+
+The test passed anyway. It passed because no file in `src/api` happens to order
+the two keywords that way today, which is a property of the current tree and not
+of the checker. It is now the earliest of the two keywords each iteration, with
+the trap recorded in a comment on the line that had it.
+
+This is the session's recurring lesson in its sharpest form: **a green test is
+evidence about the tree, not about the test.** The bug was found by re-reading
+the diff after it passed, not by the run.
+
+#### Falsification
+
+| # | mutation | killed by |
+|---|---|---|
+| R1 | un-hop a REAL call group: `entity_get`'s `offload_store(…)` becomes an immediately-invoked closure | the violations assertion, naming all three: `entity_get() calls store.get_entity() on the async reactor`, `…scan_ids_for_entity()`, `…observation_count()` |
+| R2 | break the `async fn` parse | its OWN vacuity floor — `only 0 async fns parsed — the parse, not the code, changed` |
+| R3 | break the hop-span matcher | its OWN vacuity floor — `only 0 blocking hops found — the span matcher, not the code, changed` |
+
+R2 and R3 are the rows that earlier cycles got wrong twice (REQ-GATE-002 M4,
+REQ-GATE-003 M4): a vacuity mutation that dies on some *other* assertion has
+tested the path, not the guard. Here each is killed by the floor written for it,
+with the floor's own message. The floors are stated as minimums (8 files, 40
+async fns, 10 hops) rather than exact counts, so ordinary growth never touches
+them while a parse that silently matches nothing still fires.
+
+Tree integrity re-verified by md5 after the matrix.

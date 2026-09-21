@@ -1747,3 +1747,195 @@ fn doh_resolvers_proved_unreachable_are_not_asked_three_more_times() {
          span is either deciding on outcomes not yet gathered or unreachable"
     );
 }
+
+// ─── REQ-REACTOR-001: no synchronous store read on the async reactor ─────────
+
+/// Collect every `.rs` file under `dir`, skipping test code the way
+/// [`scan_dir`] does — the store discipline is a production-path invariant, and
+/// a test is free to call the store inline on whatever thread it likes.
+fn production_rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            production_rs_files(&path, out);
+        } else if path.file_name().is_some_and(|n| n == "tests.rs")
+            || path.components().any(|c| c.as_os_str() == "tests")
+        {
+            continue;
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// The byte span of every `offload_store(…)` / `spawn_blocking(…)` call in
+/// `body`, matched by counting parentheses rather than by a line window.
+///
+/// The line-window version of this check is worthless: in `entity_get` the
+/// `move ||` sits four lines above the first `store.…()` call, and a
+/// three-line context test reports it — and seven others — as violations. A
+/// paren-matched span is the only form that answers "is this call lexically
+/// inside the hop".
+fn blocking_hop_spans(body: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let bytes = body.as_bytes();
+    let mut search = 0usize;
+    loop {
+        // The EARLIEST of the two keywords, not the first one that happens to
+        // match: an `.or_else()` chain prefers `offload_store` and would step
+        // past every `spawn_blocking` that precedes the last one, silently
+        // under-counting the spans and inventing violations.
+        let next = ["offload_store(", "spawn_blocking("]
+            .iter()
+            .filter_map(|kw| body[search..].find(kw).map(|p| search + p))
+            .min();
+        let Some(at) = next else { break };
+        let open = match body[at..].find('(') {
+            Some(p) => at + p,
+            None => break,
+        };
+        let mut depth = 0usize;
+        let mut i = open;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        spans.push((at, i));
+        search = open + 1;
+    }
+    spans
+}
+
+/// The body of every `async fn` in `src`, as `(name, body)`.
+fn async_fn_bodies(src: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let bytes = src.as_bytes();
+    let mut search = 0usize;
+    while let Some(rel) = src[search..].find("async fn ") {
+        let at = search + rel + "async fn ".len();
+        let name: String = src[at..]
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        let Some(brace) = src[at..].find('{').map(|p| at + p) else {
+            break;
+        };
+        let mut depth = 0usize;
+        let mut i = brace;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        out.push((name, src[brace..i.min(src.len())].to_string()));
+        search = brace + 1;
+    }
+    out
+}
+
+/// Every `store.<method>(` call in `body` that is NOT inside a blocking hop.
+fn unhopped_store_calls(body: &str) -> Vec<String> {
+    let spans = blocking_hop_spans(body);
+    let mut out = Vec::new();
+    let mut search = 0usize;
+    while let Some(rel) = body[search..].find("store.") {
+        let at = search + rel;
+        search = at + "store.".len();
+        let method: String = body[search..]
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        // A field access (`store.foo`) is only a CALL if a `(` follows.
+        if method.is_empty() || !body[search + method.len()..].starts_with('(') {
+            continue;
+        }
+        if spans.iter().any(|&(a, z)| a <= at && at <= z) {
+            continue;
+        }
+        out.push(method);
+    }
+    out
+}
+
+/// The `StoragePort` is synchronous SQLite under a global connection mutex,
+/// and the server runs a deliberately small async worker pool (a phone, not a
+/// datacentre). A store call left inline on the async reactor therefore stalls
+/// a worker for the whole query — and it is invisible to every other test,
+/// because it still returns the right answer, just on the wrong thread.
+///
+/// `src/api/scan_handlers/mod.rs` states the rule ("a new one cannot
+/// reintroduce a raw `spawn_blocking` copy or, worse, forget the hop and block
+/// a worker") and, before this test, nothing enforced it. The invariant held by
+/// inspection; this makes it hold by construction (REQ-REACTOR-001).
+///
+/// Note the check allows a **raw `spawn_blocking`** as well as `offload_store`:
+/// `scan_batch` deliberately uses the raw form so a per-entry persist failure
+/// records an error and lets the batch continue, where `offload_store` would
+/// abort the whole batch with a 500. The invariant is "off the reactor", not
+/// "through one helper".
+#[test]
+fn api_never_calls_the_store_on_the_async_reactor() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/api");
+    let mut files = Vec::new();
+    production_rs_files(&dir, &mut files);
+
+    let mut async_fns = 0usize;
+    let mut hopped = 0usize;
+    let mut violations: Vec<String> = Vec::new();
+
+    for path in &files {
+        let src = fs::read_to_string(path).unwrap();
+        for (name, body) in async_fn_bodies(&src) {
+            async_fns += 1;
+            hopped += blocking_hop_spans(&body).len();
+            for method in unhopped_store_calls(&body) {
+                violations.push(format!(
+                    "{}::{name}() calls store.{method}() on the async reactor",
+                    path.strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                        .unwrap_or(path)
+                        .display()
+                ));
+            }
+        }
+    }
+
+    // Vacuity guards: a parse that found nothing would make the assertion below
+    // trivially true. These numbers are floors, not counts, so ordinary growth
+    // never touches them.
+    assert!(
+        files.len() >= 8,
+        "only {} production files under src/api — the walk, not the tree, changed",
+        files.len()
+    );
+    assert!(
+        async_fns >= 40,
+        "only {async_fns} async fns parsed — the parse, not the code, changed"
+    );
+    assert!(
+        hopped >= 10,
+        "only {hopped} blocking hops found — the span matcher, not the code, changed"
+    );
+
+    assert!(
+        violations.is_empty(),
+        "synchronous store call(s) left on the async reactor:\n  {}",
+        violations.join("\n  ")
+    );
+}

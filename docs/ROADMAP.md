@@ -792,6 +792,26 @@ by looking for them rather than reading modules at random:**
    the right things"** — and the two authorities must be asserted disjoint, or
    a later overlap silently removes even that.
 
+   **A containment question needs a containment test — proximity is not
+   containment.** Classifying a `store.…()` call as "inside the blocking hop"
+   by looking three lines up reported eight violations, every one false,
+   including a handler whose `move ||` sat four lines above the call inside a
+   correctly-hopped group (REQ-REACTOR-001). Its rule: **when the question is
+   "is X lexically inside Y", match the delimiters** — a line window narrow
+   enough to exclude the unrelated is narrow enough to exclude the relevant, and
+   widening it only moves the error. Had the heuristic been trusted, the cycle
+   would have "repaired" eight already-correct handlers.
+
+   **A green test is evidence about the tree, not about the test.** The hop
+   matcher first searched `find("offload_store(").or_else(|| find("spawn_blocking("))`,
+   which steps over every `spawn_blocking` that precedes the last
+   `offload_store`, under-counts the spans and would invent violations — and it
+   passed, because no file happens to order the two keywords that way *today*
+   (REQ-REACTOR-001). Its rule: **a checker that passes has only demonstrated
+   agreement with the current tree**; whether it would catch the thing it is
+   for is a separate question, answered by mutating the tree, and whether it is
+   correct at all is answered by reading it.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other
