@@ -27,7 +27,26 @@ Two invariants, both learned from real breakage on this repo:
    real regression as invent a phantom one. The pin is the fix; this check is
    what stops it being dropped again.
 
-Exits non-zero, naming the file and the reason, when either invariant breaks.
+3. **The local gate does not silently omit a CI check.** `scripts/gate.sh`
+   exists to be "every check CI runs on a pull request, in one command", and
+   its own header promises that a check which cannot run locally is "reported
+   as SKIPPED with the reason, never silently omitted: a gate that quietly
+   drops a check is worse than no gate, because it reports success it did not
+   establish". It had nonetheless drifted: `secret-scan.yml`'s `gitleaks` job
+   — the credential scanner that exists because this repository once shipped
+   live provider keys in a public tree — was neither run nor skip-listed, so
+   the gate printed "All N executed check(s) passed" without ever counting it.
+   Every other gate check catches a defect a later commit can fix; that one
+   catches a disclosure no commit can undo (REQ-GATE-002).
+
+   This invariant is what stops the drift recurring, because a one-off
+   addition re-drifts the next time CI gains a job. [`GATE_COVERAGE`] must
+   account for every `pull_request` job, and is checked in BOTH directions:
+   every job is mapped, and every gate label named in the map really exists in
+   `gate.sh`. A map naming a label that has been renamed away is as broken as
+   an unmapped job.
+
+Exits non-zero, naming the file and the reason, when any invariant breaks.
 """
 
 from __future__ import annotations
@@ -48,6 +67,51 @@ WORKFLOW_DIR = Path(".github/workflows")
 # workflow_dispatch) on precisely the ref they used before: outside a
 # `pull_request` event `github.event.pull_request` is null.
 EXPECTED_REF = "${{ github.event.pull_request.head.sha || github.sha }}"
+
+GATE_SCRIPT = Path("scripts/gate.sh")
+
+# Every `pull_request` job, mapped to the `gate.sh` check label(s) that stand
+# in for it locally. A job whose coverage is a single label still uses a tuple.
+#
+# ADDING A CI JOB? Add it here in the same commit, exactly as `gate.sh`'s
+# header requires ("a gate that has drifted from CI is a defect, not a
+# convenience"). This lint is what turns that instruction into an enforced one.
+GATE_COVERAGE: dict[str, tuple[str, ...]] = {
+    "audit.yml::audit": ("cargo-audit / deny / machete / dep-cooldown",),
+    "ci.yml::check": (
+        "fmt",
+        "check",
+        "clippy",
+        "rustdoc lints",
+        "test",
+        "doctests",
+        "doc coverage",
+    ),
+    "ci.yml::sibling-crates": (
+        "fmt (hse-core)",
+        "clippy (hse-core)",
+        "rustdoc lints (hse-core)",
+        "test (hse-core)",
+        "fmt (wasm-ui)",
+        "clippy (wasm-ui)",
+        "test (wasm-ui, native)",
+        "wasm-ui/pkg drift check",
+    ),
+    "ci.yml::msrv": ("MSRV ($MSRV)",),
+    "ci.yml::aarch64-android": ("cross-build ($TARGET)", "cross-test-compile ($TARGET)"),
+    "ci.yml::install-script": ("install.sh syntax", "reconcile.sh syntax", "shellcheck"),
+    "rust-clippy.yml::rust-clippy-analyze": ("clippy",),
+    "secret-scan.yml::gitleaks": ("secret scan (gitleaks)",),
+}
+
+# Jobs that are deliberately NOT gate checks, each with the reason. Kept
+# separate from `GATE_COVERAGE` so "exempt" is a stated decision rather than an
+# omission that looks like one.
+GATE_EXEMPT: dict[str, str] = {
+    # Provisions a toolchain for GitHub's Copilot agent; it verifies nothing
+    # about the tree, so there is no local equivalent to run or to skip.
+    "copilot-setup-steps.yml::copilot-setup-steps": "environment setup, not a verification check",
+}
 
 
 class StrictLoader(yaml.SafeLoader):
@@ -84,12 +148,70 @@ def _triggers_on_pull_request(doc: dict) -> bool:
     return triggers == "pull_request"
 
 
+def _check_gate_coverage(pr_jobs: list[str]) -> list[str]:
+    """Invariant 3 — see the module docstring.
+
+    Checked in both directions, and guarded against vacuity: a walk that found
+    no jobs would otherwise satisfy every assertion below while proving
+    nothing, which is exactly how the registry in REQ-GEOGATE-001 stayed green
+    over seven modules it never looked at.
+    """
+    problems: list[str] = []
+
+    if len(pr_jobs) < 5:
+        return [
+            f"gate coverage: only {len(pr_jobs)} pull_request job(s) discovered — "
+            f"the walk is not finding the workflows, so this check proves nothing"
+        ]
+
+    try:
+        gate_src = GATE_SCRIPT.read_text()
+    except OSError as exc:
+        return [f"gate coverage: cannot read {GATE_SCRIPT} — {exc}"]
+
+    # Forward: every pull_request job is either covered or explicitly exempt.
+    for job in sorted(pr_jobs):
+        if job in GATE_COVERAGE or job in GATE_EXEMPT:
+            continue
+        problems.append(
+            f"gate coverage: `{job}` runs on pull_request but {GATE_SCRIPT} neither "
+            f"runs nor skip-lists it, and it is not in GATE_EXEMPT — the gate would "
+            f"report success it did not establish. Add the check to gate.sh (or, if "
+            f"it cannot run locally, a `skip` with the reason) and map it in "
+            f"GATE_COVERAGE"
+        )
+
+    # Backward: every label the map names must really exist in gate.sh. A label
+    # renamed in gate.sh and not here leaves the map pointing at nothing, which
+    # would keep this lint green while the coverage claim became false.
+    for job, labels in sorted(GATE_COVERAGE.items()):
+        for label in labels:
+            if f'"{label}"' in gate_src:
+                continue
+            problems.append(
+                f"gate coverage: `{job}` is mapped to gate.sh check {label!r}, "
+                f"which no `run`/`skip` in {GATE_SCRIPT} declares — the map has "
+                f"drifted from the script it describes"
+            )
+
+    # A mapped job that no longer runs on pull_request is stale bookkeeping.
+    for job in sorted(set(GATE_COVERAGE) | set(GATE_EXEMPT)):
+        if job not in pr_jobs:
+            problems.append(
+                f"gate coverage: `{job}` is mapped but no longer runs on "
+                f"pull_request — remove it so the map stays a true description"
+            )
+
+    return problems
+
+
 def main() -> int:
     if not WORKFLOW_DIR.is_dir():
         print(f"check_workflows: {WORKFLOW_DIR} not found", file=sys.stderr)
         return 1
 
     problems: list[str] = []
+    pr_jobs: list[str] = []
     checked = pinned_total = 0
 
     for path in sorted(WORKFLOW_DIR.glob("*.yml")):
@@ -111,6 +233,7 @@ def main() -> int:
             continue
 
         for job_name, job in doc["jobs"].items():
+            pr_jobs.append(f"{path.name}::{job_name}")
             if not isinstance(job, dict):
                 continue
             for step in job.get("steps") or []:
@@ -128,6 +251,8 @@ def main() -> int:
                         f"takes GitHub's stale-prone refs/pull/N/merge default"
                     )
 
+    problems.extend(_check_gate_coverage(pr_jobs))
+
     if problems:
         print("check_workflows: FAILED", file=sys.stderr)
         for problem in problems:
@@ -136,7 +261,9 @@ def main() -> int:
 
     print(
         f"check_workflows: {checked} workflow file(s) parsed strictly; "
-        f"{pinned_total} pull_request checkout(s) pinned to the PR head"
+        f"{pinned_total} pull_request checkout(s) pinned to the PR head; "
+        f"{len(GATE_COVERAGE)} pull_request job(s) covered by gate.sh, "
+        f"{len(GATE_EXEMPT)} exempt"
     )
     return 0
 

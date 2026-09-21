@@ -16555,3 +16555,102 @@ treat it as a clean miss instead of a decode error."* A quota notice is not a
 clean miss. The assertion is now `assert_eq!(b.success, None)`, which is the
 stronger statement the old `bool` could not make: the key was **absent**, not
 false.
+
+---
+
+### REQ-GATE-002 — the gate that proves the tree is shippable did not run the secret scanner
+
+`scripts/gate.sh` exists to be *"every check CI runs on a pull request, in one
+command"*. It did not run, skip, or mention the `gitleaks` secret scan.
+`grep -in "gitleaks\|secret" scripts/gate.sh` returned nothing.
+
+It violated three of its own header rules at once:
+
+1. *"Source of truth: `.github/workflows/{ci,rust-clippy,fuzz,audit}.yml`"* —
+   `secret-scan.yml` is absent from the list, and `fuzz.yml` is in it despite
+   not running on `pull_request` at all.
+2. *"Checks that cannot run on this host are reported as SKIPPED with the
+   reason, **never silently omitted**: a gate that quietly drops a check is
+   worse than no gate, because it reports success it did not establish."*
+3. *"If CI gains a check, add it here in the same commit — a gate that has
+   drifted from CI is a defect, not a convenience."*
+
+The gate's summary reads `All 19 executed check(s) passed; 3 could not run
+here (listed above)` — a completeness claim over a set that never counted the
+one omitted check.
+
+#### Why this check, specifically
+
+Every other gate check catches a defect a later commit can fix. This one
+catches a credential entering the tree. `secret-scan.yml`'s own header records
+why that is not symmetric:
+
+> This exists because the repository shipped live OathNet / HIBP / WiGLE /
+> SeekNow credentials as "zero-config embedded defaults" — compiled into every
+> published binary and committed to a public tree … **Nothing but an automated
+> gate keeps that from happening again** … history cannot be un-published,
+> which is why revocation at the provider (not rewriting) is the actual remedy.
+
+So the failure mode is: run the gate, read that everything passed, push — and
+learn about the secret once it is on a public remote, at which point the remedy
+is revoking a live credential rather than amending a commit.
+
+#### Two call sites, and the second one claimed more
+
+`.claude/commands/ci.md` — the `/ci` slash command, documented *"When to Run:
+before every push"* — opened with *"Runs the comprehensive verification gate —
+**same checks as GitHub CI**"* and then listed seven checks. It omitted
+gitleaks, and also most of what `gate.sh` genuinely runs (the sibling crates,
+`wasm-ui/pkg` drift, doc coverage, the script-syntax and workflow-file lints).
+So the documentation had drifted from the gate *and* the gate had drifted from
+CI. It now defers to the script — which reports its own SKIPs — instead of
+re-asserting a parity claim that has to be maintained by hand.
+
+#### The fix is the lint, not the line
+
+Adding the check alone would re-drift the next time CI gains a job, which is
+precisely how this happened: the instruction to keep them in step existed, in
+the file, and relied on being read. `scripts/check_workflows.py` — which
+already walks every workflow with a duplicate-key-refusing loader — gains a
+third invariant with a declared `GATE_COVERAGE` map, checked in **both**
+directions:
+
+* every `pull_request` job is mapped to the gate label(s) covering it, or named
+  in `GATE_EXEMPT` **with a reason** (one job qualifies: `copilot-setup-steps`
+  provisions a toolchain and verifies nothing);
+* every label the map names must really exist as a `run`/`skip` in `gate.sh`, so
+  a rename on one side cannot leave the map pointing at nothing while staying
+  green;
+* a mapped job that no longer runs on `pull_request` is reported as stale
+  bookkeeping.
+
+Locally gitleaks is absent, so the honest outcome is `SKIP` with the reason —
+the `shellcheck` precedent — and CI stays the authority. The invocation
+otherwise matches the workflow exactly, `--redact` included: without it a
+finding re-discloses, in the terminal, the secret it just caught.
+
+#### Falsification
+
+Baseline red names the defect precisely:
+
+```
+gate coverage: `secret-scan.yml::gitleaks` is mapped to gate.sh check
+'secret scan (gitleaks)', which no `run`/`skip` in scripts/gate.sh declares
+```
+
+| mutation | result |
+| --- | --- |
+| **M1** delete the gitleaks block (the pre-fix state) | KILLED — backward direction |
+| **M2** CI gains an unmapped `pull_request` job | KILLED — forward direction |
+| **M3** a `gate.sh` label is renamed, map not updated | KILLED — `ci.yml::check` → `'doc coverage'` |
+| **M4** point the walk at a missing directory | KILLED — **but by the pre-existing guard** |
+| **M4b** point it at a directory that exists and yields 0 jobs | KILLED by the new vacuity guard |
+
+M4 is recorded twice on purpose. It "passed" the matrix while proving nothing
+about the guard it was written for: the pre-existing *directory-not-found*
+check fired first, so the `len(pr_jobs) < 5` guard was never reached. Only M4b
+— a directory that exists and yields too few jobs — actually exercises it,
+producing *"only 0 pull_request job(s) discovered … this check proves nothing"*.
+The rule this re-teaches, after the mistyped test path earlier on this branch:
+**a mutation that dies on the way to the control has tested the path, not the
+control.**

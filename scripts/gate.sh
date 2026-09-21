@@ -22,9 +22,14 @@
 # a gate that quietly drops a check is worse than no gate, because it reports
 # success it did not establish.
 #
-# Source of truth: .github/workflows/{ci,rust-clippy,fuzz,audit}.yml. If CI
-# gains a check, add it here in the same commit — a gate that has drifted from
-# CI is a defect, not a convenience.
+# Source of truth: .github/workflows/{ci,rust-clippy,audit,secret-scan}.yml.
+# If CI gains a check, add it here in the same commit — a gate that has
+# drifted from CI is a defect, not a convenience. That instruction used to
+# rely on being read: `secret-scan.yml` was missing from this very list, and
+# its gitleaks job went unrun and unmentioned. `check_workflows.py`'s third
+# invariant now enforces it — every pull_request job must be run or
+# skip-listed here, and every label it names must really exist (REQ-GATE-002).
+# `fuzz.yml` is not listed because it does not run on pull_request.
 set -uo pipefail
 
 # ── Disk discipline (REQ-GATE-001) ───────────────────────────────────────────
@@ -304,6 +309,26 @@ if command -v python3 >/dev/null 2>&1; then
     run "workflow files" python3 scripts/check_workflows.py
 else
     skip "workflow files" "python3 not installed"
+fi
+
+# ── secret-scan.yml: the one miss that cannot be undone (REQ-GATE-002) ───────
+# This gate omitted gitleaks entirely — not run, not skipped, not mentioned —
+# while printing "All N executed check(s) passed". Every other check here
+# catches a defect a later commit fixes; this one catches a credential landing
+# in the tree, and secret-scan.yml's own header records why that is different:
+# the repository already shipped live OathNet / HIBP / WiGLE / SeekNow keys in
+# a public tree, "history cannot be un-published", and "nothing but an
+# automated gate keeps that from happening again". Finding it after the push
+# is finding it too late.
+#
+# Same invocation as the workflow, so local and CI cannot disagree. `--redact`
+# is not optional: without it a finding re-discloses, in this terminal, the
+# secret it just caught.
+if command -v gitleaks >/dev/null 2>&1; then
+    run "secret scan (gitleaks)" gitleaks dir . \
+        --config .gitleaks.toml --redact --no-banner --exit-code 1
+else
+    skip "secret scan (gitleaks)" "gitleaks not installed — CI is the authority"
 fi
 
 # ── audit.yml: only fires when a manifest changed, so mirror that ────────────

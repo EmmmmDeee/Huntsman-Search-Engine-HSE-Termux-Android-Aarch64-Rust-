@@ -697,6 +697,27 @@ by looking for them rather than reading modules at random:**
    rejects everything is indistinguishable from a gate that works, on rejection
    evidence alone.
 
+   **A mutation that dies on the way to the control has tested the path, not the
+   control.** REQ-GATE-002's vacuity mutation pointed the workflow walk at a
+   missing directory and was duly killed — by the pre-existing
+   *directory-not-found* check, which fires long before the new
+   "did the walk actually find anything?" guard it was written to exercise.
+   Only a directory that EXISTS and yields too few jobs reaches that guard. Its
+   rule: **after a mutation is killed, read WHICH assertion killed it.** A green
+   matrix row proves something died, not that the thing you were testing did —
+   the same failure as the mistyped test path earlier on this branch, where
+   `cargo test --exact` on a name matching nothing reported no failure at all.
+
+   **The instruction that relies on being read is not a mechanism.**
+   `scripts/gate.sh` has carried "if CI gains a check, add it here in the same
+   commit — a gate that has drifted from CI is a defect" since it was written,
+   and had drifted from CI anyway: the `gitleaks` secret scan was neither run
+   nor skip-listed (REQ-GATE-002). The remedy was not to add the check but to
+   add the lint that fails when the two disagree. Its rule: **when a file tells
+   a future editor to keep two things in step, ask what fails if they do not.**
+   If the answer is "nothing, until someone notices", the comment is a wish;
+   convert it into a check that both sides must satisfy, in both directions.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other
