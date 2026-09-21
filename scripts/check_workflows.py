@@ -193,7 +193,15 @@ def _check_audit_paths() -> list[str]:
     The gate must be **at least as eager as CI**, never looser: it is compared
     against the UNION of every event's `paths`, because a developer running the
     gate wants to know about anything CI will run, and it is harmless for the
-    local gate to run a check CI would have skipped. `push` and `pull_request`
+    local gate to run a check CI would have skipped.
+
+    Two things are checked, because REQ-GATE-003 fixed only the first and
+    REQ-GATE-004 found the second was the larger half: the path LIST must cover
+    the filter, and the COMPARISON BASE must include `origin/main...HEAD`. A
+    guard that asks "do I have uncommitted manifest edits?" answers a different
+    question from CI's "does this PR change a manifest?", and on a clean tree —
+    the normal state before a push — it skips regardless of how correct the
+    path list is. `push` and `pull_request`
     carry DIFFERENT filters here (the PR one omits `dep-cooldown.toml` and
     `src/bin/dep_cooldown/**`), so mirroring only one of them — as the comment
     said it did — leaves the other's paths unguarded (REQ-GATE-003).
@@ -235,6 +243,22 @@ def _check_audit_paths() -> list[str]:
             f"{GATE_SCRIPT} — the audit skip-list this check exists to verify is gone"
         ]
     listed = {p.rstrip("/") for p in match.group(1).split()}
+
+    # WHAT is compared, not only WHICH paths (REQ-GATE-004). `git diff HEAD`
+    # sees uncommitted edits only, so on a clean tree the gate skipped whatever
+    # the path list said — while CI's `pull_request` filter matches the
+    # branch's CUMULATIVE diff against the base. The audit guard must ask both
+    # questions, as the wasm-ui/pkg drift gate in the same script already does.
+    guard = match.group(0)
+    tail = gate_src[match.end() : match.end() + 600]
+    if "origin/main...HEAD" not in guard + tail:
+        problems.append(
+            f"audit paths: {GATE_SCRIPT}'s audit guard compares only `git diff HEAD` "
+            f"(uncommitted edits). CI's pull_request filter matches the branch's "
+            f"cumulative diff, so on a clean tree this gate skips a check CI runs. "
+            f"Check `origin/main...HEAD` too — the wasm-ui/pkg drift gate in this "
+            f"same script shows the shape"
+        )
 
     for path in sorted(required - listed):
         problems.append(

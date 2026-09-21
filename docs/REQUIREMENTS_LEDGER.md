@@ -16707,6 +16707,18 @@ a list that is correct today drifts the moment a ninth crate appears, and a
 lint that only diffs two hand-maintained lists relocates the maintenance
 instead of removing it.
 
+#### Correction, added by REQ-GATE-004
+
+**The path list was the lesser half of this defect, and this entry originally
+implied it was the whole of it.** The guard it corrects asks `git diff --quiet
+HEAD`, which sees only UNCOMMITTED edits; CI's `pull_request` filter matches the
+branch's CUMULATIVE diff against the base. On a clean tree — the normal state
+when running the gate before a push — the gate skipped regardless of how correct
+the path list was. Fixing the paths made a right answer to the wrong question.
+The comparison base is fixed in REQ-GATE-004, which also records that the
+correct pattern was already 119 lines up in the same file, and that I edited
+these exact lines without checking what they compared.
+
 #### Severity, stated plainly
 
 **Low, and lower than REQ-GATE-002's.** CI remains the authority and still runs
@@ -16744,3 +16756,75 @@ missing-path check and never reached the vacuity guard. Only a workflow with no
 nothing"*. The matrix now records, per row, **which** assertion did the killing
 — because a row that merely says KILLED is compatible with the guard under test
 never running.
+
+---
+
+### REQ-GATE-004 — the gate asked "did I edit a manifest?" where CI asks "does this branch change one?"
+
+REQ-GATE-003 corrected which PATHS the audit gate watches. It did not check
+**what the guard compares**, and that was the larger half:
+
+| | question actually asked |
+| --- | --- |
+| CI (`audit.yml` `pull_request.paths`) | does this PR's **cumulative** diff (`base...head`) touch a manifest? |
+| `gate.sh` (`git diff --quiet HEAD`) | do I have **uncommitted** manifest edits right now? |
+
+On a clean tree — the normal state when running the gate before a push — the
+second is always "no". The path list could be perfect and the gate would still
+skip. Fixing the paths was a right answer to the wrong question.
+
+#### Reproduced on the branch itself, no fixture
+
+```
+git diff --name-only origin/main...HEAD -- Cargo.lock   ->  Cargo.lock     (CI runs the audit)
+git diff --quiet HEAD -- Cargo.toml Cargo.lock          ->  quiet          (gate skips it)
+```
+
+and the gate's own run on that branch printed, verbatim:
+
+```
+SKIP  cargo-audit / deny / machete / dep-cooldown — no manifest change (audit.yml path filter)
+```
+
+for a branch that changes `Cargo.lock`. **A skip reason that is false is worse
+than the omission REQ-GATE-002 fixed**: an unmentioned check is invisible, while
+a wrong reason actively misleads. The reason now names what was compared, and
+says explicitly when `origin/main` could not be resolved and the branch diff was
+therefore NOT checked.
+
+#### The exemplar was 119 lines up, in the same file
+
+`gate.sh:230`, the `wasm-ui/pkg` drift gate, already asks both questions, and
+its comment already gives the reason: *"the stale artifact is a property of the
+branch head CI will build, not only of the edit in front of you."* Its
+`git rev-parse --verify --quiet origin/main` guard — which keeps a fresh clone
+or a detached checkout working — is copied verbatim rather than reinvented.
+
+This is the **seventh** instance on this branch of the rule being written in the
+file that violates it, and the first where the person who walked past the
+exemplar was me: I edited these exact lines an hour earlier, for a neighbouring
+defect, and read the path list without reading the comparison.
+
+#### Falsification
+
+| mutation | killed by the intended assertion? |
+| --- | --- |
+| **M1** revert the audit guard to `HEAD`-only (the pre-fix state) | yes — the new comparison-base assertion |
+| **M4** drop `hse-core/Cargo.lock` from the list | yes — the **path** assertion, not the base one |
+| **M3** strip `origin/main` from the pkg-drift **sibling** | **SURVIVED — and that is correct** |
+
+M4 matters because it proves the two assertions are distinct rather than one
+over-broad check that fires on any edit. M3 is recorded as a deliberate scope
+statement, not a hidden gap: invariant 4 guards the audit gate, and the sibling
+carries its own rationale and its own stakes message. Claiming otherwise would
+overstate what the lint establishes.
+
+Behavioural proof on the real branch, which is what the ledger should record
+rather than a test that merely goes green:
+
+```
+OLD guard (HEAD only):                    -> SKIP
+NEW guard (HEAD AND origin/main...HEAD):  -> RUNS the audit block
+```
+
+matching CI, which ran `cargo audit` on every commit of this PR.

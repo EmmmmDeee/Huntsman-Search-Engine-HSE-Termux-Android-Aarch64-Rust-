@@ -737,6 +737,18 @@ by looking for them rather than reading modules at random:**
    its source, DERIVE it** — otherwise the check is only as fresh as whoever
    last edited both sides, which is the condition it was supposed to end.
 
+   **Fixing WHICH inputs a guard watches is worthless if it asks the wrong
+   QUESTION of them.** REQ-GATE-003 corrected the audit gate's path list;
+   REQ-GATE-004 found the guard compared `git diff HEAD` — uncommitted edits —
+   where CI compares the branch's cumulative diff against its base, so on a
+   clean tree it skipped however correct the list was. Its rule: **when
+   mirroring a CI filter locally, state the comparison base before the paths.**
+   Paths answer *what*; the base answers *since when*, and a local gate run
+   before a push has no uncommitted changes to look at. A skip whose stated
+   reason is false ("no manifest change" on a branch that changes one) is worse
+   than a check that is merely missing: the omission is invisible, the wrong
+   reason is believed.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other

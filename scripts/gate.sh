@@ -346,8 +346,31 @@ fi
 # it against the real tree and fails if this list does not cover it, so adding a
 # ninth crate cannot silently narrow the gate (REQ-GATE-003). The entry that was
 # already missing when that lint was written: `.github/workflows/audit.yml`.
-if git diff --quiet HEAD -- Cargo.toml Cargo.lock deny.toml dep-cooldown.toml src/bin/dep_cooldown fuzz/Cargo.toml fuzz/Cargo.lock hse-core/Cargo.toml hse-core/Cargo.lock wasm-ui/Cargo.toml wasm-ui/Cargo.lock .github/workflows/audit.yml 2>/dev/null; then
-    skip "cargo-audit / deny / machete / dep-cooldown" "no manifest change (audit.yml path filter)"
+# WHAT IS COMPARED matters as much as which paths (REQ-GATE-004). `git diff
+# HEAD` sees only UNCOMMITTED edits, so on a clean tree — the normal state when
+# running this gate before a push — it skipped no matter what the path list
+# said. CI asks a different question: a `pull_request` path filter matches the
+# branch's CUMULATIVE diff against the base, which is why `cargo audit` runs on
+# every commit of a PR whose Cargo.lock changed, including commits that touch no
+# manifest at all. Checking only the working tree made this gate print "no
+# manifest change" for a branch that changes one.
+#
+# Both are checked, exactly as the wasm-ui/pkg drift gate above already does for
+# the same reason ("the stale artifact is a property of the branch head CI will
+# build, not only of the edit in front of you"). The `rev-parse --verify` guard
+# keeps a fresh clone or a detached checkout with no `origin/main` working.
+if git diff --quiet HEAD -- Cargo.toml Cargo.lock deny.toml dep-cooldown.toml src/bin/dep_cooldown fuzz/Cargo.toml fuzz/Cargo.lock hse-core/Cargo.toml hse-core/Cargo.lock wasm-ui/Cargo.toml wasm-ui/Cargo.lock .github/workflows/audit.yml 2>/dev/null \
+    && { ! git rev-parse --verify --quiet origin/main >/dev/null 2>&1 \
+         || git diff --quiet origin/main...HEAD -- Cargo.toml Cargo.lock deny.toml dep-cooldown.toml src/bin/dep_cooldown fuzz/Cargo.toml fuzz/Cargo.lock hse-core/Cargo.toml hse-core/Cargo.lock wasm-ui/Cargo.toml wasm-ui/Cargo.lock .github/workflows/audit.yml 2>/dev/null; }; then
+    # The reason names what was actually compared, so it cannot claim more than
+    # it checked — a wrong reason misleads where a missing check merely hides.
+    if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+        skip "cargo-audit / deny / machete / dep-cooldown" \
+            "no manifest change, uncommitted or vs origin/main (audit.yml path filter)"
+    else
+        skip "cargo-audit / deny / machete / dep-cooldown" \
+            "no uncommitted manifest change; origin/main absent, so the branch diff was NOT checked (audit.yml path filter)"
+    fi
 else
     for t in cargo-audit cargo-deny cargo-machete; do
         command -v "$t" >/dev/null 2>&1 || skip "$t" "not installed"
