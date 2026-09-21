@@ -75,6 +75,22 @@ fn default_interval_secs() -> u64 {
     crate::LIVE_DEFAULT_INTERVAL_SECS
 }
 
+/// Every key [`LiveOptions`] defines, as serde spells it on the wire.
+///
+/// The live counterpart of [`crate::core::scan::known_option_keys`], and needed
+/// for the same reason one level up: every `LiveOptions` field is
+/// absent-tolerant, and two of the three defaults are the *permissive* value.
+/// A misspelled `iterations` leaves `None`, which this module documents as
+/// "run forever (until explicit stop or process exit)" — so a typo turns a
+/// bounded session into an unbounded one. A misspelled `radar` leaves `false`,
+/// the mode this module's own doc describes as re-querying everything each
+/// iteration, so the slip *increases* paid-API spend. And because a live
+/// session repeats, each slip is multiplied over every sweep.
+#[must_use]
+pub fn known_live_option_keys() -> std::collections::BTreeSet<String> {
+    crate::core::wire_keys::known_keys::<LiveOptions>()
+}
+
 /// Status of a live session at a moment in time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

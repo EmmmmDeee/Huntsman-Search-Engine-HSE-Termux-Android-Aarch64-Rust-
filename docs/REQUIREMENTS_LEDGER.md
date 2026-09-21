@@ -16965,8 +16965,18 @@ their pre-matrix hashes.
 
 #### Scope, honestly
 
-This closes the *input* side. It does not claim anything about whether any
-operator has actually been bitten — no telemetry exists to establish that, and
+> **Correction, added by REQ-SCANOPTS-002.** "This closes the input side" was
+> wrong: it closed *two of the three* seams that accept an options object.
+> `POST /api/v1/live` takes a `LiveRequest` that carries the same
+> `ScanOptions`, and it was left open. The search behind this entry looked for
+> `Json<…ScanRequest>` / `Json<…ScanOptions>` **by type name**, and
+> `LiveRequest` is a different name that *contains* `ScanOptions`. Enumerating
+> the `Json<T>` extractors themselves — which REQ-SCANOPTS-002 did, and this
+> cycle did not — finds it immediately. The rest of this entry stands as
+> written about the scan seam.
+
+This closes the scan seam's *input* side. It does not claim anything about
+whether any operator has actually been bitten — no telemetry exists to establish that, and
 the entry does not assert it. What is established from source is that the path
 exists, is reachable over HTTP, and returns `202` with no signal.
 
@@ -16997,3 +17007,172 @@ whoever does settle it: its module doc states the fail-open as a *feature*
 degrades to 'not present' rather than a parse failure"), which is the shape
 `REQ-ZOOMEYE-001` and `REQ-HUDSONROCK-001` both had — but the shape is not the
 finding, and it is not recorded as one.
+
+---
+
+### REQ-SCANOPTS-002 — the same defect on the live seam, which the previous cycle's fix did not reach
+
+`POST /api/v1/live` takes `Json<LiveRequest>`, and `LiveRequest` carries
+`options: ScanOptions` — the identical 30-field absent-tolerant struct
+`REQ-SCANOPTS-001` had just fixed at the scan seam — **plus a second
+absent-tolerant object, `live: LiveOptions`**. Neither was checked. The
+previous entry's claim to have closed "the input side" was therefore wrong, and
+it is corrected in place above rather than left standing.
+
+#### How it was missed, and how it was found
+
+The REQ-SCANOPTS-001 search was for `Json<…ScanRequest>` and
+`Json<…ScanOptions>` — **by type name**. `LiveRequest` is a different name that
+*contains* `ScanOptions`, so it matched nothing. Enumerating the `Json<T>`
+extractors themselves finds all three seams in one grep:
+
+```
+src/api/live_handlers.rs:26      Json<crate::core::live::LiveRequest>
+src/api/scan_handlers/core.rs:21 Json<serde_json::Value>        (fixed)
+src/api/scan_handlers/core.rs:775 Json<Vec<serde_json::Value>>  (fixed)
+```
+
+The rule: **search for the seam, not for the type you expect to find there.**
+A type-name search answers "where is this type used", which is not the question;
+the question is "where does operator input enter", and the extractor is what
+answers it.
+
+#### Why the live seam is the worse of the two
+
+A live session *repeats*, so every silently-dropped control is multiplied over
+every sweep:
+
+| key | default | what a typo does |
+|---|---|---|
+| `options.*` | permissive | the same six scope/spend controls, now on a repeating scan |
+| `live.iterations` | `None` | this module documents `None` as **"run forever"** — a bounded session becomes unbounded |
+| `live.radar` | `false` | `radar: true` is the module's own *less* aggressive mode (one dispatch ledger across sweeps, so keyed modules do not re-query covered seeds); the default re-queries everything, so the slip **increases** paid-API spend |
+| `live.interval_secs` | `30` | silently changes cadence |
+
+#### The ninth instance, and this one is mine
+
+`LiveRequest.options`' own doc comment ends: *"Two spellings of 'no preference'
+must mean the same thing, and live must match scan."* It was written about a
+different bug in the same field — `#[serde(default)]` once resolved to
+`ScanOptions::default()` (depth 0) where an explicit `"options": {}` recursed
+two hops. Having fixed the scan seam and not this one, I made live stop
+matching scan, in the exact field whose doc comment forbids it.
+
+That is the ninth instance on this branch of a rule written in the file that
+violates it — and the second I created myself rather than inherited.
+
+#### The fix: one authority, three seams
+
+Rather than a third copy of the check:
+
+- `src/util/wire_keys.rs` (new) holds the generic derivation —
+  `known_keys::<T>()`, `unknown_keys()`, `nearest_key()` — over any
+  `Serialize + Default` options struct.
+- `core::scan::{known_option_keys, unknown_option_keys, nearest_option_key}`
+  become thin wrappers, keeping the names, doctest and locks shipped by
+  REQ-SCANOPTS-001.
+- `core::live::known_live_option_keys()` is the `LiveOptions` equivalent.
+- `api::handlers::reject_unknown_option_keys(raw, field, known)` is **the one
+  error-message authority**, shared by all three seams. The check is cheap to
+  re-implement per handler, which is exactly the danger: three hand-written
+  copies would drift in wording, in whether they name the offending key, and in
+  whether they say the option was *not applied* — and that last clause is the
+  whole point.
+
+`field` is now part of the message (`unrecognised live key(s): …`), so a
+two-object request says which half was wrong. The test-state constructor was
+lifted from `scan_handlers::tests` to `api::test_state()` for the same reason —
+two hand-maintained copies of a 25-line builder would drift in the way the
+checks they exercise exist to prevent.
+
+#### What the sweep refuted
+
+Every other `Json<T>` request body was examined and **none is a member**:
+
+| seam | verdict |
+|---|---|
+| `CellsClearRequest.confirm` | fails **closed** — `if !req.confirm { return bad_request(…) }`. A typo refuses an irreversible DB truncation. |
+| `KeysPutRequest` | fails **closed** — `if req.updates.is_empty() && req.deletes.is_empty() { return bad_request(…) }`, and a partial-typo request still reports `"deleted": 0`, so the no-op is observable. |
+| `KeysPoolRevokeRequest`, `KeysPoolRotateRequest`, `TogglePutRequest`, `CellsImportRequest` | **no absent-tolerant field at all** — a typo is already a deserialisation error. |
+| `KeysPoolAddRequest` | `notes`/`env` optional; losing them costs metadata, not a safety control. Not filed. |
+| `radar_live` | takes **no request body** — `State(s)` only, and builds its own `LiveOptions { radar: true, .. }` under a comment reading "no operator input". Not a seam. |
+
+So the class is exactly three seams, all now covered, and the permissive-default
+direction is **not** uniform — `confirm` is the counter-example that proves the
+check has to be made per field, not assumed.
+
+#### Reproduced before fixed
+
+```
+thread 'core::live::tests::repro_live_request_drops_unknown_option_keys' panicked:
+  a misspelled passive_only must not silently run a REPEATING ACTIVE scan
+test result: FAILED. 0 passed; 1 failed
+```
+
+with both correctly-spelled controls passing in the same run.
+
+#### Falsification
+
+Six mutations, all killed, each recorded by the assertion that killed it:
+
+| # | mutation | killed by |
+|---|---|---|
+| L1 | live's `options` check neutered — **literally the pre-fix state** | `live_create_rejects_a_misspelled_scan_scope_control`, and **nothing else**: 17 of 18 pass, including every scan-seam test REQ-SCANOPTS-001 shipped |
+| L2 | live's `live` check neutered | `live_create_rejects_a_misspelled_iteration_bound` alone |
+| L3 | **cross-wired**: the `live` object checked against the SCAN key set | `live_create_still_accepts_correctly_spelled_options` — **the control, and only the control** |
+| L4 | generic `unknown_keys` reports nothing unknown | 9 — every rejection test on both seams, plus the generic's own |
+| L5 | **over-correction**: generic reports every key unknown | 6 — the controls on both seams, plus the generic's own |
+| L6 | derived live set silently loses `iterations` | `derived_live_key_set_matches_the_struct_fields`, **and** `live_create_still_accepts_correctly_spelled_options` — the hazard's real consequence, a valid request refused |
+
+**L1 is the load-bearing row for this cycle.** It reproduces exactly the state
+the tree was in after REQ-SCANOPTS-001 shipped, and it kills one test — the one
+written this cycle. Every test that existed before passes under it. That is the
+direct, executed demonstration that the previous cycle's coverage did not reach
+this seam, rather than an assertion that it didn't.
+
+**L3 is the one worth carrying forward as a rule.** Checking the `live` object
+against the scan key set still rejects every misspelling — `iteration`,
+`passive-only` and the rest are unknown to *both* sets — so every rejection
+assertion in the suite passes. Only the control, which sends a *valid*
+`iterations: 2`, catches it. Its own error message gives it away:
+
+```
+unrecognised live key(s): iterations — NOT applied, …
+  Accepted keys for live: allow_live_sensors, allow_unknown_cost_dispatch, …
+```
+
+listing the scan options under `live`. The rule: **when a check is
+parameterised by which authority it consults, the wrong authority is invisible
+to every rejection test.** Only a control that supplies a genuinely valid value
+distinguishes "rejects the wrong things" from "rejects the right things". The
+`known_option_keys().is_disjoint(&known_live_option_keys())` assertion in
+`a_misspelled_live_option_is_reported_not_defaulted` exists to make that
+possible: if the two sets ever overlapped, a cross-wire would stop being
+detectable here.
+
+Tree integrity re-verified by md5 after the matrix: all eight touched files
+match their pre-matrix hashes.
+
+#### The gate caught a layering violation the tests did not
+
+The generic was first written as `src/util/wire_keys.rs`. Every unit and seam
+test passed, `cargo check` was clean, and `tests/architecture.rs`'s
+`core_does_not_import_util_directly` failed in the gate: `core::scan` and
+`core::live` were now importing `crate::util` directly.
+
+The invariant has an allowlist, every entry justified in a comment, and
+`util::wire_keys` would have read like a plausible addition — the entries are
+all pure, offline, dependency-free leaves, which it is. But the allowlist's
+stated purpose is narrower than "pure": `util::wifi`'s justification says it
+lives in `util` "precisely so it is the SAME implementation the WiGLE module
+applies", i.e. the exception exists for leaves that `src/modules` **also**
+needs. Nothing in `modules` needs this one — its callers are `core::scan`,
+`core::live` and the `api` seams, and `api` already depends on `core`. So it
+was moved to `src/core/wire_keys.rs`, where no exception is required at all,
+and the module doc records why.
+
+This is the third cycle running in which the gate caught something `cargo
+check` and a green test run did not, and the first where what it caught was a
+design error rather than a lint: **an allowlist you qualify for is not an
+allowlist you belong on.** Read the exception's stated reason, not just its
+membership criteria.

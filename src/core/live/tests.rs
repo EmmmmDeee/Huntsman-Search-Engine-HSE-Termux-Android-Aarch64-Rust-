@@ -392,3 +392,118 @@ use super::*;
         );
         fwd.abort();
     }
+
+// ─ REQ-SCANOPTS-002: the live seam REQ-SCANOPTS-001's fix did not reach ─
+
+/// The defect at its deserialisation layer, on BOTH of a live request's
+/// absent-tolerant option objects. REQ-SCANOPTS-001 closed the scan seam and
+/// left this one open, although `LiveRequest.options` carries the very same
+/// `ScanOptions`.
+#[test]
+fn a_misspelled_live_option_is_reported_not_defaulted() {
+    use crate::core::live::{LiveRequest, known_live_option_keys};
+    use crate::core::scan::{known_option_keys, unknown_option_keys};
+
+    // CONTROL: spelled correctly, both controls land and neither is flagged.
+    let ok: LiveRequest = serde_json::from_str(
+        r#"{"value":"cloudflare.com","options":{"passive_only":true},"live":{"iterations":3}}"#,
+    )
+    .expect("should succeed");
+    assert!(ok.options.passive_only, "control: passive_only applies");
+    assert_eq!(ok.live.iterations, Some(3), "control: iterations applies");
+    assert!(
+        unknown_option_keys(&serde_json::json!({ "passive_only": true })).is_empty(),
+        "a key ScanOptions defines must never be reported as unknown"
+    );
+    assert!(
+        crate::core::wire_keys::unknown_keys(
+            &serde_json::json!({ "iterations": 3 }),
+            &known_live_option_keys()
+        )
+        .is_empty(),
+        "a key LiveOptions defines must never be reported as unknown"
+    );
+
+    // DEFECT A — the scan-scope control, on the seam the first fix missed.
+    assert_eq!(
+        unknown_option_keys(&serde_json::json!({ "passive-only": true })),
+        vec!["passive-only".to_string()],
+        "a misspelled passive_only must be REPORTED on the live seam too"
+    );
+
+    // DEFECT B — a bounded session silently becomes unbounded. `iterations:
+    // None` is documented as "run forever", so this default is not merely a
+    // lost preference.
+    assert_eq!(
+        crate::core::wire_keys::unknown_keys(
+            &serde_json::json!({ "iteration": 3 }),
+            &known_live_option_keys()
+        ),
+        vec!["iteration".to_string()],
+        "a misspelled iterations must be REPORTED, never left to run forever"
+    );
+
+    // The two key sets are genuinely different, so checking one object against
+    // the other's set would pass this file's tests while rejecting valid input.
+    assert!(
+        known_option_keys().is_disjoint(&known_live_option_keys()),
+        "scan and live option names must not overlap, or a cross-wired check \
+         would be invisible here"
+    );
+}
+
+/// Every `LiveOptions` default that is the PERMISSIVE value, so every one whose
+/// silent loss widens what the session does.
+#[test]
+fn every_permissive_live_default_is_covered() {
+    let known = crate::core::live::known_live_option_keys();
+    for key in ["iterations", "radar", "interval_secs"] {
+        assert!(
+            known.contains(key),
+            "{key} is a live-session control and must be a recognised key"
+        );
+        let mut obj = serde_json::Map::new();
+        obj.insert(format!("{key}_x"), serde_json::Value::Bool(true));
+        assert_eq!(
+            crate::core::wire_keys::unknown_keys(&serde_json::Value::Object(obj), &known).len(),
+            1,
+            "a misspelling of {key} must be reported"
+        );
+    }
+}
+
+/// The `LiveOptions` half of `derived_key_set_matches_the_struct_fields`: the
+/// derived set is the type's own, so it must equal the type's declared fields.
+/// A field gaining `skip_serializing_if` would drop out and start being
+/// rejected as unknown — a VALID request refused.
+#[test]
+fn derived_live_key_set_matches_the_struct_fields() {
+    let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/core/live/mod.rs"));
+    let start = src
+        .find("pub struct LiveOptions {")
+        .expect("LiveOptions must be declared in live/mod.rs");
+    let body = &src[start..];
+    let end = body.find("\n}").expect("struct body must close");
+    let declared: std::collections::BTreeSet<String> = body[..end]
+        .lines()
+        .skip(1)
+        .filter_map(|l| {
+            let l = l.trim();
+            l.starts_with("pub")
+                .then(|| l.split_whitespace().nth(1))
+                .flatten()
+                .and_then(|f| f.split(':').next())
+                .map(str::to_string)
+        })
+        .collect();
+    assert!(
+        declared.len() >= 3,
+        "field extraction found only {} fields — the parse, not the struct, changed",
+        declared.len()
+    );
+    assert_eq!(
+        crate::core::live::known_live_option_keys(),
+        declared,
+        "the serde key set and the declared fields have diverged"
+    );
+}

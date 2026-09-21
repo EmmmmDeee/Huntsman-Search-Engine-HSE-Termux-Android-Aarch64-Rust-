@@ -97,41 +97,11 @@ pub const IMPORT_ROUTE_BODY_LIMIT_HEADROOM_BYTES: usize = 1024 * 1024;
 /// [`crate::core::scan::TargetKind::detect`] — the documented unified-scan
 /// behaviour of a request that omits it, not a disabled control.
 pub(super) fn scan_request_from_json(raw: serde_json::Value) -> Result<ScanRequest, String> {
-    if let Some(options) = raw.get("options") {
-        let unknown = crate::core::scan::unknown_option_keys(options);
-        if !unknown.is_empty() {
-            // Resolved once: `nearest_option_key` rebuilds the key set per call,
-            // and both the per-key detail and the catalogue decision need it.
-            let suggestions: Vec<(String, Option<String>)> = unknown
-                .iter()
-                .map(|k| (k.clone(), crate::core::scan::nearest_option_key(k)))
-                .collect();
-            let detail: Vec<String> = suggestions
-                .iter()
-                .map(|(k, near)| match near {
-                    Some(near) => format!("{k} (did you mean {near}?)"),
-                    None => k.clone(),
-                })
-                .collect();
-            // Spell out the catalogue only when nothing could be suggested —
-            // when the key IS a transcription of a real option, naming that one
-            // option is the whole answer and 30 more is noise. Either way the
-            // names come from the same derived authority as the check itself,
-            // so the error can never cite a stale set.
-            let catalogue = if suggestions.iter().all(|(_, near)| near.is_some()) {
-                String::new()
-            } else {
-                let accepted: Vec<String> =
-                    crate::core::scan::known_option_keys().into_iter().collect();
-                format!(" Accepted options: {}", accepted.join(", "))
-            };
-            return Err(format!(
-                "unrecognised scan option(s): {} — NOT applied, so the scan would \
-                 have run with the default.{catalogue}",
-                detail.join(", "),
-            ));
-        }
-    }
+    super::handlers::reject_unknown_option_keys(
+        &raw,
+        "options",
+        &crate::core::scan::known_option_keys(),
+    )?;
     serde_json::from_value(raw).map_err(|e| format!("malformed scan request: {e}"))
 }
 

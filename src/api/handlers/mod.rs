@@ -93,6 +93,64 @@ pub(crate) fn bad_request(msg: impl Into<String>) -> axum::response::Response {
         .into_response()
 }
 
+/// Reject an operator-supplied options object that carries a key its type does
+/// not define, naming the key and the option it was probably meant to be.
+///
+/// THE one error-message authority for this check, shared by every request
+/// seam that has an options object — `scan`, `scan/batch` and `live`. The
+/// check itself is cheap to re-implement per handler, which is exactly the
+/// danger: three hand-written copies of "unrecognised option" would drift in
+/// wording, in whether they name the offending key, and in whether they say
+/// the option was *not applied* — and that last clause is the whole point.
+///
+/// `field` is the object's name in the request body (`"options"`, `"live"`) so
+/// a message about a two-object request says which half was wrong.
+///
+/// The caller supplies `known` rather than a type parameter because the two
+/// objects in a live request have different types; see
+/// [`crate::core::wire_keys::known_keys`].
+pub(crate) fn reject_unknown_option_keys(
+    raw: &Value,
+    field: &str,
+    known: &std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    let Some(supplied) = raw.get(field) else {
+        return Ok(());
+    };
+    let unknown = crate::core::wire_keys::unknown_keys(supplied, known);
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    // Resolved once: both the per-key detail and the catalogue decision need it.
+    let suggestions: Vec<(String, Option<String>)> = unknown
+        .iter()
+        .map(|k| (k.clone(), crate::core::wire_keys::nearest_key(k, known)))
+        .collect();
+    let detail: Vec<String> = suggestions
+        .iter()
+        .map(|(k, near)| match near {
+            Some(near) => format!("{k} (did you mean {near}?)"),
+            None => k.clone(),
+        })
+        .collect();
+    // Spell out the catalogue only when nothing could be suggested — when the
+    // key IS a transcription of a real option, naming that one option is the
+    // whole answer and the rest is noise. Either way the names come from the
+    // same derived set as the check itself, so the message cannot cite a stale
+    // catalogue.
+    let catalogue = if suggestions.iter().all(|(_, near)| near.is_some()) {
+        String::new()
+    } else {
+        let accepted: Vec<&str> = known.iter().map(String::as_str).collect();
+        format!(" Accepted keys for {field}: {}", accepted.join(", "))
+    };
+    Err(format!(
+        "unrecognised {field} key(s): {} — NOT applied, so the request would \
+         have run with the default.{catalogue}",
+        detail.join(", ")
+    ))
+}
+
 /// A `403 Forbidden` JSON error, the access-control sibling of [`bad_request`]
 /// (e.g. a failed CSRF/loopback check). One shape for every refusal.
 pub(crate) fn forbidden(msg: impl Into<String>) -> axum::response::Response {

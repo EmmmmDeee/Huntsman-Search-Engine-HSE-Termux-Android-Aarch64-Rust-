@@ -772,6 +772,26 @@ by looking for them rather than reading modules at random:**
    tightening against** — a type with two readers has two contracts, and the
    check belongs at the seam that has only one.
 
+   **Search for the SEAM, not for the type you expect to find there.**
+   REQ-SCANOPTS-001 fixed the scan request's option check and claimed the input
+   side closed; it had searched for `Json<…ScanRequest>` / `Json<…ScanOptions>`
+   by type name, and `LiveRequest` — a different name that *contains*
+   `ScanOptions` — matched nothing, so `POST /api/v1/live` stayed open
+   (REQ-SCANOPTS-002). Its rule: **a type-name search answers "where is this
+   type used", which is never the question.** The question is "where does this
+   kind of input enter", and the extractor, handler signature or entry point is
+   what answers it — enumerate those and the set is complete by construction.
+
+   **When a check is parameterised by which authority it consults, the wrong
+   authority is invisible to every rejection test.** Cross-wiring the live
+   request's `live` object to the *scan* key set still rejects every
+   misspelling — they are unknown to both sets — so the whole rejection suite
+   stays green; only a control supplying a genuinely VALID value fails
+   (REQ-SCANOPTS-002). Its rule: **for a parameterised guard, the control is
+   the only test that distinguishes "rejects the wrong things" from "rejects
+   the right things"** — and the two authorities must be asserted disjoint, or
+   a later overlap silently removes even that.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other

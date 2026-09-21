@@ -235,6 +235,41 @@ pub struct AppState {
     pub cells_import: Arc<std::sync::Mutex<CellsImportPhase>>,
 }
 
+/// The shared in-memory `AppState` every handler's router test builds on.
+///
+/// Lifted out of `scan_handlers::tests` when `live_handlers` needed the same
+/// thing: two hand-maintained copies of a 25-line state constructor would drift
+/// in exactly the way the checks they exercise exist to prevent.
+#[cfg(test)]
+pub(crate) fn test_state() -> Arc<AppState> {
+    let store: Arc<dyn crate::core::StoragePort> =
+        Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"));
+    let (bus, _rx) = tokio::sync::broadcast::channel(16);
+    let engine = Arc::new(crate::core::engine::ScanEngine::new(
+        Vec::new(),
+        Arc::clone(&store),
+        bus.clone(),
+    ));
+    let live = crate::core::live::LiveScanner::new(
+        Arc::clone(&engine),
+        bus.clone(),
+        reqwest::Client::new(),
+        Default::default(),
+    );
+    Arc::new(AppState {
+        store,
+        engine,
+        bus,
+        live,
+        http: reqwest::Client::new(),
+        allow_key_write: false,
+        cancellations: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
+        scan_semaphore: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SCANS)),
+        update_info: Arc::new(std::sync::Mutex::new(UpdateInfo::default())),
+        cells_import: Arc::new(std::sync::Mutex::new(CellsImportPhase::default())),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

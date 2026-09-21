@@ -1,49 +1,10 @@
 use super::*;
     use crate::core::scan::TargetKind;
 
-    /// The shared in-memory `AppState` every router test builds on. Extracted
-    /// so a second route's test cannot drift from the first one's state.
-    fn test_state() -> std::sync::Arc<AppState> {
-        let store: std::sync::Arc<dyn crate::core::StoragePort> =
-            std::sync::Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"));
-        let (bus, _rx) = tokio::sync::broadcast::channel(16);
-        let engine = std::sync::Arc::new(crate::core::engine::ScanEngine::new(
-            Vec::new(),
-            std::sync::Arc::clone(&store),
-            bus.clone(),
-        ));
-        let live = crate::core::live::LiveScanner::new(
-            std::sync::Arc::clone(&engine),
-            bus.clone(),
-            reqwest::Client::new(),
-            Default::default(),
-        );
-        std::sync::Arc::new(AppState {
-            store,
-            engine,
-            bus,
-            live,
-            http: reqwest::Client::new(),
-            allow_key_write: false,
-            cancellations: std::sync::Arc::new(parking_lot::Mutex::new(
-                std::collections::HashMap::new(),
-            )),
-            scan_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(
-                crate::api::MAX_CONCURRENT_SCANS,
-            )),
-            update_info: std::sync::Arc::new(std::sync::Mutex::new(
-                crate::api::UpdateInfo::default(),
-            )),
-            cells_import: std::sync::Arc::new(std::sync::Mutex::new(
-                crate::api::CellsImportPhase::default(),
-            )),
-        })
-    }
-
     fn scan_import_router() -> axum::Router {
         axum::Router::new()
             .route("/api/v1/scans/import", axum::routing::post(scan_import))
-            .with_state(test_state())
+            .with_state(crate::api::test_state())
     }
 
     fn scan_create_router() -> axum::Router {
@@ -53,7 +14,7 @@ use super::*;
                 "/api/v1/scans/batch",
                 axum::routing::post(super::core::scan_batch),
             )
-            .with_state(test_state())
+            .with_state(crate::api::test_state())
     }
 
     /// Regression for the web upload path silently dropping a stealer-row
@@ -554,7 +515,7 @@ Victims:
         .await;
         assert_eq!(status, 400);
         assert!(
-            body.contains("Accepted options:") && body.contains("passive_only"),
+            body.contains("Accepted keys for options:") && body.contains("passive_only"),
             "an unsuggestible key must be answered with the catalogue, got: {body}"
         );
 
@@ -565,7 +526,7 @@ Victims:
         )
         .await;
         assert!(
-            !typo_body.contains("Accepted options:"),
+            !typo_body.contains("Accepted keys for options:"),
             "a suggestible key must NOT drag in the whole catalogue, got: {typo_body}"
         );
     }

@@ -676,12 +676,7 @@ pub(crate) fn default_scan_options() -> ScanOptions {
 /// is the guard against that.
 #[must_use]
 pub fn known_option_keys() -> std::collections::BTreeSet<String> {
-    let serde_json::Value::Object(map) = serde_json::to_value(ScanOptions::default())
-        .expect("ScanOptions::default() is finite and must serialize")
-    else {
-        unreachable!("ScanOptions is a struct and serializes to a JSON object")
-    };
-    map.into_iter().map(|(k, _)| k).collect()
+    crate::core::wire_keys::known_keys::<ScanOptions>()
 }
 
 /// Keys present in an operator-supplied `options` object that [`ScanOptions`]
@@ -719,44 +714,14 @@ pub fn known_option_keys() -> std::collections::BTreeSet<String> {
 /// ```
 #[must_use]
 pub fn unknown_option_keys(options: &serde_json::Value) -> Vec<String> {
-    let serde_json::Value::Object(supplied) = options else {
-        return Vec::new();
-    };
-    let known = known_option_keys();
-    let mut unknown: Vec<String> = supplied
-        .keys()
-        .filter(|k| !known.contains(k.as_str()))
-        .cloned()
-        .collect();
-    // Sorted explicitly rather than relying on `serde_json::Map` being a
-    // `BTreeMap`: `preserve_order` is an additive feature, so any crate in the
-    // graph enabling it would swap in an `IndexMap` and silently make this
-    // order — which reaches the operator in an error message — input-dependent.
-    unknown.sort();
-    unknown
+    crate::core::wire_keys::unknown_keys(options, &known_option_keys())
 }
 
 /// The defined option key an unknown one was most likely meant to be, if any.
 ///
-/// Matches on the key's letters and digits alone, so the realistic
-/// transcriptions of a known name — `passive-only`, `passiveOnly`,
-/// `PASSIVE_ONLY` — resolve to `passive_only`. Deliberately not a fuzzy
-/// distance: a suggestion that guesses is worse than none, because an operator
-/// who accepts a wrong guess lands on a *different* control.
+/// See [`crate::core::wire_keys::nearest_key`] for why this matches
+/// transcriptions rather than guessing at a fuzzy distance.
 #[must_use]
 pub fn nearest_option_key(unknown: &str) -> Option<String> {
-    fn letters(s: &str) -> String {
-        s.chars()
-            .filter(char::is_ascii_alphanumeric)
-            .map(|c| c.to_ascii_lowercase())
-            .collect()
-    }
-    let probe = letters(unknown);
-    (!probe.is_empty())
-        .then(|| {
-            known_option_keys()
-                .into_iter()
-                .find(|k| letters(k) == probe)
-        })
-        .flatten()
+    crate::core::wire_keys::nearest_key(unknown, &known_option_keys())
 }
