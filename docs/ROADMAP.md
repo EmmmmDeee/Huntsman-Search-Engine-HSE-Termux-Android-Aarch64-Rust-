@@ -638,6 +638,41 @@ by looking for them rather than reading modules at random:**
    impossible, and the sibling that looks unguarded may be in better shape than
    the one that looks guarded.
 
+   **A module's silence has four meanings and only one vocabulary to say them
+   in.** Ten modules guarded a query-quality floor, refused to spend a provider
+   call, and returned `Ok(empty)` — which dispatch and `core::coverage` turn
+   into `CleanNegative`, "the provider was asked and holds nothing". The typed
+   `Error::Skipped` existed for exactly this, said so in its own doc, and was
+   already used by ten OTHER modules; each of the ten silent sites even carried
+   a comment stating why it refused (REQ-SKIPCLASS-001). Its rule: **when a
+   module returns early without querying, the reason in the comment belongs in
+   the outcome.** A comment explains the code to a reader; only a typed outcome
+   explains it to the coverage report the operator actually reads. Ask of every
+   early `Ok(empty)`: did the provider ANSWER that, or did we decide it?
+
+   **Do not flatten a per-site judgement into a uniform sweep.** The obvious
+   finish to that cycle — one `SkipClass` for all ten — is wrong: nine refuse on
+   their own policy (`Scoped`, a coverage gap the operator can close by asking
+   better), while `ransomlook`'s own comment says the API would have rejected
+   the query, which is `NotApplicable`'s definition almost verbatim and carries
+   `is_coverage_gap() == false`. A mutation hardcoding one class is killed by
+   that single row (REQ-SKIPCLASS-001). Its rule: **a doctrine sweep decides
+   each site from that site's own evidence**, and the sweep has gone wrong when
+   every row comes out identical — the differing row is usually documented in a
+   comment someone already wrote.
+
+   **A test named for the right behaviour can still assert the wrong one.**
+   `asic_persons::single_token_name_makes_no_request` and
+   `data_gov_au::short_query_is_skipped_without_a_request` both failed on
+   REQ-SKIPCLASS-001's fix. Their names and comments were already correct —
+   "makes no request", "must return early ... before any HTTP call is
+   attempted" — and only the assertions encoded the defect, one of them via an
+   expect message reading `"single-token name is a clean no-op"`. Its rule:
+   **when a fix breaks a test, read the test's NAME against its assertion
+   before touching either.** A gap between them means the oracle drifted from
+   its own intent, and the correction belongs in the assertion (REQ-EMAILCANON-001
+   set the same precedent with three oracles).
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other

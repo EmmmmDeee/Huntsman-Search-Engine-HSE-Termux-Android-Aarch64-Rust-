@@ -78,8 +78,14 @@ impl Module for AsicBannedOrgs {
         let name = target.value.trim();
         let tokens = name_tokens(name);
         // A national company register needs a discriminating multi-token name.
+        // Scoped, not Ok(empty): the register could have answered, and the
+        // operator closes the gap by supplying a fuller name.
         if tokens.len() < 2 {
-            return Ok(result);
+            return Err(crate::core::error::Error::query_too_weak(
+                crate::core::event::SkipClass::Scoped,
+                name,
+                "a national company register needs a discriminating multi-token name",
+            ));
         }
 
         let (records, server_total) = ckan_query(ctx, name).await?;

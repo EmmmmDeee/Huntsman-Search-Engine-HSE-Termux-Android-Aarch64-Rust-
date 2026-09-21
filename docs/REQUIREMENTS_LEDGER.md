@@ -16295,3 +16295,139 @@ distinction is the same one REQ-OATHNET-002 was shipped under. It carries less
 weight here than there, because this repository does not merely permit the
 shape: it **names it, and locks it**, at `breach_rich`. The residual question
 was never whether the rule is right, only why five sites were exempt from it.
+
+---
+
+### REQ-SKIPCLASS-001 — "I declined to ask" was reported as "I asked, and they hold nothing"
+
+The mechanism for this already existed, was already used by ten modules, and
+already stated the rule in its own doc. `Error::Skipped { class, reason }`:
+
+> A module that deliberately did **not** query the provider for this target,
+> saying so in-band ... never `Ok(empty)` (which dispatch records as
+> `ModuleDone { found: 0 }` and `core::coverage` aggregates to `CleanNegative`,
+> the one outcome that is a real negative). **Before this variant existed a
+> module's only in-band options were a failure or a clean negative, so "not
+> attempted" was misreported as one or the other.**
+
+Ten other modules guard a minimum-query-quality floor before spending a
+provider call, and every one of them then returned `Ok(empty)` — the exact
+shape that doc forbids.
+
+#### The ten, each verified pre-network
+
+| module | floor | class chosen |
+| --- | --- | --- |
+| `sanctions_ofac:153` | `tokens.len() < 2` | `Scoped` |
+| `asic_banned_orgs:82` | `tokens.len() < 2` | `Scoped` |
+| `asic_persons:148` | `tokens.len() < 2` | `Scoped` |
+| `asic_business_names:88` | `name.len() < 3 \|\| tokens.is_empty()` | `Scoped` |
+| `acnc_charities:142` | `query.len() < 3` | `Scoped` |
+| `gleif_lei:180` | `query.len() < 3` | `Scoped` |
+| `wikidata:152` | `query.len() < 3` | `Scoped` |
+| `opencorporates:647` | `query.len() < 3` | `Scoped` |
+| `data_gov_au:242` | `query.len() < MIN_QUERY_LEN` | `Scoped` |
+| `ransomlook:110` | `keyword.len() < 2` | **`NotApplicable`** |
+
+Every one already carried a comment saying *why* it refused. The reason was
+written down and then thrown away.
+
+#### Why `sanctions_ofac` is the headline
+
+AU-114 grades a designation `Critical`, so the operator's due-diligence answer
+rests on the **absence** of a finding — and `CleanNegative` is precisely the
+outcome `settles_absence()` trusts. The reach is not hypothetical, and it is
+the repository's own test that proves it: `parse_tests.rs` pins
+`name_tokens("Al Zawahiri") == ["zawahiri"]`, because the deliberate 3-character
+floor drops `"Al"`. One token, so that exact query was refused and reported
+clean. Mononyms (OFAC's SDN list carries many) and short romanised names land
+the same way.
+
+#### The class is NOT uniform, and the sweep is what established that
+
+The obvious move — one class for all ten — is wrong, and `SkipClass`'s own
+wording says so. `Scoped` is *"The provider could have answered; it was not
+asked"* with `is_coverage_gap() == true`: the registries and the sanctions
+screen refuse on their **own** misattribution policy, and the operator closes
+the gap by supplying a fuller name. `ransomlook` is the exception, and its
+pre-existing comment is the evidence — *"The API rejects a <2-char query; don't
+spend a request on one"* — which is `NotApplicable`'s definition almost
+verbatim (*"asking would have been rejected upstream, so its silence carries no
+information about the subject either way"*), and `is_coverage_gap() == false`
+is the correct claim there. One row of the table differs from the other nine
+because the source said so.
+
+#### What was NOT changed
+
+No threshold. Every floor is documented and justified — the 3-character token
+floor because OFAC's global pool of transliterated names collides far more than
+a national register's, the two-token floor because a single token is too weak a
+discriminator. **The defect is the outcome class, not the discriminator.** A
+cycle that "fixed" this by lowering a floor would have traded a silent
+non-answer for a stream of false designations, which on a sanctions screen is
+strictly worse.
+
+#### One authority for the sentence, not ten
+
+`Error::query_too_weak(class, query, why)` sits beside `Error::skipped` and
+fixes the shape: `not queried: {query} — {why}. This is NOT "nothing found":
+the provider was never asked.` The per-site `why` and `class` stay the caller's;
+the disclaimer is central because `Skipped.reason`'s own contract says it *"must
+never read as 'found nothing'"*, and ten hand-written reasons are ten chances to
+drift out of it. This is `mark_truncated`'s precedent (REQ-COVERAGE-001): one
+canonical sentence, per-site facts passed in.
+
+#### Two test oracles asserted the defect, and were corrected rather than deleted
+
+`asic_persons::single_token_name_makes_no_request` and
+`data_gov_au::short_query_is_skipped_without_a_request` both failed on the fix.
+Their **names and comments were already right** — "makes no request", "must
+return early ... before any HTTP call is attempted" — and only their assertions
+encoded the old contract. `asic_persons`'s expect message said the quiet part
+out loud: `"single-token name is a clean no-op"`. It is not clean; it is
+unasked. Same handling as REQ-EMAILCANON-001's three oracles.
+
+#### Falsification
+
+Baseline: the module-boundary lock fails with the defect in its own terms —
+*"a query it declined to send answered Ok with 0 entities — dispatch records
+that as ModuleDone{found:0}, which coverage aggregates to CleanNegative"*. The
+run is hermetic (0.36 s, no socket): every floor is checked before any fetch.
+
+The lock lives at the **module boundary, one row per call site**, because a
+helper-level test proves the helper and says nothing about who calls it —
+REQ-GEOGATE-001's rule. Its non-vacuity half drives a well-formed multi-token
+query through all ten and asserts the guard did NOT fire; both tests use an
+HTTP client proxied at a closed loopback port, so the above-the-floor rows
+prove "the floor let it through" by reaching the transport and dying there,
+without spending a provider call or downloading OFAC's entire SDN list.
+
+| mutation | killed | diagnostic |
+| --- | --- | --- |
+| **M1** remove the sanctions discriminator guard | the table | `expected a typed Error::Skipped, got [sanctions_ofac] OFAC list download failed...` |
+| **M2** hardcode the shared constructor to `Scoped` | the table | `ransomlook: wrong skip class` — the one non-uniform row is load-bearing |
+| **M3** drop the "never asked" disclaimer | the table | `the reason must say the provider was never asked` |
+
+M2 is the one worth keeping: it proves the `NotApplicable`/`Scoped` distinction
+is enforced and not decorative, so a later edit cannot quietly flatten ten
+providers' coverage semantics into one.
+
+#### The gate caught two things `cargo build` and `cargo test` did not
+
+Both were green — lib build clean, 7701 tests passing — and the gate still said
+**do not commit**, failing `clippy` and `rustdoc lints`:
+
+* `clippy::deref_addrof` on a `*&want_class` in the new table lock.
+* `rustdoc::broken_intra_doc_links` on `[`SkipClass::Scoped`]` in
+  `sanctions_ofac`, which has no `SkipClass` in scope.
+
+The second is the **same error as REQ-FOFA-001's**, and the near-miss is the
+instructive part: the identical links in `core/error/mod.rs`, written in the
+same sitting, carry their reference definitions
+(`/// [`SkipClass::Scoped`]: crate::core::event::SkipClass::Scoped`) and passed.
+The pattern was applied in one file and forgotten in the other. Its rule:
+**a rustdoc link to a type the file does not import needs a reference
+definition, and "I did it correctly in the sibling file" is not evidence that I
+did it here** — only `cargo doc` with the denied lints is. `clippy` and
+`cargo test` do not resolve intra-doc links, so nothing short of the gate was
+going to say so.

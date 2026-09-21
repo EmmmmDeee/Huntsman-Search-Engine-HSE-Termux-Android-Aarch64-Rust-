@@ -149,7 +149,11 @@ impl Module for Wikidata {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let query = target.value.trim();
         if query.len() < 3 {
-            return Ok(ModuleResult::new());
+            return Err(crate::core::error::Error::query_too_weak(
+                crate::core::event::SkipClass::Scoped,
+                query,
+                "a 1-2 character query matches noise across every Wikidata label",
+            ));
         }
 
         let search: SearchResp = fetch_json(&ctx.http, SRC, &search_url(query)).await?;

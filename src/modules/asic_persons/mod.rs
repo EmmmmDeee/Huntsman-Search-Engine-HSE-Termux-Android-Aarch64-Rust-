@@ -145,7 +145,11 @@ impl Module for AsicPersons {
         let tokens = name_tokens(&target.value);
         // A single token is too ambiguous for a national name register.
         if tokens.len() < 2 {
-            return Ok(result);
+            return Err(crate::core::error::Error::query_too_weak(
+                crate::core::event::SkipClass::Scoped,
+                target.value.trim(),
+                "a single token is too ambiguous for a national name register",
+            ));
         }
 
         let (banned, advisers, credit) = tokio::join!(

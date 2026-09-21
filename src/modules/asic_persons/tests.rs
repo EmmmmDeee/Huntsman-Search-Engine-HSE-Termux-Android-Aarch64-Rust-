@@ -367,6 +367,14 @@ fn humanise_name_reorders_and_titlecases() {
 #[tokio::test]
 async fn single_token_name_makes_no_request() {
     // One token → returns before any network I/O (offline in CI).
+    //
+    // REQ-SKIPCLASS-001 corrected the OUTCOME this asserts, not the intent.
+    // "Makes no request" was always right; the old assertion read the refusal
+    // back as `Ok(empty)` — which dispatch records as ModuleDone{found:0} and
+    // coverage aggregates to CleanNegative, i.e. "the register was asked and
+    // holds nothing on Madonna". The old expect message said the quiet part
+    // out loud: "single-token name is a clean no-op". It is not clean; it is
+    // unasked.
     let (bus, _rx) = tokio::sync::broadcast::channel(1);
     let ctx = ModuleContext {
         scan_id: "t".into(),
@@ -378,8 +386,12 @@ async fn single_token_name_makes_no_request() {
     let r = AsicPersons
         .process(&Target::new(TargetKind::FullName, "Madonna"), &ctx)
         .await
-        .expect("single-token name is a clean no-op");
-    assert!(r.entities.is_empty());
+        .expect_err("a name the register was never asked about is not a clean negative");
+    let crate::core::error::Error::Skipped { class, reason } = r else {
+        panic!("expected a typed skip, got {r}");
+    };
+    assert_eq!(class, crate::core::event::SkipClass::Scoped);
+    assert!(reason.contains("Madonna") && reason.contains("never asked"), "{reason}");
 }
 
 #[test]

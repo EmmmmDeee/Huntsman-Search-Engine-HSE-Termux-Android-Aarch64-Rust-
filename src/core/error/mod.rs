@@ -98,6 +98,42 @@ impl Error {
             reason: reason.into(),
         }
     }
+
+    /// The typed skip for a query the module judged **too weak to spend a
+    /// provider call on** — a name with too few discriminating tokens, a
+    /// one-or-two character search term — phrased in one canonical sentence.
+    ///
+    /// This shape exists because the alternative is the one thing
+    /// [`Self::Skipped`] was introduced to stop. Ten modules guarded a
+    /// minimum-query-quality floor and then returned `Ok(empty)`; dispatch
+    /// records that as `ModuleDone { found: 0 }` and `core::coverage`
+    /// aggregates it to `CleanNegative` — "the only outcome that is a real
+    /// negative" — so "I declined to ask" was reported as "I asked and the
+    /// provider holds nothing". Each site already had a comment saying why it
+    /// refused; the reason was written down and then thrown away.
+    ///
+    /// `why` is the module's own justification, lower-case and without
+    /// trailing punctuation (it is embedded mid-sentence). The trailing
+    /// disclaimer is fixed here rather than per-site so no reason can drift
+    /// into reading as "found nothing", which `Skipped.reason`'s own contract
+    /// forbids.
+    ///
+    /// The `class` stays the caller's: [`SkipClass::Scoped`] when the provider
+    /// could have answered and the operator can close the gap by asking better
+    /// (`is_coverage_gap()` true), [`SkipClass::NotApplicable`] when the
+    /// provider would have rejected the query outright, so its silence carries
+    /// no information either way.
+    ///
+    /// [`SkipClass::Scoped`]: crate::core::event::SkipClass::Scoped
+    /// [`SkipClass::NotApplicable`]: crate::core::event::SkipClass::NotApplicable
+    pub fn query_too_weak(class: crate::core::event::SkipClass, query: &str, why: &str) -> Self {
+        Self::skipped(
+            class,
+            format!(
+                "not queried: {query:?} — {why}. This is NOT \"nothing found\": the provider was never asked"
+            ),
+        )
+    }
 }
 
 impl From<reqwest::Error> for Error {

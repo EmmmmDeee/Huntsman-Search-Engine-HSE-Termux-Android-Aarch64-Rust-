@@ -643,8 +643,13 @@ impl Module for OpenCorporates {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let query = target.value.trim();
-        if query.is_empty() || query.len() < 3 {
-            return Ok(ModuleResult::new());
+        // `is_empty()` was redundant beside `len() < 3`; one condition now.
+        if query.len() < 3 {
+            return Err(crate::core::error::Error::query_too_weak(
+                crate::core::event::SkipClass::Scoped,
+                query,
+                "a 1-2 character query matches noise across the global company index",
+            ));
         }
 
         // Full names pivot through officer search (people → companies they direct);

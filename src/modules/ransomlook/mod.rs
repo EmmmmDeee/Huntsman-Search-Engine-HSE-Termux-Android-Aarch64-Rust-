@@ -106,8 +106,16 @@ impl Module for RansomLook {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let keyword = target.value.trim();
         // The API rejects a <2-char query; don't spend a request on one.
+        // NotApplicable, not Scoped: "asking would have been rejected upstream,
+        // so its silence carries no information about the subject either way" —
+        // SkipClass::NotApplicable's own words. The operator is owed nothing
+        // here, so `is_coverage_gap()` must stay false.
         if keyword.len() < 2 {
-            return Ok(ModuleResult::new());
+            return Err(crate::core::error::Error::query_too_weak(
+                crate::core::event::SkipClass::NotApplicable,
+                keyword,
+                "the RansomLook API rejects a query shorter than two characters",
+            ));
         }
         // `q=` is the working param; `query=` is documented but drifted (400).
         let url = format!("{BASE}/api/search?q={}", urlencode(keyword));

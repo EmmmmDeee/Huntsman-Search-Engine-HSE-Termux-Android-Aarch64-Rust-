@@ -391,3 +391,81 @@ fn a_wallet_off_a_consolidated_list_row_carries_the_consolidated_register() {
     );
     assert!(e.has_tag("ofac-consolidated") && !e.has_tag("ofac-sdn"), "{:?}", e.tags);
 }
+
+/// REQ-SKIPCLASS-001. A name the screen REFUSED to run is not a clean sanctions
+/// result. `Ok(empty)` is recorded by dispatch as `ModuleDone { found: 0 }`,
+/// which `core::coverage` aggregates to `ProviderOutcome::CleanNegative` — "the
+/// only outcome that is a real negative", and the one `settles_absence()`
+/// trusts. For a sanctions screen that is the worst possible misreport: AU-114
+/// grades a designation Critical, so the operator's due-diligence answer rests
+/// on the ABSENCE of a finding.
+///
+/// The reach is not hypothetical — `parse_tests.rs` pins
+/// `name_tokens("Al Zawahiri") == ["zawahiri"]`, a single token, so that exact
+/// query is refused. Mononyms (OFAC's SDN list carries many) and short
+/// romanised names ("Li Wu") land the same way.
+#[test]
+fn a_query_too_weak_to_screen_is_a_typed_skip_not_a_clean_negative() {
+    use crate::core::error::Error;
+    use crate::core::event::SkipClass;
+
+    for weak in ["Al Zawahiri", "Li Wu", "Madonna", "Abu"] {
+        let err = screening_tokens(weak)
+            .expect_err("a query below the discriminator floor must not read as screened");
+        let Error::Skipped { class, reason } = err else {
+            panic!("{weak}: expected Error::Skipped, got {err}");
+        };
+        // `Scoped`, not `NotApplicable`: OFAC could have answered — this module
+        // declined to ask on its own misattribution policy, and the operator can
+        // close the gap by supplying a fuller name. `is_coverage_gap()` must
+        // therefore be true, which `NotApplicable` would wrongly deny.
+        assert_eq!(class, SkipClass::Scoped, "{weak}");
+        assert!(class.is_coverage_gap(), "{weak}: the operator is owed this answer");
+        assert!(
+            reason.contains(weak),
+            "{weak}: the reason must name the value it declined: {reason}"
+        );
+        assert!(
+            !reason.to_lowercase().contains("no match")
+                && !reason.to_lowercase().contains("found nothing"),
+            "{weak}: a skip reason must never read as 'found nothing': {reason}"
+        );
+    }
+
+    // Non-vacuity: a discriminating two-token name clears the floor and returns
+    // its tokens, so the guard cannot be passing by refusing everything.
+    let tokens = screening_tokens("Abu Abbas").expect("a two-token name must be screenable");
+    assert_eq!(tokens, vec!["abu", "abbas"]);
+}
+
+fn skip_test_ctx() -> ModuleContext {
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    ModuleContext {
+        scan_id: "skipclass".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    }
+}
+
+/// The same defect at the module boundary, driven through the real `process`.
+/// Hermetic: the discriminator floor is checked BEFORE `fetch_sdn_list`, so a
+/// refused name never opens a socket.
+#[tokio::test]
+async fn process_refusing_a_weak_name_must_not_answer_ok() {
+    let out = SanctionsOfac
+        .process(&Target::new(TargetKind::FullName, "Al Zawahiri"), &skip_test_ctx())
+        .await;
+    match out {
+        Ok(r) => panic!(
+            "REQ-SKIPCLASS-001: a name the screen refused answered Ok with {} entities — \
+             dispatch records that as ModuleDone{{found:0}} and coverage aggregates it to \
+             CleanNegative, i.e. 'OFAC holds nothing on this subject' for a list never consulted",
+            r.entities.len()
+        ),
+        Err(crate::core::error::Error::Skipped { .. }) => {}
+        Err(other) => panic!("expected a typed skip, got {other}"),
+    }
+}
+

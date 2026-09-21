@@ -85,7 +85,12 @@ impl Module for AsicBusinessNames {
         let name = target.value.trim();
         let tokens = name_tokens(name);
         if name.len() < 3 || tokens.is_empty() {
-            return Ok(result);
+            return Err(crate::core::error::Error::query_too_weak(
+                crate::core::event::SkipClass::Scoped,
+                name,
+                "a business-name search needs at least three characters and one \
+                 alphanumeric token",
+            ));
         }
 
         let (records, server_total) = ckan_query(ctx, name).await?;

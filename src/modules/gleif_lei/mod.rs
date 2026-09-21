@@ -177,7 +177,11 @@ impl Module for GleifLei {
         let query = target.value.trim();
         // A 1-2 char query would match noise across the global index.
         if query.len() < 3 {
-            return Ok(ModuleResult::new());
+            return Err(crate::core::error::Error::query_too_weak(
+                crate::core::event::SkipClass::Scoped,
+                query,
+                "a 1-2 character query matches noise across the global LEI index",
+            ));
         }
 
         let resp: types::GleifResp = fetch_json(&ctx.http, SRC, &helpers::query_url(query)).await?;
