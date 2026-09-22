@@ -530,3 +530,202 @@ Victims:
             "a suggestible key must NOT drag in the whole catalogue, got: {typo_body}"
         );
     }
+
+    // ── REQ-SCANSTATUS-001: the derived `interrupted` flag, through the real routes ──
+
+    /// A `running` row this process holds no handle for reports
+    /// `interrupted: true` on both read surfaces; installing the handle — the
+    /// state a genuinely in-flight scan is in — flips it to `false`. The row
+    /// itself is never rewritten: the same store answers both reads.
+    #[tokio::test]
+    async fn a_hard_killed_scan_reads_as_interrupted_until_a_process_owns_it() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
+        use tower::ServiceExt as _;
+
+        let state = crate::api::test_state();
+        let router = || {
+            axum::Router::new()
+                .route("/api/v1/scans", axum::routing::get(super::core::scan_list))
+                .route("/api/v1/scans/{id}", axum::routing::get(super::core::scan_get))
+                .with_state(std::sync::Arc::clone(&state))
+        };
+        // The row a dead process leaves behind: `running`, no handle anywhere.
+        let mut scan = Scan::new("orphan-1", Target::new(TargetKind::Domain, "cloudflare.com"));
+        scan.status = ScanStatus::Running;
+        state.store.upsert_scan(&scan).expect("should succeed");
+
+        let get = |path: &'static str| {
+            let r = router();
+            async move {
+                let resp = r
+                    .oneshot(Request::builder().uri(path).body(Body::empty()).expect("ok"))
+                    .await
+                    .expect("ok");
+                let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.expect("ok");
+                serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
+            }
+        };
+
+        let one = get("/api/v1/scans/orphan-1").await;
+        assert_eq!(one["status"], "running", "the persisted status is untouched");
+        assert_eq!(one["interrupted"], true, "no process owns it: {one}");
+        let list = get("/api/v1/scans").await;
+        assert_eq!(list["scans"][0]["interrupted"], true, "list agrees: {list}");
+
+        // CONTROL: the moment this process owns the scan, it is in flight.
+        state
+            .cancellations
+            .lock()
+            .insert("orphan-1".to_string(), crate::core::cancel::CancelHandle::new());
+        let one = get("/api/v1/scans/orphan-1").await;
+        assert_eq!(one["interrupted"], false, "a held handle means in flight: {one}");
+        let list = get("/api/v1/scans").await;
+        assert_eq!(list["scans"][0]["interrupted"], false, "list agrees: {list}");
+    }
+
+    /// A live-driven scan is run by THIS process, so it must never read
+    /// `interrupted` — and, because the one registry now holds it, it is
+    /// refused deletion mid-run and cancellable by scan id exactly like a
+    /// one-shot scan. The first draft of this fix derived `interrupted` from a
+    /// registry only `spawn_scan` filled; on the running binary a healthy live
+    /// iteration read `interrupted: true`, `DELETE` returned 200 mid-run and
+    /// `cancel` 404 (ledger, REQ-SCANSTATUS-001).
+    #[tokio::test]
+    async fn a_live_iteration_run_by_this_process_is_in_flight_not_interrupted() {
+        use axum::body::Body;
+        use axum::http::{Method, Request, StatusCode};
+        use crate::core::live::{LiveOptions, LiveStatus};
+        use crate::core::module::test_support::Gated;
+        use crate::core::scan::{ScanOptions, ScanStatus, Target, TargetKind};
+        use tower::ServiceExt as _;
+
+        async fn settle<T>(mut probe: impl FnMut() -> Option<T>) -> Option<T> {
+            for _ in 0..500 {
+                if let Some(v) = probe() {
+                    return Some(v);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            None
+        }
+
+        let (module, gate) = Gated::pair();
+        let state = crate::api::test_state_with_modules(vec![module]);
+        let router = || {
+            axum::Router::new()
+                .route("/api/v1/scans", axum::routing::get(super::core::scan_list))
+                .route(
+                    "/api/v1/scans/{id}",
+                    axum::routing::get(super::core::scan_get).delete(super::core::scan_delete),
+                )
+                .route(
+                    "/api/v1/scans/{id}/cancel",
+                    axum::routing::post(super::core::scan_cancel),
+                )
+                .with_state(std::sync::Arc::clone(&state))
+        };
+        let call = |method: Method, path: String| {
+            let r = router();
+            async move {
+                let resp = r
+                    .oneshot(
+                        Request::builder()
+                            .method(method)
+                            .uri(path)
+                            .body(Body::empty())
+                            .expect("ok"),
+                    )
+                    .await
+                    .expect("ok");
+                let code = resp.status();
+                let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.expect("ok");
+                let body = serde_json::from_slice::<serde_json::Value>(&bytes)
+                    .unwrap_or(serde_json::Value::Null);
+                (code, body)
+            }
+        };
+
+        let live_id = state.live.start(
+            Target::new(TargetKind::Domain, "cloudflare.com"),
+            ScanOptions::default(),
+            LiveOptions {
+                interval_secs: 1,
+                iterations: Some(1),
+                radar: false,
+            },
+        );
+        let sid = settle(|| {
+            state
+                .store
+                .list_scans(10)
+                .ok()?
+                .into_iter()
+                .find(|s| s.status == ScanStatus::Running)
+                .map(|s| s.id)
+        })
+        .await
+        .expect("the iteration reaches `running` while the module is gated");
+
+        // THE lock: a scan this process is running is in flight, whichever
+        // path spawned it.
+        let (code, one) = call(Method::GET, format!("/api/v1/scans/{sid}")).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(one["status"], "running");
+        assert_eq!(one["interrupted"], false, "this process is running it: {one}");
+        let (_, list) = call(Method::GET, "/api/v1/scans".into()).await;
+        assert_eq!(list["scans"][0]["interrupted"], false, "list agrees: {list}");
+        // `/stats` reads the same registry: histogrammed as running, never interrupted.
+        let agg = crate::api::handlers::aggregate_scan_stats(
+            &state.store.list_scans(10).expect("ok"),
+            &crate::api::handlers::in_flight_scan_ids(&state.cancellations),
+        );
+        assert_eq!(agg.by_status.get("running"), Some(&1), "{agg:?}");
+        assert_eq!(agg.by_status.get("interrupted"), None, "{agg:?}");
+
+        // The same registry protects it: no deleting a row the engine is still writing.
+        let (code, body) = call(Method::DELETE, format!("/api/v1/scans/{sid}")).await;
+        assert_eq!(
+            code,
+            StatusCode::CONFLICT,
+            "a live iteration mid-run must be refused deletion: {body}"
+        );
+
+        // …and makes it cancellable by scan id.
+        let (code, body) = call(Method::POST, format!("/api/v1/scans/{sid}/cancel")).await;
+        assert_eq!(
+            code,
+            StatusCode::OK,
+            "a live iteration is cancellable by its scan id: {body}"
+        );
+        let ended = settle(|| {
+            state
+                .store
+                .get_scan(&sid)
+                .ok()
+                .flatten()
+                .filter(|s| s.status != ScanStatus::Running)
+                .map(|s| s.status)
+        })
+        .await
+        .expect("the cancelled iteration reaches a terminal status");
+        assert_eq!(ended, ScanStatus::Aborted);
+        settle(|| {
+            state
+                .live
+                .get(&live_id)
+                .filter(|s| s.status == LiveStatus::Completed)
+                .map(|_| ())
+        })
+        .await
+        .expect("a one-iteration session completes");
+        let (_, one) = call(Method::GET, format!("/api/v1/scans/{sid}")).await;
+        assert_eq!(one["status"], "aborted");
+        assert_eq!(one["interrupted"], false, "a finished row is never interrupted: {one}");
+
+        // The documented recovery — cancel, then delete — now works for a live scan.
+        let (code, body) = call(Method::DELETE, format!("/api/v1/scans/{sid}")).await;
+        assert_eq!(code, StatusCode::OK, "{body}");
+        drop(gate);
+    }

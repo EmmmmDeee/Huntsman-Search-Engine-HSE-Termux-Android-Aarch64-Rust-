@@ -56,11 +56,15 @@ pub(super) async fn cmd_serve(
     let crate::app::runtime::ApplicationRuntime { store, bus, engine } =
         crate::app::runtime::build_runtime(1024)?;
     let http = build_client();
+    // ONE in-flight scan registry for the process: `spawn_scan` and the live
+    // loop both register in it, and every "is it in flight?" reader consults it.
+    let cancellations = crate::api::new_cancel_registry();
     let live = LiveScanner::new(
         Arc::clone(&engine),
         bus.clone(),
         http.clone(),
         crate::util::keys::populate_and_load().await,
+        Arc::clone(&cancellations),
     );
     let update_info = Arc::new(std::sync::Mutex::new(UpdateInfo::default()));
     let state = Arc::new(AppState {
@@ -70,7 +74,7 @@ pub(super) async fn cmd_serve(
         live,
         http,
         allow_key_write,
-        cancellations: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
+        cancellations,
         scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
             crate::api::MAX_CONCURRENT_SCANS,
         )),

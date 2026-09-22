@@ -1338,6 +1338,7 @@ async fn live_session_runs_two_iterations_and_completes() {
         bus.clone(),
         reqwest::Client::new(),
         Default::default(),
+        huntsman_search_engine::core::cancel::new_cancel_registry(),
     );
 
     let target = Target::new(TargetKind::Email, "live@contoso.com");
@@ -1382,6 +1383,7 @@ async fn live_session_stops_on_explicit_cancel() {
         bus.clone(),
         reqwest::Client::new(),
         Default::default(),
+        huntsman_search_engine::core::cancel::new_cancel_registry(),
     );
 
     let target = Target::new(TargetKind::Email, "cancel-live@contoso.com");

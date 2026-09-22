@@ -88,6 +88,9 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
         bus.clone(),
         crate::util::http::build_client(),
         crate::util::keys::populate_and_load().await,
+        // The CLI has no API reading this registry; the loop registers in it
+        // regardless, so there is one live code path, not a headless variant.
+        crate::core::cancel::new_cancel_registry(),
     );
 
     let live_id = scanner.start(target, scan_options, live_options);

@@ -60,17 +60,64 @@ use crate::app::export::csv_escape;
             mk("c", ScanStatus::Failed, 0, 0),
             mk("d", ScanStatus::Running, 3, 4),
         ];
-        let agg = aggregate_scan_stats(&scans);
+        // "d" is running AND this process holds its handle: genuinely in flight.
+        let in_flight: std::collections::HashSet<String> = ["d".to_string()].into();
+        let agg = aggregate_scan_stats(&scans, &in_flight);
         assert_eq!(agg.total_entities, 18);
         assert_eq!(agg.total_deduped, 7);
         assert_eq!(agg.by_status.get("complete"), Some(&2));
         assert_eq!(agg.by_status.get("failed"), Some(&1));
         assert_eq!(agg.by_status.get("running"), Some(&1));
+        assert_eq!(agg.by_status.get("interrupted"), None);
         assert_eq!(agg.by_status.get("pending"), None);
 
         // Empty input yields all-zero totals and an empty histogram.
-        let empty = aggregate_scan_stats(&[]);
+        let empty = aggregate_scan_stats(&[], &in_flight);
         assert_eq!(empty, super::ScanStatsAgg::default());
+    }
+
+    /// REQ-SCANSTATUS-001: the same `running` row with NO handle in this
+    /// process is a scan nobody is running. Pre-fix it was histogrammed as
+    /// `running`, so `/stats` reported a hard-killed scan as in progress
+    /// forever — observed on `ff4d63c` after `kill -9` + restart.
+    #[test]
+    fn a_running_row_with_no_handle_is_histogrammed_as_interrupted() {
+        use super::{aggregate_scan_stats, is_interrupted};
+        use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
+
+        let mk = |id: &str, status: ScanStatus| {
+            let mut s = Scan::new(id, Target::new(TargetKind::Domain, "cloudflare.com"));
+            s.status = status;
+            s
+        };
+        let scans = [
+            mk("orphan", ScanStatus::Running),
+            mk("live", ScanStatus::Running),
+            mk("done", ScanStatus::Complete),
+            mk("queued", ScanStatus::Pending),
+        ];
+        let in_flight: std::collections::HashSet<String> = ["live".to_string()].into();
+
+        assert!(is_interrupted(&scans[0], &in_flight), "running + no handle");
+        // CONTROLS — each is what an over-eager derivation would get wrong:
+        assert!(
+            !is_interrupted(&scans[1], &in_flight),
+            "running + handle is genuinely in flight, never interrupted"
+        );
+        assert!(
+            !is_interrupted(&scans[2], &in_flight),
+            "a terminal row is never interrupted"
+        );
+        assert!(
+            !is_interrupted(&scans[3], &in_flight),
+            "pending has a legitimate no-handle window between upsert and spawn"
+        );
+
+        let agg = aggregate_scan_stats(&scans, &in_flight);
+        assert_eq!(agg.by_status.get("interrupted"), Some(&1));
+        assert_eq!(agg.by_status.get("running"), Some(&1));
+        assert_eq!(agg.by_status.get("complete"), Some(&1));
+        assert_eq!(agg.by_status.get("pending"), Some(&1));
     }
 
     #[test]

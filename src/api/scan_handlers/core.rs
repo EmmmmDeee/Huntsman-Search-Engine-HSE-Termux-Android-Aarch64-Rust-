@@ -431,6 +431,9 @@ pub async fn scan_cancel(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    // One-shot scans and live iterations alike: the registry holds whichever
+    // handle the engine is polling for this scan id. For a live iteration that
+    // is the ITERATION's handle, so the session continues to its next tick.
     let handle = s.cancellations.lock().get(&id).cloned();
     match handle {
         Some(h) => {
@@ -459,7 +462,13 @@ pub async fn scan_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    ok_list("scans", scans)
+    // Derived `interrupted` flag per row — see `handlers::is_interrupted`.
+    let in_flight = super::super::handlers::in_flight_scan_ids(&s.cancellations);
+    let rows: Vec<serde_json::Value> = scans
+        .iter()
+        .map(|sc| super::super::handlers::scan_json(sc, &in_flight))
+        .collect();
+    ok_list("scans", rows)
 }
 
 pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> impl IntoResponse {
@@ -470,14 +479,14 @@ pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
         Err(resp) => return resp,
     };
     match scan {
-        Some(scan) => (
-            StatusCode::OK,
-            Json(serde_json::to_value(&scan).unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "failed to serialize scan to JSON value");
-                json!({})
-            })),
-        )
-            .into_response(),
+        Some(scan) => {
+            let in_flight = super::super::handlers::in_flight_scan_ids(&s.cancellations);
+            (
+                StatusCode::OK,
+                Json(super::super::handlers::scan_json(&scan, &in_flight)),
+            )
+                .into_response()
+        }
         None => not_found(),
     }
 }
@@ -487,9 +496,10 @@ pub async fn scan_delete(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     // Refuse to delete a scan that's still in-flight: `s.cancellations` holds
-    // an entry for exactly as long as the scan's spawned task is alive
-    // (installed at `spawn_scan`, removed by `CancelRegistryGuard`'s Drop when
-    // the task returns — success, error, or panic). Without this check,
+    // an entry for exactly as long as the engine is running the scan — a
+    // one-shot scan's from `spawn_scan`, a live iteration's from the live loop
+    // — removed by `CancelRegistryGuard`'s Drop when the engine returns
+    // (success, error, or panic). Without this check,
     // deleting a running scan raced the engine's own mid-scan checkpoint
     // writes and finalisation: `delete_scan`'s cascade would remove all rows
     // for the id, but the still-running engine task (nothing here stops it)

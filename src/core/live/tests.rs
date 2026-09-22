@@ -507,3 +507,134 @@ fn derived_live_key_set_matches_the_struct_fields() {
         "the serde key set and the declared fields have diverged"
     );
 }
+
+// ─ REQ-SCANSTATUS-001: a live iteration lives in the ONE in-flight registry ─
+
+/// Poll `probe` every 20 ms for up to 10 s; `None` on timeout.
+async fn settle<T>(mut probe: impl FnMut() -> Option<T>) -> Option<T> {
+    for _ in 0..500 {
+        if let Some(v) = probe() {
+            return Some(v);
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    None
+}
+
+/// The registry entry a live iteration holds is keyed by its SCAN id, carries
+/// the ITERATION's own handle, and lasts exactly as long as the engine runs
+/// the iteration: present while the row reads `running`, gone once the engine
+/// has written the final status. Cancelling through that entry aborts the one
+/// iteration and the session carries on to its next tick — the per-iteration
+/// semantics the wall-time watchdog already has, and the proof the entry is
+/// not the session's handle.
+#[tokio::test]
+async fn a_live_iteration_holds_its_scan_id_in_the_shared_registry_only_while_the_engine_runs_it()
+{
+    use crate::core::cancel::new_cancel_registry;
+    use crate::core::module::test_support::Gated;
+    use crate::core::scan::ScanStatus;
+
+    let (module, gate) = Gated::pair();
+    let store: Arc<dyn crate::core::port::StoragePort> =
+        Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"));
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = Arc::new(ScanEngine::new(
+        vec![module],
+        Arc::clone(&store),
+        bus.clone(),
+    ));
+    let in_flight = new_cancel_registry();
+    let live = LiveScanner::new(
+        engine,
+        bus,
+        reqwest::Client::new(),
+        Default::default(),
+        Arc::clone(&in_flight),
+    );
+
+    let live_id = live.start(
+        Target::new(TargetKind::Domain, "cloudflare.com"),
+        ScanOptions::default(),
+        LiveOptions {
+            interval_secs: 1,
+            iterations: Some(2),
+            radar: false,
+        },
+    );
+
+    // DURING: the first iteration's row reads `running` and its id is registered.
+    let first = settle(|| {
+        store
+            .list_scans(10)
+            .ok()?
+            .into_iter()
+            .find(|s| s.status == ScanStatus::Running)
+            .map(|s| s.id)
+    })
+    .await
+    .expect("the first iteration reaches `running` while the module is gated");
+    assert!(live.session_owns_scan(&live_id, &first));
+    assert!(
+        in_flight.lock().contains_key(&first),
+        "DURING: the iteration's scan id is registered while the engine runs it"
+    );
+
+    // Cancel through the registry entry: exactly this iteration aborts…
+    in_flight
+        .lock()
+        .get(&first)
+        .expect("registered")
+        .cancel();
+    let ended = settle(|| {
+        store
+            .get_scan(&first)
+            .ok()
+            .flatten()
+            .filter(|s| s.status != ScanStatus::Running)
+            .map(|s| s.status)
+    })
+    .await
+    .expect("the cancelled iteration reaches a terminal status");
+    assert_eq!(ended, ScanStatus::Aborted);
+    assert!(
+        !in_flight.lock().contains_key(&first),
+        "AFTER: released once the engine returned"
+    );
+
+    // …and the session is still running and starts a second iteration — the
+    // entry was the ITERATION's handle, not the session's.
+    let second = settle(|| {
+        let sess = live.get(&live_id)?;
+        if sess.status != LiveStatus::Running {
+            return None;
+        }
+        sess.scan_ids.iter().find(|id| **id != first).cloned()
+    })
+    .await
+    .expect("the session continues to a second iteration after a per-iteration cancel");
+    settle(|| in_flight.lock().contains_key(&second).then_some(()))
+        .await
+        .expect("the second iteration registers too");
+
+    // Release the gate: the second iteration completes, the session ends, and
+    // nothing is left registered.
+    gate.add_permits(1);
+    let done = settle(|| {
+        live.get(&live_id)
+            .filter(|s| s.status != LiveStatus::Running)
+            .map(|s| s.status)
+    })
+    .await
+    .expect("the session ends once its last iteration returns");
+    assert_eq!(done, LiveStatus::Completed);
+    assert_eq!(
+        store.get_scan(&second).expect("ok").expect("row").status,
+        ScanStatus::Complete
+    );
+    assert!(
+        in_flight.lock().is_empty(),
+        "nothing in flight once the session has ended: {:?}",
+        in_flight.lock().keys().collect::<Vec<_>>()
+    );
+}

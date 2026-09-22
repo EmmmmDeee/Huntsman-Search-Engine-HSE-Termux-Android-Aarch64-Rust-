@@ -709,6 +709,82 @@ mod truncation_sentence_tests {
     }
 }
 
+/// Test-only modules shared by the crate's inline test files.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::Arc;
+
+    use super::{Module, ModuleContext, ModuleResult};
+    use crate::core::scan::Target;
+
+    /// Accepts every target and blocks inside `process` until the test hands
+    /// it a permit or the scan is cancelled — the way to hold a scan genuinely
+    /// in flight for as long as an assertion needs, with no network and no
+    /// timing guess. Each permit is consumed, so one release lets exactly one
+    /// run through; a cancel is honoured within one poll (10 ms) so the
+    /// engine's per-iteration handle can be exercised too.
+    pub(crate) struct Gated {
+        gate: Arc<tokio::sync::Semaphore>,
+    }
+
+    impl Gated {
+        pub(crate) fn pair() -> (Arc<dyn Module>, Arc<tokio::sync::Semaphore>) {
+            let gate = Arc::new(tokio::sync::Semaphore::new(0));
+            (
+                Arc::new(Self {
+                    gate: Arc::clone(&gate),
+                }),
+                gate,
+            )
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Module for Gated {
+        fn name(&self) -> &'static str {
+            "gated_test_module"
+        }
+        fn priority(&self) -> u8 {
+            50
+        }
+        fn accepts(&self, _: &Target) -> bool {
+            true
+        }
+        async fn process(
+            &self,
+            _t: &Target,
+            ctx: &ModuleContext,
+        ) -> crate::core::error::Result<ModuleResult> {
+            loop {
+                if ctx.cancel.is_cancelled() {
+                    return Err(crate::core::error::Error::module(
+                        self.name(),
+                        "cancelled while gated",
+                    ));
+                }
+                match tokio::time::timeout(
+                    std::time::Duration::from_millis(10),
+                    self.gate.acquire(),
+                )
+                .await
+                {
+                    Ok(Ok(permit)) => {
+                        permit.forget();
+                        return Ok(ModuleResult::new());
+                    }
+                    Ok(Err(_closed)) => {
+                        return Err(crate::core::error::Error::module(
+                            self.name(),
+                            "gate closed",
+                        ));
+                    }
+                    Err(_still_gated) => continue,
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

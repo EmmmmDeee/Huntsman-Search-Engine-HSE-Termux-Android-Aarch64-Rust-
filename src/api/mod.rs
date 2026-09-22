@@ -21,50 +21,14 @@ pub mod scan_handlers;
 pub mod settings_handlers;
 pub mod update_handlers;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use parking_lot::Mutex;
-
 use crate::{
-    core::cancel::CancelHandle, core::engine::ScanEngine, core::event::EventBus,
-    core::live::LiveScanner, core::port::StoragePort,
+    core::engine::ScanEngine, core::event::EventBus, core::live::LiveScanner,
+    core::port::StoragePort,
 };
 
-/// Registry of in-flight scan cancellations. Keyed by scan_id; the
-/// handle in the map IS the same handle plumbed through that scan's
-/// `ModuleContext`, so calling `.cancel()` on it stops the live scan
-/// at the engine's next cancellation check. Entries are inserted by
-/// `scan_create` / `scan_rerun` and removed when the spawned scan
-/// task returns. (Issue #23.)
-pub type CancelRegistry = Arc<Mutex<HashMap<String, CancelHandle>>>;
-
-/// RAII guard that removes a `CancelRegistry` entry on Drop. Held by
-/// the spawned scan task; the entry is removed whether the future
-/// returns normally OR panics, so a runaway module that panics can't
-/// leak a stale cancel handle into the singleton map. Without this
-/// guard a panicking task would leave an `Arc<CancelHandle>` in the
-/// map indefinitely (and `POST /scans/{id}/cancel` would 200 instead
-/// of 404).
-pub struct CancelRegistryGuard {
-    registry: CancelRegistry,
-    scan_id: String,
-}
-
-impl CancelRegistryGuard {
-    /// Insert `handle` into `registry` keyed by `scan_id` and return a
-    /// guard that removes the entry when dropped.
-    pub fn install(registry: CancelRegistry, scan_id: String, handle: CancelHandle) -> Self {
-        registry.lock().insert(scan_id.clone(), handle);
-        Self { registry, scan_id }
-    }
-}
-
-impl Drop for CancelRegistryGuard {
-    fn drop(&mut self) {
-        self.registry.lock().remove(&self.scan_id);
-    }
-}
+pub use crate::core::cancel::{CancelRegistry, CancelRegistryGuard, new_cancel_registry};
 
 /// Live update status — written by the background auto-update task, read by the API
 /// handler. Shared via `Arc<std::sync::Mutex<UpdateInfo>>` so the background
@@ -242,19 +206,31 @@ pub struct AppState {
 /// in exactly the way the checks they exercise exist to prevent.
 #[cfg(test)]
 pub(crate) fn test_state() -> Arc<AppState> {
+    test_state_with_modules(Vec::new())
+}
+
+/// [`test_state`] with an engine that actually runs `modules` — for tests that
+/// need a scan genuinely in flight (see `core::module::test_support::Gated`).
+#[cfg(test)]
+pub(crate) fn test_state_with_modules(
+    modules: Vec<Arc<dyn crate::core::module::Module>>,
+) -> Arc<AppState> {
     let store: Arc<dyn crate::core::StoragePort> =
         Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"));
     let (bus, _rx) = tokio::sync::broadcast::channel(16);
     let engine = Arc::new(crate::core::engine::ScanEngine::new(
-        Vec::new(),
+        modules,
         Arc::clone(&store),
         bus.clone(),
     ));
+    // ONE in-flight registry, shared by `spawn_scan` and the live loop.
+    let cancellations = new_cancel_registry();
     let live = crate::core::live::LiveScanner::new(
         Arc::clone(&engine),
         bus.clone(),
         reqwest::Client::new(),
         Default::default(),
+        Arc::clone(&cancellations),
     );
     Arc::new(AppState {
         store,
@@ -263,7 +239,7 @@ pub(crate) fn test_state() -> Arc<AppState> {
         live,
         http: reqwest::Client::new(),
         allow_key_write: false,
-        cancellations: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
+        cancellations,
         scan_semaphore: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SCANS)),
         update_info: Arc::new(std::sync::Mutex::new(UpdateInfo::default())),
         cells_import: Arc::new(std::sync::Mutex::new(CellsImportPhase::default())),

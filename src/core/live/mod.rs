@@ -17,6 +17,12 @@
 //!   polls, so `DELETE /api/v1/live/{id}` aborts the currently-running
 //!   iteration at the next module boundary rather than waiting for it
 //!   to run to completion before the outer loop's next check (issue #23).
+//! - Every iteration is registered, under its SCAN id, in the process-wide
+//!   in-flight registry ([`CancelRegistry`]) that `AppState.cancellations`
+//!   and `spawn_scan` share, for exactly as long as the engine runs it — so a
+//!   live-driven scan is cancellable by scan id, refused deletion mid-run,
+//!   counted by the shutdown drain, and never reported `interrupted` by the
+//!   process running it (REQ-SCANSTATUS-001).
 //! - Sessions are in-memory only. Restart → cleared. Persistence is a
 //!   v0.7+ concern.
 
@@ -30,7 +36,7 @@ use tokio::time::sleep;
 use tracing::{info, warn};
 
 use crate::core::{
-    cancel::CancelHandle,
+    cancel::{CancelHandle, CancelRegistry, CancelRegistryGuard},
     engine::{DispatchLog, ScanEngine},
     entity::unix_now,
     event::{Event, EventBus, EventKind},
@@ -212,7 +218,11 @@ pub struct LiveScanner {
 
 struct LiveInner {
     sessions: RwLock<HashMap<String, LiveSession>>,
+    /// Session-level stop flags, keyed by live id (`stop` / the eviction path).
     cancels: RwLock<HashMap<String, CancelHandle>>,
+    /// The process-wide in-flight SCAN registry, shared with `AppState` — each
+    /// iteration installs its own scan id here while the engine runs it.
+    in_flight: CancelRegistry,
     engine: Arc<ScanEngine>,
     bus: EventBus,
     http: reqwest::Client,
@@ -225,11 +235,13 @@ impl LiveScanner {
         bus: EventBus,
         http: reqwest::Client,
         keys: std::collections::HashMap<String, String>,
+        in_flight: CancelRegistry,
     ) -> Self {
         Self {
             inner: Arc::new(LiveInner {
                 sessions: RwLock::new(HashMap::new()),
                 cancels: RwLock::new(HashMap::new()),
+                in_flight,
                 engine,
                 bus,
                 http,
@@ -468,6 +480,23 @@ async fn session_loop(
         // outlive the iteration or leak across ticks.
         let cancel_forwarder = spawn_stop_forwarder(cancel.clone(), iter_cancel.clone());
 
+        // Register this iteration in the process-wide in-flight registry under
+        // its SCAN id with its OWN handle, exactly as `spawn_scan` does for a
+        // one-shot scan, and hold the entry until the engine has performed the
+        // scan's final status write (`run_*_panic_safe` returns only after
+        // it). Cancel-by-scan-id, the delete-while-running refusal, the
+        // shutdown drain, and the read-time `interrupted` derivation all
+        // consult that one registry; an iteration absent from it was
+        // uncancellable by scan id, deletable mid-run, and reported
+        // `interrupted` by the very process running it (REQ-SCANSTATUS-001).
+        // Cancelling this entry aborts just this iteration — the session
+        // carries on to its next tick, as with the wall-time watchdog.
+        let in_flight_guard = CancelRegistryGuard::install(
+            Arc::clone(&inner.in_flight),
+            sid.clone(),
+            iter_cancel.clone(),
+        );
+
         let scan = Scan::new(sid.clone(), target.clone()).with_options(scan_options.clone());
         let ctx = ModuleContext {
             scan_id: sid.clone(),
@@ -492,6 +521,9 @@ async fn session_loop(
         // cannot outlive this iteration (idempotent whether it is still polling
         // or already propagated a stop).
         cancel_forwarder.abort();
+        // The engine has written the scan's final status; only now may the row
+        // read as not in flight.
+        drop(in_flight_guard);
         if let Err(e) = iteration_result {
             warn!(live_id = %live_id, scan_id = %sid, error = %e, "iteration failed");
         }

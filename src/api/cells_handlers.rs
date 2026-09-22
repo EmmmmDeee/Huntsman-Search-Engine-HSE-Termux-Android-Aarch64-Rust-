@@ -349,7 +349,6 @@ mod tests {
 
     fn cells_router() -> axum::Router {
         use crate::core::live::LiveScanner;
-        use std::collections::HashMap;
 
         let store: Arc<dyn crate::core::StoragePort> =
             Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"));
@@ -359,11 +358,13 @@ mod tests {
             Arc::clone(&store),
             bus.clone(),
         ));
+        let cancellations = crate::api::new_cancel_registry();
         let live = LiveScanner::new(
             Arc::clone(&engine),
             bus.clone(),
             reqwest::Client::new(),
             Default::default(),
+            Arc::clone(&cancellations),
         );
         let state = Arc::new(AppState {
             store,
@@ -372,7 +373,7 @@ mod tests {
             live,
             http: reqwest::Client::new(),
             allow_key_write: false,
-            cancellations: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            cancellations,
             scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
                 super::super::MAX_CONCURRENT_SCANS,
             )),

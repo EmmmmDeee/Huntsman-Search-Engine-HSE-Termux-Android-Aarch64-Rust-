@@ -17334,3 +17334,243 @@ remedy holds and is worth restating: **read the run's own test count, never just
 its exit status**, and confirm a filtered name against `cargo test -- --list`.
 
 Tree integrity re-verified by md5 after the matrix.
+
+---
+
+### REQ-SCANSTATUS-001 — a hard-killed scan read as `running` forever; the fix derives `interrupted` at read time and never rewrites the row
+
+#### Observed, on the exact integrated commit `ff4d63c`, before any fix
+
+The claim was filed from source as INFERRED. It was then attacked with the
+real binary rather than argued from reading:
+
+1. A scan was put genuinely in flight — `modules: ["hibp","crtsh"]`,
+   `max_concurrent: 0`, `throttle_ms: 30000` — so at 3 s it sat inside the
+   inter-dispatch sleep with `status: running`, and no network in that gap.
+2. `kill -9` on the server: no cooperative drain.
+3. Restart. The row still read `running`. `/stats` answered
+   `{'complete': 2, 'running': 1}`. `GET /scans/{id}` showed
+   `finished_at: null`, `modules_run: 0`. No process held it, and nothing would
+   ever finish it.
+
+The contrast in the same database: the two scans left by the *earlier*
+graceful SIGTERM both read `complete` — the cooperative drain in
+`cli::serve` works exactly as documented. The defect is confined to the
+non-cooperative exit, which `storage::entities` itself calls "routine on
+Termux/Android, where the OS reclaims backgrounded processes".
+
+What is NOT lost: the data. `entities_for_scan` already falls back to
+`entities_from_events` for precisely this case, and that path is locked five
+ways. Only the reported state was wrong.
+
+#### Why not the obvious fix
+
+A startup pass rewriting every `running` row to `failed` is one line and
+wrong: a second instance sharing the database would have its live scan marked
+failed underneath it. That moves a permanent defect into a transient one in a
+configuration nothing else defends — the kind of change the standing law
+rejects as merely relocating a defect.
+
+#### The fix: derive, never mutate
+
+A `running` row that **this process** holds no cancellation handle for is
+interrupted. That is exact per process and mutates nothing:
+
+- `handlers::in_flight_scan_ids` — the keys of the process's ONE in-flight
+  registry (which registry that is turned out to be the whole question — see
+  the adversarial re-read below).
+- `handlers::is_interrupted(scan, in_flight)` — `Running && !in_flight`.
+- `handlers::scan_json` — the one way a `Scan` becomes API JSON, carrying a
+  derived, non-persisted `interrupted` flag; `GET /scans` and
+  `GET /scans/{id}` both route through it so they cannot disagree.
+- `aggregate_scan_stats(scans, in_flight)` — histograms such rows under
+  `interrupted`, not `running`.
+
+The persisted row is left exactly as the dead process left it: no migration,
+no enum variant (which an older binary could not deserialise), no downgrade
+hazard.
+
+**The one assumption, verified from source, not assumed.** The design is only
+sound if the registry entry outlives the engine's final status write —
+otherwise a same-process race could show `running` with no handle for an
+instant. In `spawn_scan`, `let _cancel_guard = cancel_guard;` is the spawned
+task's first statement and the guard drops when the task ends, after
+`run_panic_safe` returns (which performs the final write) and after the
+post-scan diagnostics. So within one process the combination is impossible;
+only a dead process produces it.
+
+**Why `Pending` is excluded.** `scan_create` calls `upsert_scan` (row is
+`pending`) and then `spawn_scan` (handle installed). Between them a `pending`
+row legitimately has no handle for a microsecond, and a reader in that window
+must not be told the scan was interrupted. A pending scan orphaned by a kill
+inside that window never started; `pending` is the honest word for it, and the
+Pending control in `a_running_row_with_no_handle_is_histogrammed_as_interrupted`
+asserts the exclusion rather than leaving it incidental.
+
+Scope: exactly the three read surfaces. No other API consumer branches on
+`Running` (grep-verified), so nothing else needed rewiring.
+
+#### Observed again, on the fixed binary
+
+Same database, same probe, the binary built from the fix:
+
+- The orphan the pre-fix binary had left (`ddd7bc2e…`, killed under
+  `ff4d63c`) now reads `{'complete': 2, 'interrupted': 1}` in `/stats` — its
+  persisted `status` is still `running`, untouched, and it is reported
+  honestly anyway. That is the "existing data remains readable" case, with no
+  migration having run.
+- A fresh `kill -9` under the fix, then restart: `GET /scans/{id}` →
+  `{'status': 'running', 'interrupted': true, 'finished_at': null}`;
+  `/stats` → `{'complete': 2, 'interrupted': 2}`.
+- The two scans from the earlier graceful SIGTERM read `interrupted: false`.
+  No false positive on a row that was finished properly.
+
+`status` is `running` in every interrupted row on both reads: the flag is
+derived beside the persisted field, never written into it.
+
+#### The adversarial re-read: a registry only ONE spawn path filled
+
+The draft above derived "in flight" from `AppState.cancellations`. Re-reading
+the diff for what the tests could not see: that map is populated by
+`spawn_scan` only. `core::live::session_loop` runs `run_panic_safe` itself,
+with its own session-level `cancels` map keyed by *live* id and a
+per-iteration handle registered nowhere. So a scan a live session was running
+— in this very process — would have had no entry and read `interrupted`.
+The HTTP lock could not see it because it used a hand-inserted row.
+
+Not left as an argument. Probed on the first-draft binary through the real
+router (`live_probe.sh`: a live session with the same 30 s throttle gap, then
+the iteration's scan id read from `GET /live/{id}`):
+
+| | first-draft binary (`ff4d63c-dirty`, registry = `spawn_scan` only) |
+|---|---|
+| A. `GET /scans/{sid}` while the iteration runs | `{'status': 'running', 'interrupted': True}` — a healthy scan, reported dead |
+| B. `/stats` | `{'complete': 2, 'interrupted': 3}` — the two real orphans plus this one |
+| C. `DELETE /scans/{sid}` mid-run | **200** `{"deleted": …}` — the exact race `scan_delete`'s own comment documents, open for every live iteration |
+| D. `POST /scans/{sid}/cancel` | **404** `no in-flight scan with that id` — while this process was running it |
+
+Rows C and D are the finding worth more than the one that led to them: the
+false positive was new with this fix, but the delete race and the
+unreachable cancel were latent all along, and all three are one root cause
+— **two registries of "what is in flight", one of which only one spawn path
+fills**.
+
+**The correction is one registry, not a second lookup.** Unioning the live
+sessions' `scan_ids` into the read would have fixed A and B and left C and D
+exactly as they were (and been inexact: a session's `scan_ids` is its whole
+history, not its in-flight iteration). Instead:
+
+- `CancelRegistry`, `CancelRegistryGuard` and `new_cancel_registry()` move
+  from `api` to `core::cancel` (re-exported from `api`), because the live
+  loop in `core` must populate the map and cannot depend on `api`.
+- `LiveScanner::new` takes the registry. Each iteration installs a guard
+  under its **scan** id, holding the **iteration's** own handle, from before
+  the engine starts until after `run_*_panic_safe` returns — the same
+  invariant `spawn_scan` keeps, so "`running` with no entry" still means
+  only a dead process.
+- Every `AppState` shares its `cancellations` instance with its
+  `LiveScanner`: `cli::serve`, `api::test_state`, the cells-handler test
+  state and the integration harness (`tests/common`). The sites with no
+  `AppState` — `hse live` (CLI) and the two smoke tests — register into a
+  registry of their own rather than growing a headless variant of the loop.
+
+What that buys beyond A and B, for free, from the consumers that already
+read the map: `POST /scans/{sid}/cancel` aborts a live iteration (that
+iteration only — the session carries on to its next tick, the per-iteration
+semantics the wall-time watchdog already has); `DELETE /scans/{sid}`
+refuses it mid-run and the documented "cancel, then delete" recovery works
+for it; the shutdown drain counts it.
+
+Locked at two boundaries, both using a shared test module
+(`core::module::test_support::Gated`) that holds a scan genuinely in flight
+until released or cancelled, so the "during" state is asserted rather than
+timed:
+
+- `core::live`: `a_live_iteration_holds_its_scan_id_in_the_shared_registry_only_while_the_engine_runs_it`
+  — registered while the row reads `running`; cancelling *through the entry*
+  aborts that iteration and the session proceeds to a second one (the entry
+  is the iteration's handle, not the session's); released once the engine
+  returned; nothing registered after the session ends.
+- `api::scan_handlers`, through the real routes:
+  `a_live_iteration_run_by_this_process_is_in_flight_not_interrupted` —
+  `interrupted: false` on get and list and `running` (never `interrupted`)
+  in the `/stats` aggregation, `DELETE` → 409 mid-run, `cancel` → 200 then
+  `aborted`, `DELETE` → 200 afterwards.
+
+**Observed again, on the consolidated binary** (same database, the same
+`live_probe.sh`, then the hard-kill probe):
+
+| | consolidated binary |
+|---|---|
+| A. `GET /scans/{sid}` while the iteration runs | `{'status': 'running', 'interrupted': False}` |
+| B. `/stats` | `{…, 'interrupted': 3, 'running': 1}` — the three real orphans stay interrupted; the live iteration is `running` |
+| C. `DELETE /scans/{sid}` mid-run | **409** `scan is still running — cancel it first` |
+| D. `POST /scans/{sid}/cancel` | **200** `{"status": "cancelling"}`; the row settles `aborted`, `interrupted: false`; the one-iteration session ends `completed` |
+
+The hard-kill probe on the same binary is unchanged in outcome: a fresh
+`kill -9` still yields `{'status': 'running', 'interrupted': True,
+'finished_at': None}` after restart, and the two gracefully finished scans
+still read `interrupted: False`.
+
+One row the first-draft probe left behind is evidence in its own right: the
+scan it "deleted" (200) mid-run — `ad449706…` — is back in the table as
+`aborted`, resurrected by the engine's own final write after the delete. That
+is the race `scan_delete`'s comment describes, observed rather than reasoned,
+and the consolidated binary's 409 is what now prevents it for live iterations.
+
+
+#### Falsification — predicted before run, then compared
+
+Kill sets were written into the mutation script before any row executed.
+
+| # | mutation | predicted | actual |
+|---|---|---|---|
+| S1 | derivation neutered (always false) | `a_running_row…` and `a_hard_killed…` die; `aggregate_scan_stats_sums…` survives (it asserts only the non-interrupted side) | as predicted — `running + no handle` (unit) and `no process owns it` with `left: Bool(false)` (HTTP get); `…_sums…` green |
+| S2 | over-correction — ignore the handle | the **controls** only: "running + handle is in flight", "a held handle means in flight", and `…_sums…` (its `running: 1` becomes interrupted) | as predicted — the three controls: `running + handle is genuinely in flight, never interrupted`, `…_sums…` at `tests.rs:70` (`running: 1` → `None`), and `a held handle means in flight` with `left: Bool(true)` |
+| S3 | broaden to `Pending` | only the Pending control in `a_running_row…`; `a_hard_killed…` survives (no pending row) | as predicted — `pending has a legitimate no-handle window between upsert and spawn` (`tests.rs:111`) and nothing else |
+| S4 | drop the `/stats` reclassification | `a_running_row…`'s histogram asserts only; `a_hard_killed…` survives — the stats seam is covered independently of get/list | as predicted — the histogram assert at `tests.rs:117` (`interrupted: Some(1)` → `None`); a different line from S3, so the two are distinct rows, not one over-broad test |
+| S5 | unwire `scan_list` | `a_hard_killed…`'s LIST assertions only; get still derives | as predicted — `list agrees` with `left: Null` (`tests.rs:575`); the get assertion at `:573` stayed green |
+
+Five of five rows died on the assertion named for them before the run, and
+the tree was byte-identical afterwards (md5). S3 versus S4 is the pair worth
+noting: the same *test* dies in both, on different *lines* — reading only test
+names would have made the Pending exclusion and the `/stats` reclassification
+look like one assertion, when they are two.
+
+The consolidation's own rows, kill sets again written before any ran:
+
+| # | mutation (in `session_loop`) | predicted | actual |
+|---|---|---|---|
+| S6 | never register the iteration | `core::live` lock at "DURING: … registered while the engine runs it"; the API lock at "this process is running it" (`interrupted` true). Nothing else — the hard-kill and drain tests do not involve the live loop | as predicted — `core::live` at `tests.rs:578` (DURING) and the API lock at `tests.rs:676` (`left: Bool(true)`); 8 passed, nothing else died |
+| S7 | register but never release (`mem::forget` the guard) | `core::live` at "AFTER: released once the engine returned"; the API lock at its FINAL delete (409 where "cancel, then delete" must give 200). Nothing else | as predicted — `core::live` at `:600` (AFTER) and the API lock at `:729` (`left: 409, right: 200`, body `scan is still running — cancel it first`); 8 passed |
+| S8 | register under the *live* id instead of the scan id | the same two assertions as S6 — the key identity is what the readers look up | as predicted — the same two lines as S6 (`:578`, `:676`); 8 passed |
+| S9 | register the *session's* handle instead of the iteration's | `core::live` ONLY, at "the session continues to a second iteration after a per-iteration cancel" (cancelling the entry now stops the whole session). The API lock survives: its one-iteration session completes either way | as predicted — `core::live` ONLY, at `:615` (`expect` on the second-iteration poll timing out after 10 s); the API lock survived — 9 passed, 1 failed |
+
+Four of four, on the line named before the run, with the tree byte-identical
+(md5) after each row. S9 is the row that earns the two-iteration shape of the
+`core::live` lock: with one iteration the session completes whether the entry
+held the iteration's handle or the session's, and the substitution would have
+passed.
+
+#### Scope, honestly
+
+The SPA renders whatever the API returns; a client that keys only on `status`
+will still show `running` for an interrupted row until it reads the new field.
+`/stats` is corrected outright. Wiring the web view to the flag is a separate
+surface and is not claimed here.
+
+**Gate note.** The first full gate on this tree failed twice and neither
+failure was the change's: clippy's `new_ret_no_self` on the test helper
+(`Gated::new` returned a pair — renamed `pair`), and
+`tests/reconciler_device.rs::a_radar_older_than_the_package_install_is_stale_and_only_stopped_when_authorised`
+at `stop_failed` — the SIGINT-ignored inheritance the earlier gate note in
+this ledger diagnosed, reproduced here again (`SigIgn 0x4` for a top-level
+job, `0x7` under `( nohup … & )`, which is how that gate was launched). The
+crate passes 7 of 7 launched at top level, and CI runs the same suite at
+top level on the pushed commit.
+
+Also observed, not claimed: after `cancel` (D) the row took ~27 s to settle,
+because the engine's inter-dispatch throttle sleep does not poll the cancel
+handle — cancellation is honoured at the next module boundary, which for a
+30 s `throttle_ms` is after the sleep. Pre-existing engine behaviour, the
+same for one-shot scans, and a separate cycle if it is ever worth the change.

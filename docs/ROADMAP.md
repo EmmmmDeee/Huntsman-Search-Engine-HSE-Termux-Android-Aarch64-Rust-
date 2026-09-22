@@ -831,6 +831,36 @@ by looking for them rather than reading modules at random:**
    bare sink, assumes a hole, and either adds a redundant pass or files a
    defect that is not one.
 
+   **A filed hypothesis is cheaper to observe than to argue.** REQ-SCANSTATUS-001
+   sat as INFERRED-from-source with a "needs a product decision" label until the
+   running binary was pointed at it: a 30 s throttle gap, `kill -9`, restart,
+   and the stale `running` row was OBSERVED in under a minute (REQ-SCANSTATUS-001).
+   The observation also dissolved the deferral — the "decision" was only a
+   label. Its rule: **when a claim about runtime state can be produced by
+   running the thing, run the thing before deferring it**; source reading
+   establishes possibility, not occurrence, and a product question often
+   evaporates once the behaviour is on the screen.
+
+   **When only the owner can finalise a persisted status, report ownership at
+   read time instead of guessing at write time.** A `running` row is finished
+   only by the process that started it; if that process is gone the row is
+   stuck, and a startup rewrite cannot tell a dead owner from a concurrent one
+   (REQ-SCANSTATUS-001). Its rule: **derive "nobody owns this" from the
+   process's own live registry and surface it as a non-persisted field** — it
+   is exact per process, mutates nothing, needs no migration or new enum
+   variant, and an older binary reading the row sees exactly what it saw before.
+
+   **The registry you derive from must be the one every spawn path fills.**
+   The first draft read `AppState.cancellations`, which only `spawn_scan`
+   populated; the live loop ran the engine itself, so a scan this very process
+   was running read `interrupted` — and, probed on the running binary, the same
+   gap had left every live iteration deletable mid-run and uncancellable by
+   scan id all along (REQ-SCANSTATUS-001). Its rule: **when a reader asks "is
+   this in flight?", find every path that puts work in flight and make them
+   all write the one map the reader consults** — a second lookup unioned in at
+   the read fixes the symptom you noticed and leaves the consumers you did not
+   look at exactly as broken.
+
 4. *One judgement with two definitions, in one function.* AU-031 chose between
    a per-neighbour branch and an aggregate branch on a fan-out count, and only
    the aggregate branch derived its severity from the reason — the other
