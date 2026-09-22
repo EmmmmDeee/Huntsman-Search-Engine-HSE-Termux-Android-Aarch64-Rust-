@@ -1094,15 +1094,28 @@ fn non_huntsman_env_reads_are_known() {
     );
 }
 
-/// `util::paths::isolate_for_tests` redirects the entire `~/.huntsman` layout
-/// at a temp directory for the rest of the process. It exists for the
-/// integration-test harness (`tests/common`) — the one place `cfg!(test)` does
-/// not reach — and must never be reachable from a production code path, where
-/// it would silently relocate the operator's key pool, vault and scan DB.
-/// `paths.rs`'s own doc rules out an env-var escape hatch for the same reason;
-/// this pins that the function-shaped one is not called from `src/` either.
+/// The library's test seams — process-wide `OnceLock` switches that exist for
+/// the integration-test harness (`tests/common`), the one place `cfg!(test)`
+/// does not reach — must never be reachable from a production code path:
+///
+/// * `util::paths::isolate_for_tests` redirects the entire `~/.huntsman`
+///   layout at a temp directory, where production would silently relocate the
+///   operator's key pool, vault and scan DB. `paths.rs`'s own doc rules out an
+///   env-var escape hatch for the same reason.
+/// * `util::termux::tool_dir_for_tests` pins the directory the `termux-*`
+///   helpers are spawned from (REQ-RADAR-001's end-to-end lock scripts them),
+///   where production would read scripted sensors instead of the radios.
+///
+/// Each is defined exactly once, is never called by its own file, and is not
+/// so much as mentioned anywhere else under `src/`. A new seam of this shape
+/// is added to the table, not left to the honour system.
 #[test]
-fn production_code_never_redirects_the_data_dir() {
+fn production_code_never_reaches_a_test_seam() {
+    const SEAMS: &[(&str, &str)] = &[
+        ("util/paths.rs", "isolate_for_tests"),
+        ("util/termux/mod.rs", "tool_dir_for_tests"),
+    ];
+
     fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
         for entry in std::fs::read_dir(dir).expect("readable src dir").flatten() {
             let p = entry.path();
@@ -1118,32 +1131,37 @@ fn production_code_never_redirects_the_data_dir() {
     walk(&root.join("src"), &mut files);
     assert!(!files.is_empty());
 
-    let mut offenders = Vec::new();
-    for f in &files {
-        let text = std::fs::read_to_string(f).expect("readable source");
-        let rel = f.strip_prefix(root).unwrap_or(f).display().to_string();
-        if rel.ends_with("util/paths.rs") {
-            assert_eq!(
-                text.matches("fn isolate_for_tests").count(),
-                1,
-                "paths.rs must define isolate_for_tests exactly once"
-            );
-            // Its only appearance as a CALL must be its own definition — the
-            // doc comments refer to it without parentheses.
-            assert_eq!(
-                text.matches("isolate_for_tests()").count(),
-                1,
-                "paths.rs must not call isolate_for_tests() itself"
-            );
-        } else if text.contains("isolate_for_tests") {
-            offenders.push(rel);
+    for &(home, name) in SEAMS {
+        let mut defined = false;
+        let mut offenders = Vec::new();
+        for f in &files {
+            let text = std::fs::read_to_string(f).expect("readable source");
+            let rel = f.strip_prefix(root).unwrap_or(f).display().to_string();
+            if rel.ends_with(home) {
+                defined = true;
+                assert_eq!(
+                    text.matches(&format!("fn {name}")).count(),
+                    1,
+                    "{home} must define {name} exactly once"
+                );
+                // Its only appearance followed by `(` must be its own
+                // definition — doc comments refer to it without parentheses.
+                assert_eq!(
+                    text.matches(&format!("{name}(")).count(),
+                    1,
+                    "{home} must not call {name}() itself"
+                );
+            } else if text.contains(name) {
+                offenders.push(rel);
+            }
         }
+        assert!(defined, "{home} (the home of {name}) must exist under src/");
+        assert!(
+            offenders.is_empty(),
+            "{name} must only be reachable from the test harness, never from \
+             production code under src/: {offenders:?}"
+        );
     }
-    assert!(
-        offenders.is_empty(),
-        "isolate_for_tests must only be reachable from the test harness, never from \
-         production code under src/: {offenders:?}"
-    );
 }
 
 /// The core binary never escalates privilege — it is a no-root Termux userland tool.

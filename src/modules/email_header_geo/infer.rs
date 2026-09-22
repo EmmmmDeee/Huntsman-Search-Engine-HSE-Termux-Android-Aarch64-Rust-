@@ -47,15 +47,35 @@ pub(super) fn detect_corporate_provider(domain: &str) -> Option<(&'static str, &
 }
 
 /// True if `pattern` (a provider brand token such as `bigpond` or `tpg.com`)
-/// begins a host label in `domain` — i.e. it occurs at the start, or right after
-/// a label separator. Unlike the suffix-anchored `CONSUMER_PROVIDERS` check, the
-/// regional brand tokens carry no fixed TLD (`bigpond` → `bigpond.com.au`,
-/// `bigpond.net.au`), so the match stays substring-based but must start a label.
+/// spans WHOLE host labels in `domain` — it must both start a label and end
+/// one. Unlike the suffix-anchored `CONSUMER_PROVIDERS` check, the regional
+/// brand tokens carry no fixed TLD (`bigpond` → `bigpond.com.au`,
+/// `bigpond.net.au`), so the match stays substring-based; what it cannot be is
+/// a fragment of a longer label at either end.
 ///
-/// The left boundary is the fix for the mid-label false positives a plain
-/// `contains` produced: `campbell.net` does not match `bell.net`, `platt.net`
-/// does not match `att.net`, while `bigpond.com.au` and `mail.bigpond.com`
-/// (subdomain) still match.
+/// The left boundary alone was the earlier fix, for the mid-label false
+/// positives a plain `contains` produced: `campbell.net` is not `bell.net`,
+/// `platt.net` is not `att.net`. It left the mirror-image hole open at the
+/// other end, and every entry in `REGIONAL_PROVIDERS` is a complete label or
+/// label-sequence, so the right boundary costs nothing and closes
+/// (REQ-EMAILHEADERGEO-001):
+///
+/// - `bigpondxyz.com` was read as Telstra BigPond / Australia
+/// - `charterhouse.com` and `chartered-accountants.com` as Spectrum/Charter /
+///   United States — both plausible real firms, geolocated to the wrong
+///   continent off a brand token they merely begin with
+/// - `tpg.company.com` as TPG / Australia
+///
+/// `bigpond.com.au`, `bigpond.net.au` and the `mail.bigpond.com` subdomain
+/// form all still match, which is the point of the substring approach.
+///
+/// **Residual, stated rather than left implicit**: a host that embeds the whole
+/// brand label-sequence as a subdomain of something else — `bigpond.com.evil.tld`
+/// — still matches, because its labels genuinely are there. Closing that needs
+/// registrable-domain (PSL) logic, not a boundary check, and would also have to
+/// keep the legitimate `mail.bigpond.com` case. Out of scope here; the emitted
+/// entity is `confidence::LOW` / `SPECULATIVE` and tagged
+/// `email-provider-inferred`.
 fn domain_has_label_prefix(domain: &str, pattern: &str) -> bool {
     let h = domain.as_bytes();
     let mut from = 0;
@@ -67,7 +87,13 @@ fn domain_has_label_prefix(domain: &str, pattern: &str) -> bool {
             let p = h[at - 1];
             !(p.is_ascii_alphanumeric() || p == b'-')
         };
-        if starts_label {
+        // End of string, or the following char likewise ends the label.
+        let end = at + pattern.len();
+        let ends_label = end == h.len() || {
+            let n = h[end];
+            !(n.is_ascii_alphanumeric() || n == b'-')
+        };
+        if starts_label && ends_label {
             return true;
         }
         from = at + 1;
@@ -94,6 +120,64 @@ mod label_prefix_tests {
     fn rejects_mid_label_false_positives() {
         assert!(!domain_has_label_prefix("campbell.net", "bell.net"));
         assert!(!domain_has_label_prefix("platt.net", "att.net"));
+    }
+
+    /// REQ-EMAILHEADERGEO-001. The mirror image of the case above, which the
+    /// left-boundary-only check let through: a domain that merely BEGINS with a
+    /// brand token was attributed to that provider and geolocated to its
+    /// country. `charterhouse.com` and `chartered-accountants.com` are the
+    /// pointed ones — plausible real firms sent to the United States as
+    /// Spectrum/Charter subscribers off a token they merely start with.
+    ///
+    /// Collected, not asserted one at a time, so one run names every survivor
+    /// instead of stopping at the first.
+    #[test]
+    fn rejects_a_brand_token_that_only_begins_a_longer_label() {
+        let cases = [
+            ("bigpondxyz.com", "bigpond"),
+            ("charterhouse.com", "charter"),
+            ("chartered-accountants.com", "charter"),
+            ("comcastic.example", "comcast"),
+            ("tpg.company.com", "tpg.com"),
+            ("iinetworking.com.au", "iinet"),
+            ("mail.bigpondish.com", "bigpond"),
+        ];
+        let matched: Vec<&str> = cases
+            .iter()
+            .filter(|(domain, pattern)| domain_has_label_prefix(domain, pattern))
+            .map(|(domain, _)| *domain)
+            .collect();
+        assert!(
+            matched.is_empty(),
+            "a brand token must span whole labels, not just begin one: {matched:?}"
+        );
+    }
+
+    /// The control, and it PASSES on the baseline: adding the right boundary
+    /// must not cost a single real provider domain. Every shape the table is
+    /// meant to catch — bare brand on either AU ccTLD, the subdomain form, and
+    /// a multi-label pattern — still matches.
+    #[test]
+    fn real_provider_domains_still_match() {
+        let cases = [
+            ("bigpond.com.au", "bigpond"),
+            ("bigpond.net.au", "bigpond"),
+            ("mail.bigpond.com", "bigpond"),
+            ("tpg.com.au", "tpg.com"),
+            ("att.net", "att.net"),
+            ("charter.com", "charter"),
+            ("user.comcast.net", "comcast"),
+            ("t-online.de", "t-online"),
+        ];
+        let missed: Vec<&str> = cases
+            .iter()
+            .filter(|(domain, pattern)| !domain_has_label_prefix(domain, pattern))
+            .map(|(domain, _)| *domain)
+            .collect();
+        assert!(
+            missed.is_empty(),
+            "real provider domains must still match: {missed:?}"
+        );
     }
 
     #[test]

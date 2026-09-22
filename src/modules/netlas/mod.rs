@@ -303,9 +303,10 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         if let Some(geo) = &data.geo
             && geo_val.is_none()
             && let (Some(lat), Some(lon)) = (geo.latitude, geo.longitude)
-            // Shared validator: finite, in-range, not Null Island — replaces the
-            // ad-hoc 0.001 band that let out-of-range / near-(0,0) junk through.
-            && crate::util::geo::is_valid_coords(lat, lon)
+            // Shared validator for IP-geo providers: rejects finite/in-range ✓,
+            // Null Island (0,0), and the near-null-island jitter band those APIs
+            // emit as an "unknown" placeholder. Netlas is a coarse IP-geo source.
+            && crate::util::geo::is_plausible_provider_coord(lat, lon)
         {
             geo_val = Some((
                 lat,
@@ -475,6 +476,18 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
     }
     ip_entity.add_evidence(ev);
     result.push(ip_entity);
+
+    // The same fact `result_count` carries per-entity, reported once at the
+    // PROVIDER level so `core::coverage` can see it. The attribute annotates an
+    // entity in the dossier and had no reader outside this file; this decides
+    // whether the provider counts as having answered completely
+    // (REQ-COVERAGE-001 / REQ-NETLAS-001).
+    if let Some(total) = body.count
+        && let Ok(total) = usize::try_from(total)
+        && total > body.items.len()
+    {
+        result.mark_truncated(body.items.len(), Some(total), "the `fields=*` items page");
+    }
 
     // ISP → Organisation entity.
     let isp_lc = isp_val

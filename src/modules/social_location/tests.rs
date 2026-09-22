@@ -74,6 +74,42 @@ use super::*;
     }
 
     #[test]
+    fn is_supported_host_matches_exact_and_subdomains() {
+        // REQ-SOCIALLOC-001: exact match and subdomain match with dot boundary
+        assert!(is_supported_host("github.com"));
+        assert!(is_supported_host("www.github.com"));
+        assert!(is_supported_host("api.github.com"));
+        assert!(is_supported_host("linkedin.com"));
+        assert!(is_supported_host("www.linkedin.com"));
+    }
+
+    #[test]
+    fn is_supported_host_rejects_lookalikes() {
+        // REQ-SOCIALLOC-001: must not match domain suffixes that aren't actual subdomains
+        assert!(!is_supported_host("notgithub.com"));
+        assert!(!is_supported_host("github.com.evil.net"));
+        assert!(!is_supported_host("linkedinx.com"));
+        assert!(!is_supported_host("reddit.com.phishing.io"));
+    }
+
+    #[test]
+    fn is_professional_host_matches_exact_and_subdomains() {
+        // REQ-SOCIALLOC-001: professional hosts must also match subdomains safely
+        assert!(is_professional_host("ratemyagent.com.au"));
+        assert!(is_professional_host("www.ratemyagent.com.au"));
+        assert!(is_professional_host("linkedin.com"));
+        assert!(is_professional_host("www.linkedin.com"));
+    }
+
+    #[test]
+    fn is_professional_host_rejects_lookalikes() {
+        // REQ-SOCIALLOC-001: professional host check must also reject lookalikes
+        assert!(!is_professional_host("notratemyagent.com.au"));
+        assert!(!is_professional_host("ratemyagent.com.au.evil.net"));
+        assert!(!is_professional_host("linkedincorp.com"));
+    }
+
+    #[test]
     fn github_location_entities_decode_exactly_once() {
         // Regression: the local `.replace()` chain fed each replacement the
         // previous one's output, so an `&amp;` decoding to `&` paired with the

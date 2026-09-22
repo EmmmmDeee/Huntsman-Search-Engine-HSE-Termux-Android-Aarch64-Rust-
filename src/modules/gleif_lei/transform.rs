@@ -3,14 +3,38 @@
 use crate::core::confidence;
 use crate::core::entity::{Entity, EntityKind, Evidence};
 
+use crate::util::namesake::{NameCollisions, mark_ambiguous};
+
 use super::{
     ABN_CONF, ADDR_CONF, MAX_RECORDS, ORG_CANDIDATE, ORG_EXACT, SRC,
     helpers::{au_abn_acn, locality, name_matches_query, record_evidence},
     types::GleifResp,
 };
 
+/// Every legal name this response holds more than once — the names GLEIF's own
+/// answer proves do not identify a single company.
+///
+/// Folded exactly as the engine folds an entity value, because the question is
+/// "will these rows fuse into one `Organisation`?" — see [`NameCollisions`].
+fn collisions(resp: &GleifResp) -> NameCollisions {
+    NameCollisions::of(
+        &EntityKind::Organisation,
+        resp.data.iter().take(MAX_RECORDS).filter_map(|rec| {
+            rec.attributes
+                .as_ref()?
+                .entity
+                .as_ref()?
+                .legal_name
+                .as_ref()?
+                .name
+                .as_deref()
+        }),
+    )
+}
+
 /// The `(LEI, legal name)` of every searched row whose legal name matches the
-/// seed exactly — the only rows a Level-2 corporate-family walk is spent on.
+/// seed exactly **and identifies exactly one company** — the only rows a
+/// Level-2 corporate-family walk is spent on.
 ///
 /// Loose name candidates are excluded deliberately. A walk costs three HTTP
 /// requests and, worse, attributes a whole corporate family to the operator's
@@ -18,8 +42,17 @@ use super::{
 /// around the wrong company. Rows without an LEI are skipped because there is
 /// nothing to walk from.
 ///
+/// An **ambiguous exact** match is excluded for the same reason, and it was not
+/// (REQ-GLEIF-001). When two companies in different jurisdictions hold one
+/// legal name, both rows matched exactly, both were walked, and both corporate
+/// families — parents, ultimate parents and children — were attributed to the
+/// one subject, arriving tagged `exact-name-match`. That is the harm this
+/// function's own rule already forbade, reached through the gate rather than
+/// around it: the name is not the wrong company's, it is *both* companies'.
+///
 /// Pure, so the seed-selection rule is testable without a network round trip.
 pub(super) fn exact_seeds(resp: &GleifResp, query: &str) -> Vec<(String, String)> {
+    let shared = collisions(resp);
     resp.data
         .iter()
         .take(MAX_RECORDS)
@@ -29,7 +62,9 @@ pub(super) fn exact_seeds(resp: &GleifResp, query: &str) -> Vec<(String, String)
             let name =
                 super::helpers::non_empty(entity.legal_name.as_ref().and_then(|n| n.name.clone()))?;
             let lei = super::helpers::non_empty(attrs.lei.clone())?;
-            (name_matches_query(&name, query)).then_some((lei, name))
+            (name_matches_query(&name, query)
+                && !shared.is_shared(&EntityKind::Organisation, &name))
+            .then_some((lei, name))
         })
         .collect()
 }
@@ -38,7 +73,18 @@ pub(super) fn exact_seeds(resp: &GleifResp, query: &str) -> Vec<(String, String)
 /// carrying the full record in evidence; exact name matches additionally fan out
 /// into the AbnAcn (AU) and Address pivots. Loose candidates stay a single
 /// sub-floor Organisation so a noisy match can't pivot.
+///
+/// A legal name this same response holds more than once is a **proven
+/// collision**: two different real companies hold it, and because the entity
+/// value IS the name, `Entity::new` derives one uid for both and the engine
+/// fuses them. `Entity::absorb` keeps both sides' evidence (joining conflicting
+/// attributes as `"AU; DE"`), so nothing observed is lost — but the fused
+/// entity used to *assert* a single company at `ORG_EXACT`, above the expansion
+/// floor, so a composite of two companies pivoted immediately. Those rows are
+/// now capped below the floor and say why, the rule `ahpra` established for
+/// practitioners (REQ-AHPRA-001) and this module lacked (REQ-GLEIF-001).
 pub(super) fn records_to_entities(resp: &GleifResp, query: &str, scan_id: &str) -> Vec<Entity> {
+    let shared = collisions(resp);
     let total = resp
         .meta
         .as_ref()
@@ -63,7 +109,11 @@ pub(super) fn records_to_entities(resp: &GleifResp, query: &str, scan_id: &str) 
         };
         let lei = attrs.lei.clone().unwrap_or_default();
         let exact = name_matches_query(&name, query);
+        // Only an EXACT match can be an ambiguous one: a loose candidate is
+        // already sub-floor and already says it did not match.
+        let ambiguous = exact && shared.is_shared(&EntityKind::Organisation, &name);
         let conf = if exact { ORG_EXACT } else { ORG_CANDIDATE };
+        let row_start = out.len();
 
         let mut org = Entity::new(EntityKind::Organisation, &name, conf, scan_id);
         org.tag(SRC);
@@ -95,7 +145,18 @@ pub(super) fn records_to_entities(resp: &GleifResp, query: &str, scan_id: &str) 
             }
             _ => {}
         }
-        org.add_evidence(record_evidence(&lei, entity, &name, total));
+        let mut ev = record_evidence(&lei, entity, &name, total);
+        if ambiguous {
+            // The caution rides in evidence, not only in a tag, because the
+            // fused entity's attributes are what an operator reads: it will
+            // show `jurisdiction: "AU; DE"` and this says why.
+            ev = ev.with_attr(
+                "caution",
+                "this legal name is held by more than one company in GLEIF's own \
+                 answer; the merged record describes every holder, not one company",
+            );
+        }
+        org.add_evidence(ev);
         out.push(org);
 
         if !exact {
@@ -182,6 +243,12 @@ pub(super) fn records_to_entities(resp: &GleifResp, query: &str, scan_id: &str) 
                     format!("Inline geocode of GLEIF address '{loc}' → {coord_val}"),
                 ));
                 out.push(c);
+            }
+        }
+
+        if ambiguous {
+            for e in &mut out[row_start..] {
+                mark_ambiguous(e);
             }
         }
     }

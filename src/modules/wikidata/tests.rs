@@ -10,7 +10,7 @@ use crate::core::{
 use super::{
     HANDLE_PROPS, PERSON_PRIMARY, Wikidata,
     builder::{candidate_entity, primary_entities},
-    claims::{claim_entity_ids, claim_p625, claim_strings, en_text},
+    claims::{claim_entity_ids, claim_p625, claim_strings, claim_time, en_text},
     classify::{classify, name_matches_query, seed_kind},
     types::{SearchHit, SearchResp},
     urls::{entities_url, search_url},
@@ -440,5 +440,376 @@ fn a_normal_search_response_has_no_error_envelope() {
     assert!(
         crate::util::mediawiki::MwError::check(&resp.error, "wikidata").is_ok(),
         "a normal search response passes the gate"
+    );
+}
+
+/// The module's own promise (module doc, `mod.rs`):
+///
+/// > up to `MAX_CANDIDATES` further same-name items are surfaced as
+/// > low-confidence candidates … that stay **below the expansion floor so a
+/// > namesake can't pivot**.
+///
+/// `candidate_entity_is_sub_floor_and_named` above asserts that on the entity
+/// **in isolation**, which is where the promise is true and where it does not
+/// matter. Two Wikidata items that are namesakes share a label by definition —
+/// that is what makes them namesakes — and an entity valued on a name derives
+/// its uid from that name, so the primary and the candidate are ONE entity as
+/// far as the engine is concerned. `Entity::absorb` takes
+/// `f64::max(confidence)`, so the deliberate demotion is erased by the very
+/// thing it was written to protect against.
+#[test]
+fn a_namesake_candidate_does_not_smuggle_the_primary_s_confidence() {
+    let primary = primary_entities(
+        "Q1",
+        "John Smith",
+        &serde_json::json!({
+            "labels": {"en": {"value": "John Smith"}},
+            "claims": {"P31": [{"mainsnak": {"datavalue": {"value": {"entity-type": "item", "id": "Q5"}}}}]}
+        }),
+        TargetKind::FullName,
+        "s",
+    );
+    let candidate = candidate_entity(
+        &SearchHit {
+            id: "Q2".into(),
+            label: Some("John Smith".into()),
+            description: Some("a different, unrelated John Smith".into()),
+        },
+        TargetKind::FullName,
+        "s",
+    );
+
+    // Precondition, asserted rather than assumed: these really are one entity
+    // to the engine. If this ever stops holding the test below is vacuous.
+    let head = primary.first().expect("a primary must be built");
+    assert_eq!(
+        head.uid, candidate.uid,
+        "two same-label Wikidata items must share a uid — otherwise this \
+         regression cannot occur and this test proves nothing"
+    );
+
+    let mut all = primary;
+    all.push(candidate);
+    // The page-level judgement `process` makes, at its pure seam.
+    super::builder::mark_shared_labels(
+        &mut all,
+        TargetKind::FullName,
+        &["John Smith", "John Smith"],
+    );
+    crate::core::entity::dedup_merge_entities(&mut all);
+
+    let merged = all
+        .iter()
+        .find(|e| e.value == "John Smith" && e.kind == EntityKind::Person)
+        .expect("the fused person must survive");
+    assert!(
+        merged.confidence < confidence::MEDIUM,
+        "a name two Wikidata items hold does not identify one person, so the \
+         fused entity must stay below the expansion floor and must not pivot; \
+         got {} with tags {:?}",
+        merged.confidence,
+        merged.tags
+    );
+}
+
+#[test]
+fn a_single_wikidata_match_still_pivots_at_full_confidence() {
+    // CONTROL — passes on the baseline AND the fix. One item, no namesake: the
+    // primary keeps its full confidence and its fan-out.
+    let primary = primary_entities(
+        "Q1",
+        "Linus Torvalds",
+        &torvalds_entity(),
+        TargetKind::FullName,
+        "s",
+    );
+    let head = primary.first().expect("a primary must be built");
+    assert!((head.confidence - PERSON_PRIMARY).abs() < f64::EPSILON);
+    assert!(head.tags.iter().any(|t| t == "exact-name-match"));
+    assert!(!head.tags.iter().any(|t| t == "ambiguous-name"));
+}
+
+#[test]
+fn an_ambiguous_primary_does_not_leave_its_handles_pivot_eligible() {
+    // The fan-out read from the primary item alone — its website, its GitHub
+    // handle — rests on the same unresolved name. Demoting the Person while
+    // leaving those at HANDLE_CONF/DOMAIN_CONF would move the defect rather
+    // than remove it: the handle would still pivot, still attributed to a
+    // subject who may be the OTHER holder of the name.
+    let mut all = primary_entities(
+        "Q1",
+        "Linus Torvalds",
+        &torvalds_entity(),
+        TargetKind::FullName,
+        "s",
+    );
+    let fan_out = all.len();
+    assert!(
+        fan_out > 1,
+        "the fixture must produce a claims fan-out, or this test is vacuous"
+    );
+    all.push(candidate_entity(
+        &SearchHit {
+            id: "Q2".into(),
+            label: Some("Linus Torvalds".into()),
+            description: Some("a different person with the same name".into()),
+        },
+        TargetKind::FullName,
+        "s",
+    ));
+    super::builder::mark_shared_labels(
+        &mut all,
+        TargetKind::FullName,
+        &["Linus Torvalds", "Linus Torvalds"],
+    );
+
+    for e in &all {
+        assert!(
+            e.confidence < confidence::MEDIUM,
+            "{:?} entity {:?} still pivots at {} on an unresolved name",
+            e.kind,
+            e.value,
+            e.confidence
+        );
+        assert!(
+            e.tags.iter().any(|t| t == "ambiguous-name"),
+            "{:?} entity {:?} escaped the ambiguity marking",
+            e.kind,
+            e.value
+        );
+    }
+}
+
+#[test]
+fn a_differently_labelled_candidate_leaves_the_primary_alone() {
+    // CONTROL and boundary: a candidate whose label merely CONTAINS the seed
+    // tokens ("Linus Torvalds Jr") is a different value, gets a different uid,
+    // never fuses, and so erases nothing. The primary keeps full confidence.
+    let mut all = primary_entities(
+        "Q1",
+        "Linus Torvalds",
+        &torvalds_entity(),
+        TargetKind::FullName,
+        "s",
+    );
+    all.push(candidate_entity(
+        &SearchHit {
+            id: "Q2".into(),
+            label: Some("Linus Torvalds Jr".into()),
+            description: None,
+        },
+        TargetKind::FullName,
+        "s",
+    ));
+    super::builder::mark_shared_labels(
+        &mut all,
+        TargetKind::FullName,
+        &["Linus Torvalds", "Linus Torvalds Jr"],
+    );
+
+    let head = all.first().expect("primary");
+    assert!((head.confidence - PERSON_PRIMARY).abs() < f64::EPSILON);
+    assert!(!head.tags.iter().any(|t| t == "ambiguous-name"));
+    // …and the genuinely distinct candidate keeps its own sub-floor demotion,
+    // which was never at risk because it never fused.
+    let cand = all
+        .iter()
+        .find(|e| e.value == "Linus Torvalds Jr")
+        .expect("candidate");
+    assert!(cand.confidence < confidence::MEDIUM);
+    assert!(!cand.tags.iter().any(|t| t == "ambiguous-name"));
+}
+
+// ── REQ-WIKIDATA-002: Wikidata's own statement rank ──────────────────────────
+
+/// One statement, with an explicit rank, in the shape the live API sends.
+fn ranked(pid: &str, rows: &[(&str, Value)]) -> Value {
+    let statements: Vec<Value> = rows
+        .iter()
+        .map(|(rank, value)| {
+            serde_json::json!({
+                "rank": rank,
+                "mainsnak": { "snaktype": "value", "datavalue": { "value": value } }
+            })
+        })
+        .collect();
+    serde_json::json!({ "claims": { pid: statements } })
+}
+
+#[test]
+fn a_deprecated_statement_is_never_read_back_as_current_fact() {
+    // `deprecated` is Wikidata's own marker for a statement it knows to be
+    // wrong or superseded — kept visible on purpose, for provenance. Minting it
+    // as a current value republishes an error the source has already retracted.
+    //
+    // All four readers ignored `rank` entirely, so every deprecated statement
+    // was surfaced exactly like a live one.
+    let site = ranked(
+        "P856",
+        &[
+            (
+                "deprecated",
+                Value::String("https://old-and-wrong.example".into()),
+            ),
+            ("normal", Value::String("https://current.example".into())),
+        ],
+    );
+    assert_eq!(
+        claim_strings(&site, "P856"),
+        vec!["https://current.example".to_string()],
+        "a deprecated website must not be surfaced"
+    );
+
+    let occ = ranked(
+        "P106",
+        &[
+            ("deprecated", serde_json::json!({"id": "Q_WRONG"})),
+            ("normal", serde_json::json!({"id": "Q82594"})),
+        ],
+    );
+    assert_eq!(claim_entity_ids(&occ, "P106"), vec!["Q82594".to_string()]);
+
+    let dob = ranked(
+        "P569",
+        &[
+            (
+                "deprecated",
+                serde_json::json!({"time": "+1950-01-01T00:00:00Z"}),
+            ),
+            (
+                "normal",
+                serde_json::json!({"time": "+1969-12-28T00:00:00Z"}),
+            ),
+        ],
+    );
+    assert_eq!(claim_time(&dob, "P569"), Some("1969-12-28".to_string()));
+
+    let coords = ranked(
+        "P625",
+        &[
+            (
+                "deprecated",
+                serde_json::json!({"latitude": 1.0, "longitude": 1.0}),
+            ),
+            (
+                "normal",
+                serde_json::json!({"latitude": -27.4679, "longitude": 153.0281}),
+            ),
+        ],
+    );
+    let (lat, lon) = claim_p625(&coords).expect("the live statement must still resolve");
+    assert!(
+        (lat - -27.4679).abs() < 1e-9 && (lon - 153.0281).abs() < 1e-9,
+        "the deprecated coordinate won: got {lat},{lon}"
+    );
+}
+
+#[test]
+fn a_single_valued_read_takes_the_preferred_statement_not_array_index_zero() {
+    // `preferred` is how an item says "when you need ONE value, use this" —
+    // exactly the case a superseded coordinate or date creates. The readers
+    // indexed `claims/<pid>/0`, i.e. whichever statement serialised first, so a
+    // stale value placed ahead of the current one won outright.
+    let coords = ranked(
+        "P625",
+        &[
+            // Deliberately FIRST in the array, as a superseded value often is.
+            (
+                "normal",
+                serde_json::json!({"latitude": 51.5074, "longitude": -0.1278}),
+            ),
+            (
+                "preferred",
+                serde_json::json!({"latitude": -27.4679, "longitude": 153.0281}),
+            ),
+        ],
+    );
+    let (lat, lon) = claim_p625(&coords).expect("a coordinate must resolve");
+    assert!(
+        (lat - -27.4679).abs() < 1e-9 && (lon - 153.0281).abs() < 1e-9,
+        "index 0 won over the preferred statement: got {lat},{lon}"
+    );
+
+    let dob = ranked(
+        "P569",
+        &[
+            (
+                "normal",
+                serde_json::json!({"time": "+1900-01-01T00:00:00Z"}),
+            ),
+            (
+                "preferred",
+                serde_json::json!({"time": "+1969-12-28T00:00:00Z"}),
+            ),
+        ],
+    );
+    assert_eq!(claim_time(&dob, "P569"), Some("1969-12-28".to_string()));
+}
+
+#[test]
+fn a_multi_valued_read_keeps_every_live_statement_including_the_preferred_one() {
+    // The control that keeps the fix from over-correcting. P31/P106/P27 are
+    // genuinely multi-valued — a person really does hold several occupations —
+    // so narrowing to the preferred statement would DISCARD true values.
+    // Only `deprecated` is dropped here; `preferred` and `normal` both survive.
+    let occ = ranked(
+        "P106",
+        &[
+            ("preferred", serde_json::json!({"id": "Q82594"})),
+            ("normal", serde_json::json!({"id": "Q5482740"})),
+            ("deprecated", serde_json::json!({"id": "Q_RETRACTED"})),
+        ],
+    );
+    assert_eq!(
+        claim_entity_ids(&occ, "P106"),
+        vec!["Q82594".to_string(), "Q5482740".to_string()],
+        "both live occupations must survive; only the deprecated one is dropped"
+    );
+}
+
+#[test]
+fn a_statement_carrying_no_rank_is_read_as_ordinary_not_discarded() {
+    // The live API always sets `rank`, so this only arises for a trimmed body or
+    // a fixture. The safe reading of a missing rank is "ordinary" — discarding
+    // it would turn a partial response into silent data loss, and would break
+    // every fixture in this file that predates REQ-WIKIDATA-002.
+    let bare = serde_json::json!({
+        "claims": { "P856": [
+            { "mainsnak": { "datavalue": { "value": "https://no-rank.example" } } }
+        ]}
+    });
+    assert_eq!(
+        claim_strings(&bare, "P856"),
+        vec!["https://no-rank.example".to_string()]
+    );
+}
+
+#[test]
+fn an_item_whose_only_classification_is_deprecated_falls_back_it_is_never_guessed() {
+    // The boundary the rank filter moves in `classify`. P31 drives entity KIND,
+    // so dropping a deprecated statement there changes which entity is minted,
+    // not merely its content — this pins that the change is the module's own
+    // defined "I don't know" answer and not a misclassification.
+    //
+    // An item whose sole `instance of` is one Wikidata marks wrong must not be
+    // classified from it; `classify` falls back to the seed's kind.
+    let only_deprecated = ranked("P31", &[("deprecated", serde_json::json!({"id": "Q5"}))]);
+    assert_eq!(
+        classify(&only_deprecated, TargetKind::Organisation),
+        EntityKind::Organisation,
+        "a deprecated `instance of` must not classify the item; the seed decides"
+    );
+
+    // Control: a live Q5 still classifies as a Person, deprecated sibling or not.
+    let live_human = ranked(
+        "P31",
+        &[
+            ("deprecated", serde_json::json!({"id": "Q43229"})),
+            ("normal", serde_json::json!({"id": "Q5"})),
+        ],
+    );
+    assert_eq!(
+        classify(&live_human, TargetKind::Organisation),
+        EntityKind::Person
     );
 }

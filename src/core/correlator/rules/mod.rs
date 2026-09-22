@@ -443,6 +443,16 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "comb_search", // COMB combo-list corpus
         "niamonx",     // Niamonx breach-lookup API
         "osintcat",    // OSINTCat breach-lookup API
+        // Stolen.tax — a paid, key-gated breach-lookup API emitting Email /
+        // Username / Credential entities; its own `category()` comment calls it
+        // "breach corpora, same as hibp/dehashed/niamonx/osintcat" and its
+        // cache TTL follows "the dehashed/see_know/oathnet_pro/intelx
+        // paid-breach-module convention". It fell through to `"other"`, so a
+        // corpus the operator pays for was excluded from the breach sweep's
+        // dispatch allow-list AND from consensus grading — observed live as
+        // `breach-category modules unknown to the corpus classifier …
+        // modules="stolen_tax,ahmia"`.
+        "stolen_tax",
     ]) {
         "breach"
     } else if has(&[
@@ -623,6 +633,7 @@ mod payid;
 mod resolved;
 mod reuse_closure;
 mod robust;
+mod same_record;
 mod sim;
 mod template;
 mod transitive;

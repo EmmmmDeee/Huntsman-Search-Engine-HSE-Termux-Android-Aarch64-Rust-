@@ -50,6 +50,7 @@ pub mod key_vault;
 pub mod keys;
 pub mod log_capture;
 pub mod mediawiki;
+pub mod namesake;
 pub mod netrotate;
 pub mod oathnet;
 pub mod oathnet_batch;

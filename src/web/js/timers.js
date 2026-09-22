@@ -24,6 +24,12 @@ export function pageHidden(){
 
 /* ═══════════ Page: LIVE MONITOR (#/live) — continuous re-scan ═══════════ */
 export function clearLiveTimer(){ if (S.liveTimer){ clearInterval(S.liveTimer); S.liveTimer = null; } }
+
+/* ═══════════ Page: SIGNAL RADAR (#/radar) — the sighting table, live ═══════════ */
+/* Re-reads GET /api/v1/radar/signals every 8s while the page shows the LATEST
+   sweep, so a continuous radar's new sightings appear as its iterations land.
+   Torn down centrally by render() like every other page timer. */
+export function clearRadarTimer(){ if (S.radarTimer){ clearInterval(S.radarTimer); S.radarTimer = null; } }
 export function clearScanTimer(){ if (S.scanTimer){ clearTimeout(S.scanTimer); S.scanTimer = null; } }
 export function clearEnginesTimer(){ if (S.enginesTimer){ clearInterval(S.enginesTimer); S.enginesTimer = null; } }
 

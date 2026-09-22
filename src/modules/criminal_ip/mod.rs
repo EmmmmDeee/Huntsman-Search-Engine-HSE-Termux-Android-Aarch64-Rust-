@@ -251,8 +251,15 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
         // `City, Region, Country` `Address`. Both are IP-infrastructure geo, so
         // they carry `geoint` and stay at modest confidence — the ASN operator's
         // registered location, not proof of the subject's whereabouts.
+        // REQ-CRIMINALIP-001: Criminal IP is a coarse IP-geo provider and must
+        // reject the near-null-island jitter band (0.001 to 0.01) those APIs emit
+        // as an "unknown" placeholder. The stricter is_plausible_provider_coord gate
+        // is required, not the weaker is_valid_coords.
+        // REQ-CRIMINALIP-002: derived geo entities inherit the same VPN/proxy/Tor
+        // tags as the subject IP so that a VPN exit point's geo is correctly
+        // marked as infrastructure, not the subject.
         if let (Some(lat), Some(lon)) = (w.latitude, w.longitude)
-            && crate::util::geo::is_valid_coords(lat, lon)
+            && crate::util::geo::is_plausible_provider_coord(lat, lon)
             && geo_trusted
         {
             let coord_val = format!("{lat:.4},{lon:.4}");
@@ -264,6 +271,11 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
             );
             ce.tag("criminal_ip");
             ce.tag("geoint");
+            if let Some(issues) = &body.issues {
+                for (tag, _) in issues.active() {
+                    ce.tag(tag);
+                }
+            }
             ce.add_evidence(
                 Evidence::new(SRC, format!("Whois geolocation for {ip}")).with_attr("ip", ip),
             );
@@ -276,9 +288,21 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
                 .map(str::to_uppercase)
                 .unwrap_or_default();
             let addr = crate::util::geo::compose_address(city, region, &country);
-            let mut ae = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM, scan_id);
+            // Never above the whois fix it was composed from: this module rates
+            // that fix LOW_MEDIUM (0.45) while the Address beside it carried
+            // MEDIUM (0.50) — a 0.05 inversion (REQ-IPGEO-001 class). When the
+            // fix was suppressed as implausible, the provider's own city string
+            // is a separate datum and MEDIUM stands.
+            let fix = out.iter().rev().find(|e| e.kind == EntityKind::Coordinates);
+            let mut ae =
+                crate::util::geo::coarse_provider_address(&addr, confidence::MEDIUM, fix, scan_id);
             ae.tag("criminal_ip");
             ae.tag("geoint");
+            if let Some(issues) = &body.issues {
+                for (tag, _) in issues.active() {
+                    ae.tag(tag);
+                }
+            }
             ae.add_evidence(Evidence::new(SRC, format!("Whois location for {ip}")));
             out.push(ae);
         }
@@ -354,7 +378,12 @@ impl Module for CriminalIp {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let initial_key = match ctx.key_opt(KEY_ENV) {
             Some(k) => k,
-            None => return Ok(ModuleResult::new()),
+            // PROVIDER FAILURE != ZERO EVIDENCE: returning Ok(empty) here made
+            // dispatch record ModuleDone { found: 0 }, which coverage reads as a
+            // CleanNegative -- "queried, holds nothing on this subject" -- for a
+            // provider that was never asked. Error::MissingKey is the contract
+            // (REQ-KEYSKIP-001).
+            None => return Err(crate::core::error::Error::MissingKey(KEY_ENV.into())),
         };
         let ip = target.value.trim();
         if ip.is_empty() {

@@ -147,11 +147,66 @@ fn scan_evidence_corpus<'a>(
 /// `photon`, `search_engines`, and the AU registries (`abn_lookup`,
 /// `asic_director`, `ahpra`) — is classified non-breach by
 /// `source_family` and so is correctly rejected. Pure.
+/// A deterministic self-enrichment pass is EXCLUDED unconditionally, before the
+/// family lookup. `source_family`'s breach needles are substring-matched, so a
+/// pass whose NAME merely contains `breach`/`stealer`/`pwned`/… classifies as
+/// `"breach"` on its name alone — `breach_timezone`, which makes no network call
+/// and DERIVES Address/Coordinates by clustering timestamps to guess a UTC
+/// offset, is exactly that. A derivation is a restatement of data the scan
+/// already holds; it can never be a leaked record, and admitting one here would
+/// let the enrichment's own guessed locality be assembled into a person as
+/// breach-record PII — the precise failure this predicate's allow-list exists to
+/// prevent for `geocode`/`photon`, defeated by a name collision.
+/// [`crate::core::breach_consensus`]'s `breach_sources_of` already pairs this
+/// predicate with that exclusion for the corpus COUNT; the ~15 record gates in
+/// this file called it bare, so the guard protected the tally while leaving the
+/// assembly open. Narrower than the full
+/// [`is_non_corroborating_source`](crate::core::entity::is_non_corroborating_source):
+/// the recall / cross-scan replays carry data that DID originate in a real
+/// corpus, so excluding those is a separate question and is deliberately not
+/// decided here.
 pub(in crate::core) fn is_breach_source(name: &str) -> bool {
+    if crate::core::entity::is_enrichment_source(name) {
+        return false;
+    }
     super::source_family(name) == "breach"
         || name.eq_ignore_ascii_case("see_know")
         || name.eq_ignore_ascii_case("see-know")
 }
+
+/// The modules that self-declare [`crate::core::ModuleCategory::Breach`] but are
+/// deliberately NOT graded corpora — i.e. [`is_breach_source`] returns `false`
+/// for them *on purpose*, not by omission.
+///
+/// The category and this predicate answer two different questions, and
+/// conflating them is the defect this constant exists to close. `Breach` is an
+/// *intel-domain* label ("breach corpora, paste exposure, stealer logs, leaked
+/// credentials") describing what a module goes looking at. `is_breach_source` is
+/// a far narrower *evidentiary* claim: that a finding from this source is a
+/// leaked RECORD, whose PII attributes may be assembled into a person
+/// ([`breach_pii`](self)) and whose presence counts as an independent corpus
+/// attestation in [`crate::core::breach_consensus`]. A full-text index over leak
+/// sites satisfies the first and not the second.
+///
+/// Membership here is a standing decision that must be justified per module:
+///
+/// - `ahmia` — a full-text search engine over Tor, not a record corpus. It
+///   produces only [`crate::core::EntityKind::Url`] at
+///   [`crate::core::confidence::LOW_MEDIUM`], tagged `needs-identity-verification`,
+///   and carries its own caution that "the target term appears somewhere on this
+///   onion page … not necessarily as the subject's own data". Admitting it would
+///   let one unverified keyword hit attest a PII value alongside HIBP and
+///   DeHashed — manufacturing the very corroboration the consensus pass exists to
+///   measure.
+///
+/// Anything NOT listed here and not recognised by [`is_breach_source`] is an
+/// unclassified corpus: a real hole that silently drops a breach source out of
+/// cross-family diversity, out of the gap analysis, and out of the sweep's
+/// dispatch allow-list. `source_family_covers_every_breach_category_module`
+/// walks the live registry and fails on exactly that, and on a stale entry here
+/// (a name no longer registered, or one that became a graded corpus), so neither
+/// side of the reconciliation can rot.
+pub(in crate::core) const NON_CORPUS_BREACH_MODULES: &[&str] = &["ahmia"];
 
 // ── AU-073 — Subject date of birth ───────────────────────────────────────────
 
@@ -1642,7 +1697,16 @@ pub(in crate::core::correlator) fn rule_au_105_credential_reuse(
             for k in PLAINTEXT_PW_KEYS {
                 if let Some(v) = ev.attributes.get(*k) {
                     let s = v.trim();
-                    if s.len() >= 4 && !s.contains('@') {
+                    // A provider capture sentinel is not a secret. It is the
+                    // STRONGEST possible false reuse signal, because a
+                    // withheld-access placeholder is identical by construction in
+                    // every row the provider withheld — so two corpora each
+                    // carrying `[fail]` grouped as one reused password and fired
+                    // High. The 4-character floor admitted even the short forms.
+                    if s.len() >= 4
+                        && !s.contains('@')
+                        && !crate::util::extract::is_placeholder_secret(s)
+                    {
                         let entry = by_secret.entry(format!("p:{s}")).or_insert((
                             true,
                             BTreeSet::new(),
@@ -1685,7 +1749,15 @@ pub(in crate::core::correlator) fn rule_au_105_credential_reuse(
             for k in HASH_PW_KEYS {
                 if let Some(v) = ev.attributes.get(*k) {
                     let s = v.trim();
-                    if s.len() < 8 || s.contains('@') {
+                    // Same sentinel guard as the plaintext pass. `is_common_collision`
+                    // below rejects a COMMON PASSWORD's digest, which is a different
+                    // problem — it says nothing about a value that is not a digest at
+                    // all. The 8-character floor admitted the longer capture
+                    // sentinels (`UPGRADE_TO_SEE_…`, `[NOT_SAVED]`).
+                    if s.len() < 8
+                        || s.contains('@')
+                        || crate::util::extract::is_placeholder_secret(s)
+                    {
                         continue;
                     }
                     let lower = s.to_lowercase();

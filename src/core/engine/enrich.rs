@@ -223,7 +223,7 @@ pub(super) fn address_to_coords_pass(
         // ≥0.50, so we floor there too).
         let conf = addr_entity.confidence.clamp(0.50, 0.72);
         let mut c = Entity::new(EntityKind::Coordinates, &coord_val, conf, scan_id);
-        c.tag("addr-derived");
+        c.tag(crate::core::tags::ADDR_DERIVED);
         c.tag("geoint");
         // Propagate au-state from the address so AU-056 jurisdiction check works.
         for tag in &addr_entity.tags {

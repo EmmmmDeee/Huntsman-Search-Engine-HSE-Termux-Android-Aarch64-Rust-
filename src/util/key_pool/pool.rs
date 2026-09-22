@@ -348,7 +348,17 @@ impl KeyPool {
         }
     }
 
-    pub fn mark_validated(&self, service: &str, value: &str, valid: bool) {
+    /// Settle an ALREADY-POOLED key's verdict: `Active` or `Invalid`, stamped
+    /// with the validation time. The authoritative counterpart to [`Self::add`],
+    /// which refuses a value the service already holds and leaves the existing
+    /// entry untouched.
+    ///
+    /// Returns whether the pool actually held this key. That answer is what
+    /// separates "already pooled, now settled" from "this service is not
+    /// poolable at all" — two outcomes [`Self::add`]'s `false` conflates, and
+    /// which `add_and_validate` must tell apart to avoid reporting a store that
+    /// never happened (REQ-KEYPOOL-002).
+    pub fn mark_validated(&self, service: &str, value: &str, valid: bool) -> bool {
         let lower = service.to_lowercase();
         let mut data = self.data.lock();
         if let Some(entries) = data.services.get_mut(&lower)
@@ -360,7 +370,9 @@ impl KeyPool {
                 KeyStatus::Invalid
             };
             entry.last_validated = Some(crate::core::entity::unix_now());
+            return true;
         }
+        false
     }
 
     pub fn record_error(&self, service: &str, value: &str) {

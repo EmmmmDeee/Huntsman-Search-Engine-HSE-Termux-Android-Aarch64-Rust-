@@ -9,7 +9,6 @@
 //! silently carried that exact latent flake. One definition ends the drift.
 #![allow(dead_code)]
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -672,7 +671,7 @@ pub fn test_app_with_modules(modules: Vec<Arc<dyn Module>>, suffix: &str) -> axu
     test_app_with_modules_and_state(modules, suffix).0
 }
 
-fn test_app_with_modules_and_state(
+pub fn test_app_with_modules_and_state(
     modules: Vec<Arc<dyn Module>>,
     suffix: &str,
 ) -> (axum::Router, Arc<Store>, Arc<AppState>) {
@@ -684,11 +683,15 @@ fn test_app_with_modules_and_state(
         Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
         bus.clone(),
     ));
+    // ONE in-flight registry shared by `spawn_scan` and the live loop, as in
+    // `cli::serve` — the live tests below depend on that sharing.
+    let cancellations = huntsman_search_engine::api::new_cancel_registry();
     let live = LiveScanner::new(
         Arc::clone(&engine),
         bus.clone(),
         reqwest::Client::new(),
         Default::default(),
+        Arc::clone(&cancellations),
     );
     let state = Arc::new(AppState {
         store: Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
@@ -697,7 +700,7 @@ fn test_app_with_modules_and_state(
         live,
         http: reqwest::Client::new(),
         allow_key_write: false,
-        cancellations: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+        cancellations,
         scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
             huntsman_search_engine::api::MAX_CONCURRENT_SCANS,
         )),
@@ -706,6 +709,16 @@ fn test_app_with_modules_and_state(
         )),
         cells_import: Arc::new(std::sync::Mutex::new(
             huntsman_search_engine::api::CellsImportPhase::default(),
+        )),
+        // A tile upstream that refuses instantly on a closed loopback port, so
+        // no test reaches a real tile server; the cache under the test home.
+        tiles: Arc::new(huntsman_search_engine::api::tiles::TileSource::new(
+            "http://127.0.0.1:9/{z}/{x}/{y}.png",
+            huntsman_search_engine::util::paths::subdir("tiles"),
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(2))
+                .build()
+                .expect("test client"),
         )),
     });
     // Loopback bind + no token: the auth gate is not installed, so every

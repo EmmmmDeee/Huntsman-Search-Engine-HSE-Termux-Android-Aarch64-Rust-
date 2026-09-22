@@ -166,6 +166,39 @@ pub(super) fn admission_rejection(
     {
         return Some("confusable_homoglyph");
     }
+    // The same gate for the kinds homograph spoofing actually TARGETS. The list
+    // above covers the kinds where a Cyrillic lookalike is a nuisance and left
+    // out Domain / Email / Url, where it is the attack itself — a `pаypal.com`
+    // whose `a` is Cyrillic was admitted, expanded and correlated like any real
+    // domain (REQ-VALIDATION-001).
+    //
+    // Per LABEL, via `host_label_is_confusable`, not the flat string check used
+    // above. Measured: the flat check calls `москва.com` a spoof, because the
+    // ASCII TLD supplies the "genuine ASCII Latin" half of the mix — so wiring
+    // the existing predicate straight in would have dropped legitimate
+    // internationalised domains at admission. A whole Cyrillic label under
+    // `.com` is ordinary IDN usage; one label mixing Cyrillic and ASCII Latin is
+    // the deception.
+    //
+    // The host comes from `validation::host_of`, which is `core`'s own parse —
+    // `core` may not reach into `util::url_util` (the architecture test
+    // `core_does_not_import_util_directly` enforces that, and the gate's first
+    // draft tripped it). `host_of` was already here, unnamed, inside
+    // `is_onion_url`; naming it was the right resolution rather than widening a
+    // deliberate allow-list or writing a second inline parse.
+    let spoofable_host = match entity.kind {
+        EntityKind::Domain | EntityKind::Url => Some(validation::host_of(&entity.value)),
+        // The domain part; admission already requires exactly one `@`
+        // (REQ-VALIDATION-002 runs above via `is_fragment_value`).
+        EntityKind::Email => entity
+            .value
+            .rsplit_once('@')
+            .map(|(_, host)| validation::host_of(host)),
+        _ => None,
+    };
+    if spoofable_host.is_some_and(|h| validation::host_label_is_confusable(&h)) {
+        return Some("confusable_homoglyph");
+    }
     if entity.kind == EntityKind::Person && validation::looks_like_gibberish_name(&entity.value) {
         return Some("gibberish_value");
     }
@@ -303,6 +336,41 @@ pub(super) fn module_skip_reason(
     is_expansion: bool,
     target_distinct_sources: usize,
 ) -> Option<(SkipClass, &'static str)> {
+    // The ONE place the process-global circuit map is read for this decision.
+    let circuit_open = super::circuit::is_open(module.name());
+    module_skip_reason_with(
+        module,
+        target,
+        opts,
+        is_expansion,
+        target_distinct_sources,
+        circuit_open,
+    )
+}
+
+/// [`module_skip_reason`] with the circuit-breaker verdict **injected**.
+///
+/// Every other input to this decision is an argument; the circuit state was
+/// not, and it is the only one that lives in a process-global
+/// `Mutex<HashMap<&str, Trip>>` keyed by module NAME
+/// ([`super::circuit`]). That made a pure-looking gate order-dependent: any
+/// test that trips a circuit for a module — `record_rate_limit`,
+/// `record_soft_failure`, `record_bot_challenge` — changes what every OTHER
+/// test asking about that module sees, in whichever order the harness happens
+/// to run them. Two `skip_reason` tests passed only under `--test-threads=1`
+/// for exactly that reason (REQ-CI-004), the second recorded instance after a
+/// process-global key pool reset by parallel threads (REQ-CI-003).
+///
+/// The race is only how it SHOWS. The coupling is deterministic, and this seam
+/// is what lets a test state "no circuit is open" as a fact rather than a hope.
+pub(super) fn module_skip_reason_with(
+    module: &dyn Module,
+    target: &Target,
+    opts: &ScanOptions,
+    is_expansion: bool,
+    target_distinct_sources: usize,
+    circuit_open: bool,
+) -> Option<(SkipClass, &'static str)> {
     let name = module.name();
     // The allowlist means "ONLY these modules run" (`hse --help`) — and that
     // must hold on EVERY round, not just the seed. Gating it with `!is_expansion`
@@ -343,7 +411,7 @@ pub(super) fn module_skip_reason(
     // (and extends the ban); skipping it hands that dispatch slot to a source
     // that still works — the budget the alias scan needs to find more. Checked
     // here (not as a hard exclusion) so it auto-recovers when the window passes.
-    if super::circuit::is_open(name) {
+    if circuit_open {
         return Some((
             SkipClass::Unavailable,
             "circuit-open — rate-limited/quota/repeated failure (cooling down)",
@@ -455,9 +523,10 @@ pub(super) fn module_skip_reason(
     // service" so we save its quota / suppress its "HTTP 400 invalid
     // IP" responses before the dispatch even fires.
     //
-    // Modules with non-IP/Domain accepts (Email, Phone, Username, etc.)
-    // fall through the `_` arm and run normally — there's no concept
-    // of a "private email".
+    // Phone/Username/etc. still fall through the `_` arm — none of them
+    // carries a dialable host. `Email` DOES, and used to fall through on
+    // the assumption that "there's no concept of a 'private email'"; see
+    // the `Email` arm below (REQ-SSRF-002) for why that was false.
     if !super::LOCAL_PASSIVE_MODULES.contains(&name) {
         use crate::util::preflight;
         match target.kind {
@@ -473,10 +542,33 @@ pub(super) fn module_skip_reason(
                     "private/reserved IP — external API would reject",
                 ));
             }
-            TargetKind::Domain if preflight::is_local_domain(&target.value) => {
+            // SSRF gate: a Domain value that is itself an IP-literal
+            // string (`169.254.169.254`, `127.0.0.1`, …) is NOT caught
+            // by `is_local_domain` — that only matches IANA reserved
+            // *names* (`.local`, `.internal`, …), never an IP-shaped
+            // value. Without `is_private_ip_host` here too, a Domain-kind
+            // target of a private/reserved IP literal sailed past this
+            // gate untouched and reached web_crawler (and any other
+            // Domain-accepting external module), which dials it as a
+            // plain hostname with no further check. Mirrors the Url
+            // arm's own SSRF gate below — same risk, same fix, just a
+            // different `TargetKind` shape for the identical value.
+            //
+            // `is_private_ip_host`, not the stricter `is_private_ip`:
+            // `Target::validate`'s Domain branch admits any dotted
+            // alnum/`-`/`_` string, including shorthand-dotted (`127.1`),
+            // decimal (`2130706433`), hex, and octal IPv4 forms that
+            // `std::net::IpAddr`'s strict parser rejects but the URL host
+            // parser `web_crawler`'s own request path uses canonicalizes
+            // to the exact private address they dial — a bypass a
+            // Copilot review on this fix caught live (REQ-SSRF-001).
+            TargetKind::Domain
+                if preflight::is_local_domain(&target.value)
+                    || preflight::is_private_ip_host(&target.value) =>
+            {
                 return Some((
                     SkipClass::NotApplicable,
-                    "local/reserved domain — external API would reject",
+                    "local/reserved domain or private IP — external API would reject (SSRF gate)",
                 ));
             }
             // SSRF gate: a URL whose host is a private IP or local
@@ -489,6 +581,27 @@ pub(super) fn module_skip_reason(
                 return Some((
                     SkipClass::NotApplicable,
                     "URL with private host — external API would reject (SSRF gate)",
+                ));
+            }
+            // SSRF gate (REQ-SSRF-002): an Email whose DOMAIN part is a
+            // private/reserved IP literal or a local domain. Several
+            // Email-accepting modules derive a bare hostname from that
+            // domain and dial it directly with no guard of their own —
+            // `employer_pivot` fetches `https://{domain}/` plus seven
+            // more paths, `fediverse` fetches
+            // `https://{domain}/.well-known/webfinger?…` — so
+            // `finance@169.254.169.254` was a second, fully-open route to
+            // the cloud-metadata endpoint the Domain arm above already
+            // refuses. Neither module validated the derived host, and the
+            // client's DNS-level SSRF resolver never sees an IP literal
+            // (dialled with no lookup), so the only layer that can close
+            // this for every current and future Email-accepting module is
+            // this one — the same argument, and the same authoritative
+            // layer, as REQ-SSRF-001's Domain arm.
+            TargetKind::Email if preflight::email_host_is_private(&target.value) => {
+                return Some((
+                    SkipClass::NotApplicable,
+                    "email domain is a local/reserved name or private IP — external API would reject (SSRF gate)",
                 ));
             }
             _ => {}
@@ -697,6 +810,42 @@ impl super::ScanEngine {
                     super::circuit::record_success(name);
                     super::health::record_success(name);
                 }
+                // REQ-RADAR-001: a sensor module's per-sighting observations —
+                // signal, position, time — are persisted beside the entity
+                // graph, which flattens them away (`core::rf` says why both
+                // records exist). Best-effort like the entity checkpoint: a
+                // store failure is logged, never fatal, and never discards the
+                // entities that follow. A cache replay carries none (see
+                // `ModuleResult::sightings`), so nothing is re-observed here.
+                if !mr.sightings.is_empty() {
+                    match self
+                        .store
+                        .insert_rf_sightings_batch(cx.scan_id, &mr.sightings)
+                    {
+                        Ok(rows) => debug!(
+                            scan_id = cx.scan_id,
+                            module = name,
+                            rows,
+                            "rf sightings persisted"
+                        ),
+                        Err(e) => {
+                            warn!(scan_id = cx.scan_id, module = name, error = %e, "rf sightings not persisted");
+                        }
+                    }
+                }
+                // REQ-RESILIENCE-002: the device's own link, one record per
+                // sweep, "not connected" included — the disruption review reads
+                // these. Best-effort like the sightings; a replay carries none.
+                if let Some(link) = &mr.link {
+                    match self.store.insert_wifi_link(cx.scan_id, link) {
+                        Ok(()) => {
+                            debug!(scan_id = cx.scan_id, module = name, "wifi link persisted");
+                        }
+                        Err(e) => {
+                            warn!(scan_id = cx.scan_id, module = name, error = %e, "wifi link not persisted");
+                        }
+                    }
+                }
                 let mut found = 0usize;
                 for mut entity in mr.entities.drain(..) {
                     // Admission drop-filters (pure policy in `admission_rejection`);
@@ -729,17 +878,35 @@ impl super::ScanEngine {
                     for id in crate::core::attack::techniques_for_entity_kind(&entity.kind) {
                         entity.tag(format!("attack:{id}"));
                     }
+                    // ── Every mutation of `entity` happens HERE, before the
+                    //    emit ────────────────────────────────────────────────
+                    // `EventKind::EntityFound` is the DURABLE record. A scan
+                    // killed before it finalises — routine on Termux/Android,
+                    // where the OS reclaims backgrounded processes — is rebuilt
+                    // from these events alone by `Store::entities_from_events`,
+                    // which applies no enrichment of its own. Whatever is not on
+                    // the entity at this line does not exist for a recovered
+                    // scan. `entity_mutations_precede_the_durable_emit` holds
+                    // the ordering (REQ-ENGINE-001).
+                    //
                     // Universal breach-sector wiring: stamp the source's sector
                     // (`sector:real-estate`, …) on every breach finding — one
                     // chokepoint connects EVERY pool to `util::breach_sector`.
-                    // Before the emit so the event log (and the recovery rebuild)
-                    // carries it too.
                     super::tag_breach_sector(&mut entity);
                     // Categorise shared/third-party infrastructure (cloud buckets,
                     // hosting/CDN endpoints, analytics ids) as platform-infra so the
-                    // default report shows only subject-owned entities. Before the
-                    // emit so the event log + recovery rebuild carry the tag too.
+                    // default report shows only subject-owned entities.
                     super::tag_platform_infra(&mut entity);
+                    // Geohash / timezone / country / hemisphere on a Coordinates
+                    // or Address. Deterministic and offline (`util::geohash`, no
+                    // network), so there is nothing to gain by deferring it — and
+                    // it used to run AFTER the emit, which meant every recovered
+                    // scan's geo entities came back untagged and the geo
+                    // correlation rules that read those tags saw nothing. The two
+                    // passes above carried "Before the emit so the event log (and
+                    // the recovery rebuild) carries it too" in their own comments;
+                    // this one was the exception that broke the rule they state.
+                    super::enrich_geospatial(&mut entity);
                     self.emit(
                         cx.scan_id,
                         EventKind::EntityFound {
@@ -747,7 +914,6 @@ impl super::ScanEngine {
                         },
                     );
                     super::scan_entity_for_keys(&entity, self.module_runtime.as_ref());
-                    super::enrich_geospatial(&mut entity);
                     if let Some(existing) = state.entity_map.get_mut(&entity.uid) {
                         existing.merge(entity);
                     } else {
@@ -761,6 +927,10 @@ impl super::ScanEngine {
                     EventKind::ModuleDone {
                         module: name.into(),
                         found,
+                        // The module's own completeness verdict, carried into
+                        // the durable log so `core::coverage` can tell a short
+                        // answer from a whole one (REQ-COVERAGE-001).
+                        truncated: mr.truncation.take(),
                     },
                 );
                 // `debug!`, not `info!`: the structured `EventKind::ModuleDone`
@@ -806,7 +976,12 @@ impl super::ScanEngine {
         self.finalise_module_result(
             cx,
             name,
-            Ok(Ok(ModuleResult { entities: cached })),
+            Ok(Ok(ModuleResult {
+                entities: cached,
+                truncation: None,
+                sightings: Vec::new(),
+                link: None,
+            })),
             state,
             module.attack_techniques(),
             true,
@@ -838,11 +1013,60 @@ impl super::ScanEngine {
         ctx: &mut ModuleContext,
         state: &mut DispatchState<'_>,
     ) -> Result<()> {
-        if cx.opts.max_concurrent == 0 {
-            self.dispatch_target_sequential(cx, ctx, state).await
+        // ── REQ-ENGINE-002: the round barrier ────────────────────────────────
+        // `target_distinct_sources` is a SNAPSHOT taken before the module loop.
+        // Every source-count gate in the round reads that frozen value, so a
+        // target that crosses the cross-correlation threshold DURING its own
+        // round — because a free module in the same round re-confirmed it —
+        // never re-triggers the gate. And a target is visited exactly once
+        // (`visited` in engine::mod), so that skip is permanent, not deferred
+        // to a later round. The result is conservative: a paid, high-value-only
+        // module that had become eligible simply never runs.
+        //
+        // `gate_skips` records those, and only those: a skip is deferrable when
+        // re-asking the same gate with the count saturated admits the module.
+        //
+        // `Some(list)` marks the round's FIRST pass — the one that records a
+        // skip and collects the deferrable ones. `None` marks the barrier pass,
+        // which records nothing: the first pass already accounted for exactly
+        // one decision per module per target, and the barrier re-asks that same
+        // question rather than making a second dispatch attempt. Threading one
+        // `Option` (instead of a bool beside a list) makes that pairing
+        // structural — on the barrier pass there is no list to push into.
+        let mut deferred: Option<Vec<usize>> = Some(Vec::new());
+        let outcome = if cx.opts.max_concurrent == 0 {
+            self.dispatch_target_sequential(cx, ctx, state, &mut deferred, None)
+                .await
         } else {
-            self.dispatch_target_concurrent(cx, ctx, state).await
+            self.dispatch_target_concurrent(cx, ctx, state, &mut deferred)
+                .await
+        };
+        let Some(mut deferred) = deferred else {
+            return outcome;
+        };
+        if deferred.is_empty() {
+            return outcome;
         }
+        // SORTED BY MODULE NAME before re-evaluation. The two concurrent phases
+        // append in completion order, which is not deterministic; sorting makes
+        // the barrier's outcome — and therefore the event stream and the
+        // dossier — independent of that interleaving, which HSE's reproducible
+        // output requires. No dedup: `dispatch_order_for_target` is a
+        // permutation of the target kind's bucket, so each index appears at most
+        // once per pass, and the two phases partition on `ModuleCost::Paid`, so
+        // no module is reached by both.
+        deferred.sort_unstable_by_key(|&i| self.modules.get(i).map_or("", |m| m.name()));
+        // The re-evaluation runs through the sequential path, which recomputes
+        // `target_distinct_sources` at its top — that recompute IS the fix —
+        // and re-runs every gate. A module still short of the threshold is
+        // skipped again — silently, since the first pass already recorded it.
+        // It is handed no deferral list, so it cannot schedule another barrier:
+        // one barrier per round, never a loop.
+        let mut silent: Option<Vec<usize>> = None;
+        let barrier = self
+            .dispatch_target_sequential(cx, ctx, state, &mut silent, Some(&deferred))
+            .await;
+        outcome.and(barrier)
     }
 
     /// Gate check shared by the sequential path and both concurrent phases: if
@@ -855,18 +1079,75 @@ impl super::ScanEngine {
     /// three dispatch loops — toggling a module off is observable in the scan
     /// summary, not just the event stream, and the counting can't drift between
     /// the sequential and the two concurrent phases.
+    ///
+    /// `deferred` carries the round's pass (REQ-ENGINE-002): `Some(list)` is the
+    /// first pass, which records the skip and collects the indices a rising
+    /// source count could still admit; `None` is the barrier re-evaluation,
+    /// which records nothing and defers nothing.
     fn gate_skips(
         &self,
         cx: &DispatchCx<'_>,
         module: &dyn Module,
         target_sources: usize,
         stats: &mut ModuleStats,
+        idx: usize,
+        deferred: &mut Option<Vec<usize>>,
     ) -> bool {
-        if let Some((class, reason)) =
-            module_skip_reason(module, cx.target, cx.opts, cx.is_expansion, target_sources)
-        {
+        // Read the process-global circuit ONCE and inject it into both
+        // evaluations below, so the two answers cannot disagree because the
+        // breaker tripped between them (REQ-CI-004's seam, reused).
+        let circuit_open = super::circuit::is_open(module.name());
+        if let Some((class, reason)) = module_skip_reason_with(
+            module,
+            cx.target,
+            cx.opts,
+            cx.is_expansion,
+            target_sources,
+            circuit_open,
+        ) {
+            // The REQ-ENGINE-002 barrier pass (`deferred: None`) is a
+            // RE-EVALUATION of a decision the first pass already recorded, not a
+            // second dispatch attempt — so a module that stays gated must not
+            // book a second skip or emit a second `Skipped` event. Without this,
+            // one gated module produced two skips in `ModuleStats` and two
+            // events in the coverage stream.
+            let Some(deferred) = deferred.as_mut() else {
+                return true;
+            };
             stats.skipped += 1;
             self.emit_skipped(cx.scan_id, module.name(), reason, class);
+            // REQ-ENGINE-002: was this skip purely a consequence of the
+            // source count? Ask the gate itself, by re-running it with the
+            // count saturated — rather than matching on the reason string or
+            // maintaining a second list of "source-count-dependent" rules that
+            // could drift from the rules themselves. If the module would have
+            // been admitted at a higher count, the skip is DEFERRABLE: the
+            // count may still rise during this very round, and the target is
+            // visited exactly once, so dropping it here is permanent.
+            //
+            // On COST, since `module_skip_reason_with`'s own comment warns
+            // that building a second `ProviderDescriptor` per module per
+            // dispatch is a real allocation and not a style nit: this second
+            // evaluation only reaches that point if the
+            // first one did. A module skipped by an early, cheap gate
+            // (allowlist, `--exclude`, circuit-open, config toggle,
+            // `free_only`) returns before the descriptor in BOTH calls, so the
+            // bulk-skip case — a focused `--modules` scan skipping ~190 modules
+            // per target — costs a handful of string compares twice and nothing
+            // else. The doubled descriptor is paid only for modules that were
+            // already nearly eligible, which is the set this is about.
+            if module_skip_reason_with(
+                module,
+                cx.target,
+                cx.opts,
+                cx.is_expansion,
+                usize::MAX,
+                circuit_open,
+            )
+            .is_none()
+            {
+                deferred.push(idx);
+            }
             return true;
         }
         // Capability-aware dispatch — the cross-scan, persisted counterpart of
@@ -1036,6 +1317,8 @@ impl super::ScanEngine {
         cx: &DispatchCx<'_>,
         ctx: &mut ModuleContext,
         state: &mut DispatchState<'_>,
+        deferred: &mut Option<Vec<usize>>,
+        only: Option<&[usize]>,
     ) -> Result<()> {
         // O(1) dispatch-index lookup replaces the O(M) accepts() scan. Each
         // bucket is pre-sorted — by plain module priority, or (under
@@ -1050,8 +1333,21 @@ impl super::ScanEngine {
         // cross-correlation gate); computed once per target, not per module.
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
         let target_confidence = target_c_effective(state.entity_map, cx.target);
-        let dispatch_order =
-            self.dispatch_order_for_target(cx, target_sources, target_confidence, state.dispatched);
+        // `only` is the REQ-ENGINE-002 barrier pass: a subset of module indices,
+        // already sorted by module name, to re-evaluate now that the round has
+        // finished and the source count may have risen. It reuses this entire
+        // loop body, so a deferred module goes through every gate AGAIN rather
+        // than around them — which is what keeps the barrier from degenerating
+        // into "stopped gating".
+        let dispatch_order: Vec<usize> = match only {
+            Some(subset) => subset.to_vec(),
+            None => self.dispatch_order_for_target(
+                cx,
+                target_sources,
+                target_confidence,
+                state.dispatched,
+            ),
+        };
         for idx in dispatch_order {
             let Some(module) = self.modules.get(idx) else {
                 continue;
@@ -1074,7 +1370,7 @@ impl super::ScanEngine {
             if !module.accepts(cx.target) {
                 continue;
             }
-            if self.gate_skips(cx, &**module, target_sources, state.stats) {
+            if self.gate_skips(cx, &**module, target_sources, state.stats, idx, deferred) {
                 continue;
             }
             self.maybe_emit_dispatch_utility(
@@ -1175,14 +1471,15 @@ impl super::ScanEngine {
         cx: &DispatchCx<'_>,
         ctx: &mut ModuleContext,
         state: &mut DispatchState<'_>,
+        deferred: &mut Option<Vec<usize>>,
     ) -> Result<()> {
         // Key-discovery-first: this target's Paid modules run synchronously first
         // so any keys they discover hot-inject into `ctx` BEFORE the free/key-gated
         // modules are spawned concurrently against a snapshot of it. Both phases
         // share the same O(1) dispatch-index walk (`graph.modules_for`) rather than
         // allocating a per-target `Vec<Arc<dyn Module>>`.
-        self.run_paid_phase(cx, ctx, state).await;
-        self.spawn_free_phase(cx, ctx, state).await
+        self.run_paid_phase(cx, ctx, state, deferred).await;
+        self.spawn_free_phase(cx, ctx, state, deferred).await
     }
 
     /// Phase 1 of the concurrent dispatcher: run this target's **Paid** modules
@@ -1196,6 +1493,7 @@ impl super::ScanEngine {
         cx: &DispatchCx<'_>,
         ctx: &mut ModuleContext,
         state: &mut DispatchState<'_>,
+        deferred: &mut Option<Vec<usize>>,
     ) {
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
         let target_confidence = target_c_effective(state.entity_map, cx.target);
@@ -1225,7 +1523,7 @@ impl super::ScanEngine {
             if !module.accepts(cx.target) {
                 continue;
             }
-            if self.gate_skips(cx, &**module, target_sources, state.stats) {
+            if self.gate_skips(cx, &**module, target_sources, state.stats, idx, deferred) {
                 continue;
             }
             self.maybe_emit_dispatch_utility(
@@ -1296,6 +1594,7 @@ impl super::ScanEngine {
         cx: &DispatchCx<'_>,
         ctx: &mut ModuleContext,
         state: &mut DispatchState<'_>,
+        deferred: &mut Option<Vec<usize>>,
     ) -> Result<()> {
         use tokio::sync::Semaphore;
         use tokio::task::JoinSet;
@@ -1355,7 +1654,7 @@ impl super::ScanEngine {
             if !module.accepts(cx.target) {
                 continue;
             }
-            if self.gate_skips(cx, &**module, target_sources, state.stats) {
+            if self.gate_skips(cx, &**module, target_sources, state.stats, idx, deferred) {
                 continue;
             }
             self.maybe_emit_dispatch_utility(

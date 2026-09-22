@@ -137,6 +137,42 @@ async fn screen_wallet(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
     Ok(result)
 }
 
+/// The discriminator floor, as a value: the screening tokens, or the typed
+/// skip explaining why this name was never screened. **Pure**, so both arms are
+/// tested without a socket.
+///
+/// A single token against a global list is far too weak a discriminator (see
+/// the module doc's misattribution-risk note), so the screen declines to run.
+/// What it must NOT do is answer `Ok(empty)`: dispatch records that as
+/// `ModuleDone { found: 0 }` and `core::coverage` aggregates it to
+/// [`ProviderOutcome::CleanNegative`](crate::core::coverage::ProviderOutcome::CleanNegative)
+/// — "the only outcome that is a real negative", and the one `settles_absence`
+/// trusts. On a sanctions screen that is the most costly silence in the tree:
+/// AU-114 grades a designation `Critical`, so the operator's due-diligence
+/// answer rests on the ABSENCE of a finding. The reach is not hypothetical —
+/// `name_tokens("Al Zawahiri")` is a single token once the 3-character floor
+/// drops `"Al"`, and OFAC's SDN list carries many mononyms.
+///
+/// [`SkipClass::Scoped`], not [`SkipClass::NotApplicable`]: OFAC could have
+/// answered, and this module declined to ask on its own policy, so the operator
+/// is owed the answer and can close the gap with a fuller name —
+/// `is_coverage_gap()` must stay true.
+///
+/// [`SkipClass::Scoped`]: crate::core::event::SkipClass::Scoped
+/// [`SkipClass::NotApplicable`]: crate::core::event::SkipClass::NotApplicable
+fn screening_tokens(name: &str) -> Result<Vec<String>> {
+    let tokens = name_tokens(name);
+    if tokens.len() < 2 {
+        return Err(crate::core::error::Error::query_too_weak(
+            crate::core::event::SkipClass::Scoped,
+            name,
+            "it yields fewer than two discriminating tokens, and a single token against a \
+             global sanctions list matches unrelated designations — re-run with a fuller name",
+        ));
+    }
+    Ok(tokens)
+}
+
 /// Screen a name against the list, and expand each hit into the wallets that
 /// row designates.
 ///
@@ -146,12 +182,7 @@ async fn screen_wallet(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
 async fn screen_name(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
     let mut result = ModuleResult::new();
     let name = target.value.trim();
-    let tokens = name_tokens(name);
-    if tokens.len() < 2 {
-        // A single-token query against a global list is far too weak a
-        // discriminator (see the module doc's misattribution-risk note).
-        return Ok(result);
-    }
+    let tokens = screening_tokens(name)?;
 
     // `?`: a list that could not be loaded must NOT read as "no designations
     // matched" — see `list::degrade_on_fetch_failure`.

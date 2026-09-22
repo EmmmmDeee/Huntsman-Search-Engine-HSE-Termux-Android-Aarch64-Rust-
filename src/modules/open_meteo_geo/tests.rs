@@ -7,8 +7,8 @@ use crate::util::geo::au_state_for_coords;
 fn res(name: &str, lat: f64, lon: f64, cc: &str) -> GeoResult {
     GeoResult {
         name: name.to_string(),
-        latitude: lat,
-        longitude: lon,
+        latitude: Some(lat),
+        longitude: Some(lon),
         country_code: Some(cc.to_string()),
         ..Default::default()
     }
@@ -107,8 +107,8 @@ fn au_alternate_is_candidate_even_though_in_region() {
 fn enrichment_attributes_are_emitted_when_present() {
     let r = GeoResult {
         name: "Paris".to_string(),
-        latitude: 48.85341,
-        longitude: 2.3488,
+        latitude: Some(48.85341),
+        longitude: Some(2.3488),
         elevation: Some(42.0),
         feature_code: Some("PPLC".to_string()),
         country: Some("France".to_string()),
@@ -138,8 +138,8 @@ fn enrichment_attributes_are_emitted_when_present() {
 fn zero_population_and_missing_fields_are_omitted() {
     let r = GeoResult {
         name: "Nowhere".to_string(),
-        latitude: 10.0,
-        longitude: 10.0,
+        latitude: Some(10.0),
+        longitude: Some(10.0),
         population: Some(0),
         ..Default::default()
     };
@@ -201,4 +201,92 @@ fn emits_at_most_result_limit_valid_hits() {
 #[test]
 fn empty_results_yield_nothing() {
     assert!(build_entities(&[], "anywhere", "s").is_empty());
+}
+
+
+// ── REQ-OPENMETEO-001: a missing coordinate component is not zero ───────────
+
+/// REQ-OPENMETEO-001. `GeoResult` carries a struct-wide `#[serde(default)]` —
+/// there for the optional enrichment fields, all of which are already `Option`
+/// — and it also catches the two BARE `f64` coordinates. A hit that omits
+/// `latitude` therefore deserializes to `0.0` instead of failing, and `0.0`
+/// beside a real longitude passes `is_valid_coords` (correctly: the equator is
+/// a real place, REQ-GEOGATE-001). The result is a `Coordinates` entity at a
+/// latitude the provider never sent.
+///
+/// The fixture goes through `serde_json`, not the struct literal helper,
+/// because the defect IS the deserialization step — a hand-built `GeoResult`
+/// cannot reach it.
+#[test]
+fn a_hit_missing_latitude_is_not_placed_on_the_equator() {
+    let resp: GeoResponse = serde_json::from_str(
+        r#"{"results":[{"name":"Nowhere","longitude":151.2093,"country_code":"AU"}]}"#,
+    )
+    .expect("the enrichment defaults must still let the body parse");
+    let out = build_entities(&resp.results, "Nowhere", "t");
+    let coords: Vec<&str> = out.iter().map(|e| e.value.as_str()).collect();
+    assert!(
+        coords.is_empty(),
+        "REQ-OPENMETEO-001: a hit with NO latitude produced {coords:?} — the \
+         missing component was defaulted to 0.0 and shipped as a position on \
+         the equator."
+    );
+}
+
+/// REQ-OPENMETEO-001, the other direction — and the reason the fix cannot be
+/// "reject a zero component". An EXPLICIT `"latitude":0.0` is the provider
+/// asserting a value, and the equator is a real place: Pontianak, Nanyuki and
+/// the Sulawesi equator monument all sit on it. Rejecting it would re-introduce
+/// exactly the cross-shaped rejection REQ-GEOGATE-001 removed from the
+/// coarse-provider gate.
+#[test]
+fn an_explicit_zero_latitude_is_a_real_equatorial_fix_and_is_kept() {
+    let resp: GeoResponse = serde_json::from_str(
+        r#"{"results":[{"name":"Pontianak","latitude":0.0,"longitude":109.3333,"country_code":"ID"}]}"#,
+    )
+    .expect("parse");
+    let out = build_entities(&resp.results, "Pontianak", "t");
+    assert_eq!(
+        out.len(),
+        1,
+        "REQ-OPENMETEO-001/REQ-GEOGATE-001: an explicit latitude of 0.0 beside \
+         a real longitude is the EQUATOR, not a missing field. Dropping it is \
+         the cross-shaped rejection REQ-GEOGATE-001 exists to prevent."
+    );
+    assert_eq!(out[0].value, "0.000000,109.333300");
+}
+
+/// REQ-OPENMETEO-001. A row skipped for a missing component must not consume
+/// `RESULT_LIMIT` budget — the cap counts EMITTED hits, as the loop's own
+/// comment says, so a bad row must not push a good one out of the results.
+#[test]
+fn a_row_skipped_for_a_missing_component_does_not_consume_the_cap() {
+    let body = format!(
+        r#"{{"results":[{}]}}"#,
+        [
+            r#"{"name":"NoLat","longitude":151.0,"country_code":"AU"}"#,
+            r#"{"name":"A","latitude":-27.4766,"longitude":153.0166,"country_code":"AU"}"#,
+            r#"{"name":"B","latitude":-33.8688,"longitude":151.2093,"country_code":"AU"}"#,
+            r#"{"name":"C","latitude":-37.8136,"longitude":144.9631,"country_code":"AU"}"#,
+        ]
+        .join(",")
+    );
+    let resp: GeoResponse = serde_json::from_str(&body).expect("parse");
+    let out = build_entities(&resp.results, "x", "t");
+    assert_eq!(
+        out.len(),
+        RESULT_LIMIT,
+        "the skipped row consumed cap budget: {} emitted, expected {RESULT_LIMIT}",
+        out.len()
+    );
+    // Vacuity guard: the three that survived must be the three REAL ones, in
+    // order — not the skipped row silently emitting something.
+    let names: Vec<&str> = out
+        .iter()
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        names.iter().all(|v| !v.starts_with("0.000000")),
+        "a fabricated equatorial coordinate reached the output: {names:?}"
+    );
 }

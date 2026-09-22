@@ -79,6 +79,7 @@ fn seed_yield_drift(store: &Store, module: &str) {
             EventKind::ModuleDone {
                 module: module.to_string(),
                 found: 5,
+                truncated: None,
             },
         ),
         Event::new(
@@ -86,6 +87,7 @@ fn seed_yield_drift(store: &Store, module: &str) {
             EventKind::ModuleDone {
                 module: module.to_string(),
                 found: 0,
+                truncated: None,
             },
         ),
         Event::new(
@@ -93,6 +95,7 @@ fn seed_yield_drift(store: &Store, module: &str) {
             EventKind::ModuleDone {
                 module: module.to_string(),
                 found: 0,
+                truncated: None,
             },
         ),
         Event::new(
@@ -100,6 +103,7 @@ fn seed_yield_drift(store: &Store, module: &str) {
             EventKind::ModuleDone {
                 module: module.to_string(),
                 found: 0,
+                truncated: None,
             },
         ),
     ];

@@ -16,7 +16,6 @@ mod stealer_rows; // `impl Store`: paired stealer-log credential row persistence
 mod templates; // `impl Store`: cross-scan pathway-template learning
 
 pub use entities::EvidenceAnomaly;
-pub use signal::{RfDeviceRow, RfSummary};
 
 /// The SQLite WAL-backed persistence layer.
 ///
@@ -203,6 +202,26 @@ const SCHEMA_DDL: &str = "
             CREATE INDEX IF NOT EXISTS idx_rf_epoch   ON rf_sightings(observed_epoch);
             CREATE INDEX IF NOT EXISTS idx_rf_geo     ON rf_sightings(latitude, longitude);
             CREATE INDEX IF NOT EXISTS idx_rf_oui     ON rf_sightings(oui);
+            CREATE INDEX IF NOT EXISTS idx_rf_network ON rf_sightings(network_id, observed_epoch);
+
+            -- The device's OWN Wi-Fi link, one row per sweep (REQ-RESILIENCE-002):
+            -- what `termux-wifi-connectioninfo` said, a not-connected sweep
+            -- included, which the entity graph cannot record and the disruption review
+            -- (`core::link::review`) is built on. Append-only facts, like the
+            -- sightings beside it.
+            CREATE TABLE IF NOT EXISTS wifi_links (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id          TEXT NOT NULL,
+                observed_epoch   INTEGER,
+                connected        INTEGER NOT NULL,
+                ssid             TEXT,
+                bssid            TEXT,
+                signal_dbm       REAL,
+                ip               TEXT,
+                link_speed_mbps  INTEGER,
+                supplicant_state TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_wifi_links_scan ON wifi_links(scan_id);
 
             -- One row per device per scan, rolled up from the sightings. A view,
             -- not a table, so it cannot fall out of step with the facts.
@@ -761,10 +780,17 @@ impl Store {
     /// [`Self::radar_history`]'s query: the sentinel anchors are bound as
     /// `?1`/`?2` (not formatted in) so the statement is a constant the
     /// prepared-statement cache and the query-plan lock both see.
+    ///
+    /// `started_at` is whole seconds, so two sweeps started in the same second
+    /// tie; the tiebreak is `rowid` — creation order, because `upsert_scan`
+    /// updates a scan in place (`ON CONFLICT DO UPDATE`), so a scan keeps the
+    /// rowid of its first insert. The random `id` ordered a tie by chance,
+    /// and the disruption review (`core::link::review`), which reads a forced
+    /// disconnection from consecutive sweeps, needs the true order.
     pub(crate) const RADAR_HISTORY_SQL: &str = "SELECT data_json FROM scans
          WHERE (target_kind = 'coordinates' AND target_value = ?1)
             OR (target_kind = 'mac_address' AND target_value = ?2)
-         ORDER BY started_at DESC, id DESC LIMIT ?3";
+         ORDER BY started_at DESC, rowid DESC LIMIT ?3";
 
     /// The `latest` selector's query, filtered on the `status` COLUMN — not on
     /// `json_extract(data_json, '$.status')`. The column is written in the same
@@ -1406,6 +1432,42 @@ impl crate::core::port::StoragePort for Store {
         rows: &[crate::core::rf::RfSighting],
     ) -> Result<usize> {
         Store::insert_rf_sightings_batch(self, scan_id, rows)
+    }
+
+    fn rf_latest_scan_id(&self) -> Result<Option<String>> {
+        Store::rf_latest_scan_id(self)
+    }
+
+    fn rf_summary(&self, scan_id: &str) -> Result<crate::core::rf::RfSummary> {
+        Store::rf_summary(self, scan_id)
+    }
+
+    fn rf_devices_for_scan(&self, scan_id: &str) -> Result<Vec<crate::core::rf::RfDeviceRow>> {
+        Store::rf_devices_for_scan(self, scan_id)
+    }
+
+    fn rf_sightings_for_device(
+        &self,
+        scan_id: &str,
+        network_id: &str,
+    ) -> Result<Vec<crate::core::rf::RfSighting>> {
+        Store::rf_sightings_for_device(self, scan_id, network_id)
+    }
+
+    fn rf_device_track(
+        &self,
+        network_id: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::core::rf::RfTrackPoint>> {
+        Store::rf_device_track(self, network_id, limit)
+    }
+
+    fn insert_wifi_link(&self, scan_id: &str, link: &crate::core::link::LinkState) -> Result<()> {
+        Store::insert_wifi_link(self, scan_id, link)
+    }
+
+    fn wifi_link_for_scan(&self, scan_id: &str) -> Result<Option<crate::core::link::LinkState>> {
+        Store::wifi_link_for_scan(self, scan_id)
     }
 }
 

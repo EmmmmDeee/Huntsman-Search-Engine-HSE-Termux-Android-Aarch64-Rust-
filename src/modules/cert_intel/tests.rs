@@ -527,3 +527,92 @@ fn the_failure_message_names_only_the_sources_actually_attempted() {
     assert!(domain_target.contains("crt.sh CT log"));
     assert!(domain_target.contains("live TLS probe"));
 }
+
+#[test]
+fn a_probe_with_no_certificate_is_not_an_expert_tls_finding() {
+    // REQ-CERTINTEL-001: a successful HTTPS response that captured NO peer
+    // certificate (the state EVERY request was in before the shared client
+    // enabled `.tls_info(true)`, which is why the probe's cert-parsing leg was
+    // dead code) must not mint the EXPERT "TLS certificate" finding — it examined
+    // no certificate. It is an honest, modest "HTTPS service responding"
+    // observation instead. The HSTS header is a real observation and still kept.
+    let target = Target::new(TargetKind::Domain, "example.com");
+    let mut result = ModuleResult::new();
+    let mut seen = HashSet::new();
+    let entity = build_tls_entity(
+        &target,
+        "example.com",
+        "s",
+        None,
+        200,
+        Some("max-age=31536000"),
+        &mut result,
+        &mut seen,
+    );
+    assert!(
+        (entity.confidence - confidence::MEDIUM).abs() < 1e-9,
+        "a certificate-less probe must be MEDIUM, not EXPERT, got {}",
+        entity.confidence
+    );
+    let ev = &entity.evidence[0];
+    assert!(
+        !ev.summary.contains("TLS certificate for"),
+        "must not claim a certificate it never examined: {:?}",
+        ev.summary
+    );
+    assert!(ev.summary.contains("no certificate captured"));
+    assert_eq!(
+        ev.attributes.get("http_status").map(String::as_str),
+        Some("200")
+    );
+    assert!(entity.has_tag("hsts"), "the real HSTS observation is kept");
+    assert!(
+        result.entities.is_empty(),
+        "no SAN subdomains may be fabricated from a certificate that was never parsed: {:?}",
+        result.entities
+    );
+}
+
+#[test]
+fn a_captured_certificate_is_an_expert_tls_finding() {
+    // A response that captured a real peer certificate (now the normal path,
+    // since the shared client enables `.tls_info(true)`) mints the EXPERT
+    // "TLS certificate" finding and parses the certificate's SANs into
+    // discovered subdomains — the module's advertised capability, restored.
+    let target = Target::new(TargetKind::Domain, "example.com");
+    let mut result = ModuleResult::new();
+    let mut seen = HashSet::new();
+    // Minimal DER fragment carrying a single dNSName SAN for a real subdomain
+    // (same shape as `extract_sans_deduplicates_and_sorts`).
+    let dns = b"sub.example.com";
+    let len = dns.len() as u8;
+    let mut der: Vec<u8> = vec![0x55, 0x1D, 0x11, 0x82, len];
+    der.extend_from_slice(dns);
+    let entity = build_tls_entity(
+        &target,
+        "example.com",
+        "s",
+        Some(&der),
+        200,
+        None,
+        &mut result,
+        &mut seen,
+    );
+    assert!(
+        (entity.confidence - confidence::EXPERT).abs() < 1e-9,
+        "a captured certificate justifies the EXPERT finding, got {}",
+        entity.confidence
+    );
+    assert!(
+        entity.evidence[0]
+            .summary
+            .contains("TLS certificate for example.com"),
+        "the captured-cert finding names the certificate: {:?}",
+        entity.evidence[0].summary
+    );
+    assert!(
+        result.entities.iter().any(|e| e.value == "sub.example.com"),
+        "the captured certificate's SAN must be extracted as a subdomain: {:?}",
+        result.entities
+    );
+}

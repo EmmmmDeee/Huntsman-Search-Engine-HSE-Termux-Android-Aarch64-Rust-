@@ -654,7 +654,7 @@ pub(in crate::core::correlator) fn rule_au_019_temporal_breach_cluster(
     ts: u64,
 ) -> Vec<Correlation> {
     let entities = context.entities();
-    let mut breach_dates: Vec<(&Entity, &str)> = Vec::new();
+    let mut breach_dates: Vec<(&Entity, &str, String)> = Vec::new();
     for e in entities {
         if !e.has_tag("breach") {
             continue;
@@ -678,7 +678,21 @@ pub(in crate::core::correlator) fn rule_au_019_temporal_breach_cluster(
                 if let Some(d) = ev.attributes.get(field)
                     && let Some(day) = d.get(..10)
                 {
-                    breach_dates.push((e, day));
+                    // Which breach EVENT this record belongs to. One breach row
+                    // yields several entities (an Email, a Password, a Username,
+                    // an IP), so counting entities counts fragments of one leak
+                    // as if they were separate compromises — see the cluster
+                    // floor below (REQ-CORRELATOR-007). The provider's own
+                    // `breach_name` identifies the event when it stamps one
+                    // (`seon`); otherwise the source and day are the strongest
+                    // discriminator available, which merges two same-day
+                    // unnamed breaches from one provider into one event — an
+                    // UNDER-count, the safe direction for a claim this strong.
+                    let event = ev.attributes.get("breach_name").map_or_else(
+                        || format!("{}|{day}", ev.source),
+                        std::string::ToString::to_string,
+                    );
+                    breach_dates.push((e, day, event));
                 }
             }
         }
@@ -686,47 +700,57 @@ pub(in crate::core::correlator) fn rule_au_019_temporal_breach_cluster(
     if breach_dates.len() < 3 {
         return Vec::new();
     }
-    breach_dates.sort_by_key(|(_, d)| *d);
-    let mut clusters: Vec<Vec<String>> = Vec::new();
+    breach_dates.sort_by(|a, b| a.1.cmp(b.1));
+    let mut clusters: Vec<(Vec<String>, usize)> = Vec::new();
     // Track the current cluster's member uids both as an ordered list (the
     // output) and as a set (the membership test), so de-duping a uid is O(log n)
     // instead of the O(n) `Vec::contains` the rolling window previously used.
+    //
+    // The 3-member FLOOR is applied to distinct breach EVENTS, not to entities:
+    // "coordinated compromise" is a claim about more than one compromise, and a
+    // single ordinary breach row expands into three or more entities on its own
+    // (REQ-CORRELATOR-007). The uid set still de-dupes the output; the event set
+    // is what has to reach three.
     let mut current: Vec<String> = vec![breach_dates[0].0.uid.clone()];
     let mut current_set: BTreeSet<&str> = BTreeSet::from([breach_dates[0].0.uid.as_str()]);
+    let mut current_events: BTreeSet<&str> = BTreeSet::from([breach_dates[0].2.as_str()]);
     // Anchor the window to the cluster's FIRST (earliest, since sorted) date, not
     // a rolling previous date. A rolling gap chains — Jan 1 / Jan 30 / Feb 28 /
     // Mar 30 are each ≤30 days apart and would collapse into one 88-day "cluster",
     // contradicting the "within 30 days" claim. Anchoring bounds every cluster to
     // a genuine ≤30-day span (a real coordinated-compromise window).
     let mut anchor = breach_dates[0].1;
-    for &(e, d) in &breach_dates[1..] {
+    for (e, d, event) in &breach_dates[1..] {
         if date_diff_days(anchor, d) <= 30 {
             if current_set.insert(e.uid.as_str()) {
                 current.push(e.uid.clone());
             }
+            current_events.insert(event.as_str());
         } else {
-            if current.len() >= 3 {
-                clusters.push(std::mem::take(&mut current));
+            if current_events.len() >= 3 {
+                clusters.push((std::mem::take(&mut current), current_events.len()));
             } else {
                 current.clear();
             }
             current.push(e.uid.clone());
             current_set.clear();
             current_set.insert(e.uid.as_str());
+            current_events.clear();
+            current_events.insert(event.as_str());
             anchor = d;
         }
     }
-    if current.len() >= 3 {
-        clusters.push(current);
+    if current_events.len() >= 3 {
+        clusters.push((current, current_events.len()));
     }
     clusters
         .into_iter()
-        .map(|uids| Correlation {
+        .map(|(uids, events)| Correlation {
             rule_id: "AU-019".into(),
             rule_name: "Temporal breach cluster".into(),
             severity: Severity::High,
             description: format!(
-                "{} breach entities clustered within 30 days — potential coordinated compromise",
+                "{events} distinct breaches within 30 days ({} exposed entities) — potential coordinated compromise",
                 uids.len()
             ),
             entity_uids: uids,

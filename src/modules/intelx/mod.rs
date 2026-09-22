@@ -76,6 +76,227 @@ pub(crate) struct StartResp {
     pub(crate) status: Option<i32>,
 }
 
+/// The actionable outcome of a search-start response, separated from
+/// [`IntelX::process`] so the fail-closed policy is pure and unit-tested
+/// (REQ-INTELX-002).
+#[derive(Debug)]
+pub(crate) enum StartDecision {
+    /// A usable search id — proceed to the phase-2 poll.
+    Proceed(String),
+    /// The API explicitly rejected the search term (`status` 1) — the one
+    /// genuine clean negative a search *start* can mean.
+    InvalidTerm,
+}
+
+/// Classify a decoded search-start response, failing **closed** on anything that
+/// is neither a usable search id nor a recognised status.
+///
+/// `StartResp`'s fields are both `#[serde(default)]`, so an auth/quota failure
+/// page, a WAF interstitial, or any unexpected 200 JSON shape decodes without
+/// error to `{ id: None, status: None }`. IntelX has no "no results" state for a
+/// search *start* (a start either yields a poll `id` or fails), so such a body
+/// is a failure — an `Err` — never the clean "no exposure for this subject"
+/// negative that the phase-2 comment calls the most consequential false clean
+/// this engine can produce. Previously the `_` arm collapsed it to
+/// `Ok(empty)`; this makes the code keep the promise the surrounding comment
+/// already made (REQ-INTELX-002).
+/// Which error a poll loop that ended WITHOUT a terminal state should report.
+///
+/// `last` is the most recent typed failure the loop saw, if any. When the loop
+/// saw one it is returned unchanged, so a 429 stays [`Error::RateLimited`] and a
+/// WAF interstitial stays [`Error::BotChallenge`] all the way through to the
+/// breaker, the doctor projection and the live-drift sweep. Only when every poll
+/// genuinely succeeded — and the search still never reached a terminal state —
+/// is the generic module fault correct, because then nothing else went wrong to
+/// report.
+///
+/// Before this, all three failure arms of the poll loop `continue`d past their
+/// error and dropped it, so an exhausted quota, an anti-bot wall and a
+/// response-contract drift all surfaced as the same untyped `Error::module`
+/// (REQ-INTELX-001) — the defect already fixed for hibp in REQ-DRIFT-006 and for
+/// the three GitHub callers in REQ-DRIFT-007.
+pub(crate) fn poll_failure_error(last: Option<Error>, search_id: &str, attempts: u32) -> Error {
+    last.unwrap_or_else(|| {
+        Error::module(
+            SRC,
+            format!("search {search_id} never reached a terminal state within {attempts} polls"),
+        )
+    })
+}
+
+/// Where phase 2 polls, and on what schedule.
+///
+/// The poll loop's three failure arms are why REQ-INTELX-001 exists, and until
+/// this struct not one of them could be driven: the endpoint was a hardcoded
+/// `const` at every call site, so no test could put a 429, a WAF interstitial
+/// or a drifted body in front of the real classification — the coverage
+/// reached only [`poll_failure_error`]'s selection rule, and the ledger entry
+/// said so rather than claiming otherwise. Taking the endpoint as a parameter
+/// is the shape sibling `github_user` already uses for its profile fetch.
+///
+/// The SCHEDULE rides along for a reason worth stating: a test that kept the
+/// live 1.5 s cadence would spend 4.5 s per case, and the usual dodge — a
+/// separate fast-path loop for tests — is exactly the duplicated authority
+/// that would let the tested path and the production path drift apart. One
+/// loop, two plans.
+#[derive(Clone, Copy)]
+pub(crate) struct PollPlan<'a> {
+    /// API origin — `https://2.intelx.io` in production.
+    pub(crate) base: &'a str,
+    /// Wait before each poll.
+    pub(crate) interval: Duration,
+    /// Poll ceiling; past it the search is abandoned and terminated server-side.
+    pub(crate) attempts: u32,
+}
+
+impl PollPlan<'static> {
+    /// The production plan: IntelX's own host on the live cadence.
+    pub(crate) fn live() -> Self {
+        Self {
+            base: BASE,
+            interval: Duration::from_millis(POLL_INTERVAL_MS),
+            attempts: POLL_ATTEMPTS,
+        }
+    }
+}
+
+/// Phase 2 — poll until the search reaches a TERMINAL state (2 finished or 3
+/// none-available), accumulating records across batches. Status 0 and 1 both
+/// mean "keep polling"; we never break early on 1.
+///
+/// An empty `Vec` is an AUTHORITATIVE empty — the search reached a terminal
+/// state, or the caller cancelled — and is the only clean negative phase 2 can
+/// legitimately produce. Every other way the loop can end is an `Err` typed by
+/// [`poll_failure_error`].
+pub(crate) async fn poll_search(
+    ctx: &ModuleContext,
+    plan: PollPlan<'_>,
+    key: &str,
+    search_id: &str,
+) -> Result<Vec<Record>> {
+    let result_url = format!(
+        "{}/intelligent/search/result?id={search_id}&limit={MAX_RESULTS}&statistics=0",
+        plan.base
+    );
+    let mut all_records: Vec<Record> = Vec::with_capacity(MAX_RESULTS as usize);
+    let mut finished = false;
+    let mut poll_retries = 0u32;
+    // The most recent TYPED failure seen while polling. Every arm below used
+    // to `continue` past its error and drop it, so a throttle, an anti-bot
+    // wall and a schema drift all arrived at the fail-closed check below as
+    // the same untyped `Error::module` — the breaker counted each as a plain
+    // fault and the live sweep read every one as "unreachable"
+    // (REQ-INTELX-001, the pattern already fixed for hibp in REQ-DRIFT-006).
+    // Keeping the last typed error lets the real classification survive the
+    // loop.
+    let mut last_poll_err: Option<Error> = None;
+    for _ in 0..plan.attempts {
+        // Honor scan cancellation for faster abort latency (issue #23).
+        if ctx.cancel.is_cancelled() {
+            break;
+        }
+        tokio::time::sleep(plan.interval).await;
+        let resp = match ctx
+            .http
+            .get(&result_url)
+            .header("x-key", key)
+            .header("Accept", "application/json")
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                last_poll_err = Some(Error::module(SRC, format!("poll transport failure: {e}")));
+                continue;
+            }
+        };
+        if !resp.status().is_success() {
+            let code = resp.status().as_u16();
+            // Read what the headers are needed for BEFORE `http_status_error`
+            // consumes the response.
+            let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 4, 4);
+            if code != 429 || poll_retries >= 2 {
+                crate::util::http::note_keyed_error(code, SRC, key, ctx);
+            }
+            // `http_status_error` is what types a 429 as `RateLimited` and a
+            // WAF page as `BotChallenge`; previously only the status code was
+            // read and the classification thrown away.
+            last_poll_err = Some(crate::util::http::http_status_error(SRC, resp).await);
+            if code == 429 && poll_retries < 2 {
+                poll_retries += 1;
+                tokio::time::sleep(Duration::from_secs(retry_secs)).await;
+            }
+            continue;
+        }
+        let r: ResultResp = match crate::util::http::json_scanned(resp, SRC).await {
+            Ok(x) => x,
+            Err(e) => {
+                // `json_scanned` already types a 2xx anti-bot page as
+                // `BotChallenge` and a contract drift as a decode fault.
+                last_poll_err = Some(e);
+                continue;
+            }
+        };
+        all_records.extend(r.records);
+        // Terminal states only: 2 = finished, 3 = none available.
+        if matches!(r.status, Some(2 | 3)) {
+            finished = true;
+            break;
+        }
+    }
+
+    // If we stopped before the search reported finished (attempt ceiling or
+    // cancellation), terminate it server-side so we don't leak a slot toward
+    // the max-concurrent-searches limit.
+    if !finished {
+        let _ = ctx
+            .http
+            .get(format!(
+                "{}/intelligent/search/terminate?id={search_id}",
+                plan.base
+            ))
+            .header("x-key", key)
+            .send()
+            .await;
+    }
+
+    // Phase 1 already fails closed on a rejected search. Phase 2 must too:
+    // every arm of the poll loop above `continue`s past its failure, so a dead
+    // key, an exhausted quota or `attempts` worth of 429s all arrive here with
+    // nothing accumulated and `finished` still false. Returning an empty result
+    // there reads as "no breach, leak, paste or darknet record exists for this
+    // subject" from a keyed breach source — the most consequential false clean
+    // this engine can produce. A terminal state (2 finished, 3 none-available)
+    // IS an authoritative empty and stays one.
+    //
+    // Cancellation is excluded: the caller stopped the work and already knows
+    // why, so an error there is noise rather than a finding.
+    if all_records.is_empty() && !finished && !ctx.cancel.is_cancelled() {
+        // Surface the LAST TYPED failure when the loop saw one, so a throttle
+        // stays `RateLimited` and a wall stays `BotChallenge` all the way to the
+        // breaker, the doctor and the live sweep. The generic message is only
+        // for the case where every poll genuinely succeeded but the search never
+        // reached a terminal state — which is a real module fault
+        // (REQ-INTELX-001).
+        return Err(poll_failure_error(last_poll_err, search_id, plan.attempts));
+    }
+    Ok(all_records)
+}
+
+pub(crate) fn classify_start(id: Option<String>, status: Option<i32>) -> Result<StartDecision> {
+    match (id, status) {
+        (Some(id), Some(0) | None) if !id.is_empty() => Ok(StartDecision::Proceed(id)),
+        (_, Some(1)) => Ok(StartDecision::InvalidTerm),
+        (_, Some(2)) => Err(Error::module(SRC, "max concurrent searches reached")),
+        _ => Err(Error::module(
+            SRC,
+            "search-start returned no usable search id and no recognised status \
+             (an auth/quota failure or an unexpected 200 body); a search start has \
+             no \"no results\" state, so this is a failure, not a clean negative",
+        )),
+    }
+}
+
 // --- Phase 2: result-page response ------------------------------------------
 
 #[derive(Deserialize)]
@@ -88,7 +309,7 @@ pub(crate) struct ResultResp {
     pub(crate) records: Vec<Record>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub(crate) struct Record {
     #[serde(default)]
     pub(crate) bucket: Option<String>,
@@ -297,7 +518,12 @@ impl Module for IntelX {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let initial_key = match ctx.key_opt(KEY_ENV) {
             Some(k) => k,
-            None => return Ok(ModuleResult::new()),
+            // PROVIDER FAILURE != ZERO EVIDENCE: returning Ok(empty) here made
+            // dispatch record ModuleDone { found: 0 }, which coverage reads as a
+            // CleanNegative -- "queried, holds nothing on this subject" -- for a
+            // provider that was never asked. Error::MissingKey is the contract
+            // (REQ-KEYSKIP-001).
+            None => return Err(crate::core::error::Error::MissingKey(KEY_ENV.into())),
         };
         let value = target.value.trim();
         if value.is_empty() {
@@ -342,99 +568,24 @@ impl Module for IntelX {
             return Ok(ModuleResult::new());
         };
         let start: StartResp = crate::util::http::json_decode(SRC, resp).await?;
-        let search_id = match (start.id, start.status) {
-            (Some(id), Some(0) | None) if !id.is_empty() => id,
-            (_, Some(1)) => return Ok(ModuleResult::new()), // invalid term
-            (_, Some(2)) => {
-                return Err(Error::module(SRC, "max concurrent searches reached"));
-            }
-            _ => return Ok(ModuleResult::new()),
+        let search_id = match classify_start(start.id, start.status)? {
+            StartDecision::Proceed(id) => id,
+            // The API explicitly rejected the term — the one clean negative a
+            // search *start* can legitimately mean.
+            StartDecision::InvalidTerm => return Ok(ModuleResult::new()),
         };
 
-        // Phase 2 — poll until the search reaches a TERMINAL state (2 finished
-        // or 3 none-available), accumulating records across batches. Status 0
-        // and 1 both mean "keep polling". We never break early on 1.
-        let result_url = format!(
-            "{BASE}/intelligent/search/result?id={search_id}&limit={MAX_RESULTS}&statistics=0"
-        );
-        let mut all_records: Vec<Record> = Vec::with_capacity(MAX_RESULTS as usize);
-        let mut finished = false;
-        let mut poll_retries = 0u32;
-        for _ in 0..POLL_ATTEMPTS {
-            // Honor scan cancellation for faster abort latency (issue #23).
-            if ctx.cancel.is_cancelled() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
-            let resp = match ctx
-                .http
-                .get(&result_url)
-                .header("x-key", &key)
-                .header("Accept", "application/json")
-                .send()
-                .await
-            {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-            if !resp.status().is_success() {
-                let code = resp.status().as_u16();
-                if code == 429 && poll_retries < 2 {
-                    let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 4, 4);
-                    poll_retries += 1;
-                    tokio::time::sleep(Duration::from_secs(retry_secs)).await;
-                }
-                if code != 429 || poll_retries >= 2 {
-                    crate::util::http::note_keyed_error(code, SRC, &key, ctx);
-                }
-                continue;
-            }
-            let r: ResultResp = match crate::util::http::json_scanned(resp, SRC).await {
-                Ok(x) => x,
-                Err(_) => continue,
-            };
-            all_records.extend(r.records);
-            // Terminal states only: 2 = finished, 3 = none available.
-            if matches!(r.status, Some(2 | 3)) {
-                finished = true;
-                break;
-            }
-        }
-
-        // If we stopped before the search reported finished (attempt ceiling or
-        // cancellation), terminate it server-side so we don't leak a slot toward
-        // the max-concurrent-searches limit.
-        if !finished {
-            let _ = ctx
-                .http
-                .get(format!(
-                    "{BASE}/intelligent/search/terminate?id={search_id}"
-                ))
-                .header("x-key", &key)
-                .send()
-                .await;
-        }
-
+        // Phase 2 — collect this search's records, or fail with the typed
+        // reason. `PollPlan::live()` is the production endpoint and cadence;
+        // `poll_search` takes them as a parameter so the REAL poll path — status
+        // classification, `Retry-After` reading, body decoding, the terminate
+        // call and the fail-closed decision — runs against a status a test
+        // chooses (REQ-INTELX-001).
+        let all_records = poll_search(ctx, PollPlan::live(), &key, &search_id).await?;
         if all_records.is_empty() {
-            // Phase 1 already fails closed on a rejected search. Phase 2 must too:
-            // every arm of the poll loop above `continue`s past its failure, so a dead
-            // key, an exhausted quota or POLL_ATTEMPTS worth of 429s all arrive here
-            // with nothing accumulated and `finished` still false. Returning an empty
-            // result there reads as "no breach, leak, paste or darknet record exists
-            // for this subject" from a keyed breach source — the most consequential
-            // false clean this engine can produce. A terminal state (2 finished, 3
-            // none-available) IS an authoritative empty and stays one.
-            //
-            // Cancellation is excluded: the caller stopped the work and already knows
-            // why, so an error there is noise rather than a finding.
-            if !finished && !ctx.cancel.is_cancelled() {
-                return Err(Error::module(
-                    SRC,
-                    format!(
-                        "search {search_id} never reached a terminal state within {POLL_ATTEMPTS} polls"
-                    ),
-                ));
-            }
+            // An authoritative empty: the search reached a terminal state, or
+            // the caller cancelled. Every non-authoritative ending is an `Err`
+            // from `poll_search`.
             return Ok(ModuleResult::new());
         }
 

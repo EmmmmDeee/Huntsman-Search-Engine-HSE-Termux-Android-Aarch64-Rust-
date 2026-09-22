@@ -39,6 +39,7 @@ use crate::core::{
 };
 use crate::util::http::RequestBuilderExt;
 use crate::util::http::urlencode;
+use crate::util::namesake::{NameCollisions, mark_ambiguous};
 
 #[cfg(test)]
 mod tests;
@@ -425,6 +426,121 @@ pub(super) fn build_officer_entities(
 
 pub struct OpenCorporates;
 
+/// Build every entity one page of **company** results yields, applying the two
+/// page-level judgements that used to sit inline in `process`.
+///
+/// Pure of I/O, so both are unit-testable against fixtures and `process` stays
+/// a thin network adapter — the split the rest of this codebase uses, and one
+/// the old `two_companies_geocoding_to_the_same_point_…` test had to work
+/// around by hand ("`process()`'s live OpenCorporates fetch isn't independently
+/// testable here, so this calls the same pure `build_company_entities`
+/// `process()`'s `flat_map` calls per company").
+///
+/// The two judgements are different questions and both are page-level:
+///
+/// 1. **Is this row about the subject at all?** A row whose own name does not
+///    share the query's whole-word tokens is a stranger and is quarantined with
+///    `demote_to_candidate`. An `AbnAcn` target queries BY company number, so
+///    the name gate is meaningless for it and is skipped.
+/// 2. **Does the name identify ONE company?** An `Organisation` search spans
+///    all ~140 jurisdictions with no filter, so two different real companies
+///    holding one name is the ordinary case, not an edge case. Both rows pass
+///    judgement 1, both are minted at `confidence::VERY_HIGH`, and because the
+///    entity value IS the name they share a uid and the engine fuses them — one
+///    `Organisation` tagged `active` AND `inactive` AND `dissolved`, above the
+///    expansion floor, pivoting (REQ-OPENCORPORATES-001). `util::namesake` is
+///    the shared authority for that question; `gleif_lei` asks it too.
+pub(super) fn build_company_page(
+    companies: &[OcCompanyWrapper],
+    total: u64,
+    query: &str,
+    target_kind: TargetKind,
+    scan_id: &str,
+) -> Vec<Entity> {
+    let rows: Vec<&OcCompany> = companies
+        .iter()
+        .take(PER_PAGE)
+        .filter_map(|w| w.company.as_ref())
+        .collect();
+    let shared = NameCollisions::of(
+        &EntityKind::Organisation,
+        rows.iter().filter_map(|co| co.name.as_deref()),
+    );
+
+    let mut out = Vec::new();
+    for co in rows {
+        let mut ents = build_company_entities(co, total, scan_id);
+        // `AbnAcn` is an exact numeric-identifier lookup (the query IS the
+        // company number, not company-name text), so the name-token match
+        // doesn't apply; `Organisation` search is broad full-text across ~140
+        // jurisdictions and needs the same match gate as the officer path.
+        let is_match = target_kind == TargetKind::AbnAcn
+            || co
+                .name
+                .as_deref()
+                .is_some_and(|n| company_matches_query(n, query));
+        if !is_match {
+            for e in &mut ents {
+                e.demote_to_candidate();
+            }
+        } else if co
+            .name
+            .as_deref()
+            .is_some_and(|n| shared.is_shared(&EntityKind::Organisation, n))
+        {
+            // Only a row that IS about the subject can be ambiguously so: a
+            // stranger is already quarantined and already says why.
+            for e in &mut ents {
+                mark_ambiguous(e);
+            }
+        }
+        out.extend(ents);
+    }
+    out
+}
+
+/// Build every entity one page of **officer** results yields. Same two
+/// judgements as [`build_company_page`], for `FullName` targets: a common
+/// personal name returns several unrelated real people from the officer index,
+/// and two of them holding the identical name fuse into one `Person`.
+pub(super) fn build_officer_page(
+    officers: &[OcOfficerWrapper],
+    total: u64,
+    query: &str,
+    scan_id: &str,
+) -> Vec<Entity> {
+    let rows: Vec<&OcOfficer> = officers
+        .iter()
+        .take(PER_PAGE)
+        .filter_map(|w| w.officer.as_ref())
+        .collect();
+    let shared = NameCollisions::of(
+        &EntityKind::Person,
+        rows.iter().filter_map(|o| o.name.as_deref()),
+    );
+
+    let mut out = Vec::new();
+    for o in rows {
+        let mut ents = build_officer_entities(o, total, scan_id);
+        if officer_matches_query(o.name.as_deref(), query) {
+            if o.name
+                .as_deref()
+                .is_some_and(|n| shared.is_shared(&EntityKind::Person, n))
+            {
+                for e in &mut ents {
+                    mark_ambiguous(e);
+                }
+            }
+        } else {
+            for e in &mut ents {
+                e.demote_to_candidate();
+            }
+        }
+        out.extend(ents);
+    }
+    out
+}
+
 #[derive(Deserialize)]
 pub(super) struct OcResp {
     #[serde(default)]
@@ -527,8 +643,13 @@ impl Module for OpenCorporates {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let query = target.value.trim();
-        if query.is_empty() || query.len() < 3 {
-            return Ok(ModuleResult::new());
+        // `is_empty()` was redundant beside `len() < 3`; one condition now.
+        if query.len() < 3 {
+            return Err(crate::core::error::Error::query_too_weak(
+                crate::core::event::SkipClass::Scoped,
+                query,
+                "a 1-2 character query matches noise across the global company index",
+            ));
         }
 
         // Full names pivot through officer search (people → companies they direct);
@@ -584,26 +705,12 @@ impl Module for OpenCorporates {
                 return Ok(result);
             }
             let total = results.total_count.unwrap_or(results.officers.len() as u64);
-            result.extend(
-                results
-                    .officers
-                    .iter()
-                    .take(PER_PAGE)
-                    .filter_map(|w| w.officer.as_ref())
-                    .flat_map(|o| {
-                        let mut ents = build_officer_entities(o, total, &ctx.scan_id);
-                        // A common personal name can return several unrelated
-                        // real people from the officer-search index; only an
-                        // officer record whose own name actually matches the
-                        // query keeps full confidence.
-                        if !officer_matches_query(o.name.as_deref(), query) {
-                            for e in &mut ents {
-                                e.demote_to_candidate();
-                            }
-                        }
-                        ents
-                    }),
-            );
+            result.extend(build_officer_page(
+                &results.officers,
+                total,
+                query,
+                &ctx.scan_id,
+            ));
         } else {
             let body: OcResp = crate::util::http::json_decode(SRC, resp).await?;
             let Some(results) = body.results else {
@@ -615,32 +722,13 @@ impl Module for OpenCorporates {
             let total = results
                 .total_count
                 .unwrap_or(results.companies.len() as u64);
-            result.extend(
-                results
-                    .companies
-                    .iter()
-                    .take(PER_PAGE)
-                    .filter_map(|wrapper| wrapper.company.as_ref())
-                    .flat_map(|co| {
-                        let mut ents = build_company_entities(co, total, &ctx.scan_id);
-                        // `AbnAcn` is an exact numeric-identifier lookup (the
-                        // query IS the company number, not company-name text),
-                        // so the name-token match doesn't apply; `Organisation`
-                        // search is broad full-text across ~140 jurisdictions
-                        // and needs the same match gate as the officer path.
-                        let is_match = target.kind == TargetKind::AbnAcn
-                            || co
-                                .name
-                                .as_deref()
-                                .is_some_and(|n| company_matches_query(n, query));
-                        if !is_match {
-                            for e in &mut ents {
-                                e.demote_to_candidate();
-                            }
-                        }
-                        ents
-                    }),
-            );
+            result.extend(build_company_page(
+                &results.companies,
+                total,
+                query,
+                target.kind,
+                &ctx.scan_id,
+            ));
         }
 
         crate::core::entity::dedup_merge_entities(&mut result.entities);

@@ -131,9 +131,15 @@ fn ip_geo_rejects_the_null_island_band_not_just_exact_zero() {
         build_ipapico_entity(&band, "1.2.3.4", false, "t").is_empty(),
         "null-island band must be rejected, not just exact (0,0)"
     );
+    // REQ-GEOGATE-001: an explicit `latitude: 0.0` beside a real longitude is
+    // the EQUATOR, not a placeholder — 151°E on the line is the Bismarck Sea
+    // off Papua New Guinea. `latitude` is `Option<f64>`, so an OMITTED field
+    // arrives as `None` and never reaches the gate; a present `0.0` is the
+    // provider asserting a value. The placeholder is a point near `0,0`, and
+    // this one is ~17 000 km from it.
     let zero_lat: IpApiCoResp =
         serde_json::from_str(r#"{"latitude":0.0,"longitude":151.0}"#).expect("should succeed");
-    assert!(build_ipapico_entity(&zero_lat, "1.2.3.4", false, "t").is_empty());
+    assert!(!build_ipapico_entity(&zero_lat, "1.2.3.4", false, "t").is_empty());
     let band2: FreeIpApiResp =
         serde_json::from_str(r#"{"latitude":0.005,"longitude":-0.002}"#).expect("should succeed");
     assert!(build_freeipapi_entity(&band2, "1.2.3.4", false, "t").is_none());

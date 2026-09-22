@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::confidence;
 
 #[test]
 fn accepts_domain_and_ip() {
@@ -40,7 +41,8 @@ fn single_ioc_marks_malicious_with_threat_band_confidence() {
             && e.has_tag(crate::core::tags::THREAT_INTEL)
             && e.has_tag(crate::core::tags::MALICIOUS)
     );
-    assert!((e.confidence - 0.92).abs() < 1e-9);
+    // confidence_level: 75 maps to VERY_HIGH (0.75) per the 51-75 band.
+    assert!((e.confidence - confidence::VERY_HIGH).abs() < 1e-9);
     assert_eq!(attr(&e, "hits"), Some("1"));
     assert_eq!(attr(&e, "malware_families"), Some("CobaltStrike"));
     assert_eq!(attr(&e, "ioc_types"), Some("domain"));
@@ -166,4 +168,61 @@ fn an_uncapped_list_records_the_total_but_no_truncation_flag() {
     );
     assert_eq!(attr(&e, "malware_families_total"), Some("1"));
     assert_eq!(attr(&e, "malware_families_truncated"), None);
+}
+
+#[test]
+fn confidence_level_maps_to_correct_tier() {
+    // REQ-THREATFOX-001: confidence_level (0-100 vendor scale) must map to HSE
+    // confidence tiers, not flatten to AUTHORITATIVE. Vendor confidence reflects
+    // hand-curated analyst assessment; bins: 0-50→HIGH, 51-75→VERY_HIGH,
+    // 76-90→HIGH_PLUSPLUS, 91-100→VERY_HIGH_PLUS.
+    let e_low = build_ioc_entity(
+        EntityKind::IpAddress,
+        "1.1.1.1",
+        &[ioc(r#"{"confidence_level":40}"#)],
+        "s",
+    );
+    assert!((e_low.confidence - confidence::HIGH).abs() < 1e-9);
+
+    let e_mid = build_ioc_entity(
+        EntityKind::IpAddress,
+        "1.1.1.1",
+        &[ioc(r#"{"confidence_level":65}"#)],
+        "s",
+    );
+    assert!((e_mid.confidence - confidence::VERY_HIGH).abs() < 1e-9);
+
+    let e_high = build_ioc_entity(
+        EntityKind::IpAddress,
+        "1.1.1.1",
+        &[ioc(r#"{"confidence_level":85}"#)],
+        "s",
+    );
+    assert!((e_high.confidence - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
+
+    let e_vhigh = build_ioc_entity(
+        EntityKind::IpAddress,
+        "1.1.1.1",
+        &[ioc(r#"{"confidence_level":95}"#)],
+        "s",
+    );
+    assert!((e_vhigh.confidence - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
+}
+
+#[test]
+fn takes_max_confidence_across_batch() {
+    // When multiple IOCs are aggregated, take the max confidence_level and map
+    // it to the correct tier, not the first one.
+    let e = build_ioc_entity(
+        EntityKind::IpAddress,
+        "1.2.3.4",
+        &[
+            ioc(r#"{"confidence_level":30}"#),
+            ioc(r#"{"confidence_level":50}"#),
+            ioc(r#"{"confidence_level":92}"#),
+        ],
+        "s",
+    );
+    // max(30, 50, 92) = 92 → VERY_HIGH_PLUS
+    assert!((e.confidence - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
 }

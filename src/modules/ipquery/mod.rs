@@ -292,7 +292,17 @@ fn build_geo_isp_entities(ip: &str, data: &Resp, scan_id: &str) -> Vec<Entity> {
         let country = loc.country.as_deref().unwrap_or("");
         if !city.is_empty() && !country.is_empty() {
             let addr = crate::util::geo::compose_address(city, state, country);
-            let mut ae = Entity::new(EntityKind::Address, &addr, confidence::NOTABLE, scan_id);
+            // Matches the sibling Coordinates above (MEDIUM_SOLID), built from
+            // the same fix. Was NOTABLE — 0.04 ABOVE its own coordinates. The
+            // "recalibrated 0.68 -> 0.58" note on the Coordinates was never
+            // applied to the Address beside it.
+            let fix = out.iter().rev().find(|e| e.kind == EntityKind::Coordinates);
+            let mut ae = crate::util::geo::coarse_provider_address(
+                &addr,
+                confidence::MEDIUM_SOLID,
+                fix,
+                scan_id,
+            );
             ae.tag("ipquery");
             if cc.eq_ignore_ascii_case("AU") {
                 ae.tag("country:AU");

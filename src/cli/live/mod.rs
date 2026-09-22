@@ -88,6 +88,9 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
         bus.clone(),
         crate::util::http::build_client(),
         crate::util::keys::populate_and_load().await,
+        // The CLI has no API reading this registry; the loop registers in it
+        // regardless, so there is one live code path, not a headless variant.
+        crate::core::cancel::new_cancel_registry(),
     );
 
     let live_id = scanner.start(target, scan_options, live_options);
@@ -221,7 +224,7 @@ fn render_event(kind: &crate::core::event::EventKind) -> String {
             target_value,
         } => format!("scan start   {target_kind}={target_value}"),
         E::ModuleStart { module } => format!("  module {module}: running"),
-        E::ModuleDone { module, found } => {
+        E::ModuleDone { module, found, .. } => {
             if *found > 0 {
                 format!("  module {module}: done, {found} entit{}", plural(*found))
             } else {

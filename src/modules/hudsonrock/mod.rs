@@ -26,13 +26,21 @@ const SRC: &str = "hudsonrock";
 
 pub struct HudsonRock;
 
-#[derive(Deserialize)]
+/// HudsonRock Cavalier API response. The `stealers` field marks a real
+/// successful response; an unexpected 2xx shape (auth failure, rate-limit, WAF
+/// block) has no `stealers` field and must fail closed (REQ-HUDSONROCK-001).
+#[derive(Debug, Deserialize)]
 struct CavalierResp {
-    #[serde(default)]
+    /// Presence of this field indicates a genuine API response shape. Real
+    /// responses always include it (possibly empty); error envelopes never do.
+    /// With `#[serde(default)]` it would silently decode a 2xx error body as
+    /// `stealers: vec![]` — an empty hit, never an error. Omitting the
+    /// attribute makes deserialization fail on `{"error": ...}` shapes,
+    /// which is then caught and classified (never silent).
     stealers: Vec<Stealer>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct Stealer {
     computer_name: Option<String>,
     operating_system: Option<String>,

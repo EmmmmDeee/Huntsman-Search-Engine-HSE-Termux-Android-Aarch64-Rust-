@@ -1,98 +1,16 @@
 //! Pure helper functions: entity building, OpenCelliD query, confidence
 //! mapping, MCC table, and JSON normalisation.
 
-#[cfg(test)]
-use std::borrow::Cow;
-
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
 };
 use crate::util::geo::is_valid_coords;
 use crate::util::http::urlencode;
 
 use super::SRC;
 use super::types::{Cell, OpenCellidResp, TowerKey};
-
-/// Build the `Coordinates` entity for a tower position returned by OpenCelliD.
-///
-/// The evidence is attributed to the CORPUS the position came from
-/// ([`crate::modules::opencellid::SRC`]), not to this module.
-///
-/// The standalone `opencellid` module accepts `DeviceId` targets and looks a
-/// tower up through the same `cell/get` endpoint with the same
-/// `HUNTSMAN_OPENCELLID_KEY`. Since this module emits the `DeviceId` the engine
-/// then expands, both paths run against the same tower as a matter of course —
-/// the designed pivot, not a corner case — and both mint the position as
-/// `{lat:.6},{lon:.6}`. Same value, same kind, so the two entities share a UID
-/// and merge. Stamped with this module's own name, that merge produced TWO
-/// distinct corroborating sources for ONE record from ONE corpus, and
-/// `Entity::source_count` fed it straight into `c_effective`: a confidence
-/// boost bought entirely by retrieving the same row twice.
-///
-/// Only the OpenCelliD-derived position moves. The MCC-centroid fallback keeps
-/// this module's own `SRC`, because that really is its own offline derivation,
-/// and so does the tower's `DeviceId` evidence — the radio hardware observation
-/// AU-084 correctly treats as independent of the database.
-pub(super) fn build_opencellid_coordinate(
-    cell: &Cell,
-    key: &TowerKey,
-    radio: &str,
-    lat: f64,
-    lon: f64,
-    range: u64,
-    scan_id: &str,
-) -> Entity {
-    let coords = format!("{lat:.6},{lon:.6}");
-    let mut e = Entity::new(
-        EntityKind::Coordinates,
-        &coords,
-        accuracy_to_confidence(range),
-        scan_id,
-    );
-    e.tag("geoint");
-    e.tag(crate::core::tags::CELL_TOWER);
-    e.tag(format!("radio:{}", key.ctype.to_lowercase()));
-    crate::util::geo::tag_au_state(&mut e, lat, lon);
-    e.add_evidence(
-        Evidence::new(
-            crate::modules::opencellid::SRC,
-            format!("Cell tower {radio} {} -> {coords}", key.tower_id),
-        )
-        .with_attr("tower_id", &key.tower_id)
-        .with_attr("radio", radio)
-        .with_attr("mcc", key.mcc.as_ref())
-        .with_attr("mnc", key.mnc.as_ref())
-        .with_attr("range_m", range.to_string())
-        .with_attr("source", "OpenCelliD"),
-    );
-    signal_readings(e, cell)
-}
-
-/// Append the per-cell readings the tool actually reported. A reading it
-/// omitted stays absent — `dbm=0` is an unphysically strong signal, `level=0`
-/// / `asu=0` / `pci=0` real values, `registered=false` a statement about the
-/// handset's attachment — so a missing field is never asserted as an
-/// observation (the class fixed for the Wi-Fi sensors in backlog #16). Both
-/// tower builders route their evidence through here.
-fn signal_readings(mut e: Entity, cell: &Cell) -> Entity {
-    let Some(ev) = e.evidence.pop() else {
-        return e;
-    };
-    let ev = [
-        ("pci", cell.pci.map(|v| v.to_string())),
-        ("dbm", cell.dbm.map(|v| v.to_string())),
-        ("asu", cell.asu.map(|v| v.to_string())),
-        ("level", cell.level.map(|v| v.to_string())),
-        ("registered", cell.registered.map(|v| v.to_string())),
-    ]
-    .into_iter()
-    .filter_map(|(key, value)| value.map(|v| (key, v)))
-    .fold(ev, |ev, (key, value)| ev.with_attr(key, value));
-    e.add_evidence(ev);
-    e
-}
 
 /// Build the `DeviceId` entity for one cell tower. Single source of truth for
 /// the tower-survey entity shape, shared by the live `process()` path and the
@@ -113,35 +31,28 @@ pub(super) fn build_tower_device(cell: &Cell, key: &TowerKey, scan_id: &str) -> 
             .with_attr("mcc", key.mcc.as_ref())
             .with_attr("mnc", key.mnc.as_ref())
             .with_attr("lac_tac", key.lac.to_string())
-            .with_attr("cid", key.cid.to_string()),
+            .with_attr("cid", key.cid.to_string())
+            .with_attr("pci", cell.pci.unwrap_or(0).to_string())
+            .with_attr("dbm", cell.dbm.unwrap_or(0).to_string())
+            .with_attr("asu", cell.asu.unwrap_or(0).to_string())
+            .with_attr("level", cell.level.unwrap_or(0).to_string())
+            .with_attr("registered", cell.registered.unwrap_or(false).to_string()),
     );
-    signal_readings(e, cell)
+    e
 }
 
-/// OpenCelliD's `cell/get` endpoint; `query_opencellid` takes it as a
-/// parameter so a loopback server can drive the transport path in tests.
-pub(super) const OPENCELLID_BASE: &str = "https://opencellid.org/cell/get";
-
-/// One OpenCelliD lookup for `tower`. `Ok(Some(fix))` is a located tower;
-/// `Ok(None)` is the provider's documented miss (`status: "error"` with a
-/// real key — "couldn't geolocate this tower"); every other outcome — a
-/// transport failure, a non-2xx, an undecodable body, the HTTP-200 key
-/// rejection, or an `ok` answer without usable coordinates — is `Err`. It
-/// used to be `Option`, so a failed keyed lookup and a genuine miss both fell
-/// back to the MCC country centroid with no trace that the lookup failed.
 pub(super) async fn query_opencellid(
     ctx: &crate::core::module::ModuleContext,
-    api_base: &str,
     api_key: &str,
     tower: &TowerKey<'_>,
     radio: &str,
-) -> Result<Option<(f64, f64, u64)>> {
+) -> Option<(f64, f64, u64)> {
     // URL-encode every interpolated value (consistent with censys). mcc/mnc
     // come from json_to_str of arbitrary cellinfo JSON; a malformed value with
     // a `&`/space would otherwise corrupt the query string. Numeric codes
     // (the normal case) pass through unchanged.
     let url = format!(
-        "{api_base}?key={}&mcc={}&mnc={}&lac={}&cellid={}&radio={}&format=json",
+        "https://opencellid.org/cell/get?key={}&mcc={}&mnc={}&lac={}&cellid={}&radio={}&format=json",
         urlencode(api_key),
         urlencode(&tower.mcc),
         urlencode(&tower.mnc),
@@ -156,12 +67,7 @@ pub(super) async fn query_opencellid(
         .header("Accept", "application/json")
         .send()
         .await
-        .map_err(|e| {
-            Error::module(
-                SRC,
-                format!("OpenCelliD request failed: {}", e.without_url()),
-            )
-        })?;
+        .ok()?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -172,66 +78,39 @@ pub(super) async fn query_opencellid(
         // such service registered) and the pool would never learn the real
         // "opencellid" key was rejected/throttled, exactly the T2.153 class
         // of bug this fixes.
-        crate::util::http::note_keyed_error(
-            status.as_u16(),
-            crate::modules::opencellid::SRC,
-            api_key,
-            ctx,
-        );
-        return Err(crate::util::http::http_status_error(SRC, resp).await);
+        crate::util::http::note_keyed_error(status.as_u16(), "opencellid", api_key, ctx);
+        return None;
     }
 
-    let data: OpenCellidResp = crate::util::http::json_scanned(resp, SRC).await?;
+    let data: OpenCellidResp = crate::util::http::json_scanned(resp, SRC).await.ok()?;
 
-    if let Some(err) = data.error {
+    if data.error.is_some() {
         // See `OpenCellidResp::error`'s doc comment — a body-level key
         // failure OpenCelliD signals as a plain 200, so this can't be
         // caught by the status check above. Distinct from the `status:
         // "error"` case just below (a genuine "couldn't geolocate this
         // tower" negative with a real key — not a key problem).
-        crate::util::http::note_keyed_error(401, crate::modules::opencellid::SRC, api_key, ctx);
-        return Err(Error::module(
-            SRC,
-            format!("OpenCelliD rejected the key: {err}"),
-        ));
+        crate::util::http::note_keyed_error(401, "opencellid", api_key, ctx);
+        return None;
     }
     if data.status.as_deref() == Some("error") {
-        return Ok(None);
+        return None;
     }
 
+    let lat = data.lat?;
+    let lon = data.lon?;
     // Shared validator: rejects Null Island AND out-of-range / non-finite
-    // values a malformed OpenCelliD payload could carry (see util::geo). An
-    // `ok` answer without usable coordinates is a shape this module does not
-    // recognise — a failed lookup, not a miss.
-    match (data.lat, data.lon) {
-        (Some(lat), Some(lon)) if is_valid_coords(lat, lon) => {
-            Ok(Some((lat, lon, data.range.unwrap_or(5000))))
-        }
-        _ => Err(Error::module(
-            SRC,
-            "OpenCelliD answered without usable coordinates and without its documented error status",
-        )),
+    // values a malformed OpenCelliD payload could carry (see util::geo).
+    if !is_valid_coords(lat, lon) {
+        return None;
     }
+
+    Some((lat, lon, data.range.unwrap_or(5000)))
 }
 
 /// Map a cell fix's accuracy radius (metres) to a coordinate confidence.
-/// Delegates to the single authoritative implementation in `cell_db`, the
-/// same one `cell_local` and `opencellid` use — a provider-local copy (this
-/// module carried one, `util::geo::cell_range_to_confidence`, until Pass 22)
-/// let an identically-precise OpenCelliD fix score differently by which
-/// module happened to report it, silently crossing the correlator's
-/// `>= 0.50` admissibility floor at some tiers. See
-/// [`crate::util::geo::confidence_for_accuracy_m`]'s doc for why.
+/// Delegates to the single authoritative implementation in `cell_db`.
 pub(super) use crate::util::cell_db::accuracy_to_confidence;
-
-/// `mcc`/`mnc` come as `"505"` on some Android versions and `505` on others.
-/// Normalise to string; missing -> empty.
-#[cfg(test)]
-pub(super) fn json_to_str(v: &Option<serde_json::Value>) -> Cow<'_, str> {
-    v.as_ref()
-        .and_then(crate::util::json::scalar_str)
-        .unwrap_or(Cow::Borrowed(""))
-}
 
 /// Coarse country fix from a cell's **Mobile Country Code**: `(lat, lon, ISO)` at
 /// the country centroid, or `None` for an unrecognised MCC. The fallback when no
@@ -323,6 +202,9 @@ pub(super) fn parse_cells_survey(
 
     let mut result = crate::core::module::ModuleResult {
         entities: Vec::with_capacity(cells.len()),
+        truncation: None,
+        sightings: Vec::new(),
+        link: None,
     };
     for cell in &cells {
         // Same parse/skip + builder the live process() path uses, so these

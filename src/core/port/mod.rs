@@ -213,6 +213,81 @@ pub trait StoragePort: Send + Sync {
         Ok(0)
     }
 
+    /// The scan of the most recent sighting, or `None` when nothing has been
+    /// recorded — "the survey you just ran", so neither `hse signal` nor the
+    /// web reader makes the operator paste an id they never saw. Most recently
+    /// *recorded*, not the newest clock: a capture can carry an older wall
+    /// clock than a sweep imported after it. Default `None` for test doubles;
+    /// the SQLite `Store` reads `rf_sightings`.
+    fn rf_latest_scan_id(&self) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    /// Scan-level sighting totals. Default empty for test doubles; the SQLite
+    /// `Store` computes them in SQL.
+    fn rf_summary(&self, _scan_id: &str) -> Result<crate::core::rf::RfSummary> {
+        Ok(crate::core::rf::RfSummary::default())
+    }
+
+    /// Every device in a scan, strongest first. Default empty for test doubles;
+    /// the SQLite `Store` reads its `rf_devices` roll-up.
+    fn rf_devices_for_scan(&self, _scan_id: &str) -> Result<Vec<crate::core::rf::RfDeviceRow>> {
+        Ok(Vec::new())
+    }
+
+    /// Devices with a fixed hardware address — the only ones whose recurrence
+    /// across sightings means anything (AU-122). This filter is THE one
+    /// definition of "trackable", provided here so `hse signal --trackable` and
+    /// `GET /api/v1/radar/signals?trackable=1` cannot disagree; the `rf_trackable`
+    /// SQL view that once encoded the same predicate was queried by nothing and
+    /// is retired on open.
+    fn rf_trackable_devices(&self, scan_id: &str) -> Result<Vec<crate::core::rf::RfDeviceRow>> {
+        Ok(self
+            .rf_devices_for_scan(scan_id)?
+            .into_iter()
+            .filter(|d| d.locally_administered == Some(false))
+            .collect())
+    }
+
+    /// Every sighting of one device in a scan, oldest first — the movement
+    /// track. Default empty for test doubles; the SQLite `Store` reads
+    /// `rf_sightings`.
+    fn rf_sightings_for_device(
+        &self,
+        _scan_id: &str,
+        _network_id: &str,
+    ) -> Result<Vec<crate::core::rf::RfSighting>> {
+        Ok(Vec::new())
+    }
+
+    /// Every sighting of one device across EVERY scan — a whole radar session
+    /// (one scan per iteration) or a wardriving day — oldest first, capped to
+    /// the newest `limit`. The movement record the per-scan track cannot give,
+    /// and the trail the map draws. Default empty for test doubles; the SQLite
+    /// `Store` reads `rf_sightings` through its `network_id` index.
+    fn rf_device_track(
+        &self,
+        _network_id: &str,
+        _limit: usize,
+    ) -> Result<Vec<crate::core::rf::RfTrackPoint>> {
+        Ok(Vec::new())
+    }
+
+    // ── The device's own Wi-Fi link (REQ-RESILIENCE-002) ────────────────────
+    /// Persist one sweep's link state — "not connected" included, because for
+    /// the disruption review the absence is the observation. Default no-op for
+    /// test doubles; the SQLite `Store` writes `wifi_links`.
+    fn insert_wifi_link(&self, _scan_id: &str, _link: &crate::core::link::LinkState) -> Result<()> {
+        Ok(())
+    }
+
+    /// One sweep's link state, or `None` for a sweep that recorded none (one
+    /// from before the record existed, or a sweep without `device_sensors`).
+    /// Default `None` for test doubles.
+    fn wifi_link_for_scan(&self, _scan_id: &str) -> Result<Option<crate::core::link::LinkState>> {
+        Ok(None)
+    }
+
     // ── Maintenance ─────────────────────────────────────────────────────────
     /// Bound the backing store's write-ahead footprint at a safe boundary
     /// (e.g. a completed scan). Default is a no-op for backends without a

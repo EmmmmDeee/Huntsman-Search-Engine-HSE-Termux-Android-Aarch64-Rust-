@@ -126,6 +126,9 @@ impl Module for GithubCommits {
 
         Ok(ModuleResult {
             entities: extract(&parsed.items, email, &ctx.scan_id),
+            truncation: None,
+            sightings: Vec::new(),
+            link: None,
         })
     }
 }

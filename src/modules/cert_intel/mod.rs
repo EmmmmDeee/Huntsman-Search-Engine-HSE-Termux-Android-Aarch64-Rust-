@@ -138,38 +138,32 @@ impl Module for CertIntel {
         // both outcomes are visibly handled in one place.
         match ctx.http.head(&url).send_tagged(SRC).await {
             Ok(resp) => {
-                let mut entity = target.to_entity(confidence::EXPERT, &ctx.scan_id);
-                entity.tag("tls");
-
-                let mut ev = Evidence::new(SRC, format!("TLS certificate for {domain}"))
-                    .with_attr("port", "443");
-
-                let tls_info = resp.extensions().get::<reqwest::tls::TlsInfo>();
-                if let Some(info) = tls_info
-                    && let Some(der) = info.peer_certificate()
-                {
-                    parse_certificate(
-                        der,
-                        domain,
-                        &ctx.scan_id,
-                        &mut entity,
-                        &mut ev,
-                        &mut result,
-                        &mut seen_subs,
-                    );
-                }
-
-                let status = resp.status();
-                ev = ev.with_attr("http_status", status.as_u16().to_string());
-
-                if let Some(hsts) = resp.headers().get("strict-transport-security")
-                    && let Ok(v) = hsts.to_str()
-                {
-                    ev = ev.with_attr("hsts", v);
-                    entity.tag("hsts");
-                }
-
-                entity.add_evidence(ev);
+                // REQ-CERTINTEL-001: only a certificate we actually captured
+                // justifies the EXPERT "TLS certificate" finding. `TlsInfo` is
+                // now populated because the shared client enables
+                // `.tls_info(true)`, so this is the normal path — the peer's leaf
+                // certificate is parsed for its SANs/issuer/subject/serial. A
+                // response that yields no peer certificate is an honest, modest
+                // "HTTPS service responding" observation, never a near-max-
+                // confidence certificate claim that examined nothing.
+                let cert_der = resp
+                    .extensions()
+                    .get::<reqwest::tls::TlsInfo>()
+                    .and_then(|info| info.peer_certificate());
+                let hsts = resp
+                    .headers()
+                    .get("strict-transport-security")
+                    .and_then(|v| v.to_str().ok());
+                let entity = build_tls_entity(
+                    target,
+                    domain,
+                    &ctx.scan_id,
+                    cert_der,
+                    resp.status().as_u16(),
+                    hsts,
+                    &mut result,
+                    &mut seen_subs,
+                );
                 result.push(entity);
             }
             Err(e) => {
@@ -331,6 +325,58 @@ fn ct_log_entities(
 }
 
 // ── DER parsing helpers ───────────────────────────
+
+/// Build the live-TLS-probe entity from what the probe actually observed.
+///
+/// REQ-CERTINTEL-001: the EXPERT "TLS certificate for {domain}" finding is minted
+/// ONLY when a real peer certificate was captured (`cert_der: Some`) — the module
+/// then parses its SANs / issuer / subject / serial into the entity and emits the
+/// discovered subdomains. A response with no captured certificate (`None`) is a
+/// modest `MEDIUM` "HTTPS service responding" observation, so a bare HTTPS HEAD
+/// can no longer mint a near-max-confidence certificate finding that examined
+/// nothing. Pure of I/O, so the captured/absent split is unit-tested without a
+/// live TLS server (the seam the original bug slipped through untested).
+#[allow(clippy::too_many_arguments)]
+fn build_tls_entity(
+    target: &Target,
+    domain: &str,
+    scan_id: &str,
+    cert_der: Option<&[u8]>,
+    http_status: u16,
+    hsts: Option<&str>,
+    result: &mut ModuleResult,
+    seen_subs: &mut HashSet<String>,
+) -> Entity {
+    let (conf, title) = if cert_der.is_some() {
+        (confidence::EXPERT, format!("TLS certificate for {domain}"))
+    } else {
+        (
+            confidence::MEDIUM,
+            format!("HTTPS service responding on {domain}:443 (no certificate captured)"),
+        )
+    };
+    let mut entity = target.to_entity(conf, scan_id);
+    entity.tag("tls");
+    let mut ev = Evidence::new(SRC, title).with_attr("port", "443");
+    if let Some(der) = cert_der {
+        parse_certificate(
+            der,
+            domain,
+            scan_id,
+            &mut entity,
+            &mut ev,
+            result,
+            seen_subs,
+        );
+    }
+    ev = ev.with_attr("http_status", http_status.to_string());
+    if let Some(v) = hsts {
+        ev = ev.with_attr("hsts", v);
+        entity.tag("hsts");
+    }
+    entity.add_evidence(ev);
+    entity
+}
 
 fn parse_certificate(
     der: &[u8],

@@ -189,3 +189,86 @@ fn usage_type_datacenter_tags_ip_hosting() {
         .expect("should succeed");
     assert!(!ip2.has_tag("hosting"));
 }
+
+#[test]
+fn a_clean_verdict_is_never_tagged_threat_intel() {
+    // REQ-ABUSEIPDB-001. `THREAT_INTEL` is one of only three
+    // `ADJACENCY_BAD_TAGS` (core::correlator::rules), which AU-031
+    // "malicious adjacency" reads to raise a **High**-severity finding on any
+    // entity one hop from a tag-bearing node. Tagging it unconditionally —
+    // before the score branch below it — meant AbuseIPDB's OWN clean verdict
+    // (0/100 confidence, 0 reports) still marked the IP known-bad, so any
+    // domain resolving to it was reported "adjacent to known-bad
+    // infrastructure": a High-severity escalation fabricated out of a
+    // NEGATIVE signal, purely because the IP had been looked up at all.
+    //
+    // Every sibling module gates this tag on a real positive verdict —
+    // `virustotal` only when `malicious > 0` (and pins this same negative
+    // case in its own tests), `chain_intel` only on the source's own flag
+    // ("never when [it] is absent or false, so a source that doesn't report a
+    // verdict can't be mistaken for a clean bill of health"), `onyphe` only
+    // on a named threat-list match, `pulsedive` returns early when nothing is
+    // linked. abuseipdb was the one outlier.
+    let data: AbuseData =
+        serde_json::from_str(r#"{"abuseConfidenceScore":0,"totalReports":0,"isTor":false}"#)
+            .expect("clean fixture parses");
+    let ents = build_entities(&data, "8.8.8.8", "s");
+    let ip = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::IpAddress)
+        .expect("the queried IP is still emitted for a clean verdict");
+    assert!(
+        !ip.has_tag(crate::core::tags::THREAT_INTEL),
+        "a 0%/0-report clean verdict must not mark the IP known-bad, got tags {:?}",
+        ip.tags
+    );
+    assert!(!ip.has_tag(crate::core::tags::MALICIOUS));
+    assert!(!ip.has_tag("suspicious"));
+    assert!(!ip.has_tag("high-risk"));
+}
+
+#[test]
+fn a_real_positive_verdict_still_carries_threat_intel() {
+    // Guard for the fix above: the tag must STILL appear at every band the
+    // module itself treats as a positive verdict, or the gate has overreached
+    // and abuseipdb silently stops feeding adjacency analysis altogether —
+    // trading a false positive for a false negative.
+    for (score, expect_malicious) in [(40_u32, false), (79, false), (80, true), (100, true)] {
+        let json = format!(r#"{{"abuseConfidenceScore":{score},"totalReports":9}}"#);
+        let data: AbuseData = serde_json::from_str(&json).expect("scored fixture parses");
+        let ents = build_entities(&data, "1.2.3.4", "s");
+        let ip = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::IpAddress)
+            .expect("ip emitted");
+        assert!(
+            ip.has_tag(crate::core::tags::THREAT_INTEL),
+            "score {score} is a real positive verdict and must stay THREAT_INTEL"
+        );
+        assert_eq!(
+            ip.has_tag(crate::core::tags::MALICIOUS),
+            expect_malicious,
+            "score {score}: MALICIOUS gating must be unchanged by this fix"
+        );
+    }
+}
+
+#[test]
+fn a_score_below_the_suspicious_band_is_not_threat_intel() {
+    // The boundary the fix rests on: AbuseIPDB's own graded score below the
+    // module's existing `>= 40` "suspicious" band is not a verdict this
+    // engine may escalate on. 39 is the last value that must stay clean.
+    for score in [1_u32, 10, 39] {
+        let json = format!(r#"{{"abuseConfidenceScore":{score},"totalReports":1}}"#);
+        let data: AbuseData = serde_json::from_str(&json).expect("low fixture parses");
+        let ents = build_entities(&data, "1.2.3.4", "s");
+        let ip = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::IpAddress)
+            .expect("ip emitted");
+        assert!(
+            !ip.has_tag(crate::core::tags::THREAT_INTEL),
+            "score {score} is below the suspicious band and must not be known-bad"
+        );
+    }
+}

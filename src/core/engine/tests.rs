@@ -16,8 +16,22 @@ fn skip_reason(
     is_expansion: bool,
     target_distinct_sources: usize,
 ) -> Option<&'static str> {
-    module_skip_reason(module, target, opts, is_expansion, target_distinct_sources)
-        .map(|(_, reason)| reason)
+    // `circuit_open: false` is STATED, not hoped for. `module_skip_reason`
+    // reads a process-global circuit map keyed by module name, so these
+    // assertions used to depend on whether some other test in the binary had
+    // tripped a circuit for the same module first — which is why two of them
+    // passed only under `--test-threads=1` (REQ-CI-004). None of the gates
+    // pinned below is about the circuit breaker; that gate has its own tests,
+    // which set the state they need explicitly.
+    super::dispatch::module_skip_reason_with(
+        module,
+        target,
+        opts,
+        is_expansion,
+        target_distinct_sources,
+        false,
+    )
+    .map(|(_, reason)| reason)
 }
 
 #[tokio::test]
@@ -1305,6 +1319,11 @@ fn circuit_breaker_trip_skips_the_module_at_the_dispatch_gate() {
     // re-dispatching a dead provider and hands that budget to working sources.
     // A unique module name keeps this independent of the process-global breaker
     // state the circuit unit tests touch.
+    //
+    // This test goes through `module_skip_reason` — the REAL entry point that
+    // reads the global — because the circuit is what it is about. The generic
+    // `skip_reason` helper pins `circuit_open: false` so the ~40 assertions
+    // that are NOT about the circuit stop depending on it (REQ-CI-004).
     let m = StubModule {
         name: "test_circuit_gate",
         cost: ModuleCost::Free,
@@ -1316,14 +1335,16 @@ fn circuit_breaker_trip_skips_the_module_at_the_dispatch_gate() {
 
     // Healthy → not skipped for circuit reasons.
     assert!(
-        skip_reason(&m, &pub_target(), &opts, false, 0).is_none(),
+        module_skip_reason(&m, &pub_target(), &opts, false, 0)
+            .map(|(_, r)| r)
+            .is_none(),
         "a healthy module must not be gated"
     );
 
     // Trip it as a 429/quota response would, then the gate skips it.
     super::circuit::record_rate_limit(m.name());
     assert_eq!(
-        skip_reason(&m, &pub_target(), &opts, false, 0),
+        module_skip_reason(&m, &pub_target(), &opts, false, 0).map(|(_, r)| r),
         Some("circuit-open — rate-limited/quota/repeated failure (cooling down)"),
         "a tripped module must be skipped at the dispatch gate"
     );
@@ -1331,8 +1352,110 @@ fn circuit_breaker_trip_skips_the_module_at_the_dispatch_gate() {
     // A success clears the trip — the gate trusts a recovered provider again.
     super::circuit::record_success(m.name());
     assert!(
-        skip_reason(&m, &pub_target(), &opts, false, 0).is_none(),
+        module_skip_reason(&m, &pub_target(), &opts, false, 0)
+            .map(|(_, r)| r)
+            .is_none(),
         "a recovered module must dispatch again"
+    );
+}
+
+/// REQ-RADAR-001: what a module observed per sighting is persisted beside its
+/// entities, through the one finalise path every dispatch mode shares — and a
+/// cache replay, which observed nothing, persists nothing. The real SQLite
+/// store is used because the port's default `insert_rf_sightings_batch` is a
+/// no-op for test doubles: this test is about the rows.
+#[tokio::test]
+async fn a_modules_sightings_are_persisted_beside_its_entities_and_a_replay_persists_none() {
+    use crate::core::module::ModuleResult;
+    use crate::core::rf::{RadioKind, RfSighting, RfSource};
+
+    let store = Arc::new(crate::storage::Store::open(":memory:").expect("in-memory store"));
+    let port: Arc<dyn StoragePort> = Arc::clone(&store) as Arc<dyn StoragePort>;
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(vec![], port, bus);
+
+    let target = Target::new(TargetKind::Coordinates, "-27.4705,153.0260");
+    let opts = ScanOptions::default();
+    let cx = DispatchCx {
+        scan_id: "radar-sweep-1",
+        target: &target,
+        opts: &opts,
+        is_expansion: false,
+        seed_kind: TargetKind::Coordinates,
+        quarantined: no_quarantine(),
+    };
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
+    };
+
+    let mut observed = RfSighting::new("AA:BB:CC:DD:EE:FF", RadioKind::Wifi, RfSource::WifiRadar);
+    observed.signal_dbm = Some(-45.0);
+    observed.latitude = Some(-27.4705);
+    observed.longitude = Some(153.026);
+    observed.observed_epoch = Some(1_758_500_000);
+    let mut mr = ModuleResult::new();
+    mr.push_sighting(observed);
+    // REQ-RESILIENCE-002: the device's own link travels the same seam.
+    mr.link = Some(crate::core::link::LinkState {
+        connected: true,
+        ssid: Some("LabNet".to_string()),
+        bssid: Some("aa:bb:cc:dd:ee:ff".to_string()),
+        signal_dbm: Some(-45.0),
+        ip: None,
+        link_speed_mbps: None,
+        supplicant_state: Some("COMPLETED".to_string()),
+        observed_epoch: Some(1_758_500_000),
+    });
+    engine.finalise_module_result(
+        &cx,
+        "test_radar_sightings_real",
+        Ok(Ok(mr)),
+        &mut state,
+        &[],
+        false,
+    );
+
+    let link = store
+        .wifi_link_for_scan("radar-sweep-1")
+        .expect("query the link")
+        .expect("the link record reached wifi_links");
+    assert!(link.connected);
+    assert_eq!(link.bssid.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
+
+    let rows = store
+        .rf_devices_for_scan("radar-sweep-1")
+        .expect("query the sightings");
+    assert_eq!(rows.len(), 1, "the sighting reached rf_sightings");
+    assert_eq!(rows[0].network_id, "aa:bb:cc:dd:ee:ff");
+    assert_eq!(rows[0].best_signal_dbm, Some(-45.0));
+    assert_eq!(
+        (rows[0].best_latitude, rows[0].best_longitude),
+        (Some(-27.4705), Some(153.026))
+    );
+
+    // CONTROL: a cache replay carries no sightings and persists none.
+    engine.finalise_module_result(
+        &cx,
+        "test_radar_sightings_replay",
+        Ok(Ok(ModuleResult::new())),
+        &mut state,
+        &[],
+        true,
+    );
+    assert_eq!(
+        store
+            .rf_devices_for_scan("radar-sweep-1")
+            .expect("query")
+            .len(),
+        1,
+        "a replay observed nothing"
     );
 }
 
@@ -1935,8 +2058,161 @@ fn skip_reason_rejects_local_domain_for_external_module() {
     let opts = ScanOptions::default();
     assert_eq!(
         skip_reason(&m, &local, &opts, false, 0),
-        Some("local/reserved domain — external API would reject")
+        Some("local/reserved domain or private IP — external API would reject (SSRF gate)")
     );
+}
+
+#[test]
+fn skip_reason_rejects_ip_literal_domain_ssrf_gate() {
+    // SSRF gate: a Domain target whose VALUE is itself an IP literal
+    // (not caught by is_local_domain, which only matches reserved
+    // NAMES) must not reach external-API modules. Without this,
+    // `{"kind":"domain","value":"169.254.169.254"}` reached
+    // web_crawler with no guard at all — the cloud-metadata endpoint,
+    // named explicitly because it is the highest-value real target
+    // this gap exposed.
+    let m = free_active();
+    let opts = ScanOptions::default();
+    for hostile in [
+        "169.254.169.254", // cloud-metadata endpoint
+        "127.0.0.1",
+        "10.0.0.1",
+        "192.168.1.1",
+        "::1",
+    ] {
+        let t = Target::new(TargetKind::Domain, hostile);
+        let reason = skip_reason(&m, &t, &opts, false, 0);
+        assert!(
+            reason.is_some_and(|r| r.contains("SSRF") || r.contains("private")),
+            "Domain {hostile} should be SSRF-rejected, got {reason:?}",
+        );
+    }
+}
+
+#[test]
+fn skip_reason_lets_public_domain_through() {
+    // Regression guard for the fix above: a genuine public domain must
+    // still pass — the new is_private_ip check must not overreach.
+    let m = free_active();
+    let opts = ScanOptions::default();
+    for benign in ["example.com", "github.com", "abc.net.au"] {
+        let t = Target::new(TargetKind::Domain, benign);
+        assert!(
+            skip_reason(&m, &t, &opts, false, 0).is_none(),
+            "Domain {benign} should pass through",
+        );
+    }
+}
+
+#[test]
+fn skip_reason_rejects_encoded_ip_literal_domain_ssrf_bypass() {
+    // Adversarial follow-up to skip_reason_rejects_ip_literal_domain_ssrf_gate
+    // (caught live by a Copilot review on that very fix): std::net::IpAddr's
+    // strict parser rejects shorthand-dotted, decimal, hex, and octal IPv4
+    // forms, but Target::validate's Domain branch admits every one of them
+    // (a dot + alnum/-/_ charset), and the URL host parser web_crawler's own
+    // request path uses (via reqwest/url) canonicalizes each to the exact
+    // private address it dials. The gate must canonicalize before judging,
+    // not parse strictly, or every one of these reaches loopback/metadata
+    // unguarded.
+    let m = free_active();
+    let opts = ScanOptions::default();
+    for hostile in [
+        "127.1",        // shorthand-dotted -> 127.0.0.1
+        "127.0.1",      // shorthand-dotted -> 127.0.0.1
+        "2130706433",   // decimal -> 127.0.0.1
+        "0x7f000001",   // hex -> 127.0.0.1
+        "017700000001", // octal -> 127.0.0.1
+        "0177.0.0.1",   // octal first octet -> 127.0.0.1
+    ] {
+        let t = Target::new(TargetKind::Domain, hostile);
+        let reason = skip_reason(&m, &t, &opts, false, 0);
+        assert!(
+            reason.is_some_and(|r| r.contains("SSRF") || r.contains("private")),
+            "Domain {hostile} (canonicalizes to a private IP) should be SSRF-rejected, got {reason:?}",
+        );
+    }
+}
+
+#[test]
+fn skip_reason_rejects_private_email_domain_ssrf_gate() {
+    // REQ-SSRF-002. The Domain arm above closed the IP-literal hole for
+    // Domain-kind targets, but the gate's own comment asserted "there's no
+    // concept of a 'private email'" and let every Email-kind target fall
+    // through untouched. That assumption is false: `employer_pivot` and
+    // `fediverse` both derive a bare hostname from the email's domain part
+    // and dial it directly (`https://{domain}/…`,
+    // `https://{domain}/.well-known/webfinger?…`) with no guard of their
+    // own, so an Email target is a second, fully-open route to the exact
+    // internal addresses the Domain arm now refuses. The DNS-level SSRF
+    // resolver cannot help — an IP-literal host is dialled with no lookup.
+    let m = free_active();
+    let opts = ScanOptions::default();
+    for hostile in [
+        "finance@169.254.169.254", // cloud-metadata endpoint
+        "x@127.0.0.1",
+        "user@10.0.0.1",
+        "user@192.168.1.1",
+        "user@127.1",         // shorthand-dotted -> 127.0.0.1
+        "user@2130706433",    // decimal -> 127.0.0.1
+        "user@0x7f000001",    // hex -> 127.0.0.1
+        "user@[::1]",         // RFC 5321 address literal, loopback
+        "user@[IPv6:::1]",    // RFC 5321 tagged IPv6 literal form
+        "admin@router.local", // IANA reserved name
+        "postmaster@localhost",
+        "a@svc.internal",
+    ] {
+        let t = Target::new(TargetKind::Email, hostile);
+        let reason = skip_reason(&m, &t, &opts, false, 0);
+        assert!(
+            reason.is_some_and(|r| r.contains("SSRF") || r.contains("private")),
+            "Email {hostile} should be SSRF-rejected, got {reason:?}",
+        );
+    }
+}
+
+#[test]
+fn skip_reason_lets_public_email_domain_through() {
+    // Regression guard for REQ-SSRF-002: an ordinary email must still reach
+    // every email-accepting module — the new gate must not overreach. A
+    // local part that merely CONTAINS an `@`-adjacent private-looking token
+    // is not the host and must not trip the gate either.
+    let m = free_active();
+    let opts = ScanOptions::default();
+    for benign in [
+        "jane@example.com",
+        "j.citizen@abc.net.au",
+        "dns@cloudflare.com",
+        "127.0.0.1@example.com", // the LOCAL part is IP-shaped, the host is public
+        "user@8.8.8.8",          // public IP literal as the host
+    ] {
+        let t = Target::new(TargetKind::Email, benign);
+        assert!(
+            skip_reason(&m, &t, &opts, false, 0).is_none(),
+            "Email {benign} should pass through",
+        );
+    }
+}
+
+#[test]
+fn skip_reason_lets_encoded_public_ip_domain_through() {
+    // Regression guard for the bypass fix above: a Domain value that merely
+    // LOOKS numeric but canonicalizes to a PUBLIC address must still pass —
+    // the canonicalizing check must not overreach into treating every
+    // digit-only Domain value as hostile.
+    let m = free_active();
+    let opts = ScanOptions::default();
+    for benign in [
+        "8.8.8.8",   // already-canonical public IP as a Domain value
+        "134744072", // decimal -> 8.8.8.8 (public)
+        "1.1",       // shorthand-dotted -> 1.0.0.1 (public)
+    ] {
+        let t = Target::new(TargetKind::Domain, benign);
+        assert!(
+            skip_reason(&m, &t, &opts, false, 0).is_none(),
+            "Domain {benign} (canonicalizes to a public IP) should pass through",
+        );
+    }
 }
 
 #[test]
@@ -5010,6 +5286,50 @@ fn admission_rejection_covers_every_drop_filter_and_order() {
         admission_rejection(seed, None, &ent(EntityKind::Phone, "+1240893", 0.9)),
         Some("implausible_phone"),
     );
+    // REQ-VALIDATION-001: the kinds homograph spoofing actually targets. A
+    // `pаypal.com` whose `a` is Cyrillic was admitted here, then expanded and
+    // correlated like any real domain.
+    assert_eq!(
+        admission_rejection(
+            seed,
+            None,
+            &ent(EntityKind::Domain, "p\u{0430}ypal.com", 0.9)
+        ),
+        Some("confusable_homoglyph"),
+    );
+    assert_eq!(
+        admission_rejection(
+            seed,
+            None,
+            &ent(EntityKind::Email, "victim@p\u{0430}ypal.com", 0.9)
+        ),
+        Some("confusable_homoglyph"),
+    );
+    assert_eq!(
+        admission_rejection(
+            seed,
+            None,
+            &ent(EntityKind::Url, "https://p\u{0430}ypal.com/login", 0.9)
+        ),
+        Some("confusable_homoglyph"),
+    );
+    // And the false positive the per-label check exists to avoid: a whole
+    // Cyrillic label under an ASCII TLD is a real internationalised domain. The
+    // FLAT predicate calls this a spoof, so wiring the existing check straight
+    // in would have dropped it at admission.
+    assert_eq!(
+        admission_rejection(
+            seed,
+            None,
+            &ent(
+                EntityKind::Domain,
+                "\u{043C}\u{043E}\u{0441}\u{043A}\u{0432}\u{0430}.com",
+                0.9
+            )
+        ),
+        None,
+        "a legitimate internationalised domain must still be admitted",
+    );
     assert_eq!(
         admission_rejection(
             seed,
@@ -5456,6 +5776,51 @@ fn tracked_entity_map_into_inner_yields_every_entity_regardless_of_dirty_state()
 }
 
 // ── Final breach sweep + autonomous audit ───────────────────────────────────
+
+/// The sweep's dispatch allow-list, built over the REAL registry.
+///
+/// The correlator's `source_family_covers_every_breach_category_module` proves
+/// every breach-category module is deliberately classified; this proves the
+/// classification actually reaches the dispatch decision. A corpus that is
+/// classified but never dispatched is still a corpus the sweep never asks —
+/// implementation is not reachability, and these are different code paths.
+///
+/// `stolen_tax` is the regression this pins: a paid, key-gated breach API that
+/// fell through `source_family`'s needles to `"other"` and was therefore absent
+/// from this list entirely, observed live as `breach-category modules unknown to
+/// the corpus classifier … modules="stolen_tax,ahmia"`. `ahmia` is the opposite
+/// case in the same warning — a full-text Tor index, not a record corpus — and
+/// must stay OUT, silently (see `NON_CORPUS_BREACH_MODULES`).
+#[tokio::test]
+async fn the_breach_sweep_allow_list_admits_every_graded_corpus_and_no_non_corpus() {
+    // `ScanEngine::new` spawns the DB-writer actor, so a runtime must be live.
+    use crate::core::test_support::InMemoryStore;
+
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(16);
+    let engine = ScanEngine::new(crate::modules::registry(), store, bus);
+    let allow = engine.breach_sweep_modules("reachability-check");
+
+    assert!(
+        allow.iter().any(|m| m == "stolen_tax"),
+        "stolen_tax is a graded breach corpus but never reaches the sweep's dispatch \
+         allow-list: {allow:?}"
+    );
+    for excluded in crate::core::correlator::NON_CORPUS_BREACH_MODULES {
+        assert!(
+            !allow.iter().any(|m| m == excluded),
+            "`{excluded}` is recorded as a deliberate non-corpus yet the sweep dispatches it"
+        );
+    }
+    // Sanity: the allow-list is the real thing, not an empty vec that would
+    // satisfy the exclusion half vacuously.
+    for corpus in ["hibp", "dehashed", "see_know"] {
+        assert!(
+            allow.iter().any(|m| m == corpus),
+            "{corpus} missing from the sweep allow-list: {allow:?}"
+        );
+    }
+}
 
 /// A stand-in breach corpus. Its NAME is what matters: `source_family` classes
 /// anything containing "breach" into the breach family, so
@@ -6482,5 +6847,53 @@ async fn an_onion_exposure_url_is_recorded_but_never_fetched() {
     assert!(
         onion_skip,
         "the onion skip must be recorded under its own reason for the audit ledger"
+    );
+}
+
+#[test]
+fn the_skip_gate_reads_the_circuit_only_through_its_argument() {
+    // REQ-CI-004, asserted deterministically rather than by racing the harness.
+    //
+    // `module_skip_reason` consults a PROCESS-GLOBAL circuit map keyed by module
+    // name, so any test that trips a circuit changes what every other test
+    // asking about that module sees, in whichever order the harness runs them.
+    // That is why two `skip_reason` tests passed only under `--test-threads=1`.
+    //
+    // This test deliberately touches NO global state. An earlier draft tripped a
+    // real circuit here to dramatise the point and broke
+    // `circuit_breaker_trip_skips_the_module_at_the_dispatch_gate` — creating
+    // exactly the cross-test coupling this cycle removes. The wrapper's reading
+    // of the real circuit is that test's job; this one's is the seam.
+    let m = StubModule {
+        name: "test_skip_gate_injection",
+        cost: ModuleCost::Free,
+        passive: false,
+        high_value_only: false,
+        requires_geo_corroboration: false,
+    };
+    let opts = ScanOptions::default();
+    let circuit_reason = "circuit-open — rate-limited/quota/repeated failure (cooling down)";
+
+    // The injected verdict decides, in both directions, with the global never
+    // consulted and never written.
+    assert_eq!(
+        super::dispatch::module_skip_reason_with(&m, &pub_target(), &opts, false, 0, true)
+            .map(|(_, r)| r),
+        Some(circuit_reason),
+        "an open circuit must close the gate when it is passed in"
+    );
+    assert_ne!(
+        super::dispatch::module_skip_reason_with(&m, &pub_target(), &opts, false, 0, false)
+            .map(|(_, r)| r),
+        Some(circuit_reason),
+        "a closed circuit must not — the gate reads this ONLY through its argument"
+    );
+
+    // Vacuity guard: the module must otherwise pass the gate, or the assertions
+    // above would hold for a reason that has nothing to do with the circuit.
+    assert!(
+        super::dispatch::module_skip_reason_with(&m, &pub_target(), &opts, false, 0, false)
+            .is_none(),
+        "the stub must be dispatchable when no circuit is open"
     );
 }

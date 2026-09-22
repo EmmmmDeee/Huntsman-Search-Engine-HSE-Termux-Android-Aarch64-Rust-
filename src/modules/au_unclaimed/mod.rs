@@ -192,6 +192,7 @@ async fn process_qld(target: &Target, ctx: &ModuleContext, out: &mut ModuleResul
         full,
         surname,
         broadened,
+        target.kind,
         &ctx.scan_id,
     ));
     out.extend(suburbs_to_entities(&pc_localities, &ctx.scan_id));

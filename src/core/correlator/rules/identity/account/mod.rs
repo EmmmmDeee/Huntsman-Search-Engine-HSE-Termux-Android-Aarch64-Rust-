@@ -42,9 +42,10 @@ fn sorted_evidence_sources(
 /// same platform. `None` for an unparseable URL or one with no host. Shared by
 /// every rule in this family (AU-038, AU-055) that counts DISTINCT platforms a
 /// confirmed/owned URL belongs to. Deliberately not
-/// [`crate::util::circuit_breaker::host_of`], which does not strip `www.` and
-/// would count `www.x.com`/`x.com` as two different platforms — using it
-/// verbatim here would silently change AU-038/AU-055 output.
+/// [`crate::util::circuit_breaker::endpoint_of`], which neither strips `www.`
+/// nor omits the port — it would count `www.x.com`/`x.com` as two different
+/// platforms, and `x.com:443`/`x.com` likewise; using it verbatim here would
+/// silently change AU-038/AU-055 output.
 fn www_stripped_host(url_str: &str) -> Option<String> {
     url::Url::parse(url_str).ok().and_then(|u| {
         u.host_str()

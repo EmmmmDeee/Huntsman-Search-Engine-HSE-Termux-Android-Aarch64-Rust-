@@ -185,6 +185,7 @@ fn placeholder_entity_filters_artifacts_but_keeps_secrets() {
 
 #[test]
 fn username_derived_name_catches_doubled_and_slug_tokens_not_real_names() {
+    use placeholder::is_username_derived_name;
     // The exact previously-observed live case: a breach DB storing
     // `full_name = "{username} {username}"` when no real name is available.
     assert!(is_username_derived_name("rhino-ryno23 rhino-ryno23"));
@@ -198,6 +199,67 @@ fn username_derived_name_catches_doubled_and_slug_tokens_not_real_names() {
     assert!(!is_username_derived_name("Jordan Avery"));
     assert!(!is_username_derived_name("Mary Smith-Jones"));
     assert!(!is_username_derived_name("John Doe")); // caught by is_placeholder_person instead
+    // This predicate is a COMPONENT, not the gate: it is blind to the absence
+    // markers a SQL dump writes, which is precisely why it is not exported and
+    // why every call site calls `is_unusable_person_name` instead.
+    assert!(!is_username_derived_name("\\N Smith"));
+    assert!(!is_username_derived_name("Dana \\N"));
+}
+
+#[test]
+fn unusable_person_name_rejects_an_absence_marker_in_any_token() {
+    // A SQL dump nulls each column INDEPENDENTLY, so a name reaches an
+    // extractor half-real as readily as fully null. The doubled-token rule
+    // catches `"\N \N"` only incidentally (identical tokens) and a half-null
+    // pair not at all — per-token absence checking is what closes both.
+    assert!(is_unusable_person_name("\\N \\N"));
+    assert!(is_unusable_person_name("\\N Smith"));
+    assert!(is_unusable_person_name("Dana \\N"));
+    // `\N` is matched case-insensitively, which matters because the see_know
+    // associate path title-cases the composed name BEFORE gating it, turning
+    // `"\N"` into `"\n"`.
+    assert!(is_unusable_person_name("\\n Smith"));
+    // Redaction placeholders are the same class of value.
+    assert!(is_unusable_person_name("REDACTED Smith"));
+    assert!(is_unusable_person_name("Dana [NULL]"));
+    // The gate SUBSUMES the username component, so a call site needs one call.
+    assert!(is_unusable_person_name("rhino-ryno23 rhino-ryno23"));
+    assert!(is_unusable_person_name("rhino-ryno23"));
+
+    // ── Real people must survive, or the gate would destroy real evidence. ──
+    // The genuine surname "Null" is the load-bearing case: it is why the
+    // underlying sentinel test is an EXACT match on `\N` and not a fuzzy
+    // "looks like null" test.
+    assert!(!is_unusable_person_name("Anna Null"));
+    assert!(!is_unusable_person_name("Null"));
+    // The Thai province "Nan", a bare "none"/"unknown" surname-shaped token,
+    // and a hyphenated surname are all real values the primitives deliberately
+    // let through (the bracket requirement in `is_placeholder_secret`).
+    assert!(!is_unusable_person_name("Somchai Nan"));
+    assert!(!is_unusable_person_name("Mary Smith-Jones"));
+    assert!(!is_unusable_person_name("Kyle Diegmann"));
+    // A single `N` is not the sentinel — a middle initial must survive.
+    assert!(!is_unusable_person_name("John N Smith"));
+}
+
+#[test]
+fn absent_marker_is_the_one_authority_the_module_copies_replaced() {
+    // The three private copies this replaced (`breach_rich::is_absent_marker`,
+    // `oathnet_pro::breach::is_absent`, `osintcat::is_absent_marker`) were each
+    // exactly this disjunction; pin both branches so a future edit cannot
+    // narrow one of them unnoticed.
+    assert!(is_absent_marker("\\N"));
+    assert!(is_absent_marker("  \\N  "));
+    assert!(is_absent_marker("REDACTED"));
+    assert!(is_absent_marker("UPGRADE_TO_SEE_FULL"));
+    assert!(is_absent_marker("[NULL]"));
+    assert!(is_absent_marker("<empty>"));
+    // Unbracketed ambiguous tokens are real values, not markers.
+    assert!(!is_absent_marker("Null"));
+    assert!(!is_absent_marker("none"));
+    assert!(!is_absent_marker("Nan"));
+    assert!(!is_absent_marker("Diegmann"));
+    assert!(!is_absent_marker(""));
 }
 
 #[test]
@@ -601,4 +663,175 @@ mod confusable_tests {
             );
         }
     }
+}
+
+// ── REQ-VALIDATION-002: the double-`@` admission bypass ─────────────────────
+//
+// The engine's admission gate (`core::engine::dispatch`) runs exactly two
+// predicates over an Email entity, and they split the address on OPPOSITE `@`
+// occurrences. Nothing else on that path checks email syntax, and the ten
+// import paths (stealer, sql_dump, csv, oathnet_report, dossier, combined) use
+// `is_fragment_value` alone as their whole email check.
+
+/// Control — passes before the fix as well, and is the reason the fix belongs
+/// in the SYNTAX gate rather than in either split. Neither placeholder split
+/// can see this address for what it is.
+#[test]
+fn neither_placeholder_split_sees_a_double_at_address() {
+    const SPOOF: &str = "jordan@example.com@attacker-corp.net";
+    // `is_placeholder_entity` splits on the LAST `@`: local
+    // "jordan@example.com" matches no template, and "attacker-corp.net" is not
+    // a documentation domain. (`evil.tld` / `evil.invalid` would NOT have shown
+    // this: `.tld` and `.invalid` are themselves placeholder TLDs, so the gate
+    // catches those by luck rather than by seeing the malformed shape — checked
+    // rather than assumed.)
+    assert!(
+        !is_placeholder_entity(&EntityKind::Email, SPOOF),
+        "the last-`@` split cannot see the `jordan`/`example.com` placeholder"
+    );
+    // Each HALF is a placeholder on its own, which is what makes the pair of
+    // gates look adequate until the second `@` is present.
+    assert!(is_placeholder_entity(
+        &EntityKind::Email,
+        "jordan@example.com"
+    ));
+}
+
+/// A malformed address is rejected as malformed, rather than being adjudicated
+/// by whichever `@` a given gate happens to split on.
+#[test]
+fn a_double_at_address_is_rejected_as_malformed() {
+    assert!(
+        is_fragment_value(&EntityKind::Email, "jordan@example.com@attacker-corp.net"),
+        "an address with two `@` is not a deliverable mailbox and must never \
+         reach the graph"
+    );
+    // The mirrored ordering too: here the LAST-`@` split is the one that would
+    // have spotted the placeholder host, so neither split is 'the right one'.
+    assert!(is_fragment_value(
+        &EntityKind::Email,
+        "evil@attacker-corp.net@example.com"
+    ));
+}
+
+/// The structural lock. `is_fragment_value`'s Email arm used to hand-roll a
+/// SUBSET of `validate_email_syntax` — the subset that happens to omit the
+/// second-`@` guard — and that omission was the bypass. Pinning the two to
+/// agree exactly means re-inlining a weaker copy fails here rather than
+/// silently reopening it.
+#[test]
+fn email_syntax_is_what_closes_the_double_at_bypass() {
+    const VECTORS: &[&str] = &[
+        "jordan@example.com@attacker-corp.net",
+        "evil@attacker-corp.net@example.com",
+        "alice@example.com",
+        "alice.smith+tag@example.com",
+        "@gmail",
+        "matthew@",
+        "a@b",
+        "x@.com",
+        "notanemail",
+        "a..b@example.com",
+        ".alice@example.com",
+        "alice.@example.com",
+        "alice@example.com.",
+    ];
+    let mut disagreed = Vec::new();
+    for v in VECTORS {
+        let fragment = is_fragment_value(&EntityKind::Email, v);
+        let malformed = !validate_email_syntax(v).valid;
+        if fragment != malformed {
+            disagreed.push(format!(
+                "{v:?}: is_fragment_value={fragment}, !validate_email_syntax={malformed}"
+            ));
+        }
+    }
+    assert!(
+        disagreed.is_empty(),
+        "the admission gate must defer to the one syntactic authority \
+         ({} vector(s) disagree):\n  {}",
+        disagreed.len(),
+        disagreed.join("\n  ")
+    );
+}
+
+/// The shapes the delegation newly rejects, each a genuinely undeliverable
+/// address. Collected rather than asserted one at a time so a single failure
+/// cannot mask the rest.
+#[test]
+fn the_syntax_delegation_also_catches_what_the_hand_rolled_arm_missed() {
+    let overlong = format!("{}@example.com", "a".repeat(65));
+    let cases: Vec<(&str, String)> = vec![
+        ("two `@`", "jordan@example.com@attacker-corp.net".into()),
+        ("local part over 64 chars", overlong),
+        ("consecutive dots in local", "a..b@example.com".into()),
+        ("leading dot in local", ".alice@example.com".into()),
+        ("trailing dot in local", "alice.@example.com".into()),
+        ("trailing dot in domain", "alice@example.com.".into()),
+        ("consecutive dots in domain", "alice@ex..ample.com".into()),
+    ];
+    let missed: Vec<&str> = cases
+        .iter()
+        .filter(|(_, v)| !is_fragment_value(&EntityKind::Email, v))
+        .map(|(why, _)| *why)
+        .collect();
+    assert!(
+        missed.is_empty(),
+        "admitted as a valid email despite: {}",
+        missed.join("; ")
+    );
+}
+
+/// Control — the delegation is a tightening, not a change of policy: a real
+/// address is still admitted.
+#[test]
+fn a_well_formed_address_is_still_admitted_after_the_delegation() {
+    for good in [
+        "alice@example.org",
+        "alice.smith+tag@mail.example.co.uk",
+        "erik.diegmann@huntsman.example",
+    ] {
+        assert!(
+            !is_fragment_value(&EntityKind::Email, good),
+            "{good} is a deliverable address and must not be dropped"
+        );
+    }
+}
+
+// ── REQ-VALIDATION-001: homograph spoofing on the kinds it targets ──────────
+
+/// The per-label predicate exists because the flat one cannot be used on a
+/// host. Both halves are asserted here so the distinction is locked, not just
+/// described in a comment.
+#[test]
+fn a_host_is_judged_per_label_not_as_one_string() {
+    // Cyrillic `а` (U+0430) inside an otherwise-ASCII label — the attack.
+    for spoof in [
+        "\u{0430}pple.com",
+        "p\u{0430}ypal.com",
+        "mail.g\u{043E}ogle.com",
+    ] {
+        assert!(
+            host_label_is_confusable(spoof),
+            "{spoof} mixes scripts within one label"
+        );
+    }
+    // A whole Cyrillic label under an ASCII TLD is ordinary IDN usage. The FLAT
+    // check calls it a spoof — which is exactly why the gate needed a per-label
+    // predicate rather than the existing one.
+    let idn_under_ascii_tld = "\u{043C}\u{043E}\u{0441}\u{043A}\u{0432}\u{0430}.com";
+    assert!(
+        is_confusable_mixed_script(idn_under_ascii_tld),
+        "control: the flat check is fooled by the ASCII TLD"
+    );
+    assert!(
+        !host_label_is_confusable(idn_under_ascii_tld),
+        "a Cyrillic label under .com is a real internationalised domain, not a spoof"
+    );
+    // All-Cyrillic IDN: neither check flags it.
+    let all_cyrillic = "\u{043F}\u{0440}\u{0438}\u{043C}\u{0435}\u{0440}.\u{0440}\u{0444}";
+    assert!(!host_label_is_confusable(all_cyrillic));
+    assert!(!is_confusable_mixed_script(all_cyrillic));
+    // Plain ASCII is untouched.
+    assert!(!host_label_is_confusable("example.com"));
 }

@@ -177,6 +177,54 @@ pub fn is_private_ip(ip: &str) -> bool {
     ip.parse::<std::net::IpAddr>().is_ok_and(is_private_addr)
 }
 
+/// Like [`is_private_ip`], but also catches a private IP written in a form
+/// `std::net::IpAddr`'s strict parser rejects.
+///
+/// Two parsers, neither alone sufficient, so both run:
+///   - [`is_private_ip`] (`IpAddr`'s strict parser) accepts BARE IPv6
+///     (`::1`, `fe80::1`) but rejects a bracketed literal (`[::1]`) and
+///     every non-canonical IPv4 encoding.
+///   - [`url::Host::parse`] — the exact WHATWG host-parsing algorithm the
+///     URL/HTTP-fetch layer applies — canonicalizes shorthand-dotted
+///     (`127.1` → `127.0.0.1`), pure-decimal (`2130706433`), hex
+///     (`0x7f000001`), and octal (`017700000001` / `0177.0.0.1`) IPv4 to
+///     the address they dial, but requires brackets for IPv6 and so misses
+///     every bare IPv6 form.
+///
+/// Trying `is_private_ip` first and falling back to the canonicalizing
+/// parser covers both: a bare IPv6 literal is caught by the first, a
+/// numeric-IPv4-encoding bypass by the second.
+///
+/// `is_private_ip`'s narrower, strict-only contract is safe for its other
+/// callers because each receives a value some other layer already
+/// canonicalized (a full `Url::parse` before reading `host_str()`, e.g.
+/// [`url_host_is_private`] below) or strictly validated
+/// (`Target::validate`'s `IpAddress` branch requires a strict `IpAddr`
+/// parse to construct the target at all). A `Domain`-kind target's value
+/// has neither guarantee, and not every numeric encoding reaches this gate
+/// the same way: `Target::validate`'s Domain branch requires a dot before
+/// its alnum/`.`/`-`/`_` charset check, so only the dotted forms among
+/// these (shorthand-dotted `127.1`, dotted octal `0177.0.0.1`) can arrive
+/// as a directly user-supplied Domain seed. The dot-free forms (pure-decimal
+/// `2130706433`, hex `0x7f000001`, single-token octal `017700000001`)
+/// cannot pass `Target::validate` as a seed, but remain reachable through
+/// `core::engine`'s pivot-expansion path (`Target::new(tk,
+/// entity.value.clone())`, e.g. in the round-expansion loop), which
+/// constructs the next round's targets directly from a discovered entity's
+/// value with no validation step at all — so the gate must canonicalize
+/// unconditionally rather than assume every numeric form arrived
+/// pre-validated.
+pub fn is_private_ip_host(ip: &str) -> bool {
+    if is_private_ip(ip) {
+        return true;
+    }
+    match url::Host::parse(ip) {
+        Ok(url::Host::Ipv4(v4)) => is_private_addr(std::net::IpAddr::V4(v4)),
+        Ok(url::Host::Ipv6(v6)) => is_private_addr(std::net::IpAddr::V6(v6)),
+        _ => false,
+    }
+}
+
 /// True only for a parseable, **publicly routable** IP literal: the single
 /// gate every breach/stealer extractor uses to decide whether an `ip` /
 /// `lastip` field is a geolocatable lead. A hostname, a malformed value, or any
@@ -244,6 +292,54 @@ pub fn url_host_is_private(url: &str) -> bool {
     // the `IpAddr` parse inside `is_private_ip` fires.
     let bare = unbracket_host(host);
     is_private_ip(bare) || is_local_domain(bare)
+}
+
+/// SSRF egress guard for an **email address**: `true` when the address's
+/// domain part is a private/reserved IP literal or an IANA local domain.
+///
+/// The Email-kind counterpart to [`url_host_is_private`] and to the engine
+/// gate's `Domain` arm, and the fix for REQ-SSRF-002. The universal preflight
+/// gate long assumed "there's no concept of a 'private email'" and let every
+/// `TargetKind::Email` target through untouched — but several modules derive a
+/// bare hostname from the address's domain part and dial it directly with no
+/// guard of their own (`employer_pivot` fetches `https://{domain}/contact` and
+/// seven sibling paths; `fediverse` fetches
+/// `https://{domain}/.well-known/webfinger?…`), so an Email target was a
+/// second, fully-open route to exactly the internal addresses the `Domain` arm
+/// already refuses. The client's DNS-level SSRF resolver cannot close it
+/// either: an IP-literal host is dialled with no lookup, so it never reaches
+/// the resolver.
+///
+/// Splits on the LAST `@` so an address whose local part itself contains one
+/// (quoted forms, or a local part that is merely IP-shaped —
+/// `127.0.0.1@example.com`) cannot shift the host boundary; this mirrors the
+/// `rsplit('@')` userinfo strip in [`crate::util::url_util::host_only`] and
+/// `employer_pivot`'s own `domain_for_target`.
+///
+/// RFC 5321 address literals are unwrapped before judging (`user@[192.168.1.1]`,
+/// `user@[::1]`, and the tagged `user@[IPv6:::1]` form), and the check uses the
+/// canonicalizing [`is_private_ip_host`] rather than the strict
+/// [`is_private_ip`]: an Email target's domain part has no more
+/// canonicalization guarantee than a `Domain` target's value, so the same
+/// numeric-encoding bypass (`user@2130706433`, `user@0x7f000001`) applies —
+/// see [`is_private_ip_host`]'s own doc for why the pivot-expansion path makes
+/// even the dot-free forms reachable.
+pub fn email_host_is_private(email: &str) -> bool {
+    let Some((_, domain)) = email.trim().rsplit_once('@') else {
+        return false;
+    };
+    let domain = domain.trim();
+    // RFC 5321 address literal: `[192.168.1.1]` / `[::1]` / `[IPv6:::1]`.
+    // The `IPv6:` tag match is case-insensitive because an Email target's
+    // value reaches here already lowercased by the entity normaliser, so a
+    // case-sensitive `strip_prefix` silently missed the tagged form and let
+    // `user@[IPv6:::1]` through the gate (caught by this fix's own test).
+    let bare = unbracket_host(domain);
+    let bare = match bare.get(..5) {
+        Some(tag) if tag.eq_ignore_ascii_case("IPv6:") => &bare[5..],
+        _ => bare,
+    };
+    is_private_ip_host(bare) || is_local_domain(bare)
 }
 
 /// True if the string is one of the placeholder usernames that breach

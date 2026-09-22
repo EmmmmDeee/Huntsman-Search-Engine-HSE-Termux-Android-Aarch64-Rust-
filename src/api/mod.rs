@@ -19,52 +19,17 @@ pub mod routes;
 pub mod scan_export;
 pub mod scan_handlers;
 pub mod settings_handlers;
+pub mod tiles;
 pub mod update_handlers;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use parking_lot::Mutex;
-
 use crate::{
-    core::cancel::CancelHandle, core::engine::ScanEngine, core::event::EventBus,
-    core::live::LiveScanner, core::port::StoragePort,
+    core::engine::ScanEngine, core::event::EventBus, core::live::LiveScanner,
+    core::port::StoragePort,
 };
 
-/// Registry of in-flight scan cancellations. Keyed by scan_id; the
-/// handle in the map IS the same handle plumbed through that scan's
-/// `ModuleContext`, so calling `.cancel()` on it stops the live scan
-/// at the engine's next cancellation check. Entries are inserted by
-/// `scan_create` / `scan_rerun` and removed when the spawned scan
-/// task returns. (Issue #23.)
-pub type CancelRegistry = Arc<Mutex<HashMap<String, CancelHandle>>>;
-
-/// RAII guard that removes a `CancelRegistry` entry on Drop. Held by
-/// the spawned scan task; the entry is removed whether the future
-/// returns normally OR panics, so a runaway module that panics can't
-/// leak a stale cancel handle into the singleton map. Without this
-/// guard a panicking task would leave an `Arc<CancelHandle>` in the
-/// map indefinitely (and `POST /scans/{id}/cancel` would 200 instead
-/// of 404).
-pub struct CancelRegistryGuard {
-    registry: CancelRegistry,
-    scan_id: String,
-}
-
-impl CancelRegistryGuard {
-    /// Insert `handle` into `registry` keyed by `scan_id` and return a
-    /// guard that removes the entry when dropped.
-    pub fn install(registry: CancelRegistry, scan_id: String, handle: CancelHandle) -> Self {
-        registry.lock().insert(scan_id.clone(), handle);
-        Self { registry, scan_id }
-    }
-}
-
-impl Drop for CancelRegistryGuard {
-    fn drop(&mut self) {
-        self.registry.lock().remove(&self.scan_id);
-    }
-}
+pub use crate::core::cancel::{CancelRegistry, CancelRegistryGuard, new_cancel_registry};
 
 /// Live update status — written by the background auto-update task, read by the API
 /// handler. Shared via `Arc<std::sync::Mutex<UpdateInfo>>` so the background
@@ -233,6 +198,89 @@ pub struct AppState {
     /// `download_and_import(..).await` returns (see `cells_handlers`), held only
     /// for the synchronous phase write, and dropped — never across the await.
     pub cells_import: Arc<std::sync::Mutex<CellsImportPhase>>,
+    /// Where the Radar view's map tiles come from and are cached
+    /// (`/api/v1/tiles/…`, see [`tiles`]). Built once by `hse serve` from the
+    /// env var, the data directory and the guarded HTTP client; a test hands
+    /// the handler a stand-in upstream and a scratch directory instead.
+    pub tiles: Arc<tiles::TileSource>,
+}
+
+/// The shared in-memory `AppState` every handler's router test builds on.
+///
+/// Lifted out of `scan_handlers::tests` when `live_handlers` needed the same
+/// thing: two hand-maintained copies of a 25-line state constructor would drift
+/// in exactly the way the checks they exercise exist to prevent.
+#[cfg(test)]
+pub(crate) fn test_state() -> Arc<AppState> {
+    test_state_with_modules(Vec::new())
+}
+
+/// [`test_state`] with an engine that actually runs `modules` — for tests that
+/// need a scan genuinely in flight (see `core::module::test_support::Gated`).
+#[cfg(test)]
+pub(crate) fn test_state_with_modules(
+    modules: Vec<Arc<dyn crate::core::module::Module>>,
+) -> Arc<AppState> {
+    test_state_with_modules_and_tiles(modules, test_tile_source())
+}
+
+/// The tile source every handler test gets unless it brings its own: an
+/// upstream that refuses instantly on a closed loopback port, so no test ever
+/// reaches a real tile server, and a cache under the test home.
+#[cfg(test)]
+pub(crate) fn test_tile_source() -> tiles::TileSource {
+    tiles::TileSource::new(
+        "http://127.0.0.1:9/{z}/{x}/{y}.png",
+        crate::util::paths::subdir("tiles"),
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .expect("test client"),
+    )
+}
+
+/// [`test_state`] with a caller-supplied tile source — for the tile proxy's
+/// own tests, which run a stand-in upstream.
+#[cfg(test)]
+pub(crate) fn test_state_with_tiles(tiles: tiles::TileSource) -> Arc<AppState> {
+    test_state_with_modules_and_tiles(Vec::new(), tiles)
+}
+
+#[cfg(test)]
+fn test_state_with_modules_and_tiles(
+    modules: Vec<Arc<dyn crate::core::module::Module>>,
+    tiles: tiles::TileSource,
+) -> Arc<AppState> {
+    let store: Arc<dyn crate::core::StoragePort> =
+        Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"));
+    let (bus, _rx) = tokio::sync::broadcast::channel(16);
+    let engine = Arc::new(crate::core::engine::ScanEngine::new(
+        modules,
+        Arc::clone(&store),
+        bus.clone(),
+    ));
+    // ONE in-flight registry, shared by `spawn_scan` and the live loop.
+    let cancellations = new_cancel_registry();
+    let live = crate::core::live::LiveScanner::new(
+        Arc::clone(&engine),
+        bus.clone(),
+        reqwest::Client::new(),
+        Default::default(),
+        Arc::clone(&cancellations),
+    );
+    Arc::new(AppState {
+        store,
+        engine,
+        bus,
+        live,
+        http: reqwest::Client::new(),
+        allow_key_write: false,
+        cancellations,
+        scan_semaphore: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SCANS)),
+        update_info: Arc::new(std::sync::Mutex::new(UpdateInfo::default())),
+        cells_import: Arc::new(std::sync::Mutex::new(CellsImportPhase::default())),
+        tiles: Arc::new(tiles),
+    })
 }
 
 #[cfg(test)]

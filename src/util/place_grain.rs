@@ -248,6 +248,47 @@ pub fn is_bare_country(s: &str) -> bool {
     COUNTRY_NAMES.contains(&norm.as_str())
 }
 
+/// Qualifiers that turn a CITY name into the region around or above it.
+///
+/// Each is unambiguous in the position given: no city is named "X State", and
+/// "Upstate X" names the part of a state that is explicitly NOT the city.
+const CITY_NEGATING_SUFFIXES: &[&str] = &[" state", " province", " prefecture"];
+const CITY_NEGATING_PREFIXES: &[&str] = &["upstate ", "greater ", "metropolitan "];
+
+/// True when `s` names a REGION around or above a city rather than the city —
+/// `"New York State"`, `"Upstate New York"`, `"Greater London"`.
+///
+/// This is [`is_bare_country`]'s defect one grain down. A city table matches a
+/// tabulated name as a consecutive run of whole tokens, so `"New York State"`
+/// tokenises to `["new","york","state"]`, contains the run `new york`, and earns
+/// **the city centroid** — a precise-looking fix on Manhattan for a string whose
+/// whole point is that it means the rest of the state. Same for
+/// `"Upstate New York"`, which names the region explicitly excluding the city.
+///
+/// **Pure**, offline, case-insensitive.
+///
+/// Deliberately narrow, because the cost of over-reach is losing a real
+/// location: `"New York, NY"` and `"New York"` are the city and must still
+/// resolve. The qualifier must be a WHOLE leading or trailing token — a suburb
+/// legitimately called `"Statenville"` or `"Upstate Road"` is untouched
+/// (REQ-SOCIALLOC-002).
+#[must_use]
+pub fn negates_city_grain(s: &str) -> bool {
+    let norm = s.trim().to_ascii_lowercase();
+    // A comma means a finer component follows ("New York, NY"), which is an
+    // address naming the city — never a bare region label.
+    if norm.contains(',') {
+        return false;
+    }
+    let norm = norm.split_whitespace().collect::<Vec<_>>().join(" ");
+    CITY_NEGATING_SUFFIXES
+        .iter()
+        .any(|q| norm.ends_with(q) && norm.len() > q.len())
+        || CITY_NEGATING_PREFIXES
+            .iter()
+            .any(|q| norm.starts_with(q) && norm.len() > q.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,5 +313,69 @@ mod tests {
         assert!(!is_bare_country("Northern Territory"));
         assert!(!is_bare_country(""));
         assert!(!is_bare_country("55 Cavenagh Street"));
+    }
+}
+
+#[cfg(test)]
+mod city_grain_tests {
+    use super::negates_city_grain;
+
+    /// REQ-SOCIALLOC-002: a region label must not earn the city's centroid.
+    #[test]
+    fn a_qualifier_that_means_the_region_is_recognised() {
+        for s in [
+            "New York State",
+            "new york state",
+            "  New   York   State  ",
+            "Upstate New York",
+            "upstate new york",
+            "Greater London",
+            "Metropolitan Sydney",
+            "Washington State",
+        ] {
+            assert!(negates_city_grain(s), "{s} names a region, not the city");
+        }
+    }
+
+    /// THE OVER-CORRECTION CONTROL. Losing a real city fix is the expensive
+    /// failure here — this guard exists to drop a WRONG coordinate, not a right
+    /// one, and every string below is the city itself.
+    #[test]
+    fn the_city_itself_is_never_negated() {
+        for s in [
+            "New York",
+            "New York, NY",
+            "new york, ny",
+            "New York, New York",
+            "Sydney",
+            "Sydney, NSW 2000",
+            "London",
+            "12 Smith St, Perth, Australia",
+            // A comma means an address naming the city, even with a qualifier
+            // word elsewhere in it.
+            "Upstate Road, New York, NY",
+        ] {
+            assert!(
+                !negates_city_grain(s),
+                "{s} is the city and must still resolve"
+            );
+        }
+    }
+
+    /// The qualifier must be a WHOLE leading or trailing token — a place whose
+    /// name merely starts or ends with those letters is not a region label.
+    #[test]
+    fn a_qualifier_must_be_a_whole_token_not_a_substring() {
+        for s in ["Statenville", "Upstateville", "Realestate", "Greaterville"] {
+            assert!(
+                !negates_city_grain(s),
+                "{s} is a place name, not a qualified region"
+            );
+        }
+        // Vacuity guard: the bare qualifier alone is not a region label either
+        // (there is no city to negate), and must not panic or over-match.
+        assert!(!negates_city_grain("state"));
+        assert!(!negates_city_grain("upstate"));
+        assert!(!negates_city_grain(""));
     }
 }

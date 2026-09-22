@@ -11,12 +11,19 @@ use tracing::info;
 use super::super::handlers::{bad_request, internal_error, not_found, ok_list, spawn_scan};
 use crate::api::AppState;
 use crate::core::entity::scan_id;
-use crate::core::scan::{Scan, ScanRequest, Target, TargetKind};
+use crate::core::scan::{Scan, Target, TargetKind};
 
 pub async fn scan_create(
     State(s): State<Arc<AppState>>,
-    Json(req): Json<ScanRequest>,
+    // Decoded as raw JSON, not `Json<ScanRequest>`, so an `options` key that
+    // `ScanOptions` does not define can be REJECTED rather than silently
+    // dropped — see `scan_request_from_json`.
+    Json(raw): Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    let req = match super::scan_request_from_json(raw) {
+        Ok(req) => req,
+        Err(msg) => return bad_request(msg),
+    };
     let (scan, target) = match super::build_scan_from_request(req) {
         Ok(pair) => pair,
         Err(msg) => return bad_request(msg),
@@ -424,6 +431,9 @@ pub async fn scan_cancel(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    // One-shot scans and live iterations alike: the registry holds whichever
+    // handle the engine is polling for this scan id. For a live iteration that
+    // is the ITERATION's handle, so the session continues to its next tick.
     let handle = s.cancellations.lock().get(&id).cloned();
     match handle {
         Some(h) => {
@@ -452,7 +462,13 @@ pub async fn scan_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    ok_list("scans", scans)
+    // Derived `interrupted` flag per row — see `handlers::is_interrupted`.
+    let in_flight = super::super::handlers::in_flight_scan_ids(&s.cancellations);
+    let rows: Vec<serde_json::Value> = scans
+        .iter()
+        .map(|sc| super::super::handlers::scan_json(sc, &in_flight))
+        .collect();
+    ok_list("scans", rows)
 }
 
 pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> impl IntoResponse {
@@ -463,14 +479,14 @@ pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
         Err(resp) => return resp,
     };
     match scan {
-        Some(scan) => (
-            StatusCode::OK,
-            Json(serde_json::to_value(&scan).unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "failed to serialize scan to JSON value");
-                json!({})
-            })),
-        )
-            .into_response(),
+        Some(scan) => {
+            let in_flight = super::super::handlers::in_flight_scan_ids(&s.cancellations);
+            (
+                StatusCode::OK,
+                Json(super::super::handlers::scan_json(&scan, &in_flight)),
+            )
+                .into_response()
+        }
         None => not_found(),
     }
 }
@@ -480,9 +496,10 @@ pub async fn scan_delete(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     // Refuse to delete a scan that's still in-flight: `s.cancellations` holds
-    // an entry for exactly as long as the scan's spawned task is alive
-    // (installed at `spawn_scan`, removed by `CancelRegistryGuard`'s Drop when
-    // the task returns — success, error, or panic). Without this check,
+    // an entry for exactly as long as the engine is running the scan — a
+    // one-shot scan's from `spawn_scan`, a live iteration's from the live loop
+    // — removed by `CancelRegistryGuard`'s Drop when the engine returns
+    // (success, error, or panic). Without this check,
     // deleting a running scan raced the engine's own mid-scan checkpoint
     // writes and finalisation: `delete_scan`'s cascade would remove all rows
     // for the id, but the still-running engine task (nothing here stops it)
@@ -763,7 +780,9 @@ pub async fn scan_import(
 
 pub async fn scan_batch(
     State(s): State<Arc<AppState>>,
-    Json(requests): Json<Vec<ScanRequest>>,
+    // Raw JSON per entry for the same reason as `scan_create`: a batch entry's
+    // misspelled option must be a per-entry error, not a silent default.
+    Json(requests): Json<Vec<serde_json::Value>>,
 ) -> impl IntoResponse {
     if requests.is_empty() {
         return bad_request("empty batch");
@@ -773,7 +792,14 @@ pub async fn scan_batch(
     }
 
     let mut scan_ids = Vec::with_capacity(requests.len());
-    for req in requests {
+    for raw in requests {
+        let req = match super::scan_request_from_json(raw) {
+            Ok(req) => req,
+            Err(msg) => {
+                scan_ids.push(json!({ "error": msg }));
+                continue;
+            }
+        };
         let (scan, target) = match super::build_scan_from_request(req) {
             Ok(pair) => pair,
             Err(msg) => {
@@ -973,11 +999,23 @@ pub async fn radar_history(
 /// the counter-surveillance view a single per-scan correlation can never give —
 /// it needs the whole sweep history. All analysis is the pure, offline
 /// [`crate::core::radar_track`] primitive.
+///
+/// Each sweep's observations come from the sighting table
+/// (`rf_devices_for_scan`: the level and the place, which the entity graph
+/// dissolves), with the AU-117 bonded flag looked up on the same sweep's
+/// entities, where it lives. A sweep with no sighting rows — one from before
+/// the sighting writer existed (REQ-RADAR-001) — is read from its entities
+/// as it always was and counted in `legacy_sweeps`, so the review says how
+/// much of its window is level-blind rather than hiding it; that path retires
+/// with the last such sweep in the window.
 pub async fn radar_recurring(
     State(s): State<Arc<AppState>>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    use crate::core::radar_track::{Sweep, SweepObservation, recurring_devices};
+    use crate::core::radar_track::{
+        Sweep, SweepObservation, observation_from_device, observation_from_entity,
+        recurring_devices,
+    };
 
     let limit: usize = params
         .get("limit")
@@ -986,44 +1024,315 @@ pub async fn radar_recurring(
         .clamp(1, 1000);
     let min_sweeps: usize = params.get("min").and_then(|v| v.parse().ok()).unwrap_or(2);
 
-    // Off-reactor: one `radar_history` plus up to `limit` (≤1000) sequential
-    // `entities_for_scan` reads under the global SQLite mutex, then the pure
-    // offline analysis — all on a blocking thread. Walking a deep sweep history
-    // inline would stall the 2-worker async reactor and starve SSE keep-alives /
-    // `/health`, so this follows the off-reactor discipline every sibling here
-    // already uses.
+    // Off-reactor: one `radar_history` plus up to `limit` (≤1000) sweeps' worth
+    // of sequential reads under the global SQLite mutex, then the pure offline
+    // analysis — all on a blocking thread, as every sibling here does.
     let store = Arc::clone(&s.store);
-    let devices = match super::offload_store(move || -> crate::core::error::Result<_> {
+    let read = super::offload_store(move || -> crate::core::error::Result<_> {
         let scans = store.radar_history(limit)?;
         let mut sweeps: Vec<Sweep> = Vec::with_capacity(scans.len());
+        let mut legacy_sweeps = 0usize;
         for scan in &scans {
             // A single unreadable sweep must not abort the whole review.
             let Ok(entities) = store.entities_for_scan(&scan.id) else {
                 continue;
             };
-            // This review folds in Wi-Fi APs as well as Bluetooth; the mapping
-            // itself is shared with the CLI's live radar (see
-            // `radar_track::observation_from_entity`) so the two cannot drift in
-            // how they read a name/bond state off an entity.
-            let devices: Vec<SweepObservation> = entities
-                .iter()
-                .filter(|e| e.has_tag("bluetooth") || e.has_tag(crate::core::tags::WIFI_AP))
-                .filter_map(crate::core::radar_track::observation_from_entity)
-                .collect();
+            let Ok(rows) = store.rf_devices_for_scan(&scan.id) else {
+                continue;
+            };
+            let devices: Vec<SweepObservation> = if rows.is_empty() {
+                legacy_sweeps += 1;
+                entities
+                    .iter()
+                    .filter(|e| e.has_tag("bluetooth") || e.has_tag(crate::core::tags::WIFI_AP))
+                    .filter_map(observation_from_entity)
+                    .collect()
+            } else {
+                let bonded: std::collections::HashSet<String> = entities
+                    .iter()
+                    .filter(|e| e.has_tag("bond:bonded"))
+                    .map(|e| e.value.trim().to_lowercase())
+                    .collect();
+                rows.iter()
+                    .filter(|d| d.radio.has_hardware_address())
+                    .map(|d| observation_from_device(d, bonded.contains(&d.network_id)))
+                    .collect()
+            };
             sweeps.push(Sweep {
                 scan_id: scan.id.clone(),
                 ts: scan.started_at,
                 devices,
             });
         }
-        Ok(recurring_devices(&sweeps, min_sweeps))
+        let devices = recurring_devices(&sweeps, min_sweeps);
+        Ok((devices, sweeps.len(), legacy_sweeps))
     })
-    .await
-    {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    ok_list("devices", devices)
+    .await;
+    match read {
+        Ok((devices, sweeps, legacy_sweeps)) => {
+            let count = devices.len();
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "devices": devices,
+                    "count": count,
+                    "sweeps": sweeps,
+                    "legacy_sweeps": legacy_sweeps,
+                    "min_sweeps": min_sweeps.max(2),
+                })),
+            )
+                .into_response()
+        }
+        Err(resp) => resp,
+    }
+}
+
+/// `GET /api/v1/radar/disruptions?limit=<n>` — what the sweep history says
+/// about the device's own Wi-Fi link (REQ-RESILIENCE-002): forced
+/// disconnections (off the network while the access point is still heard),
+/// a deauthentication pattern, an evil twin, outages on a schedule, and the
+/// outage timeline, over the newest `limit` radar sweeps. Each sweep's link
+/// record comes from `wifi_links`; the access points it heard from the
+/// sighting table. A sweep that recorded no link (from before the record
+/// existed, or one that did not run `device_sensors`) is counted in
+/// `unrecorded_sweeps` and left out — the review is not padded with guesses.
+/// All analysis is the pure [`crate::core::link::review`]; every finding
+/// carries the same `advice` the CLI prints.
+pub async fn radar_disruptions(
+    State(s): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let limit: usize = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+        .clamp(1, 1000);
+    let store = Arc::clone(&s.store);
+    // Off-reactor: the history plus two reads per sweep under the SQLite
+    // mutex, then the pure review — the one assembly the CLI uses too.
+    let read = super::offload_store(move || {
+        let (sweeps, unrecorded) = crate::app::signal::link_sweeps_from_history(&*store, limit)?;
+        Ok((crate::core::link::review(&sweeps), unrecorded))
+    })
+    .await;
+    match read {
+        Ok((report, unrecorded)) => (
+            StatusCode::OK,
+            Json(crate::app::signal::disruption_report_json(
+                &report, unrecorded,
+            )),
+        )
+            .into_response(),
+        Err(resp) => resp,
+    }
+}
+
+/// `GET /api/v1/radar/devices/{network_id}/track?limit=<n>` — one device's
+/// sightings across EVERY sweep and import, oldest first, capped to the newest
+/// `limit` (default 500, at most 5000): the movement record the per-sweep
+/// track (`/radar/signals/{network_id}`) cannot give, and the trail the map
+/// draws. The id is canonicalised the way the store keys it. A device never
+/// heard is an empty 200 — the question was answerable.
+pub async fn radar_device_track(
+    State(s): State<Arc<AppState>>,
+    Path(network_id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let limit: usize = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(500)
+        .clamp(1, 5000);
+    let canonical = crate::core::rf::canonical_network_id(&network_id);
+    let wanted = canonical.clone();
+    let store = Arc::clone(&s.store);
+    match super::offload_store(move || store.rf_device_track(&wanted, limit)).await {
+        Ok(points) => {
+            let count = points.len();
+            let sweeps = points
+                .iter()
+                .map(|p| p.scan_id.as_str())
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "network_id": canonical,
+                    "points": points,
+                    "count": count,
+                    "sweeps": sweeps,
+                    "limit": limit,
+                })),
+            )
+                .into_response()
+        }
+        Err(resp) => resp,
+    }
+}
+
+/// Why a `/radar/signals*` read has no scan to answer about.
+enum SignalRefusal {
+    /// An explicit `scan_id` that names no scan.
+    NoSuchScan,
+    /// No `scan_id` given and no sighting recorded anywhere yet, so there is
+    /// nothing to default to.
+    NothingRecorded,
+}
+
+impl SignalRefusal {
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            Self::NoSuchScan => not_found(),
+            // A refusal with the CLI's own hint rather than an empty 200: an
+            // empty list would read as "nothing around you" when the truth is
+            // "nothing recorded".
+            Self::NothingRecorded => (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error": "no RF sightings recorded yet",
+                    "detail": "run a radar sweep (POST /api/v1/radar) or import a wardriving capture (hse import <file.kml>) first",
+                })),
+            )
+                .into_response(),
+        }
+    }
+}
+
+/// Which scan a `/radar/signals*` read is about: the explicit `scan_id` when
+/// given (it must exist), else the scan of the most recent sighting — "the
+/// survey you just ran" — exactly as `hse signal` resolves it, so the CLI and
+/// the web reader default the same way.
+fn resolve_signal_scan(
+    store: &dyn crate::core::StoragePort,
+    requested: Option<String>,
+) -> crate::core::error::Result<std::result::Result<String, SignalRefusal>> {
+    Ok(match requested {
+        Some(id) if store.get_scan(&id)?.is_some() => Ok(id),
+        Some(_) => Err(SignalRefusal::NoSuchScan),
+        None => store
+            .rf_latest_scan_id()?
+            .ok_or(SignalRefusal::NothingRecorded),
+    })
+}
+
+/// What the off-reactor read for `radar_signals` brings back.
+type SignalsRead = std::result::Result<
+    (
+        String,
+        crate::core::rf::RfSummary,
+        Vec<crate::core::rf::RfDeviceRow>,
+    ),
+    SignalRefusal,
+>;
+
+/// `GET /api/v1/radar/signals?scan_id=<id>&trackable=1&limit=<n>` — the
+/// sighting table's web reader: one sweep's summary and its device roll-up,
+/// strongest first. These are the rows `hse signal` prints, through the same
+/// presenters (`app::signal::{summary_json, device_json}`), so the CLI and the
+/// web cannot disagree about a field. `scan_id` defaults to the scan of the
+/// most recent sighting, as the CLI does; `trackable=1` keeps only
+/// fixed-hardware addresses, through the port's one `rf_trackable_devices`
+/// definition (AU-122); `limit` caps the rows returned while `total` says how
+/// many there were, so a cap never reads as completeness.
+pub async fn radar_signals(
+    State(s): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let requested = params.get("scan_id").cloned();
+    let trackable = params
+        .get("trackable")
+        .is_some_and(|v| v == "1" || v == "true");
+    let limit: usize = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(500)
+        .clamp(1, 5000);
+    let store = Arc::clone(&s.store);
+    let read = super::offload_store(move || -> crate::core::error::Result<SignalsRead> {
+        let sid = match resolve_signal_scan(&*store, requested)? {
+            Ok(sid) => sid,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let summary = store.rf_summary(&sid)?;
+        let devices = if trackable {
+            store.rf_trackable_devices(&sid)?
+        } else {
+            store.rf_devices_for_scan(&sid)?
+        };
+        Ok(Ok((sid, summary, devices)))
+    })
+    .await;
+    match read {
+        Ok(Ok((sid, summary, devices))) => {
+            let total = devices.len();
+            let rows: Vec<serde_json::Value> = devices
+                .iter()
+                .take(limit)
+                .map(crate::app::signal::device_json)
+                .collect();
+            let count = rows.len();
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "scan_id": sid,
+                    "summary": crate::app::signal::summary_json(&sid, &summary),
+                    "devices": rows,
+                    "count": count,
+                    "total": total,
+                    "trackable_only": trackable,
+                })),
+            )
+                .into_response()
+        }
+        Ok(Err(refusal)) => refusal.into_response(),
+        Err(resp) => resp,
+    }
+}
+
+/// What the off-reactor read for `radar_signal_track` brings back.
+type TrackRead = std::result::Result<(String, Vec<crate::core::rf::RfSighting>), SignalRefusal>;
+
+/// `GET /api/v1/radar/signals/{network_id}?scan_id=<id>` — one device's every
+/// sighting in a sweep, oldest first: the movement track `hse signal --track`
+/// prints, as the same `RfSighting` records. The id is canonicalised the way
+/// the store keys it, so an operator's `AA:BB:…` finds `aa:bb:…`. A device
+/// never heard in that sweep is an empty track (200), because the question
+/// was answerable; only an unknown sweep, or no sighting anywhere yet, refuses.
+pub async fn radar_signal_track(
+    State(s): State<Arc<AppState>>,
+    Path(network_id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let requested = params.get("scan_id").cloned();
+    let canonical = crate::core::rf::canonical_network_id(&network_id);
+    let wanted = canonical.clone();
+    let store = Arc::clone(&s.store);
+    let read = super::offload_store(move || -> crate::core::error::Result<TrackRead> {
+        let sid = match resolve_signal_scan(&*store, requested)? {
+            Ok(sid) => sid,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let rows = store.rf_sightings_for_device(&sid, &wanted)?;
+        Ok(Ok((sid, rows)))
+    })
+    .await;
+    match read {
+        Ok(Ok((sid, rows))) => {
+            let count = rows.len();
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "scan_id": sid,
+                    "network_id": canonical,
+                    "sightings": rows,
+                    "count": count,
+                })),
+            )
+                .into_response()
+        }
+        Ok(Err(refusal)) => refusal.into_response(),
+        Err(resp) => resp,
+    }
 }
 
 /// `GET /api/v1/plan?value=<seed>` — forward-only scan-plan PREVIEW.

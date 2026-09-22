@@ -58,11 +58,17 @@ const MAX_PORTS: usize = 32;
 /// Cap hosting IPs emitted for a domain dork.
 const MAX_IPS: usize = 32;
 
-#[derive(Deserialize, Default)]
+/// ZoomEye search response. The `matches` field marks a real successful API
+/// response; an auth/quota-failure or error 2xx body has no `matches` field
+/// and must fail closed (REQ-ZOOMEYE-001).
+#[derive(Debug, Deserialize, Default)]
 struct ZoomResp {
-    /// ZoomEye returns `matches` on success; an auth/quota error returns a
-    /// `{"error": …}` body with no matches, which deserialises to empty here.
-    #[serde(default)]
+    /// Presence of this field indicates a genuine API response shape. Real
+    /// responses always include it (possibly empty); error envelopes never do.
+    /// With `#[serde(default)]` it would silently decode a 2xx error body as
+    /// `matches: vec![]` — an empty hit list, never an error. Omitting the
+    /// attribute makes deserialization fail on `{"error": ...}` shapes,
+    /// which are then caught and surfaced as a real ModuleError.
     matches: Vec<Value>,
 }
 
@@ -171,7 +177,12 @@ impl Module for ZoomEye {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let initial_key = match ctx.key_opt(KEY_ENV) {
             Some(v) => v,
-            None => return Ok(ModuleResult::new()),
+            // PROVIDER FAILURE != ZERO EVIDENCE: returning Ok(empty) here made
+            // dispatch record ModuleDone { found: 0 }, which coverage reads as a
+            // CleanNegative -- "queried, holds nothing on this subject" -- for a
+            // provider that was never asked. Error::MissingKey is the contract
+            // (REQ-KEYSKIP-001).
+            None => return Err(crate::core::error::Error::MissingKey(KEY_ENV.into())),
         };
 
         let value = target.value.trim();
@@ -212,6 +223,19 @@ fn extract_entities(body: &ZoomResp, target: &Target, value: &str, scan_id: &str
     }
 
     let mut result = ModuleResult::new();
+    // `.take(MAX_MATCHES)` below is a CLIENT-side cap: ZoomEye is told nothing
+    // about it, so a host with a large service surface is silently cut to the
+    // first 50 matches. `ZoomResp` models only `matches` — deliberately, so an
+    // error envelope fails closed (REQ-ZOOMEYE-001) — and the provider's own
+    // hit count is not among them. Guessing a wire name for it would risk a
+    // field that silently never populates, so the FULL PAGE is the signal and
+    // the total is reported as unknown, which is what is actually known here
+    // (REQ-ZOOMEYE-002).
+    result.mark_truncated_if_capped(
+        body.matches.len(),
+        MAX_MATCHES,
+        &format!("the client-side cap of {MAX_MATCHES} matches"),
+    );
     let mut seen: HashSet<String> = HashSet::new();
     // Distinct exposed ports/services, collected across matches to tag the
     // seed IP once with its full service surface.

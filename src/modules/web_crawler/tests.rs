@@ -311,11 +311,20 @@ use super::*;
 
     /// A `CrawlState` with everything empty — for exercising one behaviour at a
     /// time without restating every field.
+    ///
+    /// `pages_fetched` is **1**, not 0: since REQ-WEBCRAWLER-001 a zero count
+    /// means the crawl retrieved nothing and the site attestations are
+    /// withheld, so a 0 here would make every caller below vacuous. It is also
+    /// the truthful fixture — each of these tests exercises what a crawl emits
+    /// from page content (MACs, image leads, link counts), which by
+    /// construction is only reachable once at least one page was read.
+    /// `crawl_attestations_need_a_page_that_was_actually_read` is the test that
+    /// owns the zero case.
     fn empty_state() -> CrawlState {
         CrawlState {
             visited: HashSet::new(),
             queue: VecDeque::new(),
-            pages_fetched: 0,
+            pages_fetched: 1,
             disallow_rules: Vec::new(),
             result: ModuleResult::new(),
             external_domains: HashSet::new(),
@@ -512,6 +521,22 @@ use super::*;
             attrs.get("image_leads_capped").map(String::as_str),
             Some(IMAGE_LEADS_CAP.to_string().as_str())
         );
+
+        // REQ-WEBCRAWLER-003: the same fact at the PROVIDER level, where
+        // `core::coverage` can read it. The attribute above annotates an entity
+        // in the dossier and had no reader outside this file — it was one of
+        // the five private truncation vocabularies REQ-COVERAGE-001 found.
+        // Asserted here, at the real emission path, because a call-site
+        // mutation has survived helper-level locks four times in this codebase.
+        let reason = state
+            .result
+            .truncation
+            .as_deref()
+            .expect("a capped crawl must declare itself truncated");
+        assert!(
+            reason.contains(&format!("{IMAGE_LEADS_CAP} of {}", IMAGE_LEADS_CAP * 2)),
+            "the crawler knows BOTH counts, so both must be stated: {reason}"
+        );
     }
 
     #[test]
@@ -547,6 +572,13 @@ use super::*;
         assert_eq!(
             attrs.get("image_leads_found").map(String::as_str),
             Some("2")
+        );
+        // THE OVER-CORRECTION CONTROL at the provider level: a crawl whose
+        // images all fit is COMPLETE and must carry no caveat.
+        assert!(
+            state.result.truncation.is_none(),
+            "nothing was cut short — the provider answer is complete: {:?}",
+            state.result.truncation
         );
         assert!(
             !attrs.contains_key("image_leads_capped"),
@@ -589,4 +621,102 @@ use super::*;
         // The entity must be the shape `exif_geo` actually accepts, or the lead
         // is a dead node.
         assert!(crate::util::exif::looks_like_image_url(&lead.value));
+    }
+
+    /// REQ-WEBCRAWLER-001. Both site attestations — the seed `Url` and the site
+    /// `Domain` — are stamped `VERY_HIGH_PLUS` (0.90) and tagged `crawled`,
+    /// which asserts the page/site was fetched and examined.
+    ///
+    /// The crawl loop `continue`s past every failure mode (non-2xx, a
+    /// non-HTML content type, a body read that returns `None`), so a domain
+    /// that is unreachable, WAF-walled, or serves no HTML arrives here with
+    /// `pages_fetched == 0`. Both entities were emitted anyway, carrying
+    /// evidence that reads "Crawled example.com: 0 pages, 0 internal links,
+    /// 0 external links" — a 0.90 attestation whose own text says nothing was
+    /// read.
+    ///
+    /// Both seed shapes are swept and every surviving attestation is
+    /// collected, so a half-fix (one block gated, the other not) is named
+    /// rather than masked by whichever assertion runs first.
+    #[test]
+    fn crawl_attestations_need_a_page_that_was_actually_read() {
+        let mut survivors: Vec<(bool, String, f64, Vec<String>)> = Vec::new();
+        for is_url_target in [true, false] {
+            let mut state = empty_state();
+            // The failed crawl: every fetch attempt fell through the loop's
+            // `continue` arms, so nothing was ever read.
+            state.pages_fetched = 0;
+            build_entities(
+                "example.com",
+                "example.com",
+                "scan-1",
+                MAX_DEPTH,
+                SeedShape {
+                    is_url_target,
+                    shared_profile_host: false,
+                },
+                "https://example.com",
+                &mut state,
+            );
+            for e in &state.result.entities {
+                if e.has_tag(tags::CRAWLED) {
+                    survivors.push((
+                        is_url_target,
+                        e.value.clone(),
+                        e.confidence,
+                        e.tags.clone(),
+                    ));
+                }
+            }
+        }
+        assert!(
+            survivors.is_empty(),
+            "a crawl that read zero pages still attested `crawled`: {survivors:?}"
+        );
+    }
+
+    /// The control, and what makes the gate safe to assert: one page read is
+    /// enough for both attestations to stand. Passes on the baseline and on
+    /// the fix, so it proves the gate keys on the page count and has not
+    /// simply disabled the emitters.
+    #[test]
+    fn a_single_read_page_is_enough_to_attest_the_crawl() {
+        let mut state = empty_state();
+        state.pages_fetched = 1;
+        build_entities(
+            "example.com",
+            "example.com",
+            "scan-1",
+            MAX_DEPTH,
+            SeedShape {
+                is_url_target: true,
+                shared_profile_host: false,
+            },
+            "https://example.com",
+            &mut state,
+        );
+        let attested: Vec<(&str, &str)> = state
+            .result
+            .entities
+            .iter()
+            .filter(|e| e.has_tag(tags::CRAWLED))
+            .map(|e| {
+                (
+                    e.value.as_str(),
+                    if e.kind == EntityKind::Url {
+                        "url"
+                    } else {
+                        "domain"
+                    },
+                )
+            })
+            .collect();
+        assert!(
+            attested.iter().any(|(_, k)| *k == "url"),
+            "the seed Url attestation must survive a real crawl: {attested:?}"
+        );
+        assert!(
+            attested.iter().any(|(_, k)| *k == "domain"),
+            "the site Domain attestation must survive a real crawl: {attested:?}"
+        );
     }

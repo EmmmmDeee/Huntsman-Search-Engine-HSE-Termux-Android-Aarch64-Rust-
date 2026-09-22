@@ -486,6 +486,37 @@ fn au101_does_not_count_a_name_intel_permutation_as_a_breach_facet() {
 }
 
 #[test]
+fn au093_does_not_assemble_a_locality_from_a_name_colliding_enrichment_pass() {
+    // The sibling test above holds only INCIDENTALLY: `name_intel` is excluded
+    // because its `source_family` is "identity_registry", not because anything
+    // checked that it is an enrichment pass. `breach_timezone` is the case where
+    // that accident fails — it is equally a listed `ENRICHMENT_ONLY_SOURCE`
+    // (no network call; it DERIVES a region by clustering timestamps to guess a
+    // UTC offset), but its NAME contains "breach", and `source_family`'s needles
+    // are substring-matched, so it classified as "breach" and `is_breach_source`
+    // accepted it.
+    //
+    // AU-093 is the rule `is_breach_source`'s own doc comment cites: its
+    // allow-list exists precisely so a DERIVED locality (`geocode`, `photon`)
+    // is never assembled and announced as "assembled from N breach record
+    // source(s)". A name collision defeated that for this pass, so the
+    // enrichment's own guessed locality could be assembled into the subject's
+    // residential address. It must produce nothing.
+    let mut p = Entity::new(EntityKind::Person, "Cindy Haynes", 0.9, "s");
+    p.add_evidence(
+        Evidence::new("breach_timezone", "inferred UTC offset")
+            .with_attr("suburb", "Maleny")
+            .with_attr("state", "QLD")
+            .with_attr("postcode", "4552"),
+    );
+    let r = super::rules::rule_au_093_au_address_from_breach(&RuleContext::new(&[p]), "s", 0);
+    assert!(
+        r.is_empty(),
+        "a derived enrichment pass must never be assembled as a breach-record locality: {r:?}"
+    );
+}
+
+#[test]
 fn au101_thin_footprint_and_low_confidence_do_not_fire() {
     // Three facets is below the threshold — the single-facet rules' job.
     let person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
@@ -617,6 +648,55 @@ fn au105_flags_plaintext_password_reused_across_breaches() {
         !r[0].description.contains("mnimp316895007"),
         "the secret value must never be echoed"
     );
+}
+
+#[test]
+fn au105_does_not_call_a_withheld_access_placeholder_a_reused_credential() {
+    // AU-105 already refuses two kinds of false reuse link — a mis-stored email
+    // (`!s.contains('@')`) and a common-password digest collision
+    // (`is_common_collision`) — but had no guard for the provider's own capture
+    // sentinel. A withheld-access placeholder is by construction IDENTICAL in
+    // every row the provider withheld, so it is the strongest possible false
+    // "same secret" signal: two distinct breach corpora each carrying
+    // `[fail]` grouped as one reused secret and fired
+    // `Severity::High` — "the subject reuses credentials, so one cracked secret
+    // opens every account" — from data that is not a secret at all.
+    //
+    // Both passes were exposed. The plaintext floor is `len() >= 4`, so even the
+    // short `[fail]` (6) qualified; the hash floor is 8, which the longer
+    // `UPGRADE_TO_SEE_xxxx` (19) clears.
+    for (key, sentinel) in [
+        ("password", "[fail]"),
+        ("hashed_password", "UPGRADE_TO_SEE_xxxx"),
+        ("password_hash", "[NOT_SAVED]"),
+    ] {
+        let mut email = Entity::new(EntityKind::Email, "j@x.com", 0.9, "s");
+        for db in ["linkedin.com", "adobe.com"] {
+            email.add_evidence(
+                Evidence::new("see_know", "breach")
+                    .with_attr("source_db", db)
+                    .with_attr(key, sentinel),
+            );
+        }
+        let r = super::rules::rule_au_105_credential_reuse(&RuleContext::new(&[email]), "s", 0);
+        assert!(
+            r.is_empty(),
+            "`{sentinel}` in `{key}` is a provider capture sentinel, not a secret — the same \
+             placeholder across two corpora is not credential reuse: {r:?}"
+        );
+    }
+    // Non-regression: a genuine reused plaintext still fires at High.
+    let mut email = Entity::new(EntityKind::Email, "j@x.com", 0.9, "s");
+    for db in ["linkedin.com", "adobe.com"] {
+        email.add_evidence(
+            Evidence::new("see_know", "breach")
+                .with_attr("source_db", db)
+                .with_attr("password", "reused-pw-9931"),
+        );
+    }
+    let r = super::rules::rule_au_105_credential_reuse(&RuleContext::new(&[email]), "s", 0);
+    assert_eq!(r.len(), 1, "a real reused secret must still fire");
+    assert_eq!(r[0].severity, Severity::High);
 }
 
 #[test]

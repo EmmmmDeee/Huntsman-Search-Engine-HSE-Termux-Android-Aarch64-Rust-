@@ -13,9 +13,9 @@ fn accepts_expected_kinds() {
 
 #[test]
 fn pbs_v1_skips_not_found_status() {
-    let resp = PbsV1Response {
-        success: true,
-        data: Some(PbsV1Data {
+    let resp = Envelope::from_parts(
+        true,
+        Some(PbsV1Data {
             status: Some("not_found".to_string()),
             error: None,
             meta: Some(PbsV1Meta {
@@ -32,12 +32,13 @@ fn pbs_v1_skips_not_found_status() {
             blocks: None,
             rate: None,
         }),
-    };
+    );
     let target = Target::new(TargetKind::Email, "x@y.com");
     let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
     let mut seen = std::collections::HashSet::new();
-    emit_pbs_v1(resp, &mut entity, &mut result, "x@y.com", "s", &mut seen);
+    emit_pbs_v1(
+        payload("pbs_v1", resp).expect("fixture is a real answer"), &mut entity, &mut result, "x@y.com", "s", &mut seen);
     assert!(!entity.has_tag("breach"));
     assert!(entity.evidence.is_empty());
 }
@@ -46,9 +47,9 @@ fn pbs_v1_skips_not_found_status() {
 fn pbs_v1_found_with_blocks_tags_breach_and_pivots_names() {
     // A real hit: positive status "found" (NOT "ok"), breach blocks, and
     // corroborating names. Must tag breach and emit a Person pivot.
-    let resp = PbsV1Response {
-        success: true,
-        data: Some(PbsV1Data {
+    let resp = Envelope::from_parts(
+        true,
+        Some(PbsV1Data {
             status: Some("found".to_string()),
             error: None,
             meta: Some(PbsV1Meta {
@@ -65,12 +66,13 @@ fn pbs_v1_found_with_blocks_tags_breach_and_pivots_names() {
             }]),
             rate: None,
         }),
-    };
+    );
     let target = Target::new(TargetKind::Email, "x@y.com");
     let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
     let mut seen = std::collections::HashSet::new();
-    emit_pbs_v1(resp, &mut entity, &mut result, "x@y.com", "s", &mut seen);
+    emit_pbs_v1(
+        payload("pbs_v1", resp).expect("fixture is a real answer"), &mut entity, &mut result, "x@y.com", "s", &mut seen);
     assert!(entity.has_tag("breach"));
     assert!(entity.has_tag("niamonx:breach:exampleleak"));
     // The breach-block evidence carries the canonical `breach_date` key AU-019's
@@ -112,12 +114,12 @@ fn pbs_v1_found_with_blocks_tags_breach_and_pivots_names() {
 fn pbs_v1_suppresses_username_derived_name_pivots() {
     // A breach `meta.names` entry that is a doubled/slug username
     // ("rhino-ryno23 rhino-ryno23") is not a real person and must never be minted
-    // as a Person pivot — the shared `is_username_derived_name` guard (also used
+    // as a Person pivot — the shared `is_unusable_person_name` gate (also used
     // by see_know/oathnet_pro) suppresses it. A genuine hit is still present
     // (blocks_total > 0), so the guard is what drops the pivot, not an empty hit.
-    let resp = PbsV1Response {
-        success: true,
-        data: Some(PbsV1Data {
+    let resp = Envelope::from_parts(
+        true,
+        Some(PbsV1Data {
             status: Some("found".to_string()),
             error: None,
             meta: Some(PbsV1Meta {
@@ -131,12 +133,13 @@ fn pbs_v1_suppresses_username_derived_name_pivots() {
             blocks: None,
             rate: None,
         }),
-    };
+    );
     let target = Target::new(TargetKind::Email, "x@y.com");
     let mut entity = target.to_entity(0.80, "s");
     let mut result = ModuleResult::new();
     let mut seen = std::collections::HashSet::new();
-    emit_pbs_v1(resp, &mut entity, &mut result, "x@y.com", "s", &mut seen);
+    emit_pbs_v1(
+        payload("pbs_v1", resp).expect("fixture is a real answer"), &mut entity, &mut result, "x@y.com", "s", &mut seen);
     assert!(
         !result.entities.iter().any(|e| e.kind == EntityKind::Person),
         "a username-derived meta.names entry must not mint a Person pivot"
@@ -145,9 +148,9 @@ fn pbs_v1_suppresses_username_derived_name_pivots() {
 
 #[test]
 fn ulp_emits_stealer_tag_and_pivots() {
-    let resp = UlpResponse {
-        success: true,
-        data: Some(UlpData {
+    let resp = Envelope::from_parts(
+        true,
+        Some(UlpData {
             error: None,
             stats: Some(UlpStats {
                 total: 1,
@@ -160,12 +163,13 @@ fn ulp_emits_stealer_tag_and_pivots() {
                 login: Some("other@example.com".to_string()),
             }]),
         }),
-    };
+    );
     let target = Target::new(TargetKind::Email, "victim@example.com");
     let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
     let mut seen = std::collections::HashSet::new();
-    emit_ulp(resp, &mut entity, &mut result, "victim@example.com", "s", &mut seen);
+    emit_ulp(
+        payload("ulp_search", resp).expect("fixture is a real answer"), &mut entity, &mut result, "victim@example.com", "s", &mut seen);
     assert!(entity.has_tag("stealer-log"));
     assert!(entity.has_tag("infostealer"));
     // login differs from query → Email pivot emitted, plus the login-URL Url pivot.
@@ -191,9 +195,9 @@ fn ulp_promotes_the_login_url_to_a_first_class_url_pivot() {
     // own pivot entity, unlike the sibling oathnet_pro stealer extractor which mints
     // exactly this field as EntityKind::Url. It must now surface as a real Url pivot
     // so downstream modules (wayback/cert/dns) can chase the credential-capture page.
-    let resp = UlpResponse {
-        success: true,
-        data: Some(UlpData {
+    let resp = Envelope::from_parts(
+        true,
+        Some(UlpData {
             error: None,
             stats: Some(UlpStats {
                 total: 1,
@@ -206,14 +210,15 @@ fn ulp_promotes_the_login_url_to_a_first_class_url_pivot() {
                 login: Some("victim@example.com".to_string()),
             }]),
         }),
-    };
+    );
     // Login equals the query, so no Email/Username pivot fires — isolating the
     // Url pivot as the only entity this record can produce.
     let target = Target::new(TargetKind::Email, "victim@example.com");
     let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
     let mut seen = std::collections::HashSet::new();
-    emit_ulp(resp, &mut entity, &mut result, "victim@example.com", "s", &mut seen);
+    emit_ulp(
+        payload("ulp_search", resp).expect("fixture is a real answer"), &mut entity, &mut result, "victim@example.com", "s", &mut seen);
     let url_pivot = result
         .entities
         .iter()
@@ -243,9 +248,9 @@ fn ulp_recovers_the_login_on_username_and_ip_scans() {
         (TargetKind::Username, "jsmith"),
         (TargetKind::IpAddress, "203.0.113.10"),
     ] {
-        let resp = UlpResponse {
-            success: true,
-            data: Some(UlpData {
+        let resp = Envelope::from_parts(
+            true,
+            Some(UlpData {
                 error: None,
                 stats: Some(UlpStats {
                     total: 1,
@@ -258,12 +263,13 @@ fn ulp_recovers_the_login_on_username_and_ip_scans() {
                     login: Some("jsmith@gmail.com".to_string()),
                 }]),
             }),
-        };
+        );
         let target = Target::new(kind, query);
         let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
         let mut result = ModuleResult::new();
         let mut seen = std::collections::HashSet::new();
-        emit_ulp(resp, &mut entity, &mut result, query, "s", &mut seen);
+        emit_ulp(
+        payload("ulp_search", resp).expect("fixture is a real answer"), &mut entity, &mut result, query, "s", &mut seen);
         // The differing login is now promoted to a first-class Email pivot…
         assert!(
             result
@@ -309,9 +315,9 @@ fn attack_techniques_include_employee_names_for_the_pbs_v1_name_pivot() {
 
 #[test]
 fn pbs_v2_found_with_records_tags_breach() {
-    let resp = PbsV2Response {
-        success: true,
-        data: Some(PbsV2Data {
+    let resp = Envelope::from_parts(
+        true,
+        Some(PbsV2Data {
             niamonx_success: true,
             error: None,
             stats: Some(PbsV2Stats {
@@ -331,12 +337,13 @@ fn pbs_v2_found_with_records_tags_breach() {
                 fields: None,
             }]),
         }),
-    };
+    );
     let target = Target::new(TargetKind::Email, "victim@example.com");
     let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
     let mut seen = std::collections::HashSet::new();
-    emit_pbs_v2(resp, &mut entity, &mut result, "victim@example.com", "s", &mut seen);
+    emit_pbs_v2(
+        payload("pbs_v2", resp).expect("fixture is a real answer"), &mut entity, &mut result, "victim@example.com", "s", &mut seen);
     assert!(entity.has_tag("breach"), "breach tag must be set on hit");
     assert!(entity.has_tag("niamonx:breach:leaksite"));
     // The alternate email pivot is emitted.
@@ -351,9 +358,9 @@ fn a_formatted_and_a_bare_spelling_of_the_same_phone_dedup_to_one_entity() {
     // the same number with different formatting each earned their own `seen`
     // slot and minted a duplicate Phone entity — even though both collapse
     // onto the same uid once constructed.
-    let resp = PbsV2Response {
-        success: true,
-        data: Some(PbsV2Data {
+    let resp = Envelope::from_parts(
+        true,
+        Some(PbsV2Data {
             niamonx_success: true,
             error: None,
             stats: Some(PbsV2Stats {
@@ -386,12 +393,13 @@ fn a_formatted_and_a_bare_spelling_of_the_same_phone_dedup_to_one_entity() {
                 },
             ]),
         }),
-    };
+    );
     let target = Target::new(TargetKind::Email, "victim@example.com");
     let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
     let mut seen = std::collections::HashSet::new();
-    emit_pbs_v2(resp, &mut entity, &mut result, "victim@example.com", "s", &mut seen);
+    emit_pbs_v2(
+        payload("pbs_v2", resp).expect("fixture is a real answer"), &mut entity, &mut result, "victim@example.com", "s", &mut seen);
     let phones: Vec<&Entity> = result
         .entities
         .iter()
@@ -412,9 +420,9 @@ fn a_sigil_prefixed_and_a_bare_spelling_of_the_same_pbs_v2_username_dedup_to_one
     // the same handle with/without the sigil each earned their own `seen`
     // slot and minted a duplicate Username entity — even though both collapse
     // onto the same uid once constructed.
-    let resp = PbsV2Response {
-        success: true,
-        data: Some(PbsV2Data {
+    let resp = Envelope::from_parts(
+        true,
+        Some(PbsV2Data {
             niamonx_success: true,
             error: None,
             stats: Some(PbsV2Stats {
@@ -447,12 +455,13 @@ fn a_sigil_prefixed_and_a_bare_spelling_of_the_same_pbs_v2_username_dedup_to_one
                 },
             ]),
         }),
-    };
+    );
     let target = Target::new(TargetKind::Email, "victim@example.com");
     let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
     let mut seen = std::collections::HashSet::new();
-    emit_pbs_v2(resp, &mut entity, &mut result, "victim@example.com", "s", &mut seen);
+    emit_pbs_v2(
+        payload("pbs_v2", resp).expect("fixture is a real answer"), &mut entity, &mut result, "victim@example.com", "s", &mut seen);
     let unames: Vec<&Entity> = result
         .entities
         .iter()
@@ -472,9 +481,9 @@ fn a_quote_wrapped_and_a_clean_spelling_of_the_same_ulp_login_dedup_to_one_entit
     // Username arm does. A leading-quote fixture is used, not a leading `@`
     // one: `login.contains('@')` decides Email vs Username kind, and `@` would
     // flip this fixture to the Email branch instead of exercising Username.
-    let resp = UlpResponse {
-        success: true,
-        data: Some(UlpData {
+    let resp = Envelope::from_parts(
+        true,
+        Some(UlpData {
             error: None,
             stats: Some(UlpStats {
                 total: 2,
@@ -494,12 +503,13 @@ fn a_quote_wrapped_and_a_clean_spelling_of_the_same_ulp_login_dedup_to_one_entit
                 },
             ]),
         }),
-    };
+    );
     let target = Target::new(TargetKind::Email, "victim@example.com");
     let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
     let mut seen = std::collections::HashSet::new();
-    emit_ulp(resp, &mut entity, &mut result, "victim@example.com", "s", &mut seen);
+    emit_ulp(
+        payload("ulp_search", resp).expect("fixture is a real answer"), &mut entity, &mut result, "victim@example.com", "s", &mut seen);
     let unames: Vec<&Entity> = result
         .entities
         .iter()
@@ -514,9 +524,9 @@ fn a_quote_wrapped_and_a_clean_spelling_of_the_same_ulp_login_dedup_to_one_entit
 
 #[test]
 fn pbs_v2_zero_found_is_quiet() {
-    let resp = PbsV2Response {
-        success: true,
-        data: Some(PbsV2Data {
+    let resp = Envelope::from_parts(
+        true,
+        Some(PbsV2Data {
             niamonx_success: true,
             error: None,
             stats: Some(PbsV2Stats {
@@ -526,12 +536,13 @@ fn pbs_v2_zero_found_is_quiet() {
             }),
             records: None,
         }),
-    };
+    );
     let target = Target::new(TargetKind::Email, "clean@example.com");
     let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
     let mut seen = std::collections::HashSet::new();
-    emit_pbs_v2(resp, &mut entity, &mut result, "clean@example.com", "s", &mut seen);
+    emit_pbs_v2(
+        payload("pbs_v2", resp).expect("fixture is a real answer"), &mut entity, &mut result, "clean@example.com", "s", &mut seen);
     assert!(!entity.has_tag("breach"));
     assert!(result.entities.is_empty());
 }
@@ -542,9 +553,9 @@ fn a_shared_seen_set_dedups_the_same_email_restated_across_pbs_v1_and_pbs_v2() {
     // underlying NiamonX provider, and commonly restate the same
     // corroborating email. Without a dedup guard spanning both calls, this
     // minted two separate Email pivots for one restated fact instead of one.
-    let v1 = PbsV1Response {
-        success: true,
-        data: Some(PbsV1Data {
+    let v1 = Envelope::from_parts(
+        true,
+        Some(PbsV1Data {
             status: Some("found".to_string()),
             error: None,
             meta: Some(PbsV1Meta {
@@ -558,10 +569,10 @@ fn a_shared_seen_set_dedups_the_same_email_restated_across_pbs_v1_and_pbs_v2() {
             blocks: None,
             rate: None,
         }),
-    };
-    let v2 = PbsV2Response {
-        success: true,
-        data: Some(PbsV2Data {
+    );
+    let v2 = Envelope::from_parts(
+        true,
+        Some(PbsV2Data {
             niamonx_success: true,
             error: None,
             stats: Some(PbsV2Stats {
@@ -582,13 +593,15 @@ fn a_shared_seen_set_dedups_the_same_email_restated_across_pbs_v1_and_pbs_v2() {
                 fields: None,
             }]),
         }),
-    };
+    );
     let target = Target::new(TargetKind::Email, "victim@example.com");
     let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
     let mut seen = std::collections::HashSet::new();
-    emit_pbs_v1(v1, &mut entity, &mut result, "victim@example.com", "s", &mut seen);
-    emit_pbs_v2(v2, &mut entity, &mut result, "victim@example.com", "s", &mut seen);
+    emit_pbs_v1(
+        payload("pbs_v1", v1).expect("fixture is a real answer"), &mut entity, &mut result, "victim@example.com", "s", &mut seen);
+    emit_pbs_v2(
+        payload("pbs_v2", v2).expect("fixture is a real answer"), &mut entity, &mut result, "victim@example.com", "s", &mut seen);
     let email_count = result
         .entities
         .iter()
@@ -608,4 +621,125 @@ fn produces_includes_the_seed_kinds_for_every_accepted_target_kind() {
     let m = NiamonX;
     assert!(m.produces().contains(&EntityKind::Domain));
     assert!(m.produces().contains(&EntityKind::IpAddress));
+}
+
+// ── REQ-NIAMONX-001: a failed call is not an empty answer ───────────────────
+//
+// The over-correction controls for these are the miss tests ABOVE, and they
+// need no new code: every fixture in this file now reaches its emitter through
+// `payload(...).expect("fixture is a real answer")`, so if this change had
+// turned a genuine no-results reply into an error,
+// `pbs_v1_skips_not_found_status` (success:true + status "not_found"),
+// `ulp_*` (stats.total == 0) and the `niamonx_success: false` v2 cases would
+// panic on that `expect` instead of quietly passing. "Fail closed" is only a
+// fix while an honest miss still succeeds.
+
+/// LOCK. `success: false` is the provider saying the CALL failed. It must reach
+/// the caller as an error so `process`'s existing machinery can see it — the
+/// `hard_failure` path that `ModuleResult::or_hard_failure` reports, and the
+/// key cascade that rotates a burned key when all three endpoints fail. Before
+/// this, each emitter opened with `if !resp.success { return; }` and returned
+/// `()`, so the failure could not be reported even in principle: the module
+/// answered "no findings" for a call the provider had already said did not
+/// work.
+#[test]
+fn a_success_false_body_is_an_error_not_an_empty_answer() {
+    for endpoint in ["pbs_v1", "pbs_v2", "ulp_search"] {
+        let err = payload(
+            endpoint,
+            Envelope::from_parts(false, Some(())),
+        )
+            .expect_err("success:false must not read as an answer");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(endpoint) && msg.contains("success:false"),
+            "the error must name the endpoint and the flag so a wrong firing is \
+             diagnosable from one log line: {msg}"
+        );
+    }
+}
+
+/// LOCK. `success: true` with no `data` object is malformed, not empty. It hit
+/// the emitters' second silent return (`let Some(data) = resp.data else
+/// { return }`) and produced the same "no findings" as a real miss.
+#[test]
+fn a_body_with_no_data_object_is_an_error_not_an_empty_answer() {
+    let err = payload(
+        "pbs_v1",
+        Envelope::<()>::from_parts(true, None),
+    )
+        .expect_err("success:true with no data is malformed");
+    assert!(
+        err.to_string().contains("no `data` object"),
+        "{}",
+        err
+    );
+}
+
+/// CONTROL for the two locks above, at the seam itself: a real answer passes
+/// through untouched. Without this, `payload` could satisfy both locks by
+/// erroring unconditionally.
+#[test]
+fn a_real_answer_passes_through_the_seam() {
+    assert_eq!(
+        payload(
+            "pbs_v1",
+            Envelope::from_parts(true, Some(42)),
+        ).expect("a real answer is not an error"),
+        42
+    );
+}
+
+/// `meta.names` comes from the same dumped-export family as the see_know /
+/// oathnet_pro name slots, so it carries the same SQL-NULL sentinel. The
+/// doubled-token guard catches `"\\N \\N"` only; a half-null pair clears it and
+/// is minted as a Person pivot at confidence::HIGH.
+#[test]
+fn pbs_v1_suppresses_absence_marker_name_pivots() {
+    let names = vec![
+        "\\N Smith".to_string(),
+        "Dana \\N".to_string(),
+        "Anna Null".to_string(),
+    ];
+    let resp = Envelope::from_parts(
+        true,
+        Some(PbsV1Data {
+            status: Some("found".to_string()),
+            error: None,
+            meta: Some(PbsV1Meta {
+                blocks_total: 1,
+                emails: None,
+                names: Some(names),
+                first_seen: None,
+                last_seen: None,
+            }),
+            risk: None,
+            blocks: None,
+            rate: None,
+        }),
+    );
+    let target = Target::new(TargetKind::Email, "x@y.com");
+    let mut entity = target.to_entity(0.80, "s");
+    let mut result = ModuleResult::new();
+    let mut seen = std::collections::HashSet::new();
+    emit_pbs_v1(
+        payload("pbs_v1", resp).expect("fixture is a real answer"),
+        &mut entity,
+        &mut result,
+        "x@y.com",
+        "s",
+        &mut seen,
+    );
+    let minted: Vec<&str> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person)
+        .map(|e| e.value.as_str())
+        .collect();
+    // The genuine name is the positive control: it must survive, proving the
+    // rejections below are the guard and not an empty hit.
+    assert_eq!(
+        minted, vec!["Anna Null"],
+        "only the genuine name may mint a Person pivot; got {minted:?}"
+    );
 }

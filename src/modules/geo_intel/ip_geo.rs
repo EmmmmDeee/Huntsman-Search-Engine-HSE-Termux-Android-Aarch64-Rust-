@@ -89,14 +89,20 @@ pub(super) async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<M
     }
     let untrusted = geo_untrusted.is_some();
 
+    // Early exit if cancelled.
+    if ctx.cancel.is_cancelled() {
+        return Ok(result);
+    }
+
     // Source 1: ipapi.co (free, HTTPS, 1000/day). Yields a Coordinates entity
     // plus an optional Asn entity — only the former is subject to the
-    // cross-source coordinate dedup below.
-    if !ctx.cancel.is_cancelled()
-        && let Ok(data) =
-            fetch_json::<IpApiCoResp>(&ctx.http, SRC, &format!("https://ipapi.co/{ip}/json/")).await
-    {
-        for e in build_ipapico_entity(&data, ip, untrusted, &ctx.scan_id) {
+    // cross-source coordinate dedup below. Track success/failure independently
+    // so we can fail closed if BOTH providers fail (REQ-GEOINTEL-001).
+    let ipapico_result =
+        fetch_json::<IpApiCoResp>(&ctx.http, SRC, &format!("https://ipapi.co/{ip}/json/")).await;
+
+    if let Ok(data) = &ipapico_result {
+        for e in build_ipapico_entity(data, ip, untrusted, &ctx.scan_id) {
             if e.kind != EntityKind::Coordinates || seen_coords.insert(e.value.clone()) {
                 result.push(e);
             }
@@ -104,17 +110,27 @@ pub(super) async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<M
     }
 
     // Source 2: freeipapi.com (free, HTTPS, no limit documented)
-    if !ctx.cancel.is_cancelled()
-        && let Ok(data) = fetch_json::<FreeIpApiResp>(
-            &ctx.http,
-            SRC,
-            &format!("https://freeipapi.com/api/json/{ip}"),
-        )
-        .await
-        && let Some(e) = build_freeipapi_entity(&data, ip, untrusted, &ctx.scan_id)
+    let freeipapi_result = fetch_json::<FreeIpApiResp>(
+        &ctx.http,
+        SRC,
+        &format!("https://freeipapi.com/api/json/{ip}"),
+    )
+    .await;
+
+    if let Ok(data) = &freeipapi_result
+        && let Some(e) = build_freeipapi_entity(data, ip, untrusted, &ctx.scan_id)
         && seen_coords.insert(e.value.clone())
     {
         result.push(e);
+    }
+
+    // If we got at least one successful fetch, return its results (even if
+    // empty). If BOTH failed, return the first error to surface it (fail
+    // closed). This prevents a total outage of ipapi.co + freeipapi.com from
+    // silently reading as "no IP geo available" (REQ-GEOINTEL-001).
+    if ipapico_result.is_err() && freeipapi_result.is_err() {
+        // Both providers failed — surface the first error rather than silent empty.
+        ipapico_result?;
     }
 
     Ok(result)

@@ -82,6 +82,11 @@
 //! | POST   | `/api/v1/radar/live`                     | `radar_live`                   |
 //! | GET    | `/api/v1/radar/history`                  | `radar_history`                |
 //! | GET    | `/api/v1/radar/recurring`                | `radar_recurring`              |
+//! | GET    | `/api/v1/radar/signals`                  | `radar_signals`                |
+//! | GET    | `/api/v1/radar/signals/{network_id}`     | `radar_signal_track`           |
+//! | GET    | `/api/v1/radar/devices/{network_id}/track` | `radar_device_track`         |
+//! | GET    | `/api/v1/radar/disruptions`              | `radar_disruptions`            |
+//! | GET    | `/api/v1/tiles/{z}/{x}/{y}`              | `tiles::tile` (`.png`)         |
 //! | POST   | `/api/v1/live`                           | `live_create` (v0.5+)          |
 //! | GET    | `/api/v1/live`                           | `live_list`                    |
 //! | GET    | `/api/v1/live/{id}`                      | `live_get`                     |
@@ -353,6 +358,16 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         include_bytes!("../../web/js/views/live.js"),
     ),
     (
+        "js/views/radar.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/radar.js"),
+    ),
+    (
+        "js/radar_map.js",
+        "application/javascript",
+        include_bytes!("../../web/js/radar_map.js"),
+    ),
+    (
         "js/views/debug_log.js",
         "application/javascript",
         include_bytes!("../../web/js/views/debug_log.js"),
@@ -509,6 +524,25 @@ pub fn router(
         // require remembering a session id.
         .route("/radar/history", get(scan_handlers::radar_history))
         .route("/radar/recurring", get(scan_handlers::radar_recurring))
+        // The sighting table's web reader (REQ-RADAR-002): one sweep's summary
+        // and device roll-up, and one device's sighting track — the rows
+        // `hse signal` prints, through the same presenters.
+        .route("/radar/signals", get(scan_handlers::radar_signals))
+        .route(
+            "/radar/signals/{network_id}",
+            get(scan_handlers::radar_signal_track),
+        )
+        // One device across every sweep — the trail (REQ-RADAR-004).
+        .route(
+            "/radar/devices/{network_id}/track",
+            get(scan_handlers::radar_device_track),
+        )
+        // The device's own link across the sweep history — forced disconnections,
+        // deauthentication, evil twins, scheduled outages (REQ-RESILIENCE-002).
+        .route("/radar/disruptions", get(scan_handlers::radar_disruptions))
+        // Map tiles for the Radar view — the loopback proxy that keeps the map
+        // within `img-src 'self'` and caches every tile (REQ-RADAR-003).
+        .route("/tiles/{z}/{x}/{y}", get(crate::api::tiles::tile))
         .route(
             "/scans/import",
             // Raise this route's body cap from axum's 2 MB default to the import

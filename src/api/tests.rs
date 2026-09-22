@@ -1,4 +1,7 @@
 use super::*;
+    use crate::core::cancel::CancelHandle;
+    use parking_lot::Mutex;
+    use std::collections::HashMap;
 
     #[test]
     fn cancel_registry_guard_installs_and_removes_on_drop() {
@@ -45,11 +48,12 @@ use super::*;
         assert!(registry.lock().contains_key("s2"));
     }
 
-    fn empty_live_scanner() -> crate::core::live::LiveScanner {
+    fn empty_live_scanner(in_flight: &CancelRegistry) -> crate::core::live::LiveScanner {
         // No session is ever started, so `live.list()` is always empty —
         // these tests exercise the `cancellations` (scan) side of
         // `drain_in_flight_work`; `LiveScanner::list`/`stop` have their own
-        // dedicated coverage in `core::live::tests`.
+        // dedicated coverage in `core::live::tests`. The scanner shares the
+        // test's registry exactly as production shares `AppState`'s.
         let store = crate::storage::Store::open(":memory:").expect("should succeed");
         let store: std::sync::Arc<dyn crate::core::port::StoragePort> = std::sync::Arc::new(store);
         let (bus, _rx) = tokio::sync::broadcast::channel(16);
@@ -58,14 +62,20 @@ use super::*;
             store,
             bus.clone(),
         ));
-        crate::core::live::LiveScanner::new(engine, bus, reqwest::Client::new(), Default::default())
+        crate::core::live::LiveScanner::new(
+            engine,
+            bus,
+            reqwest::Client::new(),
+            Default::default(),
+            std::sync::Arc::clone(in_flight),
+        )
     }
 
     #[tokio::test]
     async fn drain_returns_immediately_when_nothing_is_in_flight() {
         let cancellations: CancelRegistry =
             std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
-        let live = empty_live_scanner();
+        let live = empty_live_scanner(&cancellations);
         let start = tokio::time::Instant::now();
         // A generously long grace period that the fast path must never wait
         // out — proves the empty-registry check short-circuits.
@@ -88,7 +98,7 @@ use super::*;
         cancellations
             .lock()
             .insert("scan-1".to_string(), handle.clone());
-        let live = empty_live_scanner();
+        let live = empty_live_scanner(&cancellations);
 
         let reg = std::sync::Arc::clone(&cancellations);
         let h = handle.clone();
@@ -127,7 +137,7 @@ use super::*;
         cancellations
             .lock()
             .insert("stuck-scan".to_string(), CancelHandle::new());
-        let live = empty_live_scanner();
+        let live = empty_live_scanner(&cancellations);
 
         let grace = std::time::Duration::from_millis(100);
         let start = tokio::time::Instant::now();

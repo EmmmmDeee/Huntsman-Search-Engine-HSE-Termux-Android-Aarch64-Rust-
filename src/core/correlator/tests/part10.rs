@@ -810,3 +810,148 @@ fn au_057_low_confidence_coords_do_not_fire() {
     ];
     assert!(rule_au_057_synthesised_location_fix(&RuleContext::new(&ents), "scan", 0).is_empty());
 }
+
+
+// ── REQ-CORRELATOR-005: a derived point is not a second sighting ─────────────
+
+/// The centroid `engine::enrich::address_to_coords_pass` emits for an Address:
+/// it carries the Address's OWN source and is tagged `addr-derived`. Its value
+/// differs from any direct fix (a city centroid is not a rooftop), so neither of
+/// that pass's dedups \u2014 same-value `seen_coords`, existing-uid `contains_key`
+/// \u2014 suppresses it.
+fn derived_coord(value: &str, source: &str) -> Entity {
+    let mut e = coord_from(value, source);
+    e.tag(crate::core::tags::ADDR_DERIVED);
+    e.tag("geoint");
+    e
+}
+
+#[test]
+fn a_derived_centroid_does_not_become_the_third_sighting_of_a_residence() {
+    // Two observations: one geocoded address, one photo GPS. Pinned above as
+    // not enough to assert a footprint.
+    let two = vec![
+        coord_from("-33.8700,151.2100", "geocode"),
+        coord_from("-33.8720,151.2150", "exif_geo"),
+    ];
+    assert!(
+        super::rules::rule_au_052_geographic_area_of_operation(&RuleContext::new(&two), "s", 0)
+            .is_empty(),
+        "control: two sightings must not fire"
+    );
+
+    // The engine now geocodes that SAME address again, at city grain. Nothing
+    // was observed in between.
+    //
+    // Before this fix AU-052 counted the centroid as a third sighting and fired
+    // `High`: "3 coordinates from 2 sources bound a 3-vertex area (tight) \u2014
+    // tight fix on a residence/base". A residence fix is among the most
+    // consequential things this engine asserts, and two observations do not
+    // support one.
+    let mut three = two.clone();
+    three.push(derived_coord("-33.8688,151.2093", "geocode"));
+    let hits =
+        super::rules::rule_au_052_geographic_area_of_operation(&RuleContext::new(&three), "s", 0);
+    assert!(
+        hits.is_empty(),
+        "a centroid re-geocoded from an address `geocode` already fixed directly \
+         is the same datum at coarser grain, not a third sighting; got {:?}",
+        hits.iter().map(|c| &c.description).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_derived_point_from_a_source_with_no_direct_fix_is_still_a_sighting() {
+    // The control that keeps the fix from over-correcting, and the reason the
+    // test is per-SOURCE rather than per-tag. Three modules each report an
+    // address and none geocodes directly: that is three independent placements
+    // of the subject, and discarding them would drop real evidence.
+    //
+    // The sources must be drawn from `ANCHORING_GEO_SOURCES`. Written first with
+    // `abn_lookup`/`social_location`/`email_header_geo`, this control asserted a
+    // firing that cannot happen for an unrelated reason — `person_anchored_coords`
+    // drops a non-anchoring point before the sighting counter ever sees it, so
+    // the control was vacuous rather than the fix wrong. The counter only ever
+    // arbitrates among points already admitted by that allowlist.
+    let derived_only = vec![
+        derived_coord("-33.8700,151.2100", "geocode"),
+        derived_coord("-33.8720,151.2150", "photon"),
+        derived_coord("-33.8680,151.2080", "exif_geo"),
+    ];
+    let hits = super::rules::rule_au_052_geographic_area_of_operation(
+        &RuleContext::new(&derived_only),
+        "s",
+        0,
+    );
+    assert_eq!(
+        hits.len(),
+        1,
+        "three sources each placing the subject IS multi-source convergence"
+    );
+
+    // And a derived point that introduces a NEW source still counts beside
+    // direct ones: geocode (direct) + exif (direct) + abn_lookup (derived) is
+    // three genuinely independent observations.
+    let mixed = vec![
+        coord_from("-33.8700,151.2100", "geocode"),
+        coord_from("-33.8720,151.2150", "exif_geo"),
+        derived_coord("-33.8680,151.2080", "photon"),
+    ];
+    assert_eq!(
+        super::rules::rule_au_052_geographic_area_of_operation(&RuleContext::new(&mixed), "s", 0)
+            .len(),
+        1,
+        "a derived point from an otherwise-unrepresented source is a sighting"
+    );
+}
+
+#[test]
+fn au053_cannot_build_its_established_area_out_of_derived_centroids() {
+    // AU-053 reports a sighting OUTSIDE an established area, so the area it
+    // compares against must itself be real. It gates on >=4 points and read the
+    // same inflated count AU-052 did.
+    //
+    // Three observations: two near Sydney, one far away in Melbourne. Below the
+    // threshold, so no out-of-area claim can be made.
+    let three = vec![
+        coord_from("-33.8700,151.2100", "geocode"),
+        coord_from("-33.8720,151.2150", "exif_geo"),
+        coord_from("-37.8136,144.9631", "wigle"),
+    ];
+    assert!(
+        super::rules::rule_au_053_out_of_area_location(&RuleContext::new(&three), "s", 0)
+            .is_empty(),
+        "control: three points are below AU-053's threshold"
+    );
+
+    // VACUITY GUARD on the input set: a genuine FOURTH observation from a new
+    // source must make this fixture fire. Without this the lock below could pass
+    // because the fixture can never fire, rather than because the fix works.
+    let mut with_real_fourth = three.clone();
+    with_real_fourth.push(coord_from("-33.8680,151.2080", "photon"));
+    assert!(
+        !super::rules::rule_au_053_out_of_area_location(
+            &RuleContext::new(&with_real_fourth),
+            "s",
+            0
+        )
+        .is_empty(),
+        "the fixture must be capable of firing on four real sightings, or the \
+         lock below proves nothing"
+    );
+
+    // THE LOCK: swap that fourth observation for a re-geocode of the address
+    // `geocode` already fixed directly. Four points, three sightings \u2014 and an
+    // out-of-area claim must not become assertable because the engine geocoded
+    // one of its own inputs a second time.
+    let mut with_derived = three.clone();
+    with_derived.push(derived_coord("-33.8688,151.2093", "geocode"));
+    let hits =
+        super::rules::rule_au_053_out_of_area_location(&RuleContext::new(&with_derived), "s", 0);
+    assert!(
+        hits.is_empty(),
+        "a derived centroid manufactured the established area an out-of-area \
+         claim rests on; got {:?}",
+        hits.iter().map(|c| &c.description).collect::<Vec<_>>()
+    );
+}

@@ -94,6 +94,8 @@ pub enum RfSource {
     BluetoothRadar,
     /// A local Wi-Fi scan (`modules::signal_radar::wifi`).
     WifiRadar,
+    /// A local cell survey (`modules::signal_radar::cell`).
+    CellRadar,
 }
 
 impl RfSource {
@@ -104,6 +106,7 @@ impl RfSource {
             Self::WigleApi => "wigle-api",
             Self::BluetoothRadar => "bt-radar",
             Self::WifiRadar => "wifi-radar",
+            Self::CellRadar => "cell-radar",
         }
     }
 
@@ -113,6 +116,7 @@ impl RfSource {
             "wigle-api" => Self::WigleApi,
             "bt-radar" => Self::BluetoothRadar,
             "wifi-radar" => Self::WifiRadar,
+            "cell-radar" => Self::CellRadar,
             _ => Self::WigleKml,
         }
     }
@@ -121,7 +125,10 @@ impl RfSource {
     /// being reported by a third party.
     #[must_use]
     pub fn is_local_sensor(self) -> bool {
-        matches!(self, Self::BluetoothRadar | Self::WifiRadar)
+        matches!(
+            self,
+            Self::BluetoothRadar | Self::WifiRadar | Self::CellRadar
+        )
     }
 }
 
@@ -237,6 +244,26 @@ impl RfSighting {
             }
             _ => false,
         }
+    }
+
+    /// Give a sighting the sweep's own position, but only if it carries none
+    /// of its own. A receiver that reports a position per reading has said
+    /// where the device was heard; the sweep-level fix says only where the
+    /// phone was, and overwriting the former with the latter would move the
+    /// device. The accuracy travels with the position it belongs to, so a
+    /// sighting that keeps its own position keeps its own accuracy too.
+    pub fn stamp_position_if_absent(
+        &mut self,
+        latitude: f64,
+        longitude: f64,
+        accuracy_m: Option<f64>,
+    ) {
+        if self.latitude.is_some() || self.longitude.is_some() {
+            return;
+        }
+        self.latitude = Some(latitude);
+        self.longitude = Some(longitude);
+        self.accuracy_m = accuracy_m;
     }
 }
 
@@ -375,6 +402,79 @@ pub fn parse_iso8601_epoch(s: &str) -> Option<i64> {
         epoch += sign * (oh * 3600 + om * 60);
     }
     Some(epoch)
+}
+
+/// One device as rolled up from its sightings within a scan — the `rf_devices`
+/// view's row, and the read model every device reader presents (`hse signal
+/// --devices`, `GET /api/v1/radar/signals`). Every field is derived, so this is
+/// a read model with no independent lifetime: it cannot drift from the facts
+/// because it is not stored. It lives here, beside [`RfSighting`], rather than
+/// in the storage layer, because it is what the storage port *returns* — the
+/// engine, the CLI and the HTTP reader all name it without naming SQLite.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RfDeviceRow {
+    pub network_id: String,
+    pub radio: RadioKind,
+    /// `None` when the id is not a hardware address (a cellular identifier).
+    pub locally_administered: Option<bool>,
+    pub oui: Option<String>,
+    /// The registered organisation for [`oui`](Self::oui).
+    ///
+    /// Resolved on read rather than stored. The OUI is the durable fact; the
+    /// name attached to it is a lookup against a table that gets regenerated,
+    /// so a stored copy would silently go stale while the row still looked
+    /// authoritative. Resolving on read means the embedded registry is always
+    /// the single answer.
+    ///
+    /// `None` for a locally-administered address even though its first three
+    /// bytes would index the table perfectly well: those bytes are randomly
+    /// generated, so naming a vendor from them fabricates an identity. This is
+    /// the same refusal [`crate::util::oui::classify_mac`] makes.
+    pub vendor: Option<&'static str>,
+    pub device_class: Option<String>,
+    pub name: Option<String>,
+    pub sightings: i64,
+    /// Distinct rounded positions this device was heard from. Greater than one
+    /// means the sightings genuinely constrain a location rather than giving a
+    /// single bearing.
+    pub distinct_fixes: i64,
+    pub first_epoch: Option<i64>,
+    pub last_epoch: Option<i64>,
+    pub best_signal_dbm: Option<f64>,
+    pub worst_signal_dbm: Option<f64>,
+    pub best_accuracy_m: Option<f64>,
+    pub best_latitude: Option<f64>,
+    pub best_longitude: Option<f64>,
+}
+
+/// One sighting with the scan it belongs to — a point on a device's track
+/// across every sweep and import (`rf_device_track`), where the per-scan
+/// track (`rf_sightings_for_device`) needs no scan id because it has one.
+/// Serialised flat: the sighting's own fields plus `scan_id`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RfTrackPoint {
+    /// The sweep or import this reading belongs to.
+    pub scan_id: String,
+    /// The reading itself: network id, radio, level, position, time.
+    #[serde(flatten)]
+    pub sighting: RfSighting,
+}
+
+/// Scan-level totals, computed in SQL so a summary never walks every row.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RfSummary {
+    pub sightings: i64,
+    pub devices: i64,
+    pub wifi: i64,
+    pub ble: i64,
+    pub bt: i64,
+    pub cellular: i64,
+    pub fixed_address: i64,
+    pub randomised_address: i64,
+    pub named: i64,
+    pub with_position: i64,
+    pub first_epoch: Option<i64>,
+    pub last_epoch: Option<i64>,
 }
 
 #[cfg(test)]

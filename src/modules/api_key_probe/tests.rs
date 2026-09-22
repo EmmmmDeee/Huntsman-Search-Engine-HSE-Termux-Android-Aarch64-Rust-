@@ -106,6 +106,12 @@ use super::*;
         let err2: Value = serde_json::json!({"success": false});
         assert!(is_error_response(&err2));
 
+        let err3: Value = serde_json::json!({"valid": false});
+        assert!(
+            is_error_response(&err3),
+            "dead/rejected keys with valid:false must be detected (numverify, etc.)"
+        );
+
         let ok: Value = serde_json::json!({"plan": "free", "credits": 100});
         assert!(!is_error_response(&ok));
     }

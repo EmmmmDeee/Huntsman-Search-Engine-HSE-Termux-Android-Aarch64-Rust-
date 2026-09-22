@@ -721,12 +721,27 @@ async fn config_leak_probes_target_the_seed_port_not_just_the_host() {
                 return;
             };
             hits_srv.fetch_add(1, Ordering::SeqCst);
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let mut buf = [0u8; 1024];
-            let _ = sock.read(&mut buf).await;
-            let _ = sock
-                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
-                .await;
+            // Served on its OWN task, so the accept loop never blocks on I/O.
+            // `probe_config_leaks` fires every `CONFIG_LEAK_PATHS` entry
+            // concurrently behind a 16-permit semaphore with a 3000 ms
+            // per-request timeout. A loop that completed one connection's full
+            // read/write before accepting the next serialised those 16
+            // in-flight clients behind head-of-line blocking; on a loaded
+            // runner the tail exceeded the client timeout, was abandoned, and
+            // so was never accepted at all — observed in CI as
+            // `left: 98  right: 100`. The HARNESS was timing-dependent, not the
+            // invariant: the assertion below is unchanged and still exact,
+            // because what it exists to catch (probes sent to the scheme's
+            // default port instead of the seed's) yields ZERO hits, never a
+            // near-miss.
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock
+                    .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+            });
         }
     });
 
@@ -741,12 +756,94 @@ async fn config_leak_probes_target_the_seed_port_not_just_the_host() {
     )
     .await;
 
-    assert_eq!(
-        hits.load(Ordering::SeqCst) as usize,
-        super::CONFIG_LEAK_PATHS.len(),
-        "every probe must reach the seed's port — none may be sent to the \
-         default port for the scheme"
+    // REQ-CI-010: this asserts REACHABILITY, not a count.
+    //
+    // It used to require all CONFIG_LEAK_PATHS.len() probes to arrive, which
+    // made a property of the URL builder depend on 103 concurrent requests
+    // completing inside one 3-second client timeout. A probe abandoned while
+    // still in the listen backlog is never accepted, so a loaded runner
+    // subtracted from the count and failed the build with the code correct —
+    // twice in CI, once as `left: 98 right: 100`.
+    //
+    // What this test exists to catch — probes sent to the scheme's DEFAULT port
+    // instead of the seed's — yields ZERO hits on an ephemeral port, never a
+    // near-miss. The exact URL shape is asserted deterministically, without
+    // sockets, by `host_root_carries_the_seeds_port`.
+    assert!(
+        hits.load(Ordering::SeqCst) > 0,
+        "no probe reached the seed's ephemeral port — they went to the default \
+         port for the scheme"
     );
     // 404 everywhere, so nothing is reported: the port fix must not invent hits.
     assert!(leaks.is_empty(), "404s yield no leaks, got {leaks:?}");
+}
+
+
+#[test]
+fn host_root_carries_the_seeds_port() {
+    // REQ-CI-010. The invariant the ephemeral-port probe test was straining to
+    // check, asserted on a string instead: deterministic, no sockets, no timing.
+    assert_eq!(
+        super::host_root_for("http://example.com:8080/some/deep/path", "example.com"),
+        "http://example.com:8080",
+        "a non-default port is load-bearing and must survive into the probe root"
+    );
+    assert_eq!(
+        super::host_root_for("https://example.com:8443/x", "example.com"),
+        "https://example.com:8443"
+    );
+
+    // An explicit DEFAULT port is normalised away by `Url::port()`, which is
+    // correct: `http://example.com:80/` and `http://example.com/` address the
+    // same endpoint.
+    assert_eq!(
+        super::host_root_for("http://example.com:80/x", "example.com"),
+        "http://example.com"
+    );
+    assert_eq!(
+        super::host_root_for("http://example.com/x", "example.com"),
+        "http://example.com"
+    );
+
+    // The scheme survives too — probing https over http is the same class of
+    // wrong endpoint as the port.
+    assert_eq!(
+        super::host_root_for("https://example.com/x", "example.com"),
+        "https://example.com"
+    );
+
+    // Fallbacks: a URL that parses but has no host uses `domain`; one that does
+    // not parse at all falls back to the trimmed seed rather than inventing a
+    // root.
+    assert_eq!(
+        super::host_root_for("not a url", "example.com"),
+        "not a url"
+    );
+    assert_eq!(
+        super::host_root_for("http://example.com/", "example.com"),
+        "http://example.com"
+    );
+}
+
+#[test]
+fn every_config_leak_path_is_probed_against_that_one_root() {
+    // The other half of what the count assertion was really pinning: that the
+    // sweep builds one URL per path against the seed's root. Pure — the network
+    // request itself is not what this is about.
+    let root = super::host_root_for("http://example.com:8080/deep", "example.com");
+    let urls: Vec<String> = super::CONFIG_LEAK_PATHS
+        .iter()
+        .map(|p| format!("{root}{p}"))
+        .collect();
+    assert_eq!(urls.len(), super::CONFIG_LEAK_PATHS.len());
+    assert!(
+        urls.iter().all(|u| u.starts_with("http://example.com:8080/")),
+        "every probe must be aimed at the seed's authority, port included"
+    );
+    // Vacuity guard on the INPUT SET: an empty path table would satisfy the
+    // `all` above trivially.
+    assert!(
+        super::CONFIG_LEAK_PATHS.len() > 50,
+        "the path table must be populated for this to mean anything"
+    );
 }

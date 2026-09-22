@@ -9,16 +9,6 @@ use super::*;
 use crate::core::confidence;
 use crate::util::extract::CredentialField;
 
-/// True for a value that is really an absence sentinel (`\N`, `NULL`, an empty/
-/// whitespace string, a redaction placeholder), not a datum — the SAME guard
-/// SeekNow/breach_rich already apply (`breach_rich::is_absent_marker`). Gating
-/// an emission on it stops a breach page where many rows carry `\N` employer or
-/// `NULL` country/location from minting one shared node that fuses all those
-/// unrelated strangers together — a false positive, the worst kind for an
-/// evidentiary tool.
-fn is_absent(s: &str) -> bool {
-    crate::util::json::is_null_sentinel(s) || crate::util::extract::is_placeholder_secret(s)
-}
 // ─── Entity extraction ─────────────────────────────────────────────────────
 
 pub(super) fn breach_evidence(item: &Value) -> Evidence {
@@ -393,7 +383,7 @@ pub(super) fn extract_breach_entities_with(
         // the graph.
         if t.len() >= 4
             && t.contains(' ')
-            && !is_username_derived_name(t)
+            && !is_unusable_person_name(t)
             && seen.insert(t.to_lowercase())
         {
             // Parity with SeekNow: stamp the record's demographics (DOB / gender
@@ -437,36 +427,18 @@ pub(super) fn extract_breach_entities_with(
     }
 
     if let Some(country) = val_str(item, "country")
-        && !is_absent(&country)
+        && !is_absent_marker(&country)
         && seen.insert(format!("@country:{country}"))
     {
-        if let Some((lat, lon)) = crate::util::city_coords::city_coords(&country)
-            // `city_coords` is a many-to-one phrase lookup: the country,
-            // composed-address, and free-text-location legs below each gate
-            // on their OWN input text, but two differently-worded strings
-            // (a country name that happens to double as a tabulated city, a
-            // street address vs. a free-text location) can resolve to the
-            // identical centroid — keyed on the RESOLVED coordinate, shared
-            // across all three legs via this same `seen` set, to catch that.
-            && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
-        {
-            let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(
-                EntityKind::Coordinates,
-                &coord_val,
-                confidence::LOW_MEDIUM,
-                scan_id,
-            );
-            c.tag("addr-derived");
-            c.tag("geoint");
-            c.tag("breach");
-            c.tag("oathnet-pro");
-            if !is_target_row {
-                c.demote_to_candidate();
-            }
-            c.add_evidence(ev.clone());
-            result.push(c);
-        }
+        // No centroid is derived from the country. `city_coords` is a gazetteer
+        // of CITIES — its 143 rows are city names and not one is a country, not
+        // even a city-state — so `city_coords(&country)` resolves to nothing for
+        // every country a breach record can carry. This leg existed on the
+        // premise, written into its own comment, of "a country name that happens
+        // to double as a tabulated city"; there is no such row, so it never fired
+        // (REQ-SHODAN-002). The composed-address and free-text-location legs
+        // below geocode strings the gazetteer can actually answer, and they carry
+        // the coordinate for this record. The country still becomes an Address.
         push_oathnet_entity(
             result,
             Entity::new(
@@ -506,15 +478,17 @@ pub(super) fn extract_breach_entities_with(
         // `state`/`postal` would leave a `", ,"` gap or a trailing `", "` in the
         // composed value and degrade geocoding. Also drop an absence sentinel
         // (`\N`/`NULL`/redaction) part so it can't fuse strangers into one address.
-        .filter(|s| !s.is_empty() && !is_absent(s))
+        .filter(|s| !s.is_empty() && !is_absent_marker(s))
         .collect::<Vec<&str>>()
         .join(", ");
         if addr.len() >= 4 && seen.insert(format!("@addr:{}", addr.to_lowercase())) {
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr)
-                // See the `country` leg above: keyed on the resolved
-                // coordinate (shared `seen` set) so this doesn't mint a
-                // second Coordinates entity for a city the country or
-                // free-text-location leg already resolved.
+                // `city_coords` is a many-to-one phrase lookup: this leg and
+                // the free-text-location leg gate on their OWN input text, but
+                // two differently-worded strings (a street address vs. a
+                // free-text location) can resolve to the identical centroid —
+                // so the dedup is keyed on the RESOLVED coordinate, shared
+                // between both legs via this same `seen` set.
                 && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
             {
                 let coord_val = format!("{lat:.4},{lon:.4}");
@@ -550,13 +524,14 @@ pub(super) fn extract_breach_entities_with(
     // "US" that are already captured as the `country` evidence attribute.
     if let Some(loc) = val_str(item, "location") {
         let loc = loc.trim();
-        if loc.len() >= 4 && !is_absent(loc) && seen.insert(format!("@loc:{}", loc.to_lowercase()))
+        if loc.len() >= 4
+            && !is_absent_marker(loc)
+            && seen.insert(format!("@loc:{}", loc.to_lowercase()))
         {
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc)
-                // See the `country` leg above: keyed on the resolved
-                // coordinate (shared `seen` set) so this doesn't mint a
-                // second Coordinates entity for a city the country or
-                // composed-address leg already resolved.
+                // See the composed-address leg above: keyed on the resolved
+                // coordinate (shared `seen` set) so this doesn't mint a second
+                // Coordinates entity for a city that leg already resolved.
                 && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
             {
                 let coord_val = format!("{lat:.4},{lon:.4}");
@@ -626,6 +601,12 @@ pub(super) fn extract_breach_entities_with(
     }
 
     if let Some(ig) = val_str(item, "instagram")
+        // Absence gate — the same `is_absent_marker` the country / location /
+        // organisation emitters in this file already apply. It was never wired
+        // here, so a `\N` or `[NOT_SAVED]` column minted a Username entity that
+        // the engine then dispatches to username_search / search_engines as a
+        // live pivot.
+        && !is_absent_marker(&ig)
         // A bare `.to_lowercase()` doesn't strip a leading `@` sigil or
         // wrapping quote the way `Entity::new` does internally, so "@jordan"
         // and "jordan" each earned their own dedup slot despite colliding on
@@ -647,7 +628,10 @@ pub(super) fn extract_breach_entities_with(
     // LinkedIn handle — unlocks proxycurl (paid LinkedIn enrichment).
     // The field may contain a URL or a bare handle. Emit as Url if it
     // looks like a URL, else as Username with a linkedin: prefix.
-    if let Some(li) = val_str(item, "linkedin") {
+    // Absence-gated for the same reason as `instagram` above: without it the
+    // bare-handle branch minted `linkedin:\N` / `linkedin:[not_saved]`, which
+    // reads as a real LinkedIn identity and unlocks the paid proxycurl leg.
+    if let Some(li) = val_str(item, "linkedin").filter(|s| !is_absent_marker(s)) {
         let lower = li.to_lowercase();
         if lower.contains("linkedin.com") {
             if seen.insert(format!("@li:{lower}")) {
@@ -694,7 +678,7 @@ pub(super) fn extract_breach_entities_with(
         if let Some(org) = val_str(item, k) {
             let org = org.trim();
             if org.len() >= 2
-                && !is_absent(org)
+                && !is_absent_marker(org)
                 && seen.insert(format!("@org:{}", org.to_ascii_lowercase()))
             {
                 let mut oe =
@@ -729,6 +713,19 @@ pub(super) fn extract_breach_entities_with(
     // confirms whether the hash is in known breach corpora). Emit as a
     // low-confidence ApiKey entity tagged for that module.
     if let Some(ph) = val_str(item, "password_hash")
+        // REQ-OATHNET-002. The gate was `ph.len() >= 32` alone, and the entity's
+        // VALUE is the hash string — so any two rows carrying the same long
+        // placeholder mint one shared node and fuse unrelated strangers, which
+        // `is_absent_marker`'s own doc calls "a false positive, the worst kind for
+        // an evidentiary tool". That is REQ-DEHASHED-001's harm in the hash slot.
+        //
+        // Reachability is UNOBSERVED, and the honest claim is no stronger: the
+        // longest capture sentinel this repository records is
+        // `UPGRADE_TO_SEE_FULL_DATA` (24 chars), so nothing known clears the
+        // 32-char floor today. This is the same classification the module already
+        // applies to the plaintext `password` field (below, and in `stealer.rs`),
+        // reaching the one field that was gated on length alone.
+        && !is_absent_marker(&ph)
         && ph.len() >= 32
         && seen.insert(format!(
             "@pwhash:{}",
@@ -892,8 +889,15 @@ pub(super) fn extract_breach_entities_with(
             // does internally via `normalise`'s Username arm, so a dirty and a
             // clean spelling of the same handle each earned their own dedup
             // slot despite colliding on the same uid once constructed.
+            // `is_absent_marker`, not the narrower `is_redacted_sentinel` this used
+            // call: the latter matched only `UPGRADE_TO_SEE` / `REDACTED`, a
+            // STRICT SUBSET (`is_placeholder_secret`'s own first branch covers
+            // both), so the SQL-dump NULL `\N` — length 2, inside the window
+            // below — and every bracketed form (`[NOT_SAVED]`, `[fail]`,
+            // `<empty>`) minted a handle. One absence authority, tree-wide
+            // (`core::validation::is_absent_marker`, REQ-NAMEGATE-001).
             if (2..=64).contains(&h.len())
-                && !is_redacted_sentinel(h)
+                && !is_absent_marker(h)
                 && seen.insert(format!(
                     "@{platform}:{}",
                     crate::core::entity::normalise(&EntityKind::Username, h)

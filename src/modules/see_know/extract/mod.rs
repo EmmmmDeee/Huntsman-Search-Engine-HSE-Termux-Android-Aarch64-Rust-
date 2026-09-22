@@ -28,7 +28,7 @@ use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
     tags,
-    validation::is_username_derived_name,
+    validation::is_unusable_person_name,
 };
 use crate::util::geo::is_valid_coords;
 use crate::util::see_know::{val_str, val_str_or_coerce};
@@ -185,11 +185,11 @@ pub(super) fn extract_entities(
     }
     if let Some(name) = val_str(item, "full_name").or_else(|| val_str(item, "name"))
         && name.trim().contains(' ')
-        // Some breach databases store `full_name = "{username} {username}"`
-        // when no real name is available — reject before it reaches the graph
-        // (the sibling `oathnet_pro` extractor shares this exact schema and
-        // the same guard, `oathnet_pro/breach.rs`).
-        && !is_username_derived_name(name.trim())
+        // The shared name-integrity gate: a doubled/slug username
+        // (`full_name = "{username} {username}"`) or any token that is an
+        // absence marker (`"\N Smith"`). This path mints at confidence::HIGH —
+        // the pivot-eligible tier — so a fabricated name here seeds a child scan.
+        && !is_unusable_person_name(name.trim())
         && seen.insert(name.to_lowercase())
     {
         let mut person = Entity::new(EntityKind::Person, name.trim(), confidence::HIGH, scan_id);
@@ -815,5 +815,87 @@ mod tests {
             "a real associate in the same array is unaffected"
         );
         assert_eq!(names.len(), 1, "only the legitimate associate survives");
+    }
+
+    #[test]
+    fn associates_reject_half_null_composed_names() {
+        // A SQL dump nulls columns INDEPENDENTLY, so a relationship object can
+        // carry `first_name = "\\N"` with a real `last_name` (and the reverse).
+        // `associate_name` composes those two components into one string exactly
+        // as `breach_rich` does, and breach_rich already rejects the half-real
+        // pair. The doubled-token rule catches only `"\\N \\N"`; a half-null pair
+        // clears it.
+        let item = json!({
+            "relatives": [
+                {"first_name": "\\N", "last_name": "Smith"},
+                {"first_name": "Dana", "last_name": "\\N"},
+                {"first_name": "Jane", "last_name": "Smith"},
+            ],
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_associates(&item, "Kyle Diegmann", "s", "fp", &mut seen, &mut result);
+        let names: Vec<&str> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Person)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["Jane Smith"],
+            "only the fully-real associate may be minted; got {names:?}"
+        );
+    }
+
+    #[test]
+    fn subject_name_with_a_null_sentinel_token_is_not_minted() {
+        // The SUBJECT path mints at confidence::HIGH — the pivot-eligible tier —
+        // so a `"\\N Smith"` here is worse than the associate case: it seeds a
+        // child scan on a fabricated name.
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        let m = TargetMatch::new("a@b.com");
+        extract_entities(
+            &json!({"email": "a@b.com", "full_name": "\\N Smith"}),
+            "a@b.com",
+            &m,
+            "s",
+            "ep",
+            "fp",
+            &mut seen,
+            &mut result,
+        );
+        assert!(
+            !result.entities.iter().any(|e| e.kind == EntityKind::Person),
+            "a half-null subject name must not mint a Person: {:?}",
+            result
+                .entities
+                .iter()
+                .filter(|e| e.kind == EntityKind::Person)
+                .map(|e| &e.value)
+                .collect::<Vec<_>>()
+        );
+        // Positive control: a genuine name on the identical shape still mints,
+        // so the assertion above cannot pass vacuously.
+        let mut seen2 = HashSet::new();
+        let mut result2 = ModuleResult::new();
+        extract_entities(
+            &json!({"email": "a@b.com", "full_name": "Anna Null"}),
+            "a@b.com",
+            &m,
+            "s",
+            "ep",
+            "fp",
+            &mut seen2,
+            &mut result2,
+        );
+        assert!(
+            result2
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Person && e.value == "Anna Null"),
+            "the real surname \"Null\" must still mint a Person"
+        );
     }
 }

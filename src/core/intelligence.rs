@@ -761,7 +761,12 @@ impl IntelligenceLedger {
             .get(claim_id)
             .into_iter()
             .flat_map(BTreeMap::values)
-            .filter(|observation| !observation.outcome.is_resolved())
+            // `settles_absence`, not `is_resolved`: a TRUNCATED provider ran, so
+            // it is not a skip — but it searched only part of its corpus, so its
+            // silence cannot close this claim. Rejecting on it would be the
+            // false clean result this ledger exists to prevent, built on a page
+            // nobody read (REQ-COVERAGE-001).
+            .filter(|observation| !observation.outcome.settles_absence())
             .collect()
     }
 
@@ -1258,6 +1263,63 @@ mod tests {
             .reject_claim(&id, &against, "registry holds no such record")
             .expect("rejection is available once the source has actually answered");
         assert_eq!(ledger.claims[&id].state, ClaimState::Rejected);
+    }
+
+    #[test]
+    fn a_truncated_provider_cannot_close_a_claim_on_the_page_it_never_read() {
+        // REQ-COVERAGE-001, and the reason `coverage_gaps` reads
+        // `settles_absence` rather than `is_resolved`.
+        //
+        // A provider that searched the first 20 of 213 matches and found
+        // nothing supporting the claim has NOT established an absence — the
+        // record may be in the 193 it never retrieved. Rejecting here is
+        // exactly the confident clean answer on a hard target that this ledger
+        // exists to refuse.
+        let (mut ledger, against) = coverage_ledger();
+        let id: ClaimId = "claim-1".into();
+        ledger
+            .record_provider(
+                &id,
+                ProviderObservation {
+                    provider_id: "registry".to_string(),
+                    outcome: ProviderOutcome::Truncated {
+                        reason: "20 of 213 retrieved — stopped by the API's `limit=20` page."
+                            .to_string(),
+                    },
+                    observed_at_unix: Some(1),
+                },
+            )
+            .expect("a truncated observation is a valid record — it carries a reason");
+        assert_eq!(
+            ledger.coverage_gaps(&id).len(),
+            1,
+            "a short answer leaves a coverage gap"
+        );
+        assert_eq!(
+            ledger.reject_claim(&id, &against, "nothing found"),
+            Err(LedgerError::UnresolvedCoverageGap(vec![
+                "registry".to_string()
+            ])),
+            "a provider that read part of its corpus cannot be counted as having said no"
+        );
+        assert_eq!(ledger.claims[&id].state, ClaimState::Candidate);
+
+        // Control: the SAME provider, having since answered in full, closes the
+        // gap. The block is about completeness, not about the provider.
+        ledger
+            .record_provider(
+                &id,
+                ProviderObservation {
+                    provider_id: "registry".to_string(),
+                    outcome: ProviderOutcome::CleanNegative,
+                    observed_at_unix: Some(2),
+                },
+            )
+            .expect("recorded");
+        assert!(ledger.coverage_gaps(&id).is_empty());
+        ledger
+            .reject_claim(&id, &against, "registry holds no such record")
+            .expect("rejection is available once the whole corpus has been read");
     }
 
     #[test]

@@ -255,3 +255,69 @@ use super::*;
         // The ASN placeholder is always written (no asn → "-").
         assert_eq!(attrs.get("asn").map(String::as_str), Some("-"));
     }
+
+    /// REQ-IPGEO-001. A city string is composed FROM the lat/lon, so it is
+    /// strictly coarser and can never be the more confident of the two. The
+    /// Address was a flat `confidence::HIGH` (0.65) while the Coordinates are
+    /// graded down to MEDIUM (0.50) for a mobile IP and sit at MEDIUM_PLUS
+    /// (0.60) for a residential one — 0.15 and 0.05 above its own coordinates,
+    /// blind to the grading the module applies for exactly this reason.
+    ///
+    /// A hosting/proxy IP is the control that keeps this honest: `geo_conf`
+    /// drops to TENTATIVE (0.35) there, but `is_datacenter` suppresses the
+    /// Address outright, so the pair never exists and 0.30 was never the
+    /// reachable gap. That branch is asserted as a suppression rather than
+    /// counted as a comparison, so the test cannot pass by finding nothing.
+    #[test]
+    fn an_address_never_outranks_the_coordinates_it_was_composed_from() {
+        let graded = [
+            ("residential", r#""mobile":false,"proxy":false,"hosting":false"#),
+            ("mobile", r#""mobile":true,"proxy":false,"hosting":false"#),
+        ];
+        let suppressed = [
+            ("hosting", r#""mobile":false,"proxy":false,"hosting":true"#),
+            ("proxy", r#""mobile":false,"proxy":true,"hosting":false"#),
+        ];
+        let body_for = |flags: &str| {
+            resp(&format!(
+                r#"{{"status":"success","country":"Australia","countryCode":"AU",
+                    "regionName":"Queensland","city":"Brisbane","zip":"4000",
+                    "lat":-27.4679,"lon":153.0281,"isp":"Telstra",{flags}}}"#
+            ))
+        };
+
+        let mut wrong = Vec::new();
+        let mut compared = 0usize;
+        for (why, flags) in graded {
+            let ents = build_entities(&body_for(flags), "1.2.3.4", "s");
+            let (Some(coords), Some(addr)) = (
+                of_kind(&ents, EntityKind::Coordinates),
+                of_kind(&ents, EntityKind::Address),
+            ) else {
+                wrong.push(format!("{why}: no Coordinates/Address pair emitted"));
+                continue;
+            };
+            compared += 1;
+            if addr.confidence > coords.confidence {
+                wrong.push(format!(
+                    "{why}: Address {:.2} > Coordinates {:.2}",
+                    addr.confidence, coords.confidence
+                ));
+            }
+        }
+        for (why, flags) in suppressed {
+            let ents = build_entities(&body_for(flags), "1.2.3.4", "s");
+            if let Some(addr) = of_kind(&ents, EntityKind::Address) {
+                wrong.push(format!(
+                    "{why}: a datacentre address must not be emitted at all, got {:?} at {:.2}",
+                    addr.value, addr.confidence
+                ));
+            }
+        }
+        assert_eq!(compared, graded.len(), "every graded rung must be compared");
+        assert!(
+            wrong.is_empty(),
+            "an Address is coarser than the fix it was composed from:\n  {}",
+            wrong.join("\n  ")
+        );
+    }

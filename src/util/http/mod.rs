@@ -38,6 +38,7 @@ pub use fetch::{
     keyed_ok_or_404, note_keyed_error, ok_or_absent, parse_retry_after_secs, read_body_capped,
     read_body_capped_or_fail, read_text, retry_after_secs,
 };
+pub(crate) use fetch::{breaker_gate, record_breaker_outcome};
 pub use keys::{scan_for_api_keys, scan_for_api_keys_with_source};
 pub(crate) use redact::redact_credentials;
 pub(crate) use ssrf::resolve_public_ips;

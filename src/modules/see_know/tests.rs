@@ -2081,3 +2081,113 @@ mod key_rejection_tests {
         assert!(err.to_string().contains("plan_required"), "{err}");
     }
 }
+
+/// REQ-SEEKNOW-001: the pivot walk's four exits do not mean the same thing, and
+/// only one of them is an exhaustive answer.
+#[test]
+fn only_an_exhausted_chain_is_a_complete_pivot_walk() {
+    use super::{PivotStop, pivot_truncation};
+
+    // THE EXHAUSTIVE EXIT, and the over-correction control. A hop that surfaced
+    // nothing new means the chain is fully walked; flagging it would put a
+    // permanent completeness caveat on every successful pivot walk, which is
+    // indistinguishable from "fewer silent truncations" without this assertion.
+    assert_eq!(
+        pivot_truncation(2, PivotStop::ChainExhausted),
+        None,
+        "a chain that stopped yielding was fully walked"
+    );
+
+    // The three truncating exits each name what stopped the walk, so an
+    // operator can act on it — raise the budget, or accept the hop ceiling.
+    for (stop, needle) in [
+        (PivotStop::BudgetSpent, "budget"),
+        (PivotStop::HopCeiling, "ceiling"),
+        (PivotStop::HopPartial, "partway"),
+    ] {
+        let cause = pivot_truncation(2, stop)
+            .unwrap_or_else(|| panic!("{stop:?} leaves the chain unfinished and must say so"));
+        assert!(
+            cause.contains(needle),
+            "{stop:?} must name its cause: {cause}"
+        );
+    }
+
+    // The three causes are DISTINCT — collapsing them into one "truncated"
+    // would lose the difference between a quota an operator can raise and a
+    // structural ceiling they cannot.
+    let causes: std::collections::HashSet<String> =
+        [PivotStop::BudgetSpent, PivotStop::HopCeiling, PivotStop::HopPartial]
+            .into_iter()
+            .filter_map(|s| pivot_truncation(2, s))
+            .collect();
+    assert_eq!(causes.len(), 3, "each stop reason reads differently: {causes:?}");
+}
+
+/// The caveat takes the unknown-total form: a pivot chain has no denominator,
+/// and inventing one would be false precision.
+#[test]
+fn a_truncated_pivot_walk_never_invents_a_total() {
+    use super::{PivotStop, pivot_truncation};
+    let mut r = crate::core::module::ModuleResult::new();
+    let cause = pivot_truncation(1, PivotStop::BudgetSpent).expect("truncating");
+    r.mark_truncated(7, None, &cause);
+    let reason = r.truncation.expect("set");
+    assert!(
+        reason.contains("did not report how many exist"),
+        "must take the unknown-total arm: {reason}"
+    );
+    assert!(!reason.contains("7 of "), "no invented denominator: {reason}");
+}
+
+/// The pivot walk must actually RECORD its exit and APPLY the caveat.
+///
+/// `resolve_identity_pivots` dispatches HTTP, so its behaviour cannot be
+/// exercised from a unit test — and two mutations proved that matters: one
+/// that never records the hop-ceiling exit, and one that computes the caveat
+/// and drops it on the floor, both passed every lock over `pivot_truncation`
+/// itself. A helper's own tests cannot check its callers (REQ-ZOOMEYE-002,
+/// REQ-DOCPARSE-002, and now here — the third time).
+///
+/// So this asserts on the function's own SOURCE, windowed to its body. It is
+/// deliberately narrow: each needle is a distinctive token that only the real
+/// wiring produces, and the window stops at the next `async fn` so an
+/// unrelated match elsewhere in the file cannot satisfy it — the mistake
+/// REQ-CI-009's lock made by matching a warning's prose instead of its command.
+#[test]
+fn the_pivot_walk_records_its_exit_and_applies_the_caveat() {
+    let src = include_str!("mod.rs");
+    let start = src
+        .find("async fn resolve_identity_pivots(")
+        .expect("the pivot walk must exist");
+    let rest = &src[start + 1..];
+    let end = rest.find("\nasync fn ").map_or(rest.len(), |i| start + 1 + i);
+    let body = &src[start..end];
+
+    for needle in [
+        // every truncating exit is recorded...
+        "stop = PivotStop::BudgetSpent",
+        "stop = PivotStop::HopPartial",
+        "PivotStop::HopCeiling",
+        // ...the exhaustive one is too, or a complete walk would be flagged...
+        "stop = PivotStop::ChainExhausted",
+        // ...and the verdict actually reaches the result.
+        "pivot_truncation(hops_used, stop)",
+        "result.mark_truncated(",
+    ] {
+        assert!(
+            body.contains(needle),
+            "the pivot walk must contain `{needle}` — without it the walk's \
+             completeness verdict is computed and never used"
+        );
+    }
+
+    // Vacuity guard: if the window collapsed, every `contains` above would be
+    // meaningless. A real body is thousands of bytes.
+    assert!(
+        body.len() > 2000,
+        "the windowed function body is implausibly short ({} bytes) — the \
+         window is wrong and the assertions above prove nothing",
+        body.len()
+    );
+}

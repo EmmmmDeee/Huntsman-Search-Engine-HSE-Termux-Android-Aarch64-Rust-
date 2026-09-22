@@ -392,3 +392,94 @@ fn blank_country_code_adds_no_tag_but_keeps_other_geo_attrs() {
         Some("Sydney")
     );
 }
+
+#[test]
+fn near_null_island_jitter_coordinates_yield_no_coords_entity() {
+    // REQ-CENSYS-001: Censys is a coarse IP-geo provider and must reject the
+    // near-null-island jitter band (0.001 to 0.01) those APIs emit as an
+    // "unknown" placeholder. The stricter is_plausible_provider_coord gate is
+    // required, not the weaker is_valid_coords. A (0.005, 0.005) jitter
+    // coordinate must not become a Coordinates entity, and Address is gated on it.
+    let ents = build_entities(
+        &host(
+            r#"{ "result": { "services": [],
+                "location": { "coordinates": { "latitude": 0.005, "longitude": 0.005 },
+                              "country": "Unknown", "city": "Null" } } }"#,
+        ),
+        "1.2.3.4",
+        "s",
+    );
+    assert!(
+        of_kind(&ents, EntityKind::Coordinates).is_none(),
+        "near-null-island jitter coordinates (0.005, 0.005) must be rejected"
+    );
+    assert!(
+        of_kind(&ents, EntityKind::Address).is_none(),
+        "no Address when coordinates are rejected"
+    );
+}
+
+// ── REQ-KEYSKIP-002: a missing SECRET is a skip, not a clean negative ───────
+
+fn ctx_with(keys: &[(&str, &str)]) -> crate::core::module::ModuleContext {
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    crate::core::module::ModuleContext {
+        scan_id: "scan".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: keys
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    }
+}
+
+/// LOCK. Censys authenticates with HTTP Basic `api_id:api_secret` — its own
+/// header says both are required, and `process` sends them together. With the
+/// ID present and the SECRET missing, the module cannot make a request at all,
+/// so the provider is never contacted.
+///
+/// It used to return `Ok(ModuleResult::new())` for that. Dispatch records an
+/// empty result as `ModuleDone { found: 0 }`, which coverage aggregates to
+/// `ProviderOutcome::CleanNegative` — documented as "the only outcome that is a
+/// real negative", and the one `settles_absence` trusts. So a half-configured
+/// censys asserted that censys holds nothing on the subject.
+///
+/// REQ-KEYSKIP-001 established `Error::MissingKey` as the contract for exactly
+/// this and converted ~8 modules, including the `api_id` arm **two lines above
+/// this one**. The secret arm was left behind. A sweep of every credential
+/// lookup in `src/modules` with a quiet-empty miss arm found this as the only
+/// survivor tree-wide.
+#[tokio::test]
+async fn a_missing_secret_is_a_typed_skip_not_a_clean_negative() {
+    let ctx = ctx_with(&[(super::ID_ENV, "an-api-id")]);
+    let err = Censys
+        .process(&Target::new(TargetKind::IpAddress, "1.1.1.1"), &ctx)
+        .await
+        .expect_err("half-configured censys was never asked, so this is a skip");
+    assert!(
+        matches!(err, crate::core::error::Error::MissingKey(ref k) if k == super::SECRET_ENV),
+        "expected MissingKey({}), got {err:?}",
+        super::SECRET_ENV
+    );
+}
+
+/// CONTROL. The fix must name the credential that is actually missing, not
+/// error on anything incomplete: with NEITHER key set, the ID is still the one
+/// reported, because it is checked first. A repair that returned
+/// `MissingKey(SECRET_ENV)` here — or that erred unconditionally — would fail
+/// this while passing the lock above.
+#[tokio::test]
+async fn with_neither_credential_the_id_is_still_the_one_reported() {
+    let ctx = ctx_with(&[]);
+    let err = Censys
+        .process(&Target::new(TargetKind::IpAddress, "1.1.1.1"), &ctx)
+        .await
+        .expect_err("no credentials at all is still a skip");
+    assert!(
+        matches!(err, crate::core::error::Error::MissingKey(ref k) if k == super::ID_ENV),
+        "expected MissingKey({}), got {err:?}",
+        super::ID_ENV
+    );
+}

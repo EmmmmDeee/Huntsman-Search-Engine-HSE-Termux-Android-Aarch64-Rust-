@@ -1880,3 +1880,148 @@ fn infra_provider_tables_are_one_authority_plus_disjoint_extras() {
         );
     }
 }
+
+// ─── REQ-SCANOPTS-001: an unknown option key must never be silently dropped ───
+
+/// The defect, at the deserialisation layer it originates from: every
+/// `ScanOptions` field is absent-tolerant, so serde cannot tell a misspelled
+/// key from an omitted one — and omitted means "the default", which for the
+/// scope controls is the PERMISSIVE value. Pre-fix, this request ran an ACTIVE
+/// scan for an operator who asked for a passive one, and reported it as the
+/// scan they requested.
+#[test]
+fn a_misspelled_option_key_is_reported_not_defaulted() {
+    // CONTROL: spelled correctly, the operator's control lands and is not
+    // flagged. The fix cannot have been achieved by rejecting everything.
+    let good = serde_json::json!({ "passive_only": true });
+    assert!(
+        crate::core::scan::unknown_option_keys(&good).is_empty(),
+        "a key ScanOptions defines must never be reported as unknown"
+    );
+    let parsed: ScanOptions = serde_json::from_value(good).expect("should succeed");
+    assert!(parsed.passive_only, "control: correct spelling must apply");
+
+    // DEFECT: one character wrong. serde still accepts it silently…
+    let typo = serde_json::json!({ "passive-only": true });
+    let dropped: ScanOptions = serde_json::from_value(typo.clone()).expect("should succeed");
+    assert!(
+        !dropped.passive_only,
+        "premise: serde drops the unknown key — that is WHY the seam check exists"
+    );
+    // …so the seam check is the only thing standing between the operator and an
+    // unauthorised active scan.
+    assert_eq!(
+        crate::core::scan::unknown_option_keys(&typo),
+        vec!["passive-only".to_string()],
+        "a misspelled passive_only must be REPORTED, never silently defaulted"
+    );
+}
+
+/// Every scope, spend and authorisation control is covered — not just the one
+/// the defect was found through. Each of these defaults to the permissive
+/// value, so each fails OPEN when silently dropped.
+#[test]
+fn every_permissive_default_control_is_covered() {
+    for key in [
+        "passive_only",
+        "free_only",
+        "max_cost_usd",
+        "modules",
+        "exclude_modules",
+        "category_focus",
+        "max_wall_time_secs",
+        "gate_speculative",
+    ] {
+        assert!(
+            crate::core::scan::known_option_keys().contains(key),
+            "{key} is a scope/spend control and must be a recognised option name"
+        );
+        let mut obj = serde_json::Map::new();
+        obj.insert(format!("{key}_x"), serde_json::Value::Bool(true));
+        assert_eq!(
+            crate::core::scan::unknown_option_keys(&serde_json::Value::Object(obj)).len(),
+            1,
+            "a misspelling of {key} must be reported"
+        );
+    }
+}
+
+/// The suggestion resolves the realistic transcriptions of a real name, and
+/// declines to guess at one that is not a transcription of anything. An
+/// operator who accepts a wrong guess lands on a *different* control.
+#[test]
+fn nearest_option_key_suggests_only_transcriptions() {
+    for spelling in [
+        "passive-only",
+        "passiveOnly",
+        "PASSIVE_ONLY",
+        "passive only",
+    ] {
+        assert_eq!(
+            crate::core::scan::nearest_option_key(spelling).as_deref(),
+            Some("passive_only"),
+            "{spelling} is a transcription of passive_only and must resolve to it"
+        );
+    }
+    assert_eq!(
+        crate::core::scan::nearest_option_key("stealth_mode"),
+        None,
+        "a name that is not a transcription of any option must NOT be guessed at"
+    );
+}
+
+/// A non-object `options` yields no keys — that is a shape error, which
+/// deserialisation reports; the key check must not also claim it.
+#[test]
+fn a_non_object_options_value_reports_no_unknown_keys() {
+    for v in [
+        serde_json::json!(null),
+        serde_json::json!("passive"),
+        serde_json::json!([1, 2]),
+    ] {
+        assert!(crate::core::scan::unknown_option_keys(&v).is_empty());
+    }
+}
+
+/// The guard named in `known_option_keys`' own doc: the serde key set is
+/// derived from the type, so it must equal the type's declared fields. A field
+/// that gained `skip_serializing_if` would silently drop out of the known set
+/// and start being rejected as unknown — valid requests refused. A field that
+/// gained `#[serde(rename)]` would change the wire name. Both are real changes
+/// that must be made consciously, so both fail here.
+#[test]
+fn derived_key_set_matches_the_struct_fields() {
+    let src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/core/scan/options.rs"
+    ));
+    let start = src
+        .find("pub struct ScanOptions {")
+        .expect("ScanOptions must be declared in options.rs");
+    let body = &src[start..];
+    let end = body.find("\n}").expect("struct body must close");
+    let declared: std::collections::BTreeSet<String> = body[..end]
+        .lines()
+        .skip(1)
+        .filter_map(|l| {
+            let l = l.trim();
+            l.starts_with("pub")
+                .then(|| l.split_whitespace().nth(1))
+                .flatten()
+                .and_then(|f| f.split(':').next())
+                .map(str::to_string)
+        })
+        .collect();
+    // Vacuity guard: an extraction that found nothing would make the comparison
+    // below trivially true against an empty derived set.
+    assert!(
+        declared.len() >= 25,
+        "field extraction found only {} fields — the parse, not the struct, changed",
+        declared.len()
+    );
+    assert_eq!(
+        crate::core::scan::known_option_keys(),
+        declared,
+        "the serde key set and the declared fields have diverged"
+    );
+}

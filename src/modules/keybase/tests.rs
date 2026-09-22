@@ -254,3 +254,107 @@ fn build_entities_case_insensitive_username_match_is_accepted() {
             .any(|e| e.kind == EntityKind::Username && e.value == "alice")
     );
 }
+
+/// `profile_kit::location_address` / `location_coordinates` are the shared
+/// authority six sibling profile modules already use (`steam_profile`,
+/// `codewars_user`, `gitlab_user`, `stackoverflow_user`, `codeberg_user`,
+/// `dockerhub_user`), and both refuse a value over 100 characters because —
+/// in the helper's own words — "a longer value is a bio mis-mapped to the
+/// location field, not a place."
+///
+/// `keybase` built both entities inline and checked only `loc.len() >= 3`, so
+/// a bio sitting in the location field became an `Address` **valued on the
+/// whole bio** plus a person-anchored `Coordinates` at `confidence::MEDIUM` —
+/// which is exactly the noisy-OR expansion floor, so it pivots. `city_coords`
+/// matches whole tokens anywhere in the string, so any city named in passing
+/// anchors the subject to it (REQ-KEYBASE-001).
+#[test]
+fn a_bio_in_the_location_field_is_not_a_place() {
+    let bio = "Software engineer and occasional speaker. Previously at ACME in \
+               Sydney, now mostly travelling. Opinions my own, DMs open.";
+    assert!(bio.len() > 100, "the fixture must exceed the shared cap");
+
+    let body = kb(&format!(
+        r#"{{
+        "status": {{"code": 0}},
+        "them": {{
+            "basics": {{"username": "carol"}},
+            "profile": {{"location": "{bio}"}},
+            "proofs_summary": {{"all": []}}
+        }}
+    }}"#
+    ));
+    let ents = build_entities(body, "carol", "scan");
+
+    assert!(
+        !ents
+            .iter()
+            .any(|e| e.kind == EntityKind::Address && e.value == bio),
+        "a 140-character bio is not an Address"
+    );
+    assert!(
+        !ents.iter().any(|e| e.kind == EntityKind::Coordinates),
+        "a city merely NAMED in a bio must not anchor the subject to it; got {:?}",
+        ents.iter()
+            .filter(|e| e.kind == EntityKind::Coordinates)
+            .map(|e| (e.value.clone(), e.confidence))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_real_location_still_yields_an_address_and_a_coordinate() {
+    // CONTROL — passes on the baseline AND the fix. The cap must reject bios,
+    // never ordinary places.
+    let body = kb(r#"{
+        "status": {"code": 0},
+        "them": {
+            "basics": {"username": "dave"},
+            "profile": {"location": "Melbourne, VIC"},
+            "proofs_summary": {"all": []}
+        }
+    }"#);
+    let ents = build_entities(body, "dave", "scan");
+    let a = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .expect("a real place is still an Address");
+    assert_eq!(a.value, "Melbourne, VIC");
+    assert!(a.has_tag("au-state:VIC") && a.has_tag("country:AU"));
+    let c = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Coordinates)
+        .expect("a real place is still geocoded");
+    assert!(c.has_tag("addr-derived") && c.has_tag("keybase"));
+    assert!(c.has_tag("au-state:VIC") && c.has_tag("country:AU"));
+}
+
+#[test]
+fn a_location_exactly_at_the_cap_is_still_a_place() {
+    // CONTROL and boundary: the shared helper rejects `> 100`, not `>= 100`.
+    // Pinning it here stops the consolidation from quietly tightening the
+    // contract the six sibling modules already depend on.
+    //
+    // The padding must survive `trim()`, which the helper applies BEFORE
+    // measuring. The first cut of this test padded with spaces, so the value
+    // collapsed to 6 characters and the assertion held for the wrong reason —
+    // a mutation tightening the cap to `>= 100` sailed straight past it.
+    let loc = format!("Sydney, New South Wales, Australia{}", "-x".repeat(33));
+    assert_eq!(loc.len(), 100);
+    assert_eq!(loc.trim().len(), 100, "the fixture must survive trimming");
+    let body = kb(&format!(
+        r#"{{
+        "status": {{"code": 0}},
+        "them": {{
+            "basics": {{"username": "erin"}},
+            "profile": {{"location": "{loc}"}},
+            "proofs_summary": {{"all": []}}
+        }}
+    }}"#
+    ));
+    let ents = build_entities(body, "erin", "scan");
+    assert!(
+        ents.iter().any(|e| e.kind == EntityKind::Coordinates),
+        "a 100-character location is within the shared cap"
+    );
+}

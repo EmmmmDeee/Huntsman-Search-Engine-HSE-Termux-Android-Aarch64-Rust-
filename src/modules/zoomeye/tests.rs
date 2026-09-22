@@ -79,10 +79,30 @@ fn deserialises_matches() {
 }
 
 #[test]
-fn error_body_deserialises_to_empty_matches() {
-    let resp: ZoomResp =
-        serde_json::from_str(r#"{"error":"invalid key","status":401}"#).expect("should succeed");
-    assert!(resp.matches.is_empty());
+fn unexpected_response_shape_fails_deserialization() {
+    // A 2xx response with an unexpected shape (e.g., `{"error": "..."}` from
+    // an auth failure, quota exceeded, or WAF block) must fail deserialization,
+    // not silently decode as `{"matches": []}` and report a clean "no results"
+    // (REQ-ZOOMEYE-001). Pre-fix: `#[serde(default)]` on `matches` silently
+    // defaulted a missing field to `vec![]`, so any 2xx error envelope read as
+    // "nothing indexed".
+    //
+    // Post-fix: removing `#[serde(default)]` makes deserialization fail, so the
+    // JSON decode error surfaces as a real ModuleError, never silent.
+    let error_envelope = r#"{"error":"invalid key","status":401}"#;
+    let result: serde_json::Result<ZoomResp> = serde_json::from_str(error_envelope);
+    assert!(
+        result.is_err(),
+        "an error envelope with no `matches` field must fail to deserialize; \
+         got a successful parse: {result:?}"
+    );
+    // A real empty response still works.
+    let empty_response = r#"{"matches":[]}"#;
+    let result: serde_json::Result<ZoomResp> = serde_json::from_str(empty_response);
+    assert!(
+        result.is_ok(),
+        "a valid empty response must deserialize: {result:?}"
+    );
 }
 
 #[test]
@@ -373,5 +393,47 @@ fn zoomeye_dork_rejects_unsupported_target_kinds() {
     assert_eq!(
         zoomeye_dork(&Target::new(TargetKind::Email, "a@b.com")),
         None
+    );
+}
+
+#[test]
+fn the_real_emission_path_marks_a_capped_sweep_and_leaves_a_short_one_alone() {
+    // REQ-ZOOMEYE-002, locked at the module's OWN call site rather than on the
+    // shared helper.
+    //
+    // This exists because a mutation survived without it. `mark_truncated_if_capped`
+    // is verified where it lives, but nothing checked that THIS module hands it
+    // THIS module's real cap: replacing `MAX_MATCHES` with `MAX_MATCHES * 1000`
+    // at the call site passed every other lock while silently disabling the
+    // signal forever. A shared guard cannot check its callers' arguments, so
+    // each caller has to pin its own.
+    let target = Target::new(TargetKind::IpAddress, "8.8.8.8");
+    let host = |n: usize| {
+        (0..n)
+            .map(|i| serde_json::json!({"ip": format!("198.51.100.{}", i % 254 + 1), "portinfo": {"port": 80 + i}}))
+            .collect::<Vec<_>>()
+    };
+
+    let full = ZoomResp {
+        matches: host(MAX_MATCHES),
+    };
+    let r = extract_entities(&full, &target, "8.8.8.8", "scan");
+    let reason = r
+        .truncation
+        .expect("a sweep filling the client-side cap must declare itself bounded");
+    assert!(
+        reason.contains(&MAX_MATCHES.to_string()),
+        "the operator needs the cap that bit: {reason}"
+    );
+
+    // THE OVER-CORRECTION CONTROL: one under the cap is an exhaustive answer.
+    let short = ZoomResp {
+        matches: host(MAX_MATCHES - 1),
+    };
+    assert!(
+        extract_entities(&short, &target, "8.8.8.8", "scan")
+            .truncation
+            .is_none(),
+        "a sweep that did not reach the cap is exhaustive and must not be flagged"
     );
 }

@@ -96,11 +96,51 @@ fn missing_optional_fields_default_cleanly() {
 #[test]
 fn deserializes_a_response_with_no_result_field_at_all() {
     // The RapidAPI gateway's own quota/error bodies (`{"message": "..."}`) carry
-    // none of this shape's fields — every field must default (success: false,
-    // found: 0, result: empty) rather than fail to parse, so `process()` can
-    // treat it as a clean miss instead of a decode error.
+    // none of this shape's fields, and must still DECODE rather than fail to
+    // parse — that part was always right, and is what this test is named for.
+    //
+    // REQ-SUCCESSFLAG-001 corrected what the old comment concluded from it:
+    // "so `process()` can treat it as a clean miss". A quota notice is not a
+    // clean miss; it is the provider refusing to answer, and reporting it as
+    // CleanNegative asserts the identifier is in no known breach. `success` is
+    // now `Option<bool>`, so ABSENT is distinguishable from the API saying
+    // `false` — the distinction a `#[serde(default)] bool` erased.
     let b = body(r#"{"message": "You have exceeded the MONTHLY quota"}"#);
-    assert!(!b.success);
+    assert_eq!(b.success, None, "an absent key must read as absent, not as false");
     assert_eq!(b.found, 0);
     assert!(b.result.is_empty());
+}
+
+/// REQ-SUCCESSFLAG-001. `process` decided with ONE expression —
+/// `!body.success || body.result.is_empty()` — returning `Ok(empty)` for it, so
+/// dispatch recorded `ModuleDone { found: 0 }` and `core::coverage` aggregated
+/// every one of three different realities to `CleanNegative`: "queried, holds
+/// nothing on this subject".
+///
+/// Tested off JSON **text**, not constructed structs: a struct literal can only
+/// express presence, and an ABSENT `success` key is precisely the case the old
+/// `#[serde(default)] bool` could not distinguish from the API saying it failed
+/// (the rule REQ-FOFA-001 left behind).
+#[test]
+fn a_failure_an_unreadable_body_and_a_clean_miss_are_three_outcomes_not_one() {
+    let v = |j: &str| classify(&serde_json::from_str::<BreachDirResp>(j).expect("decodes"));
+
+    // The provider answered, and the answer was failure.
+    assert!(matches!(v(r#"{"success":false,"result":[]}"#), BodyVerdict::ProviderFailed));
+    // Not this API's shape at all — a gateway notice, a quota page.
+    assert!(matches!(v(r#"{"message":"not subscribed"}"#), BodyVerdict::Uninterpretable));
+    assert!(matches!(v(r#"{}"#), BodyVerdict::Uninterpretable));
+
+    // ── The control that matters more than the rejections. ──
+    // A genuine miss MUST still be a clean negative. A "fix" that turned every
+    // empty answer into an error would satisfy the assertions above and destroy
+    // this module's ability to report an honest absence — strictly worse than
+    // the defect it replaced.
+    assert!(matches!(v(r#"{"success":true,"result":[]}"#), BodyVerdict::CleanMiss));
+    // And a real answer with rows is still data.
+    assert!(matches!(v(r#"{"success":true,"result":[{"sources":["Collection#1"],"has_password":true}]}"#), BodyVerdict::Rows));
+    // Weakest-condition check: rows present but `success` omitted is DATA, not
+    // a refusal. Requiring `success` outright would be the fail-shut trade
+    // REQ-FOFA-001 rejected.
+    assert!(matches!(v(r#"{"result":[{"sources":["Collection#1"],"has_password":true}]}"#), BodyVerdict::Rows));
 }

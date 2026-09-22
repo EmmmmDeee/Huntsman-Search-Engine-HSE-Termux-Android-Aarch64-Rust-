@@ -299,6 +299,13 @@ pub(super) async fn parse_oathnet_json(
                     svc,
                     pw,
                     Some(format!("Import: {svc} key from stealer data")),
+                    // Provenance: this key was recovered from a stealer-log /
+                    // infostealer dump (the oathnet import path), NOT supplied
+                    // by the operator. Stamping `discovered_by` is what keeps
+                    // it out of the `next_key_excluding` auth chokepoint, so
+                    // HSE never authenticates its own outbound requests with a
+                    // stranger's stolen credential (REQ-KEYPOOL-001).
+                    Some(format!("stealer_import:{svc}")),
                 )
                 .await;
                 if valid {

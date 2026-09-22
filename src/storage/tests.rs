@@ -1001,6 +1001,34 @@ fn radar_history_returns_only_radar_sentinel_scans_newest_first() {
 }
 
 #[test]
+fn radar_history_orders_a_same_second_tie_by_creation_not_by_id() {
+    // `started_at` is whole seconds. Two sweeps started in the same second
+    // used to be ordered by their random ids; the disruption review reads a
+    // forced disconnection from CONSECUTIVE sweeps, so the tie must follow
+    // creation order (the rowid, stable because `upsert_scan` updates in
+    // place). The ids are chosen so that `id DESC` would invert the truth.
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    let mut first = Scan::new("zz-first", Target::new(TargetKind::Coordinates, "0,0"));
+    first.started_at = 1_700_000_000;
+    store.upsert_scan(&first).expect("should succeed");
+    let mut second = Scan::new("aa-second", Target::new(TargetKind::Coordinates, "0,0"));
+    second.started_at = 1_700_000_000;
+    store.upsert_scan(&second).expect("should succeed");
+    // A later update in place (the sweep completing) must not reorder them.
+    first.status = crate::core::scan::ScanStatus::Complete;
+    store.upsert_scan(&first).expect("should succeed");
+
+    let sweeps = store.radar_history(10).expect("should succeed");
+    assert_eq!(
+        sweeps.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+        vec!["aa-second", "zz-first"],
+        "newest CREATED first within the same second: {sweeps:?}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn radar_history_respects_limit() {
     let path = tmp_db();
     let store = Store::open(&path).expect("should succeed");
@@ -1289,6 +1317,7 @@ fn event_log_round_trips_in_emission_order() {
         EventKind::ModuleDone {
             module: "dns_intel".into(),
             found: 3,
+            truncated: None,
         },
     ]
     .into_iter()
@@ -1349,6 +1378,7 @@ fn recent_module_outcome_events_filters_orders_and_bounds_across_scans() {
             EventKind::ModuleDone {
                 module: "dns_intel".into(),
                 found: 3,
+                truncated: None,
             },
         ),
         (
@@ -1597,6 +1627,7 @@ fn delete_scan_cascades_to_events() {
             EventKind::ModuleDone {
                 module: "dns_intel".into(),
                 found: 1,
+                truncated: None,
             },
         ))
         .expect("should succeed");
@@ -2756,6 +2787,7 @@ fn insert_events_batch_persists_all_in_emission_order() {
             EventKind::ModuleDone {
                 module: "dns_intel".into(),
                 found: 3,
+                truncated: None,
             },
         ),
     ];
@@ -2863,6 +2895,7 @@ fn open_produces_exact_schema_and_pragmas() {
         "index|idx_rf_device",
         "index|idx_rf_epoch",
         "index|idx_rf_geo",
+        "index|idx_rf_network",
         "index|idx_rf_oui",
         "index|idx_rf_scan",
         "index|idx_scans_started",
@@ -2870,6 +2903,8 @@ fn open_produces_exact_schema_and_pragmas() {
         "index|idx_scans_target",
         "index|idx_stealer_rows_log",
         "index|idx_stealer_rows_scan",
+        // The device's own Wi-Fi link, one row per sweep (REQ-RESILIENCE-002).
+        "index|idx_wifi_links_scan",
         "index|sqlite_autoindex_correlations_1",
         "index|sqlite_autoindex_entities_1",
         "index|sqlite_autoindex_entity_observations_1",
@@ -2900,6 +2935,7 @@ fn open_produces_exact_schema_and_pragmas() {
         "table|sqlite_stat1",
         "table|sqlite_stat4",
         "table|stealer_rows",
+        "table|wifi_links",
         "view|rf_devices",
         "view|rf_shared_names",
     ];
@@ -3357,6 +3393,7 @@ fn prune_events_spares_a_live_scans_events_but_not_a_finished_or_zombie_scans() 
                 EventKind::ModuleDone {
                     module: format!("m{i}"),
                     found: i,
+                    truncated: None,
                 },
             );
             ev.ts = first_ts + i as u64;

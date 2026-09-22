@@ -45,7 +45,7 @@ use crate::core::{
 use crate::util::http::fetch_json;
 use crate::util::mediawiki::MwError;
 
-use self::builder::{candidate_entity, primary_entities};
+use self::builder::{candidate_entity, mark_shared_labels, primary_entities};
 use self::classify::{name_matches_query, seed_kind};
 use self::types::{EntitiesResp, SearchResp};
 use self::urls::{entities_url, search_url};
@@ -149,7 +149,11 @@ impl Module for Wikidata {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let query = target.value.trim();
         if query.len() < 3 {
-            return Ok(ModuleResult::new());
+            return Err(crate::core::error::Error::query_too_weak(
+                crate::core::event::SkipClass::Scoped,
+                query,
+                "a 1-2 character query matches noise across every Wikidata label",
+            ));
         }
 
         let search: SearchResp = fetch_json(&ctx.http, SRC, &search_url(query)).await?;
@@ -218,6 +222,12 @@ impl Module for Wikidata {
             rest.iter()
                 .map(|hit| candidate_entity(hit, target.kind, &ctx.scan_id)),
         );
+
+        // A label this same answer holds more than once does not identify one
+        // item; see `mark_shared_labels` for what the engine's merge does with
+        // that if nothing intervenes (REQ-WIKIDATA-001).
+        let labels: Vec<&str> = eligible.iter().filter_map(|h| h.label.as_deref()).collect();
+        mark_shared_labels(&mut out.entities, target.kind, &labels);
 
         // More name-matching items existed than MAX_CANDIDATES surfaced — the
         // head entity (always out.entities[0]: both branches above push it

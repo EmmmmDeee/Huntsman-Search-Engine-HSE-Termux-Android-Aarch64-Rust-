@@ -340,6 +340,7 @@ fn flags_a_zero_yield_keyed_or_paid_module() {
         EventKind::ModuleDone {
             module: "shodan".into(),
             found: 0,
+            truncated: None,
         },
     )];
     assert_eq!(
@@ -356,6 +357,7 @@ fn ignores_a_module_that_found_something() {
         EventKind::ModuleDone {
             module: "shodan".into(),
             found: 3,
+            truncated: None,
         },
     )];
     assert!(keyed_or_paid_zero_yield_modules(&events, &costs()).is_empty());
@@ -370,6 +372,7 @@ fn ignores_a_free_module_with_zero_yield() {
         EventKind::ModuleDone {
             module: "search_engines".into(),
             found: 0,
+            truncated: None,
         },
     )];
     assert!(keyed_or_paid_zero_yield_modules(&events, &costs()).is_empty());
@@ -385,6 +388,7 @@ fn output_is_sorted_and_deduped() {
             EventKind::ModuleDone {
                 module: m.into(),
                 found: 0,
+                truncated: None,
             },
         )
     };

@@ -62,14 +62,25 @@ struct GeoResponse {
     results: Vec<GeoResult>,
 }
 
-/// One geocoding hit. `latitude`/`longitude` are always present on a real hit;
-/// every enrichment field is optional and emitted only when returned.
+/// One geocoding hit.
+///
+/// `latitude`/`longitude` are `Option` **on purpose** (REQ-OPENMETEO-001). The
+/// struct-wide `#[serde(default)]` exists for the enrichment fields below, all
+/// of which are already `Option` — but it also caught these two when they were
+/// bare `f64`, so a hit that simply omitted `latitude` deserialized to `0.0`
+/// instead of failing. `0.0` beside a real longitude passes `is_valid_coords`
+/// (correctly — the equator is a real place, REQ-GEOGATE-001), so the row
+/// became a `Coordinates` entity at a latitude the provider never sent. A
+/// missing component is not zero; modelling it as absent is what makes the
+/// difference expressible at all. Every sibling geo module does the same
+/// (`IpApiCoResp`, `FreeIpApiResp`, beaconDB's `Location`, mylnikov's data
+/// block, WiGLE's `Network`).
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct GeoResult {
     name: String,
-    latitude: f64,
-    longitude: f64,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
     elevation: Option<f64>,
     feature_code: Option<String>,
     country: Option<String>,
@@ -119,15 +130,22 @@ fn build_entities(results: &[GeoResult], query: &str, scan_id: &str) -> Vec<Enti
         if out.len() >= RESULT_LIMIT {
             break;
         }
-        if !is_valid_coords(r.latitude, r.longitude) {
+        // A hit missing either component is skipped, NOT defaulted to zero
+        // (REQ-OPENMETEO-001). This sits with the validity check so a skipped
+        // row costs no `RESULT_LIMIT` budget, exactly as an invalid-coord row
+        // does not.
+        let (Some(lat), Some(lon)) = (r.latitude, r.longitude) else {
+            continue;
+        };
+        if !is_valid_coords(lat, lon) {
             continue;
         }
-        let coords = format!("{:.6},{:.6}", r.latitude, r.longitude);
+        let coords = format!("{lat:.6},{lon:.6}");
         let in_au = r
             .country_code
             .as_deref()
             .is_some_and(|c| c.eq_ignore_ascii_case("AU"))
-            || is_in_australia(r.latitude, r.longitude);
+            || is_in_australia(lat, lon);
         // The anchor is the first EMITTED (valid) hit — keyed on `out.is_empty()`,
         // not the raw result index, so an invalid-coord result that is skipped
         // above never consumes the anchor slot and demotes a valid in-AU hit
@@ -143,7 +161,7 @@ fn build_entities(results: &[GeoResult], query: &str, scan_id: &str) -> Vec<Enti
         e.tag("geocoded");
         if in_au {
             e.tag("au-relevant");
-            if let Some(state) = au_state_for_coords(r.latitude, r.longitude) {
+            if let Some(state) = au_state_for_coords(lat, lon) {
                 e.tag(format!("au-state:{state}"));
             }
         } else {
@@ -155,7 +173,7 @@ fn build_entities(results: &[GeoResult], query: &str, scan_id: &str) -> Vec<Enti
             e.tag("candidate");
         }
 
-        e.add_evidence(build_evidence(r, query, &coords));
+        e.add_evidence(build_evidence(r, query, &coords, lat, lon));
         out.push(e);
     }
 
@@ -164,15 +182,21 @@ fn build_entities(results: &[GeoResult], query: &str, scan_id: &str) -> Vec<Enti
 
 /// Build the enrichment evidence for one hit — every field guarded so an absent
 /// value is simply omitted, never emitted as a fabricated default.
-fn build_evidence(r: &GeoResult, query: &str, coords: &str) -> Evidence {
+///
+/// `lat`/`lon` are passed in already validated rather than re-read from `r`
+/// (REQ-OPENMETEO-001): they are `Option` on the wire, and the caller has
+/// already established both are present. Re-reading them here would be the one
+/// place in this function that could still emit a fabricated default, which is
+/// exactly what the doc line above promises it does not do.
+fn build_evidence(r: &GeoResult, query: &str, coords: &str, lat: f64, lon: f64) -> Evidence {
     let mut ev = Evidence::new(
         SRC,
         format!("Geocoded \"{query}\" \u{2192} {coords} ({})", r.name),
     )
     .with_attr("input_address", query)
     .with_attr("place_name", &r.name)
-    .with_attr("latitude", format!("{:.6}", r.latitude))
-    .with_attr("longitude", format!("{:.6}", r.longitude));
+    .with_attr("latitude", format!("{lat:.6}"))
+    .with_attr("longitude", format!("{lon:.6}"));
     if let Some(c) = &r.country {
         ev = ev.with_attr("country", c);
     }

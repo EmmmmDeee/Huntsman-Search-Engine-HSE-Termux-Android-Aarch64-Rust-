@@ -1041,6 +1041,23 @@ fn core_does_not_import_util_directly() {
                 && !line.contains("util::hashcat::is_common_password")
                 && !line.contains("util::hashcat::digests_of")
                 && !line.contains("util::hashcat::is_common_collision")
+                // Pure, offline, dependency-free capture-sentinel predicate (an
+                // ASCII-uppercase copy, two substring tests and a bracket-trimmed
+                // match against a const list; no I/O, no state, no upward deps) —
+                // the same leaf category as the three `util::hashcat` predicates
+                // directly above, and used by the SAME rule. AU-105 must not read
+                // a provider's withheld-access placeholder as a reused secret: the
+                // placeholder is identical by construction in every row the
+                // provider withheld, so it is the strongest possible false "same
+                // secret" signal and fired a High account-takeover claim from data
+                // that is not a secret at all. It lives in `util` rather than
+                // `core` precisely so it is the SAME predicate the breach PARSERS
+                // apply when deciding what to mint (`dehashed`'s two credential
+                // loops, `oathnet_pro`, `see_know`), and the module and correlator
+                // sides can never drift on what counts as a secret. Scoped to the
+                // single function rather than the whole module so the guard stays
+                // precise if `util::extract` ever grows a non-pure item.
+                && !line.contains("util::extract::is_placeholder_secret")
                 // Pure, dependency-free disjoint-set / union-find primitive (a
                 // flat parent `Vec<usize>` with path-halving; no state, no I/O,
                 // no deps), same leaf category as `util::geometry`. The
@@ -1209,3 +1226,716 @@ include!("architecture_parts/architecture_part4.rs");
 include!("architecture_parts/architecture_part5.rs");
 include!("architecture_parts/architecture_part6.rs");
 include!("architecture_parts/architecture_part7.rs");
+
+/// A provider address is born through one emitter, so its confidence can never
+/// drift above the fix it was composed from again (REQ-IPGEO-001).
+///
+/// Eight modules composed a city/region/country address from a geolocation
+/// reading and then each chose an `Address` confidence by hand, with nothing
+/// tying that number to the sibling `Coordinates` built from the same reading.
+/// Five had drifted above it — `ip_geo` by 0.15 on a mobile IP, `shodan` by
+/// 0.10 on its country-centroid fallback, `criminal_ip` by 0.05, `ipquery` by
+/// 0.04, `ipinfo` by 0.02 — and the two that were sound were sound by
+/// coincidence, not by construction. An address is a *rounding off* of the fix,
+/// so it is strictly coarser and can never be the more confident of the two.
+///
+/// This is the structural half of the fix: `util::geo::coarse_provider_address`
+/// takes the sibling fix and caps against it, and a module that composes an
+/// address must go through it rather than calling `Entity::new` with a constant
+/// of its own. Without this check the invariant would hold only for the eight
+/// modules that exist today, and the ninth would be free to reintroduce it —
+/// exactly how the first five arrived.
+#[test]
+fn a_composed_provider_address_is_born_through_the_shared_emitter() {
+    /// Modules exempt from the rule, each with the reason it cannot hold.
+    ///
+    /// Keep this list empty unless a module genuinely composes an address it
+    /// never births as an entity (evidence text only, say). An entry here is a
+    /// claim that must stay true, not a way to silence a failure.
+    const EXEMPT: &[(&str, &str)] = &[];
+
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs")
+                // Test code builds Address fixtures freely; the rule is about
+                // production emission.
+                && !path.components().any(|c| c.as_os_str() == "tests")
+                && path.file_name().is_some_and(|n| n != "tests.rs")
+            {
+                out.push(path);
+            }
+        }
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    walk(&root.join("src/modules"), &mut files);
+
+    let mut composing = 0usize;
+    let mut violations = Vec::new();
+    for path in files {
+        let raw = fs::read_to_string(&path).unwrap();
+        let src = production_source(&raw);
+        if !src.contains("compose_address(") {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        if let Some((_, why)) = EXEMPT.iter().find(|(f, _)| rel.contains(f)) {
+            assert!(!why.is_empty(), "an exemption must carry its reason");
+            continue;
+        }
+        composing += 1;
+        // `Entity::new(` and its first argument are routinely split across lines
+        // by rustfmt, so the check is on a whitespace-collapsed copy.
+        let flat: String = src.split_whitespace().collect::<Vec<_>>().join(" ");
+        if flat.contains("Entity::new( EntityKind::Address") {
+            violations.push(format!(
+                "{rel}: composes an address and then calls Entity::new(EntityKind::Address, ..) \
+                 with a confidence of its own — use util::geo::coarse_provider_address, which \
+                 caps against the sibling Coordinates fix"
+            ));
+        }
+        if !src.contains("coarse_provider_address(") {
+            violations.push(format!(
+                "{rel}: composes an address but never reaches coarse_provider_address — if the \
+                 composed string is never born as an Address entity, add it to EXEMPT with that \
+                 reason"
+            ));
+        }
+    }
+
+    assert!(
+        composing >= 8,
+        "eight modules compose a provider address; found {composing} — has compose_address been \
+         renamed, or the walk stopped reaching src/modules?"
+    );
+    assert!(
+        violations.is_empty(),
+        "a composed provider address must be born through the shared emitter \
+         ({} of {composing}):\n  {}",
+        violations.len(),
+        violations.join("\n  ")
+    );
+}
+
+/// An EXIF GPS fix is worth one thing, wherever the file came from
+/// (REQ-DOCPARSE-001).
+///
+/// `util::exif`'s own header says its two consumers — `modules::exif_geo` for
+/// images found during a scan, `util::document_parse::image_geolocation` for
+/// files handed to `hse ingest` — "must agree on what a coordinate means".
+/// They read the identical GPS IFD through the identical `extract_gps` and then
+/// disagreed on its worth by 0.15: 0.80 over the network, 0.95 on disk. The
+/// 0.95 outranked `AUTHORITATIVE` (0.92, a government register) and the WiGLE
+/// consensus rung its own sibling's comment says an EXIF fix must sit below —
+/// for a tag anyone can rewrite with `exiftool`.
+///
+/// `util::exif::GPS_FIX_CONFIDENCE` is now the single answer. This holds the
+/// third path to it. Its limit, stated rather than implied: it checks that a
+/// file reaching for the GPS IFD names the shared constant, not that every
+/// coordinate in that file is stamped with it — a file could reference it and
+/// still hand a Coordinates entity some other rung. The runtime locks in
+/// `image_geolocation` and the ladder test in `util::exif` cover the values
+/// themselves.
+#[test]
+fn an_exif_gps_fix_uses_the_one_shared_confidence() {
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    walk(&root.join("src"), &mut files);
+
+    let mut readers = Vec::new();
+    let mut violations = Vec::new();
+    for path in files {
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        // The definition site itself, and test code building fixtures.
+        if rel == "src/util/exif.rs"
+            || path.components().any(|c| c.as_os_str() == "tests")
+            || path.file_name().is_some_and(|n| n == "tests.rs")
+        {
+            continue;
+        }
+        let src = production_source(&fs::read_to_string(&path).unwrap());
+        if !src.contains("extract_gps(") {
+            continue;
+        }
+        readers.push(rel.clone());
+        if !src.contains("GPS_FIX_CONFIDENCE") {
+            violations.push(format!(
+                "{rel}: reads the EXIF GPS IFD but never names \
+                 util::exif::GPS_FIX_CONFIDENCE — it is choosing a second \
+                 answer to what a GPS tag is worth"
+            ));
+        }
+    }
+
+    assert!(
+        readers.len() >= 2,
+        "exif_geo and image_geolocation both read the GPS IFD; found {} ({}) — \
+         has extract_gps been renamed?",
+        readers.len(),
+        readers.join(", ")
+    );
+    assert!(
+        violations.is_empty(),
+        "an EXIF GPS fix must carry the one shared confidence ({} of {}):\n  {}",
+        violations.len(),
+        readers.len(),
+        violations.join("\n  ")
+    );
+}
+
+/// Nothing mutates a discovered entity after its durable event is emitted
+/// (REQ-ENGINE-001).
+///
+/// `EventKind::EntityFound` is the record a scan is rebuilt from when it never
+/// finalises — routine on Termux/Android, where the OS reclaims backgrounded
+/// processes. `Store::entities_for_scan` falls back to
+/// `Store::entities_from_events`, which merges the logged entities, canonicalises
+/// their order and returns them, applying no enrichment of its own. Whatever is
+/// not on the entity at the emit does not exist for that scan, ever.
+///
+/// Two of the three finalisation passes already said so in their own comments —
+/// "Before the emit so the event log (and the recovery rebuild) carries it too"
+/// — while `enrich_geospatial` ran after it, so every recovered scan's
+/// Coordinates and Address came back with no geohash, timezone, country or
+/// hemisphere tag, and the geo correlation rules that read those tags saw
+/// nothing.
+///
+/// The check is the general form on purpose: not "these three passes are in
+/// this order", which a fourth pass added below the emit would walk straight
+/// past, but "no `&mut entity` appears between the emit and the end of the
+/// admission block".
+#[test]
+fn entity_mutations_precede_the_durable_emit() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let src = fs::read_to_string(root.join("src/core/engine/dispatch.rs")).expect("dispatch.rs");
+
+    // The construction, not the name: the explanatory comment above the emit
+    // mentions `EventKind::EntityFound` too, and matching that instead would
+    // put the split point above the very passes this test is checking — a
+    // self-inflicted false positive, which is exactly what it did first time.
+    let emit = src
+        .find("EventKind::EntityFound {")
+        .expect("the EntityFound emit — has it been renamed or moved?");
+    // The admission block ends when the surviving entity is counted.
+    let block_end = src[emit..]
+        .find("found += 1;")
+        .map(|i| emit + i)
+        .expect("`found += 1;` closes the admission block");
+    let tail = &src[emit..block_end];
+
+    let offenders: Vec<&str> = tail
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with("//") && l.contains("&mut entity"))
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "these mutate the entity AFTER its durable EntityFound event, so a \
+         recovered scan never sees the change — move them above the emit:\n  {}",
+        offenders.join("\n  ")
+    );
+
+    // Not vacuous: the passes that must run before the emit are really there.
+    let head = &src[..emit];
+    for pass in [
+        "tag_breach_sector(&mut entity)",
+        "tag_platform_infra(&mut entity)",
+        "enrich_geospatial(&mut entity)",
+    ] {
+        assert!(
+            head.contains(pass),
+            "{pass} must run before the durable emit; it is not in the block above it"
+        );
+    }
+}
+
+/// Every WiGLE-trilaterated coordinate goes through the strict provider gate
+/// (REQ-WIGLE-001).
+///
+/// `is_valid_coords` rejects only `(0,0)` and out-of-range values.
+/// `is_plausible_provider_coord` additionally rejects the near-null-island
+/// JITTER BAND just outside it — which is what WiGLE emits for "no fix", and
+/// the whole reason the stricter predicate exists.
+///
+/// `wigle` gated four `trilat`/`trilong` sites: two with the strict check
+/// (`emit.rs`'s BSSID and SSID emitters) and two with the weak one (the
+/// cell-tower top-3 list, and each AP's own position in `mod.rs`). Same
+/// provider, same two fields, opposite answers — the module knew the rule and
+/// applied it to half its sites. `wifi_intel`, `criminal_ip`, `netlas` and
+/// `censys` each had the same defect fixed one module at a time, with nothing
+/// added to stop the next one; this is that missing piece for the WiGLE family.
+///
+/// Scoped to `src/modules/wigle/` deliberately. `is_valid_coords` is correct
+/// elsewhere — an on-device GPS fix (`device_fix`), a Wikidata claim, a
+/// geocoder result — because those sources do not emit the band as a
+/// placeholder. The rule is about PROVIDER-trilaterated data, not about
+/// coordinates generally.
+#[test]
+fn wigle_trilateration_uses_the_strict_provider_gate() {
+    /// Sites exempt from the rule, each with the reason it cannot hold.
+    ///
+    /// Keep this empty. An entry is a claim that must stay true, not a way to
+    /// silence a failure.
+    const EXEMPT: &[(&str, &str)] = &[];
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = root.join("src/modules/wigle");
+    let mut checked = 0usize;
+    let mut violations = Vec::new();
+
+    for entry in fs::read_dir(&dir).expect("src/modules/wigle") {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "rs")
+            || path.file_name().is_some_and(|n| n == "tests.rs")
+        {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        if let Some((_, why)) = EXEMPT.iter().find(|(f, _)| rel.ends_with(f)) {
+            assert!(!why.is_empty(), "an exemption must carry its reason");
+            continue;
+        }
+        checked += 1;
+        let src = production_source(&fs::read_to_string(&path).unwrap());
+        for (i, line) in src.lines().enumerate() {
+            if line.contains("is_valid_coords(") {
+                violations.push(format!("{rel}:{}: {}", i + 1, line.trim()));
+            }
+        }
+    }
+
+    assert!(
+        checked >= 4,
+        "wigle has account/emit/fetch/mod; scanned only {checked} — has the \
+         module been reorganised?"
+    );
+    // Not vacuous: the strict gate really is what the module reaches for.
+    let emit = fs::read_to_string(dir.join("emit.rs")).expect("emit.rs");
+    assert!(
+        emit.contains("is_plausible_provider_coord("),
+        "emit.rs must use the strict provider gate"
+    );
+    assert!(
+        violations.is_empty(),
+        "WiGLE trilateration must use is_plausible_provider_coord — \
+         is_valid_coords lets WiGLE's own no-fix jitter band through as a real \
+         position ({} site(s)):\n  {}",
+        violations.len(),
+        violations.join("\n  ")
+    );
+}
+
+/// REQ-LIBRAVATAR-001. `is_image_content_type` is a pure helper, so its own
+/// unit tests prove only that the *classifier* is correct — not that `process`
+/// consults it. A refactor that dropped the call would leave those tests green
+/// while restoring the defect: every 200 read as an avatar again.
+///
+/// This locks the wiring. The call must sit between the point the 2xx is
+/// admitted (`ok_or_absent`) and the point the finding is minted
+/// (`build_avatar_result`), because a check after the emit guards nothing.
+///
+/// Anchored on the three **constructions**, never on bare names: the module's
+/// own explanatory comment beside the gate names `is_image_content_type`, and
+/// an earlier architecture test in this file was defeated by exactly that —
+/// matching the prose it had just been given rather than the code. Comments and
+/// string literals are blanked first for the same reason.
+#[test]
+fn a_libravatar_presence_is_gated_on_the_response_being_an_image() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let raw = fs::read_to_string(root.join("src/modules/libravatar/mod.rs"))
+        .expect("libravatar module must exist");
+
+    // Blank `//` comments and string literals so prose naming the helper
+    // cannot satisfy the check.
+    let mut src = String::with_capacity(raw.len());
+    for line in raw.lines() {
+        let code = line.split("//").next().unwrap_or("");
+        let mut in_str = false;
+        for ch in code.chars() {
+            match ch {
+                '"' => {
+                    in_str = !in_str;
+                    src.push('"');
+                }
+                _ if in_str => src.push(' '),
+                _ => src.push(ch),
+            }
+        }
+        src.push('\n');
+    }
+
+    let admit = src
+        .find("ok_or_absent(SRC, resp, &[404])")
+        .expect("process must still admit a 2xx via ok_or_absent");
+    let emit = src
+        .find("Ok(build_avatar_result(")
+        .expect("process must still mint the avatar via build_avatar_result");
+    let gate = src.find("is_image_content_type(content_type)").expect(
+        "libravatar must gate the finding on the response being an image \
+         (REQ-LIBRAVATAR-001): a 200 alone cannot tell an avatar from an \
+         anti-bot wall, and this module's finding is a claim about a person",
+    );
+
+    assert!(
+        admit < gate && gate < emit,
+        "the image-type gate must sit between admitting the 2xx ({admit}) and \
+         minting the finding ({emit}), but is at {gate} — a check that does not \
+         precede the emit guards nothing"
+    );
+}
+
+/// REQ-WIFIINTEL-002. `leg_failure` and `disclose_lookups` are pure, so their
+/// unit tests prove only that the *decisions* are right — not that `process`
+/// takes them. The defect being locked out was precisely a `process` that
+/// reached the right information and threw it away: the WiGLE error was
+/// formatted into a `tracing::debug!` line and dropped, and `Ok(result)`
+/// returned as though the provider had answered.
+///
+/// This lock pins the whole path, in order. The refusal must be captured where
+/// it is observed; the disclosure must be written onto the entities BEFORE the
+/// result is returned (a note added after the return reaches nobody); the
+/// ledger decision must be taken from the recorded outcomes rather than from
+/// whatever happened to be in scope; and the `ModuleError` must be published
+/// before `Ok(result)`.
+///
+/// Anchored on **constructions**, never on bare names: this module's header
+/// prose names `ModuleError`, `wigle_lookup` and `or_hard_failure`, and an
+/// earlier architecture test in this file was defeated by matching exactly such
+/// prose. Comments and string literals are blanked first for the same reason.
+#[test]
+fn a_wifi_intel_wigle_refusal_is_never_discarded() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let raw = fs::read_to_string(root.join("src/modules/wifi_intel/mod.rs"))
+        .expect("wifi_intel module must exist");
+
+    // Blank `//` comments (including the `//!` header) and string literals, so
+    // prose naming the mechanism cannot satisfy the check.
+    let mut src = String::with_capacity(raw.len());
+    for line in raw.lines() {
+        let code = line.split("//").next().unwrap_or("");
+        let mut in_str = false;
+        for ch in code.chars() {
+            match ch {
+                '"' => {
+                    in_str = !in_str;
+                    src.push('"');
+                }
+                _ if in_str => src.push(' '),
+                _ => src.push(ch),
+            }
+        }
+        src.push('\n');
+    }
+
+    let capture = src.find("Lookup::Refused(e.to_string())").expect(
+        "the WiGLE error must be CAPTURED where it is observed \
+         (REQ-WIFIINTEL-002): logging it and breaking leaves a revoked token \
+         indistinguishable from a corpus that holds nothing",
+    );
+    let disclose = src
+        .find("disclose_lookups(&mut result, &outcomes)")
+        .expect("every unanswered lookup must be written onto its own AP entity");
+    let decide = src
+        .find("leg_failure(&outcomes)")
+        .expect("the coverage-ledger decision must be taken from the recorded outcomes");
+    let publish = src
+        .find("EventKind::ModuleError {")
+        .expect("a refusal must reach the scan's event log as a ModuleError");
+    let ret = src
+        .find("Ok(result)")
+        .expect("process must still return its kept findings");
+
+    assert!(
+        capture < disclose && disclose < decide && decide < publish && publish < ret,
+        "the refusal path must run capture ({capture}) → disclose ({disclose}) \
+         → decide ({decide}) → publish ({publish}) → return ({ret}); anything \
+         after the return is unreachable and anything before the capture is \
+         deciding on information that has not been gathered yet"
+    );
+}
+
+/// REQ-DOHRESOLVER-001. `dns_wholly_unreachable` is a pure predicate, and its
+/// unit tests prove only that it classifies correctly — not that the three
+/// dedicated passes consult it. They did not: the `i == 1` early break guarded
+/// only the `RECORD_TYPES` loop, so the DMARC, CAA and TLSRPT passes ran
+/// regardless, issuing three more lookups — six more HTTP requests across the
+/// two providers — to resolvers the same dispatch had already proved
+/// unreachable.
+///
+/// That is invisible to every unit test, because `process` needs a live network
+/// and a `ModuleContext`. This locks the wiring instead: all three guards must
+/// exist, and all three must sit between the record-type loop that establishes
+/// the outage and the point the outage is reported.
+///
+/// Anchored on the **construction**, with comments and string literals blanked
+/// first: this module's own prose now names `dns_wholly_unreachable` several
+/// times, and an earlier architecture test in this file was defeated by
+/// matching exactly such prose.
+#[test]
+fn doh_resolvers_proved_unreachable_are_not_asked_three_more_times() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let raw = fs::read_to_string(root.join("src/modules/doh_resolver/mod.rs"))
+        .expect("doh_resolver module must exist");
+
+    let mut src = String::with_capacity(raw.len());
+    for line in raw.lines() {
+        let code = line.split("//").next().unwrap_or("");
+        let mut in_str = false;
+        for ch in code.chars() {
+            match ch {
+                '"' => {
+                    in_str = !in_str;
+                    src.push('"');
+                }
+                _ if in_str => src.push(' '),
+                _ => src.push(ch),
+            }
+        }
+        src.push('\n');
+    }
+
+    const GUARD: &str = "!ctx.cancel.is_cancelled() && !dns_wholly_unreachable(&outcomes)";
+    let guards: Vec<usize> = src.match_indices(GUARD).map(|(i, _)| i).collect();
+    assert_eq!(
+        guards.len(),
+        3,
+        "each of the DMARC, CAA and TLSRPT passes must skip once no resolver \
+         has answered (REQ-DOHRESOLVER-001); found {} such guards, so {} pass(es) \
+         still query resolvers this dispatch already proved unreachable",
+        guards.len(),
+        3_usize.saturating_sub(guards.len())
+    );
+
+    let loop_start = src
+        .find("for (i, rtype) in RECORD_TYPES.iter().enumerate()")
+        .expect("the record-type loop must still establish the outage first");
+    let report = src
+        .find("outage_error(&domain, &outcomes)")
+        .expect("a wholly-unanswered sweep must still report its typed outage");
+    assert!(
+        guards.iter().all(|g| *g > loop_start && *g < report),
+        "the three guards must sit between the loop that establishes the outage \
+         ({loop_start}) and the point it is reported ({report}); one outside that \
+         span is either deciding on outcomes not yet gathered or unreachable"
+    );
+}
+
+// ─── REQ-REACTOR-001: no synchronous store read on the async reactor ─────────
+
+/// Collect every `.rs` file under `dir`, skipping test code the way
+/// [`scan_dir`] does — the store discipline is a production-path invariant, and
+/// a test is free to call the store inline on whatever thread it likes.
+fn production_rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            production_rs_files(&path, out);
+        } else if path.file_name().is_some_and(|n| n == "tests.rs")
+            || path.components().any(|c| c.as_os_str() == "tests")
+        {
+            continue;
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// The byte span of every `offload_store(…)` / `spawn_blocking(…)` call in
+/// `body`, matched by counting parentheses rather than by a line window.
+///
+/// The line-window version of this check is worthless: in `entity_get` the
+/// `move ||` sits four lines above the first `store.…()` call, and a
+/// three-line context test reports it — and seven others — as violations. A
+/// paren-matched span is the only form that answers "is this call lexically
+/// inside the hop".
+fn blocking_hop_spans(body: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let bytes = body.as_bytes();
+    let mut search = 0usize;
+    loop {
+        // The EARLIEST of the two keywords, not the first one that happens to
+        // match: an `.or_else()` chain prefers `offload_store` and would step
+        // past every `spawn_blocking` that precedes the last one, silently
+        // under-counting the spans and inventing violations.
+        let next = ["offload_store(", "spawn_blocking("]
+            .iter()
+            .filter_map(|kw| body[search..].find(kw).map(|p| search + p))
+            .min();
+        let Some(at) = next else { break };
+        let open = match body[at..].find('(') {
+            Some(p) => at + p,
+            None => break,
+        };
+        let mut depth = 0usize;
+        let mut i = open;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        spans.push((at, i));
+        search = open + 1;
+    }
+    spans
+}
+
+/// The body of every `async fn` in `src`, as `(name, body)`.
+fn async_fn_bodies(src: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let bytes = src.as_bytes();
+    let mut search = 0usize;
+    while let Some(rel) = src[search..].find("async fn ") {
+        let at = search + rel + "async fn ".len();
+        let name: String = src[at..]
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        let Some(brace) = src[at..].find('{').map(|p| at + p) else {
+            break;
+        };
+        let mut depth = 0usize;
+        let mut i = brace;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        out.push((name, src[brace..i.min(src.len())].to_string()));
+        search = brace + 1;
+    }
+    out
+}
+
+/// Every `store.<method>(` call in `body` that is NOT inside a blocking hop.
+fn unhopped_store_calls(body: &str) -> Vec<String> {
+    let spans = blocking_hop_spans(body);
+    let mut out = Vec::new();
+    let mut search = 0usize;
+    while let Some(rel) = body[search..].find("store.") {
+        let at = search + rel;
+        search = at + "store.".len();
+        let method: String = body[search..]
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        // A field access (`store.foo`) is only a CALL if a `(` follows.
+        if method.is_empty() || !body[search + method.len()..].starts_with('(') {
+            continue;
+        }
+        if spans.iter().any(|&(a, z)| a <= at && at <= z) {
+            continue;
+        }
+        out.push(method);
+    }
+    out
+}
+
+/// The `StoragePort` is synchronous SQLite under a global connection mutex,
+/// and the server runs a deliberately small async worker pool (a phone, not a
+/// datacentre). A store call left inline on the async reactor therefore stalls
+/// a worker for the whole query — and it is invisible to every other test,
+/// because it still returns the right answer, just on the wrong thread.
+///
+/// `src/api/scan_handlers/mod.rs` states the rule ("a new one cannot
+/// reintroduce a raw `spawn_blocking` copy or, worse, forget the hop and block
+/// a worker") and, before this test, nothing enforced it. The invariant held by
+/// inspection; this makes it hold by construction (REQ-REACTOR-001).
+///
+/// Note the check allows a **raw `spawn_blocking`** as well as `offload_store`:
+/// `scan_batch` deliberately uses the raw form so a per-entry persist failure
+/// records an error and lets the batch continue, where `offload_store` would
+/// abort the whole batch with a 500. The invariant is "off the reactor", not
+/// "through one helper".
+#[test]
+fn api_never_calls_the_store_on_the_async_reactor() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/api");
+    let mut files = Vec::new();
+    production_rs_files(&dir, &mut files);
+
+    let mut async_fns = 0usize;
+    let mut hopped = 0usize;
+    let mut violations: Vec<String> = Vec::new();
+
+    for path in &files {
+        let src = fs::read_to_string(path).unwrap();
+        for (name, body) in async_fn_bodies(&src) {
+            async_fns += 1;
+            hopped += blocking_hop_spans(&body).len();
+            for method in unhopped_store_calls(&body) {
+                violations.push(format!(
+                    "{}::{name}() calls store.{method}() on the async reactor",
+                    path.strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                        .unwrap_or(path)
+                        .display()
+                ));
+            }
+        }
+    }
+
+    // Vacuity guards: a parse that found nothing would make the assertion below
+    // trivially true. These numbers are floors, not counts, so ordinary growth
+    // never touches them.
+    assert!(
+        files.len() >= 8,
+        "only {} production files under src/api — the walk, not the tree, changed",
+        files.len()
+    );
+    assert!(
+        async_fns >= 40,
+        "only {async_fns} async fns parsed — the parse, not the code, changed"
+    );
+    assert!(
+        hopped >= 10,
+        "only {hopped} blocking hops found — the span matcher, not the code, changed"
+    );
+
+    assert!(
+        violations.is_empty(),
+        "synchronous store call(s) left on the async reactor:\n  {}",
+        violations.join("\n  ")
+    );
+}

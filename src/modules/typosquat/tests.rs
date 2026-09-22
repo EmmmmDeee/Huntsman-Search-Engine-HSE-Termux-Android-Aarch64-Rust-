@@ -253,3 +253,70 @@ fn a_sibling_scans_dedup_never_suppresses_this_scans_findings() {
     reset_seen("scan-a");
     reset_seen("scan-b");
 }
+
+// ------------------------------------------ label-preserving techniques -----
+
+/// Every fuzzer technique except one ALTERS the brand label into something
+/// visually confusable — `paypa1` for `paypal`, `exmple` for `example`. TLD swap
+/// does not: it is `format!("{label}.{tld}")`, so the label is byte-identical by
+/// construction and the only difference is the namespace.
+///
+/// `example.com.au` for a seed of `example.com` is therefore as likely the
+/// owner's own country registration as a third party's, and the module reported
+/// it as `"Registered lookalike of example.com via tld-swap"` at the same
+/// `confidence::MEDIUM_HIGH` as a Cyrillic homoglyph — under a module doc that
+/// calls a registered lookalike "a phishing / brand-abuse signal". That is a
+/// brand-impersonation accusation against an organisation's own domain
+/// (REQ-TYPOSQUAT-001).
+#[test]
+fn a_same_label_different_tld_hit_is_not_called_a_spoof() {
+    let e = hit_entity("example.com", "example.com.au", "tld-swap", "203.0.113.4", "s");
+
+    assert!(
+        !e.evidence[0].summary.to_lowercase().contains("lookalike"),
+        "a technique that cannot alter the label must not be worded as a \
+         lookalike; got {:?}",
+        e.evidence[0].summary
+    );
+    assert!(
+        e.has_tag("same-label-other-tld"),
+        "the operator needs to see WHY this one is different; got tags {:?}",
+        e.tags
+    );
+    assert!(
+        e.confidence < confidence::MEDIUM_HIGH,
+        "it must not be graded like a genuine spoof; got {}",
+        e.confidence
+    );
+    // …and it is still surfaced with its resolution, because it may well be a
+    // real third-party squat on the same label. Nothing is omitted.
+    assert!(e.evidence[0].summary.contains("203.0.113.4"));
+    assert_eq!(e.value, "example.com.au");
+}
+
+#[test]
+fn a_genuine_spoof_is_still_called_one() {
+    // CONTROL — passes on the baseline AND the fix. A homoglyph alters the
+    // label into a confusable, which IS the impersonation signal this module
+    // exists to surface; its wording and grade must be untouched.
+    let e = hit_entity("paypal.com", "paypa1.com", "homoglyph", "203.0.113.9", "s");
+    assert!(e.evidence[0].summary.contains("Registered lookalike"));
+    assert!((e.confidence - confidence::MEDIUM_HIGH).abs() < f64::EPSILON);
+    assert!(!e.has_tag("same-label-other-tld"));
+    assert!(e.has_tag("typosquat") && e.has_tag("typosquat:homoglyph"));
+}
+
+#[test]
+fn every_hit_keeps_the_typosquat_tag_whatever_its_technique() {
+    // CONTROL and boundary: AU-118 uses the `typosquat` tag to EXCLUDE
+    // generated permutations from the cross-source impersonation rule
+    // (`is_generated_permutation`). Dropping it from the label-preserving class
+    // would remove that protection and make the org's own domain ELIGIBLE for a
+    // High "brand abuse" finding — the opposite of this fix.
+    for tech in ["tld-swap", "homoglyph", "omission", "transposition"] {
+        let e = hit_entity("example.com", "example.net", tech, "203.0.113.4", "s");
+        assert!(e.has_tag("typosquat"), "{tech} lost the typosquat tag");
+        assert!(e.has_tag(&format!("typosquat:{tech}")));
+        assert_eq!(e.kind, EntityKind::Domain);
+    }
+}

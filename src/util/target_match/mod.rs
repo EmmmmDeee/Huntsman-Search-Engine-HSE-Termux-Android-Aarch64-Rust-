@@ -61,6 +61,14 @@ enum Mode {
     /// against the BARE token, not the raw target value — a leading `@` or other
     /// punctuation on a handle must not have to reappear in the record field.
     SingleTermSubstring(String),
+    /// Target parses as an IP address: a field matches only when it too parses to
+    /// the SAME [`IpAddr`](std::net::IpAddr). An IP is an ordered, positional,
+    /// atomic identifier — `192.168.1.10` and `192.168.10.1` are different hosts —
+    /// so the order/position-blind whole-word predicate would attribute any row
+    /// that merely shares the octet digits (in any order, in any field) to the
+    /// subject. Canonical `IpAddr` equality is order-strict and collapses
+    /// formatting (IPv6 compression and case). REQ-TARGETMATCH-001.
+    IpExact(std::net::IpAddr),
     /// Nothing self-identifying to match on (a lone `"jo"`, or an empty value):
     /// exact equality only, never a partial hit. Deliberately conservative — a
     /// missed row is quarantined as a `candidate` and stays recoverable, whereas
@@ -85,6 +93,18 @@ pub struct TargetMatch {
 impl TargetMatch {
     pub fn new(target_value: &str) -> Self {
         let lower = target_value.to_lowercase();
+        // An IP-address target is an ordered, positional, atomic identifier, not a
+        // bag of octet tokens, so it is decided by canonical `IpAddr` equality —
+        // never by the order/position-blind whole-word predicate below, which
+        // would attribute a different host sharing the same octet digits to the
+        // subject (REQ-TARGETMATCH-001). Checked before the token count because an
+        // IP has 2+ tokens and would otherwise fall into `AllTokensWholeWord`.
+        if let Ok(addr) = target_value.trim().parse::<std::net::IpAddr>() {
+            return Self {
+                lower,
+                mode: Mode::IpExact(addr),
+            };
+        }
         // Count the target's OWN tokens with no significance filter: the token
         // count answers "how many parts must corroborate?", which is a different
         // question from "is this part long enough to match loosely?". Deriving
@@ -133,6 +153,13 @@ impl TargetMatch {
                         crate::util::str_util::whole_word_token_match(&vl, &self.lower)
                     }
                     Mode::SingleTermSubstring(term) => vl.contains(term.as_str()),
+                    // Parse the field value as an IP and compare canonically:
+                    // order-strict, and a non-IP field (or a different host) can
+                    // never match. `v`, not `vl` — IP parsing is case-insensitive.
+                    Mode::IpExact(addr) => v
+                        .trim()
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|a| a == *addr),
                     Mode::ExactOnly => false,
                 };
                 if hit {

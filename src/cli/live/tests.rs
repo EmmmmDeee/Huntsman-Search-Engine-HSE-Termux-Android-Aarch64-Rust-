@@ -158,14 +158,16 @@ use super::*;
             render_event(&EventKind::ModuleDone {
                 module: "see_know".into(),
                 found: 0,
-            }),
+                        truncated: None,
+                    }),
             ""
         );
         assert!(
             render_event(&EventKind::ModuleDone {
                 module: "see_know".into(),
                 found: 3,
-            })
+                        truncated: None,
+                    })
             .contains("see_know")
         );
     }

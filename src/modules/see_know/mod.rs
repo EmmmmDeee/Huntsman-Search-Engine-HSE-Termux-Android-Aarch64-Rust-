@@ -730,6 +730,48 @@ const MAX_PIVOT_HOPS: usize = 3;
 /// [`ModuleResult::or_hard_failure`] in [`SeekNow::process`]), so a Discord/
 /// Steam/cascade endpoint exhausting its retries against an outage is not
 /// silently indistinguishable from "this ID had no linked accounts".
+/// Why the pivot walk stopped.
+///
+/// The walk's doc lists four exits, and they do not mean the same thing. Only
+/// one is exhaustive: a hop that surfaced nothing new means the chain is fully
+/// walked. The other three mean the chain was still going when something
+/// unrelated to the subject stopped it — and all four returned an
+/// indistinguishable result (REQ-SEEKNOW-001).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PivotStop {
+    /// A hop surfaced no new entities. The only EXHAUSTIVE exit.
+    ChainExhausted,
+    /// The per-scan query budget ran out before a hop could start.
+    BudgetSpent,
+    /// [`MAX_PIVOT_HOPS`] was reached while the chain was still yielding.
+    HopCeiling,
+    /// A hop ran, but the budget ran out partway and a non-empty dispatch was
+    /// skipped — so even the hop that did run is partial.
+    HopPartial,
+}
+
+/// The completeness caveat a [`PivotStop`] warrants, or `None` when the walk
+/// was exhaustive. **Pure.**
+///
+/// The provider reports no total for a pivot chain — there is no "of N" to be
+/// had — so every caveat here takes the unknown-total form rather than
+/// inventing a denominator.
+fn pivot_truncation(hops_used: usize, stop: PivotStop) -> Option<String> {
+    let cause = match stop {
+        PivotStop::ChainExhausted => return None,
+        PivotStop::BudgetSpent => {
+            format!("the per-scan query budget, spent after {hops_used} pivot hop(s)")
+        }
+        PivotStop::HopCeiling => format!(
+            "the {MAX_PIVOT_HOPS}-hop pivot ceiling, reached while the chain was still yielding"
+        ),
+        PivotStop::HopPartial => {
+            format!("the per-scan query budget, spent partway through pivot hop {hops_used}")
+        }
+    };
+    Some(cause)
+}
+
 async fn resolve_identity_pivots(
     key: &str,
     key_fp: &str,
@@ -745,8 +787,16 @@ async fn resolve_identity_pivots(
     // duplicates can't suppress a real pivot. Only ids actually dispatched
     // (per the individual dispatch helpers' return values) are inserted.
     let mut resolved: HashSet<String> = HashSet::new();
+    // Which exit the walk takes, so the result can say whether the chain was
+    // fully walked or merely stopped (REQ-SEEKNOW-001). Starts at the ceiling
+    // case: falling out of the loop without an earlier verdict means all
+    // MAX_PIVOT_HOPS ran and the last one was still producing.
+    let mut stop = PivotStop::HopCeiling;
+    let mut hops_used = 0usize;
     for hop in 0..MAX_PIVOT_HOPS {
+        hops_used = hop;
         if !see_know::budget_remaining() {
+            stop = PivotStop::BudgetSpent;
             break;
         }
         let discord: Vec<String> = discover_discord_pivots(result)
@@ -788,6 +838,10 @@ async fn resolve_identity_pivots(
             pivot_results.extend(items);
             hard_failure = hard_failure.or(failed);
         }
+        // A non-empty dispatch skipped for budget makes even THIS hop partial.
+        if !steam.is_empty() && !see_know::budget_remaining() {
+            stop = PivotStop::HopPartial;
+        }
         if !steam.is_empty() && see_know::budget_remaining() {
             let (items, attempted, failed) = dispatch_steam_pivots(key, steam).await;
             for id in attempted {
@@ -799,6 +853,9 @@ async fn resolve_identity_pivots(
 
         // Cascade detection dispatch: re-query discovered emails via email-check
         // (Tier 1: service discovery). High ROI per credit, only on non-seed hops.
+        if !cascade_emails.is_empty() && !see_know::budget_remaining() {
+            stop = PivotStop::HopPartial;
+        }
         if !cascade_emails.is_empty() && see_know::budget_remaining() {
             let (items, attempted, failed) =
                 dispatch_email_cascade_checks(key, cascade_emails).await;
@@ -812,8 +869,16 @@ async fn resolve_identity_pivots(
         let before = result.entities.len();
         extract_pivot_entities(&pivot_results, seed_value, scan_id, key_fp, seen, result);
         if result.entities.len() == before {
-            break; // a hop that surfaced nothing new — stop chasing
+            // A hop that surfaced nothing new — the chain is fully walked.
+            // This is the ONE exhaustive exit, and it outranks a partial-hop
+            // verdict: the budget skipping a dispatch does not matter if the
+            // hop still produced nothing.
+            stop = PivotStop::ChainExhausted;
+            break;
         }
+    }
+    if let Some(cause) = pivot_truncation(hops_used, stop) {
+        result.mark_truncated(result.entities.len(), None, &cause);
     }
     hard_failure
 }

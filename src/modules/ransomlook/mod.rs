@@ -38,6 +38,7 @@ use crate::core::{
 };
 use crate::util::domains::is_or_subdomain_of;
 use crate::util::http::{fetch_json_or_404, urlencode};
+use crate::util::str_util::whole_word_token_match;
 
 /// Stable evidence-source string.
 pub(crate) const SRC: &str = "ransomlook";
@@ -105,8 +106,16 @@ impl Module for RansomLook {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let keyword = target.value.trim();
         // The API rejects a <2-char query; don't spend a request on one.
+        // NotApplicable, not Scoped: "asking would have been rejected upstream,
+        // so its silence carries no information about the subject either way" —
+        // SkipClass::NotApplicable's own words. The operator is owed nothing
+        // here, so `is_coverage_gap()` must stay false.
         if keyword.len() < 2 {
-            return Ok(ModuleResult::new());
+            return Err(crate::core::error::Error::query_too_weak(
+                crate::core::event::SkipClass::NotApplicable,
+                keyword,
+                "the RansomLook API rejects a query shorter than two characters",
+            ));
         }
         // `q=` is the working param; `query=` is documented but drifted (400).
         let url = format!("{BASE}/api/search?q={}", urlencode(keyword));
@@ -165,7 +174,7 @@ fn classify(title: &str, needle: &str, target: &Target) -> Option<Match> {
             if title == needle {
                 return Some(Match::Strong);
             }
-            (title.contains(needle) || needle.contains(&title)).then_some(Match::Partial)
+            whole_word_token_match(&title, needle).then_some(Match::Partial)
         }
         _ => None,
     }

@@ -34,7 +34,7 @@ pub(crate) const LOCATION_TOOL: &str = "termux-location";
 
 /// A `termux-location` JSON fix — the on-device GPS/network position sample as
 /// emitted by `termux-location`, shared by every consumer that parses it.
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct Fix {
     pub(crate) latitude: f64,
     pub(crate) longitude: f64,
@@ -128,7 +128,7 @@ async fn fetch_fix(
     timeout_ms: u64,
     scan_id: &str,
     src: &'static str,
-) -> Result<ModuleResult> {
+) -> Result<(ModuleResult, Option<Fix>)> {
     match crate::util::termux::termux_cmd(
         LOCATION_TOOL,
         &["-p", provider, "-r", request],
@@ -137,18 +137,32 @@ async fn fetch_fix(
     .await
     {
         Some(stdout) => {
-            let mut r = parse_fix(&stdout, scan_id, src)?;
+            let fix = decode_fix(&stdout, src)?;
+            let mut r = fix
+                .as_ref()
+                .map_or_else(ModuleResult::new, |f| result_for_fix(f, scan_id, src));
             if request == "last" {
                 for e in &mut r.entities {
                     e.tag("fix-age:last-known");
                 }
             }
-            Ok(r)
+            Ok((r, sighting_fix(request, fix)))
         }
         // Absent tool / timeout / non-zero exit: nothing observed, nothing to
         // attest — the absent-tool row of `termux_sensor`'s contract table.
-        None => Ok(ModuleResult::new()),
+        None => Ok((ModuleResult::new(), None)),
     }
+}
+
+/// The fix a sweep may stamp onto its sightings: a fresh lock, never a `last`
+/// read. A `last` read is the OS's passively-cached position — minutes or
+/// hours old on a phone that has moved — so it establishes the `Coordinates`
+/// entity (tagged `fix-age:last-known` by [`fetch_fix`]) but positions no
+/// sighting: a sighting's position asserts where the device was heard from
+/// NOW, and only a fresh lock observed that (REQ-RADAR-001). Pure, so the
+/// rule is testable without a device.
+pub(crate) fn sighting_fix(request: &str, fix: Option<Fix>) -> Option<Fix> {
+    if request == "last" { None } else { fix }
 }
 
 /// Walk [`LOCATION_STAGES`] until a stage establishes a fix, tagging entities
@@ -157,7 +171,7 @@ async fn fetch_fix(
 /// `signal_radar::gps` and `device_sensors` each carried a byte-identical copy
 /// of this ladder — the same four stages, the same budgets, the same
 /// `fix-age:last-known` tagging and the same first-failure semantics — differing
-/// only in which module's `SRC` tag they passed to [`parse_fix`]. The parse was
+/// only in which module's `SRC` tag they passed to `parse_fix`. The parse was
 /// single-sourced here previously; the ladder wrapped around it was not, so the
 /// GNSS-fallback defect this ladder's argv-keyed cache exists to prevent lived
 /// in two places at once, and fixing either copy would have left the other
@@ -168,34 +182,63 @@ async fn fetch_fix(
 /// first failure is remembered and surfaces only if no stage produced a fix, via
 /// [`ModuleResult::or_hard_failure`].
 pub(crate) async fn scan_location_ladder(scan_id: &str, src: &'static str) -> Result<ModuleResult> {
+    scan_location_ladder_with_fix(scan_id, src)
+        .await
+        .map(|(result, _)| result)
+}
+
+/// [`scan_location_ladder`], also returning the decoded [`Fix`] the entity was
+/// built from — for a consumer that needs the numbers themselves.
+/// `signal_radar` stamps them onto every sighting its other radios made in the
+/// same sweep (REQ-RADAR-001); reading them from the one decode, rather than
+/// back out of the entity's evidence strings, keeps one authority for the fix.
+pub(crate) async fn scan_location_ladder_with_fix(
+    scan_id: &str,
+    src: &'static str,
+) -> Result<(ModuleResult, Option<Fix>)> {
     let mut first_failure = None;
     for &(provider, request, timeout_ms) in LOCATION_STAGES {
         match fetch_fix(provider, request, timeout_ms, scan_id, src).await {
-            Ok(r) if !r.is_empty() => return Ok(r),
+            Ok((r, fix)) if !r.is_empty() => return Ok((r, fix)),
             Ok(_) => {}
             Err(e) => {
                 first_failure.get_or_insert(e);
             }
         }
     }
-    ModuleResult::new().or_hard_failure(first_failure)
+    ModuleResult::new()
+        .or_hard_failure(first_failure)
+        .map(|r| (r, None))
 }
 
 /// Parse `termux-location`'s JSON into a `Coordinates` entity — the device's own
-/// GPS fix, the strongest first-party geolocation signal.
+/// GPS fix, the strongest first-party geolocation signal. Production reaches
+/// the two halves ([`decode_fix`] then [`result_for_fix`]) through
+/// [`fetch_fix`], which also needs the decoded numbers; this composition is
+/// what the parse tests exercise.
 ///
 /// `src` is the calling module's evidence-source tag, the ONLY thing that
 /// differed between the two copies this replaces.
-///
-/// Outcomes, per the [`termux_sensor`] contract: blank output from a tool that
-/// exited 0, or a lat/lon that fails validation, is a real answer that locates
-/// nothing — an honest empty `Ok`. Non-blank output that will not parse is a
-/// malfunction and surfaces as an `Err`, because reporting it as "no fix" would
-/// make a broken tool indistinguishable from a device that simply has no
-/// signal. Pure given `stdout`, so it is unit-testable without a device.
+#[cfg(test)]
 pub(crate) fn parse_fix(stdout: &[u8], scan_id: &str, src: &'static str) -> Result<ModuleResult> {
+    Ok(decode_fix(stdout, src)?
+        .map_or_else(ModuleResult::new, |fix| result_for_fix(&fix, scan_id, src)))
+}
+
+/// The typed half of the parse: `termux-location`'s JSON as a [`Fix`], or
+/// `None` for the two honest empties (blank output; a lat/lon that fails
+/// validation). Non-blank output that will not parse is an `Err`. Per the
+/// [`termux_sensor`] contract: blank output from a tool that exited 0, or a
+/// lat/lon that fails validation, is a real answer that locates nothing;
+/// non-blank output that will not parse is a malfunction, because reporting
+/// it as "no fix" would make a broken tool indistinguishable from a device
+/// that simply has no signal. Split out so a consumer that needs the NUMBERS —
+/// `signal_radar`, stamping the sweep's position onto every sighting it made
+/// (REQ-RADAR-001) — reads them from the one decode rather than re-parsing
+/// the entity's evidence strings.
+pub(crate) fn decode_fix(stdout: &[u8], src: &'static str) -> Result<Option<Fix>> {
     if termux_sensor::is_blank(stdout) {
-        return Ok(ModuleResult::new());
+        return Ok(None);
     }
     let fix: Fix = serde_json::from_slice(stdout)
         .map_err(|e| termux_sensor::unparseable(src, "location", &e))?;
@@ -207,9 +250,13 @@ pub(crate) fn parse_fix(stdout: &[u8], scan_id: &str, src: &'static str) -> Resu
             lon = fix.longitude,
             "rejecting invalid location fix"
         );
-        return Ok(ModuleResult::new());
+        return Ok(None);
     }
+    Ok(Some(fix))
+}
 
+/// The entity half of the parse: one `Coordinates` entity for a decoded fix.
+fn result_for_fix(fix: &Fix, scan_id: &str, src: &'static str) -> ModuleResult {
     let provider = fix.provider.as_deref().unwrap_or("network");
     let confidence = fix_confidence(provider, fix.accuracy);
     let coords = format!("{:.7},{:.7}", fix.latitude, fix.longitude);
@@ -247,9 +294,12 @@ pub(crate) fn parse_fix(stdout: &[u8], scan_id: &str, src: &'static str) -> Resu
 
     let mut result = ModuleResult {
         entities: Vec::with_capacity(1),
+        truncation: None,
+        sightings: Vec::new(),
+        link: None,
     };
     result.push(e);
-    Ok(result)
+    result
 }
 
 #[cfg(test)]
@@ -354,16 +404,44 @@ mod tests {
         }
     }
 
+    /// The rule behind `fix-age:last-known`, at the sighting boundary: a
+    /// cached position establishes the entity and positions no sighting; a
+    /// fresh lock does both.
+    #[test]
+    fn a_last_known_read_never_positions_a_sighting() {
+        let fix = || {
+            Some(Fix {
+                latitude: -27.4705,
+                longitude: 153.026,
+                altitude: None,
+                accuracy: Some(8.0),
+                speed: None,
+                bearing: None,
+                provider: Some("gps".into()),
+            })
+        };
+        assert!(
+            sighting_fix("last", fix()).is_none(),
+            "a cached position is not an observation"
+        );
+        assert!(sighting_fix("once", fix()).is_some(), "a fresh lock is");
+        assert!(
+            sighting_fix("once", None).is_none(),
+            "and no fix stays no fix"
+        );
+    }
+
     /// A stage whose tool is absent is a clean empty answer, not an error —
     /// the absent-tool row of the sensor contract. Moved here from
     /// `device_sensors` along with the ladder itself.
     #[tokio::test]
     async fn fetch_fix_is_empty_off_device() {
         for request in ["once", "last"] {
-            let r = fetch_fix("gps", request, 1000, "test", "device_sensors")
+            let (r, fix) = fetch_fix("gps", request, 1000, "test", "device_sensors")
                 .await
                 .expect("an absent tool is a clean empty answer");
             assert!(r.entities.is_empty(), "{request}: must be empty off-device");
+            assert!(fix.is_none(), "{request}: no fix off-device");
         }
     }
 

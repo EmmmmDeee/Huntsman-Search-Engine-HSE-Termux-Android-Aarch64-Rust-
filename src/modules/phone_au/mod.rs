@@ -198,8 +198,35 @@ fn au_national(raw: &str) -> Option<String> {
     // International form first (shares `phone_intl`'s honest-attribution gate).
     let intl =
         crate::modules::phone_intl::international_digits(raw).filter(|d| d.starts_with("61"));
-    // Else an AU-local form that `to_e164_au` recognises and canonicalises.
+    // Else an AU-local form that `to_e164_au` recognises and canonicalises —
+    // but ONLY when the raw value actually carries a domestic AU signal.
+    //
+    // REQ-PHONEAU-001: `to_e164_au` → `util::address_au::normalise_phone` is
+    // deliberately lenient for the IMPORT path (it canonicalises a plausibly-AU
+    // string so a breach dump's phone column dedups against the same number
+    // written any other way), and its bare-9-digit branch accepts ANY 9 digits
+    // whose first is one of 2/3/4/5/7/8 — no `+`, no `61`, no trunk `0`. That
+    // leniency must not become a JURISDICTION CLAIM here: this module stamps
+    // `au-phone`, a `line:*` type and an `au-region:*` geographic attribute at
+    // confidence 0.80, so trusting a marker-less string would fabricate an
+    // Australian number out of a foreign local one (routine when a source
+    // stores phones as integers and drops the leading 0) — the same
+    // country-inferred-from-an-ambiguous-national-number defect already fixed
+    // in `phone_geo`, which put a bare US number in Kyoto.
+    //
+    // A domestic signal is the trunk `0` prefix or an AU-specific
+    // service-number prefix; `phone_intl` applies the same discipline in the
+    // other direction, refusing to attribute a country without an explicit
+    // `+`/`00` marker. The leniency is left intact for `to_e164_au`'s other
+    // callers, which canonicalise for storage rather than assert a country.
     let digits = intl.or_else(|| {
+        let raw_digits = crate::util::str_util::ascii_digits(raw);
+        let has_domestic_signal = raw_digits.starts_with('0')
+            || raw_digits.starts_with("1300")
+            || raw_digits.starts_with("1800");
+        if !has_domestic_signal {
+            return None;
+        }
         crate::core::validation::to_e164_au(raw)
             .map(|e| crate::util::str_util::ascii_digits(&e))
             .filter(|d| d.starts_with("61"))

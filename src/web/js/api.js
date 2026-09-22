@@ -1,10 +1,31 @@
 /* ─── API client ─── */
 export const API = {
+  /* The one place the console's own reachability is shown: a banner under
+     the header, raised by `_req` when a request gets no answer at all and
+     lowered by the next request that does. No page keeps its own copy. */
+  offline(down){
+    const el = document.getElementById('offline-banner');
+    if (!el) return;
+    if (down === el.classList.contains('is-down')) return;
+    el.classList.toggle('is-down', down);
+    el.style.display = down ? '' : 'none';
+    if (down) el.textContent = 'Console unreachable — the server is down or restarting; retrying on the next request.';
+  },
   async _req(path, opts){
     opts = opts || {};
     const init = {method: opts.method||'GET'};
     if (opts.body){ init.headers = {'Content-Type':'application/json'}; init.body = JSON.stringify(opts.body); }
-    const r = await fetch(path, init);
+    let r;
+    try { r = await fetch(path, init); }
+    catch (e) {
+      // `fetch` rejects only when no HTTP answer came back at all: the server
+      // is down, restarting, or the loopback link itself is gone. Every other
+      // outcome is a response with a status. Say so once, at the top of the
+      // page, and keep saying it until a request comes back.
+      API.offline(true);
+      throw new Error('console unreachable: ' + (e && e.message ? e.message : 'no response'));
+    }
+    API.offline(false);
     if (opts.raw) return r;
     if (!r.ok){
       let err = `HTTP ${r.status}`;
@@ -149,6 +170,26 @@ export const API = {
   // table, so it survives a server restart (unlike the in-memory live-session
   // list above). This is what makes "what was around me earlier" reviewable.
   radarHistory: limit=>API._req('/api/v1/radar/history'+(limit?('?limit='+encodeURIComponent(limit)):'')),
+  // The sighting table's web reader (REQ-RADAR-002): a sweep's summary and
+  // device roll-up, strongest first — the rows `hse signal` prints, through
+  // the same presenters. No scan id = the latest sweep (the one just run);
+  // `trackable` keeps fixed hardware addresses only (AU-122).
+  radarSignals: (scanId, trackable)=>{
+    const q = [];
+    if (scanId) q.push('scan_id='+encodeURIComponent(scanId));
+    if (trackable) q.push('trackable=1');
+    return API._req('/api/v1/radar/signals'+(q.length?'?'+q.join('&'):''));
+  },
+  // One device's every sighting in a sweep, oldest first — the movement track.
+  radarTrack: (networkId, scanId)=>API._req('/api/v1/radar/signals/'+encodeURIComponent(networkId)+(scanId?('?scan_id='+encodeURIComponent(scanId)):'')),
+  radarSignalsUrl: scanId=>'/api/v1/radar/signals'+(scanId?('?scan_id='+encodeURIComponent(scanId)):''),
+  // One device across every sweep and import — the trail (REQ-RADAR-004).
+  radarDeviceTrack: (networkId, limit)=>API._req('/api/v1/radar/devices/'+encodeURIComponent(networkId)+'/track'+(limit?('?limit='+encodeURIComponent(limit)):'')),
+  // Devices recurring across ≥min sweeps — the counter-surveillance review.
+  radarRecurring: (min, limit)=>API._req('/api/v1/radar/recurring?min='+encodeURIComponent(min||2)+'&limit='+encodeURIComponent(limit||100)),
+  // The device's own Wi-Fi link across the sweep history: forced disconnections,
+  // deauthentication, evil twins, scheduled outages (REQ-RESILIENCE-002).
+  radarDisruptions: limit=>API._req('/api/v1/radar/disruptions?limit='+encodeURIComponent(limit||100)),
   selftest:     ()=>API._req('/api/v1/selftest'),
   logsUrl:      ()=>'/api/v1/logs',
   // Live tail of the verbose debug-log ring (loopback-only): pass the cursor

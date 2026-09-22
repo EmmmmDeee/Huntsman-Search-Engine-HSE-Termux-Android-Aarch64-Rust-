@@ -199,8 +199,20 @@ async fn short_query_is_skipped_without_a_request() {
     };
     let m = DataGovAu;
     let target = Target::new(TargetKind::Organisation, "AB");
-    let result = m.process(&target, &ctx).await.expect("should succeed");
-    assert!(result.entities.is_empty());
+    // REQ-SKIPCLASS-001: below the floor the module declines to ask, and that
+    // must not read as "the catalogue was searched and holds nothing".
+    let err = m
+        .process(&target, &ctx)
+        .await
+        .expect_err("a query below MIN_QUERY_LEN is unasked, not a clean negative");
+    let crate::core::error::Error::Skipped { class, reason } = err else {
+        panic!("expected a typed skip, got {err}");
+    };
+    assert_eq!(class, crate::core::event::SkipClass::Scoped);
+    assert!(
+        reason.contains("AB") && reason.contains("never asked"),
+        "{reason}"
+    );
 }
 
 #[tokio::test]

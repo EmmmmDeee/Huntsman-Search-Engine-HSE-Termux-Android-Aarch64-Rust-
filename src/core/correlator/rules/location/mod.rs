@@ -178,6 +178,46 @@ fn person_anchored_coords(entities: &[Entity]) -> Vec<(&Entity, (f64, f64))> {
         .collect()
 }
 
+/// How many of `parsed` are INDEPENDENT sightings — the count the rules that
+/// gate on a NUMBER OF POINTS must use, as distinct from how many points the
+/// footprint geometry then draws on.
+///
+/// A [`crate::core::tags::ADDR_DERIVED`] point is not an observation.
+/// `core::engine::enrich`'s address→coordinate pass geocodes an `Address` some
+/// module already reported and carries that Address's own sources onto the
+/// result, so when the same source also produced a direct fix the derived
+/// centroid is the SAME datum at coarser grain. Its value differs from the
+/// direct fix (a city centroid is not a rooftop), so neither of that pass's
+/// dedups suppresses it, and before this function existed AU-052 counted it as a
+/// third sighting: one geocoded address plus one photo GPS bound a 3-vertex
+/// "tight fix on a residence/base" at `High` from **two** observations
+/// (REQ-CORRELATOR-005).
+///
+/// A derived point whose source no direct point provides IS a sighting — three
+/// addresses from three modules, none of which geocoded directly, are three
+/// independent placements of the subject, and excluding them would discard real
+/// evidence rather than an artifact. So the test is per-source, not per-tag.
+///
+/// The geometry is deliberately left alone: the hull, centroid and median still
+/// see every admissible point. Only the "is there enough here to assert a
+/// footprint at all" threshold changes.
+fn independent_sighting_count(parsed: &[(&Entity, (f64, f64))]) -> usize {
+    let direct_sources: std::collections::HashSet<&str> = parsed
+        .iter()
+        .filter(|(e, _)| !e.has_tag(crate::core::tags::ADDR_DERIVED))
+        .flat_map(|(e, _)| e.corroborating_sources())
+        .collect();
+    parsed
+        .iter()
+        .filter(|(e, _)| {
+            !e.has_tag(crate::core::tags::ADDR_DERIVED)
+                || e.corroborating_sources()
+                    .iter()
+                    .any(|s| !direct_sources.contains(s))
+        })
+        .count()
+}
+
 /// AU `Coordinates` that geolocate a person's own **breach/stealer login IP**
 /// (their network connection) rather than infrastructure — parsed to `(lat, lon)`.
 ///
@@ -264,7 +304,9 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
 ) -> Vec<Correlation> {
     let entities = context.entities();
     let parsed = person_anchored_coords(entities);
-    if parsed.len() < 3 {
+    // Count SIGHTINGS, not points: a centroid geocoded from an address whose
+    // own source already supplied a direct fix is the same observation twice.
+    if independent_sighting_count(&parsed) < 3 {
         return Vec::new();
     }
     // Multi-source gate: the points must come from ≥2 distinct corroborating
@@ -343,8 +385,10 @@ pub(in crate::core::correlator) fn rule_au_053_out_of_area_location(
 
     let entities = context.entities();
     let mut parsed = person_anchored_coords(entities);
-    // Need an established area (≥3) plus at least one candidate outlier.
-    if parsed.len() < 4 {
+    // Need an established area (≥3) plus at least one candidate outlier — and
+    // the same sighting/point distinction AU-052 draws, so a derived centroid
+    // cannot manufacture the established area an "out of area" claim rests on.
+    if independent_sighting_count(&parsed) < 4 {
         return Vec::new();
     }
     if distinct_geo_sources(&parsed) < 2 {
@@ -601,12 +645,88 @@ pub(crate) fn entity_locates_subject_directly(e: &Entity) -> bool {
 /// [`is_infrastructure_geo`] gates the fusion candidate set on. `None` when the
 /// entity carries no anchoring source at all.
 pub(in crate::core::correlator) fn best_precision_radius_m(e: &Entity) -> Option<f64> {
+    let coarse_geocode = declared_geocode_grain_m(e);
     e.corroborating_sources()
         .into_iter()
         .filter(|s| is_anchoring_geo_source(s))
-        .map(|s| precision_radius_m(geo_source_class(s)))
+        .map(|s| {
+            let class = geo_source_class(s);
+            let base = precision_radius_m(class);
+            // The geocoder's own account of what it matched refines ITS leg
+            // only. Applying it to the whole entity would let a coarse address
+            // string degrade a GPS fix sitting on the same coordinate, which is
+            // the exact inversion of the `min` above.
+            if class == GeoSourceClass::Geocode {
+                coarse_geocode.map_or(base, |g| base.max(g))
+            } else {
+                base
+            }
+        })
         .fold(None, |acc: Option<f64>, r| {
             Some(acc.map_or(r, |a| a.min(r)))
+        })
+}
+
+/// The radius implied by a geocoder's OWN description of what it matched, or
+/// `None` when it matched something at least as precise as the class default —
+/// or when nothing recognisable was reported.
+///
+/// `geocode` (Nominatim) and `photon` both return a `type` naming the grain of
+/// the hit, and both already write it to the `place_type` evidence attribute of
+/// the very `Coordinates` entity the fusion weighs. Nothing read it, so
+/// [`best_precision_radius_m`] handed back a flat 40 m whether the geocoder
+/// pinpointed a house number or shrugged and returned a state centroid — a
+/// `sqrt(1000/40)` = **5x** fusion multiplier for a point that may be a hundred
+/// kilometres from the subject, pulling harder than a registry address that
+/// really is known to 500 m (REQ-GEO-002).
+///
+/// # Only ever coarsens
+///
+/// Every radius here exceeds `precision_radius_m(GeoSourceClass::Geocode)`, and
+/// the caller takes a `max`, so this can reduce a source's pull and never
+/// increase it. Inventing precision is the one direction that would be
+/// dangerous: it would let a geocoder's self-report override the class anchor
+/// and annihilate genuinely precise sightings. An unrecognised or absent grain
+/// therefore falls back to the class radius unchanged, so a provider adding a
+/// new `type` string degrades to today's behaviour rather than to a guess.
+///
+/// The values are deliberately coarse-grained order-of-magnitude figures, not
+/// false precision: what matters to an inverse-sqrt weight is the decade.
+fn geocode_grain_radius_m(place_type: &str) -> Option<f64> {
+    let radius = match place_type.trim().to_ascii_lowercase().as_str() {
+        "country" => 300_000.0,
+        "state" | "province" | "region" => 100_000.0,
+        "state_district" | "county" | "district" => 30_000.0,
+        "city" | "municipality" => 8_000.0,
+        "postcode" | "postal_code" => 4_000.0,
+        "town" | "island" => 4_000.0,
+        "borough" | "suburb" | "village" | "quarter" | "neighbourhood" | "hamlet" | "locality" => {
+            1_500.0
+        }
+        _ => return None,
+    };
+    debug_assert!(
+        radius > precision_radius_m(GeoSourceClass::Geocode),
+        "this table may only coarsen"
+    );
+    Some(radius)
+}
+
+/// The coarsest grain any geocoding source on this entity admitted to.
+///
+/// Coarsest rather than finest: each geocode evidence row is a separate
+/// geocoder answer, and if one of them only resolved a state then that answer
+/// is a state centroid however confidently a sibling row reports a street. The
+/// `min` in [`best_precision_radius_m`] still lets a genuinely precise
+/// non-geocode source (a GPS fix) set the entity's precision.
+fn declared_geocode_grain_m(e: &Entity) -> Option<f64> {
+    e.evidence
+        .iter()
+        .filter(|ev| geo_source_class(&ev.source) == GeoSourceClass::Geocode)
+        .filter_map(|ev| ev.attributes.get("place_type"))
+        .filter_map(|pt| geocode_grain_radius_m(pt))
+        .fold(None, |acc: Option<f64>, r| {
+            Some(acc.map_or(r, |a: f64| a.max(r)))
         })
 }
 

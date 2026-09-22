@@ -111,11 +111,26 @@ fn build_entities(data: &AbuseData, ip: &str, scan_id: &str) -> Vec<Entity> {
     let confidence = abuse_confidence(abuse_score);
 
     let mut ip_entity = Entity::new(EntityKind::IpAddress, ip, confidence, scan_id);
-    ip_entity.tag(crate::core::tags::THREAT_INTEL);
-    if abuse_score >= 80 {
+    // `THREAT_INTEL` is gated on AbuseIPDB's own graded verdict, never applied
+    // just because the IP was looked up. The tag is one of only three
+    // `ADJACENCY_BAD_TAGS` (`core::correlator::rules`), which AU-031
+    // "malicious adjacency" reads to raise a High-severity finding on any
+    // entity one hop from a tag-bearing node — so tagging it unconditionally
+    // turned this provider's own CLEAN answer (0/100, 0 reports) into a
+    // High-severity escalation against every domain resolving to that IP.
+    // Every sibling gates it the same way (`virustotal` on `malicious > 0`,
+    // `chain_intel` on the source's own flag, `onyphe` on a named
+    // threat-list match, `pulsedive` by returning early when nothing is
+    // linked); this module was the outlier. The threshold is the module's own
+    // existing first positive band, so a score that already earned
+    // `suspicious` still feeds adjacency analysis unchanged.
+    if abuse_score >= SUSPICIOUS_SCORE {
+        ip_entity.tag(crate::core::tags::THREAT_INTEL);
+    }
+    if abuse_score >= MALICIOUS_SCORE {
         ip_entity.tag(crate::core::tags::MALICIOUS);
         ip_entity.tag("high-risk");
-    } else if abuse_score >= 40 {
+    } else if abuse_score >= SUSPICIOUS_SCORE {
         ip_entity.tag("suspicious");
     }
     if data.is_tor.unwrap_or(false) {
@@ -262,6 +277,16 @@ struct Report {
 fn abuse_confidence(score: u32) -> f64 {
     confidence::MEDIUM_PLUS + (score as f64 / 100.0) * 0.35
 }
+
+/// Lowest AbuseIPDB confidence score (0–100) this module treats as a real
+/// positive verdict rather than a clean answer — the threshold for both the
+/// `suspicious` tag and, since REQ-ABUSEIPDB-001, the `THREAT_INTEL`
+/// known-bad tag that AU-031's adjacency rule escalates on.
+const SUSPICIOUS_SCORE: u32 = 40;
+
+/// AbuseIPDB confidence score at or above which the IP is treated as
+/// outright malicious (`MALICIOUS` + `high-risk`), not merely suspicious.
+const MALICIOUS_SCORE: u32 = 80;
 
 /// Map an AbuseIPDB numeric report-category id to its label. `None` for an
 /// unknown id (taxonomy drift) so it is summarised as `other` rather than a bare

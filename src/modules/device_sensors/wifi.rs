@@ -1,5 +1,6 @@
 use serde::Deserialize;
 
+use crate::core::link::LinkState;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
@@ -28,9 +29,17 @@ pub(super) struct ConnInfo {
 /// nothing to report). Non-blank output that will not parse is a malfunction
 /// and surfaces as an `Err`, so a broken tool is never reported as "not
 /// connected". Pure given `stdout` — unit-testable without a device.
-pub(super) fn parse_conn(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
+pub(super) fn parse_conn(
+    stdout: &[u8],
+    scan_id: &str,
+    observed_epoch: Option<i64>,
+) -> Result<ModuleResult> {
     if super::is_blank(stdout) {
-        return Ok(ModuleResult::new());
+        // Off the network is a record, not an absence (REQ-RESILIENCE-002):
+        // the disruption review is built on exactly this row.
+        let mut result = ModuleResult::new();
+        result.link = Some(LinkState::disconnected(observed_epoch));
+        return Ok(result);
     }
     let info: ConnInfo = serde_json::from_slice(stdout)
         .map_err(|e| super::unparseable(super::Sensor::WifiConnection, &e))?;
@@ -71,6 +80,45 @@ pub(super) fn parse_conn(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
         .filter_map(|(key, value)| value.map(|v| (key, v)))
         .fold(ev, |ev, (key, value)| ev.with_attr(key, value))
     };
+
+    // The typed link record. A real address beside a supplicant state that
+    // means "not associated" is the LAST network, not the current one; the
+    // address is kept for the record and `connected` says the truth.
+    let real_bssid = info
+        .bssid
+        .as_deref()
+        .map(str::trim)
+        .filter(|b| !b.is_empty() && *b != "00:00:00:00:00:00" && *b != "02:00:00:00:00:00");
+    let associated = info
+        .supplicant_state
+        .as_deref()
+        .map(str::trim)
+        .is_none_or(|st| {
+            !crate::core::link::NOT_ASSOCIATED
+                .iter()
+                .any(|n| st.eq_ignore_ascii_case(n))
+        });
+    result.link = Some(LinkState {
+        connected: real_bssid.is_some() && associated,
+        ssid: ssid.map(str::to_string),
+        bssid: real_bssid.map(crate::core::rf::canonical_network_id),
+        #[allow(clippy::cast_precision_loss)]
+        signal_dbm: info.rssi.map(|v| v as f64),
+        ip: info
+            .ip
+            .as_deref()
+            .map(str::trim)
+            .filter(|ip| !ip.is_empty() && *ip != "0.0.0.0")
+            .map(str::to_string),
+        link_speed_mbps: info.link_speed_mbps,
+        supplicant_state: info
+            .supplicant_state
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        observed_epoch,
+    });
 
     if let Some(ref bssid) = info.bssid
         && !bssid.is_empty()

@@ -23,8 +23,28 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProviderOutcome {
-    /// Queried successfully and produced evidence, inserted separately.
+    /// Queried successfully and produced evidence, inserted separately, and the
+    /// answer was COMPLETE as far as the provider is concerned.
     Observed,
+    /// Queried successfully and produced evidence, but the answer was **cut
+    /// short** — a client-side cap, an unfollowed page cursor, or the
+    /// provider's own reported total exceeding what was retrieved.
+    ///
+    /// Distinct from [`Self::Observed`] for the reason this enum exists at all.
+    /// A provider that returned the first 20 of 200 matches looks identical to
+    /// one that returned everything, and the difference is the whole question
+    /// when the next step is to conclude something from what was NOT found: the
+    /// evidence may be in the part that was never retrieved.
+    ///
+    /// It DID answer, so it is not a skip and not a failure — see
+    /// [`Self::is_resolved`]. What it does not do is settle an absence; see
+    /// [`Self::settles_absence`].
+    Truncated {
+        /// What was retrieved out of what exists, and why it stopped — for the
+        /// operator to act on (raise the cap, follow the cursor, narrow the
+        /// query).
+        reason: String,
+    },
     /// Queried successfully; the provider holds nothing on this subject. The
     /// only outcome that is a real negative.
     CleanNegative,
@@ -43,10 +63,35 @@ pub enum ProviderOutcome {
 }
 
 impl ProviderOutcome {
-    /// Whether this outcome settles what the provider had to say. Only a
-    /// successful query does; an outage and an unasked question do not.
+    /// Whether the provider actually ran and answered. An outage and an unasked
+    /// question do not; a truncated answer does — it is a short answer, not a
+    /// missing one, and reporting it as unavailable would misdescribe a
+    /// provider that worked.
+    ///
+    /// This is the predicate for "was this a skip?". It is NOT the predicate
+    /// for "can I trust this provider's silence" — that is
+    /// [`Self::settles_absence`], and the two disagree exactly on
+    /// [`Self::Truncated`]. They were one predicate before that variant
+    /// existed, and collapsing them again would let a claim be rejected on the
+    /// strength of a page nobody read (REQ-COVERAGE-001).
     #[must_use]
     pub fn is_resolved(&self) -> bool {
+        matches!(
+            self,
+            Self::Observed | Self::CleanNegative | Self::Truncated { .. }
+        )
+    }
+
+    /// Whether this provider's **absence of evidence** can be relied on.
+    ///
+    /// Only a complete query settles an absence. A truncated one does not: it
+    /// searched part of the corpus and found nothing there, which says nothing
+    /// about the part it never reached. This is what
+    /// [`crate::core::intelligence`]'s coverage gaps are computed from, and
+    /// therefore what stands between a hard target and a confident clean
+    /// answer built on an unread page.
+    #[must_use]
+    pub fn settles_absence(&self) -> bool {
         matches!(self, Self::Observed | Self::CleanNegative)
     }
 
@@ -55,17 +100,22 @@ impl ProviderOutcome {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Observed => "observed",
+            Self::Truncated { .. } => "truncated",
             Self::CleanNegative => "clean_negative",
             Self::NotAttempted { .. } => "not_attempted",
             Self::Failed { .. } => "failed",
         }
     }
 
-    /// The operator-facing reason an unresolved outcome carries.
+    /// The operator-facing reason an outcome carries: why it was not attempted,
+    /// why it failed, or — for [`Self::Truncated`] — how much of the answer was
+    /// retrieved and what stopped it.
     #[must_use]
     pub fn reason(&self) -> Option<&str> {
         match self {
-            Self::NotAttempted { reason } | Self::Failed { reason } => Some(reason.as_str()),
+            Self::NotAttempted { reason }
+            | Self::Failed { reason }
+            | Self::Truncated { reason } => Some(reason.as_str()),
             Self::Observed | Self::CleanNegative => None,
         }
     }
@@ -133,6 +183,11 @@ pub fn provider_coverage_from_events(
         /// True once any gap-bearing skip was NOT merely the operator's own
         /// narrowing — an unusable provider, or an event too old to say.
         unavailable: bool,
+        /// The first completeness caveat any `ModuleDone` carried. A provider
+        /// dispatched several times (seed plus expansion rounds) is truncated
+        /// if ANY of those answers was cut short — the union of what it
+        /// returned still has a hole in it.
+        first_truncation: Option<String>,
     }
 
     let mut tallies: BTreeMap<&str, Tally> = BTreeMap::new();
@@ -164,10 +219,19 @@ pub fn provider_coverage_from_events(
             first_error: None,
             first_skip: None,
             unavailable: false,
+            first_truncation: None,
         });
         tally.dispatches = tally.dispatches.saturating_add(1);
         match &event.kind {
-            EventKind::ModuleDone { found, .. } => {
+            EventKind::ModuleDone {
+                found, truncated, ..
+            } => {
+                if tally.first_truncation.is_none()
+                    && let Some(reason) = truncated
+                    && !reason.trim().is_empty()
+                {
+                    tally.first_truncation = Some(reason.clone());
+                }
                 tally.findings = tally
                     .findings
                     .saturating_add(u32::try_from(*found).unwrap_or(u32::MAX));
@@ -207,9 +271,26 @@ pub fn provider_coverage_from_events(
                     reason: non_empty(tally.first_skip, "module was not dispatched"),
                 }
             } else if tally.findings > 0 {
-                ProviderOutcome::Observed
+                // A short answer is still an answer, so this sits BELOW the
+                // failure/skip rungs — but above a plain `Observed`, because
+                // the caller must not read the two as the same thing.
+                match tally.first_truncation {
+                    Some(reason) => ProviderOutcome::Truncated {
+                        reason: non_empty(Some(reason), "the provider's answer was cut short"),
+                    },
+                    None => ProviderOutcome::Observed,
+                }
             } else {
-                ProviderOutcome::CleanNegative
+                // Findings of zero with a truncation caveat is a real shape: a
+                // capped sweep that matched nothing IN THE PART IT READ. It is
+                // emphatically not a clean negative — that is the one outcome
+                // this enum treats as a genuine absence.
+                match tally.first_truncation {
+                    Some(reason) => ProviderOutcome::Truncated {
+                        reason: non_empty(Some(reason), "the provider's answer was cut short"),
+                    },
+                    None => ProviderOutcome::CleanNegative,
+                }
             };
             let skip_class = if outcome.is_resolved() {
                 None
@@ -313,6 +394,7 @@ mod tests {
             module_event(EventKind::ModuleDone {
                 module: "quiet".to_string(),
                 found: 0,
+                truncated: None,
             }),
             module_event(EventKind::ModuleError {
                 module: "broken".to_string(),
@@ -331,6 +413,7 @@ mod tests {
             module_event(EventKind::ModuleDone {
                 module: "productive".to_string(),
                 found: 3,
+                truncated: None,
             }),
             // Not a dispatch outcome: it must not create a coverage row.
             module_event(EventKind::ExpansionStop {
@@ -407,6 +490,7 @@ mod tests {
             module_event(EventKind::ModuleDone {
                 module: "registry".to_string(),
                 found: 2,
+                truncated: None,
             }),
             module_event(EventKind::ModuleSkipped {
                 module: "registry".to_string(),
@@ -543,6 +627,7 @@ mod tests {
             module_event(EventKind::ModuleDone {
                 module: "registry".to_string(),
                 found: 5,
+                truncated: None,
             }),
             module_event(EventKind::ModuleError {
                 module: "registry".to_string(),
@@ -567,5 +652,168 @@ mod tests {
         assert_eq!(rows[0].findings, 5);
         assert_eq!(rows[0].failures, 1);
         assert_eq!(rows[0].skips, 1);
+    }
+}
+
+#[cfg(test)]
+mod truncation_tests {
+    use super::*;
+    use crate::core::event::EventKind;
+    use crate::core::test_support::module_event;
+
+    fn done(module: &str, found: usize, truncated: Option<&str>) -> crate::core::event::Event {
+        module_event(EventKind::ModuleDone {
+            module: module.to_string(),
+            found,
+            truncated: truncated.map(str::to_string),
+        })
+    }
+
+    #[test]
+    fn a_short_answer_is_never_reported_as_a_complete_one() {
+        // The defect this variant exists for. A provider that returned the
+        // first 20 of 213 matches was `Observed` — byte-identical to one that
+        // returned everything — so nothing downstream could tell them apart.
+        let rows = provider_coverage_from_events(&[
+            done("whole", 5, None),
+            done(
+                "capped",
+                20,
+                Some("20 of 213 retrieved — stopped by the API's `limit=20` page."),
+            ),
+        ]);
+        let by_id = |id: &str| {
+            rows.iter()
+                .find(|r| r.provider_id == id)
+                .unwrap_or_else(|| panic!("no row for {id}"))
+                .outcome
+                .clone()
+        };
+        assert_eq!(by_id("whole"), ProviderOutcome::Observed);
+        match by_id("capped") {
+            ProviderOutcome::Truncated { reason } => {
+                assert!(
+                    reason.contains("213"),
+                    "the operator needs the numbers: {reason}"
+                );
+            }
+            other => panic!("a capped sweep must not read as {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_capped_sweep_that_matched_nothing_is_not_a_clean_negative() {
+        // `CleanNegative` is the ONE outcome this enum treats as a real
+        // absence. A sweep that read 500 of 12000 records and matched none of
+        // them found nothing IN THE PART IT READ, which is not the same claim.
+        let rows = provider_coverage_from_events(&[done(
+            "capped",
+            0,
+            Some("500 retrieved — stopped by the client-side cap."),
+        )]);
+        assert!(
+            matches!(rows[0].outcome, ProviderOutcome::Truncated { .. }),
+            "got {:?}",
+            rows[0].outcome
+        );
+    }
+
+    #[test]
+    fn truncation_from_any_round_survives_a_later_complete_round() {
+        // A provider dispatched on the seed and again on expansion: if EITHER
+        // answer was cut short, the union still has a hole in it.
+        let rows = provider_coverage_from_events(&[
+            done(
+                "p",
+                20,
+                Some("20 of 213 retrieved — stopped by the page limit."),
+            ),
+            done("p", 3, None),
+        ]);
+        assert!(matches!(rows[0].outcome, ProviderOutcome::Truncated { .. }));
+    }
+
+    #[test]
+    fn a_truncated_provider_ran_but_its_silence_settles_nothing() {
+        // THE PREDICATE SPLIT, and the reason one predicate would have been
+        // wrong. `is_resolved` answers "was this a skip?" — no, it ran, and
+        // reporting it unavailable would misdescribe a provider that worked.
+        // `settles_absence` answers "can I trust its silence?" — no, it read
+        // part of its corpus. The two disagree exactly here.
+        let t = ProviderOutcome::Truncated {
+            reason: "20 of 213".to_string(),
+        };
+        assert!(
+            t.is_resolved(),
+            "a truncated provider answered; it is not a skip"
+        );
+        assert!(
+            !t.settles_absence(),
+            "a truncated provider's silence cannot close a claim"
+        );
+
+        // Controls: the other three outcomes agree with themselves on both.
+        for complete in [ProviderOutcome::Observed, ProviderOutcome::CleanNegative] {
+            assert!(complete.is_resolved());
+            assert!(complete.settles_absence());
+        }
+        for absent in [
+            ProviderOutcome::NotAttempted { reason: "r".into() },
+            ProviderOutcome::Failed { reason: "r".into() },
+        ] {
+            assert!(!absent.is_resolved());
+            assert!(!absent.settles_absence());
+        }
+    }
+
+    #[test]
+    fn a_truncated_provider_is_not_filed_as_an_unavailable_skip() {
+        // `skip_class` is derived from `is_resolved`. A provider that answered
+        // short must not be reported to the operator as unusable.
+        let rows = provider_coverage_from_events(&[done(
+            "capped",
+            20,
+            Some("20 of 213 retrieved — stopped by the page limit."),
+        )]);
+        assert!(
+            rows[0].skip_class.is_none(),
+            "a provider that ran is not a skip; got {:?}",
+            rows[0].skip_class
+        );
+    }
+
+    #[test]
+    fn an_empty_truncation_string_is_not_a_truncation_claim() {
+        // An event carrying a blank caveat must not produce an outcome whose
+        // `reason()` is empty — `record_provider` rejects that as unreasoned,
+        // so a blank string would mint an observation the ledger refuses.
+        let rows = provider_coverage_from_events(&[done("p", 4, Some("   "))]);
+        assert_eq!(rows[0].outcome, ProviderOutcome::Observed);
+    }
+
+    #[test]
+    fn the_wire_spelling_is_distinct_and_round_trips() {
+        // The whole point is that an operator SEES the difference, through
+        // report.json and /api/v1/scans/{id}/coverage.
+        let t = ProviderOutcome::Truncated {
+            reason: "20 of 213".to_string(),
+        };
+        assert_eq!(t.as_str(), "truncated");
+        assert_ne!(t.as_str(), ProviderOutcome::Observed.as_str());
+        let json = serde_json::to_string(&t).expect("serialize");
+        let back: ProviderOutcome = serde_json::from_str(&json).expect("round-trip");
+        assert_eq!(back, t);
+    }
+
+    #[test]
+    fn an_event_logged_before_this_field_existed_still_decodes() {
+        // The durable log predates the field. An old `ModuleDone` must decode,
+        // and must read as "nothing was claimed" rather than failing the scan.
+        let old = r#"{"type":"module_done","module":"p","found":3}"#;
+        let kind: EventKind = serde_json::from_str(old).expect("old event must decode");
+        match kind {
+            EventKind::ModuleDone { truncated, .. } => assert!(truncated.is_none()),
+            other => panic!("wrong kind: {other:?}"),
+        }
     }
 }

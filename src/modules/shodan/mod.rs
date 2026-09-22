@@ -58,7 +58,7 @@ pub(super) struct HostResp {
     pub(super) city: Option<String>,
     /// Shodan's own geolocation of the host. When present and real (guarded by
     /// [`crate::util::geo::is_valid_coords`]), this is a far better fix than the
-    /// country centroid the module used to fall back to — the paid record's
+    /// address-derived centroid the module falls back to — the paid record's
     /// highest-precision location signal, previously discarded.
     #[serde(default)]
     pub(super) latitude: Option<f64>,
@@ -481,17 +481,17 @@ fn build_paid_entities(ip: &str, body: HostResp, scan_id: &str) -> Vec<Entity> {
         result.push(ae);
     }
     // Prefer Shodan's own host coordinates (guarded so the `(0,0)`
-    // placeholder is never trusted) over the coarse country centroid — a
-    // real per-host fix, not a whole-country approximation.
+    // placeholder is never trusted) over the coarse address-derived centroid — a
+    // real per-host fix, not a city-centroid approximation.
     let real_coords = match (body.latitude, body.longitude) {
         (Some(lat), Some(lon)) if crate::util::geo::is_valid_coords(lat, lon) => Some((lat, lon)),
         _ => None,
     };
     // Suppressed when the host IP is a CDN/anycast edge (the geo — real fix,
-    // country-centroid fallback, and Address alike — is the datacentre, not
+    // address-derived fallback, and Address alike — is the datacentre, not
     // the subject) — parity with the sibling IP-geo modules. ASN/Organisation
     // above are unaffected. Checked once and applied to both the real-fix and
-    // the country-centroid-fallback/Address block below, so an untrusted IP
+    // the address-derived-fallback/Address block below, so an untrusted IP
     // doesn't fall through to the fallback path when its real fix is suppressed.
     let geo_trusted = crate::core::validation::untrusted_ip_geo_reason(ip).is_none();
     if geo_trusted && let Some((lat, lon)) = real_coords {
@@ -513,10 +513,33 @@ fn build_paid_entities(ip: &str, body: HostResp, scan_id: &str) -> Vec<Entity> {
         && let Some(country) = &body.country_name
         && !country.is_empty()
     {
-        // Country centroid only as a fallback — never in addition to a real
-        // fix, which would plant a second, coarser coordinate for one host.
+        // City sharpens the address when Shodan carries it ("City, Country");
+        // otherwise the country alone, as before. Composed BEFORE the geocode
+        // below, which reads this same string — see the comment there.
+        let addr_val = match body
+            .city
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(city) => crate::util::geo::compose_address(city, "", country),
+            None => country.clone(),
+        };
+        // An address-derived centroid only as a fallback — never in addition to
+        // a real fix, which would plant a second, coarser coordinate for one
+        // host.
+        //
+        // This geocodes the COMPOSED address, not `country` alone. `city_coords`
+        // is a gazetteer of cities: its 143 rows are city names and not one is a
+        // country, not even a city-state, so a bare country name resolves to
+        // nothing and this leg could never fire (REQ-SHODAN-002). Shodan's own
+        // `city` field was right there — composed into the Address two lines up,
+        // exported, and never read by the one consumer that could use it. Passing
+        // the composed string makes the fallback live at CITY grain, which is the
+        // grain the gazetteer actually has; a response carrying only a country
+        // still resolves to nothing, exactly as before.
         if real_coords.is_none()
-            && let Some((lat, lon)) = crate::util::city_coords::city_coords(country)
+            && let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr_val)
         {
             let coord_val = format!("{lat:.4},{lon:.4}");
             let mut c = Entity::new(
@@ -529,25 +552,25 @@ fn build_paid_entities(ip: &str, body: HostResp, scan_id: &str) -> Vec<Entity> {
             c.tag("addr-derived");
             c.tag("geoint");
             c.add_evidence(
-                Evidence::new(SRC, format!("Geocode of country for {ip}")).with_attr("ip", ip),
+                Evidence::new(SRC, format!("Geocode of {addr_val} for {ip}")).with_attr("ip", ip),
             );
             result.push(c);
         }
-        // City sharpens the address when Shodan carries it ("City, Country");
-        // otherwise the country alone, as before.
-        let addr_val = match body
-            .city
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            Some(city) => crate::util::geo::compose_address(city, "", country),
-            None => country.clone(),
-        };
-        let mut addr = Entity::new(
-            EntityKind::Address,
+        // Never above the fix just emitted for this same host. On the real-fix
+        // path the module already sits below it (0.55 under 0.60); on the
+        // address-derived FALLBACK path it did not — 0.55 against a centroid
+        // graded 0.45, a 0.10 inversion, and the Address is the very string the
+        // centroid was looked up from (REQ-IPGEO-001). That guard was built for
+        // this path and never ran while the path was dead (REQ-SHODAN-002); it
+        // engages now.
+        let fix = result
+            .iter()
+            .rev()
+            .find(|e| e.kind == EntityKind::Coordinates);
+        let mut addr = crate::util::geo::coarse_provider_address(
             &addr_val,
             confidence::MEDIUM_HIGH,
+            fix,
             scan_id,
         );
         addr.tag("shodan");

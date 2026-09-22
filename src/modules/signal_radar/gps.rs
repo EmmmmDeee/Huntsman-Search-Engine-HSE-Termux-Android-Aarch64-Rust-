@@ -4,7 +4,7 @@
 //! semantics live there, not here.
 
 use crate::core::{error::Result, module::ModuleResult};
-use crate::modules::device_fix;
+use crate::modules::device_fix::{self, Fix};
 
 use super::SRC;
 
@@ -13,8 +13,8 @@ use super::SRC;
 /// module's evidence-source tag. The stages, their budgets and the
 /// last-known-fix fallback semantics live there, single-sourced with
 /// `device_sensors`, which ran a byte-identical copy.
-pub(super) async fn scan_gps(scan_id: &str) -> Result<ModuleResult> {
-    device_fix::scan_location_ladder(scan_id, SRC).await
+pub(super) async fn scan_gps(scan_id: &str) -> Result<(ModuleResult, Option<Fix>)> {
+    device_fix::scan_location_ladder_with_fix(scan_id, SRC).await
 }
 
 #[cfg(test)]

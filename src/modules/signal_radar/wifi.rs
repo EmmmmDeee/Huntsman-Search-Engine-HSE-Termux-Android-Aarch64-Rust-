@@ -10,6 +10,7 @@ use crate::core::{
 };
 
 use super::SRC;
+use crate::core::rf::{RadioKind, RfSighting, RfSource};
 
 #[derive(Deserialize)]
 pub(super) struct Ap {
@@ -45,7 +46,11 @@ pub(super) fn rssi_confidence(rssi: Option<i64>) -> f64 {
 }
 
 /// Parse the JSON array from `termux-wifi-scaninfo` into entities.
-pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
+pub(super) fn parse_scan(
+    stdout: &[u8],
+    scan_id: &str,
+    observed_epoch: Option<i64>,
+) -> Result<ModuleResult> {
     if super::is_blank(stdout) {
         return Ok(ModuleResult::new());
     }
@@ -146,6 +151,14 @@ pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
         e.add_evidence(ev);
 
         result.push(e);
+
+        // The per-sighting record beside the entity: the graph flattens the
+        // reading away, the sighting keeps it (`core::rf`, REQ-RADAR-001).
+        let mut sighting = RfSighting::new(&ap.bssid, RadioKind::Wifi, RfSource::WifiRadar);
+        sighting.name = ssid.map(str::to_string);
+        sighting.signal_dbm = ap.rssi.map(|v| v as f64);
+        sighting.observed_epoch = observed_epoch;
+        result.push_sighting(sighting);
 
         // The SSID is a WiGLE-geolocatable pivot in its own right (a network
         // name search can surface every place that SSID was ever seen), so it

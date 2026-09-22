@@ -239,7 +239,14 @@ impl Module for DataGovAu {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let query = target.value.trim();
         if query.len() < MIN_QUERY_LEN {
-            return Ok(ModuleResult::new());
+            return Err(crate::core::error::Error::query_too_weak(
+                crate::core::event::SkipClass::Scoped,
+                query,
+                &format!(
+                    "a query shorter than {MIN_QUERY_LEN} characters matches noise across \
+                          the whole open-data catalogue"
+                ),
+            ));
         }
 
         let data = package_search(&ctx.http, API_BASE, query).await?;

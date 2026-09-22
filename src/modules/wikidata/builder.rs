@@ -5,6 +5,7 @@ use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     scan::TargetKind,
 };
+use crate::util::namesake::{NameCollisions, mark_ambiguous};
 use crate::util::url_util::host_from_url;
 
 use super::{
@@ -187,6 +188,46 @@ pub(super) fn primary_entities(
         }
     }
     out
+}
+
+/// Mark every entity whose identity this one answer holds **more than once**.
+///
+/// A label two Wikidata items share does not identify one item, and both the
+/// primary and the same-label candidate are valued on that label — so the
+/// engine derives ONE uid for them and `Entity::absorb` takes
+/// `f64::max(confidence)`. That silently erases the [`candidate_entity`]
+/// demotion which exists precisely for this case: the module doc promises
+/// candidates "stay below the expansion floor so a namesake can't pivot", and
+/// the fused entity instead pivoted at `PERSON_PRIMARY` carrying both QIDs and
+/// both of the contradictory `exact-name-match` / `name-candidate` tags
+/// (REQ-WIKIDATA-001).
+///
+/// Keyed on each entity's own `(kind, value)` — the identity the engine really
+/// merges on — so a primary that [`classify`] placed in a *different* kind from
+/// the candidates is correctly left alone: it never fuses with them, so nothing
+/// of its confidence is erased.
+///
+/// When the primary's own label is shared, the claims fan-out read from that
+/// single item (its website, handles, coordinates) is marked too: it rests on
+/// the same unresolved name, and demoting the person while leaving their
+/// handles pivot-eligible would move the defect rather than remove it.
+///
+/// `entities[0]` is the primary — both branches in `process` push it before the
+/// candidates are appended. **Pure**, so the rule is testable without a network
+/// round trip, which the fix's first cut was not.
+pub(super) fn mark_shared_labels(entities: &mut [Entity], seed: TargetKind, labels: &[&str]) {
+    let shared = NameCollisions::of(&seed_kind(seed), labels.iter().copied());
+    if !shared.any() {
+        return;
+    }
+    let primary_shared = entities
+        .first()
+        .is_some_and(|head| shared.is_shared(&head.kind, &head.value));
+    for e in entities.iter_mut() {
+        if primary_shared || shared.is_shared(&e.kind, &e.value) {
+            mark_ambiguous(e);
+        }
+    }
 }
 
 /// A non-primary same-name item: surfaced as a low-confidence candidate so a

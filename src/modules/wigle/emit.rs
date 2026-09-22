@@ -144,7 +144,17 @@ pub(super) fn extract_cell_intel(
         .filter_map(|n| {
             let lat = n.trilat?;
             let lon = n.trilong?;
-            if !crate::util::geo::is_valid_coords(lat, lon) {
+            // The STRICT provider gate, as the BSSID and SSID emitters below
+            // already use on these same two WiGLE fields. `is_valid_coords`
+            // only rejects (0,0) and out-of-range; WiGLE's own no-fix
+            // placeholder is the near-null-island JITTER BAND just outside it
+            // (0.001-ish), which sailed through and became one of the "top-3
+            // tower positions closest to target" — ranked by a distance
+            // computed from a placeholder (REQ-WIGLE-001). This is the same
+            // provider and the same band REQ-WIFIINTEL-001 closed in
+            // `wifi_intel`; this module knew the rule and applied it to two of
+            // its four trilat/trilong sites.
+            if !crate::util::geo::is_plausible_provider_coord(lat, lon) {
                 return None;
             }
             let dist = target_coords.map_or(0.0, |(t_lat, t_lon)| {
@@ -251,7 +261,6 @@ pub(super) fn emit_bssid_entities(
     let Some(lat) = net.trilat else {
         return result;
     };
-    let lon = net.trilong.unwrap_or(0.0);
     let observation_tag = match kind {
         NetworkKind::Wifi => "bssid-located",
         NetworkKind::Cell => "cell-located",
@@ -292,7 +301,21 @@ pub(super) fn emit_bssid_entities(
         }
         result.push(addr);
     }
-    if crate::util::geo::is_plausible_provider_coord(lat, lon) {
+    // A missing longitude is NOT longitude zero (REQ-GEOGATE-001). This read
+    // `let lon = net.trilong.unwrap_or(0.0);` up beside the `trilat` bail, and
+    // the old cross-shaped gate hid it: a fabricated `0.0` longitude always
+    // fell in the rejected strip, so the half-coordinate never reached an
+    // entity. With the gate corrected to the Null Island *square*, `51.4779,
+    // 0.0` is a valid point on the prime meridian and would have shipped as a
+    // real fix for a network WiGLE never gave a longitude for.
+    //
+    // The check belongs HERE, not up there: the Address block above is built
+    // from `city`/`region`/`country` and has nothing to do with coordinates,
+    // so bailing early would have discarded a perfectly good Address to fix a
+    // coordinate defect.
+    if let Some(lon) = net.trilong
+        && crate::util::geo::is_plausible_provider_coord(lat, lon)
+    {
         let mut e = Entity::new(
             EntityKind::Coordinates,
             format!("{lat:.6},{lon:.6}"),

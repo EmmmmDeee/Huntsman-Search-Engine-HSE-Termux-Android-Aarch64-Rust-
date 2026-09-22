@@ -45,7 +45,7 @@ fn parses_connected_state() {
     let json = br#"{"bssid":"aa:bb:cc:dd:ee:ff","ssid":"MyNet","ip":"192.168.1.42",
         "frequency_mhz":2412,"rssi":-45,"link_speed_mbps":866,
         "supplicant_state":"COMPLETED"}"#;
-    let r = parse_conn(json, "test").expect("valid sensor JSON parses");
+    let r = parse_conn(json, "test", Some(1_758_500_000)).expect("valid sensor JSON parses");
     assert_eq!(r.entities.len(), 2);
 }
 
@@ -53,14 +53,14 @@ fn parses_connected_state() {
 fn parses_disconnected_state() {
     let json = br#"{"bssid":"02:00:00:00:00:00","ssid":"<unknown ssid>","ip":"0.0.0.0",
         "supplicant_state":"DISCONNECTED"}"#;
-    let r = parse_conn(json, "test").expect("valid sensor JSON parses");
+    let r = parse_conn(json, "test", Some(1_758_500_000)).expect("valid sensor JSON parses");
     assert_eq!(r.entities.len(), 0);
 }
 
 #[test]
 fn wifi_filters_all_zero_mac() {
     let json = br#"{"bssid":"00:00:00:00:00:00","ssid":"Test","ip":"10.0.0.1"}"#;
-    let r = parse_conn(json, "test").expect("valid sensor JSON parses");
+    let r = parse_conn(json, "test", Some(1_758_500_000)).expect("valid sensor JSON parses");
     assert_eq!(r.entities.len(), 1);
     assert_eq!(r.entities[0].kind, EntityKind::IpAddress);
 }
@@ -69,7 +69,7 @@ fn wifi_filters_all_zero_mac() {
 fn connected_bssid_is_geolocatable_and_banded() {
     let json = br#"{"bssid":"aa:bb:cc:dd:ee:ff","ssid":"MyNet","ip":"192.168.1.42",
         "frequency_mhz":5180,"supplicant_state":"COMPLETED"}"#;
-    let r = parse_conn(json, "test").expect("valid sensor JSON parses");
+    let r = parse_conn(json, "test", Some(1_758_500_000)).expect("valid sensor JSON parses");
     let mac = r
         .entities
         .iter()
@@ -91,7 +91,7 @@ fn wifi_ssid_in_evidence() {
     let json = br#"{"bssid":"aa:bb:cc:dd:ee:ff","ssid":"CafeNet","ip":"192.168.0.5",
         "frequency_mhz":5180,"rssi":-60,"link_speed_mbps":400,
         "supplicant_state":"COMPLETED"}"#;
-    let r = parse_conn(json, "test").expect("valid sensor JSON parses");
+    let r = parse_conn(json, "test", Some(1_758_500_000)).expect("valid sensor JSON parses");
     let mac_ev = &r.entities[0].evidence[0];
     assert_eq!(
         mac_ev.attributes.get("ssid").expect("should succeed"),
@@ -109,7 +109,7 @@ fn wifi_ssid_in_evidence() {
 #[test]
 fn wifi_evidence_source_is_device_sensors() {
     let json = br#"{"bssid":"aa:bb:cc:dd:ee:ff","ssid":"Net","ip":"10.0.0.1"}"#;
-    let r = parse_conn(json, "test").expect("valid sensor JSON parses");
+    let r = parse_conn(json, "test", Some(1_758_500_000)).expect("valid sensor JSON parses");
     assert_eq!(r.entities[0].evidence[0].source, "device_sensors");
     assert_eq!(r.entities[1].evidence[0].source, "device_sensors");
 }
@@ -334,7 +334,7 @@ fn blank_output_is_an_empty_ok() {
                 .is_empty()
         );
         assert!(
-            parse_conn(blank, "test")
+            parse_conn(blank, "test", Some(1_758_500_000))
                 .expect("blank output is an empty answer, not an error")
                 .entities
                 .is_empty()
@@ -362,7 +362,7 @@ fn absent_wifi_readings_are_omitted_never_asserted_as_zero_or_hidden() {
     // report is not a `<hidden>` network. Absent stays absent — the contract
     // `device_fix` states for the same sensor family.
     let json = br#"{"bssid":"aa:bb:cc:dd:ee:ff","ip":"192.168.1.42"}"#;
-    let r = parse_conn(json, "test").expect("valid sensor JSON parses");
+    let r = parse_conn(json, "test", Some(1_758_500_000)).expect("valid sensor JSON parses");
     assert_eq!(r.entities.len(), 2);
     for e in &r.entities {
         let attrs = &e.evidence[0].attributes;
@@ -396,10 +396,63 @@ fn absent_wifi_readings_are_omitted_never_asserted_as_zero_or_hidden() {
 
     // Readings the tool DID supply are recorded verbatim.
     let json = br#"{"bssid":"aa:bb:cc:dd:ee:ff","ssid":"MyNet","ip":"192.168.1.42","rssi":-45}"#;
-    let r = parse_conn(json, "test").expect("valid sensor JSON parses");
+    let r = parse_conn(json, "test", Some(1_758_500_000)).expect("valid sensor JSON parses");
     let attrs = &r.entities[0].evidence[0].attributes;
     assert_eq!(attrs.get("rssi_dbm").map(String::as_str), Some("-45"));
     assert_eq!(attrs.get("ssid").map(String::as_str), Some("MyNet"));
     assert!(!attrs.contains_key("frequency_mhz"));
     assert_eq!(r.entities[0].evidence[0].summary, "Connected to: MyNet");
+}
+
+#[test]
+fn the_link_record_says_connected_with_the_readings_and_disconnected_with_nothing() {
+    // REQ-RESILIENCE-002: the typed record beside the entities.
+    let json = br#"{"bssid":"00:1A:2B:3C:4D:5E","ssid":"LabNet","rssi":-45,"ip":"192.168.1.20","link_speed_mbps":433,"supplicant_state":"COMPLETED","frequency_mhz":2437}"#;
+    let r = parse_conn(json, "test", Some(1_758_500_000)).expect("parses");
+    let link = r.link.expect("a link record");
+    assert!(link.connected);
+    assert_eq!(
+        link.bssid.as_deref(),
+        Some("00:1a:2b:3c:4d:5e"),
+        "canonical"
+    );
+    assert_eq!(link.ssid.as_deref(), Some("LabNet"));
+    assert_eq!(link.signal_dbm, Some(-45.0));
+    assert_eq!(link.ip.as_deref(), Some("192.168.1.20"));
+    assert_eq!(link.link_speed_mbps, Some(433));
+    assert_eq!(link.observed_epoch, Some(1_758_500_000));
+
+    // Blank output (Wi-Fi off, or nothing to report) is "not connected" —
+    // a record, because the review counts exactly these sweeps.
+    let r = parse_conn(b"  \n", "test", Some(1_758_500_060)).expect("blank is fine");
+    let link = r.link.expect("a link record even when off");
+    assert!(!link.connected);
+    assert_eq!(link.observed_epoch, Some(1_758_500_060));
+    assert!(r.entities.is_empty());
+}
+
+#[test]
+fn a_stale_address_beside_a_disconnected_supplicant_is_not_a_connection() {
+    // Android reports the last network's address with `DISCONNECTED`; the
+    // entity path already refuses the null addresses, and the link record
+    // must not read a stale real one as "on the network".
+    let json = br#"{"bssid":"00:1A:2B:3C:4D:5E","ssid":"LabNet","rssi":-45,"supplicant_state":"DISCONNECTED"}"#;
+    let r = parse_conn(json, "test", Some(1)).expect("parses");
+    let link = r.link.expect("a link record");
+    assert!(!link.connected, "{link:?}");
+    assert_eq!(
+        link.bssid.as_deref(),
+        Some("00:1a:2b:3c:4d:5e"),
+        "the last address is kept for the record"
+    );
+    assert_eq!(link.supplicant_state.as_deref(), Some("DISCONNECTED"));
+    // The null address the tool uses for "none" is no address at all.
+    let json =
+        br#"{"bssid":"02:00:00:00:00:00","ssid":"<unknown ssid>","supplicant_state":"SCANNING"}"#;
+    let link = parse_conn(json, "test", Some(1))
+        .expect("parses")
+        .link
+        .expect("record");
+    assert!(!link.connected);
+    assert_eq!(link.bssid, None);
 }

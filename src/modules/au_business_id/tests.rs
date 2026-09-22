@@ -127,3 +127,81 @@ async fn invalid_identifier_yields_nothing() {
         "a checksum-invalid identifier must produce no entities"
     );
 }
+
+// ── REQ-AUBUSINESSID-001: a re-derivation is not a second opinion ────────────
+
+#[test]
+fn this_modules_evidence_never_counts_as_independent_corroboration() {
+    // The harm, stated at the boundary that causes it. This module reads the
+    // ABN's own check digits — it observes nothing. When a live register has
+    // already confirmed the same identifier, the arithmetic agreeing with the
+    // digits it was computed from is not a second source, and counting it as
+    // one inflates `source_count` → `c_effective` → every correlator rule and
+    // dispatch gate keyed on cross-correlation.
+    let mut e = Entity::new(
+        EntityKind::AbnAcn,
+        "51824753556",
+        confidence::MEDIUM_HIGH,
+        "s",
+    );
+    e.add_evidence(Evidence::new(
+        "abn_lookup",
+        "ABR confirms the ABN is registered and active",
+    ));
+    e.add_evidence(Evidence::new(
+        SRC,
+        "Checksum-valid company ABN; embeds ACN 824753556 (decoded offline)",
+    ));
+
+    assert_eq!(
+        e.corroborating_sources().len(),
+        1,
+        "one live register plus an offline re-derivation is ONE source, got {:?}",
+        e.corroborating_sources()
+    );
+    assert_eq!(e.source_count(), 1, "the count must agree with the set");
+
+    // Control: the full evidence set is retained for display — the fix excludes
+    // this source from CORROBORATION, it does not hide the finding.
+    assert!(
+        e.evidence_sources().contains(SRC),
+        "the derivation must still be visible as evidence"
+    );
+    assert_eq!(e.evidence_sources().len(), 2);
+}
+
+#[test]
+fn a_live_register_and_a_second_live_register_still_corroborate() {
+    // The control that keeps the exclusion from swallowing real corroboration:
+    // two genuine observers of the same ABN must still count as two.
+    let mut e = Entity::new(
+        EntityKind::AbnAcn,
+        "51824753556",
+        confidence::MEDIUM_HIGH,
+        "s",
+    );
+    e.add_evidence(Evidence::new("abn_lookup", "ABR record"));
+    e.add_evidence(Evidence::new("asic_business_names", "ASIC register record"));
+    assert_eq!(e.corroborating_sources().len(), 2);
+}
+
+#[test]
+fn the_module_declares_itself_a_derivation() {
+    // Both halves of the declaration, asserted here as well as in the
+    // architecture guard. `derivation_modules_are_exactly_the_enrichment_only_sources`
+    // checks that the trait method and `ENRICHMENT_ONLY_SOURCES` AGREE — which
+    // it did before this fix, because this module was absent from both. Two
+    // declarations agreeing does not make them right, so the module states the
+    // fact directly rather than only relative to the list.
+    assert!(
+        AuBusinessId.is_derivation(),
+        "this module's output is a deterministic transform of its input"
+    );
+    assert!(
+        crate::core::entity::is_enrichment_source(SRC),
+        "the runtime exclusion is keyed on the source STRING, not the trait — \
+         `hse_core::ENRICHMENT_ONLY_SOURCES` must name this module too"
+    );
+    // A derivation observes nothing, so it is necessarily passive.
+    assert!(AuBusinessId.is_passive());
+}

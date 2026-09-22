@@ -337,15 +337,55 @@ fn search_resp() -> GleifResp {
 }
 
 #[test]
-fn only_exact_name_matches_with_an_lei_are_walked() {
+fn a_name_two_rows_hold_is_walked_for_neither_of_them() {
+    // INVERTED (REQ-GLEIF-001), keeping the original claim on the record. This
+    // test used to assert:
+    //
+    //     assert_eq!(seeds, vec![("WZE1WSENV6JSZFK0JC28", "BHP GROUP LIMITED")]);
+    //
+    // with the comment "row 3 matches the name but has no LEI, so there is
+    // nothing to walk from." True, but it missed what row 3 IS: a SECOND holder
+    // of "BHP GROUP LIMITED", in GB. Both rows become an `Organisation` whose
+    // value is that name, so `Entity::new` derives one uid for both and the
+    // engine fuses them into a single AU+GB composite. Walking row 1's
+    // corporate family then attributes those parents and children to a subject
+    // who may be the other company — the precise harm `exact_seeds`' own doc
+    // comment forbids, reached through the exact-match gate instead of around
+    // it. Neither row is walked now.
     let seeds = exact_seeds(&search_resp(), "BHP Group Limited");
-    // Row 2 is a different company entirely; row 3 matches the name but has no
-    // LEI, so there is nothing to walk from.
+    assert!(
+        seeds.is_empty(),
+        "a legal name two rows hold identifies no single company to walk; got {seeds:?}"
+    );
+}
+
+#[test]
+fn a_singly_held_exact_name_without_an_lei_is_still_not_walked() {
+    // The coverage the inverted test above provided before its fixture's
+    // namesake pair took over: there is nothing to walk FROM without an LEI.
+    // Kept as its own case, on a fixture where no name repeats, so the two
+    // reasons a row is skipped can never mask each other again.
+    let raw = r#"{
+        "meta": {"pagination": {"total": 2}},
+        "data": [
+            {"attributes": {"entity": {
+                "legalName": {"name": "Solo Holdings Limited"}, "jurisdiction": "AU", "status": "ACTIVE"
+            }}},
+            {"attributes": {"lei": "WZE1WSENV6JSZFK0JC28", "entity": {
+                "legalName": {"name": "Unrelated Pty Ltd"}, "jurisdiction": "AU", "status": "ACTIVE"
+            }}}
+        ]
+    }"#;
+    let resp: GleifResp = serde_json::from_str(raw).expect("should succeed");
+    assert!(exact_seeds(&resp, "Solo Holdings Limited").is_empty());
+    // CONTROL: the same fixture, queried for the row that DOES carry an LEI,
+    // still yields its seed — so the assertion above is about the missing LEI,
+    // not about the fixture being unwalkable.
     assert_eq!(
-        seeds,
+        exact_seeds(&resp, "Unrelated Pty Ltd"),
         vec![(
             "WZE1WSENV6JSZFK0JC28".to_string(),
-            "BHP GROUP LIMITED".to_string()
+            "Unrelated Pty Ltd".to_string()
         )]
     );
 }

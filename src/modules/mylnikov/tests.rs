@@ -49,10 +49,13 @@ use super::*;
     #[test]
     fn confidence_bands_track_range_accuracy() {
         // Boundaries of each band, plus the missing-range default (wide → 5000).
-        assert!((confidence_for_range(Some(0.0)) - confidence::VERY_HIGH).abs() < 1e-9);
-        assert!((confidence_for_range(Some(200.0)) - confidence::VERY_HIGH).abs() < 1e-9);
-        assert!((confidence_for_range(Some(201.0)) - confidence::HIGH).abs() < 1e-9);
+        assert!((confidence_for_range(Some(0.0)) - confidence::HIGH_PLUSPLUS_PLUS).abs() < 1e-9);
+        assert!((confidence_for_range(Some(50.0)) - confidence::HIGH_PLUSPLUS_PLUS).abs() < 1e-9);
+        assert!((confidence_for_range(Some(51.0)) - confidence::VERY_HIGH).abs() < 1e-9);
+        assert!((confidence_for_range(Some(300.0)) - confidence::VERY_HIGH).abs() < 1e-9);
+        assert!((confidence_for_range(Some(301.0)) - confidence::HIGH).abs() < 1e-9);
         assert!((confidence_for_range(Some(1000.0)) - confidence::HIGH).abs() < 1e-9);
+        assert!((confidence_for_range(Some(1001.0)) - confidence::MEDIUM).abs() < 1e-9);
         assert!((confidence_for_range(Some(5000.0)) - confidence::MEDIUM).abs() < 1e-9);
         assert!((confidence_for_range(Some(5001.0)) - 0.35).abs() < 1e-9);
         // None → 5000 default → the 1001..=5000 band.

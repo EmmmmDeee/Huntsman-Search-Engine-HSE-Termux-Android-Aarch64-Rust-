@@ -1,44 +1,21 @@
 use super::*;
     use crate::core::scan::TargetKind;
+    use std::sync::Arc;
 
     fn scan_import_router() -> axum::Router {
-        let store: std::sync::Arc<dyn crate::core::StoragePort> =
-            std::sync::Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"));
-        let (bus, _rx) = tokio::sync::broadcast::channel(16);
-        let engine = std::sync::Arc::new(crate::core::engine::ScanEngine::new(
-            Vec::new(),
-            std::sync::Arc::clone(&store),
-            bus.clone(),
-        ));
-        let live = crate::core::live::LiveScanner::new(
-            std::sync::Arc::clone(&engine),
-            bus.clone(),
-            reqwest::Client::new(),
-            Default::default(),
-        );
-        let state = std::sync::Arc::new(AppState {
-            store,
-            engine,
-            bus,
-            live,
-            http: reqwest::Client::new(),
-            allow_key_write: false,
-            cancellations: std::sync::Arc::new(parking_lot::Mutex::new(
-                std::collections::HashMap::new(),
-            )),
-            scan_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(
-                crate::api::MAX_CONCURRENT_SCANS,
-            )),
-            update_info: std::sync::Arc::new(std::sync::Mutex::new(
-                crate::api::UpdateInfo::default(),
-            )),
-            cells_import: std::sync::Arc::new(std::sync::Mutex::new(
-                crate::api::CellsImportPhase::default(),
-            )),
-        });
         axum::Router::new()
             .route("/api/v1/scans/import", axum::routing::post(scan_import))
-            .with_state(state)
+            .with_state(crate::api::test_state())
+    }
+
+    fn scan_create_router() -> axum::Router {
+        axum::Router::new()
+            .route("/api/v1/scans", axum::routing::post(super::core::scan_create))
+            .route(
+                "/api/v1/scans/batch",
+                axum::routing::post(super::core::scan_batch),
+            )
+            .with_state(crate::api::test_state())
     }
 
     /// Regression for the web upload path silently dropping a stealer-row
@@ -426,4 +403,818 @@ Victims:
             confine_graph_to_visible(vec![subject, candidate], vec![edge], &params);
         assert_eq!(ents.len(), 2);
         assert_eq!(rels.len(), 1);
+    }
+
+    // ── REQ-SCANOPTS-001: the unknown-option check, through the real route ──
+
+    async fn post_json(router: axum::Router, path: &str, body: &str) -> (u16, String) {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("should succeed"),
+            )
+            .await
+            .expect("should succeed");
+        let status = resp.status().as_u16();
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .expect("should succeed");
+        (status, String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    /// The defect as an operator meets it: a one-character slip in a scope
+    /// control. Pre-fix this returned 202 Accepted and ran a FULL ACTIVE scan
+    /// for an operator who asked for a passive one — indistinguishable, in the
+    /// response, from the scan they requested.
+    #[tokio::test]
+    async fn scan_create_rejects_a_misspelled_scope_control() {
+        let (status, body) = post_json(
+            scan_create_router(),
+            "/api/v1/scans",
+            r#"{"value":"cloudflare.com","options":{"passive-only":true}}"#,
+        )
+        .await;
+        assert_eq!(status, 400, "a misspelled scope control must not be accepted");
+        assert!(
+            body.contains("passive-only"),
+            "the error must name the offending key, got: {body}"
+        );
+        assert!(
+            body.contains("passive_only"),
+            "the error must suggest the intended key, got: {body}"
+        );
+    }
+
+    /// The control: the same request, spelled correctly, is still accepted.
+    /// Without this, the test above would also pass if the seam rejected
+    /// every request.
+    #[tokio::test]
+    async fn scan_create_still_accepts_a_correctly_spelled_option() {
+        let (status, body) = post_json(
+            scan_create_router(),
+            "/api/v1/scans",
+            r#"{"value":"cloudflare.com","options":{"passive_only":true}}"#,
+        )
+        .await;
+        assert_eq!(status, 202, "a valid request must still be queued: {body}");
+    }
+
+    /// And the second control: an `options`-less request — the documented
+    /// "bare `{\"value\": …}` is as thorough as the CLI" shape — is unaffected.
+    #[tokio::test]
+    async fn scan_create_still_accepts_a_request_with_no_options() {
+        let (status, body) = post_json(
+            scan_create_router(),
+            "/api/v1/scans",
+            r#"{"value":"cloudflare.com"}"#,
+        )
+        .await;
+        assert_eq!(status, 202, "an options-less request must still be queued: {body}");
+    }
+
+    /// The batch seam is the same authority: one entry's typo is that entry's
+    /// error, and does not silently run as a default — nor abort its siblings.
+    #[tokio::test]
+    async fn scan_batch_reports_a_misspelled_option_per_entry() {
+        let (status, body) = post_json(
+            scan_create_router(),
+            "/api/v1/scans/batch",
+            r#"[{"value":"cloudflare.com","options":{"free-only":true}},
+                {"value":"mozilla.org","options":{"free_only":true}}]"#,
+        )
+        .await;
+        assert_eq!(status, 202, "the batch itself must still be processed: {body}");
+        assert!(
+            body.contains("free-only"),
+            "the bad entry must report its own key, got: {body}"
+        );
+        assert!(
+            body.contains("scan_id"),
+            "the good entry must still have been queued, got: {body}"
+        );
+    }
+
+    /// A key that is not a transcription of any option gets the full accepted
+    /// list — the only in-band documentation of the option names, since no
+    /// schema route serves them. The suggestible case must NOT carry it: that
+    /// branch exists to keep the common typo's error readable, so both sides
+    /// are asserted rather than just the one that happens to fire.
+    #[tokio::test]
+    async fn an_unsuggestible_option_gets_the_catalogue_and_a_typo_does_not() {
+        let (status, body) = post_json(
+            scan_create_router(),
+            "/api/v1/scans",
+            r#"{"value":"cloudflare.com","options":{"stealth_mode":true}}"#,
+        )
+        .await;
+        assert_eq!(status, 400);
+        assert!(
+            body.contains("Accepted keys for options:") && body.contains("passive_only"),
+            "an unsuggestible key must be answered with the catalogue, got: {body}"
+        );
+
+        let (_, typo_body) = post_json(
+            scan_create_router(),
+            "/api/v1/scans",
+            r#"{"value":"cloudflare.com","options":{"passive-only":true}}"#,
+        )
+        .await;
+        assert!(
+            !typo_body.contains("Accepted keys for options:"),
+            "a suggestible key must NOT drag in the whole catalogue, got: {typo_body}"
+        );
+    }
+
+    // ── REQ-SCANSTATUS-001: the derived `interrupted` flag, through the real routes ──
+
+    /// A `running` row this process holds no handle for reports
+    /// `interrupted: true` on both read surfaces; installing the handle — the
+    /// state a genuinely in-flight scan is in — flips it to `false`. The row
+    /// itself is never rewritten: the same store answers both reads.
+    #[tokio::test]
+    async fn a_hard_killed_scan_reads_as_interrupted_until_a_process_owns_it() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
+        use tower::ServiceExt as _;
+
+        let state = crate::api::test_state();
+        let router = || {
+            axum::Router::new()
+                .route("/api/v1/scans", axum::routing::get(super::core::scan_list))
+                .route("/api/v1/scans/{id}", axum::routing::get(super::core::scan_get))
+                .with_state(std::sync::Arc::clone(&state))
+        };
+        // The row a dead process leaves behind: `running`, no handle anywhere.
+        let mut scan = Scan::new("orphan-1", Target::new(TargetKind::Domain, "cloudflare.com"));
+        scan.status = ScanStatus::Running;
+        state.store.upsert_scan(&scan).expect("should succeed");
+
+        let get = |path: &'static str| {
+            let r = router();
+            async move {
+                let resp = r
+                    .oneshot(Request::builder().uri(path).body(Body::empty()).expect("ok"))
+                    .await
+                    .expect("ok");
+                let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.expect("ok");
+                serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
+            }
+        };
+
+        let one = get("/api/v1/scans/orphan-1").await;
+        assert_eq!(one["status"], "running", "the persisted status is untouched");
+        assert_eq!(one["interrupted"], true, "no process owns it: {one}");
+        let list = get("/api/v1/scans").await;
+        assert_eq!(list["scans"][0]["interrupted"], true, "list agrees: {list}");
+
+        // CONTROL: the moment this process owns the scan, it is in flight.
+        state
+            .cancellations
+            .lock()
+            .insert("orphan-1".to_string(), crate::core::cancel::CancelHandle::new());
+        let one = get("/api/v1/scans/orphan-1").await;
+        assert_eq!(one["interrupted"], false, "a held handle means in flight: {one}");
+        let list = get("/api/v1/scans").await;
+        assert_eq!(list["scans"][0]["interrupted"], false, "list agrees: {list}");
+    }
+
+    /// A live-driven scan is run by THIS process, so it must never read
+    /// `interrupted` — and, because the one registry now holds it, it is
+    /// refused deletion mid-run and cancellable by scan id exactly like a
+    /// one-shot scan. The first draft of this fix derived `interrupted` from a
+    /// registry only `spawn_scan` filled; on the running binary a healthy live
+    /// iteration read `interrupted: true`, `DELETE` returned 200 mid-run and
+    /// `cancel` 404 (ledger, REQ-SCANSTATUS-001).
+    #[tokio::test]
+    async fn a_live_iteration_run_by_this_process_is_in_flight_not_interrupted() {
+        use axum::body::Body;
+        use axum::http::{Method, Request, StatusCode};
+        use crate::core::live::{LiveOptions, LiveStatus};
+        use crate::core::module::test_support::Gated;
+        use crate::core::scan::{ScanOptions, ScanStatus, Target, TargetKind};
+        use tower::ServiceExt as _;
+
+        async fn settle<T>(mut probe: impl FnMut() -> Option<T>) -> Option<T> {
+            for _ in 0..500 {
+                if let Some(v) = probe() {
+                    return Some(v);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            None
+        }
+
+        let (module, gate) = Gated::pair();
+        let state = crate::api::test_state_with_modules(vec![module]);
+        let router = || {
+            axum::Router::new()
+                .route("/api/v1/scans", axum::routing::get(super::core::scan_list))
+                .route(
+                    "/api/v1/scans/{id}",
+                    axum::routing::get(super::core::scan_get).delete(super::core::scan_delete),
+                )
+                .route(
+                    "/api/v1/scans/{id}/cancel",
+                    axum::routing::post(super::core::scan_cancel),
+                )
+                .with_state(std::sync::Arc::clone(&state))
+        };
+        let call = |method: Method, path: String| {
+            let r = router();
+            async move {
+                let resp = r
+                    .oneshot(
+                        Request::builder()
+                            .method(method)
+                            .uri(path)
+                            .body(Body::empty())
+                            .expect("ok"),
+                    )
+                    .await
+                    .expect("ok");
+                let code = resp.status();
+                let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.expect("ok");
+                let body = serde_json::from_slice::<serde_json::Value>(&bytes)
+                    .unwrap_or(serde_json::Value::Null);
+                (code, body)
+            }
+        };
+
+        let live_id = state.live.start(
+            Target::new(TargetKind::Domain, "cloudflare.com"),
+            ScanOptions::default(),
+            LiveOptions {
+                interval_secs: 1,
+                iterations: Some(1),
+                radar: false,
+            },
+        );
+        let sid = settle(|| {
+            state
+                .store
+                .list_scans(10)
+                .ok()?
+                .into_iter()
+                .find(|s| s.status == ScanStatus::Running)
+                .map(|s| s.id)
+        })
+        .await
+        .expect("the iteration reaches `running` while the module is gated");
+
+        // THE lock: a scan this process is running is in flight, whichever
+        // path spawned it.
+        let (code, one) = call(Method::GET, format!("/api/v1/scans/{sid}")).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(one["status"], "running");
+        assert_eq!(one["interrupted"], false, "this process is running it: {one}");
+        let (_, list) = call(Method::GET, "/api/v1/scans".into()).await;
+        assert_eq!(list["scans"][0]["interrupted"], false, "list agrees: {list}");
+        // `/stats` reads the same registry: histogrammed as running, never interrupted.
+        let agg = crate::api::handlers::aggregate_scan_stats(
+            &state.store.list_scans(10).expect("ok"),
+            &crate::api::handlers::in_flight_scan_ids(&state.cancellations),
+        );
+        assert_eq!(agg.by_status.get("running"), Some(&1), "{agg:?}");
+        assert_eq!(agg.by_status.get("interrupted"), None, "{agg:?}");
+
+        // The same registry protects it: no deleting a row the engine is still writing.
+        let (code, body) = call(Method::DELETE, format!("/api/v1/scans/{sid}")).await;
+        assert_eq!(
+            code,
+            StatusCode::CONFLICT,
+            "a live iteration mid-run must be refused deletion: {body}"
+        );
+
+        // …and makes it cancellable by scan id.
+        let (code, body) = call(Method::POST, format!("/api/v1/scans/{sid}/cancel")).await;
+        assert_eq!(
+            code,
+            StatusCode::OK,
+            "a live iteration is cancellable by its scan id: {body}"
+        );
+        let ended = settle(|| {
+            state
+                .store
+                .get_scan(&sid)
+                .ok()
+                .flatten()
+                .filter(|s| s.status != ScanStatus::Running)
+                .map(|s| s.status)
+        })
+        .await
+        .expect("the cancelled iteration reaches a terminal status");
+        assert_eq!(ended, ScanStatus::Aborted);
+        settle(|| {
+            state
+                .live
+                .get(&live_id)
+                .filter(|s| s.status == LiveStatus::Completed)
+                .map(|_| ())
+        })
+        .await
+        .expect("a one-iteration session completes");
+        let (_, one) = call(Method::GET, format!("/api/v1/scans/{sid}")).await;
+        assert_eq!(one["status"], "aborted");
+        assert_eq!(one["interrupted"], false, "a finished row is never interrupted: {one}");
+
+        // The documented recovery — cancel, then delete — now works for a live scan.
+        let (code, body) = call(Method::DELETE, format!("/api/v1/scans/{sid}")).await;
+        assert_eq!(code, StatusCode::OK, "{body}");
+        drop(gate);
+    }
+
+    /// The two `/radar/signals*` routes on the shared test state — the real
+    /// SQLite store behind `Arc<dyn StoragePort>`, so a reader left off the port,
+    /// or a `Store` override forgotten, fails here rather than answering empty in
+    /// production.
+    fn radar_signals_router(state: Arc<crate::api::AppState>) -> axum::Router {
+        axum::Router::new()
+            .route(
+                "/api/v1/radar/signals",
+                axum::routing::get(super::core::radar_signals),
+            )
+            .route(
+                "/api/v1/radar/signals/{network_id}",
+                axum::routing::get(super::core::radar_signal_track),
+            )
+            .with_state(state)
+    }
+
+    async fn get_json(app: &axum::Router, uri: &str) -> (u16, serde_json::Value) {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+        let resp = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status().as_u16();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    fn radar_sighting(
+        id: &str,
+        radio: crate::core::rf::RadioKind,
+        source: crate::core::rf::RfSource,
+        name: Option<&str>,
+        dbm: f64,
+        epoch: i64,
+    ) -> crate::core::rf::RfSighting {
+        let mut s = crate::core::rf::RfSighting::new(id, radio, source);
+        s.name = name.map(str::to_string);
+        s.signal_dbm = Some(dbm);
+        s.observed_epoch = Some(epoch);
+        s.latitude = Some(-27.47);
+        s.longitude = Some(153.02);
+        s.accuracy_m = Some(8.0);
+        s
+    }
+
+    fn radar_scan(id: &str) -> Scan {
+        Scan::new(
+            id.to_string(),
+            Target::new(
+                TargetKind::Coordinates,
+                crate::core::scan::RADAR_SENTINEL_COORD_RAW,
+            ),
+        )
+    }
+
+    #[tokio::test]
+    async fn radar_signals_defaults_to_the_latest_sweep_and_refuses_before_any_sighting() {
+        use crate::core::rf::{RadioKind, RfSource};
+        let state = crate::api::test_state();
+        let app = radar_signals_router(Arc::clone(&state));
+
+        // Nothing recorded: a refusal carrying the CLI's own hint — not an
+        // empty 200, which would read as "nothing around you".
+        let (status, body) = get_json(&app, "/api/v1/radar/signals").await;
+        assert_eq!(status, 404, "{body}");
+        assert_eq!(body["error"], "no RF sightings recorded yet");
+        assert!(
+            body["detail"]
+                .as_str()
+                .unwrap_or("")
+                .contains("POST /api/v1/radar"),
+            "{body}"
+        );
+
+        // Sweep A: a named fixed-address AP (00:… — the U/L bit clear), a
+        // randomised BLE address (02:… — the bit set), a tower.
+        state.store.upsert_scan(&radar_scan("radar-a")).unwrap();
+        state
+            .store
+            .insert_rf_sightings_batch(
+                "radar-a",
+                &[
+                    radar_sighting(
+                        "00:1A:2B:3C:4D:5E",
+                        RadioKind::Wifi,
+                        RfSource::WifiRadar,
+                        Some("LabNet"),
+                        -45.0,
+                        1_700_000_100,
+                    ),
+                    radar_sighting(
+                        "02:11:22:33:44:55",
+                        RadioKind::Ble,
+                        RfSource::BluetoothRadar,
+                        None,
+                        -70.0,
+                        1_700_000_100,
+                    ),
+                    radar_sighting(
+                        "505-01-678-12345",
+                        RadioKind::Cellular,
+                        RfSource::CellRadar,
+                        None,
+                        -90.0,
+                        1_700_000_100,
+                    ),
+                ],
+            )
+            .unwrap();
+        // Sweep B, recorded later but stamped EARLIER: "latest" is the most
+        // recently recorded, as `hse signal` resolves it, not the newest clock.
+        state.store.upsert_scan(&radar_scan("radar-b")).unwrap();
+        state
+            .store
+            .insert_rf_sightings_batch(
+                "radar-b",
+                &[radar_sighting(
+                    "00:1A:2B:3C:4D:5E",
+                    RadioKind::Wifi,
+                    RfSource::WifiRadar,
+                    Some("LabNet"),
+                    -60.0,
+                    1_700_000_000,
+                )],
+            )
+            .unwrap();
+
+        let (status, body) = get_json(&app, "/api/v1/radar/signals").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["scan_id"], "radar-b");
+        assert_eq!(body["summary"]["sightings"], 1);
+        assert_eq!(body["count"], 1);
+
+        // An explicit sweep: the summary the CLI prints, devices strongest
+        // first with the address classified, and no vendor for a randomised
+        // address.
+        let (status, body) = get_json(&app, "/api/v1/radar/signals?scan_id=radar-a").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["summary"]["scan_id"], "radar-a");
+        let s = &body["summary"];
+        assert_eq!(
+            (
+                s["sightings"].as_i64(),
+                s["devices"].as_i64(),
+                s["wifi"].as_i64(),
+                s["ble"].as_i64(),
+                s["cellular"].as_i64(),
+                s["with_position"].as_i64(),
+                s["named"].as_i64(),
+            ),
+            (Some(3), Some(3), Some(1), Some(1), Some(1), Some(3), Some(1)),
+            "{s}"
+        );
+        let devices = body["devices"].as_array().expect("devices");
+        let ids: Vec<&str> = devices
+            .iter()
+            .map(|d| d["network_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            ["00:1a:2b:3c:4d:5e", "02:11:22:33:44:55", "505-01-678-12345"],
+            "strongest first, canonical ids"
+        );
+        assert_eq!(devices[0]["address"], "fixed");
+        assert_eq!(devices[0]["radio"], "wifi");
+        assert_eq!(devices[0]["name"], "LabNet");
+        assert_eq!(devices[0]["best_signal_dbm"], -45.0);
+        assert_eq!(devices[1]["address"], "random");
+        assert!(
+            devices[1]["vendor"].is_null(),
+            "a randomised address names no vendor: {}",
+            devices[1]
+        );
+        assert_eq!(devices[2]["address"], "—");
+        assert_eq!(body["total"], 3);
+        assert_eq!(body["trackable_only"], false);
+
+        // Fixed addresses only — the one AU-122 definition, through the port.
+        let (status, body) =
+            get_json(&app, "/api/v1/radar/signals?scan_id=radar-a&trackable=1").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["trackable_only"], true);
+        assert_eq!((body["count"].as_u64(), body["total"].as_u64()), (Some(1), Some(1)));
+        assert_eq!(body["devices"][0]["network_id"], "00:1a:2b:3c:4d:5e");
+        assert_eq!(
+            body["summary"]["devices"], 3,
+            "the summary still counts the whole sweep"
+        );
+
+        // A cap never reads as completeness.
+        let (_, body) = get_json(&app, "/api/v1/radar/signals?scan_id=radar-a&limit=2").await;
+        assert_eq!((body["count"].as_u64(), body["total"].as_u64()), (Some(2), Some(3)));
+
+        // An unknown sweep is the plain not-found, not the "nothing recorded" hint.
+        let (status, body) = get_json(&app, "/api/v1/radar/signals?scan_id=never-ran").await;
+        assert_eq!(status, 404, "{body}");
+        assert_eq!(body["error"], "not found");
+    }
+
+    #[tokio::test]
+    async fn radar_signal_track_lists_one_devices_sightings_oldest_first() {
+        use crate::core::rf::{RadioKind, RfSource};
+        let state = crate::api::test_state();
+        let app = radar_signals_router(Arc::clone(&state));
+        state.store.upsert_scan(&radar_scan("radar-t")).unwrap();
+        // Inserted out of time order, with a second device in the way.
+        state
+            .store
+            .insert_rf_sightings_batch(
+                "radar-t",
+                &[
+                    radar_sighting(
+                        "00:1A:2B:3C:4D:5E",
+                        RadioKind::Wifi,
+                        RfSource::WifiRadar,
+                        Some("LabNet"),
+                        -52.0,
+                        30,
+                    ),
+                    radar_sighting(
+                        "AA:BB:CC:DD:EE:01",
+                        RadioKind::BtClassic,
+                        RfSource::BluetoothRadar,
+                        None,
+                        -80.0,
+                        30,
+                    ),
+                    radar_sighting(
+                        "00:1A:2B:3C:4D:5E",
+                        RadioKind::Wifi,
+                        RfSource::WifiRadar,
+                        Some("LabNet"),
+                        -45.0,
+                        10,
+                    ),
+                    radar_sighting(
+                        "00:1A:2B:3C:4D:5E",
+                        RadioKind::Wifi,
+                        RfSource::WifiRadar,
+                        Some("LabNet"),
+                        -48.0,
+                        20,
+                    ),
+                ],
+            )
+            .unwrap();
+
+        // The id as an operator might type it; the answer is canonical.
+        let (status, body) = get_json(
+            &app,
+            "/api/v1/radar/signals/00%3A1A%3A2B%3A3C%3A4D%3A5E?scan_id=radar-t",
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["network_id"], "00:1a:2b:3c:4d:5e");
+        assert_eq!(body["scan_id"], "radar-t");
+        assert_eq!(body["count"], 3);
+        let epochs: Vec<i64> = body["sightings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["observed_epoch"].as_i64().unwrap())
+            .collect();
+        assert_eq!(epochs, [10, 20, 30], "oldest first, whatever the insert order");
+        assert_eq!(body["sightings"][0]["signal_dbm"], -45.0);
+        assert_eq!(body["sightings"][0]["latitude"], -27.47);
+
+        // Never heard in this sweep: an empty track, because the question was
+        // answerable.
+        let (status, body) =
+            get_json(&app, "/api/v1/radar/signals/00:00:00:00:00:99?scan_id=radar-t").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["count"], 0);
+
+        // No sweep named: the latest, as the list reader defaults.
+        let (status, body) = get_json(&app, "/api/v1/radar/signals/aa:bb:cc:dd:ee:01").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["scan_id"], "radar-t");
+        assert_eq!(body["count"], 1);
+
+        // An unknown sweep refuses.
+        let (status, _) = get_json(
+            &app,
+            "/api/v1/radar/signals/00:1a:2b:3c:4d:5e?scan_id=never-ran",
+        )
+        .await;
+        assert_eq!(status, 404);
+    }
+
+    fn track_router(state: Arc<crate::api::AppState>) -> axum::Router {
+        axum::Router::new()
+            .route(
+                "/api/v1/radar/devices/{network_id}/track",
+                axum::routing::get(super::core::radar_device_track),
+            )
+            .route(
+                "/api/v1/radar/recurring",
+                axum::routing::get(super::core::radar_recurring),
+            )
+            .with_state(state)
+    }
+
+    #[tokio::test]
+    async fn radar_device_track_spans_sweeps_oldest_first_with_the_id_canonicalised() {
+        use crate::core::rf::{RadioKind, RfSource};
+        let state = crate::api::test_state();
+        let app = track_router(Arc::clone(&state));
+        for (scan, dbm, epoch) in [("radar-1", -60.0, 100), ("radar-2", -45.0, 300), ("radar-3", -52.0, 200)] {
+            state.store.upsert_scan(&radar_scan(scan)).unwrap();
+            state
+                .store
+                .insert_rf_sightings_batch(
+                    scan,
+                    &[radar_sighting(
+                        "00:1A:2B:3C:4D:5E",
+                        RadioKind::Wifi,
+                        RfSource::WifiRadar,
+                        Some("LabNet"),
+                        dbm,
+                        epoch,
+                    )],
+                )
+                .unwrap();
+        }
+        let (status, body) = get_json(&app, "/api/v1/radar/devices/00%3A1A%3A2B%3A3C%3A4D%3A5E/track").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["network_id"], "00:1a:2b:3c:4d:5e");
+        assert_eq!((body["count"].as_u64(), body["sweeps"].as_u64()), (Some(3), Some(3)));
+        let scans: Vec<&str> = body["points"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["scan_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(scans, ["radar-1", "radar-3", "radar-2"], "oldest first across sweeps");
+        assert_eq!(body["points"][2]["signal_dbm"], -45.0);
+        assert_eq!(body["points"][0]["latitude"], -27.47, "the point is the sighting, flat");
+
+        let (_, body) = get_json(&app, "/api/v1/radar/devices/00:1a:2b:3c:4d:5e/track?limit=2").await;
+        assert_eq!((body["count"].as_u64(), body["limit"].as_u64()), (Some(2), Some(2)));
+        assert_eq!(body["points"][0]["scan_id"], "radar-3", "the cap keeps the newest two");
+
+        let (status, body) = get_json(&app, "/api/v1/radar/devices/ff:ff:ff:ff:ff:ff/track").await;
+        assert_eq!(status, 200);
+        assert_eq!(body["count"], 0);
+    }
+
+    #[tokio::test]
+    async fn radar_recurring_reads_the_sighting_table_and_discloses_legacy_sweeps() {
+        use crate::core::entity::{Entity, EntityKind};
+        use crate::core::rf::{RadioKind, RfSource};
+        let state = crate::api::test_state();
+        let app = track_router(Arc::clone(&state));
+
+        // Two sweeps with sighting rows: a fixed AP heard twice (from two
+        // places 200 m apart), a randomised BLE address heard twice, and a
+        // fixed classic device the phone is bonded to — the tag lives on the
+        // sweep's entity, where AU-117 puts it.
+        for (scan, ap_dbm, lat) in [("radar-r1", -70.0, -27.4705), ("radar-r2", -52.0, -27.4723)] {
+            state.store.upsert_scan(&radar_scan(scan)).unwrap();
+            let mut ap = radar_sighting("00:1A:2B:3C:4D:5E", RadioKind::Wifi, RfSource::WifiRadar, Some("LabNet"), ap_dbm, 1_700_000_000);
+            ap.latitude = Some(lat);
+            let rnd = radar_sighting("02:11:22:33:44:55", RadioKind::Ble, RfSource::BluetoothRadar, None, -70.0, 1_700_000_000);
+            let own = radar_sighting("00:1A:2B:3C:4D:01", RadioKind::BtClassic, RfSource::BluetoothRadar, Some("Car"), -40.0, 1_700_000_000);
+            state
+                .store
+                .insert_rf_sightings_batch(scan, &[ap, rnd, own])
+                .unwrap();
+            let mut car = Entity::new(EntityKind::MacAddress, "00:1A:2B:3C:4D:01", 0.9, scan);
+            car.tag("bluetooth");
+            car.tag("bond:bonded");
+            state.store.upsert_entity(&car).unwrap();
+        }
+        // A sweep from before readings were kept: entities only, the same AP.
+        state.store.upsert_scan(&radar_scan("radar-r0")).unwrap();
+        let mut old_ap = Entity::new(EntityKind::MacAddress, "00:1A:2B:3C:4D:5E", 0.9, "radar-r0");
+        old_ap.tag(crate::core::tags::WIFI_AP);
+        state.store.upsert_entity(&old_ap).unwrap();
+
+        let (status, body) = get_json(&app, "/api/v1/radar/recurring?min=2").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!((body["sweeps"].as_u64(), body["legacy_sweeps"].as_u64()), (Some(3), Some(1)), "{body}");
+        let devices = body["devices"].as_array().expect("devices");
+        assert_eq!(devices.len(), 1, "the randomised address and the bonded car never recur: {body}");
+        let ap = &devices[0];
+        assert_eq!(ap["mac"], "00:1a:2b:3c:4d:5e");
+        assert_eq!(ap["name"], "LabNet");
+        assert_eq!(ap["sweeps_seen"], 3, "the legacy sweep still counts for recurrence");
+        assert_eq!(ap["best_signal_dbm"], -52.0, "the strongest level any sweep heard");
+        assert_eq!(ap["distinct_positions"], 2, "two places 200 m apart");
+        assert_eq!(body["count"], 1);
+    }
+
+    #[tokio::test]
+    async fn radar_disruptions_reads_the_link_records_and_the_access_points_heard() {
+        use crate::core::link::LinkState;
+        use crate::core::rf::{RadioKind, RfSource};
+        let state = crate::api::test_state();
+        let app = axum::Router::new()
+            .route(
+                "/api/v1/radar/disruptions",
+                axum::routing::get(super::core::radar_disruptions),
+            )
+            .with_state(Arc::clone(&state));
+
+        // Sweep 1 (older, on the network), sweep 2 (newer, off it while the
+        // same access point is heard at −48), and an old sweep with no link
+        // record at all. `radar_scan` gives them the sentinel target the
+        // history lists; `Scan::new` stamps `started_at` now, so the order is
+        // fixed explicitly below.
+        let mut s1 = radar_scan("radar-l1");
+        s1.started_at = 1_700_000_000;
+        let mut s2 = radar_scan("radar-l2");
+        s2.started_at = 1_700_000_060;
+        let mut s0 = radar_scan("radar-l0");
+        s0.started_at = 1_699_990_000;
+        for sc in [&s0, &s1, &s2] {
+            state.store.upsert_scan(sc).unwrap();
+        }
+        let up = LinkState {
+            connected: true,
+            ssid: Some("LabNet".to_string()),
+            bssid: Some("00:1a:2b:3c:4d:5e".to_string()),
+            signal_dbm: Some(-45.0),
+            ip: Some("192.168.1.20".to_string()),
+            link_speed_mbps: Some(433),
+            supplicant_state: Some("COMPLETED".to_string()),
+            observed_epoch: Some(1_700_000_000),
+        };
+        state.store.insert_wifi_link("radar-l1", &up).unwrap();
+        state
+            .store
+            .insert_wifi_link("radar-l2", &LinkState::disconnected(Some(1_700_000_060)))
+            .unwrap();
+        for (scan, epoch) in [("radar-l1", 1_700_000_000), ("radar-l2", 1_700_000_060)] {
+            state
+                .store
+                .insert_rf_sightings_batch(
+                    scan,
+                    &[radar_sighting(
+                        "00:1A:2B:3C:4D:5E",
+                        RadioKind::Wifi,
+                        RfSource::WifiRadar,
+                        Some("LabNet"),
+                        -48.0,
+                        epoch,
+                    )],
+                )
+                .unwrap();
+        }
+
+        let (status, body) = get_json(&app, "/api/v1/radar/disruptions").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(
+            (
+                body["sweeps"].as_u64(),
+                body["connected_sweeps"].as_u64(),
+                body["disconnected_sweeps"].as_u64(),
+                body["unrecorded_sweeps"].as_u64()
+            ),
+            (Some(2), Some(1), Some(1), Some(1)),
+            "{body}"
+        );
+        let kinds: Vec<&str> = body["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["forced_disconnect", "outage"], "{body}");
+        let forced = &body["findings"][0];
+        assert_eq!(forced["bssid"], "00:1a:2b:3c:4d:5e");
+        assert_eq!(forced["ssid"], "LabNet");
+        assert_eq!(forced["heard_dbm"], -48.0);
+        assert_eq!(forced["scan_id"], "radar-l2");
+        assert!(
+            forced["advice"].as_str().unwrap_or("").contains("in range"),
+            "every finding carries its advice: {forced}"
+        );
+        assert_eq!(body["count"], 2);
     }

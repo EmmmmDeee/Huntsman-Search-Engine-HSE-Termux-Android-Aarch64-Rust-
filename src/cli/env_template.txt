@@ -15,6 +15,11 @@
 # Primary Upstream Intelligence API Focus
 # Both pools run in parallel: 2x daily lookup capacity, overlapping but
 # distinct data corpora.
+# Map tiles for the Radar view. `hse serve` fetches tiles through its own
+# loopback proxy and caches them under ~/.huntsman/tiles; any {z}/{x}/{y}
+# server works here. Leave unset for OpenStreetMap's standard layer.
+# HUNTSMAN_TILE_UPSTREAM="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+
 HUNTSMAN_OATHNET_KEY="insert_oathnet_pro_key_here"
 HUNTSMAN_SEEKNOW_KEY="insert_see_know_eu_key_here"
 # Concurrent PBS v1/v2 breach search + ULP infostealer lookup:

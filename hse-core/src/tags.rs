@@ -174,6 +174,13 @@ pub const PEP: &str = "pep";
 /// Debarred from public contracting (World Bank, IDB, and similar
 /// multilateral debarment lists).
 pub const DEBARRED: &str = "debarred";
+/// Associated with a sanctioned party (a relative, business partner, or
+/// majority-owned company) via OpenSanctions' `sanction.linked` topic — **not**
+/// itself listed. A materially weaker signal than [`SANCTIONED`] (a
+/// designation): the entity is *linked to* a designated party, not designated.
+/// The correlator grades it as an elevated due-diligence signal, never a
+/// Critical "designation" (REQ-OPENSANCTIONS-001).
+pub const SANCTIONS_LINKED: &str = "sanctions-linked";
 
 // Identity
 /// The entity is a **social-media or community profile** — a platform account
@@ -236,6 +243,15 @@ pub const RECYCLED: &str = "recycled";
 /// a platform. Gates expansion so an unconfirmed name-permutation guess does not
 /// fan out as though it were a sighting.
 pub const NAME_DERIVED: &str = "name-derived";
+/// A `Coordinates` **geocoded from an Address another module already reported**
+/// (`core::engine::enrich`'s address→coordinate pass), rather than a direct
+/// sighting. The pass carries the Address's own sources onto the result, so the
+/// derived point is the SAME datum at coarser grain whenever that source also
+/// produced a direct fix — a second point, not a second observation. The rules
+/// that gate on a point COUNT read this to avoid treating it as one
+/// (`location::independent_sighting_count`). Deliberately parallel to
+/// [`NAME_DERIVED`], which plays the same role for name-permuted handles.
+pub const ADDR_DERIVED: &str = "addr-derived";
 
 // Document references
 /// A **document in a public corpus** the subject was searched in — a court

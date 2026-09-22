@@ -206,6 +206,26 @@ pub fn controlled(target: ProbeResult, control: &ProbeResult) -> ProbeResult {
 /// the probe of it, the answers run concurrently, and [`controlled`] is
 /// applied. A control answer is remembered per URL for the process, so a
 /// multi-target scan asks each site about the control handle once.
+///
+/// A control probe that FAILED is not remembered — see the insert below.
+///
+/// Successful answers are cached **per scan** (REQ-PROBE-005). The map is a
+/// process-lifetime `static`, so keying it on the control URL alone handed an
+/// answer read during one scan to every later scan in the same process —
+/// correct inside a scan, stale across them, and under `hse serve` that process
+/// runs indefinitely. The key is now `(scan, url)`, taking the scan from the
+/// ambient the engine already establishes around every scan
+/// ([`crate::util::budget::with_scan`], re-applied inside each spawned module
+/// dispatch) rather than growing a second scoping mechanism — which is what
+/// that function's own doc asks of "the provider response caches".
+///
+/// `current_scan()` is `""` when no ambient is set. Every production caller
+/// reaches this through module dispatch and is therefore always scoped; the
+/// `""` bucket is shared, which is the pre-existing behaviour and is what the
+/// unit tests below exercise. If an unscoped production path ever appears it
+/// would share one bucket rather than isolate — so the thing to re-check is
+/// that the ambient is still applied at both sites, not that this key is
+/// right.
 pub async fn control_presences<S, Fut>(
     first: Vec<(S, ProbeResult)>,
     control: impl Fn(S) -> (String, Fut),
@@ -214,10 +234,14 @@ where
     S: Copy,
     Fut: std::future::Future<Output = ProbeResult>,
 {
+    // Keyed on (scan, url): see this function's doc. A tuple key rather than a
+    // composed string, so no delimiter can collide with a URL's own characters.
     static ANSWERS: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, ProbeResult>>,
+        std::sync::Mutex<std::collections::HashMap<(String, String), ProbeResult>>,
     > = std::sync::OnceLock::new();
     let answers = ANSWERS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    // One read for the whole call — the ambient cannot change mid-invocation.
+    let scan = crate::util::budget::current_scan();
 
     let mut pending = Vec::new();
     for (site, result) in &first {
@@ -225,7 +249,9 @@ where
             continue;
         }
         let (url, probe) = control(*site);
-        let remembered = answers.lock().map_or(None, |a| a.get(&url).cloned());
+        let remembered = answers
+            .lock()
+            .map_or(None, |a| a.get(&(scan.clone(), url.clone())).cloned());
         pending.push(async move {
             let answer = match remembered {
                 Some(answer) => answer,
@@ -237,7 +263,23 @@ where
     let read: Vec<(String, ProbeResult)> = futures::future::join_all(pending).await;
     if let Ok(mut a) = answers.lock() {
         for (url, answer) in &read {
-            a.insert(url.clone(), answer.clone());
+            // A FAILED control probe is not an answer, so it is not remembered.
+            //
+            // `controlled()` turns a `Found` judged against an `Error` control
+            // into `Uncontrolled`, or into `Found { controlled: false }` — the
+            // field's own doc says "False when the control could not be read".
+            // Caching that verdict made one transient network error mark every
+            // future presence on the site uncontrolled for the life of the
+            // process, which under `hse serve` is indefinitely. The site is
+            // simply re-asked next time (REQ-PROBE-005).
+            //
+            // This is the doctrine `core::coverage::ProviderOutcome` states one
+            // layer up — PROVIDER FAILURE != ZERO EVIDENCE — applied to the
+            // cache that decides whether a presence can be confirmed.
+            if matches!(answer, ProbeResult::Error) {
+                continue;
+            }
+            a.insert((scan.clone(), url.clone()), answer.clone());
         }
     }
     let mut read = read.into_iter();

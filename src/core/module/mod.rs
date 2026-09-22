@@ -496,6 +496,36 @@ impl ModuleContext {
 pub struct ModuleResult {
     /// The discovered entities, in module-emission order.
     pub entities: Vec<Entity>,
+    /// Set when the module knows its answer was **cut short** — a client-side
+    /// cap, an unfollowed page cursor, a provider total larger than what was
+    /// retrieved. `None` means the module believes it returned everything it
+    /// had to say.
+    ///
+    /// This is the ONE channel for that fact. Before it existed, five modules
+    /// each wrote a private evidence attribute (`sitemap_enumeration_truncated`,
+    /// `historical_subdomains_truncated`, `image_leads_capped`, netlas's bare
+    /// `result_count`, domainsdb's `broad_match` boolean) and not one of them
+    /// had a reader outside its own file — so nothing downstream could ask
+    /// whether a result set was complete. It reaches
+    /// [`crate::core::coverage::ProviderOutcome::Truncated`] through
+    /// `EventKind::ModuleDone`, which is what the coverage derivation actually
+    /// reads (REQ-COVERAGE-001).
+    ///
+    /// Set it with [`ModuleResult::mark_truncated`] rather than by hand, so the
+    /// operator-facing sentence has one spelling.
+    pub truncation: Option<String>,
+    /// The per-sighting RF observations behind the entities — one radio
+    /// hearing one device at one place and time (`core::rf`). Filled by the
+    /// local-sensor modules; the engine persists it to `rf_sightings` beside
+    /// the entity graph, which flattens signal, position and time away
+    /// (REQ-RADAR-001). Never cached or replayed: a sighting is an observation
+    /// at a moment, and a cache replay observed nothing.
+    pub sightings: Vec<crate::core::rf::RfSighting>,
+    /// The device's own Wi-Fi link as this module read it (REQ-RESILIENCE-002):
+    /// a typed record beside the `wifi-connected` entity, *including* "not
+    /// connected", which the graph cannot say. One per sweep, from
+    /// `device_sensors`; never cached or replayed, like `sightings`.
+    pub link: Option<crate::core::link::LinkState>,
 }
 
 impl ModuleResult {
@@ -511,6 +541,57 @@ impl ModuleResult {
     pub fn with_capacity(cap: usize) -> Self {
         Self {
             entities: Vec::with_capacity(cap),
+            truncation: None,
+            sightings: Vec::new(),
+            link: None,
+        }
+    }
+
+    /// Declare this result **incomplete**, in one canonical sentence.
+    ///
+    /// `emitted` is what the module is returning; `total` is the provider's own
+    /// count of what exists, when it reports one (many do not — a client-side
+    /// cap knows only that it stopped). `cause` names what stopped it, in the
+    /// module's own terms ("the client-side cap of 50", "the `limit=20` page").
+    ///
+    /// The distinction between a known and an unknown total is kept, not
+    /// flattened: "20 of 213" and "20, and the provider did not say how many
+    /// exist" call for different operator actions, and collapsing them into one
+    /// `truncated: true` is what made the previous per-module attributes
+    /// unusable.
+    pub fn mark_truncated(&mut self, emitted: usize, total: Option<usize>, cause: &str) {
+        self.truncation = Some(match total {
+            Some(total) => format!(
+                "{emitted} of {total} retrieved — stopped by {cause}. The remainder were NOT retrieved, so absence of a finding here is not evidence of absence."
+            ),
+            None => format!(
+                "{emitted} retrieved — stopped by {cause}, and the provider did not report how many exist. Absence of a finding here is not evidence of absence."
+            ),
+        });
+    }
+
+    /// Declare this result incomplete **when a page came back full against a
+    /// known cap** — the commonest truncation shape, and the only one available
+    /// to a provider that reports no total.
+    ///
+    /// `returned` is what the provider sent; `cap` is the ceiling that was
+    /// asked for (a `limit=` parameter, a client-side `.take(N)`). A full page
+    /// does not prove more records exist — the corpus may hold exactly `cap` —
+    /// but it does mean the answer was bounded by the CAP rather than by the
+    /// DATA, so completeness is unknown. That is the claim
+    /// [`Self::mark_truncated`]'s unknown-total arm makes, and it is true in
+    /// both cases.
+    ///
+    /// A SHORT page is the opposite and is left alone: the provider ran out of
+    /// records before the cap did, so the answer is exhaustive. **That guard
+    /// lives here, once.** It was written per-module first, and two modules is
+    /// where a private spelling starts becoming five — the mistake
+    /// REQ-COVERAGE-001 was about. Marking every page truncated is the easy
+    /// error, and it is indistinguishable from "fewer silent truncations"
+    /// without an assertion on the short-page case.
+    pub fn mark_truncated_if_capped(&mut self, returned: usize, cap: usize, cause: &str) {
+        if returned >= cap {
+            self.mark_truncated(returned, None, cause);
         }
     }
 
@@ -541,6 +622,24 @@ impl ModuleResult {
     /// Append every entity from an iterator.
     pub fn extend(&mut self, entities: impl IntoIterator<Item = Entity>) {
         self.entities.extend(entities);
+    }
+    /// Record one RF sighting beside the entities (REQ-RADAR-001).
+    pub fn push_sighting(&mut self, sighting: crate::core::rf::RfSighting) {
+        self.sightings.push(sighting);
+    }
+    /// Fold another result into this one — entities, sightings and the first
+    /// truncation notice — for a module that merges independent sub-fetches.
+    /// `extend` moves entities only, which is how a sensor sweep once kept its
+    /// entities and silently dropped every sighting behind them.
+    pub fn absorb(&mut self, other: ModuleResult) {
+        self.entities.extend(other.entities);
+        self.sightings.extend(other.sightings);
+        if self.truncation.is_none() {
+            self.truncation = other.truncation;
+        }
+        if self.link.is_none() {
+            self.link = other.link;
+        }
     }
 
     /// True when the module produced nothing.
@@ -581,6 +680,193 @@ impl ModuleResult {
 }
 
 #[cfg(test)]
+mod truncation_sentence_tests {
+    use super::ModuleResult;
+
+    /// Both arms of `mark_truncated` ship straight to an operator — into
+    /// `report.json`, the dossier appendix and `/api/v1/scans/{id}/coverage`.
+    ///
+    /// Regression: they were written with `\`-continuations across source
+    /// lines, and `cargo fmt` rejoined them leaving the indentation in as
+    /// LITERAL SPACES ("did not report how                  many exist").
+    /// Nothing else would have noticed — the string still contained every word
+    /// a `contains` check might look for, and the defect is invisible in a
+    /// diff of a long line. The guard is therefore on the shape of the rendered
+    /// sentence, not on its wording.
+    #[test]
+    fn neither_operator_facing_sentence_carries_a_whitespace_run() {
+        let mut known = ModuleResult::new();
+        known.mark_truncated(20, Some(213), "the page limit");
+        let mut unknown = ModuleResult::new();
+        unknown.mark_truncated(100, None, "the page limit");
+
+        for (label, r) in [("known total", known), ("unknown total", unknown)] {
+            let sentence = r.truncation.expect("mark_truncated always sets one");
+            assert!(
+                !sentence.contains("  "),
+                "{label}: a run of spaces reached the operator: {sentence:?}"
+            );
+            assert!(
+                !sentence.contains('\n') && !sentence.contains('\t'),
+                "{label}: the sentence is one line: {sentence:?}"
+            );
+        }
+    }
+
+    /// The known/unknown distinction is the reason this is not a
+    /// `truncated: bool`. If both arms rendered the same claim, the field would
+    /// have collapsed back into the boolean it replaced.
+    #[test]
+    fn a_known_total_is_stated_and_an_unknown_one_is_never_invented() {
+        let mut known = ModuleResult::new();
+        known.mark_truncated(20, Some(213), "the page limit");
+        let known = known.truncation.expect("set");
+        assert!(known.contains("20 of 213"), "{known}");
+
+        let mut unknown = ModuleResult::new();
+        unknown.mark_truncated(20, None, "the page limit");
+        let unknown = unknown.truncation.expect("set");
+        assert!(
+            unknown.contains("did not report how many exist"),
+            "{unknown}"
+        );
+        // Windowed to the NUMERIC claim. An earlier version of this assertion
+        // searched for " of " and matched the sentence's own closing phrase,
+        // "evidence of absence" — the assertion firing on prose rather than on
+        // the count it is about.
+        assert!(
+            !unknown.contains("20 of "),
+            "an unknown total must never be rendered as a count: {unknown}"
+        );
+    }
+}
+
+/// Test-only modules shared by the crate's inline test files.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::Arc;
+
+    use super::{Module, ModuleContext, ModuleResult};
+    use crate::core::scan::Target;
+
+    /// Accepts every target and blocks inside `process` until the test hands
+    /// it a permit or the scan is cancelled — the way to hold a scan genuinely
+    /// in flight for as long as an assertion needs, with no network and no
+    /// timing guess. Each permit is consumed, so one release lets exactly one
+    /// run through; a cancel is honoured within one poll (10 ms) so the
+    /// engine's per-iteration handle can be exercised too.
+    pub(crate) struct Gated {
+        gate: Arc<tokio::sync::Semaphore>,
+    }
+
+    impl Gated {
+        pub(crate) fn pair() -> (Arc<dyn Module>, Arc<tokio::sync::Semaphore>) {
+            let gate = Arc::new(tokio::sync::Semaphore::new(0));
+            (
+                Arc::new(Self {
+                    gate: Arc::clone(&gate),
+                }),
+                gate,
+            )
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Module for Gated {
+        fn name(&self) -> &'static str {
+            "gated_test_module"
+        }
+        fn priority(&self) -> u8 {
+            50
+        }
+        fn accepts(&self, _: &Target) -> bool {
+            true
+        }
+        async fn process(
+            &self,
+            _t: &Target,
+            ctx: &ModuleContext,
+        ) -> crate::core::error::Result<ModuleResult> {
+            loop {
+                if ctx.cancel.is_cancelled() {
+                    return Err(crate::core::error::Error::module(
+                        self.name(),
+                        "cancelled while gated",
+                    ));
+                }
+                match tokio::time::timeout(
+                    std::time::Duration::from_millis(10),
+                    self.gate.acquire(),
+                )
+                .await
+                {
+                    Ok(Ok(permit)) => {
+                        permit.forget();
+                        return Ok(ModuleResult::new());
+                    }
+                    Ok(Err(_closed)) => {
+                        return Err(crate::core::error::Error::module(
+                            self.name(),
+                            "gate closed",
+                        ));
+                    }
+                    Err(_still_gated) => continue,
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     include!("tests.rs");
+}
+
+#[cfg(test)]
+mod capped_page_tests {
+    use super::ModuleResult;
+
+    /// The guard that decides whether a page was bounded by its cap. It lived
+    /// per-module first; this is the one place it is now decided, so this is
+    /// the one place the boundary has to be right.
+    #[test]
+    fn only_a_page_that_reached_its_cap_is_reported_as_bounded() {
+        let cases = [
+            // (returned, cap, expect_truncated)
+            (50, 50, true),  // exactly at the cap: bounded by the cap
+            (51, 50, true),  // over the cap (a provider ignoring `limit`)
+            (49, 50, false), // THE OVER-CORRECTION CASE: exhaustive
+            (1, 50, false),
+            (0, 50, false), // an empty answer is not a truncated one
+        ];
+        for (returned, cap, expect) in cases {
+            let mut r = ModuleResult::new();
+            r.mark_truncated_if_capped(returned, cap, "the cap");
+            assert_eq!(
+                r.truncation.is_some(),
+                expect,
+                "returned={returned} cap={cap}: expected truncated={expect}"
+            );
+        }
+    }
+
+    /// A cap-bounded page knows only that it stopped, so it must take the
+    /// unknown-total arm. Reporting "50 of 50" would assert a total the
+    /// provider never gave — the exact false precision this helper avoids by
+    /// not guessing a wire field name for it.
+    #[test]
+    fn a_cap_bounded_page_never_claims_a_total_it_was_not_given() {
+        let mut r = ModuleResult::new();
+        r.mark_truncated_if_capped(50, 50, "the client-side cap of 50 matches");
+        let reason = r.truncation.expect("a full page declares itself");
+        assert!(
+            reason.contains("did not report how many exist"),
+            "must take the unknown-total arm: {reason}"
+        );
+        assert!(!reason.contains("50 of "), "no invented total: {reason}");
+        assert!(
+            reason.contains("the client-side cap of 50 matches"),
+            "the operator needs the cause that bit: {reason}"
+        );
+    }
 }

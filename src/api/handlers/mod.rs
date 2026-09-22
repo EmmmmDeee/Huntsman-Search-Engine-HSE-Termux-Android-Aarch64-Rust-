@@ -93,6 +93,64 @@ pub(crate) fn bad_request(msg: impl Into<String>) -> axum::response::Response {
         .into_response()
 }
 
+/// Reject an operator-supplied options object that carries a key its type does
+/// not define, naming the key and the option it was probably meant to be.
+///
+/// THE one error-message authority for this check, shared by every request
+/// seam that has an options object — `scan`, `scan/batch` and `live`. The
+/// check itself is cheap to re-implement per handler, which is exactly the
+/// danger: three hand-written copies of "unrecognised option" would drift in
+/// wording, in whether they name the offending key, and in whether they say
+/// the option was *not applied* — and that last clause is the whole point.
+///
+/// `field` is the object's name in the request body (`"options"`, `"live"`) so
+/// a message about a two-object request says which half was wrong.
+///
+/// The caller supplies `known` rather than a type parameter because the two
+/// objects in a live request have different types; see
+/// [`crate::core::wire_keys::known_keys`].
+pub(crate) fn reject_unknown_option_keys(
+    raw: &Value,
+    field: &str,
+    known: &std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    let Some(supplied) = raw.get(field) else {
+        return Ok(());
+    };
+    let unknown = crate::core::wire_keys::unknown_keys(supplied, known);
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    // Resolved once: both the per-key detail and the catalogue decision need it.
+    let suggestions: Vec<(String, Option<String>)> = unknown
+        .iter()
+        .map(|k| (k.clone(), crate::core::wire_keys::nearest_key(k, known)))
+        .collect();
+    let detail: Vec<String> = suggestions
+        .iter()
+        .map(|(k, near)| match near {
+            Some(near) => format!("{k} (did you mean {near}?)"),
+            None => k.clone(),
+        })
+        .collect();
+    // Spell out the catalogue only when nothing could be suggested — when the
+    // key IS a transcription of a real option, naming that one option is the
+    // whole answer and the rest is noise. Either way the names come from the
+    // same derived set as the check itself, so the message cannot cite a stale
+    // catalogue.
+    let catalogue = if suggestions.iter().all(|(_, near)| near.is_some()) {
+        String::new()
+    } else {
+        let accepted: Vec<&str> = known.iter().map(String::as_str).collect();
+        format!(" Accepted keys for {field}: {}", accepted.join(", "))
+    };
+    Err(format!(
+        "unrecognised {field} key(s): {} — NOT applied, so the request would \
+         have run with the default.{catalogue}",
+        detail.join(", ")
+    ))
+}
+
 /// A `403 Forbidden` JSON error, the access-control sibling of [`bad_request`]
 /// (e.g. a failed CSRF/loopback check). One shape for every refusal.
 pub(crate) fn forbidden(msg: impl Into<String>) -> axum::response::Response {
@@ -233,6 +291,68 @@ pub async fn health() -> Json<Value> {
     Json(json!({ "status": "ok", "version": crate::VERSION }))
 }
 
+/// The ids of every scan THIS process is running: the keys of the one in-flight
+/// registry, which `spawn_scan` populates for a one-shot scan and the live
+/// loop (`core::live`) for each iteration. Both install the entry before the
+/// engine starts and drop it after the engine's final status write, so within
+/// one process a row can never read `running` without an entry here. The only
+/// way to observe that combination is a process that died without the
+/// cooperative drain. (A registry only ONE of the two spawn paths filled
+/// would have reported every live iteration as interrupted — observed on the
+/// first draft of this fix, and the reason the registry moved into `core`.)
+pub(crate) fn in_flight_scan_ids(
+    registry: &super::CancelRegistry,
+) -> std::collections::HashSet<String> {
+    registry.lock().keys().cloned().collect()
+}
+
+/// REQ-SCANSTATUS-001: a row that says `running` but that this process holds
+/// no handle for was interrupted — the process running it exited without the
+/// cooperative drain (SIGKILL, OOM, Android reclaiming a backgrounded process,
+/// which `storage::entities` calls routine on Termux). Observed on `ff4d63c`:
+/// after `kill -9` and a restart the row still read `running`, `/stats`
+/// counted it as in progress, and nothing would ever finish it.
+///
+/// Derived at READ time and never written back. The persisted row is left
+/// exactly as the dead process left it: a startup pass rewriting every
+/// `running` row to `failed` would be simpler and wrong, because a second
+/// instance sharing the database would have its live scan marked failed
+/// underneath it. Deriving from this process's own registry is exact per
+/// process and mutates nothing — the data these rows carry is already
+/// recovered by `entities_from_events`; only the reported state was stale.
+///
+/// Only `Running` qualifies. A `Pending` row has a real (microsecond) window
+/// between `upsert_scan` and `spawn_scan` in which it legitimately has no
+/// handle yet; claiming "interrupted" there would be a false positive on a
+/// healthy process. A pending scan orphaned by a kill inside that window never
+/// started, and `pending` is the honest word for it.
+pub(crate) fn is_interrupted(
+    scan: &crate::core::scan::Scan,
+    in_flight: &std::collections::HashSet<String>,
+) -> bool {
+    scan.status == crate::core::scan::ScanStatus::Running && !in_flight.contains(&scan.id)
+}
+
+/// The one way a `Scan` becomes API JSON: its serialised fields plus the
+/// derived, non-persisted `interrupted` flag. `GET /scans` and
+/// `GET /scans/{id}` both route through here so the two cannot disagree.
+pub(crate) fn scan_json(
+    scan: &crate::core::scan::Scan,
+    in_flight: &std::collections::HashSet<String>,
+) -> Value {
+    let mut v = serde_json::to_value(scan).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "failed to serialize scan to JSON value");
+        json!({})
+    });
+    if let Value::Object(map) = &mut v {
+        map.insert(
+            "interrupted".to_string(),
+            Value::Bool(is_interrupted(scan, in_flight)),
+        );
+    }
+    v
+}
+
 /// Pure aggregation of dashboard scan statistics — the per-status histogram and
 /// the entity/dedup totals — over a scan list. Split out of [`stats`] so the
 /// summation logic is unit-testable without a live store + async handler.
@@ -243,10 +363,21 @@ pub(crate) struct ScanStatsAgg {
     pub total_deduped: u64,
 }
 
-pub(crate) fn aggregate_scan_stats(scans: &[crate::core::scan::Scan]) -> ScanStatsAgg {
+pub(crate) fn aggregate_scan_stats(
+    scans: &[crate::core::scan::Scan],
+    in_flight: &std::collections::HashSet<String>,
+) -> ScanStatsAgg {
     let mut agg = ScanStatsAgg::default();
     for scan in scans {
-        *agg.by_status.entry(scan.status.as_str()).or_insert(0) += 1;
+        // An interrupted row is a `running` row nobody is running; counting it
+        // under `running` is what made `/stats` report a dead scan as in
+        // progress forever (REQ-SCANSTATUS-001).
+        let bucket = if is_interrupted(scan, in_flight) {
+            "interrupted"
+        } else {
+            scan.status.as_str()
+        };
+        *agg.by_status.entry(bucket).or_insert(0) += 1;
         agg.total_entities += scan.entity_count as u64;
         agg.total_deduped += scan.modules_deduped as u64;
     }
@@ -262,11 +393,12 @@ pub async fn stats(
         Ok(scans) => scans,
         Err(e) => return e,
     };
+    let in_flight = in_flight_scan_ids(&s.cancellations);
     let ScanStatsAgg {
         by_status,
         total_entities,
         total_deduped,
-    } = aggregate_scan_stats(&scans);
+    } = aggregate_scan_stats(&scans, &in_flight);
     let modules = s.engine.modules().len();
     let live_sessions = s.live.list().len();
 

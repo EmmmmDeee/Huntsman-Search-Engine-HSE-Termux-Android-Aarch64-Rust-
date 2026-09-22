@@ -367,6 +367,14 @@ fn humanise_name_reorders_and_titlecases() {
 #[tokio::test]
 async fn single_token_name_makes_no_request() {
     // One token → returns before any network I/O (offline in CI).
+    //
+    // REQ-SKIPCLASS-001 corrected the OUTCOME this asserts, not the intent.
+    // "Makes no request" was always right; the old assertion read the refusal
+    // back as `Ok(empty)` — which dispatch records as ModuleDone{found:0} and
+    // coverage aggregates to CleanNegative, i.e. "the register was asked and
+    // holds nothing on Madonna". The old expect message said the quiet part
+    // out loud: "single-token name is a clean no-op". It is not clean; it is
+    // unasked.
     let (bus, _rx) = tokio::sync::broadcast::channel(1);
     let ctx = ModuleContext {
         scan_id: "t".into(),
@@ -378,8 +386,12 @@ async fn single_token_name_makes_no_request() {
     let r = AsicPersons
         .process(&Target::new(TargetKind::FullName, "Madonna"), &ctx)
         .await
-        .expect("single-token name is a clean no-op");
-    assert!(r.entities.is_empty());
+        .expect_err("a name the register was never asked about is not a clean negative");
+    let crate::core::error::Error::Skipped { class, reason } = r else {
+        panic!("expected a typed skip, got {r}");
+    };
+    assert_eq!(class, crate::core::event::SkipClass::Scoped);
+    assert!(reason.contains("Madonna") && reason.contains("never asked"), "{reason}");
 }
 
 #[test]
@@ -421,4 +433,101 @@ async fn asic_persons_live_finds_a_banned_person() {
             .any(|e| e.kind == EntityKind::Person && e.has_tag("asic-banned")),
         "expected the banned-person finding from the live register"
     );
+}
+
+// ── REQ-ASICPERSONS-001: a name match is not an identification ──────────────
+//
+// All three registers are selected by `record_name_matches` alone: the CKAN
+// query is full-text and the predicate only requires the row to share the
+// seed's whole-word tokens, order-independent. None of the three datasets
+// publishes a date of birth. So for a seed like "John Smith" a DIFFERENT real
+// John Smith's ban, disqualification or disciplinary action matched, and was
+// emitted carrying `asic-banned` / `regulatory-action` with nothing marking it
+// as unverified — a reputationally severe finding about a real person, fused
+// onto the subject.
+//
+// The contract is the one every sibling name-matched register already keeps
+// (`sanctions_ofac`, `openarch`, `austlii`, `trove_au`, `europeana`, `ahmia`):
+// the `needs-identity-verification` tag plus an explicit evidence `caution`.
+// Deliberately NOT `tags::CANDIDATE`, which this codebase reserves for a known
+// non-match / off-region / synthetic value and which caps confidence — the
+// register hit is real, it is the IDENTIFICATION that is unproven.
+
+#[test]
+fn every_emitted_entity_carries_the_name_only_identity_contract() {
+    // The whole result set, not just the Person: the registered Address is a
+    // stranger's home locality on a namesake match, and the licensee
+    // Organisation / AbnAcn are that stranger's employer.
+    let mut r = ModuleResult::new();
+    emit_banned(&rec(BANNED), "scan", &mut r);
+    emit_adviser(&rec(ADVISER), "scan", &mut r);
+    super::flag_name_only_match(&mut r);
+
+    assert!(
+        !r.entities.is_empty(),
+        "fixtures must produce entities or this test is vacuous"
+    );
+    for e in &r.entities {
+        assert!(
+            e.has_tag("needs-identity-verification"),
+            "{:?} {} was matched by name alone and must say so",
+            e.kind,
+            e.value
+        );
+    }
+}
+
+#[test]
+fn the_adverse_finding_and_the_address_both_carry_an_identity_caution() {
+    let mut r = ModuleResult::new();
+    emit_banned(&rec(BANNED), "scan", &mut r);
+
+    let person = r
+        .entities
+        .iter()
+        .find(|x| x.kind == EntityKind::Person)
+        .expect("person");
+    assert!(
+        person
+            .evidence
+            .iter()
+            .any(|ev| ev.attributes.get("caution").is_some_and(|c| c
+                .contains("Name-only match"))),
+        "a ban attributed by name alone must carry the identity caution"
+    );
+
+    let addr = r
+        .entities
+        .iter()
+        .find(|x| x.kind == EntityKind::Address)
+        .expect("address");
+    assert!(
+        addr.evidence
+            .iter()
+            .any(|ev| ev.attributes.get("caution").is_some_and(|c| c
+                .contains("Name-only match"))),
+        "the register address is a stranger's locality on a namesake match — \
+         it must carry the caution too"
+    );
+}
+
+#[test]
+fn the_contract_is_not_the_candidate_quarantine() {
+    // `tags::CANDIDATE` is enforced (held out of exports, timeline, correlator,
+    // exposure) and caps confidence at 0.25. An ASIC register hit is a REAL
+    // register row, so quarantining it would discard a true finding; only the
+    // identification is unproven. Locking the distinction so a future change
+    // doesn't "upgrade" this to the quarantine and silently drop AU register
+    // findings out of every shareable view.
+    let mut r = ModuleResult::new();
+    emit_banned(&rec(BANNED), "scan", &mut r);
+    super::flag_name_only_match(&mut r);
+
+    for e in &r.entities {
+        assert!(
+            !e.has_tag(crate::core::tags::CANDIDATE),
+            "{} must stay in the confirmed view, flagged — not quarantined",
+            e.value
+        );
+    }
 }

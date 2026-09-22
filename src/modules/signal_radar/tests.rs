@@ -1,6 +1,14 @@
 use super::*;
 
-use crate::core::{confidence, entity::EntityKind};
+use crate::core::{
+    confidence,
+    entity::EntityKind,
+    rf::{AddressKind, RadioKind, RfSighting, RfSource},
+};
+
+/// A fixed reading time for the parser tests — the parsers take the epoch as
+/// an argument precisely so nothing here depends on the clock.
+const TEST_EPOCH: i64 = 1_758_500_000;
 
 // ── wifi parser ────────────────────────────────────────────────────────────
 
@@ -10,7 +18,8 @@ fn wifi_parse_valid_aps() {
         {"bssid":"AA:BB:CC:DD:EE:FF","ssid":"TestNet","rssi":-45,"frequency":2437,"channel_width":"20","timestamp":1000},
         {"bssid":"11:22:33:44:55:66","ssid":"WeakAP","rssi":-80,"frequency":5180,"channel_width":"40","timestamp":2000}
     ]"#;
-    let result = wifi::parse_scan(json, "test-scan").expect("valid AP JSON parses");
+    let result =
+        wifi::parse_scan(json, "test-scan", Some(TEST_EPOCH)).expect("valid AP JSON parses");
     // 2 APs, each with a non-empty SSID → 2 MacAddress entities + 2 Ssid
     // entities (one Ssid pushed right after its AP's MacAddress entity).
     assert_eq!(result.len(), 4);
@@ -72,7 +81,8 @@ fn wifi_skip_placeholder_bssids() {
         {"bssid":"","ssid":"Bad3","rssi":-40,"frequency":2437},
         {"bssid":"AA:BB:CC:DD:EE:FF","ssid":"Good","rssi":-40,"frequency":2437}
     ]"#;
-    let result = wifi::parse_scan(json, "test-scan").expect("valid AP JSON parses");
+    let result =
+        wifi::parse_scan(json, "test-scan", Some(TEST_EPOCH)).expect("valid AP JSON parses");
     // Only the last AP survives the placeholder/empty-BSSID filter, and its
     // non-empty SSID ("Good") mints a second, Ssid entity alongside its
     // MacAddress entity.
@@ -84,7 +94,8 @@ fn wifi_skip_placeholder_bssids() {
 
 #[test]
 fn wifi_parse_empty_array() {
-    let result = wifi::parse_scan(b"[]", "test-scan").expect("an empty array parses");
+    let result =
+        wifi::parse_scan(b"[]", "test-scan", Some(TEST_EPOCH)).expect("an empty array parses");
     assert!(result.is_empty());
 }
 
@@ -93,7 +104,7 @@ fn wifi_parse_empty_array() {
 /// "no Wi-Fi in range".
 #[test]
 fn wifi_parse_invalid_json_is_an_error() {
-    assert!(wifi::parse_scan(b"not json", "test-scan").is_err());
+    assert!(wifi::parse_scan(b"not json", "test-scan", Some(TEST_EPOCH)).is_err());
 }
 
 /// Blank output is the complement: a tool that exits 0 and prints nothing has
@@ -102,7 +113,7 @@ fn wifi_parse_invalid_json_is_an_error() {
 fn wifi_parse_blank_output_is_an_empty_ok() {
     for blank in [&b""[..], b"  \n"] {
         assert!(
-            wifi::parse_scan(blank, "test-scan")
+            wifi::parse_scan(blank, "test-scan", Some(TEST_EPOCH))
                 .expect("blank output is an empty answer, not an error")
                 .is_empty()
         );
@@ -163,7 +174,8 @@ fn bluetooth_parse_valid_devices() {
         {"address":"AA:BB:CC:DD:EE:01","name":"Headphones","type":"classic","bondState":"bonded"},
         {"address":"AA:BB:CC:DD:EE:02","name":"Speaker","type":"le","bondState":"none"}
     ]"#;
-    let result = bluetooth::parse_bt_json(json, "test-scan").expect("valid BT JSON parses");
+    let result = bluetooth::parse_bt_json(json, "test-scan", Some(TEST_EPOCH))
+        .expect("valid BT JSON parses");
     assert_eq!(result.len(), 2);
 
     let d1 = &result.entities[0];
@@ -182,7 +194,8 @@ fn bluetooth_skip_placeholder_address() {
         {"address":"","name":"Empty"},
         {"address":"AA:BB:CC:DD:EE:FF","name":"Good"}
     ]"#;
-    let result = bluetooth::parse_bt_json(json, "test-scan").expect("valid BT JSON parses");
+    let result = bluetooth::parse_bt_json(json, "test-scan", Some(TEST_EPOCH))
+        .expect("valid BT JSON parses");
     assert_eq!(result.len(), 1);
 }
 
@@ -194,7 +207,8 @@ fn cell_parse_valid_towers() {
         {"type":"LTE","registered":true,"dbm":-80,"cid":12345,"lac":null,"tac":678,"mcc":"505","mnc":"01"},
         {"type":"GSM","registered":false,"dbm":-95,"cid":999,"lac":100,"tac":null,"mcc":505,"mnc":3}
     ]"#;
-    let result = cell::parse_cells(json, "test-scan").expect("valid cell JSON parses");
+    let result =
+        cell::parse_cells(json, "test-scan", Some(TEST_EPOCH)).expect("valid cell JSON parses");
     assert_eq!(result.len(), 2);
 
     let t1 = &result.entities[0];
@@ -217,7 +231,8 @@ fn cell_skip_incomplete_towers() {
         {"type":"LTE","cid":1234,"mcc":"","mnc":"01"},
         {"type":"LTE","cid":null,"mcc":"505","mnc":"01"}
     ]"#;
-    let result = cell::parse_cells(json, "test-scan").expect("valid cell JSON parses");
+    let result =
+        cell::parse_cells(json, "test-scan", Some(TEST_EPOCH)).expect("valid cell JSON parses");
     assert!(result.is_empty());
 }
 
@@ -309,7 +324,7 @@ fn wifi_absent_readings_are_omitted_never_zero_or_hidden() {
     // only a BSSID must not gain `rssi_dbm=0`, `frequency_mhz=0`,
     // `timestamp=0` or a `<hidden>` network name.
     let json = br#"[{"bssid":"AA:BB:CC:DD:EE:FF"}]"#;
-    let r = super::wifi::parse_scan(json, "s").expect("parses");
+    let r = super::wifi::parse_scan(json, "s", Some(TEST_EPOCH)).expect("parses");
     let mac = r
         .entities
         .iter()
@@ -342,7 +357,7 @@ fn wifi_absent_readings_are_omitted_never_zero_or_hidden() {
 fn cell_absent_dbm_is_omitted_never_zero() {
     let json =
         br#"[{"type":"LTE","registered":true,"cid":12345,"tac":678,"mcc":"505","mnc":"01"}]"#;
-    let r = super::cell::parse_cells(json, "s").expect("parses");
+    let r = super::cell::parse_cells(json, "s", Some(TEST_EPOCH)).expect("parses");
     let e = r
         .entities
         .iter()
@@ -353,4 +368,200 @@ fn cell_absent_dbm_is_omitted_never_zero() {
         "{:?}",
         e.evidence[0].attributes
     );
+}
+
+// ── REQ-RADAR-001: every reading is also a sighting ──────────────────────────
+
+/// Each Wi-Fi reading yields one sighting beside its entity: the same BSSID
+/// (canonical), the SSID where reported, the level as measured, the read time.
+#[test]
+fn wifi_readings_become_sightings_with_signal_name_and_time() {
+    let json = br#"[
+        {"bssid":"AA:BB:CC:DD:EE:FF","ssid":"TestNet","rssi":-45,"frequency":2437},
+        {"bssid":"11:22:33:44:55:66","rssi":-80,"frequency":5180}
+    ]"#;
+    let r = wifi::parse_scan(json, "test-scan", Some(TEST_EPOCH)).expect("parses");
+    assert_eq!(r.sightings.len(), 2, "one sighting per AP, hidden or not");
+    let s = &r.sightings[0];
+    assert_eq!(s.network_id, "aa:bb:cc:dd:ee:ff");
+    assert_eq!(s.radio, RadioKind::Wifi);
+    assert_eq!(s.source, RfSource::WifiRadar);
+    assert!(s.source.is_local_sensor());
+    assert_eq!(s.name.as_deref(), Some("TestNet"));
+    assert_eq!(s.signal_dbm, Some(-45.0));
+    assert_eq!(s.observed_epoch, Some(TEST_EPOCH));
+    assert!(
+        !s.has_usable_position(),
+        "the parser knows no position; the sweep stamps it"
+    );
+    let hidden = &r.sightings[1];
+    assert_eq!(hidden.name, None, "an unreported SSID stays absent");
+    assert_eq!(hidden.signal_dbm, Some(-80.0));
+}
+
+/// `le` is BLE; `classic`/`dual`/unknown are recorded as classic with the
+/// tool's own type kept verbatim, and a missing or blank name stays absent.
+#[test]
+fn bluetooth_readings_classify_the_radio_and_keep_the_type_verbatim() {
+    let json = br#"[
+        {"address":"AA:BB:CC:DD:EE:01","name":"Headphones","type":"classic","bondState":"bonded"},
+        {"address":"AA:BB:CC:DD:EE:02","name":"Speaker","type":"le","bondState":"none"},
+        {"address":"AA:BB:CC:DD:EE:03","type":"dual"},
+        {"address":"AA:BB:CC:DD:EE:04","name":"  "}
+    ]"#;
+    let r = bluetooth::parse_bt_json(json, "test-scan", Some(TEST_EPOCH)).expect("parses");
+    assert_eq!(r.sightings.len(), 4);
+    let by_id = |id: &str| r.sightings.iter().find(|s| s.network_id == id).expect(id);
+    let classic = by_id("aa:bb:cc:dd:ee:01");
+    assert_eq!(classic.radio, RadioKind::BtClassic);
+    assert_eq!(classic.source, RfSource::BluetoothRadar);
+    assert_eq!(classic.name.as_deref(), Some("Headphones"));
+    assert_eq!(classic.raw_type.as_deref(), Some("classic"));
+    let le = by_id("aa:bb:cc:dd:ee:02");
+    assert_eq!(le.radio, RadioKind::Ble);
+    assert_eq!(le.raw_type.as_deref(), Some("le"));
+    let dual = by_id("aa:bb:cc:dd:ee:03");
+    assert_eq!(
+        dual.radio,
+        RadioKind::BtClassic,
+        "found over BR/EDR discovery"
+    );
+    assert_eq!(
+        dual.raw_type.as_deref(),
+        Some("dual"),
+        "the tool's own word survives for re-derivation"
+    );
+    assert_eq!(dual.name, None);
+    let blank_name = by_id("aa:bb:cc:dd:ee:04");
+    assert_eq!(blank_name.name, None, "a blank name is no name");
+    assert_eq!(blank_name.raw_type, None);
+    assert!(
+        r.sightings
+            .iter()
+            .all(|s| s.observed_epoch == Some(TEST_EPOCH))
+    );
+}
+
+/// A tower sighting carries the engine's own tower id (so it joins the
+/// `DeviceId` entity), the level only when the radio gave a real one, and the
+/// technology string verbatim.
+#[test]
+fn cell_readings_become_sightings_keyed_by_the_engine_tower_id() {
+    let json = br#"[
+        {"type":"LTE","registered":true,"dbm":-80,"cid":12345,"lac":null,"tac":678,"mcc":"505","mnc":"01"},
+        {"type":"GSM","registered":false,"dbm":2147483647,"cid":999,"lac":100,"tac":null,"mcc":505,"mnc":3}
+    ]"#;
+    let r = cell::parse_cells(json, "test-scan", Some(TEST_EPOCH)).expect("parses");
+    assert_eq!(r.sightings.len(), 2);
+    let lte = &r.sightings[0];
+    assert_eq!(lte.network_id, "505-01-678-12345");
+    assert_eq!(
+        lte.network_id, r.entities[0].value,
+        "the sighting keys on the DeviceId the entity carries"
+    );
+    assert_eq!(lte.radio, RadioKind::Cellular);
+    assert_eq!(lte.source, RfSource::CellRadar);
+    assert_eq!(lte.signal_dbm, Some(-80.0));
+    assert_eq!(lte.raw_type.as_deref(), Some("LTE"));
+    assert_eq!(lte.address_kind(), AddressKind::NotAnAddress);
+    let gsm = &r.sightings[1];
+    assert_eq!(
+        gsm.signal_dbm, None,
+        "the Integer.MAX_VALUE sentinel is not a level"
+    );
+}
+
+/// The sweep's fix is stamped onto every sighting the other radios made — and
+/// only onto those with no position of their own.
+#[test]
+fn the_sweeps_fix_positions_every_sighting_that_has_none_of_its_own() {
+    let fix = Fix {
+        latitude: -27.4705,
+        longitude: 153.026,
+        altitude: None,
+        accuracy: Some(8.0),
+        speed: None,
+        bearing: None,
+        provider: Some("gps".into()),
+    };
+    let mut sightings = vec![
+        RfSighting::new("aa:bb:cc:dd:ee:ff", RadioKind::Wifi, RfSource::WifiRadar),
+        RfSighting::new("505-01-678-12345", RadioKind::Cellular, RfSource::CellRadar),
+    ];
+    let mut own = RfSighting::new(
+        "aa:bb:cc:dd:ee:01",
+        RadioKind::Ble,
+        RfSource::BluetoothRadar,
+    );
+    own.latitude = Some(51.5074);
+    own.longitude = Some(-0.1278);
+    own.accuracy_m = Some(12.0);
+    sightings.push(own);
+
+    stamp_sweep_position(&mut sightings, Some(&fix));
+
+    assert_eq!(
+        (
+            sightings[0].latitude,
+            sightings[0].longitude,
+            sightings[0].accuracy_m
+        ),
+        (Some(-27.4705), Some(153.026), Some(8.0))
+    );
+    assert_eq!(
+        (sightings[1].latitude, sightings[1].longitude),
+        (Some(-27.4705), Some(153.026)),
+        "a tower sighting is positioned too"
+    );
+    assert_eq!(
+        (
+            sightings[2].latitude,
+            sightings[2].longitude,
+            sightings[2].accuracy_m
+        ),
+        (Some(51.5074), Some(-0.1278), Some(12.0)),
+        "a reading's own position is never overwritten"
+    );
+}
+
+/// No fix in the sweep: nothing is invented. A sighting stays position-less
+/// rather than being placed at a stale or null position.
+#[test]
+fn without_a_fix_no_sighting_is_positioned() {
+    let mut sightings = vec![RfSighting::new(
+        "aa:bb:cc:dd:ee:ff",
+        RadioKind::Wifi,
+        RfSource::WifiRadar,
+    )];
+    stamp_sweep_position(&mut sightings, None);
+    assert!(!sightings[0].has_usable_position());
+    assert_eq!(sightings[0].accuracy_m, None);
+}
+
+/// `combine_sensors` keeps every radio's sightings, not only their entities —
+/// merging sub-results with `extend` is exactly how they used to be lost.
+#[test]
+fn combine_sensors_keeps_every_radios_sightings() {
+    let wifi = wifi::parse_scan(
+        br#"[{"bssid":"AA:BB:CC:DD:EE:FF","rssi":-45}]"#,
+        "s",
+        Some(TEST_EPOCH),
+    )
+    .expect("parses");
+    let bt = bluetooth::parse_bt_json(
+        br#"[{"address":"AA:BB:CC:DD:EE:02","type":"le"}]"#,
+        "s",
+        Some(TEST_EPOCH),
+    )
+    .expect("parses");
+    let combined = combine_sensors([
+        Ok(wifi),
+        Ok(bt),
+        Ok(ModuleResult::new()),
+        Ok(ModuleResult::new()),
+        Ok(ModuleResult::new()),
+    ])
+    .expect("nothing failed");
+    assert_eq!(combined.sightings.len(), 2);
+    assert_eq!(combined.entities.len(), 2);
 }

@@ -480,8 +480,29 @@ fn build_entities(
         is_url_target,
         shared_profile_host,
     } = seed;
-    // For URL targets, emit the URL entity itself with crawl results
-    if is_url_target {
+    // Both attestations below — the seed `Url` and the site `Domain` — are
+    // stamped VERY_HIGH_PLUS and tagged `CRAWLED`, i.e. "this page/site was
+    // fetched and examined". The crawl loop `continue`s past every failure
+    // (non-2xx, a non-HTML content type, a body read that returns None), so a
+    // domain that is entirely unreachable, WAF-walled, or serves no HTML
+    // reaches here with `pages_fetched == 0` and used to emit both anyway —
+    // a 0.90 "crawled" claim whose own evidence string reads "0 pages".
+    // Nothing was observed, so nothing is attested. (REQ-WEBCRAWLER-001; same
+    // class as REQ-CERTINTEL-001, a finding minted from a probe leg that never
+    // actually examined anything.)
+    //
+    // Everything else these two blocks carry — the tech stack, page types,
+    // link counts, subdomains, image leads — is read out of page BODIES, so it
+    // is empty at zero pages and costs nothing to withhold. The one signal
+    // that can survive is the security-header audit (it runs on the first 2xx,
+    // before the content-type gate), and it is deliberately dropped with the
+    // rest: a header reading taken from a response the crawler could not use
+    // is not a crawl, and surfacing it would need its own entity at its own
+    // rung rather than riding a `crawled` attestation.
+    //
+    // Subject data found ON pages (emails, phones, hydration) is emitted
+    // further down, outside both blocks, and is unaffected.
+    if is_url_target && state.pages_fetched > 0 {
         let mut url_entity = Entity::new(
             EntityKind::Url,
             seed_url,
@@ -521,7 +542,7 @@ fn build_entities(
     // subject, so the whole section is skipped. Subject data observed ON
     // the page (emails, phones, hydration values) is emitted below either
     // way — that is what a profile crawl is actually for.
-    if !shared_profile_host {
+    if !shared_profile_host && state.pages_fetched > 0 {
         // Main domain entity with crawl summary
         let mut entity = Entity::new(
             EntityKind::Domain,
@@ -550,6 +571,7 @@ fn build_entities(
             entity.tag(tags::MISSING_SECURITY_HEADERS);
         }
 
+        let mut capped_images: Option<(usize, usize)> = None;
         let mut ev = Evidence::new(
             SRC,
             format!(
@@ -586,6 +608,14 @@ fn build_entities(
         ev = ev.with_attr("image_leads_emitted", state.image_urls.len().to_string());
         if state.image_urls_seen.len() > state.image_urls.len() {
             ev = ev.with_attr("image_leads_capped", IMAGE_LEADS_CAP.to_string());
+            // The same fact, reported once at the PROVIDER level so
+            // `core::coverage` can see it. `image_leads_capped` annotates an
+            // entity in the dossier and had no reader outside this file — it was
+            // one of the five private truncation vocabularies REQ-COVERAGE-001
+            // found, and this is its migration onto the shared mechanism. The
+            // crawler knows BOTH counts, so the total is stated rather than
+            // reported unknown (REQ-WEBCRAWLER-003).
+            capped_images = Some((state.image_urls.len(), state.image_urls_seen.len()));
         }
 
         if !missing_headers.is_empty() {
@@ -603,6 +633,11 @@ fn build_entities(
 
         entity.add_evidence(ev);
         state.result.push(entity);
+        if let Some((emitted, total)) = capped_images {
+            state
+                .result
+                .mark_truncated(emitted, Some(total), "the image-lead cap");
+        }
 
         // Image URLs — EXIF leads for `modules::exif_geo`, which accepts an image
         // `Url` target and reads the GPS IFD out of it. Emitted as entities because

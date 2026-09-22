@@ -385,6 +385,21 @@ pub const CHALLENGE_PHRASE_SETS: &[&[&str]] = &[
     // blocked by mistake, file a ticket below…". No vendor string; the page
     // opens with a bare `<body class=theme-beta>`.
     &["blocked by network security"],
+    // F5 BIG-IP ASM, the appliance behind AHPRA's register (live 2026-09-15
+    // and 2026-09-18): a 200 whose whole visible text is "Please enable
+    // JavaScript to view the page content. Your support ID is: <digits>".
+    // Its two standard block bodies, each as an AND-set of two independent
+    // F5 markers — a real page may carry a `<noscript>` telling the reader to
+    // enable JavaScript, or quote a support ID, but not both.
+    //
+    // Until this, both AHPRA captures were caught ONLY by the incidental
+    // `/cdn-cgi/challenge-platform` asset reference their page happens to
+    // carry (the register also fronts with Cloudflare). F5 ASM had no
+    // signature of its own, so any F5-walled host without a Cloudflare front
+    // answered a 200 wall that read as the document — for ahpra, "the subject
+    // is not a registered health practitioner".
+    &["enable javascript to view the page content", "support id"],
+    &["the requested url was rejected", "support id"],
 ];
 
 /// True when `body` is an anti-bot challenge, CAPTCHA or WAF block page — the

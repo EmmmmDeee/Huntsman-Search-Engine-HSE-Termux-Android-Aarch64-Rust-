@@ -169,7 +169,8 @@ use crate::core::confidence;
                 .expect("a valid fix")
                 .confidence
         };
-        assert!((at(50.0) - confidence::VERY_HIGH).abs() < 1e-9);
+        assert!((at(50.0) - confidence::HIGH_PLUSPLUS_PLUS).abs() < 1e-9);
+        assert!((at(300.0) - confidence::VERY_HIGH).abs() < 1e-9);
         assert!((at(2_000.0) - confidence::MEDIUM).abs() < 1e-9);
         assert!((at(25_000.0) - 0.35).abs() < 1e-9);
         assert!(

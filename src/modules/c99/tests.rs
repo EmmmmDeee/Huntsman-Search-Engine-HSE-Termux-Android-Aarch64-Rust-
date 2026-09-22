@@ -258,3 +258,37 @@ fn normalize_subdomain_rejects_whitespace_and_dotless() {
     assert_eq!(normalize_subdomain(Some("has space.com"), "example.com"), None);
     assert_eq!(normalize_subdomain(Some("localhost"), "example.com"), None);
 }
+
+/// REQ-SUCCESSFLAG-001. `process` decided with ONE expression —
+/// `!body.success || body.subdomains.is_empty()` — returning `Ok(empty)` for it, so
+/// dispatch recorded `ModuleDone { found: 0 }` and `core::coverage` aggregated
+/// every one of three different realities to `CleanNegative`: "queried, holds
+/// nothing on this subject".
+///
+/// Tested off JSON **text**, not constructed structs: a struct literal can only
+/// express presence, and an ABSENT `success` key is precisely the case the old
+/// `#[serde(default)] bool` could not distinguish from the API saying it failed
+/// (the rule REQ-FOFA-001 left behind).
+#[test]
+fn a_failure_an_unreadable_body_and_a_clean_miss_are_three_outcomes_not_one() {
+    let v = |j: &str| classify(&serde_json::from_str::<SubdomainFinderResp>(j).expect("decodes"));
+
+    // The provider answered, and the answer was failure.
+    assert!(matches!(v(r#"{"success":false,"subdomains":[]}"#), BodyVerdict::ProviderFailed));
+    // Not this API's shape at all — a gateway notice, a quota page.
+    assert!(matches!(v(r#"{"message":"not subscribed"}"#), BodyVerdict::Uninterpretable));
+    assert!(matches!(v(r#"{}"#), BodyVerdict::Uninterpretable));
+
+    // ── The control that matters more than the rejections. ──
+    // A genuine miss MUST still be a clean negative. A "fix" that turned every
+    // empty answer into an error would satisfy the assertions above and destroy
+    // this module's ability to report an honest absence — strictly worse than
+    // the defect it replaced.
+    assert!(matches!(v(r#"{"success":true,"subdomains":[]}"#), BodyVerdict::CleanMiss));
+    // And a real answer with rows is still data.
+    assert!(matches!(v(r#"{"success":true,"subdomains":[{"subdomain":"a.example.com","ip":"1.2.3.4"}]}"#), BodyVerdict::Rows));
+    // Weakest-condition check: rows present but `success` omitted is DATA, not
+    // a refusal. Requiring `success` outright would be the fail-shut trade
+    // REQ-FOFA-001 rejected.
+    assert!(matches!(v(r#"{"subdomains":[{"subdomain":"a.example.com","ip":"1.2.3.4"}]}"#), BodyVerdict::Rows));
+}

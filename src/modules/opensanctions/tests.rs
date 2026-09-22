@@ -181,6 +181,35 @@ fn pep_topic_without_sanction_tags_pep_only() {
 }
 
 #[test]
+fn a_sanction_linked_only_record_is_not_tagged_sanctioned() {
+    // REQ-OPENSANCTIONS-001: OpenSanctions' `sanction.linked` topic means the
+    // entity is ASSOCIATED with a designated party (a relative, business
+    // partner, or majority-owned company) — NOT itself listed. It must never
+    // carry `tags::SANCTIONED`, which drives AU-114's Critical "matches a
+    // sanctions designation" — a false, reputationally severe claim about a real
+    // person. It is surfaced under its own weaker `tags::SANCTIONS_LINKED`.
+    let es = matches(
+        r#"{"responses":{"q":{"results":[{
+            "id":"NK-linked1",
+            "caption":"Associated Person",
+            "properties":{"topics":["sanction.linked"]},
+            "datasets":["us_ofac_sdn"],
+            "score":0.91,
+            "match":true
+        }]}}}"#,
+    );
+    assert_eq!(es.len(), 1);
+    assert!(
+        !es[0].has_tag(crate::core::tags::SANCTIONED),
+        "a merely-linked record must NOT be tagged as a designated party"
+    );
+    assert!(
+        es[0].has_tag(crate::core::tags::SANCTIONS_LINKED),
+        "a linked record is surfaced under its own weaker tag"
+    );
+}
+
+#[test]
 fn au_dfat_dataset_gets_the_au_sanctions_tag() {
     let es = matches(
         r#"{"responses":{"q":{"results":[{

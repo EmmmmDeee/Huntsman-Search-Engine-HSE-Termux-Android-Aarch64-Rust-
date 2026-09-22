@@ -51,12 +51,14 @@ pub fn parse_coords(value: &str) -> Result<(f64, f64)> {
 ///   - the `0.0, 0.0` "Null Island" sentinel that geo APIs and the Android
 ///     location stack emit when they have no real fix.
 ///
-/// Coarse IP/WiFi-geo providers (`ip_geo`, `ipinfo`, `ip_whois_geo`,
-/// `ip2location`, `ipquery`, `wigle`) want [`is_plausible_provider_coord`]
-/// instead: it
-/// builds on this but additionally drops the near-null-island placeholder
-/// band those APIs emit. Precise sources stay here so a real equatorial fix
-/// isn't discarded.
+/// A provider whose "no fix" answer arrives *as a coordinate* — a `0,0` or a
+/// sub-degree jitter around it — wants [`is_plausible_provider_coord`]
+/// instead: it builds on this and additionally drops the Null Island square
+/// those APIs emit as a placeholder. A provider that says "no fix" out-of-band
+/// (a `fallback` marker, a result code, an empty collection, a
+/// `status:"error"`) has nothing for that gate to catch and belongs here.
+/// The rule decides, not a list of module names: the list drifted to naming
+/// six of the thirteen call sites before it was removed (REQ-GEOGATE-001).
 ///
 /// ```
 /// use huntsman_search_engine::util::geo::is_valid_coords;
@@ -493,7 +495,10 @@ pub fn tag_flags(entity: &mut crate::core::entity::Entity, flags: &[(Option<bool
 /// use huntsman_search_engine::util::geo::confidence_for_accuracy_m;
 /// use huntsman_search_engine::core::confidence;
 ///
-/// assert_eq!(confidence_for_accuracy_m(Some(25.0)), confidence::VERY_HIGH);
+/// // A doorway-grade fix (<= 50 m) sits at the top of the ladder.
+/// assert_eq!(confidence_for_accuracy_m(Some(25.0)), confidence::HIGH_PLUSPLUS_PLUS);
+/// // A block-grade one (51..=300 m) one rung below it.
+/// assert_eq!(confidence_for_accuracy_m(Some(150.0)), confidence::VERY_HIGH);
 /// assert_eq!(confidence_for_accuracy_m(Some(2_000.0)), confidence::MEDIUM);
 /// // A 25 km IP-derived radius is not a wireless fix.
 /// assert_eq!(confidence_for_accuracy_m(Some(25_000.0)), 0.35);
@@ -509,44 +514,76 @@ pub fn confidence_for_accuracy_m(metres: Option<f64>) -> f64 {
         _ => 5000.0,
     };
     match metres as u64 {
-        0..=200 => confidence::VERY_HIGH,
-        201..=1000 => confidence::HIGH,
+        0..=50 => confidence::HIGH_PLUSPLUS_PLUS,
+        51..=300 => confidence::VERY_HIGH,
+        301..=1000 => confidence::HIGH,
         1001..=5000 => confidence::MEDIUM,
         _ => confidence::TENTATIVE,
     }
 }
 
-/// Magnitude (in degrees) below which a *coarse* geolocation provider's
-/// coordinate component is treated as that provider's "no fix" placeholder
-/// rather than a real position. Several IP/WiFi-geo APIs return `0.0000` or a
-/// sub-degree jitter around null island when they have no location.
+/// Half-width (in degrees) of the square centred on Null Island inside which a
+/// *coarse* geolocation provider's answer is treated as that provider's "no
+/// fix" placeholder rather than a real position. Several IP/WiFi-geo APIs
+/// return `0.0000,0.0000`, or a sub-degree jitter around it, when they have no
+/// location.
+///
+/// It bounds a **point**, not a component: both components together must fall
+/// inside the square for the answer to be a placeholder. See
+/// [`is_plausible_provider_coord`] for why that distinction is the whole
+/// behaviour of this constant (REQ-GEOGATE-001).
 pub const NULL_ISLAND_BAND: f64 = 0.01;
 
 /// Validity check for coordinates coming from a *coarse* IP/WiFi-geolocation
-/// provider (`ipinfo`, `ip_whois_geo`, `ip2location`, `ipquery`, `wigle`, …):
-/// [`is_valid_coords`] **and** clear of the near-null-island
-/// [`NULL_ISLAND_BAND`] those providers emit as an "unknown" placeholder (a
-/// `loc` like `0.0000,0.0000` or `0.001,0.001`). Both components must exceed
-/// the band.
+/// provider: [`is_valid_coords`] **and** clear of the Null Island square of
+/// half-width [`NULL_ISLAND_BAND`] that those providers emit as an "unknown"
+/// placeholder (a `loc` like `0.0000,0.0000` or `0.001,0.001`).
+///
+/// Use it wherever the provider's no-fix answer arrives *as a coordinate*.
+/// Providers that signal "no fix" out-of-band — a `fallback` marker
+/// (`beacondb`), a result code (`mylnikov`), an empty collection (`wifidb`),
+/// a `status:"error"` (`opencellid`) — have nothing for this gate to catch and
+/// stay on plain [`is_valid_coords`], which keeps equatorial and prime-meridian
+/// fixes they legitimately hold.
 ///
 /// Prefer this over a bare `lat.abs() > 0.01 && lon.abs() > 0.01`: that idiom
-/// (which had been copied across the five providers above) dropped null
-/// island but *silently accepted out-of-range and non-finite values*, which
-/// then became high-confidence false fixes — precisely what
-/// [`is_valid_coords`] exists to reject. Folding the validity check in keeps
-/// the band heuristic while closing that gap in one place.
+/// (which had been copied across several providers) dropped null island but
+/// *silently accepted out-of-range and non-finite values*, which then became
+/// high-confidence false fixes — precisely what [`is_valid_coords`] exists to
+/// reject. Folding the validity check in keeps the placeholder heuristic while
+/// closing that gap in one place.
+///
+/// # The square, not the cross (REQ-GEOGATE-001)
+///
+/// The placeholder is a *point near `0,0`*, so the rejected region is the
+/// square around the origin — not "either component near zero", which is a
+/// cross: two ≈2.2 km-wide strips running the full length of the equator and
+/// the full length of the prime meridian. That cross ran through Greenwich,
+/// Peacehaven, the Normandy coast, the Gironde, Pontianak, Sulawesi, Nanyuki
+/// and the Ghanaian coast, so thirteen modules could not report a fix at any
+/// of them.
+/// No provider here is recorded emitting a half-placeholder (one real
+/// component beside one near-zero one); every observed sample — `0.001,0.001`,
+/// `0.005,0.005`, `0.004,0.004`, `0.005,-0.002` — has *both* components inside
+/// the square.
 ///
 /// ```
 /// use huntsman_search_engine::util::geo::is_plausible_provider_coord;
 ///
 /// assert!(is_plausible_provider_coord(-27.47, 153.02)); // real fix
 /// assert!(!is_plausible_provider_coord(0.001, 0.001));  // null-island jitter
-/// assert!(!is_plausible_provider_coord(0.0, 153.0));    // a component in the band
 /// assert!(!is_plausible_provider_coord(91.0, 0.0));     // also fails validity
+/// // A real place with one component near zero is NOT a placeholder:
+/// assert!(is_plausible_provider_coord(51.4779, -0.0015)); // Royal Observatory, Greenwich
+/// assert!(is_plausible_provider_coord(0.0, 153.0));       // a real equatorial fix
 /// ```
 #[must_use]
 pub fn is_plausible_provider_coord(lat: f64, lon: f64) -> bool {
-    is_valid_coords(lat, lon) && lat.abs() > NULL_ISLAND_BAND && lon.abs() > NULL_ISLAND_BAND
+    // Reject the SQUARE around Null Island, not the cross of two strips: a
+    // placeholder is a point near `0,0`, and a coordinate with only one
+    // component near zero is a real location on the equator or the prime
+    // meridian (REQ-GEOGATE-001).
+    is_valid_coords(lat, lon) && !(lat.abs() <= NULL_ISLAND_BAND && lon.abs() <= NULL_ISLAND_BAND)
 }
 
 /// Build the coarse IP-geolocation `geoint` Coordinates entity shared by the
@@ -590,6 +627,92 @@ pub fn coarse_provider_coords(
         e.tag("off-region");
     }
     Some(e)
+}
+
+/// Build the coarse provider-reported `Address` entity that sits beside a
+/// [`coarse_provider_coords`] fix — and hold the one invariant those two share.
+///
+/// **An address composed from a geolocation fix is strictly coarser than the
+/// fix**: `"Brisbane, Queensland, Australia"` is what you get by rounding off
+/// `-27.4679,153.0281`, so it can never be the more confident of the two. Eight
+/// modules each chose an `Address` rung by hand with nothing tying it to the
+/// fix beside it, and five of them drifted above it:
+///
+/// | module | Coordinates | Address | gap |
+/// |---|---|---|---|
+/// | `ip_geo` | 0.50 mobile / 0.60 residential | 0.65 flat | **+0.15** |
+/// | `shodan` (country-centroid path) | 0.45 | 0.55 | **+0.10** |
+/// | `criminal_ip` | 0.45 | 0.50 | **+0.05** |
+/// | `ipquery` | 0.58 | 0.62 | **+0.04** |
+/// | `ipinfo` | 0.58 | 0.60 | **+0.02** |
+///
+/// `ip_geo` is the sharpest case and shows why the drift matters: that module
+/// deliberately grades a fix DOWN to 0.50 for a mobile IP (and 0.35 for a
+/// hosting/proxy one, where it suppresses the Address altogether, which is why
+/// the reachable gap is 0.15 and not 0.30), and its own comment records the
+/// reason — "a single overstated IP-geo hit was outranking a corroborated WiGLE
+/// WiFi fix". The recalibration reached the Coordinates and not the Address
+/// derived from the same fix, so the exact overstatement it was written to stop
+/// walked straight back in through the city string.
+///
+/// `fix` is the sibling Coordinates entity for this same reading, when one was
+/// emitted; the returned confidence is `min(confidence, fix.confidence)`. The
+/// ceiling is taken FROM THE ENTITY rather than from a second `f64` parameter
+/// precisely so a caller cannot pass the wrong number — there is no number to
+/// pass. Modules that deliberately sit below their fix (`censys` 0.60 under
+/// 0.65, `shodan`'s real-fix path 0.55 under 0.60) keep their own rung
+/// untouched; the ceiling only ever removes an inversion.
+///
+/// Pass `None` when no fix was emitted for this reading — an implausible
+/// null-island lat/lon, a provider that returns a city and no coordinates at
+/// all. The caller's rung then stands, because the address is no longer a
+/// coarsening of a fix this module published: it is the provider's own city
+/// string, a separate datum.
+///
+/// The caller keeps its own presence gate (the modules disagree legitimately on
+/// whether a blank country still yields an address), its provider tag, and its
+/// evidence. **Pure** (no IO).
+///
+/// ```
+/// use huntsman_search_engine::core::entity::{Entity, EntityKind};
+/// use huntsman_search_engine::util::geo::coarse_provider_address;
+///
+/// let fix = Entity::new(EntityKind::Coordinates, "-27.4679,153.0281", 0.35, "s");
+/// // A hosting IP: the fix was graded down, so the address it was composed
+/// // from is graded down with it.
+/// let addr = coarse_provider_address("Brisbane, Australia", 0.65, Some(&fix), "s");
+/// assert!((addr.confidence - 0.35).abs() < 1e-9);
+///
+/// // A module that deliberately sits below its fix keeps its own rung.
+/// let fix = Entity::new(EntityKind::Coordinates, "-27.4679,153.0281", 0.65, "s");
+/// let addr = coarse_provider_address("Brisbane, Australia", 0.60, Some(&fix), "s");
+/// assert!((addr.confidence - 0.60).abs() < 1e-9);
+///
+/// // No fix published for this reading: the caller's rung stands.
+/// let addr = coarse_provider_address("Brisbane, Australia", 0.50, None, "s");
+/// assert!((addr.confidence - 0.50).abs() < 1e-9);
+/// ```
+#[must_use]
+pub fn coarse_provider_address(
+    address: &str,
+    confidence: f64,
+    fix: Option<&crate::core::entity::Entity>,
+    scan_id: &str,
+) -> crate::core::entity::Entity {
+    let capped = fix.map_or(confidence, |f| confidence.min(f.confidence));
+    let mut e = crate::core::entity::Entity::new(
+        crate::core::entity::EntityKind::Address,
+        address,
+        capped,
+        scan_id,
+    );
+    // Stamped HERE, not by the caller — matching the sibling
+    // `coarse_provider_coords`, which has always done so. Leaving it to each of
+    // the eight callers is what let `ipinfo`, `ipquery` and `ip2location` drift
+    // without it: two helpers born to standardise the same pair of entities
+    // disagreed about who owned the tag (REQ-IPGEO-002).
+    e.tag(crate::core::tags::GEOINT);
+    e
 }
 
 /// Build the `Asn` entity shared verbatim by every IP-geo provider module

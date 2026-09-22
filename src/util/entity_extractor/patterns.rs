@@ -60,16 +60,214 @@ pub static IPV6_CANDIDATE: LazyLock<Regex> =
 pub static HEX_TOKEN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b[0-9a-fA-F]+\b").expect("valid hex regex"));
 
+#[cfg(test)]
+mod hash_validity_tests {
+    use super::{EntityKind, ExtractedEntity, extract_by_patterns};
+
+    fn hashes(text: &str) -> Vec<ExtractedEntity> {
+        extract_by_patterns(text)
+            .into_iter()
+            .filter(|e| matches!(e.kind, EntityKind::Hash))
+            .collect()
+    }
+
+    /// REQ-EXTRACTOR-002. Width was the entire classification, and `0-9` are
+    /// hex digits, so a decimal run of the right length was certified a digest.
+    /// Collected rather than asserted one at a time so a single failure names
+    /// every width that slipped through.
+    #[test]
+    fn a_decimal_run_is_never_certified_a_cryptographic_hash() {
+        let cases: Vec<(&str, String)> = vec![
+            (
+                "32-digit transaction id",
+                "txn 12345678901234567890123456789012 ok".into(),
+            ),
+            (
+                "40-digit account run",
+                "acct 1234567890123456789012345678901234567890 ok".into(),
+            ),
+            (
+                "64-digit numeric blob",
+                format!("blob {} ok", "9".repeat(64)),
+            ),
+            (
+                "128-digit numeric blob",
+                format!("blob {} ok", "1".repeat(128)),
+            ),
+        ];
+        let minted: Vec<String> = cases
+            .iter()
+            .flat_map(|(why, text)| {
+                hashes(text)
+                    .into_iter()
+                    .map(move |e| format!("{why}: {} at {}", e.source_pattern, e.confidence))
+            })
+            .collect();
+        assert!(
+            minted.is_empty(),
+            "a run of decimal digits is not a digest:\n  {}",
+            minted.join("\n  ")
+        );
+    }
+
+    /// Control — passes before the fix too. Every real digest of each supported
+    /// width is still classified, at its own confidence, so the guard is a
+    /// discriminator rather than a blanket refusal.
+    #[test]
+    fn every_real_digest_width_is_still_classified() {
+        for (text, algo, conf) in [
+            ("hash 5d41402abc4b2a76b9719d911017c592 x", "hash_md5", 0.85),
+            (
+                "hash aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d x",
+                "hash_sha1",
+                0.90,
+            ),
+            (
+                "hash 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824 x",
+                "hash_sha256",
+                0.95,
+            ),
+        ] {
+            let got = hashes(text);
+            assert_eq!(got.len(), 1, "{algo}: {got:?}");
+            assert_eq!(got[0].source_pattern, algo);
+            assert!((got[0].confidence - conf).abs() < f64::EPSILON, "{algo}");
+        }
+    }
+
+    /// Control — passes before the fix too. The guard is about the ALPHABET, not
+    /// the width: a token of an unrecognised width was already declined, and a
+    /// single hex letter is enough to make a run a candidate again.
+    #[test]
+    fn the_guard_is_about_the_alphabet_not_the_width() {
+        assert!(
+            hashes("x 1234567890123456789012345678901 ok").is_empty(),
+            "31 chars is not a recognised digest width"
+        );
+        let mut one_letter = "a".to_string();
+        one_letter.push_str(&"1".repeat(31));
+        let got = hashes(&format!("h {one_letter} ok"));
+        assert_eq!(
+            got.len(),
+            1,
+            "a single hex letter makes a 32-char run a candidate again: {got:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod email_validity_tests {
+    use super::{EntityKind, extract_by_patterns};
+
+    fn emails(text: &str) -> Vec<String> {
+        extract_by_patterns(text)
+            .into_iter()
+            .filter(|e| matches!(e.kind, EntityKind::Email))
+            .map(|e| e.value)
+            .collect()
+    }
+
+    /// REQ-EXTRACTOR-001. Every value carrying the `email_rfc5322` /
+    /// "RFC 5322 compliant format" stamp must actually satisfy the crate's own
+    /// syntactic authority. These three shapes were measured being admitted
+    /// under that stamp before the arm validated anything; collected rather
+    /// than asserted one at a time so one failure names all of them.
+    #[test]
+    fn nothing_carries_the_rfc_stamp_without_earning_it() {
+        let overlong = format!("mail {}@example.com here", "a".repeat(69));
+        let cases: Vec<(&str, String)> = vec![
+            (
+                "consecutive dots in local",
+                "contact a..b@example.com now".into(),
+            ),
+            (
+                "trailing dot in local",
+                "write alice.@example.com ok".into(),
+            ),
+            ("local part over 64 chars", overlong),
+        ];
+        let admitted: Vec<String> = cases
+            .iter()
+            .flat_map(|(why, text)| {
+                emails(text)
+                    .into_iter()
+                    .filter(|v| !crate::core::validation::validate_email_syntax(v).valid)
+                    .map(move |v| format!("{why}: {v:?}"))
+            })
+            .collect();
+        assert!(
+            admitted.is_empty(),
+            "stamped \"RFC 5322 compliant format\" without being valid:\n  {}",
+            admitted.join("\n  ")
+        );
+    }
+
+    /// The stamp itself, asserted rather than assumed — a future arm that
+    /// validated but dropped the label would pass the test above vacuously.
+    #[test]
+    fn a_real_address_is_still_extracted_and_still_labelled() {
+        let got = extract_by_patterns("good alice.smith+tag@example.com z");
+        let email = got
+            .iter()
+            .find(|e| matches!(e.kind, EntityKind::Email))
+            .expect("a well-formed address must still be extracted");
+        assert_eq!(email.value, "alice.smith+tag@example.com");
+        assert_eq!(email.source_pattern, "email_rfc5322");
+        assert_eq!(
+            email.boost_reason.as_deref(),
+            Some("RFC 5322 compliant format")
+        );
+    }
+
+    /// Control — passes before the fix too. The locator already trims a leading
+    /// dot and a trailing domain dot out of the match, so those never reached
+    /// the stamp and the fix is not credited with them.
+    #[test]
+    fn the_locator_already_trimmed_these_edges_before_the_fix() {
+        assert_eq!(
+            emails("mail .alice@example.com here"),
+            ["alice@example.com"]
+        );
+        assert_eq!(emails("to alice@example.com. end"), ["alice@example.com"]);
+    }
+}
+
 /// Extract entities from text using pattern matching.
 pub fn extract_by_patterns(text: &str) -> Vec<ExtractedEntity> {
     let mut entities = Vec::new();
 
-    // Email extraction
+    // Email extraction. The locator is a SCANNER pattern, not a validator —
+    // `util::extract`'s own header says so ("Pragmatic, ASCII-only,
+    // scanner-grade — NOT an RFC 5322 validator"). This arm nonetheless stamped
+    // every raw match `source_pattern: "email_rfc5322"` with the boost reason
+    // "RFC 5322 compliant format" at 0.85, having checked nothing. Measured
+    // against the crate's own `validate_email_syntax`, three shapes were
+    // admitted under that untrue stamp:
+    //
+    //   "a..b@example.com"          consecutive dots in the local part
+    //   "alice.@example.com"        trailing dot in the local part
+    //   69-char local part          over RFC 5321's 64-octet limit
+    //
+    // This is the same defect the IPv4 arm below already carries the scar of —
+    // its comment records an arm that "stamped it 'Valid IPv4 range' ... under a
+    // boost reason that was untrue" until it was made to parse through
+    // `Ipv4Addr`. Email was the remaining unbacked claim (REQ-EXTRACTOR-001).
+    //
+    // Validate through the ONE syntactic authority, exactly as the IPv4 and IPv6
+    // arms validate through their parsers, and drop what does not conform — so
+    // the stamp means what it says. Not a second local copy of the rules: the
+    // admission gate (`core::validation::is_fragment_value`) delegates to the
+    // same function, so the extractor and the gate cannot disagree about what an
+    // email is.
     for cap in EMAIL_PATTERN.find_iter(text) {
+        let value = cap.as_str().to_lowercase();
+        if !crate::core::validation::validate_email_syntax(&value).valid {
+            continue;
+        }
         entities.push(ExtractedEntity {
             kind: EntityKind::Email,
-            value: cap.as_str().to_lowercase(),
-            confidence: 0.85, // RFC 5322 validation high confidence
+            value,
+            confidence: 0.85, // syntax-validated above, so the stamp is earned
             context: extract_context(text, cap.start()),
             source_pattern: "email_rfc5322".to_string(),
             boost_reason: Some("RFC 5322 compliant format".to_string()),
@@ -172,6 +370,35 @@ pub fn extract_by_patterns(text: &str) -> Vec<ExtractedEntity> {
     // therefore never also reported as the 40-char SHA-1 that is its own prefix.
     for cap in HEX_TOKEN.find_iter(text) {
         let value = cap.as_str();
+        // A run of DECIMAL digits is not a digest, however long it is. Width
+        // alone was the whole classification, and `0-9` are hex digits, so
+        // measured against this same arm:
+        //
+        //   "txn 1234…(32 digits)"  -> hash_md5    0.85  "128-bit hex hash"
+        //   "acct 1234…(40 digits)" -> hash_sha1   0.90  "160-bit hex hash"
+        //   "blob 999…(64 digits)"  -> hash_sha256 0.95  "256-bit hex hash"
+        //   "blob 111…(128 digits)" -> hash_sha512 0.97  "512-bit hex hash"
+        //
+        // A transaction id, an account number, a concatenated timestamp or a
+        // numeric column out of a breach dump landed in the graph as a
+        // cryptographic hash at up to 0.97 (REQ-EXTRACTOR-002).
+        //
+        // Requiring at least one `a`-`f` is the discriminator, and its cost is
+        // worth stating rather than glossing: a GENUINE digest whose every
+        // nibble happens to fall in 0-9 has probability (10/16)^n — about
+        // 1.2e-7 for a 32-char MD5, and 4e-27 for a 128-char SHA-512. Free text
+        // contains decimal runs of these lengths far more often than that.
+        //
+        // Deliberately NOT pushed down into `util::hashcat::identify_hash`,
+        // which shares the length-only shape. That function classifies a value
+        // that arrived in a hash-typed FIELD (a breach row's `password_hash`),
+        // where provenance already establishes the value is a digest and an
+        // all-decimal one should still be read as one. This arm scans arbitrary
+        // prose with no provenance at all, so the same string carries a
+        // different prior. The guard belongs where the prior is weak.
+        if !value.bytes().any(|b| b.is_ascii_alphabetic()) {
+            continue;
+        }
         let (confidence, algo) = match value.len() {
             32 => (0.85, "md5"),
             40 => (0.90, "sha1"),

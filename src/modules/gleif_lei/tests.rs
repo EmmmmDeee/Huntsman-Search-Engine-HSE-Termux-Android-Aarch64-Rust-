@@ -302,3 +302,158 @@ fn empty_response_yields_nothing() {
     let resp: GleifResp = serde_json::from_str(r#"{"data":[]}"#).expect("should succeed");
     assert!(records_to_entities(&resp, "Nonexistent Org", "s").is_empty());
 }
+
+/// Two DIFFERENT real companies that hold the identical legal name in
+/// different jurisdictions. GLEIF returns both; `Entity::new` derives the uid
+/// from the normalised value, which is the name, so the engine's merge fuses
+/// them into ONE `Organisation` whose evidence attributes are joined
+/// (`jurisdiction: "AU; DE"`, `entity_status: "ACTIVE; INACTIVE"`, both LEIs).
+///
+/// Nothing is lost — `merge_evidence_attrs` keeps both sides — but the fused
+/// entity ASSERTS a single company at `ORG_EXACT`
+/// (`confidence::HIGH_PLUSPLUS_PLUS`), which is above the noisy-OR expansion
+/// floor, so a composite of two companies pivots immediately and seeds new
+/// targets. `ahpra` already solved exactly this for practitioners
+/// (REQ-AHPRA-001): a name THIS result set holds more than once is a proven
+/// collision, so those rows score lower and say so.
+fn colliding_pair() -> GleifResp {
+    let raw = r#"{
+        "meta": {"pagination": {"total": 2}},
+        "data": [
+            {"attributes": {"lei": "AAAAAAAAAAAAAAAAAAAA", "entity": {
+                "legalName": {"name": "Meridian Holdings Limited"},
+                "jurisdiction": "AU", "status": "ACTIVE",
+                "registeredAs": "004 028 077",
+                "headquartersAddress": {"city": "Sydney", "region": "AU-NSW", "postalCode": "2000", "country": "AU"}
+            }}},
+            {"attributes": {"lei": "BBBBBBBBBBBBBBBBBBBB", "entity": {
+                "legalName": {"name": "Meridian Holdings Limited"},
+                "jurisdiction": "DE", "status": "INACTIVE",
+                "headquartersAddress": {"city": "Berlin", "region": "DE-BE", "postalCode": "10115", "country": "DE"}
+            }}}
+        ]
+    }"#;
+    serde_json::from_str(raw).expect("should succeed")
+}
+
+#[test]
+fn a_legal_name_two_companies_hold_is_not_one_confident_company() {
+    let resp = colliding_pair();
+    let ents = records_to_entities(&resp, "Meridian Holdings Limited", "s");
+
+    let orgs: Vec<_> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Organisation)
+        .collect();
+    assert_eq!(orgs.len(), 2, "both records must still surface");
+
+    // EVERY entity a colliding row produced, not just the Organisation: the
+    // AbnAcn (`confidence::EXPERT`), the registered Address and the inline
+    // Coordinates all rest on "the subject is this company" and would each
+    // pivot on their own. Asserting over the whole result also catches a future
+    // early `continue` in the row loop silently skipping the marking.
+    assert!(
+        ents.len() > orgs.len(),
+        "the fixture must exercise the fan-out, not only the Organisation rows"
+    );
+    for e in &ents {
+        assert!(
+            e.tags.iter().any(|t| t == "ambiguous-name"),
+            "{:?} entity {:?} escaped the ambiguity marking",
+            e.kind,
+            e.value
+        );
+        assert!(
+            e.confidence < confidence::MEDIUM,
+            "{:?} entity {:?} can still pivot at {}",
+            e.kind,
+            e.value,
+            e.confidence
+        );
+    }
+
+    for o in &orgs {
+        assert!(
+            o.tags.iter().any(|t| t == "ambiguous-name"),
+            "a legal name held by two different companies in this very result \
+             set is a PROVEN collision and must say so, like ahpra's \
+             `ambiguous-name`; got tags {:?}",
+            o.tags
+        );
+        assert!(
+            o.confidence < confidence::MEDIUM,
+            "a composite of two different companies must sit BELOW the noisy-OR \
+             expansion floor so it cannot pivot; got {} (floor {})",
+            o.confidence,
+            confidence::MEDIUM
+        );
+    }
+}
+
+#[test]
+fn an_ambiguous_legal_name_never_seeds_a_corporate_family_walk() {
+    // `exact_seeds`' own doc comment: a walk "attributes a whole corporate
+    // family to the operator's subject; doing that off a fuzzy match would
+    // manufacture a confident graph around the wrong company." An ambiguous
+    // EXACT match is the same harm — worse, because it arrives tagged
+    // `exact-name-match` — and was not guarded.
+    let resp = colliding_pair();
+    let seeds = super::transform::exact_seeds(&resp, "Meridian Holdings Limited");
+    assert!(
+        seeds.is_empty(),
+        "no corporate family may be attributed to a name two companies hold; \
+         got {seeds:?}"
+    );
+}
+
+#[test]
+fn a_singly_held_exact_name_still_pivots_at_full_confidence() {
+    // CONTROL — passes on the baseline AND the fix. The guard must fire only on
+    // a proven collision, never on an ordinary unambiguous exact match.
+    let raw = r#"{
+        "meta": {"pagination": {"total": 1}},
+        "data": [
+            {"attributes": {"lei": "AAAAAAAAAAAAAAAAAAAA", "entity": {
+                "legalName": {"name": "Meridian Holdings Limited"},
+                "jurisdiction": "AU", "status": "ACTIVE",
+                "registeredAs": "004 028 077",
+                "headquartersAddress": {"city": "Sydney", "region": "AU-NSW", "postalCode": "2000", "country": "AU"}
+            }}}
+        ]
+    }"#;
+    let resp: GleifResp = serde_json::from_str(raw).expect("should succeed");
+    let ents = records_to_entities(&resp, "Meridian Holdings Limited", "s");
+
+    let org = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Organisation)
+        .expect("the exact match must surface");
+    assert!((org.confidence - ORG_EXACT).abs() < f64::EPSILON);
+    assert!(!org.tags.iter().any(|t| t == "ambiguous-name"));
+    assert!(org.tags.iter().any(|t| t == "exact-name-match"));
+    // The exact-match fan-out is intact.
+    assert!(ents.iter().any(|e| e.kind == EntityKind::AbnAcn));
+    assert!(ents.iter().any(|e| e.kind == EntityKind::Address));
+    assert_eq!(
+        super::transform::exact_seeds(&resp, "Meridian Holdings Limited").len(),
+        1,
+        "an unambiguous exact match still earns its corporate-family walk"
+    );
+}
+
+#[test]
+fn two_different_names_both_matching_the_query_are_not_a_collision() {
+    // CONTROL — passes on the baseline AND the fix, and pins the boundary: the
+    // collision is between two records holding the SAME name, not between two
+    // distinct names that each satisfy the query's tokens. `sample()`'s rows
+    // ("BHP GROUP LIMITED" / "BHP Billiton Group Limited") are different
+    // values, so they get different uids and never fuse.
+    let resp = sample();
+    let ents = records_to_entities(&resp, "BHP Group Limited", "s");
+    assert!(
+        !ents
+            .iter()
+            .any(|e| e.tags.iter().any(|t| t == "ambiguous-name")),
+        "distinct legal names must not be read as a namesake collision"
+    );
+}

@@ -392,3 +392,237 @@ fn officer_single_token_name_yields_no_person() {
     // Empty company_number → no AbnAcn even for AU.
     assert!(ents.iter().all(|e| e.kind != EntityKind::AbnAcn));
 }
+
+// ---------------------------------------------- namesake collisions (page) ---
+
+fn page(raw: &str) -> Vec<OcCompanyWrapper> {
+    serde_json::from_str(raw).expect("should succeed")
+}
+
+/// Two DIFFERENT real companies holding one name, in different jurisdictions
+/// with opposite statuses — the ordinary case for an `Organisation` target,
+/// since the search spans ~140 jurisdictions with no filter.
+fn colliding_page() -> Vec<OcCompanyWrapper> {
+    page(
+        r#"[
+        {"company":{"name":"Meridian Holdings Limited","company_number":"111","jurisdiction_code":"au",
+                    "current_status":"Active","registered_address_in_full":"1 Main St, Sydney NSW 2000"}},
+        {"company":{"name":"Meridian Holdings Limited","company_number":"222","jurisdiction_code":"gb",
+                    "current_status":"Dissolved","dissolution_date":"2019-03-01",
+                    "registered_address_in_full":"10 High St, London"}}
+    ]"#,
+    )
+}
+
+#[test]
+fn a_company_name_two_registries_hold_is_not_one_confident_company() {
+    // `build_company_entities` mints at `confidence::VERY_HIGH`, and the entity
+    // value IS the name, so both rows share a uid and the engine fuses them
+    // into one `Organisation` carrying `country:AU` AND `active` AND
+    // `inactive` AND `dissolved` — a company that does not exist, above the
+    // expansion floor, pivoting. Same defect `gleif_lei` had (REQ-GLEIF-001).
+    let ents = build_company_page(
+        &colliding_page(),
+        2,
+        "Meridian Holdings Limited",
+        TargetKind::Organisation,
+        "s",
+    );
+    assert!(
+        ents.iter().any(|e| e.kind == EntityKind::Organisation),
+        "both records must still surface"
+    );
+    for e in &ents {
+        assert!(
+            e.tags.iter().any(|t| t == "ambiguous-name"),
+            "{:?} entity {:?} escaped the ambiguity marking; tags {:?}",
+            e.kind,
+            e.value,
+            e.tags
+        );
+        assert!(
+            e.confidence < confidence::MEDIUM,
+            "{:?} entity {:?} can still pivot at {}",
+            e.kind,
+            e.value,
+            e.confidence
+        );
+    }
+}
+
+#[test]
+fn a_singly_held_company_name_keeps_its_full_confidence() {
+    // CONTROL — passes on the baseline AND the fix.
+    let ents = build_company_page(
+        &page(
+            r#"[{"company":{"name":"Meridian Holdings Limited","company_number":"111",
+                 "jurisdiction_code":"au","current_status":"Active"}}]"#,
+        ),
+        1,
+        "Meridian Holdings Limited",
+        TargetKind::Organisation,
+        "s",
+    );
+    let org = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Organisation)
+        .expect("the match must surface");
+    assert!(!org.tags.iter().any(|t| t == "ambiguous-name"));
+    assert!((org.confidence - confidence::VERY_HIGH).abs() < f64::EPSILON);
+}
+
+#[test]
+fn two_distinct_company_names_on_one_page_are_not_a_collision() {
+    // CONTROL — pins the boundary: a collision is two rows holding the SAME
+    // name, not two distinct names appearing together.
+    let ents = build_company_page(
+        &page(
+            r#"[
+            {"company":{"name":"Meridian Holdings Limited","company_number":"111","jurisdiction_code":"au"}},
+            {"company":{"name":"Meridian Trading Limited","company_number":"222","jurisdiction_code":"gb"}}
+        ]"#,
+        ),
+        2,
+        "Meridian",
+        TargetKind::Organisation,
+        "s",
+    );
+    assert!(
+        !ents
+            .iter()
+            .any(|e| e.tags.iter().any(|t| t == "ambiguous-name"))
+    );
+}
+
+#[test]
+fn the_subject_match_gate_still_demotes_a_stranger_on_the_page() {
+    // CONTROL — the pre-existing `demote_to_candidate` behaviour must survive
+    // the extraction of `process`'s inline page loop into a pure function.
+    let ents = build_company_page(
+        &page(
+            r#"[{"company":{"name":"Totally Unrelated Pty Ltd","company_number":"111",
+                 "jurisdiction_code":"au"}}]"#,
+        ),
+        1,
+        "Meridian Holdings Limited",
+        TargetKind::Organisation,
+        "s",
+    );
+    let org = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Organisation)
+        .expect("a non-matching row still surfaces, quarantined");
+    assert!(
+        org.tags.iter().any(|t| t == crate::core::tags::CANDIDATE),
+        "a row whose own name does not match the query stays a candidate"
+    );
+}
+
+#[test]
+fn an_abn_acn_lookup_is_exact_so_the_match_gate_does_not_apply() {
+    // CONTROL — `AbnAcn` queries BY company number, so the name-token gate is
+    // meaningless for it and must not demote a correct hit. This is the branch
+    // `process` expressed as `target.kind == TargetKind::AbnAcn || …`.
+    let ents = build_company_page(
+        &page(
+            r#"[{"company":{"name":"Totally Unrelated Pty Ltd","company_number":"51824753556",
+                 "jurisdiction_code":"au"}}]"#,
+        ),
+        1,
+        "51824753556",
+        TargetKind::AbnAcn,
+        "s",
+    );
+    let org = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Organisation)
+        .expect("the numeric hit must surface");
+    assert!(
+        !org.tags.iter().any(|t| t == crate::core::tags::CANDIDATE),
+        "an exact company-number lookup is not a name guess"
+    );
+}
+
+#[test]
+fn an_officer_name_two_people_hold_is_not_one_confident_person() {
+    // The officer index is where this bites hardest: a common personal name
+    // returns several unrelated real directors, and two holding the identical
+    // name fuse into one `Person` carrying both directorships.
+    let officers: Vec<OcOfficerWrapper> = serde_json::from_str(
+        r#"[
+        {"officer":{"name":"Jane Roe","position":"director",
+                    "company":{"name":"Alpha Pty Ltd","company_number":"111","jurisdiction_code":"au"}}},
+        {"officer":{"name":"Jane Roe","position":"secretary",
+                    "company":{"name":"Beta Ltd","company_number":"222","jurisdiction_code":"gb"}}}
+    ]"#,
+    )
+    .expect("should succeed");
+
+    let ents = build_officer_page(&officers, 2, "Jane Roe", "s");
+    let people: Vec<_> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person)
+        .collect();
+    assert!(!people.is_empty(), "the officer rows must still surface");
+    for p in people {
+        assert!(
+            p.tags.iter().any(|t| t == "ambiguous-name"),
+            "Person {:?} escaped the ambiguity marking; tags {:?}",
+            p.value,
+            p.tags
+        );
+        assert!(
+            p.confidence < confidence::MEDIUM,
+            "Person {:?} can still pivot at {}",
+            p.value,
+            p.confidence
+        );
+    }
+}
+
+#[test]
+fn a_singly_held_officer_name_is_untouched() {
+    // CONTROL — one holder, matching the query: nothing is demoted or flagged.
+    let officers: Vec<OcOfficerWrapper> = serde_json::from_str(
+        r#"[{"officer":{"name":"Jane Roe","position":"director",
+             "company":{"name":"Alpha Pty Ltd","company_number":"111","jurisdiction_code":"au"}}}]"#,
+    )
+    .expect("should succeed");
+    let ents = build_officer_page(&officers, 1, "Jane Roe", "s");
+    let person = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .expect("the officer must surface");
+    assert!(!person.tags.iter().any(|t| t == "ambiguous-name"));
+    assert!(
+        !person
+            .tags
+            .iter()
+            .any(|t| t == crate::core::tags::CANDIDATE)
+    );
+}
+
+#[test]
+fn a_stranger_in_the_officer_index_is_quarantined_not_flagged_ambiguous() {
+    // CONTROL and boundary: the two judgements are distinct. A row that is not
+    // about the subject is a CANDIDATE; it is not "an ambiguous name", and
+    // conflating them would put a stranger's record in the operator's
+    // full-confidence view wearing the wrong label.
+    let officers: Vec<OcOfficerWrapper> = serde_json::from_str(
+        r#"[{"officer":{"name":"Someone Else","position":"director",
+             "company":{"name":"Alpha Pty Ltd","company_number":"111","jurisdiction_code":"au"}}}]"#,
+    )
+    .expect("should succeed");
+    let ents = build_officer_page(&officers, 1, "Jane Roe", "s");
+    let person = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .expect("a non-matching officer still surfaces, quarantined");
+    assert!(
+        person
+            .tags
+            .iter()
+            .any(|t| t == crate::core::tags::CANDIDATE)
+    );
+    assert!(!person.tags.iter().any(|t| t == "ambiguous-name"));
+}

@@ -6,64 +6,8 @@
 use rusqlite::params;
 
 use crate::core::error::Result;
-use crate::core::rf::{RadioKind, RfSighting, RfSource};
-
-/// One device as rolled up from its sightings within a scan — the `rf_devices`
-/// view's row. Every field is derived, so this is a read model with no
-/// independent lifetime: it cannot drift from the facts because it is not
-/// stored.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RfDeviceRow {
-    pub network_id: String,
-    pub radio: RadioKind,
-    /// `None` when the id is not a hardware address (a cellular identifier).
-    pub locally_administered: Option<bool>,
-    pub oui: Option<String>,
-    /// The registered organisation for [`oui`](Self::oui).
-    ///
-    /// Resolved on read rather than stored. The OUI is the durable fact; the
-    /// name attached to it is a lookup against a table that gets regenerated,
-    /// so a stored copy would silently go stale while the row still looked
-    /// authoritative. Resolving here means the embedded registry is always the
-    /// single answer.
-    ///
-    /// `None` for a locally-administered address even though its first three
-    /// bytes would index the table perfectly well: those bytes are randomly
-    /// generated, so naming a vendor from them fabricates an identity. This is
-    /// the same refusal [`crate::util::oui::classify_mac`] makes.
-    pub vendor: Option<&'static str>,
-    pub device_class: Option<String>,
-    pub name: Option<String>,
-    pub sightings: i64,
-    /// Distinct rounded positions this device was heard from. Greater than one
-    /// means the sightings genuinely constrain a location rather than giving a
-    /// single bearing.
-    pub distinct_fixes: i64,
-    pub first_epoch: Option<i64>,
-    pub last_epoch: Option<i64>,
-    pub best_signal_dbm: Option<f64>,
-    pub worst_signal_dbm: Option<f64>,
-    pub best_accuracy_m: Option<f64>,
-    pub best_latitude: Option<f64>,
-    pub best_longitude: Option<f64>,
-}
-
-/// Scan-level totals, computed in SQL so a summary never walks every row.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RfSummary {
-    pub sightings: i64,
-    pub devices: i64,
-    pub wifi: i64,
-    pub ble: i64,
-    pub bt: i64,
-    pub cellular: i64,
-    pub fixed_address: i64,
-    pub randomised_address: i64,
-    pub named: i64,
-    pub with_position: i64,
-    pub first_epoch: Option<i64>,
-    pub last_epoch: Option<i64>,
-}
+use crate::core::link::LinkState;
+use crate::core::rf::{RadioKind, RfDeviceRow, RfSighting, RfSource, RfSummary, RfTrackPoint};
 
 impl super::Store {
     /// Persist a batch of sightings for one scan under one transaction —
@@ -212,6 +156,102 @@ impl super::Store {
         Ok(mapped.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Every sighting of one device across every scan, oldest first, capped to
+    /// the newest `limit` — the movement record across a whole radar session
+    /// (one scan per iteration) or a wardriving day, where
+    /// [`rf_sightings_for_device`](Self::rf_sightings_for_device) is one
+    /// sweep's. Served by `idx_rf_network`, not a table scan. Readings without a
+    /// time come first: they cannot be placed on the timeline, and hiding them
+    /// would make the track look complete.
+    pub fn rf_device_track(&self, network_id: &str, limit: usize) -> Result<Vec<RfTrackPoint>> {
+        let canonical = crate::core::rf::canonical_network_id(network_id);
+        let cap = i64::try_from(limit).unwrap_or(i64::MAX);
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT scan_id, network_id, radio, source, device_class, name, encryption,
+                    observed_at, observed_epoch, signal_dbm, accuracy_m,
+                    latitude, longitude, raw_type
+               FROM rf_sightings
+              WHERE network_id = ?1
+              ORDER BY observed_epoch IS NULL, observed_epoch DESC, id DESC
+              LIMIT ?2",
+        )?;
+        let mapped = stmt.query_map(params![canonical, cap], |r| {
+            Ok(RfTrackPoint {
+                scan_id: r.get(0)?,
+                sighting: RfSighting {
+                    network_id: r.get(1)?,
+                    radio: RadioKind::from_db_str(&r.get::<_, String>(2)?),
+                    source: RfSource::from_db_str(&r.get::<_, String>(3)?),
+                    device_class: r.get(4)?,
+                    name: r.get(5)?,
+                    encryption: r.get(6)?,
+                    observed_at: r.get(7)?,
+                    observed_epoch: r.get(8)?,
+                    signal_dbm: r.get(9)?,
+                    accuracy_m: r.get(10)?,
+                    latitude: r.get(11)?,
+                    longitude: r.get(12)?,
+                    raw_type: r.get(13)?,
+                },
+            })
+        })?;
+        let mut rows = mapped.collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.reverse();
+        Ok(rows)
+    }
+
+    /// One sweep's link state (REQ-RESILIENCE-002). One row per sweep; a
+    /// second write for the same scan is a second observation and is kept —
+    /// the reader takes the latest.
+    pub fn insert_wifi_link(&self, scan_id: &str, link: &LinkState) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO wifi_links(scan_id, observed_epoch, connected, ssid, bssid, signal_dbm,
+                                    ip, link_speed_mbps, supplicant_state)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![
+                scan_id,
+                link.observed_epoch,
+                i64::from(link.connected),
+                link.ssid,
+                link.bssid.as_deref().map(str::to_lowercase),
+                link.signal_dbm,
+                link.ip,
+                link.link_speed_mbps,
+                link.supplicant_state,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The latest link state recorded for a sweep, or `None` when it recorded
+    /// none — a sweep from before the record existed, or one that did not run
+    /// `device_sensors`. The caller tells the two apart from the sweep, not
+    /// from this answer.
+    pub fn wifi_link_for_scan(&self, scan_id: &str) -> Result<Option<LinkState>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT observed_epoch, connected, ssid, bssid, signal_dbm, ip, link_speed_mbps,
+                    supplicant_state
+               FROM wifi_links WHERE scan_id = ?1 ORDER BY id DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![scan_id])?;
+        Ok(match rows.next()? {
+            Some(r) => Some(LinkState {
+                observed_epoch: r.get(0)?,
+                connected: r.get::<_, i64>(1)? != 0,
+                ssid: r.get(2)?,
+                bssid: r.get(3)?,
+                signal_dbm: r.get(4)?,
+                ip: r.get(5)?,
+                link_speed_mbps: r.get(6)?,
+                supplicant_state: r.get(7)?,
+            }),
+            None => None,
+        })
+    }
+
     /// Names carried by more than one radio, largest installation first.
     pub fn rf_shared_names(&self, scan_id: &str) -> Result<Vec<(String, i64)>> {
         let conn = self.conn.lock();
@@ -221,18 +261,6 @@ impl super::Store {
         )?;
         let mapped = stmt.query_map(params![scan_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
         Ok(mapped.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    /// Devices with a fixed hardware address — the only ones whose recurrence
-    /// across sightings means anything (AU-122). This filter is the ONE
-    /// definition of "trackable": the `rf_trackable` SQL view that encoded the
-    /// same predicate was queried by nothing and is retired on open.
-    pub fn rf_trackable_devices(&self, scan_id: &str) -> Result<Vec<RfDeviceRow>> {
-        Ok(self
-            .rf_devices_for_scan(scan_id)?
-            .into_iter()
-            .filter(|d| d.locally_administered == Some(false))
-            .collect())
     }
 
     /// The scan of the most recent sighting, or `None` when nothing has been

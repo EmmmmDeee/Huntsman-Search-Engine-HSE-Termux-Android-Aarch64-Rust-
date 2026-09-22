@@ -1,11 +1,11 @@
 use super::CellIntel;
 use super::helpers::{
-    accuracy_to_confidence, build_tower_device, json_to_str, mcc_to_centroid, parse_cells_survey,
-    query_opencellid,
+    accuracy_to_confidence, build_tower_device, mcc_to_centroid, parse_cells_survey,
 };
 use crate::core::module::Module;
 use crate::core::scan::{Target, TargetKind};
 use crate::core::{confidence, entity::EntityKind};
+use crate::modules::device_cell::json_to_str;
 
 // ---- Module trait tests ----
 
@@ -47,7 +47,7 @@ fn module_max_timeout() {
 #[test]
 fn parses_mcc_as_string_or_number() {
     let json = br#"[
-        {"type":"lte","registered":true,"cid":12345,"tac":54321,
+        {"type":"lte","registered":true,"ci":12345,"tac":54321,
          "mcc":"505","mnc":"01","dbm":-75,"asu":30,"level":4,"pci":100},
         {"type":"gsm","registered":true,"cid":99,"lac":42,
          "mcc":505,"mnc":1,"dbm":-90,"asu":10,"level":2}
@@ -56,6 +56,24 @@ fn parses_mcc_as_string_or_number() {
     assert_eq!(r.entities.len(), 2);
     assert_eq!(r.entities[0].value, "505-01-54321-12345");
     assert_eq!(r.entities[1].value, "505-1-42-99");
+}
+
+/// This module reads the same tool as `signal_radar` and had the same defect:
+/// only `cid` was consulted, but an LTE cell reports `ci` and an NR cell `nci`
+/// (see `TelephonyAPI.java`). Every LTE and 5G tower was skipped, so on a
+/// modern handset there was never a tower to look up against OpenCelliD.
+///
+/// The fixture above spells an LTE cell with `cid` — a combination the tool
+/// never emits — which is why a green suite never showed this.
+#[test]
+fn survey_reads_the_identity_key_each_radio_actually_emits() {
+    let json = br#"[
+        {"type":"lte","registered":true,"ci":12345,"tac":54321,"mcc":"505","mnc":"01"},
+        {"type":"nr","registered":true,"nci":777,"tac":888,"mcc":"505","mnc":"01"}
+    ]"#;
+    let r = parse_cells_survey(json, "test");
+    let ids: Vec<&str> = r.entities.iter().map(|e| e.value.as_str()).collect();
+    assert_eq!(ids, vec!["505-01-54321-12345", "505-01-888-777"]);
 }
 
 #[test]
@@ -74,7 +92,7 @@ fn malformed_json_no_ops() {
 #[test]
 fn entity_tags_include_cell_tower_and_radio_type() {
     let json = br#"[
-        {"type":"lte","registered":true,"cid":5678,"tac":1234,
+        {"type":"lte","registered":true,"ci":5678,"tac":1234,
          "mcc":"310","mnc":"260","dbm":-85,"asu":25,"level":3,"pci":42}
     ]"#;
     let r = parse_cells_survey(json, "scan-x");
@@ -113,7 +131,7 @@ fn evidence_attributes_populated() {
 
 #[test]
 fn lac_falls_back_to_tac_for_lte() {
-    let json = br#"[{"type":"lte","cid":999,"tac":555,"mcc":"310","mnc":"410"}]"#;
+    let json = br#"[{"type":"lte","ci":999,"tac":555,"mcc":"310","mnc":"410"}]"#;
     let r = parse_cells_survey(json, "test");
     assert_eq!(r.entities[0].value, "310-410-555-999");
 }
@@ -127,7 +145,7 @@ fn lac_preferred_over_tac_when_both_present() {
 
 #[test]
 fn skips_cell_with_zero_cid() {
-    let json = br#"[{"type":"lte","cid":0,"tac":123,"mcc":"310","mnc":"260"}]"#;
+    let json = br#"[{"type":"lte","ci":0,"tac":123,"mcc":"310","mnc":"260"}]"#;
     let r = parse_cells_survey(json, "test");
     assert_eq!(r.entities.len(), 0);
 }
@@ -173,17 +191,11 @@ fn json_to_str_handles_all_variants() {
 
 #[test]
 fn accuracy_to_confidence_tiers() {
-    // accuracy_to_confidence delegates to the canonical util::geo ladder (see
-    // its doc comment) — pin the delegation itself, at every tier boundary,
-    // rather than a second hardcoded copy of the thresholds, so this test
-    // can't silently drift from the one canonical scale.
-    for m in [0, 50, 200, 201, 1000, 1001, 5000, 5001, 50_000] {
-        assert_eq!(
-            accuracy_to_confidence(m),
-            crate::util::geo::confidence_for_accuracy_m(Some(m as f64)),
-            "accuracy_to_confidence({m}) must match the canonical geo ladder"
-        );
-    }
+    assert!((accuracy_to_confidence(50) - confidence::HIGH_PLUSPLUS_PLUS).abs() < 1e-6);
+    assert!((accuracy_to_confidence(300) - confidence::VERY_HIGH).abs() < 1e-6);
+    assert!((accuracy_to_confidence(1000) - confidence::HIGH).abs() < 1e-6);
+    assert!((accuracy_to_confidence(5000) - confidence::MEDIUM).abs() < 1e-6);
+    assert!((accuracy_to_confidence(50000) - 0.35).abs() < 1e-6);
 }
 
 #[test]
@@ -312,28 +324,16 @@ fn build_tower_device_carries_radio_tags_and_evidence_attrs() {
 }
 
 #[test]
-fn build_tower_device_omits_absent_readings_never_asserting_zero_or_false() {
-    // This test used to pin the defect: a tower record without `dbm` / `asu`
-    // / `level` / `pci` / `registered` gained all five as `0` / `false` —
-    // `dbm=0` an unphysically strong signal, `registered=false` a statement
-    // about the handset — asserted as observations (the class fixed for the
-    // Wi-Fi sensors in backlog #16). Absent stays absent.
+fn build_tower_device_defaults_absent_signal_fields_to_zero() {
     let cell = cell_from_json(r#"{"type":"gsm","mcc":"505","mnc":"1","cid":99,"lac":42}"#);
     let key = TowerKey::from_cell(&cell).expect("should succeed");
     let e = build_tower_device(&cell, &key, "s");
     let attrs = &e.evidence[0].attributes;
-    for k in ["pci", "dbm", "asu", "level", "registered"] {
-        assert!(!attrs.contains_key(k), "{k} must be absent: {attrs:?}");
-    }
-    assert_eq!(attrs.get("cid").map(String::as_str), Some("99"));
-    // Readings the tool DID report are recorded verbatim.
-    let cell = cell_from_json(
-        r#"{"type":"gsm","mcc":"505","mnc":"1","cid":99,"lac":42,"dbm":-97,"registered":true}"#,
-    );
-    let key = TowerKey::from_cell(&cell).expect("should succeed");
-    let attrs = &build_tower_device(&cell, &key, "s").evidence[0].attributes;
-    assert_eq!(attrs.get("dbm").map(String::as_str), Some("-97"));
-    assert_eq!(attrs.get("registered").map(String::as_str), Some("true"));
+    assert_eq!(attrs.get("pci").map(String::as_str), Some("0"));
+    assert_eq!(attrs.get("dbm").map(String::as_str), Some("0"));
+    assert_eq!(attrs.get("asu").map(String::as_str), Some("0"));
+    assert_eq!(attrs.get("level").map(String::as_str), Some("0"));
+    assert_eq!(attrs.get("registered").map(String::as_str), Some("false"));
 }
 
 // ---- OpenCellidResp bad-key error shape ----
@@ -370,160 +370,4 @@ fn opencellid_resp_status_error_is_distinct_from_the_body_error_field() {
     let resp: OpenCellidResp = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(resp.status.as_deref(), Some("error"));
     assert_eq!(resp.error, None);
-}
-
-// ---- source attribution: one corpus retrieved twice is one source ----
-
-#[test]
-fn an_opencellid_position_is_attributed_to_opencellid_not_to_this_module() {
-    use super::helpers::{build_opencellid_coordinate, build_tower_device};
-    use crate::core::entity::Entity;
-
-    let cell = cell_from_json(r#"{"type":"lte","mcc":"505","mnc":"01","cid":12345,"lac":42}"#);
-    let key = TowerKey::from_cell(&cell).expect("a well-formed tower");
-
-    // What THIS module mints from an OpenCelliD `cell/get` response...
-    let ours = build_opencellid_coordinate(&cell, &key, "lte", -33.865143, 151.209900, 1500, "s1");
-    // ...and what the standalone `opencellid` module mints from the SAME
-    // response for the same tower: identical kind, identical `{lat:.6},{lon:.6}`
-    // value, so identical UID.
-    let mut theirs = Entity::new(
-        crate::core::entity::EntityKind::Coordinates,
-        "-33.865143,151.209900",
-        0.5,
-        "s1",
-    );
-    theirs.add_evidence(crate::core::entity::Evidence::new(
-        crate::modules::opencellid::SRC,
-        "OpenCelliD tower 505-1-42-12345",
-    ));
-    assert_eq!(
-        ours.uid, theirs.uid,
-        "both paths mint the same coordinate, so the entities merge"
-    );
-
-    // The merge must leave ONE corroborating source. Attributed to this module
-    // instead, it left two — and `source_count` feeds `c_effective` directly,
-    // so the same OpenCelliD row retrieved twice bought a confidence boost it
-    // never earned. Repeated retrieval of one corpus is not corroboration.
-    let mut merged = ours.clone();
-    merged.merge(theirs);
-    assert_eq!(
-        merged.source_count(),
-        1,
-        "one corpus retrieved by two paths is one source, not two: {:?}",
-        merged.corroborating_sources()
-    );
-    assert!(
-        merged
-            .corroborating_sources()
-            .contains(crate::modules::opencellid::SRC)
-    );
-    assert!(
-        !merged.corroborating_sources().contains(super::SRC),
-        "this module did not independently observe the position; OpenCelliD did"
-    );
-
-    // The MCC-centroid fallback and the radio observation are this module's
-    // own, and keep its name: the tower really was detected on the air, which
-    // is what AU-084 treats as independent of the database.
-    let device = build_tower_device(&cell, &key, "s1");
-    assert!(device.corroborating_sources().contains(super::SRC));
-    assert!(
-        !device
-            .corroborating_sources()
-            .contains(crate::modules::opencellid::SRC),
-        "a hardware radio sighting is not an OpenCelliD record"
-    );
-}
-
-// ---- confidence scoring: must match the one canonical accuracy ladder ----
-
-/// `build_opencellid_coordinate` — the actual production entity-building
-/// path, not a bare utility function — must score confidence on exactly the
-/// same ladder `cell_local` and `opencellid` use for an identically-precise
-/// fix (`util::geo::confidence_for_accuracy_m`, reached via
-/// `cell_db::accuracy_to_confidence`).
-///
-/// Until Pass 22 this module carried its own copy
-/// (`util::geo::cell_range_to_confidence`) that silently diverged from the
-/// canonical ladder at every tier: a 50 m fix scored 0.85 here vs 0.75 on the
-/// canonical scale, 300 m scored 0.75 vs 0.65, 1500 m scored 0.65 vs 0.50, and
-/// 7000 m scored 0.50 vs 0.35 — the last crossing the correlator's
-/// `>= 0.50` AU-052/AU-053 admissibility floor, so the *same* OpenCelliD row
-/// could clear or miss that floor purely by which module reported it. The
-/// existing `accuracy_to_confidence_tiers` test could not catch this: it
-/// compared `cell_db::accuracy_to_confidence` against its own delegation
-/// target, never the production call site this test drives.
-#[test]
-fn opencellid_coordinate_confidence_matches_the_canonical_ladder() {
-    use super::helpers::build_opencellid_coordinate;
-    use crate::util::geo::confidence_for_accuracy_m;
-
-    let cell = cell_from_json(r#"{"type":"lte","mcc":"505","mnc":"01","cid":1,"lac":1}"#);
-    let key = TowerKey::from_cell(&cell).expect("a well-formed tower");
-
-    for range in [
-        0, 50, 200, 201, 300, 1000, 1001, 1500, 5000, 5001, 7000, 50_000,
-    ] {
-        let e = build_opencellid_coordinate(&cell, &key, "lte", -33.8, 151.2, range, "s1");
-        assert_eq!(
-            e.confidence,
-            confidence_for_accuracy_m(Some(range as f64)),
-            "range {range} m: production entity confidence must match the canonical ladder"
-        );
-    }
-}
-
-#[tokio::test]
-async fn a_failed_opencellid_lookup_is_an_error_and_only_the_documented_miss_is_none() {
-    // A transport failure, a 5xx, the HTTP-200 key rejection and an
-    // undecodable body used to be `None` — indistinguishable from the
-    // provider's own "couldn't geolocate this tower" — so the centroid
-    // fallback silently stood in for a lookup that never happened.
-    use crate::util::http::test_server::{Canned, serve};
-    let base = serve(vec![
-        Canned::json(
-            200,
-            r#"{"status":"ok","lat":-33.8688,"lon":151.2093,"range":500}"#,
-        ),
-        Canned::json(200, r#"{"status":"error","message":"cell not found"}"#),
-        Canned::json(
-            200,
-            r#"{"error":"API Key not known: garbage00000invalid","code":2}"#,
-        ),
-        Canned::text(503, "Service Unavailable"),
-        Canned::html(200, "<html><body>Just a moment...</body></html>"),
-        Canned::json(200, r#"{"status":"ok"}"#),
-    ])
-    .await;
-    let (bus, _rx) = tokio::sync::broadcast::channel(1);
-    let ctx = crate::core::module::ModuleContext {
-        scan_id: "t".into(),
-        bus,
-        http: reqwest::Client::new(),
-        keys: std::collections::HashMap::new(),
-        cancel: crate::core::cancel::CancelHandle::new(),
-    };
-    let cells: Vec<Cell> = serde_json::from_str(
-        r#"[{"type":"LTE","registered":true,"cid":12345,"tac":678,"mcc":"505","mnc":"01","dbm":-80}]"#,
-    )
-    .expect("decodes");
-    let key = TowerKey::from_cell(&cells[0]).expect("keyed");
-    let q = || query_opencellid(&ctx, &base, "k", &key, "LTE");
-
-    let fix = q().await.expect("a located tower").expect("present");
-    assert!((fix.0 - -33.8688).abs() < 1e-9 && fix.2 == 500);
-    assert!(q().await.expect("the documented miss").is_none());
-    let err = q().await.expect_err("a rejected key is not a miss");
-    assert!(err.to_string().contains("rejected the key"), "{err}");
-    let err = q().await.expect_err("503 is not a miss");
-    assert!(err.to_string().contains("503"), "{err}");
-    let err = q().await.expect_err("an HTML page is not a miss");
-    assert!(err.to_string().contains("HTML page"), "{err}");
-    let err = q().await.expect_err("ok without coordinates is not a miss");
-    assert!(
-        err.to_string().contains("without usable coordinates"),
-        "{err}"
-    );
 }

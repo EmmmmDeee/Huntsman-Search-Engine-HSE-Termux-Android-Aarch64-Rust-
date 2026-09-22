@@ -315,17 +315,37 @@ fn build_entities(body: &BwResp, domain: &str, scan_id: &str) -> ModuleResult {
         let Some(meta) = &res.meta else { continue };
 
         // Company name (or the first observed registrant Name) → Organisation.
+        //
+        // Gated on the shared `is_proxy_registrant`, exactly as the Email arm
+        // below is: the Meta block is registrant data, so it is dominated by
+        // privacy proxies and registrar boilerplate, and the company-name field
+        // is precisely where `Domains By Proxy, LLC` / `REDACTED FOR PRIVACY` /
+        // `Whoisguard, Inc.` land. Without it those were minted as the domain
+        // owner at `confidence::HIGH` — the Email arm's own reasoning, applied
+        // one field over. (REQ-BUILTWITH-001.)
+        //
+        // The guard sits INSIDE the selection rather than after it, so a proxy
+        // company name does not shadow a genuine registrant in `names[]`: a
+        // post-filter would have emitted nothing for the common case where
+        // WHOIS carries the proxy as `CompanyName` and the real party as a
+        // `Name` entry.
+        let is_registrant = |s: &str| !crate::util::domains::is_proxy_registrant(s, false);
         let org_name = meta
             .company_name
             .as_deref()
             .map(str::trim)
-            .filter(|s| !s.is_empty())
+            .filter(|s| !s.is_empty() && is_registrant(s))
             .map(str::to_string)
             .or_else(|| {
                 meta.names.as_ref().and_then(|names| {
                     names
                         .iter()
-                        .find_map(|n| n.name.as_deref().map(str::trim).filter(|s| !s.is_empty()))
+                        .find_map(|n| {
+                            n.name
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty() && is_registrant(s))
+                        })
                         .map(str::to_string)
                 })
             });
@@ -355,10 +375,20 @@ fn build_entities(body: &BwResp, domain: &str, scan_id: &str) -> ModuleResult {
                 // #351 removed from `cert_intel`, `crtsh`, `ip_registry` and
                 // `doh_resolver`. This module reads the same class of data from
                 // a different provider, so it takes the same gate: the shared
-                // `is_infrastructure_email` (role local-part OR known infra
-                // mail domain, with freemail explicitly exempted so a personal
-                // mailbox is never mislabelled infrastructure).
-                .filter(|e| !crate::util::domains::is_infrastructure_email(e))
+                // `is_proxy_registrant`, which is `is_infrastructure_email`
+                // (role local-part OR known infra mail domain, with freemail
+                // explicitly exempted so a personal mailbox is never
+                // mislabelled infrastructure) PLUS the WHOIS privacy-placeholder
+                // brand check the Organisation arm above also takes.
+                //
+                // The placeholder half is not redundant here: the proxy brands
+                // are deliberately absent from `INFRA_PROVIDER_ROOTS` /
+                // `INFRA_MAIL_ONLY` (which hold CDN, cloud and registrar
+                // control-plane roots), so a proxy mailbox with a
+                // personal-looking local part — `jane.doe@domainsbyproxy.com` —
+                // passed `is_infrastructure_email` on its own and was emitted
+                // as the subject's own mail. (REQ-BUILTWITH-001.)
+                .filter(|e| !crate::util::domains::is_proxy_registrant(e, true))
                 .collect();
             seen.sort();
             seen.dedup();

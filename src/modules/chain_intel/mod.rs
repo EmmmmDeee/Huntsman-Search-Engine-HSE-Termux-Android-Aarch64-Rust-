@@ -57,7 +57,13 @@ pub struct ChainIntel;
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct EsploraAddress {
-    chain_stats: EsploraStats,
+    /// REQ-CHAININTEL-001: `Option`, not a defaulted `EsploraStats`, so an
+    /// unexpected 200 body (a rate-limit / "not found" JSON, a WAF page) that
+    /// carries no `chain_stats` decodes to `None` and fails closed in
+    /// [`esplora_enrichment`] rather than silently defaulting to a zero-balance,
+    /// zero-tx "dormant" verdict. A genuinely dormant address still returns a
+    /// real `chain_stats` object full of zeros → `Some`.
+    chain_stats: Option<EsploraStats>,
     mempool_stats: EsploraStats,
 }
 
@@ -132,6 +138,12 @@ struct SolBalanceResult {
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct BlockcypherBalance {
+    /// REQ-CHAININTEL-001: the queried address BlockCypher echoes back in every
+    /// real balance response. Its absence means the 200 body was not a balance
+    /// response (a `{"error":…}` body, a WAF page) — [`blockcypher_enrichment`]
+    /// fails closed on it rather than defaulting `balance`/`n_tx` to a "dormant"
+    /// zero. A genuinely dormant address still echoes its own `address`.
+    address: Option<String>,
     balance: u64,
     total_received: u64,
     n_tx: u64,
@@ -139,6 +151,7 @@ struct BlockcypherBalance {
 
 /// Normalised enrichment for any chain — only the fields the source genuinely
 /// provides are `Some`, so the evidence never fabricates a value.
+#[derive(Debug)]
 struct Enrichment {
     unit: &'static str,
     decimals: u32,
@@ -403,20 +416,39 @@ async fn enrich_esplora(
 ) -> Result<Option<Enrichment>> {
     let url = format!("{api_base}/address/{addr}");
     let a: EsploraAddress = fetch_json(&ctx.http, SRC, &url).await?;
-    let received = a.chain_stats.funded_txo_sum.max(0) as u128;
-    let spent = a.chain_stats.spent_txo_sum.max(0) as u128;
-    Ok(Some(Enrichment {
+    esplora_enrichment(a, unit).map(Some)
+}
+
+/// Build BTC/LTC enrichment from a decoded Esplora address response, failing
+/// **closed** when the body carried no `chain_stats` object — i.e. it was not an
+/// address-stats response at all (a rate-limit / "not found" JSON, a WAF page),
+/// merely a JSON object that `EsploraAddress`'s defaults would otherwise
+/// collapse to a zero-balance, zero-tx "dormant" verdict at
+/// `confidence::HIGH_PLUSPLUS`. A genuinely dormant address returns a real
+/// `chain_stats` full of zeros, which stays a legitimate "dormant" reading. Pure
+/// (no I/O), so both paths are unit-tested without a network (REQ-CHAININTEL-001).
+fn esplora_enrichment(a: EsploraAddress, unit: &'static str) -> Result<Enrichment> {
+    let Some(chain_stats) = a.chain_stats else {
+        return Err(Error::module(
+            SRC,
+            "esplora address response carried no chain_stats — an error / WAF / \
+             wrong-shape 200 body, not a dormant address",
+        ));
+    };
+    let received = chain_stats.funded_txo_sum.max(0) as u128;
+    let spent = chain_stats.spent_txo_sum.max(0) as u128;
+    Ok(Enrichment {
         unit,
         decimals: 8,
         balance: received.saturating_sub(spent),
         received: Some(received),
-        tx_count: Some(a.chain_stats.tx_count + a.mempool_stats.tx_count),
+        tx_count: Some(chain_stats.tx_count + a.mempool_stats.tx_count),
         ens: None,
         is_scam: None,
         reputation: None,
         known_name: None,
         public_tags: Vec::new(),
-    }))
+    })
 }
 
 /// EVM (ETH) enrichment via Blockscout. `Err` on a genuine failure of the
@@ -533,9 +565,39 @@ async fn enrich_sol_at(ctx: &ModuleContext, addr: &str, url: &str) -> Result<Opt
 /// Dogecoin enrichment via BlockCypher (see module doc for why this source,
 /// not `dogechain.info`, was chosen).
 async fn enrich_doge(ctx: &ModuleContext, addr: &str) -> Result<Option<Enrichment>> {
-    let url = format!("https://api.blockcypher.com/v1/doge/main/addrs/{addr}/balance");
+    enrich_doge_at(ctx, addr, "https://api.blockcypher.com").await
+}
+
+/// `enrich_doge`'s implementation, parameterized on the BlockCypher base URL so a
+/// local server can exercise the failure contract in tests (mirrors
+/// [`enrich_sol_at`] and [`enrich_esplora`]'s parameterized base).
+async fn enrich_doge_at(ctx: &ModuleContext, addr: &str, base: &str) -> Result<Option<Enrichment>> {
+    let url = format!("{base}/v1/doge/main/addrs/{addr}/balance");
     let b: BlockcypherBalance = fetch_json(&ctx.http, SRC, &url).await?;
-    Ok(Some(Enrichment {
+    blockcypher_enrichment(b).map(Some)
+}
+
+/// Build DOGE enrichment from a decoded BlockCypher balance response, failing
+/// **closed** when the body echoed no `address` — i.e. it was not a balance
+/// response (a `{"error":…}` body, a WAF page), merely a JSON object that
+/// `BlockcypherBalance`'s defaults would otherwise collapse to a zero-balance,
+/// zero-tx "dormant" verdict at `confidence::HIGH_PLUSPLUS`. A genuinely dormant
+/// address still echoes its own `address`. Pure (no I/O), so both paths are
+/// unit-tested without a network (REQ-CHAININTEL-001).
+fn blockcypher_enrichment(b: BlockcypherBalance) -> Result<Enrichment> {
+    let has_address = b
+        .address
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty());
+    if !has_address {
+        return Err(Error::module(
+            SRC,
+            "blockcypher balance response echoed no address — an error / WAF / \
+             wrong-shape 200 body, not a dormant address",
+        ));
+    }
+    Ok(Enrichment {
         unit: "DOGE",
         decimals: 8,
         balance: u128::from(b.balance),
@@ -546,7 +608,7 @@ async fn enrich_doge(ctx: &ModuleContext, addr: &str) -> Result<Option<Enrichmen
         reputation: None,
         known_name: None,
         public_tags: Vec::new(),
-    }))
+    })
 }
 
 #[cfg(test)]

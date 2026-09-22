@@ -42,8 +42,8 @@ impl Module for SocialLocation {
         if t.kind != TargetKind::Url {
             return false;
         }
-        let lower = t.value.to_lowercase();
-        SUPPORTED_HOSTS.iter().any(|h| lower.contains(h))
+        let host = crate::util::url_util::host_from_url(&t.value).unwrap_or_default();
+        is_supported_host(&host)
     }
 
     /// `accepts()` value-gates (the URL host must be a supported social site),
@@ -164,8 +164,19 @@ impl Module for SocialLocation {
     }
 }
 
+/// True when the host is a known supported social platform for location extraction.
+/// Matches exact hosts and subdomains (e.g., both github.com and www.github.com),
+/// but rejects lookalike domains like github.com.evil.com. REQ-SOCIALLOC-001.
+fn is_supported_host(host: &str) -> bool {
+    let h = host.trim().to_ascii_lowercase();
+    SUPPORTED_HOSTS
+        .iter()
+        .any(|s| h == *s || h.ends_with(&format!(".{s}")))
+}
+
 /// True when the host is an AU real estate / professional-profile portal whose
 /// location data reflects a workplace address rather than a personal bio field.
+/// Matches exact hosts and subdomains but rejects lookalikes. REQ-SOCIALLOC-001.
 fn is_professional_host(host: &str) -> bool {
     const PROFESSIONAL: &[&str] = &[
         "ratemyagent.com.au",
@@ -175,7 +186,10 @@ fn is_professional_host(host: &str) -> bool {
         "domain.com.au",
         "linkedin.com",
     ];
-    PROFESSIONAL.iter().any(|h| host.contains(h))
+    let h = host.trim().to_ascii_lowercase();
+    PROFESSIONAL
+        .iter()
+        .any(|s| h == *s || h.ends_with(&format!(".{s}")))
 }
 
 /// Hosts where a self-reported or professional location can be extracted.

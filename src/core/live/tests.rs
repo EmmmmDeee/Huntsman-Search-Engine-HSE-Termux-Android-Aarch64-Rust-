@@ -392,3 +392,249 @@ use super::*;
         );
         fwd.abort();
     }
+
+// ─ REQ-SCANOPTS-002: the live seam REQ-SCANOPTS-001's fix did not reach ─
+
+/// The defect at its deserialisation layer, on BOTH of a live request's
+/// absent-tolerant option objects. REQ-SCANOPTS-001 closed the scan seam and
+/// left this one open, although `LiveRequest.options` carries the very same
+/// `ScanOptions`.
+#[test]
+fn a_misspelled_live_option_is_reported_not_defaulted() {
+    use crate::core::live::{LiveRequest, known_live_option_keys};
+    use crate::core::scan::{known_option_keys, unknown_option_keys};
+
+    // CONTROL: spelled correctly, both controls land and neither is flagged.
+    let ok: LiveRequest = serde_json::from_str(
+        r#"{"value":"cloudflare.com","options":{"passive_only":true},"live":{"iterations":3}}"#,
+    )
+    .expect("should succeed");
+    assert!(ok.options.passive_only, "control: passive_only applies");
+    assert_eq!(ok.live.iterations, Some(3), "control: iterations applies");
+    assert!(
+        unknown_option_keys(&serde_json::json!({ "passive_only": true })).is_empty(),
+        "a key ScanOptions defines must never be reported as unknown"
+    );
+    assert!(
+        crate::core::wire_keys::unknown_keys(
+            &serde_json::json!({ "iterations": 3 }),
+            &known_live_option_keys()
+        )
+        .is_empty(),
+        "a key LiveOptions defines must never be reported as unknown"
+    );
+
+    // DEFECT A — the scan-scope control, on the seam the first fix missed.
+    assert_eq!(
+        unknown_option_keys(&serde_json::json!({ "passive-only": true })),
+        vec!["passive-only".to_string()],
+        "a misspelled passive_only must be REPORTED on the live seam too"
+    );
+
+    // DEFECT B — a bounded session silently becomes unbounded. `iterations:
+    // None` is documented as "run forever", so this default is not merely a
+    // lost preference.
+    assert_eq!(
+        crate::core::wire_keys::unknown_keys(
+            &serde_json::json!({ "iteration": 3 }),
+            &known_live_option_keys()
+        ),
+        vec!["iteration".to_string()],
+        "a misspelled iterations must be REPORTED, never left to run forever"
+    );
+
+    // The two key sets are genuinely different, so checking one object against
+    // the other's set would pass this file's tests while rejecting valid input.
+    assert!(
+        known_option_keys().is_disjoint(&known_live_option_keys()),
+        "scan and live option names must not overlap, or a cross-wired check \
+         would be invisible here"
+    );
+}
+
+/// Every `LiveOptions` default that is the PERMISSIVE value, so every one whose
+/// silent loss widens what the session does.
+#[test]
+fn every_permissive_live_default_is_covered() {
+    let known = crate::core::live::known_live_option_keys();
+    for key in ["iterations", "radar", "interval_secs"] {
+        assert!(
+            known.contains(key),
+            "{key} is a live-session control and must be a recognised key"
+        );
+        let mut obj = serde_json::Map::new();
+        obj.insert(format!("{key}_x"), serde_json::Value::Bool(true));
+        assert_eq!(
+            crate::core::wire_keys::unknown_keys(&serde_json::Value::Object(obj), &known).len(),
+            1,
+            "a misspelling of {key} must be reported"
+        );
+    }
+}
+
+/// The `LiveOptions` half of `derived_key_set_matches_the_struct_fields`: the
+/// derived set is the type's own, so it must equal the type's declared fields.
+/// A field gaining `skip_serializing_if` would drop out and start being
+/// rejected as unknown — a VALID request refused.
+#[test]
+fn derived_live_key_set_matches_the_struct_fields() {
+    let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/core/live/mod.rs"));
+    let start = src
+        .find("pub struct LiveOptions {")
+        .expect("LiveOptions must be declared in live/mod.rs");
+    let body = &src[start..];
+    let end = body.find("\n}").expect("struct body must close");
+    let declared: std::collections::BTreeSet<String> = body[..end]
+        .lines()
+        .skip(1)
+        .filter_map(|l| {
+            let l = l.trim();
+            l.starts_with("pub")
+                .then(|| l.split_whitespace().nth(1))
+                .flatten()
+                .and_then(|f| f.split(':').next())
+                .map(str::to_string)
+        })
+        .collect();
+    assert!(
+        declared.len() >= 3,
+        "field extraction found only {} fields — the parse, not the struct, changed",
+        declared.len()
+    );
+    assert_eq!(
+        crate::core::live::known_live_option_keys(),
+        declared,
+        "the serde key set and the declared fields have diverged"
+    );
+}
+
+// ─ REQ-SCANSTATUS-001: a live iteration lives in the ONE in-flight registry ─
+
+/// Poll `probe` every 20 ms for up to 10 s; `None` on timeout.
+async fn settle<T>(mut probe: impl FnMut() -> Option<T>) -> Option<T> {
+    for _ in 0..500 {
+        if let Some(v) = probe() {
+            return Some(v);
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    None
+}
+
+/// The registry entry a live iteration holds is keyed by its SCAN id, carries
+/// the ITERATION's own handle, and lasts exactly as long as the engine runs
+/// the iteration: present while the row reads `running`, gone once the engine
+/// has written the final status. Cancelling through that entry aborts the one
+/// iteration and the session carries on to its next tick — the per-iteration
+/// semantics the wall-time watchdog already has, and the proof the entry is
+/// not the session's handle.
+#[tokio::test]
+async fn a_live_iteration_holds_its_scan_id_in_the_shared_registry_only_while_the_engine_runs_it()
+{
+    use crate::core::cancel::new_cancel_registry;
+    use crate::core::module::test_support::Gated;
+    use crate::core::scan::ScanStatus;
+
+    let (module, gate) = Gated::pair();
+    let store: Arc<dyn crate::core::port::StoragePort> =
+        Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"));
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = Arc::new(ScanEngine::new(
+        vec![module],
+        Arc::clone(&store),
+        bus.clone(),
+    ));
+    let in_flight = new_cancel_registry();
+    let live = LiveScanner::new(
+        engine,
+        bus,
+        reqwest::Client::new(),
+        Default::default(),
+        Arc::clone(&in_flight),
+    );
+
+    let live_id = live.start(
+        Target::new(TargetKind::Domain, "cloudflare.com"),
+        ScanOptions::default(),
+        LiveOptions {
+            interval_secs: 1,
+            iterations: Some(2),
+            radar: false,
+        },
+    );
+
+    // DURING: the first iteration's row reads `running` and its id is registered.
+    let first = settle(|| {
+        store
+            .list_scans(10)
+            .ok()?
+            .into_iter()
+            .find(|s| s.status == ScanStatus::Running)
+            .map(|s| s.id)
+    })
+    .await
+    .expect("the first iteration reaches `running` while the module is gated");
+    assert!(live.session_owns_scan(&live_id, &first));
+    assert!(
+        in_flight.lock().contains_key(&first),
+        "DURING: the iteration's scan id is registered while the engine runs it"
+    );
+
+    // Cancel through the registry entry: exactly this iteration aborts…
+    in_flight
+        .lock()
+        .get(&first)
+        .expect("registered")
+        .cancel();
+    let ended = settle(|| {
+        store
+            .get_scan(&first)
+            .ok()
+            .flatten()
+            .filter(|s| s.status != ScanStatus::Running)
+            .map(|s| s.status)
+    })
+    .await
+    .expect("the cancelled iteration reaches a terminal status");
+    assert_eq!(ended, ScanStatus::Aborted);
+    assert!(
+        !in_flight.lock().contains_key(&first),
+        "AFTER: released once the engine returned"
+    );
+
+    // …and the session is still running and starts a second iteration — the
+    // entry was the ITERATION's handle, not the session's.
+    let second = settle(|| {
+        let sess = live.get(&live_id)?;
+        if sess.status != LiveStatus::Running {
+            return None;
+        }
+        sess.scan_ids.iter().find(|id| **id != first).cloned()
+    })
+    .await
+    .expect("the session continues to a second iteration after a per-iteration cancel");
+    settle(|| in_flight.lock().contains_key(&second).then_some(()))
+        .await
+        .expect("the second iteration registers too");
+
+    // Release the gate: the second iteration completes, the session ends, and
+    // nothing is left registered.
+    gate.add_permits(1);
+    let done = settle(|| {
+        live.get(&live_id)
+            .filter(|s| s.status != LiveStatus::Running)
+            .map(|s| s.status)
+    })
+    .await
+    .expect("the session ends once its last iteration returns");
+    assert_eq!(done, LiveStatus::Completed);
+    assert_eq!(
+        store.get_scan(&second).expect("ok").expect("row").status,
+        ScanStatus::Complete
+    );
+    assert!(
+        in_flight.lock().is_empty(),
+        "nothing in flight once the session has ended: {:?}",
+        in_flight.lock().keys().collect::<Vec<_>>()
+    );
+}

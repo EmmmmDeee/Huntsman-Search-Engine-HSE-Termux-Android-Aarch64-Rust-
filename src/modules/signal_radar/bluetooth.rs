@@ -18,6 +18,7 @@ use crate::core::{
 };
 
 use super::SRC;
+use crate::core::rf::{RadioKind, RfSighting, RfSource};
 
 #[derive(Deserialize)]
 pub(super) struct BtDevice {
@@ -30,7 +31,11 @@ pub(super) struct BtDevice {
 }
 
 /// Parse the JSON array from `termux-bluetooth-scaninfo`.
-pub(super) fn parse_bt_json(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
+pub(super) fn parse_bt_json(
+    stdout: &[u8],
+    scan_id: &str,
+    observed_epoch: Option<i64>,
+) -> Result<ModuleResult> {
     if super::is_blank(stdout) {
         return Ok(ModuleResult::new());
     }
@@ -84,6 +89,28 @@ pub(super) fn parse_bt_json(stdout: &[u8], scan_id: &str) -> Result<ModuleResult
         e.add_evidence(ev);
 
         result.push(e);
+
+        // Per-sighting record (REQ-RADAR-001). `le` is BLE; everything else the
+        // classic-discovery shim reports (`classic`, `dual`, unknown) was
+        // found over BR/EDR and is recorded as classic, with the tool's own
+        // type string kept verbatim in `raw_type` for a later re-derivation.
+        // The name stays absent where the advertiser had none — the entity's
+        // `<unknown>` is display text, not an observation.
+        let radio = if bt_type.eq_ignore_ascii_case("le") {
+            RadioKind::Ble
+        } else {
+            RadioKind::BtClassic
+        };
+        let mut sighting = RfSighting::new(&dev.address, radio, RfSource::BluetoothRadar);
+        sighting.name = dev
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(str::to_string);
+        sighting.raw_type = dev.bt_type.clone();
+        sighting.observed_epoch = observed_epoch;
+        result.push_sighting(sighting);
     }
 
     Ok(result)
@@ -93,7 +120,7 @@ pub(super) fn parse_bt_json(stdout: &[u8], scan_id: &str) -> Result<ModuleResult
 /// scan shim — no root, no raw socket).
 pub(super) async fn scan_bluetooth(scan_id: &str) -> Result<ModuleResult> {
     crate::modules::termux_sensor::read_and_parse(super::Sensor::BluetoothScan, |stdout| {
-        parse_bt_json(stdout, scan_id)
+        parse_bt_json(stdout, scan_id, super::epoch_now())
     })
     .await
 }

@@ -962,12 +962,19 @@ fn runtime_carries_no_ai_ml_inference_dependency() {
 #[test]
 fn coarse_ip_geo_providers_use_the_provider_coord_gate() {
     const COARSE_PROVIDERS: &[&str] = &[
-        "ip_geo",
-        "ipinfo",
+        "censys",
+        "criminal_ip",
+        "geo_intel",
         "ip2location",
-        "ipquery",
+        "ip_geo",
         "ip_whois_geo",
+        "ipinfo",
+        "ipquery",
+        "netlas",
+        "onyphe",
+        "wifi_intel",
         "wigle",
+        "zoomeye",
     ];
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/modules");
     let mut offenders = Vec::new();
@@ -1031,8 +1038,15 @@ fn coarse_ip_geo_providers_use_the_provider_coord_gate() {
         // directly OR by building the entity through `coarse_provider_coords`,
         // which applies that exact gate internally (ipinfo/ip2location/
         // ipquery were consolidated onto the helper).
-        let gated =
-            prod.contains("is_plausible_provider_coord") || prod.contains("coarse_provider_coords");
+        //
+        // REQ-GEOGATE-001: the trailing `(` is load-bearing. Without it a bare
+        // `use crate::util::geo::is_plausible_provider_coord;` left at the top
+        // of a file satisfies this check, so a module whose only CALL was
+        // downgraded to `is_valid_coords` still read as gated — which is
+        // exactly what the falsification found when it downgraded `censys` and
+        // this assertion stayed green.
+        let gated = prod.contains("is_plausible_provider_coord(")
+            || prod.contains("coarse_provider_coords(");
         if !gated {
             offenders.push(*provider);
         }
@@ -1042,6 +1056,89 @@ fn coarse_ip_geo_providers_use_the_provider_coord_gate() {
         "coarse IP/WiFi-geo provider(s) {offenders:?} do not gate coordinates on \
          is_plausible_provider_coord / coarse_provider_coords — a null-island placeholder could become a \
          false geoint fix. Use crate::util::geo::is_plausible_provider_coord."
+    );
+
+    // ── Direction 2: the list must be the WHOLE set, not a subset ──────────
+    //
+    // REQ-GEOGATE-001. This test only ever checked "every module I list gates
+    // its coordinates". Nothing checked the converse, so the list quietly
+    // became a SUBSET: it named six modules while thirteen actually used the
+    // gate, leaving `censys`, `criminal_ip`, `geo_intel`, `netlas`,
+    // `wifi_intel`, `onyphe` and `zoomeye` free to be downgraded to the weak
+    // `is_valid_coords` with nothing noticing. `is_valid_coords`'s own doc
+    // carried the same six names and had drifted the same way.
+    //
+    // Closing the loop makes the constant a REGISTRY rather than a sample: a
+    // new coarse provider that reaches for the gate fails here until it is
+    // declared, and a declared one that drops the gate fails above. Comments
+    // and string literals are blanked by `production_source`, so only a real
+    // call counts in either direction.
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs")
+                && p.file_name().is_some_and(|n| n != "tests.rs")
+            {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(&root, &mut files);
+    files.sort();
+    assert!(
+        files.len() > 100,
+        "the module sweep found only {} files — it is not reading src/modules",
+        files.len()
+    );
+
+    let mut undeclared: Vec<String> = Vec::new();
+    let mut declared_seen: Vec<&str> = Vec::new();
+    for f in &files {
+        let Ok(text) = fs::read_to_string(f) else {
+            continue;
+        };
+        let prod = production_source(&text);
+        if !prod.contains("is_plausible_provider_coord(") && !prod.contains("coarse_provider_coords(")
+        {
+            continue;
+        }
+        // The module name is the first path component below `src/modules`:
+        // `netlas/mod.rs` -> `netlas`, and a flat `cell_local.rs` -> `cell_local`.
+        let rel = f.strip_prefix(&root).unwrap_or(f);
+        let first = rel
+            .components()
+            .next()
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .unwrap_or_default();
+        let module = first.strip_suffix(".rs").unwrap_or(&first).to_string();
+        if let Some(d) = COARSE_PROVIDERS.iter().find(|p| **p == module) {
+            declared_seen.push(d);
+        } else if !undeclared.contains(&module) {
+            undeclared.push(module);
+        }
+    }
+    assert!(
+        undeclared.is_empty(),
+        "module(s) {undeclared:?} call the coarse-provider coordinate gate but are \
+         not in COARSE_PROVIDERS. The list is a REGISTRY, not a sample: a module \
+         missing from it can be downgraded to the weak is_valid_coords and this \
+         test will stay green, which is exactly how it drifted to six of thirteen \
+         (REQ-GEOGATE-001). Add it."
+    );
+    // Vacuity guard: the sweep must have actually matched the declared set,
+    // not passed because it found nothing at all.
+    declared_seen.sort_unstable();
+    declared_seen.dedup();
+    assert_eq!(
+        declared_seen.len(),
+        COARSE_PROVIDERS.len(),
+        "the sweep saw {declared_seen:?} but COARSE_PROVIDERS declares \
+         {COARSE_PROVIDERS:?} — a declared provider was never found by the file \
+         walk, so this direction is asserting less than it appears to"
     );
 }
 

@@ -1070,8 +1070,10 @@ pub(in crate::core::correlator) fn rule_au_107_breach_employer_affiliation(
 /// the analyst had to notice the tag by hand). This rule reports one finding per
 /// flagged identity, at a severity graded by the strongest flag it carries:
 ///   * sanctioned → CRITICAL (a designated party — OFAC/UN/EU/DFAT SDN, …),
-///   * debarred   → HIGH     (barred from public contracting),
-///   * PEP-only   → MEDIUM   (elevated due-diligence signal, not a determination).
+///   * debarred → HIGH (barred from public contracting),
+///   * sanctions-linked → MEDIUM (linked to a designated party — an association,
+///     not a designation; REQ-OPENSANCTIONS-001),
+///   * PEP-only → MEDIUM (elevated due-diligence signal, not a determination).
 ///
 /// Evidentiary care: fires only for a CONFIRMED (candidate-filtered) entity at or
 /// above the producers' definitive-match confidence floor, frames a PEP hit as a
@@ -1093,16 +1095,27 @@ pub(in crate::core::correlator) fn rule_au_114_sanctions_exposure(
         .filter_map(|e| {
             let sanctioned = e.has_tag(tags::SANCTIONED);
             let debarred = e.has_tag(tags::DEBARRED);
+            let sanctions_linked = e.has_tag(tags::SANCTIONS_LINKED);
             let pep = e.has_tag(tags::PEP);
-            if !(sanctioned || debarred || pep) {
+            if !(sanctioned || debarred || sanctions_linked || pep) {
                 return None;
             }
             // Strongest flag sets the severity and the headline; all present
-            // flags are enumerated in the description.
+            // flags are enumerated in the description. `sanctions-linked` is an
+            // association with a designated party (REQ-OPENSANCTIONS-001), NOT a
+            // determination about the subject, so — like the PEP role flag — it
+            // is a Medium due-diligence signal, never the Critical designation
+            // reserved for the literal `sanction` topic.
             let (severity, headline) = if sanctioned {
                 (Severity::Critical, "matches a sanctions designation")
             } else if debarred {
                 (Severity::High, "is debarred from public contracting")
+            } else if sanctions_linked {
+                (
+                    Severity::Medium,
+                    "is linked to a sanctioned party (elevated due diligence — an \
+                     association, not a designation)",
+                )
             } else {
                 (
                     Severity::Medium,
@@ -1115,6 +1128,9 @@ pub(in crate::core::correlator) fn rule_au_114_sanctions_exposure(
             }
             if debarred {
                 flags.push("debarred");
+            }
+            if sanctions_linked {
+                flags.push("sanctions-linked");
             }
             if pep {
                 flags.push("PEP");

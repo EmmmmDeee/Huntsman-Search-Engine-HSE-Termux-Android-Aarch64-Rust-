@@ -77,6 +77,11 @@
   </div>
 </header>
 
+<!-- Raised by API._req when a request gets no answer at all (server down or
+     restarting); lowered by the next request that does. Fixed text, no
+     per-page logic — the one reachability signal every page shares. -->
+<div id="offline-banner" class="offline-banner" role="status" aria-live="polite" style="display:none"></div>
+
 <nav class="navbar" id="mainnav" aria-label="Primary">
   <a class="navlink" id="nav-dash" href="#/dash">
     <i class="glyphicon glyphicon-dashboard" aria-hidden="true"></i><span>Dashboard</span>
@@ -89,6 +94,9 @@
   </a>
   <a class="navlink" id="nav-live" href="#/live">
     <i class="glyphicon glyphicon-record" aria-hidden="true"></i><span>Live</span>
+  </a>
+  <a class="navlink" id="nav-radar" href="#/radar">
+    <i class="glyphicon glyphicon-map-marker" aria-hidden="true"></i><span>Radar</span>
   </a>
 
   <!-- Raises #morepanel on narrow screens; hidden once the panel flows inline. -->

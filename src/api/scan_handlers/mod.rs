@@ -28,9 +28,10 @@ pub use analysis::{
     scan_location, scan_network, scan_relations, scan_snake_svg, scan_stealer_rows,
 };
 pub use core::{
-    plan_preview, radar_history, radar_live, radar_recurring, radar_sweep, scan_auto,
-    scan_auto_plan, scan_auto_sweep, scan_batch, scan_cancel, scan_create, scan_delete,
-    scan_events_history, scan_get, scan_import, scan_list, scan_profiles, scan_rerun,
+    plan_preview, radar_device_track, radar_disruptions, radar_history, radar_live,
+    radar_recurring, radar_signal_track, radar_signals, radar_sweep, scan_auto, scan_auto_plan,
+    scan_auto_sweep, scan_batch, scan_cancel, scan_create, scan_delete, scan_events_history,
+    scan_get, scan_import, scan_list, scan_profiles, scan_rerun,
 };
 pub use diagnostics::{
     scan_audit, scan_benchmark, scan_duplicates, scan_gaps, scan_metrics, scan_pivots,
@@ -69,6 +70,41 @@ pub const MAX_UPLOAD_BYTES: usize = crate::app::import::MAX_IMPORT_BYTES as usiz
 pub const IMPORT_ROUTE_BODY_LIMIT_HEADROOM_BYTES: usize = 1024 * 1024;
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
+
+/// Decode an operator-supplied scan-request body, rejecting any `options` key
+/// `ScanOptions` does not define.
+///
+/// The seam exists because every `ScanOptions` field is absent-tolerant, so a
+/// misspelled key is indistinguishable from an omitted one after
+/// deserialisation — and omission means "no preference", i.e. the DEFAULT. For
+/// `passive_only`, `free_only`, `max_cost_usd`, `modules`, `exclude_modules`
+/// and `category_focus` that default is the *permissive* value, so a typo runs
+/// a wider, more active or more expensive scan than the operator authorised and
+/// returns it as the scan they asked for. This is the same argument
+/// [`build_scan_from_request`] already makes about unknown module *names* one
+/// level down — an unmatched control "runs a scan … and reports it as a
+/// narrowed sweep … the client cannot distinguish from a real one" — applied to
+/// the control's own name.
+///
+/// Rejecting here rather than with `#[serde(deny_unknown_fields)]` is
+/// deliberate: `ScanOptions` is also the persisted form (a `Scan` is stored as
+/// `data_json` and read back), where an unknown key must stay *readable* so an
+/// older binary can still load a newer scan row. Operator input and stored
+/// state are different contracts over one type.
+///
+/// Scope is the `options` object only. `ScanRequest`'s own three keys need no
+/// such check: `value` has no default, so a typo there is already a
+/// deserialisation error, and a dropped `kind` falls back to
+/// [`crate::core::scan::TargetKind::detect`] — the documented unified-scan
+/// behaviour of a request that omits it, not a disabled control.
+pub(super) fn scan_request_from_json(raw: serde_json::Value) -> Result<ScanRequest, String> {
+    super::handlers::reject_unknown_option_keys(
+        &raw,
+        "options",
+        &crate::core::scan::known_option_keys(),
+    )?;
+    serde_json::from_value(raw).map_err(|e| format!("malformed scan request: {e}"))
+}
 
 /// Build a validated, profile-resolved `Scan` (+ its `Target`) from a request,
 /// or a client-facing error message. Shared by `scan_create` and `scan_batch`

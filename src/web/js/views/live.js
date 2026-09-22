@@ -29,9 +29,15 @@ export function openLiveStream(id, label){
   if (host) host.innerHTML = '<div class="text-muted">Waiting for events…</div>';
   if (panel) panel.style.display = '';
   let first = true;
+  const pill = $('#live-stream-state');
   openLiveSse(id, ev => {
     if (first){ if (host) host.innerHTML = ''; first = false; }
     appendLiveLog(ev);
+  }, (state, es) => {
+    if (!pill || !S.liveSse) return;
+    if (state === 'open'){ pill.className = 'label label-info radar-stream-pill'; pill.textContent = 'live'; }
+    else if (es.readyState === 2){ pill.className = 'label label-default radar-stream-pill'; pill.textContent = 'disconnected'; }
+    else { pill.className = 'label label-warning radar-stream-pill'; pill.textContent = 'reconnecting…'; }
   });
 }
 export function closeLiveStream(){
@@ -87,63 +93,20 @@ export function renderLiveSessions(sessions){
       <th class="text-right">Scans</th><th></th></tr></thead>
     <tbody>${rows}</tbody></table></div>`;
 }
-/* Historical review of past radar sweeps — sourced from the persisted scans
-   table (GET /api/v1/radar/history), so it survives a server restart unlike
-   the "Active sessions" table above, which only shows what's still held in
-   memory. This is the surface that lets an operator reconstruct "what was
-   around me" after the fact, even having forgotten the session id. */
-export function renderRadarHistory(sweeps){
-  if (!sweeps.length){
-    return '<div class="empty-state"><h3>No radar sweeps yet</h3>'
-      + '<p>Every sweep the radar button or continuous radar ever queued is listed here, newest '
-      + 'first, once it runs — reviewable later even after a server restart.</p></div>';
-  }
-  const rows = sweeps.map(sw=>{
-    const seed = sw.target && sw.target.kind==='mac_address' ? 'local network' : 'ambient (GPS/RF)';
-    const dur = sw.finished_at && sw.started_at ? (sw.finished_at - sw.started_at) : null;
-    return `<tr>
-      <td>${esc(fmtDate(sw.started_at))}</td>
-      <td>${esc(seed)}</td>
-      <td>${statusPill(sw.status)}</td>
-      <td class="text-right">${dur==null?'<span class="text-muted">—</span>':(dur+'s')}</td>
-      <td class="text-right">${sw.entity_count||0}</td>
-      <td><a href="#/scaninfo?id=${attr(sw.id)}" class="btn btn-default btn-xs" title="Review this sweep's signals"><i class="glyphicon glyphicon-eye-open"></i>&nbsp;Review</a></td>
-    </tr>`;
-  }).join('');
-  return `<div class="table-responsive"><table class="table table-condensed table-striped">
-    <thead><tr><th>When</th><th>Seed</th><th>Status</th><th class="text-right">Duration</th>
-      <th class="text-right">Signals</th><th></th></tr></thead>
-    <tbody>${rows}</tbody></table></div>`;
-}
 export async function renderLive(v){
   const data = await API.liveList();
   const sessions = data.sessions || [];
-  // A history-fetch hiccup must never take down the whole Live view (the
-  // "Active sessions" panel above is the more critical, real-time surface).
-  let sweeps = [];
-  try { sweeps = (await API.radarHistory(50)).sweeps || []; } catch(_){}
   v.innerHTML = `
     <h2>Live Monitor <small class="text-muted">continuous re-scan of a target on an interval</small>
       <div class="pull-right"><button class="btn btn-default btn-sm" onclick="render()" title="Refresh"><i class="glyphicon glyphicon-refresh"></i></button></div>
     </h2>
     <hr style="margin:8px 0 14px 0">
     <div class="panel panel-default" style="border-color:var(--accent)">
-      <div class="panel-heading" style="background:var(--info-dim)"><b><i class="glyphicon glyphicon-record" style="color:var(--accent)"></i>&nbsp;Live Signal Radar</b>
-        <span class="text-muted" style="font-weight:400">— continuous autonomous enumeration of <i>this device's</i> passive signals</span></div>
-      <div class="panel-body">
-        <p class="text-muted" style="margin:0 0 10px 0;font-size:12px">
-          Continuously enumerates the signals <b>around the device</b> in real time — Wi-Fi access points, Bluetooth, cell towers,
-          the GPS/last-known fix and the local network — using only the on-device passive sensors (<code>signal_radar</code>,
-          <code>device_sensors</code>, <code>wifi_intel</code>, <code>cell_intel</code>, <code>local_net</code>). It requires
-          <b>no input whatsoever</b>: no target, no seed, no interval — just one tap. It is entirely separate from target seed
-          scanning (those sensors run on <i>no other scan</i>), and re-sweeps on a loop so new signals surface as they appear or the
-          device moves.
-        </p>
-        <div class="form-inline">
-          <button id="radar-go" class="btn btn-info"><i class="glyphicon glyphicon-record"></i>&nbsp;Activate Live Radar</button>
-          <span class="text-muted" style="margin-left:8px;font-style:italic">zero input — one tap starts a continuous passive-signal sweep</span>
-          <span id="radar-status" class="text-muted" style="margin-left:10px"></span>
-        </div>
+      <div class="panel-body" style="padding:8px 12px">
+        <i class="glyphicon glyphicon-map-marker" style="color:var(--accent)"></i>&nbsp;<b>Signal Radar</b>
+        <span class="text-muted">— the device's own passive-signal sweep, every reading as a sighting, with the sweep history — is the</span>
+        <a href="#/radar" class="btn btn-info btn-xs"><i class="glyphicon glyphicon-map-marker"></i>&nbsp;Radar page</a>
+        <span class="text-muted">A continuous radar started there is a live session, listed and stoppable below.</span>
       </div>
     </div>
     <div class="panel panel-default">
@@ -170,6 +133,7 @@ export async function renderLive(v){
       <div class="panel-heading" style="background:rgba(91,192,222,0.12)">
         <b><i class="glyphicon glyphicon-transfer" style="color:var(--info)"></i>&nbsp;Live activity</b>
         <span id="live-stream-label" class="text-muted" style="font-weight:400"></span>
+        <span id="live-stream-state" class="label label-default radar-stream-pill">connecting…</span>
         <button class="btn btn-default btn-xs pull-right" onclick="closeLiveStream()" title="Stop tailing this session"><i class="glyphicon glyphicon-stop"></i>&nbsp;Stop</button>
         <button class="btn btn-default btn-xs pull-right" style="margin-right:6px" onclick="saveLiveShown()" title="Save the live activity shown here to a .log file"><i class="glyphicon glyphicon-download-alt"></i>&nbsp;Save shown</button>
       </div>
@@ -180,11 +144,6 @@ export async function renderLive(v){
     <div class="panel panel-default">
       <div class="panel-heading"><b>Active sessions</b> <span class="badge">${sessions.length}</span></div>
       <div id="live-sessions">${renderLiveSessions(sessions)}</div>
-    </div>
-    <div class="panel panel-default">
-      <div class="panel-heading"><b><i class="glyphicon glyphicon-time"></i>&nbsp;Radar history</b> <span class="badge">${sweeps.length}</span>
-        <span class="text-muted" style="font-weight:400">— review past sweeps later, even after a restart</span></div>
-      <div id="radar-history">${renderRadarHistory(sweeps)}</div>
     </div>`;
   $('#live-start').addEventListener('click', async ()=>{
     const kind = $('#live-kind').value;
@@ -201,25 +160,6 @@ export async function renderLive(v){
       if (typeof alertify !== 'undefined') alertify.success('Live session started');
       render();
     } catch(e){ if (typeof alertify !== 'undefined') alertify.error('Start failed: '+e.message); }
-  });
-  // Live Signal Radar — the single, deliberate button that activates the on-device
-  // sensors. Fully autonomous: NO input whatsoever (no target, no seed, no interval).
-  // Starts a CONTINUOUS live radar session, server-configured, that re-enumerates the
-  // device's passive signals in real time. Re-renders so the new session appears in
-  // "Active sessions", where its iteration count climbs live.
-  $('#radar-go').addEventListener('click', async ()=>{
-    const btn = $('#radar-go'), st = $('#radar-status');
-    btn.disabled = true; btn.innerHTML = '<i class="glyphicon glyphicon-refresh glyphicon-spin"></i>&nbsp;Starting…';
-    if (st) st.textContent = 'Activating continuous passive-signal radar…';
-    try {
-      await API.radarLive();
-      toast('Continuous radar started — enumerating passive signals');
-      render();
-    } catch(e){
-      btn.disabled = false; btn.innerHTML = '<i class="glyphicon glyphicon-record"></i>&nbsp;Activate Live Radar';
-      if (st) st.textContent = '';
-      if (typeof alertify !== 'undefined') alertify.error('Radar failed: '+e.message);
-    }
   });
   wireLiveStops();
   wireLiveStreams();

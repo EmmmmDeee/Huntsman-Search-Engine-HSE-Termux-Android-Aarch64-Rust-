@@ -49,6 +49,51 @@
 /// [`canonical_email_mailbox`]).
 pub const GMAIL_DOMAINS: [&str; 2] = ["gmail.com", "googlemail.com"];
 
+/// Domains whose mail service implements RFC 5233 `+tag` subaddressing by
+/// default, so `jane+promo@…` and `jane@…` are provably the SAME mailbox and
+/// may be folded onto one canonical identity.
+///
+/// Deliberately an ALLOWLIST, not a universal rule (REQ-EMAILCANON-001).
+/// Plus-addressing is a per-mail-server opt-in convention, not a property of
+/// the address string: an arbitrary corporate or self-hosted domain may route
+/// `jane+promo@corp.example` to a different mailbox than `jane@corp.example`,
+/// or nowhere at all (Microsoft 365/Exchange Online tenants, for instance,
+/// require an administrator to enable it explicitly). Folding unconditionally
+/// therefore fused two potentially DIFFERENT real people onto one identity —
+/// and [`crate::modules::email_canonical`] emits that fold as a new `Email`
+/// entity above the expansion floor, so the scan actively pivots the whole
+/// email pipeline onto the fabricated link.
+///
+/// The list is intentionally conservative and limited to the providers whose
+/// support is documented and default-on (RULE.md: no assumed contract). An
+/// unrecognised domain keeps its tag: the fail-safe direction is to leave two
+/// addresses SEPARATE when equivalence is unproven, since a missed merge is
+/// recoverable while a false merge silently corrupts an identity. Notably
+/// absent: Yahoo, which offers disposable addresses rather than `+tag`
+/// subaddressing.
+pub const PLUS_ADDRESSING_DOMAINS: &[&str] = &[
+    // Google (both namespace aliases — see `GMAIL_DOMAINS`).
+    "gmail.com",
+    "googlemail.com",
+    // Microsoft consumer accounts.
+    "outlook.com",
+    "hotmail.com",
+    "live.com",
+    "msn.com",
+    // Fastmail.
+    "fastmail.com",
+    "fastmail.fm",
+    // Proton.
+    "proton.me",
+    "protonmail.com",
+    "protonmail.ch",
+    "pm.me",
+    // Apple iCloud.
+    "icloud.com",
+    "me.com",
+    "mac.com",
+];
+
 /// Generational/professional suffix tokens that follow a comma WITHOUT making
 /// it a surname-first separator (`"Smith, Jr."`, `"Smith, PhD"`).
 ///
@@ -72,9 +117,14 @@ pub const GEN_SUFFIXES: &[&str] = &[
 /// * lowercase the whole address (a full Unicode case-fold, matching
 ///   [`crate::core::entity`]'s entity-UID normaliser for `Email`, so a
 ///   non-ASCII capital folds identically at both layers);
-/// * strip a `+tag` suffix from the local-part — plus-addressing routes to the
-///   base mailbox on every major provider (Gmail, Outlook/Microsoft, Fastmail,
-///   Proton, iCloud, …), so it never distinguishes identity;
+/// * strip a `+tag` suffix from the local-part **only for a domain whose mail
+///   service is known to implement RFC 5233 subaddressing**
+///   ([`PLUS_ADDRESSING_DOMAINS`] — Gmail, Outlook/Microsoft, Fastmail,
+///   Proton, iCloud); there the tag provably routes to the base mailbox and so
+///   never distinguishes identity. For any other domain the tag is PRESERVED,
+///   because plus-addressing is a per-server opt-in rather than a property of
+///   the address, and folding it blind fused two potentially different real
+///   people onto one identity (REQ-EMAILCANON-001);
 /// * for **Gmail only** ([`GMAIL_DOMAINS`]) additionally drop **all dots** in
 ///   the local-part and fold the domain to `gmail.com` — Gmail treats
 ///   `j.o.h.n` and `john` as one mailbox.
@@ -92,10 +142,17 @@ pub const GEN_SUFFIXES: &[&str] = &[
 ///     canonical_email_mailbox("Jo.hn+promo@GoogleMail.com").as_deref(),
 ///     Some("john@gmail.com")
 /// );
-/// // Non-Gmail: dots are significant — only the +tag is stripped.
+/// // A known subaddressing provider: dots are significant off-Gmail, but the
+/// // +tag provably routes to the base mailbox, so it is stripped.
+/// assert_eq!(
+///     canonical_email_mailbox("Jane.Doe+promo@Outlook.com").as_deref(),
+///     Some("jane.doe@outlook.com")
+/// );
+/// // An arbitrary domain: subaddressing is NOT guaranteed, so the tag is kept
+/// // rather than fusing two possibly-different mailboxes (REQ-EMAILCANON-001).
 /// assert_eq!(
 ///     canonical_email_mailbox("jane+promo@corp.com").as_deref(),
-///     Some("jane@corp.com")
+///     Some("jane+promo@corp.com")
 /// );
 /// assert_eq!(canonical_email_mailbox("not-an-email"), None);
 /// ```
@@ -108,8 +165,14 @@ pub fn canonical_email_mailbox(value: &str) -> Option<String> {
     }
 
     // `+tag` subaddressing: the base mailbox before the first '+' is the
-    // identity. Universally safe — every major provider routes the base.
-    let base = local.split('+').next().unwrap_or(local);
+    // identity — but ONLY where the provider is known to implement it. See
+    // `PLUS_ADDRESSING_DOMAINS` for why this is an allowlist rather than the
+    // universal rule it used to be (REQ-EMAILCANON-001).
+    let base = if PLUS_ADDRESSING_DOMAINS.contains(&domain) {
+        local.split('+').next().unwrap_or(local)
+    } else {
+        local
+    };
 
     let (local_canon, domain_canon) = if GMAIL_DOMAINS.contains(&domain) {
         // Gmail dot-blindness, and googlemail.com == gmail.com.
@@ -194,10 +257,38 @@ mod tests {
     }
 
     #[test]
-    fn non_gmail_keeps_dots_but_strips_plus_tag() {
+    fn non_gmail_subaddressing_provider_keeps_dots_but_strips_plus_tag() {
+        // The original intent of this test — "off Gmail, dots are significant
+        // but the +tag is not" — is preserved, moved onto a domain where
+        // subaddressing is actually documented. It previously used `corp.com`,
+        // an arbitrary domain, which is what locked in REQ-EMAILCANON-001's
+        // universal-strip bug.
+        assert_eq!(
+            canonical_email_mailbox("jane.smith+promo@outlook.com").as_deref(),
+            Some("jane.smith@outlook.com")
+        );
+    }
+
+    #[test]
+    fn an_arbitrary_domain_keeps_its_plus_tag() {
+        // REQ-EMAILCANON-001. `+tag` subaddressing is a per-mail-server opt-in
+        // (RFC 5233), not a property of the address string, so an arbitrary
+        // corporate or self-hosted domain may route `jane+promo@` to a
+        // different mailbox than `jane@` — or nowhere. Folding it
+        // unconditionally fused two potentially DIFFERENT real people onto one
+        // canonical identity. Dots stay significant here too.
         assert_eq!(
             canonical_email_mailbox("jane.smith+promo@corp.com").as_deref(),
-            Some("jane.smith@corp.com")
+            Some("jane.smith+promo@corp.com")
+        );
+        assert_eq!(
+            canonical_email_mailbox("bob+x@smallbiz.example").as_deref(),
+            Some("bob+x@smallbiz.example")
+        );
+        // ...so the two spellings do NOT collapse onto one key.
+        assert_ne!(
+            canonical_email_mailbox("bob+x@smallbiz.example"),
+            canonical_email_mailbox("bob@smallbiz.example"),
         );
     }
 

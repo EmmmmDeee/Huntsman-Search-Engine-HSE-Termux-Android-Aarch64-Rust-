@@ -708,6 +708,84 @@ use crate::core::confidence;
     }
 
     #[test]
+    fn a_placeholder_in_a_social_field_is_never_minted_as_a_handle() {
+        use serde_json::json;
+        // The shared `is_absent_marker` — `is_null_sentinel ||
+        // is_placeholder_secret` — and applies it to country, location and
+        // organisation. Three social-handle sites never got it:
+        //
+        //   * `instagram` and `linkedin` had NO absence guard at all;
+        //   * the extra-social loop (github/tiktok/reddit/…) guarded with
+        //     `is_redacted_sentinel`, which matches only `UPGRADE_TO_SEE` and
+        //     `REDACTED` — a STRICT SUBSET of `is_absent_marker`, so the SQL-dump NULL
+        //     `\N` and every bracketed form (`[NOT_SAVED]`, `[fail]`, `<empty>`)
+        //     sailed through its `(2..=64)` length window.
+        //
+        // These are not inert nodes: the loop's own comment says each handle
+        // "unlocks username_search / search_engines for free", so a minted
+        // sentinel is dispatched to live per-platform lookups, and any presence
+        // found for that garbage string is attributed to the subject.
+        for sentinel in ["\\N", "[NOT_SAVED]", "UPGRADE_TO_SEE_xxxx"] {
+            for field in ["instagram", "linkedin", "github", "tiktok", "reddit"] {
+                let item = json!({ field: sentinel, "source": "DB1" });
+                let mut seen = HashSet::new();
+                let mut result = ModuleResult::new();
+                extract_breach_entities(
+                    &item,
+                    "unrelated",
+                    "scan",
+                    "oathnet.org:test",
+                    &mut seen,
+                    &mut result,
+                );
+                // `Entity::new`'s Username arm CASE-FOLDS, so the minted value
+                // is `[not_saved]` / `\n`, not the spelling the provider sent.
+                // Comparing case-sensitively made the first cut of this test
+                // pass against a baseline that mints all three — a clean
+                // negative from an assertion that could not observe the
+                // positive is not evidence, so the needle is folded too.
+                let needle = sentinel.trim_start_matches('\\').to_lowercase();
+                let minted: Vec<&Entity> = result
+                    .entities
+                    .iter()
+                    .filter(|e| {
+                        matches!(e.kind, EntityKind::Username | EntityKind::Url)
+                            && e.value.to_lowercase().contains(&needle)
+                    })
+                    .collect();
+                assert!(
+                    minted.is_empty(),
+                    "`{sentinel}` in `{field}` is a provider absence marker, not a handle — \
+                     minting it creates a pivot that is dispatched to live lookups: {minted:?}"
+                );
+            }
+        }
+        // Non-regression: a real handle in each of those fields still mints.
+        // `linkedin` is included: its bare-handle branch prefixes the value
+        // (`linkedin:jordan_m`), which `contains` still sees.
+        for field in ["instagram", "linkedin", "github", "tiktok", "reddit"] {
+            let item = json!({ field: "jordan_m", "source": "DB1" });
+            let mut seen = HashSet::new();
+            let mut result = ModuleResult::new();
+            extract_breach_entities(
+                &item,
+                "unrelated",
+                "scan",
+                "oathnet.org:test",
+                &mut seen,
+                &mut result,
+            );
+            assert!(
+                result
+                    .entities
+                    .iter()
+                    .any(|e| e.kind == EntityKind::Username && e.value.contains("jordan_m")),
+                "a genuine `{field}` handle must still be minted"
+            );
+        }
+    }
+
+    #[test]
     fn a_quote_wrapped_and_a_clean_spelling_of_the_same_telegram_handle_dedup_to_one_entity() {
         use serde_json::json;
         // Regression: `h.to_lowercase()` doesn't strip a wrapping quote (a
@@ -1324,14 +1402,18 @@ use crate::core::confidence;
         assert!(!is_public_ip("1234567")); // not an IP at all
         assert!(!is_public_ip("UPGRADE_TO_SEE"));
 
-        // Digit gate, email structure, redaction sentinel.
+        // Digit gate, email structure.
         assert!(has_min_digits("15551234567", 7));
         assert!(!has_min_digits("UPGRADE_TO_SEE", 7));
         assert!(looks_like_email("jane.doe@example.com"));
         assert!(!looks_like_email("UPGRADE_TO_SEE@x"));
         assert!(!looks_like_email("nobody"));
-        assert!(is_redacted_sentinel("UPGRADE_TO_SEE_FULL"));
-        assert!(!is_redacted_sentinel("realhandle"));
+        // The redaction-sentinel assertions that stood here tested the
+        // now-removed `is_redacted_sentinel` predicate directly. Their coverage
+        // is not lost: `a_placeholder_in_a_social_field_is_never_minted_as_a_handle`
+        // asserts the same `UPGRADE_TO_SEE` rejection — plus the `\N` and
+        // bracketed forms that predicate never caught — through the real
+        // extraction path, which is the boundary that actually matters.
     }
 
     #[test]
@@ -1459,6 +1541,75 @@ use crate::core::confidence;
                 .iter()
                 .any(|e| e.kind == EntityKind::Domain && e.value == "portal.acmebank.com"),
             "stealer url host must not be minted as a Domain"
+        );
+    }
+
+    // ── REQ-OATHNET-002: the hash slot was gated on LENGTH alone ───────────
+
+    /// LOCK. A long capture sentinel in `password_hash` must not mint an
+    /// entity. The entity's VALUE is the hash string, so two unrelated people
+    /// whose rows both carry the same placeholder would mint ONE shared node and
+    /// fuse them — the harm `is_absent_marker`'s own doc calls "a false
+    /// positive, the worst kind for an evidentiary tool", and REQ-DEHASHED-001's
+    /// defect in the hash slot rather than the plaintext one.
+    ///
+    /// Reachability is UNOBSERVED and this test does not pretend otherwise: the
+    /// longest sentinel this repository records is `UPGRADE_TO_SEE_FULL_DATA`
+    /// (24 chars), which the old `ph.len() >= 32` gate already excluded. The
+    /// fixture below is a 36-character variant — structurally possible for a
+    /// provider that appends a URL, never seen in this tree. The gate is now the
+    /// same classification the module already applies to the plaintext
+    /// `password` field, instead of a length coincidence.
+    #[test]
+    fn a_long_capture_sentinel_in_the_hash_slot_mints_nothing() {
+        use serde_json::json;
+        let sentinel = "UPGRADE_TO_SEE@https://example.com/x";
+        assert!(
+            sentinel.len() >= 32,
+            "the fixture must clear the old length-only gate, or this proves nothing \
+             (len {})",
+            sentinel.len()
+        );
+        let item = json!({
+            "email": "a@b.com",
+            "password_hash": sentinel,
+            "source": "TestDB"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&item, "a@b.com", "scan", "oathnet.org:test", &mut seen, &mut result);
+        assert!(
+            !result.entities.iter().any(|e| e.tags.iter().any(|t| t == "password-hash")),
+            "a capture sentinel must not become a password-hash node: {:?}",
+            result.entities.iter().map(|e| (&e.kind, &e.value)).collect::<Vec<_>>()
+        );
+    }
+
+    /// NON-VACUITY CONTROL for the lock above. A real MD5 — exactly 32 hex, the
+    /// narrowest recognised width and so the value closest to the old floor —
+    /// must still mint its node. Without this, the lock could be satisfied by a
+    /// gate that rejects every hash, which would silently delete the module's
+    /// strongest credential-exposure signal.
+    #[test]
+    fn a_real_md5_in_the_hash_slot_still_mints_its_node() {
+        use serde_json::json;
+        let item = json!({
+            "email": "a@b.com",
+            "password_hash": "0123456789abcdef0123456789abcdef",
+            "source": "TestDB"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&item, "a@b.com", "scan", "oathnet.org:test", &mut seen, &mut result);
+        let node = result
+            .entities
+            .iter()
+            .find(|e| e.tags.iter().any(|t| t == "password-hash"))
+            .expect("a real md5 must still be emitted");
+        assert!(
+            node.tags.iter().any(|t| t == "hash:md5"),
+            "and still classified: {:?}",
+            node.tags
         );
     }
 
@@ -1779,5 +1930,107 @@ use crate::core::confidence;
         assert!(
             !r.entities.iter().any(|e| e.kind == EntityKind::Password),
             "…never as a Password"
+        );
+    }
+
+    #[test]
+    fn a_breach_rows_country_becomes_an_address_and_never_a_coordinate() {
+        // REQ-SHODAN-002. This module held a geocoding leg that passed the
+        // breach row's `country` into `util::city_coords`, on the premise —
+        // written into its own comment — of "a country name that happens to
+        // double as a tabulated city". There is no such row: CITIES is a
+        // gazetteer of cities and not one of them is a country, not even a
+        // city-state. The leg could not fire and is gone.
+        //
+        // This pins the boundary of that deletion. The country still becomes an
+        // Address (nothing was lost), and the composed-address leg still carries
+        // the coordinate for a row that has one.
+        use serde_json::json;
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &json!({
+                "email": "sam@example.com",
+                "country": "Australia",
+                "source": "TestDB"
+            }),
+            "sam@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Address && e.value == "Australia"),
+            "the country must still surface as an Address"
+        );
+        assert!(
+            !result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Coordinates),
+            "a bare country must never mint a coordinate"
+        );
+
+        // Control: the composed-address leg is untouched and still geocodes.
+        let mut seen2 = HashSet::new();
+        let mut result2 = ModuleResult::new();
+        extract_breach_entities(
+            &json!({
+                "email": "sam@example.com",
+                "country": "Australia",
+                "city": "Brisbane",
+                "address_street": "12 Smith St",
+                "source": "TestDB"
+            }),
+            "sam@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen2,
+            &mut result2,
+        );
+        assert!(
+            result2
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Coordinates),
+            "a row naming a tabulated city must still earn its coordinate"
+        );
+    }
+
+    /// A SQL dump nulls each column independently, so `full_name` rebuilt from a
+    /// nulled component reaches this extractor as a half-real `"\\N Smith"`. The
+    /// doubled-token rule catches only the fully-null `"\\N \\N"` pair; this file
+    /// defined its own `is_absent` for exactly this class of value (one of three
+    /// identical private copies, since consolidated into
+    /// `core::validation::is_absent_marker`) but never applied it to the name slot.
+    #[test]
+    fn half_null_full_name_is_not_minted_as_person() {
+        use serde_json::json;
+        for name in ["\\N Smith", "Dana \\N", "REDACTED Smith"] {
+            let item = json!({ "full_name": name, "source": "TestDB" });
+            let mut seen = HashSet::new();
+            let mut result = ModuleResult::new();
+            extract_breach_entities(&item, "x@y.com", "scan", "oathnet.org:t", &mut seen, &mut result);
+            assert!(
+                !result.entities.iter().any(|e| e.kind == EntityKind::Person),
+                "{name:?} carries an absence marker and must not mint a Person"
+            );
+        }
+        // Positive control: the real surname "Null" still mints, so the loop
+        // above cannot be passing because the extractor mints nothing at all.
+        let item = json!({ "full_name": "Anna Null", "source": "TestDB" });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&item, "x@y.com", "scan", "oathnet.org:t", &mut seen, &mut result);
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Person && e.value == "Anna Null"),
+            "a genuine name must still mint a Person"
         );
     }

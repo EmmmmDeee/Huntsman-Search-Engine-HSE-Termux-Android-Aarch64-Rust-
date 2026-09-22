@@ -665,3 +665,63 @@ pub(crate) fn default_scan_options() -> ScanOptions {
         ..Default::default()
     }
 }
+
+/// Every option key [`ScanOptions`] defines, as serde spells it on the wire.
+///
+/// Derived from the type's own `Serialize` impl rather than a second list, so a
+/// field added to `ScanOptions` is recognised the moment it exists — the
+/// `unknown_module_names`/`registry()` relationship, one level up. A field that
+/// ever gained `skip_serializing_if` would silently drop out of this set and
+/// start being rejected as unknown; `derived_key_set_matches_the_struct_fields`
+/// is the guard against that.
+#[must_use]
+pub fn known_option_keys() -> std::collections::BTreeSet<String> {
+    crate::core::wire_keys::known_keys::<ScanOptions>()
+}
+
+/// Keys present in an operator-supplied `options` object that [`ScanOptions`]
+/// does not define, sorted and deduplicated.
+///
+/// Every `ScanOptions` field is absent-tolerant — by design, so that omitting a
+/// knob means "no preference" — which is exactly why a *misspelled* knob cannot
+/// be distinguished from an omitted one by deserialisation alone. Left
+/// unchecked, `"passive-only": true` deserialises to `passive_only: false` and
+/// the engine runs the ACTIVE scan the operator explicitly asked it not to,
+/// reporting it as the scan that was requested. The same silent fail-open
+/// applies to `free_only`, `max_cost_usd`, `modules`, `exclude_modules` and
+/// `category_focus` — the scope, spend and legal-authorisation controls.
+///
+/// This is the [`crate::core::scan::ScanRequest`] seam's analogue of
+/// `dep-cooldown.toml`'s `deny_unknown_fields`, which exists for the identical
+/// reason: a typo must fail loudly at parse time instead of leaving the
+/// operator's intended policy unapplied. It is a seam check rather than a serde
+/// attribute because `ScanOptions` is *also* the persisted form — a `Scan` is
+/// stored as `data_json` and read back — and `deny_unknown_fields` there would
+/// make a stored scan carrying a legacy key unreadable.
+///
+/// A non-object value yields no keys: that is a shape error, which
+/// deserialisation itself reports.
+///
+/// ```
+/// use huntsman_search_engine::core::scan::unknown_option_keys;
+///
+/// let typo = serde_json::json!({ "passive-only": true });
+/// assert_eq!(unknown_option_keys(&typo), vec!["passive-only".to_string()]);
+///
+/// // A key the struct really defines is not flagged.
+/// let good = serde_json::json!({ "passive_only": true });
+/// assert!(unknown_option_keys(&good).is_empty());
+/// ```
+#[must_use]
+pub fn unknown_option_keys(options: &serde_json::Value) -> Vec<String> {
+    crate::core::wire_keys::unknown_keys(options, &known_option_keys())
+}
+
+/// The defined option key an unknown one was most likely meant to be, if any.
+///
+/// See [`crate::core::wire_keys::nearest_key`] for why this matches
+/// transcriptions rather than guessing at a fuzzy distance.
+#[must_use]
+pub fn nearest_option_key(unknown: &str) -> Option<String> {
+    crate::core::wire_keys::nearest_key(unknown, &known_option_keys())
+}

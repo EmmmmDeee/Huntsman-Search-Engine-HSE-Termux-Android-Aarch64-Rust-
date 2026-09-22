@@ -56,8 +56,18 @@ use super::*;
         // AWS CloudFront + Fastly are header-name driven.
         assert!(tags_for(&[("x-amz-cf-id", "abc")]).has_tag("aws-cloudfront"));
         assert!(tags_for(&[("x-served-by", "cache-syd")]).has_tag("fastly"));
-        assert!(tags_for(&[("x-cache", "HIT")]).has_tag("fastly"));
-        // CMS fingerprints in any header value.
+        // Inverted (REQ-WEBBANNER-001). This previously read
+        // `assert!(tags_for(&[("x-cache", "HIT")]).has_tag("fastly"));` —
+        // asserting that a bare `x-cache` names Fastly. It does not:
+        // IDENTIFYING_HEADERS' own doc lists `x-cache` as a generic caching
+        // header, and Varnish, CloudFront, Akamai and nginx's proxy cache all
+        // emit it. Naming one vendor from a signal shared by its competitors
+        // is a guess, not a fingerprint.
+        assert!(!tags_for(&[("x-cache", "HIT")]).has_tag("fastly"));
+        // CMS fingerprints in an IDENTIFYING header's value — `x-generator`
+        // here. A value carried by a generic header (a CSP, HSTS, XFO) is no
+        // longer scanned; `a_csp_naming_someone_elses_cdn_is_not_this_sites_stack`
+        // owns that case.
         assert!(tags_for(&[("x-generator", "WordPress 6.5")]).has_tag("wordpress"));
         assert!(tags_for(&[("x-generator", "Drupal 10 (https://drupal.org)")]).has_tag("drupal"));
         // Apache.
@@ -171,4 +181,126 @@ use super::*;
         let e = banner_entity(&t, "1.2.3.4", confidence::HIGH_PLUSPLUS_PLUS, "scan1");
         assert_eq!(e.kind, EntityKind::IpAddress);
         assert_eq!(e.value, "1.2.3.4");
+    }
+
+    /// REQ-WEBBANNER-001. `apply_stack_tags` joined EVERY captured header's
+    /// value into one substring-searched blob, including the three
+    /// `FINGERPRINT_HEADERS` that `IDENTIFYING_HEADERS`' own doc calls "purely
+    /// security-posture / caching headers present on countless unrelated
+    /// stacks [that] confirm nothing distinctive by themselves".
+    ///
+    /// A `content-security-policy` is the pointed case: it ENUMERATES OTHER
+    /// PEOPLE'S DOMAINS by design. Loading a script from `cdnjs.cloudflare.com`
+    /// — routine — put "cloudflare" in the blob and tagged the site as
+    /// Cloudflare-fronted when it may have no CDN at all.
+    ///
+    /// Every generic-header carrier is swept and survivors collected, so a
+    /// partial fix is named rather than masked by the first case.
+    #[test]
+    fn a_csp_naming_someone_elses_cdn_is_not_this_sites_stack() {
+        let mut leaked: Vec<(&str, &str, &str)> = Vec::new();
+        for (header, value, tag) in [
+            // The real-world one: cdnjs is on countless sites' CSP.
+            (
+                "content-security-policy",
+                "default-src 'self'; script-src https://cdnjs.cloudflare.com",
+                "cloudflare",
+            ),
+            (
+                "content-security-policy",
+                "script-src https://s.w.org https://wordpress.example/wp.js",
+                "wordpress",
+            ),
+            (
+                "content-security-policy",
+                "form-action https://legacy.example/login.php",
+                "php",
+            ),
+            (
+                "content-security-policy",
+                "frame-ancestors https://portal.drupal.org",
+                "drupal",
+            ),
+            // The other two generic carriers named in the doc.
+            ("strict-transport-security", "max-age=31536000; nginx", "nginx"),
+            ("x-frame-options", "ALLOW-FROM https://apache.example", "apache"),
+            // `via` and `x-cache` are generic too (same doc sentence).
+            ("via", "1.1 cloudflare", "cloudflare"),
+            ("x-cache", "MISS from nginx-edge", "nginx"),
+        ] {
+            if tags_for(&[(header, value)]).has_tag(tag) {
+                leaked.push((header, value, tag));
+            }
+        }
+        assert!(
+            leaked.is_empty(),
+            "a generic header's value was read as this site's stack: {leaked:?}"
+        );
+    }
+
+    /// Proves the filter keys on WHICH header carried the value rather than
+    /// having disabled the tagging: every identifying carrier still
+    /// fingerprints, including with a misleading generic header beside it.
+    ///
+    /// Note this is not a pure control — it also asserts the adjacent CSP does
+    /// NOT tag, so it fails on the baseline for that reason. The tagging half
+    /// (`nginx`, `php`, `apache`, `wordpress` from identifying headers) is what
+    /// passes on both sides; the always-green controls are the pre-existing
+    /// `apply_stack_tags_*` and `banner_confidence_*` tests, which the fix
+    /// leaves untouched.
+    #[test]
+    fn an_identifying_header_still_fingerprints_beside_a_noisy_generic_one() {
+        let e = tags_for(&[
+            ("server", "nginx/1.24.0"),
+            // A CSP naming a competitor must not add its tag…
+            (
+                "content-security-policy",
+                "script-src https://cdnjs.cloudflare.com",
+            ),
+        ]);
+        assert!(e.has_tag("nginx"), "the real Server banner must still tag");
+        assert!(
+            !e.has_tag("cloudflare"),
+            "the CSP's third-party domain must not tag"
+        );
+        // And every identifying carrier keeps working on its own.
+        assert!(tags_for(&[("x-powered-by", "PHP/8.1.0")]).has_tag("php"));
+        assert!(tags_for(&[("server", "Apache/2.4.52")]).has_tag("apache"));
+        assert!(tags_for(&[("x-generator", "WordPress 6.5")]).has_tag("wordpress"));
+    }
+
+    /// REQ-WEBBANNER-001, the transport half. Both schemes' failures were
+    /// discarded by `let Ok(resp) = … else { continue; }` and the loop fell
+    /// through to `Ok(empty)` — so "unreachable / TLS failed / refused" was
+    /// indistinguishable from "answered, published no fingerprint headers".
+    /// The second is a real negative finding; the first is no observation at
+    /// all, and banking it as clean hides a dead host from the breaker, the
+    /// doctor and the live-drift sweep.
+    ///
+    /// Driven against a CLOSED LOCAL PORT: a bound-then-dropped listener gives
+    /// a deterministic connection-refused with no DNS and no external network,
+    /// so this runs in CI rather than being ignored.
+    #[tokio::test]
+    async fn both_transports_failing_is_not_a_clean_negative() {
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+            let p = l.local_addr().expect("local addr").port();
+            drop(l); // closed: every connect is refused immediately
+            p
+        };
+        let (bus, _rx) = tokio::sync::broadcast::channel(1);
+        let ctx = ModuleContext {
+            scan_id: "t".into(),
+            bus,
+            http: reqwest::Client::new(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+        let target = Target::new(TargetKind::Url, format!("http://127.0.0.1:{port}/"));
+        let r = WebserverBanner.process(&target, &ctx).await;
+        assert!(
+            r.is_err(),
+            "both transports refused must surface as an error, got {:?}",
+            r.map(|ok| ok.entities.len())
+        );
     }

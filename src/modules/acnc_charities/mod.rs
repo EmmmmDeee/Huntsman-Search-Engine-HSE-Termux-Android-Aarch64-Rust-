@@ -139,7 +139,11 @@ impl Module for AcncCharities {
         let query = target.value.trim();
         // A 1-2 char query would match noise across the whole register.
         if query.len() < 3 {
-            return Ok(ModuleResult::new());
+            return Err(crate::core::error::Error::query_too_weak(
+                crate::core::event::SkipClass::Scoped,
+                query,
+                "a 1-2 character query matches noise across the whole charities register",
+            ));
         }
 
         // The shared helper folds the fetch and the CKAN application-error check

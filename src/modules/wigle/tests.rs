@@ -1550,3 +1550,209 @@ async fn one_bssid_dispatch_is_billed_for_every_corpus_it_probes() {
 
     BSSID_BUDGET.reset_scan();
 }
+
+/// A `Network` carrying only the fields these two tests exercise.
+fn tri_net(ssid: &str, tri: Option<(f64, f64)>) -> Network {
+    Network {
+        ssid: Some(ssid.into()),
+        netid: Some("AA:BB:CC:DD:EE:FF".into()),
+        encryption: None,
+        lastupdt: None,
+        trilat: tri.map(|t| t.0),
+        trilong: tri.map(|t| t.1),
+        city: None,
+        region: None,
+        country: None,
+        postalcode: None,
+    }
+}
+
+/// REQ-WIGLE-001. WiGLE's no-fix placeholder is not `(0,0)` — it is the
+/// near-null-island JITTER BAND just outside it, which `is_valid_coords`
+/// accepts and `is_plausible_provider_coord` exists to reject. This module
+/// gated two of its four `trilat`/`trilong` sites with the strict check and two
+/// with the weak one, on the same provider's same fields.
+///
+/// `wifi_ap_entities`'s own doc comment promises that "a record with no usable
+/// position ... yields no phantom `Coordinates` node". Under the weak gate a
+/// placeholder WAS a usable position, so the phantom node it promises not to
+/// emit was emitted — a first-class `geoint` Coordinates for an access point.
+#[test]
+fn an_ap_in_the_null_island_jitter_band_yields_no_phantom_position() {
+    let (qlat, qlon) = (-27.0, 153.0);
+    let results = vec![tri_net("band", Some((0.001, 0.001)))];
+    let ents = wifi_ap_entities(&results, qlat, qlon, "-27.0,153.0", "scan");
+
+    let coords: Vec<&Entity> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .collect();
+    assert!(
+        coords.is_empty(),
+        "a jitter-band placeholder is not an AP position, got {:?}",
+        coords.iter().map(|e| &e.value).collect::<Vec<_>>()
+    );
+
+    // The control, and it passes on the baseline: the BSSID pivot itself is
+    // still emitted. Rejecting the POSITION must not drop the access point.
+    assert!(
+        ents.iter().any(|e| e.kind == EntityKind::MacAddress),
+        "the BSSID pivot survives — only its placeholder position is refused"
+    );
+}
+
+/// REQ-WIGLE-001, the other weak site. A jitter-band tower passed
+/// `is_valid_coords`, entered the "top-3 tower positions closest to target"
+/// list, and was ranked by a distance computed from a placeholder.
+#[test]
+fn a_jitter_band_tower_is_not_a_top_three_position() {
+    let resp = Resp {
+        success: Some(true),
+        result_count: Some(2),
+        total_results: Some(2),
+        results: vec![
+            tri_net("RealCo Network", Some((-27.4766, 153.0280))),
+            tri_net("RealCo Network", Some((0.001, 0.001))),
+        ],
+    };
+    let mut r = ModuleResult::new();
+    extract_cell_intel(&resp, "-27.5,153.0", "test-scan", &mut r);
+
+    let coords: Vec<&str> = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        !coords.iter().any(|v| v.starts_with("0.0010")),
+        "a jitter-band placeholder is not a tower position, got {coords:?}"
+    );
+    // Not vacuous: the real tower beside it still comes through, so the gate
+    // rejects the placeholder rather than the whole list.
+    assert_eq!(
+        coords.len(),
+        1,
+        "the real tower position survives, got {coords:?}"
+    );
+}
+
+/// REQ-GEOGATE-001 / REQ-WIGLE-001. `a_jitter_band_tower_is_not_a_top_three_position`
+/// locks the jitter-band gate at ONE of `emit.rs`'s three `trilat`/`trilong`
+/// sites — the AP-ranking closure. Downgrading either of the other two to the
+/// weak `is_valid_coords` left the whole 52-test module green, so the fix
+/// REQ-WIGLE-001 shipped could be reverted at two of its three sites without
+/// anything noticing. These lock the two that were unguarded.
+///
+/// Both emitters are pure, so the assertion is on the entity list itself: a
+/// `0.001,0.001` placeholder must never become a `Coordinates` entity, and a
+/// real fix in the same call must still come through (so the test cannot pass
+/// by emitting nothing).
+#[test]
+fn emit_bssid_entities_never_mints_a_jitter_band_placeholder() {
+    let placeholder = tri_net("JitterCo", Some((0.001, 0.001)));
+    let r = emit_bssid_entities(
+        "AA:BB:CC:DD:EE:FF",
+        NetworkKind::Wifi,
+        &[placeholder],
+        "test",
+    );
+    let coords: Vec<&str> = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        coords.is_empty(),
+        "REQ-WIGLE-001: emit_bssid_entities minted a Coordinates entity from \
+         WiGLE's near-null-island no-fix placeholder: {coords:?}. This site is \
+         on the weak is_valid_coords, not is_plausible_provider_coord."
+    );
+    // Not vacuous: the identical call with a real fix DOES emit one.
+    let real = tri_net("RealCo", Some((-27.4766, 153.0166)));
+    let r = emit_bssid_entities("AA:BB:CC:DD:EE:FF", NetworkKind::Wifi, &[real], "test");
+    assert_eq!(
+        r.entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Coordinates)
+            .count(),
+        1,
+        "a real fix must still be emitted — otherwise the assertion above \
+         passes for the wrong reason"
+    );
+}
+
+/// REQ-GEOGATE-001. The second unguarded site: the per-network coordinate emit
+/// inside `emit_ssid_entities`. Same shape, same provider, same placeholder.
+#[test]
+fn emit_ssid_entities_never_mints_a_jitter_band_placeholder() {
+    let results = vec![
+        tri_net("SharedSSID", Some((0.001, 0.001))),
+        tri_net("SharedSSID", Some((-27.4766, 153.0166))),
+    ];
+    let r = emit_ssid_entities("SharedSSID", &results, "test");
+    let coords: Vec<&str> = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        !coords.iter().any(|v| v.starts_with("0.0010")),
+        "REQ-WIGLE-001: emit_ssid_entities minted WiGLE's near-null-island \
+         no-fix placeholder as a Coordinates entity: {coords:?}"
+    );
+    // Not vacuous: the real fix in the same batch came through.
+    assert_eq!(
+        coords.len(),
+        1,
+        "exactly the real fix should survive, got {coords:?}"
+    );
+}
+
+/// REQ-GEOGATE-001. `emit_bssid_entities` bailed on a missing `trilat` but
+/// substituted `unwrap_or(0.0)` for a missing `trilong`. The old cross-shaped
+/// gate masked it — a longitude of `0.0` always fell in the rejected strip —
+/// so correcting the gate to the Null Island square would have turned a
+/// half-coordinate into a first-class fix on the prime meridian for a network
+/// WiGLE never reported a longitude for. A missing component is not zero.
+///
+/// The second half of this test is the reason the check sits at the coordinate
+/// site rather than beside the `trilat` bail: the Address is built from
+/// `city`/`region`/`country` and has nothing to do with coordinates, so an
+/// early return would have discarded real data to fix a coordinate defect.
+#[test]
+fn emit_bssid_entities_never_fabricates_a_missing_longitude() {
+    let mut half = tri_net("HalfCo", Some((51.4779, 0.0)));
+    half.trilong = None; // WiGLE gave a latitude and no longitude.
+    half.city = Some("Brisbane".into());
+    half.region = Some("QLD".into());
+    half.country = Some("AU".into());
+    let r = emit_bssid_entities("AA:BB:CC:DD:EE:FF", NetworkKind::Wifi, &[half], "test");
+    let coords: Vec<&str> = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        coords.is_empty(),
+        "REQ-GEOGATE-001: a network with NO longitude produced a coordinate \
+         {coords:?} — the missing component was defaulted to 0.0 and shipped \
+         as a position on the prime meridian."
+    );
+    // The Address does not depend on the coordinate and must survive.
+    let addrs: Vec<&str> = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert_eq!(
+        addrs,
+        vec!["Brisbane, QLD, AU"],
+        "the missing-longitude guard must not cost the Address, which is built \
+         from city/region/country and never touches a coordinate"
+    );
+}

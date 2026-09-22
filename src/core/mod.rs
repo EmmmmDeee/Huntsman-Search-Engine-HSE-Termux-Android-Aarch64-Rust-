@@ -48,6 +48,7 @@ pub mod gexf;
 pub mod graph;
 pub mod intelligence;
 pub mod leads;
+pub mod link;
 pub mod live;
 pub mod metrics;
 pub mod module;
@@ -68,6 +69,7 @@ pub mod roi;
 pub mod scan;
 pub mod snake_graph;
 pub mod stealer_row;
+pub mod wire_keys;
 /// Re-export of `hse-core`'s `tags` module (moved alongside `core::entity` —
 /// see that re-export's comment above) so `crate::core::tags::*` call sites
 /// keep resolving unchanged.

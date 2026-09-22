@@ -50,14 +50,34 @@ fn non_gmail_address_keeps_its_dots_so_dotted_pair_does_not_group() {
 }
 
 #[test]
-fn non_gmail_plus_tag_is_stripped_so_those_group() {
-    // `+tag` IS stripped everywhere (widely-supported subaddressing), so two
-    // non-Gmail addresses differing only by a tag DO group — dots stay intact.
+fn non_gmail_subaddressing_provider_plus_tag_is_stripped_so_those_group() {
+    // `+tag` is stripped for a provider that documents subaddressing, so two
+    // of its addresses differing only by a tag DO group — dots stay intact.
+    // This test previously used `corp.com` and asserted the tag is "stripped
+    // everywhere", which is what locked in REQ-EMAILCANON-001: subaddressing
+    // is a per-mail-server opt-in, not a property of the address string. Its
+    // real intent (off-Gmail: tag insignificant, dots significant) is kept,
+    // moved onto a domain where that is actually true.
+    let a = ent(EntityKind::Email, "sales@outlook.com");
+    let b = ent(EntityKind::Email, "sales+promo@outlook.com");
+    let g = only_group(&[a.clone(), b.clone()]);
+    assert_eq!(g.canonical, "sales@outlook.com");
+    assert_eq!(g.members, sorted_uids(&[&a, &b]));
+}
+
+#[test]
+fn an_arbitrary_domains_plus_tag_does_not_group() {
+    // REQ-EMAILCANON-001, at the resolve layer: on a domain with no documented
+    // subaddressing support, `sales@` and `sales+promo@` may be two DIFFERENT
+    // mailboxes, so the resolver must not suggest merging them. A missed merge
+    // is recoverable; a false merge silently fuses two people's identities.
     let a = ent(EntityKind::Email, "sales@corp.com");
     let b = ent(EntityKind::Email, "sales+promo@corp.com");
-    let g = only_group(&[a.clone(), b.clone()]);
-    assert_eq!(g.canonical, "sales@corp.com");
-    assert_eq!(g.members, sorted_uids(&[&a, &b]));
+    assert!(
+        suggest_merges(&[a, b]).is_empty(),
+        "two addresses differing only by a +tag on an arbitrary domain are not \
+         provably the same mailbox and must not be grouped",
+    );
 }
 
 // ── Phone: digit canonicalisation, conservatively ─────────────────────────────

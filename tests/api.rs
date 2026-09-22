@@ -679,6 +679,82 @@ async fn autonomous_sweep_dispatches_without_input() {
     }
 }
 
+#[tokio::test]
+async fn radar_view_is_wired_from_the_nav_to_the_signals_api() {
+    // REQ-RADAR-002: the sighting table's web surface. The nav entry, the hash
+    // route, the served view module and the API path it reads must all be
+    // present in ONE bundle — a view that is served but never linked, or linked
+    // but reading a path nothing serves, is exactly the dormant surface the
+    // radar track forbids.
+    let app = test_app("radar-view");
+    // The nav entry is asserted on the SHELL, not the bundle: `main.js` carries
+    // the string `nav-radar` in its nav map whether or not the link exists, so
+    // a bundle-wide search passed with the link deleted (REQ-RADAR-002's K7
+    // survived exactly that way). The link's own attributes cannot be
+    // satisfied by anything but the link.
+    let (_, shell) = fetch_text(&app, "/").await;
+    for marker in ["id=\"nav-radar\"", "href=\"#/radar\""] {
+        assert!(
+            shell.contains(marker),
+            "SPA shell lacks the radar nav entry {marker}"
+        );
+    }
+    let (html, served) = spa_bundle(&app).await;
+    for marker in [
+        "#/radar",
+        "/api/v1/radar/signals",
+        "renderRadar",
+        // REQ-RADAR-003: the map — the served tile path and the attribution
+        // the tile policy requires.
+        "/api/v1/tiles/",
+        "openstreetmap.org/copyright",
+        "radar-map",
+        // REQ-RADAR-004: the view follows a continuous radar over its own
+        // event stream, draws a trail, and reviews recurrence.
+        "openLiveSse",
+        "scan_complete",
+        "/api/v1/radar/devices/",
+        "radar-recurring",
+        "setTrail",
+        // REQ-RESILIENCE-001: a dropped stream is said and polled around, a
+        // dead server is said once at the top of every page, a server that is
+        // still starting is retried rather than given up on.
+        "radarStreamDown",
+        "reconnecting",
+        "offline-banner",
+        "live-stream-state",
+        // REQ-RESILIENCE-002: the disruption review on the page.
+        "/api/v1/radar/disruptions",
+        "radar-disruptions",
+        "deauth_suspected",
+    ] {
+        assert!(
+            html.contains(marker),
+            "SPA radar surface missing {marker:?}"
+        );
+    }
+    assert!(
+        served.iter().any(|p| p == "/static/js/views/radar.js"),
+        "the radar view module is served and imported: {served:?}"
+    );
+    assert!(
+        served.iter().any(|p| p == "/static/js/radar_map.js"),
+        "the map module is served and imported: {served:?}"
+    );
+    // The tile route answers on this router: the test upstream is a closed
+    // loopback port, so a registered route is a 502 naming it, never the
+    // fallback's 404.
+    let (status, body) = fetch_text(&app, "/api/v1/tiles/3/4/2.png").await;
+    assert_eq!(status, http::StatusCode::BAD_GATEWAY, "{body}");
+    assert!(body.contains("tile upstream unreachable"), "{body}");
+    // And the path the view reads answers on this router — with the handler's
+    // own "nothing recorded" refusal, not the api fallback's 404.
+    let (status, body) = fetch_text(&app, "/api/v1/radar/signals").await;
+    assert_eq!(status, http::StatusCode::NOT_FOUND);
+    assert!(body.contains("no RF sightings recorded yet"), "{body}");
+    assert!(!body.contains("endpoint not found"), "{body}");
+}
+
 // ── 5c. Subject network synthesis ─────────────────────────────────────────
 
 #[tokio::test]
@@ -3527,6 +3603,10 @@ async fn spa_references_only_registered_api_endpoints() {
             "plan" => "/api/v1/plan?value=example.com".to_string(),
             // Cell-tower DB status — ungated GET, safe to probe with no side effects.
             "cells" => "/api/v1/cells/status".to_string(),
+            // Map tiles — the test app's upstream is a closed loopback port, so
+            // the registered route answers 502 (never the fallback 404) without
+            // any test reaching a real tile server.
+            "tiles" => "/api/v1/tiles/3/4/2.png".to_string(),
             // Live capability probe — POST-only (a real network sweep per keyless
             // module), so a bare GET returns 405, not the fallback 404; the
             // assertion only needs "not 404", confirming the route is registered
@@ -3700,6 +3780,21 @@ async fn live_events_endpoint_is_server_sent_events() {
         ct.starts_with("text/event-stream"),
         "live events must stream as SSE, got content-type {ct:?}"
     );
+}
+
+#[tokio::test]
+async fn an_unknown_live_sessions_stream_is_a_404_not_an_open_pipe() {
+    // REQ-RESILIENCE-001: after `hse serve` restarts its in-memory sessions are
+    // gone. A console reconnecting to the stream of a session this process
+    // does not know must learn that at once — `EventSource` does not retry a
+    // non-200 — rather than hold a stream that will never carry anything and
+    // read as "live".
+    let app = test_app("live-sse-unknown");
+    let resp = app
+        .oneshot(get("/api/v1/live/live-never-existed/events"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::NOT_FOUND);
 }
 
 // ── HTTP response compression (mobile-bandwidth) ─────────────────────────────
