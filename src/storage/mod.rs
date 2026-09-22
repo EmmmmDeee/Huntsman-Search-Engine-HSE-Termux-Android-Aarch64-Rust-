@@ -1395,11 +1395,20 @@ impl crate::core::port::StoragePort for Store {
         Store::recent_module_outcome_events(self, limit)
     }
 
-    fn archive_module_result(&self, key: &str, ttl_secs: u64, entities: &[Entity]) -> Result<()> {
-        Store::archive_module_result(self, key, ttl_secs, entities)
+    fn archive_module_result(
+        &self,
+        key: &str,
+        ttl_secs: u64,
+        entities: &[Entity],
+        truncation: Option<&str>,
+    ) -> Result<()> {
+        Store::archive_module_result(self, key, ttl_secs, entities, truncation)
     }
 
-    fn lookup_module_result_fresh(&self, key: &str) -> Result<Option<Vec<Entity>>> {
+    fn lookup_module_result_fresh(
+        &self,
+        key: &str,
+    ) -> Result<Option<crate::core::port::CachedModuleResult>> {
         Store::lookup_module_result_fresh(self, key)
     }
 

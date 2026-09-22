@@ -234,12 +234,21 @@ use super::*;
         // Inter-scan entity cache: now a genuine round-trip, not a no-op — a
         // fresh archive is a real hit, and an unarchived key still misses.
         // `Entity` has no `PartialEq`, so assert the hit via its length.
-        assert!(store.archive_module_result("k", 3600, &[]).is_ok());
+        assert!(
+            store
+                .archive_module_result("k", 3600, &[], Some("partial"))
+                .is_ok()
+        );
         let hit = store.lookup_module_result_fresh("k").expect("should succeed");
         assert_eq!(
-            hit.map(|v| v.len()),
+            hit.as_ref().map(|v| v.entities.len()),
             Some(0),
             "a fresh archive must be a genuine hit, not the old no-op miss"
+        );
+        assert_eq!(
+            hit.and_then(|v| v.truncation).as_deref(),
+            Some("partial"),
+            "the in-memory double carries the verdict exactly as the real store does"
         );
         assert!(
             store

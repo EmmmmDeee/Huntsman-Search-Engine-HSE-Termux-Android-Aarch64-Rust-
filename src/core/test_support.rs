@@ -49,12 +49,12 @@ struct Inner {
     relations: Vec<Relation>,
     events: Vec<Event>,
     /// Mirrors the real store's `raw_archive` table (inter-scan entity
-    /// cache): key → `(archived_at, ttl_secs, entities)`. Without this, the
+    /// cache): key → `(archived_at, ttl_secs, result)`. Without this, the
     /// trait's default no-op `archive_module_result`/`lookup_module_result_fresh`
     /// made a cache HIT untestable against this port — every lookup silently
     /// returned `None` regardless of what was archived, so no dispatch-level
     /// test could ever exercise the module-skip-on-cache-hit path.
-    raw_archive: HashMap<String, (u64, u64, Vec<Entity>)>,
+    raw_archive: HashMap<String, (u64, u64, crate::core::port::CachedModuleResult)>,
 }
 
 impl InMemoryStore {
@@ -320,17 +320,33 @@ impl StoragePort for InMemoryStore {
             .collect())
     }
 
-    fn archive_module_result(&self, key: &str, ttl_secs: u64, entities: &[Entity]) -> Result<()> {
+    fn archive_module_result(
+        &self,
+        key: &str,
+        ttl_secs: u64,
+        entities: &[Entity],
+        truncation: Option<&str>,
+    ) -> Result<()> {
         // Mirror `Store::archive_module_result`: `INSERT OR REPLACE` keyed on
         // `key`, timestamped `archived_at = now()`.
         self.inner.lock().raw_archive.insert(
             key.to_string(),
-            (crate::core::entity::unix_now(), ttl_secs, entities.to_vec()),
+            (
+                crate::core::entity::unix_now(),
+                ttl_secs,
+                crate::core::port::CachedModuleResult {
+                    entities: entities.to_vec(),
+                    truncation: truncation.map(str::to_string),
+                },
+            ),
         );
         Ok(())
     }
 
-    fn lookup_module_result_fresh(&self, key: &str) -> Result<Option<Vec<Entity>>> {
+    fn lookup_module_result_fresh(
+        &self,
+        key: &str,
+    ) -> Result<Option<crate::core::port::CachedModuleResult>> {
         // Mirror `Store::lookup_module_result_fresh`'s freshness predicate
         // exactly: `archived_at + ttl_secs > now()`, so `ttl_secs == 0`
         // expires immediately, matching the real store's tested behavior.
@@ -341,7 +357,7 @@ impl StoragePort for InMemoryStore {
             .raw_archive
             .get(key)
             .filter(|(archived_at, ttl_secs, _)| archived_at + ttl_secs > now)
-            .map(|(_, _, entities)| entities.clone()))
+            .map(|(_, _, result)| result.clone()))
     }
 }
 

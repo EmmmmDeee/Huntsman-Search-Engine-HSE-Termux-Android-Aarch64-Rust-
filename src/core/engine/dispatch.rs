@@ -954,7 +954,7 @@ impl super::ScanEngine {
         &self,
         cx: &DispatchCx,
         module: &dyn Module,
-        cached: Vec<Entity>,
+        cached: crate::core::port::CachedModuleResult,
         state: &mut DispatchState,
     ) {
         let name = module.name();
@@ -967,7 +967,10 @@ impl super::ScanEngine {
         // archiving scan's row and is dropped, so the finding silently vanishes
         // from this scan's read-back (entities_for_scan) while still being counted
         // — a count-vs-list inconsistency.
-        let mut cached = cached;
+        let crate::core::port::CachedModuleResult {
+            entities: mut cached,
+            truncation,
+        } = cached;
         for e in &mut cached {
             e.scan_id = cx.scan_id.to_owned();
         }
@@ -978,7 +981,10 @@ impl super::ScanEngine {
             name,
             Ok(Ok(ModuleResult {
                 entities: cached,
-                truncation: None,
+                // The archived answer's own completeness verdict. `None` here
+                // unconditionally was REQ-CACHE-001: every replay of a partial
+                // answer was reported complete.
+                truncation,
                 sightings: Vec::new(),
                 link: None,
             })),
@@ -999,9 +1005,12 @@ impl super::ScanEngine {
             && let Ok(Ok(mr)) = result
             && !mr.entities.is_empty()
         {
-            let _ = self
-                .store
-                .archive_module_result(key, ttl_secs, &mr.entities);
+            let _ = self.store.archive_module_result(
+                key,
+                ttl_secs,
+                &mr.entities,
+                mr.truncation.as_deref(),
+            );
         }
     }
 

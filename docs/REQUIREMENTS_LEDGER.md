@@ -18719,3 +18719,75 @@ the harness now always passes `--no-fail-fast`.
   `plc_directory`, `wiki_geosearch`, `openarch`, `au_unclaimed`,
   `securitytrails` and `hunter_io`. Those modules never wrote the tag, so this
   lock does not see them. Each is tracked on its own evidence.
+
+---
+
+## REQ-CACHE-001 — the inter-scan cache replayed a partial answer as a complete one
+
+**Requirement.** A cache replay is the module's answer for the current scan. It
+must carry that answer's completeness verdict exactly as the live call did.
+
+### Found
+
+This wave's audit workflow found it while checking `openarch`'s fix path, and
+it was confirmed by reading the engine:
+
+- `archive_if_eligible` (`core::engine::dispatch`) stored `mr.entities` only.
+- `replay_cached_result` rebuilt the result with `truncation: None`
+  unconditionally.
+
+The engine emits the same `ModuleDone` for a replay as for a live call, and
+`core::coverage` reads completeness from that event alone. So on every re-scan
+inside a module's TTL, a partial answer was reported complete.
+
+The modules that both cache and truncate are the high-value paid ones:
+`netlas`, `see_know`, and `passivetotal` (whose truncation REQ-COVERAGE-002
+just made visible). REQ-COVERAGE-001's derivation lock could not see this: it
+tests live `ModuleDone` events, and a replay is a second, parallel emitter of
+the same field. This is the first recurring shape in ROADMAP §4, a guard applied
+to one emitter but not its neighbour.
+
+### Implemented
+
+- `core::port::CachedModuleResult { entities, truncation }` is what the cache
+  hands back.
+- `StoragePort::archive_module_result(key, ttl, entities, truncation)`
+  borrows, so archiving clones nothing. The SQLite store writes a JSON object.
+  `InMemoryStore` mirrors it.
+- `replay_cached_result` restores the archived verdict.
+
+**No schema migration.** A row written before this change is a bare JSON array.
+It holds the entities and no verdict. `lookup_module_result_fresh` treats it as
+a **miss**, not a replay: inventing "complete" on the module's behalf is the
+defect itself. Re-asking once costs one query; the fresh answer is archived in
+the new shape and replaces the row. Legacy rows also age out under the
+existing TTL prune.
+
+The archive runs before `finalise_module_result` takes the truncation, at all
+three dispatch call sites, and the engine lock proves it: a wrong order would
+archive `None`.
+
+### Locks
+
+- `core::engine::tests::a_cache_replay_of_a_partial_answer_is_still_partial`:
+  two scans of one target through the real `dispatch_target`. The second is
+  asserted to be a cache replay (the premise). Its `ModuleDone` must carry the
+  live answer's own sentence.
+- `storage::archive::tests::a_partial_answer_is_replayed_as_partial` and
+  `a_row_archived_before_the_verdict_was_recorded_is_a_miss`: the latter
+  inserts a legacy array row by hand.
+- `core::port::tests::default_optional_methods_are_documented_no_ops` now pins
+  that the in-memory double carries the verdict too.
+
+### Falsified
+
+The mutation harness now runs with `--no-fail-fast`.
+
+| # | mutation | result |
+|---|---|---|
+| C1 | **baseline**: the replay claims completeness | killed by 1 (the engine lock) |
+| C2 | the archive drops the verdict | killed by 1 |
+| C3 | a legacy row is replayed (no miss guard) | killed by 1 |
+| C4 | the in-memory double drops the verdict | killed by 2 |
+
+**4 of 4 killed.**

@@ -27,6 +27,24 @@ use crate::core::{
     scan::Scan,
 };
 
+/// One module result as the inter-scan entity cache (C9) holds it: the
+/// entities, and the module's own completeness verdict
+/// (`ModuleResult::truncation`).
+///
+/// The verdict travels with the entities because a replay IS the module's
+/// answer for this scan: the engine emits the same `ModuleDone` for it, and
+/// `core::coverage` reads completeness from that event alone. The cache held
+/// entities only, so a partial answer replayed within its TTL was reported
+/// complete on every re-scan (REQ-CACHE-001). Sightings and the link record are
+/// deliberately NOT here: a replay observed nothing.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct CachedModuleResult {
+    pub entities: Vec<Entity>,
+    /// `None` when the archived answer was complete.
+    #[serde(default)]
+    pub truncation: Option<String>,
+}
+
 /// Retention policy for the `events` table, shared by the startup prune
 /// (`cli`) and the per-scan-boundary prune (engine) so the two can't drift.
 pub const EVENTS_RETENTION_SECS: u64 = 7 * 86_400; // 7 days
@@ -137,7 +155,8 @@ pub trait StoragePort: Send + Sync {
     }
 
     // ── Inter-scan entity cache (C9 / SOL-CACHE-INTERSCAN) ────────────────
-    /// Persist a module result under `key` with a TTL. Called after a
+    /// Persist a module result — its entities and its completeness verdict
+    /// (see [`CachedModuleResult`]) — under `key` with a TTL. Called after a
     /// successful `process()` when `module.cache_ttl_secs() > 0`. Best-effort:
     /// a failure must not abort the scan; callers ignore the error.
     ///
@@ -148,6 +167,7 @@ pub trait StoragePort: Send + Sync {
         _key: &str,
         _ttl_secs: u64,
         _entities: &[Entity],
+        _truncation: Option<&str>,
     ) -> Result<()> {
         Ok(())
     }
@@ -158,7 +178,7 @@ pub trait StoragePort: Send + Sync {
     /// provider call entirely.
     ///
     /// Default no-op returns `None` for test doubles.
-    fn lookup_module_result_fresh(&self, _key: &str) -> Result<Option<Vec<Entity>>> {
+    fn lookup_module_result_fresh(&self, _key: &str) -> Result<Option<CachedModuleResult>> {
         Ok(None)
     }
 
