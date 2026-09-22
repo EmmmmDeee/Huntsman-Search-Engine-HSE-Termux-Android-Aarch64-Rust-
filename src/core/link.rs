@@ -23,11 +23,16 @@ pub struct LinkState {
     /// Associated with an access point. False is a fact, not an absence: it
     /// is what a forced disconnection looks like from the phone.
     pub connected: bool,
+    /// The network name, verbatim as the supplicant reports it.
     pub ssid: Option<String>,
     /// The access point's address, canonical lower-case.
     pub bssid: Option<String>,
+    /// The signal level, dBm.
     pub signal_dbm: Option<f64>,
+    /// The device's own address on this link, when the supplicant reports
+    /// one (never `0.0.0.0`).
     pub ip: Option<String>,
+    /// The negotiated link speed, Mbps.
     pub link_speed_mbps: Option<i64>,
     /// The supplicant's own word for the state (`COMPLETED`, `DISCONNECTED`,
     /// `SCANNING`, …), verbatim.
@@ -67,8 +72,11 @@ pub const NOT_ASSOCIATED: &[&str] = &[
 /// An access point one sweep heard, as the review needs it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HeardAp {
+    /// The access point's address, canonical lower-case.
     pub bssid: String,
+    /// The network name it advertised, when heard.
     pub ssid: Option<String>,
+    /// The level the sweep heard it at, dBm.
     pub signal_dbm: Option<f64>,
 }
 
@@ -76,10 +84,14 @@ pub struct HeardAp {
 /// point it heard.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinkSweep {
+    /// The radar sweep or import this reading came from.
     pub scan_id: String,
     /// The sweep's time, Unix seconds.
     pub ts: u64,
+    /// The device's own link, as this sweep saw it.
     pub link: LinkState,
+    /// Every Wi-Fi access point this sweep heard, the device's own link
+    /// included when it was heard as a sighting too.
     pub heard: Vec<HeardAp>,
 }
 
@@ -105,43 +117,73 @@ pub enum Disruption {
     /// Off the network while the access point it was on is still heard at a
     /// usable level: the link did not fade, it was cut.
     ForcedDisconnect {
+        /// When it happened, Unix seconds.
         at: u64,
+        /// The sweep that observed it.
         scan_id: String,
+        /// The access point the device was on, canonical lower-case.
         bssid: String,
+        /// Its network name, when the previous sweep's link carried one.
         ssid: Option<String>,
+        /// How loud the access point was still heard, dBm.
         heard_dbm: f64,
     },
     /// [`DEAUTH_MIN`] or more forced disconnections from one access point
     /// within [`DEAUTH_WINDOW_SECS`].
     DeauthSuspected {
+        /// The earliest forced disconnection in the densest window, Unix
+        /// seconds.
         from: u64,
+        /// The latest one in that window, Unix seconds.
         to: u64,
+        /// How many forced disconnections fell in the window.
         count: usize,
+        /// The access point they were all from, canonical lower-case.
         bssid: String,
+        /// Its network name, when known.
         ssid: Option<String>,
     },
     /// A network name the device knows, advertised by an address it has never
     /// seen, louder than the address it knows — while the known one is still
     /// heard, so this is not simply another site.
     EvilTwinSuspected {
+        /// When it was heard, Unix seconds.
         at: u64,
+        /// The sweep that heard it.
         scan_id: String,
+        /// The network name being impersonated.
         ssid: String,
+        /// The never-before-seen address advertising it, canonical
+        /// lower-case.
         new_bssid: String,
+        /// How loud the impostor was heard, dBm.
         new_dbm: f64,
+        /// The known-good address for the same name, canonical lower-case.
         known_bssid: String,
+        /// How loud the known-good address was heard in the same sweep, dBm.
         known_dbm: f64,
     },
     /// Outages beginning at a regular interval.
     PeriodicOutage {
+        /// The median gap between outage starts, seconds.
         period_secs: u64,
+        /// How many outage starts fed the median.
         occurrences: usize,
+        /// The first outage start counted, Unix seconds.
         from: u64,
+        /// The last one, Unix seconds.
         to: u64,
     },
     /// A run of sweeps off the network, whatever the cause — the timeline the
     /// other findings sit on.
-    Outage { from: u64, to: u64, sweeps: usize },
+    Outage {
+        /// The first sweep in the run, Unix seconds.
+        from: u64,
+        /// The last sweep in the run, Unix seconds.
+        to: u64,
+        /// How many sweeps the run spans.
+        sweeps: usize,
+    },
 }
 
 impl Disruption {
@@ -193,8 +235,11 @@ impl Disruption {
 /// The review of a sweep history.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DisruptionReport {
+    /// How many sweeps the review read.
     pub sweeps: usize,
+    /// How many of them were connected.
     pub connected_sweeps: usize,
+    /// How many were not — `sweeps - connected_sweeps`.
     pub disconnected_sweeps: usize,
     /// Oldest first.
     pub findings: Vec<Disruption>,

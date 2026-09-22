@@ -1113,8 +1113,9 @@ Ordered cycles:
    sweep from before the record existed is counted as unrecorded, not
    guessed. Proven with the sensor scripted through a drop under a real
    `hse serve`, in the shell and in Chromium.
-3. **REQ-RESILIENCE-003 — the radar through an outage, with the outage
-   classified.** A live radar with a network-bound module against a dead
+3. **The radar through an outage, with the outage classified.** (Earns its
+   own `REQ-RESILIENCE-0xx` id and ledger entry once built and falsified —
+   not cited here in advance of that record.) A live radar with a network-bound module against a dead
    host and hanging sensor shims keeps sweeping, every iteration bounded (no
    change needed if the per-module timeouts the engine already enforces are
    sound — verify, don't assume). A new pure `core::outage` (the `core::link`
@@ -1145,7 +1146,8 @@ Ordered cycles:
    the Radar view. Proven against a real captive-portal-shaped stub server
    (200 + HTML where 204 is expected) and a DNS stub that disagrees with
    itself, not asserted from the classifier's own logic.
-4. **REQ-RESILIENCE-004 — a session the OS kills is one tap from resumed.**
+4. **A session the OS kills is one tap from resumed.** (Likewise: its own
+   id and ledger entry land with the implementation, not before it.)
    `core::live` says plainly: "Sessions are in-memory only. Restart →
    cleared." True today, and REQ-RESILIENCE-001 made that visible rather
    than silent — but visible-and-lost is not resilient against exactly the
