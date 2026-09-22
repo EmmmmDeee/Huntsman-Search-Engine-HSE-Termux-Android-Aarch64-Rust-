@@ -48,6 +48,22 @@ fn live_radar_is_registered_and_armed_by_default_with_killswitch() {
 }
 
 #[test]
+fn map_tiles_is_registered_and_on_by_default_with_killswitch() {
+    // The tile fetch is a known feature toggle, ON by default (a tile is only
+    // ever fetched when the operator opens the map) with an explicit OFF as the
+    // kill-switch for the outbound request. Key constant and helper must agree.
+    assert_eq!(MAP_TILES_FEATURE, "feature.map_tiles");
+    assert!(is_feature_key(MAP_TILES_FEATURE), "must be in FEATURE_TOGGLES");
+    assert!(default_for(MAP_TILES_FEATURE), "tiles fetch by default");
+    let mut off = BTreeMap::new();
+    off.insert(MAP_TILES_FEATURE.to_string(), false);
+    assert!(
+        !resolve(&off, MAP_TILES_FEATURE, true),
+        "an explicit OFF must stop the fetch (kill-switch)"
+    );
+}
+
+#[test]
 fn resolve_uses_map_value_over_default() {
     let mut map = BTreeMap::new();
     map.insert("k".to_string(), false);

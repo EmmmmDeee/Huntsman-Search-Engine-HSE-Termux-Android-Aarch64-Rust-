@@ -82,6 +82,9 @@
 //! | POST   | `/api/v1/radar/live`                     | `radar_live`                   |
 //! | GET    | `/api/v1/radar/history`                  | `radar_history`                |
 //! | GET    | `/api/v1/radar/recurring`                | `radar_recurring`              |
+//! | GET    | `/api/v1/radar/signals`                  | `radar_signals`                |
+//! | GET    | `/api/v1/radar/signals/{network_id}`     | `radar_signal_track`           |
+//! | GET    | `/api/v1/tiles/{z}/{x}/{y}`              | `tiles::tile` (`.png`)         |
 //! | POST   | `/api/v1/live`                           | `live_create` (v0.5+)          |
 //! | GET    | `/api/v1/live`                           | `live_list`                    |
 //! | GET    | `/api/v1/live/{id}`                      | `live_get`                     |
@@ -358,6 +361,11 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         include_bytes!("../../web/js/views/radar.js"),
     ),
     (
+        "js/radar_map.js",
+        "application/javascript",
+        include_bytes!("../../web/js/radar_map.js"),
+    ),
+    (
         "js/views/debug_log.js",
         "application/javascript",
         include_bytes!("../../web/js/views/debug_log.js"),
@@ -522,6 +530,9 @@ pub fn router(
             "/radar/signals/{network_id}",
             get(scan_handlers::radar_signal_track),
         )
+        // Map tiles for the Radar view — the loopback proxy that keeps the map
+        // within `img-src 'self'` and caches every tile (REQ-RADAR-003).
+        .route("/tiles/{z}/{x}/{y}", get(crate::api::tiles::tile))
         .route(
             "/scans/import",
             // Raise this route's body cap from axum's 2 MB default to the import

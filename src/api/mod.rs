@@ -19,6 +19,7 @@ pub mod routes;
 pub mod scan_export;
 pub mod scan_handlers;
 pub mod settings_handlers;
+pub mod tiles;
 pub mod update_handlers;
 
 use std::sync::Arc;
@@ -197,6 +198,11 @@ pub struct AppState {
     /// `download_and_import(..).await` returns (see `cells_handlers`), held only
     /// for the synchronous phase write, and dropped — never across the await.
     pub cells_import: Arc<std::sync::Mutex<CellsImportPhase>>,
+    /// Where the Radar view's map tiles come from and are cached
+    /// (`/api/v1/tiles/…`, see [`tiles`]). Built once by `hse serve` from the
+    /// env var, the data directory and the guarded HTTP client; a test hands
+    /// the handler a stand-in upstream and a scratch directory instead.
+    pub tiles: Arc<tiles::TileSource>,
 }
 
 /// The shared in-memory `AppState` every handler's router test builds on.
@@ -214,6 +220,36 @@ pub(crate) fn test_state() -> Arc<AppState> {
 #[cfg(test)]
 pub(crate) fn test_state_with_modules(
     modules: Vec<Arc<dyn crate::core::module::Module>>,
+) -> Arc<AppState> {
+    test_state_with_modules_and_tiles(modules, test_tile_source())
+}
+
+/// The tile source every handler test gets unless it brings its own: an
+/// upstream that refuses instantly on a closed loopback port, so no test ever
+/// reaches a real tile server, and a cache under the test home.
+#[cfg(test)]
+pub(crate) fn test_tile_source() -> tiles::TileSource {
+    tiles::TileSource::new(
+        "http://127.0.0.1:9/{z}/{x}/{y}.png",
+        crate::util::paths::subdir("tiles"),
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .expect("test client"),
+    )
+}
+
+/// [`test_state`] with a caller-supplied tile source — for the tile proxy's
+/// own tests, which run a stand-in upstream.
+#[cfg(test)]
+pub(crate) fn test_state_with_tiles(tiles: tiles::TileSource) -> Arc<AppState> {
+    test_state_with_modules_and_tiles(Vec::new(), tiles)
+}
+
+#[cfg(test)]
+fn test_state_with_modules_and_tiles(
+    modules: Vec<Arc<dyn crate::core::module::Module>>,
+    tiles: tiles::TileSource,
 ) -> Arc<AppState> {
     let store: Arc<dyn crate::core::StoragePort> =
         Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"));
@@ -243,6 +279,7 @@ pub(crate) fn test_state_with_modules(
         scan_semaphore: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SCANS)),
         update_info: Arc::new(std::sync::Mutex::new(UpdateInfo::default())),
         cells_import: Arc::new(std::sync::Mutex::new(CellsImportPhase::default())),
+        tiles: Arc::new(tiles),
     })
 }
 

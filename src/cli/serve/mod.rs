@@ -82,6 +82,12 @@ pub(super) async fn cmd_serve(
         cells_import: Arc::new(std::sync::Mutex::new(
             crate::api::CellsImportPhase::default(),
         )),
+        // The Radar map's tile proxy: the guarded client (SSRF resolver,
+        // redirect policy, the crate's User-Agent) with a bounded per-tile
+        // wait, the upstream from `HUNTSMAN_TILE_UPSTREAM` or the OSM default.
+        tiles: Arc::new(crate::api::tiles::TileSource::from_env(
+            crate::util::http::build_client_with_timeout(std::time::Duration::from_secs(20)),
+        )),
     });
 
     // A separate clone for the shutdown path — `router` consumes `state` by

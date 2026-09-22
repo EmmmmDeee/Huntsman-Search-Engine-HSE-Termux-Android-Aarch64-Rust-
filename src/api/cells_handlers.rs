@@ -379,6 +379,7 @@ mod tests {
             )),
             update_info: Arc::new(std::sync::Mutex::new(crate::api::UpdateInfo::default())),
             cells_import: Arc::new(std::sync::Mutex::new(CellsImportPhase::default())),
+            tiles: Arc::new(crate::api::test_tile_source()),
         });
         axum::Router::new()
             .route("/api/v1/cells/status", axum::routing::get(cells_status))

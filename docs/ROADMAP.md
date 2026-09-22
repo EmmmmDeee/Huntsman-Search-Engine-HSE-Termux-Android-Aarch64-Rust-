@@ -1014,12 +1014,13 @@ Ordered cycles, each shipped with its own ledger entry and gate:
    readers on the port, `/api/v1/radar/signals` and `…/signals/{network_id}`
    through the CLI's presenters, and the `#/radar` view — sweep and continuous
    radar, a polar plot by level, the device table, per-device tracks, the
-   sweep history, JSON/CSV — as the radar's one home. *2b, next:* a loopback
-   tile proxy with an on-disk cache under `hse serve`
-   (`/api/v1/tiles/{z}/{x}/{y}.png` → OpenStreetMap, with the User-Agent and
-   attribution the tile policy requires, served from cache when offline) so
-   the SPA's map stays within `img-src 'self'`; the view draws a sweep's
-   positioned sightings and the sweep's own fix on it.
+   sweep history, JSON/CSV — as the radar's one home. *2b, REQ-RADAR-003,
+   shipped:* the loopback tile proxy with its on-disk cache
+   (`/api/v1/tiles/{z}/{x}/{y}.png`; `HUNTSMAN_TILE_UPSTREAM`, OSM by default,
+   with the User-Agent and attribution the policy requires; `feature.map_tiles`
+   kills the fetch, never the cache) and the dependency-free map in the view,
+   every positioned device at its position and nothing placed where it was
+   not heard.
 3. **Real-time tracking.** The live radar's SSE feed drives the map as
    iterations complete; per-device trails from `rf_sightings_for_device`;
    `radar_recurring` rewired onto the sighting table (its own doc records
@@ -1043,6 +1044,10 @@ The second cycle added the converse: **a reader that only the CLI can reach
 is not a product surface.** Every `rf_*` reader was inherent on the SQLite
 `Store`; the HTTP layer sees the port and could not call one. Put the reader
 on the port first, then build the page.
+The map cycle's rule is about the browser: **the console loads nothing from
+a third party, ever.** A map wants tiles from somewhere; the answer was a
+proxy the operator controls, not a CSP exception — and the same proxy is
+what makes the map work offline.
 
 ---
 

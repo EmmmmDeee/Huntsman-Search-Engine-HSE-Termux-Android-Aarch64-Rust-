@@ -710,6 +710,16 @@ pub fn test_app_with_modules_and_state(
         cells_import: Arc::new(std::sync::Mutex::new(
             huntsman_search_engine::api::CellsImportPhase::default(),
         )),
+        // A tile upstream that refuses instantly on a closed loopback port, so
+        // no test reaches a real tile server; the cache under the test home.
+        tiles: Arc::new(huntsman_search_engine::api::tiles::TileSource::new(
+            "http://127.0.0.1:9/{z}/{x}/{y}.png",
+            huntsman_search_engine::util::paths::subdir("tiles"),
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(2))
+                .build()
+                .expect("test client"),
+        )),
     });
     // Loopback bind + no token: the auth gate is not installed, so every
     // existing API test exercises the same unauthenticated path it always has.

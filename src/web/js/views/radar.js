@@ -14,6 +14,7 @@ import { API } from '/static/js/api.js';
 import { $, $$, attr, esc, fmtDate, statusPill, toast, triggerBlobDownload } from '/static/js/helpers.js';
 import { S } from '/static/js/state.js';
 import { clearRadarTimer, pageHidden } from '/static/js/timers.js';
+import { createMap } from '/static/js/radar_map.js';
 
 const RADIOS = [['wifi','Wi-Fi'], ['ble','BLE'], ['bt','BT'], ['cell','Cell']];
 const RADIO_LABEL = Object.fromEntries(RADIOS);
@@ -23,6 +24,9 @@ const SUMMARY_KEY = { wifi:'wifi', ble:'ble', bt:'bt', cell:'cellular' };
 /* View choices survive a re-render within the session: the filter an operator
    set must not reset because a sweep finished. `sid` null = the latest sweep. */
 const view = { sid: null, radio: 'all', sort: 'signal', trackable: false, track: null, data: null, print: '' };
+/* The map controller and the sweep it was centred on: a refresh of the same
+   sweep keeps the operator's pan and zoom; a different sweep re-centres. */
+let map = null, mapSweep = null;
 
 const SORTS = {
   signal: (a,b) => ((b.best_signal_dbm ?? -999) - (a.best_signal_dbm ?? -999)) || a.network_id.localeCompare(b.network_id),
@@ -121,8 +125,45 @@ function renderSummaryLine(){
        + (d.total > d.count ? ` · <b>showing ${d.count} of ${d.total}</b>` : '');
 }
 
+/* The map: every device with a position, at its position. Live-sweep
+   sightings all carry the sweep's own fix, so they cluster on one marker with
+   a count; a wardriving import spreads out. Devices without a position are
+   not drawn — nothing is placed where it was not heard. */
+function paintMap(devices){
+  const panel = $('#radar-map-panel'), host = $('#radar-map'), note = $('#radar-map-note');
+  if (!panel || !host) return;
+  const positioned = devices.filter(d => d.latitude != null && d.longitude != null);
+  if (!positioned.length) {
+    panel.style.display = view.data ? '' : 'none';
+    if (map) { map.destroy(); map = null; mapSweep = null; }
+    host.style.display = 'none';
+    if (note) note.textContent = 'No positioned sightings in this view — the sweep had no fresh GNSS fix, so nothing is placed on the map.';
+    return;
+  }
+  panel.style.display = ''; host.style.display = '';
+  if (note) note.textContent = `${positioned.length} of ${devices.length} devices positioned · drag to pan, +/− to zoom`;
+  const groups = new Map();
+  for (const d of positioned) {
+    const key = `${d.latitude.toFixed(6)},${d.longitude.toFixed(6)}`;
+    const g = groups.get(key) || { lat: d.latitude, lon: d.longitude, items: [] };
+    g.items.push(d); groups.set(key, g);
+  }
+  const markers = Array.from(groups.values()).map(g => ({
+    lat: g.lat, lon: g.lon, count: g.items.length,
+    colour: g.items.length === 1 ? colour(g.items[0]) : 'var(--accent)',
+    label: g.items.length === 1 ? `${label(g.items[0])} · ${dbm(g.items[0].best_signal_dbm)}` : g.items.slice(0, 8).map(label).join(', ') + (g.items.length > 8 ? ` +${g.items.length - 8}` : ''),
+  }));
+  const lat = positioned.reduce((a, d) => a + d.latitude, 0) / positioned.length;
+  const lon = positioned.reduce((a, d) => a + d.longitude, 0) / positioned.length;
+  if (!map) map = createMap(host, { lat, lon, zoom: 17 });
+  const sweep = view.data ? view.data.scan_id : null;
+  if (sweep !== mapSweep) { map.setView(lat, lon, 17); mapSweep = sweep; }
+  map.setMarkers(markers);
+}
+
 function paintSignals(){
   const host = $('#radar-signals'); if (!host) return;
+  paintMap(view.data ? visibleDevices() : []);
   if (!view.data) {
     host.innerHTML = '<div class="empty-state"><h3>No signals recorded yet</h3>'
       + '<p>Run a sweep or start the continuous radar above. Every Wi-Fi access point, Bluetooth device and cell tower the '
@@ -294,6 +335,11 @@ export async function renderRadar(v){
         <div id="radar-summary" class="radar-summary"></div>
         <div id="radar-chips"></div>
       </div>
+    </div>
+    <div class="panel panel-default" id="radar-map-panel" style="display:none">
+      <div class="panel-heading"><b><i class="glyphicon glyphicon-globe"></i>&nbsp;Map</b>
+        <span id="radar-map-note" class="text-muted" style="font-weight:400"></span></div>
+      <div id="radar-map" style="display:none"></div>
     </div>
     <div id="radar-signals"></div>
     <div class="panel panel-default" id="radar-track-panel" style="display:none;border-color:var(--info)">

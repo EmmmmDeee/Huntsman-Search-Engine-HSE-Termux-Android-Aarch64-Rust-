@@ -856,3 +856,12 @@ input[type=checkbox],input[type=radio]{ accent-color:var(--accent); width:14px; 
 .radar-chip.active{ background:var(--accent-dim); border-color:var(--accent); color:var(--accent-strong); }
 .radar-swatch{ display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:4px; vertical-align:middle; }
 .radar-summary{ font-family:var(--mono); font-size:12px; color:var(--text-muted); margin:6px 0 6px 0; }
+.radar-map{ position:relative; height:300px; overflow:hidden; background:var(--bg-elevated); border-radius:var(--radius); border:1px solid var(--border); touch-action:none; cursor:grab; user-select:none; }
+.radar-map img{ position:absolute; width:256px; height:256px; pointer-events:none; -webkit-user-drag:none; }
+.radar-map img.radar-tile-missing{ opacity:.18; background:repeating-linear-gradient(45deg, var(--border) 0 6px, transparent 6px 12px); }
+.radar-map-attr{ position:absolute; right:4px; bottom:2px; font-size:10px; color:var(--text); background:rgba(10,13,17,.65); padding:1px 6px; border-radius:3px; }
+.radar-map-attr a{ color:var(--accent-strong); }
+.radar-map-zoom{ position:absolute; left:6px; top:6px; display:flex; flex-direction:column; gap:4px; }
+.radar-marker{ position:absolute; width:12px; height:12px; border-radius:50%; border:2px solid #fff; transform:translate(-50%,-50%); box-shadow:var(--shadow-sm); }
+.radar-marker-cluster{ width:auto; min-width:22px; height:22px; border-radius:11px; font-size:10px; font-weight:600; line-height:18px; text-align:center; color:#fff; padding:0 5px; }
+.radar-map-note{ font-size:12px; color:var(--text-muted); padding:6px 10px; }

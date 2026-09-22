@@ -17873,14 +17873,25 @@ The rows were there; only the CLI could reach them.
 
 | # | mutation | predicted | actual |
 |---|---|---|---|
-| K1 | `Store` forgets to override `rf_summary` (the port default answers) | handler test at "summary sightings == 1" (left 0); e2e at "summary sightings == 5" (left 0). The CLI reads the inherent method and is untouched — which is exactly why the override needs its own lock | FILL |
-| K2 | `Store` forgets to override `rf_latest_scan_id` | handler test at the first 200 after inserting (404, "no RF sightings"); track test at "no sweep named" (404); e2e at `status == 200` (404). Explicit-id reads survive | FILL |
-| K3 | the one trackable predicate inverted | handler test at `trackable=1` count/total (0/0 vs 1/1); storage `address_kind…` at `track.len() == 1` (0) — the CLI path dies with the web path from one edit | FILL |
-| K4 | an unknown explicit sweep silently falls back to the latest | list test at the `never-ran` 404 (200); track test at its `never-ran` 404 (200). Everything else survives | FILL |
-| K5 | the track comes back newest first | track test at `[10, 20, 30]` (`[30, 20, 10]`); storage `the_sighting_track_is_preserved…` at its order assert; e2e survives (one sighting per device) | FILL |
-| K6 | the `/radar/signals` route not registered | `radar_view_is_wired…` at "no RF sightings recorded yet" (body is the fallback's); e2e at `status == 200` (404). Handler tests survive — they build their own router, which is why the bundle and e2e locks exist | FILL |
-| K7 | the nav entry dropped | `radar_view_is_wired…` at marker `nav-radar` only | FILL |
-| K8 | the shared presenter renames `address` | handler test at `devices[0]["address"] == "fixed"` (null); e2e at `ap_row["address"] == "fixed"` — both readers fail from one line, the point of sharing it | FILL |
+| K1 | `Store` forgets to override `rf_summary` (the port default answers) | handler test at "summary sightings == 1" (left 0); e2e at "summary sightings == 5" (left 0). The CLI reads the inherent method and is untouched — which is exactly why the override needs its own lock | handler test at `tests.rs:870` (`left: 0, right: 1`) — as predicted. The e2e binary did not run: cargo stops at the first failing binary, so the e2e prediction for this row is unobserved |
+| K2 | `Store` forgets to override `rf_latest_scan_id` | handler test at the first 200 after inserting (404, "no RF sightings"); track test at "no sweep named" (404); e2e at `status == 200` (404). Explicit-id reads survive | as predicted — `tests.rs:868` (404 for 200) and the track test at `:1016` (404 for 200); e2e unobserved (fail-fast) |
+| K3 | the one trackable predicate inverted | handler test at `trackable=1` count/total (0/0 vs 1/1); storage `address_kind…` at `track.len() == 1` (0) — the CLI path dies with the web path from one edit | the lock held, the predicted line was wrong: the inverted predicate returns the ONE randomised device, so `count`/`total` were `1/1` and the row identity died instead — `tests.rs:923` (`02:11:22:33:44:55` for `00:1a:2b:3c:4d:5e`) and, the same way, `signal_tests.rs:122` (`02:aa:bb:cc:dd:ee`). A count is a weaker lock than an identity; both tests carry the identity |
+| K4 | an unknown explicit sweep silently falls back to the latest | list test at the `never-ran` 404 (200); track test at its `never-ran` 404 (200). Everything else survives | as predicted — `tests.rs:935` and `:1026`, both `left: 200, right: 404`; everything else green |
+| K5 | the track comes back newest first | track test at `[10, 20, 30]` (`[30, 20, 10]`); storage `the_sighting_track_is_preserved…` at its order assert; e2e survives (one sighting per device) | as predicted — `tests.rs:1003` (`[30, 20, 10]`) and `signal_tests.rs:81` (`Some(300)` for `Some(100)`); e2e unobserved (fail-fast) |
+| K6 | the `/radar/signals` route not registered | `radar_view_is_wired…` at "no RF sightings recorded yet" (body is the fallback's); e2e at `status == 200` (404). Handler tests survive — they build their own router, which is why the bundle and e2e locks exist | the handler tests survived (4 passed) and `radar_view_is_wired…` died at `tests/api.rs:710`, the "no RF sightings recorded yet" assertion, with the fallback's body — as predicted; the e2e binary did not run after it (fail-fast) |
+| K7 | the nav entry dropped | `radar_view_is_wired…` at marker `nav-radar` only | **SURVIVED.** Every test passed with the nav link deleted: `main.js` carries the string `nav-radar` in its nav map, so a bundle-wide `contains` was satisfied by the map, not the link. The lock was wrong, not the code. Repaired in the next commit: the nav entry is now asserted on the served shell by its own attributes (`id="nav-radar"`, `href="#/radar"`), which nothing but the link can satisfy, and the row is rerun there |
+| K8 | the shared presenter renames `address` | handler test at `devices[0]["address"] == "fixed"` (null); e2e at `ap_row["address"] == "fixed"` — both readers fail from one line, the point of sharing it | as predicted — `tests.rs:903` (`left: Null, right: "fixed"`); e2e unobserved (fail-fast) |
+
+Seven of eight rows died; K3 died one assertion later than predicted; K7
+survived and exposed a lock that read the wrong document. Two lessons are
+taken as rules. **A marker is only a lock if nothing but the thing it stands
+for can produce it** — a nav id that also lives in the router's map proves
+the map, not the link. **Fail-fast hides the second lock**: cargo stops at
+the first failing test binary, so a row predicted to kill a lib lock and an
+e2e lock shows only the first; the e2e column above says "unobserved" where
+that happened rather than borrowing the prediction. The rows that matter
+most for the e2e lock (the route, K6) are rerun with `--no-fail-fast` under
+REQ-RADAR-003.
 
 #### Scope, honestly
 
@@ -17895,3 +17906,135 @@ The rows were there; only the CLI could reach them.
 - The polar plot is a level plot with a stable pseudo-bearing, said so in the
   code; the map (2b) is where position becomes real, and only for sightings
   that carry one.
+
+### REQ-RADAR-003 — the Radar view had no map, and the console's CSP means it could not have loaded one; a loopback tile proxy with a cache, and the map on it
+
+#### Where this sits
+
+T5, cycle 2b (`docs/ROADMAP.md`): the "open-source map" of the directive.
+REQ-RADAR-002 put the sighting table on the web; this puts the positioned
+sightings on a map without the browser ever talking to a tile server.
+
+#### Observed, on the pre-cycle binary, before any change
+
+The console's CSP is `img-src 'self' data:` — deliberately: the SPA
+auto-loads nothing from a third party (`embedded_spa_auto_loads_nothing_external`
+pins it). A map needs tiles from somewhere, and letting the browser fetch
+them would both breach that rule and tell a tile server, through a referer
+the operator never chose to send, where they are looking. Probed on the
+`78a4b643` binary (the tile route is equally absent at `3d92f7ab`):
+
+| | pre-cycle |
+|---|---|
+| `GET /api/v1/tiles/17/121245/74627.png` | `404 {"error":"endpoint not found", …}` — the api fallback |
+| the served shell | no `radar-map`; `/static/js/radar_map.js` a 404 |
+| `feature.map_tiles` in `/api/v1/settings/toggles` | absent |
+
+#### The fix: a proxy the operator controls, and a map with no dependency
+
+- `api::tiles` — `TileSource { upstream, cache_dir, client }` built once by
+  `hse serve` (`HUNTSMAN_TILE_UPSTREAM` or OSM's standard layer; the data
+  directory; the guarded client with a 20 s bound) and carried in `AppState`,
+  so a test hands the handler a stand-in upstream and a scratch directory
+  instead of reaching for a global. `GET /api/v1/tiles/{z}/{x}/{y}.png`:
+  validate (`z ≤ 19`, `x, y < 2^z` — anything else is a `400` that never
+  reaches the upstream: the proxy relays tiles, not URLs); the cache first
+  (`tokio::fs::read`); then the kill-switch (`feature.map_tiles`, ON by
+  default — consulted *after* the cache because it is about the outbound
+  fetch, not the operator's own copies); then one fetch — success status,
+  `image/*` content type, the body streamed to a 2 MiB cap — written
+  atomically under owner-only directories off the reactor, best-effort with
+  the reason disclosed; else a `502` naming the upstream host and caching
+  nothing. `x-hse-tile: cache|upstream` says which side answered; the probe,
+  the tests and a puzzled operator read it. The browser's `Cache-Control` is
+  a week; the disk cache is the real store.
+- `feature.map_tiles` joins `FEATURE_TOGGLES` with `MAP_TILES_FEATURE` /
+  `map_tiles_enabled()` (the `live_radar` shape), so `hse config`, the
+  settings page and the write guard all know it;
+  `every_checked_feature_flag_is_registered` holds. `HUNTSMAN_TILE_UPSTREAM`
+  is documented, commented out, in the env template.
+- `js/radar_map.js` — Web-Mercator maths, a tile layer that reuses `<img>`
+  elements across pans (a pan never refetches), pointer pan, +/− and wheel
+  zoom within 3..19, a marker layer, and the attribution the tile policy
+  requires. ~150 lines, no dependency (`VENDOR_FILES` stays empty).
+- The Radar view's map panel: every device with a position, at its
+  position; devices sharing a position (a live sweep's readings all carry
+  the sweep's fix) cluster on one marker with a count and a title naming
+  them; the view re-centres on a new sweep and keeps the operator's pan and
+  zoom across refreshes of the same one; the radio chips filter the map as
+  they filter the table. No position, no marker — and no positioned device
+  at all hides the map and says the sweep had no fresh fix. Nothing is placed
+  where it was not heard.
+
+#### Observed again, on the fixed binary, against a stand-in upstream
+
+`probe.sh`: `stub_tiles.py` on a loopback port as `HUNTSMAN_TILE_UPSTREAM`, a
+real `hse serve`, the four Termux tools scripted.
+
+| | fixed |
+|---|---|
+| first `GET …/17/121245/74627.png` | `200 image/png`, `cache-control: public, max-age=604800`, `x-hse-tile: upstream`; a 569-byte `-rw-------` file at `~/.huntsman/tiles/17/121245/74627.png`; the stub saw one hit, `User-Agent: huntsman-search-engine/1.41.0 (+https://github.com/…)` |
+| second `GET` of the same tile | `200`, `x-hse-tile: cache`; the stub still at one hit |
+| `z=20`, `x=8` at `z=3` | `400`, `400`; no hit |
+| `PUT /settings/toggles {"key":"feature.map_tiles","enabled":false}` then an uncached tile | `403 {"error":"map tiles switched off","detail":"… tiles already cached still serve","enable":"… hse config feature.map_tiles on"}` |
+| … and the cached tile, switch still off | `200`, `x-hse-tile: cache` |
+| the stub killed: cached tile / uncached tile | `200 cache` / `502 {"error":"tile upstream unreachable","upstream":"127.0.0.1","detail":"request failed: …"}` |
+| `hse serve` restarted on the same home | the cached tile `200 cache` |
+| Chromium (`browser_map.cjs`) | the map panel hidden before any sweep; after **Sweep once**: visible, "5 of 5 devices positioned", six tiles in view, all six decoded at 256 px from the proxy, none missing; one cluster marker reading `5` titled `LabNet, aa:bb:cc:dd:ee:f0, 505-01-678-12…`; the attribution `© OpenStreetMap contributors` linking `openstreetmap.org/copyright`; two zoom-outs fetched new tiles (16 requests, every one `200 upstream` from the stub — distinct tiles); a 100 px drag moved the marker `180px → 280px`; the only failed request in the session the pre-sweep `404` the empty state is built on |
+
+#### Locks
+
+- `api::tiles::tests` — a loopback stand-in upstream inside the test (PNG
+  for `z ≤ 3`, 404 deeper, a hit counter) and a scratch cache:
+  `a_tile_is_fetched_once_and_served_from_the_cache_after` (upstream, the
+  file, then cache with the counter unchanged, the bare `{y}` form finding
+  the same file); `an_out_of_range_tile_never_reaches_the_upstream` (`z=20`,
+  `x=2^z`, `y=2^z`, a non-number: `400` ×4, zero hits);
+  `an_upstream_failure_is_a_502_naming_the_upstream_and_caches_nothing`;
+  `a_cached_tile_serves_with_no_upstream_at_all` (a closed loopback port as
+  upstream); `the_template_and_the_cache_share_one_layout`.
+- `util::settings::tests::map_tiles_is_registered_and_on_by_default_with_killswitch`.
+- `tests/api.rs::radar_view_is_wired_from_the_nav_to_the_signals_api` — the
+  tile path, the attribution and `radar-map` in the bundle, `radar_map.js`
+  served and imported, and the route answering `502` on the test app's
+  closed-port upstream, never the fallback's `404`;
+  `spa_references_only_registered_api_endpoints` carries the `tiles` probe.
+- The endpoint-surface table rows for the three routes
+  (`endpoint_surface_doc_table_lists_every_registered_route`, which CI
+  failed on `3d92f7ab` for `/radar/signals` — the one lib test a targeted
+  local run had not covered).
+
+#### Falsification — predicted before run, then compared
+
+| # | mutation | predicted | actual |
+|---|---|---|---|
+| M1 | a fetched tile is never cached | `a_tile_is_fetched_once…` at "the tile is kept at …" (the file is absent). Everything else survives | FILL |
+| M2 | the cache is never read | `a_tile_is_fetched_once…` at the second read's origin (`upstream` for `cache`); `a_cached_tile_serves_with_no_upstream_at_all` at `status == 200` (`502`) | FILL |
+| M3 | the zoom bound dropped | `an_out_of_range…` at the `z=20` URI (the stub answers 404 for `z > 3`, so `502` for `400`); `the_template…` at `!valid_tile(20, 0, 0)` | FILL |
+| M4 | every answer claims `upstream` | `a_tile_is_fetched_once…` at the second read's origin; `a_cached_tile…` at its origin — the diagnostic the probe reads must not lie | FILL |
+| M5 | the route not registered | `radar_view_is_wired…` at the `502` assertion (`404`); `spa_references_only_registered…` at the `tiles` probe (`404`). The handler tests survive — their own router | FILL |
+| M6 | `radar_map.js` not served | `radar_view_is_wired…` at "the map module is served and imported" — the import would fail in a browser, and nothing else here can see that | FILL |
+| M7 | the attribution dropped | `radar_view_is_wired…` at `openstreetmap.org/copyright` only | FILL |
+
+REQ-RADAR-002's K6 and K7 are rerun with `--no-fail-fast` in the same run:
+K6 to observe the e2e lock the first run's fail-fast hid, K7 to prove the
+repaired nav lock kills what the old one survived.
+
+#### Scope, honestly
+
+- OSM's tile usage policy is honoured in the mechanics (an identifying
+  User-Agent, attribution, no bulk download — a slippy map fetches what is
+  on screen, and the cache means once) and made configurable where the
+  policy asks for it (a distributed application should not lean on OSM's
+  own servers; the upstream is one variable away). It is still the
+  operator's choice of upstream; the default is the standard layer.
+- The cache is unbounded and never expires. A phone that browses a city at
+  zoom 17 stores a few thousand small files; a bound (size or age) and a
+  `hse tidy` row for it are a small later item, recorded here.
+- The kill-switch is asserted at the toggle registry and observed live
+  through the real settings API; the handler's own branch is not exercised
+  by a hermetic test because the settings cache is process-global and a
+  test that flips it would leak into its siblings. The probe row is the
+  evidence for that branch.
+- The map draws positions; the polar plot draws levels. Neither draws a
+  bearing or a distance, and the module headers say why.

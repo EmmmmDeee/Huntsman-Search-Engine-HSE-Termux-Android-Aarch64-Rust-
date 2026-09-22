@@ -96,6 +96,16 @@ pub const FEATURE_TOGGLES: &[(&str, bool)] = &[
     // spec sets), so an ordinary scan can never attribute the operator's own
     // location/RF to a remote subject regardless of this default.
     ("feature.live_radar", true),
+    // Map tiles for the Radar view: `hse serve` fetches map tiles for the
+    // operator's browser through its own loopback proxy (`/api/v1/tiles/…`)
+    // and keeps them on disk, so the browser never talks to a tile server and
+    // a map seen once is there offline. Default ON — a tile is fetched only
+    // when the operator opens the map. This toggle is a **kill-switch** for
+    // the outbound fetch (`hse config feature.map_tiles off`): switched off,
+    // tiles already cached still serve and an uncached one is refused, so a
+    // device that must not reach out — or must not disclose where it is
+    // looking — still shows every map it has seen.
+    ("feature.map_tiles", true),
     // Autonomous region-scoped search augmentation. Default OFF (queries stay
     // geolocation-neutral). Turning it on makes regional the baseline for every
     // scan; the per-scan `--regional` flag still forces it on for one scan.
@@ -170,6 +180,17 @@ pub const LIVE_RADAR_FEATURE: &str = "feature.live_radar";
 #[must_use]
 pub fn live_radar_enabled() -> bool {
     get_bool(LIVE_RADAR_FEATURE, true)
+}
+
+/// The `feature.*` key gating the map-tile fetch — the single source of the
+/// key string so the proxy's gate and the toggle registry can't drift.
+pub const MAP_TILES_FEATURE: &str = "feature.map_tiles";
+
+/// Whether the tile proxy may fetch from its upstream. **On by default**; a
+/// kill-switch for the outbound fetch only — cached tiles serve regardless.
+#[must_use]
+pub fn map_tiles_enabled() -> bool {
+    get_bool(MAP_TILES_FEATURE, true)
 }
 
 /// The feature toggles with their current effective state (override else

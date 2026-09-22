@@ -687,12 +687,28 @@ async fn radar_view_is_wired_from_the_nav_to_the_signals_api() {
     // but reading a path nothing serves, is exactly the dormant surface the
     // radar track forbids.
     let app = test_app("radar-view");
+    // The nav entry is asserted on the SHELL, not the bundle: `main.js` carries
+    // the string `nav-radar` in its nav map whether or not the link exists, so
+    // a bundle-wide search passed with the link deleted (REQ-RADAR-002's K7
+    // survived exactly that way). The link's own attributes cannot be
+    // satisfied by anything but the link.
+    let (_, shell) = fetch_text(&app, "/").await;
+    for marker in ["id=\"nav-radar\"", "href=\"#/radar\""] {
+        assert!(
+            shell.contains(marker),
+            "SPA shell lacks the radar nav entry {marker}"
+        );
+    }
     let (html, served) = spa_bundle(&app).await;
     for marker in [
-        "nav-radar",
         "#/radar",
         "/api/v1/radar/signals",
         "renderRadar",
+        // REQ-RADAR-003: the map — the served tile path and the attribution
+        // the tile policy requires.
+        "/api/v1/tiles/",
+        "openstreetmap.org/copyright",
+        "radar-map",
     ] {
         assert!(
             html.contains(marker),
@@ -703,6 +719,16 @@ async fn radar_view_is_wired_from_the_nav_to_the_signals_api() {
         served.iter().any(|p| p == "/static/js/views/radar.js"),
         "the radar view module is served and imported: {served:?}"
     );
+    assert!(
+        served.iter().any(|p| p == "/static/js/radar_map.js"),
+        "the map module is served and imported: {served:?}"
+    );
+    // The tile route answers on this router: the test upstream is a closed
+    // loopback port, so a registered route is a 502 naming it, never the
+    // fallback's 404.
+    let (status, body) = fetch_text(&app, "/api/v1/tiles/3/4/2.png").await;
+    assert_eq!(status, http::StatusCode::BAD_GATEWAY, "{body}");
+    assert!(body.contains("tile upstream unreachable"), "{body}");
     // And the path the view reads answers on this router — with the handler's
     // own "nothing recorded" refusal, not the api fallback's 404.
     let (status, body) = fetch_text(&app, "/api/v1/radar/signals").await;
@@ -3559,6 +3585,10 @@ async fn spa_references_only_registered_api_endpoints() {
             "plan" => "/api/v1/plan?value=example.com".to_string(),
             // Cell-tower DB status — ungated GET, safe to probe with no side effects.
             "cells" => "/api/v1/cells/status".to_string(),
+            // Map tiles — the test app's upstream is a closed loopback port, so
+            // the registered route answers 502 (never the fallback 404) without
+            // any test reaching a real tile server.
+            "tiles" => "/api/v1/tiles/3/4/2.png".to_string(),
             // Live capability probe — POST-only (a real network sweep per keyless
             // module), so a bare GET returns 405, not the fallback 404; the
             // assertion only needs "not 404", confirming the route is registered
