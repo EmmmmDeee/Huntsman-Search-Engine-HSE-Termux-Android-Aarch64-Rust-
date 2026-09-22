@@ -1001,6 +1001,34 @@ fn radar_history_returns_only_radar_sentinel_scans_newest_first() {
 }
 
 #[test]
+fn radar_history_orders_a_same_second_tie_by_creation_not_by_id() {
+    // `started_at` is whole seconds. Two sweeps started in the same second
+    // used to be ordered by their random ids; the disruption review reads a
+    // forced disconnection from CONSECUTIVE sweeps, so the tie must follow
+    // creation order (the rowid, stable because `upsert_scan` updates in
+    // place). The ids are chosen so that `id DESC` would invert the truth.
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    let mut first = Scan::new("zz-first", Target::new(TargetKind::Coordinates, "0,0"));
+    first.started_at = 1_700_000_000;
+    store.upsert_scan(&first).expect("should succeed");
+    let mut second = Scan::new("aa-second", Target::new(TargetKind::Coordinates, "0,0"));
+    second.started_at = 1_700_000_000;
+    store.upsert_scan(&second).expect("should succeed");
+    // A later update in place (the sweep completing) must not reorder them.
+    first.status = crate::core::scan::ScanStatus::Complete;
+    store.upsert_scan(&first).expect("should succeed");
+
+    let sweeps = store.radar_history(10).expect("should succeed");
+    assert_eq!(
+        sweeps.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+        vec!["aa-second", "zz-first"],
+        "newest CREATED first within the same second: {sweeps:?}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn radar_history_respects_limit() {
     let path = tmp_db();
     let store = Store::open(&path).expect("should succeed");
@@ -2875,6 +2903,8 @@ fn open_produces_exact_schema_and_pragmas() {
         "index|idx_scans_target",
         "index|idx_stealer_rows_log",
         "index|idx_stealer_rows_scan",
+        // The device's own Wi-Fi link, one row per sweep (REQ-RESILIENCE-002).
+        "index|idx_wifi_links_scan",
         "index|sqlite_autoindex_correlations_1",
         "index|sqlite_autoindex_entities_1",
         "index|sqlite_autoindex_entity_observations_1",
@@ -2905,6 +2935,7 @@ fn open_produces_exact_schema_and_pragmas() {
         "table|sqlite_stat1",
         "table|sqlite_stat4",
         "table|stealer_rows",
+        "table|wifi_links",
         "view|rf_devices",
         "view|rf_shared_names",
     ];

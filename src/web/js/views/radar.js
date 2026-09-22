@@ -250,6 +250,39 @@ function renderSparkline(points){
     <text x="${W - 60}" y="9">${levelled.length} readings</text></svg>`;
 }
 
+/* The device's own Wi-Fi link across the sweep history (core::link::review
+   over the wifi_links records): forced disconnections while the access point
+   was still heard, a deauthentication pattern, an evil twin, outages on a
+   schedule, and the outage timeline — each with the advice the CLI prints. */
+const DISRUPTION_LABEL = { forced_disconnect: ['Forced disconnect', 'label-danger'], deauth_suspected: ['Deauthentication suspected', 'label-danger'], evil_twin_suspected: ['Evil twin suspected', 'label-danger'], periodic_outage: ['Periodic outage', 'label-warning'], outage: ['Outage', 'label-default'] };
+function describeDisruption(f){
+  const when = t => esc(fmtDate(t));
+  switch (f.kind) {
+    case 'forced_disconnect': return `${when(f.at)} — off <b>${esc(f.ssid || '?')}</b> <code>${esc(f.bssid)}</code> while it was still heard at ${esc(dbm(f.heard_dbm))}`;
+    case 'deauth_suspected': return `${f.count} forced disconnections from <b>${esc(f.ssid || '?')}</b> <code>${esc(f.bssid)}</code> between ${when(f.from)} and ${when(f.to)}`;
+    case 'evil_twin_suspected': return `${when(f.at)} — <b>${esc(f.ssid)}</b> from a new address <code>${esc(f.new_bssid)}</code> at ${esc(dbm(f.new_dbm))}, louder than the known <code>${esc(f.known_bssid)}</code> at ${esc(dbm(f.known_dbm))}`;
+    case 'periodic_outage': return `${f.occurrences} outages every ~${esc(String(f.period_secs))} s, ${when(f.from)} → ${when(f.to)}`;
+    case 'outage': return `${f.sweeps} sweep${f.sweeps === 1 ? '' : 's'} off the network, ${when(f.from)} → ${when(f.to)}`;
+    default: return esc(JSON.stringify(f));
+  }
+}
+async function refreshDisruptions(){
+  const host = $('#radar-disruptions'); if (!host) return;
+  let r = null;
+  try { r = await API.radarDisruptions(100); } catch (e) { host.innerHTML = `<div class="text-muted" style="padding:8px 12px">${esc(e.message)}</div>`; return; }
+  const findings = (r.findings || []).filter(f => f.kind !== 'outage');
+  const outages = (r.findings || []).filter(f => f.kind === 'outage');
+  const badge = $('#radar-disruptions-count'); if (badge) badge.textContent = findings.length;
+  const note = $('#radar-disruptions-note');
+  if (note) note.textContent = `— ${r.sweeps || 0} sweep${r.sweeps === 1 ? '' : 's'} reviewed, ${r.disconnected_sweeps || 0} off the network${r.unrecorded_sweeps ? `, ${r.unrecorded_sweeps} older without a link record` : ''}`;
+  if (!findings.length && !outages.length) {
+    host.innerHTML = '<div class="text-muted" style="padding:8px 12px">No disruption found: the link was up on every reviewed sweep, or nothing has been reviewed yet.</div>';
+    return;
+  }
+  const row = f => { const [label, cls] = DISRUPTION_LABEL[f.kind] || [f.kind, 'label-default']; return `<div class="radar-finding"><span class="label ${cls}">${esc(label)}</span> ${describeDisruption(f)}<div class="text-muted radar-advice">${esc(f.advice || '')}</div></div>`; };
+  host.innerHTML = findings.map(row).join('') + (outages.length ? `<details class="radar-outages"><summary class="text-muted">${outages.length} outage${outages.length === 1 ? '' : 's'} on the timeline</summary>${outages.map(row).join('')}</details>` : '');
+}
+
 /* Devices recurring across sweeps — the counter-surveillance review
    (core::radar_track over the sighting table): fixed hardware addresses the
    phone is not bonded to, seen in ≥2 sweeps, with the strongest level and
@@ -336,7 +369,7 @@ function onLiveEvent(ev){
   if (ev.type === 'scan_complete') {
     setLiveStatus(`continuous radar · sweep done at ${fmtClock()}`);
     view.sid = null; syncSweepPicker();
-    refreshSignals(true); refreshRecurring();
+    refreshSignals(true); refreshRecurring(); refreshDisruptions();
     return;
   }
   if (ev.type === 'live_stop') {
@@ -365,7 +398,7 @@ function attachLive(id){
         wasDown = false;
         setLiveStatus('continuous radar · stream back — re-reading');
         view.sid = null; syncSweepPicker();
-        refreshSignals(true); refreshRecurring(); refreshHistory(); adoptRunningRadar();
+        refreshSignals(true); refreshRecurring(); refreshDisruptions(); refreshHistory(); adoptRunningRadar();
       }
       return;
     }
@@ -420,6 +453,9 @@ async function sweepOnce(){
     view.sid = null; closeTrack();
     await refreshSignals(false);
     await refreshHistory();
+    // A sweep changes every review built on the history, not just the rows.
+    await refreshRecurring();
+    await refreshDisruptions();
   } catch (e) { toast('Sweep failed: ' + e.message, 'error'); }
   finally { if (btn) btn.disabled = false; }
 }
@@ -487,6 +523,11 @@ export async function renderRadar(v){
       </div>
       <div class="panel-body" id="radar-track" style="max-height:320px;overflow:auto;padding:6px 10px;font-size:12px"></div>
     </div>
+    <div class="panel panel-default" id="radar-disruptions-panel" style="border-color:var(--danger)">
+      <div class="panel-heading"><b><i class="glyphicon glyphicon-flash" style="color:var(--danger)"></i>&nbsp;Network disruption</b> <span class="badge" id="radar-disruptions-count">…</span>
+        <span id="radar-disruptions-note" class="text-muted" style="font-weight:400"></span></div>
+      <div id="radar-disruptions"><div class="text-muted" style="padding:8px 12px">Loading…</div></div>
+    </div>
     <div class="panel panel-default" id="radar-recurring-panel" style="border-color:var(--warning)">
       <div class="panel-heading"><b><i class="glyphicon glyphicon-eye-open" style="color:var(--warning)"></i>&nbsp;Recurring across sweeps</b> <span class="badge" id="radar-recurring-count">…</span>
         <span id="radar-recurring-note" class="text-muted" style="font-weight:400"></span></div>
@@ -512,6 +553,7 @@ export async function renderRadar(v){
   await refreshSignals(false);
   await refreshHistory();
   await refreshRecurring();
+  await refreshDisruptions();
   // Without a stream to follow, poll the latest sweep while this page is open:
   // the producers a stream cannot see (`hse radar` from the shell, an import)
   // still land here. With a continuous radar attached, its `scan_complete`
@@ -524,6 +566,7 @@ export async function renderRadar(v){
     if (S.liveSse && !S.radarStreamDown) { await adoptRunningRadar(); return; }
     await refreshSignals(true);
     await refreshRecurring();
+    await refreshDisruptions();
     // A history panel left showing a fetch error from an outage is repainted
     // by the first poll that gets through.
     if (!$('#radar-history table')) await refreshHistory();

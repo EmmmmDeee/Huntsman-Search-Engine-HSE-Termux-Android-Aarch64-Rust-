@@ -833,6 +833,19 @@ impl super::ScanEngine {
                         }
                     }
                 }
+                // REQ-RESILIENCE-002: the device's own link, one record per
+                // sweep, "not connected" included — the disruption review reads
+                // these. Best-effort like the sightings; a replay carries none.
+                if let Some(link) = &mr.link {
+                    match self.store.insert_wifi_link(cx.scan_id, link) {
+                        Ok(()) => {
+                            debug!(scan_id = cx.scan_id, module = name, "wifi link persisted");
+                        }
+                        Err(e) => {
+                            warn!(scan_id = cx.scan_id, module = name, error = %e, "wifi link not persisted");
+                        }
+                    }
+                }
                 let mut found = 0usize;
                 for mut entity in mr.entities.drain(..) {
                     // Admission drop-filters (pure policy in `admission_rejection`);
@@ -967,6 +980,7 @@ impl super::ScanEngine {
                 entities: cached,
                 truncation: None,
                 sightings: Vec::new(),
+                link: None,
             })),
             state,
             module.attack_techniques(),

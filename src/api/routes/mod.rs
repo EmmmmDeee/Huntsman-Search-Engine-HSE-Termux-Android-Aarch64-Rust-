@@ -85,6 +85,7 @@
 //! | GET    | `/api/v1/radar/signals`                  | `radar_signals`                |
 //! | GET    | `/api/v1/radar/signals/{network_id}`     | `radar_signal_track`           |
 //! | GET    | `/api/v1/radar/devices/{network_id}/track` | `radar_device_track`         |
+//! | GET    | `/api/v1/radar/disruptions`              | `radar_disruptions`            |
 //! | GET    | `/api/v1/tiles/{z}/{x}/{y}`              | `tiles::tile` (`.png`)         |
 //! | POST   | `/api/v1/live`                           | `live_create` (v0.5+)          |
 //! | GET    | `/api/v1/live`                           | `live_list`                    |
@@ -536,6 +537,9 @@ pub fn router(
             "/radar/devices/{network_id}/track",
             get(scan_handlers::radar_device_track),
         )
+        // The device's own link across the sweep history — forced disconnections,
+        // deauthentication, evil twins, scheduled outages (REQ-RESILIENCE-002).
+        .route("/radar/disruptions", get(scan_handlers::radar_disruptions))
         // Map tiles for the Radar view — the loopback proxy that keeps the map
         // within `img-src 'self'` and caches every tile (REQ-RADAR-003).
         .route("/tiles/{z}/{x}/{y}", get(crate::api::tiles::tile))

@@ -187,6 +187,9 @@ export const API = {
   radarDeviceTrack: (networkId, limit)=>API._req('/api/v1/radar/devices/'+encodeURIComponent(networkId)+'/track'+(limit?('?limit='+encodeURIComponent(limit)):'')),
   // Devices recurring across ≥min sweeps — the counter-surveillance review.
   radarRecurring: (min, limit)=>API._req('/api/v1/radar/recurring?min='+encodeURIComponent(min||2)+'&limit='+encodeURIComponent(limit||100)),
+  // The device's own Wi-Fi link across the sweep history: forced disconnections,
+  // deauthentication, evil twins, scheduled outages (REQ-RESILIENCE-002).
+  radarDisruptions: limit=>API._req('/api/v1/radar/disruptions?limit='+encodeURIComponent(limit||100)),
   selftest:     ()=>API._req('/api/v1/selftest'),
   logsUrl:      ()=>'/api/v1/logs',
   // Live tail of the verbose debug-log ring (loopback-only): pass the cursor

@@ -521,6 +521,11 @@ pub struct ModuleResult {
     /// (REQ-RADAR-001). Never cached or replayed: a sighting is an observation
     /// at a moment, and a cache replay observed nothing.
     pub sightings: Vec<crate::core::rf::RfSighting>,
+    /// The device's own Wi-Fi link as this module read it (REQ-RESILIENCE-002):
+    /// a typed record beside the `wifi-connected` entity, *including* "not
+    /// connected", which the graph cannot say. One per sweep, from
+    /// `device_sensors`; never cached or replayed, like `sightings`.
+    pub link: Option<crate::core::link::LinkState>,
 }
 
 impl ModuleResult {
@@ -538,6 +543,7 @@ impl ModuleResult {
             entities: Vec::with_capacity(cap),
             truncation: None,
             sightings: Vec::new(),
+            link: None,
         }
     }
 
@@ -630,6 +636,9 @@ impl ModuleResult {
         self.sightings.extend(other.sightings);
         if self.truncation.is_none() {
             self.truncation = other.truncation;
+        }
+        if self.link.is_none() {
+            self.link = other.link;
         }
     }
 

@@ -1102,6 +1102,12 @@ pub enum Command {
         /// Every sighting of one device, oldest first.
         #[arg(long, value_name = "NETWORK_ID")]
         track: Option<String>,
+        /// The device's own Wi-Fi link across the sweep history: forced
+        /// disconnections, a deauthentication pattern, an evil twin, outages
+        /// on a schedule — the same review `GET /api/v1/radar/disruptions`
+        /// serves, with the same advice.
+        #[arg(long)]
+        disruptions: bool,
         /// Cap on rows printed by the list views.
         #[arg(long, default_value_t = 50)]
         limit: usize,

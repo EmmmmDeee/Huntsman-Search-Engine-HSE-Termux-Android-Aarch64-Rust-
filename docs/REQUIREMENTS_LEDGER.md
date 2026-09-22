@@ -18294,3 +18294,183 @@ as exercised above — and passed every step.
 - A session lives in memory: a restart ends it, and this cycle makes that
   visible and one tap away from resumed rather than persistent across
   restarts. Persisting live sessions is a later decision, not a hidden gap.
+
+### REQ-RESILIENCE-002 — a disconnection was "nothing to report": the device's own link is now a record per sweep, and the history is reviewed for forced disconnections, deauthentication, evil twins and scheduled outages
+
+#### Where this sits
+
+T6, cycle 2 (`docs/ROADMAP.md`). Cycle 1 made the console survive its own
+link dying. This cycle gives the radar its first *view* of a Wi-Fi
+disruption: the fact the directive turns on — *was I thrown off the network
+while the access point was still right there?* — recorded on every sweep and
+read back over the history. Cycle 3 is the radar *through* an outage with
+the outage classified.
+
+#### Observed, before any change (`219d6a52`)
+
+- `device_sensors::wifi::parse_conn` read `termux-wifi-connectioninfo` on
+  every radar sweep (`device_sensors` is in `LOCAL_PASSIVE_MODULES`, the
+  radar's pinned set) and flattened the answer into a `MacAddress` entity
+  tagged `wifi-connected`, level and supplicant state in evidence strings.
+  A blank answer — Wi-Fi off, or thrown off the network — returned
+  `ModuleResult::new()`: nothing. The entity graph has no way to say *off
+  the network*, so the disconnection the directive is about was never
+  written down anywhere.
+- `GET /api/v1/radar/disruptions` was the api fallback's `endpoint not
+  found`; `hse signal --disruptions` an unknown argument. (Probe table
+  below.)
+
+#### The fix
+
+- `core::link` (pure): `LinkState` — connected, SSID, canonical BSSID, level,
+  address, link speed, the supplicant's own state verbatim, the read time —
+  with `LinkState::disconnected(epoch)` for "off, nothing else known";
+  `NOT_ASSOCIATED`, the supplicant states that mean "not associated"
+  whatever address the tool reports beside them (Android reports the LAST
+  network's BSSID with `DISCONNECTED`).
+- `parse_conn(stdout, scan_id, observed_epoch)`: a blank answer is a
+  *disconnected* record; a parsed one is connected iff a real address is
+  reported AND the supplicant state is not in `NOT_ASSOCIATED`; the null
+  addresses (`00:…`, `02:00:00:00:00:00`) are no address. The entities are
+  produced exactly as before.
+- `ModuleResult.link: Option<LinkState>` — the `sightings` precedent: never
+  cached or replayed; `absorb` carries it (the module used `extend`, which
+  would have dropped it — row Q2). The engine's one finalise path persists it
+  beside the sightings, best-effort like them, into `wifi_links` (one row per
+  sweep; `wifi_link_for_scan` takes the latest) through two new
+  `StoragePort` methods with no-op defaults for the doubles.
+- `core::link::review(&[LinkSweep]) -> DisruptionReport` — sweeps in any
+  order (it sorts by time, then id); per sweep the link record and the
+  access points heard. Findings, each with `advice()`:
+  - `ForcedDisconnect`: connected on the previous sweep, off now, the
+    previous BSSID heard at ≥ `FORCED_MIN_DBM` (−75) — cut, not faded.
+  - `DeauthSuspected`: ≥ `DEAUTH_MIN` (3) forced disconnections from one
+    access point within `DEAUTH_WINDOW_SECS` (3600), the densest window.
+  - `EvilTwinSuspected`: a known SSID from a BSSID never seen before this
+    sweep, louder than the strongest known BSSID heard in the SAME sweep; an
+    unheard known BSSID is another site, not an impostor.
+  - `PeriodicOutage`: more than `PERIODIC_MIN_GAPS` (3) outage starts whose
+    gaps all sit within `PERIODIC_TOLERANCE` (15 %) of their median.
+  - `Outage`: each run of sweeps off the network — the timeline.
+- ONE assembly, `app::signal::link_sweeps_from_history` (the radar history →
+  each sweep's link record, or `unrecorded` when it has none → the Wi-Fi
+  rows of `rf_devices_for_scan` as the access points heard), and ONE
+  presenter, `disruption_report_json`, behind both `GET
+  /api/v1/radar/disruptions?limit=` (`offload_store`, default 100, max 1000)
+  and `hse signal --disruptions [--json]`.
+- The Radar view's "Network disruption" panel: findings with their advice,
+  outages under a `<details>`, the count and the note (`n sweeps reviewed, m
+  off the network, k older without a link record`); refreshed on
+  `scan_complete`, on the stream's return, in the degraded poll, at load,
+  and — new — after a sweep-once completes (it refreshed rows and history
+  only).
+
+#### Locks
+
+- `core::link::tests` (six): forced vs a fade at −85 and vs unheard; three
+  forced drops within an hour are a pattern and spread over four hours are
+  not; a known name from a new *louder* address is a twin, a known second
+  address is not, and a new *weaker* one is not; outage starts on a schedule
+  are periodic and irregular ones are not; the review orders sweeps itself
+  and counts the timeline; every finding carries advice and serialises by
+  `kind`.
+- `device_sensors::tests::{the_link_record_says_connected_with_the_readings_and_disconnected_with_nothing, a_stale_address_beside_a_disconnected_supplicant_is_not_a_connection}`.
+- `storage::signal_tests::a_sweeps_link_state_round_trips_and_the_latest_write_wins`.
+- `core::engine::tests::a_modules_sightings_are_persisted_beside_its_entities_and_a_replay_persists_none` — extended: the link record reaches `wifi_links` through the finalise path.
+- `api::scan_handlers::tests::radar_disruptions_reads_the_link_records_and_the_access_points_heard` — through the real store behind the port, with an unrecorded sweep counted.
+- `tests/radar_sightings.rs::a_forced_disconnection_is_seen_across_two_sweeps` — end to end: `signal_radar` + `device_sensors` over the scripted tools, the link flipped between sweeps by a flag file, the review over HTTP.
+- `tests/api.rs::radar_view_is_wired…` — `/api/v1/radar/disruptions`, `radar-disruptions`, `deauth_suspected` in the bundle.
+- `endpoint_surface_doc_table_lists_every_registered_route` — the route's row.
+
+#### Observed again — the probe (`res2/probe.sh`, a real `hse serve`, the five Termux tools scripted; the link shim flips to Android's "no network" answer when a flag file appears)
+
+| step | baseline `78a4b643` (`hse-78a4b643`) | fixed (this tree) |
+|---|---|---|
+| `GET /api/v1/radar/disruptions` before any sweep | `404 {"error":"endpoint not found"}` (the api fallback) | `200` — `sweeps 0, connected 0, disconnected 0, unrecorded 0, count 0` |
+| sweep 1, the link on LabNet (`00:1A:2B:3C:4D:5E`, −45, `COMPLETED`) | `wifi_links` table ABSENT; the entity graph holds one `mac_address 00:1a:2b:3c:4d:5e` tagged `wifi-ap`, `wifi-connected` | `wifi_links` row `(sweep 1, connected 1, LabNet, 00:1a:2b:3c:4d:5e, −45.0, COMPLETED, epoch)`; the review: `sweeps 1, connected 1`, no finding |
+| sweep 2, Android's "no network" answer (`02:00:00:00:00:00`, `<unknown ssid>`, `DISCONNECTED`), LabNet still heard by the radar at −45 | nothing: no table, no entity, no row anywhere — the disconnection is recorded nowhere | a second row `(sweep 2, connected 0, bssid NULL, level NULL, DISCONNECTED, epoch)`; the review: `sweeps 2, connected 1, disconnected 1, unrecorded 0, count 2` — `forced_disconnect {bssid 00:1a:2b:3c:4d:5e, ssid LabNet, heard_dbm −45.0, scan_id <sweep 2>}` with its advice, then `outage {sweeps 1}` |
+| `hse signal --disruptions` on the same home | `error: unexpected argument '--disruptions' found` | `Wi-Fi link across 2 sweep(s): 1 connected, 1 off the network` / `FORCED DISCONNECT epoch …: off LabNet (00:1a:2b:3c:4d:5e) while it was still heard at -45 dBm` + the advice / `outage 1 sweep(s) off the network` + its advice |
+| `hse signal --disruptions --json` | n/a (exit 2) | `sweeps 2, count 2, kinds ["forced_disconnect", "outage"]` — the API's shape |
+| the server restarted on the same home | `404` | the same review (`count 2`, the same forced disconnection) — the records are on disk |
+
+Both sweeps in the probe ran within ONE second (`observed_epoch` equal, and
+`started_at` equal): the forced disconnection was found because the history's
+same-second tiebreak is creation order — see "The first run" below.
+
+#### In Chromium (`res2/browser_disruptions.cjs`)
+
+| step | observed |
+|---|---|
+| the view at load, no sweep yet | the panel reads the review (`No disruption found: the link was up on every reviewed sweep, or nothing has been reviewed yet.`), the note `— 0 sweeps reviewed, 0 off the network` |
+| **Sweep once** with the link up | the note `— 1 sweep reviewed, 0 off the network`, the badge `0`, no finding — the sweep-once path now refreshes the reviews, so this appeared with the rows, not on the next poll |
+| the link shim flipped to "no network"; **Sweep once** again | the note `— 2 sweeps reviewed, 1 off the network`, the badge `1`, one finding labelled `Forced disconnect`: `2026-09-22 16:16:42 — off LabNet 00:1a:2b:3c:4d:5e while it was still heard at -45 dBm`, the advice under it (`The access point was in range when the link dropped, so this was not fading. …`), and `1 outage on the timeline` folded below |
+| a reload | the badge `1` and the `Forced disconnect` finding again, from the API |
+| reads of `/api/v1/radar/disruptions` in the run | 4 — at load, after each sweep, at the reload; none on a timer |
+| page errors | none |
+
+#### The first run of the end-to-end lock found a defect the unit tests could not
+
+`a_forced_disconnection_is_seen_across_two_sweeps` first answered
+`["outage"]` where `["forced_disconnect", "outage"]` was expected: the two
+sweeps ran within one second, `Scan::started_at` is whole seconds, and the
+review's tiebreak for equal seconds was the scan id — random. The store had
+the same defect one layer down: `radar_history` ordered a same-second tie by
+`id DESC`, so even the Radar view's history list ordered two such sweeps by
+chance. Fixed at the store (`ORDER BY started_at DESC, rowid DESC` — the rowid
+is creation order, because `upsert_scan` updates in place and a scan keeps the
+rowid of its first insert; locked by
+`radar_history_orders_a_same_second_tie_by_creation_not_by_id`, whose ids are
+chosen so that the old tiebreak inverts the truth), at the assembly (the
+history reversed, oldest first, is the order handed to the review) and at the
+review (a stable sort by `ts`: sweeps with the same second keep the order
+given — locked by the same-second case added to
+`the_review_orders_sweeps_itself…`, which finds the forced disconnection in
+one order and not in the other). The probe above then reproduced the
+same-second case on the real binary.
+
+#### Falsification — predicted before run, then compared
+
+Each row mutates one line, runs the locks (`--no-fail-fast`, so a second
+binary's kill is not hidden by the first's), restores (md5-verified).
+
+| # | mutation | predicted | actual |
+|---|---|---|---|
+| Q1 | a blank answer is "nothing to report" again (no link record when off) | `the_link_record_says…` fails at "a link record even when off"; the e2e fails: sweep 2 has no record (`unrecorded_sweeps` 1, no finding) | **partly wrong, corrected here**: `the_link_record_says_connected_with_the_readings_and_disconnected_with_nothing` failed exactly as predicted; the e2e **survived** — its sweep 2 uses the `link-down` shim, which answers a real JSON body (`supplicant_state: DISCONNECTED`), never a BLANK one, so Q1's mutation (which only touches the blank-output early return) never executes on that path. The prediction conflated two different "off the network" shapes the parser handles; only the unit test exercises the blank one. Residual noted below. |
+| Q2 | the module `extend`s entities instead of `absorb`ing the result (the first draft's defect) | the parser test and the handler test survive (the seam is below and above them); the e2e fails: neither sweep recorded a link (`unrecorded_sweeps` 2) | exactly as predicted — all 10 matched lib tests passed, the e2e failed at sweep 1 ("the sweep recorded its link"), consistent with BOTH sweeps losing their link record (`extend` drops it every iteration, not only the second) |
+| Q3 | nothing is loud enough to be a forced disconnection (`FORCED_MIN_DBM` = −30) | the link tests fail (forced at −45/−60 no longer found); the handler test and the e2e fail with kinds `["outage"]` | exactly as predicted, broader than enumerated: four `core::link::tests` failed (not only the one named), plus the handler test and the e2e, every failure the same shape — `["forced_disconnect", "outage"]` collapsed to `["outage"]` |
+| Q4 | the review trusts the order it is handed (no sort) | `the_review_orders_sweeps_itself…` fails; the handler test fails too — the history is newest-first, so the forced disconnection (older→newer) is not seen | **partly wrong, corrected here**: only `the_review_orders_sweeps_itself_and_counts_the_timeline` failed; the handler test and the e2e both **survived**. The prediction did not account for `link_sweeps_from_history` (the assembly both real callers go through) already reversing the newest-first history to oldest-first before calling `review` — so both current callers hand `review` correctly-ordered sweeps regardless of its own sort, and only a caller that (like the unit test) deliberately hands sweeps out of order exercises the guarantee `review`'s own doc comment makes. The invariant is real and worth keeping — a future caller may not pre-sort — but this row's blast radius was overstated. |
+| Q5 | a new address is a twin even when weaker | `a_known_name_from_a_new_louder_address…` fails at the "new but weaker" control | exactly as predicted — the one test carrying that control failed, nothing else |
+| Q6 | the engine never persists the record | the engine test fails ("the link record reached wifi_links"); the e2e fails at sweep 1 ("the sweep recorded its link") | exactly as predicted |
+
+Two of six rows were partly mispredicted (Q1, Q4) — both in the SAME
+direction: overstating a mutation's reach into the handler/e2e layer without
+tracing the exact path each test's fixture takes through the code. Recorded
+rather than quietly corrected, per this project's own falsification
+discipline: a wrong prediction that is caught is more valuable evidence than
+a right one, and rewriting it after the run would throw that away.
+
+MATRIX_SUMMARY_PLACEHOLDER
+
+#### Scope, honestly
+
+- The review is over the radar's own sweep cadence (the default continuous
+  interval is 30 s), so a drop that begins and ends between two sweeps is
+  invisible to it; `DEAUTH_WINDOW_SECS` and the forced-disconnection rule are
+  stated in sweeps, not frames. A frame-level view needs monitor mode, which
+  Termux does not give.
+- The evil-twin rule needs the known address heard in the same sweep; a
+  twin that has fully displaced the real one reads as the real one moving.
+  That is the safe error: a louder, unheard-known "twin" is far more often a
+  second site of the same network.
+- The advice is text; a later cycle is action where Termux allows and the
+  operator opts in. Cycle 3 classifies the outage kind (offline / captive
+  portal / DNS hijack / TLS interception) from the probes that already exist.
+- Q1's falsification run found a real coverage gap, not only a
+  misprediction: no end-to-end test exercises `termux-wifi-connectioninfo`
+  answering truly BLANK output (the radio off, or the tool genuinely
+  reporting nothing) — the e2e's `link-down` shim always answers real JSON
+  (a `DISCONNECTED` supplicant state), which is a different code path from
+  the blank-output early return `the_link_record_says…` locks directly.
+  Both paths are locked at the unit level; only the blank one lacks an
+  end-to-end demonstration through the real binary. Queued, not silently
+  accepted.

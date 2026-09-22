@@ -95,7 +95,7 @@ impl Module for DeviceSensors {
         // was observed. Same `or_hard_failure` contract as `signal_radar`.
         let wifi_out =
             crate::modules::termux_sensor::read_and_parse(Sensor::WifiConnection, |stdout| {
-                wifi::parse_conn(stdout, &ctx.scan_id)
+                wifi::parse_conn(stdout, &ctx.scan_id, epoch_now())
             })
             .await;
         let loc_out = scan_location(&ctx.scan_id).await;
@@ -104,7 +104,9 @@ impl Module for DeviceSensors {
         let mut first_failure = None;
         for outcome in [wifi_out, loc_out] {
             match outcome {
-                Ok(r) => result.extend(r.entities),
+                // `absorb`, not `extend`: the link record travels with the
+                // entities (REQ-RESILIENCE-002), as sightings do in signal_radar.
+                Ok(r) => result.absorb(r),
                 Err(e) => {
                     tracing::warn!(module = SRC, error = %e, "device_sensors: sensor failed");
                     first_failure.get_or_insert(e);
@@ -122,4 +124,10 @@ impl Module for DeviceSensors {
 /// `signal_radar`, which ran a byte-identical copy.
 async fn scan_location(scan_id: &str) -> Result<ModuleResult> {
     crate::modules::device_fix::scan_location_ladder(scan_id, SRC).await
+}
+
+/// The read time, Unix seconds, for the link record: the tool carries no wall
+/// clock of its own.
+fn epoch_now() -> Option<i64> {
+    i64::try_from(crate::core::entity::unix_now()).ok()
 }

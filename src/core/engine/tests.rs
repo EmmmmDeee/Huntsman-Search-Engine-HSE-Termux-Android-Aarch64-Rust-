@@ -1402,6 +1402,17 @@ async fn a_modules_sightings_are_persisted_beside_its_entities_and_a_replay_pers
     observed.observed_epoch = Some(1_758_500_000);
     let mut mr = ModuleResult::new();
     mr.push_sighting(observed);
+    // REQ-RESILIENCE-002: the device's own link travels the same seam.
+    mr.link = Some(crate::core::link::LinkState {
+        connected: true,
+        ssid: Some("LabNet".to_string()),
+        bssid: Some("aa:bb:cc:dd:ee:ff".to_string()),
+        signal_dbm: Some(-45.0),
+        ip: None,
+        link_speed_mbps: None,
+        supplicant_state: Some("COMPLETED".to_string()),
+        observed_epoch: Some(1_758_500_000),
+    });
     engine.finalise_module_result(
         &cx,
         "test_radar_sightings_real",
@@ -1410,6 +1421,13 @@ async fn a_modules_sightings_are_persisted_beside_its_entities_and_a_replay_pers
         &[],
         false,
     );
+
+    let link = store
+        .wifi_link_for_scan("radar-sweep-1")
+        .expect("query the link")
+        .expect("the link record reached wifi_links");
+    assert!(link.connected);
+    assert_eq!(link.bssid.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
 
     let rows = store
         .rf_devices_for_scan("radar-sweep-1")

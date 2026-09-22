@@ -204,6 +204,7 @@ pub(super) fn parse_cells_survey(
         entities: Vec::with_capacity(cells.len()),
         truncation: None,
         sightings: Vec::new(),
+        link: None,
     };
     for cell in &cells {
         // Same parse/skip + builder the live process() path uses, so these

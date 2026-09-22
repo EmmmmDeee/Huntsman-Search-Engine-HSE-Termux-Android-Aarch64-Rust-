@@ -723,6 +723,10 @@ async fn radar_view_is_wired_from_the_nav_to_the_signals_api() {
         "reconnecting",
         "offline-banner",
         "live-stream-state",
+        // REQ-RESILIENCE-002: the disruption review on the page.
+        "/api/v1/radar/disruptions",
+        "radar-disruptions",
+        "deauth_suspected",
     ] {
         assert!(
             html.contains(marker),

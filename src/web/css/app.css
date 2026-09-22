@@ -873,3 +873,8 @@ input[type=checkbox],input[type=radio]{ accent-color:var(--accent); width:14px; 
 .radar-spark text{ fill:var(--text-dim); font-size:8px; font-family:var(--mono); }
 .offline-banner{ background:var(--danger-dim); color:var(--danger); border-bottom:1px solid var(--danger); padding:6px 12px; font-size:12px; text-align:center; }
 .radar-stream-pill{ margin-left:6px; }
+.radar-finding{ padding:8px 12px; border-bottom:1px solid var(--border); font-size:12px; }
+.radar-finding:last-child{ border-bottom:none; }
+.radar-advice{ margin-top:3px; font-size:11px; }
+.radar-outages{ padding:6px 12px; font-size:12px; }
+.radar-outages summary{ cursor:pointer; }

@@ -1060,18 +1060,28 @@ the web reader at the moment the event arrives — the property the view
 rests on is asserted, not assumed.
 
 **T6 — Resilience (the console and the radar under hostile or failing
-networks).** The directive: the world's most resilient system against
-predictable Wi-Fi outages, forced disconnections, deauthentication and
-hostile network disruption. What that means for HSE, whose console is a
-loopback page and whose radar needs no network at all: nothing the operator
-is looking at may freeze, lie, or lose what it had when the link goes; the
-radar keeps sweeping through an outage; and the radar *sees* the disruption
-— records it, classifies it, and says what it is. The authorities: the SPA's
-one stream opener (`scan_info/log.js`) and one request path (`api.js`), the
-live loop (`core::live`), `device_sensors`' connected-AP read
-(`termux-wifi-connectioninfo`), `util::egress` / `util::dns` /
-`util::probe::control_presences` for the outage kind, and the sighting table
-for the record.
+networks, the process under Android's own lifecycle).** The directive: the
+world's most resilient system against (a) predictable Wi-Fi outages, forced
+disconnections, deauthentication and hostile network disruption; (b) DNS
+failure, captive portals, IP reassignment, routing changes, gateway
+instability and partial upstream connectivity; and (c) Android process
+termination, battery optimisation, device sleep, app eviction, unexpected
+reboots and loss of runtime state. What that means for HSE, whose console is
+a loopback page and whose radar needs no network at all: nothing the
+operator is looking at may freeze, lie, or lose what it had when the link
+goes; the radar keeps sweeping through an outage; the radar *sees* the
+disruption — records it, classifies it, and says what it is; and a session
+the OS kills is one tap from resumed, never silently gone. The authorities:
+the SPA's one stream opener (`scan_info/log.js`) and one request path
+(`api.js`), the live loop (`core::live`), `device_sensors`' connected-AP
+read (`termux-wifi-connectioninfo`), `core::link` for the Wi-Fi-link record,
+`util::curl_client` (the DNS-resolve exit code and its DoH retry),
+`util::egress` (the health-scored proxy pool and its captive-portal probe
+URL — the same `generate_204` endpoint Android's own connectivity check
+uses), `util::dns` (the resolver pool) and `cert_intel`'s TLS capture for
+the outage KIND; and the store — `wifi_links`, `rf_sightings`, and a new
+persisted live-session row — for everything that must survive the process
+dying.
 
 Ordered cycles:
 
@@ -1083,21 +1093,88 @@ Ordered cycles:
    banner raised by the one request path and lowered by the next answer; the
    stream of a session the server does not know is a 404, not a silent pipe.
    Proven by killing and restarting `hse serve` under an open console.
-2. **The disruption record.** The connected-AP read becomes a per-sweep link
-   state beside the sightings (connected, SSID, BSSID, level, address), and
-   `core::disruption` reviews the sweep history: a forced disconnection (off
-   the network while the last BSSID is still heard at usable level),
-   deauthentication suspected (repeated within an hour), an evil twin (a
-   known SSID from a never-seen BSSID, stronger), and predictable outages
-   (drops at a regular period). `GET /api/v1/radar/disruptions`, a Radar
-   panel, `hse signal --disruptions`.
-3. **The radar through an outage.** A live radar with a network-bound module
-   against a dead host and hanging sensor shims keeps sweeping, every
-   iteration bounded; `hse doctor` and the radar status say which kind of
-   outage it is — offline, captive portal, hijacked DNS, intercepted TLS —
-   from the probes that already exist.
-4. **Advice and, where Termux allows and the operator opts in, action:**
-   PMF/802.11w, cell-data fallback, re-enabling Wi-Fi after a drop.
+2. **REQ-RESILIENCE-002 — the disruption record.** The connected-AP read is
+   a per-sweep `LinkState` (`core::link`) beside the sightings — connected,
+   SSID, canonical BSSID, level, address, link speed, the supplicant's own
+   state, the read time; *not connected* is a record, not an absence —
+   carried on `ModuleResult.link` like the sightings and persisted by the
+   engine's one finalise path into `wifi_links`, never on a cache replay.
+   `core::link::review` (pure: no I/O, no clock) reads the sweep history —
+   each sweep's link record plus the Wi-Fi access points its sightings heard
+   — for a forced disconnection (off the network while the last BSSID is
+   still heard at ≥ −75 dBm), deauthentication suspected (three or more
+   forced disconnections from one access point within an hour), an evil twin
+   (a known SSID from a never-seen BSSID, louder than the known one heard in
+   the same sweep), periodic outages (more than three outage starts whose
+   gaps all sit within 15 % of their median) and the outage timeline they sit
+   on; every finding carries the same advice on the page and in the shell.
+   `GET /api/v1/radar/disruptions`, `hse signal --disruptions`, and the Radar
+   view's "Network disruption" panel share one assembly and one presenter; a
+   sweep from before the record existed is counted as unrecorded, not
+   guessed. Proven with the sensor scripted through a drop under a real
+   `hse serve`, in the shell and in Chromium.
+3. **REQ-RESILIENCE-003 — the radar through an outage, with the outage
+   classified.** A live radar with a network-bound module against a dead
+   host and hanging sensor shims keeps sweeping, every iteration bounded (no
+   change needed if the per-module timeouts the engine already enforces are
+   sound — verify, don't assume). A new pure `core::outage` (the `core::link`
+   precedent: no I/O, no clock, a `review`-shaped entry point over readings
+   the caller supplies) classifies what kind of trouble the path to the
+   internet is in, from signals HSE already produces or can cheaply add:
+   - **Offline** — DNS resolution fails (`util::curl_client`'s own
+     `CURL_EXIT_COULD_NOT_RESOLVE`, already surfaced per-provider) AND a
+     probe that never touches DNS (an IP-literal request to a stable anchor)
+     also fails: no path exists at all, not just a bad resolver.
+   - **Captive portal** — DNS resolves and a TCP connect succeeds, but a
+     request to `util::egress`'s existing neutral connectivity-check URL
+     (`http://www.gstatic.com/generate_204`, already the pool's own health
+     probe, and the identical URL Android's and Chrome's own captive-portal
+     detectors use) answers anything other than an empty 204 — a 200 with a
+     body, or a redirect, is a login page intercepting the request.
+   - **DNS hijacked/filtered** — the system resolver's answer for a small set
+     of pinned, stable domains disagrees with (or the system resolver fails
+     while) the DoH fallback already wired into `util::curl_client` succeeds
+     for the same domain at roughly the same time: the two paths give
+     different truths.
+   - **TLS interception** — a request to a pinned domain completes but the
+     leaf certificate's issuer is not one of a small allow-list of public
+     CAs, reusing `cert_intel`'s existing `.tls_info(true)` capture
+     (REQ-CERTINTEL-001) rather than a second TLS-parsing path.
+   Exposed on `hse doctor`, the radar's disruption review (a new finding
+   kind carried beside the Wi-Fi-link findings, not a separate surface), and
+   the Radar view. Proven against a real captive-portal-shaped stub server
+   (200 + HTML where 204 is expected) and a DNS stub that disagrees with
+   itself, not asserted from the classifier's own logic.
+4. **REQ-RESILIENCE-004 — a session the OS kills is one tap from resumed.**
+   `core::live` says plainly: "Sessions are in-memory only. Restart →
+   cleared." True today, and REQ-RESILIENCE-001 made that visible rather
+   than silent — but visible-and-lost is not resilient against exactly the
+   failure mode this cycle's directive names: Android's battery optimiser,
+   Doze, an OOM eviction, or a plain reboot killing the Termux process mid
+   live-radar with no cooperative shutdown to persist anything. A killed
+   ONE-SHOT scan already survives this (REQ-SCANSTATUS-001: the row reads
+   `interrupted`, and every sighting up to the kill is on disk) — a live
+   SESSION's own configuration (target, `ScanOptions`, `LiveOptions`, the
+   live-id, when it started, how many iterations it has completed) does not,
+   because nothing ever writes it down. Persist a `live_sessions` row
+   (mirroring `wifi_links`: append-only-ish, one authoritative row per
+   session, written on start and on each iteration boundary — never on the
+   async reactor) with enough to reconstruct the session, not the whole
+   engine state; on `hse serve` startup, read every row whose status is
+   still "running" (the process that owned it is provably gone, or this
+   read would not be happening) and surface them as **resumable**, not
+   silently re-started — the operator's `passive_only`/`modules`/`depth`
+   scope controls are a deliberate choice this fix must never override by
+   guessing. `GET /api/v1/live` already lists sessions; extend it (and the
+   Radar view's `adoptRunningRadar`, which already re-attaches a session
+   still listed) to also list resumable-but-dead ones with a Resume action,
+   so cycle 1's "re-attached if still listed" and this cycle's "listed even
+   after the process died" are the same code path, not two. Proven by
+   `kill -9` on a live radar mid-run and a restart on the same database: the
+   session is offered for resume, not silently absent.
+5. **Advice and, where Termux allows and the operator opts in, action:**
+   PMF/802.11w, cell-data fallback, re-enabling Wi-Fi after a drop, switching
+   egress path on a classified captive portal.
 
 The rule the track starts with: **a stream is a refresh signal, not a source
 of truth** — anything a page shows must be re-derivable from the store on

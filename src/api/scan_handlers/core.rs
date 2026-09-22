@@ -1087,6 +1087,46 @@ pub async fn radar_recurring(
     }
 }
 
+/// `GET /api/v1/radar/disruptions?limit=<n>` — what the sweep history says
+/// about the device's own Wi-Fi link (REQ-RESILIENCE-002): forced
+/// disconnections (off the network while the access point is still heard),
+/// a deauthentication pattern, an evil twin, outages on a schedule, and the
+/// outage timeline, over the newest `limit` radar sweeps. Each sweep's link
+/// record comes from `wifi_links`; the access points it heard from the
+/// sighting table. A sweep that recorded no link (from before the record
+/// existed, or one that did not run `device_sensors`) is counted in
+/// `unrecorded_sweeps` and left out — the review is not padded with guesses.
+/// All analysis is the pure [`crate::core::link::review`]; every finding
+/// carries the same `advice` the CLI prints.
+pub async fn radar_disruptions(
+    State(s): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let limit: usize = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+        .clamp(1, 1000);
+    let store = Arc::clone(&s.store);
+    // Off-reactor: the history plus two reads per sweep under the SQLite
+    // mutex, then the pure review — the one assembly the CLI uses too.
+    let read = super::offload_store(move || {
+        let (sweeps, unrecorded) = crate::app::signal::link_sweeps_from_history(&*store, limit)?;
+        Ok((crate::core::link::review(&sweeps), unrecorded))
+    })
+    .await;
+    match read {
+        Ok((report, unrecorded)) => (
+            StatusCode::OK,
+            Json(crate::app::signal::disruption_report_json(
+                &report, unrecorded,
+            )),
+        )
+            .into_response(),
+        Err(resp) => resp,
+    }
+}
+
 /// `GET /api/v1/radar/devices/{network_id}/track?limit=<n>` — one device's
 /// sightings across EVERY sweep and import, oldest first, capped to the newest
 /// `limit` (default 500, at most 5000): the movement record the per-sweep

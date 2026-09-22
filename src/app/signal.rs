@@ -6,6 +6,7 @@
 //! would return.
 
 use crate::core::error::Result;
+use crate::core::link::{Disruption, DisruptionReport, HeardAp, LinkSweep, review};
 use crate::core::port::StoragePort as _;
 use crate::core::rf::{RadioKind, RfDeviceRow, RfSummary};
 use crate::storage::Store;
@@ -133,17 +134,173 @@ fn print_devices(rows: &[RfDeviceRow], limit: usize, json: bool) {
     }
 }
 
+/// The sweep history as the disruption review reads it — one [`LinkSweep`]
+/// per radar sweep that recorded a link, with the access points it heard —
+/// plus the count of sweeps that recorded none (from before the record
+/// existed, or without `device_sensors`), which are left out rather than
+/// guessed. ONE assembly, shared by `hse signal --disruptions` and
+/// `GET /api/v1/radar/disruptions`, so the shell and the page review the
+/// same sweeps.
+pub fn link_sweeps_from_history(
+    store: &dyn crate::core::StoragePort,
+    limit: usize,
+) -> Result<(Vec<LinkSweep>, usize)> {
+    let scans = store.radar_history(limit.max(1))?;
+    let mut sweeps: Vec<LinkSweep> = Vec::with_capacity(scans.len());
+    let mut unrecorded = 0usize;
+    // The history is newest first with creation order breaking a same-second
+    // tie; reversed, it is the order the review keeps for equal seconds.
+    for scan in scans.iter().rev() {
+        let Some(link) = store.wifi_link_for_scan(&scan.id)? else {
+            unrecorded += 1;
+            continue;
+        };
+        let heard: Vec<HeardAp> = store
+            .rf_devices_for_scan(&scan.id)?
+            .into_iter()
+            .filter(|d| d.radio == RadioKind::Wifi)
+            .map(|d| HeardAp {
+                bssid: d.network_id,
+                ssid: d.name,
+                signal_dbm: d.best_signal_dbm,
+            })
+            .collect();
+        sweeps.push(LinkSweep {
+            scan_id: scan.id.clone(),
+            ts: scan.started_at,
+            link,
+            heard,
+        });
+    }
+    Ok((sweeps, unrecorded))
+}
+
+/// The review as JSON — the report's counts, `unrecorded_sweeps`, and every
+/// finding with its `advice` beside it. THE one shape, for `--json` and the
+/// API alike.
+#[must_use]
+pub fn disruption_report_json(report: &DisruptionReport, unrecorded: usize) -> serde_json::Value {
+    let findings: Vec<serde_json::Value> = report
+        .findings
+        .iter()
+        .map(|f| {
+            let mut v = serde_json::to_value(f).unwrap_or(serde_json::Value::Null);
+            if let serde_json::Value::Object(m) = &mut v {
+                m.insert(
+                    "advice".to_string(),
+                    serde_json::Value::String(f.advice().to_string()),
+                );
+            }
+            v
+        })
+        .collect();
+    serde_json::json!({
+        "sweeps": report.sweeps,
+        "connected_sweeps": report.connected_sweeps,
+        "disconnected_sweeps": report.disconnected_sweeps,
+        "unrecorded_sweeps": unrecorded,
+        "findings": findings,
+        "count": report.findings.len(),
+    })
+}
+
+/// `hse signal --disruptions` (REQ-RESILIENCE-002).
+fn print_disruptions(store: &Store, limit: usize, json: bool) -> Result<()> {
+    let (sweeps, unrecorded) = link_sweeps_from_history(store, limit)?;
+    let report = review(&sweeps);
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&disruption_report_json(&report, unrecorded))
+                .unwrap_or_default()
+        );
+        return Ok(());
+    }
+    println!(
+        "Wi-Fi link across {} sweep(s): {} connected, {} off the network{}",
+        report.sweeps,
+        report.connected_sweeps,
+        report.disconnected_sweeps,
+        if unrecorded > 0 {
+            format!(" ({unrecorded} older sweep(s) recorded no link and are not reviewed)")
+        } else {
+            String::new()
+        }
+    );
+    if report.findings.is_empty() {
+        println!("  No disruption found.");
+        return Ok(());
+    }
+    for f in &report.findings {
+        let line = match f {
+            Disruption::ForcedDisconnect {
+                at,
+                bssid,
+                ssid,
+                heard_dbm,
+                ..
+            } => format!(
+                "FORCED DISCONNECT  epoch {at}: off {} ({bssid}) while it was still heard at {heard_dbm:.0} dBm",
+                ssid.as_deref().unwrap_or("?")
+            ),
+            Disruption::DeauthSuspected {
+                from,
+                to,
+                count,
+                bssid,
+                ssid,
+            } => format!(
+                "DEAUTH SUSPECTED   {count} forced disconnections from {} ({bssid}) between epoch {from} and {to}",
+                ssid.as_deref().unwrap_or("?")
+            ),
+            Disruption::EvilTwinSuspected {
+                at,
+                ssid,
+                new_bssid,
+                new_dbm,
+                known_bssid,
+                known_dbm,
+                ..
+            } => format!(
+                "EVIL TWIN?         epoch {at}: {ssid} from new {new_bssid} at {new_dbm:.0} dBm, louder than known {known_bssid} at {known_dbm:.0} dBm"
+            ),
+            Disruption::PeriodicOutage {
+                period_secs,
+                occurrences,
+                from,
+                to,
+            } => format!(
+                "PERIODIC OUTAGE    {occurrences} outages every ~{period_secs} s, epoch {from} → {to}"
+            ),
+            Disruption::Outage { from, to, sweeps } => {
+                format!("outage             {sweeps} sweep(s) off the network, epoch {from} → {to}")
+            }
+        };
+        println!("  {line}");
+        println!("      {}", f.advice());
+    }
+    Ok(())
+}
+
 /// CLI entry.
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 pub async fn cmd_signal(
     scan_id: Option<String>,
     devices: bool,
     trackable: bool,
     names: bool,
     track: Option<String>,
+    disruptions: bool,
     limit: usize,
     json: bool,
 ) -> Result<()> {
     let store = Store::open(&crate::default_db_path())?;
+
+    // The disruption review is over the sweep HISTORY, not one scan, so it
+    // resolves no scan id and outranks every per-scan view.
+    if disruptions {
+        return print_disruptions(&store, limit, json);
+    }
 
     let sid = match scan_id {
         Some(s) => s,

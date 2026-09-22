@@ -690,3 +690,32 @@ fn a_devices_track_is_served_by_its_own_index_not_a_table_scan() {
     );
     assert!(!joined.contains("SCAN rf_sightings"), "{joined}");
 }
+
+#[test]
+fn a_sweeps_link_state_round_trips_and_the_latest_write_wins() {
+    use crate::core::link::LinkState;
+    let store = Store::open(":memory:").expect("in-memory store");
+    assert_eq!(store.wifi_link_for_scan("s1").expect("read"), None, "no record is None, not disconnected");
+    let up = LinkState {
+        connected: true,
+        ssid: Some("LabNet".to_string()),
+        bssid: Some("00:1A:2B:3C:4D:5E".to_string()),
+        signal_dbm: Some(-45.0),
+        ip: Some("192.168.1.20".to_string()),
+        link_speed_mbps: Some(433),
+        supplicant_state: Some("COMPLETED".to_string()),
+        observed_epoch: Some(1_758_500_000),
+    };
+    store.insert_wifi_link("s1", &up).expect("write");
+    let back = store.wifi_link_for_scan("s1").expect("read").expect("recorded");
+    assert_eq!(back.bssid.as_deref(), Some("00:1a:2b:3c:4d:5e"), "the address is stored canonical");
+    assert_eq!(LinkState { bssid: back.bssid.clone(), ..up.clone() }, back);
+    // A disconnection is a record too, and the latest write is the answer.
+    store
+        .insert_wifi_link("s1", &LinkState::disconnected(Some(1_758_500_100)))
+        .expect("write");
+    let back = store.wifi_link_for_scan("s1").expect("read").expect("recorded");
+    assert!(!back.connected);
+    assert_eq!(back.observed_epoch, Some(1_758_500_100));
+    assert!(store.wifi_link_for_scan("s2").expect("read").is_none(), "scoped to its scan");
+}

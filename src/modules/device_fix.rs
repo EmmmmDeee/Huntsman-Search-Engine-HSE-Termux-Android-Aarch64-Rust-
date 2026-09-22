@@ -296,6 +296,7 @@ fn result_for_fix(fix: &Fix, scan_id: &str, src: &'static str) -> ModuleResult {
         entities: Vec::with_capacity(1),
         truncation: None,
         sightings: Vec::new(),
+        link: None,
     };
     result.push(e);
     result

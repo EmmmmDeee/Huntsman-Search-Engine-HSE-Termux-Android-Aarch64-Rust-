@@ -6,6 +6,7 @@
 use rusqlite::params;
 
 use crate::core::error::Result;
+use crate::core::link::LinkState;
 use crate::core::rf::{RadioKind, RfDeviceRow, RfSighting, RfSource, RfSummary, RfTrackPoint};
 
 impl super::Store {
@@ -198,6 +199,57 @@ impl super::Store {
         let mut rows = mapped.collect::<rusqlite::Result<Vec<_>>>()?;
         rows.reverse();
         Ok(rows)
+    }
+
+    /// One sweep's link state (REQ-RESILIENCE-002). One row per sweep; a
+    /// second write for the same scan is a second observation and is kept —
+    /// the reader takes the latest.
+    pub fn insert_wifi_link(&self, scan_id: &str, link: &LinkState) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO wifi_links(scan_id, observed_epoch, connected, ssid, bssid, signal_dbm,
+                                    ip, link_speed_mbps, supplicant_state)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![
+                scan_id,
+                link.observed_epoch,
+                i64::from(link.connected),
+                link.ssid,
+                link.bssid.as_deref().map(str::to_lowercase),
+                link.signal_dbm,
+                link.ip,
+                link.link_speed_mbps,
+                link.supplicant_state,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The latest link state recorded for a sweep, or `None` when it recorded
+    /// none — a sweep from before the record existed, or one that did not run
+    /// `device_sensors`. The caller tells the two apart from the sweep, not
+    /// from this answer.
+    pub fn wifi_link_for_scan(&self, scan_id: &str) -> Result<Option<LinkState>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT observed_epoch, connected, ssid, bssid, signal_dbm, ip, link_speed_mbps,
+                    supplicant_state
+               FROM wifi_links WHERE scan_id = ?1 ORDER BY id DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![scan_id])?;
+        Ok(match rows.next()? {
+            Some(r) => Some(LinkState {
+                observed_epoch: r.get(0)?,
+                connected: r.get::<_, i64>(1)? != 0,
+                ssid: r.get(2)?,
+                bssid: r.get(3)?,
+                signal_dbm: r.get(4)?,
+                ip: r.get(5)?,
+                link_speed_mbps: r.get(6)?,
+                supplicant_state: r.get(7)?,
+            }),
+            None => None,
+        })
     }
 
     /// Names carried by more than one radio, largest installation first.

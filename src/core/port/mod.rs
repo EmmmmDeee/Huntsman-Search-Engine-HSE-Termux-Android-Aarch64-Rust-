@@ -273,6 +273,21 @@ pub trait StoragePort: Send + Sync {
         Ok(Vec::new())
     }
 
+    // ── The device's own Wi-Fi link (REQ-RESILIENCE-002) ────────────────────
+    /// Persist one sweep's link state — "not connected" included, because for
+    /// the disruption review the absence is the observation. Default no-op for
+    /// test doubles; the SQLite `Store` writes `wifi_links`.
+    fn insert_wifi_link(&self, _scan_id: &str, _link: &crate::core::link::LinkState) -> Result<()> {
+        Ok(())
+    }
+
+    /// One sweep's link state, or `None` for a sweep that recorded none (one
+    /// from before the record existed, or a sweep without `device_sensors`).
+    /// Default `None` for test doubles.
+    fn wifi_link_for_scan(&self, _scan_id: &str) -> Result<Option<crate::core::link::LinkState>> {
+        Ok(None)
+    }
+
     // ── Maintenance ─────────────────────────────────────────────────────────
     /// Bound the backing store's write-ahead footprint at a safe boundary
     /// (e.g. a completed scan). Default is a no-op for backends without a

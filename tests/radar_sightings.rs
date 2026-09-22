@@ -56,6 +56,13 @@ fn shims() -> &'static Path {
             r#"if [ -f "$(dirname "$0")/no-fresh-fix" ] && [ "$4" = "once" ]; then exit 1; fi
 echo '{"latitude":-27.4705,"longitude":153.0260,"accuracy":8.0,"provider":"gps"}'"#,
         );
+        // The device's own link (`device_sensors`): on LabNet until the
+        // `link-down` flag appears, then Android's "no network" answer.
+        stub(
+            shims.path(),
+            "termux-wifi-connectioninfo",
+            r#"if [ -f "$(dirname "$0")/link-down" ]; then echo '{"bssid":"02:00:00:00:00:00","ssid":"<unknown ssid>","supplicant_state":"DISCONNECTED"}'; else echo '{"bssid":"AA:BB:CC:DD:EE:FF","ssid":"LabNet","rssi":-45,"ip":"192.168.1.20","link_speed_mbps":433,"supplicant_state":"COMPLETED","frequency_mhz":2437}'; fi"#,
+        );
         stub(
             shims.path(),
             "termux-telephony-cellinfo",
@@ -409,4 +416,78 @@ async fn a_continuous_radar_announces_each_sweep_and_recurrence_builds_across_th
         scans, completed,
         "the trail runs through both sweeps in order"
     );
+}
+
+/// REQ-RESILIENCE-002 — the device's own link is a record per sweep, "not
+/// connected" included, and the review over two sweeps sees a forced
+/// disconnection: off the network while the access point it was on is still
+/// heard. `device_sensors` runs beside `signal_radar` here, as in the radar
+/// spec; the access points heard come from the sighting table.
+#[tokio::test]
+async fn a_forced_disconnection_is_seen_across_two_sweeps() {
+    use huntsman_search_engine::modules::device_sensors::DeviceSensors;
+    let shims = shims();
+    let (app, store, _state) = common::test_app_with_modules_and_state(
+        vec![
+            Arc::new(SignalRadar) as Arc<dyn Module>,
+            Arc::new(DeviceSensors) as Arc<dyn Module>,
+        ],
+        "radar-link",
+    );
+
+    // Sweep 1: on LabNet. The record is typed, canonical, and persisted.
+    let sid1 = sweep(&app).await;
+    let link = store
+        .wifi_link_for_scan(&sid1)
+        .expect("read")
+        .expect("the sweep recorded its link");
+    assert!(link.connected, "{link:?}");
+    assert_eq!(link.bssid.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
+    assert_eq!(link.ssid.as_deref(), Some("LabNet"));
+    assert_eq!(link.signal_dbm, Some(-45.0));
+
+    // Sweep 2: thrown off, LabNet still heard at −45 by the radar.
+    std::fs::write(shims.join("link-down"), "").unwrap();
+    let sid2 = sweep(&app).await;
+    let link = store
+        .wifi_link_for_scan(&sid2)
+        .expect("read")
+        .expect("off the network is a record too");
+    assert!(!link.connected, "{link:?}");
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/radar/disruptions")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = json_of(resp).await;
+    assert_eq!(
+        (
+            body["sweeps"].as_u64(),
+            body["connected_sweeps"].as_u64(),
+            body["disconnected_sweeps"].as_u64(),
+            body["unrecorded_sweeps"].as_u64()
+        ),
+        (Some(2), Some(1), Some(1), Some(0)),
+        "{body}"
+    );
+    let kinds: Vec<&str> = body["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .map(|f| f["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["forced_disconnect", "outage"], "{body}");
+    let forced = &body["findings"][0];
+    assert_eq!(forced["bssid"], "aa:bb:cc:dd:ee:ff");
+    assert_eq!(forced["ssid"], "LabNet");
+    assert_eq!(forced["heard_dbm"], -45.0, "the radar still heard it");
+    assert_eq!(forced["scan_id"], sid2.as_str());
+    assert!(forced["advice"].as_str().is_some_and(|a| !a.is_empty()));
 }

@@ -423,11 +423,21 @@ async fn run_command(command: Command) -> Result<()> {
             trackable,
             names,
             track,
+            disruptions,
             limit,
             json,
         } => {
-            crate::app::signal::cmd_signal(scan_id, devices, trackable, names, track, limit, json)
-                .await
+            crate::app::signal::cmd_signal(
+                scan_id,
+                devices,
+                trackable,
+                names,
+                track,
+                disruptions,
+                limit,
+                json,
+            )
+            .await
         }
         Command::Tidy { dry_run, json } => crate::app::tidy::cmd_tidy(dry_run, json),
     }

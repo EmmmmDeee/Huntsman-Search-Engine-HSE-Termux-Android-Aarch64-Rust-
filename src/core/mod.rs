@@ -48,6 +48,7 @@ pub mod gexf;
 pub mod graph;
 pub mod intelligence;
 pub mod leads;
+pub mod link;
 pub mod live;
 pub mod metrics;
 pub mod module;

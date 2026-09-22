@@ -1129,3 +1129,92 @@ Victims:
         assert_eq!(ap["distinct_positions"], 2, "two places 200 m apart");
         assert_eq!(body["count"], 1);
     }
+
+    #[tokio::test]
+    async fn radar_disruptions_reads_the_link_records_and_the_access_points_heard() {
+        use crate::core::link::LinkState;
+        use crate::core::rf::{RadioKind, RfSource};
+        let state = crate::api::test_state();
+        let app = axum::Router::new()
+            .route(
+                "/api/v1/radar/disruptions",
+                axum::routing::get(super::core::radar_disruptions),
+            )
+            .with_state(Arc::clone(&state));
+
+        // Sweep 1 (older, on the network), sweep 2 (newer, off it while the
+        // same access point is heard at −48), and an old sweep with no link
+        // record at all. `radar_scan` gives them the sentinel target the
+        // history lists; `Scan::new` stamps `started_at` now, so the order is
+        // fixed explicitly below.
+        let mut s1 = radar_scan("radar-l1");
+        s1.started_at = 1_700_000_000;
+        let mut s2 = radar_scan("radar-l2");
+        s2.started_at = 1_700_000_060;
+        let mut s0 = radar_scan("radar-l0");
+        s0.started_at = 1_699_990_000;
+        for sc in [&s0, &s1, &s2] {
+            state.store.upsert_scan(sc).unwrap();
+        }
+        let up = LinkState {
+            connected: true,
+            ssid: Some("LabNet".to_string()),
+            bssid: Some("00:1a:2b:3c:4d:5e".to_string()),
+            signal_dbm: Some(-45.0),
+            ip: Some("192.168.1.20".to_string()),
+            link_speed_mbps: Some(433),
+            supplicant_state: Some("COMPLETED".to_string()),
+            observed_epoch: Some(1_700_000_000),
+        };
+        state.store.insert_wifi_link("radar-l1", &up).unwrap();
+        state
+            .store
+            .insert_wifi_link("radar-l2", &LinkState::disconnected(Some(1_700_000_060)))
+            .unwrap();
+        for (scan, epoch) in [("radar-l1", 1_700_000_000), ("radar-l2", 1_700_000_060)] {
+            state
+                .store
+                .insert_rf_sightings_batch(
+                    scan,
+                    &[radar_sighting(
+                        "00:1A:2B:3C:4D:5E",
+                        RadioKind::Wifi,
+                        RfSource::WifiRadar,
+                        Some("LabNet"),
+                        -48.0,
+                        epoch,
+                    )],
+                )
+                .unwrap();
+        }
+
+        let (status, body) = get_json(&app, "/api/v1/radar/disruptions").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(
+            (
+                body["sweeps"].as_u64(),
+                body["connected_sweeps"].as_u64(),
+                body["disconnected_sweeps"].as_u64(),
+                body["unrecorded_sweeps"].as_u64()
+            ),
+            (Some(2), Some(1), Some(1), Some(1)),
+            "{body}"
+        );
+        let kinds: Vec<&str> = body["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["forced_disconnect", "outage"], "{body}");
+        let forced = &body["findings"][0];
+        assert_eq!(forced["bssid"], "00:1a:2b:3c:4d:5e");
+        assert_eq!(forced["ssid"], "LabNet");
+        assert_eq!(forced["heard_dbm"], -48.0);
+        assert_eq!(forced["scan_id"], "radar-l2");
+        assert!(
+            forced["advice"].as_str().unwrap_or("").contains("in range"),
+            "every finding carries its advice: {forced}"
+        );
+        assert_eq!(body["count"], 2);
+    }
