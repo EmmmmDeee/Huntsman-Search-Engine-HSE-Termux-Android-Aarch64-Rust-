@@ -19025,3 +19025,62 @@ third list. The harness recorded that as BAD-SPEC but printed nothing, so the
 row simply went missing. That silent-vacuity shape is the one REQ-TYPOSQUAT-001
 names. It now prints every BAD-SPEC. Every row of every earlier matrix in this
 wave was re-checked: each printed a result, so nothing was skipped.
+
+---
+
+## REQ-LEAKIX-001 — the decoder read a shape LeakIX never sends, so every lookup was "no exposure"
+
+**Found** by the audit wave. The auditor could not verify the wire shape from
+inside the repository and said so. It was then established from LeakIX's own
+code:
+- the official Python client `leakix` 1.1.0 declares
+  `class HostResult(Model): Services: list[L9Event] | None; Leaks: list[L9Event] | None`,
+  built by `HostResult.from_dict(data)` over the raw body, and only
+  afterwards re-keys to lowercase for its own callers;
+- `l9format`'s `L9Event` declares `port: str`.
+
+An anonymous request to the live API answers `401 "Invalid API key"`, so no
+live capture was possible without a key.
+
+**Defect.** `HostResp` read lowercase `services`/`leaks`, both
+`#[serde(default)]`, with no rename. On a real body the capitalised arrays
+were unknown fields and were dropped, so both lists decoded empty and the
+module returned `Ok(empty)`: `CleanNegative`, "LeakIX holds no exposure for
+this host", for every host and domain ever asked. The same body also has
+string ports, which `port: Option<i64>` would have rejected as soon as the
+keys matched. Fixing the casing alone would have turned "empty" into a decode
+error on every response. Every existing fixture was author-written lowercase
+with numeric ports, the one shape LeakIX never sends, so none of them could
+see this. This is the REQ-FOFA-001 rule: test by deserialising the text the
+provider actually sends.
+
+**Fix.**
+- `Services`/`Leaks` are read as `Option<Vec<Event>>`, so they accept `null`.
+  The lowercase keys are kept as aliases.
+- `port` decodes from a string or a number, and any other shape is "no port"
+  rather than a failed event.
+- The pure seam `leakix_result` **fails closed** when a 200 body carries
+  neither key in either spelling: that is an unrecognised shape, not "no
+  exposure". A body with the keys set to `null` or `[]` stays the real clean
+  negative.
+- `ssh-exposed` now reads `protocol` too, because in L9 events `event_type`
+  is the event class and `protocol` names the service.
+
+**Locks:**
+- `the_real_wire_shape_is_an_exposure_not_a_clean_negative`
+- `null_or_empty_lists_are_the_real_clean_negative`
+- `a_body_with_neither_key_fails_closed`
+- `a_port_of_any_scalar_shape_or_none_never_fails_the_event`
+
+| # | mutation | result |
+|---|---|---|
+| X0 | **baseline**: lowercase keys only | killed by 2 |
+| X1 | numeric ports only | killed by 2 |
+| X2 | an unrecognised body is a clean negative again | killed by 1 |
+| X3 | SSH read from `event_type` only | killed by 1 |
+
+**4 of 4 killed.**
+
+**Residual.** No live capture was made. The shape rests on the vendor's own
+client and schema library, not on a response observed from this
+environment.
