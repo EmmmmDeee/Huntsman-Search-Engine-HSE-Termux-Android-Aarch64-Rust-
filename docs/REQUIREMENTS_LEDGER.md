@@ -18449,7 +18449,9 @@ rather than quietly corrected, per this project's own falsification
 discipline: a wrong prediction that is caught is more valuable evidence than
 a right one, and rewriting it after the run would throw that away.
 
-MATRIX_SUMMARY_PLACEHOLDER
+**Matrix: 6 of 6 mutations killed**, each by at least one lock. Q1 and Q4 were
+killed by fewer locks than predicted, for the reasons their rows give. None
+survived.
 
 #### Scope, honestly
 
@@ -18474,3 +18476,133 @@ MATRIX_SUMMARY_PLACEHOLDER
   Both paths are locked at the unit level; only the blank one lacks an
   end-to-end demonstration through the real binary. Queued, not silently
   accepted.
+
+---
+
+## REQ-CERTSPOTTER-001 — one page of a cursor, reported as the whole answer
+
+**Requirement.** A provider whose answer is a cursor must be followed as far as
+the module can afford. Where the walk stops before the end of the data, the
+result must say so. A small domain must not pay for the walk.
+
+### Observed, before any change (`069278d`)
+
+`certspotter::process` built one URL, made one `fetch_json`, and returned
+`build_entities` over that page. It never read an issuance `id` and never
+called `ModuleResult::mark_truncated`. The module's documentation did not
+mention pagination.
+
+The API reference (sslmate.com, *CT Search API v1*) says the endpoint "returns
+a limited number of issuances in a single response". A client takes the `id` of
+the last issuance, passes it back as `after=`, and repeats "until the issuances
+endpoint returns an empty array".
+
+Measured on 2026-09-22 with anonymous requests, `include_subdomains=true&expand=dns_names`:
+
+| query | observed |
+|---|---|
+| `google.com` | `200`, **exactly 100** issuances: a full page |
+| `github.com` | `200`, 75 issuances. The same query with `after=<last id>` returned `200 []`, `retry-after: 3600` |
+| `burntsushi.net` | `200`, 3 issuances, then `[]` for `after=<last id>` |
+| `amazon.com` | `504` after 10.6 s: `{"code":"timeout","message":"This query took longer than 10 seconds to complete. …"}` |
+| every response | `x-ratelimit-limit: 10`. An `after=` request decremented `x-ratelimit-remaining` like any other |
+
+Two things follow. The page holds 100, so any apex with more than 100 live
+certificates lost everything past the first page, and the coverage layer
+recorded `Observed` (complete). A short page is the end of the data, so a
+"follow until empty" loop would spend a second request on every small domain.
+The engine sends every discovered subdomain back through this module, and the
+anonymous tier allows only ten requests an hour, so that second request is not
+free.
+
+### The fix
+
+`walk_issuances(client, base, host, max_pages, next_page_cutoff) -> Result<Walk>`:
+
+- A page shorter than `PAGE_SIZE` (100) ends the walk as complete. An empty
+  page does too.
+- A full page is followed from its last issuance's `id`, which `Issuance` now
+  models.
+- The walk stops early, with the cause recorded in `Walk::cut`, on any of these:
+  the `MAX_PAGES` (5) cap; no page is started after `NEXT_PAGE_CUTOFF` (10 s);
+  a full page whose last issuance has no `id`.
+- A failed **first** request is still the module's `Err`. With nothing
+  retrieved, `Ok(empty)` would be a clean negative fabricated from an outage.
+  A failed **later** request keeps the pages already retrieved and records the
+  cause. Discarding real evidence because a different page failed is the
+  partial outage `ModuleResult::or_hard_failure` exists to prevent.
+
+`walk_result` is the pure seam `process()` returns through. A `cut` becomes
+`ModuleResult::mark_truncated(entities, None, cause)`. The provider reports no
+total, so the unknown-total arm is the honest one.
+
+`max_timeout_ms` rises from 10 s to 25 s. The server allows a query 10 s and
+then answers `504` with an explanation. The old budget killed the module at
+exactly 10 s, so an oversized apex surfaced as an anonymous engine timeout.
+No page starts after 10 s, so the page in flight gets the server's full 10 s
+plus transfer before the engine intervenes. The pages already held survive.
+
+**Assumption, recorded.** `PAGE_SIZE` is measured, not documented. If SSLMate
+shrank the page, a short page would be misread as the end. Growing it is
+harmless, because a larger page is still `>=` 100 and is still followed. The
+alternative, always requesting until an empty array, is robust to that change
+but doubles the cost of every small domain on a ten-an-hour budget. The
+measured constant is kept, with this trade stated where it is defined.
+
+### Locks (`src/modules/certspotter/tests.rs`)
+
+These are hermetic. A loopback listener answers a scripted sequence with
+`Connection: close` and records every request line, so the request count is
+part of each assertion. Failures are served as `503` rather than `429`: one 5xx
+cannot open the loopback endpoint's breaker, so no lock can change what another
+sees.
+
+- `a_short_page_is_the_whole_answer_and_costs_one_request`: 3 issuances, one
+  request, complete.
+- `a_full_page_is_followed_from_its_last_issuance_id`: 100 + 2 issuances, two
+  requests, the second carrying `&after=100`, with the query otherwise
+  unchanged.
+- `an_empty_page_after_a_full_one_is_the_end_not_a_truncation`: a corpus of
+  exactly 100.
+- `reaching_the_page_cap_is_reported_as_truncation`: the cap bounds requests,
+  not only entities.
+- `a_later_page_failure_keeps_the_pages_already_retrieved`: page one survives a
+  `503` on page two, and the cause names the status.
+- `a_first_page_failure_is_still_the_modules_error`.
+- `the_time_budget_stops_the_walk_before_requesting_another_page`.
+- `a_full_page_without_a_cursor_is_truncated_not_complete`.
+- `a_cut_walk_reaches_the_coverage_layer_and_a_complete_one_does_not`: the
+  emission seam.
+- `the_cursor_is_percent_encoded_onto_the_unchanged_query` and
+  `the_page_id_is_read_from_the_real_response_shape`, which uses the captured
+  `github.com` shape.
+
+### Falsified
+
+Each mutation was applied textually. The module's tests were run and the file
+was restored (md5-verified). A run that printed no `test result:` line was
+reported as NO-RUN, never as survived.
+
+| # | mutation | result |
+|---|---|---|
+| M0 | **baseline**: every page ends the walk as complete (the pre-fix behaviour) | killed by 6 |
+| M1 | **over-correction**: every page is followed, short or not | killed by 3 (incl. the one-request lock) |
+| M2 | a later page's failure discards the pages already held | killed by 1 |
+| M3 | the cursor is taken from the FIRST issuance | killed by 1 |
+| M4 | `walk_result` never declares the cut | killed by 1 (the seam lock) |
+| M5 | the time budget is never checked | killed by 1 |
+| M6 | a first-page failure is a clean empty result | killed by 1 |
+| M7 | a full page with no `id` reads as complete | killed by 1 (the first spec for this row was malformed; the harness reported NO-RUN, and the corrected spec was killed) |
+| M8 | off by one: an exactly-full page counts as short | killed by 6 |
+
+**9 of 9 killed.**
+
+### Residual
+
+- The module still has no key support. SSLMate's authenticated tiers raise the
+  hourly budget, which is what would make deeper walks affordable. That is a
+  capability addition, not part of this defect.
+- Each discovered subdomain re-queries with `include_subdomains=true`, so a
+  subdomain's answer is a subset of its apex's. Deduplicating that belongs to
+  the engine, across every host-keyed collector (`crtsh`, `anubis`,
+  `hackertarget`), and is not this module's to solve alone.
