@@ -7,10 +7,13 @@
 //! host — turning a single netblock seed into a swept range.
 //!
 //! Pure, no API, no native deps (Termux-clean). Bounded: at most [`MAX_HOSTS`]
-//! addresses are emitted so a wide block (or a `/0`) can't flood the graph; the
-//! parent `Cidr` entity is tagged `truncated` when the block exceeds the cap.
-//! IPv6 blocks are never enumerated (the host space is astronomical) — only the
-//! network base address is surfaced.
+//! addresses are emitted so a wide block (or a `/0`) can't flood the graph. A
+//! block that exceeds the cap is declared incomplete to the coverage layer
+//! ([`ModuleResult::mark_truncated_of`]) and its parent `Cidr` entity carries
+//! the same note, tagged `truncated`. An IPv6 block that fits the cap (`/118`
+//! and longer — the `/120` above) is enumerated like an IPv4 one; a wider IPv6
+//! block surfaces only its network base address, since sweeping the first
+//! thousand addresses of a `/64` says nothing about the rest of it.
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -97,8 +100,16 @@ impl Module for Netblock {
             e
         }));
         if truncated {
-            // Surface the cap on the parent so the operator knows the sweep was
-            // bounded (the block has `total` addresses; only MAX_HOSTS emitted).
+            let emitted = result.len();
+            // The provider-level declaration the coverage layer reads. A
+            // private `truncated` tag on the parent was the only signal before,
+            // and nothing outside this file reads that tag.
+            result.mark_truncated_of(
+                emitted,
+                total,
+                &format!("the host-expansion cap of {MAX_HOSTS}"),
+            );
+            // And the per-block note on the parent, for the operator reading it.
             let mut e = Entity::new(
                 EntityKind::Cidr,
                 block,
@@ -109,10 +120,10 @@ impl Module for Netblock {
             e.add_evidence(
                 Evidence::new(
                     SRC,
-                    format!("Block {block} has {total} addresses; expansion capped at {MAX_HOSTS}"),
+                    format!("Block {block} has {total} addresses; expansion capped at {emitted}"),
                 )
                 .with_attr("total_addresses", total.to_string())
-                .with_attr("emitted", MAX_HOSTS.to_string()),
+                .with_attr("emitted", emitted.to_string()),
             );
             result.push(e);
         }
@@ -122,11 +133,14 @@ impl Module for Netblock {
 
 /// Expand a CIDR string into up to `cap` host-IP strings. Returns
 /// `(ips, total_addresses, truncated)`, or `None` if the input is not a valid
-/// CIDR. IPv6 blocks yield only the network base address (`total = 1`) — the
-/// host space is too large to enumerate. **Pure.**
-fn expand_cidr(cidr: &str, cap: usize) -> Option<(Vec<String>, u64, bool)> {
+/// CIDR. `total_addresses` is exact (`u128`: an IPv6 `/0` holds `2^128`,
+/// saturated to `u128::MAX`). An IPv6 block that fits `cap` is enumerated in
+/// full; a wider one yields only its network base address, and is truncated.
+/// **Pure.**
+fn expand_cidr(cidr: &str, cap: usize) -> Option<(Vec<String>, u128, bool)> {
     let (ip, prefix) = cidr.split_once('/')?;
     let prefix: u8 = prefix.trim().parse().ok()?;
+    let cap_u = cap as u128;
 
     match ip.trim().parse::<std::net::IpAddr>().ok()? {
         std::net::IpAddr::V4(v4) => {
@@ -136,23 +150,32 @@ fn expand_cidr(cidr: &str, cap: usize) -> Option<(Vec<String>, u64, bool)> {
             let bits = 32 - u32::from(prefix);
             let mask = if bits == 32 { 0 } else { (!0u32) << bits };
             let base = u32::from(v4) & mask;
-            let total: u64 = 1u64 << bits;
-            let count = total.min(cap as u64);
+            let total: u128 = 1u128 << bits;
+            let count = total.min(cap_u);
             let ips = (0..count)
                 .map(|i| Ipv4Addr::from(base.wrapping_add(i as u32)).to_string())
                 .collect();
-            Some((ips, total, total > cap as u64))
+            Some((ips, total, total > cap_u))
         }
         std::net::IpAddr::V6(v6) => {
             if prefix > 128 {
                 return None;
             }
-            // Do not enumerate v6 (host space is astronomical); surface only the
-            // network base so the block still yields a scannable IP entity.
             let bits = 128 - u32::from(prefix);
             let mask: u128 = if bits == 128 { 0 } else { (!0u128) << bits };
             let base = u128::from(v6) & mask;
-            Some((vec![Ipv6Addr::from(base).to_string()], 1, false))
+            let total = 1u128.checked_shl(bits).unwrap_or(u128::MAX);
+            if total <= cap_u {
+                // Small enough to sweep like an IPv4 block — the `/120` the
+                // module header advertises, which was never enumerated before.
+                let ips = (0..total)
+                    .map(|i| Ipv6Addr::from(base + i).to_string())
+                    .collect();
+                return Some((ips, total, false));
+            }
+            // Do not enumerate a wide v6 block: surface only the network base
+            // so it still yields a scannable IP entity, and say it is partial.
+            Some((vec![Ipv6Addr::from(base).to_string()], total, true))
         }
     }
 }

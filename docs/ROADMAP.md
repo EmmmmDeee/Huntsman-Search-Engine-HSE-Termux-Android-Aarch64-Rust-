@@ -18,7 +18,7 @@
 > (`src/core/module/provider.rs`) — machine-readable and canonical, so this
 > document points at it rather than copying it.
 
-Last realigned: **2026-09-19**.
+Last realigned: **2026-09-22**.
 
 ---
 
@@ -492,6 +492,18 @@ by looking for them rather than reading modules at random:**
    contradiction and close it**, because a shared authority standing beside two
    survivors is three authorities, and the next reader cannot tell which is
    canonical.
+
+   **Count the spellings, not only the ones spelled like the first.**
+   REQ-COVERAGE-001 swept for private truncation *attributes* and found five;
+   eight more were written as a bare `"truncated"` entity *tag*, which the sweep
+   never looked for, and the coverage layer read all eight as complete
+   (REQ-COVERAGE-002). Three of them were hiding false negatives: two register
+   lookups returned "not found" from a page the provider said was partial,
+   because the tag sat after the no-match return. Its rule: **when you migrate a
+   concept, search for it by meaning (every word a module might use for it, in
+   every channel it could write to), then lock the channel shut** —
+   `tests/architecture.rs` now refuses a module that tags a truncation without
+   declaring it.
 
    **A filter's SHAPE can contradict the thing it filters.**
    `is_plausible_provider_coord` exists to drop a no-fix placeholder that is a

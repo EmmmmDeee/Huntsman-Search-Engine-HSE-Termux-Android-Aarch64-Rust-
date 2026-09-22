@@ -3,15 +3,16 @@ use serde_json::Value;
 use crate::core::{
     confidence,
     entity::EntityKind,
-    module::{ModuleCategory, ModuleCost},
+    module::{ModuleCategory, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 
 use super::{
-    HANDLE_PROPS, PERSON_PRIMARY, Wikidata,
+    HANDLE_PROPS, MAX_CANDIDATES, PERSON_PRIMARY, SEARCH_LIMIT, Wikidata,
     builder::{candidate_entity, primary_entities},
     claims::{claim_entity_ids, claim_p625, claim_strings, claim_time, en_text},
     classify::{classify, name_matches_query, seed_kind},
+    declare_search_truncation,
     types::{SearchHit, SearchResp},
     urls::{entities_url, search_url},
 };
@@ -812,4 +813,49 @@ fn an_item_whose_only_classification_is_deprecated_falls_back_it_is_never_guesse
         classify(&live_human, TargetKind::Organisation),
         EntityKind::Person
     );
+}
+
+// ── what the coverage layer is told ─────────────────────────────────────────
+
+#[test]
+fn a_full_search_page_is_partial_even_with_no_matching_label() {
+    // FAILS before the fix: a full page of fuzzy hits none of which carried
+    // the name returned `ModuleResult::new()` — a clean "no such item" — while
+    // the API held more hits beyond the page.
+    let mut out = ModuleResult::new();
+    declare_search_truncation(&mut out, SEARCH_LIMIT, 0);
+    let why = out.truncation.expect("a full page is not the whole answer");
+    assert!(why.contains(&format!("limit={SEARCH_LIMIT}")), "{why}");
+    assert!(why.contains("did not report how many"), "{why}");
+}
+
+#[test]
+fn more_matches_than_the_candidate_cap_are_declared_with_their_count() {
+    let mut out = ModuleResult::new();
+    declare_search_truncation(&mut out, SEARCH_LIMIT - 1, MAX_CANDIDATES + 2);
+    let why = out.truncation.expect("the candidate cap cut the answer");
+    assert!(
+        why.starts_with(&format!("{MAX_CANDIDATES} of {}", MAX_CANDIDATES + 2)),
+        "{why}"
+    );
+}
+
+#[test]
+fn a_short_page_within_the_cap_declares_nothing() {
+    // The control: a short page is everything the API holds, so an empty or
+    // capped-within-limit answer IS the answer.
+    for (returned, matched) in [(0, 0), (3, 0), (SEARCH_LIMIT - 1, MAX_CANDIDATES)] {
+        let mut out = ModuleResult::new();
+        declare_search_truncation(&mut out, returned, matched);
+        assert!(
+            out.truncation.is_none(),
+            "{returned}/{matched}: {:?}",
+            out.truncation
+        );
+    }
+}
+
+#[test]
+fn the_page_is_requested_at_the_size_it_is_measured_against() {
+    assert!(search_url("x").ends_with(&format!("&limit={SEARCH_LIMIT}")));
 }

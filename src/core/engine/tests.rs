@@ -3592,6 +3592,8 @@ async fn concurrent_dispatch_stops_near_max_entities_not_after_the_full_module_s
 struct CachingProbe {
     calls: Arc<AtomicU64>,
     ttl_secs: u64,
+    /// When set, every answer declares itself partial with this cause.
+    truncation: Option<&'static str>,
 }
 
 #[async_trait::async_trait]
@@ -3630,6 +3632,9 @@ impl Module for CachingProbe {
         ));
         let mut r = crate::core::module::ModuleResult::new();
         r.push(e);
+        if let Some(cause) = self.truncation {
+            r.mark_truncated(1, Some(40), cause);
+        }
         Ok(r)
     }
 }
@@ -3652,6 +3657,7 @@ async fn cache_hit_skips_reprocessing_a_later_scan_of_the_same_target() {
         vec![Arc::new(CachingProbe {
             calls: calls.clone(),
             ttl_secs: 3600,
+            truncation: None,
         })],
         store,
         bus.clone(),
@@ -6895,5 +6901,95 @@ fn the_skip_gate_reads_the_circuit_only_through_its_argument() {
         super::dispatch::module_skip_reason_with(&m, &pub_target(), &opts, false, 0, false)
             .is_none(),
         "the stub must be dispatchable when no circuit is open"
+    );
+}
+
+/// REQ-CACHE-001: a cache replay is the module's answer for THIS scan, and it
+/// must carry the answer's completeness verdict. The engine emits the same
+/// `ModuleDone` for a replay as for a live call, and `core::coverage` reads
+/// completeness from that event alone — so a replay that dropped the verdict
+/// reported a partial answer as complete on every re-scan inside the TTL.
+#[tokio::test]
+async fn a_cache_replay_of_a_partial_answer_is_still_partial() {
+    use crate::core::event::EventKind;
+    use crate::core::test_support::InMemoryStore;
+
+    let calls = Arc::new(AtomicU64::new(0));
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _keep) = tokio::sync::broadcast::channel(256);
+    let mut rx = bus.subscribe();
+    let engine = ScanEngine::new(
+        vec![Arc::new(CachingProbe {
+            calls: calls.clone(),
+            ttl_secs: 3600,
+            truncation: Some("the page limit"),
+        })],
+        store,
+        bus.clone(),
+    );
+    let opts = ScanOptions::default();
+    let target = Target::new(TargetKind::Username, "partial-target");
+
+    for scan_id in ["partial-scan-1", "partial-scan-2"] {
+        let mut ctx = ModuleContext {
+            scan_id: scan_id.to_string(),
+            bus: bus.clone(),
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+        let cx = DispatchCx {
+            scan_id,
+            target: &target,
+            opts: &opts,
+            is_expansion: false,
+            seed_kind: TargetKind::Username,
+            quarantined: no_quarantine(),
+        };
+        let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+        let mut stats = ModuleStats::default();
+        let mut dispatched: DispatchLog = DispatchLog::new();
+        let mut newly_inserted: Vec<String> = Vec::new();
+        let mut state = DispatchState {
+            entity_map: &mut entity_map,
+            stats: &mut stats,
+            dispatched: &mut dispatched,
+            newly_inserted: &mut newly_inserted,
+        };
+        engine
+            .dispatch_target(&cx, &mut ctx, &mut state)
+            .await
+            .expect("dispatch runs");
+        if scan_id == "partial-scan-2" {
+            // Premise: the second scan was served from the cache.
+            assert_eq!(stats.cached, 1, "the second scan must be a cache replay");
+        }
+    }
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        1,
+        "the provider was asked once"
+    );
+
+    let mut verdicts = std::collections::HashMap::new();
+    while let Ok(ev) = rx.try_recv() {
+        if let EventKind::ModuleDone {
+            module, truncated, ..
+        } = ev.kind
+            && module == "cache_probe"
+        {
+            verdicts.insert(ev.scan_id.clone(), truncated);
+        }
+    }
+    let live = verdicts
+        .get("partial-scan-1")
+        .cloned()
+        .flatten()
+        .expect("the live answer declared itself partial");
+    assert!(live.starts_with("1 of 40"), "{live}");
+    assert_eq!(
+        verdicts.get("partial-scan-2").cloned().flatten().as_deref(),
+        Some(live.as_str()),
+        "the replay must carry the archived answer's own verdict, not claim it complete"
     );
 }

@@ -27,9 +27,32 @@ use crate::core::{
     scan::Scan,
 };
 
+/// One module result as the inter-scan entity cache (C9) holds it: the
+/// entities, and the module's own completeness verdict
+/// (`ModuleResult::truncation`).
+///
+/// The verdict travels with the entities because a replay IS the module's
+/// answer for this scan: the engine emits the same `ModuleDone` for it, and
+/// `core::coverage` reads completeness from that event alone. The cache held
+/// entities only, so a partial answer replayed within its TTL was reported
+/// complete on every re-scan (REQ-CACHE-001). Sightings and the link record are
+/// deliberately NOT here: a replay observed nothing.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct CachedModuleResult {
+    /// The entities the module returned, stamped with the ARCHIVING scan's
+    /// id; the engine re-stamps them to the replaying scan.
+    pub entities: Vec<Entity>,
+    /// `None` when the archived answer was complete.
+    #[serde(default)]
+    pub truncation: Option<String>,
+}
+
 /// Retention policy for the `events` table, shared by the startup prune
 /// (`cli`) and the per-scan-boundary prune (engine) so the two can't drift.
 pub const EVENTS_RETENTION_SECS: u64 = 7 * 86_400; // 7 days
+/// Row cap for the `events` table, applied after the age prune at the same
+/// lifecycle points as [`EVENTS_RETENTION_SECS`], so a burst of scans inside
+/// the retention window still cannot grow the table without bound.
 pub const EVENTS_MAX_ROWS: usize = 100_000;
 
 /// Row cap for the `module_result_cache` inter-scan cache (SQLite table
@@ -42,24 +65,45 @@ pub const EVENTS_MAX_ROWS: usize = 100_000;
 /// still-fresh row only costs a re-query, never correctness.
 pub const MODULE_RESULT_CACHE_MAX_ROWS: usize = 20_000;
 
+/// The persistence boundary every layer above `core` goes through. The engine,
+/// the HTTP API and the CLI hold an `Arc<dyn StoragePort>`, never a concrete
+/// store; the SQLite `crate::storage::Store` is the production implementation
+/// and `crate::core::test_support::InMemoryStore` the test double. Methods with
+/// a default body are optional capabilities a double may leave as a no-op.
 pub trait StoragePort: Send + Sync {
     // ── Scans ──────────────────────────────────────────────────────────────
+    /// Insert `scan`, or update every mutable column when its id exists.
     fn upsert_scan(&self, scan: &Scan) -> Result<()>;
+    /// The scan with this id, or `None` when no such row exists. A corrupt
+    /// stored row is an `Err`, never a silent `None`.
     fn get_scan(&self, id: &str) -> Result<Option<Scan>>;
+    /// The most recent `limit` scans, newest first, with a deterministic
+    /// tie-break for scans sharing a start second.
     fn list_scans(&self, limit: usize) -> Result<Vec<Scan>>;
     /// Chronological (newest-first) list of past radar sweeps — scans whose
     /// target is one of the radar endpoints' sentinel anchors. See
     /// `crate::storage::Store::radar_history` for the full rationale.
     fn radar_history(&self, limit: usize) -> Result<Vec<Scan>>;
+    /// Delete a scan and everything scoped to it (its correlations,
+    /// relations, events and observations) in one transaction. `Ok(false)`
+    /// when no such scan existed, in which case nothing is touched.
     fn delete_scan(&self, scan_id: &str) -> Result<bool>;
 
     // ── Entities ───────────────────────────────────────────────────────────
+    /// Persist one entity, merging it into the stored row with the same uid
+    /// (entities are content-addressed and shared across scans), and record
+    /// that its scan observed it.
     fn upsert_entity(&self, entity: &Entity) -> Result<()>;
     /// Persist many entities in a single transaction. Takes a slice (not
     /// an owned `Vec`) so the caller retains ownership and can fall back
     /// to per-entity `upsert_entity` if the batch rolls back.
     fn upsert_entities_batch(&self, entities: &[Entity]) -> Result<usize>;
+    /// Every entity `scan_id` observed, confidence-descending then uid.
+    /// Membership is the scan's observation set, not `Entity::scan_id` (which
+    /// is only the scan that first saw it).
     fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>>;
+    /// [`Self::entities_for_scan`] narrowed by any of: an exact `kind`, a
+    /// `min_confidence` floor, and a `value_contains` substring.
     fn entities_filtered(
         &self,
         scan_id: &str,
@@ -67,10 +111,19 @@ pub trait StoragePort: Send + Sync {
         min_confidence: Option<f64>,
         value_contains: Option<&str>,
     ) -> Result<Vec<Entity>>;
+    /// `(kind, count)` over the entities `scan_id` observed, most frequent
+    /// kind first, ties by kind name.
     fn entity_facets(&self, scan_id: &str) -> Result<Vec<(String, u64)>>;
+    /// The stored entity with this uid, from any scan, or `None`.
     fn get_entity(&self, uid: &str) -> Result<Option<Entity>>;
+    /// Search every stored entity for `query`, best matches first, at most
+    /// `limit`. The SQLite store ranks by full-text relevance and falls back
+    /// to a substring match; see `crate::storage::Store::search_entities`.
     fn search_entities(&self, query: &str, limit: usize) -> Result<Vec<Entity>>;
+    /// Every scan that observed this entity, most recent observation first —
+    /// the substrate of cross-scan recall.
     fn scan_ids_for_entity(&self, entity_uid: &str) -> Result<Vec<String>>;
+    /// How many scans observed this entity.
     fn observation_count(&self, entity_uid: &str) -> Result<usize>;
 
     /// Detach `entity_uids` from `scan_id`'s observation set — the store-side
@@ -85,10 +138,17 @@ pub trait StoragePort: Send + Sync {
     }
 
     // ── Correlations ───────────────────────────────────────────────────────
+    /// Persist a correlator finding. The SQLite store deduplicates by member
+    /// set within one scan and rule: a finding whose members are a strict
+    /// superset of an earlier one supersedes it, and a subset is skipped, so a
+    /// cluster growing across expansion rounds is stored once.
     fn upsert_correlation(&self, c: &Correlation) -> Result<()>;
+    /// The scan's correlator findings, highest ranked first.
     fn correlations_for_scan(&self, scan_id: &str) -> Result<Vec<Correlation>>;
 
     // ── Relations (typed entity-to-entity edges) ────────────────────────────
+    /// Persist one typed edge. Idempotent on the relation's id, so a re-scan
+    /// that re-derives the same edge never duplicates it.
     fn upsert_relation(&self, r: &Relation) -> Result<()>;
     /// Persist many relations in a single transaction. The default loops
     /// [`upsert_relation`](Self::upsert_relation) so in-memory / test impls
@@ -101,9 +161,11 @@ pub trait StoragePort: Send + Sync {
         }
         Ok(rels.len())
     }
+    /// The scan's typed edges, ordered by kind then id.
     fn relations_for_scan(&self, scan_id: &str) -> Result<Vec<Relation>>;
 
     // ── Events ─────────────────────────────────────────────────────────────
+    /// Append one event to the durable log.
     fn insert_event(&self, event: &Event) -> Result<()>;
     /// Insert many events in a single transaction. The default loops
     /// [`insert_event`](Self::insert_event); the SQLite store overrides it so
@@ -116,6 +178,7 @@ pub trait StoragePort: Send + Sync {
         }
         Ok(events.len())
     }
+    /// The scan's events in the order they were written.
     fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>>;
 
     /// Clear all events for a scan at the start of that scan so event logs don't
@@ -137,7 +200,8 @@ pub trait StoragePort: Send + Sync {
     }
 
     // ── Inter-scan entity cache (C9 / SOL-CACHE-INTERSCAN) ────────────────
-    /// Persist a module result under `key` with a TTL. Called after a
+    /// Persist a module result — its entities and its completeness verdict
+    /// (see [`CachedModuleResult`]) — under `key` with a TTL. Called after a
     /// successful `process()` when `module.cache_ttl_secs() > 0`. Best-effort:
     /// a failure must not abort the scan; callers ignore the error.
     ///
@@ -148,6 +212,7 @@ pub trait StoragePort: Send + Sync {
         _key: &str,
         _ttl_secs: u64,
         _entities: &[Entity],
+        _truncation: Option<&str>,
     ) -> Result<()> {
         Ok(())
     }
@@ -158,7 +223,7 @@ pub trait StoragePort: Send + Sync {
     /// provider call entirely.
     ///
     /// Default no-op returns `None` for test doubles.
-    fn lookup_module_result_fresh(&self, _key: &str) -> Result<Option<Vec<Entity>>> {
+    fn lookup_module_result_fresh(&self, _key: &str) -> Result<Option<CachedModuleResult>> {
         Ok(None)
     }
 
