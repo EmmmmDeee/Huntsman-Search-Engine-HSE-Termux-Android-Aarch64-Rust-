@@ -18019,6 +18019,11 @@ real `hse serve`, the four Termux tools scripted.
 Seven of seven died — M1 twice, M6 a line early — on `64170a4b` with the
 explicit restore map (`restored (Mn)` after every row, md5-verified).
 
+The full gate then ran at top level on `64170a4b`: all 22 executed checks
+passed, 6 could not run here (the same six as always: the tools they need
+are not in this container). With CI 9/9 on the same commit, that closes the
+gate debt REQ-RADAR-001's rerun note carried forward.
+
 REQ-RADAR-002's K6 and K7 were rerun with `--no-fail-fast` on `64170a4b`:
 K6 to observe the e2e lock the first run's fail-fast hid, K7 to prove the
 repaired nav lock kills what the old one survived. **K6:** the handler tests
@@ -18167,3 +18172,102 @@ this makes the map and the review move with the radar.
   that way.
 - Per-row sparklines (one grouped signal-history query rather than a
   request per device) and a recurrence badge on the device row are 3b.
+
+### REQ-RESILIENCE-001 — the console froze, lied, or gave up when its own server went away; now it says so, polls around the gap, re-reads on return, and waits for a server that is still starting
+
+#### Where this sits
+
+T6, cycle 1 (`docs/ROADMAP.md`): the directive is the world's most resilient
+system against predictable Wi-Fi outages, forced disconnections,
+deauthentication and hostile network disruption. HSE's console is a loopback
+page and its radar needs no network, so the first thing resilience means
+here is that nothing the operator is looking at may freeze, lie, or lose what
+it had when a link — including the loopback one, when `hse serve` restarts —
+goes away. The radar's own view of the disruption is cycle 2.
+
+#### Observed, before any change
+
+- `openLiveSse` (the stream the Live page's panel and, since REQ-RADAR-004,
+  the Radar view follow) took no state callback, while `openSse` — the
+  scan-log stream, three functions up in the same file — has reported
+  `open`/`error` with the browser's reconnecting-or-closed distinction
+  since the "live/reconnecting…/disconnected" pill was added. A dropped
+  live stream looked identical to a quiet one.
+- The Radar view's poller stood down while a stream was attached
+  (`if (S.liveSse) return`), whether or not that stream was alive; and on a
+  reconnect nothing was re-read, although a broadcast stream replays nothing
+  emitted while the link was down.
+- `API._req` treated a `fetch` that rejected — no HTTP answer at all: the
+  server down or restarting — as any other error: each page showed its own
+  message, or nothing.
+
+#### The fix
+
+- `openLiveSse(liveId, onEv, onState)` — the same contract as `openSse`, the
+  browser's `EventSource` doing the reconnecting, the consumer told so.
+- The Radar view's `attachLive`: `error` while CONNECTING → "stream
+  reconnecting… (polling meanwhile)" and `S.radarStreamDown`, which turns
+  the 8 s timer back into a poller; `open` after a drop → "stream back —
+  re-reading" and a full re-read (signals, recurrence, the session list);
+  CLOSED → the stream is released and the poller says a session is
+  re-attached if it is still running (a restart empties the in-memory
+  session list, so usually it is not, and the Start button returns).
+- `API._req`: a rejected `fetch` raises the one `#offline-banner` under the
+  header and rethrows as "console unreachable"; the next request that gets
+  any answer lowers it. Every page shares it; none keeps a copy.
+- The Live page's stream panel: a live/reconnecting…/disconnected pill.
+- `live_events_sse`: the stream of a session this process does not know is a
+  `404`, not an open pipe to nothing. `EventSource` does not retry a non-200,
+  so a console reconnecting after a restart learns at once that its session
+  went with the old process — the first run of the exercise reconnected to
+  the dead session's stream, was answered `200`, and read as live again.
+
+#### Observed again, in Chromium against a real `hse serve` (`browser_resilience.cjs`)
+
+| step | fixed |
+|---|---|
+| banner at start | hidden |
+| continuous radar started; first sweep done over the stream | `sweep done at …` on the first `scan_complete`, five rows |
+| `kill -9` of the server under the open view | within one poll: the banner `Console unreachable — the server is down or restarting; retrying on the next request.`; the status `continuous radar · stream reconnecting… (polling meanwhile)`; the five rows still shown |
+| the server restarted on the same port | the banner lowered by the first request that got an answer; the browser's reconnect to the old session's stream answered `404` (the session lived in the dead process), so the stream went CLOSED and the view said `radar stream closed — polling; the session is re-attached if it is still running`; **Start** offered again; the five rows and the sweep history (one sweep, repainted after the outage had left the panel showing a fetch error) still on screen |
+| one tap resumes | **Start** → a new session, `sweep done` on its first sweep over the new stream |
+| a fresh load while the server is down, then the restart | while down, Chromium itself refuses the load (`ERR_CONNECTION_REFUSED` — no shell to retry from; the 3 s health retry applies once the shell is up and the API is not); after the restart the fresh page shows the last sweep's five rows |
+
+#### Locks
+
+- `tests/api.rs::radar_view_is_wired…` — `radarStreamDown`, `reconnecting`,
+  `offline-banner`, `live-stream-state` in the bundle: the wiring exists.
+- `tests/api.rs::an_unknown_live_sessions_stream_is_a_404_not_an_open_pipe`.
+- The browser exercise above is the behavioural lock, and the matrix below
+  is run *through it*: each row mutates one line of the SPA, rebuilds the
+  binary (the SPA is embedded), and runs the kill-and-restart exercise. A
+  string marker cannot see a callback that is attached but ignored; a
+  browser can.
+
+#### Falsification — predicted before run, then compared (browser-level)
+
+| # | mutation | predicted | actual |
+|---|---|---|---|
+| P1 | the view attaches without listening to the stream's state | the exercise fails at "status while down": the status never says reconnecting or closed | as predicted — the banner rose, then the 30 s wait for `reconnecting|closed` timed out |
+| P2 | a request with no answer is not said | fails at "banner raised after the kill" (30 s timeout) | as predicted — the first sweep completed, then the 30 s wait for the banner timed out |
+| P3 | a console opened before its server answers renders once, dead (the 3 s health retry at load removed) | fails at the last step: the fresh page opened while the server was down never recovers after the restart (no rows) | **SURVIVED** — every step passed. The scenario the retry waited for cannot occur: the shell and the API are one process, so a shell that loaded has a server behind it, and while the server is down Chromium refuses the load itself (`ERR_CONNECTION_REFUSED`) — there is no page to retry from. If the server dies between serving the shell and the health read, `_req` has already raised the banner and the page's own pollers pick the server up when it returns. The retry loop was speculative; it is **removed** in this commit, and this row is why
+
+Two of three died as predicted; the third survived and took a speculative
+piece of the fix with it. Each row rebuilt the binary and ran the whole
+exercise (`restored (Pn)` after every row, md5-verified). The exercise was
+run once more on the final tree — the retry loop removed, everything else
+as exercised above — and passed every step.
+
+#### Scope, honestly
+
+- The one case the removed loop would have covered — the server dying in
+  the milliseconds between serving the shell and the first health read —
+  ends with the banner up and the pollers waiting, which is the same state
+  the exercise shows after a kill; it is not separately demonstrated.
+- This cycle is the console's own link. The radar's view of a Wi-Fi
+  disruption — link state per sweep, forced disconnections,
+  deauthentication, evil twins, periodic outages — is cycle 2; the radar
+  *through* an outage, with the outage classified, is cycle 3.
+- A session lives in memory: a restart ends it, and this cycle makes that
+  visible and one tap away from resumed rather than persistent across
+  restarts. Persisting live sessions is a later decision, not a hidden gap.

@@ -1059,6 +1059,50 @@ engine's own `upsert_scan`, and the end-to-end lock reads the sweep through
 the web reader at the moment the event arrives — the property the view
 rests on is asserted, not assumed.
 
+**T6 — Resilience (the console and the radar under hostile or failing
+networks).** The directive: the world's most resilient system against
+predictable Wi-Fi outages, forced disconnections, deauthentication and
+hostile network disruption. What that means for HSE, whose console is a
+loopback page and whose radar needs no network at all: nothing the operator
+is looking at may freeze, lie, or lose what it had when the link goes; the
+radar keeps sweeping through an outage; and the radar *sees* the disruption
+— records it, classifies it, and says what it is. The authorities: the SPA's
+one stream opener (`scan_info/log.js`) and one request path (`api.js`), the
+live loop (`core::live`), `device_sensors`' connected-AP read
+(`termux-wifi-connectioninfo`), `util::egress` / `util::dns` /
+`util::probe::control_presences` for the outage kind, and the sighting table
+for the record.
+
+Ordered cycles:
+
+1. **REQ-RESILIENCE-001 — the console survives its own link dying.** The
+   live stream reports its state like the scan-log stream does; the Radar
+   view says "reconnecting", polls around the gap, re-reads everything on
+   `open` (a broadcast stream replays nothing), and releases a stream the
+   server closed for good; every page shares one "console unreachable"
+   banner raised by the one request path and lowered by the next answer; the
+   stream of a session the server does not know is a 404, not a silent pipe.
+   Proven by killing and restarting `hse serve` under an open console.
+2. **The disruption record.** The connected-AP read becomes a per-sweep link
+   state beside the sightings (connected, SSID, BSSID, level, address), and
+   `core::disruption` reviews the sweep history: a forced disconnection (off
+   the network while the last BSSID is still heard at usable level),
+   deauthentication suspected (repeated within an hour), an evil twin (a
+   known SSID from a never-seen BSSID, stronger), and predictable outages
+   (drops at a regular period). `GET /api/v1/radar/disruptions`, a Radar
+   panel, `hse signal --disruptions`.
+3. **The radar through an outage.** A live radar with a network-bound module
+   against a dead host and hanging sensor shims keeps sweeping, every
+   iteration bounded; `hse doctor` and the radar status say which kind of
+   outage it is — offline, captive portal, hijacked DNS, intercepted TLS —
+   from the probes that already exist.
+4. **Advice and, where Termux allows and the operator opts in, action:**
+   PMF/802.11w, cell-data fallback, re-enabling Wi-Fi after a drop.
+
+The rule the track starts with: **a stream is a refresh signal, not a source
+of truth** — anything a page shows must be re-derivable from the store on
+demand, so a dropped link costs a delay and never a fact.
+
 ---
 
 ## 5. Cleanup & consolidation register (T3 — living)

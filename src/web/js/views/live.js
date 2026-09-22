@@ -29,9 +29,15 @@ export function openLiveStream(id, label){
   if (host) host.innerHTML = '<div class="text-muted">Waiting for events…</div>';
   if (panel) panel.style.display = '';
   let first = true;
+  const pill = $('#live-stream-state');
   openLiveSse(id, ev => {
     if (first){ if (host) host.innerHTML = ''; first = false; }
     appendLiveLog(ev);
+  }, (state, es) => {
+    if (!pill || !S.liveSse) return;
+    if (state === 'open'){ pill.className = 'label label-info radar-stream-pill'; pill.textContent = 'live'; }
+    else if (es.readyState === 2){ pill.className = 'label label-default radar-stream-pill'; pill.textContent = 'disconnected'; }
+    else { pill.className = 'label label-warning radar-stream-pill'; pill.textContent = 'reconnecting…'; }
   });
 }
 export function closeLiveStream(){
@@ -127,6 +133,7 @@ export async function renderLive(v){
       <div class="panel-heading" style="background:rgba(91,192,222,0.12)">
         <b><i class="glyphicon glyphicon-transfer" style="color:var(--info)"></i>&nbsp;Live activity</b>
         <span id="live-stream-label" class="text-muted" style="font-weight:400"></span>
+        <span id="live-stream-state" class="label label-default radar-stream-pill">connecting…</span>
         <button class="btn btn-default btn-xs pull-right" onclick="closeLiveStream()" title="Stop tailing this session"><i class="glyphicon glyphicon-stop"></i>&nbsp;Stop</button>
         <button class="btn btn-default btn-xs pull-right" style="margin-right:6px" onclick="saveLiveShown()" title="Save the live activity shown here to a .log file"><i class="glyphicon glyphicon-download-alt"></i>&nbsp;Save shown</button>
       </div>

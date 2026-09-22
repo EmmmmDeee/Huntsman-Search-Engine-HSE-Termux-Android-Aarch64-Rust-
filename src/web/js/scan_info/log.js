@@ -418,13 +418,21 @@ export function closeSse(){ if (S.sse){ S.sse.close(); S.sse = null; } }
    S.sse, so the Live Monitor can tail a running session's events (its own
    lifecycle plus every per-iteration scan it spawns) via /live/{id}/events
    without clobbering, or being clobbered by, an open scan log. */
-export function openLiveSse(liveId, onEv){
+export function openLiveSse(liveId, onEv, onState){
   closeLiveSse();
   const es = new EventSource('/api/v1/live/'+encodeURIComponent(liveId)+'/events');
   // A frame that is not JSON is the stream's problem and is dropped; an error
   // INSIDE the consumer is the consumer's bug and must reach the console, not
   // vanish in the same catch (one did: a missing import silenced every event).
   es.onmessage = e => { let ev; try { ev = JSON.parse(e.data); } catch { return; } onEv(ev); };
+  if (onState){
+    // The same contract as `openSse`: the browser reconnects on its own, and
+    // the consumer is told so it can say "reconnecting" instead of "live",
+    // and re-read state on `open` — a broadcast stream replays nothing that
+    // was emitted while the link was down.
+    es.onopen  = () => onState('open', es);
+    es.onerror = () => onState('error', es);
+  }
   S.liveSse = es;
   return es;
 }

@@ -716,6 +716,13 @@ async fn radar_view_is_wired_from_the_nav_to_the_signals_api() {
         "/api/v1/radar/devices/",
         "radar-recurring",
         "setTrail",
+        // REQ-RESILIENCE-001: a dropped stream is said and polled around, a
+        // dead server is said once at the top of every page, a server that is
+        // still starting is retried rather than given up on.
+        "radarStreamDown",
+        "reconnecting",
+        "offline-banner",
+        "live-stream-state",
     ] {
         assert!(
             html.contains(marker),
@@ -3769,6 +3776,21 @@ async fn live_events_endpoint_is_server_sent_events() {
         ct.starts_with("text/event-stream"),
         "live events must stream as SSE, got content-type {ct:?}"
     );
+}
+
+#[tokio::test]
+async fn an_unknown_live_sessions_stream_is_a_404_not_an_open_pipe() {
+    // REQ-RESILIENCE-001: after `hse serve` restarts its in-memory sessions are
+    // gone. A console reconnecting to the stream of a session this process
+    // does not know must learn that at once — `EventSource` does not retry a
+    // non-200 — rather than hold a stream that will never carry anything and
+    // read as "live".
+    let app = test_app("live-sse-unknown");
+    let resp = app
+        .oneshot(get("/api/v1/live/live-never-existed/events"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::NOT_FOUND);
 }
 
 // ── HTTP response compression (mobile-bandwidth) ─────────────────────────────

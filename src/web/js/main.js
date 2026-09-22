@@ -126,6 +126,12 @@ Object.assign(window, {
   initTableLabels();
   initDownloads();
   if (typeof alertify !== 'undefined') alertify.set('notifier','position','top-right');
+  // One health read. The shell and the API are one process, so a shell that
+  // loaded has a server behind it; if that server goes away between the
+  // shell and this read, `API._req` has already raised the banner, and the
+  // page's own pollers pick the server up when it returns. (A retry loop
+  // here was tried and removed: the scenario it waited for cannot occur —
+  // REQ-RESILIENCE-001's P3 row.)
   try {
     const h = await API.health();
     S.health = h; S.version = h.version || '?';

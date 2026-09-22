@@ -871,3 +871,5 @@ input[type=checkbox],input[type=radio]{ accent-color:var(--accent); width:14px; 
 .radar-spark polyline{ fill:none; stroke:var(--accent); stroke-width:1.5; }
 .radar-spark .radar-spark-axis{ stroke:var(--border-strong); stroke-width:1; }
 .radar-spark text{ fill:var(--text-dim); font-size:8px; font-family:var(--mono); }
+.offline-banner{ background:var(--danger-dim); color:var(--danger); border-bottom:1px solid var(--danger); padding:6px 12px; font-size:12px; text-align:center; }
+.radar-stream-pill{ margin-left:6px; }

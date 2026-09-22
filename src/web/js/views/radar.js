@@ -322,7 +322,6 @@ function syncLiveButtons(){
   const start = $('#radar-live'), stop = $('#radar-stop');
   if (start) start.style.display = S.radarLiveId ? 'none' : '';
   if (stop) stop.style.display = S.radarLiveId ? '' : 'none';
-  if (!S.radarLiveId) setLiveStatus('');
 }
 function setLiveStatus(text){ const el = $('#radar-live-status'); if (el) el.textContent = text; }
 
@@ -347,9 +346,43 @@ function onLiveEvent(ev){
     if (start) start.style.display = ''; if (stop) stop.style.display = 'none';
   }
 }
+/* Attach to a radar session's stream. The browser reconnects a dropped
+   EventSource on its own; while it is down the timer below polls instead
+   (`S.radarStreamDown`), and on `open` after a drop the view re-reads
+   everything the stream would have told it — a broadcast stream replays
+   nothing emitted while the link was down. A stream the server closed for
+   good (readyState CLOSED: the process went away) is released; the poller's
+   `adoptRunningRadar` re-attaches if the session is listed again. */
 function attachLive(id){
   S.radarLiveId = id;
-  openLiveSse(id, onLiveEvent);
+  let wasDown = false;
+  S.radarStreamDown = false;
+  openLiveSse(id, onLiveEvent, (state, es) => {
+    if (!S.liveSse) return;
+    if (state === 'open') {
+      S.radarStreamDown = false;
+      if (wasDown) {
+        wasDown = false;
+        setLiveStatus('continuous radar · stream back — re-reading');
+        view.sid = null; syncSweepPicker();
+        refreshSignals(true); refreshRecurring(); refreshHistory(); adoptRunningRadar();
+      }
+      return;
+    }
+    if (es.readyState === 2) {
+      // Closed for good: the server idle-closed it or is gone. Release the
+      // session; a restart empties the in-memory session list, and the
+      // poller says so when nothing is there to adopt.
+      S.radarStreamDown = true; wasDown = true;
+      setLiveStatus('radar stream closed — polling; the session is re-attached if it is still running');
+      S.radarLiveId = null; closeLiveSse();
+      const start = $('#radar-live'), stop = $('#radar-stop');
+      if (start) start.style.display = ''; if (stop) stop.style.display = 'none';
+      return;
+    }
+    S.radarStreamDown = true; wasDown = true;
+    setLiveStatus('continuous radar · stream reconnecting… (polling meanwhile)');
+  });
   setLiveStatus('continuous radar · following its sweeps');
   syncLiveButtons();
 }
@@ -361,7 +394,13 @@ async function adoptRunningRadar(){
     const d = await API.liveList();
     const running = (d.sessions || []).find(x => x.status === 'running' && x.scan_options && x.scan_options.allow_live_sensors);
     if (running) { if (S.radarLiveId !== running.id || !S.liveSse) attachLive(running.id); }
-    else if (S.radarLiveId) { S.radarLiveId = null; closeLiveSse(); syncLiveButtons(); }
+    else if (S.radarLiveId) {
+      // Listed no more: it finished, was stopped elsewhere, or the server
+      // restarted (a session lives in memory). Say which is knowable and
+      // offer Start again; the last sweep stays on screen from the store.
+      S.radarLiveId = null; closeLiveSse(); syncLiveButtons();
+      setLiveStatus('radar session ended — no longer listed by the server (finished, stopped, or the server restarted); the last sweep is shown from the store');
+    }
   } catch (_) {}
 }
 
@@ -394,7 +433,7 @@ async function startLive(){
   } catch (e) { toast('Radar failed: ' + e.message, 'error'); }
 }
 async function stopLive(){
-  try { await API.liveStop(S.radarLiveId); toast('Radar stopped'); }
+  try { await API.liveStop(S.radarLiveId); toast('Radar stopped'); setLiveStatus('radar stopped'); }
   catch (e) { toast('Stop failed: ' + e.message, 'error'); }
   S.radarLiveId = null; closeLiveSse(); syncLiveButtons();
 }
@@ -482,8 +521,12 @@ export async function renderRadar(v){
   clearRadarTimer();
   S.radarTimer = setInterval(async () => {
     if (pageHidden() || view.sid) return;
-    if (S.liveSse) { await adoptRunningRadar(); return; }
+    if (S.liveSse && !S.radarStreamDown) { await adoptRunningRadar(); return; }
     await refreshSignals(true);
+    await refreshRecurring();
+    // A history panel left showing a fetch error from an outage is repainted
+    // by the first poll that gets through.
+    if (!$('#radar-history table')) await refreshHistory();
     await adoptRunningRadar();
   }, 8000);
 }

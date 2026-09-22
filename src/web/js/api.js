@@ -1,10 +1,31 @@
 /* ─── API client ─── */
 export const API = {
+  /* The one place the console's own reachability is shown: a banner under
+     the header, raised by `_req` when a request gets no answer at all and
+     lowered by the next request that does. No page keeps its own copy. */
+  offline(down){
+    const el = document.getElementById('offline-banner');
+    if (!el) return;
+    if (down === el.classList.contains('is-down')) return;
+    el.classList.toggle('is-down', down);
+    el.style.display = down ? '' : 'none';
+    if (down) el.textContent = 'Console unreachable — the server is down or restarting; retrying on the next request.';
+  },
   async _req(path, opts){
     opts = opts || {};
     const init = {method: opts.method||'GET'};
     if (opts.body){ init.headers = {'Content-Type':'application/json'}; init.body = JSON.stringify(opts.body); }
-    const r = await fetch(path, init);
+    let r;
+    try { r = await fetch(path, init); }
+    catch (e) {
+      // `fetch` rejects only when no HTTP answer came back at all: the server
+      // is down, restarting, or the loopback link itself is gone. Every other
+      // outcome is a response with a status. Say so once, at the top of the
+      // page, and keep saying it until a request comes back.
+      API.offline(true);
+      throw new Error('console unreachable: ' + (e && e.message ? e.message : 'no response'));
+    }
+    API.offline(false);
     if (opts.raw) return r;
     if (!r.ok){
       let err = `HTTP ${r.status}`;

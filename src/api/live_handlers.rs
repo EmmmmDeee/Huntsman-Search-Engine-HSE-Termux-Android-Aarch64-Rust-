@@ -4,18 +4,14 @@
 //! configuration & secrets surface and `scan_handlers` carries the scan-data
 //! surface.
 
-use std::{convert::Infallible, sync::Arc};
+use std::sync::Arc;
 
 use axum::{
     Json,
     extract::{Path, State},
     http::StatusCode,
-    response::{
-        IntoResponse,
-        sse::{Event as SseEvent, Sse},
-    },
+    response::IntoResponse,
 };
-use futures::Stream;
 use serde_json::json;
 
 use super::AppState;
@@ -110,13 +106,23 @@ pub async fn live_stop(
 pub async fn live_events_sse(
     State(s): State<Arc<AppState>>,
     Path(target_lid): Path<String>,
-) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+) -> axum::response::Response {
+    // A session this process does not know — it never existed, or the process
+    // restarted and the in-memory sessions went with it — is a 404, not an open
+    // stream that will never carry anything. `EventSource` does not retry a
+    // non-200 answer, so a console reconnecting after a restart learns at once
+    // that the session is gone (REQ-RESILIENCE-001) instead of sitting on a
+    // silent pipe as "live".
+    if s.live.get(&target_lid).is_none() {
+        return not_found();
+    }
     // A live session's stream carries both its own lifecycle events (emitted
     // under `scan_id == live_id`) and every per-iteration scan it spawned.
     let live = s.live.clone();
     sse_event_stream(&s.bus, move |event| {
         event.scan_id == target_lid || live.session_owns_scan(&target_lid, &event.scan_id)
     })
+    .into_response()
 }
 
 #[cfg(test)]
