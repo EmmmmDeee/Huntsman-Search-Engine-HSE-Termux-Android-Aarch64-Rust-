@@ -28,9 +28,10 @@ pub use analysis::{
     scan_location, scan_network, scan_relations, scan_snake_svg, scan_stealer_rows,
 };
 pub use core::{
-    plan_preview, radar_history, radar_live, radar_recurring, radar_signal_track, radar_signals,
-    radar_sweep, scan_auto, scan_auto_plan, scan_auto_sweep, scan_batch, scan_cancel, scan_create,
-    scan_delete, scan_events_history, scan_get, scan_import, scan_list, scan_profiles, scan_rerun,
+    plan_preview, radar_device_track, radar_history, radar_live, radar_recurring,
+    radar_signal_track, radar_signals, radar_sweep, scan_auto, scan_auto_plan, scan_auto_sweep,
+    scan_batch, scan_cancel, scan_create, scan_delete, scan_events_history, scan_get, scan_import,
+    scan_list, scan_profiles, scan_rerun,
 };
 pub use diagnostics::{
     scan_audit, scan_benchmark, scan_duplicates, scan_gaps, scan_metrics, scan_pivots,

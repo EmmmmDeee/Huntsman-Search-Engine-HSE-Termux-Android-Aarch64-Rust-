@@ -202,6 +202,7 @@ const SCHEMA_DDL: &str = "
             CREATE INDEX IF NOT EXISTS idx_rf_epoch   ON rf_sightings(observed_epoch);
             CREATE INDEX IF NOT EXISTS idx_rf_geo     ON rf_sightings(latitude, longitude);
             CREATE INDEX IF NOT EXISTS idx_rf_oui     ON rf_sightings(oui);
+            CREATE INDEX IF NOT EXISTS idx_rf_network ON rf_sightings(network_id, observed_epoch);
 
             -- One row per device per scan, rolled up from the sightings. A view,
             -- not a table, so it cannot fall out of step with the facts.
@@ -1425,6 +1426,14 @@ impl crate::core::port::StoragePort for Store {
         network_id: &str,
     ) -> Result<Vec<crate::core::rf::RfSighting>> {
         Store::rf_sightings_for_device(self, scan_id, network_id)
+    }
+
+    fn rf_device_track(
+        &self,
+        network_id: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::core::rf::RfTrackPoint>> {
+        Store::rf_device_track(self, network_id, limit)
     }
 }
 

@@ -28,6 +28,48 @@ fn stub(dir: &Path, name: &str, body: &str) {
     std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+/// The four Termux tools, scripted once per test binary: `tool_dir_for_tests`
+/// pins the directory exactly once per process, so every test in this file
+/// shares one set of shims (and the `no-fresh-fix` flag one test writes is
+/// visible to the others — which is why the second test asserts nothing that
+/// depends on a fix).
+fn shims() -> &'static Path {
+    static SHIMS: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    let dir = SHIMS.get_or_init(|| {
+        let shims = tempfile::tempdir().expect("temp dir");
+        stub(
+            shims.path(),
+            "termux-wifi-scaninfo",
+            r#"echo '[{"bssid":"AA:BB:CC:DD:EE:FF","ssid":"LabNet","rssi":-45,"frequency":2437},{"bssid":"11:22:33:44:55:66","rssi":-80,"frequency":5180}]'"#,
+        );
+        stub(
+            shims.path(),
+            "termux-bluetooth-scaninfo",
+            r#"echo '[{"address":"AA:BB:CC:DD:EE:01","name":"Headphones","type":"classic","bondState":"none"},{"address":"AA:BB:CC:DD:EE:02","name":"Speaker","type":"le","bondState":"none"}]'"#,
+        );
+        // `-p <provider> -r <request>`: with the `no-fresh-fix` flag present the
+        // fresh-lock stages exit 1 and only the `last` (cached-position) stages
+        // answer.
+        stub(
+            shims.path(),
+            "termux-location",
+            r#"if [ -f "$(dirname "$0")/no-fresh-fix" ] && [ "$4" = "once" ]; then exit 1; fi
+echo '{"latitude":-27.4705,"longitude":153.0260,"accuracy":8.0,"provider":"gps"}'"#,
+        );
+        stub(
+            shims.path(),
+            "termux-telephony-cellinfo",
+            r#"echo '[{"type":"LTE","registered":true,"dbm":-80,"cid":12345,"tac":678,"mcc":"505","mnc":"01"}]'"#,
+        );
+        assert!(
+            huntsman_search_engine::util::termux::tool_dir_for_tests(shims.path().to_path_buf()),
+            "this binary pins the tool directory exactly once"
+        );
+        shims
+    });
+    dir.path()
+}
+
 async fn json_of(resp: axum::response::Response) -> serde_json::Value {
     let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
         .await
@@ -82,35 +124,7 @@ async fn sweep(app: &axum::Router) -> String {
 
 #[tokio::test]
 async fn a_live_radar_sweep_records_every_reading_as_a_positioned_sighting() {
-    let shims = tempfile::tempdir().expect("temp dir");
-    stub(
-        shims.path(),
-        "termux-wifi-scaninfo",
-        r#"echo '[{"bssid":"AA:BB:CC:DD:EE:FF","ssid":"LabNet","rssi":-45,"frequency":2437},{"bssid":"11:22:33:44:55:66","rssi":-80,"frequency":5180}]'"#,
-    );
-    stub(
-        shims.path(),
-        "termux-bluetooth-scaninfo",
-        r#"echo '[{"address":"AA:BB:CC:DD:EE:01","name":"Headphones","type":"classic","bondState":"none"},{"address":"AA:BB:CC:DD:EE:02","name":"Speaker","type":"le","bondState":"none"}]'"#,
-    );
-    // `-p <provider> -r <request>`: with the `no-fresh-fix` flag present the
-    // fresh-lock stages exit 1 and only the `last` (cached-position) stages
-    // answer — the second sweep below.
-    stub(
-        shims.path(),
-        "termux-location",
-        r#"if [ -f "$(dirname "$0")/no-fresh-fix" ] && [ "$4" = "once" ]; then exit 1; fi
-echo '{"latitude":-27.4705,"longitude":153.0260,"accuracy":8.0,"provider":"gps"}'"#,
-    );
-    stub(
-        shims.path(),
-        "termux-telephony-cellinfo",
-        r#"echo '[{"type":"LTE","registered":true,"dbm":-80,"cid":12345,"tac":678,"mcc":"505","mnc":"01"}]'"#,
-    );
-    assert!(
-        huntsman_search_engine::util::termux::tool_dir_for_tests(shims.path().to_path_buf()),
-        "this binary pins the tool directory exactly once"
-    );
+    let shims = shims();
 
     let (app, store, _state) = common::test_app_with_modules_and_state(
         vec![Arc::new(SignalRadar) as Arc<dyn Module>],
@@ -222,7 +236,7 @@ echo '{"latitude":-27.4705,"longitude":153.0260,"accuracy":8.0,"provider":"gps"}
     // Second sweep: no fresh lock, only the OS's cached position. The fix
     // entity still exists (tagged last-known); no sighting is positioned by
     // it, because a cached position is not where the devices were heard from.
-    std::fs::write(shims.path().join("no-fresh-fix"), "").unwrap();
+    std::fs::write(shims.join("no-fresh-fix"), "").unwrap();
     let sid2 = sweep(&app).await;
     let summary = store.rf_summary(&sid2).expect("rf_summary");
     assert_eq!(
@@ -256,5 +270,143 @@ echo '{"latitude":-27.4705,"longitude":153.0260,"accuracy":8.0,"provider":"gps"}
         fix.has_tag("fix-age:last-known"),
         "and it says what it is: {:?}",
         fix.tags
+    );
+}
+
+/// REQ-RADAR-004 — real-time tracking. A continuous radar (one scan per
+/// iteration) announces each sweep on the bus and over its SSE stream, and
+/// the readings are persisted before the completion event is emitted — the
+/// property the Radar view's refresh rests on; across its sweeps the one
+/// fixed-address device recurs, with its level, and has a trail.
+#[tokio::test]
+async fn a_continuous_radar_announces_each_sweep_and_recurrence_builds_across_them() {
+    use huntsman_search_engine::core::event::EventKind;
+    use huntsman_search_engine::core::live::LiveOptions;
+    use huntsman_search_engine::core::scan::{
+        RADAR_SENTINEL_COORD_RAW, ScanOptions, Target, TargetKind,
+    };
+
+    let _shims = shims();
+    let (app, _store, state) = common::test_app_with_modules_and_state(
+        vec![Arc::new(SignalRadar) as Arc<dyn Module>],
+        "radar-continuous",
+    );
+
+    // Subscribe BEFORE the session starts: a broadcast channel does not replay.
+    let mut rx = state.bus.subscribe();
+    let options: ScanOptions = serde_json::from_value(serde_json::json!({
+        "modules": ["signal_radar"], "passive_only": true, "depth": 0, "allow_live_sensors": true
+    }))
+    .expect("the radar's own scan options");
+    let live_id = state.live.start(
+        Target::new(TargetKind::Coordinates, RADAR_SENTINEL_COORD_RAW),
+        options,
+        LiveOptions {
+            interval_secs: 1,
+            iterations: Some(2),
+            radar: true,
+        },
+    );
+
+    // Two iterations: each a `live_tick` naming its scan, then that scan's
+    // `scan_complete` — and at the moment it arrives, the scan's readings are
+    // already readable through the web reader.
+    let mut ticked: Vec<String> = Vec::new();
+    let mut completed: Vec<String> = Vec::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    while completed.len() < 2 {
+        let ev = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("two iterations complete within the deadline")
+            .expect("the bus stays open");
+        match ev.kind {
+            EventKind::LiveTick {
+                live_id: lid,
+                scan_id,
+                ..
+            } if lid == live_id => ticked.push(scan_id),
+            EventKind::ScanComplete { scan_id, .. }
+                if state.live.session_owns_scan(&live_id, &scan_id) =>
+            {
+                let resp = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri(format!("/api/v1/radar/signals?scan_id={scan_id}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    resp.status(),
+                    200,
+                    "readings are persisted before the event"
+                );
+                let body = json_of(resp).await;
+                assert_eq!(body["summary"]["sightings"], 5, "{body}");
+                completed.push(scan_id);
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        ticked, completed,
+        "each tick's scan is the one that completed, in order"
+    );
+    assert_ne!(completed[0], completed[1]);
+
+    // The recurrence review over those sweeps: the one universally-administered
+    // address (0x11) recurs with the level it was heard at; the `aa:…` fixtures
+    // carry the U/L bit and cannot recur, whatever their names.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/radar/recurring?min=2")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let review = json_of(resp).await;
+    let macs: Vec<&str> = review["devices"]
+        .as_array()
+        .expect("devices")
+        .iter()
+        .map(|d| d["mac"].as_str().unwrap())
+        .collect();
+    assert_eq!(macs, ["11:22:33:44:55:66"], "{review}");
+    assert_eq!(review["devices"][0]["sweeps_seen"], 2);
+    assert_eq!(review["devices"][0]["best_signal_dbm"], -80.0);
+    assert_eq!(review["legacy_sweeps"], 0, "{review}");
+
+    // Its trail: one point per sweep, oldest first, each naming its sweep.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/radar/devices/11:22:33:44:55:66/track")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let track = json_of(resp).await;
+    assert_eq!(
+        (track["count"].as_u64(), track["sweeps"].as_u64()),
+        (Some(2), Some(2)),
+        "{track}"
+    );
+    let scans: Vec<&str> = track["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["scan_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        scans, completed,
+        "the trail runs through both sweeps in order"
     );
 }

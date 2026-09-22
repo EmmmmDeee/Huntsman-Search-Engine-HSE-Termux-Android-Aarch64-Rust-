@@ -709,6 +709,13 @@ async fn radar_view_is_wired_from_the_nav_to_the_signals_api() {
         "/api/v1/tiles/",
         "openstreetmap.org/copyright",
         "radar-map",
+        // REQ-RADAR-004: the view follows a continuous radar over its own
+        // event stream, draws a trail, and reviews recurrence.
+        "openLiveSse",
+        "scan_complete",
+        "/api/v1/radar/devices/",
+        "radar-recurring",
+        "setTrail",
     ] {
         assert!(
             html.contains(marker),

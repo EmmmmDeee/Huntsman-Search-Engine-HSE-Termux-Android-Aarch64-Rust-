@@ -374,6 +374,8 @@ mod tests {
             mac: mac.to_string(),
             name: None,
             bonded,
+            signal_dbm: None,
+            position: None,
         }
     }
 

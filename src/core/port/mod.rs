@@ -260,6 +260,19 @@ pub trait StoragePort: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Every sighting of one device across EVERY scan — a whole radar session
+    /// (one scan per iteration) or a wardriving day — oldest first, capped to
+    /// the newest `limit`. The movement record the per-scan track cannot give,
+    /// and the trail the map draws. Default empty for test doubles; the SQLite
+    /// `Store` reads `rf_sightings` through its `network_id` index.
+    fn rf_device_track(
+        &self,
+        _network_id: &str,
+        _limit: usize,
+    ) -> Result<Vec<crate::core::rf::RfTrackPoint>> {
+        Ok(Vec::new())
+    }
+
     // ── Maintenance ─────────────────────────────────────────────────────────
     /// Bound the backing store's write-ahead footprint at a safe boundary
     /// (e.g. a completed scan). Default is a no-op for backends without a

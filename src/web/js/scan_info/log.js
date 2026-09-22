@@ -403,7 +403,7 @@ export function mapEvent(ev){
 export function openSse(scanId, onEv, onState){
   closeSse();
   const es = new EventSource('/api/v1/scans/'+encodeURIComponent(scanId)+'/events');
-  es.onmessage = e => { try { onEv(JSON.parse(e.data)); } catch {} };
+  es.onmessage = e => { let ev; try { ev = JSON.parse(e.data); } catch { return; } onEv(ev); };
   if (onState){
     // EventSource auto-reconnects on its own; we only reflect the state so a
     // dropped stream on a flaky mobile link doesn't look frozen-but-live.
@@ -421,7 +421,10 @@ export function closeSse(){ if (S.sse){ S.sse.close(); S.sse = null; } }
 export function openLiveSse(liveId, onEv){
   closeLiveSse();
   const es = new EventSource('/api/v1/live/'+encodeURIComponent(liveId)+'/events');
-  es.onmessage = e => { try { onEv(JSON.parse(e.data)); } catch {} };
+  // A frame that is not JSON is the stream's problem and is dropped; an error
+  // INSIDE the consumer is the consumer's bug and must reach the console, not
+  // vanish in the same catch (one did: a missing import silenced every event).
+  es.onmessage = e => { let ev; try { ev = JSON.parse(e.data); } catch { return; } onEv(ev); };
   S.liveSse = es;
   return es;
 }

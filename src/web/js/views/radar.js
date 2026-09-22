@@ -11,10 +11,11 @@
  * it. Distance is not shown for the same reason: HSE never re-derives a
  * distance from a level (docs/ROADMAP.md T5). */
 import { API } from '/static/js/api.js';
-import { $, $$, attr, esc, fmtDate, statusPill, toast, triggerBlobDownload } from '/static/js/helpers.js';
+import { $, $$, attr, esc, fmtClock, fmtDate, statusPill, toast, triggerBlobDownload } from '/static/js/helpers.js';
 import { S } from '/static/js/state.js';
 import { clearRadarTimer, pageHidden } from '/static/js/timers.js';
 import { createMap } from '/static/js/radar_map.js';
+import { closeLiveSse, openLiveSse } from '/static/js/scan_info/log.js';
 
 const RADIOS = [['wifi','Wi-Fi'], ['ble','BLE'], ['bt','BT'], ['cell','Cell']];
 const RADIO_LABEL = Object.fromEntries(RADIOS);
@@ -208,7 +209,16 @@ async function showTrack(id){
     const t = await API.radarTrack(id, view.data ? view.data.scan_id : null);
     const rows = t.sightings || [];
     if (!rows.length) { host.innerHTML = '<div class="text-muted">No sightings of this device in the sweep.</div>'; return; }
-    host.innerHTML = `<div class="table-responsive"><table class="table table-condensed table-striped">
+    // Across every sweep: the level over time and the trail on the map. The
+    // per-sweep rows below stay the sweep's own.
+    let across = null;
+    try { across = await API.radarDeviceTrack(id, 500); } catch (_) {}
+    const pts = across ? (across.points || []) : [];
+    if (map) map.setTrail(pts.filter(p => p.latitude != null && p.longitude != null).map(p => ({ lat: p.latitude, lon: p.longitude })));
+    const acrossHtml = across
+      ? `<div class="text-muted" style="margin-bottom:4px">${pts.length} sighting${pts.length === 1 ? '' : 's'} across ${across.sweeps} sweep${across.sweeps === 1 ? '' : 's'}${across.count >= across.limit ? ` (newest ${across.limit})` : ''}${pts.some(p => p.latitude != null) ? ' · trail drawn on the map' : ''}</div>${renderSparkline(pts)}`
+      : '';
+    host.innerHTML = acrossHtml + `<div class="table-responsive"><table class="table table-condensed table-striped">
       <thead><tr><th>Observed</th><th class="text-right">Level</th><th class="text-right">Latitude</th><th class="text-right">Longitude</th><th class="text-right">±m</th><th>Source</th><th>Name</th></tr></thead>
       <tbody>${rows.map(r => `<tr>
         <td>${esc(r.observed_epoch ? fmtDate(r.observed_epoch) : (r.observed_at || '—'))}</td>
@@ -221,7 +231,53 @@ async function showTrack(id){
   } catch (e) { host.innerHTML = `<div class="alert alert-danger">${esc(e.message)}</div>`; }
 }
 
-function closeTrack(){ view.track = null; const p = $('#radar-track-panel'); if (p) p.style.display = 'none'; }
+function closeTrack(){ view.track = null; const p = $('#radar-track-panel'); if (p) p.style.display = 'none'; if (map) map.setTrail([]); }
+
+/* The level over time, as the oracle app draws beside each device: one point
+   per sighting that carried a level, oldest left. Nothing is interpolated. */
+function renderSparkline(points){
+  const levelled = points.filter(p => p.signal_dbm != null);
+  if (levelled.length < 2) return '';
+  const W = 420, H = 48, pad = 4;
+  const lo = Math.min(-100, ...levelled.map(p => p.signal_dbm)), hi = Math.max(-30, ...levelled.map(p => p.signal_dbm));
+  const x = i => (pad + i * (W - 2 * pad) / (levelled.length - 1)).toFixed(1);
+  const y = v => (H - pad - (v - lo) / (hi - lo) * (H - 2 * pad)).toFixed(1);
+  const pts = levelled.map((p, i) => `${x(i)},${y(p.signal_dbm)}`).join(' ');
+  return `<svg class="radar-spark" viewBox="0 0 ${W} ${H}" role="img" aria-label="Level over ${levelled.length} sightings">
+    <line class="radar-spark-axis" x1="${pad}" y1="${H - pad}" x2="${W - pad}" y2="${H - pad}"/>
+    <polyline points="${pts}"/>
+    <text x="${pad}" y="9">${Math.round(hi)} dBm</text><text x="${pad}" y="${H - pad - 2}">${Math.round(lo)} dBm</text>
+    <text x="${W - 60}" y="9">${levelled.length} readings</text></svg>`;
+}
+
+/* Devices recurring across sweeps — the counter-surveillance review
+   (core::radar_track over the sighting table): fixed hardware addresses the
+   phone is not bonded to, seen in ≥2 sweeps, with the strongest level and
+   how many distinct places they were heard from. */
+async function refreshRecurring(){
+  const host = $('#radar-recurring'); if (!host) return;
+  let r = null;
+  try { r = await API.radarRecurring(2, 100); } catch (e) { host.innerHTML = `<div class="text-muted" style="padding:8px 12px">${esc(e.message)}</div>`; return; }
+  const devices = r.devices || [];
+  const badge = $('#radar-recurring-count'); if (badge) badge.textContent = devices.length;
+  const note = $('#radar-recurring-note');
+  if (note) note.textContent = `— ${r.sweeps || 0} sweep${r.sweeps === 1 ? '' : 's'} reviewed${r.legacy_sweeps ? `, ${r.legacy_sweeps} from before readings were kept (recurrence only)` : ''}`;
+  if (!devices.length) {
+    host.innerHTML = '<div class="text-muted" style="padding:8px 12px">No fixed-address device has recurred across two sweeps yet. A randomised address cannot recur; the phone\'s own paired kit is not counted.</div>';
+    return;
+  }
+  host.innerHTML = `<div class="table-responsive"><table class="table table-condensed table-striped">
+    <thead><tr><th>Device</th><th class="text-right">Sweeps</th><th class="text-right">Best</th><th class="text-right">Places</th><th>First</th><th>Last</th><th></th></tr></thead>
+    <tbody>${devices.map(d => `<tr>
+      <td><b>${esc(d.name || d.vendor || d.mac)}</b>${d.vendor && d.name ? `<span class="text-muted"> · ${esc(d.vendor)}</span>` : ''}${d.device_class ? `<span class="text-muted"> · ${esc(d.device_class)}</span>` : ''}<br><code class="text-muted" style="font-size:11px">${esc(d.mac)}</code></td>
+      <td class="text-right"><span class="badge">${d.sweeps_seen}</span></td>
+      <td class="text-right"><code>${esc(dbm(d.best_signal_dbm))}</code></td>
+      <td class="text-right">${d.distinct_positions}</td>
+      <td>${esc(fmtDate(d.first_ts))}</td><td>${esc(fmtDate(d.last_ts))}</td>
+      <td class="text-right"><button class="btn btn-default btn-xs" data-track="${attr(d.mac)}" title="Its sightings in the current sweep and its trail across all of them"><i class="glyphicon glyphicon-time"></i>&nbsp;Track</button></td>
+    </tr>`).join('')}</tbody></table></div>`;
+  $$('[data-track]', host).forEach(el => el.addEventListener('click', () => showTrack(el.dataset.track)));
+}
 
 /* Sweep history — every sweep the radar button or continuous radar queued,
    from the persisted scans table, so it survives a restart. "Load" pins the
@@ -266,6 +322,47 @@ function syncLiveButtons(){
   const start = $('#radar-live'), stop = $('#radar-stop');
   if (start) start.style.display = S.radarLiveId ? 'none' : '';
   if (stop) stop.style.display = S.radarLiveId ? '' : 'none';
+  if (!S.radarLiveId) setLiveStatus('');
+}
+function setLiveStatus(text){ const el = $('#radar-live-status'); if (el) el.textContent = text; }
+
+/* Follow a continuous radar over its own event stream (the same SSE the Live
+   page tails): a `live_tick` says a sweep started, a `scan_complete` says its
+   readings are persisted — the engine writes the row before it emits the
+   event — so the view refreshes exactly then, not on a timer. `live_stop`
+   releases the session. One stream at a time; render() closes it on leaving. */
+function onLiveEvent(ev){
+  if (!ev || !ev.type) return;
+  if (ev.type === 'live_tick') { setLiveStatus(`continuous radar · sweep #${ev.iteration} running…`); return; }
+  if (ev.type === 'scan_complete') {
+    setLiveStatus(`continuous radar · sweep done at ${fmtClock()}`);
+    view.sid = null; syncSweepPicker();
+    refreshSignals(true); refreshRecurring();
+    return;
+  }
+  if (ev.type === 'live_stop') {
+    setLiveStatus(`radar stopped: ${ev.reason || ''}`);
+    S.radarLiveId = null; closeLiveSse();
+    const start = $('#radar-live'), stop = $('#radar-stop');
+    if (start) start.style.display = ''; if (stop) stop.style.display = 'none';
+  }
+}
+function attachLive(id){
+  S.radarLiveId = id;
+  openLiveSse(id, onLiveEvent);
+  setLiveStatus('continuous radar · following its sweeps');
+  syncLiveButtons();
+}
+/* A radar session this page did not start (a reload, or `hse radar` from the
+   shell against the same server) is recognised by what only the radar sets:
+   `allow_live_sensors` on its scan options. */
+async function adoptRunningRadar(){
+  try {
+    const d = await API.liveList();
+    const running = (d.sessions || []).find(x => x.status === 'running' && x.scan_options && x.scan_options.allow_live_sensors);
+    if (running) { if (S.radarLiveId !== running.id || !S.liveSse) attachLive(running.id); }
+    else if (S.radarLiveId) { S.radarLiveId = null; closeLiveSse(); syncLiveButtons(); }
+  } catch (_) {}
 }
 
 /* One sweep: queue it, follow the scan to its terminal state (each sensor tool
@@ -291,15 +388,15 @@ async function sweepOnce(){
 async function startLive(){
   try {
     const r = await API.radarLive();
-    S.radarLiveId = r.live_id;
     toast('Continuous radar started — sightings land as each iteration completes');
-    view.sid = null; syncSweepPicker(); syncLiveButtons();
+    view.sid = null; syncSweepPicker();
+    attachLive(r.live_id);
   } catch (e) { toast('Radar failed: ' + e.message, 'error'); }
 }
 async function stopLive(){
   try { await API.liveStop(S.radarLiveId); toast('Radar stopped'); }
   catch (e) { toast('Stop failed: ' + e.message, 'error'); }
-  S.radarLiveId = null; syncLiveButtons();
+  S.radarLiveId = null; closeLiveSse(); syncLiveButtons();
 }
 
 function exportCsv(){
@@ -323,6 +420,7 @@ export async function renderRadar(v){
           <button id="radar-sweep" class="btn btn-info btn-sm" title="One sweep of the on-device sensors: Wi-Fi, Bluetooth, cell, GNSS, LAN"><i class="glyphicon glyphicon-record"></i>&nbsp;Sweep once</button>
           <button id="radar-live" class="btn btn-danger btn-sm" title="A continuous radar: the sensors re-run on a loop until stopped"><i class="glyphicon glyphicon-play"></i>&nbsp;Start continuous radar</button>
           <button id="radar-stop" class="btn btn-default btn-sm" style="display:none"><i class="glyphicon glyphicon-stop"></i>&nbsp;Stop continuous radar</button>
+          <span id="radar-live-status" class="text-muted" style="font-size:12px"></span>
           <span style="flex:1"></span>
           <label class="text-muted" style="font-weight:normal;margin:0" title="Fixed hardware addresses only — the ones whose recurrence across sweeps means anything (AU-122)"><input type="checkbox" id="radar-trackable">&nbsp;fixed only</label>
           <select id="radar-sort" class="form-control input-sm" title="Sort">
@@ -350,6 +448,11 @@ export async function renderRadar(v){
       </div>
       <div class="panel-body" id="radar-track" style="max-height:320px;overflow:auto;padding:6px 10px;font-size:12px"></div>
     </div>
+    <div class="panel panel-default" id="radar-recurring-panel" style="border-color:var(--warning)">
+      <div class="panel-heading"><b><i class="glyphicon glyphicon-eye-open" style="color:var(--warning)"></i>&nbsp;Recurring across sweeps</b> <span class="badge" id="radar-recurring-count">…</span>
+        <span id="radar-recurring-note" class="text-muted" style="font-weight:400"></span></div>
+      <div id="radar-recurring"><div class="text-muted" style="padding:8px 12px">Loading…</div></div>
+    </div>
     <div class="panel panel-default">
       <div class="panel-heading"><b><i class="glyphicon glyphicon-time"></i>&nbsp;Sweep history</b> <span class="badge" id="radar-history-count">…</span>
         <span class="text-muted" style="font-weight:400">— every sweep ever queued, newest first, even after a restart</span></div>
@@ -366,20 +469,21 @@ export async function renderRadar(v){
   const tr = $('#radar-trackable'); tr.checked = view.trackable;
   tr.addEventListener('change', async () => { view.trackable = tr.checked; await refreshSignals(false); });
   syncLiveButtons();
+  await adoptRunningRadar();
   await refreshSignals(false);
   await refreshHistory();
-  // Follow the latest sweep while this page is open, so a continuous radar's
-  // sightings appear as its iterations land. A pinned sweep never changes, so
-  // the poller leaves it alone; a hidden page skips the fetch (see `pageHidden`).
+  await refreshRecurring();
+  // Without a stream to follow, poll the latest sweep while this page is open:
+  // the producers a stream cannot see (`hse radar` from the shell, an import)
+  // still land here. With a continuous radar attached, its `scan_complete`
+  // events drive the refresh and this timer only re-checks for a session to
+  // adopt. A pinned sweep never changes, so the poller leaves it alone; a
+  // hidden page skips the fetch (see `pageHidden`).
   clearRadarTimer();
   S.radarTimer = setInterval(async () => {
     if (pageHidden() || view.sid) return;
+    if (S.liveSse) { await adoptRunningRadar(); return; }
     await refreshSignals(true);
-    if (S.radarLiveId) {
-      try {
-        const d = await API.liveList();
-        if (!(d.sessions || []).some(s => s.id === S.radarLiveId)) { S.radarLiveId = null; syncLiveButtons(); }
-      } catch (_) {}
-    }
+    await adoptRunningRadar();
   }, 8000);
 }

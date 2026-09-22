@@ -6,7 +6,7 @@
 use rusqlite::params;
 
 use crate::core::error::Result;
-use crate::core::rf::{RadioKind, RfDeviceRow, RfSighting, RfSource, RfSummary};
+use crate::core::rf::{RadioKind, RfDeviceRow, RfSighting, RfSource, RfSummary, RfTrackPoint};
 
 impl super::Store {
     /// Persist a batch of sightings for one scan under one transaction —
@@ -153,6 +153,51 @@ impl super::Store {
             })
         })?;
         Ok(mapped.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Every sighting of one device across every scan, oldest first, capped to
+    /// the newest `limit` — the movement record across a whole radar session
+    /// (one scan per iteration) or a wardriving day, where
+    /// [`rf_sightings_for_device`](Self::rf_sightings_for_device) is one
+    /// sweep's. Served by `idx_rf_network`, not a table scan. Readings without a
+    /// time come first: they cannot be placed on the timeline, and hiding them
+    /// would make the track look complete.
+    pub fn rf_device_track(&self, network_id: &str, limit: usize) -> Result<Vec<RfTrackPoint>> {
+        let canonical = crate::core::rf::canonical_network_id(network_id);
+        let cap = i64::try_from(limit).unwrap_or(i64::MAX);
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT scan_id, network_id, radio, source, device_class, name, encryption,
+                    observed_at, observed_epoch, signal_dbm, accuracy_m,
+                    latitude, longitude, raw_type
+               FROM rf_sightings
+              WHERE network_id = ?1
+              ORDER BY observed_epoch IS NULL, observed_epoch DESC, id DESC
+              LIMIT ?2",
+        )?;
+        let mapped = stmt.query_map(params![canonical, cap], |r| {
+            Ok(RfTrackPoint {
+                scan_id: r.get(0)?,
+                sighting: RfSighting {
+                    network_id: r.get(1)?,
+                    radio: RadioKind::from_db_str(&r.get::<_, String>(2)?),
+                    source: RfSource::from_db_str(&r.get::<_, String>(3)?),
+                    device_class: r.get(4)?,
+                    name: r.get(5)?,
+                    encryption: r.get(6)?,
+                    observed_at: r.get(7)?,
+                    observed_epoch: r.get(8)?,
+                    signal_dbm: r.get(9)?,
+                    accuracy_m: r.get(10)?,
+                    latitude: r.get(11)?,
+                    longitude: r.get(12)?,
+                    raw_type: r.get(13)?,
+                },
+            })
+        })?;
+        let mut rows = mapped.collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.reverse();
+        Ok(rows)
     }
 
     /// Names carried by more than one radio, largest installation first.

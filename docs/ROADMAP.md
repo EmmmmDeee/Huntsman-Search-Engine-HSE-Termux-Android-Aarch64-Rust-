@@ -1021,10 +1021,15 @@ Ordered cycles, each shipped with its own ledger entry and gate:
    kills the fetch, never the cache) and the dependency-free map in the view,
    every positioned device at its position and nothing placed where it was
    not heard.
-3. **Real-time tracking.** The live radar's SSE feed drives the map as
-   iterations complete; per-device trails from `rf_sightings_for_device`;
-   `radar_recurring` rewired onto the sighting table (its own doc records
-   that it cannot see signal, position or time today).
+3. **Real-time tracking.** *3a, REQ-RADAR-004, shipped:* the view follows a
+   continuous radar over its SSE stream (`scan_complete` → refresh; a running
+   radar is recognised by `allow_live_sensors`), one device's track across
+   every sweep (`/api/v1/radar/devices/{id}/track`, a trail on the map and a
+   sparkline), and `radar_recurring` on the sighting table — level, place,
+   time, with entity-only sweeps disclosed as `legacy_sweeps`. *3b, next:*
+   per-row sparklines from one grouped signal-history query, a recurrence
+   badge on the device row itself (the oracle's "tracking" chip), and a bound
+   on the tile cache.
 4. **Synergy with the app.** An HSE sensor module reading the app's loopback
    `/api/devices` — the RSSI/distance axis the Termux Bluetooth path
    structurally lacks — after the 8080 collision is settled (one default
@@ -1048,6 +1053,11 @@ The map cycle's rule is about the browser: **the console loads nothing from
 a third party, ever.** A map wants tiles from somewhere; the answer was a
 proxy the operator controls, not a CSP exception — and the same proxy is
 what makes the map work offline.
+The tracking cycle's rule: **an event is a refresh signal only if the row is
+written before the event is sent.** `scan_complete` is emitted after the
+engine's own `upsert_scan`, and the end-to-end lock reads the sweep through
+the web reader at the moment the event arrives — the property the view
+rests on is asserted, not assumed.
 
 ---
 

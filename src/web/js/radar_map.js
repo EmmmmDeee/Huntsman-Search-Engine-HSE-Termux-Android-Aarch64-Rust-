@@ -23,12 +23,12 @@ export function tileUrl(z, x, y){ return `/api/v1/tiles/${z}/${x}/${y}.png`; }
 /* Build a map inside `host`. Returns a small controller; the caller owns the
    host element and calls `destroy()` when the view goes away. */
 export function createMap(host, opts){
-  const state = { lat: (opts && opts.lat) || 0, lon: (opts && opts.lon) || 0, zoom: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, (opts && opts.zoom) || 16)), markers: [] };
+  const state = { lat: (opts && opts.lat) || 0, lon: (opts && opts.lon) || 0, zoom: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, (opts && opts.zoom) || 16)), markers: [], trail: [] };
   host.classList.add('radar-map');
-  host.innerHTML = `<div class="radar-map-tiles"></div><div class="radar-map-markers"></div>
+  host.innerHTML = `<div class="radar-map-tiles"></div><svg class="radar-map-trail" aria-hidden="true"><polyline points=""/></svg><div class="radar-map-markers"></div>
     <div class="radar-map-zoom"><button type="button" class="btn btn-default btn-xs" data-zoom="1" title="Zoom in">+</button><button type="button" class="btn btn-default btn-xs" data-zoom="-1" title="Zoom out">−</button></div>
     <div class="radar-map-attr">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors</div>`;
-  const tilesEl = host.querySelector('.radar-map-tiles'), markersEl = host.querySelector('.radar-map-markers');
+  const tilesEl = host.querySelector('.radar-map-tiles'), markersEl = host.querySelector('.radar-map-markers'), trailEl = host.querySelector('.radar-map-trail polyline');
   const imgs = new Map(); // "z/x/y" → img, reused across renders so a pan never refetches
 
   function render(){
@@ -55,6 +55,9 @@ export function createMap(host, opts){
       }
     }
     for (const [key, img] of imgs) { if (!keep.has(key)) { img.remove(); imgs.delete(key); } }
+    // The trail: where the device was heard from, in time order — a line
+    // through the positioned sightings, drawn under the markers.
+    trailEl.setAttribute('points', state.trail.map(p => `${(lonToX(p.lon, z) * TILE - left).toFixed(1)},${(latToY(p.lat, z) * TILE - top).toFixed(1)}`).join(' '));
     markersEl.innerHTML = '';
     for (const m of state.markers) {
       const px = lonToX(m.lon, z) * TILE - left, py = latToY(m.lat, z) * TILE - top;
@@ -90,6 +93,7 @@ export function createMap(host, opts){
       render();
     },
     setMarkers(markers){ state.markers = markers || []; render(); },
+    setTrail(points){ state.trail = (points || []).filter(p => p.lat != null && p.lon != null); render(); },
     getView(){ return { lat: state.lat, lon: state.lon, zoom: state.zoom }; },
     tileCount(){ return imgs.size; },
     destroy(){ imgs.clear(); host.innerHTML = ''; host.classList.remove('radar-map'); },

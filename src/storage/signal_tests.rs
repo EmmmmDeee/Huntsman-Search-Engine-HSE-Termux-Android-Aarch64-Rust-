@@ -620,3 +620,73 @@ fn committed_sightings_survive_a_store_restart() {
         "the persisted sweep is still the latest after a restart"
     );
 }
+
+#[test]
+fn a_devices_track_spans_scans_oldest_first_and_keeps_the_newest_n() {
+    // Three scans, inserted out of time order, plus a bystander device: the
+    // track is one device's readings across ALL of them, oldest first, and a
+    // cap keeps the NEWEST readings (the recent past is what a trail is for).
+    let store = Store::open(":memory:").expect("in-memory store");
+    let id = "00:1A:2B:3C:4D:5E";
+    store
+        .insert_rf_sightings_batch("s1", &[sighting(id, RadioKind::Wifi, None, -60.0, None, 100)])
+        .expect("insert");
+    store
+        .insert_rf_sightings_batch(
+            "s2",
+            &[
+                sighting(id, RadioKind::Wifi, None, -50.0, Some((-27.47, 153.02)), 300),
+                sighting("02:AA:BB:CC:DD:EE", RadioKind::Ble, None, -70.0, None, 300),
+            ],
+        )
+        .expect("insert");
+    store
+        .insert_rf_sightings_batch("s3", &[sighting(id, RadioKind::Wifi, None, -55.0, None, 200)])
+        .expect("insert");
+
+    let track = store.rf_device_track("00:1a:2b:3c:4d:5e", 10).expect("track");
+    let seen: Vec<(&str, Option<i64>)> = track
+        .iter()
+        .map(|p| (p.scan_id.as_str(), p.sighting.observed_epoch))
+        .collect();
+    assert_eq!(seen, [("s1", Some(100)), ("s3", Some(200)), ("s2", Some(300))]);
+    assert_eq!(track[2].sighting.latitude, Some(-27.47));
+
+    let newest_two = store.rf_device_track(id, 2).expect("track");
+    let seen: Vec<Option<i64>> = newest_two
+        .iter()
+        .map(|p| p.sighting.observed_epoch)
+        .collect();
+    assert_eq!(seen, [Some(200), Some(300)], "the cap keeps the newest, still oldest first");
+
+    assert!(
+        store.rf_device_track("ff:ff:ff:ff:ff:ff", 10).expect("track").is_empty(),
+        "a device never heard has an empty track"
+    );
+}
+
+#[test]
+fn a_devices_track_is_served_by_its_own_index_not_a_table_scan() {
+    // The per-scan index leads with `scan_id`, so a by-device query could not
+    // use it; `idx_rf_network` exists for this query. A plan that says SCAN
+    // would be a full pass over every sighting ever kept, per trail.
+    let store = Store::open(":memory:").expect("in-memory store");
+    let conn = store.conn.lock();
+    let mut stmt = conn
+        .prepare(
+            "EXPLAIN QUERY PLAN SELECT scan_id FROM rf_sightings WHERE network_id = 'x'
+             ORDER BY observed_epoch IS NULL, observed_epoch DESC, id DESC LIMIT 5",
+        )
+        .expect("plan");
+    let plan: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(3))
+        .expect("rows")
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("plan rows");
+    let joined = plan.join(" | ");
+    assert!(
+        joined.contains("idx_rf_network"),
+        "the device track must use idx_rf_network: {joined}"
+    );
+    assert!(!joined.contains("SCAN rf_sightings"), "{joined}");
+}

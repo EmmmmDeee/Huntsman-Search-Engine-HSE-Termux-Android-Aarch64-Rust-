@@ -447,6 +447,17 @@ pub struct RfDeviceRow {
     pub best_longitude: Option<f64>,
 }
 
+/// One sighting with the scan it belongs to — a point on a device's track
+/// across every sweep and import (`rf_device_track`), where the per-scan
+/// track (`rf_sightings_for_device`) needs no scan id because it has one.
+/// Serialised flat: the sighting's own fields plus `scan_id`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RfTrackPoint {
+    pub scan_id: String,
+    #[serde(flatten)]
+    pub sighting: RfSighting,
+}
+
 /// Scan-level totals, computed in SQL so a summary never walks every row.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RfSummary {

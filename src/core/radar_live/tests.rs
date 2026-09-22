@@ -18,6 +18,8 @@ fn obs(mac: &str) -> SweepObservation {
         mac: mac.to_string(),
         name: None,
         bonded: false,
+        signal_dbm: None,
+        position: None,
     }
 }
 
@@ -26,6 +28,8 @@ fn named(mac: &str, name: &str) -> SweepObservation {
         mac: mac.to_string(),
         name: Some(name.to_string()),
         bonded: false,
+        signal_dbm: None,
+        position: None,
     }
 }
 
@@ -34,6 +38,8 @@ fn bonded(mac: &str) -> SweepObservation {
         mac: mac.to_string(),
         name: None,
         bonded: true,
+        signal_dbm: None,
+        position: None,
     }
 }
 

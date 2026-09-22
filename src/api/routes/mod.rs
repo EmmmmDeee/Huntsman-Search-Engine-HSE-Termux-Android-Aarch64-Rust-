@@ -84,6 +84,7 @@
 //! | GET    | `/api/v1/radar/recurring`                | `radar_recurring`              |
 //! | GET    | `/api/v1/radar/signals`                  | `radar_signals`                |
 //! | GET    | `/api/v1/radar/signals/{network_id}`     | `radar_signal_track`           |
+//! | GET    | `/api/v1/radar/devices/{network_id}/track` | `radar_device_track`         |
 //! | GET    | `/api/v1/tiles/{z}/{x}/{y}`              | `tiles::tile` (`.png`)         |
 //! | POST   | `/api/v1/live`                           | `live_create` (v0.5+)          |
 //! | GET    | `/api/v1/live`                           | `live_list`                    |
@@ -529,6 +530,11 @@ pub fn router(
         .route(
             "/radar/signals/{network_id}",
             get(scan_handlers::radar_signal_track),
+        )
+        // One device across every sweep — the trail (REQ-RADAR-004).
+        .route(
+            "/radar/devices/{network_id}/track",
+            get(scan_handlers::radar_device_track),
         )
         // Map tiles for the Radar view — the loopback proxy that keeps the map
         // within `img-src 'self'` and caches every tile (REQ-RADAR-003).

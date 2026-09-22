@@ -162,6 +162,10 @@ export const API = {
   // One device's every sighting in a sweep, oldest first — the movement track.
   radarTrack: (networkId, scanId)=>API._req('/api/v1/radar/signals/'+encodeURIComponent(networkId)+(scanId?('?scan_id='+encodeURIComponent(scanId)):'')),
   radarSignalsUrl: scanId=>'/api/v1/radar/signals'+(scanId?('?scan_id='+encodeURIComponent(scanId)):''),
+  // One device across every sweep and import — the trail (REQ-RADAR-004).
+  radarDeviceTrack: (networkId, limit)=>API._req('/api/v1/radar/devices/'+encodeURIComponent(networkId)+'/track'+(limit?('?limit='+encodeURIComponent(limit)):'')),
+  // Devices recurring across ≥min sweeps — the counter-surveillance review.
+  radarRecurring: (min, limit)=>API._req('/api/v1/radar/recurring?min='+encodeURIComponent(min||2)+'&limit='+encodeURIComponent(limit||100)),
   selftest:     ()=>API._req('/api/v1/selftest'),
   logsUrl:      ()=>'/api/v1/logs',
   // Live tail of the verbose debug-log ring (loopback-only): pass the cursor

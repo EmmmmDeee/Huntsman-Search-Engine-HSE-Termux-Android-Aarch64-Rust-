@@ -18008,17 +18008,28 @@ real `hse serve`, the four Termux tools scripted.
 
 | # | mutation | predicted | actual |
 |---|---|---|---|
-| M1 | a fetched tile is never cached | `a_tile_is_fetched_once…` at "the tile is kept at …" (the file is absent). Everything else survives | FILL |
-| M2 | the cache is never read | `a_tile_is_fetched_once…` at the second read's origin (`upstream` for `cache`); `a_cached_tile_serves_with_no_upstream_at_all` at `status == 200` (`502`) | FILL |
-| M3 | the zoom bound dropped | `an_out_of_range…` at the `z=20` URI (the stub answers 404 for `z > 3`, so `502` for `400`); `the_template…` at `!valid_tile(20, 0, 0)` | FILL |
-| M4 | every answer claims `upstream` | `a_tile_is_fetched_once…` at the second read's origin; `a_cached_tile…` at its origin — the diagnostic the probe reads must not lie | FILL |
-| M5 | the route not registered | `radar_view_is_wired…` at the `502` assertion (`404`); `spa_references_only_registered…` at the `tiles` probe (`404`). The handler tests survive — their own router | FILL |
-| M6 | `radar_map.js` not served | `radar_view_is_wired…` at "the map module is served and imported" — the import would fail in a browser, and nothing else here can see that | FILL |
-| M7 | the attribution dropped | `radar_view_is_wired…` at `openstreetmap.org/copyright` only | FILL |
+| M1 | a fetched tile is never cached | `a_tile_is_fetched_once…` at "the tile is kept at …" (the file is absent). Everything else survives | `a_tile_is_fetched_once…` died at `tiles.rs:352`, the "the tile is kept at …" assertion — as predicted — and `a_cached_tile_serves_with_no_upstream_at_all` died too (`502` for `200`), NOT predicted: that test seeds its cache through the same `write_cached`, so the mutation emptied its own fixture. A second kill for the right reason, recorded because it was not foreseen |
+| M2 | the cache is never read | `a_tile_is_fetched_once…` at the second read's origin (`upstream` for `cache`); `a_cached_tile_serves_with_no_upstream_at_all` at `status == 200` (`502`) | as predicted — `tiles.rs:358` (`Some("upstream")` for `Some("cache")`) and `:418` (`502` for `200`) |
+| M3 | the zoom bound dropped | `an_out_of_range…` at the `z=20` URI (the stub answers 404 for `z > 3`, so `502` for `400`); `the_template…` at `!valid_tile(20, 0, 0)` | as predicted — `tiles.rs:378` (`502` for `400`: the stub answered 404 for `z=20`, relayed) and `:442` (`!valid_tile(20, 0, 0)`) |
+| M4 | every answer claims `upstream` | `a_tile_is_fetched_once…` at the second read's origin; `a_cached_tile…` at its origin — the diagnostic the probe reads must not lie | as predicted — `tiles.rs:361` and `:422`, both `Some("upstream")` for `Some("cache")`; the handler tests otherwise green |
+| M5 | the route not registered | `radar_view_is_wired…` at the `502` assertion (`404`); `spa_references_only_registered…` at the `tiles` probe (`404`). The handler tests survive — their own router | as predicted — `tests/api.rs:730` (`404` for `502`) and `:3616`, the `tiles` probe (`assert_ne!(status, 404)` with `404`); the five handler tests survived |
+| M6 | `radar_map.js` not served | `radar_view_is_wired…` at "the map module is served and imported" — the import would fail in a browser, and nothing else here can see that | the lock held, one assertion earlier than predicted: the attribution string lives in the module that was not served, so the marker loop died at `tests/api.rs:713` (`openstreetmap.org/copyright` missing from the bundle) before the served-module assertion was reached. Either line is the same fact — the map module was not in the bundle |
+| M7 | the attribution dropped | `radar_view_is_wired…` at `openstreetmap.org/copyright` only | as predicted — `tests/api.rs:713`, the `openstreetmap.org/copyright` marker, and nothing else |
 
-REQ-RADAR-002's K6 and K7 are rerun with `--no-fail-fast` in the same run:
+Seven of seven died — M1 twice, M6 a line early — on `64170a4b` with the
+explicit restore map (`restored (Mn)` after every row, md5-verified).
+
+REQ-RADAR-002's K6 and K7 were rerun with `--no-fail-fast` on `64170a4b`:
 K6 to observe the e2e lock the first run's fail-fast hid, K7 to prove the
-repaired nav lock kills what the old one survived.
+repaired nav lock kills what the old one survived. **K6:** the handler tests
+survived (2 passed), the bundle lock died at the "no RF sightings recorded
+yet" assertion and — now observed — the end-to-end lock died at
+`radar_sightings.rs:178` (`left: 404, right: 200`), the web reader answering
+the fallback's 404 for the sweep the store had just written. **K7:** with the
+nav link deleted, the repaired lock died at `tests/api.rs:697`, the shell's
+`id="nav-radar"` assertion; the handler tests and the end-to-end lock stayed
+green, as they should — neither knows the shell. What survived a bundle-wide
+search dies on the shell's own attributes.
 
 #### Scope, honestly
 
@@ -18038,3 +18049,121 @@ repaired nav lock kills what the old one survived.
   evidence for that branch.
 - The map draws positions; the polar plot draws levels. Neither draws a
   bearing or a distance, and the module headers say why.
+
+### REQ-RADAR-004 — the view followed a continuous radar by polling and forgot it on reload; a device's track ended at one sweep; recurrence was reviewed from a graph that had dissolved the readings
+
+#### Where this sits
+
+T5, cycle 3a (`docs/ROADMAP.md`): "real-time tracking". REQ-RADAR-001
+made the readings exist, 002 made them reachable, 003 put them on a map;
+this makes the map and the review move with the radar.
+
+#### Observed, on `64170a4b`, before any change
+
+- `js/views/radar.js` learned of new sightings by re-reading "latest"
+  every 8 s (a timer, whatever the radar was doing) and held the session id
+  only in memory (`S.radarLiveId`): after a reload the Stop button was gone
+  and the page could not tell a running radar from any other session.
+- `/api/v1/radar/signals/{network_id}` is one sweep's track; nothing read
+  one device across the sweeps of a session, and `rf_sightings` had no
+  index leading with `network_id` — a by-device query was a table scan.
+- `radar_recurring` built each sweep from `entities_for_scan` through
+  `observation_from_entity`, which `core::radar_track`'s own header says
+  "cannot recover signal, position or sighting time, because those were
+  never stored per sighting" — true when written, false since
+  REQ-RADAR-001, and the handler had not been told.
+
+#### The fix
+
+- **The stream.** `attachLive(id)` opens the session's SSE stream (the same
+  `openLiveSse` the Live page uses, one slot, closed by `render()` on
+  leaving). `live_tick` → the sweep number in the status; `scan_complete` →
+  `refreshSignals` + `refreshRecurring`, because the engine calls
+  `upsert_scan` and then emits the event (`core::engine`, both branches),
+  so the readings are there when it arrives; `live_stop` → release.
+  `adoptRunningRadar()` recognises a running radar this page did not start
+  by the one thing only the radar spec sets — `scan_options.allow_live_sensors`
+  — so Stop and the stream survive a reload and follow `hse radar` from the
+  shell. The 8 s timer polls only while no stream is attached: the shell's
+  radar loop and an import are producers a stream cannot see, and that is
+  said in the code rather than left as a second mechanism.
+- **The track across sweeps.** `StoragePort::rf_device_track(network_id,
+  limit)` — every sighting of one device across every scan, oldest first,
+  capped to the newest `limit`, as `RfTrackPoint { scan_id, sighting }`
+  (serialised flat); served by a new `idx_rf_network (network_id,
+  observed_epoch)` — the existing index leads with `scan_id` and could not
+  serve it, and a plan test says so. `GET /api/v1/radar/devices/{id}/track`
+  exposes it (`count`, `sweeps`, `limit`; an unheard device is an empty
+  200). The view draws the positioned points as a dashed trail on the map
+  (`radar_map.setTrail`) and the levelled ones as a sparkline beside the
+  per-sweep rows — nothing interpolated, the oracle app's level-over-time
+  line.
+- **Recurrence from the readings.** `SweepObservation` gains `signal_dbm`
+  and `position`; `observation_from_device(&RfDeviceRow, bonded)` reads a
+  sighting-table row, `observation_from_entity` fills the two as `None`
+  (the graph has neither). `RecurringDevice` gains `best_signal_dbm` and
+  `distinct_positions` (rounded to 1e-4°, ~11 m, so a jittering fix is one
+  place). `radar_recurring` builds a sweep from `rf_devices_for_scan` and
+  looks the AU-117 bonded flag up on the sweep's entities, where it lives; a
+  sweep with no sighting rows — from before REQ-RADAR-001 — is read from its
+  entities as before and counted in `legacy_sweeps`, so the review says how
+  much of its window is level-blind rather than hiding it, and that path
+  retires with the last such sweep in the window. The response keeps
+  `devices`/`count` and adds `sweeps`, `legacy_sweeps`, `min_sweeps`.
+- **The review on the page.** A "Recurring across sweeps" panel — the
+  oracle's tracker count — with device, sweeps seen, best level, places,
+  first/last, and Track (which now draws the trail).
+
+#### Observed again
+
+| | fixed |
+|---|---|
+| `tests/radar_sightings.rs`, a two-iteration radar at 1 s over the scripted sensors, the bus subscribed before `start` | `live_tick(A)`, `scan_complete(A)`, `live_tick(B)`, `scan_complete(B)` in order, A ≠ B; at each `scan_complete` the web reader already answers `summary.sightings: 5` for that scan |
+| `GET /radar/recurring?min=2` over those two sweeps | exactly `11:22:33:44:55:66` (the one universally-administered fixture; the named `aa:…` AP and Bluetooth devices carry the U/L bit and cannot recur), `sweeps_seen 2`, `best_signal_dbm −80`, `legacy_sweeps 0` |
+| `GET /radar/devices/11:22:33:44:55:66/track` | `count 2, sweeps 2`, the points naming sweep A then B |
+| Chromium (`browser_live.cjs`) against a real `hse serve` | Stop hidden before any start; **Start continuous radar** → `following its sweeps`; the first sweep's `scan_complete` → `sweep done at 15:00:58`, five device rows, two `/radar/signals` requests in the whole run (the initial read and the event-driven one — no timer); Stop visible; a reload → the running radar adopted from the session list (`following its sweeps`, Stop visible) with nothing surviving in memory; the second sweep, 30 s later, → **Recurring across sweeps** `2` (Headphones and LabNet, two sweeps each, LabNet at −45 dBm, one place each — one fix, one place); **Track** on the first → `2 sightings across 2 sweeps · trail drawn on the map`, two trail points on the map, and no sparkline for a classic-Bluetooth device that carries no level (two levelled readings are the line's minimum); **Stop** → the status cleared; the only failed request in the session the pre-sweep `404` the empty state is built on. The first run of this exercise found the missing `fmtClock` import that a catch-all in the stream consumer had silenced — every event was arriving and none was acted on — which is why that catch now drops only unparseable frames |
+
+#### Locks
+
+- `storage::signal::tests::a_devices_track_spans_scans_oldest_first_and_keeps_the_newest_n`,
+  `…::a_devices_track_is_served_by_its_own_index_not_a_table_scan` (the
+  query plan names `idx_rf_network`, never `SCAN rf_sightings`).
+- `core::radar_track::tests::recurrence_carries_the_best_level_and_the_distinct_places`
+  (three sweeps, two from one jittering spot; an entity-only pair carries
+  neither), `…::a_device_row_becomes_an_observation_with_its_level_and_place`
+  (and never `(0, 0)` for a row without a fix).
+- `api::scan_handlers::tests::radar_device_track_spans_sweeps_oldest_first_with_the_id_canonicalised`,
+  `…::radar_recurring_reads_the_sighting_table_and_discloses_legacy_sweeps`
+  (a randomised address and a bonded car never recur; the legacy sweep
+  counts for recurrence; best level and two places).
+- `tests/radar_sightings.rs::a_continuous_radar_announces_each_sweep_and_recurrence_builds_across_them`
+  — the end-to-end row above, through the real bus, engine, router and
+  scripted sensors. The four shims are now created once per test binary
+  (`tool_dir_for_tests` pins once per process).
+- `tests/api.rs::radar_view_is_wired…` — `openLiveSse`, `scan_complete`, the
+  device-track path, `radar-recurring`, `setTrail` in the bundle.
+- The endpoint-surface row for the new route.
+
+#### Falsification — predicted before run, then compared
+
+| # | mutation | predicted | actual |
+|---|---|---|---|
+| N1 | the trail comes back newest first | storage test at `[("s1",100),("s3",200),("s2",300)]`; handler test at `["radar-1","radar-3","radar-2"]`; e2e at "the trail runs through both sweeps in order" | FILL |
+| N2 | recurrence drops the level | `recurrence_carries…` at `best_signal_dbm == Some(-52.0)` (`None`); handler test at `-52.0` (null); e2e at `-80.0` (null) | FILL |
+| N3 | places rounded to 1e-9° instead of 1e-4° | `recurrence_carries…` at `distinct_positions == 2` (3: the jitter becomes a place); handler test survives (its two places are 200 m apart) | FILL |
+| N4 | a legacy sweep is counted but read from nothing | handler test at `sweeps_seen == 3` (2); e2e survives (no legacy sweep) | FILL |
+| N5 | the bonded lookup dropped | handler test at `devices.len() == 1` (2: the bonded car recurs); e2e survives (no bonded fixture) | FILL |
+| N6 | the view stops following `scan_complete` | `radar_view_is_wired…` at the `scan_complete` marker only — a string lock; the browser exercise above is what proves the behaviour | FILL |
+| N7 | the by-device index dropped | the plan test at "must use idx_rf_network" | FILL |
+
+#### Scope, honestly
+
+- The stream follows the session the page adopted; two radars at once (not
+  a supported operation — one device, one set of sensors) would follow the
+  first listed.
+- `legacy_sweeps` is a disclosed compatibility path with an exit condition
+  (the last entity-only sweep leaving the 100-sweep window), not a fallback
+  that hides the difference; the response says how many sweeps it read
+  that way.
+- Per-row sparklines (one grouped signal-history query rather than a
+  request per device) and a recurrence badge on the device row are 3b.

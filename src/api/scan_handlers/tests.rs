@@ -1025,3 +1025,107 @@ Victims:
         .await;
         assert_eq!(status, 404);
     }
+
+    fn track_router(state: Arc<crate::api::AppState>) -> axum::Router {
+        axum::Router::new()
+            .route(
+                "/api/v1/radar/devices/{network_id}/track",
+                axum::routing::get(super::core::radar_device_track),
+            )
+            .route(
+                "/api/v1/radar/recurring",
+                axum::routing::get(super::core::radar_recurring),
+            )
+            .with_state(state)
+    }
+
+    #[tokio::test]
+    async fn radar_device_track_spans_sweeps_oldest_first_with_the_id_canonicalised() {
+        use crate::core::rf::{RadioKind, RfSource};
+        let state = crate::api::test_state();
+        let app = track_router(Arc::clone(&state));
+        for (scan, dbm, epoch) in [("radar-1", -60.0, 100), ("radar-2", -45.0, 300), ("radar-3", -52.0, 200)] {
+            state.store.upsert_scan(&radar_scan(scan)).unwrap();
+            state
+                .store
+                .insert_rf_sightings_batch(
+                    scan,
+                    &[radar_sighting(
+                        "00:1A:2B:3C:4D:5E",
+                        RadioKind::Wifi,
+                        RfSource::WifiRadar,
+                        Some("LabNet"),
+                        dbm,
+                        epoch,
+                    )],
+                )
+                .unwrap();
+        }
+        let (status, body) = get_json(&app, "/api/v1/radar/devices/00%3A1A%3A2B%3A3C%3A4D%3A5E/track").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["network_id"], "00:1a:2b:3c:4d:5e");
+        assert_eq!((body["count"].as_u64(), body["sweeps"].as_u64()), (Some(3), Some(3)));
+        let scans: Vec<&str> = body["points"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["scan_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(scans, ["radar-1", "radar-3", "radar-2"], "oldest first across sweeps");
+        assert_eq!(body["points"][2]["signal_dbm"], -45.0);
+        assert_eq!(body["points"][0]["latitude"], -27.47, "the point is the sighting, flat");
+
+        let (_, body) = get_json(&app, "/api/v1/radar/devices/00:1a:2b:3c:4d:5e/track?limit=2").await;
+        assert_eq!((body["count"].as_u64(), body["limit"].as_u64()), (Some(2), Some(2)));
+        assert_eq!(body["points"][0]["scan_id"], "radar-3", "the cap keeps the newest two");
+
+        let (status, body) = get_json(&app, "/api/v1/radar/devices/ff:ff:ff:ff:ff:ff/track").await;
+        assert_eq!(status, 200);
+        assert_eq!(body["count"], 0);
+    }
+
+    #[tokio::test]
+    async fn radar_recurring_reads_the_sighting_table_and_discloses_legacy_sweeps() {
+        use crate::core::entity::{Entity, EntityKind};
+        use crate::core::rf::{RadioKind, RfSource};
+        let state = crate::api::test_state();
+        let app = track_router(Arc::clone(&state));
+
+        // Two sweeps with sighting rows: a fixed AP heard twice (from two
+        // places 200 m apart), a randomised BLE address heard twice, and a
+        // fixed classic device the phone is bonded to — the tag lives on the
+        // sweep's entity, where AU-117 puts it.
+        for (scan, ap_dbm, lat) in [("radar-r1", -70.0, -27.4705), ("radar-r2", -52.0, -27.4723)] {
+            state.store.upsert_scan(&radar_scan(scan)).unwrap();
+            let mut ap = radar_sighting("00:1A:2B:3C:4D:5E", RadioKind::Wifi, RfSource::WifiRadar, Some("LabNet"), ap_dbm, 1_700_000_000);
+            ap.latitude = Some(lat);
+            let rnd = radar_sighting("02:11:22:33:44:55", RadioKind::Ble, RfSource::BluetoothRadar, None, -70.0, 1_700_000_000);
+            let own = radar_sighting("00:1A:2B:3C:4D:01", RadioKind::BtClassic, RfSource::BluetoothRadar, Some("Car"), -40.0, 1_700_000_000);
+            state
+                .store
+                .insert_rf_sightings_batch(scan, &[ap, rnd, own])
+                .unwrap();
+            let mut car = Entity::new(EntityKind::MacAddress, "00:1A:2B:3C:4D:01", 0.9, scan);
+            car.tag("bluetooth");
+            car.tag("bond:bonded");
+            state.store.upsert_entity(&car).unwrap();
+        }
+        // A sweep from before readings were kept: entities only, the same AP.
+        state.store.upsert_scan(&radar_scan("radar-r0")).unwrap();
+        let mut old_ap = Entity::new(EntityKind::MacAddress, "00:1A:2B:3C:4D:5E", 0.9, "radar-r0");
+        old_ap.tag(crate::core::tags::WIFI_AP);
+        state.store.upsert_entity(&old_ap).unwrap();
+
+        let (status, body) = get_json(&app, "/api/v1/radar/recurring?min=2").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!((body["sweeps"].as_u64(), body["legacy_sweeps"].as_u64()), (Some(3), Some(1)), "{body}");
+        let devices = body["devices"].as_array().expect("devices");
+        assert_eq!(devices.len(), 1, "the randomised address and the bonded car never recur: {body}");
+        let ap = &devices[0];
+        assert_eq!(ap["mac"], "00:1a:2b:3c:4d:5e");
+        assert_eq!(ap["name"], "LabNet");
+        assert_eq!(ap["sweeps_seen"], 3, "the legacy sweep still counts for recurrence");
+        assert_eq!(ap["best_signal_dbm"], -52.0, "the strongest level any sweep heard");
+        assert_eq!(ap["distinct_positions"], 2, "two places 200 m apart");
+        assert_eq!(body["count"], 1);
+    }
