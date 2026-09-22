@@ -68,19 +68,26 @@ fn is_benign_infra(e: &Entity) -> bool {
 
 /// Evidence-source names of the modules that can assert a *threat verdict* — the
 /// ones that call `entity.tag(tags::MALICIOUS)` (`abuseipdb`, `chain_intel`,
-/// `greynoise`, `onyphe`, `threatfox`, `urlhaus`, `virustotal`) plus the
-/// `ip_reputation` aggregate feed. A correlation that ESCALATES on independent
+/// `emailrep`, `greynoise`, `onyphe`, `pulsedive`, `threatfox`, `urlhaus`,
+/// `virustotal`) plus the `ip_reputation` aggregate feed. A correlation that ESCALATES on independent
 /// agreement — AU-004's CRITICAL "≥2 sources agree it's malicious" — must count
 /// only these, and AU-015 names only these as the finding's attribution. A
 /// geolocation/enrichment record (`ip_geo`, `ipinfo`, …) riding along on the same
 /// entity is not a second opinion on maliciousness, so it must not corroborate a
-/// threat verdict. Keep in sync with the `entity.tag(MALICIOUS)` call sites.
+/// threat verdict. The sync with the `entity.tag(MALICIOUS)` call sites is enforced, not
+/// remembered: it had already drifted (`emailrep` and `pulsedive` tagged
+/// MALICIOUS and were missing, so AU-004 never counted their votes and AU-015
+/// could not name them — REQ-THREATSRC-001), and
+/// `tests/architecture.rs::every_module_that_asserts_malicious_is_a_threat_intel_source`
+/// now fails on the next one.
 const THREAT_INTEL_SOURCES: &[&str] = &[
     "abuseipdb",
     "chain_intel",
+    "emailrep",
     "greynoise",
     "ip_reputation",
     "onyphe",
+    "pulsedive",
     "threatfox",
     "urlhaus",
     "virustotal",

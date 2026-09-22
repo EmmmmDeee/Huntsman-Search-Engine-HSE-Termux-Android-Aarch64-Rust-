@@ -170,10 +170,25 @@ fn build_entities(kind: EntityKind, value: &str, body: &InfoResp, scan_id: &str)
 
     let mut entity = Entity::new(kind, value, risk_confidence(risk), scan_id);
     entity.tag("pulsedive");
-    entity.tag(crate::core::tags::THREAT_INTEL);
     let risk_lc = risk.to_ascii_lowercase();
-    if matches!(risk_lc.as_str(), "high" | "critical") || !body.threats.is_empty() {
-        entity.tag(crate::core::tags::MALICIOUS);
+    // The vendor's own verdict decides the tags (REQ-PULSEDIVE-001). Its risk
+    // model: `none`/`very low` — "Pulsedive's assessment points to benign
+    // activity"; `critical` — "risk factors with the highest severity, strongly
+    // indicating malicious activity". Tagging THREAT_INTEL unconditionally, and
+    // MALICIOUS whenever any threat was linked, raised AU-015's High "present
+    // in a curated threat-intel feed" (and AU-031's adjacency) on indicators
+    // the vendor had called benign.
+    if matches!(risk_lc.as_str(), "none" | "very low") {
+        // A real answer, kept as evidence, carrying no bad-infrastructure tag.
+        entity.tag("pulsedive-benign");
+    } else {
+        // Assessed as risky, or not yet assessed but linked to a threat: an
+        // unadjudicated sighting in a threat-intel source.
+        entity.tag(crate::core::tags::THREAT_INTEL);
+        // A conduct claim only where the vendor makes one.
+        if matches!(risk_lc.as_str(), "high" | "critical") {
+            entity.tag(crate::core::tags::MALICIOUS);
+        }
     }
 
     let mut ev = Evidence::new(SRC, format!("Pulsedive risk assessment for {value}"));

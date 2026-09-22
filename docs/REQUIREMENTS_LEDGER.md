@@ -18951,3 +18951,77 @@ domain, which is locked by asserting it over the full generator output.
 - `a_public_suffix_or_single_label_is_not_permuted`
 
 Falsified by P0 and P4 above.
+
+---
+
+## REQ-PULSEDIVE-001 — a benign vendor verdict raised a High threat-intel finding
+
+**Found** by the audit wave (both lenses confirmed it). The vendor's semantics
+were checked against its own risk model (`docs.pulsedive.com/model/risk.md`):
+
+| Risk | Pulsedive's definition |
+|---|---|
+| `none` / `very low` | "Pulsedive's assessment points to benign activity" |
+| `unknown` | "the data available doesn't point to an elevated or reduced risk level" |
+| `critical` | "risk factors with the highest severity, strongly indicating malicious activity" |
+
+**Defect.** `build_entities` tagged `THREAT_INTEL` on every non-unknown answer,
+`none` included. It tagged `MALICIOUS` whenever any threat was linked, even
+under a `none` verdict. `THREAT_INTEL` alone raises AU-015's High "present in
+a curated threat-intel feed" and AU-031's High adjacency grading, so a benign
+verdict became a High threat finding about the scan subject. The module's own
+doc called `none` "an actively-confirmed-benign verdict", three lines above the
+tagging that ignored it.
+
+**Fix.** The vendor's grade decides the tags:
+- `none` / `very low` → `pulsedive-benign`, and no bad tag. The linked threats
+  stay in evidence.
+- Every other verdict → `THREAT_INTEL`, an unadjudicated sighting.
+- `MALICIOUS` only for `high` / `critical`, the verdicts where the vendor
+  makes a conduct claim.
+
+`pulsedive-benign` is deliberately **not** added to `BENIGN_INFRA_TAGS`. That
+would let Pulsedive's verdict veto other sources' bad tags, which is a stronger
+claim than its risk model makes.
+
+**Changed lock, deliberately.** `unknown_risk_with_a_linked_threat_still_surfaces`
+asserted `MALICIOUS`. It now asserts `THREAT_INTEL` and not `MALICIOUS`. The
+finding still surfaces as AU-015; what it loses is a "malicious" vote in
+AU-004's two-source CRITICAL escalation, which an unassessed record does not
+earn.
+
+**Falsified**, with the matrix below.
+
+---
+
+## REQ-THREATSRC-001 — the list of who may vote "malicious" had drifted from who does
+
+`core::correlator::rules::THREAT_INTEL_SOURCES` decides whose `MALICIOUS` tag
+AU-004 counts toward its CRITICAL "≥2 independent sources agree", and whom
+AU-015 names. Its doc said "keep in sync with the `entity.tag(MALICIOUS)`
+call sites". That is a remembered procedure (ROADMAP §4 shape 3), and it had
+drifted: `emailrep` and `pulsedive` both tag `MALICIOUS` and were absent.
+
+**Fix.** Both are added. The doc now says the sync is enforced.
+`tests/architecture.rs::every_module_that_asserts_malicious_is_a_threat_intel_source`
+reads the list and every module's production code, resolves each module's
+`SRC`, and fails on any `MALICIOUS` emitter the list lacks. Its vacuity guard
+requires the scan to see a known emitter.
+
+### Falsified (both requirements)
+
+| # | mutation | result |
+|---|---|---|
+| T0 | **baseline** pulsedive tagging | killed by 4 |
+| T1 | **over-correction**: `MALICIOUS` on any non-benign verdict | killed by 2 |
+| T2 | `pulsedive` dropped from the list | killed by the architecture lock |
+| T3 | `emailrep` dropped from the list | killed by the architecture lock |
+
+**4 of 4 killed.**
+
+**The harness had a silent path, now closed.** T3's first spec matched
+`"emailrep"` three times: the file also has `EMAIL_CONFIRMATION_SOURCES` and a
+third list. The harness recorded that as BAD-SPEC but printed nothing, so the
+row simply went missing. That silent-vacuity shape is the one REQ-TYPOSQUAT-001
+names. It now prints every BAD-SPEC. Every row of every earlier matrix in this
+wave was re-checked: each printed a result, so nothing was skipped.
