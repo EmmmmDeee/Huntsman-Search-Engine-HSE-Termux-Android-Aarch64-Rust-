@@ -18791,3 +18791,41 @@ The mutation harness now runs with `--no-fail-fast`.
 | C4 | the in-memory double drops the verdict | killed by 2 |
 
 **4 of 4 killed.**
+
+---
+
+## REQ-LIVE-001 — a lock observed its property through a proxy that turns true too early
+
+**Observed.** CI on `d2980d3` failed
+`core::live::tests::a_live_iteration_holds_its_scan_id_in_the_shared_registry_only_while_the_engine_runs_it`
+at `tests.rs:600`, "AFTER: released once the engine returned". The same test
+passed in four full local runs.
+
+**Root cause, in the test.** The test polls the store until the cancelled
+iteration's row reads terminal, then asserts **in the same instant** that the
+in-flight registry entry is gone. The product writes the row *inside*
+`engine.run_*_panic_safe` and drops `in_flight_guard` only *after* that call
+returns (`core::live::mod`). REQ-SCANSTATUS-001 requires this order, so that a
+scan still running can never read `interrupted`. The row turning terminal is
+therefore a proxy that becomes true slightly **before** the property it stands
+for. A loaded runner lands in the gap.
+
+**Reproduced before fixing.** The test binary was run repeatedly with six CPU
+burners on four cores, at `d2980d3`: 7 failures at `tests.rs:600`, the same
+assertion as CI.
+
+**Fix.** The test waits for the release with the file's existing bounded
+`settle` helper (500 × 20 ms) instead of asserting it at the row's first
+terminal read. The doc comment now states the real ordering. The product is
+unchanged: its order is the correct one.
+
+**Verified.** 60 of 60 runs passed under the same load.
+
+**Falsified.** L1, the product never dropping the guard
+(`std::mem::forget(in_flight_guard)`), is still killed by this test. The wait
+is bounded, so a release that never happens still fails.
+
+**Rule.** This is ROADMAP §4's "assert the antecedent before the consequent"
+seen from the other side. When a test observes property P through a proxy Q,
+check which becomes true first. If Q can precede P, wait for P itself; never
+infer it from Q.
