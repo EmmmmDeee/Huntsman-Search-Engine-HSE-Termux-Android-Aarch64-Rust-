@@ -18153,13 +18153,36 @@ this makes the map and the review move with the radar.
 
 | # | mutation | predicted | actual |
 |---|---|---|---|
-| N1 | the trail comes back newest first | storage test at `[("s1",100),("s3",200),("s2",300)]`; handler test at `["radar-1","radar-3","radar-2"]`; e2e at "the trail runs through both sweeps in order" | FILL |
-| N2 | recurrence drops the level | `recurrence_carries…` at `best_signal_dbm == Some(-52.0)` (`None`); handler test at `-52.0` (null); e2e at `-80.0` (null) | FILL |
-| N3 | places rounded to 1e-9° instead of 1e-4° | `recurrence_carries…` at `distinct_positions == 2` (3: the jitter becomes a place); handler test survives (its two places are 200 m apart) | FILL |
-| N4 | a legacy sweep is counted but read from nothing | handler test at `sweeps_seen == 3` (2); e2e survives (no legacy sweep) | FILL |
-| N5 | the bonded lookup dropped | handler test at `devices.len() == 1` (2: the bonded car recurs); e2e survives (no bonded fixture) | FILL |
-| N6 | the view stops following `scan_complete` | `radar_view_is_wired…` at the `scan_complete` marker only — a string lock; the browser exercise above is what proves the behaviour | FILL |
-| N7 | the by-device index dropped | the plan test at "must use idx_rf_network" | FILL |
+| N1 | the trail comes back newest first | storage test at `[("s1",100),("s3",200),("s2",300)]`; handler test at `["radar-1","radar-3","radar-2"]`; e2e at "the trail runs through both sweeps in order" | storage test failed on the order assertion, handler test SURVIVED (row identity, not order, was under test there), e2e failed at "the trail runs through both sweeps in order" — 2 of 3 killed exactly as named |
+| N2 | recurrence drops the level | `recurrence_carries…` at `best_signal_dbm == Some(-52.0)` (`None`); handler test at `-52.0` (null); e2e at `-80.0` (null) | all 3 killed exactly as predicted (`left: None right: Some(-52.0)`; `left: Null right: -52.0`; `left: Null right: -80.0`) |
+| N3 | places rounded to 1e-9° instead of 1e-4° | `recurrence_carries…` at `distinct_positions == 2` (3: the jitter becomes a place); handler test survives (its two places are 200 m apart) | killed exactly as predicted (`left: 3 right: 2`); handler test survived as predicted |
+| N4 | a legacy sweep is counted but read from nothing | handler test at `sweeps_seen == 3` (2); e2e survives (no legacy sweep) | killed exactly as predicted; e2e survived as predicted |
+| N5 | the bonded lookup dropped | handler test at `devices.len() == 1` (2: the bonded car recurs); e2e survives (no bonded fixture) | killed exactly as predicted; e2e survived as predicted |
+| N6 | the view stops following `scan_complete` | `radar_view_is_wired…` at the `scan_complete` marker only — a string lock; the browser exercise above is what proves the behaviour | **SURVIVED exactly as predicted** — a string lock cannot see a callback that is attached but ignored; the browser exercise is the behavioural lock for this row, not this matrix |
+| N7 | the by-device index dropped | the plan test at "must use idx_rf_network" | killed exactly as predicted (`a_devices_track_is_served_by_its_own_index_not_a_table_scan` failed) |
+
+All seven rows behaved exactly as pre-registered — no surprise in either
+direction. The matrix ran on the pushed head (`219d6a52`) at top level, once
+cleanly (a first attempt collided with a concurrently-restarted full-gate
+run on the same tree after a container restart; both were killed and the
+matrix was rerun alone — recorded so the evidence trail is honest about the
+retry, not because the retry changed any row's outcome).
+
+#### The gate found what the matrix could not: a stale schema-lock assertion
+
+The full local gate, run to completion on this branch's head after the
+matrix above, failed exactly one of its 22 executable checks:
+`storage::tests::open_produces_exact_schema_and_pragmas` — a
+characterisation lock pinning the EXACT set of tables/indexes/views
+`Store::open` produces. This cycle's own `idx_rf_network` (the index N7
+above proves is load-bearing) was never added to that test's hardcoded
+expected list, because the cycle's gate run was interrupted by a container
+restart before it ever reached this check. Fixed in a follow-up commit
+(one line, the missing entry restored in its alphabetical place beside
+`idx_rf_geo`/`idx_rf_oui`); the fast checks and the specific test both pass
+on the fix, and the full gate then ran clean: 21/22 executed checks passed
+(the 22nd — this one — now included), 6 skipped for missing local tooling
+exactly as on every prior clean run.
 
 #### Scope, honestly
 
