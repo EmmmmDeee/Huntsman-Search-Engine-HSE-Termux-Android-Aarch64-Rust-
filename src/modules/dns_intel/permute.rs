@@ -23,9 +23,11 @@
 //! engine wiring is needed for the recursion; only the candidate generator
 //! and its wiring into `process_domain` are new.
 //!
-//! Only fires on a target with **≥3 labels** — a genuine subdomain, not the
-//! bare registrable apex (`"example.com"` has no informative leftmost label
-//! to mutate; `"api.example.com"` does).
+//! Only fires on a genuine subdomain — a host with a label above its
+//! registrable domain — never on the apex itself (`"example.com"` and
+//! `"example.com.au"` have no informative leftmost label to mutate, and their
+//! "siblings" are other people's domains; `"api.example.com.au"` does). See
+//! [`permutation_split`].
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -122,9 +124,30 @@ pub(super) fn generate_permutations(label: &str, rest: &str) -> Vec<String> {
         .collect()
 }
 
+/// The `(label, rest)` a permutation pass mutates, or `None` when `host` is
+/// not a subdomain. **Pure.**
+///
+/// A subdomain is a host with at least one label above its REGISTRABLE domain
+/// — the same apex test `srv` and `dkim` apply. It was a label count
+/// (`rest` contains a dot), which a multi-label public suffix defeats: for the
+/// apex `acme.com.au` it gave `("acme", "com.au")`, and the "siblings" it then
+/// resolved — `acme1.com.au`, `dev-acme.com.au`, `acme-new.com.au` — are other
+/// registrable domains, owned by anyone, emitted as the target's own subdomains
+/// at `VERY_HIGH` and re-dispatched into its dossier. That is every seed under
+/// `.com.au` and `.com.vn`, the two jurisdictions this tool is built for
+/// (REQ-DNSINTEL-001).
+fn permutation_split(host: &str) -> Option<(&str, &str)> {
+    let registrable = crate::util::domains::registrable_domain(host)?;
+    if registrable == host {
+        return None;
+    }
+    let (label, rest) = host.split_once('.')?;
+    (!label.is_empty()).then_some((label, rest))
+}
+
 /// Structural permutation sweep for one target. No-op (returns empty) unless
-/// `target` already has ≥3 labels — the bare registrable apex has no
-/// informative leftmost label to mutate.
+/// `target` is a subdomain ([`permutation_split`]) — the registrable apex has
+/// no informative leftmost label to mutate.
 pub(super) async fn permute_subdomains(
     target: &Target,
     ctx: &ModuleContext,
@@ -133,17 +156,9 @@ pub(super) async fn permute_subdomains(
     if host.is_empty() || host.contains('/') || host.contains(' ') {
         return Ok(Vec::new());
     }
-    let Some((label, rest)) = host.split_once('.') else {
+    let Some((label, rest)) = permutation_split(&host) else {
         return Ok(Vec::new());
     };
-    // The apex itself (`example.com`, 2 labels) has nothing informative to
-    // mutate — permutation needs an ALREADY-DISCOVERED subdomain label.
-    if !rest.contains('.') {
-        return Ok(Vec::new());
-    }
-    if label.is_empty() {
-        return Ok(Vec::new());
-    }
 
     let candidates = generate_permutations(label, rest);
     if candidates.is_empty() {
@@ -189,6 +204,56 @@ pub(super) async fn permute_subdomains(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_apex_under_a_multi_label_suffix_is_never_permuted() {
+        // REQ-DNSINTEL-001: FAILS before the fix — the label-count gate took
+        // `acme.com.au` for a subdomain of `com.au` and permuted it into other
+        // registrants' domains.
+        for apex in [
+            "acme.com.au",
+            "acme.com.vn",
+            "acme.co.uk",
+            "acme.com",
+            "acme.gov.vn",
+        ] {
+            assert_eq!(permutation_split(apex), None, "{apex} is an apex");
+        }
+    }
+
+    #[test]
+    fn a_real_subdomain_is_still_permuted_within_its_own_registrable_domain() {
+        assert_eq!(
+            permutation_split("api.acme.com.au"),
+            Some(("api", "acme.com.au"))
+        );
+        assert_eq!(
+            permutation_split("api.prod.acme.com.vn"),
+            Some(("api", "prod.acme.com.vn"))
+        );
+        assert_eq!(
+            permutation_split("api.example.com"),
+            Some(("api", "example.com"))
+        );
+        // Every candidate it generates stays under the target's own
+        // registrable domain — never a sibling registrant.
+        let (label, rest) = permutation_split("api.acme.com.vn").expect("subdomain");
+        for candidate in generate_permutations(label, rest) {
+            assert_eq!(
+                crate::util::domains::registrable_domain(&candidate).as_deref(),
+                Some("acme.com.vn"),
+                "{candidate} left the target's registrable domain"
+            );
+        }
+    }
+
+    #[test]
+    fn a_public_suffix_or_single_label_is_not_permuted() {
+        for host in ["com.au", "com.vn", "localhost", "github.io"] {
+            assert_eq!(permutation_split(host), None, "{host}");
+        }
+    }
+
     use super::*;
 
     #[test]

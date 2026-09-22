@@ -264,9 +264,18 @@ use super::*;
         // so a future change to one that desyncs from another is caught.
         let labels = ["a", "sub", "mail", "shop", "www", "deeply", "nested"];
         let bases = ["example", "acme", "target-co"];
-        // Single-label TLDs plus every curated multi-label suffix.
-        let mut suffixes: Vec<String> = vec!["com".into(), "org".into(), "io".into()];
-        suffixes.extend(MULTI_LABEL_SUFFIXES.iter().map(|s| (*s).to_string()));
+        // Single-label TLDs plus multi-label suffixes from the regions this
+        // tool works in (AU and VN first), the old curated table's own set, and
+        // a shared-hosting suffix from the list's PRIVATE section.
+        let suffixes: Vec<String> = [
+            "com", "org", "io", "com.au", "net.au", "org.au", "gov.au", "edu.au", "id.au",
+            "asn.au", "com.vn", "net.vn", "org.vn", "gov.vn", "edu.vn", "ac.vn", "name.vn",
+            "co.uk", "org.uk", "ac.uk", "co.nz", "govt.nz", "co.jp", "com.br", "com.cn",
+            "com.sg", "co.za", "co.in", "co.id", "co.kr", "com.tw", "github.io",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
 
         let mut corpus: Vec<String> = Vec::new();
         for base in bases {
@@ -360,14 +369,6 @@ use super::*;
     }
 
     #[test]
-    fn multi_label_suffix_table_is_sorted_for_binary_search() {
-        assert!(
-            MULTI_LABEL_SUFFIXES.is_sorted(),
-            "MULTI_LABEL_SUFFIXES must stay sorted (binary_search)"
-        );
-    }
-
-    #[test]
     fn registrable_domain_single_label_tlds() {
         assert_eq!(
             registrable_domain("www.example.com").as_deref(),
@@ -403,9 +404,10 @@ use super::*;
             registrable_domain("dept.gov.au").as_deref(),
             Some("dept.gov.au")
         );
-        // The bare suffix itself has no registered label in front → kept as-is
-        // (two labels, not in a 3-label position).
-        assert_eq!(registrable_domain("com.au").as_deref(), Some("com.au"));
+        // The bare suffix itself has no registered label in front, so it has
+        // no registrable domain. The curated table answered `com.au` here — a
+        // "registrable domain" that every Australian company shared.
+        assert_eq!(registrable_domain("com.au"), None);
     }
 
     #[test]

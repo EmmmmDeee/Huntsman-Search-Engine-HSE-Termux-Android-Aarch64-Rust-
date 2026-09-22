@@ -793,6 +793,44 @@ fn redirect_verdict_follows_the_apex_to_www_hop_real_sites_depend_on() {
 }
 
 #[test]
+fn redirect_verdict_stops_a_hop_between_two_registrants_under_one_public_suffix() {
+    // REQ-PSL-001: FAILS on the 39-entry suffix table. It held no `com.vn`, so
+    // `api.provider.com.vn` and `attacker.com.vn` both reduced to the
+    // "registrable domain" `com.vn`, the hop was judged same-site, and the
+    // caller's provider key replayed to a different registrant. The same held
+    // for every suffix the table lacked and for every shared-hosting suffix.
+    for (from, to) in [
+        (
+            "https://api.provider.com.vn/v1/lookup",
+            "https://attacker.com.vn/collect",
+        ),
+        (
+            "https://api.provider.co.kr/v1",
+            "https://attacker.co.kr/collect",
+        ),
+        (
+            "https://provider.github.io/api",
+            "https://attacker.github.io/collect",
+        ),
+    ] {
+        assert_eq!(
+            redirect_verdict(&[u(from)], &u(to)),
+            RedirectVerdict::Stop,
+            "{from} -> {to} leaves one registrant for another"
+        );
+    }
+    // Control: within ONE Vietnamese registrant the hop is still followed.
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://provider.com.vn/v1")],
+            &u("https://api.provider.com.vn/v1")
+        ),
+        RedirectVerdict::Follow,
+        "provider.com.vn and api.provider.com.vn are one registrable domain"
+    );
+}
+
+#[test]
 fn redirect_verdict_compares_ip_literals_exactly_never_by_registrable_domain() {
     // `registrable_domain` is a name helper: its last-two-labels rule reads
     // 10.20.30.40 and 99.88.30.40 as the same "site" (30.40). Routing IP

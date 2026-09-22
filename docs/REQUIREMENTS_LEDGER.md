@@ -18829,3 +18829,125 @@ is bounded, so a release that never happens still fails.
 seen from the other side. When a test observes property P through a proxy Q,
 check which becomes true first. If Q can precede P, wait for P itself; never
 infer it from Q.
+
+---
+
+## REQ-PSL-001 — the site boundary knew 39 suffixes and no Vietnamese one
+
+**Requirement.** `registrable_domain` answers "which registrant owns this
+host?". Every decision that turns on that question must be answered by the
+Public Suffix List, the published authority, and not by a subset of it. Most
+of all, the answer must be right for the jurisdictions this tool is built for.
+
+### Found
+
+The audit wave's `dns_intel` finding (REQ-DNSINTEL-001) proposed adding the
+VNNIC second levels to `util::domains::MULTI_LABEL_SUFFIXES`. Reading that
+table showed the defect was the table itself. It held 39 hand-curated
+multi-label suffixes and not one Vietnamese second level, although
+`CLAUDE.md` makes Vietnam the primary jurisdiction and `util::domain_vn`
+already cites the VNNIC namespace and the PSL as its source.
+
+`registrable_domain("shop.acme.com.vn")` answered `com.vn`. It has 21
+production callers, and each was wrong for every `.vn` commercial domain at
+once:
+
+| Consumer | What the wrong boundary did |
+|---|---|
+| `util::http::ssrf::same_site` (the credentialed-redirect guard) | `api.provider.com.vn` → `attacker.com.vn` counted as **same-site**, so the caller's provider key replayed to a different registrant. The same held for every suffix the table lacked (`co.kr`, `com.tw`, `co.th`, …) and for every shared-hosting suffix (`github.io`, `blogspot.com`, …). |
+| AU-118 look-alike impersonation | `techcombank.com.vn` and `techc0mbank.com.vn` folded to one key, `com.vn`, so no Vietnamese impersonation could ever fire. |
+| AU-110 co-hosting | two different Vietnamese companies on one dedicated IP counted as one site, and the co-ownership lead never fired. |
+| `dns_intel` permutation | see REQ-DNSINTEL-001 |
+
+### Implemented
+
+`util/domains/psl.rs` implements the list's specification exactly:
+- an exception rule beats the rule it carves out of;
+- otherwise the longest match wins, with a wildcard matching one label;
+- otherwise the default rule `*` applies (the TLD alone);
+- rules are compared in Unicode, and a punycode host is answered in the form
+  it was asked in.
+
+A bare public suffix, a single label, and an empty label all answer `None`. The
+old table answered `com.au` for `com.au`, a "registrable domain" every
+Australian company shared. `registrable_domain` delegates to it, and
+`MULTI_LABEL_SUFFIXES` is deleted: one authority, not two.
+
+**The data** is `public_suffix_list.dat`, Mozilla's list vendored verbatim,
+version `2026-09-21_18-50-07_UTC`, commit `728555a`, sha256 `e81c6f5f…`. It
+includes both the ICANN and PRIVATE sections, because the boundary decides
+credential replay and attribution, and a `github.io` tenant is a different
+party.
+
+**Licence.** The list is MPL-2.0; its header is kept. MPL-2.0 is file-level:
+shipping the unmodified file inside a larger proprietary work is permitted,
+provided that file stays MPL-2.0 and available, as it is here. This is recorded
+so the owner can see the decision; no crate dependency was added. To refresh,
+replace the file and run the tests.
+
+### Locks
+
+- `the_official_conformance_suite_passes_in_full`: the PSL project's own
+  `test_psl.txt` (public domain, vendored verbatim), **78 of 78** live
+  cases. The vacuity guard pins the count, so a parser that stopped matching
+  cannot pass on zero cases.
+- `the_vendored_list_is_the_whole_list`: both section markers, the version
+  line, over 9 000 plain rules, and the rule shapes the algorithm
+  distinguishes, so a truncated refresh fails.
+- `every_vietnamese_second_level_is_a_suffix`,
+  `a_shared_hosting_tenant_is_its_own_registrant`,
+  `a_punycode_host_is_answered_in_the_form_it_was_asked_in`.
+- Consumer locks at their real call sites, since a helper's own tests never
+  establish its callers (REQ-ZOOMEYE-002):
+  `redirect_verdict_stops_a_hop_between_two_registrants_under_one_public_suffix`,
+  `au118_sees_an_impersonation_under_a_vietnamese_second_level`,
+  `au110_sees_two_vietnamese_companies_on_one_dedicated_ip`, and its
+  same-registrant control.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| P0 | **baseline**: the 39-entry table restored | killed by 6: the SSRF, AU-118, AU-110, two permutation and the multi-label locks |
+| P1 | exception rules ignored | killed by the conformance suite (4 cases) |
+| P2 | wildcard rules ignored | killed by the conformance suite (9 cases in the standalone run) |
+| P3 | IDN matched as written | killed by 2 |
+| P4 | the permutation gate back to a label count | killed by 1 |
+| P5 | a public suffix is its own registrable domain | killed by 4 |
+
+**6 of 6 killed.**
+
+**One claim was refuted by this matrix and is not made.** An inverse harm was
+suspected: a `.vn` domain's brand label `com` pairing with an unrelated
+`corn.com` as a High-severity impersonation. P0 did not kill the lock written
+for it, so that pairing does not occur. The test is kept only as a labelled
+control.
+
+---
+
+## REQ-DNSINTEL-001 — subdomain permutation turned every `.com.au` / `.com.vn` apex into other people's domains
+
+**Found** by the audit wave (both adversarial lenses confirmed it).
+`permute_subdomains` judged "is a subdomain" by counting labels. For the apex
+`acme.com.au` it split off `("acme", "com.au")`. It then resolved
+`acme1.com.au`, `dev-acme.com.au`, `acme-new.com.au` and the rest: separate
+registrable domains, owned by anyone. Each one that resolved was emitted as
+the target's `subdomain` at `VERY_HIGH`, with evidence "a structural
+permutation of discovered sibling acme.com.au", and re-dispatched into the
+target's dossier.
+
+That is every seed under `.com.au` and `.com.vn`, the two jurisdictions this
+tool is built for. `srv` and `dkim` in the same module already used the right
+test.
+
+**Fix.** `permutation_split` requires a label above the host's registrable
+domain (REQ-PSL-001), the same apex test `srv` and `dkim` apply. Every
+candidate generated therefore stays inside the target's own registrable
+domain, which is locked by asserting it over the full generator output.
+
+**Locks:**
+- `the_apex_under_a_multi_label_suffix_is_never_permuted`
+- `a_real_subdomain_is_still_permuted_within_its_own_registrable_domain`
+- `a_public_suffix_or_single_label_is_not_permuted`
+
+Falsified by P0 and P4 above.
