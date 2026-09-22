@@ -2198,3 +2198,86 @@ async fn a_single_5xx_does_not_open_the_breaker() {
         "one 5xx is evidence, not a contract — the endpoint stays reachable"
     );
 }
+
+// ── REQ-CURL-001: the curl fallback answers exactly as the reqwest path ─────
+
+#[derive(serde::Deserialize, Debug, Default)]
+struct Loose {
+    #[serde(default)]
+    results: Vec<String>,
+}
+
+fn status(status: u16, body: &str) -> crate::util::curl::JsonFetch<Loose> {
+    crate::util::curl::JsonFetch::Status {
+        status,
+        body: body.to_string(),
+    }
+}
+
+#[test]
+fn a_fallback_404_is_absent_only_where_the_caller_says_so() {
+    let absent = super::fetch::resolve_curl_fallback::<Loose>(
+        "m",
+        "https://api.example/x",
+        None,
+        &[404],
+        "t",
+        status(404, "{}"),
+    );
+    assert!(
+        matches!(absent, Ok(None)),
+        "fetch_json_or_404: a 404 is absent"
+    );
+    let error = super::fetch::resolve_curl_fallback::<Loose>(
+        "m",
+        "https://api.example/x",
+        None,
+        &[],
+        "t",
+        status(404, "{}"),
+    );
+    assert!(error.is_err(), "fetch_json: a 404 is an error, never data");
+}
+
+#[test]
+fn a_fallback_throttle_is_the_typed_rate_limit_not_data() {
+    // FAILS on the body-only fallback: `{}` decodes as `Loose`, so a 429 was
+    // returned as Ok(Some(empty)) — a clean answer from a throttled provider.
+    let r = super::fetch::resolve_curl_fallback::<Loose>(
+        "m",
+        "https://api.example/x",
+        None,
+        &[404],
+        "t",
+        status(429, "{}"),
+    );
+    let e = r.expect_err("a 429 is not an answer");
+    assert!(
+        matches!(e, crate::core::error::Error::RateLimited(_)),
+        "typed exactly as http_status_error types it: {e:?}"
+    );
+}
+
+#[test]
+fn a_fallback_with_no_answer_is_a_failure_never_absent() {
+    let r = super::fetch::resolve_curl_fallback::<Loose>(
+        "m",
+        "https://api.example/x",
+        None,
+        &[404],
+        "connect refused",
+        crate::util::curl::JsonFetch::NoAnswer,
+    );
+    assert!(r.is_err(), "an outage must never read as `not found`");
+    let ok = super::fetch::resolve_curl_fallback::<Loose>(
+        "m",
+        "https://api.example/x",
+        None,
+        &[],
+        "t",
+        crate::util::curl::JsonFetch::Decoded(Loose {
+            results: vec!["a".into()],
+        }),
+    );
+    assert_eq!(ok.expect("decoded").expect("some").results, ["a"]);
+}

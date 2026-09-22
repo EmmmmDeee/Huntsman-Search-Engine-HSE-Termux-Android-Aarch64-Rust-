@@ -506,14 +506,25 @@ pub(crate) fn breaker_gate(module: &str, url: &str) -> Result<Option<String>> {
 /// was observed issuing eight consecutive 429s roughly 330 ms apart … each one
 /// logging a 60 s backoff that never happened".
 pub(crate) fn record_breaker_outcome(endpoint: Option<&str>, resp: &reqwest::Response) {
+    let retry_secs = retry_after_secs(resp.headers(), RATE_LIMIT_DEFAULT_SECS, RATE_LIMIT_MAX_SECS);
+    record_breaker_status(endpoint, resp.status(), retry_secs);
+}
+
+/// [`record_breaker_outcome`] from a bare status — the one breaker decision,
+/// shared by the reqwest path and the curl fallback (which has a status but no
+/// `reqwest::Response`; it passes the default back-off, since it does not
+/// capture headers).
+pub(crate) fn record_breaker_status(
+    endpoint: Option<&str>,
+    status: reqwest::StatusCode,
+    retry_secs: u64,
+) {
     let Some(h) = endpoint else {
         return;
     };
     let now = crate::core::entity::unix_now();
-    match breaker_outcome_for(resp.status()) {
+    match breaker_outcome_for(status) {
         BreakerOutcome::RateLimited => {
-            let retry_secs =
-                retry_after_secs(resp.headers(), RATE_LIMIT_DEFAULT_SECS, RATE_LIMIT_MAX_SECS);
             // Warned, not debugged: a throttle is the operator's own quota being
             // spent, and it now backs every other caller off this endpoint too.
             tracing::warn!(
@@ -596,39 +607,93 @@ async fn fetch_json_inner<T: DeserializeOwned>(
             Ok(Some(decode_json_body(resp, module).await?))
         }
         Err(transport) => {
-            // reqwest transport failure → one curl fallback attempt. curl
-            // collapses every outcome (404, non-zero exit, parse failure) to
-            // `None`, so a `None` here means the fallback ALSO failed — surface
-            // that as an error rather than `Ok(None)`, which `fetch_json_or_404`
-            // callers would read as a definitive "not found", silently masking a
-            // network outage as a clean, empty result.
+            // reqwest transport failure → one curl fallback attempt, which must
+            // answer exactly as the reqwest arm above would have: a 2xx body
+            // decodes, an `absent_statuses` status is `Ok(None)`, any other
+            // status is the same typed error `http_status_error` builds, and no
+            // HTTP answer at all is a failure — never `Ok(None)`, which
+            // `fetch_json_or_404` callers would read as a definitive "not
+            // found". The fallback used to read the body alone, so a 404, 429
+            // or 5xx whose error body decoded as `T` came back as data
+            // (REQ-CURL-001).
             //
             // Breaker accounting is DEFERRED until the fallback resolves. If curl
             // rescues the call the host is reachable — just not over reqwest's
-            // transport (a TLS/HTTP2 quirk curl tolerates) — so it counts as a
-            // SUCCESS and the breaker stays closed, keeping the working fallback
-            // alive. Recording a failure eagerly (as this did before) opened the
+            // transport (a TLS/HTTP2 quirk curl tolerates) — so an answer is
+            // recorded by its status, exactly as the reqwest arm records it.
+            // Recording a failure eagerly (as this did before) opened the
             // breaker after N *rescued* calls and then permanently short-circuited
             // the very fallback that was succeeding, because the HalfOpen probe
             // also uses reqwest and re-fails. Only a curl-also-failed outcome — a
-            // genuinely wedged host — trips the breaker now.
-            match super::super::curl::fetch_json::<T>(url, crate::MODULE_TIMEOUT_MS).await {
-                Some(data) => {
-                    if let Some(h) = host.as_deref() {
-                        circuit_breaker::record_success(h);
-                    }
-                    Ok(Some(data))
-                }
-                None => {
-                    if let Some(h) = host.as_deref() {
-                        circuit_breaker::record_failure(h, crate::core::entity::unix_now());
-                    }
-                    Err(Error::module(
-                        module,
-                        transport_and_fallback_failed(&transport.to_string(), url),
-                    ))
-                }
+            // genuinely wedged host — trips the breaker as a failure.
+            let fetched =
+                super::super::curl::fetch_json_classified::<T>(url, crate::MODULE_TIMEOUT_MS).await;
+            resolve_curl_fallback(
+                module,
+                url,
+                host.as_deref(),
+                absent_statuses,
+                &transport.to_string(),
+                fetched,
+            )
+        }
+    }
+}
+
+/// Turn a curl fallback's answer into the fetch's result, recording the
+/// breaker outcome the reqwest path would have recorded for the same answer.
+/// Pure apart from the breaker write, which goes through the same
+/// [`record_breaker_status`] authority.
+pub(super) fn resolve_curl_fallback<T>(
+    module: &str,
+    url: &str,
+    host: Option<&str>,
+    absent_statuses: &[u16],
+    transport: &str,
+    fetched: super::super::curl::JsonFetch<T>,
+) -> Result<Option<T>> {
+    use super::super::curl::JsonFetch;
+    match fetched {
+        JsonFetch::Decoded(data) => {
+            if let Some(h) = host {
+                circuit_breaker::record_success(h);
             }
+            Ok(Some(data))
+        }
+        JsonFetch::Status { status, body } => {
+            let Ok(code) = reqwest::StatusCode::from_u16(status) else {
+                return Err(Error::module(
+                    module,
+                    format!("curl fallback reported an invalid HTTP status {status}"),
+                ));
+            };
+            record_breaker_status(host, code, RATE_LIMIT_DEFAULT_SECS);
+            if absent_statuses.contains(&status) {
+                return Ok(None);
+            }
+            Err(classify_status_error(module, code, Some(&body)))
+        }
+        JsonFetch::Undecodable => {
+            // The host answered 2xx: reachable, as the reqwest arm would record.
+            if let Some(h) = host {
+                circuit_breaker::record_success(h);
+            }
+            Err(Error::module(
+                module,
+                format!(
+                    "curl fallback's 2xx body for {} was not the expected JSON",
+                    redact_credentials(url)
+                ),
+            ))
+        }
+        JsonFetch::NoAnswer => {
+            if let Some(h) = host {
+                circuit_breaker::record_failure(h, crate::core::entity::unix_now());
+            }
+            Err(Error::module(
+                module,
+                transport_and_fallback_failed(transport, url),
+            ))
         }
     }
 }

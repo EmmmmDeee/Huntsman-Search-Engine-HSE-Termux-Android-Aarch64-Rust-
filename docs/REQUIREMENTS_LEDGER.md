@@ -19084,3 +19084,80 @@ provider actually sends.
 **Residual.** No live capture was made. The shape rests on the vendor's own
 client and schema library, not on a response observed from this
 environment.
+
+---
+
+## REQ-CURL-001 — the shared curl fallback returned error responses as documents
+
+**Found** by the audit wave while it was reading `hexpm_user`. The finding is
+in the shared outbound path, not in that module.
+
+`util::http::fetch_json_inner` backs `fetch_json`, `fetch_json_or_404` and
+their callers. On a reqwest transport failure it retries once through
+`util::curl::fetch_json`, which the module comments describe as the working
+transport on Termux and datacenter IPs. That helper ran `curl -s` with no
+`-f` and no status capture. curl exits 0 for **any** response it receives, so
+a 404, 429 or 5xx came back as the document, and wherever the error body
+decoded as `T` (an all-default struct, `{}`, `[]`) the fallback returned it
+as **success**. The effects:
+- `fetch_json_or_404`'s "404 means absent" became "404 body is the data";
+- a throttle or an outage could read as a clean answer for every module on
+  the shared helper;
+- the breaker recorded all of these as successes.
+
+The code's own comment claimed "curl collapses every outcome (404, non-zero
+exit, parse failure) to `None`". That was false for any error body that
+decodes.
+
+### Implemented, at the shared authority
+
+- `run_curl_once` writes `%{http_code}` to stderr beside the redirect target
+  it already wrote, keeping stdout the pure body. The two formats are the
+  constants `WRITE_OUT_HOP` / `WRITE_OUT_FOLLOW`, and `parse_write_out`
+  splits them.
+- `curl_exec_response` returns `(status, body)`. The body-only helpers
+  (`fetch`, `fetch_with_ua`, the POST variant) keep their behaviour, because
+  their callers read challenge and error pages on purpose.
+- `util::curl::fetch_json` is **deleted**; its one caller moved to
+  `fetch_json_classified`, which returns `JsonFetch::{Decoded, Status,
+  Undecodable, NoAnswer}`. The classification is the pure `classify_json`.
+- `resolve_curl_fallback` answers as the reqwest arm would for the same
+  response:
+  - a 2xx body is decoded;
+  - an `absent_statuses` status becomes `Ok(None)`;
+  - any other status goes through `classify_status_error`, the same typed
+    error `http_status_error` builds (`RateLimited`, `BotChallenge`, …);
+  - no HTTP answer at all is a failure, never `Ok(None)`.
+- The breaker decision is shared too. `record_breaker_outcome` became a
+  wrapper over the new `record_breaker_status`, so both transports record
+  429, 5xx and success identically. The curl path uses the default back-off,
+  because it does not capture `Retry-After`.
+
+### Locks
+
+- `util::curl::tests`:
+  - `an_error_status_is_never_decoded_as_the_document`
+  - `a_2xx_body_decodes_or_is_undecodable_and_no_status_is_no_answer`
+  - `the_write_out_parser_reads_status_and_next_hop`
+  - `real_curl_writes_what_the_parser_reads`: the real `curl` binary (8.5.0
+    here) with the production format constants, against a loopback 404 and
+    302. A parser test alone could agree with itself while curl wrote
+    something else.
+- `util::http::tests`:
+  - `a_fallback_404_is_absent_only_where_the_caller_says_so`
+  - `a_fallback_throttle_is_the_typed_rate_limit_not_data`
+  - `a_fallback_with_no_answer_is_a_failure_never_absent`
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| K0 | **baseline**: the body is decoded whatever the status | killed by 2 |
+| K1 | an absent status is an error | killed by 1 |
+| K2 | no answer reads as absent | killed by 1 |
+| K3 | the parser drops the status | killed by 2 (incl. the real-curl lock) |
+| K4 | the hop write-out omits `%{http_code}` | killed by 1: **only** the real-curl lock can see this |
+
+**5 of 5 killed.** K2's first spec was reported **BAD-SPEC** (rustfmt had
+reflowed the targeted line) instead of going missing. That is the harness fix
+REQ-THREATSRC-001 recorded, catching its first case one requirement later.
