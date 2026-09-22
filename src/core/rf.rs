@@ -453,7 +453,9 @@ pub struct RfDeviceRow {
 /// Serialised flat: the sighting's own fields plus `scan_id`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RfTrackPoint {
+    /// The sweep or import this reading belongs to.
     pub scan_id: String,
+    /// The reading itself: network id, radio, level, position, time.
     #[serde(flatten)]
     pub sighting: RfSighting,
 }
