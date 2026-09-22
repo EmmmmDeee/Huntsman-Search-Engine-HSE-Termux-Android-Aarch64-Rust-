@@ -424,6 +424,7 @@ async fn run_command(command: Command) -> Result<()> {
             names,
             track,
             disruptions,
+            live,
             limit,
             json,
         } => {
@@ -434,6 +435,7 @@ async fn run_command(command: Command) -> Result<()> {
                 names,
                 track,
                 disruptions,
+                live,
                 limit,
                 json,
             )
