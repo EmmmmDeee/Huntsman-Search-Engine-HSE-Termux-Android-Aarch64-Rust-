@@ -41,8 +41,10 @@ use crate::core::{
     entity::EntityKind,
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
+    rf::RfSighting,
     scan::{Target, TargetKind},
 };
+use crate::modules::device_fix::Fix;
 
 pub(super) const SRC: &str = "signal_radar";
 
@@ -141,7 +143,15 @@ impl Module for SignalRadar {
 
         let cell_out = scan_cell(scan_id).await;
 
-        combine_sensors([wifi_out, bt_out, gps_out, Ok(lan_out), cell_out])
+        // The fix is the sweep's own position at observation time: it is
+        // stamped onto every sighting the other radios made (REQ-RADAR-001).
+        let (gps_out, fix) = match gps_out {
+            Ok((r, fix)) => (Ok(r), fix),
+            Err(e) => (Err(e), None),
+        };
+        let mut combined = combine_sensors([wifi_out, bt_out, gps_out, Ok(lan_out), cell_out])?;
+        stamp_sweep_position(&mut combined.sightings, fix.as_ref());
+        Ok(combined)
     }
 }
 
@@ -163,7 +173,7 @@ fn combine_sensors(outcomes: [Result<ModuleResult>; 5]) -> Result<ModuleResult> 
     let mut first_failure = None;
     for outcome in outcomes {
         match outcome {
-            Ok(r) => combined.extend(r.entities),
+            Ok(r) => combined.absorb(r),
             Err(e) => {
                 tracing::warn!(module = SRC, error = %e, "signal_radar: sensor failed");
                 first_failure.get_or_insert(e);
@@ -173,10 +183,31 @@ fn combine_sensors(outcomes: [Result<ModuleResult>; 5]) -> Result<ModuleResult> 
     combined.or_hard_failure(first_failure)
 }
 
+/// Stamp the sweep's own fix onto every sighting that carries no position of
+/// its own. The Termux radios report no position per reading — the phone's
+/// fix at sweep time IS where each device was heard from, which is exactly
+/// what a wardriving capture records per row. The rule itself (never override
+/// a reading's own position) is [`RfSighting::stamp_position_if_absent`]'s.
+pub(super) fn stamp_sweep_position(sightings: &mut [RfSighting], fix: Option<&Fix>) {
+    let Some(fix) = fix else {
+        return;
+    };
+    for s in sightings {
+        s.stamp_position_if_absent(fix.latitude, fix.longitude, fix.accuracy);
+    }
+}
+
+/// The moment a reading was taken, as the sighting's epoch. The Termux tools
+/// carry no wall-clock timestamp of their own (`termux-wifi-scaninfo`'s
+/// `timestamp` is device uptime), so the sighting's time is the read time.
+fn epoch_now() -> Option<i64> {
+    i64::try_from(crate::core::entity::unix_now()).ok()
+}
+
 /// Fetch and parse `termux-wifi-scaninfo`.
 async fn scan_wifi(scan_id: &str) -> Result<ModuleResult> {
     crate::modules::termux_sensor::read_and_parse(Sensor::WifiScan, |stdout| {
-        wifi::parse_scan(stdout, scan_id)
+        wifi::parse_scan(stdout, scan_id, epoch_now())
     })
     .await
 }
@@ -189,7 +220,7 @@ async fn scan_wifi(scan_id: &str) -> Result<ModuleResult> {
 /// nothing (`PROBLEM_TREE` T2.109).
 async fn scan_cell(scan_id: &str) -> Result<ModuleResult> {
     crate::modules::termux_sensor::read_and_parse(Sensor::CellInfo, |stdout| {
-        cell::parse_cells(stdout, scan_id)
+        cell::parse_cells(stdout, scan_id, epoch_now())
     })
     .await
 }

@@ -671,7 +671,7 @@ pub fn test_app_with_modules(modules: Vec<Arc<dyn Module>>, suffix: &str) -> axu
     test_app_with_modules_and_state(modules, suffix).0
 }
 
-fn test_app_with_modules_and_state(
+pub fn test_app_with_modules_and_state(
     modules: Vec<Arc<dyn Module>>,
     suffix: &str,
 ) -> (axum::Router, Arc<Store>, Arc<AppState>) {

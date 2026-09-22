@@ -231,11 +231,43 @@ fn round_trips_through_the_db_string_forms() {
         RfSource::WigleApi,
         RfSource::BluetoothRadar,
         RfSource::WifiRadar,
+        RfSource::CellRadar,
     ] {
         assert_eq!(RfSource::from_db_str(s.as_db_str()), s);
     }
     assert!(RfSource::BluetoothRadar.is_local_sensor());
+    assert!(RfSource::CellRadar.is_local_sensor());
     assert!(!RfSource::WigleApi.is_local_sensor());
     assert!(RadioKind::Wifi.has_hardware_address());
     assert!(!RadioKind::Cellular.has_hardware_address());
+}
+
+// ── REQ-RADAR-001: positioning a local sighting ──────────────────────────────
+
+/// The sweep's fix fills a sighting that has no position of its own, and
+/// never overrides one that does — a receiver's own reading says where the
+/// device was heard; the sweep-level fix says only where the phone was.
+#[test]
+fn stamp_position_if_absent_fills_an_empty_position_and_never_overrides_a_readings_own() {
+    let mut blank = RfSighting::new("aa:bb:cc:dd:ee:ff", RadioKind::Wifi, RfSource::WifiRadar);
+    blank.stamp_position_if_absent(-27.4705, 153.026, Some(5.0));
+    assert_eq!(blank.latitude, Some(-27.4705));
+    assert_eq!(blank.longitude, Some(153.026));
+    assert_eq!(
+        blank.accuracy_m,
+        Some(5.0),
+        "the accuracy travels with the position it belongs to"
+    );
+    assert!(blank.has_usable_position());
+
+    let mut own = RfSighting::new("aa:bb:cc:dd:ee:01", RadioKind::Ble, RfSource::BluetoothRadar);
+    own.latitude = Some(51.5074);
+    own.longitude = Some(-0.1278);
+    own.accuracy_m = Some(12.0);
+    own.stamp_position_if_absent(-27.4705, 153.026, Some(5.0));
+    assert_eq!(
+        (own.latitude, own.longitude, own.accuracy_m),
+        (Some(51.5074), Some(-0.1278), Some(12.0)),
+        "a reading's own position outranks the sweep's fix"
+    );
 }

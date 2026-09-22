@@ -810,6 +810,29 @@ impl super::ScanEngine {
                     super::circuit::record_success(name);
                     super::health::record_success(name);
                 }
+                // REQ-RADAR-001: a sensor module's per-sighting observations —
+                // signal, position, time — are persisted beside the entity
+                // graph, which flattens them away (`core::rf` says why both
+                // records exist). Best-effort like the entity checkpoint: a
+                // store failure is logged, never fatal, and never discards the
+                // entities that follow. A cache replay carries none (see
+                // `ModuleResult::sightings`), so nothing is re-observed here.
+                if !mr.sightings.is_empty() {
+                    match self
+                        .store
+                        .insert_rf_sightings_batch(cx.scan_id, &mr.sightings)
+                    {
+                        Ok(rows) => debug!(
+                            scan_id = cx.scan_id,
+                            module = name,
+                            rows,
+                            "rf sightings persisted"
+                        ),
+                        Err(e) => {
+                            warn!(scan_id = cx.scan_id, module = name, error = %e, "rf sightings not persisted");
+                        }
+                    }
+                }
                 let mut found = 0usize;
                 for mut entity in mr.entities.drain(..) {
                     // Admission drop-filters (pure policy in `admission_rejection`);
@@ -943,6 +966,7 @@ impl super::ScanEngine {
             Ok(Ok(ModuleResult {
                 entities: cached,
                 truncation: None,
+                sightings: Vec::new(),
             })),
             state,
             module.attack_techniques(),

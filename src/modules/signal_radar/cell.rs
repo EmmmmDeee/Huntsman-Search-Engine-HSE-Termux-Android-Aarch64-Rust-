@@ -17,6 +17,7 @@ use crate::core::{
 use crate::modules::device_cell::{Cell, is_numeric_segment};
 
 use super::SRC;
+use crate::core::rf::{RadioKind, RfSighting, RfSource};
 
 fn tech_tag(cell_type: Option<&str>) -> &'static str {
     match cell_type.map(str::to_lowercase).as_deref() {
@@ -29,7 +30,11 @@ fn tech_tag(cell_type: Option<&str>) -> &'static str {
 }
 
 /// Parse `termux-telephony-cellinfo` JSON array into DeviceId entities.
-pub(super) fn parse_cells(cellinfo: &[u8], scan_id: &str) -> Result<ModuleResult> {
+pub(super) fn parse_cells(
+    cellinfo: &[u8],
+    scan_id: &str,
+    observed_epoch: Option<i64>,
+) -> Result<ModuleResult> {
     if super::is_blank(cellinfo) {
         return Ok(ModuleResult::new());
     }
@@ -83,6 +88,14 @@ pub(super) fn parse_cells(cellinfo: &[u8], scan_id: &str) -> Result<ModuleResult
         e.add_evidence(ev);
 
         result.push(e);
+
+        // Per-sighting record (REQ-RADAR-001): the tower id the engine uses,
+        // the level only where the radio gave a real one, the tool's own type.
+        let mut sighting = RfSighting::new(&tower_id, RadioKind::Cellular, RfSource::CellRadar);
+        sighting.signal_dbm = cell.usable_dbm().map(|v| v as f64);
+        sighting.raw_type = cell.cell_type.clone();
+        sighting.observed_epoch = observed_epoch;
+        result.push_sighting(sighting);
     }
 
     Ok(result)

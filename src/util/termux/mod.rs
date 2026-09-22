@@ -279,6 +279,31 @@ fn record_responsive(cmd: &str, args: &[&str], read: bool) {
     }
 }
 
+/// Where the `termux-*` helpers are spawned from when a test has pinned a
+/// directory; `None` in production, where they resolve on `PATH` exactly as
+/// before. Mirrors the data-dir isolation seam in `crate::util::paths`: the
+/// crate is `#![forbid(unsafe_code)]`, and since edition 2024
+/// `std::env::set_var` is `unsafe`, so an in-process test that wants the real
+/// sensor modules to read scripted tools cannot prepend to `PATH` — a
+/// `OnceLock` needs no env mutation. Set once per process; a second call is
+/// ignored, so two tests in one binary must agree on the directory.
+static TOOL_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Pin the directory the `termux-*` helpers are spawned from, for a test
+/// binary that scripts them (REQ-RADAR-001's end-to-end lock). Production
+/// never calls this. Returns whether this call set it.
+pub fn tool_dir_for_tests(dir: std::path::PathBuf) -> bool {
+    TOOL_DIR.set(dir).is_ok()
+}
+
+/// The program to spawn for `cmd`: the pinned directory's copy under a test,
+/// the bare name (a `PATH` lookup) otherwise.
+fn tool_program(cmd: &str) -> std::path::PathBuf {
+    TOOL_DIR
+        .get()
+        .map_or_else(|| std::path::PathBuf::from(cmd), |dir| dir.join(cmd))
+}
+
 /// Run a `termux-*` helper with a hard timeout, returning its stdout on a clean
 /// exit. A tool that would not spawn is cached as absent for [`ABSENT_TTL`]; an
 /// invocation that timed out is backed off along [`TIMEOUT_BACKOFF`]'s ladder.
@@ -290,7 +315,10 @@ pub async fn termux_cmd(cmd: &str, args: &[&str], timeout_ms: u64) -> Option<Vec
         tracing::debug!(cmd, reason, "termux_cmd: skipped");
         return None;
     }
-    let fut = Command::new(cmd).args(args).kill_on_drop(true).output();
+    let fut = Command::new(tool_program(cmd))
+        .args(args)
+        .kill_on_drop(true)
+        .output();
     match timeout(Duration::from_millis(timeout_ms), fut).await {
         Err(_) => {
             let backoff = record_timeout(cmd, args, Instant::now());

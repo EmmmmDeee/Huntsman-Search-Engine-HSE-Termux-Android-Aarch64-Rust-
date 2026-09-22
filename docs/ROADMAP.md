@@ -976,6 +976,63 @@ the correlator graph the differentiator, and make every implemented capability
 Nothing dormant: a rule with no producer, a leg that never runs, a declared
 error never constructed — each is either wired or removed.
 
+**T5 — Radar (signal situational awareness as a product surface).** The
+directive: the mobile signal "Radar" — the oracle app's feature set as the
+skeleton (Wi-Fi + BLE + classic BT, tracker detection, scan modes, JSON/CSV
+export, history) — grown into the best in its class: an open-source map,
+real-time tracking, and the complementary features around them, with HSE and
+the HSE BLE Radar app working as one system. The authorities, as they stand:
+
+- **The oracle APK** (`com.huntsman.bleradar` v0.3.0, retained in
+  `EmmmmDeee/HSE-BLE-API-`) is the behavioural reference, not a codebase — its
+  UI is what the operator has in hand today.
+- **`bleradar-core`** (pinned git dependency) owns the radar mathematics —
+  RSSI filtering, calibrated distance, proximity bands, identity, geometry.
+  HSE consumes it (`signal_radar`: channel and proximity band) and never
+  re-derives a distance.
+- **The Rust-first app** (`android/app` in that repository, v1.0.0) owns
+  native BLE scanning with RSSI, the loopback `ApiHttpServer`
+  (`/api/devices`, `/api/status`, `/api/scan/start|stop`) and a
+  self-contained dashboard. BLE-only by design: Wi-Fi, classic BT and tracker
+  detection are not reproduced there yet. Its default port is 8080 — so is
+  `hse serve`'s.
+- **HSE** owns persistence and analysis: `core::rf::RfSighting` +
+  `rf_sightings` (position, level, time; geo index), `radar_track`
+  (cross-sweep recurrence), the WiGLE/KML importers, AU-117/AU-122,
+  `hse signal`, the SPA radar (`live.js`) and `/api/v1/radar*`. From Termux
+  the sensors are Wi-Fi (with RSSI), classic-discovery Bluetooth (no RSSI),
+  cell and GNSS.
+
+Ordered cycles, each shipped with its own ledger entry and gate:
+
+1. **REQ-RADAR-001 — every reading is a sighting.** The live sweep now writes
+   the same `rf_sightings` rows a WiGLE import does, positioned by the
+   sweep's own fix. Everything below draws from this table. *Shipped.*
+2. **The map.** A loopback tile proxy with an on-disk cache under `hse serve`
+   (`/api/v1/tiles/{z}/{x}/{y}.png` → OpenStreetMap, with the User-Agent and
+   attribution the tile policy requires, served from cache when offline) so
+   the SPA's map stays within `img-src 'self'`; a Radar view drawing the
+   device rows and sightings of a sweep, and the sweep history, on it.
+3. **Real-time tracking.** The live radar's SSE feed drives the map as
+   iterations complete; per-device trails from `rf_sightings_for_device`;
+   `radar_recurring` rewired onto the sighting table (its own doc records
+   that it cannot see signal, position or time today).
+4. **Synergy with the app.** An HSE sensor module reading the app's loopback
+   `/api/devices` — the RSSI/distance axis the Termux Bluetooth path
+   structurally lacks — after the 8080 collision is settled (one default
+   moves; the operator must not have to know).
+5. **The app itself** (in its own repository, on its own gates — host-JVM,
+   dashboard, emulator, APK): Wi-Fi scanning, classic BT, tracker
+   heuristics, scan modes, export and history on the Rust-first core — the
+   oracle's feature set, then past it.
+
+What the first cycle taught, as a rule for the rest of the track: **a table
+with readers is not a capability until its production writer exists.**
+`rf_sightings` had a geo index, a summary, a trackable-device view and a CLI
+reader, and the only writer was the importer; every radar-side comment
+described the live sweep as a source it never was. Check the writer before
+building the next reader.
+
 ---
 
 ## 5. Cleanup & consolidation register (T3 — living)

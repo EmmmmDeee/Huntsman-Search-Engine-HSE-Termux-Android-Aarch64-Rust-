@@ -514,6 +514,13 @@ pub struct ModuleResult {
     /// Set it with [`ModuleResult::mark_truncated`] rather than by hand, so the
     /// operator-facing sentence has one spelling.
     pub truncation: Option<String>,
+    /// The per-sighting RF observations behind the entities — one radio
+    /// hearing one device at one place and time (`core::rf`). Filled by the
+    /// local-sensor modules; the engine persists it to `rf_sightings` beside
+    /// the entity graph, which flattens signal, position and time away
+    /// (REQ-RADAR-001). Never cached or replayed: a sighting is an observation
+    /// at a moment, and a cache replay observed nothing.
+    pub sightings: Vec<crate::core::rf::RfSighting>,
 }
 
 impl ModuleResult {
@@ -530,6 +537,7 @@ impl ModuleResult {
         Self {
             entities: Vec::with_capacity(cap),
             truncation: None,
+            sightings: Vec::new(),
         }
     }
 
@@ -608,6 +616,21 @@ impl ModuleResult {
     /// Append every entity from an iterator.
     pub fn extend(&mut self, entities: impl IntoIterator<Item = Entity>) {
         self.entities.extend(entities);
+    }
+    /// Record one RF sighting beside the entities (REQ-RADAR-001).
+    pub fn push_sighting(&mut self, sighting: crate::core::rf::RfSighting) {
+        self.sightings.push(sighting);
+    }
+    /// Fold another result into this one — entities, sightings and the first
+    /// truncation notice — for a module that merges independent sub-fetches.
+    /// `extend` moves entities only, which is how a sensor sweep once kept its
+    /// entities and silently dropped every sighting behind them.
+    pub fn absorb(&mut self, other: ModuleResult) {
+        self.entities.extend(other.entities);
+        self.sightings.extend(other.sightings);
+        if self.truncation.is_none() {
+            self.truncation = other.truncation;
+        }
     }
 
     /// True when the module produced nothing.

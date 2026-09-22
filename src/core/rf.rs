@@ -94,6 +94,8 @@ pub enum RfSource {
     BluetoothRadar,
     /// A local Wi-Fi scan (`modules::signal_radar::wifi`).
     WifiRadar,
+    /// A local cell survey (`modules::signal_radar::cell`).
+    CellRadar,
 }
 
 impl RfSource {
@@ -104,6 +106,7 @@ impl RfSource {
             Self::WigleApi => "wigle-api",
             Self::BluetoothRadar => "bt-radar",
             Self::WifiRadar => "wifi-radar",
+            Self::CellRadar => "cell-radar",
         }
     }
 
@@ -113,6 +116,7 @@ impl RfSource {
             "wigle-api" => Self::WigleApi,
             "bt-radar" => Self::BluetoothRadar,
             "wifi-radar" => Self::WifiRadar,
+            "cell-radar" => Self::CellRadar,
             _ => Self::WigleKml,
         }
     }
@@ -121,7 +125,10 @@ impl RfSource {
     /// being reported by a third party.
     #[must_use]
     pub fn is_local_sensor(self) -> bool {
-        matches!(self, Self::BluetoothRadar | Self::WifiRadar)
+        matches!(
+            self,
+            Self::BluetoothRadar | Self::WifiRadar | Self::CellRadar
+        )
     }
 }
 
@@ -237,6 +244,26 @@ impl RfSighting {
             }
             _ => false,
         }
+    }
+
+    /// Give a sighting the sweep's own position, but only if it carries none
+    /// of its own. A receiver that reports a position per reading has said
+    /// where the device was heard; the sweep-level fix says only where the
+    /// phone was, and overwriting the former with the latter would move the
+    /// device. The accuracy travels with the position it belongs to, so a
+    /// sighting that keeps its own position keeps its own accuracy too.
+    pub fn stamp_position_if_absent(
+        &mut self,
+        latitude: f64,
+        longitude: f64,
+        accuracy_m: Option<f64>,
+    ) {
+        if self.latitude.is_some() || self.longitude.is_some() {
+            return;
+        }
+        self.latitude = Some(latitude);
+        self.longitude = Some(longitude);
+        self.accuracy_m = accuracy_m;
     }
 }
 

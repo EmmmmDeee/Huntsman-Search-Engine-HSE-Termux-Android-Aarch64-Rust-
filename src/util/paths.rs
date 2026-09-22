@@ -125,7 +125,7 @@ static TEST_BASE_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 /// This is deliberately **not** the env-var escape hatch [`data_file`]'s doc
 /// rules out: it changes only the base-path computation, so [`huntsman_dir`]'s
 /// `0700` creation still runs and [`data_file`]/[`subdir`] still derive from the
-/// one base. `production_code_never_redirects_the_data_dir`
+/// one base. `production_code_never_reaches_a_test_seam`
 /// (tests/architecture_parts) pins that nothing under `src/` calls it.
 #[must_use]
 pub fn isolate_for_tests() -> PathBuf {

@@ -1359,6 +1359,88 @@ fn circuit_breaker_trip_skips_the_module_at_the_dispatch_gate() {
     );
 }
 
+/// REQ-RADAR-001: what a module observed per sighting is persisted beside its
+/// entities, through the one finalise path every dispatch mode shares — and a
+/// cache replay, which observed nothing, persists nothing. The real SQLite
+/// store is used because the port's default `insert_rf_sightings_batch` is a
+/// no-op for test doubles: this test is about the rows.
+#[tokio::test]
+async fn a_modules_sightings_are_persisted_beside_its_entities_and_a_replay_persists_none() {
+    use crate::core::module::ModuleResult;
+    use crate::core::rf::{RadioKind, RfSighting, RfSource};
+
+    let store = Arc::new(crate::storage::Store::open(":memory:").expect("in-memory store"));
+    let port: Arc<dyn StoragePort> = Arc::clone(&store) as Arc<dyn StoragePort>;
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(vec![], port, bus);
+
+    let target = Target::new(TargetKind::Coordinates, "-27.4705,153.0260");
+    let opts = ScanOptions::default();
+    let cx = DispatchCx {
+        scan_id: "radar-sweep-1",
+        target: &target,
+        opts: &opts,
+        is_expansion: false,
+        seed_kind: TargetKind::Coordinates,
+        quarantined: no_quarantine(),
+    };
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
+    };
+
+    let mut observed = RfSighting::new("AA:BB:CC:DD:EE:FF", RadioKind::Wifi, RfSource::WifiRadar);
+    observed.signal_dbm = Some(-45.0);
+    observed.latitude = Some(-27.4705);
+    observed.longitude = Some(153.026);
+    observed.observed_epoch = Some(1_758_500_000);
+    let mut mr = ModuleResult::new();
+    mr.push_sighting(observed);
+    engine.finalise_module_result(
+        &cx,
+        "test_radar_sightings_real",
+        Ok(Ok(mr)),
+        &mut state,
+        &[],
+        false,
+    );
+
+    let rows = store
+        .rf_devices_for_scan("radar-sweep-1")
+        .expect("query the sightings");
+    assert_eq!(rows.len(), 1, "the sighting reached rf_sightings");
+    assert_eq!(rows[0].network_id, "aa:bb:cc:dd:ee:ff");
+    assert_eq!(rows[0].best_signal_dbm, Some(-45.0));
+    assert_eq!(
+        (rows[0].best_latitude, rows[0].best_longitude),
+        (Some(-27.4705), Some(153.026))
+    );
+
+    // CONTROL: a cache replay carries no sightings and persists none.
+    engine.finalise_module_result(
+        &cx,
+        "test_radar_sightings_replay",
+        Ok(Ok(ModuleResult::new())),
+        &mut state,
+        &[],
+        true,
+    );
+    assert_eq!(
+        store
+            .rf_devices_for_scan("radar-sweep-1")
+            .expect("query")
+            .len(),
+        1,
+        "a replay observed nothing"
+    );
+}
+
 #[tokio::test]
 async fn cache_replay_does_not_feed_the_circuit_breaker_success_path() {
     use crate::core::module::ModuleResult;

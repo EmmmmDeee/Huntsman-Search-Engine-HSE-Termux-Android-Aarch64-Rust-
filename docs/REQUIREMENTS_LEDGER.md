@@ -1606,7 +1606,7 @@ $ scripts/gate.sh
 
 | ID | Behavior | Inputs | Outputs | Side effects | Failure behavior | Implementation location | Tests covering it | Runtime verification evidence | Status |
 |---|---|---|---|---|---|---|---|---|---|
-| REQ-TEST-001 (**new, Pass 14**) | No test — unit or integration — writes into the developer's real `~/.huntsman`. Unit tests use the library's `cfg(test)` switch; integration crates (where `cfg!(test)` is `false` in the linked library) go through `paths::isolate_for_tests()`, a `OnceLock` base-dir override (no `unsafe` env mutation — the crate is `#![forbid(unsafe_code)]`) called by every `tests/common` harness constructor via `tmp_db`/`tmp_dir`; `cli_seed_validation`'s spawned binary gets `HOME` set like its sibling helpers. The override only moves the base path, so `huntsman_dir`'s `0700` creation and the single-base derivation of `data_file`/`subdir` are untouched, and production code never calls it. | n/a | per-process `huntsman-test-home-<pid>/.huntsman` under the OS temp dir | temp dir only | n/a | `src/util/paths.rs` (`isolate_for_tests`), `tests/common/mod.rs` (`isolate_home`), `tests/cli_seed_validation.rs` (`run`) | `production_code_never_redirects_the_data_dir` (`tests/architecture_parts/architecture_part3.rs`) | Baseline artefact observed in this environment after `cargo test --test api`: the real `~/.huntsman/module_stats.json` held 102 synthetic `seed` scans (the input to `hse scan --adaptive`) and `settings.json` had been overwritten with `{"feature.depth_decay": false}` by `settings_toggles_put_succeeds_and_persists_the_flip`. With the real directory moved aside, `cargo test --test api --test smoke --test cli_seed_validation` (129/58/9 pass) no longer recreates it; the smoke key-chaining fixture's fake `shodan` key now lands in `/tmp/huntsman-test-home-<pid>/.huntsman/key_pool.json`. | VERIFIED |
+| REQ-TEST-001 (**new, Pass 14**) | No test — unit or integration — writes into the developer's real `~/.huntsman`. Unit tests use the library's `cfg(test)` switch; integration crates (where `cfg!(test)` is `false` in the linked library) go through `paths::isolate_for_tests()`, a `OnceLock` base-dir override (no `unsafe` env mutation — the crate is `#![forbid(unsafe_code)]`) called by every `tests/common` harness constructor via `tmp_db`/`tmp_dir`; `cli_seed_validation`'s spawned binary gets `HOME` set like its sibling helpers. The override only moves the base path, so `huntsman_dir`'s `0700` creation and the single-base derivation of `data_file`/`subdir` are untouched, and production code never calls it. | n/a | per-process `huntsman-test-home-<pid>/.huntsman` under the OS temp dir | temp dir only | n/a | `src/util/paths.rs` (`isolate_for_tests`), `tests/common/mod.rs` (`isolate_home`), `tests/cli_seed_validation.rs` (`run`) | `production_code_never_reaches_a_test_seam` (`tests/architecture_parts/architecture_part3.rs`) | Baseline artefact observed in this environment after `cargo test --test api`: the real `~/.huntsman/module_stats.json` held 102 synthetic `seed` scans (the input to `hse scan --adaptive`) and `settings.json` had been overwritten with `{"feature.depth_decay": false}` by `settings_toggles_put_succeeds_and_persists_the_flip`. With the real directory moved aside, `cargo test --test api --test smoke --test cli_seed_validation` (129/58/9 pass) no longer recreates it; the smoke key-chaining fixture's fake `shodan` key now lands in `/tmp/huntsman-test-home-<pid>/.huntsman/key_pool.json`. | VERIFIED |
 
 | REQ-TEST-002 (**new, Pass 14**) | The architecture lint `modules_do_not_collapse_a_non_2xx_into_an_empty_result` scans BOTH guard shapes — the inline `if !resp.status().is_success()` and the bound-variable `let status = resp.status(); if !status.is_success()` — with a vacuity floor just below the in-tree count. | n/a | n/a | none | fails the gate if any guarded block `return Ok(`s, or if fewer than 35 guards are found | `tests/architecture_parts/architecture_part7.rs` | itself | The trigger was `status().is_success()` only; 17 in-tree guards use the bound-variable form and were never scanned (a collapse written that way shipped green). Widened trigger scans 39 guards (measured with a probe, then removed); floor raised 20 → 35; all 39 comply. `cargo test --test architecture modules_do_not_collapse` passes. | VERIFIED |
 | REQ-TEST-003 (**new, Pass 14**) | `non_huntsman_env_reads_are_known` sees every shape a non-`HUNTSMAN_` knob is read through — direct `env::var("…")`, the typed wrappers `env_i64`/`resolve_env_u64`, a typed constant (`const X: &str = "HSE_…"`) read by identifier, and clap `env = "HSE_…"` attributes — and `KNOWN_HSE_KNOBS` lists every one with its consumer; the anti-rot check still fails on a listed knob nothing reads. | n/a | n/a | none | fails the gate on an unlisted read or a stale entry | `tests/architecture_parts/architecture_part3.rs`; `src/core/module/provider.rs` (`PROVIDER_COST_ENV_PREFIX`, so the `HSE_PROVIDER_COST_<ID>` family is a visible constant, not an inline `format!` literal) | itself | Four live operator knobs — `HSE_SQLITE_CACHE_KB`, `HSE_SQLITE_MMAP` (storage `env_i64`), `HSE_RESOURCE_PROFILE` (typed const), `HSE_PROVIDER_COST_*` (`format!`) — were invisible to the scanner and absent from the list; `HSE_BIND`/`HSE_AUTH_TOKEN` (clap) were documented as deliberately unlisted. All six are now collected and listed; the test passes in both directions (no unknown, no stale). | VERIFIED |
@@ -17574,3 +17574,172 @@ because the engine's inter-dispatch throttle sleep does not poll the cancel
 handle — cancellation is honoured at the next module boundary, which for a
 30 s `throttle_ms` is after the sleep. Pre-existing engine behaviour, the
 same for one-shot scans, and a separate cycle if it is ever worth the change.
+
+
+---
+
+### REQ-RADAR-001 — the live radar sweep never recorded a sighting; `rf_sightings` and every analytic on it were reachable only through file import
+
+#### The directive, and where this sits
+
+The operator's target is a best-in-class mobile signal radar — open-source
+map, real-time tracking, and the complementary features around them — with
+the oracle app's screen as the skeleton. `docs/ROADMAP.md` T5 lays the track
+out across HSE and the HSE BLE Radar repository. This entry is its first
+cycle: the data every later item draws from.
+
+#### Observed, on the pre-fix binary, before any change
+
+`core::rf`'s own header says why the sighting record exists beside the entity
+graph: the graph "dissolves the sighting", and for local sweeps signal,
+position and time "were never stored per sighting". `RfSource::WifiRadar` and
+`RfSource::BluetoothRadar` were declared for the local sweep and, by grep,
+constructed only in tests. `insert_rf_sightings_batch` had one production
+caller: the importer (`src/app/import/mod.rs`). And `hse signal`'s empty-state
+hint told the operator to "run a radar sweep first".
+
+Probed rather than argued (`radar_probe.sh`): a real `hse serve`, the four
+Termux tools scripted on `PATH` (two APs, a classic and an LE device, a GNSS
+fix at −27.4705/153.026 ±8 m, one LTE cell), `POST /api/v1/radar`, then the
+operator's own reader on the same home:
+
+| | pre-fix binary (`ff4d63c-dirty`) |
+|---|---|
+| sweep | `complete`, `modules_run: 5`, `entity_count: 13` |
+| `hse signal --scan-id … --json` | `sightings: 0, devices: 0, wifi: 0, ble: 0, bt: 0, cellular: 0, with_position: 0` |
+| `hse signal --devices` | an empty table |
+
+Thirteen entities, no sighting. The reader's hint promised what the sweep
+never delivered.
+
+#### The fix: one typed channel, one stamping rule, one persistence seam
+
+- `ModuleResult` gains `sightings: Vec<RfSighting>` — the `truncation`
+  precedent: a typed channel rather than evidence strings re-parsed
+  downstream. `absorb` folds sub-results including their sightings;
+  `combine_sensors` uses it, because `extend` (entities only) is exactly how
+  a sensor sweep kept its entities and dropped every reading behind them.
+- The three parsers push one sighting per reading beside its entity:
+  Wi-Fi with the SSID where reported and the level as measured; Bluetooth
+  with `le` → `Ble` and everything else the classic-discovery shim reports
+  (`classic`, `dual`, unknown) → `BtClassic`, the tool's own type string kept
+  verbatim in `raw_type` for a later re-derivation, and a missing or blank
+  name left absent (the entity's `<unknown>` is display text, not an
+  observation); cell keyed on the engine's own tower id so it joins the
+  `DeviceId` entity, with a new `RfSource::CellRadar`. The read time is the
+  sighting's epoch: the Termux tools carry no wall clock of their own
+  (`termux-wifi-scaninfo`'s `timestamp` is device uptime). The parsers take
+  the epoch as an argument, so they stay pure.
+- `device_fix` now exposes the decoded `Fix` beside the entity
+  (`decode_fix` / `result_for_fix`; `scan_location_ladder_with_fix`), so the
+  sweep reads the numbers from the one decode rather than back out of the
+  entity's evidence strings. `signal_radar` stamps that fix onto every
+  sighting through `RfSighting::stamp_position_if_absent` — the one rule:
+  never over a reading's own position, and the accuracy travels with the
+  position it belongs to. None of these sensors reports a per-reading
+  position today; the rule is asserted anyway, because the first sensor that
+  does must not be moved to where the phone was.
+- **A `last`-known read positions nothing.** The ladder's third and fourth
+  stages read the OS's passively-cached position — minutes or hours old on a
+  phone that has moved. That read still establishes the `Coordinates` entity
+  (tagged `fix-age:last-known`, as before), but `device_fix::sighting_fix`
+  hands the sweep a fix to stamp only from a fresh lock: a sighting's position
+  asserts where the device was heard from *now*, and only a fresh lock
+  observed that. This rule was found in the adversarial re-read of the first
+  draft, which would have stamped a stale cache onto every reading.
+- The engine persists `mr.sightings` in `finalise_module_result`, the one
+  path every dispatch mode shares (sequential, concurrent, the join drain,
+  the cache replay), best-effort like the entity checkpoint: a store failure
+  is logged and never discards the entities that follow. A cache replay
+  carries no sightings by construction.
+- The end-to-end lock needs the real sensor modules to read scripted tools
+  from inside one test process, and the crate is `#![forbid(unsafe_code)]` —
+  since edition 2024 `std::env::set_var` is `unsafe`, so `PATH` cannot be
+  prepended in-process. `util::termux::tool_dir_for_tests` is a `OnceLock`
+  seam on the exact pattern of `paths::isolate_for_tests`; production never
+  sets it and spawns by bare name on `PATH` exactly as before, and the
+  architecture guard that kept the `paths` seam out of production is now a
+  table with this seam as its second row.
+
+#### Observed again, on the fixed tree
+
+Same probe, same fixtures, the binary built from the fix:
+
+| | fixed (`aacef18-dirty`) |
+|---|---|
+| sweep | `complete`, `modules_run: 5`, `entity_count: 13` — unchanged |
+| `hse signal --json` | `sightings: 5, devices: 5, wifi: 2, ble: 1, bt: 1, cellular: 1, with_position: 5, named: 3, fixed_address: 1, randomised_address: 3` |
+| `hse signal --devices` | `aa:bb:cc:dd:ee:ff wifi random −45 LabNet`, `11:22:33:44:55:66 wifi fixed −80`, `505-01-678-12345 cell −80`, `aa:bb:cc:dd:ee:01 bt Headphones`, `aa:bb:cc:dd:ee:02 ble Speaker` |
+
+The fixture addresses `aa:bb:cc:dd:ee:*` classify as locally-administered
+(the U/L bit of `0xaa` is set), which is the honest answer, not a defect.
+
+#### Locks
+
+- `core::rf`: `stamp_position_if_absent` fills an empty position and never
+  overrides a reading's own; `CellRadar` round-trips and is a local sensor.
+- `signal_radar`: Wi-Fi/Bluetooth/cell readings become sightings with the
+  right radio, source, level, name, type and epoch; the sweep's fix positions
+  every sighting that has none of its own (with a sighting that has one as
+  the over-correction control); no fix invents nothing; `combine_sensors`
+  keeps every radio's sightings.
+- `device_fix::sighting_fix`: a cached read positions nothing, a fresh lock
+  does, no fix stays no fix.
+- `core::engine`: `finalise_module_result` persists a module's sightings to
+  the real store and a cache replay persists none.
+- `tests/radar_sightings.rs`: the real router and engine with only
+  `signal_radar` registered and the four tools scripted — `POST /api/v1/radar`
+  → 5 sightings, 5 positioned, 3 named, the AP row with level, position and
+  accuracy, the LE device classified, every row timestamped; then a second
+  sweep with the fresh-lock stages refused (`termux-location … -r once` exits
+  1) → 5 sightings, `with_position: 0`, the `Coordinates` entity present and
+  tagged `fix-age:last-known`. 0.2 s, no network.
+- `tests/architecture_parts`: `production_code_never_reaches_a_test_seam`
+  — the guard that kept `paths::isolate_for_tests` out of production is now a
+  table, and `termux::tool_dir_for_tests` is its second row.
+
+#### Falsification — predicted before run, then compared
+
+| # | mutation | predicted | actual |
+|---|---|---|---|
+| R1 | the engine never persists | engine lock at "the sighting reached rf_sightings"; e2e at "2 APs + 2 Bluetooth + 1 tower" (5 → 0). Parsers and stamping survive | as predicted — engine lock at `tests.rs:1417` (`left: 0, right: 1`) and the e2e at `radar_sightings.rs:115` (`left: 0, right: 5`); 8 passed otherwise |
+| R2 | no fix stamping | `the_sweeps_fix_positions…` at its first position assert; e2e at "the sweep's fix positions every reading" (5 → 0). `without_a_fix…` survives | as predicted — `the_sweeps_fix…` at `tests.rs:503` (`(None, None, None)`) and the e2e at `:124` (`with_position` 5 → 0); `without_a_fix…` green |
+| R3 | over-stamp: the fix overrides a reading's own position | `core::rf` at "a reading's own position outranks the sweep's fix" and `signal_radar` at "never overwritten" — the two controls ONLY; e2e survives (no fixture reading carries its own position) | as predicted — the two controls only: `rf_tests.rs:268` and `signal_radar/tests.rs:516`, both showing the fix's values where the reading's own should be; the e2e stayed green (6 passed) |
+| R4 | Bluetooth mapping inverted | `bluetooth_readings_classify…` at `classic.radio`; e2e at "the LE speaker". Count-only tests survive | as predicted — `tests.rs:416` (`left: Ble, right: BtClassic`) and the e2e at `:148` (`left: BtClassic, right: Ble`) |
+| R5 | Wi-Fi sightings sourced as `WigleKml` | `wifi_readings_become…` at the source assert ONLY; e2e survives — the summary counts by radio, not source, which is a gap this row makes visible | as predicted — `tests.rs:388` (`left: WigleKml`) only; the e2e stayed green |
+| R6 | cell sightings dropped | `cell_readings_become…` (2 → 0); e2e at "2 APs + 2 Bluetooth + 1 tower" (5 → 4). `the_sweeps_fix…` survives (hand-built rows) | as predicted — `tests.rs:455` (`left: 0, right: 2`) and the e2e at `:115` (`left: 4, right: 5`) |
+
+Six of six on the line named before the run. The harness itself failed once
+and is recorded rather than tidied away: the first pass's restore step mapped
+pristine copies back to paths by replacing `_` with `/`, so nothing under
+`signal_radar/` was ever restored and R2's mutation lingered into R3 —
+visible as R3 dying at R2's line with R2's values. The tree was restored
+explicitly and re-verified by md5, the mapping made explicit and
+abort-on-mismatch, and R3–R6 rerun clean; R1 and R2 had each run on a tree
+carrying only their own mutation. The last-known rule above landed after the
+matrix (it came out of the re-read, not the rows); it is locked by its own
+unit test and by the second sweep of the end-to-end lock.
+
+**Reconstruction note.** The session's container was restarted before this
+tree was committed; the working tree came back at the previous head with
+every uncommitted edit, the probe scripts and the matrix logs gone. The
+change was rebuilt from the recorded edit scripts and re-verified (the
+locks above, clippy, the rustdoc lints) before this commit; the matrix rows
+and the line numbers above are the first run's, and the matrix and the full
+gate are rerun on the committed tree, with any difference recorded in a
+follow-up rather than edited into this table. The lesson is taken as a
+rule: verified work is pushed at the first green fast checks, not held
+through an hour-long gate.
+
+#### Scope, honestly
+
+- A live cell sighting is keyed by the engine's tower id
+  (`MCC-MNC-LAC-CID`, hyphens), the same value the `DeviceId` entity carries;
+  a WiGLE import keeps the capture's own `Network ID` spelling. The same
+  tower from the two sources is therefore two ids today — a canonicalisation
+  item for T2, recorded here rather than solved in passing.
+- `hse radar` (the CLI loop) and the live radar session persist sightings by
+  construction — they run the same engine path — but only the one-shot
+  `POST /api/v1/radar` was observed in this cycle.
+- Nothing reads the new rows on the web yet; `hse signal` does. The map and
+  the live feed are the next two cycles of T5.

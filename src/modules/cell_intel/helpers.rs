@@ -203,6 +203,7 @@ pub(super) fn parse_cells_survey(
     let mut result = crate::core::module::ModuleResult {
         entities: Vec::with_capacity(cells.len()),
         truncation: None,
+        sightings: Vec::new(),
     };
     for cell in &cells {
         // Same parse/skip + builder the live process() path uses, so these
