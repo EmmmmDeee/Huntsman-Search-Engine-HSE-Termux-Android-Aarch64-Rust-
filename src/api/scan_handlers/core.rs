@@ -1052,6 +1052,171 @@ pub async fn radar_recurring(
     ok_list("devices", devices)
 }
 
+/// Why a `/radar/signals*` read has no scan to answer about.
+enum SignalRefusal {
+    /// An explicit `scan_id` that names no scan.
+    NoSuchScan,
+    /// No `scan_id` given and no sighting recorded anywhere yet, so there is
+    /// nothing to default to.
+    NothingRecorded,
+}
+
+impl SignalRefusal {
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            Self::NoSuchScan => not_found(),
+            // A refusal with the CLI's own hint rather than an empty 200: an
+            // empty list would read as "nothing around you" when the truth is
+            // "nothing recorded".
+            Self::NothingRecorded => (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error": "no RF sightings recorded yet",
+                    "detail": "run a radar sweep (POST /api/v1/radar) or import a wardriving capture (hse import <file.kml>) first",
+                })),
+            )
+                .into_response(),
+        }
+    }
+}
+
+/// Which scan a `/radar/signals*` read is about: the explicit `scan_id` when
+/// given (it must exist), else the scan of the most recent sighting — "the
+/// survey you just ran" — exactly as `hse signal` resolves it, so the CLI and
+/// the web reader default the same way.
+fn resolve_signal_scan(
+    store: &dyn crate::core::StoragePort,
+    requested: Option<String>,
+) -> crate::core::error::Result<std::result::Result<String, SignalRefusal>> {
+    Ok(match requested {
+        Some(id) if store.get_scan(&id)?.is_some() => Ok(id),
+        Some(_) => Err(SignalRefusal::NoSuchScan),
+        None => store
+            .rf_latest_scan_id()?
+            .ok_or(SignalRefusal::NothingRecorded),
+    })
+}
+
+/// What the off-reactor read for `radar_signals` brings back.
+type SignalsRead = std::result::Result<
+    (
+        String,
+        crate::core::rf::RfSummary,
+        Vec<crate::core::rf::RfDeviceRow>,
+    ),
+    SignalRefusal,
+>;
+
+/// `GET /api/v1/radar/signals?scan_id=<id>&trackable=1&limit=<n>` — the
+/// sighting table's web reader: one sweep's summary and its device roll-up,
+/// strongest first. These are the rows `hse signal` prints, through the same
+/// presenters (`app::signal::{summary_json, device_json}`), so the CLI and the
+/// web cannot disagree about a field. `scan_id` defaults to the scan of the
+/// most recent sighting, as the CLI does; `trackable=1` keeps only
+/// fixed-hardware addresses, through the port's one `rf_trackable_devices`
+/// definition (AU-122); `limit` caps the rows returned while `total` says how
+/// many there were, so a cap never reads as completeness.
+pub async fn radar_signals(
+    State(s): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let requested = params.get("scan_id").cloned();
+    let trackable = params
+        .get("trackable")
+        .is_some_and(|v| v == "1" || v == "true");
+    let limit: usize = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(500)
+        .clamp(1, 5000);
+    let store = Arc::clone(&s.store);
+    let read = super::offload_store(move || -> crate::core::error::Result<SignalsRead> {
+        let sid = match resolve_signal_scan(&*store, requested)? {
+            Ok(sid) => sid,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let summary = store.rf_summary(&sid)?;
+        let devices = if trackable {
+            store.rf_trackable_devices(&sid)?
+        } else {
+            store.rf_devices_for_scan(&sid)?
+        };
+        Ok(Ok((sid, summary, devices)))
+    })
+    .await;
+    match read {
+        Ok(Ok((sid, summary, devices))) => {
+            let total = devices.len();
+            let rows: Vec<serde_json::Value> = devices
+                .iter()
+                .take(limit)
+                .map(crate::app::signal::device_json)
+                .collect();
+            let count = rows.len();
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "scan_id": sid,
+                    "summary": crate::app::signal::summary_json(&sid, &summary),
+                    "devices": rows,
+                    "count": count,
+                    "total": total,
+                    "trackable_only": trackable,
+                })),
+            )
+                .into_response()
+        }
+        Ok(Err(refusal)) => refusal.into_response(),
+        Err(resp) => resp,
+    }
+}
+
+/// What the off-reactor read for `radar_signal_track` brings back.
+type TrackRead = std::result::Result<(String, Vec<crate::core::rf::RfSighting>), SignalRefusal>;
+
+/// `GET /api/v1/radar/signals/{network_id}?scan_id=<id>` — one device's every
+/// sighting in a sweep, oldest first: the movement track `hse signal --track`
+/// prints, as the same `RfSighting` records. The id is canonicalised the way
+/// the store keys it, so an operator's `AA:BB:…` finds `aa:bb:…`. A device
+/// never heard in that sweep is an empty track (200), because the question
+/// was answerable; only an unknown sweep, or no sighting anywhere yet, refuses.
+pub async fn radar_signal_track(
+    State(s): State<Arc<AppState>>,
+    Path(network_id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let requested = params.get("scan_id").cloned();
+    let canonical = crate::core::rf::canonical_network_id(&network_id);
+    let wanted = canonical.clone();
+    let store = Arc::clone(&s.store);
+    let read = super::offload_store(move || -> crate::core::error::Result<TrackRead> {
+        let sid = match resolve_signal_scan(&*store, requested)? {
+            Ok(sid) => sid,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let rows = store.rf_sightings_for_device(&sid, &wanted)?;
+        Ok(Ok((sid, rows)))
+    })
+    .await;
+    match read {
+        Ok(Ok((sid, rows))) => {
+            let count = rows.len();
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "scan_id": sid,
+                    "network_id": canonical,
+                    "sightings": rows,
+                    "count": count,
+                })),
+            )
+                .into_response()
+        }
+        Ok(Err(refusal)) => refusal.into_response(),
+        Err(resp) => resp,
+    }
+}
+
 /// `GET /api/v1/plan?value=<seed>` — forward-only scan-plan PREVIEW.
 pub async fn plan_preview(
     Query(params): Query<std::collections::HashMap<String, String>>,

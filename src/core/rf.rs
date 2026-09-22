@@ -404,6 +404,66 @@ pub fn parse_iso8601_epoch(s: &str) -> Option<i64> {
     Some(epoch)
 }
 
+/// One device as rolled up from its sightings within a scan — the `rf_devices`
+/// view's row, and the read model every device reader presents (`hse signal
+/// --devices`, `GET /api/v1/radar/signals`). Every field is derived, so this is
+/// a read model with no independent lifetime: it cannot drift from the facts
+/// because it is not stored. It lives here, beside [`RfSighting`], rather than
+/// in the storage layer, because it is what the storage port *returns* — the
+/// engine, the CLI and the HTTP reader all name it without naming SQLite.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RfDeviceRow {
+    pub network_id: String,
+    pub radio: RadioKind,
+    /// `None` when the id is not a hardware address (a cellular identifier).
+    pub locally_administered: Option<bool>,
+    pub oui: Option<String>,
+    /// The registered organisation for [`oui`](Self::oui).
+    ///
+    /// Resolved on read rather than stored. The OUI is the durable fact; the
+    /// name attached to it is a lookup against a table that gets regenerated,
+    /// so a stored copy would silently go stale while the row still looked
+    /// authoritative. Resolving on read means the embedded registry is always
+    /// the single answer.
+    ///
+    /// `None` for a locally-administered address even though its first three
+    /// bytes would index the table perfectly well: those bytes are randomly
+    /// generated, so naming a vendor from them fabricates an identity. This is
+    /// the same refusal [`crate::util::oui::classify_mac`] makes.
+    pub vendor: Option<&'static str>,
+    pub device_class: Option<String>,
+    pub name: Option<String>,
+    pub sightings: i64,
+    /// Distinct rounded positions this device was heard from. Greater than one
+    /// means the sightings genuinely constrain a location rather than giving a
+    /// single bearing.
+    pub distinct_fixes: i64,
+    pub first_epoch: Option<i64>,
+    pub last_epoch: Option<i64>,
+    pub best_signal_dbm: Option<f64>,
+    pub worst_signal_dbm: Option<f64>,
+    pub best_accuracy_m: Option<f64>,
+    pub best_latitude: Option<f64>,
+    pub best_longitude: Option<f64>,
+}
+
+/// Scan-level totals, computed in SQL so a summary never walks every row.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RfSummary {
+    pub sightings: i64,
+    pub devices: i64,
+    pub wifi: i64,
+    pub ble: i64,
+    pub bt: i64,
+    pub cellular: i64,
+    pub fixed_address: i64,
+    pub randomised_address: i64,
+    pub named: i64,
+    pub with_position: i64,
+    pub first_epoch: Option<i64>,
+    pub last_epoch: Option<i64>,
+}
+
 #[cfg(test)]
 mod tests {
     include!("rf_tests.rs");

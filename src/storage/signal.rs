@@ -6,64 +6,7 @@
 use rusqlite::params;
 
 use crate::core::error::Result;
-use crate::core::rf::{RadioKind, RfSighting, RfSource};
-
-/// One device as rolled up from its sightings within a scan — the `rf_devices`
-/// view's row. Every field is derived, so this is a read model with no
-/// independent lifetime: it cannot drift from the facts because it is not
-/// stored.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RfDeviceRow {
-    pub network_id: String,
-    pub radio: RadioKind,
-    /// `None` when the id is not a hardware address (a cellular identifier).
-    pub locally_administered: Option<bool>,
-    pub oui: Option<String>,
-    /// The registered organisation for [`oui`](Self::oui).
-    ///
-    /// Resolved on read rather than stored. The OUI is the durable fact; the
-    /// name attached to it is a lookup against a table that gets regenerated,
-    /// so a stored copy would silently go stale while the row still looked
-    /// authoritative. Resolving here means the embedded registry is always the
-    /// single answer.
-    ///
-    /// `None` for a locally-administered address even though its first three
-    /// bytes would index the table perfectly well: those bytes are randomly
-    /// generated, so naming a vendor from them fabricates an identity. This is
-    /// the same refusal [`crate::util::oui::classify_mac`] makes.
-    pub vendor: Option<&'static str>,
-    pub device_class: Option<String>,
-    pub name: Option<String>,
-    pub sightings: i64,
-    /// Distinct rounded positions this device was heard from. Greater than one
-    /// means the sightings genuinely constrain a location rather than giving a
-    /// single bearing.
-    pub distinct_fixes: i64,
-    pub first_epoch: Option<i64>,
-    pub last_epoch: Option<i64>,
-    pub best_signal_dbm: Option<f64>,
-    pub worst_signal_dbm: Option<f64>,
-    pub best_accuracy_m: Option<f64>,
-    pub best_latitude: Option<f64>,
-    pub best_longitude: Option<f64>,
-}
-
-/// Scan-level totals, computed in SQL so a summary never walks every row.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RfSummary {
-    pub sightings: i64,
-    pub devices: i64,
-    pub wifi: i64,
-    pub ble: i64,
-    pub bt: i64,
-    pub cellular: i64,
-    pub fixed_address: i64,
-    pub randomised_address: i64,
-    pub named: i64,
-    pub with_position: i64,
-    pub first_epoch: Option<i64>,
-    pub last_epoch: Option<i64>,
-}
+use crate::core::rf::{RadioKind, RfDeviceRow, RfSighting, RfSource, RfSummary};
 
 impl super::Store {
     /// Persist a batch of sightings for one scan under one transaction —
@@ -221,18 +164,6 @@ impl super::Store {
         )?;
         let mapped = stmt.query_map(params![scan_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
         Ok(mapped.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    /// Devices with a fixed hardware address — the only ones whose recurrence
-    /// across sightings means anything (AU-122). This filter is the ONE
-    /// definition of "trackable": the `rf_trackable` SQL view that encoded the
-    /// same predicate was queried by nothing and is retired on open.
-    pub fn rf_trackable_devices(&self, scan_id: &str) -> Result<Vec<RfDeviceRow>> {
-        Ok(self
-            .rf_devices_for_scan(scan_id)?
-            .into_iter()
-            .filter(|d| d.locally_administered == Some(false))
-            .collect())
     }
 
     /// The scan of the most recent sighting, or `None` when nothing has been

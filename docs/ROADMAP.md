@@ -996,23 +996,30 @@ the HSE BLE Radar app working as one system. The authorities, as they stand:
   self-contained dashboard. BLE-only by design: Wi-Fi, classic BT and tracker
   detection are not reproduced there yet. Its default port is 8080 — so is
   `hse serve`'s.
-- **HSE** owns persistence and analysis: `core::rf::RfSighting` +
-  `rf_sightings` (position, level, time; geo index), `radar_track`
-  (cross-sweep recurrence), the WiGLE/KML importers, AU-117/AU-122,
-  `hse signal`, the SPA radar (`live.js`) and `/api/v1/radar*`. From Termux
-  the sensors are Wi-Fi (with RSSI), classic-discovery Bluetooth (no RSSI),
-  cell and GNSS.
+- **HSE** owns persistence and analysis: `core::rf::{RfSighting,
+  RfDeviceRow, RfSummary}` + `rf_sightings` (position, level, time; geo
+  index) read through `StoragePort`, `radar_track` (cross-sweep recurrence),
+  the WiGLE/KML importers, AU-117/AU-122, `hse signal` and
+  `/api/v1/radar/signals*` (one presenter, `app::signal`), and the SPA Radar
+  view (`js/views/radar.js`, `#/radar`) with `/api/v1/radar*`. From Termux the
+  sensors are Wi-Fi (with RSSI), classic-discovery Bluetooth (no RSSI), cell
+  and GNSS.
 
 Ordered cycles, each shipped with its own ledger entry and gate:
 
 1. **REQ-RADAR-001 — every reading is a sighting.** The live sweep now writes
    the same `rf_sightings` rows a WiGLE import does, positioned by the
    sweep's own fix. Everything below draws from this table. *Shipped.*
-2. **The map.** A loopback tile proxy with an on-disk cache under `hse serve`
+2. **The reader, then the map.** *2a, REQ-RADAR-002, shipped:* the sighting
+   readers on the port, `/api/v1/radar/signals` and `…/signals/{network_id}`
+   through the CLI's presenters, and the `#/radar` view — sweep and continuous
+   radar, a polar plot by level, the device table, per-device tracks, the
+   sweep history, JSON/CSV — as the radar's one home. *2b, next:* a loopback
+   tile proxy with an on-disk cache under `hse serve`
    (`/api/v1/tiles/{z}/{x}/{y}.png` → OpenStreetMap, with the User-Agent and
    attribution the tile policy requires, served from cache when offline) so
-   the SPA's map stays within `img-src 'self'`; a Radar view drawing the
-   device rows and sightings of a sweep, and the sweep history, on it.
+   the SPA's map stays within `img-src 'self'`; the view draws a sweep's
+   positioned sightings and the sweep's own fix on it.
 3. **Real-time tracking.** The live radar's SSE feed drives the map as
    iterations complete; per-device trails from `rf_sightings_for_device`;
    `radar_recurring` rewired onto the sighting table (its own doc records
@@ -1032,6 +1039,10 @@ with readers is not a capability until its production writer exists.**
 reader, and the only writer was the importer; every radar-side comment
 described the live sweep as a source it never was. Check the writer before
 building the next reader.
+The second cycle added the converse: **a reader that only the CLI can reach
+is not a product surface.** Every `rf_*` reader was inherent on the SQLite
+`Store`; the HTTP layer sees the port and could not call one. Put the reader
+on the port first, then build the page.
 
 ---
 

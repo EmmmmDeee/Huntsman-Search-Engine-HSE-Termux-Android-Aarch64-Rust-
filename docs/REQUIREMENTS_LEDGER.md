@@ -17731,6 +17731,19 @@ follow-up rather than edited into this table. The lesson is taken as a
 rule: verified work is pushed at the first green fast checks, not held
 through an hour-long gate.
 
+**Rerun on the committed tree, `78a4b643`.** The six rows were rerun with the
+explicit restore map, each on a tree carrying only its own mutation
+(`restored (Rn)` after every row, md5-verified). Every lib lock died on the
+line recorded above with the same values; the end-to-end lock died on the same
+assertions with the same values, eleven lines lower than recorded
+(`radar_sightings.rs:126`, `:135`, `:159`, `:126` for R1, R2, R4, R6 — the
+reconstructed file carries a longer header than the first draft). Nothing in
+the table above is changed by the rerun. The full gate was **not** rerun on
+`78a4b643` itself: CI ran all nine jobs on that exact commit and every one
+passed (Check & test at 12:56Z, cargo audit at 12:50Z), which is the record
+for that tree; the gate that superseded it ran at top level on the successor
+commit (REQ-RADAR-002 below), whose tree contains this one.
+
 #### Scope, honestly
 
 - A live cell sighting is keyed by the engine's tower id
@@ -17743,3 +17756,142 @@ through an hour-long gate.
   `POST /api/v1/radar` was observed in this cycle.
 - Nothing reads the new rows on the web yet; `hse signal` does. The map and
   the live feed are the next two cycles of T5.
+
+### REQ-RADAR-002 — every reader of the sighting table was inherent on the SQLite store, so the web could not read a row; the readers go onto the port, two routes and one view make them reachable
+
+#### Where this sits
+
+T5, cycle 2a (`docs/ROADMAP.md`). REQ-RADAR-001 made the live sweep write
+`rf_sightings`; this makes what it wrote reachable where the operator is —
+the browser on the phone — and closes the first cycle's recorded residual
+("nothing reads the new rows on the web yet; `hse signal` does"). The map
+(2b) sits on top of this reader and is the next cycle.
+
+#### Observed, on `78a4b643`, before any change
+
+`rf_latest_scan_id`, `rf_summary`, `rf_devices_for_scan`, `rf_trackable_devices`
+and `rf_sightings_for_device` were inherent methods on `storage::Store`. Every
+HTTP handler sees `AppState.store: Arc<dyn StoragePort>`, and the port had one
+sighting method, the writer (`insert_rf_sightings_batch`). No handler could
+read a sighting without opening a second connection to the same database,
+which `core/port` forbids by architecture test. The SPA's radar surface was an
+activation button and a sweep list on the Live page; its "Review" link opened
+the entity graph, where — as `core::rf`'s own header says — the reading has
+already been dissolved.
+
+Probed rather than argued (`radar_signals_probe.sh`): a real `hse serve` from
+the `78a4b643` binary, the four Termux tools scripted, one `POST /api/v1/radar`:
+
+| | `78a4b643` |
+|---|---|
+| `GET /api/v1/radar/signals` before and after the sweep | `404 {"error":"endpoint not found", …}` — the api fallback |
+| the served shell | no `nav-radar`, no `#/radar`; `/static/js/views/radar.js` 404 |
+| the same home, `hse signal --scan-id … --json` | `sightings: 5, with_position: 5` |
+
+The rows were there; only the CLI could reach them.
+
+#### The fix: the port, one presenter, two routes, one view
+
+- `RfDeviceRow` and `RfSummary` move from `storage::signal` to `core::rf`,
+  beside the sighting they roll up: they are what the port *returns*, and the
+  engine, the CLI and the HTTP reader all name them without naming SQLite.
+  No re-export is left behind; the two importers were updated.
+- `StoragePort` gains `rf_latest_scan_id`, `rf_summary`, `rf_devices_for_scan`,
+  `rf_sightings_for_device` (the SQLite `Store` overrides each, next to the
+  writer's override) and `rf_trackable_devices` as a *provided* method — the
+  AU-122 predicate written once, on the trait, so `hse signal --trackable` and
+  `?trackable=1` cannot disagree. The inherent `Store::rf_trackable_devices`
+  is deleted, and the CLI reaches the filter through the trait.
+- `app::signal::{summary_json, device_json}` are the presenters `hse signal
+  --json` already used, now `pub` and shared: the API calls the same two
+  functions, so a field renamed for one reader renames for both, and the test
+  that pins the name fails for both (K8 below).
+- `GET /api/v1/radar/signals[?scan_id=&trackable=1&limit=]` — summary plus
+  device roll-up strongest first; `count`/`total` so a cap never reads as
+  completeness. `GET /api/v1/radar/signals/{network_id}[?scan_id=]` — one
+  device's sightings oldest first, the id canonicalised the way the store
+  keys it. Both default to the scan of the most recent sighting exactly as
+  the CLI does (`resolve_signal_scan` is the one resolver). Before any
+  sighting exists that is `404 {"error":"no RF sightings recorded yet",
+  "detail":"run a radar sweep (POST /api/v1/radar) or import …"}` — the
+  CLI's own hint, never an empty 200, because an empty list reads as
+  "nothing around you" when the truth is "nothing recorded". An unknown
+  explicit sweep is the plain `not found`. Both reads are off-reactor through
+  `offload_store`; the REQ-REACTOR-001 guard covers them like every sibling.
+- `#/radar` (`js/views/radar.js`, `nav-radar`): one sweep / continuous radar
+  (stop for the session this page started), a polar plot by best level —
+  rings at −40/−60/−80/−100 dBm, strongest at the centre, the bearing a stable
+  FNV hash of the address and labelled as such in the module header, because
+  no on-device sensor reports a direction and drawing one would fabricate it;
+  no distance, because HSE never re-derives one from a level — radio chips
+  with the summary's counts, sort, fixed-only, the device table (address
+  classified, vendor withheld from a randomised address), a per-device
+  sighting track, the sweep history with Load/Latest, and JSON (the API URL)
+  and CSV (the rows shown) export. The Live page's radar panel and history
+  moved here; one pointer remains, and its session list still lists and stops
+  a continuous radar. An 8 s poller follows the latest sweep only while the
+  page is visible and not pinned to an older sweep, so a continuous radar's
+  sightings appear as its iterations land.
+
+#### Observed again, on the fixed binary
+
+| | fixed |
+|---|---|
+| before any sweep | `404 {"error":"no RF sightings recorded yet", …}` — the handler's refusal |
+| the served shell | `nav-radar`, `#/radar`, `/static/js/views/radar.js` 200 |
+| after one sweep, `GET /api/v1/radar/signals` (no id) | `200`, `scan_id` = the sweep just run, `sightings 5, devices 5, wifi 2, ble 1, bt 1, cellular 1, with_position 5`, `count 5, total 5`; rows strongest first — `00:1a:2b:3c:4d:5e wifi fixed LabNet −45 Ayecom Technology Co., Ltd.`, `aa:bb:cc:dd:ee:f0 wifi random — −71 (no vendor)`, `505-01-678-12345 cell —`, `00:1a:2b:3c:4d:01 bt fixed Headphones`, `aa:bb:cc:dd:ee:02 ble random Speaker (no vendor)` |
+| `…?trackable=1` | `count 2, total 2`: the two `00:1a:2b:…` devices — the fixture's `aa:…` addresses carry the U/L bit and are rightly excluded |
+| `GET /api/v1/radar/signals/00:1a:2b:3c:4d:5e` | one sighting: `−45 dBm` at `−27.4705, 153.026 ±8 m`, epoch stamped |
+| `hse signal --scan-id … --json` on the same home | `sightings 5, with_position 5` — the same presenter, the same numbers |
+| after a restart of `hse serve` on the same home | the reader defaults to the same sweep, `sightings 5` |
+| Chromium against that server (`browser_smoke.cjs`, Playwright) | `#nav-radar` active; the empty state before any sweep; **Sweep once** → 5 table rows and 5 plot dots; the summary line `5 sightings · 5 devices · 2 fixed / 2 random · 3 named · 5 positioned`; chips `all 5 · Wi-Fi 2 · BLE 1 · BT 1 · Cell 1`; the Wi-Fi chip → 2 rows, all → 5; **Track** on the first row → the panel with `−45 dBm −27.470500 153.026000 8 WifiRadar LabNet`; **fixed only** → 2 rows; the history lists the sweep with its Load disabled; the JSON link carries the sweep id; the Live page points to the Radar page; the only failed request in the whole session is the pre-sweep `404` the empty state is built on |
+
+#### Locks
+
+- `src/api/scan_handlers/tests.rs::radar_signals_defaults_to_the_latest_sweep_and_refuses_before_any_sighting`
+  — through the real store behind `Arc<dyn StoragePort>`: the refusal with the
+  hint; latest = most recently *recorded* (a sweep stamped earlier but
+  inserted later wins); an explicit sweep's summary and strongest-first rows
+  with canonical ids, `fixed`/`random`/`—`, no vendor for a randomised
+  address; `trackable=1` through the port's one predicate while the summary
+  still counts the whole sweep; `limit` with `total`; unknown sweep = plain
+  not-found.
+- `…::radar_signal_track_lists_one_devices_sightings_oldest_first` — the
+  operator's `AA:BB:…` answered as `aa:bb:…`; oldest first whatever the insert
+  order; an unheard device is an empty 200; no id = latest; unknown sweep 404.
+- `tests/radar_sightings.rs` — after the scripted sweep, the web reader with
+  no id names that sweep and reports the store's own five sightings, five
+  positioned; the AP's track carries −45 dBm and the fix; after the second
+  (last-known) sweep the reader follows it.
+- `tests/api.rs::radar_view_is_wired_from_the_nav_to_the_signals_api` — nav
+  entry, hash route, served module and API path in ONE bundle, and the path
+  answers with the handler's refusal, not the fallback's 404.
+- `src/storage/signal_tests.rs::address_kind_is_derived_on_write_from_the_bits`
+  now exercises the trait-provided `rf_trackable_devices` (the only copy).
+
+#### Falsification — predicted before run, then compared
+
+| # | mutation | predicted | actual |
+|---|---|---|---|
+| K1 | `Store` forgets to override `rf_summary` (the port default answers) | handler test at "summary sightings == 1" (left 0); e2e at "summary sightings == 5" (left 0). The CLI reads the inherent method and is untouched — which is exactly why the override needs its own lock | FILL |
+| K2 | `Store` forgets to override `rf_latest_scan_id` | handler test at the first 200 after inserting (404, "no RF sightings"); track test at "no sweep named" (404); e2e at `status == 200` (404). Explicit-id reads survive | FILL |
+| K3 | the one trackable predicate inverted | handler test at `trackable=1` count/total (0/0 vs 1/1); storage `address_kind…` at `track.len() == 1` (0) — the CLI path dies with the web path from one edit | FILL |
+| K4 | an unknown explicit sweep silently falls back to the latest | list test at the `never-ran` 404 (200); track test at its `never-ran` 404 (200). Everything else survives | FILL |
+| K5 | the track comes back newest first | track test at `[10, 20, 30]` (`[30, 20, 10]`); storage `the_sighting_track_is_preserved…` at its order assert; e2e survives (one sighting per device) | FILL |
+| K6 | the `/radar/signals` route not registered | `radar_view_is_wired…` at "no RF sightings recorded yet" (body is the fallback's); e2e at `status == 200` (404). Handler tests survive — they build their own router, which is why the bundle and e2e locks exist | FILL |
+| K7 | the nav entry dropped | `radar_view_is_wired…` at marker `nav-radar` only | FILL |
+| K8 | the shared presenter renames `address` | handler test at `devices[0]["address"] == "fixed"` (null); e2e at `ap_row["address"] == "fixed"` — both readers fail from one line, the point of sharing it | FILL |
+
+#### Scope, honestly
+
+- The Stop button knows only the continuous radar this page started
+  (`S.radarLiveId`, in memory); after a reload the session is still listed
+  and stoppable on the Live page. Exposing a `mode` on the live-session JSON
+  so the view can recognise a radar session it did not start is small and
+  belongs with cycle 3's live feed.
+- The sweep history shows the sweep's entity count, not its sighting count;
+  a per-sweep sighting count needs one grouped query the store does not have
+  yet. Recorded, not solved in passing.
+- The polar plot is a level plot with a stable pseudo-bearing, said so in the
+  code; the map (2b) is where position becomes real, and only for sightings
+  that carry one.

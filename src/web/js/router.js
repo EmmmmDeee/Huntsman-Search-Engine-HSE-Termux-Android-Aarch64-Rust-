@@ -23,6 +23,7 @@ export function parseHash(){
   if (segs[0]==='opts'||segs[0]==='settings') return {name:'opts', params:{}, query};
   if (segs[0]==='search')                   return {name:'search', params:{}, query};
   if (segs[0]==='live')                     return {name:'live', params:{}, query};
+  if (segs[0]==='radar')                    return {name:'radar', params:{}, query};
   if (segs[0]==='engines')                  return {name:'engines', params:{}, query};
   if (segs[0]==='harvest')                  return {name:'harvest', params:{}, query};
   if (segs[0]==='assurance'||segs[0]==='bsi') return {name:'assurance', params:{}, query};

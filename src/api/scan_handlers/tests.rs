@@ -1,5 +1,6 @@
 use super::*;
     use crate::core::scan::TargetKind;
+    use std::sync::Arc;
 
     fn scan_import_router() -> axum::Router {
         axum::Router::new()
@@ -728,4 +729,299 @@ Victims:
         let (code, body) = call(Method::DELETE, format!("/api/v1/scans/{sid}")).await;
         assert_eq!(code, StatusCode::OK, "{body}");
         drop(gate);
+    }
+
+    /// The two `/radar/signals*` routes on the shared test state — the real
+    /// SQLite store behind `Arc<dyn StoragePort>`, so a reader left off the port,
+    /// or a `Store` override forgotten, fails here rather than answering empty in
+    /// production.
+    fn radar_signals_router(state: Arc<crate::api::AppState>) -> axum::Router {
+        axum::Router::new()
+            .route(
+                "/api/v1/radar/signals",
+                axum::routing::get(super::core::radar_signals),
+            )
+            .route(
+                "/api/v1/radar/signals/{network_id}",
+                axum::routing::get(super::core::radar_signal_track),
+            )
+            .with_state(state)
+    }
+
+    async fn get_json(app: &axum::Router, uri: &str) -> (u16, serde_json::Value) {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+        let resp = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status().as_u16();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    fn radar_sighting(
+        id: &str,
+        radio: crate::core::rf::RadioKind,
+        source: crate::core::rf::RfSource,
+        name: Option<&str>,
+        dbm: f64,
+        epoch: i64,
+    ) -> crate::core::rf::RfSighting {
+        let mut s = crate::core::rf::RfSighting::new(id, radio, source);
+        s.name = name.map(str::to_string);
+        s.signal_dbm = Some(dbm);
+        s.observed_epoch = Some(epoch);
+        s.latitude = Some(-27.47);
+        s.longitude = Some(153.02);
+        s.accuracy_m = Some(8.0);
+        s
+    }
+
+    fn radar_scan(id: &str) -> Scan {
+        Scan::new(
+            id.to_string(),
+            Target::new(
+                TargetKind::Coordinates,
+                crate::core::scan::RADAR_SENTINEL_COORD_RAW,
+            ),
+        )
+    }
+
+    #[tokio::test]
+    async fn radar_signals_defaults_to_the_latest_sweep_and_refuses_before_any_sighting() {
+        use crate::core::rf::{RadioKind, RfSource};
+        let state = crate::api::test_state();
+        let app = radar_signals_router(Arc::clone(&state));
+
+        // Nothing recorded: a refusal carrying the CLI's own hint — not an
+        // empty 200, which would read as "nothing around you".
+        let (status, body) = get_json(&app, "/api/v1/radar/signals").await;
+        assert_eq!(status, 404, "{body}");
+        assert_eq!(body["error"], "no RF sightings recorded yet");
+        assert!(
+            body["detail"]
+                .as_str()
+                .unwrap_or("")
+                .contains("POST /api/v1/radar"),
+            "{body}"
+        );
+
+        // Sweep A: a named fixed-address AP (00:… — the U/L bit clear), a
+        // randomised BLE address (02:… — the bit set), a tower.
+        state.store.upsert_scan(&radar_scan("radar-a")).unwrap();
+        state
+            .store
+            .insert_rf_sightings_batch(
+                "radar-a",
+                &[
+                    radar_sighting(
+                        "00:1A:2B:3C:4D:5E",
+                        RadioKind::Wifi,
+                        RfSource::WifiRadar,
+                        Some("LabNet"),
+                        -45.0,
+                        1_700_000_100,
+                    ),
+                    radar_sighting(
+                        "02:11:22:33:44:55",
+                        RadioKind::Ble,
+                        RfSource::BluetoothRadar,
+                        None,
+                        -70.0,
+                        1_700_000_100,
+                    ),
+                    radar_sighting(
+                        "505-01-678-12345",
+                        RadioKind::Cellular,
+                        RfSource::CellRadar,
+                        None,
+                        -90.0,
+                        1_700_000_100,
+                    ),
+                ],
+            )
+            .unwrap();
+        // Sweep B, recorded later but stamped EARLIER: "latest" is the most
+        // recently recorded, as `hse signal` resolves it, not the newest clock.
+        state.store.upsert_scan(&radar_scan("radar-b")).unwrap();
+        state
+            .store
+            .insert_rf_sightings_batch(
+                "radar-b",
+                &[radar_sighting(
+                    "00:1A:2B:3C:4D:5E",
+                    RadioKind::Wifi,
+                    RfSource::WifiRadar,
+                    Some("LabNet"),
+                    -60.0,
+                    1_700_000_000,
+                )],
+            )
+            .unwrap();
+
+        let (status, body) = get_json(&app, "/api/v1/radar/signals").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["scan_id"], "radar-b");
+        assert_eq!(body["summary"]["sightings"], 1);
+        assert_eq!(body["count"], 1);
+
+        // An explicit sweep: the summary the CLI prints, devices strongest
+        // first with the address classified, and no vendor for a randomised
+        // address.
+        let (status, body) = get_json(&app, "/api/v1/radar/signals?scan_id=radar-a").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["summary"]["scan_id"], "radar-a");
+        let s = &body["summary"];
+        assert_eq!(
+            (
+                s["sightings"].as_i64(),
+                s["devices"].as_i64(),
+                s["wifi"].as_i64(),
+                s["ble"].as_i64(),
+                s["cellular"].as_i64(),
+                s["with_position"].as_i64(),
+                s["named"].as_i64(),
+            ),
+            (Some(3), Some(3), Some(1), Some(1), Some(1), Some(3), Some(1)),
+            "{s}"
+        );
+        let devices = body["devices"].as_array().expect("devices");
+        let ids: Vec<&str> = devices
+            .iter()
+            .map(|d| d["network_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            ["00:1a:2b:3c:4d:5e", "02:11:22:33:44:55", "505-01-678-12345"],
+            "strongest first, canonical ids"
+        );
+        assert_eq!(devices[0]["address"], "fixed");
+        assert_eq!(devices[0]["radio"], "wifi");
+        assert_eq!(devices[0]["name"], "LabNet");
+        assert_eq!(devices[0]["best_signal_dbm"], -45.0);
+        assert_eq!(devices[1]["address"], "random");
+        assert!(
+            devices[1]["vendor"].is_null(),
+            "a randomised address names no vendor: {}",
+            devices[1]
+        );
+        assert_eq!(devices[2]["address"], "—");
+        assert_eq!(body["total"], 3);
+        assert_eq!(body["trackable_only"], false);
+
+        // Fixed addresses only — the one AU-122 definition, through the port.
+        let (status, body) =
+            get_json(&app, "/api/v1/radar/signals?scan_id=radar-a&trackable=1").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["trackable_only"], true);
+        assert_eq!((body["count"].as_u64(), body["total"].as_u64()), (Some(1), Some(1)));
+        assert_eq!(body["devices"][0]["network_id"], "00:1a:2b:3c:4d:5e");
+        assert_eq!(
+            body["summary"]["devices"], 3,
+            "the summary still counts the whole sweep"
+        );
+
+        // A cap never reads as completeness.
+        let (_, body) = get_json(&app, "/api/v1/radar/signals?scan_id=radar-a&limit=2").await;
+        assert_eq!((body["count"].as_u64(), body["total"].as_u64()), (Some(2), Some(3)));
+
+        // An unknown sweep is the plain not-found, not the "nothing recorded" hint.
+        let (status, body) = get_json(&app, "/api/v1/radar/signals?scan_id=never-ran").await;
+        assert_eq!(status, 404, "{body}");
+        assert_eq!(body["error"], "not found");
+    }
+
+    #[tokio::test]
+    async fn radar_signal_track_lists_one_devices_sightings_oldest_first() {
+        use crate::core::rf::{RadioKind, RfSource};
+        let state = crate::api::test_state();
+        let app = radar_signals_router(Arc::clone(&state));
+        state.store.upsert_scan(&radar_scan("radar-t")).unwrap();
+        // Inserted out of time order, with a second device in the way.
+        state
+            .store
+            .insert_rf_sightings_batch(
+                "radar-t",
+                &[
+                    radar_sighting(
+                        "00:1A:2B:3C:4D:5E",
+                        RadioKind::Wifi,
+                        RfSource::WifiRadar,
+                        Some("LabNet"),
+                        -52.0,
+                        30,
+                    ),
+                    radar_sighting(
+                        "AA:BB:CC:DD:EE:01",
+                        RadioKind::BtClassic,
+                        RfSource::BluetoothRadar,
+                        None,
+                        -80.0,
+                        30,
+                    ),
+                    radar_sighting(
+                        "00:1A:2B:3C:4D:5E",
+                        RadioKind::Wifi,
+                        RfSource::WifiRadar,
+                        Some("LabNet"),
+                        -45.0,
+                        10,
+                    ),
+                    radar_sighting(
+                        "00:1A:2B:3C:4D:5E",
+                        RadioKind::Wifi,
+                        RfSource::WifiRadar,
+                        Some("LabNet"),
+                        -48.0,
+                        20,
+                    ),
+                ],
+            )
+            .unwrap();
+
+        // The id as an operator might type it; the answer is canonical.
+        let (status, body) = get_json(
+            &app,
+            "/api/v1/radar/signals/00%3A1A%3A2B%3A3C%3A4D%3A5E?scan_id=radar-t",
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["network_id"], "00:1a:2b:3c:4d:5e");
+        assert_eq!(body["scan_id"], "radar-t");
+        assert_eq!(body["count"], 3);
+        let epochs: Vec<i64> = body["sightings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["observed_epoch"].as_i64().unwrap())
+            .collect();
+        assert_eq!(epochs, [10, 20, 30], "oldest first, whatever the insert order");
+        assert_eq!(body["sightings"][0]["signal_dbm"], -45.0);
+        assert_eq!(body["sightings"][0]["latitude"], -27.47);
+
+        // Never heard in this sweep: an empty track, because the question was
+        // answerable.
+        let (status, body) =
+            get_json(&app, "/api/v1/radar/signals/00:00:00:00:00:99?scan_id=radar-t").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["count"], 0);
+
+        // No sweep named: the latest, as the list reader defaults.
+        let (status, body) = get_json(&app, "/api/v1/radar/signals/aa:bb:cc:dd:ee:01").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["scan_id"], "radar-t");
+        assert_eq!(body["count"], 1);
+
+        // An unknown sweep refuses.
+        let (status, _) = get_json(
+            &app,
+            "/api/v1/radar/signals/00:1a:2b:3c:4d:5e?scan_id=never-ran",
+        )
+        .await;
+        assert_eq!(status, 404);
     }

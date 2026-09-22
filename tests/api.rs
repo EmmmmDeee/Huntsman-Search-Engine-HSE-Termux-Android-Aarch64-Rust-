@@ -679,6 +679,38 @@ async fn autonomous_sweep_dispatches_without_input() {
     }
 }
 
+#[tokio::test]
+async fn radar_view_is_wired_from_the_nav_to_the_signals_api() {
+    // REQ-RADAR-002: the sighting table's web surface. The nav entry, the hash
+    // route, the served view module and the API path it reads must all be
+    // present in ONE bundle — a view that is served but never linked, or linked
+    // but reading a path nothing serves, is exactly the dormant surface the
+    // radar track forbids.
+    let app = test_app("radar-view");
+    let (html, served) = spa_bundle(&app).await;
+    for marker in [
+        "nav-radar",
+        "#/radar",
+        "/api/v1/radar/signals",
+        "renderRadar",
+    ] {
+        assert!(
+            html.contains(marker),
+            "SPA radar surface missing {marker:?}"
+        );
+    }
+    assert!(
+        served.iter().any(|p| p == "/static/js/views/radar.js"),
+        "the radar view module is served and imported: {served:?}"
+    );
+    // And the path the view reads answers on this router — with the handler's
+    // own "nothing recorded" refusal, not the api fallback's 404.
+    let (status, body) = fetch_text(&app, "/api/v1/radar/signals").await;
+    assert_eq!(status, http::StatusCode::NOT_FOUND);
+    assert!(body.contains("no RF sightings recorded yet"), "{body}");
+    assert!(!body.contains("endpoint not found"), "{body}");
+}
+
 // ── 5c. Subject network synthesis ─────────────────────────────────────────
 
 #[tokio::test]

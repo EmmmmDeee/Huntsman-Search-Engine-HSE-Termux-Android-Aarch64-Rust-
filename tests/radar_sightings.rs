@@ -162,6 +162,63 @@ echo '{"latitude":-27.4705,"longitude":153.0260,"accuracy":8.0,"provider":"gps"}
         "every sighting carries its read time: {devices:?}"
     );
 
+    // The web reader on the same sweep (REQ-RADAR-002): with no id it defaults
+    // to the survey just run and reports the store's own totals through the
+    // real router; the AP's track carries the level and the sweep's fix.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/radar/signals")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = json_of(resp).await;
+    assert_eq!(body["scan_id"], sid.as_str());
+    assert_eq!(body["summary"]["sightings"], 5, "{body}");
+    assert_eq!(body["summary"]["with_position"], 5, "{body}");
+    assert_eq!(body["count"], 5, "{body}");
+    let ap_row = body["devices"]
+        .as_array()
+        .expect("devices")
+        .iter()
+        .find(|d| d["network_id"] == "aa:bb:cc:dd:ee:ff")
+        .expect("the AP row on the web");
+    assert_eq!(ap_row["name"], "LabNet");
+    assert_eq!(ap_row["best_signal_dbm"], -45.0);
+    // 0xAA carries the U/L bit, so the fixture AP is a locally-administered
+    // address and the reader must say so rather than name a vendor for it.
+    assert_eq!(ap_row["address"], "random");
+    assert!(ap_row["vendor"].is_null(), "{ap_row}");
+    assert_eq!(ap_row["radio"], "wifi");
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/radar/signals/aa:bb:cc:dd:ee:ff?scan_id={sid}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let track = json_of(resp).await;
+    assert_eq!(track["count"], 1, "{track}");
+    assert_eq!(
+        (
+            track["sightings"][0]["latitude"].as_f64(),
+            track["sightings"][0]["longitude"].as_f64(),
+            track["sightings"][0]["signal_dbm"].as_f64(),
+        ),
+        (Some(-27.4705), Some(153.026), Some(-45.0)),
+        "{track}"
+    );
+
     // Second sweep: no fresh lock, only the OS's cached position. The fix
     // entity still exists (tagged last-known); no sighting is positioned by
     // it, because a cached position is not where the devices were heard from.
@@ -176,6 +233,20 @@ echo '{"latitude":-27.4705,"longitude":153.0260,"accuracy":8.0,"provider":"gps"}
         summary.with_position, 0,
         "a last-known position never positions a sighting: {summary:?}"
     );
+    // And the web reader now follows the newer sweep by default.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/radar/signals")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = json_of(resp).await;
+    assert_eq!(body["scan_id"], sid2.as_str(), "{body}");
+    assert_eq!(body["summary"]["with_position"], 0, "{body}");
     let entities = store.entities_for_scan(&sid2).expect("entities");
     let fix = entities
         .iter()

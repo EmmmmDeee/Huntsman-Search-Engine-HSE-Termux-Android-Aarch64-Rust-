@@ -6,8 +6,9 @@
 //! would return.
 
 use crate::core::error::Result;
-use crate::core::rf::RadioKind;
-use crate::storage::{RfDeviceRow, Store};
+use crate::core::port::StoragePort as _;
+use crate::core::rf::{RadioKind, RfDeviceRow, RfSummary};
+use crate::storage::Store;
 
 /// Which view the flags selected. Resolved once so the precedence between
 /// mutually-exclusive-ish flags is stated in one place rather than implied by
@@ -54,31 +55,52 @@ fn address_label(la: Option<bool>) -> &'static str {
     }
 }
 
+/// The JSON shape of one device row — THE one presenter, shared by
+/// `hse signal --devices --json` and `GET /api/v1/radar/signals`, so the CLI
+/// and the web reader cannot disagree about a field's name or spelling. The
+/// SPA's Radar view reads these names; a rename here is an API change.
+#[must_use]
+pub fn device_json(d: &RfDeviceRow) -> serde_json::Value {
+    serde_json::json!({
+        "network_id": d.network_id,
+        "radio": radio_label(d.radio),
+        "address": address_label(d.locally_administered),
+        "oui": d.oui,
+        "vendor": d.vendor,
+        "device_class": d.device_class,
+        "name": d.name,
+        "sightings": d.sightings,
+        "distinct_fixes": d.distinct_fixes,
+        "best_signal_dbm": d.best_signal_dbm,
+        "worst_signal_dbm": d.worst_signal_dbm,
+        "latitude": d.best_latitude,
+        "longitude": d.best_longitude,
+        "first_epoch": d.first_epoch,
+        "last_epoch": d.last_epoch,
+    })
+}
+
+/// The JSON shape of a scan's sighting summary — shared by `hse signal --json`
+/// and `GET /api/v1/radar/signals` the same way as [`device_json`].
+#[must_use]
+pub fn summary_json(scan_id: &str, s: &RfSummary) -> serde_json::Value {
+    serde_json::json!({
+        "scan_id": scan_id,
+        "sightings": s.sightings,
+        "devices": s.devices,
+        "wifi": s.wifi, "ble": s.ble, "bt": s.bt, "cellular": s.cellular,
+        "fixed_address": s.fixed_address,
+        "randomised_address": s.randomised_address,
+        "named": s.named,
+        "with_position": s.with_position,
+        "first_epoch": s.first_epoch,
+        "last_epoch": s.last_epoch,
+    })
+}
+
 fn print_devices(rows: &[RfDeviceRow], limit: usize, json: bool) {
     if json {
-        let out: Vec<_> = rows
-            .iter()
-            .take(limit)
-            .map(|d| {
-                serde_json::json!({
-                    "network_id": d.network_id,
-                    "radio": radio_label(d.radio),
-                    "address": address_label(d.locally_administered),
-                    "oui": d.oui,
-                    "vendor": d.vendor,
-                    "device_class": d.device_class,
-                    "name": d.name,
-                    "sightings": d.sightings,
-                    "distinct_fixes": d.distinct_fixes,
-                    "best_signal_dbm": d.best_signal_dbm,
-                    "worst_signal_dbm": d.worst_signal_dbm,
-                    "latitude": d.best_latitude,
-                    "longitude": d.best_longitude,
-                    "first_epoch": d.first_epoch,
-                    "last_epoch": d.last_epoch,
-                })
-            })
-            .collect();
+        let out: Vec<_> = rows.iter().take(limit).map(device_json).collect();
         println!(
             "{}",
             serde_json::to_string_pretty(&out).unwrap_or_else(|_| "[]".to_string())
@@ -154,19 +176,7 @@ pub async fn cmd_signal(
             if json {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "scan_id": sid,
-                        "sightings": s.sightings,
-                        "devices": s.devices,
-                        "wifi": s.wifi, "ble": s.ble, "bt": s.bt, "cellular": s.cellular,
-                        "fixed_address": s.fixed_address,
-                        "randomised_address": s.randomised_address,
-                        "named": s.named,
-                        "with_position": s.with_position,
-                        "first_epoch": s.first_epoch,
-                        "last_epoch": s.last_epoch,
-                    }))
-                    .unwrap_or_default()
+                    serde_json::to_string_pretty(&summary_json(&sid, &s)).unwrap_or_default()
                 );
                 return Ok(());
             }

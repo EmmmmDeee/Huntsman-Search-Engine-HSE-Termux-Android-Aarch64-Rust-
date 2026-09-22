@@ -17,7 +17,7 @@ import { $, $$, esc, initDownloads } from '/static/js/helpers.js';
 import { API } from '/static/js/api.js';
 import { S } from '/static/js/state.js';
 import { parseHash, nav } from '/static/js/router.js';
-import { clearLiveTimer, clearScanTimer, clearEnginesTimer, clearOptsTimers, clearDebugLogTimer } from '/static/js/timers.js';
+import { clearLiveTimer, clearScanTimer, clearEnginesTimer, clearOptsTimers, clearDebugLogTimer, clearRadarTimer } from '/static/js/timers.js';
 import initWasmUi, { applyTheme } from '/static/hse_wasm_ui.js';
 import { renderDash } from '/static/js/views/dash.js';
 import { renderScans } from '/static/js/views/scans.js';
@@ -37,6 +37,7 @@ import { globalSearch, renderSearch } from '/static/js/views/search.js';
 import { renderEngines, refreshEngines, runCapabilityProbe } from '/static/js/views/engines.js';
 import { renderHarvest, refreshHarvest, harvestPoolFilter, harvestPoolRoi, harvestPoolGroup, harvestPoolSort } from '/static/js/views/key_harvest.js';
 import { renderLive, closeLiveStream, saveLiveShown } from '/static/js/views/live.js';
+import { renderRadar } from '/static/js/views/radar.js';
 import { renderDebugLog } from '/static/js/views/debug_log.js';
 import { initCompatShims, initMoreSheet, initModals, initTableLabels } from '/static/js/ui.js';
 
@@ -74,9 +75,10 @@ export async function render(){
   clearEnginesTimer();
   clearOptsTimers();
   clearDebugLogTimer();
+  clearRadarTimer();
   S.route = parseHash();
   $$('#mainnav .navlink').forEach(a=>a.classList.remove('active'));
-  const navMap = {dash:'nav-dash', scans:'nav-scans', live:'nav-live', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans', engines:'nav-engines', harvest:'nav-harvest', debuglog:'nav-debuglog', assurance:'nav-assurance', attack:'nav-attack'};
+  const navMap = {dash:'nav-dash', scans:'nav-scans', live:'nav-live', radar:'nav-radar', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans', engines:'nav-engines', harvest:'nav-harvest', debuglog:'nav-debuglog', assurance:'nav-assurance', attack:'nav-attack'};
   const navEl = $('#'+navMap[S.route.name]); if (navEl) navEl.classList.add('active');
 
   const v = $('#view');
@@ -89,6 +91,7 @@ export async function render(){
     if (S.route.name==='opts')     return await renderOpts(v);
     if (S.route.name==='search')   return await renderSearch(v);
     if (S.route.name==='live')     return await renderLive(v);
+    if (S.route.name==='radar')    return await renderRadar(v);
     if (S.route.name==='engines')  return await renderEngines(v);
     if (S.route.name==='harvest')  return await renderHarvest(v);
     if (S.route.name==='debuglog') return await renderDebugLog(v);

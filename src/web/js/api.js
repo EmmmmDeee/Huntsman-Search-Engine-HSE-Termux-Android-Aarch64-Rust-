@@ -149,6 +149,19 @@ export const API = {
   // table, so it survives a server restart (unlike the in-memory live-session
   // list above). This is what makes "what was around me earlier" reviewable.
   radarHistory: limit=>API._req('/api/v1/radar/history'+(limit?('?limit='+encodeURIComponent(limit)):'')),
+  // The sighting table's web reader (REQ-RADAR-002): a sweep's summary and
+  // device roll-up, strongest first — the rows `hse signal` prints, through
+  // the same presenters. No scan id = the latest sweep (the one just run);
+  // `trackable` keeps fixed hardware addresses only (AU-122).
+  radarSignals: (scanId, trackable)=>{
+    const q = [];
+    if (scanId) q.push('scan_id='+encodeURIComponent(scanId));
+    if (trackable) q.push('trackable=1');
+    return API._req('/api/v1/radar/signals'+(q.length?'?'+q.join('&'):''));
+  },
+  // One device's every sighting in a sweep, oldest first — the movement track.
+  radarTrack: (networkId, scanId)=>API._req('/api/v1/radar/signals/'+encodeURIComponent(networkId)+(scanId?('?scan_id='+encodeURIComponent(scanId)):'')),
+  radarSignalsUrl: scanId=>'/api/v1/radar/signals'+(scanId?('?scan_id='+encodeURIComponent(scanId)):''),
   selftest:     ()=>API._req('/api/v1/selftest'),
   logsUrl:      ()=>'/api/v1/logs',
   // Live tail of the verbose debug-log ring (loopback-only): pass the cursor

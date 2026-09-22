@@ -4,6 +4,7 @@
 
 use super::super::Store;
 use super::*;
+use crate::core::port::StoragePort as _;
 use crate::core::rf::{RadioKind, RfSighting, RfSource};
 
 /// A sighting with the fields these tests vary; the rest stay absent, which is

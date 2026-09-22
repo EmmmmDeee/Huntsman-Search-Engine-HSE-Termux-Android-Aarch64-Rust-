@@ -353,6 +353,11 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         include_bytes!("../../web/js/views/live.js"),
     ),
     (
+        "js/views/radar.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/radar.js"),
+    ),
+    (
         "js/views/debug_log.js",
         "application/javascript",
         include_bytes!("../../web/js/views/debug_log.js"),
@@ -509,6 +514,14 @@ pub fn router(
         // require remembering a session id.
         .route("/radar/history", get(scan_handlers::radar_history))
         .route("/radar/recurring", get(scan_handlers::radar_recurring))
+        // The sighting table's web reader (REQ-RADAR-002): one sweep's summary
+        // and device roll-up, and one device's sighting track — the rows
+        // `hse signal` prints, through the same presenters.
+        .route("/radar/signals", get(scan_handlers::radar_signals))
+        .route(
+            "/radar/signals/{network_id}",
+            get(scan_handlers::radar_signal_track),
+        )
         .route(
             "/scans/import",
             // Raise this route's body cap from axum's 2 MB default to the import

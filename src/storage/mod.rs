@@ -16,7 +16,6 @@ mod stealer_rows; // `impl Store`: paired stealer-log credential row persistence
 mod templates; // `impl Store`: cross-scan pathway-template learning
 
 pub use entities::EvidenceAnomaly;
-pub use signal::{RfDeviceRow, RfSummary};
 
 /// The SQLite WAL-backed persistence layer.
 ///
@@ -1406,6 +1405,26 @@ impl crate::core::port::StoragePort for Store {
         rows: &[crate::core::rf::RfSighting],
     ) -> Result<usize> {
         Store::insert_rf_sightings_batch(self, scan_id, rows)
+    }
+
+    fn rf_latest_scan_id(&self) -> Result<Option<String>> {
+        Store::rf_latest_scan_id(self)
+    }
+
+    fn rf_summary(&self, scan_id: &str) -> Result<crate::core::rf::RfSummary> {
+        Store::rf_summary(self, scan_id)
+    }
+
+    fn rf_devices_for_scan(&self, scan_id: &str) -> Result<Vec<crate::core::rf::RfDeviceRow>> {
+        Store::rf_devices_for_scan(self, scan_id)
+    }
+
+    fn rf_sightings_for_device(
+        &self,
+        scan_id: &str,
+        network_id: &str,
+    ) -> Result<Vec<crate::core::rf::RfSighting>> {
+        Store::rf_sightings_for_device(self, scan_id, network_id)
     }
 }
 
