@@ -122,9 +122,13 @@ impl ModuleCategory {
 #[derive(Debug, Clone, Serialize)]
 #[non_exhaustive]
 pub struct ModuleInfo {
+    /// The module's stable snake_case identifier ([`Module::name`]).
     pub name: &'static str,
+    /// Dispatch order, higher first ([`Module::priority`]).
     pub priority: u8,
+    /// Funding/access class ([`Module::cost`]); drives the free-only filter.
     pub cost: ModuleCost,
+    /// Whether the module reaches no external network ([`Module::is_passive`]).
     pub passive: bool,
     /// One-sentence operator-facing summary of what the module does.
     /// Drives the wizard's per-row tooltip (`title="..."`). May be empty
@@ -410,9 +414,17 @@ pub trait Module: Send + Sync {
 /// Shared per-scan context handed to every module invocation.
 #[derive(Clone)]
 pub struct ModuleContext {
+    /// The scan this invocation belongs to; stamped onto every entity the
+    /// module emits.
     pub scan_id: String,
+    /// The scan's live event bus.
     pub bus: EventBus,
+    /// The shared outbound HTTP client. In production it is
+    /// [`crate::util::http::build_client`]'s: SSRF-filtering resolver and the
+    /// credential-safe redirect policy.
     pub http: reqwest::Client,
+    /// The operator's configured provider keys, by env-var name. Read through
+    /// [`Self::key`], which treats a blank value as absent.
     pub keys: HashMap<String, String>,
     /// Engine-wide cancellation flag for this scan (issue #23). The
     /// engine checks `cancel.is_cancelled()` between modules; modules

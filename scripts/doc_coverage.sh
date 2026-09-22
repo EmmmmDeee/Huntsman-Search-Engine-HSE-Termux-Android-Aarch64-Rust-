@@ -85,7 +85,15 @@ set -euo pipefail
 # command this script runs (two undocumented public items left with the retired
 # au_people / psbdmp modules), so the ceiling follows it down — the ratchet may
 # fall but not rise.
-BASELINE=1029
+# Lowered 1029 -> 1001 here: REQ-CACHE-001 added `CachedModuleResult` with an
+# undocumented `entities` field and CI's check failed at 1030 (it had not been
+# run locally — the gate, not this script, was skipped). Rather than document
+# the one field and stop, the whole `StoragePort` trait (the persistence
+# boundary every layer goes through, previously undocumented itself and 19 of
+# its methods), `EVENTS_MAX_ROWS`, and the undocumented `ModuleInfo` /
+# `ModuleContext` fields were documented from the implementations they
+# describe. Figure from the command this script runs.
+BASELINE=1001
 
 cd "$(dirname "$0")/.."
 
