@@ -286,8 +286,6 @@ impl Module for VirusTotal {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut result = ModuleResult::new();
-
         let url = match target.kind {
             TargetKind::Domain => format!(
                 "https://www.virustotal.com/api/v3/domains/{}",
@@ -305,7 +303,7 @@ impl Module for VirusTotal {
                 "https://www.virustotal.com/api/v3/urls/{}",
                 vt_url_id(target.value.trim())
             ),
-            _ => return Ok(result),
+            _ => return Ok(ModuleResult::new()),
         };
 
         let Some(body) = crate::util::http::fetch_keyed_json::<VtResponse>(
@@ -317,18 +315,34 @@ impl Module for VirusTotal {
         )
         .await?
         else {
-            return Ok(result);
+            return Ok(ModuleResult::new());
         };
 
         let Some(attrs) = body.data.and_then(|d| d.attributes) else {
-            return Ok(result);
+            return Ok(ModuleResult::new());
         };
 
-        for entity in build_entities(target, &attrs, &ctx.scan_id) {
-            result.push(entity);
-        }
-        Ok(result)
+        Ok(vt_result(target, &attrs, &ctx.scan_id))
     }
+}
+
+/// The module's result for one decoded object: [`build_entities`]' pivots,
+/// declared incomplete when the passive-DNS list was cut at
+/// [`MAX_DNS_RECORDS`]. **Pure** — the emission path `process()` returns
+/// through. The per-entity `truncated` tag and the `tracing::warn!` were the
+/// only signals before; neither reaches the coverage layer.
+fn vt_result(target: &Target, attrs: &VtAttributes, scan_id: &str) -> ModuleResult {
+    let mut result = ModuleResult::new();
+    result.extend(build_entities(target, attrs, scan_id));
+    let total = attrs.last_dns_records.len();
+    if total > MAX_DNS_RECORDS {
+        result.mark_truncated(
+            MAX_DNS_RECORDS,
+            Some(total),
+            &format!("the client-side cap of {MAX_DNS_RECORDS} passive-DNS records"),
+        );
+    }
+    result
 }
 
 #[cfg(test)]

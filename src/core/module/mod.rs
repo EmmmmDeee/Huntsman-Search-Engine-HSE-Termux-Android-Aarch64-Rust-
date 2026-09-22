@@ -561,13 +561,19 @@ impl ModuleResult {
     /// unusable.
     pub fn mark_truncated(&mut self, emitted: usize, total: Option<usize>, cause: &str) {
         self.truncation = Some(match total {
-            Some(total) => format!(
-                "{emitted} of {total} retrieved — stopped by {cause}. The remainder were NOT retrieved, so absence of a finding here is not evidence of absence."
-            ),
+            Some(total) => known_total_sentence(emitted, total as u128, cause),
             None => format!(
                 "{emitted} retrieved — stopped by {cause}, and the provider did not report how many exist. Absence of a finding here is not evidence of absence."
             ),
         });
+    }
+
+    /// [`Self::mark_truncated`] with a KNOWN total too large for `usize` — an
+    /// IPv6 block's `2^64` addresses. Passing `None` there would render "the
+    /// provider did not report how many exist", which is false when the total
+    /// is exact; this states it, in the same sentence as the known arm.
+    pub fn mark_truncated_of(&mut self, emitted: usize, total: u128, cause: &str) {
+        self.truncation = Some(known_total_sentence(emitted, total, cause));
     }
 
     /// Declare this result incomplete **when a page came back full against a
@@ -679,6 +685,15 @@ impl ModuleResult {
     }
 }
 
+/// The known-total arm of [`ModuleResult::mark_truncated`], shared with
+/// [`ModuleResult::mark_truncated_of`] so the operator-facing sentence has one
+/// spelling.
+fn known_total_sentence(emitted: usize, total: u128, cause: &str) -> String {
+    format!(
+        "{emitted} of {total} retrieved — stopped by {cause}. The remainder were NOT retrieved, so absence of a finding here is not evidence of absence."
+    )
+}
+
 #[cfg(test)]
 mod truncation_sentence_tests {
     use super::ModuleResult;
@@ -711,6 +726,27 @@ mod truncation_sentence_tests {
                 "{label}: the sentence is one line: {sentence:?}"
             );
         }
+    }
+
+    /// A known total beyond `usize` (an IPv6 block's `2^64` addresses) is
+    /// stated exactly, in the known arm's words — never rendered as unknown,
+    /// which is what `mark_truncated(_, None, _)` would have said about it.
+    #[test]
+    fn a_known_total_beyond_usize_is_stated_not_rendered_unknown() {
+        let mut r = ModuleResult::new();
+        r.mark_truncated_of(1, 1u128 << 64, "the host-expansion cap");
+        let s = r.truncation.expect("set");
+        assert!(s.starts_with("1 of 18446744073709551616 retrieved"), "{s}");
+        assert!(!s.contains("did not report"), "{s}");
+
+        let mut small = ModuleResult::new();
+        small.mark_truncated(20, Some(213), "the page limit");
+        let mut wide = ModuleResult::new();
+        wide.mark_truncated_of(20, 213, "the page limit");
+        assert_eq!(
+            small.truncation, wide.truncation,
+            "one sentence, two entry points"
+        );
     }
 
     /// The known/unknown distinction is the reason this is not a

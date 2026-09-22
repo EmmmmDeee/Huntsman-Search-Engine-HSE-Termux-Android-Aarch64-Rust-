@@ -18606,3 +18606,116 @@ reported as NO-RUN, never as survived.
   subdomain's answer is a subset of its apex's. Deduplicating that belongs to
   the engine, across every host-keyed collector (`crtsh`, `anubis`,
   `hackertarget`), and is not this module's to solve alone.
+
+---
+
+## REQ-COVERAGE-002 — eight more private truncation spellings, written as a tag; three were hiding false negatives
+
+**Requirement.** A module whose answer is partial must declare it through
+`ModuleResult` (`mark_truncated` / `mark_truncated_if_capped` /
+`mark_truncated_of`). That declaration is the only channel `core::coverage`
+reads. A partial answer must never become the clean negative that settles an
+absence.
+
+### Found
+
+REQ-COVERAGE-001 migrated five private spellings of "this answer is partial"
+(evidence attributes). Eight more survived because they were spelled as a bare
+`"truncated"` entity **tag**. `rg '"truncated"' src` finds only emitters, and
+no reader outside each module's own file: `netblock`, `virustotal`,
+`asic_banned_orgs`, `asic_business_names`, `dns_axfr`, `leakix`, `wikidata` and
+`passivetotal`. `netblock` was found independently by this wave's audit
+workflow. The tag has no `tags::` const, which ROADMAP §3 names as the tell.
+
+Reading each site showed that for three modules the missing declaration was
+the smaller defect:
+
+| Module | What the tag was hiding |
+|---|---|
+| `asic_banned_orgs`, `asic_business_names` | The tag sat **after** `if matched_count == 0 { return Ok(result) }`. CKAN's free-text search is broad and the module's whole-word filter is strict. A full `limit=100` page of rows that mention the name, none of which IS it, from a search CKAN says holds more, returned an empty, complete answer: a clean "not banned" / "no registration". That is the one outcome that settles an absence, and the real record may be in the rows never fetched. |
+| `passivetotal` | `build_entities` returned `(out, false)`, a constant. `is_truncated` compared `totalRecords` with the **returned** count. The API takes no limit, so a long-lived domain returns thousands of rows with `totalRecords` equal to what it sent, and the client-side `.take(200)` was invisible. That is precisely the case the module's header documents. An existing test, `build_entities_at_result_limit_returns_true_when_server_reports_more`, asserted `false`, with exactly 200 records, so the cap never engaged. Separately, the per-query note for an **IP** query was minted as `Entity::new(EntityKind::Domain, ip)`, a domain named after an IP, which the engine then expanded as a domain. |
+| `dns_axfr` | `mark_axfr_truncation`'s caller said the zone may "span multiple AXFR messages this module only reads the first of", but the check read only `ANCOUNT` against the parser cap. A large zone split across messages, the ordinary shape of one, was reported as the complete inventory. |
+| `netblock` | The module header names `2001:db8::/120` as a block it enumerates, yet every IPv6 block yielded only its base address, with `total = 1`: a 256-address block reported as a complete single host. |
+| `wikidata` | The same early-return shape as ASIC: a full `limit=10` search page with no whole-word label match returned `ModuleResult::new()`. |
+| `virustotal` | The cap at 30 passive-DNS records was a tag plus a `tracing::warn!`. |
+| `leakix` | **Not a truncation of the answer.** Every service is retrieved and counted; only the port list rendered into one evidence attribute is shortened. Declaring it would tell the coverage layer that services exist which it did not see. It is left alone and is the lock's one documented exemption. |
+
+### Implemented
+
+- `asic_*`: the result is now built by pure `banned_orgs_result` /
+  `business_names_result`, which declare the partial page **before** the
+  no-match return.
+- `passivetotal`: `cut(total_records, returned) -> Option<(processed, total)>`
+  sees both causes. `pdns_result` is the pure seam `process()` returns
+  through. The note takes the queried kind. The dead `bool` is gone from
+  `build_entities`.
+- `dns_axfr`: `attempt_axfr` is now transport only. `parse_axfr_message` is
+  pure and counts SOA records among the answers walked; per RFC 5936 §2.2 a
+  transfer opens and closes with the zone's SOA. `mark_axfr_truncation`
+  declares the cap (with the advertised count) or an unfinished transfer (with
+  the size unknown).
+- `netblock`: an IPv6 block that fits the cap is enumerated like an IPv4 one.
+  A wider one keeps base-only and is declared with its exact size.
+- `ModuleResult::mark_truncated_of(emitted, total: u128, cause)`: a /64's
+  `2^64` addresses does not fit `usize`, and `mark_truncated(_, None, _)`
+  would have rendered it as "the provider did not report how many exist",
+  which is false when the size is exact. Both entry points share one private
+  `known_total_sentence`, so the operator-facing wording still has one
+  spelling.
+- `wikidata`: `declare_search_truncation` at one call site on each exit
+  path. `SEARCH_LIMIT` is now the one constant both the request URL and the
+  full-page check use, so the two cannot drift (REQ-ZOOMEYE-002's surviving
+  M5).
+- `virustotal`: the pure seam `vt_result`.
+- The per-entity notes are kept, following REQ-COVERAGE-001's precedent: they
+  are useful to an operator reading the entity. They are no longer the
+  declaration.
+
+### Structural lock
+
+`tests/architecture.rs::a_module_that_tags_a_truncation_declares_it_to_the_coverage_layer`:
+any module directory whose production code writes `.tag("truncated")` must also
+call `.mark_truncated*`, with `leakix` exempted for the stated reason. A vacuity
+guard requires the scan to still see `netblock`, `passivetotal` and `leakix`.
+
+### Falsified
+
+Each mutation was applied textually, the locks were run, and the file was
+restored (md5-verified). Runs with no `test result:` line are NO-RUN, never
+"survived".
+
+| # | mutation | result |
+|---|---|---|
+| N1 | passivetotal: the client-side cap is invisible again (`processed = returned`) | killed by 3 |
+| N2 | passivetotal: an IP query's note is a Domain again | killed by 1 |
+| N3 | passivetotal: `pdns_result` never declares | killed by 2 |
+| N4 | asic_banned_orgs never declares | killed by 2, incl. the no-match full-page lock |
+| N5 | asic_business_names never declares | killed by 2 |
+| N6 | netblock: the cap is only a tag again | killed by 2 module locks, **and** by the architecture lock (see below) |
+| N7 | netblock: a small v6 block is not enumerated | killed by 2 |
+| N8 | dns_axfr: the closing SOA is not checked | killed by 1 |
+| N9 | dns_axfr **over-correction**: a whole transfer counts as partial | killed by 1 |
+| N10 | wikidata: a full page is not a cut | killed by 1 |
+| N11 | wikidata **over-correction**: off by one, a 9-hit page counts as full | killed by 2 |
+| N12 | virustotal never declares | killed by 1 |
+| N13 | asic_banned_orgs **over-correction**: every page is partial | killed by 1 (the short-page control) |
+
+**13 of 13 killed.**
+
+**The harness hid one result, and the matrix caught it.** The combined run
+passed `--lib --test architecture` without `--no-fail-fast`. When N6 failed the
+lib binary, cargo never ran the architecture binary, so the new structural lock
+was absent from N6's killers rather than present. That is the hidden-kill shape
+REQ-RESILIENCE-002's falsification notes warn about. Re-run alone, N6 is killed
+by `a_module_that_tags_a_truncation_declares_it_to_the_coverage_layer`, and
+the harness now always passes `--no-fail-fast`.
+
+### Residual
+
+- `dns_axfr` still reads only the first message. Reading the rest of a
+  multi-message transfer is a capability change. This fix makes the partial
+  answer honest; it does not make it complete.
+- The audit wave that found `netblock` also reported truncation-silent caps in
+  `plc_directory`, `wiki_geosearch`, `openarch`, `au_unclaimed`,
+  `securitytrails` and `hunter_io`. Those modules never wrote the tag, so this
+  lock does not see them. Each is tracked on its own evidence.

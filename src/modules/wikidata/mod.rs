@@ -56,6 +56,12 @@ const API: &str = "https://www.wikidata.org/w/api.php";
 /// Max same-name items surfaced (1 primary + the rest as candidates).
 const MAX_CANDIDATES: usize = 6;
 
+/// The search API's page size: the `limit=` [`urls::search_url`] requests, and
+/// the size a full page is measured against. One constant, so the request and
+/// the check cannot drift apart (REQ-ZOOMEYE-002's surviving mutation was a
+/// caller passing the wrong cap).
+const SEARCH_LIMIT: usize = 10;
+
 // Confidence tiers vs the confidence::MEDIUM noisy-OR expansion floor. The primary pivots;
 // candidates stay sub-floor. People are kept a touch lower than orgs because a
 // name-only seed is more ambiguous than an organisation name.
@@ -181,11 +187,14 @@ impl Module for Wikidata {
         let eligible: Vec<&self::types::SearchHit> =
             name_matched.into_iter().take(MAX_CANDIDATES).collect();
 
+        let mut out = ModuleResult::new();
         let Some((primary, rest)) = eligible.split_first() else {
-            return Ok(ModuleResult::new());
+            // No label on this page is the name — which is a clean negative
+            // only if the page held everything. See `declare_search_truncation`.
+            declare_search_truncation(&mut out, search.search.len(), total_name_matches);
+            return Ok(out);
         };
 
-        let mut out = ModuleResult::new();
         let primary_label = primary.label.clone().unwrap_or_else(|| primary.id.clone());
 
         // Fetch the primary item's claims (non-fatal: candidates still surface).
@@ -236,8 +245,37 @@ impl Module for Wikidata {
         if let Some(head) = out.entities.first_mut() {
             mark_candidate_truncation(head, total_name_matches);
         }
+        declare_search_truncation(&mut out, search.search.len(), total_name_matches);
 
         Ok(out)
+    }
+}
+
+/// Declare the answer incomplete to the coverage layer when it was cut short.
+/// **Pure.** Two cuts, in order of how much they hide:
+///
+/// - the search page came back FULL (`returned >= SEARCH_LIMIT`): the API holds
+///   more hits than it sent, any of which may carry the name, and it reports no
+///   total — so this also covers a page with NO matching label, which returned
+///   a clean "no such item" before, the one outcome that settles an absence;
+/// - more name-matching items were on the page than [`MAX_CANDIDATES`]
+///   surfaced.
+///
+/// The head-entity tag [`mark_candidate_truncation`] writes was the only
+/// signal before, and nothing outside this file reads it.
+fn declare_search_truncation(out: &mut ModuleResult, returned: usize, total_name_matches: usize) {
+    if returned >= SEARCH_LIMIT {
+        out.mark_truncated(
+            returned,
+            None,
+            &format!("the search API's `limit={SEARCH_LIMIT}` page, which came back full"),
+        );
+    } else if total_name_matches > MAX_CANDIDATES {
+        out.mark_truncated(
+            MAX_CANDIDATES,
+            Some(total_name_matches),
+            &format!("the cap of {MAX_CANDIDATES} surfaced candidates"),
+        );
     }
 }
 

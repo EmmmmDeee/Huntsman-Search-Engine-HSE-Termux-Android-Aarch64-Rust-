@@ -176,3 +176,41 @@ async fn asic_business_names_live_resolves_a_name() {
         "expected at least one matching registered business name"
     );
 }
+
+// ── the page's completeness, declared before the no-match return ────────────
+
+fn near_misses(n: usize) -> Vec<Map<String, Value>> {
+    (0..n)
+        .map(|i| rec(&format!(r#"{{"BN_NAME":"Cut Price Painting Supplies {i}"}}"#)))
+        .collect()
+}
+
+#[test]
+fn a_full_page_with_no_whole_word_match_is_truncated_not_a_clean_negative() {
+    // FAILS before the fix — see the identical lock in `asic_banned_orgs`.
+    let page = near_misses(MAX_HITS);
+    assert!(
+        !page.iter().any(|r| record_name_matches(r, "Cut Above Painting")),
+        "premise: no row on the page is the queried business name"
+    );
+    let r = business_names_result(&page, 900, "Cut Above Painting", "s");
+    assert!(r.entities.is_empty());
+    let why = r.truncation.expect("a page CKAN says is partial is not a clean negative");
+    assert!(why.starts_with(&format!("{MAX_HITS} of 900")), "{why}");
+}
+
+#[test]
+fn a_short_page_with_no_match_stays_a_clean_negative() {
+    let r = business_names_result(&near_misses(4), 4, "Cut Above Painting", "s");
+    assert!(r.entities.is_empty());
+    assert!(r.truncation.is_none(), "{:?}", r.truncation);
+}
+
+#[test]
+fn a_matched_partial_page_keeps_its_finding_and_declares_the_rest() {
+    let mut page = near_misses(MAX_HITS - 1);
+    page.push(rec(REC));
+    let r = business_names_result(&page, 900, "Cut Above Painting", "s");
+    assert!(r.entities.iter().any(|e| e.has_tag("truncated")));
+    assert!(r.truncation.is_some());
+}

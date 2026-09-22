@@ -208,3 +208,50 @@ async fn asic_banned_orgs_live_finds_a_banned_org() {
         "expected the banned-organisation finding from the live register"
     );
 }
+
+// ── the page's completeness, declared before the no-match return ────────────
+
+/// `n` broad free-text hits that mention the query's words but are not it.
+fn near_misses(n: usize) -> Vec<Map<String, Value>> {
+    (0..n)
+        .map(|i| rec(&format!(r#"{{"BD_ORG_NAME":"Australian Business Brokers No {i} Pty Ltd"}}"#)))
+        .collect()
+}
+
+#[test]
+fn a_full_page_with_no_whole_word_match_is_truncated_not_a_clean_negative() {
+    // FAILS before the fix: the no-match return ran first, so a full page of
+    // near-misses from a search CKAN says holds 340 rows was reported as an
+    // empty, COMPLETE answer — a clean "not banned", the one outcome that
+    // settles an absence — while the real record may be in the 240 unread.
+    let page = near_misses(MAX_HITS);
+    assert!(
+        !page.iter().any(|r| record_name_matches(r, "Australian Business Insurance")),
+        "premise: no row on the page is the queried organisation"
+    );
+    let r = banned_orgs_result(&page, 340, "Australian Business Insurance", "s", mid_ban_today());
+    assert!(r.entities.is_empty(), "nothing matched, so nothing is claimed");
+    let why = r.truncation.expect("a page CKAN says is partial is not a clean negative");
+    assert!(why.starts_with(&format!("{MAX_HITS} of 340")), "{why}");
+}
+
+#[test]
+fn a_short_page_with_no_match_stays_a_clean_negative() {
+    // The control: CKAN sent everything it holds, so "no whole-word match" IS
+    // the answer. Marking this truncated would be the over-correction.
+    let r = banned_orgs_result(&near_misses(3), 3, "Australian Business Insurance", "s", mid_ban_today());
+    assert!(r.entities.is_empty());
+    assert!(r.truncation.is_none(), "{:?}", r.truncation);
+}
+
+#[test]
+fn a_matched_partial_page_keeps_its_finding_and_declares_the_rest() {
+    let mut page = near_misses(MAX_HITS - 1);
+    page.push(rec(REC));
+    let r = banned_orgs_result(&page, 340, "Australian Business Insurance", "s", mid_ban_today());
+    assert!(
+        r.entities.iter().any(|e| e.kind == EntityKind::Organisation && e.has_tag("truncated")),
+        "the per-search note on the seed is kept"
+    );
+    assert!(r.truncation.is_some(), "and the coverage layer is told");
+}
