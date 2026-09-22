@@ -2867,6 +2867,7 @@ fn open_produces_exact_schema_and_pragmas() {
         "index|idx_rf_device",
         "index|idx_rf_epoch",
         "index|idx_rf_geo",
+        "index|idx_rf_network",
         "index|idx_rf_oui",
         "index|idx_rf_scan",
         "index|idx_scans_started",
