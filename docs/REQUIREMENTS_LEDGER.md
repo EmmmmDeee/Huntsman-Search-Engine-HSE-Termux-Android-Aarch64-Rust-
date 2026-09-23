@@ -22219,6 +22219,10 @@ those modules stamp (`phone-prefix`, `cctld-inferred`, `locale-inferred`,
 attributes is still read correctly. Both yield to a fine measurement on the
 same value, like every other non-measured account. The label then comes from
 the offline tier at country grain: "New Zealand (country-level fix, ±300 km)".
+(Narrowed by REQ-GEOLABEL-019: the signal yields to ANY other record that
+explains the value, not only a fine measurement. REQ-GEOLABEL-020 removed the
+300 km disc: the label now reads "New Zealand (country-level signal — no
+position within the country)".)
 
 **REQ-GEOLABEL-010 — one street recogniser, in every form the jurisdictions
 write.** `place_naming` knew only English street types that FOLLOW a name.
@@ -22275,7 +22279,8 @@ inner-west Melbourne point became "Footscray (city centroid)". The coincidence
 is now skipped when the value has fewer printed decimals than the table key
 (`cut_below_table_key`). It tests printed width, not significant digits: a
 normalised `-33.800000,151.000000` that a module really minted still is the
-row.
+row. (REQ-GEOLABEL-021: the width is read from `raw_value` too, because
+`Entity::new` hides a cut value's width there.)
 
 **REQ-GEOLABEL-013 — equal redactions grade alike.** `quantisation_radius_m`
 stripped trailing zeros, so the redactor's `-28.0,153.0` counted 0 decimals
@@ -22434,12 +22439,207 @@ file's md5 was checked against a snapshot taken before it.
 | R17 | single-signal label worded "fused" again | killed by `a_best_location_estimate_prints_its_fused_place` and `every_best_location_object_carries_a_fused_place_label` |
 | R18 | collapse keeps the finest stamp | killed by `a_point_keeps_one_grain_stamp_the_coarsest` |
 
-**18 of 18 killed.** One change has no regression test: the finalise-side
-`enrich_geospatial` re-run after the two `address_to_coords_pass` merges in
-`engine::mod`. Those merges happen inside a scan's run and cannot be reached
+**18 of 18 killed.** One change has no regression test: the seed-round and
+per-round `enrich_geospatial` re-run after the two `address_to_coords_pass`
+merges in `engine::mod`. Those merges happen inside a scan's run and cannot be reached
 from a unit test. The store-side collapse (R15/R16) is the rule that decides
 what a stored point carries, so an in-memory stale stamp cannot reach an
 export either way. The allowlist cleanup (REQ-GEOLABEL-018) is not
 behavioural; `tests/architecture.rs` passes without the removed entry.
 `hse-core` changed (REQ-GEOLABEL-015), so `wasm-ui/pkg` must be regenerated
 by the lead. `wasm-ui/src` is unchanged.
+
+## REQ-GEOLABEL-019 / REQ-GEOLABEL-020 / REQ-GEOLABEL-021 / REQ-GEOLABEL-022 / REQ-GEOLABEL-023 / REQ-GEO-019 — review round 2 on the precision authority and the place label
+
+**Found** by adversarial review of 7f0828de (review round 1). Eleven findings
+were raised. Each was checked against the branch head, and all eleven were
+real. Four of them are one defect reported from different angles
+(REQ-GEOLABEL-021), and two are another (REQ-GEOLABEL-019). Every fix is at
+the layer that owns the rule, and every one has a regression test that fails
+on the code before it.
+
+**REQ-GEOLABEL-019 — a country signal never erases a finding of its
+stand-in city.** REQ-GEOLABEL-009 gave `email_locale`'s and `geo_intel`'s
+country points a country-grain account (300 km) and a country floor from
+their tags. Their points are stand-ins on real city rows: `.au` / `en-au` is
+Sydney's `-33.8688,151.2093` and `+64` is Wellington's `-41.2865,174.7762`.
+Those are exactly the values `city_coords` gives for a Sydney ABN or ASIC
+address, or for a `+64 4` landline's area code. The two entities have the
+same uid and merge, `assess` keeps the coarsest account, and the tag floor
+applied unless a fine measurement was present. So a register-confirmed
+Sydney address read "Australia (country-level fix, ±300 km)", its CSV
+`fix_radius_m` read 300000, and the correlator weighed it at 300 km. The
+reviewers' Wellington example goes through `phone_area_geo`, whose own
+account is 100 km (region grain), so that point never read "Wellington (city
+centroid)". But its grade did change from region to country, and a
+Wellington register address takes the same path at city grain.
+
+The rule is now in `assess`, step 2. A country signal (the record rule, or
+the `COUNTRY_SIGNAL_TAGS` floor) is read only when no other account explains
+the value, meaning every other account is a country signal or an
+unclassified record. An unclassified record explains nothing, and a CSV
+round trip turns a country signal's own `geo_intel` record into one when it
+strips `method`. Otherwise the signal is set aside like an annotator. When
+the signal does decide the grade, the gazetteer coincidence is skipped too,
+because the row it lands on is its stand-in and nobody reported that place.
+
+That alone was not enough. The engine stamps `fix-grain:<grain>` on
+admission, and `assess` reads that stamp back as a floor that only ever
+coarsens. A `.au` point admitted FIRST was therefore stamped
+`fix-grain:country`, and the Sydney address that merged onto it later was
+pinned at country grain by the stamp. `enrich_geospatial` now writes no
+grain stamp for a country-signal grade (`FixBasis::CountrySignal`, new). The
+signal's own records and tags already carry that grade wherever the point
+goes, and unlike a stamp they yield. `coarse` is still stamped.
+
+**REQ-GEOLABEL-020 — a country signal claims no disc.** The country account
+used the geocoder table's 300 km "country" radius around a stand-in point.
+A `.au` email at Sydney ±300 km put Melbourne (~710 km), Brisbane (~730 km)
+and Perth (~3,300 km) outside the circle its label stated. `+64` at
+Wellington ±300 km did the same to Auckland (~490 km), and `+61` at the
+continent's centre did it to every capital. The radius is now
+`COUNTRY_SIGNAL_RADIUS_M = f64::INFINITY`, and every surface renders it as
+no radius:
+- the label reads "Australia (country-level signal — no position within the
+  country)", with no `±`;
+- `PlaceLabel::to_json` writes `"fix_radius_m": null`, never `0`;
+- `detail()` reads "fix=country, no radius";
+- `fix_radius_ceil_m` returns `None`, so the CSV cell is empty. The importer
+  still reads the point as the country, because the row keeps its tags.
+
+The correlator never weighs such a point, because `geo_intel` and
+`email_locale` are not anchoring sources, and under REQ-GEOLABEL-019 an
+anchoring record on the same value sets the signal aside. A geocoder's
+declared `country` hit keeps the table's 300 km. That is a different fact
+(the geocoder matched a country's polygon), and the finding did not cover
+it.
+
+**REQ-GEOLABEL-021 — a normalised redaction keeps its printed width.**
+`Entity::new` normalises every `Coordinates` value to six decimals and keeps
+what it was given only in `raw_value`. HSE's CSV importer builds each row
+that way, so a redacted `-33.8,151.0` came back as value
+`-33.800000,151.000000` with raw value `-33.8,151.0`. This broke two rules:
+- `cut_below_table_key` read `value` alone. The re-imported Parramatta point
+  became the REGIONS row "21" again ("New South Wales (region-level fix)",
+  `coarse`, withheld from pivots), and a redacted inner-west Melbourne fix
+  became "Footscray (city centroid)". This is REQ-GEOLABEL-012's defect on
+  the import surface.
+- `quantisation_radius_m` took `min(value, raw_value)`. The normalisation's
+  zeros strip to nothing, so `-28.0,153.0` graded 0 decimals (±55.7 km,
+  region) while `-27.9,153.2` graded 1 (±5.6 km, locality). This is
+  REQ-GEOLABEL-013's parity split, back again.
+
+Both now read the PRINTED form (`grain::printed_form`): `raw_value` when it
+is a coordinate pair, else `value`. The cut gate fires when either `value` or
+the printed form is cut. The redactor rewrites both fields in place, so
+`value` stays checked. The decimal count is capped by the value's own
+printed width, so a raw value printed wider than the six decimals kept can
+never grade the point finer than the value it is. Only `email_locale`
+prints a coordinate with Rust's `{}` (and so may print fewer than four
+decimals), and a country signal's point never takes a coincidence anyway.
+
+**REQ-GEOLABEL-022 — an unnumbered street naming is held to the street it
+names.** REQ-GEOLABEL-010 widened the street vocabulary. "Grove" ends real
+localities (Kelvin Grove and Ferny Grove QLD, Golden Grove SA, Elk Grove),
+"Kiệt" is a common Vietnamese given name, and "Phố" begins town names (Phố
+Châu, Phố Lu). So "Kelvin Grove, QLD" became the street "Kelvin Grove", and
+the cap on a geocode of it rose from region to street. A Photon or Nominatim
+hit on "Kelvin Grove Road" then graded Street. The fragment rule could not
+catch this. It fired only when the input named no street, and in that case
+the cap is the administrative grain anyway, so the rule was a no-op.
+
+It now fires for any input that names no NUMBERED street. The hit's names
+are read from the road it lies on (`road`, Nominatim) or its own name
+(`place_name`, Photon and Open-Meteo), and one of them must be the queried
+place (`is_name_of_queried_place`). If none is, only the input's
+administrative grain stands. So "Kelvin Grove Road" for "Kelvin Grove, QLD"
+and "Nguyễn Trãi" for "Kiệt Nguyễn, Hà Nội" are fragments. "Oak Grove" for
+"Oak Grove, Toowong" and "Đường Láng" for "Đường Láng, Hà Nội" still keep
+the street cap. To make "Smith Street" count as the "Smith St" asked about,
+`is_name_of_queried_place` reads street-type spellings as one word
+(`PLACE_WORD_FORMS`, which replaces `PLACE_WORD_ABBREVIATIONS`). "st" shares
+one group with "saint" and "street", and a test holds that every
+street-type spelling there is in `STREET_TYPES`. A numbered street is
+specific enough to stand on its own, so it is not held to the hit's road
+name.
+
+**REQ-GEO-019 — a typed street line keeps its suburb.** In the first
+segment of a multi-segment string, the "number + name" street-line rule
+claimed the whole segment (`rest_from = words.len()`). For equal grains,
+`found` keeps the larger `rest_from`, so the rule replaced a trailing type's
+match. As a result `locality_part("12 Smith St Toowong, QLD")` was "QLD", and
+`city_coords` found no locality for a tabulated suburb. The rule is now a
+fallback that applies only when no type word placed the street.
+
+**REQ-GEOLABEL-023 — a lone corroboration is not fused.**
+`au_location_corroboration` returns a point for a single signal too
+(`signal_count: 1`), but the export always labelled it with
+`FixKind::Corroboration`. So the corroboration object attached to a
+single-signal fix read "(fused fix ±8 km)" beside its own count of one.
+`FixKind::of_corroboration(signal_count)` now chooses Corroboration for two
+or more signals and SingleSignal otherwise.
+
+**Wording corrected.** The CHANGELOG entry for REQ-GEOLABEL-016 and that
+section's closing note said "finalise-side" merges. The two
+`address_to_coords_pass` merges that re-run the enrichment are the
+seed-round and per-round ones in `engine::mod`, as the REQ-GEOLABEL-016
+paragraph itself says. Both texts now say so. The REQ-GEOLABEL-009 and
+REQ-GEOLABEL-012 paragraphs and CHANGELOG entries now point to the rules
+that narrowed them. (The 7f0828de commit message cannot be changed, because
+history is not rewritten.)
+
+### Deliberate test updates
+
+- `core::place::tests::assert_honest`: a point with no radius must show
+  `fix_radius_m: null`. Every other point still shows an integer no smaller
+  than its radius.
+
+### Locks
+
+- `core::place::tests`: `a_country_signal_never_erases_a_city_finding_on_its_stand_in`;
+  `a_country_signal_claims_no_disc`; `a_normalised_redaction_keeps_its_printed_width`;
+  `an_unnumbered_street_naming_is_held_to_the_street_it_names`.
+- `core::engine::enrich::tests::a_country_signal_admitted_first_never_pins_a_later_city_finding`.
+- `app::import::tests::a_redacted_export_re_imports_at_its_exported_grade`;
+  `a_country_signal_re_imports_as_the_country_with_no_radius`.
+- `util::place_grain::city_grain_tests::a_typed_street_line_keeps_the_suburb_after_its_type`;
+  `a_street_named_either_way_is_the_queried_street`.
+- `util::city_coords::tests::a_place_named_in_the_street_is_not_the_address_locality`
+  (extended with "12 Smith St Toowong, QLD").
+- `app::export::tests::every_best_location_object_carries_a_fused_place_label`
+  (extended to the single-signal fix's corroboration object).
+- `util::place_grain::city_grain_tests::a_street_named_either_way_is_the_queried_street`
+  also checks every `PLACE_WORD_FORMS` group in both directions.
+
+### Falsified
+
+Each mutation restores a defect, or removes the rule under test. A script
+applied each one to the fixed file in memory, ran the named tests, restored
+the file, and checked its md5 against a snapshot taken before the run. After
+the whole run, every touched file's md5 matched again.
+
+| # | mutation | result |
+|---|---|---|
+| M1 | a country signal never yields to another account | killed by `a_country_signal_never_erases_a_city_finding_on_its_stand_in` |
+| M2 | country tag floor gated only by a fine measurement (the round-1 rule) | killed by `a_country_signal_never_erases_a_city_finding_on_its_stand_in` |
+| M3 | enrichment stamps `fix-grain:` on a country-signal grade | killed by `a_country_signal_admitted_first_never_pins_a_later_city_finding` |
+| M4 | country-signal radius back to 300 km | killed by `a_country_signal_claims_no_disc` and `a_country_signal_re_imports_as_the_country_with_no_radius` |
+| M5 | country label keeps "±" | killed by `a_country_signal_claims_no_disc` |
+| M6 | JSON `fix_radius_m` is `0` for no radius | killed by `a_country_signal_claims_no_disc` |
+| M7 | CSV `fix_radius_m` written for no radius | killed by `a_country_signal_claims_no_disc` and `a_country_signal_re_imports_as_the_country_with_no_radius` |
+| M8 | cut gate reads `value` only | killed by `a_normalised_redaction_keeps_its_printed_width` and `a_redacted_export_re_imports_at_its_exported_grade` |
+| M9 | quantisation takes `min(value, raw_value)` again | killed by `a_normalised_redaction_keeps_its_printed_width` and `a_redacted_export_re_imports_at_its_exported_grade` |
+| M10 | raw decimals not capped by the value's width | killed by `a_normalised_redaction_keeps_its_printed_width` |
+| M11 | fragment rule only for an input naming no street | killed by `an_unnumbered_street_naming_is_held_to_the_street_it_names` |
+| M12 | "rd" dropped from the "road" spelling group | killed by `a_street_named_either_way_is_the_queried_street`. It survived the first run, because no test compared "Rd" with "Road". The both-directions check over every group was added, and the rerun killed it |
+| M12b | "street" dropped from the "st" group | killed by `a_street_named_either_way_is_the_queried_street` and `an_unnumbered_street_naming_is_held_to_the_street_it_names` |
+| M13 | street-line rule overrides a typed street | killed by `a_typed_street_line_keeps_the_suburb_after_its_type` and `a_place_named_in_the_street_is_not_the_address_locality` |
+| M14 | corroboration always labelled fused | killed by `every_best_location_object_carries_a_fused_place_label` |
+| M15 | `detail()` prints a radius for no radius | killed by `a_country_signal_claims_no_disc` |
+| M16 | gazetteer coincidence taken on a country signal's point | killed by `a_country_signal_never_erases_a_city_finding_on_its_stand_in` |
+| M17 | fragment rule ignores Nominatim's `road` | killed by `an_unnumbered_street_naming_is_held_to_the_street_it_names` |
+
+**18 of 18 killed** (M12 on the second run). `hse-core` and `wasm-ui/src`
+are unchanged in this round, so this round adds nothing to regenerate in
+`wasm-ui/pkg`. REQ-GEOLABEL-015 still needs that regeneration, and it
+remains the lead's step.

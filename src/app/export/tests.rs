@@ -2883,6 +2883,20 @@ fn every_best_location_object_carries_a_fused_place_label() {
     assert!(t.contains("(single-signal fix ±"), "{single}");
     assert!(!t.contains("fused"), "{single}");
     assert_eq!(single["place_label"]["basis"], "single_signal");
+    // The corroboration object attached to that fix rests on the same one
+    // signal, and says so: its label is not "fused" beside its own
+    // `signal_count: 1`.
+    let corroboration = &single["corroboration"];
+    assert_eq!(corroboration["signal_count"], 1, "{single}");
+    let ct = corroboration["place_label"]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(ct.contains("(single-signal fix ±"), "{single}");
+    assert!(!ct.contains("fused"), "{single}");
+    assert_eq!(corroboration["place_label"]["basis"], "single_signal");
+    // Two agreeing signals ARE fused, on the corroboration object too.
+    assert!(ladder["corroboration"]["signal_count"].as_u64() >= Some(2));
+    fused(&ladder["corroboration"]);
 }
 
 /// REQ-GEOLABEL-003: every label-bearing export is byte-identical across

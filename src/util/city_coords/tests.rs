@@ -556,6 +556,11 @@ fn a_bare_country_name_never_resolves_but_the_address_it_belongs_to_does() {
         assert_eq!(city_coords("12 Smith St, Sydney NSW"), Some(sydney));
         assert_eq!(city_coords("Martin Place, Sydney"), Some(sydney));
         assert!(city_coords("12 Smith St, Maleny QLD 4552").is_some());
+        // REQ-GEO-019: a suburb after the street type in the street's own
+        // segment is the locality, comma or no comma after it.
+        let toowong = city_coords("Toowong").expect("tabulated");
+        assert_eq!(city_coords("12 Smith St Toowong, QLD"), Some(toowong));
+        assert_eq!(city_coords("12 Smith St Toowong QLD"), Some(toowong));
     }
 
     /// The street recogniser never reads a gazetteer name as a street: every

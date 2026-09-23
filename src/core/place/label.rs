@@ -114,7 +114,9 @@ pub struct PlaceLabel {
     pub label_grain: FixGrain,
     /// The grain the fix itself was graded at.
     pub fix_grain: FixGrain,
-    /// The fix's radius (metres), as graded — rendered rounded UP.
+    /// The fix's radius (metres), as graded — rendered rounded UP. Infinite
+    /// for a point that claims no disc at all (a country signal,
+    /// [`FixBasis::CountrySignal`]), rendered as no radius.
     pub fix_radius_m: f64,
     /// For a nearest-address label, how far the matched address object lies
     /// from the fix (metres); `None` otherwise or when it was not recorded.
@@ -127,14 +129,19 @@ impl PlaceLabel {
     /// The structured form every JSON surface carries as `place_label`. Every
     /// number is a rounded integer (the radius rounded UP to one significant
     /// figure, the offset to its display bucket), so float noise in the last
-    /// digit can never change a byte of an export (REQ-GEOLABEL-003).
+    /// digit can never change a byte of an export (REQ-GEOLABEL-003). A point
+    /// with no radius (a country signal) carries `"fix_radius_m": null` —
+    /// never `0`, which would claim a fix with no error at all.
     #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "text": self.text,
             "label_grain": self.label_grain.as_str(),
             "fix_grain": self.fix_grain.as_str(),
-            "fix_radius_m": radius_display_m(self.fix_radius_m),
+            "fix_radius_m": self
+                .fix_radius_m
+                .is_finite()
+                .then(|| radius_display_m(self.fix_radius_m)),
             "offset_m": self.offset_m.map(distance_display_m),
             "basis": self.basis.as_str(),
             "caveat": PLACE_CAVEAT,
@@ -142,14 +149,20 @@ impl PlaceLabel {
     }
 
     /// The bracketed precision detail the text renderers print after the
-    /// label: `[label=locality, fix=locality ±8 km; centroid]`.
+    /// label: `[label=locality, fix=locality ±8 km; centroid]`, or
+    /// `[label=country, fix=country, no radius; gazetteer]` for a point that
+    /// claims no disc.
     #[must_use]
     pub fn detail(&self) -> String {
+        let radius = if self.fix_radius_m.is_finite() {
+            format!(" ±{}", radius_text(self.fix_radius_m))
+        } else {
+            ", no radius".to_string()
+        };
         format!(
-            "[label={}, fix={} ±{}; {}]",
+            "[label={}, fix={}{radius}; {}]",
             self.label_grain.as_str(),
             self.fix_grain.as_str(),
-            radius_text(self.fix_radius_m),
             self.basis.as_str()
         )
     }
@@ -1105,12 +1118,17 @@ pub fn describe(e: &Entity, ctx: &PlaceContext) -> Option<PlaceLabel> {
     if out.is_none()
         && let Some((phrase, g)) = offline_phrase(Some(e), lat, lon, grain, radius)
     {
+        // A country signal names the country and no position in it: no disc
+        // is drawn around its stand-in point (`grain::COUNTRY_SIGNAL_RADIUS_M`
+        // — "±300 km" around Sydney for a `.au` email left Melbourne, Brisbane
+        // and Perth outside the circle the label stated).
+        let precision = if fix.basis == FixBasis::CountrySignal || !radius.is_finite() {
+            "country-level signal — no position within the country".to_string()
+        } else {
+            format!("{}-level fix, ±{}", grain.as_str(), radius_text(radius))
+        };
         out = Some(label(
-            format!(
-                "{phrase} ({}-level fix, ±{})",
-                grain.as_str(),
-                radius_text(radius)
-            ),
+            format!("{phrase} ({precision})"),
             g,
             LabelBasis::Gazetteer,
             None,
@@ -1154,6 +1172,22 @@ impl FixKind {
     pub fn of_estimate_basis(basis: &str) -> Self {
         if basis == crate::core::correlator::SYNERGY_BASIS {
             Self::Synergy
+        } else {
+            Self::SingleSignal
+        }
+    }
+
+    /// The kind of an independent-class corroboration point that agrees
+    /// `signal_count` signals: [`FixKind::Corroboration`] when two or more
+    /// were fused into it, [`FixKind::SingleSignal`] when it is one signal's
+    /// own position. `correlator::au_location_corroboration` returns a point
+    /// for a lone signal too (count 1, one class); labelling that "(fused fix
+    /// ±N)" beside its own `signal_count: 1` was the REQ-GEOLABEL-017 mislabel
+    /// on the object attached to every best-location fix (REQ-GEOLABEL-023).
+    #[must_use]
+    pub const fn of_corroboration(signal_count: usize) -> Self {
+        if signal_count >= 2 {
+            Self::Corroboration
         } else {
             Self::SingleSignal
         }

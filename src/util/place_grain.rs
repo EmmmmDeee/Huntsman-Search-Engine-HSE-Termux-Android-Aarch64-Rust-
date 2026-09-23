@@ -473,7 +473,8 @@ struct SegmentStreet {
 /// line an address puts its street on in Australia, the US and Vietnam alike.
 /// There, a leading house number followed by a name is a numbered street even
 /// with no type word (`"123 Nguyễn Huệ, Quận 1, TP. Hồ Chí Minh"`) — the
-/// Vietnamese convention, and the common shorthand elsewhere.
+/// Vietnamese convention, and the common shorthand elsewhere. It is the
+/// fallback for a line no type word explains, never an override of one.
 fn segment_street(words: &[&str], street_line: bool) -> Option<SegmentStreet> {
     let lower: Vec<String> = words
         .iter()
@@ -536,14 +537,23 @@ fn segment_street(words: &[&str], street_line: bool) -> Option<SegmentStreet> {
             found(numbered(others), words.len());
         }
     }
+    // Only when no type word placed the street: the rule claims the WHOLE
+    // segment (`rest_from = words.len()`), and let win over a trailing type it
+    // replaced that type's own end — `"12 Smith St Toowong, QLD"` lost the
+    // `"Toowong"` after the `"St"`, so `locality_part` was `"QLD"` and
+    // `city_coords` found no locality at all for a tabulated suburb.
     if street_line
+        && best.is_none()
         && words.len() >= 2
         && is_house_number(words[0])
         && words[1..]
             .iter()
             .any(|w| w.chars().any(char::is_alphabetic))
     {
-        found(StreetGrain::House, words.len());
+        best = Some(SegmentStreet {
+            grain: StreetGrain::House,
+            rest_from: words.len(),
+        });
     }
     best
 }
@@ -652,25 +662,53 @@ fn folded_tokens(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// Abbreviations a place name is written with either way — `"Mt Isa"` /
-/// `"Mount Isa"`, `"St Kilda"` / `"Saint Kilda"`, `"Pt Lonsdale"` / `"Point
-/// Lonsdale"` — read as their full word on both sides of a comparison.
-const PLACE_WORD_ABBREVIATIONS: &[(&str, &str)] = &[
-    ("mt", "mount"),
-    ("st", "saint"),
-    ("pt", "point"),
-    ("ft", "fort"),
+/// Words a place or street name is written with either way, each group read
+/// as ONE word on both sides of a comparison: `"Mt Isa"` / `"Mount Isa"`,
+/// `"St Kilda"` / `"Saint Kilda"`, `"Pt Lonsdale"` / `"Point Lonsdale"`, and
+/// the street types a geocoder spells out where the query abbreviated them —
+/// `"Smith St"` asked, `"Smith Street"` answered.
+///
+/// `"st"` is both a saint and a street, so the two share one group: a name
+/// that differs from the query ONLY in reading "Saint" for "Street" is not a
+/// name anyone writes, while losing either reading misses a real match. Every
+/// street-type word here is in [`STREET_TYPES`] (a test holds it).
+const PLACE_WORD_FORMS: &[&[&str]] = &[
+    &["mount", "mt"],
+    &["st", "saint", "street"],
+    &["point", "pt"],
+    &["fort", "ft"],
+    &["road", "rd"],
+    &["avenue", "ave", "av"],
+    &["lane", "ln"],
+    &["drive", "dr"],
+    &["court", "ct"],
+    &["crescent", "cres"],
+    &["place", "pl"],
+    &["highway", "hwy"],
+    &["freeway", "fwy"],
+    &["parade", "pde"],
+    &["terrace", "tce"],
+    &["boulevard", "blvd"],
+    &["circuit", "cct"],
+    &["close", "cl"],
+    &["esplanade", "esp"],
+    &["square", "sq"],
+    &["grove", "gr"],
+    &["parkway", "pkwy"],
+    &["circle", "cir"],
+    &["trail", "trl"],
 ];
 
-/// [`folded_tokens`], with each abbreviation read as its full word.
+/// [`folded_tokens`], with each word of a [`PLACE_WORD_FORMS`] group read as
+/// the group's first word. One token per folded token, in order.
 fn place_tokens(s: &str) -> Vec<String> {
     folded_tokens(s)
         .into_iter()
         .map(|t| {
-            PLACE_WORD_ABBREVIATIONS
+            PLACE_WORD_FORMS
                 .iter()
-                .find(|(short, _)| *short == t)
-                .map_or(t, |(_, full)| (*full).to_string())
+                .find(|forms| forms.contains(&t.as_str()))
+                .map_or(t, |forms| forms[0].to_string())
         })
         .collect()
 }
@@ -689,7 +727,8 @@ fn place_tokens(s: &str) -> Vec<String> {
 /// * diacritics and case (`"Hà Nội"` / `"ha noi"`);
 /// * word boundaries — the run's words are compared joined, so `"Hanoi"` and
 ///   `"Ha Noi"`, `"Haiphong"` and `"Hải Phòng"` are one name;
-/// * the everyday abbreviations ([`PLACE_WORD_ABBREVIATIONS`]);
+/// * the everyday abbreviations and street-type spellings
+///   ([`PLACE_WORD_FORMS`]);
 /// * a trailing generic `"City"` on the matched name — GeoNames' English name
 ///   for Vietnam's largest city is "Ho Chi Minh City", asked as `"Ho Chi Minh,
 ///   Vietnam"` — unless the name without it is a state or a country ("Kansas
@@ -699,8 +738,11 @@ fn place_tokens(s: &str) -> Vec<String> {
 #[must_use]
 pub fn is_name_of_queried_place(name: &str, query: &str) -> bool {
     let mut want = place_tokens(name);
+    // The region test reads the name's own words, not their canonical forms:
+    // `place_naming` does its own matching.
+    let written = folded_tokens(name);
     if want.len() >= 2 && want.last().is_some_and(|t| t == "city") {
-        let rest = want[..want.len() - 1].join(" ");
+        let rest = written[..written.len() - 1].join(" ");
         let names_region = matches!(
             place_naming(&rest).admin,
             Some(AdminGrain::Region | AdminGrain::Country)
@@ -801,8 +843,8 @@ mod tests {
 #[cfg(test)]
 mod city_grain_tests {
     use super::{
-        AdminGrain, StreetGrain, is_name_of_queried_place, locality_part, negates_city_grain,
-        place_naming,
+        AdminGrain, PLACE_WORD_FORMS, STREET_TYPES, StreetGrain, is_name_of_queried_place,
+        locality_part, negates_city_grain, place_naming,
     };
 
     /// REQ-SOCIALLOC-002: a region label must not earn the city's centroid.
@@ -965,6 +1007,74 @@ mod city_grain_tests {
         // Nothing to drop: the string is returned whitespace-normalised.
         assert_eq!(locality_part("Toowong,  QLD"), "Toowong, QLD");
         assert_eq!(locality_part("St Kilda, Victoria"), "St Kilda, Victoria");
+    }
+
+    /// REQ-GEO-019: the first-line "number + name" rule is a fallback for a
+    /// street line no type word explains, never an override of one. It claims
+    /// the whole segment, and replaced a trailing type's match, so the suburb
+    /// after the type was dropped: `"12 Smith St Toowong, QLD"` kept only
+    /// `"QLD"`.
+    #[test]
+    fn a_typed_street_line_keeps_the_suburb_after_its_type() {
+        assert_eq!(locality_part("12 Smith St Toowong, QLD"), "Toowong, QLD");
+        assert_eq!(
+            locality_part("3 Harbour Rise Hope Island, QLD 4212"),
+            "Hope Island, QLD 4212"
+        );
+        // The fallback itself still stands where no type word is present.
+        assert_eq!(
+            locality_part("123 Nguyễn Huệ, Quận 1, TP. Hồ Chí Minh"),
+            "Quận 1, TP. Hồ Chí Minh"
+        );
+        assert_eq!(
+            place_naming("12 Smith St Toowong, QLD").street,
+            Some(StreetGrain::House)
+        );
+    }
+
+    /// REQ-GEOLABEL-022: a geocoder's spelled-out street type is the query's
+    /// abbreviation — "Smith Street" is the "Smith St" asked about — and every
+    /// street-type spelling the comparison folds is a street type the
+    /// recogniser knows, so the two lists cannot drift apart.
+    #[test]
+    fn a_street_named_either_way_is_the_queried_street() {
+        assert!(is_name_of_queried_place(
+            "Smith Street",
+            "Smith St, Toowong"
+        ));
+        assert!(is_name_of_queried_place("Oak Gr", "12 Oak Grove, Toowong"));
+        assert!(is_name_of_queried_place("Saint Kilda", "St Kilda, VIC"));
+        // Every group, both ways round: each spelling is the group's first.
+        for forms in PLACE_WORD_FORMS {
+            for (a, b) in forms.iter().zip(forms.iter().skip(1)) {
+                assert!(
+                    is_name_of_queried_place(&format!("Hobart {a}"), &format!("Hobart {b}, TAS")),
+                    "{a} / {b}"
+                );
+                assert!(
+                    is_name_of_queried_place(&format!("Hobart {b}"), &format!("Hobart {a}, TAS")),
+                    "{b} / {a}"
+                );
+            }
+        }
+        assert!(is_name_of_queried_place(
+            "Hobart Road",
+            "Hobart Rd, Kings Meadows TAS"
+        ));
+        assert!(!is_name_of_queried_place(
+            "Kelvin Grove Road",
+            "Kelvin Grove, QLD"
+        ));
+        assert!(!is_name_of_queried_place(
+            "Nguyễn Trãi",
+            "Kiệt Nguyễn, Hà Nội"
+        ));
+        let place_words = ["mount", "mt", "saint", "point", "pt", "fort", "ft"];
+        for forms in PLACE_WORD_FORMS {
+            for w in forms.iter().filter(|w| !place_words.contains(w)) {
+                assert!(STREET_TYPES.contains(w), "{w} is not a street type");
+            }
+        }
     }
 
     /// REQ-OPENMETEO-002: a match must be the queried place, not a neighbour.

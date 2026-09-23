@@ -141,9 +141,19 @@ pub(crate) fn enrich_geospatial(entity: &mut crate::core::entity::Entity) {
                 entity
                     .tags
                     .retain(|t| !t.starts_with(crate::core::place::grain::FIX_GRAIN_TAG_PREFIX));
+                // A COUNTRY signal's grade is not stamped: its own records and
+                // tags already carry it wherever the point goes, and they
+                // yield when a real finding of the city its stand-in sits on
+                // merges in (`assess`, step 2). A `fix-grain:country` stamp
+                // would not yield — it is a floor that only ever coarsens — so
+                // a `.au` email's point admitted first would have pinned the
+                // Sydney ABN address that later merged onto it at country
+                // grain for good.
                 if precision.is_area() {
                     entity.tag(crate::core::tags::COARSE);
-                    entity.tag(precision.grain.tag());
+                    if precision.basis != crate::core::place::FixBasis::CountrySignal {
+                        entity.tag(precision.grain.tag());
+                    }
                 }
 
                 let h = geohash::geohash(lat, lon, 7);
@@ -1414,6 +1424,63 @@ mod tests {
             vec!["fix-grain:region".to_string()],
             "idempotent"
         );
+    }
+
+    /// REQ-GEOLABEL-019: a country signal admitted FIRST never pins a later
+    /// real finding of its stand-in city. A `.au` email's point sits on
+    /// Sydney's row; stamped `fix-grain:country` on admission, that stamp —
+    /// a floor that only ever coarsens — held the Sydney register address
+    /// that later merged onto the same value at country grain for good. The
+    /// signal's grade is carried by its own records and tags, which yield.
+    #[test]
+    fn a_country_signal_admitted_first_never_pins_a_later_city_finding() {
+        let fix_grains = |e: &Entity| -> Vec<String> {
+            e.tags
+                .iter()
+                .filter(|t| t.starts_with(crate::core::place::grain::FIX_GRAIN_TAG_PREFIX))
+                .cloned()
+                .collect()
+        };
+        let mut point = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.2, "s1");
+        for t in ["geoint", "coarse", "cctld-inferred"] {
+            point.tag(t);
+        }
+        point.add_evidence(
+            Evidence::new("email_locale", "Email domain ccTLD .au indicates Australia")
+                .with_attr("cctld", "au")
+                .with_attr("locale", "en-au"),
+        );
+        enrich_geospatial(&mut point);
+        assert_eq!(
+            crate::core::place::assess(&point).grain,
+            crate::core::place::FixGrain::Country
+        );
+        assert!(point.has_tag(crate::core::tags::COARSE));
+        assert!(fix_grains(&point).is_empty(), "{:?}", point.tags);
+
+        let mut a = Entity::new(
+            EntityKind::Address,
+            "10 Smith St, Sydney NSW 2000",
+            0.7,
+            "s1",
+        );
+        a.add_evidence(Evidence::new("abn_lookup", "registered address"));
+        let mut m = std::collections::HashMap::new();
+        m.insert(a.uid.clone(), a);
+        let derived = address_to_coords_pass(&m, "s1").remove(0);
+        assert_eq!(derived.uid, point.uid, "the stand-in IS Sydney's row");
+        point.merge(derived);
+        enrich_geospatial(&mut point);
+        let p = crate::core::place::assess(&point);
+        assert_eq!(p.grain, crate::core::place::FixGrain::Locality, "{p:?}");
+        assert!(
+            matches!(
+                p.stands_for,
+                Some(crate::core::place::StandsFor::Gazetteer { ref name, .. }) if name == "Sydney"
+            ),
+            "{p:?}"
+        );
+        assert_eq!(fix_grains(&point), vec!["fix-grain:locality".to_string()]);
     }
 
     /// REQ-GEOLABEL-005: a coordinate `address_to_coords_pass` calculates from

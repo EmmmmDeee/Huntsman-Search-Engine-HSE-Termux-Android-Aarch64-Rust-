@@ -3226,3 +3226,89 @@ fn a_reimported_coordinate_is_never_finer_than_its_export() {
         assert_eq!(assess(&ents2[0]).radius_m, now.radius_m);
     }
 }
+
+/// REQ-GEOLABEL-021: a REDACTED CSV export re-imports at the grade it was
+/// exported at. The importer rebuilds each row with `Entity::new`, which
+/// normalises a redacted `-33.8,151.0` to `-33.800000,151.000000` and keeps
+/// the printed form only in `raw_value`. The table-key gate read `value`
+/// alone, so the Parramatta geocode came back as the REGIONS row "21" ("New
+/// South Wales (region-level fix)") and an inner-west Melbourne fix as the
+/// Footscray anchor; and the precision floor's `min(value, raw_value)` let
+/// the normalisation's stripped zeros grade `-28.0,153.0` a region beside
+/// `-27.9,153.2` at a locality.
+#[test]
+fn a_redacted_export_re_imports_at_its_exported_grade() {
+    use crate::core::entity::{Entity, Evidence};
+    use crate::core::place::{FixGrain, assess, describe};
+    let geocode = |value: &str| {
+        let mut e = Entity::new(EntityKind::Coordinates, value, 0.7, "s");
+        e.add_evidence(
+            Evidence::new("geocode", "Geocoded \"12 Church St, Parramatta NSW 2150\"")
+                .with_attr("input_address", "12 Church St, Parramatta NSW 2150")
+                .with_attr("place_type", "house"),
+        );
+        e
+    };
+    // Parramatta → -33.8,151.0 (REGIONS "21"); inner-west Melbourne →
+    // -37.8,144.9 (the Footscray anchor); and the parity pair.
+    let mut originals = vec![
+        geocode("-33.815678,151.003456"),
+        geocode("-37.812345,144.891234"),
+        geocode("-27.960000,153.040000"),
+        geocode("-27.912345,153.212345"),
+    ];
+    crate::util::redact::redact_entities(&mut originals);
+    let printed: Vec<&str> = originals.iter().map(|e| e.value.as_str()).collect();
+    assert_eq!(
+        printed,
+        ["-33.8,151.0", "-37.8,144.9", "-28.0,153.0", "-27.9,153.2"]
+    );
+    let csv = crate::app::export::entities_to_csv(&originals, "s");
+    let (back, _stats) = parse_hse_csv(&csv, "s2");
+    assert_eq!(back.len(), originals.len());
+    for (original, back) in originals.iter().zip(&back) {
+        assert_ne!(back.value, original.value, "Entity::new normalised it");
+        let (was, now) = (assess(original), assess(back));
+        assert_eq!(
+            now.grain, was.grain,
+            "{} : {was:?} -> {now:?}",
+            original.value
+        );
+        assert_eq!(now.grain, FixGrain::Locality, "{now:?}");
+        assert_eq!(now.stands_for, None, "{}: {now:?}", original.value);
+        let ctx = crate::core::place::PlaceContext::default();
+        let label = describe(back, &ctx).expect("labelled").text;
+        assert!(
+            !label.contains("region-level") && !label.contains("city centroid"),
+            "{}: {label}",
+            original.value
+        );
+    }
+    assert_eq!(assess(&back[2]).radius_m, assess(&back[3]).radius_m);
+}
+
+/// REQ-GEOLABEL-020: a country signal's CSV row claims no radius — the
+/// `fix_radius_m` cell is empty, never a disc — and re-imports as the country
+/// through the tags the row keeps.
+#[test]
+fn a_country_signal_re_imports_as_the_country_with_no_radius() {
+    use crate::core::entity::{Entity, Evidence};
+    use crate::core::place::{FixGrain, assess};
+    let mut e = Entity::new(EntityKind::Coordinates, "-41.2865,174.7762", 0.5, "s");
+    for t in ["geoint", "phone-prefix", "coarse", "country:NZ"] {
+        e.tag(t);
+    }
+    e.add_evidence(
+        Evidence::new("geo_intel", "Phone prefix -> New Zealand for +6444990000")
+            .with_attr("country_code", "NZ")
+            .with_attr("method", "e164-prefix"),
+    );
+    let csv = crate::app::export::entities_to_csv(std::slice::from_ref(&e), "s");
+    let row = csv.lines().nth(1).expect("a row");
+    assert!(row.ends_with(','), "the fix_radius_m cell is empty: {row}");
+    let (back, _stats) = parse_hse_csv(&csv, "s2");
+    let p = assess(&back[0]);
+    assert_eq!(p.grain, FixGrain::Country, "{p:?}");
+    assert!(p.radius_m.is_infinite(), "{p:?}");
+    assert!(!back[0].tags.iter().any(|t| t.starts_with("fix-radius:")));
+}

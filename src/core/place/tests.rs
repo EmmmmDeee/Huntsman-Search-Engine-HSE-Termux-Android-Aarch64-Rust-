@@ -653,8 +653,14 @@ fn assert_honest(l: &PlaceLabel, e: &Entity) {
         l.label_grain >= l.fix_grain,
         "label finer than the fix: {l:?}"
     );
-    let shown = l.to_json()["fix_radius_m"].as_u64().expect("an integer");
-    assert!(shown as f64 >= fix.radius_m.floor(), "{l:?} vs {fix:?}");
+    // A point with no radius (a country signal) shows none; any other shows
+    // a whole number never smaller than its own.
+    if fix.radius_m.is_finite() {
+        let shown = l.to_json()["fix_radius_m"].as_u64().expect("an integer");
+        assert!(shown as f64 >= fix.radius_m.floor(), "{l:?} vs {fix:?}");
+    } else {
+        assert!(l.to_json()["fix_radius_m"].is_null(), "{l:?}");
+    }
 }
 
 /// REQ-GEOLABEL-002 (P3/P6): the 7258fc07 Sydney centroid is labelled as the
@@ -1435,4 +1441,256 @@ fn a_point_keeps_one_grain_stamp_the_coarsest() {
     let mut none: Vec<String> = vec!["coarse".into()];
     collapse_fix_grain_tags(&mut none);
     assert_eq!(none, ["coarse"]);
+}
+
+/// The point `address_to_coords_pass` carries from an Address that names
+/// `city` onto the city's tabulated centroid — the shape a Sydney ABN address
+/// or a Wellington register address takes (`addr_entity_uid`, `place_type`).
+fn city_address_centroid(value: &str, source: &str, city: &str) -> Entity {
+    let mut e = coord(value);
+    e.tag("addr-derived");
+    e.add_evidence(ev(
+        source,
+        &format!("Inline geocode of address '{city}'"),
+        &[("addr_entity_uid", "a1"), ("place_type", "city")],
+    ));
+    e
+}
+
+/// A `.au` email's ccTLD point, as `email_locale` mints it (Sydney's row).
+fn au_email_point() -> Entity {
+    let mut e = coord("-33.8688,151.2093");
+    for t in ["geoint", "coarse", "cctld-inferred"] {
+        e.tag(t);
+    }
+    e.add_evidence(ev(
+        "email_locale",
+        "Email domain ccTLD .au indicates Australia",
+        &[("cctld", "au"), ("locale", "en-au")],
+    ));
+    e
+}
+
+/// A `+64` number's dialling-prefix point, as `geo_intel` mints it
+/// (Wellington's row).
+fn nz_prefix_point() -> Entity {
+    let mut e = coord("-41.2865,174.7762");
+    for t in ["geoint", "phone-prefix", "coarse", "country:NZ"] {
+        e.tag(t);
+    }
+    e.add_evidence(ev(
+        "geo_intel",
+        "Phone prefix -> New Zealand for +6444990000",
+        &[
+            ("country", "New Zealand"),
+            ("country_code", "NZ"),
+            ("method", "e164-prefix"),
+        ],
+    ));
+    e
+}
+
+/// REQ-GEOLABEL-019: a country signal never erases a real finding of the
+/// city its stand-in sits on. `email_locale` puts a `.au` domain on Sydney's
+/// row and `geo_intel` puts `+64` on Wellington's; a Sydney ABN address or a
+/// `+64 4` landline's area code resolves through `city_coords` to the very
+/// same value, the two merge, and the coarsest-wins rule let the signal
+/// grade the merged point "Australia" / "New Zealand". The finding is the
+/// reading of the point; merging the signal in changes nothing about it.
+#[test]
+fn a_country_signal_never_erases_a_city_finding_on_its_stand_in() {
+    let sydney = city_address_centroid("-33.868800,151.209300", "abn_lookup", "Sydney NSW");
+    let wellington = city_address_centroid("-41.286500,174.776200", "asic_director", "Wellington");
+    // `phone_geo`'s area-code point: a Provider account of its own (100 km).
+    let mut area_code = coord("-41.2865,174.7762");
+    for t in ["addr-derived", "geoint", "phone-area-code", "country:NZ"] {
+        area_code.tag(t);
+    }
+    area_code.add_evidence(ev(
+        "phone_area_geo",
+        "Phone area code 4 → Wellington, New Zealand",
+        &[
+            ("area_code", "4"),
+            ("country", "New Zealand"),
+            ("country_code", "NZ"),
+        ],
+    ));
+    for (finding, signal, city) in [
+        (&sydney, au_email_point(), Some("Sydney")),
+        (&wellington, nz_prefix_point(), Some("Wellington")),
+        (&area_code, nz_prefix_point(), None),
+    ] {
+        assert_eq!(finding.uid, signal.uid, "the stand-in IS the city's row");
+        let alone = assess(finding);
+        for (mut held, incoming) in [
+            (finding.clone(), signal.clone()),
+            (signal.clone(), finding.clone()),
+        ] {
+            held.merge(incoming);
+            let p = assess(&held);
+            assert_eq!(p, alone, "the signal changed the finding: {p:?}");
+            assert_ne!(p.grain, FixGrain::Country, "{p:?}");
+            let l = label_of(&held, std::slice::from_ref(&held));
+            if let Some(city) = city {
+                assert!(l.text.starts_with(city), "{l:?}");
+                assert!(l.text.contains("city centroid"), "{l:?}");
+            }
+            assert!(!l.text.contains("country-level"), "{l:?}");
+            assert_honest(&l, &held);
+        }
+    }
+    // Control: the signal alone is still the country, with no disc.
+    for signal in [au_email_point(), nz_prefix_point()] {
+        let p = assess(&signal);
+        assert_eq!(p.grain, FixGrain::Country, "{p:?}");
+        assert_eq!(p.basis, FixBasis::CountrySignal, "{p:?}");
+        assert_eq!(p.stands_for, None, "{p:?}");
+    }
+    // An unclassified record explains nothing, so it does not set the signal
+    // aside: a CSV copy of `geo_intel`'s record without its `method` is still
+    // read through its tag.
+    let mut bare = coord("-41.2865,174.7762");
+    bare.tag("phone-prefix");
+    bare.add_evidence(ev("geo_intel", "Phone prefix -> New Zealand for +000", &[]));
+    bare.add_evidence(ev("some_new_module", "unclassified", &[]));
+    assert_eq!(assess(&bare).grain, FixGrain::Country);
+}
+
+/// REQ-GEOLABEL-020: a country signal claims no disc. Its point is a stand-in
+/// (Sydney for `.au`, Wellington for `+64`), and "±300 km" around it left
+/// Melbourne, Brisbane and Perth — or Auckland — outside the circle the label
+/// stated. The label names the country with no `±`, the JSON radius is null
+/// and the CSV cell is empty.
+#[test]
+fn a_country_signal_claims_no_disc() {
+    for e in [au_email_point(), nz_prefix_point()] {
+        let p = assess(&e);
+        assert!(p.radius_m.is_infinite(), "{p:?}");
+        assert_eq!(super::fix_radius_ceil_m(&e), None);
+        let l = label_of(&e, std::slice::from_ref(&e));
+        assert!(!l.text.contains('±'), "{l:?}");
+        assert!(l.text.contains("country-level signal"), "{l:?}");
+        assert!(l.to_json()["fix_radius_m"].is_null(), "{l:?}");
+        assert!(l.detail().contains("no radius"), "{}", l.detail());
+        assert!(!l.detail().contains('±'), "{}", l.detail());
+        assert_honest(&l, &e);
+    }
+    // Every other point still shows its radius.
+    let l = label_of(&gps_fix(), &[gps_fix()]);
+    assert!(l.text.contains('±') || l.detail().contains('±'), "{l:?}");
+}
+
+/// REQ-GEOLABEL-021: a value CUT below the table key stays cut after
+/// `Entity::new` normalises it. HSE's CSV importer rebuilds a redacted
+/// `-33.8,151.0` into value `-33.800000,151.000000` and keeps the printed
+/// form only in `raw_value`; the gate read `value` alone, so the re-imported
+/// Parramatta point was the REGIONS row "21" again, and an inner-west
+/// Melbourne point the Footscray anchor. And the precision floor took
+/// `min(value, raw_value)`, so the normalisation's stripped zeros graded
+/// `-28.0,153.0` a region beside `-27.9,153.2` at a locality.
+#[test]
+fn a_normalised_redaction_keeps_its_printed_width() {
+    for (printed, never) in [
+        ("-33.8,151.0", "Postcode 21xx"),
+        ("-37.8,144.9", "city centroid"),
+    ] {
+        let e = coord(printed);
+        assert_ne!(e.value, printed, "Entity::new normalises the value");
+        let p = assess(&e);
+        assert_eq!(p.stands_for, None, "{printed}: {p:?}");
+        assert_eq!(p.grain, FixGrain::Locality, "{printed}: {p:?}");
+        let l = label_of(&e, std::slice::from_ref(&e));
+        assert!(!l.text.contains(never), "{printed}: {l:?}");
+        assert!(!l.text.contains("region-level"), "{printed}: {l:?}");
+    }
+    let graded = |v: &str| {
+        let p = assess(&coord(v));
+        (p.grain, p.radius_m)
+    };
+    assert_eq!(graded("-28.0,153.0"), graded("-27.9,153.2"));
+    assert_eq!(graded("-28.0,153.0").0, FixGrain::Locality);
+    // Control: a row a module PRINTED at the key's width is still the row.
+    assert!(assess(&coord("-33.8000,151.0000")).stands_for.is_some());
+    assert!(assess(&coord("-33.868800,151.209300")).stands_for.is_some());
+    // A raw value printed wider than the six decimals kept never grades the
+    // point finer than the value it is.
+    let mut wide = coord("-27.481234,153.012345");
+    wide.raw_value = "-27.48123456,153.01234567".to_string();
+    wide.add_evidence(ev("signal_radar", "GNSS fix", &[("accuracy_m", "0.01")]));
+    assert!(assess(&wide).radius_m >= 0.05, "{:?}", assess(&wide));
+}
+
+/// REQ-GEOLABEL-022: an UNNUMBERED street naming is held to the street it
+/// names. A street-type word also ends real locality names ("Kelvin Grove",
+/// a Brisbane suburb) and a leading one starts given names ("Kiệt Nguyễn"),
+/// so the widened street vocabulary read them as streets and lifted the cap
+/// to Street — a geocoder's hit on "Kelvin Grove Road" or on any "Nguyễn …"
+/// street then graded Street. A hit that is not the named street is a
+/// fragment; a hit that is keeps the street cap.
+#[test]
+fn an_unnumbered_street_naming_is_held_to_the_street_it_names() {
+    let geocoded = |source: &str, input: &str, attrs: &[(&str, &str)]| {
+        let mut e = coord("-27.451234,153.012345");
+        let mut all = vec![("input_address", input)];
+        all.extend_from_slice(attrs);
+        e.add_evidence(ev(source, &format!("Geocoded \"{input}\""), &all));
+        assess(&e)
+    };
+    for (source, input, attrs) in [
+        (
+            "photon",
+            "Kelvin Grove, QLD",
+            &[
+                ("place_type", "street"),
+                ("osm_key", "highway"),
+                ("place_name", "Kelvin Grove Road"),
+            ][..],
+        ),
+        (
+            "geocode",
+            "Kelvin Grove, QLD",
+            &[("place_type", "road"), ("road", "Kelvin Grove Road")][..],
+        ),
+        (
+            "geocode",
+            "Kiệt Nguyễn, Hà Nội",
+            &[("place_type", "residential"), ("road", "Nguyễn Trãi")][..],
+        ),
+    ] {
+        let p = geocoded(source, input, attrs);
+        assert!(p.grain >= FixGrain::Locality, "{input} {attrs:?}: {p:?}");
+        assert!(p.is_area(), "{input}: {p:?}");
+    }
+    // Controls: the named street itself, however the geocoder spells it.
+    for (source, input, attrs) in [
+        (
+            "photon",
+            "Smith St, Toowong QLD",
+            &[
+                ("place_type", "street"),
+                ("osm_key", "highway"),
+                ("place_name", "Smith Street"),
+            ][..],
+        ),
+        (
+            "geocode",
+            "Oak Grove, Toowong QLD",
+            &[("place_type", "road"), ("road", "Oak Grove")][..],
+        ),
+        (
+            "geocode",
+            "Đường Láng, Hà Nội",
+            &[("place_type", "road"), ("road", "Đường Láng")][..],
+        ),
+    ] {
+        let p = geocoded(source, input, attrs);
+        assert_eq!(p.grain, FixGrain::Street, "{input}: {p:?}");
+    }
+    // A numbered street is not held to the hit's road name.
+    let p = geocoded(
+        "geocode",
+        "12 Smith St, Toowong QLD 4066",
+        &[("place_type", "house"), ("road", "Smith Street West")],
+    );
+    assert_eq!(p.grain, FixGrain::Point, "{p:?}");
 }

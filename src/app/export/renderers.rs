@@ -1275,14 +1275,16 @@ pub(crate) fn extract_au_location_fix(
             "signal_count": c.signal_count,
             "classes": c.class_names,
             "confidence": c.confidence,
-            // Every fix object carries its own fused place label: offline,
-            // never finer than a locality, never a street or a point of
-            // interest (REQ-GEOLABEL-002, P8).
+            // Every fix object carries its own place label: offline, never
+            // finer than a locality, never a street or a point of interest
+            // (REQ-GEOLABEL-002, P8) — and worded "fused" only when two or
+            // more signals were fused into it: this object exists for a lone
+            // signal too (REQ-GEOLABEL-023).
             "place_label": crate::core::place::fused_label_json(
                 c.lat,
                 c.lon,
                 c.radius_km,
-                crate::core::place::FixKind::Corroboration,
+                crate::core::place::FixKind::of_corroboration(c.signal_count),
             ),
         })
     });
