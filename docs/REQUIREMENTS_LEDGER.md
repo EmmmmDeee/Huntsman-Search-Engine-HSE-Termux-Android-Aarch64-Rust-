@@ -19778,3 +19778,388 @@ does not widen into a module it did not otherwise touch.
 - The follow-up stage's failures are best-effort by design and move no outage
   verdict; a declared server that could not be followed stays recorded as
   declared, unvalidated.
+
+## REQ-KEYPROBE-002 — any key was a "validated" credential for every service whose refusal the body heuristic could not read
+
+**Found** by the adversarially verified module audit (`api_key_probe/mod.rs:366`). Vendor facts were checked against the vendors' own documentation: VirusTotal's error reference, and the Hunter and AbuseIPDB API docs.
+
+`probe_endpoint` ran `curl -s` with no `-f` and no status capture. curl exits 0 for **any** response it receives, so a 401 reached `process()` exactly as a 200 did. Past that point, one thing decided whether the answer became a `validated` `ApiKey` at `VERY_HIGH_PLUSPLUS`, plus a service-domain pivot and an `api_key_report` summary: `is_error_response`, a vocabulary of body shapes. It read `error` only as a string.
+
+VirusTotal's documented error envelope is `{"error": {"code": …, "message": …}}`, and a wrong key gets `401 WrongCredentialsError`. So **every key scanned** became a live VirusTotal credential with a `virustotal.com` pivot. An `ApiKey` target can come from a crawled page or a breach dump, and the module's own docs warn against exactly this false attribution.
+
+VirusTotal was one shape among several. The vendors document conventional status codes, not a common body:
+- Hunter: "401 - Unauthorized: No valid API key was provided", with an `{"errors": […]}` list;
+- AbuseIPDB: "HTTP status codes are the most reliable method of determining the status of the API response", with a JSON:API `errors` collection;
+- Netlas answers a dead key with `400 {"detail": …}`, the body `AUTH_400_SIGNATURES` records as observed live;
+- Criminal IP reports a dead key as an in-body `status: 401` on an HTTP 200.
+
+None of them matched an arm. REQ-KEYPROBE-001 (#637, recorded only in its commit message) had already added one arm, for `valid:false`. A further arm would have been the same patch again: the defect was the discarded status.
+
+### Implemented, at the shared authority
+
+- `probe_endpoint` writes `%{http_code}` after the body, using `-w "\n%{http_code}"`, the sentinel `key_pool::validation` already reads for the same `ServiceDef`. It returns `Answer { status, body }`. A refusal is still an answer, not a transport failure, so T2.123's outage detection is unchanged.
+- The verdict is not new code. `key_pool::validation::classify_probe_response` already judged answers from these test endpoints for the pool:
+  - a 2xx is valid unless `service_defs::body_rejects_key` says otherwise;
+  - 401/403, and a 400 matching `is_auth_failure_400_body`, are refusals;
+  - anything else settles nothing.
+
+  It and its `ProbeOutcome` are now `pub(crate)`. The pure `accepted_body` requires `Valid` before a body is parsed or minted. The probe therefore never validates a key on an answer the pool reads as a refusal.
+- `is_error_response` stays as the second gate, for 2xx answers only. It now reads a non-empty `error` object as an error envelope. A scalar marker is not one: ONYPHE's success carries `"error": 0`.
+- The hand-rolled `serve_once_json` is replaced by the shared `util::http::test_server`.
+
+### Locks
+
+`modules::api_key_probe::tests`:
+- `a_virustotal_refusal_is_an_answer_but_never_a_validated_key` runs the real curl binary against a loopback 401 carrying VirusTotal's envelope. It asserts that the status reaches the verdict and that the refusal is an answer, not a transport failure.
+- `a_refusal_only_the_status_carries_is_still_a_refusal`: Hunter's 401 and Netlas' 400, each with a control asserting that the body heuristic alone cannot see it.
+- `an_answer_that_settles_nothing_about_the_key_is_not_a_validation`: AbuseIPDB's documented 422, verbatim.
+- `a_dead_key_reported_inside_a_200_body_is_a_refusal`: Criminal IP's in-body 401/402/429. Only the shared verdict sees these, so a module-local 2xx gate cannot pass it.
+- `a_key_the_service_accepts_is_still_reported_validated`: the over-correction guard, with VirusTotal's 200 and ONYPHE's `"error": 0` success.
+- `an_error_object_is_an_error_response_but_a_scalar_error_marker_is_not`
+- `probe_endpoint_reports_executed_when_the_host_answers` now asserts the captured status too.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| P1 | **baseline**: the verdict never reads the status (every answer judged as a 200) | killed |
+| P2 | **baseline**: the probe drops the `-w` status write-out | killed |
+| P3 | **baseline**: the `error`-object arm removed | killed |
+| P4 | over-correction: any non-null `error` marker is an error | killed |
+| P5 | over-correction: a refusal is a transport failure (a rejected key reads as an outage) | killed |
+| P6 | over-correction: nothing validates | killed |
+| P7 | over-correction: an empty `error` object is an error | killed |
+| P8 | a 2xx gate of the module's own instead of the shared verdict | killed |
+| P9 | an answer that settles nothing counts as acceptance | killed |
+
+**killed of 9 killed.**
+
+### Residual
+
+- `hibp` probes `/api/v3/breaches`, which HIBP does not list among its authorised APIs. If HIBP ignores a supplied key there, any key answers 200 and is still validated. No verdict can see that; it is a test-endpoint defect (unverified).
+- The `valid:false` arm (REQ-KEYPROBE-001) reads numverify's verdict on the probe's number, a NANP 555-01xx fictional number. It may therefore refuse a valid key (unverified).
+- One `ServiceDef` still has two request builders, `probes::request_for` and `validate_against_endpoint`. Only the verdict is shared.
+
+**9 of 9 killed** (run against the compiled patch; clippy `-D warnings` clean).
+
+
+## REQ-PLC-001 / REQ-PLC-002 — a deleted identity's last handle is not current; a did:web string is not an identity
+
+**Found** by the adversarially verified module audit (two findings, one module). Wire facts were read on 2026-09-23 from:
+- the did:plc spec v0.1 (`web.plc.directory/spec/v0.1/did-plc`);
+- the W3C CCG did:web method;
+- the AT Protocol DID and handle specs (`atproto.com/specs/did`, `/specs/handle`);
+- the `com.atproto.identity.resolveHandle` lexicon and its AppView handler (`bluesky-social/atproto`, main).
+
+**REQ-PLC-001 — a deleted identity kept its "current" handle and server.** `history::fold` recorded a `plc_tombstone` only as a date. The handle and PDS declared by the op before it stayed in `current_handles` / `current_pds`. The spec says a tombstone "clears all of the data fields and permanently deactivates the DID". So the deleted account's last handle was emitted as its **current** handle:
+- the Username at 0.85, `handle_state=current`, with no released-handle caveat;
+- a domain handle as a 0.80 `verified-control` Domain with no `historical` tag;
+- the PDS as the "current personal data server";
+- the DID with `current_handle` / `current_pds` next to `tombstoned`.
+
+A deleted identity releases its handles, so a stranger may already hold that name. The same stickiness hit any op that declared no handle or no server: `if !handles.is_empty()` and `if let Some(host)` skipped it. The spec lists `alsoKnownAs` and `services` among the fields every creation or update carries, so an empty list means none.
+
+**REQ-PLC-002 — the module attributed an identity it never confirmed.** A `did:web:` seed was returned verbatim by `resolve_did` with no request. `process` then minted a `verified-control` Domain at 0.80 and the DID at `DID_CONF` (0.95), whose own doc said "read straight from the registry" although nothing was read. A typo named a stranger's domain as the subject's infrastructure. The did:web method's resolution step is to fetch `https://{host}/.well-known/did.json` and "verify that the ID of the resolved DID document matches the Web DID being resolved"; that step never ran.
+
+Separately, the AppView's `resolveHandle` "does not necessarily bi-directionally verify against the DID document" (its lexicon; the handler passes `lookupUnidirectional: true`). The handle spec requires the link be confirmed both ways, "otherwise anybody could create handle aliases for third-party accounts". Neither branch checked that the identity claims the handle it was reached through. A handle whose `_atproto` record names someone else's DID got that identity's anchor domain (did:web) or its entire handle and PDS history (did:plc).
+
+### Implemented
+
+- `history::fold`:
+  - a tombstone clears `current_handles` and `current_pds`;
+  - every other effective op assigns both unconditionally.
+
+  The existing former-value authority (`is_former`, `FORMER_HANDLE_CONF`, `FORMER_HANDLE_CAVEAT`, `former-handle`/`historical`, `handle_domain_confidence(false, ..)`, `PDS_CONF_FORMER`) now grades what a deleted identity released. `transform` gets no new branch. The caveat names deletion as a release.
+- `resolve_did` returns `Resolved { did, handle }`, keeping the handle the DID was reached through.
+- New `resolve::web_did_document` reads the did:web document through `util::http::fetch_json_or_404`:
+  - a 404 is a clean "no such identity";
+  - a transport, 5xx or breaker failure is an `Err`, the same contract as `audit_log`.
+- New wire type `types::DidDocument { id, alsoKnownAs }`. Its `confirms(did, handle)` requires:
+  - `id` to equal the DID (ASCII case-insensitive, because the seed is case-folded);
+  - for a handle-reached identity, an `at://` entry equal to that handle (handles are case-insensitive).
+- `web_did_entities` takes the fetched `&DidDocument`, so nothing can be minted without the read. It emits nothing unless the document confirms.
+- `history_to_entities` takes `&Resolved` and emits nothing when the log never declared the handle (`History::has_claimed`). A current or released claim both link, so a deleted or renamed account's history survives.
+- `at://` parsing is one helper, `at_handles`, shared with `PlcOperation::handles`.
+- `DID_CONF`'s doc now says nothing is emitted at that grade without reading the record.
+
+### Locks
+
+`modules::plc_directory::tests`:
+- `a_deleted_identity_holds_no_current_handle_or_server` covers the Username, Domain, PDS and DID attributes, and checks that a handle-reached deleted identity keeps its history.
+- `an_operation_that_drops_the_handle_and_server_leaves_neither_in_force`
+- `a_reverted_deletion_leaves_the_identity_as_it_was` (over-correction guard)
+- `a_log_reached_through_a_handle_it_never_claimed_attributes_nothing`, with a released and a re-cased control.
+- `a_web_did_is_an_identity_only_when_its_host_serves_a_document_naming_it`
+- `a_web_did_reached_through_a_handle_must_claim_that_handle_back`
+- `a_did_web_seed_nobody_confirmed_asserts_nothing`: the audit's scenario through `process`, on the `query_floor_skips` offline client.
+- `a_web_did_yields_its_anchor_domain_and_admits_it_has_no_log`: updated to pass a confirming document.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| P1 | **baseline**: a tombstone keeps the current handle | see apply log |
+| P2 | **baseline**: a tombstone keeps the current PDS | see apply log |
+| P3 | **baseline**: an empty `alsoKnownAs` keeps the previous handle current | see apply log |
+| P4 | **baseline**: a missing `services` keeps the previous PDS current | see apply log |
+| P5 | over-correction: a reverted (nullified) tombstone still clears the present | see apply log |
+| P6 | over-correction: a tombstone erases the handle/PDS history | see apply log |
+| W1 | **baseline**: a did:web seed confirms itself (no document read) | see apply log |
+| W2 | **baseline**: the document is read but not checked | see apply log |
+| W3 | **baseline**: did:web handle claim not checked | see apply log |
+| W4 | **baseline**: did:plc handle claim not checked | see apply log |
+| W5 | over-correction: a did:plc claim must be the *current* handle | see apply log |
+| W6 | over-correction: did:web demands a handle claim even for a DID seed | see apply log |
+| W7 | over-correction: document `id` compared case-sensitively | see apply log |
+| W8 | over-correction: handle claim compared case-sensitively | see apply log |
+
+### Residual
+
+- The atproto DID spec treats only the **first** valid `at://` entry in `alsoKnownAs` as the claimed handle ("Any other handle URIs should be ignored"). `fold` marks every one current. This is not changed here.
+- `MAX_HANDLES` / `MAX_PDS` / `MAX_ROTATION_KEYS` still state truncation only in DID evidence attributes, not through `ModuleResult::mark_truncated`. That is already tracked from REQ-COVERAGE-002's residual list.
+- Whether the production AppView resolves handles one way over the network is UNVERIFIED. The open-source data plane only does a DB lookup under a `@TODO` for `lookupUnidirectional`. The back-check rests on the lexicon's stated contract and the handle spec.
+
+**Falsification (compiled):** 14 of 14 killed.
+
+## REQ-DNS-001 / REQ-DNSINTEL-002 / REQ-DNSINTEL-003 — a blocklisted domain resolved to nothing; a DNSBL's refusal read as a listing or a pass; a per-name wildcard read as no wildcard
+
+**Found** by the adversarially verified module audit: three findings in `dns_intel` and the shared resolver it runs on. Each vendor's behaviour was checked against its own documentation and live over DoH on 2026-09-23.
+
+**REQ-DNS-001 — Quad9's blocklist answered for the shared resolver.** `util::dns::PROVIDERS` used hickory's `QUAD9` preset. That preset is Quad9's *filtered* service (`9.9.9.9`, `149.112.112.112`).
+- Quad9 documents its block answer as NXDOMAIN with no authority records (docs.quad9.net FAQ).
+- Live, `isitblocked.org` got exactly that from `dns.quad9.net`. Cloudflare and `dns10.quad9.net` returned its A record.
+- hickory builds every preset server with `trust_negative_responses = true`. It ends a lookup on a trusted server's NXDOMAIN and drops the parallel query.
+
+So whenever a Quad9 server won the race (about 60% of cold-pool orderings put one in the first two), a live phishing or C2 domain read as having no records:
+- `resolve_records` passed its fail-closed gate on `is_no_records_found`;
+- CAA read as "none";
+- brute, permute, SRV and DKIM found nothing.
+
+`typosquat`, on the same resolver, classed a blocked look-alike as a `CleanMiss`.
+
+**REQ-DNSINTEL-002 — a DNSBL's refusal read as a listing or as a pass.** `blocklist_check` took any `Ok` answer as a listing. For ZEN it took any value that was not an abuse code as a clean check. The pool is made only of public resolvers, and Spamhaus answers ZEN and CBL queries arriving through one with `127.255.255.254`, its documented "query via public/open resolver" error. This was confirmed live through Cloudflare and both Quad9 services, for the `127.0.0.2` test entry too. The consequences:
+- Every IPv4 target, `8.8.8.8` included, read "listed on 1 of 8 blocklists (CBL)" and was tagged `blocklisted`. ZEN's refusal counted as clean.
+- Through Google, Spamhaus answers NXDOMAIN instead, even for `127.0.0.2`, which every list must hold (RFC 5782 §5). That was counted as clean.
+- SORBS is retired and answers NXDOMAIN for its own test entry. That was counted as clean.
+- A value outside `127.0.0.0/8` (an NXDOMAIN rewritten by a carrier) was a listing on seven zones. That is enough for `high-risk` and AU-007.
+- The ZEN table was wrong. 127.0.0.4 is XBL, not DROP. 127.0.0.9 is DROP. 127.0.0.5–7 are allocated to XBL, and the helper read them as PBL.
+
+**REQ-DNSINTEL-003 — a per-name wildcard read as no wildcard.** `detect_wildcard` returned a fingerprint only when both GUID canaries resolved to the same IP set. Otherwise it returned `None`, which means no filtering. A GUID label resolves only through a wildcard, so two canaries resolving to different sets prove one exists.
+- Live, `herokuapp.com` gives the two canaries different ingress CNAMEs and disjoint IP sets, both through one provider and across providers.
+- So every one of the 146 dictionary words (brute) or up to 80 siblings (permute) was emitted as a subdomain at 0.85 / 0.75 and re-dispatched.
+- A canary that timed out also read as "no wildcard".
+
+### Implemented
+
+**REQ-DNS-001**
+- `util::dns` defines `QUAD9_UNFILTERED` (`9.9.9.10`, `149.112.112.10`). Quad9's service table describes it as "No Malware blocking, DNSSEC validation". The pool uses it.
+- Negative answers stay trusted: an unfiltered resolver's NXDOMAIN is the zone's own.
+- Distrusting only Quad9's negatives would not be enough. hickory's `most_specific` prefers a `NoRecordsFound` over a timeout, so when Cloudflare and Google are unreachable (the case the pool exists for) the block would still win.
+- `answered()`'s doc now names the property it relies on.
+- The opt-in `HUNTSMAN_DNS_RESOLVERS` egress rotation keeps the filtered preset. It resolves hosts the engine connects to, where blocking protects the operator.
+
+**REQ-DNSINTEL-002 — one reading of a DNSBL answer**
+- `dnsbl_answer` returns `Listed` / `NotListed` / `Unresolved`:
+  - `127.255.255.0/24` (Spamhaus's error range) and anything outside `127.0.0.0/8` are `Unresolved`;
+  - for ZEN, abuse codes are `Listed`, PBL is `NotListed`, and any value outside the published table is `Unresolved`;
+  - any other `127/8` value is a listing (RFC 5782 §2.3), never a pass.
+- `zone_answer` counts a zone only when its RFC 5782 §5 test entries behave through the same path: `127.0.0.2` listed and `127.0.0.1` not. The entries are queried concurrently with the address and cached for their TTL.
+- `BlocklistTally::record` is the one place an answer becomes a count. An `Unresolved` zone is disclosed through the existing `unresolved_count` / `coverage: partial` and is never folded into "clean on N". `supports_a_verdict` and `is_wholly_unresolved` are unchanged.
+- `is_spamhaus_abuse_listing` uses Spamhaus's own table: 2–9 are abuse codes, 10–11 are policy. The ZEN zone name is single-sourced as `constants::SPAMHAUS_ZEN`.
+- Through public resolvers today, 5 zones answer and ZEN, CBL and SORBS are disclosed as unresolved. Nothing lists `8.8.8.8`.
+
+**REQ-DNSINTEL-003 — a typed wildcard verdict**
+- `wildcard_verdict` maps two `Canary` outcomes to a `Wildcard`:
+  - both "no such name" → `Absent`: every hit is reported;
+  - both resolved to different sets → `Unstable`: the pass reports nothing;
+  - one set that the other canary does not contradict → `CatchAll`: exact-match noise is filtered as before;
+  - a failed canary and none resolved → `Unknown`.
+- Under `CatchAll` and `Unknown`, hits that are a majority of the candidates are treated as the wildcard answering. That covers an upstream returning different edge addresses, and failed canaries on a wildcard zone.
+- `reportable_hits` is shared by brute and permute. It withholds those hits and **declares** the cut through `ModuleResult::mark_truncated` (REQ-COVERAGE-001).
+- Both passes now return a `ModuleResult`, and `process_domain` `absorb`s them.
+
+### Locks
+
+- `util::dns::tests`:
+  - `no_filtering_resolver_answers_for_the_pool`: Quad9 Recommended / ECS and 1.1.1.1 for Families are absent, and every member is trusted;
+  - `pool_spans_all_three_providers` now asserts `9.9.9.10`.
+- `modules::dns_intel::tests`:
+  - `a_dnsbl_error_code_is_neither_a_listing_nor_a_clean_answer`
+  - `an_answer_outside_127_slash_8_is_a_rewritten_nxdomain_not_a_listing`
+  - `a_documented_listing_code_is_still_a_listing` (over-correction guard)
+  - `a_zone_that_fails_its_rfc5782_test_entries_establishes_nothing`
+  - `the_public_resolver_sweep_lists_nothing_and_counts_no_refusal_as_clean`: the live Cloudflare sweep, zone by zone
+  - `spamhaus_abuse_listing_accepts_the_codes_allocated_to_xbl_and_sbl`. It replaces `spamhaus_abuse_listing_rejects_pbl_isp`, which encoded the defect. `…accepts_drop` / `…accepts_xbl` now carry Spamhaus's codes.
+  - `two_canaries_that_resolve_to_different_sets_are_a_wildcard_not_its_absence`
+  - `a_failed_canary_is_not_proof_there_is_no_wildcard`
+  - `hits_that_swamp_the_dictionary_under_a_catch_all_are_the_catch_all`
+  - `a_zone_the_canaries_prove_has_no_wildcard_reports_every_hit` (over-correction guard)
+
+Two pieces of network glue are not unit-locked: `blocklist_check`'s `tokio::join!` of the three names, and `process_domain`'s `absorb`. The type forces the `absorb`, because a `ModuleResult` cannot be `extend`ed into another.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| Q1 | **baseline**: Quad9's filtered service (`9.9.9.9`) back in the pool | see apply log |
+| Q2 | over-correction: Quad9 dropped from the pool | see apply log |
+| Q3 | over-correction: no member's NXDOMAIN trusted | see apply log |
+| B1 | **baseline**: Spamhaus's `127.255.255.x` errors read as values | see apply log |
+| B2 | **baseline**: a value outside `127/8` is a listing | see apply log |
+| B3 | **baseline**: an unknown ZEN value is a clean check | see apply log |
+| B4 | an answer with no A value counts as an answer | see apply log |
+| B5 | **baseline**: the RFC 5782 test entries not checked | see apply log |
+| B6 | the unlisted test entry need only resolve | see apply log |
+| B7 | **baseline**: an unresolved zone counted as answered | see apply log |
+| B8 | **baseline**: ZEN's XBL-allocated codes read as policy | see apply log |
+| B9 | over-correction: every `127/8` value unresolved | see apply log |
+| B10 | over-correction: PBL unresolved | see apply log |
+| B11 | over-correction: NXDOMAIN unresolved | see apply log |
+| W1 | **baseline**: two canaries with different sets read as no wildcard | see apply log |
+| W2 | **baseline**: a failed canary read as no wildcard | see apply log |
+| W3 | **baseline**: an unstable wildcard's hits reported | see apply log |
+| W4 | **baseline**: no majority backstop | see apply log |
+| W5 | over-correction: a catch-all withholds every hit | see apply log |
+| W6 | over-correction: the backstop overrides proven absence | see apply log |
+| W7 | **baseline**: the withheld pass is silent | see apply log |
+| W8 | regression: the stable catch-all's fingerprint lost | see apply log |
+| W9 | over-correction: one canary's sample withholds everything | see apply log |
+
+**Falsification (compiled):** 23 of 23 killed.
+
+### Review round on #644: REQ-PLC-002 and REQ-DNSINTEL-002/003
+
+Copilot raised two findings as review threads and one more in its summary.
+Each was verified against the code and a primary source before any change.
+
+- **REQ-PLC-002 — the claimed handle is the FIRST valid one.** The AT
+  Protocol DID spec (<https://atproto.com/specs/did>) says: "The first
+  syntactically valid handle found in the ordered list is treated as the
+  claimed handle ... Any other handle URIs should be ignored."
+  `DidDocument::confirms` took **any** `at://` entry, so a document claiming
+  `other.example` first confirmed a lookup for its later alias
+  `wanted.example`. The same helper decided which handles a PLC operation
+  declares. The fix is one helper, `claimed_handle`, with syntax checked by the
+  existing `util::atproto::is_handle`; both the document check and
+  `PlcOperation::handles` use it.
+- **REQ-DNSINTEL-002 — Spamhaus's error range belongs to Spamhaus's zones.**
+  The Spamhaus DNSBL usage FAQ reserves `127.255.255.0/24` as "ERRORS (not
+  implying a 'listed' response)" for "Any" Spamhaus zone. `dnsbl_code` applied
+  that range to all eight zones, which suppressed an RFC 5782 listing code on
+  SpamCop, Barracuda and the rest. It is now scoped to `SPAMHAUS_ZONES`: ZEN,
+  and the CBL, which Spamhaus operates (`www.abuseat.org` redirects with a 301
+  to Spamhaus's Exploits Blocklist). The existing test had encoded the defect by
+  asserting SpamCop's value was "unresolved"; it now asserts the RFC reading.
+  A non-Spamhaus zone that answered everything with such a value would still
+  fail `zone_answer`'s `127.0.0.1` test entry.
+- **REQ-DNSINTEL-003 — a failed lookup is not "no such name"** (from the
+  review summary). `resolve_hosts_concurrently` mapped every lookup error to a
+  miss. The wildcard canaries tell `Resolved / NoSuchName / Failed` apart
+  (`wildcard::canary`), but the candidates did not. So a pass whose resolver was
+  failing, the same failure that leaves the canaries `Unknown`, found 0 hits
+  and read as "no subdomains". Now:
+  - the pure `outcome` restores the three answers per candidate;
+  - the pure `tally` counts failed and dead lookups;
+  - `reportable_hits`, the one decision shared by brute force and
+    permutation, declares a pass with failures as partial.
+
+| # | mutation | result |
+|---|---|---|
+| P1 | **baseline**: any `at://` entry confirms | killed by 1 |
+| P2 | over-correction: the first `at://` entry whatever its syntax | killed by 2 |
+| D1 | **baseline**: the error range applies on every zone | killed by 1 |
+| D2 | over-correction: only ZEN is Spamhaus | killed by 1 |
+| F1 | **baseline**: a failed lookup folds into no-such-name | killed by 1 |
+| F2 | **baseline**: failed lookups never declared | killed by 1 |
+| F3 | over-correction: every pass declared partial | killed by 4 |
+| F4 | the batch never counts a failure | killed by 1 |
+| F5 | a dead task is not a failure | killed by 1 |
+
+**9 of 9 killed.** F4 **survived** its first run: the counting sat inside the
+async drain loop, and a live resolver is needed to reach it there. It was
+moved into the pure `tally` with its own test, and the re-run killed it.
+
+## REQ-CODEWARS-001 — a body that names no Codewars account read as "no such user"
+
+**Found** by the adversarially verified module audit (one finding,
+`codewars_user`). It was re-verified on the current tree before anything was
+designed, and the re-verification narrowed it.
+
+`CwUser.username` carried `#[serde(default)]` like every other field, so any
+JSON object decoded. Both `{}` and a body shaped like Codewars' own error
+(`{"success":false,"reason":"not found"}`, observed live on a 404) became a
+user named `""`. The handle match (`"".eq_ignore_ascii_case(handle)`) then
+returned `Ok(empty)`. Dispatch records that as `ModuleDone { found: 0 }`, and
+coverage reads it as CleanNegative: "no Codewars account", for a handle the
+provider never answered about. This is the `#[serde(default)]` fail-open
+family (REQ-ZOOMEYE-001, REQ-HUDSONROCK-001) in its **field-level** spelling.
+REQ-FOFA-001's sweep enumerated container-level `#[serde(default)]` only, so
+it never reached this struct.
+
+**Narrowed on re-verification.** The audit named two routes. The second was
+the curl fallback returning a 429 / 5xx JSON body as the document. REQ-CURL-001
+had already closed it at the shared authority: `classify_json` decodes only a
+2xx, and `resolve_curl_fallback` types every other status the way the reqwest
+arm does. That also retires the audit's fix-risk, since a curl-arm 404 is now
+classified by status before any decode. What remains is a **2xx** body that is
+not a user object, on either transport. Codewars documents conventional status
+codes for its errors, so this route needs an off-spec 2xx, from an
+intermediary or from the v1 API that the vendor's own reference calls
+"minimal and inconsistent". The fix is defence in depth, not a response to an
+observed failure.
+
+**The sentinel is established, not assumed** (ROADMAP §4: a precedent
+transfers only with the fact that made it safe):
+- the vendor's API reference lists `username` in the User Object and in its
+  Get User example;
+- a live `GET /api/v1/users/g964` answers 200 with `username` (2026-09-23);
+- the module already emitted nothing unless `username` matched the handle, so
+  requiring the field cannot drop a true finding.
+
+### Implemented
+
+- `username` loses `#[serde(default)]`. A body without it fails to decode and
+  becomes the module's error through the shared decode path: `json_body_error`
+  on the reqwest arm, `JsonFetch::Undecodable` on the curl arm.
+- A user object whose `username` is blank names no account. That is now the
+  module's error, not a mismatch.
+- A present but different `username` stays the clean miss. The path takes
+  "Username or ID", so an ID-shaped handle resolves to another account (live:
+  `545207bac8e60b30fc000942` answers `g964`).
+- The body of `process` moved into `lookup(client, api_base, handle, scan_id)`.
+  That is the seam `chess_profile`, `gaming_profile` and `bitcoin` already
+  use, so the real request path now runs against `util::http::test_server`.
+
+**Rejected: `#[serde(deny_unknown_fields)]`.** It would refuse the envelope,
+but it would refuse every real profile too: a live answer carries `id`,
+`honor`, `ranks` and more that the struct does not read. The documented-shape
+control locks this.
+
+### Locks
+
+- `modules::codewars_user::tests`:
+  - `a_body_without_a_username_is_not_a_codewars_user` decodes `{}` and the
+    live envelope as text, and checks each fails for the missing `username`.
+    The documented User Object is the control;
+  - `a_2xx_that_names_no_account_is_a_failure_not_no_such_user` runs over the
+    loopback with `{}`, an envelope, an empty `username` and a whitespace
+    `username`, each checked for its reason;
+  - `a_404_or_another_accounts_record_is_a_clean_miss_that_mints_nothing` is
+    the over-correction guard;
+  - `the_documented_user_object_is_found_under_its_own_handle` is the positive
+    control, and also pins the production path.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| CW-M1 | **baseline**: `username` defaulted again | see apply log |
+| CW-M2 | **baseline**: a blank `username` falls through to the mismatch | see apply log |
+| CW-W1 | the blank check does not trim | see apply log |
+| CW-O1 | over-correction: another account's record is a failure | see apply log |
+| CW-O2 | another account's record is minted as the handle's | see apply log |
+| CW-O3 | over-correction: the 404 is a failure | see apply log |
+| CW-O4 | over-correction: `deny_unknown_fields` | see apply log |
+| CW-P1 | the production path drifts | see apply log |
+
+**Falsification (compiled):** 8 of 8 killed.

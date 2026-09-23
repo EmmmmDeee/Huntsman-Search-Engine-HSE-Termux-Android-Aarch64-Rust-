@@ -1,16 +1,40 @@
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::OnceLock;
 
 use hickory_resolver::{
     TokioResolver,
-    config::{CLOUDFLARE, GOOGLE, QUAD9, ResolverConfig},
+    config::{CLOUDFLARE, GOOGLE, ResolverConfig, ServerGroup},
     net::runtime::TokioRuntimeProvider,
+};
+
+/// Quad9's **unfiltered** service — "No Malware blocking, DNSSEC validation"
+/// (quad9.net, *Service Addresses & Features*): `9.9.9.10` / `149.112.112.10`.
+///
+/// hickory's `QUAD9` preset is Quad9's *filtered* service (`9.9.9.9`), and
+/// Quad9 answers a domain on its threat blocklist with NXDOMAIN (docs.quad9.net
+/// FAQ: "When Quad9 blocks a domain, the response is NXDOMAIN"). Its test
+/// domain `isitblocked.org` gets exactly that from `9.9.9.9` while Cloudflare
+/// and this service return its A record. hickory trusts a pool member's
+/// NXDOMAIN and ends the lookup on it, so whenever the filtered service won the
+/// race a live phishing or C2 domain — what this engine investigates — came
+/// back as a name with no records at all, to every module sharing this pool.
+const QUAD9_UNFILTERED: ServerGroup<'static> = ServerGroup {
+    ips: &[
+        IpAddr::V4(Ipv4Addr::new(9, 9, 9, 10)),
+        IpAddr::V4(Ipv4Addr::new(149, 112, 112, 10)),
+        IpAddr::V6(Ipv6Addr::new(0x2620, 0xfe, 0, 0, 0, 0, 0, 0x10)),
+        IpAddr::V6(Ipv6Addr::new(0x2620, 0xfe, 0, 0, 0, 0, 0xfe, 0x10)),
+    ],
+    server_name: "dns10.quad9.net",
+    path: "/dns-query",
 };
 
 /// Upstream resolvers, in preference order, that back the shared resolver's
 /// self-healing pool:
 ///
 /// 1. **Cloudflare** (`1.1.1.1`) — fastest anycast, privacy-respecting.
-/// 2. **Quad9** (`9.9.9.9`) — no-logging, malware-blocking, independent (Swiss).
+/// 2. **Quad9** (`9.9.9.10`) — no-logging, independent (Swiss); its
+///    *unfiltered* service ([`QUAD9_UNFILTERED`]).
 /// 3. **Google** (`8.8.8.8`) — ubiquitous, rarely blocked.
 ///
 /// One reputable resolver is a single point of failure: networks that block
@@ -19,7 +43,12 @@ use hickory_resolver::{
 /// for DNS reasons. A pool of independent providers removes that: if the
 /// preferred resolver is blocked or dead, hickory transparently fails over to
 /// the next (see [`resolver_config`]).
-const PROVIDERS: [hickory_resolver::config::ServerGroup<'static>; 3] = [CLOUDFLARE, QUAD9, GOOGLE];
+///
+/// **No filtering resolver.** A resolver that blocks domains answers a blocked
+/// one with a policy answer, not the zone's records, and hickory ends a lookup
+/// on a pool member's NXDOMAIN. For an investigation engine the blocked domains
+/// are the targets, so every provider here is its unfiltered service.
+const PROVIDERS: [ServerGroup<'static>; 3] = [CLOUDFLARE, QUAD9_UNFILTERED, GOOGLE];
 
 /// Build the shared resolver's [`ResolverConfig`]: a validated, self-healing
 /// pool of the [`PROVIDERS`], mirroring the egress proxy pool's
@@ -47,15 +76,15 @@ const PROVIDERS: [hickory_resolver::config::ServerGroup<'static>; 3] = [CLOUDFLA
 fn resolver_config() -> ResolverConfig {
     let name_servers = PROVIDERS
         .iter()
-        .flat_map(hickory_resolver::config::ServerGroup::udp_and_tcp)
+        .flat_map(ServerGroup::udp_and_tcp)
         .filter(|ns| ns.ip.is_ipv4())
         .collect::<Vec<_>>();
     ResolverConfig::from_parts(None, vec![], name_servers)
 }
 
 /// The process-wide DNS resolver — a lazily-initialised [`TokioResolver`] backed
-/// by a self-healing multi-provider pool (Cloudflare → Quad9 → Google; see
-/// [`resolver_config`]) and shared by every DNS-issuing module (`dns_intel`,
+/// by a self-healing pool of unfiltered providers (Cloudflare → Quad9 → Google;
+/// see [`resolver_config`]) and shared by every DNS-issuing module (`dns_intel`,
 /// `geo_intel`, the DNSBL checks, …) so they reuse one connection pool and cache
 /// instead of each standing up its own.
 ///
@@ -178,13 +207,50 @@ mod tests {
             "Cloudflare"
         );
         assert!(
-            ips.contains(&IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))),
-            "Quad9"
+            ips.contains(&IpAddr::V4(Ipv4Addr::new(9, 9, 9, 10))),
+            "Quad9, unfiltered"
         );
         assert!(
             ips.contains(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))),
             "Google"
         );
+    }
+
+    /// A filtering resolver answers a blocklisted domain with a policy answer —
+    /// Quad9 an NXDOMAIN, 1.1.1.1 for Families `0.0.0.0` — and hickory ends a
+    /// lookup on the first NXDOMAIN from a server it trusts. One filtering
+    /// member made a blocklisted phishing or C2 domain "no records" for
+    /// `dns_intel`, `typosquat` and every other module sharing this pool. The
+    /// pool holds none, and what it holds is trusted: an unfiltered resolver's
+    /// NXDOMAIN is the zone's own, and distrusting it would re-ask the whole
+    /// pool for every name a brute-force pass guesses wrong.
+    #[test]
+    fn no_filtering_resolver_answers_for_the_pool() {
+        // The documented filtering services of the providers in this pool:
+        // Quad9 "Recommended" and "Secured w/ECS", and 1.1.1.1 for Families
+        // (malware; malware and adult content).
+        let filtering: [IpAddr; 8] = [
+            Ipv4Addr::new(9, 9, 9, 9).into(),
+            Ipv4Addr::new(149, 112, 112, 112).into(),
+            Ipv4Addr::new(9, 9, 9, 11).into(),
+            Ipv4Addr::new(149, 112, 112, 11).into(),
+            Ipv4Addr::new(1, 1, 1, 2).into(),
+            Ipv4Addr::new(1, 0, 0, 2).into(),
+            Ipv4Addr::new(1, 1, 1, 3).into(),
+            Ipv4Addr::new(1, 0, 0, 3).into(),
+        ];
+        for ns in &resolver_config().name_servers {
+            assert!(
+                !filtering.contains(&ns.ip),
+                "{} filters: a blocked domain comes back as no records",
+                ns.ip
+            );
+            assert!(
+                ns.trust_negative_responses,
+                "{}'s NXDOMAIN is the zone's own and ends the lookup",
+                ns.ip
+            );
+        }
     }
 
     #[test]

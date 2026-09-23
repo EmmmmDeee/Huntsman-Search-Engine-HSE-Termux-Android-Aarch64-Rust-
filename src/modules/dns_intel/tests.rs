@@ -580,20 +580,25 @@ fn spamhaus_abuse_listing_accepts_css() {
 
 #[test]
 fn spamhaus_abuse_listing_accepts_drop() {
-    let drop = std::net::IpAddr::from([127, 0, 0, 4]);
+    let drop = std::net::IpAddr::from([127, 0, 0, 9]);
     assert!(is_spamhaus_abuse_listing(drop));
 }
 
 #[test]
-fn spamhaus_abuse_listing_accepts_sbl_css_combined() {
-    let combined = std::net::IpAddr::from([127, 0, 0, 9]);
-    assert!(is_spamhaus_abuse_listing(combined));
+fn spamhaus_abuse_listing_accepts_xbl() {
+    let xbl = std::net::IpAddr::from([127, 0, 0, 4]);
+    assert!(is_spamhaus_abuse_listing(xbl));
 }
 
+/// Spamhaus allocates 127.0.0.5–7 to XBL and 127.0.0.8 to SBL. The test this
+/// replaces asserted 127.0.0.5 was PBL, a policy code, so an XBL listing on
+/// that code read as a clean ZEN check.
 #[test]
-fn spamhaus_abuse_listing_rejects_pbl_isp() {
-    let pbl = std::net::IpAddr::from([127, 0, 0, 5]);
-    assert!(!is_spamhaus_abuse_listing(pbl));
+fn spamhaus_abuse_listing_accepts_the_codes_allocated_to_xbl_and_sbl() {
+    for last in 5..=8 {
+        let code = std::net::IpAddr::from([127, 0, 0, last]);
+        assert!(is_spamhaus_abuse_listing(code), "127.0.0.{last}");
+    }
 }
 
 #[test]
@@ -630,4 +635,430 @@ fn spamhaus_abuse_listing_rejects_non_127() {
 fn spamhaus_abuse_listing_rejects_ipv6() {
     let ipv6 = std::net::IpAddr::from([0, 0, 0, 0, 0, 0, 0, 1]);
     assert!(!is_spamhaus_abuse_listing(ipv6));
+}
+
+// ─── A DNSBL's answer is its value, from a zone shown to be answering ─────────
+
+use super::constants::BLOCKLISTS;
+use super::resolve::{DnsblAnswer, DnsblLookup, dnsbl_answer, zone_answer};
+
+/// Spamhaus's answer to a query that reaches it through a public resolver.
+const REFUSED: [u8; 4] = [127, 255, 255, 254];
+
+/// A DNSBL answer carrying these A values.
+fn a_values(values: &[[u8; 4]]) -> DnsblLookup {
+    Ok(values
+        .iter()
+        .copied()
+        .map(std::net::Ipv4Addr::from)
+        .collect())
+}
+
+/// The zone's "no such name".
+fn nxdomain() -> DnsblLookup {
+    use hickory_resolver::proto::op::{Query, ResponseCode};
+    Err(hickory_resolver::net::NoRecords::new(Query::default(), ResponseCode::NXDomain).into())
+}
+
+/// Spamhaus answers ZEN and CBL queries that reach it through a public
+/// resolver with `127.255.255.254`, "query via public/open resolver" — observed
+/// through Cloudflare and Quad9 for the `127.0.0.2` test entry itself. It is in
+/// the range Spamhaus reserves for errors, which "must not be taken to imply
+/// that the object of the query is listed". The sweep read it as a CBL listing
+/// on every IPv4 target, and as a clean ZEN check.
+#[test]
+fn a_dnsbl_error_code_is_neither_a_listing_nor_a_clean_answer() {
+    for zone in ["zen.spamhaus.org", "cbl.abuseat.org"] {
+        for last in [252, 254, 255] {
+            assert_eq!(
+                dnsbl_answer(zone, &a_values(&[[127, 255, 255, last]])),
+                DnsblAnswer::Unresolved,
+                "{zone}: 127.255.255.{last}"
+            );
+        }
+    }
+    // The range is Spamhaus's convention, not every list's: on another list
+    // RFC 5782 lets any 127/8 value be a listing, so it must not be suppressed
+    // there (REQ-DNSINTEL-002 review round). A list that answered everything
+    // with it would fail `zone_answer`'s 127.0.0.1 test entry anyway.
+    for zone in ["bl.spamcop.net", "b.barracudacentral.org", "all.s5h.net"] {
+        assert_eq!(
+            dnsbl_answer(zone, &a_values(&[[127, 255, 255, 254]])),
+            DnsblAnswer::Listed,
+            "{zone}"
+        );
+    }
+    let mut tally = BlocklistTally {
+        attempted: 2,
+        ..BlocklistTally::default()
+    };
+    for zone in ["zen.spamhaus.org", "cbl.abuseat.org"] {
+        assert!(
+            !tally.record(dnsbl_answer(zone, &a_values(&[REFUSED]))),
+            "{zone} refused; it lists nothing"
+        );
+    }
+    assert_eq!(tally.answered, 0, "a refusal is not a check that passed");
+    assert_eq!(tally.unresolved, 2, "it is disclosed as partial coverage");
+    assert!(!tally.supports_a_verdict());
+}
+
+/// A value outside `127.0.0.0/8` is not a DNSBL answer: it is an NXDOMAIN a
+/// carrier or hijacking resolver rewrote to a landing page. Every zone but ZEN
+/// read any value as a listing, so on such a network every address was "listed
+/// on 7 of 8" — `high-risk`, and AU-007's High correlation.
+#[test]
+fn an_answer_outside_127_slash_8_is_a_rewritten_nxdomain_not_a_listing() {
+    for (zone, _) in BLOCKLISTS {
+        assert_eq!(
+            dnsbl_answer(zone, &a_values(&[[93, 184, 216, 34]])),
+            DnsblAnswer::Unresolved,
+            "{zone}"
+        );
+    }
+    assert_eq!(
+        dnsbl_answer("bl.spamcop.net", &a_values(&[])),
+        DnsblAnswer::Unresolved,
+        "no A value is no answer"
+    );
+}
+
+/// Over-correction guard: failing closed on every value would erase the check.
+/// A listing code is a listing, a PBL-only ZEN answer is answered but not a
+/// listing, and NXDOMAIN is the zone saying "not listed".
+#[test]
+fn a_documented_listing_code_is_still_a_listing() {
+    use DnsblAnswer::{Listed, NotListed, Unresolved};
+    assert_eq!(
+        dnsbl_answer("bl.spamcop.net", &a_values(&[[127, 0, 0, 2]])),
+        Listed
+    );
+    // RFC 5782 §2.3: a sublist may use any 127/8 value.
+    assert_eq!(
+        dnsbl_answer("b.barracudacentral.org", &a_values(&[[127, 0, 1, 2]])),
+        Listed
+    );
+    // ZEN's answer for its own test entry, per Spamhaus: SBL, XBL and PBL.
+    let zen_test_entry = a_values(&[[127, 0, 0, 2], [127, 0, 0, 4], [127, 0, 0, 10]]);
+    assert_eq!(dnsbl_answer("zen.spamhaus.org", &zen_test_entry), Listed);
+    for pbl in [10, 11] {
+        assert_eq!(
+            dnsbl_answer("zen.spamhaus.org", &a_values(&[[127, 0, 0, pbl]])),
+            NotListed,
+            "127.0.0.{pbl} is policy-zone membership"
+        );
+    }
+    assert_eq!(dnsbl_answer("bl.spamcop.net", &nxdomain()), NotListed);
+    assert_eq!(
+        dnsbl_answer(
+            "bl.spamcop.net",
+            &Err(hickory_resolver::net::NetError::Timeout)
+        ),
+        Unresolved
+    );
+}
+
+/// A value check cannot see every refusal. Through Google Public DNS, Spamhaus
+/// answers NXDOMAIN — for the address and for `127.0.0.2`, which RFC 5782 §5
+/// requires every list to hold — so its refusal read as a clean ZEN and CBL
+/// check. A retired zone (SORBS, whose `127.0.0.2` entry is gone) read the
+/// same, and a list that "lists the world" answers `127.0.0.1` too. The test
+/// entries are how a zone shows it is answering.
+#[test]
+fn a_zone_that_fails_its_rfc5782_test_entries_establishes_nothing() {
+    use DnsblAnswer::{Listed, NotListed, Unresolved};
+    let listed = || a_values(&[[127, 0, 0, 2]]);
+    // Google for ZEN, and SORBS through any resolver: NXDOMAIN for all three.
+    for zone in ["zen.spamhaus.org", "dnsbl.sorbs.net"] {
+        assert_eq!(
+            zone_answer(zone, &nxdomain(), &nxdomain(), &nxdomain()),
+            Unresolved,
+            "{zone}"
+        );
+    }
+    // A list that lists the world.
+    assert_eq!(
+        zone_answer("psbl.surriel.com", &listed(), &listed(), &listed()),
+        Unresolved
+    );
+    // Over-correction guard: a zone that passes both is believed either way.
+    assert_eq!(
+        zone_answer("bl.spamcop.net", &nxdomain(), &listed(), &nxdomain()),
+        NotListed
+    );
+    assert_eq!(
+        zone_answer("bl.spamcop.net", &listed(), &listed(), &nxdomain()),
+        Listed
+    );
+}
+
+/// The sweep as it runs through Cloudflare for `8.8.8.8`, zone by zone as
+/// observed live: ZEN and CBL refuse, SORBS is retired, and the other five
+/// answer and do not list it. It reported "listed on 1 of 8 blocklists" (CBL),
+/// tagged the address `blocklisted`, and counted ZEN and SORBS as clean.
+#[test]
+fn the_public_resolver_sweep_lists_nothing_and_counts_no_refusal_as_clean() {
+    let mut tally = BlocklistTally::default();
+    let mut listed_on = Vec::new();
+    for (zone, label) in BLOCKLISTS {
+        let refused = || a_values(&[REFUSED]);
+        let (address, listed_test, unlisted_test) = match *zone {
+            "zen.spamhaus.org" | "cbl.abuseat.org" => (refused(), refused(), refused()),
+            "dnsbl.sorbs.net" => (nxdomain(), nxdomain(), nxdomain()),
+            _ => (nxdomain(), a_values(&[[127, 0, 0, 2]]), nxdomain()),
+        };
+        tally.attempted += 1;
+        if tally.record(zone_answer(zone, &address, &listed_test, &unlisted_test)) {
+            listed_on.push(*label);
+        }
+    }
+    assert!(listed_on.is_empty(), "8.8.8.8 is on no list: {listed_on:?}");
+    assert_eq!(
+        tally,
+        BlocklistTally {
+            attempted: 8,
+            answered: 5,
+            unresolved: 3,
+        }
+    );
+}
+
+// ─── A wildcard zone's catch-all is not a discovered subdomain ────────────────
+
+use super::resolve_batch::{Outcome, ResolvedHost, outcome, reportable_hits, tally};
+use super::wildcard::{Canary, Wildcard, wildcard_verdict};
+use crate::core::module::ModuleResult;
+
+fn ip_set(ips: &[&str]) -> std::collections::BTreeSet<String> {
+    ips.iter().map(ToString::to_string).collect()
+}
+
+/// `n` resolved candidates under `zone`, as `resolve_hosts_concurrently`
+/// returns them.
+fn resolved(n: usize, zone: &str) -> Vec<ResolvedHost> {
+    (0..n)
+        .map(|i| (format!("h{i}.{zone}"), "203.0.113.7".to_string(), 1))
+        .collect()
+}
+
+/// A GUID label resolves only through a wildcard, so two canaries that both
+/// resolve prove one, whatever they resolve to. The verdict demanded identical
+/// IP sets and read anything else as NO wildcard. A CDN or PaaS ingress
+/// wildcard answers each name differently — `herokuapp.com` gave the two
+/// canaries different CNAME targets and disjoint sets through one provider —
+/// so nothing was filtered, and every candidate was emitted as a discovered
+/// subdomain at high confidence and re-dispatched into the scan.
+#[test]
+fn two_canaries_that_resolve_to_different_sets_are_a_wildcard_not_its_absence() {
+    let verdict = wildcard_verdict(
+        Canary::Resolved(ip_set(&["3.219.96.23", "23.22.144.165"])),
+        Canary::Resolved(ip_set(&["34.241.115.67", "54.78.134.111"])),
+    );
+    assert_eq!(verdict, Wildcard::Unstable);
+    let mut result = ModuleResult::new();
+    let kept = reportable_hits(
+        "herokuapp.com",
+        &verdict,
+        49,
+        resolved(49, "herokuapp.com"),
+        0,
+        &mut result,
+    );
+    assert!(
+        kept.is_empty(),
+        "no candidate can be told from a per-name catch-all"
+    );
+    let why = result
+        .truncation
+        .expect("the withheld pass is declared, not a silent empty");
+    assert!(why.contains("herokuapp.com"), "{why}");
+}
+
+/// A canary that timed out established nothing; it is not the zone answering
+/// "no such name". It read as "no wildcard", so one lost packet on a wildcard
+/// zone let the whole dictionary through. With the canaries unsettled, the
+/// hits decide: a wildcard answers for the whole dictionary, a zone's real
+/// records are a handful of it.
+#[test]
+fn a_failed_canary_is_not_proof_there_is_no_wildcard() {
+    // One canary resolved: a wildcard, filtered by the one sample it gave.
+    assert_eq!(
+        wildcard_verdict(Canary::Failed, Canary::Resolved(ip_set(&["192.0.2.1"]))),
+        Wildcard::CatchAll(ip_set(&["192.0.2.1"]))
+    );
+    let unknown = wildcard_verdict(Canary::Failed, Canary::NoSuchName);
+    assert_eq!(unknown, Wildcard::Unknown);
+    let mut result = ModuleResult::new();
+    let kept = reportable_hits(
+        "corp.example",
+        &unknown,
+        146,
+        resolved(146, "corp.example"),
+        0,
+        &mut result,
+    );
+    assert!(kept.is_empty());
+    assert!(result.truncation.is_some());
+    // Over-correction guard: a handful of hits is a zone's real records.
+    let mut result = ModuleResult::new();
+    let kept = reportable_hits(
+        "corp.example",
+        &unknown,
+        146,
+        resolved(6, "corp.example"),
+        0,
+        &mut result,
+    );
+    assert_eq!(kept.len(), 6);
+    assert!(result.truncation.is_none());
+}
+
+/// A stable catch-all is still filtered by its fingerprint. A candidate that
+/// escapes the exact-match filter only because another upstream answered it
+/// with different edge addresses is caught by the count: most of the
+/// dictionary resolving is the catch-all, not the zone's records.
+#[test]
+fn hits_that_swamp_the_dictionary_under_a_catch_all_are_the_catch_all() {
+    let fp = ip_set(&["192.0.2.10"]);
+    let verdict = wildcard_verdict(Canary::Resolved(fp.clone()), Canary::Resolved(fp.clone()));
+    assert_eq!(verdict, Wildcard::CatchAll(fp.clone()));
+    assert_eq!(verdict.fingerprint().as_deref(), Some(&fp));
+    let mut result = ModuleResult::new();
+    let kept = reportable_hits(
+        "blogspot.com",
+        &verdict,
+        146,
+        resolved(120, "blogspot.com"),
+        0,
+        &mut result,
+    );
+    assert!(kept.is_empty());
+    assert!(result.truncation.is_some());
+    // Over-correction guard: the few records that differ from the catch-all
+    // are real, and reported.
+    let mut result = ModuleResult::new();
+    let kept = reportable_hits(
+        "blogspot.com",
+        &verdict,
+        146,
+        resolved(3, "blogspot.com"),
+        0,
+        &mut result,
+    );
+    assert_eq!(kept.len(), 3);
+    assert!(result.truncation.is_none());
+}
+
+/// Over-correction guard: a zone both canaries prove has no wildcard is the
+/// common case, and every name that resolves there is a real record, however
+/// many there are.
+#[test]
+fn a_zone_the_canaries_prove_has_no_wildcard_reports_every_hit() {
+    let verdict = wildcard_verdict(Canary::NoSuchName, Canary::NoSuchName);
+    assert_eq!(verdict, Wildcard::Absent);
+    assert!(verdict.fingerprint().is_none(), "nothing to filter");
+    let mut result = ModuleResult::new();
+    let kept = reportable_hits(
+        "example.com",
+        &verdict,
+        146,
+        resolved(90, "example.com"),
+        0,
+        &mut result,
+    );
+    assert_eq!(kept.len(), 90);
+    assert!(result.truncation.is_none());
+}
+
+/// REQ-DNSINTEL-003 review round: a failed lookup (SERVFAIL, REFUSED, timeout)
+/// established nothing, unlike "no such name". Folded together, a pass whose
+/// resolver was failing — the same failure that leaves the canaries `Unknown` —
+/// found 0 "hits" and read as "no subdomains".
+#[test]
+fn a_failed_candidate_lookup_is_not_a_no_such_name() {
+    use hickory_resolver::proto::op::{Query, ResponseCode};
+    let nx = hickory_resolver::net::NoRecords::new(Query::default(), ResponseCode::NXDomain).into();
+    assert_eq!(
+        outcome("a.example.com".into(), Err(nx), None),
+        Outcome::Miss
+    );
+    assert_eq!(
+        outcome(
+            "a.example.com".into(),
+            Err(hickory_resolver::net::NetError::Timeout),
+            None
+        ),
+        Outcome::Failed
+    );
+}
+
+#[test]
+fn a_pass_whose_lookups_failed_is_declared_partial_not_a_clean_negative() {
+    // Every lookup failed: no answer at all, whatever the wildcard verdict.
+    let mut r = ModuleResult::new();
+    let kept = reportable_hits(
+        "example.com",
+        &Wildcard::Unknown,
+        100,
+        Vec::new(),
+        100,
+        &mut r,
+    );
+    assert!(kept.is_empty());
+    let why = r.truncation.as_deref().expect("declared");
+    assert!(why.contains("100 of 100 candidate lookups"), "{why}");
+
+    // Some failed: the hits stand, and the pass says it is partial.
+    let mut r = ModuleResult::new();
+    let kept = reportable_hits(
+        "example.com",
+        &Wildcard::Absent,
+        100,
+        resolved(2, "example.com"),
+        5,
+        &mut r,
+    );
+    assert_eq!(kept.len(), 2);
+    assert!(r.truncation.is_some());
+
+    // Control: none failed, nothing to declare.
+    let mut r = ModuleResult::new();
+    let kept = reportable_hits(
+        "example.com",
+        &Wildcard::Absent,
+        100,
+        resolved(2, "example.com"),
+        0,
+        &mut r,
+    );
+    assert_eq!(kept.len(), 2);
+    assert!(r.truncation.is_none());
+}
+
+#[test]
+fn a_batch_counts_every_failed_or_dead_lookup_and_sorts_its_hits() {
+    let (hits, failed) = tally([
+        Some(Outcome::Hit((
+            "b.example.com".into(),
+            "192.0.2.2".into(),
+            1,
+        ))),
+        Some(Outcome::Failed),
+        Some(Outcome::Miss),
+        None,
+        Some(Outcome::Hit((
+            "a.example.com".into(),
+            "192.0.2.1".into(),
+            1,
+        ))),
+    ]);
+    assert_eq!(
+        failed, 2,
+        "a failed lookup and a dead task both asked nothing"
+    );
+    assert_eq!(
+        hits.iter().map(|h| h.0.as_str()).collect::<Vec<_>>(),
+        ["a.example.com", "b.example.com"],
+        "sorted, for output independent of completion order"
+    );
 }

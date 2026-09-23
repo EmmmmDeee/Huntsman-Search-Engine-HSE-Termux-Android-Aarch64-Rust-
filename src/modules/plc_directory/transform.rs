@@ -8,10 +8,12 @@ use std::collections::BTreeSet;
 use crate::core::entity::{Entity, EntityKind, Evidence};
 use crate::util::atproto::{
     DOMAIN_HANDLE_ATTRIBUTION, DOMAIN_HANDLE_CAVEAT, bare_handle, handle_domain_confidence,
-    is_bluesky_operated_pds, platform_handle_suffix,
+    is_bluesky_operated_pds, platform_handle_suffix, web_did_host,
 };
 
 use super::history::{History, Spell};
+use super::resolve::Resolved;
+use super::types::DidDocument;
 use super::{
     CURRENT_HANDLE_CONF, DID_CONF, DID_KIND, FORMER_HANDLE_CAVEAT, FORMER_HANDLE_CONF, MAX_HANDLES,
     MAX_PDS, MAX_ROTATION_KEYS, PDS_CAVEAT, PDS_CONF, PDS_CONF_FORMER, ROTATION_KEY_CAVEAT,
@@ -19,8 +21,21 @@ use super::{
 };
 use crate::core::confidence;
 
-/// Everything the audit log establishes, as entities.
-pub(super) fn history_to_entities(did: &str, h: &History, scan_id: &str) -> Vec<Entity> {
+/// Everything the audit log establishes, as entities — or nothing, when the
+/// identity was reached through a handle its log has never claimed.
+///
+/// The claim may be current or since released: a handle the identity once
+/// declared links the two for the window it was held, which is what this walk
+/// reports, and a deleted identity's history must survive the deletion. A
+/// handle it never declared is someone else's alias pointed at it — see
+/// [`Resolved::handle`].
+pub(super) fn history_to_entities(identity: &Resolved, h: &History, scan_id: &str) -> Vec<Entity> {
+    if let Some(handle) = identity.handle.as_deref()
+        && !h.has_claimed(handle)
+    {
+        return Vec::new();
+    }
+    let did = identity.did.as_str();
     let mut out = Vec::new();
     let mut emitted_usernames: BTreeSet<String> = BTreeSet::new();
 
@@ -87,7 +102,25 @@ pub(super) fn history_to_entities(did: &str, h: &History, scan_id: &str) -> Vec<
 /// serves `/.well-known/did.json` from — control demonstrated by the same
 /// mechanism as a custom handle, and worth saying so rather than returning
 /// nothing because the DID method was the other one.
-pub(super) fn web_did_entities(did: &str, host: &str, scan_id: &str) -> Vec<Entity> {
+///
+/// Only on the strength of `doc`, the document that host served: it must name
+/// this DID and, when the identity was reached through a handle, claim that
+/// handle back. A `did:web:` string alone names a host, not an identity — a
+/// typo names a stranger's domain as readily as the subject's — so a document
+/// that confirms neither yields nothing rather than a weaker claim.
+pub(super) fn web_did_entities(
+    identity: &Resolved,
+    doc: &DidDocument,
+    scan_id: &str,
+) -> Vec<Entity> {
+    let did = identity.did.as_str();
+    let Some(host) = web_did_host(did) else {
+        return Vec::new();
+    };
+    if !doc.confirms(did, identity.handle.as_deref()) {
+        return Vec::new();
+    }
+
     let mut d = Entity::new(EntityKind::Domain, host, confidence::HIGH_PLUSPLUS, scan_id);
     d.tag(SRC);
     d.tag("atproto");
@@ -102,8 +135,9 @@ pub(super) fn web_did_entities(did: &str, host: &str, scan_id: &str) -> Vec<Enti
         .with_attr("did_method", "web")
         .with_attr(
             "attribution",
-            "did:web resolves by fetching /.well-known/did.json from this host, so the \
-                 subject controlled it when the identity was created",
+            "did:web resolves by fetching /.well-known/did.json from this host, and this \
+                 scan read a document there naming the identity — so whoever holds the \
+                 identity controls what this host serves",
         )
         .with_attr(
             "coverage",
