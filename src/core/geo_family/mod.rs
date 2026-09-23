@@ -249,7 +249,9 @@ pub fn subject_fixes(entities: &[Entity]) -> Vec<SubjectFix> {
             // with no AU postcode, the tabulated city/suburb the address names.
             // Without that second leg a postcode-less name-matched address had
             // no anchor once its forward geocode stopped counting as a fix
-            // (REQ-GEO-FAMILY-003).
+            // (REQ-GEO-FAMILY-003). `city_coords` resolves only the address's
+            // LOCALITY, never a place its street is named after — "45 Sydney
+            // Road, Brunswick VIC" is not an anchor at Sydney (REQ-GEO-018).
             EntityKind::Address if e.has_tag("exact-name-match") => au_postcode(e)
                 .and_then(|pc| crate::util::city_coords::city_coords(&pc))
                 .or_else(|| crate::util::city_coords::city_coords(&e.value)),

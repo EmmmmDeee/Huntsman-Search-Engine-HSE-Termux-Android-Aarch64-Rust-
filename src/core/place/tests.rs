@@ -160,9 +160,7 @@ fn brisbane_centroid_is_not_a_street() {
 #[test]
 fn a_carried_address_record_is_a_centroid_even_off_the_tables() {
     let mut e = coord("-27.4801,152.9912");
-    assert!(!crate::util::city_coords::is_gazetteer_centroid(
-        -27.4801, 152.9912
-    ));
+    assert!(crate::util::city_coords::tabulated_centroid_at(-27.4801, 152.9912).is_none());
     e.add_evidence(ev(
         "qld_cadastre",
         "Inline geocode of address 'Toowong, Queensland'",
@@ -573,8 +571,8 @@ fn assess_is_deterministic() {
 // ── The nearest-place label (REQ-GEOLABEL-002..004) ───────────────────────
 
 use super::label::{
-    LabelBasis, PlaceContext, PlaceLabel, bearing_8, describe, describe_fused, distance_display_m,
-    radius_display_m,
+    FixKind, LabelBasis, PlaceContext, PlaceLabel, bearing_8, describe, describe_fused,
+    distance_display_m, radius_display_m,
 };
 
 /// A measured fix good to a doorway, off every gazetteer table, at six
@@ -1088,15 +1086,21 @@ fn redacted_values_never_label_finer_than_a_locality() {
 /// was the Ian Thorpe Aquatic Centre's position ±1.3 km.
 #[test]
 fn a_fused_fix_is_a_locality_and_says_so() {
-    let l = describe_fused(-33.8774, 151.1989, 1.3).expect("Sydney");
+    let l = describe_fused(-33.8774, 151.1989, 1.3, FixKind::Synergy).expect("Sydney");
     assert_eq!(l.text, "Sydney, NSW (fused fix ±2 km)");
     assert_eq!(l.basis, LabelBasis::Fused);
     assert!(l.label_grain >= FixGrain::Locality);
     // Wider than a locality: the state.
-    let wide = describe_fused(-27.47, 153.02, 60.0).expect("QLD");
+    let wide = describe_fused(-27.47, 153.02, 60.0, FixKind::Synergy).expect("QLD");
     assert_eq!(wide.text, "Queensland, Australia (fused fix ±60 km)");
-    assert!(describe_fused(0.0, -140.0, 1.0).is_none(), "open ocean");
-    assert!(describe_fused(95.0, 0.0, 1.0).is_none(), "invalid");
+    assert!(
+        describe_fused(0.0, -140.0, 1.0, FixKind::Synergy).is_none(),
+        "open ocean"
+    );
+    assert!(
+        describe_fused(95.0, 0.0, 1.0, FixKind::Synergy).is_none(),
+        "invalid"
+    );
 }
 
 /// REQ-GEOLABEL-002 (P13): the offline gazetteer words distance and an
@@ -1105,7 +1109,9 @@ fn a_fused_fix_is_a_locality_and_says_so() {
 #[test]
 fn the_offline_gazetteer_words_distance_bearing_and_remoteness() {
     let at = |lat: f64, lon: f64, radius_km: f64| {
-        describe_fused(lat, lon, radius_km).expect("placed").text
+        describe_fused(lat, lon, radius_km, FixKind::Synergy)
+            .expect("placed")
+            .text
     };
     // ~16 km north-east of Toowoomba, from a fix good to 1 km.
     let t = at(-27.45, 152.07, 0.5);
@@ -1233,4 +1239,200 @@ fn only_real_coordinates_are_labelled() {
     let sentinel = coord(crate::core::scan::RADAR_SENTINEL_COORD_NORMALISED);
     assert!(describe(&sentinel, &ctx).is_none());
     assert!(describe(&coord("not,a-point"), &ctx).is_none());
+}
+
+// ── Review round 1 ────────────────────────────────────────────────────────
+
+/// REQ-GEOLABEL-009: a country-grain signal is labelled as the COUNTRY. A
+/// `+64` phone prefix puts its point on Wellington's row, a `.au` email
+/// domain on Sydney's, `+61` at the continent's centre; each names a country
+/// and nothing finer, and was labelled as the city (or a "remote NT" state
+/// phrase) at locality grain.
+#[test]
+fn a_country_signal_is_labelled_the_country_never_a_city() {
+    let phone = |value: &str, cc: &str, country: &str| {
+        let mut e = coord(value);
+        for t in ["geoint", "phone-prefix", "coarse"] {
+            e.tag(t);
+        }
+        e.tag(format!("country:{cc}"));
+        e.add_evidence(ev(
+            "geo_intel",
+            &format!("Phone prefix -> {country} for +000"),
+            &[
+                ("country", country),
+                ("country_code", cc),
+                ("method", "e164-prefix"),
+            ],
+        ));
+        e
+    };
+    let nz = phone("-41.2865,174.7762", "NZ", "New Zealand");
+    let au = phone("-25.2744,133.7751", "AU", "Australia");
+    let mut email = coord("-33.8688,151.2093");
+    for t in ["geoint", "coarse", "cctld-inferred"] {
+        email.tag(t);
+    }
+    email.add_evidence(ev(
+        "email_locale",
+        "Email domain ccTLD .au indicates Australia",
+        &[("cctld", "au"), ("locale", "en-au")],
+    ));
+    for (e, country, never) in [
+        (&nz, "New Zealand", "Wellington"),
+        (&au, "Australia", "Alice Springs"),
+        (&email, "Australia", "Sydney"),
+    ] {
+        let p = assess(e);
+        assert_eq!(p.grain, FixGrain::Country, "{p:?}");
+        let l = label_of(e, std::slice::from_ref(e));
+        assert_eq!(l.label_grain, FixGrain::Country, "{l:?}");
+        assert!(l.text.starts_with(country), "{l:?}");
+        assert!(
+            !l.text.contains(never),
+            "{never} is finer than the fix: {l:?}"
+        );
+        assert_honest(&l, e);
+    }
+    // The record alone (a copy whose tags were not carried) is the country.
+    let mut untagged = nz.clone();
+    untagged
+        .tags
+        .retain(|t| t != "phone-prefix" && t != "coarse");
+    assert_eq!(assess(&untagged).grain, FixGrain::Country);
+    // A re-imported copy keeps its tags but not its attributes: the tag alone
+    // still reads as the country.
+    let mut bare = coord("-41.2865,174.7762");
+    bare.tag("phone-prefix");
+    bare.add_evidence(ev("geo_intel", "Phone prefix -> New Zealand for +000", &[]));
+    assert_eq!(assess(&bare).grain, FixGrain::Country);
+    // A fine measurement on the same value is not demoted by the tag.
+    let mut gps = coord("-41.286512,174.776234");
+    gps.tag("phone-prefix");
+    gps.add_evidence(ev("signal_radar", "GNSS fix", &[("accuracy_m", "8")]));
+    assert_eq!(assess(&gps).grain, FixGrain::Point);
+}
+
+/// REQ-GEOLABEL-011: a positive radius never shows as zero. The operator's
+/// seed typed to six decimals is good to its quantisation (~0.06 m); the
+/// whole-metre step rounded it to `0`, a fix claiming no error at all.
+#[test]
+fn a_sub_metre_radius_shows_as_one_metre_never_zero() {
+    assert_eq!(radius_display_m(0.0557), 1);
+    assert_eq!(radius_display_m(0.3), 1);
+    assert_eq!(radius_display_m(1.0), 1);
+    assert_eq!(radius_display_m(1.2), 2);
+    let mut seed = coord("-27.470123,153.021456");
+    seed.add_evidence(ev("seed", "Operator seed", &[]));
+    let l = label_of(&seed, std::slice::from_ref(&seed));
+    assert_eq!(l.to_json()["fix_radius_m"], 1, "{l:?}");
+    assert!(!l.text.contains("±0 m"), "{l:?}");
+}
+
+/// REQ-GEOLABEL-012: a value CUT below the gazetteer's 4-decimal key (a
+/// redacted export) is never read as the table row it happens to land on. A
+/// geocoded Parramatta address redacted to `-33.8,151.0` sits exactly on the
+/// REGIONS row "21", and an inner-west Melbourne fix redacted to
+/// `-37.8,144.9` on the Footscray anchor.
+#[test]
+fn a_redacted_value_is_not_the_table_row_it_lands_on() {
+    for (value, never) in [
+        ("-33.8,151.0", "Postcode 21xx"),
+        ("-37.8,144.9", "city centroid"),
+    ] {
+        let mut e = coord("-33.815678,151.003456");
+        e.add_evidence(ev(
+            "geocode",
+            "Geocoded \"12 Church St, Parramatta NSW 2150\"",
+            &[
+                ("input_address", "12 Church St, Parramatta NSW 2150"),
+                ("place_type", "house"),
+            ],
+        ));
+        e.value = value.to_string();
+        e.raw_value = value.to_string();
+        let p = assess(&e);
+        assert_eq!(p.stands_for, None, "{value}: {p:?}");
+        assert_eq!(p.grain, FixGrain::Locality, "{value}: {p:?}");
+        let l = label_of(&e, std::slice::from_ref(&e));
+        assert!(!l.text.contains(never), "{value}: {l:?}");
+        assert!(!l.text.contains("region-level"), "{value}: {l:?}");
+        assert_honest(&l, &e);
+    }
+    // Control: the SAME row minted at full width is still recognised.
+    let region = coord("-33.800000,151.000000");
+    assert!(
+        assess(&region).stands_for.is_some(),
+        "{:?}",
+        assess(&region)
+    );
+}
+
+/// REQ-GEOLABEL-013: two redactions of identical precision grade alike. The
+/// redactor always prints one decimal, so `-28.0,153.0` is one decimal like
+/// `-27.9,153.0`; reading its printed `0` as no digit graded it a region
+/// (±56 km) beside a locality (±6 km).
+#[test]
+fn redactions_of_equal_precision_grade_alike() {
+    let graded = |v: &str| {
+        let mut e = coord("-27.960000,153.040000");
+        e.value = v.to_string();
+        e.raw_value = v.to_string();
+        let p = assess(&e);
+        (p.grain, p.radius_m)
+    };
+    assert_eq!(graded("-28.0,153.0"), graded("-27.9,153.0"));
+    assert_eq!(graded("-28.0,153.0").0, FixGrain::Locality);
+    // Trailing zeros of a WIDER value are still not precision.
+    let mut padded = coord("-33.900000,151.200000");
+    padded.add_evidence(ev("exif_geo", "EXIF GPS", &[("gps_accuracy_m", "5")]));
+    assert!(assess(&padded).radius_m >= 5_500.0);
+}
+
+/// REQ-GEOLABEL-015: a scan's own reverse observation is read even when a
+/// recalled prior scan made the identical one. Recall pre-loads the prior
+/// Address (its rows still name the prior scan), the live leg re-observes the
+/// same point with the same summary, and the two rows merge; the merged row
+/// must name the scan that is building it, or the new scan's label skips its
+/// own observation as another scan's.
+#[test]
+fn a_recalled_observation_re_made_live_is_this_scans() {
+    let fix = gps_fix();
+    // What `recall_prior_entities` hands the new scan: the prior scan's
+    // Address, re-stamped to the new scan, its evidence rows untouched.
+    let mut recalled = nominatim_at(20.0, "30", "Smith Street", "Toowong");
+    recalled.evidence[0].scan_id = "s0".to_string();
+    recalled.scan_id = "s1".to_string();
+    // The new scan's live reverse leg: the identical record, this scan's.
+    let live = nominatim_at(20.0, "30", "Smith Street", "Toowong");
+    for (mut held, incoming) in [(recalled.clone(), live.clone()), (live, recalled)] {
+        held.merge(incoming);
+        assert_eq!(held.evidence.len(), 1, "one record");
+        let l = label_of(&fix, &[fix.clone(), held]);
+        assert_eq!(l.basis, LabelBasis::NearestAddress, "{l:?}");
+        assert!(l.text.contains("Smith Street"), "{l:?}");
+    }
+    // Not re-observed: the recalled row alone is still the prior scan's.
+    let mut stale = nominatim_at(20.0, "30", "Smith Street", "Toowong");
+    stale.evidence[0].scan_id = "s0".to_string();
+    stale.scan_id = "s1".to_string();
+    let l = label_of(&fix, &[fix.clone(), stale]);
+    assert_ne!(l.basis, LabelBasis::NearestAddress, "{l:?}");
+}
+
+/// REQ-GEOLABEL-016: one point, one grain stamp — the coarsest — however the
+/// store's tag union combined them.
+#[test]
+fn a_point_keeps_one_grain_stamp_the_coarsest() {
+    use super::grain::collapse_fix_grain_tags;
+    let mut tags: Vec<String> = ["coarse", "fix-grain:locality", "geoint", "fix-grain:region"]
+        .map(String::from)
+        .to_vec();
+    collapse_fix_grain_tags(&mut tags);
+    assert_eq!(tags, ["coarse", "fix-grain:region", "geoint"]);
+    collapse_fix_grain_tags(&mut tags);
+    assert_eq!(tags, ["coarse", "fix-grain:region", "geoint"], "idempotent");
+    let mut none: Vec<String> = vec!["coarse".into()];
+    collapse_fix_grain_tags(&mut none);
+    assert_eq!(none, ["coarse"]);
 }

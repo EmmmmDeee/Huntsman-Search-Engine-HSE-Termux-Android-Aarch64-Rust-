@@ -77,13 +77,19 @@ fn print_association_caveat(locates_subject_directly: bool) {
     }
 }
 
-/// The `place:` line under a best-location estimate: the fix's fused place
-/// label (`core::place::describe_fused` — offline, never finer than a
-/// locality, never a street or a point of interest, always "(fused fix ±N
-/// km)"), or `None` when no gazetteer can name the point. Pure, so the line is
-/// tested without capturing stdout (REQ-GEOLABEL-002, P8).
-pub(super) fn fused_place_line(lat: f64, lon: f64, radius_km: f64) -> Option<String> {
-    crate::core::place::describe_fused(lat, lon, radius_km)
+/// The `place:` line under a best-location estimate: the fix's place label
+/// (`core::place::describe_fused` — offline, never finer than a locality,
+/// never a street or a point of interest, marked "(fused fix ±N km)" or
+/// "(single-signal fix ±N km)" by `kind`), or `None` when no gazetteer can name
+/// the point. Pure, so the line is tested without capturing stdout
+/// (REQ-GEOLABEL-002, P8).
+pub(super) fn fused_place_line(
+    lat: f64,
+    lon: f64,
+    radius_km: f64,
+    kind: crate::core::place::FixKind,
+) -> Option<String> {
+    crate::core::place::describe_fused(lat, lon, radius_km, kind)
         .map(|p| format!("    place: {}", p.text))
 }
 
@@ -301,7 +307,12 @@ impl Collection {
                 fix.class_names.join(", "),
                 fix.synergy_confidence
             );
-            if let Some(line) = fused_place_line(fix.lat, fix.lon, fix.radius_km) {
+            if let Some(line) = fused_place_line(
+                fix.lat,
+                fix.lon,
+                fix.radius_km,
+                crate::core::place::FixKind::Synergy,
+            ) {
                 println!("{line}");
             }
             print_association_caveat(fix.locates_subject_directly);
@@ -324,11 +335,18 @@ impl Collection {
                 "  Best location estimate: {:.4},{:.4} ± {:.1} km  (geohash={}{}{})",
                 est.lat, est.lon, est.radius_km, est.geohash, state, near
             );
+            // The basis line and the place label read the fix's kind from one
+            // place, so they cannot call one sighting two different things.
+            let kind = crate::core::place::FixKind::of_estimate_basis(est.basis);
+            let kind_word = match kind {
+                crate::core::place::FixKind::SingleSignal => "single-signal fix",
+                _ => "multi-source fix",
+            };
             println!(
-                "    basis: {} (confidence {:.2}) — single-signal fix",
+                "    basis: {} (confidence {:.2}) — {kind_word}",
                 est.basis, est.confidence
             );
-            if let Some(line) = fused_place_line(est.lat, est.lon, est.radius_km) {
+            if let Some(line) = fused_place_line(est.lat, est.lon, est.radius_km, kind) {
                 println!("{line}");
             }
             print_association_caveat(est.locates_subject_directly);

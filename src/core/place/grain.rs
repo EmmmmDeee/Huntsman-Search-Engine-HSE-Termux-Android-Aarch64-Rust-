@@ -41,7 +41,7 @@ use crate::core::correlator::{
 };
 use crate::core::entity::{Entity, EntityKind, Evidence};
 use crate::util::city_coords::TabulatedCentroid;
-use crate::util::place_grain::{AdminGrain, StreetGrain, is_whole_word_phrase, place_naming};
+use crate::util::place_grain::{AdminGrain, StreetGrain, is_name_of_queried_place, place_naming};
 
 /// Prefix of the `fix-grain:<grain>` tag the engine's admission stamp writes on
 /// a `Coordinates` [`assess`] grades as an area ([`FixPrecision::is_area`]) —
@@ -49,6 +49,77 @@ use crate::util::place_grain::{AdminGrain, StreetGrain, is_whole_word_phrase, pl
 /// an export or a recalled scan sees the grain the point was admitted at, and
 /// [`assess`] reads it back as a floor that no later re-grading can go below.
 pub const FIX_GRAIN_TAG_PREFIX: &str = "fix-grain:";
+
+/// Reduce `tags` to ONE `fix-grain:` stamp, the coarsest — the grain a point
+/// admitted at several grains honestly has, since [`assess`] reads every stamp
+/// as a floor and so already grades it at the coarsest.
+///
+/// The engine re-decides the stamp on every in-memory merge
+/// (`engine::enrich::enrich_geospatial`), but a store merge unions tags: a
+/// point checkpointed at `fix-grain:locality` and re-stamped `fix-grain:region`
+/// in a later round was written back carrying both, so the JSON, CSV and GEXF
+/// tag columns showed two contradictory grains for one point — and a scan
+/// recovered from its event log (which re-runs the enrichment) showed one. The
+/// store calls this after each merge. Order of the other tags is untouched;
+/// the kept stamp takes the first stamp's position. Pure, idempotent.
+pub fn collapse_fix_grain_tags(tags: &mut Vec<String>) {
+    let coarsest = tags
+        .iter()
+        .filter_map(|t| {
+            t.strip_prefix(FIX_GRAIN_TAG_PREFIX)
+                .and_then(FixGrain::parse)
+        })
+        .max();
+    let Some(coarsest) = coarsest else {
+        return;
+    };
+    let keep = coarsest.tag();
+    let mut kept = false;
+    tags.retain_mut(|t| {
+        if !t.starts_with(FIX_GRAIN_TAG_PREFIX) {
+            return true;
+        }
+        if kept {
+            return false;
+        }
+        kept = true;
+        t.clone_from(&keep);
+        true
+    });
+}
+
+/// Prefix of the `fix-radius:<metres>m` tag HSE's CSV importer writes on a
+/// re-imported `Coordinates` — the radius the exporting scan graded the point
+/// at, from the export's `fix_radius_m` column. [`assess`] reads it back as a
+/// radius floor.
+///
+/// Why the grade must travel: the CSV carries each record's source and
+/// summary, but not its attributes, so a re-imported record is graded by its
+/// source class alone. A beaconDB fix recorded at `accuracy_m=1500` (a suburb,
+/// ±2 km) came back as the Wi-Fi class default, 75 m — a street, labelled
+/// "±80 m", 25x finer than the scan that found it; a forward geocode capped at
+/// its input came back as a 40 m rooftop. A floor only ever coarsens, so a
+/// re-import can lose precision it cannot reconstruct but never gain any.
+pub const FIX_RADIUS_TAG_PREFIX: &str = "fix-radius:";
+
+/// The radius [`assess`] grades a `Coordinates` entity at, rounded UP to a
+/// whole metre — `None` for any other kind or an unparseable value. The CSV
+/// export's `fix_radius_m` column, which the importer carries back as a floor
+/// ([`FIX_RADIUS_TAG_PREFIX`]). A plain ceiling, not the one-significant-figure
+/// display rounding: that keeps a rung floor such as `5000.000…1` on "5 km",
+/// and a floor of `5000` would re-import a locality as a suburb.
+#[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // ≥ 0, ≤ Earth.
+pub fn fix_radius_ceil_m(e: &Entity) -> Option<u64> {
+    (e.kind == EntityKind::Coordinates && crate::util::geohash::parse_coords(&e.value).is_some())
+        .then(|| assess(e).radius_m.max(0.0).ceil() as u64)
+}
+
+/// The `fix-radius:<metres>m` tag ([`FIX_RADIUS_TAG_PREFIX`]) for `metres`.
+#[must_use]
+pub fn fix_radius_tag(metres: u64) -> String {
+    format!("{FIX_RADIUS_TAG_PREFIX}{metres}m")
+}
 
 /// The rungs a coordinate's precision is graded on, finest first. `Ord`, so the
 /// `max` of two grains is the coarser.
@@ -553,6 +624,35 @@ fn tabulated_radius_m(c: &TabulatedCentroid) -> f64 {
     geocode_grain_radius_m(place_type).unwrap_or(f64::INFINITY)
 }
 
+/// The tags the country-grain inference modules stamp on the point they mint:
+/// `geo_intel`'s dialling-prefix country (`phone-prefix`) and `email_locale`'s
+/// ccTLD and name-pattern locales (`cctld-inferred`, `locale-inferred`). Read
+/// as a country floor by [`assess`] beside the record rule
+/// ([`is_country_signal`]), so a copy of the point whose records lost their
+/// attributes (a CSV re-import keeps tags, not attributes) is still read as
+/// the country it is.
+const COUNTRY_SIGNAL_TAGS: &[&str] = &["phone-prefix", "cctld-inferred", "locale-inferred"];
+
+/// Whether a record is a COUNTRY-grain inference: a phone number's E.164
+/// dialling prefix (`method=e164-prefix`, `geo_intel`) or an email's ccTLD or
+/// name-pattern locale (every coordinate `email_locale` mints).
+///
+/// Each says only "New Zealand" or "Australia", and places the point at a
+/// stand-in for the whole country — `+64` at Wellington's row, a `.au` domain
+/// at Sydney's, `+61` at the continent's centre. Their sources are
+/// unclassified (`GeoSourceClass::Other`), so without this rule they graded at
+/// the 30 km unknown default, a gazetteer coincidence then named the city, and
+/// the label read "Wellington (city centroid — not a street location)" or
+/// "remote NT — nearest centre Alice Springs (locality-level fix, ±30 km)" for
+/// a signal that names a country and nothing finer.
+fn is_country_signal(ev: &Evidence) -> bool {
+    ev.source == "email_locale"
+        || ev
+            .attributes
+            .get("method")
+            .is_some_and(|m| m.trim() == "e164-prefix")
+}
+
 /// One originating record's account of the point, or `None` for an annotator
 /// ([`is_annotator_row`]). The first rule that applies decides:
 ///
@@ -563,7 +663,8 @@ fn tabulated_radius_m(c: &TabulatedCentroid) -> f64 {
 ///    for a record written before it declared one; a `search_engines`
 ///    known-city lookup — a city;
 /// 3. a register's postcode-grain record (`qld_unclaimed` / `au_unclaimed` with
-///    `postcode`) — a postcode centroid;
+///    `postcode`) — a postcode centroid; a country-grain inference
+///    ([`is_country_signal`]) — the country;
 /// 4. a stated error bar (`accuracy_m`, `gps_accuracy_m`, `range_m`) — that
 ///    radius, as a measurement;
 /// 5. a GeoNames `feature_code`, else a declared `place_type` / `osm_value`
@@ -608,6 +709,13 @@ fn account_of(ev: &Evidence) -> Option<Account> {
         });
         return Some(a);
     }
+    if is_country_signal(ev) {
+        return Some(Account::new(
+            geocode_grain_radius_m("country").unwrap_or(f64::INFINITY),
+            FixBasis::Provider,
+            true,
+        ));
+    }
     if let Some(r) = ["accuracy_m", "gps_accuracy_m", "range_m"]
         .into_iter()
         .find_map(|k| attr(k).and_then(positive_number))
@@ -649,8 +757,9 @@ fn account_of(ev: &Evidence) -> Option<Account> {
 ///   at best (an unrecognised word is not evidence of a street);
 /// * an AMBIGUOUS hit (`ambiguity_detected`, or `candidates_count` > 1) is one
 ///   rung coarser than it claims — the geocoder itself was not sure which;
-/// * a hit whose `place_name` is not a whole-word phrase of an input that names
-///   no street is a FRAGMENT match — the surname matched a road — and only the
+/// * a hit whose `place_name` is not the place an input that names no street
+///   asked about (`util::place_grain::is_name_of_queried_place`) is a FRAGMENT
+///   match — the surname matched a road — and only the
 ///   input's administrative grain stands;
 /// * a Photon `house` hit under a non-address `osm_key` is a point of interest
 ///   ([`ADDRESS_OSM_KEYS`]): a mapped feature, capped at the input's
@@ -675,7 +784,7 @@ fn forward_geocode_account(ev: &Evidence, input: &str, mut hit: Account) -> Acco
         && attr("place_type").is_some_and(|t| t.eq_ignore_ascii_case("house"))
         && attr("osm_key").is_some_and(|k| !ADDRESS_OSM_KEYS.contains(&k));
     let fragment = naming.street.is_none()
-        && attr("place_name").is_some_and(|name| !is_whole_word_phrase(name, input));
+        && attr("place_name").is_some_and(|name| !is_name_of_queried_place(name, input));
     let cap = if poi || fragment {
         named_cap(None, naming.admin)
     } else {
@@ -696,10 +805,21 @@ fn forward_geocode_account(ev: &Evidence, input: &str, mut hit: Account) -> Acco
 
 /// The radius the value's own printed decimals can support: a value quoted to
 /// `d` decimals is uncertain by half its last digit, `0.5 × 10^-d` degrees
-/// (≈ `55.66 km × 10^-d`). Trailing zeros are not precision (`-33.900000` is
-/// `-33.9`), and the value and the raw value the module wrote are both read,
-/// taking the coarser: a redacted one-decimal value is ≥ 5.5 km whatever its
-/// provenance claims. `None` when neither parses as a coordinate pair.
+/// (≈ `55.66 km × 10^-d`). The value and the raw value the module wrote are
+/// both read, taking the coarser: a redacted one-decimal value is ≥ 5.5 km
+/// whatever its provenance claims. `None` when neither parses as a coordinate
+/// pair.
+///
+/// Trailing zeros of a WIDER component are not precision: `-33.900000` is the
+/// six-decimal normalisation of `-33.9`, and the pad cannot be told from a
+/// real zero, so it is stripped — the direction that never manufactures
+/// precision. A component printed with EXACTLY one decimal is read as one
+/// decimal even when that digit is `0`: only a one-decimal formatter prints
+/// that shape (the redactor's `{v:.1}`, `util::redact::coarsen_coordinates`),
+/// so the zero is a digit it chose to print. Stripping it graded `-28.0,153.0`
+/// at 0 decimals (±55.7 km, region) and `-27.9,153.0` at 1 (±5.6 km,
+/// locality) — two redactions of identical precision labelled a grain apart
+/// by the parity of their digits.
 pub(crate) fn quantisation_radius_m(e: &Entity) -> Option<f64> {
     /// Metres per degree of latitude, the scale of the half-digit bound.
     const METRES_PER_DEGREE: f64 = 111_320.0;
@@ -707,7 +827,11 @@ pub(crate) fn quantisation_radius_m(e: &Entity) -> Option<f64> {
         let part = part.trim();
         part.parse::<f64>().ok()?;
         let frac = part.split_once('.').map_or("", |(_, f)| f);
-        let significant = frac.trim_end_matches('0');
+        let significant = if frac.len() == 1 {
+            frac
+        } else {
+            frac.trim_end_matches('0')
+        };
         i32::try_from(significant.len()).ok()
     };
     let pair_decimals = |s: &str| -> Option<i32> {
@@ -719,6 +843,31 @@ pub(crate) fn quantisation_radius_m(e: &Entity) -> Option<f64> {
         .filter_map(pair_decimals)
         .min()?;
     Some(0.5 * 10f64.powi(-d) * METRES_PER_DEGREE)
+}
+
+/// The decimals the gazetteer tables are keyed at
+/// (`util::city_coords::tabulated_centroid_at` compares at 4 decimals).
+const TABLE_KEY_DECIMALS: usize = 4;
+
+/// Whether `value` was CUT to fewer printed decimals than the gazetteer key —
+/// a redacted `"-33.8,151.0"`, never a normalised six-decimal value.
+///
+/// Such a value cannot be identified as a table row: the rounding that
+/// produced it maps a whole ~11 km cell of real points onto whichever row is
+/// aligned to one decimal. Nineteen REGIONS rows are (`"21"` is
+/// `-33.8,151.0`), and so is the Footscray anchor, so a redacted geocode in
+/// Parramatta read as "New South Wales (region-level fix, ±100 km)" and a
+/// redacted inner-west Melbourne point as "Footscray (city centroid)". Its
+/// printed width, not its significant digits, is the test — a normalised
+/// `-33.800000,151.000000` IS the row when a module minted it, and keeps its
+/// coincidence; the cut value is graded by its quantisation alone.
+fn cut_below_table_key(value: &str) -> bool {
+    value.split(',').any(|part| {
+        part.trim()
+            .split_once('.')
+            .map_or(0, |(_, frac)| frac.len())
+            < TABLE_KEY_DECIMALS
+    })
 }
 
 /// Grade how precisely a `Coordinates` entity locates anything.
@@ -735,14 +884,18 @@ pub(crate) fn quantisation_radius_m(e: &Entity) -> Option<f64> {
 ///    unclassified-source default (30 km, a locality at best) and never
 ///    positive evidence of an area.
 /// 4. Floors from the entity's tags: a `fix-grain:` stamp, `coarse` (suburb),
-///    `postcode-centroid` (suburb), and the legacy signatures of the paths that
-///    minted city centroids before the `coarse` tag — `search-geocoded`, and
-///    the `recycled` + `addr-derived` pair (locality).
+///    `postcode-centroid` (suburb), the country-signal tags
+///    ([`COUNTRY_SIGNAL_TAGS`], country — unless a fine measurement sits on the
+///    entity), and the legacy signatures of the paths that minted city
+///    centroids before the `coarse` tag — `search-geocoded`, and the
+///    `recycled` + `addr-derived` pair (locality).
 /// 5. Gazetteer coincidence: a value equal at 4 decimals to a tabulated
 ///    centroid (`util::city_coords::tabulated_centroid_at`) is graded at the
 ///    grain of what it stands for, and says what that is — unless a MEASURED
-///    account good to a street or better sits on the same entity.
-/// 6. The quantisation floor ([`quantisation_radius_m`]).
+///    account good to a street or better sits on the same entity, or the value
+///    was cut below the table's 4 decimals ([`cut_below_table_key`]).
+/// 6. The quantisation floor ([`quantisation_radius_m`]), and a re-import's
+///    carried grade ([`FIX_RADIUS_TAG_PREFIX`]).
 ///
 /// Pure and order-independent: every combination is a `max` or an `||`, ties
 /// break on a total order, and nothing reads the clock or the network.
@@ -796,6 +949,15 @@ pub fn assess(e: &Entity) -> FixPrecision {
     if has(crate::core::tags::COARSE) || has("postcode-centroid") {
         floors.push(floor(FixGrain::Suburb));
     }
+    // The country-signal tags stand in for the record rule, so they yield to a
+    // fine measurement exactly as that record's account does.
+    if !measured_fine && COUNTRY_SIGNAL_TAGS.iter().any(|t| has(t)) {
+        floors.push(Account::new(
+            geocode_grain_radius_m("country").unwrap_or(f64::INFINITY),
+            FixBasis::Provider,
+            true,
+        ));
+    }
     if e.kind == EntityKind::Coordinates
         && (has(crate::core::tags::SEARCH_GEOCODED)
             || (has(crate::core::tags::RECYCLED) && has(crate::core::tags::ADDR_DERIVED)))
@@ -807,6 +969,7 @@ pub fn assess(e: &Entity) -> FixPrecision {
         ));
     }
     if !measured_fine
+        && !cut_below_table_key(&e.value)
         && let Some((lat, lon)) = crate::util::geohash::parse_coords(&e.value)
         && let Some(centroid) = crate::util::city_coords::tabulated_centroid_at(lat, lon)
     {
@@ -825,6 +988,21 @@ pub fn assess(e: &Entity) -> FixPrecision {
     }
     if let Some(q) = quantisation_radius_m(e) {
         best.radius_m = best.radius_m.max(q);
+    }
+    // A re-import carries the exporting scan's grade as a radius floor. It
+    // raises the radius only: the basis the surviving records name still says
+    // what KIND of fix the point is.
+    if let Some(r) = e
+        .tags
+        .iter()
+        .filter_map(|t| {
+            t.strip_prefix(FIX_RADIUS_TAG_PREFIX)?
+                .strip_suffix('m')
+                .and_then(positive_number)
+        })
+        .reduce(f64::max)
+    {
+        best.radius_m = best.radius_m.max(r);
     }
     FixPrecision {
         grain: FixGrain::from_radius_m(best.radius_m),

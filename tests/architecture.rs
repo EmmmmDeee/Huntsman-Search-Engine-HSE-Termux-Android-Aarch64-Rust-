@@ -1010,13 +1010,6 @@ fn core_does_not_import_util_directly() {
                 // address_to_coords_pass records it as the derived centroid's
                 // `place_type` so the correlator weighs it at its real grain.
                 && !line.contains("util::city_coords::city_coords_with_grain")
-                // Pure membership test over the SAME tables (no I/O, no
-                // network; the set is built once from them): whether a point
-                // is one of the centroids `city_coords` returns. The engine's
-                // geospatial enrichment and pivot gate use it to tag and
-                // withhold every gazetteer centroid whichever module minted it
-                // (REQ-GEO-017).
-                && !line.contains("util::city_coords::is_gazetteer_centroid")
                 // Pure, dependency-free offline AU-locality exact-match lookup
                 // (no I/O, no network), same leaf category as `city_coords`
                 // immediately above — it reuses the identical `CITIES` table,
@@ -1028,11 +1021,12 @@ fn core_does_not_import_util_directly() {
                 // prefix from a multi-word suburb.
                 && !line.contains("util::city_coords::is_tabulated_au_city")
                 // Pure, offline lookups over the SAME gazetteer tables as
-                // `city_coords::is_gazetteer_centroid` above (which is now this
-                // lookup as a predicate): which tabulated centroid a 4-decimal
+                // `city_coords` above: which tabulated centroid a 4-decimal
                 // value is, and the enum naming it. `core::place::grain` grades
                 // a coordinate at the grain of the place a centroid stands for
-                // and names that place (REQ-GEOLABEL-001). No I/O, no state
+                // and names that place — the one centroid authority the
+                // engine's admission stamp and pivot gate reach through
+                // `core::place::assess` (REQ-GEOLABEL-001). No I/O, no state
                 // beyond the lazily built table.
                 && !line.contains("util::city_coords::tabulated_centroid_at")
                 // Nearest tabulated city within a bound, by haversine over the
@@ -1044,11 +1038,15 @@ fn core_does_not_import_util_directly() {
                 // Pure string predicates (no I/O, no network, no state) over
                 // place names: `is_bare_country`, what grain a place string
                 // names (`place_naming` and its `AdminGrain`/`StreetGrain`
-                // vocabulary), and whole-word phrase containment. They call only
-                // other pure leaves already allowed here (`city_coords`,
+                // vocabulary, the one street recogniser), the locality part of
+                // an address (`locality_part`), and whether a matched name is
+                // the queried place (`is_name_of_queried_place`). They call
+                // only other pure leaves already allowed here (`city_coords`,
                 // `address_au::single_state_code`, `str_util::fold_ascii_lower`).
                 // `core::place::grain` caps a forward geocode at the grain its
-                // input names (REQ-GEOLABEL-001).
+                // input names (REQ-GEOLABEL-001, REQ-GEOLABEL-010), and
+                // `core::geo_family` reaches `locality_part` through
+                // `city_coords` (REQ-GEO-018).
                 && !line.contains("util::place_grain")
                 // Pure, dependency-free offline surname-distinctiveness heuristic
                 // (a small embedded common-surname set; no state, no I/O), same leaf

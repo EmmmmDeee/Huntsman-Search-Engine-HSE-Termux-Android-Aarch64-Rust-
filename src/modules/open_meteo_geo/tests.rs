@@ -293,8 +293,8 @@ fn a_row_skipped_for_a_missing_component_does_not_consume_the_cap() {
 
 /// REQ-OPENMETEO-002: GeoNames' fuzzy search answered "Sydney, Australia" with
 /// the headland "Sydney Heads" (feature code MT) near Isaac, Queensland,
-/// ~1,400 km from Sydney, and it became the anchor. A hit whose name is not a
-/// whole-word phrase of the query is not a geocode of it: skipped without
+/// ~1,400 km from Sydney, and it became the anchor. A hit whose name is not the
+/// queried place (a run of the query's whole words) is not a geocode of it: skipped without
 /// taking the anchor slot, so the real match behind it anchors.
 #[test]
 fn a_fuzzy_neighbour_of_the_query_is_not_its_geocode() {
@@ -317,4 +317,34 @@ fn a_fuzzy_neighbour_of_the_query_is_not_its_geocode() {
     // Case, punctuation and diacritics do not make a match a fragment.
     let hanoi = res("Hà Nội", 21.0245, 105.8412, "VN");
     assert_eq!(build_entities(&[hanoi], "ha noi, vietnam", "s").len(), 1);
+}
+
+/// REQ-OPENMETEO-003: the name check forgives how ONE name is written, so the
+/// operating jurisdiction's own place names still geocode. Queried live
+/// (2026-09-23): `"Ho Chi Minh, Vietnam"` returns GeoNames' English name
+/// "Ho Chi Minh City" — whose trailing generic "City" the whole-word check
+/// rejected, leaving Vietnam's largest city with no Open-Meteo coordinate.
+/// A name written with or without its word break ("Hanoi" / "Ha Noi") and
+/// the "Mt" / "Mount" abbreviation are the same place too. The Sydney Heads
+/// rejection above still holds, and a "City" whose remainder is a state or a
+/// country is not the place asked about.
+#[test]
+fn a_name_written_another_way_is_still_the_queried_place() {
+    let hcmc = res("Ho Chi Minh City", 10.8231, 106.6297, "VN");
+    let ents = build_entities(&[hcmc], "Ho Chi Minh, Vietnam", "s");
+    assert_eq!(ents.len(), 1, "{ents:?}");
+    assert_eq!(ents[0].value, "10.823100,106.629700");
+
+    let hanoi = res("Hanoi", 21.0245, 105.8412, "VN");
+    assert_eq!(build_entities(&[hanoi], "Hà Nội, Việt Nam", "s").len(), 1);
+
+    let isa = res("Mount Isa", -20.7256, 139.4927, "AU");
+    assert_eq!(build_entities(&[isa], "Mt Isa, QLD", "s").len(), 1);
+
+    // Still not a neighbour: a different place that merely starts the same.
+    let heads = res("Sydney Heads", -21.95, 148.68, "AU");
+    assert!(build_entities(&[heads], "Sydney, Australia", "s").is_empty());
+    // A "City" standing on a state is a different place from the state.
+    let kc = res("Kansas City", 39.0997, -94.5786, "US");
+    assert!(build_entities(&[kc], "Kansas, USA", "s").is_empty());
 }

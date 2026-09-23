@@ -1027,8 +1027,9 @@ fn debug_bundle_is_deterministic() {
         "debug bundle is not byte-deterministic across exports"
     );
     assert!(
-        a.contains("    place: ") && a.contains("(fused fix ±"),
-        "the fixture must exercise the place and fused-place lines"
+        a.contains("    place: ")
+            && (a.contains("(fused fix ±") || a.contains("(single-signal fix ±")),
+        "the fixture must exercise the place and best-location place lines"
     );
     // And it carries no wall-clock generation timestamp that would break that.
     assert!(!a.contains("generated_at"));
@@ -2247,7 +2248,7 @@ fn entities_to_csv_assembles_header_and_escaped_rows() {
     // (the SPA download button, external tooling) parse this header row.
     assert_eq!(
         entities_to_csv(&[], "src").trim_end(),
-        "kind,value,raw_value,confidence,c_effective,corroboration,source_count,classification,observed_at,sources,corroborating_sources,evidence_urls,evidence,tags,uid,generation,place_label,place_grain"
+        "kind,value,raw_value,confidence,c_effective,corroboration,source_count,classification,observed_at,sources,corroborating_sources,evidence_urls,evidence,tags,uid,generation,place_label,place_grain,fix_radius_m"
     );
 
     let mut e = Entity::new(EntityKind::Email, "a@b.com", 0.60, "src");
@@ -2273,11 +2274,12 @@ fn entities_to_csv_assembles_header_and_escaped_rows() {
     // `uid` + `generation` close the row: the uid is what every other
     // artifact (JSON export, debug bundle, Browse, /entities/{uid}) keys a
     // finding by, so a CSV row must be joinable back to them.
-    // The appended place columns are empty on anything but a coordinate.
+    // The appended place and fix-radius columns are empty on anything but a
+    // coordinate.
     let e2 = Entity::new(EntityKind::Email, "a@b.com", 0.60, "src");
     assert!(
-        row.ends_with(&format!(",{},0,,", e2.uid)),
-        "row must end with the uid join key, generation and two empty place cells: {row}"
+        row.ends_with(&format!(",{},0,,,", e2.uid)),
+        "row must end with the uid join key, generation and three empty place cells: {row}"
     );
 }
 
@@ -2691,7 +2693,7 @@ fn csv_and_gexf_carry_the_place_label() {
     let header = csv.lines().next().expect("header");
     assert!(header.starts_with("kind,value,raw_value,confidence,c_effective"));
     assert!(
-        header.ends_with(",uid,generation,place_label,place_grain"),
+        header.ends_with(",uid,generation,place_label,place_grain,fix_radius_m"),
         "{header}"
     );
     let sydney_row = csv
@@ -2699,15 +2701,23 @@ fn csv_and_gexf_carry_the_place_label() {
         // Values are formula-guarded (`'-33…`), so match them past the quote.
         .find(|l| l.starts_with("coordinates,") && l.contains("-33.868800,151.209300\","))
         .expect("the centroid row");
+    // The label, the grain it names, and the fix's own radius (8 km).
     assert!(
-        sydney_row.ends_with(&format!(",\"{SYDNEY_LABEL}\",locality")),
+        sydney_row.ends_with(&format!(",\"{SYDNEY_LABEL}\",locality,8000")),
         "{sydney_row}"
     );
     let gps_row = csv
         .lines()
         .find(|l| l.starts_with("coordinates,") && l.contains("-27.481234,153.012345\","))
         .unwrap_or_else(|| panic!("the gps row: {csv}"));
-    assert!(gps_row.ends_with(",point"), "{gps_row}");
+    let (gps_rest, gps_radius) = gps_row.rsplit_once(',').expect("cells");
+    assert!(gps_rest.ends_with(",point"), "{gps_row}");
+    assert!(
+        gps_radius
+            .parse::<u64>()
+            .is_ok_and(|r| (1..=50).contains(&r)),
+        "a point's fix radius: {gps_row}"
+    );
 
     let gexf = render_gexf(&store, "scan-place", false).expect("gexf");
     assert!(gexf.contains(r#"<attribute id="9" title="place_label" type="string"/>"#));
@@ -2825,7 +2835,13 @@ fn full_dossier_and_debug_bundle_print_place_lines_and_the_fused_place() {
         .lines()
         .find(|l| l.starts_with("  place: "))
         .expect("a place line under the fix");
-    assert!(place.contains("(fused fix ±"), "{place}");
+    // The label names the kind of fix the header names (REQ-GEOLABEL-017):
+    // this fixture's fix is a single-signal rung.
+    assert!(
+        tail.starts_with("── BEST AU LOCATION FIX (single-signal)"),
+        "{tail}"
+    );
+    assert!(place.contains("(single-signal fix ±"), "{place}");
     assert!(
         !place.contains("Smith") && !place.contains("Hotel"),
         "{place}"
@@ -2858,6 +2874,15 @@ fn every_best_location_object_carries_a_fused_place_label() {
     if !ladder["corroboration"].is_null() {
         fused(&ladder["corroboration"]);
     }
+    // REQ-GEOLABEL-017: a ladder rung that rests on ONE signal is labelled as
+    // the single-signal fix its own `source` says it is — never "fused".
+    let one = vec![au_sighting("-33.8700,151.2100", 0.70, "exif_geo", "NSW")];
+    let single = extract_au_location_fix(&[], &one);
+    assert_eq!(single["source"], "single-signal", "{single}");
+    let t = single["place_label"]["text"].as_str().unwrap_or_default();
+    assert!(t.contains("(single-signal fix ±"), "{single}");
+    assert!(!t.contains("fused"), "{single}");
+    assert_eq!(single["place_label"]["basis"], "single_signal");
 }
 
 /// REQ-GEOLABEL-003: every label-bearing export is byte-identical across

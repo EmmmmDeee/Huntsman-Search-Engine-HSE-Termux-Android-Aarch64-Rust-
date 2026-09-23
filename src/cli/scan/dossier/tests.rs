@@ -542,13 +542,20 @@ fn a_coordinate_finding_prints_its_place_line() {
     assert!(super::findings::place_line(&email, &ctx).is_none());
 }
 
-/// The best-location estimate prints its fused place: offline, a locality at
-/// best, marked fused — for either headline branch, which both call this.
+/// The best-location estimate prints its place: offline, a locality at best,
+/// marked fused for the synergy branch and single-signal for the ladder's
+/// single-signal rung — the kind its own basis line names (REQ-GEOLABEL-017).
 #[test]
 fn a_best_location_estimate_prints_its_fused_place() {
+    use crate::core::place::FixKind;
     assert_eq!(
-        super::appendix::fused_place_line(-33.8774, 151.1989, 1.3).as_deref(),
+        super::appendix::fused_place_line(-33.8774, 151.1989, 1.3, FixKind::Synergy).as_deref(),
         Some("    place: Sydney, NSW (fused fix ±2 km)")
     );
-    assert!(super::appendix::fused_place_line(0.0, -140.0, 1.0).is_none());
+    assert_eq!(
+        super::appendix::fused_place_line(-33.8774, 151.1989, 1.3, FixKind::SingleSignal)
+            .as_deref(),
+        Some("    place: Sydney, NSW (single-signal fix ±2 km)")
+    );
+    assert!(super::appendix::fused_place_line(0.0, -140.0, 1.0, FixKind::Synergy).is_none());
 }

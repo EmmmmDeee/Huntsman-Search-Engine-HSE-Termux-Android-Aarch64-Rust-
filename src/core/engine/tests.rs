@@ -6656,7 +6656,7 @@ fn autonomous_sweep_seeds_specific_geo_pivots_and_refuses_generic_ones() {
     // EXIF GPS tag); without one `is_infrastructure_geo` treats a bare lat/lon as
     // an IP/WHOIS-derived infrastructure location, correctly NOT seedable.
     // Off the gazetteer's tables: the Sydney CBD centroid itself is coarse by
-    // value (`util::city_coords::is_gazetteer_centroid`, REQ-GEO-017).
+    // value (`util::city_coords::tabulated_centroid_at`, REQ-GEO-017).
     let mut fix = Entity::new(EntityKind::Coordinates, "-33.8712,151.2069", 0.90, "s");
     fix.add_evidence(Evidence::new("exif_geo", "photo GPS"));
 

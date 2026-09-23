@@ -73,7 +73,18 @@ pub fn city_coords_with_grain(addr: &str) -> Option<((f64, f64), &'static str)> 
     if crate::util::place_grain::negates_city_grain(trimmed) {
         return None;
     }
-    if let Some(hit) = match_tabulated_city(&lower) {
+    // Only the LOCALITY the address names is looked up, never a word of its
+    // street: streets are named after places, and `"45 Sydney Road, Brunswick
+    // VIC"` contains the whole-token run `sydney` — the Sydney centroid, 700 km
+    // from a Melbourne address, which every register, directory and WHOIS
+    // leg that passes its full address here then emitted as the subject's
+    // city, and `geo_family` anchored the subject on. The street part is
+    // dropped by the one street recogniser (`place_grain::locality_part`), so
+    // what counts as a street cannot differ between the grain a geocode is
+    // capped at and the city an address resolves to.
+    if let Some(hit) =
+        match_tabulated_city(&crate::util::place_grain::locality_part(trimmed).to_lowercase())
+    {
         return Some((hit, "city"));
     }
     // A postcode: the exact suburb centroid when tabulated, else the region
@@ -427,8 +438,8 @@ impl TabulatedCentroid {
 /// equal to any of them is a centre standing in for an area, whichever module
 /// minted it.
 ///
-/// The one authority on "this point is a gazetteer centroid, not a place"
-/// ([`is_gazetteer_centroid`] is this, as a predicate), and the one that says
+/// The one authority on "this point is a gazetteer centroid, not a place",
+/// and the one that says
 /// WHICH place, so `core::place::grain` can grade the point at the grain of what
 /// it stands for and a reader can name that place instead of the street, parcel
 /// or shop that happens to contain the centroid (REQ-GEOLABEL-001).
@@ -501,20 +512,6 @@ pub fn tabulated_centroid_at(lat: f64, lon: f64) -> Option<TabulatedCentroid> {
         map
     });
     CENTROIDS.get(&grain_key(lat, lon)).cloned()
-}
-
-/// Whether `(lat, lon)` is one of the tabulated centroids — a city/suburb row,
-/// an AU locality anchor, a tabulated postcode centroid, or a leading-digit
-/// region centroid — at the 4-decimal grain: [`tabulated_centroid_at`], as a
-/// predicate, so the two can never disagree about what a centroid is.
-///
-/// ~30 modules mint a `Coordinates` from [`city_coords`], and tagging each at
-/// its own call site left most of them untagged and pivoted into reverse
-/// geocoders and cadastre lookups as if the Sydney CBD centroid were the
-/// subject's parcel (REQ-GEO-007, REQ-GEO-017).
-#[must_use]
-pub fn is_gazetteer_centroid(lat: f64, lon: f64) -> bool {
-    tabulated_centroid_at(lat, lon).is_some()
 }
 
 /// The nearest [`CITIES`] row to `(lat, lon)` within `max_km`, as its display

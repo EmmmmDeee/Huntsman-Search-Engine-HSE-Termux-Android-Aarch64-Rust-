@@ -83,6 +83,9 @@ pub enum LabelBasis {
     Gazetteer,
     /// A fused multi-signal fix ([`describe_fused`]), offline, locality at best.
     Fused,
+    /// A best-location estimate that rests on ONE signal ([`describe_fused`]
+    /// with [`FixKind::SingleSignal`]), offline, locality at best.
+    SingleSignal,
 }
 
 impl LabelBasis {
@@ -97,6 +100,7 @@ impl LabelBasis {
             Self::StatisticalArea => "statistical_area",
             Self::Gazetteer => "gazetteer",
             Self::Fused => "fused",
+            Self::SingleSignal => "single_signal",
         }
     }
 }
@@ -325,13 +329,18 @@ impl PlaceContext {
 /// A radius rounded UP to one significant figure, in whole metres — up, so the
 /// radius a reader sees is never smaller than the fix's (P1). A tolerance of
 /// `1e-9` keeps a rung floor such as `5000.000…1` on `5 km`.
+///
+/// The whole-metre step rounds up too: a sub-metre radius — the operator's
+/// seed typed to six decimals is good to its quantisation, ~0.06 m — shows as
+/// `1 m`, never `0 m`, which would claim a fix with no error at all. Only a
+/// radius that is exactly zero (or not a radius) shows as `0`.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // ≥ 0, ≤ Earth.
 pub(super) fn radius_display_m(m: f64) -> u64 {
     if !m.is_finite() || m <= 0.0 {
         return 0;
     }
     let scale = 10f64.powi(m.log10().floor() as i32);
-    ((m / scale - 1e-9).ceil() * scale).round() as u64
+    ((m / scale - 1e-9).ceil() * scale).ceil() as u64
 }
 
 /// `"60 m"`, `"8 km"` — a radius as [`radius_display_m`] rounds it.
@@ -1122,27 +1131,66 @@ pub fn describe(e: &Entity, ctx: &PlaceContext) -> Option<PlaceLabel> {
     Some(out)
 }
 
-/// The label of a FUSED fix — the AU-059 synergy fix, a rung of the best-location
-/// ladder, the independent-class corroboration point — at `(lat, lon)` good to
-/// `radius_km`. Offline only, never finer than a locality (a fused point is a
-/// weighted centre of several signals, not a place anyone reported), no street
-/// and no point-of-interest name, and always marked "(fused fix ±N km)" (P8).
-/// `None` for an invalid point or one no gazetteer can name.
+/// What a best-location object's fix IS, so its label says so: several
+/// signals fused into one point, or one signal standing alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixKind {
+    /// The AU-059 cross-class synergy fix, or the ladder rung that recomputes
+    /// it — a weighted centre of several independent signals.
+    Synergy,
+    /// The independent-class corroboration point — a centre of the signals
+    /// that agree on one locality.
+    Corroboration,
+    /// A ladder rung below the synergy: ONE signal's position.
+    SingleSignal,
+}
+
+impl FixKind {
+    /// The kind of a best-location estimate, read from the basis the ladder
+    /// wrote on it (`correlator::SYNERGY_BASIS` for the synergy rung) — the
+    /// one reading every surface shares, so the JSON `source`, the dossier's
+    /// basis line and the place label cannot disagree.
+    #[must_use]
+    pub fn of_estimate_basis(basis: &str) -> Self {
+        if basis == crate::core::correlator::SYNERGY_BASIS {
+            Self::Synergy
+        } else {
+            Self::SingleSignal
+        }
+    }
+}
+
+/// The label of a best-location fix — the AU-059 synergy fix, a rung of the
+/// best-location ladder, the independent-class corroboration point — at
+/// `(lat, lon)` good to `radius_km`. Offline only, never finer than a locality
+/// (a fused point is a weighted centre of several signals, and a single
+/// signal's estimate is placed at the grain the ladder can vouch for — neither
+/// is a place anyone reported), no street and no point-of-interest name (P8).
+/// Marked "(fused fix ±N km)" for a [`FixKind::Synergy`] or
+/// [`FixKind::Corroboration`] point and "(single-signal fix ±N km)" for a
+/// [`FixKind::SingleSignal`] one: a single sighting labelled "fused" beside a
+/// basis line reading "single-signal fix" was the REQ-EXPORT-004 mislabel in
+/// the other direction. `None` for an invalid point or one no gazetteer can
+/// name.
 #[must_use]
-pub fn describe_fused(lat: f64, lon: f64, radius_km: f64) -> Option<PlaceLabel> {
+pub fn describe_fused(lat: f64, lon: f64, radius_km: f64, kind: FixKind) -> Option<PlaceLabel> {
     if !crate::util::geo::is_valid_coords(lat, lon) || !radius_km.is_finite() {
         return None;
     }
     let radius = (radius_km * 1_000.0).max(0.0);
     let grain = FixGrain::from_radius_m(radius).max(FixGrain::Locality);
     let (phrase, g) = offline_phrase(None, lat, lon, grain, radius)?;
+    let (how, basis) = match kind {
+        FixKind::Synergy | FixKind::Corroboration => ("fused fix", LabelBasis::Fused),
+        FixKind::SingleSignal => ("single-signal fix", LabelBasis::SingleSignal),
+    };
     Some(PlaceLabel {
-        text: format!("{phrase} (fused fix ±{})", radius_text(radius)),
+        text: format!("{phrase} ({how} ±{})", radius_text(radius)),
         label_grain: g.max(grain),
         fix_grain: FixGrain::from_radius_m(radius),
         fix_radius_m: radius,
         offset_m: None,
-        basis: LabelBasis::Fused,
+        basis,
     })
 }
 
@@ -1153,8 +1201,8 @@ pub fn place_label_json(e: &Entity, ctx: &PlaceContext) -> Option<serde_json::Va
     describe(e, ctx).map(|l| l.to_json())
 }
 
-/// The `place_label` JSON for a fused fix, or `Null`.
+/// The `place_label` JSON for a best-location fix of `kind`, or `Null`.
 #[must_use]
-pub fn fused_label_json(lat: f64, lon: f64, radius_km: f64) -> serde_json::Value {
-    describe_fused(lat, lon, radius_km).map_or(serde_json::Value::Null, |l| l.to_json())
+pub fn fused_label_json(lat: f64, lon: f64, radius_km: f64, kind: FixKind) -> serde_json::Value {
+    describe_fused(lat, lon, radius_km, kind).map_or(serde_json::Value::Null, |l| l.to_json())
 }

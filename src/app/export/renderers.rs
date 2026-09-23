@@ -147,6 +147,14 @@ pub(super) fn render_csv(store: &Store, sid: &str, redact: bool) -> Result<Strin
 /// `core::place::describe` label of a `Coordinates` row (its text and the grain
 /// it names) and are empty on every other kind. `scan_id` names the scan whose
 /// own stored records the label may read (`PlaceContext::for_scan`).
+///
+/// `fix_radius_m`, appended after them, is NOT a label: it is the radius the
+/// precision authority graded the point at (`core::place::fix_radius_ceil_m`,
+/// rounded up to a whole metre). The CSV keeps each record's source and summary but not its
+/// attributes, so a re-imported point could otherwise be graded only by its
+/// source class — a ±1.5 km Wi-Fi fix came back as a 75 m one. The importer
+/// reads this column back as a radius floor (`grain::FIX_RADIUS_TAG_PREFIX`),
+/// so a round trip can lose precision but never gain it.
 pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity], scan_id: &str) -> String {
     use std::fmt::Write as _;
     let ctx = crate::core::place::PlaceContext::for_scan(entities, scan_id);
@@ -170,7 +178,7 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity], scan_id:
     // artifacts by string-matching kind+value. `generation` (hops from the seed)
     // travels with it for the same reason it was added to the bundle — it
     // separates a seed-adjacent finding from one three pivots out.
-    body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,source_count,classification,observed_at,sources,corroborating_sources,evidence_urls,evidence,tags,uid,generation,place_label,place_grain\n");
+    body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,source_count,classification,observed_at,sources,corroborating_sources,evidence_urls,evidence,tags,uid,generation,place_label,place_grain,fix_radius_m\n");
     for e in entities {
         let eff = e.c_effective();
         let source_count = e.source_count();
@@ -227,10 +235,12 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity], scan_id:
         let (place_label, place_grain) = place
             .as_ref()
             .map_or(("", ""), |p| (p.text.as_str(), p.label_grain.as_str()));
+        let fix_radius =
+            crate::core::place::fix_radius_ceil_m(e).map_or_else(String::new, |r| r.to_string());
 
         let _ = writeln!(
             body,
-            "{},{},{},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             csv_escape(&e.kind.to_string()),
             csv_escape(&e.value),
             csv_escape(&e.raw_value),
@@ -249,6 +259,7 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity], scan_id:
             e.generation,
             csv_escape(place_label),
             place_grain,
+            fix_radius,
         );
     }
     body
@@ -1051,8 +1062,10 @@ pub(crate) fn render_debug_bundle(
 /// The `place:` line under a BEST AU LOCATION FIX header — the fix's own
 /// `place_label` ([`extract_au_location_fix`] attaches it, so the bundle, the
 /// report and the `/location` API print one label). The label says "fused
-/// fix": it names where several signals centre, never a street and never a
-/// point of interest (REQ-GEOLABEL-002, P8).
+/// fix" for a multi-signal fix and "single-signal fix" for a single-signal
+/// rung, the same kind the header names (REQ-GEOLABEL-017); either way it names
+/// a locality at best, never a street and never a point of interest
+/// (REQ-GEOLABEL-002, P8).
 fn write_fix_place(s: &mut String, fix: &serde_json::Value) {
     use std::fmt::Write as _;
     if let Some(text) = fix["place_label"]["text"].as_str() {
@@ -1265,7 +1278,12 @@ pub(crate) fn extract_au_location_fix(
             // Every fix object carries its own fused place label: offline,
             // never finer than a locality, never a street or a point of
             // interest (REQ-GEOLABEL-002, P8).
-            "place_label": crate::core::place::fused_label_json(c.lat, c.lon, c.radius_km),
+            "place_label": crate::core::place::fused_label_json(
+                c.lat,
+                c.lon,
+                c.radius_km,
+                crate::core::place::FixKind::Corroboration,
+            ),
         })
     });
 
@@ -1300,7 +1318,12 @@ pub(crate) fn extract_au_location_fix(
             // assert about the subject's own position.
             "locates_subject_directly": synergy.locates_subject_directly,
             "rule_id": "AU-059",
-            "place_label": crate::core::place::fused_label_json(synergy.lat, synergy.lon, synergy.radius_km),
+            "place_label": crate::core::place::fused_label_json(
+                synergy.lat,
+                synergy.lon,
+                synergy.radius_km,
+                crate::core::place::FixKind::Synergy,
+            ),
         })
     } else {
         // Fallback: the best-location estimate ladder, so the web/JSON surface
@@ -1334,12 +1357,18 @@ pub(crate) fn extract_au_location_fix(
                 // As above: whether this pin observed the SUBJECT or a place
                 // merely associated with them.
                 "locates_subject_directly": est.locates_subject_directly,
-                "source": if est.basis == crate::core::correlator::SYNERGY_BASIS {
-                    "synergy-recomputed"
-                } else {
-                    "single-signal"
+                "source": match crate::core::place::FixKind::of_estimate_basis(est.basis) {
+                    crate::core::place::FixKind::SingleSignal => "single-signal",
+                    _ => "synergy-recomputed",
                 },
-                "place_label": crate::core::place::fused_label_json(est.lat, est.lon, est.radius_km),
+                // The label names the same kind of fix `source` does
+                // (a single sighting is not "fused").
+                "place_label": crate::core::place::fused_label_json(
+                    est.lat,
+                    est.lon,
+                    est.radius_km,
+                    crate::core::place::FixKind::of_estimate_basis(est.basis),
+                ),
             }),
             None => serde_json::Value::Null,
         }

@@ -191,16 +191,23 @@ re-implemented per module.
   `Coordinates` target must be given a role in `COORDINATE_TARGET_MODULES`,
   and a registry test enforces that (REQ-GEOLABEL-001). It reads the gazetteer
   through `util::city_coords::tabulated_centroid_at` and a place string's
-  grain through `util::place_grain::place_naming`. On top of it sits the one
+  grain through `util::place_grain::place_naming` — the one street
+  recogniser, which `util::city_coords` also uses to resolve an address on
+  its locality and never on a place its street is named after
+  (REQ-GEOLABEL-010, REQ-GEO-018). On top of it sits the one
   nearest-place LABEL (`label::describe` for a stored coordinate,
-  `label::describe_fused` for a fused fix): never finer than `assess` grades
+  `label::describe_fused` for a best-location fix, worded fused or
+  single-signal by its `FixKind`): never finer than `assess` grades
   the point, computed at render time from the scan's own records
   (`PlaceContext`, incl. this scan's reverse geocodes) and compiled-in
   gazetteers (the AU and VN anchors in `util::geo`, `CITIES`) — no network.
   Every output surface reads it: `app::export::augment_entity_json` (JSON,
   report.json, the API listings), the CSV and GEXF writers, the full dossier /
   debug bundle, `extract_au_location_fix`, the CLI dossier and the wasm-ui
-  Browse / Location panes (REQ-GEOLABEL-002..004).
+  Browse / Location panes (REQ-GEOLABEL-002..004; the served `wasm-ui/pkg`
+  bundle carries the panes once it is regenerated with the pinned toolchain).
+  The CSV's `fix_radius_m` column carries the grade across a re-import as a
+  radius floor, so a round trip never sharpens a point (REQ-GEOLABEL-014).
 - `core/exposure/` — the subject's exposure index. It reads evidence through
   ONE gate, `attributable`: a record whose ownership is `Unverified` (a
   name-matched genealogy profile, an ambiguous-name row) is shown but never

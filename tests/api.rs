@@ -6022,10 +6022,13 @@ async fn entity_listings_and_location_carry_the_place_label() {
     let json = body_json(resp).await;
     let text = json["best_location"]["place_label"]["text"]
         .as_str()
-        .unwrap_or_else(|| panic!("no fused label: {json}"));
-    assert!(text.contains("(fused fix ±"), "{text}");
+        .unwrap_or_else(|| panic!("no best-location label: {json}"));
+    // One GPS sighting: the ladder's single-signal rung, and the label names
+    // that kind of fix, never "fused" (REQ-GEOLABEL-017).
+    assert_eq!(json["best_location"]["source"], "single-signal", "{json}");
+    assert!(text.contains("(single-signal fix ±"), "{text}");
     assert!(
         !text.contains("Smith"),
-        "a fused fix never names a street: {text}"
+        "a best-location fix never names a street: {text}"
     );
 }

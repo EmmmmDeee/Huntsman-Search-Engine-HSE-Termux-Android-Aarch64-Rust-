@@ -21,7 +21,7 @@
 
 //!
 //! On top of it sits the one place LABEL ([`label::describe`] for a stored
-//! coordinate, [`label::describe_fused`] for a fused fix): the nearest place a
+//! coordinate, [`label::describe_fused`] for a best-location fix): the nearest place a
 //! coordinate can honestly be called, never finer than `assess` grades it, and
 //! computed at render time from the scan's own records and compiled-in
 //! gazetteers — no network (REQ-GEOLABEL-002..004). Every output surface
@@ -31,10 +31,10 @@
 pub mod grain;
 pub mod label;
 
-pub use grain::{FixBasis, FixGrain, FixPrecision, StandsFor, assess};
+pub use grain::{FixBasis, FixGrain, FixPrecision, StandsFor, assess, fix_radius_ceil_m};
 pub use label::{
-    LabelBasis, PLACE_CAVEAT, PLACE_LEGEND, PlaceContext, PlaceLabel, describe, describe_fused,
-    fused_label_json, place_label_json,
+    FixKind, LabelBasis, PLACE_CAVEAT, PLACE_LEGEND, PlaceContext, PlaceLabel, describe,
+    describe_fused, fused_label_json, place_label_json,
 };
 
 #[cfg(test)]

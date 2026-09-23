@@ -468,10 +468,10 @@ fn a_bare_country_name_never_resolves_but_the_address_it_belongs_to_does() {
                 .split(',')
                 .map(|p| p.parse().unwrap())
                 .collect();
-            assert!(is_gazetteer_centroid(shown[0], shown[1]), "{addr}");
+            assert!(tabulated_centroid_at(shown[0], shown[1]).is_some(), "{addr}");
         }
-        assert!(!is_gazetteer_centroid(-27.4801, 152.9912));
-        assert!(!is_gazetteer_centroid(-33.869844, 151.208285));
+        assert!(tabulated_centroid_at(-27.4801, 152.9912).is_none());
+        assert!(tabulated_centroid_at(-33.869844, 151.208285).is_none());
     }
 
     /// REQ-GEOLABEL-001: the one centroid authority says WHICH place a value
@@ -522,16 +522,10 @@ fn a_bare_country_name_never_resolves_but_the_address_it_belongs_to_does() {
             > TabulatedCentroid::City { name: String::new(), state: None }.rank());
     }
 
-    /// `is_gazetteer_centroid` is `tabulated_centroid_at` as a predicate — and
-    /// the curated AU locality anchors are centroids too.
+    /// The curated AU locality anchors are centroids too, alongside the city,
+    /// postcode and region rows.
     #[test]
-    fn the_gazetteer_predicate_is_the_lookup() {
-        for (lat, lon) in [(-27.4698, 153.0251), (-28.8136, 153.2773), (-27.4801, 152.9912)] {
-            assert_eq!(
-                is_gazetteer_centroid(lat, lon),
-                tabulated_centroid_at(lat, lon).is_some()
-            );
-        }
+    fn the_curated_au_anchors_are_centroids() {
         // Lismore's anchor value is in no CITIES or postcode row: only the
         // anchor table makes it a centroid.
         assert_eq!(
@@ -541,4 +535,43 @@ fn a_bare_country_name_never_resolves_but_the_address_it_belongs_to_does() {
                 state: Some("NSW"),
             })
         );
+    }
+
+    /// REQ-GEO-018: an address resolves on the LOCALITY it names, never on a
+    /// place name inside its street's name. "45 Sydney Road, Brunswick VIC"
+    /// is in Melbourne and resolved to the Sydney centroid (~700 km off);
+    /// "Hobart Rd, Kings Meadows TAS" is in Launceston and resolved to Hobart;
+    /// "Geelong Rd, Footscray" to Geelong instead of Footscray.
+    #[test]
+    fn a_place_named_in_the_street_is_not_the_address_locality() {
+        let sydney = city_coords("Sydney").expect("tabulated");
+        assert_ne!(city_coords("45 Sydney Road, Brunswick VIC"), Some(sydney));
+        assert_ne!(city_coords("45 Sydney Road Brunswick VIC"), Some(sydney));
+        let hobart = city_coords("Hobart").expect("tabulated");
+        assert_ne!(city_coords("Hobart Rd, Kings Meadows TAS"), Some(hobart));
+        let geelong = city_coords("Geelong").expect("tabulated");
+        assert_ne!(city_coords("120 Geelong Rd, Footscray VIC"), Some(geelong));
+        // The locality itself still resolves, street or no street, and a
+        // street's postcode still resolves when its suburb is untabulated.
+        assert_eq!(city_coords("12 Smith St, Sydney NSW"), Some(sydney));
+        assert_eq!(city_coords("Martin Place, Sydney"), Some(sydney));
+        assert!(city_coords("12 Smith St, Maleny QLD 4552").is_some());
+    }
+
+    /// The street recogniser never reads a gazetteer name as a street: every
+    /// tabulated city and every curated AU and VN anchor is its own locality
+    /// part, so no row can be dropped by [`city_coords`]'s street stripping.
+    #[test]
+    fn no_tabulated_locality_name_reads_as_a_street() {
+        let names = CITIES
+            .iter()
+            .map(|&(name, _, _)| name)
+            .chain(crate::util::geo::au_locality_anchors().map(|(name, _, _, _)| name));
+        for name in names {
+            assert_eq!(
+                crate::util::place_grain::locality_part(name).to_lowercase(),
+                name.to_lowercase(),
+                "{name} would be dropped as a street"
+            );
+        }
     }

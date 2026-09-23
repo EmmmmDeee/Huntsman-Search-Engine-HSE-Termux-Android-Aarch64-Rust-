@@ -561,3 +561,37 @@ fn a_postcode_less_name_matched_address_still_anchors_at_its_named_place() {
     nowhere.tag("exact-name-match");
     assert!(subject_fixes(&[nowhere]).is_empty());
 }
+
+/// REQ-GEO-FAMILY-004 / REQ-GEO-018: the postcode-less fallback resolves the
+/// address's LOCALITY, never a place name inside its street's. "45 Sydney
+/// Road, Brunswick VIC" anchored the subject at the Sydney centroid, ~700 km
+/// from their Melbourne address, so Melbourne relatives read as discordant
+/// and Sydney namesakes as family. An untabulated locality with no postcode
+/// anchors nowhere — the conservative outcome — and a tabulated one still
+/// anchors at itself.
+#[test]
+fn a_place_named_in_the_street_never_anchors_the_subject() {
+    let sydney = crate::util::city_coords::city_coords("Sydney").expect("tabulated");
+    let mut own = Entity::new(
+        EntityKind::Address,
+        "45 Sydney Road, Brunswick VIC",
+        0.70,
+        "s",
+    );
+    own.tag("exact-name-match");
+    assert_eq!(au_postcode(&own), None, "fixture must carry no postcode");
+    assert!(
+        subject_fixes(std::slice::from_ref(&own))
+            .iter()
+            .all(|f| f.coord != sydney),
+        "anchored at the city the street is named after"
+    );
+    let mut toowong = Entity::new(EntityKind::Address, "3 Brisbane St, Toowong QLD", 0.70, "s");
+    toowong.tag("exact-name-match");
+    assert_eq!(
+        subject_fixes(std::slice::from_ref(&toowong))
+            .first()
+            .map(|f| f.coord),
+        crate::util::city_coords::city_coords("Toowong")
+    );
+}

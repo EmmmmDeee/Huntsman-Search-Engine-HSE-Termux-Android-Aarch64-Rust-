@@ -137,8 +137,9 @@ fn build_entities(results: &[GeoResult], query: &str, scan_id: &str) -> Vec<Enti
         let (Some(lat), Some(lon)) = (r.latitude, r.longitude) else {
             continue;
         };
-        // The matched place must be the place ASKED ABOUT: its name a
-        // whole-word phrase of the query. GeoNames' search is fuzzy by prefix
+        // The matched place must be the place ASKED ABOUT: its name, read as
+        // one name, a run of the query's whole words
+        // (`place_grain::is_name_of_queried_place`). GeoNames' search is fuzzy by prefix
         // and ranks by population across every feature class, so
         // "Sydney, Australia" came back as "Sydney Heads" — a headland
         // (`feature_code` MT) near Isaac, Queensland, ~1,400 km from Sydney —
@@ -146,10 +147,14 @@ fn build_entities(results: &[GeoResult], query: &str, scan_id: &str) -> Vec<Enti
         // is not the named place is not a geocode of the query at all; it is
         // skipped like an invalid-coordinate row (no anchor slot, no
         // `RESULT_LIMIT` budget), so the real match behind it still anchors
-        // (REQ-OPENMETEO-002). An exonym or a renamed place ("Saigon") is
-        // lost to this geocoder — the two street geocoders still answer it,
-        // and a missed coordinate is recoverable where a wrong one is not.
-        if !crate::util::place_grain::is_whole_word_phrase(&r.name, query) {
+        // (REQ-OPENMETEO-002). How ONE name is written is forgiven — word
+        // boundaries ("Hanoi" / "Ha Noi"), "Mt"/"Mount", and the trailing
+        // "City" of GeoNames' English "Ho Chi Minh City", which a Vietnamese
+        // query "Ho Chi Minh, Vietnam" omits — but an exonym or a renamed
+        // place ("Saigon") is lost to this geocoder: the two street geocoders
+        // still answer it, and a missed coordinate is recoverable where a
+        // wrong one is not.
+        if !crate::util::place_grain::is_name_of_queried_place(&r.name, query) {
             continue;
         }
         if !is_valid_coords(lat, lon) {

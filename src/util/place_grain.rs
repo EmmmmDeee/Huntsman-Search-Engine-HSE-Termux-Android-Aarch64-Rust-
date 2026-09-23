@@ -332,8 +332,18 @@ pub struct PlaceNaming {
     pub admin: Option<AdminGrain>,
 }
 
-/// Street-type words, the same vocabulary `util::address_au`'s address pattern
-/// ends a street with.
+/// Street-type words that FOLLOW the street's name (`"Smith Street"`,
+/// `"Oak Grove"`, `"Main Circle"`), matched as a whole, ASCII-lowercased word.
+///
+/// A superset of `util::address_au`'s extraction pattern, deliberately not the
+/// same list: that pattern mints an address out of free prose, so it keeps to
+/// the types common enough to be worth the false positives; this one reads a
+/// string a caller already holds AS a place (a geocoder's input, a register's
+/// address field), where missing a street type is the expensive failure — the
+/// geocode of `"12 Oak Grove, Toowong"` was capped at the suburb, stamped an
+/// area and withheld from every pivot. Kept free of every word a tabulated
+/// locality name ends with (`city_coords::tests` holds that invariant), so no
+/// gazetteer name is ever read as a street.
 const STREET_TYPES: &[&str] = &[
     "street",
     "st",
@@ -341,6 +351,7 @@ const STREET_TYPES: &[&str] = &[
     "rd",
     "avenue",
     "ave",
+    "av",
     "lane",
     "ln",
     "drive",
@@ -354,6 +365,9 @@ const STREET_TYPES: &[&str] = &[
     "way",
     "highway",
     "hwy",
+    "freeway",
+    "fwy",
+    "motorway",
     "parade",
     "pde",
     "terrace",
@@ -368,7 +382,209 @@ const STREET_TYPES: &[&str] = &[
     "esp",
     "square",
     "sq",
+    "grove",
+    "gr",
+    "rise",
+    "mews",
+    "walk",
+    "loop",
+    "link",
+    "parkway",
+    "pkwy",
+    "promenade",
+    "row",
+    "circle",
+    "cir",
+    "trail",
+    "trl",
+    "plaza",
+    "alley",
+    "track",
 ];
+
+/// Street-type words that PRECEDE the street's name, each with whether a
+/// number AFTER the name is the house number.
+///
+/// * **Vietnamese** — `"Đường Láng"` (street), `"Phố Huế"` (street, in the
+///   old quarters), `"Ngõ 12 Láng Hạ"` / `"Ngách"` / `"Hẻm"` / `"Kiệt"`
+///   (alleys and sub-alleys), `"Đại lộ Thăng Long"` (boulevard). The house
+///   number comes FIRST (`"12 Đường Láng"`); a number after the type is part
+///   of the street's own name (`"Đường 3 Tháng 2"`, alley `"Ngõ 12"`), so it is
+///   not a house number.
+/// * **Romance** — `"rue"`, `"calle"`, `"via"`, `"avenida"`, `"rua"`,
+///   `"carrer"`: the number comes either first (`"12 rue de Rivoli"`) or after
+///   the name (`"Calle Mayor 5"`, `"Via Roma 10"`).
+///
+/// Matched on the lowercased word WITH its diacritics, never on the folded
+/// ASCII: `"Đường"` (street) and `"Dương"` (one of the commonest Vietnamese
+/// surnames) fold to the same `duong`, and a name read as a street would lift
+/// the cap on a geocode of `"Dương Văn Minh, Hà Nội"` — the Ian Thorpe defect
+/// in Vietnamese. The forms are NFC, the form every provider and keyboard
+/// emits.
+const LEADING_STREET_TYPES: &[(&[&str], bool)] = &[
+    (&["đường"], false),
+    (&["phố"], false),
+    (&["ngõ"], false),
+    (&["ngách"], false),
+    (&["hẻm"], false),
+    (&["kiệt"], false),
+    (&["đại", "lộ"], false),
+    (&["rue"], true),
+    (&["calle"], true),
+    (&["via"], true),
+    (&["avenida"], true),
+    (&["rua"], true),
+    (&["carrer"], true),
+];
+
+/// Endings that make ONE word a street name with its type fused on
+/// (`"Hauptstraße"`, `"Kerkstraat"`, `"Herrengasse"`); the house number follows
+/// the name. The abbreviated `"Hauptstr."` is recognised by its trailing
+/// `str.`.
+const COMPOUND_STREET_SUFFIXES: &[&str] = &["straße", "strasse", "straat", "gasse"];
+
+/// A house-number word: 1–3 digits with an optional letter (`"12"`, `"45A"`),
+/// or a unit/number pair (`"12/5"`, `"3/15"`). Never four digits, which is the
+/// shape of an Australian postcode (`"4066 Toowong"` names a postcode area, not
+/// house 4066), and never five, a European or US postcode.
+fn is_house_number(w: &str) -> bool {
+    let w = w.trim_matches(|c: char| !c.is_alphanumeric() && c != '/');
+    let one = |part: &str| {
+        let digits = part.chars().take_while(char::is_ascii_digit).count();
+        let rest = &part[digits..];
+        (1..=3).contains(&digits)
+            && (rest.is_empty()
+                || (rest.len() == 1 && rest.chars().all(|c| c.is_ascii_alphabetic())))
+    };
+    !w.is_empty() && w.split('/').all(one)
+}
+
+/// A street found in one comma-separated segment: its grain, and the index of
+/// the first word AFTER it (the locality that shares the segment, as in
+/// `"45 Sydney Road Brunswick"`).
+struct SegmentStreet {
+    grain: StreetGrain,
+    rest_from: usize,
+}
+
+/// The street one comma-separated segment names, if any.
+///
+/// `street_line` is true for the FIRST segment of a multi-segment string: the
+/// line an address puts its street on in Australia, the US and Vietnam alike.
+/// There, a leading house number followed by a name is a numbered street even
+/// with no type word (`"123 Nguyễn Huệ, Quận 1, TP. Hồ Chí Minh"`) — the
+/// Vietnamese convention, and the common shorthand elsewhere.
+fn segment_street(words: &[&str], street_line: bool) -> Option<SegmentStreet> {
+    let lower: Vec<String> = words
+        .iter()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .collect();
+    let has_digit = |w: &&str| w.chars().any(|c| c.is_ascii_digit());
+    let mut best: Option<SegmentStreet> = None;
+    let mut found = |grain: StreetGrain, rest_from: usize| {
+        let keep = best.as_ref().is_none_or(|b| {
+            (grain == StreetGrain::House && b.grain == StreetGrain::Street)
+                || (grain == b.grain && rest_from > b.rest_from)
+        });
+        if keep {
+            best = Some(SegmentStreet { grain, rest_from });
+        }
+    };
+    let numbered = |yes: bool| {
+        if yes {
+            StreetGrain::House
+        } else {
+            StreetGrain::Street
+        }
+    };
+    for (i, w) in lower.iter().enumerate() {
+        // A trailing type FOLLOWS a name word, so the `St` of `"St Kilda"` is a
+        // saint, not a street.
+        if i > 0 && STREET_TYPES.contains(&w.as_str()) {
+            found(numbered(words[..i].iter().any(has_digit)), i + 1);
+        }
+        // A leading type STARTS the street line — first, or after only the
+        // house number (`"12 Đường Láng"`) — and a name must follow it, so
+        // `"Brisbane via Toowoomba"` is a route, not a street.
+        if words[..i].iter().all(has_digit) {
+            for &(phrase, number_may_follow) in LEADING_STREET_TYPES {
+                let end = i + phrase.len();
+                if end < lower.len()
+                    && lower[i..end]
+                        .iter()
+                        .map(String::as_str)
+                        .eq(phrase.iter().copied())
+                {
+                    let before = i > 0;
+                    let after = number_may_follow && words[end..].iter().any(has_digit);
+                    found(numbered(before || after), words.len());
+                }
+            }
+        }
+        let compound = COMPOUND_STREET_SUFFIXES
+            .iter()
+            .any(|s| w.len() > s.len() && w.ends_with(s))
+            || words[i].to_lowercase().ends_with("str.") && w.len() > 3;
+        if compound {
+            let others = words
+                .iter()
+                .enumerate()
+                .any(|(j, o)| j != i && has_digit(o));
+            found(numbered(others), words.len());
+        }
+    }
+    if street_line
+        && words.len() >= 2
+        && is_house_number(words[0])
+        && words[1..]
+            .iter()
+            .any(|w| w.chars().any(char::is_alphabetic))
+    {
+        found(StreetGrain::House, words.len());
+    }
+    best
+}
+
+/// Each comma-separated segment of `s` with the street it names, if any.
+fn segments_with_streets(s: &str) -> Vec<(Vec<&str>, Option<SegmentStreet>)> {
+    let segments: Vec<&str> = s.split(',').collect();
+    let multi = segments.len() >= 2;
+    segments
+        .iter()
+        .enumerate()
+        .map(|(k, seg)| {
+            let words: Vec<&str> = seg.split_whitespace().collect();
+            let street = segment_street(&words, multi && k == 0);
+            (words, street)
+        })
+        .collect()
+}
+
+/// `s` with its street part removed — the locality it names, for a lookup that
+/// must resolve the PLACE and never a word of a street's name.
+///
+/// A street is named after places: `"45 Sydney Road, Brunswick VIC"` is in
+/// Melbourne, `"Hobart Rd, Kings Meadows TAS"` in Launceston, and a gazetteer
+/// that matches `"sydney"` anywhere in the string anchors both 700 km from the
+/// address. Every segment [`place_naming`] reads as a street is dropped, except
+/// the words that FOLLOW a trailing street type in the same segment (the
+/// `"Brunswick"` of `"45 Sydney Road Brunswick"`). Whitespace inside a kept
+/// segment is normalised; segments are rejoined with `", "`. Pure.
+#[must_use]
+pub fn locality_part(s: &str) -> String {
+    segments_with_streets(s)
+        .into_iter()
+        .filter_map(|(words, street)| {
+            let from = street.map_or(0, |st| st.rest_from);
+            let kept = words.get(from..).unwrap_or_default().join(" ");
+            (!kept.is_empty()).then_some(kept)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 /// The US states (and DC), lowercase, matched as whole-token phrases. A US
 /// state is region grain exactly as an Australian one is.
@@ -436,30 +652,91 @@ fn folded_tokens(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// True when `needle` occurs in `haystack` as a consecutive run of WHOLE words,
-/// compared diacritic- and case-insensitively. Whole words, so `"Sydney
-/// Heads"` is not a phrase of `"Sydney, Australia"` and `"Milton"` is not one
-/// of `"Hamilton"`. An empty `needle` is a phrase of nothing. Pure.
+/// Abbreviations a place name is written with either way — `"Mt Isa"` /
+/// `"Mount Isa"`, `"St Kilda"` / `"Saint Kilda"`, `"Pt Lonsdale"` / `"Point
+/// Lonsdale"` — read as their full word on both sides of a comparison.
+const PLACE_WORD_ABBREVIATIONS: &[(&str, &str)] = &[
+    ("mt", "mount"),
+    ("st", "saint"),
+    ("pt", "point"),
+    ("ft", "fort"),
+];
+
+/// [`folded_tokens`], with each abbreviation read as its full word.
+fn place_tokens(s: &str) -> Vec<String> {
+    folded_tokens(s)
+        .into_iter()
+        .map(|t| {
+            PLACE_WORD_ABBREVIATIONS
+                .iter()
+                .find(|(short, _)| *short == t)
+                .map_or(t, |(_, full)| (*full).to_string())
+        })
+        .collect()
+}
+
+/// True when a geocoder's matched place `name` is the place `query` asked
+/// about — its words, read as ONE name, are a consecutive run of the query's
+/// words — rather than a fuzzy neighbour of it. Pure.
 ///
-/// The test a geocoder's matched place name must pass to be an answer TO the
-/// query rather than a fuzzy neighbour of it: Open-Meteo answered
-/// `"Sydney, Australia"` with the headland "Sydney Heads", 1,400 km north in
-/// Queensland.
+/// The test a geocoder's answer must pass to be a geocode OF the query:
+/// Open-Meteo answered `"Sydney, Australia"` with the headland "Sydney Heads",
+/// 1,400 km north in Queensland, and Photon answered `"Ian Thorpe, North
+/// Carolina"` with "Thorpe-Abbotts Lane". Whole words, so `"Sydney Heads"` is
+/// not the place of `"Sydney, Australia"` and `"Milton"` is not one of
+/// `"Hamilton"`. The comparison forgives only how ONE name is written:
+///
+/// * diacritics and case (`"Hà Nội"` / `"ha noi"`);
+/// * word boundaries — the run's words are compared joined, so `"Hanoi"` and
+///   `"Ha Noi"`, `"Haiphong"` and `"Hải Phòng"` are one name;
+/// * the everyday abbreviations ([`PLACE_WORD_ABBREVIATIONS`]);
+/// * a trailing generic `"City"` on the matched name — GeoNames' English name
+///   for Vietnam's largest city is "Ho Chi Minh City", asked as `"Ho Chi Minh,
+///   Vietnam"` — unless the name without it is a state or a country ("Kansas
+///   City" is not Kansas, "Mexico City" not Mexico).
+///
+/// An empty `name` is the place of nothing.
 #[must_use]
-pub fn is_whole_word_phrase(needle: &str, haystack: &str) -> bool {
-    let want = folded_tokens(needle);
-    let have = folded_tokens(haystack);
-    !want.is_empty()
-        && want.len() <= have.len()
-        && have.windows(want.len()).any(|w| w == want.as_slice())
+pub fn is_name_of_queried_place(name: &str, query: &str) -> bool {
+    let mut want = place_tokens(name);
+    if want.len() >= 2 && want.last().is_some_and(|t| t == "city") {
+        let rest = want[..want.len() - 1].join(" ");
+        let names_region = matches!(
+            place_naming(&rest).admin,
+            Some(AdminGrain::Region | AdminGrain::Country)
+        );
+        if !names_region {
+            want.pop();
+        }
+    }
+    let joined = want.concat();
+    if joined.is_empty() {
+        return false;
+    }
+    let have = place_tokens(query);
+    (0..have.len()).any(|i| {
+        let mut run = String::new();
+        for t in &have[i..] {
+            run.push_str(t);
+            if run.len() >= joined.len() {
+                return run == joined;
+            }
+        }
+        false
+    })
 }
 
 /// What `s` names at its finest ([`PlaceNaming`]). Pure, offline, no I/O.
 ///
-/// * **Street** — a street-type word ([`STREET_TYPES`]) that FOLLOWS a name word
-///   in its comma-separated segment (so the `St` of `"St Kilda"` is a saint,
-///   not a street); a **house** when a digit-bearing word precedes it in that
-///   segment (`"12 Smith St"`, `"3/15 Smith St"`).
+/// * **Street**, read per comma-separated segment:
+///   a street-type word ([`STREET_TYPES`]) that FOLLOWS a name word (so the
+///   `St` of `"St Kilda"` is a saint, not a street) — a **house** when a
+///   digit-bearing word precedes it (`"12 Smith St"`, `"3/15 Smith St"`);
+///   a type that PRECEDES the name ([`LEADING_STREET_TYPES`]: `"12 Đường
+///   Láng"`, `"Ngõ 12 Láng Hạ"`, `"Calle Mayor 5"`); a word with its type fused
+///   on ([`COMPOUND_STREET_SUFFIXES`]: `"Hauptstraße 12"`); and, on the first
+///   segment of a multi-segment string, a house number followed by a name
+///   (`"123 Nguyễn Huệ, Quận 1"`), the Vietnamese form with no type word.
 /// * **Administrative**, first match in this order:
 ///   a tabulated locality or postcode (`util::city_coords::city_coords_with_grain`
 ///   — `"city"` is [`AdminGrain::Locality`], a postcode centroid or postcode
@@ -471,29 +748,10 @@ pub fn is_whole_word_phrase(needle: &str, haystack: &str) -> bool {
 ///   as locality at best — an unrecognised word is not evidence of a street.
 #[must_use]
 pub fn place_naming(s: &str) -> PlaceNaming {
-    let mut street = None;
-    for segment in s.split(',') {
-        let words: Vec<&str> = segment.split_whitespace().collect();
-        for (i, w) in words.iter().enumerate() {
-            let bare = w
-                .trim_matches(|c: char| !c.is_alphanumeric())
-                .to_ascii_lowercase();
-            if i == 0 || !STREET_TYPES.contains(&bare.as_str()) {
-                continue;
-            }
-            let numbered = words[..i]
-                .iter()
-                .any(|p| p.chars().any(|c| c.is_ascii_digit()));
-            let found = if numbered {
-                StreetGrain::House
-            } else {
-                StreetGrain::Street
-            };
-            if street != Some(StreetGrain::House) {
-                street = Some(found);
-            }
-        }
-    }
+    let street = segments_with_streets(s)
+        .into_iter()
+        .filter_map(|(_, st)| st.map(|st| st.grain))
+        .max_by_key(|g| *g == StreetGrain::House);
     let tokens = folded_tokens(s);
     let names_us_state = US_STATES.iter().any(|st| {
         let want: Vec<&str> = st.split(' ').collect();
@@ -542,7 +800,10 @@ mod tests {
 
 #[cfg(test)]
 mod city_grain_tests {
-    use super::{AdminGrain, StreetGrain, is_whole_word_phrase, negates_city_grain, place_naming};
+    use super::{
+        AdminGrain, StreetGrain, is_name_of_queried_place, locality_part, negates_city_grain,
+        place_naming,
+    };
 
     /// REQ-SOCIALLOC-002: a region label must not earn the city's centroid.
     #[test]
@@ -625,17 +886,101 @@ mod city_grain_tests {
         assert_eq!(place_naming("Ian Thorpe").admin, None);
     }
 
-    /// REQ-OPENMETEO-002: a match must be a whole-word phrase of the query.
+    /// REQ-GEOLABEL-010: a street is recognised in the forms the operating
+    /// jurisdiction and the common AU/US/European addresses write it — a
+    /// leading Vietnamese or Romance type, a fused German/Dutch type, the
+    /// Vietnamese "number + name" street line with no type word, and the
+    /// AU/US types the first list lacked — without reading a surname, a
+    /// route or a postcode area as one.
     #[test]
-    fn whole_word_phrase_matching() {
-        assert!(is_whole_word_phrase("Sydney", "Sydney, Australia"));
-        assert!(!is_whole_word_phrase("Sydney Heads", "Sydney, Australia"));
-        assert!(!is_whole_word_phrase("Milton", "Hamilton, NZ"));
-        assert!(is_whole_word_phrase("Hà Nội", "ha noi, vietnam"));
-        assert!(!is_whole_word_phrase(
+    fn place_naming_reads_streets_in_every_form_the_jurisdictions_write() {
+        let house = Some(StreetGrain::House);
+        let street = Some(StreetGrain::Street);
+        for (s, want) in [
+            ("12 Đường Láng, Phường Láng, Hà Nội", house),
+            ("Đường Láng, Hà Nội", street),
+            ("5 Phố Huế, Hai Bà Trưng, Hà Nội", house),
+            ("Ngõ 12 Láng Hạ, Đống Đa, Hà Nội", street),
+            ("Hẻm 45 Lê Lợi, Huế", street),
+            ("Đường 3 Tháng 2, Quận 10", street),
+            ("Đại lộ Thăng Long, Hà Nội", street),
+            ("123 Nguyễn Huệ, Quận 1, TP. Hồ Chí Minh", house),
+            ("12 rue de Rivoli, Paris", house),
+            ("Calle Mayor 5, Madrid", house),
+            ("Via Roma 10, Torino", house),
+            ("Hauptstraße 12, Berlin", house),
+            ("Kerkstraat 3, Amsterdam", house),
+            ("Hauptstr. 7, Berlin", house),
+            ("12 Oak Grove, Toowong QLD 4066", house),
+            ("450 Main Circle, Springfield", house),
+            ("3 Harbour Rise, Hope Island", house),
+            ("7 Kings Mews, London", house),
+            ("Riverside Walk, Brisbane", street),
+            // Types read on their own, not through the first-line number rule.
+            ("Oak Grove, Toowong QLD", street),
+            ("12 Oak Grove Toowong", house),
+            ("Main Circle, Springfield", street),
+            ("1 Sunset Parkway, Denver", house),
+        ] {
+            assert_eq!(place_naming(s).street, want, "{s}");
+        }
+        for s in [
+            // A surname is not a street: "Dương" folds to the same ASCII as
+            // "Đường" but is not the street word.
+            "Dương Văn Minh, Hà Nội",
+            // A route, not a street line.
+            "Brisbane via Toowoomba",
+            // A postcode area, a lone name, a saint.
+            "4066 Toowong, QLD",
+            "Nguyễn Huệ",
+            "St Kilda, Victoria",
+            // One segment: a bare number + name is not read as a street line.
+            "12 Nguyễn Huệ",
+        ] {
+            assert_eq!(place_naming(s).street, None, "{s}");
+        }
+    }
+
+    /// REQ-GEO-018: the locality part of an address is what is left once its
+    /// street is dropped — never a place name inside the street's.
+    #[test]
+    fn the_locality_part_drops_the_street_and_keeps_the_place() {
+        assert_eq!(
+            locality_part("45 Sydney Road, Brunswick VIC"),
+            "Brunswick VIC"
+        );
+        assert_eq!(
+            locality_part("45 Sydney Road Brunswick VIC 3056"),
+            "Brunswick VIC 3056"
+        );
+        assert_eq!(
+            locality_part("Hobart Rd, Kings Meadows TAS"),
+            "Kings Meadows TAS"
+        );
+        assert_eq!(
+            locality_part("12 Đường Láng, Phường Láng, Hà Nội"),
+            "Phường Láng, Hà Nội"
+        );
+        assert_eq!(locality_part("Martin Place, Sydney"), "Sydney");
+        // Nothing to drop: the string is returned whitespace-normalised.
+        assert_eq!(locality_part("Toowong,  QLD"), "Toowong, QLD");
+        assert_eq!(locality_part("St Kilda, Victoria"), "St Kilda, Victoria");
+    }
+
+    /// REQ-OPENMETEO-002: a match must be the queried place, not a neighbour.
+    #[test]
+    fn a_matched_name_must_be_the_queried_place() {
+        assert!(is_name_of_queried_place("Sydney", "Sydney, Australia"));
+        assert!(!is_name_of_queried_place(
+            "Sydney Heads",
+            "Sydney, Australia"
+        ));
+        assert!(!is_name_of_queried_place("Milton", "Hamilton, NZ"));
+        assert!(is_name_of_queried_place("Hà Nội", "ha noi, vietnam"));
+        assert!(!is_name_of_queried_place(
             "Thorpe-Abbotts Lane",
             "Ian Thorpe, North Carolina"
         ));
-        assert!(!is_whole_word_phrase("", "anything"));
+        assert!(!is_name_of_queried_place("", "anything"));
     }
 }

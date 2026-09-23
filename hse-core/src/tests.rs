@@ -2902,3 +2902,36 @@ fn a_stale_unmarked_copy_never_shadows_the_marked_copy_of_one_record() {
     assert_eq!(v(&one), v(&two));
     assert_eq!(v(&one), Some(VerificationMethod::EmailLinked));
 }
+
+/// REQ-GEOLABEL-015: when two copies of one record name different scans, the
+/// owning entity's scan wins if either copy names it — whichever arrives
+/// first. A recalled prior-scan row that the new scan re-observes live is the
+/// new scan's observation; keeping the recalled id filed it under the old
+/// scan, and the new scan's per-scan readers skipped it. A pair naming
+/// neither scan keeps the existing id, as before.
+#[test]
+fn a_merged_record_names_the_owning_scan_when_either_copy_does() {
+    let row = |scan: &str| {
+        let mut ev = Evidence::new("geocode", "Reverse geocode for -27.48,153.01");
+        ev.scan_id = scan.to_string();
+        ev
+    };
+    let entity = |scan: &str, ev: Evidence| {
+        let mut e = Entity::new(EntityKind::Address, "12 Smith St, Toowong", 0.7, "owner");
+        e.add_evidence(ev);
+        e.scan_id = scan.to_string();
+        e
+    };
+    for (held, incoming) in [("prior", "owner"), ("owner", "prior")] {
+        let mut e = entity("owner", row(held));
+        e.merge(entity("owner", row(incoming)));
+        assert_eq!(e.evidence.len(), 1);
+        assert_eq!(e.evidence[0].scan_id, "owner", "{held} then {incoming}");
+    }
+    let mut e = entity("owner", row("a"));
+    e.merge(entity("owner", row("b")));
+    assert_eq!(
+        e.evidence[0].scan_id, "a",
+        "neither is the owner: unchanged"
+    );
+}

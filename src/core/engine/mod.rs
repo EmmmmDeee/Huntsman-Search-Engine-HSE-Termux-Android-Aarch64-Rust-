@@ -952,6 +952,11 @@ impl ScanEngine {
             enrich_geospatial(&mut derived);
             if let Some(existing) = entity_map.get_mut(&derived.uid) {
                 existing.merge(derived);
+                // Re-decide the merged point's grain stamp and country answer,
+                // exactly as the dispatch merge does: the merge unions tags,
+                // so without this a centroid landing on an earlier point kept
+                // both points' `fix-grain:` stamps (REQ-GEOLABEL-005).
+                enrich_geospatial(existing);
             } else {
                 entity_map.insert(derived.uid.clone(), derived);
             }
@@ -2732,6 +2737,8 @@ impl ScanEngine {
                     d.generation = depth;
                     if let Some(existing) = entity_map.get_mut(&d.uid) {
                         existing.merge(d);
+                        // As at the seed round: one grain stamp per point.
+                        enrich_geospatial(existing);
                     } else {
                         entity_map.insert(d.uid.clone(), d);
                     }

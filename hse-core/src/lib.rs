@@ -1409,7 +1409,7 @@ impl Entity {
                     .iter_mut()
                     .find(|e| e.source == ev.source && e.summary == ev.summary)
                 {
-                    Some(existing) => merge_evidence_attrs(existing, ev),
+                    Some(existing) => merge_evidence_attrs(existing, ev, &self.scan_id),
                     None => self.evidence.push(ev),
                 }
             }
@@ -1447,7 +1447,7 @@ impl Entity {
                     })
                 });
                 match existing_index {
-                    Some(i) => merge_evidence_attrs(&mut self.evidence[i], ev),
+                    Some(i) => merge_evidence_attrs(&mut self.evidence[i], ev, &self.scan_id),
                     None => {
                         index
                             .entry(identity_hash)
@@ -1628,7 +1628,25 @@ fn evidence_identity_hash(state: &RandomState, source: &str, summary: &str) -> u
 /// `openarch` register entry) and recalled into a re-scan shadowed the fresh,
 /// marked copy of the identical `(source, summary)` — so the stale record kept
 /// corroborating, was re-persisted, and never healed (REQ-CORE-019).
-fn merge_evidence_attrs(existing: &mut Evidence, incoming: Evidence) {
+///
+/// The record's `scan_id` names the scan that made the observation, and when
+/// the two copies name different scans, the OWNING entity's scan (`owner_scan`)
+/// wins if either copy names it: both scans made the observation, and the copy
+/// being built is that scan's. A recalled prior-scan row that a live module
+/// re-observes in the new scan is the new scan's observation too — keeping the
+/// first-arrived (recalled) id filed the new scan's own reverse geocode under
+/// the old scan, so the new scan's place label skipped it as another scan's
+/// and fell back a tier, the label depending on recall history rather than on
+/// what the scan observed (REQ-GEOLABEL-003). A pair naming neither keeps the
+/// existing id, as before. Deterministic whichever copy arrives first, since
+/// the owner is fixed.
+fn merge_evidence_attrs(existing: &mut Evidence, incoming: Evidence, owner_scan: &str) {
+    if !owner_scan.is_empty()
+        && existing.scan_id != incoming.scan_id
+        && incoming.scan_id == owner_scan
+    {
+        existing.scan_id.clone_from(&incoming.scan_id);
+    }
     existing.is_annotation |= incoming.is_annotation;
     existing.is_inferred |= incoming.is_inferred;
     existing.verification = match (existing.verification, incoming.verification) {

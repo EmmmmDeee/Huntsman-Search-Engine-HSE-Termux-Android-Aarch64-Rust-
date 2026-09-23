@@ -3846,3 +3846,52 @@ fn a_recovered_scan_reconciles_a_merged_points_country_like_the_live_one() {
     assert_eq!(cs, vec!["country:CA"], "{:?}", recovered[0].tags);
     assert!(!recovered[0].has_tag("tz:America/New_York"));
 }
+
+/// REQ-GEOLABEL-016: a stored point carries ONE grain stamp, the coarsest.
+/// The engine re-stamps a point coarser in memory when a later round merges a
+/// coarser account onto it, but the store's merge unioned tags, so the shared
+/// row and the scan's own copy both kept the earlier, finer stamp beside the
+/// new one — two contradictory grains in every export's tag column.
+#[test]
+fn a_stored_point_keeps_one_grain_stamp_the_coarsest() {
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    insert_scan(&store, "scan-t");
+    insert_scan(&store, "scan-s");
+    let stamped = |scan: &str, grain: &str| {
+        let mut e = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.6, scan);
+        e.add_evidence(Evidence::new("search_engines", format!("lookup {grain}")));
+        e.tag("coarse");
+        e.tag(format!("fix-grain:{grain}"));
+        e
+    };
+    // Another scan touches the uid first, so scan-s's copy takes the copy
+    // merge path, not the shared row's.
+    store
+        .upsert_entity(&stamped("scan-t", "suburb"))
+        .expect("t");
+    store
+        .upsert_entity(&stamped("scan-s", "locality"))
+        .expect("s1");
+    store
+        .upsert_entity(&stamped("scan-s", "region"))
+        .expect("s2");
+    let grains = |e: &Entity| -> Vec<String> {
+        e.tags
+            .iter()
+            .filter(|t| t.starts_with("fix-grain:"))
+            .cloned()
+            .collect()
+    };
+    let uid = stamped("scan-s", "region").uid;
+    let shared = store.get_entity(&uid).expect("read").expect("row");
+    assert_eq!(grains(&shared), ["fix-grain:region"], "{:?}", shared.tags);
+    let copy = store
+        .entities_for_scan("scan-s")
+        .expect("read")
+        .into_iter()
+        .find(|e| e.uid == uid)
+        .expect("scan-s's copy");
+    assert_eq!(grains(&copy), ["fix-grain:region"], "{:?}", copy.tags);
+    let _ = std::fs::remove_file(&path);
+}

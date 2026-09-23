@@ -3179,3 +3179,50 @@ fn a_reimported_csv_export_ignores_the_place_columns() {
         );
     }
 }
+
+/// REQ-GEOLABEL-014: a coordinate never re-imports finer than the scan that
+/// found it graded it. The CSV keeps each record's source and summary but not
+/// its attributes, so a beaconDB fix recorded at `accuracy_m=1500` (a suburb,
+/// ±2 km) came back graded by the Wi-Fi class default — a street, ±80 m — and
+/// a forward geocode capped at a city-only input came back a 40 m rooftop. The
+/// export's `fix_radius_m` column is carried back as a radius floor.
+#[test]
+fn a_reimported_coordinate_is_never_finer_than_its_export() {
+    use crate::core::entity::{Entity, Evidence};
+    use crate::core::place::{FixGrain, assess};
+    let mut wifi = Entity::new(EntityKind::Coordinates, "-27.481234,153.012345", 0.8, "s");
+    wifi.add_evidence(
+        Evidence::new("beacondb", "beaconDB Wi-Fi position").with_attr("accuracy_m", "1500"),
+    );
+    let mut capped = Entity::new(EntityKind::Coordinates, "-27.391234,153.112345", 0.6, "s");
+    capped.add_evidence(
+        Evidence::new("geocode", "Geocoded \"Toowong\"")
+            .with_attr("input_address", "Toowong")
+            .with_attr("place_type", "house"),
+    );
+    let originals = [wifi, capped];
+    let csv = crate::app::export::entities_to_csv(&originals, "s");
+    assert!(
+        csv.lines()
+            .next()
+            .is_some_and(|h| h.ends_with(",fix_radius_m")),
+        "{csv}"
+    );
+    let (ents, _stats) = parse_hse_csv(&csv, "s2");
+    assert_eq!(ents.len(), originals.len());
+    for original in &originals {
+        let back = ents
+            .iter()
+            .find(|e| e.value == original.value)
+            .expect("re-imported");
+        let (was, now) = (assess(original), assess(back));
+        assert!(now.radius_m >= was.radius_m, "{was:?} -> {now:?}");
+        assert!(now.grain >= was.grain, "{was:?} -> {now:?}");
+        assert!(now.grain >= FixGrain::Suburb, "{now:?}");
+        // And the round trip is stable: exporting the re-import carries the
+        // same radius again.
+        let again = crate::app::export::entities_to_csv(std::slice::from_ref(back), "s2");
+        let (ents2, _) = parse_hse_csv(&again, "s3");
+        assert_eq!(assess(&ents2[0]).radius_m, now.radius_m);
+    }
+}

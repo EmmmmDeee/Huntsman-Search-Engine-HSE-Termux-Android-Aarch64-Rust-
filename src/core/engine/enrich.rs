@@ -1219,7 +1219,7 @@ mod tests {
                 .with_attr("recycle_query", "\"x\""),
         );
         assert!(
-            !crate::util::city_coords::is_gazetteer_centroid(-27.4801, 152.9912),
+            crate::util::city_coords::tabulated_centroid_at(-27.4801, 152.9912).is_none(),
             "fixture must be off the tables, or this proves nothing"
         );
         assert!(is_coarse_geo(&recycled));
@@ -1366,6 +1366,40 @@ mod tests {
         enrich_geospatial(&mut unknown);
         assert!(!unknown.has_tag(crate::core::tags::COARSE));
         assert!(fix_grains(&unknown).is_empty());
+
+        // REQ-GEOLABEL-010: a geocoder's house hit for a numbered street in a
+        // form the English trailing-type list did not know — Vietnamese
+        // leading types, the bare "number + name" Vietnamese street line, the
+        // common AU/US types — is a point, not an area: never stamped, so it
+        // keeps its pivots.
+        for (value, input) in [
+            ("21.017300,105.812300", "12 Đường Láng, Phường Láng, Hà Nội"),
+            (
+                "10.773400,106.703500",
+                "123 Nguyễn Huệ, Quận 1, TP. Hồ Chí Minh",
+            ),
+            ("-27.480100,152.991200", "12 Oak Grove, Toowong QLD 4066"),
+            ("39.781700,-89.650100", "450 Main Circle, Springfield"),
+        ] {
+            let mut house = Entity::new(EntityKind::Coordinates, value, 0.7, "s1");
+            house.add_evidence(
+                Evidence::new("geocode", format!("Geocoded \"{input}\""))
+                    .with_attr("input_address", input)
+                    .with_attr("place_type", "house"),
+            );
+            enrich_geospatial(&mut house);
+            assert!(
+                !house.has_tag(crate::core::tags::COARSE),
+                "{input}: {:?}",
+                house.tags
+            );
+            assert!(fix_grains(&house).is_empty(), "{input}: {:?}", house.tags);
+            assert_eq!(
+                crate::core::place::assess(&house).grain,
+                crate::core::place::FixGrain::Point,
+                "{input}"
+            );
+        }
 
         // A merged point carries ONE grain, re-decided coarser-only: a later
         // state-grain answer on the stamped locality re-stamps it a region.
