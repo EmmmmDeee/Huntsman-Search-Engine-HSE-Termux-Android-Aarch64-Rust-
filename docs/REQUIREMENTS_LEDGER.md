@@ -20367,11 +20367,11 @@ instead of repeating the literal `30`.
 
 | Falsification | Mutation | Expected failing test | Result |
 |---|---|---|---|
-| baseline-caller | profile_kit calls `city_coords` again | a_bare_or_embedded_4_digit_code… | see apply log |
-| baseline-gate | remove the `names_au_locality` gate | a_bare_or_embedded_4_digit_code… | see apply log |
-| baseline-flag | self_reported passes `false` | a_bare_or_embedded_4_digit_code… | see apply log |
-| overcorrect-no-postcode-fallback | gate every postcode fallback | a_profile_location_that_names_australia… | see apply log |
-| overcorrect-gate-before-city-match | gate before the city match | a_profile_location_that_names_australia… (Auckland 1010, Brisbane 4000) | see apply log |
+| baseline-caller | profile_kit calls `city_coords` again | a_bare_or_embedded_4_digit_code… | killed |
+| baseline-gate | remove the `names_au_locality` gate | a_bare_or_embedded_4_digit_code… | killed |
+| baseline-flag | self_reported passes `false` | a_bare_or_embedded_4_digit_code… | killed |
+| overcorrect-no-postcode-fallback | gate every postcode fallback | a_profile_location_that_names_australia… | killed |
+| overcorrect-gate-before-city-match | gate before the city match | a_profile_location_that_names_australia… (Auckland 1010, Brisbane 4000) | killed |
 
 **Falsification (compiled):** 5 of 5 killed.
 
@@ -20385,9 +20385,9 @@ instead of repeating the literal `30`.
 
 | Test | Falsified by | Result |
 |---|---|---|
-| `an_oidc_issuer_webfinger_is_not_a_fediverse_account` | baseline-no-proof-gate | see apply log |
-| `a_webfinger_with_only_untyped_aliases_is_not_a_fediverse_account` | baseline-no-proof-gate | see apply log |
-| `a_profile_page_with_a_non_http_href_is_not_proof_of_an_account` | baseline-profile-http-filter-late | see apply log |
-| `an_actor_only_webfinger_is_still_a_fediverse_account` | baseline-actor-type-activity-json-only, overcorrect-require-profile-page, overcorrect-require-both | see apply log |
+| `an_oidc_issuer_webfinger_is_not_a_fediverse_account` | baseline-no-proof-gate | killed |
+| `a_webfinger_with_only_untyped_aliases_is_not_a_fediverse_account` | baseline-no-proof-gate | killed |
+| `a_profile_page_with_a_non_http_href_is_not_proof_of_an_account` | baseline-profile-http-filter-late | killed |
+| `an_actor_only_webfinger_is_still_a_fediverse_account` | baseline-actor-type-activity-json-only, overcorrect-require-profile-page, overcorrect-require-both | killed |
 
 **Falsification (compiled):** 5 of 5 killed.
