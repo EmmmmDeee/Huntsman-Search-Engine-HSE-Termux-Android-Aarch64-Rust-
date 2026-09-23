@@ -166,22 +166,28 @@ impl Module for EmailRep {
 /// documents that it "can include reputation sources for the domain", so a
 /// mailbox nobody holds at a reputable domain has references. What does
 /// qualify: profiles the address is used on, a breach or credential leak it
-/// appeared in, behaviour it was observed in, or a `first_seen` date (the
-/// vendor writes `never` when there is none).
+/// appeared in, behaviour it was observed in (the `*_recent` flags included),
+/// or a `first_seen` / `last_seen` date (the vendor writes `never` when there
+/// is none).
 pub(super) fn report_observes_the_address(body: &RepResp) -> bool {
+    // A date the vendor writes when it has one, and `never` when it has not.
+    let dated = |d: Option<&str>| {
+        d.is_some_and(|d| !d.trim().is_empty() && !d.trim().eq_ignore_ascii_case("never"))
+    };
     body.details.as_ref().is_some_and(|d| {
         !d.profiles.is_empty()
             || [
                 d.data_breach,
                 d.credentials_leaked,
+                d.credentials_leaked_recent,
                 d.malicious_activity,
+                d.malicious_activity_recent,
                 d.spam,
                 d.blacklisted,
             ]
             .contains(&Some(true))
-            || d.first_seen
-                .as_deref()
-                .is_some_and(|f| !f.trim().is_empty() && !f.trim().eq_ignore_ascii_case("never"))
+            || dated(d.first_seen.as_deref())
+            || dated(d.last_seen.as_deref())
     })
 }
 

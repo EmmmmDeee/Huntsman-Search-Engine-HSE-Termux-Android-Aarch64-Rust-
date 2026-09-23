@@ -210,6 +210,10 @@ use super::*;
             .find(|e| e.kind == EntityKind::Url && e.value == "https://linkedin.com/in/jdoe")
             .expect("linkedin URL pivot");
         assert!(url.has_tag("employee-profile"));
+        assert!(
+            url.has_tag(crate::core::tags::THIRD_PARTY),
+            "the engine's never-pivot gate reads this (REQ-HUNTER-003)"
+        );
         assert!(!url.has_tag("social-profile"), "a colleague's, not the subject's");
     }
 
@@ -230,6 +234,7 @@ use super::*;
             .expect("twitter handle pivot");
         assert_eq!(user.value, "twitter:jdoe");
         assert!(user.has_tag("employee-profile"));
+        assert!(user.has_tag(crate::core::tags::THIRD_PARTY));
         assert!(!user.has_tag("social-profile"), "a colleague's, not the subject's");
     }
 
@@ -403,7 +408,7 @@ use super::*;
     }
 
     #[test]
-    fn a_domain_searchs_colleague_profiles_are_never_the_subjects_accounts() {
+    fn a_domain_search_colleague_profiles_are_never_subject_accounts() {
         // REQ-HUNTER-001: FAILS on `social-profile`. A domain search lists every
         // employee Hunter holds; three colleagues' LinkedIn / Twitter / GitHub
         // URLs were read by AU-055 as "the subject's own confirmed accounts" on

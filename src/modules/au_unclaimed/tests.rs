@@ -658,7 +658,7 @@ mod qld {
     }
 
     #[test]
-    fn a_named_co_owner_on_the_seed_companys_row_is_not_the_subject() {
+    fn a_named_co_owner_on_the_seed_company_row_is_not_the_subject() {
         let recs = records(
             r#"{"result":{"total":1,"records":[
                 {"_id":1,"Owner":"FORD PTY LTD & JOHN FORD","Amount":"80.00","PCode":"4000"}
@@ -671,5 +671,54 @@ mod qld {
             .expect("the co-owner is recorded");
         assert!(john.has_tag("co-owner") && !john.has_tag("exact-name-match"));
         assert!(john.confidence < crate::core::confidence::MEDIUM);
+    }
+}
+
+#[cfg(test)]
+mod company_filter {
+    use super::super::qld_helpers::records_to_entities;
+    use crate::core::entity::EntityKind;
+    use crate::core::scan::TargetKind;
+    use crate::util::ckan::Response as CkanResp;
+
+    fn records(raw: &str) -> Vec<serde_json::Map<String, serde_json::Value>> {
+        serde_json::from_str::<CkanResp>(raw).expect("parses").result.expect("result").records
+    }
+
+    #[test]
+    fn the_seed_company_is_emitted_however_its_legal_form_and_article_are_written() {
+        // REQ-AU-UNCLAIMED-003: FAILS on the token-subset emit filter. The row is
+        // exact (same_company folds both to ACME GROUP) but the filter needed THE
+        // and LIMITED in the owner, so the seed company itself was never emitted.
+        let recs = records(
+            r#"{"result":{"total":1,"records":[
+                {"_id":1,"Owner":"ACME GROUP PTY LTD","Amount":"80.00","PCode":"4000"}
+            ]}}"#,
+        );
+        let seed = "The Acme Group Limited";
+        let ents = records_to_entities(&recs, 1, seed, seed, false, TargetKind::Organisation, "s");
+        let org = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Organisation && e.value == "ACME GROUP PTY LTD")
+            .expect("the seed company is emitted");
+        assert!(org.confidence >= crate::core::confidence::MEDIUM);
+    }
+
+    #[test]
+    fn a_sender_carrying_the_seed_words_is_a_lead_not_the_subject() {
+        // REQ-AU-UNCLAIMED-003: FAILS when a matching sender pays at the row's
+        // weight. "FORD CREDIT" lodged money owed to "FORD PTY LTD"; it carries
+        // the seed's word and is not the seed company.
+        let recs = records(
+            r#"{"result":{"total":1,"records":[
+                {"_id":1,"Owner":"FORD PTY LTD","Amount":"80.00","SenderName":"FORD CREDIT PTY LTD","PCode":"4000"}
+            ]}}"#,
+        );
+        let ents = records_to_entities(&recs, 1, "Ford", "Ford", false, TargetKind::Organisation, "s");
+        let sender = ents
+            .iter()
+            .find(|e| e.has_tag("sender-company") && e.value == "FORD CREDIT PTY LTD")
+            .expect("the lead is kept");
+        assert!(sender.confidence < crate::core::confidence::MEDIUM, "{}", sender.confidence);
     }
 }

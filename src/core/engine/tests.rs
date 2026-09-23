@@ -6569,12 +6569,12 @@ async fn an_unbudgeted_scan_is_not_reported_as_truncated() {
     );
 }
 
-/// Emits one `Url` — a court-judgment page — for the `seed` Username. With
-/// `document` set the Url carries [`crate::core::tags::SOURCE_DOCUMENT`]; without
-/// it the same page is an ordinary Url, the control that proves the tag alone is
-/// what stops the pivot.
+/// Emits one `Url` — a court-judgment page — for the `seed` Username, carrying
+/// `tag` when set ([`crate::core::tags::SOURCE_DOCUMENT`] or
+/// [`crate::core::tags::THIRD_PARTY`]); without one the same page is an ordinary
+/// Url, the control that proves the tag alone is what stops the pivot.
 struct CourtRecordModule {
-    document: bool,
+    tag: Option<&'static str>,
 }
 
 #[async_trait::async_trait]
@@ -6605,8 +6605,8 @@ impl Module for CourtRecordModule {
                 0.9,
                 &ctx.scan_id,
             );
-            if self.document {
-                e.tag(crate::core::tags::SOURCE_DOCUMENT);
+            if let Some(tag) = self.tag {
+                e.tag(tag);
             }
             e.add_evidence(crate::core::entity::Evidence::new(
                 "court_record",
@@ -6657,7 +6657,7 @@ impl Module for PageMinerModule {
 /// with every other expansion gate opened (all identities, no floor, no ROI) and
 /// return the persisted entity values plus every `EntityExcluded` reason the
 /// engine recorded for the judgment Url.
-async fn run_court_record_scan(document: bool) -> (Vec<String>, Vec<String>) {
+async fn run_court_record_scan(tag: Option<&'static str>) -> (Vec<String>, Vec<String>) {
     use crate::core::test_support::InMemoryStore;
 
     let store = Arc::new(InMemoryStore::new());
@@ -6665,7 +6665,7 @@ async fn run_court_record_scan(document: bool) -> (Vec<String>, Vec<String>) {
     let (bus, mut rx) = tokio::sync::broadcast::channel(8192);
     let engine = ScanEngine::new(
         vec![
-            Arc::new(CourtRecordModule { document }),
+            Arc::new(CourtRecordModule { tag }),
             Arc::new(PageMinerModule),
         ],
         store_port,
@@ -6719,7 +6719,7 @@ async fn a_source_document_url_is_recorded_but_never_pivoted() {
     // stop: the Url is persisted as evidence, no Url-accepting module is ever
     // dispatched against it, and the skip is recorded under its own reason so
     // the audit ledger can account for it.
-    let (values, reasons) = run_court_record_scan(true).await;
+    let (values, reasons) = run_court_record_scan(Some(crate::core::tags::SOURCE_DOCUMENT)).await;
     assert!(
         values.iter().any(|v| v.contains("austlii.edu.au")),
         "the judgment Url must still be recorded as evidence: {values:?}"
@@ -6735,7 +6735,7 @@ async fn a_source_document_url_is_recorded_but_never_pivoted() {
 
     // Control: the identical page without the tag IS pivoted on, so the tag —
     // not the floor, the identity gate or the infra gate — is what stopped it.
-    let (values, reasons) = run_court_record_scan(false).await;
+    let (values, reasons) = run_court_record_scan(None).await;
     assert!(
         values.iter().any(|v| v == "mined-from-page"),
         "an untagged Url at 0.9 with every gate open must be pivoted on: {values:?}"
@@ -6991,5 +6991,26 @@ async fn a_cache_replay_of_a_partial_answer_is_still_partial() {
         verdicts.get("partial-scan-2").cloned().flatten().as_deref(),
         Some(live.as_str()),
         "the replay must carry the archived answer's own verdict, not claim it complete"
+    );
+}
+
+#[tokio::test]
+async fn a_third_party_page_is_recorded_but_never_pivoted() {
+    // REQ-HUNTER-003: a colleague's profile a domain search lists is a page about
+    // somebody else. Mining it would attribute their emails and phones to the
+    // subject, so it takes the same gate as a source document, under its own
+    // reason. The untagged control is `a_source_document_url_is_recorded_but_never_pivoted`'s.
+    let (values, reasons) = run_court_record_scan(Some(crate::core::tags::THIRD_PARTY)).await;
+    assert!(
+        values.iter().any(|v| v.contains("austlii.edu.au")),
+        "the page is still recorded as evidence: {values:?}"
+    );
+    assert!(
+        !values.iter().any(|v| v == "mined-from-page"),
+        "a third party's page must never be pivoted on: {values:?}"
+    );
+    assert!(
+        reasons.iter().any(|r| r == "third_party_not_pivoted"),
+        "recorded under its own reason, got {reasons:?}"
     );
 }

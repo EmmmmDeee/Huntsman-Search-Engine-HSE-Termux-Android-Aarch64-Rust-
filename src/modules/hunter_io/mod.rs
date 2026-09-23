@@ -529,7 +529,10 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
         // `social-profile` is what AU-055 ("the subject's own confirmed
         // accounts") and AU-038 (cross-platform identity) read as the subject's,
         // so it raised a colleague's LinkedIn to a High finding about the subject
-        // (REQ-HUNTER-001). `employee-profile` keeps the pivot and says whose.
+        // (REQ-HUNTER-001). `employee-profile` says whose. `THIRD_PARTY` keeps
+        // the engine from mining the page into the subject's scan — a crawl of a
+        // colleague's profile would attribute their emails and phones to the
+        // subject (REQ-HUNTER-003).
         for (network, value) in [("linkedin", &entry.linkedin), ("twitter", &entry.twitter)] {
             let Some(v) = nonempty(value) else {
                 continue;
@@ -539,6 +542,7 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
                     let mut e = Entity::new(EntityKind::Url, &v, confidence::MEDIUM_HIGH, scan_id);
                     e.tag("hunter-io");
                     e.tag("employee-profile");
+                    e.tag(crate::core::tags::THIRD_PARTY);
                     e.add_evidence(
                         Evidence::new(SRC, format!("Hunter.io {network} profile for {addr}"))
                             .with_attr("email", &addr)
@@ -557,6 +561,7 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
                     );
                     e.tag("hunter-io");
                     e.tag("employee-profile");
+                    e.tag(crate::core::tags::THIRD_PARTY);
                     e.add_evidence(
                         Evidence::new(SRC, format!("Hunter.io {network} handle for {addr}"))
                             .with_attr("email", &addr)

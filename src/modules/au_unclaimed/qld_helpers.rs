@@ -183,6 +183,17 @@ pub(super) fn row_verdict(
     Some(exact)
 }
 
+/// Whether an Organisation seed's row should emit `company` at all: it IS the
+/// seed company ([`crate::util::abn::same_company`], which folds legal forms, a
+/// leading `THE` and punctuation) or carries every seed token. The folded test
+/// comes first because the token test alone dropped the seed company itself —
+/// `"The Acme Group Limited"` against `"ACME GROUP PTY LTD"` needs `THE` and
+/// `LIMITED`, and the row that [`row_verdict`] accepted as exact emitted no
+/// company (REQ-AU-UNCLAIMED-003). **Pure.**
+fn company_carries_seed(company: &str, seed: &str) -> bool {
+    crate::util::abn::same_company(company, seed) || owner_matches_full_name(company, seed)
+}
+
 /// True if `surname` is the SURNAME position — the last whitespace token — of
 /// `name`, a single string already parsed by [`owner_person_names`] (so it is
 /// in that function's Given-\[Middle\]-Surname normalised order).
@@ -614,7 +625,7 @@ pub(super) fn records_to_entities(
         out.extend(
             companies
                 .into_iter()
-                .filter(|company| !org_is_seed || owner_matches_full_name(company, seed))
+                .filter(|company| !org_is_seed || company_carries_seed(company, seed))
                 .map(|company| {
                     // On an Organisation seed, a syndicate member is the
                     // subject only if it IS the seed company; a sibling that
@@ -657,10 +668,18 @@ pub(super) fn records_to_entities(
             out.extend(
                 crate::util::abn::company_names(sender)
                     .into_iter()
-                    .filter(|company| !org_is_seed || owner_matches_full_name(company, seed))
+                    .filter(|company| !org_is_seed || company_carries_seed(company, seed))
                     .map(|company| {
+                        // The same rule as the owner's syndicate: only the seed
+                        // company itself pays at the row's weight.
+                        let conf = if org_is_seed && !crate::util::abn::same_company(&company, seed)
+                        {
+                            confidence::TENTATIVE
+                        } else {
+                            find_conf
+                        };
                         let mut org =
-                            Entity::new(EntityKind::Organisation, &company, find_conf, scan_id);
+                            Entity::new(EntityKind::Organisation, &company, conf, scan_id);
                         org.tag(SRC);
                         org.tag("unclaimed-money");
                         org.tag("country:AU");

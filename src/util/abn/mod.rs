@@ -169,8 +169,8 @@ pub fn looks_like_company(name: &str) -> bool {
         " INCORPORATED ",
         " INC ",
         " NL ",
+        // `AND CO` folds onto this: `company_tokens` spells the conjunction `&`.
         " & CO ",
-        " AND CO ",
     ];
     SUFFIXES.iter().any(|s| u.contains(s))
 }
@@ -275,7 +275,13 @@ fn company_tokens(name: &str) -> Vec<String> {
     name.to_uppercase()
         .split(|c: char| !(c.is_alphanumeric() || c == '&'))
         .filter(|t| !t.is_empty())
-        .map(str::to_string)
+        // One spelling of the conjunction: registers write "ACME AND SONS" and
+        // "ACME & SONS" for one firm, and an HTML-escaped `&amp;` survives
+        // scraping as the token `&AMP` (REQ-AU-UNCLAIMED-003).
+        .map(|t| match t {
+            "AND" | "&AMP" => "&".to_string(),
+            t => t.to_string(),
+        })
         .collect()
 }
 

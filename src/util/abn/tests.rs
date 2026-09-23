@@ -246,3 +246,18 @@ use super::*;
             assert!(same_company(b, a), "{b:?} vs {a:?}");
         }
     }
+
+    #[test]
+    fn and_and_an_escaped_ampersand_are_one_conjunction() {
+        // REQ-AU-UNCLAIMED-003: registers write both, and a scraped `&amp;`
+        // survives as a token. Both directions, with the word-boundary guard.
+        for (a, b) in [
+            ("Acme & Sons Pty Ltd", "ACME AND SONS"),
+            ("Acme &amp; Sons", "Acme & Sons"),
+        ] {
+            assert!(same_company(a, b), "{a:?} vs {b:?}");
+            assert!(same_company(b, a), "{b:?} vs {a:?}");
+        }
+        assert!(!same_company("Anderson Holdings", "& Holdings"), "AND inside a word is not the conjunction");
+        assert!(looks_like_company("SMITH AND CO"), "AND CO folds onto & CO");
+    }

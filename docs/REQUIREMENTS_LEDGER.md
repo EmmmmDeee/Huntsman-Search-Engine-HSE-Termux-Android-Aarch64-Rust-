@@ -19244,7 +19244,7 @@ the reverse cases, and the record found three defects around it.
   - `a_syndicate_sibling_of_the_seed_company_stays_tentative`
   - `a_joint_owner_is_judged_per_co_owner_not_over_the_raw_string`
   - `exact_postcodes_takes_only_rows_the_entity_pass_accepts_as_the_subject`
-  - `a_named_co_owner_on_the_seed_companys_row_is_not_the_subject`
+  - `a_named_co_owner_on_the_seed_company_row_is_not_the_subject`
 - `util::abn::tests::same_company_is_equality_whichever_side_is_the_seed`,
   and `same_company`'s doc-test.
 
@@ -19309,7 +19309,7 @@ answer of 10, and the subject's address may be among the 25 never fetched.
 ### Locks
 
 `modules::hunter_io::tests`:
-- `a_domain_searchs_colleague_profiles_are_never_the_subjects_accounts`. It
+- `a_domain_search_colleague_profiles_are_never_subject_accounts`. It
   runs the module's output through `correlator::correlate_entities`, the
   boundary where the harm happened, and asserts that neither AU-055 nor
   AU-038 fires.
@@ -19460,7 +19460,7 @@ no rule read it; only the report renderer printed it.
 ### Locks
 
 - `modules::wikitree::tests`:
-  - `a_namesakes_birth_date_on_the_subject_anchor_is_not_the_subjects_disclosure`
+  - `a_namesake_birth_date_on_the_subject_anchor_is_not_the_subject_disclosure`
     merges the module's output onto a seed anchor exactly as the engine does,
     runs `exposure::assess`, and carries a control (the subject's own breach
     DOB still counts);
@@ -19489,3 +19489,114 @@ no rule read it; only the report renderer printed it.
 
 **8 of 8 killed.** W2's first spec did not compile, and the harness reported
 it as **NO-RUN**, not as a survivor. It was re-specified and killed.
+
+## REQ-NAMESAKE-001 — the ambiguity mark must survive the merge, and there must be one of it
+
+Two defects in the namesake family, found while mapping the authority after
+REQ-WIKIDATA-001 and REQ-WIKITREE-001.
+
+**The mark did not survive the merge it was written for.** `mark_ambiguous`
+capped confidence and stamped the `ambiguous-name` tag — both **entity-level**.
+The engine merges same-named entities and `Entity::absorb` keeps
+`f64::max(confidence)`, so an ambiguous row folded onto the subject's own
+same-named anchor kept the anchor's higher confidence: the cap was erased, the
+tag unioned in but the harm (a pivot-eligible confidence) gone. That is the
+exact erasure REQ-WIKIDATA-001 documented for one module; it is a property of
+the authority, not of any one caller. The row's evidence attributes — a date
+of birth, a registration number — then read as the subject's own.
+
+The durable mark is **per record**. `mark_ambiguous` now also sets
+`Evidence.verification = Unverified` on every record that has no ownership
+status, and records survive the merge. `core::exposure` already gates on that
+field (REQ-WIKITREE-001), so a namesake's DOB on the subject's anchor is shown
+and not scored. An ownership the source actually established (an account linked
+by email) answers a different question and is left untouched.
+
+**There was more than one copy of the rule.** `ahpra` open-coded the tag and a
+confidence of `confidence::MEDIUM` — the expansion floor **itself**, not below
+it — so a proven-collision practitioner sat exactly on the pivot boundary and
+carried no evidence-level mark. `tests/architecture.rs` now refuses the
+`ambiguous-name` tag applied anywhere but `util::namesake::mark_ambiguous`
+(`the_ambiguous_name_tag_is_applied_only_through_mark_ambiguous`), so a fifth
+copy cannot drift in. `ahpra` and `wikitree` both call the authority; the
+consumers are now `ahpra`, `gleif_lei`, `opencorporates`, `wikidata`,
+`wikitree`.
+
+### Locks
+
+- `util::namesake::tests::the_ownership_mark_survives_the_merge_that_erases_the_cap`
+  — merges an ambiguous row onto a same-named anchor, asserts the cap is gone
+  and the `Unverified` mark is not, and that exposure does not count the row's
+  DOB; with the verified control.
+- `util::namesake::tests::an_ownership_the_source_established_is_kept`, also the
+  idempotence of the tag and the mark.
+- `modules::ahpra::tests::a_proven_collision_sits_below_the_expansion_floor_with_its_ownership_unverified`.
+- `modules::wikitree::tests::a_name_the_answer_holds_twice_is_marked_by_the_namesake_authority`.
+- `tests::architecture::the_ambiguous_name_tag_is_applied_only_through_mark_ambiguous`.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| N1 | **baseline**: the mark only caps and tags | killed by 3 |
+| N2 | over-correction: an established ownership is overwritten | killed by 1 |
+| N3 | **baseline**: `ahpra`'s partial copy (floor score, tag only) | killed by 1 |
+| N3-arch | the same partial copy, against the architecture lock | killed by 1 |
+| N4 | `wikitree` never marks a collision | killed by 1 |
+| N5 | over-correction: `wikitree` marks every name | killed by 1 |
+
+**6 of 6 killed.**
+
+## REQ-HUNTER-003 / REQ-AU-UNCLAIMED-003 — review round on #643
+
+Found by review of #643 (Copilot). Every finding was verified against the code
+before it was acted on.
+
+**REQ-HUNTER-003 — a colleague's profile was still an ordinary pivot.**
+REQ-HUNTER-001 retagged the profiles `employee-profile`, which stopped
+AU-055/AU-038. But a tag is not a gate: the `Url` stayed pivot-eligible, so
+`web_crawler` and `search_engines` could mine a colleague's page and attribute
+their emails and phones to the subject. The fix is a canonical
+`tags::THIRD_PARTY`: a page about somebody else, kept and shown, not
+quarantined. `core::engine` reads it in the gate that already withheld
+`SOURCE_DOCUMENT`. The gate is now one table, `NEVER_PIVOTED`, so the two tags
+cannot be gated differently. Adding the tag touches `hse-core`: `tags.rs` holds
+only constants, and the `wasm-ui/pkg` byte check was run locally with the
+pinned toolchain to confirm the bytes did not change.
+
+**Also fixed in this round:**
+- **emailrep** did not count `*_recent` flags or `last_seen` as observations of
+  the address, although the vendor documents them as such.
+- **wikitree** returned early on an empty page before the truncation check, so
+  a positive `total` with no rows read as a clean negative.
+
+**REQ-AU-UNCLAIMED-003 — the company filters still used the token subset.**
+- The emit filter dropped **the seed company itself** whenever the seed's
+  article or legal form differed: "The Acme Group Limited" against "ACME GROUP
+  PTY LTD" on a row `row_verdict` had accepted as exact.
+- A sender company carrying the seed's words was emitted at the row's full
+  weight.
+- The fix: `company_carries_seed` = `same_company || token subset`, and only
+  the seed company itself is emitted at full weight.
+- `util::abn`'s tokeniser now folds `AND` and a scraped `&amp;` to `&`. This
+  retires the hand-kept `" AND CO "` suffix, which had been a workaround for the
+  missing fold.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| T1 | **baseline**: no `THIRD_PARTY` row in the gate | killed by 1 |
+| T2 | the table refactor drops `SOURCE_DOCUMENT` | killed by 1 |
+| T3 | **baseline**: hunter's pivot untagged | killed by 1 |
+| E8 / E9 | recent flags / `last_seen` ignored | killed by 1 each |
+| E10 | over-correction: `never` counted as a date | killed by 1 |
+| W7b | **baseline**: the empty return precedes the verdict | killed by 1 |
+| U10 / U11 | **baseline**: token-subset filter / sender paid at full weight | killed by 1 each |
+| U12 | over-correction: equality-only filter | killed by 2 |
+| A1 / A2 | no fold / folding any `AND…` token | killed by 1 each |
+
+**13 of 13 killed.** The first W7 spec *survived*: removing the return
+outright is an equivalent mutant, because the loop over no rows is empty. It
+was re-specified as the true baseline, the return moved ahead of the verdict,
+and that version was killed.

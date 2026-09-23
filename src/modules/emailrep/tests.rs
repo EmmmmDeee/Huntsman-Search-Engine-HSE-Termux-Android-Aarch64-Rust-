@@ -310,3 +310,28 @@ fn an_observed_address_is_present_but_not_verified_by_this_source_alone() {
         );
     }
 }
+
+#[test]
+fn a_recent_signal_or_last_seen_alone_is_an_observation_of_the_address() {
+    // REQ-EMAILREP-001 review round: the vendor documents the `*_recent` flags and
+    // `last_seen` as observations of the address itself, so a partial report
+    // carrying only one of them earns presence like its non-recent twin. `never`
+    // stays no date (`a_report_that_never_observed_the_address_confers_no_presence`
+    // holds a `last_seen: never` case).
+    for (why, body) in [
+        (
+            "a recent credential leak",
+            r#"{"details":{"credentials_leaked_recent":true}}"#,
+        ),
+        (
+            "recent malicious activity",
+            r#"{"details":{"malicious_activity_recent":true}}"#,
+        ),
+        (
+            "a last-seen date",
+            r#"{"details":{"last_seen":"05/24/2019"}}"#,
+        ),
+    ] {
+        assert!(build(body).confidence >= PRESENT, "{why}");
+    }
+}
