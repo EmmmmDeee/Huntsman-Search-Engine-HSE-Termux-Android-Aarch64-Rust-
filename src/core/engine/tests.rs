@@ -1673,7 +1673,7 @@ async fn module_error_sink_is_redacted() {
         target: &target,
         opts: &opts,
         is_expansion: false,
-        seed_kind: TargetKind::Domain,
+        seed: &Target::new(TargetKind::Domain, "seed"),
         quarantined: no_quarantine(),
     };
     let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
@@ -1729,7 +1729,7 @@ async fn a_panicked_module_task_error_is_redacted() {
         target: &target,
         opts: &opts,
         is_expansion: false,
-        seed_kind: TargetKind::Domain,
+        seed: &Target::new(TargetKind::Domain, "seed"),
         quarantined: no_quarantine(),
     };
     let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
@@ -7526,7 +7526,7 @@ async fn dispatch_one_scan(
         target,
         opts: &opts,
         is_expansion: false,
-        seed_kind: target.kind,
+        seed: target,
         quarantined: no_quarantine(),
     };
     let mut entity_map = TrackedEntityMap::new();
