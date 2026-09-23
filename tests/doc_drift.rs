@@ -607,6 +607,32 @@ fn every_requirement_the_ledger_records_is_accounted_for_in_the_changelog() {
     );
 }
 
+/// **The map's module count is the registry's.** The Layer 3 heading states how
+/// many provider modules HSE registers. It is the same hand-maintained figure
+/// the README carries, and the README's copy has long been locked
+/// (`readme_module_overview_count_matches_registry`, `tests/architecture_parts`)
+/// — while this copy was not, and the three layer headings around it had all
+/// drifted from the tree (`src/util` 213 vs 215 files, `src/core` 203 vs 207,
+/// `src/modules` 516 vs 518) by the time `api_discovery` became module 194.
+/// A figure with a guard in one document and none in the other is the
+/// "guard applied to one consumer but not its neighbour" shape the map itself
+/// names; the module count is the one that means something, so it is the one
+/// locked.
+#[test]
+fn the_map_states_the_live_registry_size() {
+    let map = read_doc(ROADMAP_DOC);
+    let n = huntsman_search_engine::modules::registry().len();
+    let heading = map
+        .lines()
+        .find(|l| l.starts_with("### Layer 3 "))
+        .unwrap_or_else(|| panic!("{ROADMAP_DOC} must keep its `### Layer 3` modules heading"));
+    assert!(
+        heading.contains(&format!(", {n} provider modules)")),
+        "{ROADMAP_DOC}'s Layer 3 heading must state the live registry size ({n}); \
+         update it after adding or removing a module. Found: {heading}"
+    );
+}
+
 /// Every `WORD_PLACEHOLDER` template token in `text`: an upper-case,
 /// underscore-joined word ending in `_PLACEHOLDER`, standing alone.
 ///

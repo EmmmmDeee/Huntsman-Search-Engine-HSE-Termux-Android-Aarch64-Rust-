@@ -11,6 +11,7 @@ pub mod acnc_charities;
 pub mod ahmia;
 pub mod ahpra;
 pub mod anubis;
+pub mod api_discovery;
 pub mod api_key_probe;
 pub mod app_links;
 pub mod asic_banned_orgs;
@@ -462,6 +463,10 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(webserver_banner::WebserverBanner),
             Arc::new(web_crawler::WebCrawler),
             Arc::new(app_links::AppLinks),
+            // Sibling of `app_links`: the other half of what a domain publishes
+            // about its programmable surface — OIDC/OAuth (RFC 8414/9728) and
+            // API-catalog (RFC 9727) well-knowns, spec-validated.
+            Arc::new(api_discovery::ApiDiscovery),
             Arc::new(url_extract::UrlExtract),
             Arc::new(urlscan::UrlScan),
             Arc::new(email_parse::EmailParse),
