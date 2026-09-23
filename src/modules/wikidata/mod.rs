@@ -243,7 +243,7 @@ impl Module for Wikidata {
         // first, before rest is appended) carries the signal so an operator
         // knows the candidate list isn't exhaustive.
         if let Some(head) = out.entities.first_mut() {
-            mark_candidate_truncation(head, total_name_matches);
+            mark_candidate_truncation(head, query, total_name_matches);
         }
         declare_search_truncation(&mut out, search.search.len(), total_name_matches);
 
@@ -282,7 +282,14 @@ fn declare_search_truncation(out: &mut ModuleResult, returned: usize, total_name
 /// Signal on the primary/head entity when more items matched the seed name
 /// than [`MAX_CANDIDATES`] surfaced. **Pure**. No-op when the match count is
 /// within the cap.
-fn mark_candidate_truncation(head: &mut Entity, total_name_matches: usize) {
+///
+/// The note names the SEARCH it describes (`query`): an evidence record's
+/// identity is `(source, summary)`, and the GEXF co-occurrence edge keys on
+/// it. Without the query, the note for "Ian Thorpe" and the note for "John
+/// Thorpe" were the same text whenever the counts agreed, so the two
+/// namesakes' head entities read as named together by one Wikidata record
+/// (scan 7258fc07).
+fn mark_candidate_truncation(head: &mut Entity, query: &str, total_name_matches: usize) {
     if total_name_matches <= MAX_CANDIDATES {
         return;
     }
@@ -291,7 +298,7 @@ fn mark_candidate_truncation(head: &mut Entity, total_name_matches: usize) {
         Evidence::new(
             SRC,
             format!(
-                "Wikidata name search matched {total_name_matches} item(s); only {MAX_CANDIDATES} surfaced"
+                "Wikidata name search for '{query}' matched {total_name_matches} item(s); only {MAX_CANDIDATES} surfaced"
             ),
         )
         .with_attr("total_name_matches", total_name_matches.to_string())

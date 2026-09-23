@@ -657,9 +657,13 @@ pub async fn scan_import(
         .map_or_else(|| "uploaded dossier".to_string(), |e| e.value.clone());
 
     let entity_count = entities.len();
+    // Written `Pending` first and turned `Complete` only once the entities,
+    // relations and correlations are all stored (the commit at the end of the
+    // blocking closure below). Exports classify a scan by its stored status,
+    // so a `Complete` written first let an export taken mid-import brand a
+    // half-written scan whole — the window the live engine's finalise had too
+    // (`ScanEngine::finalise_scan`'s commit step).
     let mut scan = Scan::new(sid.clone(), Target::new(TargetKind::FullName, label));
-    scan.status = ScanStatus::Complete;
-    scan.finished_at = Some(unix_now());
     scan.entity_count = entity_count;
 
     // Cross-entry enrichment (relation derivation + the correlator) is pairwise
@@ -683,8 +687,16 @@ pub async fn scan_import(
     let stealer_rows_parsed = stealer_rows.len();
     let (relation_count, correlation_count, enriched, stealer_rows_stored) =
         match super::offload_store(move || -> crate::core::error::Result<_> {
+            let mut scan = scan;
             store.upsert_scan(&scan)?;
             store.upsert_entities_batch(&entities)?;
+            // The terminal write, run on every exit below — nothing after it
+            // may add to what the scan's exports read.
+            let commit = |scan: &mut Scan| -> crate::core::error::Result<()> {
+                scan.status = ScanStatus::Complete;
+                scan.finished_at = Some(unix_now());
+                store.upsert_scan(scan)
+            };
             // Best-effort: a stealer-row persistence hiccup must not fail an
             // otherwise-successful import — the entity graph above already
             // carries the same credentials, just unpaired. Logged and
@@ -708,6 +720,7 @@ pub async fn scan_import(
             // Device-safety bound: skip the O(n²) enrichment on a pathologically
             // large import (entities are already persisted above; nothing lost).
             if entities.len() > IMPORT_ENRICH_MAX_ENTITIES {
+                commit(&mut scan)?;
                 return Ok((0usize, 0usize, false, stealer_rows_stored));
             }
             let mut relations = 0usize;
@@ -741,6 +754,7 @@ pub async fn scan_import(
                     }
                 }
             }
+            commit(&mut scan)?;
             Ok((relations, correlations, true, stealer_rows_stored))
         })
         .await

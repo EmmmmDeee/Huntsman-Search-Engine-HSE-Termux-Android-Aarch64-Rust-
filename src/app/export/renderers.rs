@@ -835,8 +835,9 @@ pub(crate) fn render_debug_bundle(
 
     // Best AU geolocation fix, if one fired. `extract_au_location_fix` returns
     // one of two shapes: a true AU-059 cross-seed synergy fix (has
-    // `synergy_confidence`) or a coarser single-signal fallback (has `confidence`
-    // / `basis` instead) — see `dossier.rs`'s matching dual-branch render for the
+    // `synergy_confidence`) or the estimate-ladder fallback (has `confidence`
+    // / `basis` instead, and a `source` saying whether it is the synergy
+    // recomputed without a persisted AU-059 or a coarser single signal) — see `dossier.rs`'s matching dual-branch render for the
     // reference pattern this mirrors. Branching on which shape actually fired
     // (rather than unconditionally labelling every fix "(AU-059)") matters
     // because the fallback can be a single hardcoded landline-area-code anchor,
@@ -861,9 +862,18 @@ pub(crate) fn render_debug_bundle(
         } else {
             let confidence = fix["confidence"].as_f64().unwrap_or(0.0);
             let basis = fix["basis"].as_str().unwrap_or("");
+            // The fallback shape covers two different things: the synergy fix
+            // recomputed without a persisted AU-059 correlation, and a genuine
+            // single-signal rung. The header follows the fix's own `source`, so
+            // the strongest fix is never printed under the weakest label.
+            let header = if fix["source"] == "synergy-recomputed" {
+                "multi-source synergy, recomputed — AU-059 not persisted"
+            } else {
+                "single-signal"
+            };
             let _ = writeln!(
                 s,
-                "\n── BEST AU LOCATION FIX (single-signal) ──\n  {lat:.4},{lon:.4} ± {radius:.1} km · geohash={gh} · state={state} · basis={basis} · confidence={confidence:.2}"
+                "\n── BEST AU LOCATION FIX ({header}) ──\n  {lat:.4},{lon:.4} ± {radius:.1} km · geohash={gh} · state={state} · basis={basis} · confidence={confidence:.2}"
             );
         }
     }
@@ -1129,22 +1139,25 @@ pub(crate) fn build_scan_report(
     })))
 }
 
-/// Parse the structured geo-fix fields that AU-059 embeds in its description.
+/// The `best_location` for the export, read **structurally** from the scan
+/// entities rather than by parsing the finding prose. One of two shapes:
 ///
-/// AU-059 description format:
-/// `"N AU coordinate(s) from M orthogonal source class(es) [C1, C2] converge on
-///  LAT,LON (geohash=GH, state=STATE); synergy confidence SC — MITRE T1591.001"`
+/// - **AU-059** (`rule_id: "AU-059"`, `synergy_confidence`, `severity`, `rank`)
+///   — present iff AU-059 actually fired this scan (the gated, ranked finding).
+///   The geo fields come from the one canonical
+///   [`crate::core::correlator::au059_synergy_fix`] computation the rule itself
+///   uses, so the structured export and the finding can never drift (they did,
+///   by construction, when this re-parsed the prose). Severity and the
+///   post-hoc `rank` are taken from the emitted correlation.
+/// - **Estimate ladder** (`confidence`, `basis`, `source`) — no AU-059
+///   correlation is stored, so the best rung of
+///   [`crate::core::correlator::best_au_location_estimate`] is reported.
+///   `source` is `"synergy-recomputed"` when that rung is the multi-source
+///   synergy itself (the synergy exists but no correlation was persisted) and
+///   `"single-signal"` for every coarser rung. It never carries
+///   `severity`/`rank`: no correlation was emitted to take them from.
 ///
-/// Returns a JSON object `{lat, lon, geohash, state, synergy_confidence,
-/// source_count, class_count, severity}` from the highest-rank AU-059 firing,
-/// or `serde_json::Value::Null` when no AU-059 correlation exists for the scan.
-/// The AU-059 `best_location` for the export, read **structurally** from the
-/// scan entities rather than by parsing the finding prose. It is present iff
-/// AU-059 actually fired this scan (the gated, ranked finding); the geo fields
-/// come from the one canonical [`crate::core::correlator::au059_synergy_fix`]
-/// computation the rule itself uses, so the structured export and the finding
-/// can never drift (they did, by construction, when this re-parsed the prose).
-/// Severity and the post-hoc `rank` are taken from the emitted correlation.
+/// `serde_json::Value::Null` when the scan has no AU location signal at all.
 pub(crate) fn extract_au_location_fix(
     correlations: &[crate::core::correlator::Correlation],
     entities: &[crate::core::entity::Entity],
@@ -1200,11 +1213,24 @@ pub(crate) fn extract_au_location_fix(
             "rule_id": "AU-059",
         })
     } else {
-        // Fallback: the single-signal best-location estimate, so the web/JSON
-        // surface carries a headline fix whenever ANY AU location signal exists —
-        // not only the ≥2-class synergy case. Carries the precision radius, nearest
-        // locality, and the basis it was derived from. `Null` only when there is no
-        // AU location at all.
+        // Fallback: the best-location estimate ladder, so the web/JSON surface
+        // carries a headline fix whenever ANY AU location signal exists — not
+        // only when an AU-059 correlation was persisted. Carries the precision
+        // radius, nearest locality, and the basis it was derived from. `Null`
+        // only when there is no AU location at all.
+        //
+        // `source` names what the fix IS, read from the rung that produced it —
+        // never a constant. Rung 1 of the ladder is the very same multi-source
+        // synergy computation AU-059 runs, and it is reached here whenever the
+        // synergy exists but no AU-059 correlation is stored (the correlator
+        // never ran, ran out of its budget, or this is a snapshot taken before
+        // finalise persisted correlations). Stamping that "single-signal"
+        // labelled the strongest, multi-class fix as the weakest kind — the
+        // scan-7258fc07 bundle printed "(single-signal)" directly above
+        // "basis=multi-source cross-class synergy". It stays in THIS shape (no
+        // `severity`/`rank`, no `rule_id`): no correlation was emitted, so
+        // inventing the AU-059 shape would assert a finding that does not
+        // exist; "synergy-recomputed" says exactly that.
         match crate::core::correlator::best_au_location_estimate(entities) {
             Some(est) => serde_json::json!({
                 "lat": est.lat,
@@ -1218,7 +1244,11 @@ pub(crate) fn extract_au_location_fix(
                 // As above: whether this pin observed the SUBJECT or a place
                 // merely associated with them.
                 "locates_subject_directly": est.locates_subject_directly,
-                "source": "single-signal",
+                "source": if est.basis == crate::core::correlator::SYNERGY_BASIS {
+                    "synergy-recomputed"
+                } else {
+                    "single-signal"
+                },
             }),
             None => serde_json::Value::Null,
         }

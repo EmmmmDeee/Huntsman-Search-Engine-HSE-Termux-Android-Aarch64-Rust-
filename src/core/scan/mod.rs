@@ -43,6 +43,22 @@ pub use scoring::{
 #[cfg(test)]
 use scoring::{auto_min_expand_confidence, seed_marginal_yield};
 
+/// **Subject claims.** The tags a module sets to assert that an entity IS the
+/// scan subject (`seed`, `subject`) or that a register row's name EXACTLY
+/// matched it (`exact-name-match`). Every consumer reads them as statements
+/// about the scan's subject, so they are one list, defined once:
+///
+/// * the engine's `dispatch::rescope_subject_claims` strips them from what a
+///   module returned for a pivot — a module cannot tell the seed from a pivot,
+///   so its claim is re-scoped to what the engine knows (REQ-SUBJECT-SCOPE-001);
+/// * [`crate::core::geo_family::subject_surname`] reads the family surname off
+///   them, in this order (the operator's own seed first);
+/// * the GEXF export labels only an identity node carrying one of them as the
+///   Diamond `victim` vertex ([`crate::core::diamond::scoped_vertex_label`]).
+///
+/// Order is precedence: strongest claim first.
+pub(crate) const SUBJECT_CLAIM_TAGS: &[&str] = &["seed", "subject", "exact-name-match"];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TargetKind {
@@ -803,6 +819,11 @@ pub struct Scan {
     pub finished_at: Option<u64>,
     pub entity_count: usize,
     pub error: Option<String>,
+    /// Modules that actually executed against their provider this scan —
+    /// completed, errored or timed out. Disjoint from
+    /// [`modules_skipped`](Self::modules_skipped): a module that dispatched and
+    /// then opted out (no key, not applicable) is a skip, not a run. Includes
+    /// `modules_errored` and `modules_timed_out`.
     #[serde(default)]
     pub modules_run: usize,
     #[serde(default)]

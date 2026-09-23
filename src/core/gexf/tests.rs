@@ -21,8 +21,11 @@ use super::*;
     fn gexf_exports_the_diamond_vertex_per_kind() {
         // The attribution vertex is a first-class node attribute so Gephi can
         // partition the whole graph by Diamond role, not just by kind. It must
-        // reflect the per-kind classification, not a single bucket.
-        let email = Entity::new(EntityKind::Email, "alice@example.com", 0.9, "s"); // victim
+        // reflect the per-kind classification, not a single bucket. The email
+        // is the operator's seed — only a subject-scoped identity is `victim`
+        // (see `a_namesake_identity_is_not_exported_as_victim`).
+        let mut email = Entity::new(EntityKind::Email, "alice@example.com", 0.9, "s"); // victim
+        email.tag("seed");
         let ip = Entity::new(EntityKind::IpAddress, "203.0.113.7", 0.9, "s"); // infrastructure
         let pw = Entity::new(EntityKind::Password, "leaked", 0.9, "s"); // capability
         let xml = entities_to_gexf(&[email, ip, pw], &[], "s");
@@ -38,6 +41,146 @@ use super::*;
         assert!(
             xml.contains(r#"<attvalue for="7" value="capability"/>"#),
             "{xml}"
+        );
+    }
+
+    /// The `diamond_vertex` attvalue of the node for `e` in `xml`.
+    fn node_vertex(xml: &str, e: &Entity) -> String {
+        let start = xml
+            .find(&format!(r#"<node id="{}""#, e.uid))
+            .expect("node present");
+        let end = start + xml[start..].find("</node>").expect("node closes");
+        xml[start..end]
+            .split(r#"<attvalue for="7" value=""#)
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("diamond_vertex attvalue")
+            .to_string()
+    }
+
+    #[test]
+    fn a_namesake_identity_is_not_exported_as_victim() {
+        // Scan 7258fc07's GEXF labelled every identity-kind node `victim` — "an
+        // identity facet of the subject" — including a stranger's Instagram
+        // handle, a WikiTree relative and "Ian Thorpe Aquatic Centre": the
+        // label was a pure function of KIND. Partitioning by attribution role
+        // then merged strangers into the subject.
+        let mut ian = Entity::new(EntityKind::Person, "Ian Thorpe", 0.9, "s");
+        ian.tag("seed");
+        ian.tag("subject");
+        let megan = Entity::new(EntityKind::Person, "Megan Thorpe", 0.8, "s");
+        let handle = Entity::new(EntityKind::Username, "aidanthorpee", 0.8, "s");
+        let mut row = Entity::new(EntityKind::Person, "Ian James Thorpe", 0.7, "s");
+        row.tag("exact-name-match");
+        let ip = Entity::new(EntityKind::IpAddress, "203.0.113.7", 0.9, "s");
+        let xml = entities_to_gexf(
+            &[
+                ian.clone(),
+                megan.clone(),
+                handle.clone(),
+                row.clone(),
+                ip.clone(),
+            ],
+            &[],
+            "s",
+        );
+        assert_eq!(node_vertex(&xml, &ian), "victim");
+        assert_eq!(
+            node_vertex(&xml, &row),
+            "victim",
+            "an engine-kept exact-name-match is a subject claim"
+        );
+        assert_eq!(
+            node_vertex(&xml, &megan),
+            "unattributed",
+            "a namesake/relative is not the subject's identity facet"
+        );
+        assert_eq!(
+            node_vertex(&xml, &handle),
+            "unattributed",
+            "an unscoped handle is not the subject's identity facet"
+        );
+        assert_eq!(
+            node_vertex(&xml, &ip),
+            "infrastructure",
+            "a non-identity vertex carries no identity claim and is unchanged"
+        );
+    }
+
+    #[test]
+    fn co_occurrence_weight_is_bounded_and_typed() {
+        // Scan 7258fc07: ~276 co-occurrence edges weighted by raw record count
+        // (1.0, 2.0) beside ~21,000 relation edges weighted by confidence
+        // (≤ 0.95), in one `weight` attribute, with no edge attribute telling
+        // the two families apart. One shared snippet outranked any verified
+        // relation in Gephi's weighted degree and modularity.
+        use crate::core::relation::{Relation, RelationKind};
+        let mut a = Entity::new(EntityKind::Email, "a@x.com", 0.8, "s");
+        let mut b = Entity::new(EntityKind::Username, "aaa", 0.8, "s");
+        for e in [&mut a, &mut b] {
+            e.add_evidence(Evidence::new("hibp", "Breach 'Apollo'"));
+            e.add_evidence(Evidence::new("hibp", "Breach 'Zeus'"));
+        }
+        let c = Entity::new(EntityKind::Domain, "x.com", 0.9, "s");
+        let rel = Relation::new(
+            a.uid.clone(),
+            c.uid.clone(),
+            RelationKind::BelongsToDomain,
+            0.9,
+            "s",
+        );
+        let xml = entities_to_gexf(&[a.clone(), b.clone(), c], std::slice::from_ref(&rel), "s");
+        assert!(
+            xml.contains(r#"<attributes class="edge""#) && xml.contains(r#"title="edge_type""#),
+            "the edge_type attribute must be declared: {xml}"
+        );
+        let edge_block = |from: &str, to: &str| -> String {
+            let start = xml
+                .find(&format!(r#"source="{from}" target="{to}""#))
+                .expect("edge present");
+            let end = start + xml[start..].find("</edge>").expect("edge closes");
+            xml[start..end].to_string()
+        };
+        let co = edge_block(&a.uid, &b.uid);
+        assert!(co.contains(r#"weight="0.510""#), "1 − 0.7² for two records: {co}");
+        assert!(co.contains(r#"<attvalue for="0" value="co_occurrence"/>"#), "{co}");
+        assert!(co.contains(r#"<attvalue for="1" value="2"/>"#), "{co}");
+        let re = edge_block(&rel.from_uid, &rel.to_uid);
+        assert!(re.contains(r#"<attvalue for="0" value="relation"/>"#), "{re}");
+        for w in xml.split(r#"weight=""#).skip(1) {
+            let w: f64 = w
+                .split('"')
+                .next()
+                .and_then(|v| v.parse().ok())
+                .expect("numeric weight");
+            assert!((0.0..=1.0).contains(&w), "every edge weight on one [0,1] scale: {w}");
+        }
+        assert_eq!(
+            xml,
+            entities_to_gexf(&[a, b, Entity::new(EntityKind::Domain, "x.com", 0.9, "s")], &[rel], "s"),
+            "deterministic"
+        );
+    }
+
+    #[test]
+    fn a_joint_record_links_despite_per_entity_attributes() {
+        // Guard against the tempting wrong fix for templated summaries (keying
+        // co-occurrence on attributes too): one genuine joint record carries
+        // different attributes on its two entities, because `absorb` merges
+        // them and modules add per-entity ones. It must still draw its edge.
+        let ev = || {
+            Evidence::new("huggingface_user", "Hugging Face profile of 'Ian-Thorpe'")
+                .with_attr("profile_url", "https://huggingface.co/Ian-Thorpe")
+        };
+        let mut person = Entity::new(EntityKind::Person, "Ian Thorpe", 0.8, "s");
+        person.add_evidence(ev().with_attr("source_field", "fullname"));
+        let mut url = Entity::new(EntityKind::Url, "https://huggingface.co/Ian-Thorpe", 0.8, "s");
+        url.add_evidence(ev());
+        let xml = entities_to_gexf(&[person, url], &[], "s");
+        assert_eq!(
+            xml.matches(r#"label="huggingface_user""#).count(),
+            1,
+            "one joint record → one edge: {xml}"
         );
     }
 
@@ -353,6 +496,10 @@ use super::*;
       <attribute id="7" title="diamond_vertex" type="string"/>
       <attribute id="8" title="generation" type="integer"/>
     </attributes>
+    <attributes class="edge" mode="static">
+      <attribute id="0" title="edge_type" type="string"/>
+      <attribute id="1" title="shared_records" type="integer"/>
+    </attributes>
     <nodes>
       <node id="ed152b32b035d8e873341938ca5f75d242725beae5a202c27e413eb4477f8739" label="example.com">
         <attvalues>
@@ -382,8 +529,17 @@ use super::*;
       </node>
     </nodes>
     <edges>
-      <edge id="0" source="df4bda23ac181f24c2f80cb94caa9745ce198e6164e5564186c27eeeaf90e273" target="ed152b32b035d8e873341938ca5f75d242725beae5a202c27e413eb4477f8739" weight="0.800" label="subdomain_of"/>
-      <edge id="1" source="ed152b32b035d8e873341938ca5f75d242725beae5a202c27e413eb4477f8739" target="df4bda23ac181f24c2f80cb94caa9745ce198e6164e5564186c27eeeaf90e273" weight="1.0" label="crtsh"/>
+      <edge id="0" source="df4bda23ac181f24c2f80cb94caa9745ce198e6164e5564186c27eeeaf90e273" target="ed152b32b035d8e873341938ca5f75d242725beae5a202c27e413eb4477f8739" weight="0.800" label="subdomain_of">
+        <attvalues>
+          <attvalue for="0" value="relation"/>
+        </attvalues>
+      </edge>
+      <edge id="1" source="ed152b32b035d8e873341938ca5f75d242725beae5a202c27e413eb4477f8739" target="df4bda23ac181f24c2f80cb94caa9745ce198e6164e5564186c27eeeaf90e273" weight="0.300" label="crtsh">
+        <attvalues>
+          <attvalue for="0" value="co_occurrence"/>
+          <attvalue for="1" value="1"/>
+        </attvalues>
+      </edge>
     </edges>
   </graph>
 </gexf>

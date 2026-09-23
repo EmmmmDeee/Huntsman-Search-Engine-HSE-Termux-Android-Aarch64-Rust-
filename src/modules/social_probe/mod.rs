@@ -604,10 +604,17 @@ pub(super) fn emit_judged(
                 } else {
                     "weak-detection"
                 });
+                // The summary names the profile, not just the platform: an
+                // evidence record's identity is `(source, summary)` — `absorb`
+                // de-duplicates on it and the GEXF co-occurrence edge keys on
+                // it — so "Profile found on twitter" for three DIFFERENT
+                // profiles read as one record naming all three, and scan
+                // 7258fc07's graph wired twitter.com/ianthorpe, /ianthorpe26
+                // and /ianthorpe91 into a false clique.
                 entity.add_evidence(
                     Evidence::new(
                         crate::modules::corpus_source(url, SRC),
-                        format!("Profile found on {}", platform.name),
+                        format!("Profile found on {}: {url}", platform.name),
                     )
                     .with_attr("platform", platform.name)
                     .with_attr("http_status", status.to_string())

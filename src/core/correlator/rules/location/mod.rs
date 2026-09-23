@@ -1272,6 +1272,14 @@ fn coord_accuracy_km(e: &Entity) -> Option<f64> {
     })
 }
 
+/// The [`AuLocationEstimate::basis`] of rung 1 of [`best_au_location_estimate`]
+/// — the multi-source cross-class synergy fix. Named so a consumer that must
+/// tell rung 1 apart from the single-signal rungs (the export's
+/// `best_location.source`, the debug bundle's fix header) compares against the
+/// one string the rung actually writes, instead of a second copy of the literal
+/// that could drift and silently re-label a synergy fix "single-signal".
+pub(crate) const SYNERGY_BASIS: &str = "multi-source cross-class synergy";
+
 /// The single best Australian location estimate for the subject, by a fixed
 /// precedence from finest to coarsest signal — so EVERY scan with any AU location
 /// data yields one headline fix (with its precision), not only the multi-source
@@ -1304,7 +1312,7 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
             radius_km: fix.radius_km,
             state: Some(fix.state),
             locality: locality_of(fix.lat, fix.lon),
-            basis: "multi-source cross-class synergy",
+            basis: SYNERGY_BASIS,
             confidence: fix.synergy_confidence,
             geohash: fix.geohash,
             uids: fix.uids,

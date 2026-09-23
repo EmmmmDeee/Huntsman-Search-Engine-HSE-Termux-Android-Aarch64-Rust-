@@ -700,6 +700,37 @@ mod qld {
         assert!(john.has_tag("co-owner") && !john.has_tag("exact-name-match"));
         assert!(john.confidence < crate::core::confidence::MEDIUM);
     }
+
+    #[test]
+    fn distinct_rows_of_one_owner_carry_distinct_records() {
+        // Scan 7258fc07: every row of a repeated owner name carried the one
+        // summary "QLD unclaimed money: {owner}", so the GEXF read distinct
+        // lodgements at different postcodes as one shared record and drew 27
+        // false edges between them. The summary must name the row.
+        let raw = r#"{"result":{"total":2,"records":[
+            {"_id":1,"ClientId_ActNo":"111","Owner":"CURT AVERY","Amount":"1.00","PCode":"4555"},
+            {"_id":2,"ClientId_ActNo":"222","Owner":"CURT AVERY","Amount":"2.00","PCode":"4557"}
+        ]}}"#;
+        let resp: CkanResp = serde_json::from_str(raw).expect("should succeed");
+        let recs = resp.result.expect("should succeed").records;
+        let ents = records_to_entities(&recs, 2, "Curt Avery", "Avery", true, TargetKind::FullName, "s");
+        let addrs: Vec<Entity> = ents
+            .into_iter()
+            .filter(|e| e.kind == EntityKind::Address)
+            .collect();
+        assert_eq!(addrs.len(), 2, "one address per postcode");
+        let summary = |e: &Entity| {
+            e.evidence
+                .iter()
+                .find(|ev| ev.source == SRC)
+                .map(|ev| ev.summary.clone())
+                .expect("row evidence")
+        };
+        assert_ne!(summary(&addrs[0]), summary(&addrs[1]), "each row is its own record");
+        assert!(summary(&addrs[0]).contains("ref 111"), "{}", summary(&addrs[0]));
+        let xml = crate::core::gexf::entities_to_gexf(&addrs, &[], "s");
+        assert!(!xml.contains("<edge "), "distinct rows are not a joint record: {xml}");
+    }
 }
 
 #[cfg(test)]

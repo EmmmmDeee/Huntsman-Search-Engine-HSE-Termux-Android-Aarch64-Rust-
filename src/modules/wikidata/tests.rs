@@ -969,3 +969,21 @@ fn a_namesake_primary_s_pep_flag_does_not_reach_the_subject() {
         "AU-114 must not report a namesake's PEP status against the subject"
     );
 }
+
+#[test]
+fn truncation_notes_for_different_searches_are_distinct_records() {
+    // Scan 7258fc07: the truncation note "Wikidata name search matched 10
+    // item(s); only N surfaced" was the same text for the "Ian Thorpe" and
+    // "John Thorpe" searches, so the GEXF read the two namesakes' head entities
+    // as named together by one Wikidata record. The note names its search.
+    let mut ian = crate::core::entity::Entity::new(EntityKind::Person, "Ian Thorpe", 0.5, "s");
+    let mut john = crate::core::entity::Entity::new(EntityKind::Person, "John Thorpe", 0.5, "s");
+    super::mark_candidate_truncation(&mut ian, "Ian Thorpe", MAX_CANDIDATES + 5);
+    super::mark_candidate_truncation(&mut john, "John Thorpe", MAX_CANDIDATES + 5);
+    assert_ne!(ian.evidence[0].summary, john.evidence[0].summary);
+    let xml = crate::core::gexf::entities_to_gexf(&[ian, john], &[], "s");
+    assert!(
+        !xml.contains("<edge "),
+        "two searches are not a joint record: {xml}"
+    );
+}

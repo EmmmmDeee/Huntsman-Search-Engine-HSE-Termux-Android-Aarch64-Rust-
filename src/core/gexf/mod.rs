@@ -8,7 +8,6 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
-use crate::core::diamond::ClassifyDiamondVertex;
 use crate::core::entity::Entity;
 use crate::core::graph::Graph;
 use crate::core::relation::Relation;
@@ -43,11 +42,15 @@ pub fn entities_to_gexf(entities: &[Entity], relations: &[Relation], scan_id: &s
     }
     let _ = writeln!(xml, r#"    </nodes>"#);
 
-    // Edges. Two kinds:
+    // Edges. Two kinds, told apart by the `edge_type` edge attribute (never by
+    // guessing which label strings are relation kinds and which are module
+    // names), and weighted on ONE scale, [0, 1]:
     //   1. Typed Relation edges (the explicit attribution graph), labelled by
     //      relation kind (subdomain_of / belongs_to_domain / hosted_on /
-    //      derived_from), weighted by edge confidence.
-    //   2. Shared-evidence co-occurrence edges, labelled by the shared sources.
+    //      derived_from), weighted by edge confidence. `edge_type=relation`.
+    //   2. Shared-evidence co-occurrence edges, labelled by the shared sources,
+    //      weighted by `coref::shared_evidence_weight` of the shared-record
+    //      count. `edge_type=co_occurrence`, count in `shared_records`.
     // Edge ids are assigned sequentially: relation edges first, then the
     // co-occurrence edges continue the same counter.
     //
@@ -78,9 +81,10 @@ pub fn entities_to_gexf(entities: &[Entity], relations: &[Relation], scan_id: &s
     xml
 }
 
-/// XML header, `<meta>`, the `<graph>` open tag, and the node attribute
+/// XML header, `<meta>`, the `<graph>` open tag, the node attribute
 /// declarations (kind / confidence / c_effective / classification /
-/// corroboration / coreness / tags / diamond_vertex / generation). Leaves `xml`
+/// corroboration / coreness / tags / diamond_vertex / generation) and the edge
+/// attribute declarations (edge_type / shared_records). Leaves `xml`
 /// positioned to receive `<nodes>`.
 fn write_preamble(xml: &mut String, scan_id: &str) {
     let _ = writeln!(xml, r#"<?xml version="1.0" encoding="UTF-8"?>"#);
@@ -126,11 +130,14 @@ fn write_preamble(xml: &mut String, scan_id: &str) {
         xml,
         r#"      <attribute id="6" title="tags" type="string"/>"#
     );
-    // Diamond Model attribution vertex (victim / infrastructure / capability) —
-    // the deterministic `core::diamond` classification, exported so a Gephi
+    // Diamond Model attribution vertex (victim / unattributed / infrastructure /
+    // capability) — `core::diamond::scoped_vertex_label`, exported so a Gephi
     // analyst can partition or colour the WHOLE entity graph by attribution role
-    // in one click, not just by kind. A fixed lowercase enum string, never
-    // adversary (that role is relational, carried by the edges, not the node).
+    // in one click, not just by kind. `victim` is reserved for identity nodes
+    // the engine scoped to the subject; any other identity node is
+    // `unattributed`, so the one-click partition never merges a namesake, a
+    // relative or a stranger's handle into the subject. A fixed lowercase
+    // string, never adversary (that role is relational, carried by the edges).
     let _ = writeln!(
         xml,
         r#"      <attribute id="7" title="diamond_vertex" type="string"/>"#
@@ -143,6 +150,25 @@ fn write_preamble(xml: &mut String, scan_id: &str) {
     let _ = writeln!(
         xml,
         r#"      <attribute id="8" title="generation" type="integer"/>"#
+    );
+    let _ = writeln!(xml, r#"    </attributes>"#);
+
+    // Edge attributes. GEXF scopes attribute ids per class, so these ids do
+    // not collide with the node attributes above. `edge_type` is what lets a
+    // Gephi analyst filter or style the two edge families apart — a relation
+    // (a typed structural or attribution fact) and a co-occurrence (two
+    // entities named in one evidence record) are different claims, and the
+    // label namespace alone (relation kinds vs module names) never said which
+    // was which. `shared_records` keeps the raw count a co-occurrence weight is
+    // derived from, so normalising the weight loses nothing.
+    let _ = writeln!(xml, r#"    <attributes class="edge" mode="static">"#);
+    let _ = writeln!(
+        xml,
+        r#"      <attribute id="0" title="edge_type" type="string"/>"#
+    );
+    let _ = writeln!(
+        xml,
+        r#"      <attribute id="1" title="shared_records" type="integer"/>"#
     );
     let _ = writeln!(xml, r#"    </attributes>"#);
 }
@@ -203,13 +229,14 @@ fn write_node(xml: &mut String, e: &Entity, coreness: usize) {
         r#"          <attvalue for="6" value="{}"/>"#,
         xml_escape(&e.tags.join("|"))
     );
-    // Diamond attribution vertex — a fixed lowercase enum string, XML-safe by
-    // construction (no escaping needed), so no scan can ever produce an
-    // unclassified node in the graph view.
+    // Diamond attribution vertex, scoped to the subject — a fixed lowercase
+    // string, XML-safe by construction (no escaping needed). Per ENTITY, not
+    // per kind: see `scoped_vertex_label` for why an unscoped identity node is
+    // `unattributed` rather than `victim`.
     let _ = writeln!(
         xml,
         r#"          <attvalue for="7" value="{}"/>"#,
-        e.diamond_vertex().as_str()
+        crate::core::diamond::scoped_vertex_label(e)
     );
     // Expansion depth (hops from the seed) — integer, XML-safe by construction.
     let _ = writeln!(
@@ -221,24 +248,37 @@ fn write_node(xml: &mut String, e: &Entity, coreness: usize) {
     let _ = writeln!(xml, r#"      </node>"#);
 }
 
-/// One typed `Relation` edge, weighted by edge confidence and labelled by the
-/// relation kind. Advances `edge_id`.
+/// One typed `Relation` edge, weighted by edge confidence (`[0, 1]`), labelled
+/// by the relation kind and typed `edge_type=relation`. Advances `edge_id`.
 fn write_relation_edge(xml: &mut String, r: &Relation, edge_id: &mut u64) {
     let _ = writeln!(
         xml,
-        r#"      <edge id="{edge_id}" source="{}" target="{}" weight="{:.3}" label="{}"/>"#,
+        r#"      <edge id="{edge_id}" source="{}" target="{}" weight="{:.3}" label="{}">"#,
         r.from_uid,
         r.to_uid,
         r.confidence,
         xml_escape(r.kind.as_str())
     );
+    let _ = writeln!(xml, r#"        <attvalues>"#);
+    let _ = writeln!(xml, r#"          <attvalue for="0" value="relation"/>"#);
+    let _ = writeln!(xml, r#"        </attvalues>"#);
+    let _ = writeln!(xml, r#"      </edge>"#);
     *edge_id += 1;
 }
 
 /// Shared-evidence co-occurrence edges: for every unordered entity pair that
-/// shares ≥1 corroborating evidence **record**, an edge weighted by the
-/// shared-record count and labelled by the joined source names. Advances
-/// `edge_id` per emitted edge.
+/// shares ≥1 corroborating evidence **record**, an edge labelled by the joined
+/// source names, typed `edge_type=co_occurrence`, carrying the shared-record
+/// count as `shared_records`, and weighted `1 − 0.7^count`
+/// (`coref::shared_evidence_weight`) — the SAME `[0, 1]` scale as a relation
+/// edge's confidence. Advances `edge_id` per emitted edge.
+///
+/// The weight used to be the raw count (`1.0`, `2.0`, …) in the same `weight`
+/// attribute as relation confidences (≤ 0.95). Gephi's weighted degree,
+/// modularity and edge-weight filters read every edge's `weight` as one
+/// quantity, so one shared search snippet outranked any verified typed
+/// relation — in scan 7258fc07 ~276 co-occurrence edges sat at ≥ 1.0 beside
+/// ~21,000 relations at ≤ 0.95.
 ///
 /// Keys on [`Entity::corroborating_records`] — the `(source, summary)` pair —
 /// NOT the bare source name ([`Entity::corroborating_sources`]) and NOT
@@ -262,6 +302,17 @@ fn write_relation_edge(xml: &mut String, r: &Relation, edge_id: &mut u64) {
 /// `("hibp", "Breach 'Apollo'")`) or extracted from the same crawled page — is
 /// shared verbatim, so the true co-occurrence edge survives. Seed-derivation
 /// lineage remains carried, correctly, by the typed `DerivedFrom` relation edges.
+///
+/// The key is sound only if every emitter's summary NAMES its record: a module
+/// that writes one templated summary for distinct findings ("Profile found on
+/// twitter" for three different profiles) makes them look like one shared
+/// record, and this function wires them into a false clique. That contract is
+/// enforced at the emitters, not patched here. Attributes are deliberately NOT
+/// part of the key: `Entity::absorb` merges a record's attributes across
+/// observations and modules add per-entity ones, so a genuine joint record's
+/// attributes legitimately differ between the entities that carry it — keying
+/// on them would drop real edges (a `huggingface_user` person ↔ profile pair)
+/// while keeping templated ones whose attributes happen to agree.
 fn write_shared_evidence_edges(xml: &mut String, entities: &[Entity], edge_id: &mut u64) {
     // Each entity's record set is built ONCE, up front.
     //
@@ -311,7 +362,9 @@ fn write_shared_evidence_edges(xml: &mut String, entities: &[Entity], edge_id: &
             if shared.is_empty() {
                 continue;
             }
-            // Weight = number of shared records (strength of the joint sighting).
+            // Weight = `shared_evidence_weight(count)`: the strength of the
+            // joint sighting on the relation edges' [0, 1] scale (the count
+            // itself is kept as `shared_records`).
             // Label = the DISTINCT source names among those records, sorted for a
             // deterministic, readable Gephi label (HashSet order is not stable;
             // two entities can share several records from one source).
@@ -320,12 +373,24 @@ fn write_shared_evidence_edges(xml: &mut String, entities: &[Entity], edge_id: &
             labels.dedup();
             let _ = writeln!(
                 xml,
-                r#"      <edge id="{edge_id}" source="{}" target="{}" weight="{}.0" label="{}"/>"#,
+                r#"      <edge id="{edge_id}" source="{}" target="{}" weight="{:.3}" label="{}">"#,
                 src.uid,
                 tgt.uid,
-                shared.len(),
+                crate::core::coref::shared_evidence_weight(shared.len()),
                 xml_escape(&labels.join(", "))
             );
+            let _ = writeln!(xml, r#"        <attvalues>"#);
+            let _ = writeln!(
+                xml,
+                r#"          <attvalue for="0" value="co_occurrence"/>"#
+            );
+            let _ = writeln!(
+                xml,
+                r#"          <attvalue for="1" value="{}"/>"#,
+                shared.len()
+            );
+            let _ = writeln!(xml, r#"        </attvalues>"#);
+            let _ = writeln!(xml, r#"      </edge>"#);
             *edge_id += 1;
         }
     }

@@ -113,18 +113,39 @@ pub(crate) async fn persist_entities_as_scan(
     let store: Arc<dyn StoragePort> =
         Arc::new(crate::storage::Store::open(&crate::default_db_path())?);
 
+    // The scan row is written `Pending` and turned `Complete` only after its
+    // entities, relations and correlations are all stored. Exports classify a
+    // scan by its stored status (`partial_export_reason`), so writing
+    // `Complete` first — as this did — let an export taken mid-import brand a
+    // half-written scan whole, the same window the live engine's finalise had
+    // (see `ScanEngine::finalise_scan`'s commit step).
     let mut scan = Scan::new(sid.to_string(), Target::new(kind, label));
-    scan.status = ScanStatus::Complete;
-    scan.finished_at = Some(unix_now());
     scan.entity_count = entities.len();
     store.upsert_scan(&scan)?;
     store.upsert_entities_batch(entities)?;
+    let counts = enrich_persisted_batch(&store, sid, entities);
+    scan.status = ScanStatus::Complete;
+    scan.finished_at = Some(unix_now());
+    store.upsert_scan(&scan)?;
+    Ok(counts)
+}
+
+/// The best-effort enrichment half of [`persist_entities_as_scan`]: relations
+/// and correlations over the already-stored batch, bounded by
+/// [`PERSIST_ENRICH_MAX_ENTITIES`]. Returns `(relations, correlations,
+/// enriched)`.
+fn enrich_persisted_batch(
+    store: &std::sync::Arc<dyn crate::core::StoragePort>,
+    sid: &str,
+    entities: &[Entity],
+) -> (usize, usize, bool) {
+    use std::sync::Arc;
 
     // Device-safety bound: skip the O(n²) enrichment on a pathologically
     // large batch (entities are already persisted above; nothing lost) — see
     // `PERSIST_ENRICH_MAX_ENTITIES`'s own doc for why and the reproduction.
     if entities.len() > PERSIST_ENRICH_MAX_ENTITIES {
-        return Ok((0, 0, false));
+        return (0, 0, false);
     }
 
     let mut relations = 0usize;
@@ -146,7 +167,7 @@ pub(crate) async fn persist_entities_as_scan(
     // unwind the whole persist after the entities were already stored and shown
     // to the operator.
     let mut correlations = 0usize;
-    let guard_store = Arc::clone(&store);
+    let guard_store = Arc::clone(store);
     if let Some(hits) = crate::core::engine::guarded_correlation_pass(sid, move || {
         crate::core::correlator::Correlator::new(guard_store).run(sid)
     }) {
@@ -157,7 +178,7 @@ pub(crate) async fn persist_entities_as_scan(
         }
     }
 
-    Ok((relations, correlations, true))
+    (relations, correlations, true)
 }
 
 #[cfg(test)]

@@ -112,6 +112,20 @@ const W_NAME_TOKEN: f64 = 0.62;
 const W_SUBSTRING: f64 = 0.45;
 /// Per-shared-source decay base: the shared-source signal is `1 − BASE^k`.
 const SHARED_SOURCE_BASE: f64 = 0.7;
+
+/// The strength, in `[0, 1)`, of `k` shared evidence items between two
+/// entities: `1 − 0.7^k` (k=1 → 0.300, k=2 → 0.510, k=3 → 0.657). Each extra
+/// shared item adds less, and no count ever reaches certainty.
+///
+/// One definition for every consumer that turns "how much do these two share"
+/// into a weight on the same `[0, 1]` scale as a confidence: the co-reference
+/// scorer below, and the GEXF export's co-occurrence edge weight (which used to
+/// write the raw count, so one shared record at 1.0 outweighed every typed
+/// relation at ≤ 0.95 in Gephi's weighted degree and modularity).
+#[must_use]
+pub(crate) fn shared_evidence_weight(k: usize) -> f64 {
+    1.0 - SHARED_SOURCE_BASE.powi(i32::try_from(k).unwrap_or(i32::MAX))
+}
 /// Default emission threshold — a pair must reach this fused score to surface.
 pub const DEFAULT_MIN_SCORE: f64 = 0.55;
 
@@ -364,7 +378,7 @@ pub fn resolve_coreferences(entities: &[Entity], min_score: f64, limit: usize) -
 
             let shared = lo.sources.intersection(&hi.sources).count();
             if shared > 0 {
-                weights.push(1.0 - SHARED_SOURCE_BASE.powi(shared as i32));
+                weights.push(shared_evidence_weight(shared));
                 signals.push("shared-source");
             }
 

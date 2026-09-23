@@ -453,6 +453,19 @@ pub(super) fn records_to_entities(
         // Fold the optional money-trail fields into the evidence in a single
         // pass: only the present (`Some`) attributes are attached; owner /
         // register / total_matches always are.
+        // The summary names the ROW — its register reference, else its
+        // postcode — not only the owner: an evidence record's identity is
+        // `(source, summary)`, which `absorb` de-duplicates on and the GEXF
+        // co-occurrence edge keys on. One summary per owner made every row of
+        // a repeated owner name (different lodgements, different postcodes)
+        // look like one shared record, wiring 27 false edges between distinct
+        // register rows in scan 7258fc07's graph — and merging those rows'
+        // money-trail attributes onto whichever address they shared.
+        let row_id = reference
+            .as_deref()
+            .map(|r| format!(" (ref {r})"))
+            .or_else(|| pc.as_deref().map(|p| format!(" (postcode {p})")))
+            .unwrap_or_default();
         let ev = [
             ("amount_aud", amount.as_deref()),
             ("sender", sender.as_deref()),
@@ -463,7 +476,8 @@ pub(super) fn records_to_entities(
         .into_iter()
         .filter_map(|(k, v)| v.map(|val| (k, val)))
         .fold(
-            Evidence::new(SRC, format!("QLD unclaimed money: {owner}")).with_attr("owner", &owner),
+            Evidence::new(SRC, format!("QLD unclaimed money: {owner}{row_id}"))
+                .with_attr("owner", &owner),
             |ev, (k, val)| ev.with_attr(k, val),
         )
         .with_attr("register", "QLD Public Trustee unclaimed monies")

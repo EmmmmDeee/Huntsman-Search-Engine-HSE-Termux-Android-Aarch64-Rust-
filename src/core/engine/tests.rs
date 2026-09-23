@@ -1587,6 +1587,113 @@ async fn cache_replay_does_not_feed_the_circuit_breaker_success_path() {
 }
 
 #[tokio::test]
+async fn a_module_that_opts_out_in_band_is_skipped_not_run() {
+    use crate::core::error::Error;
+    use crate::core::event::SkipClass;
+    use crate::core::test_support::InMemoryStore;
+
+    // Scan 7258fc07 reported "1003 run, … 349 skipped" where 247 of the 1003
+    // were "needs API key" opt-outs: `finalise_module_result` bumped `run` for
+    // every non-cached dispatch before matching, and the `MissingKey` /
+    // `Error::Skipped` arms then bumped `skipped` too. `run` and `skipped`
+    // must partition the dispatches; `errored` stays a subset of `run`.
+    // Each case gets a fresh `ModuleStats` and a unique module name (the
+    // breaker/health state is process-global).
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(vec![], store, bus);
+    let target = Target::new(TargetKind::Email, "optout@example.com");
+    let opts = ScanOptions::default();
+    let cx = DispatchCx {
+        scan_id: "optout-scan",
+        target: &target,
+        opts: &opts,
+        is_expansion: false,
+        seed: &Target::new(TargetKind::Email, "optout@example.com"),
+        quarantined: no_quarantine(),
+    };
+    // (module, result, from_cache, want_run, want_skipped, want_errored)
+    type Case = (
+        &'static str,
+        dispatch::TimeoutResult,
+        bool,
+        usize,
+        usize,
+        usize,
+    );
+    let cases: Vec<Case> = vec![
+        (
+            "test_optout_missing_key",
+            Ok(Err(Error::MissingKey("HUNTSMAN_X_KEY".into()))),
+            false,
+            0,
+            1,
+            0,
+        ),
+        (
+            "test_optout_skipped",
+            Ok(Err(Error::skipped(
+                SkipClass::NotApplicable,
+                "not applicable to this target",
+            ))),
+            false,
+            0,
+            1,
+            0,
+        ),
+        (
+            "test_optout_contrast_error",
+            Ok(Err(Error::module("test_optout_contrast_error", "boom"))),
+            false,
+            1,
+            0,
+            1,
+        ),
+        (
+            "test_optout_contrast_done",
+            Ok(Ok(crate::core::module::ModuleResult::new())),
+            false,
+            1,
+            0,
+            0,
+        ),
+        (
+            "test_optout_contrast_cached",
+            Ok(Ok(crate::core::module::ModuleResult::new())),
+            true,
+            0,
+            0,
+            0,
+        ),
+    ];
+    for (name, result, from_cache, run, skipped, errored) in cases {
+        let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+        let mut stats = ModuleStats::default();
+        let mut dispatched: DispatchLog = DispatchLog::new();
+        let mut newly_inserted: Vec<String> = Vec::new();
+        let mut state = DispatchState {
+            entity_map: &mut entity_map,
+            stats: &mut stats,
+            dispatched: &mut dispatched,
+            newly_inserted: &mut newly_inserted,
+        };
+        engine.finalise_module_result(
+            &cx,
+            name,
+            result,
+            &mut state,
+            ModuleAdmission::default(),
+            from_cache,
+        );
+        assert_eq!(
+            (stats.run, stats.skipped, stats.errored),
+            (run, skipped, errored),
+            "{name}: (run, skipped, errored)"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_typed_unavailable_skip_never_feeds_the_circuit_breaker() {
     use crate::core::error::Error;
     use crate::core::event::SkipClass;
@@ -6020,6 +6127,158 @@ fn drain_events(rx: &mut tokio::sync::broadcast::Receiver<crate::core::Event>) -
     out
 }
 
+/// Lifecycle invariant at the engine/storage boundary: a scan's stored status
+/// turns terminal only once everything its exports read is durable —
+/// entities, relations, correlations and the `ScanComplete` event. Finalise
+/// used to write `Complete` BEFORE the relation/correlation passes and before
+/// the (asynchronously persisted) completion event, and scan 7258fc07's debug
+/// bundle shows the result: "status: Complete", "CORRELATIONS (0)", and no
+/// `scan_complete` among its 8190 events. The in-memory store snapshots what
+/// it held at the instant the row first turned terminal.
+#[tokio::test]
+async fn a_scan_is_marked_complete_only_after_its_exported_artefacts_are_durable() {
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, _rx) = tokio::sync::broadcast::channel(4096);
+    let engine = ScanEngine::new(
+        vec![Arc::new(StubBreachCorpus {
+            name: "stub_breach_corpus",
+        })],
+        store_port,
+        bus.clone(),
+    );
+    let opts = ScanOptions {
+        depth: 1,
+        expand_all_identities: true,
+        max_roi: false,
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Email, "lifecycle@example.com");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("email", "lifecycle@example.com"),
+        target.clone(),
+    )
+    .with_options(opts);
+    let scan_id = scan.id.clone();
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let done = engine.run(scan, target, ctx).await.expect("should succeed");
+    assert_eq!(done.status, ScanStatus::Complete);
+
+    let witnesses: Vec<_> = store
+        .terminal_witnesses()
+        .into_iter()
+        .filter(|w| w.scan_id == scan_id)
+        .collect();
+    assert_eq!(witnesses.len(), 1, "the row turns terminal exactly once");
+    let w = &witnesses[0];
+    assert_eq!(w.status, ScanStatus::Complete);
+    assert!(
+        w.completion_event,
+        "the row read Complete before its scan_complete event was stored"
+    );
+    let final_relations = store
+        .relations_for_scan(&scan_id)
+        .expect("should succeed")
+        .len();
+    let final_correlations = store
+        .correlations_for_scan(&scan_id)
+        .expect("should succeed")
+        .len();
+    assert!(final_relations > 0, "fixture must persist relations");
+    assert_eq!(
+        (w.relations, w.correlations),
+        (final_relations, final_correlations),
+        "the row read Complete before its relations/correlations were all stored"
+    );
+}
+
+/// Scan 7258fc07: `expansion_stop max_entities=2500 reached`, then
+/// `breach_sweep {probes: 64}`, then no sweep dispatch at all — the per-probe
+/// budget guard broke on probe 0, and the event (emitted before the loop)
+/// announced 64 probes that never went out. A sweep that cannot dispatch must
+/// say so: zero dispatched, and why.
+#[tokio::test]
+async fn a_budget_exhausted_breach_sweep_reports_zero_dispatched() {
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, mut rx) = tokio::sync::broadcast::channel(4096);
+    let engine = ScanEngine::new(
+        vec![Arc::new(StubBreachCorpus {
+            name: "stub_breach_corpus",
+        })],
+        store_port,
+        bus.clone(),
+    );
+    let opts = ScanOptions {
+        depth: 1,
+        expand_all_identities: true,
+        max_roi: false,
+        // The seed round alone fills this budget.
+        max_entities: Some(1),
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Email, "budget@example.com");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("email", "budget@example.com"),
+        target.clone(),
+    )
+    .with_options(opts);
+    let scan_id = scan.id.clone();
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    engine.run(scan, target, ctx).await.expect("should succeed");
+
+    let events = drain_events(&mut rx);
+    let (probes, dispatched, stopped) = events
+        .iter()
+        .find_map(|k| match k {
+            EventKind::BreachSweep {
+                probes,
+                dispatched,
+                stopped,
+                ..
+            } => Some((*probes, *dispatched, stopped.clone())),
+            _ => None,
+        })
+        .expect("a budget-stopped sweep still records that it did not run");
+    assert_eq!(
+        dispatched, 0,
+        "no probe can go out once the budget is spent"
+    );
+    assert_eq!(
+        probes, 0,
+        "no plan is compiled (or announced) when nothing can be dispatched"
+    );
+    assert!(
+        stopped
+            .as_deref()
+            .is_some_and(|s| s.contains("max_entities")),
+        "the event must name the budget that stopped the sweep; got {stopped:?}"
+    );
+    let swept = store
+        .entities_for_scan(&scan_id)
+        .expect("should succeed")
+        .into_iter()
+        .filter(|e| e.has_tag(crate::core::breach_consensus::SWEEP_TAG))
+        .count();
+    assert_eq!(swept, 0, "cross-check: no sweep entity exists");
+}
+
 /// End-to-end: the final bulk breach query is compiled and dispatched by the
 /// scan pipeline itself — not merely available to a CLI caller — and the
 /// autonomous audit runs after it.
@@ -6068,15 +6327,22 @@ async fn a_scan_runs_the_final_breach_sweep_and_then_audits_it() {
                 anchors,
                 probes,
                 dropped,
-            } => Some((*anchors, *probes, *dropped)),
+                dispatched,
+                stopped,
+            } => Some((*anchors, *probes, *dropped, *dispatched, stopped.clone())),
             _ => None,
         })
         .expect("the scan pipeline must run the final breach sweep, not just offer it to the CLI");
-    let (anchors, probes, _dropped) = sweep;
+    let (anchors, probes, _dropped, dispatched, stopped) = sweep;
     assert!(
         probes > 0 && anchors > 0,
         "a confident Email seed must yield at least one anchor and probe; got \
          {anchors} anchors / {probes} probes"
+    );
+    assert!(
+        dispatched == probes && stopped.is_none(),
+        "an unbudgeted sweep dispatches its whole plan; got {dispatched}/{probes}, \
+         stopped {stopped:?}"
     );
 
     let audit = events

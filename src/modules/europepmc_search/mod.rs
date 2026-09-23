@@ -246,12 +246,21 @@ pub(super) fn build_entities(
         let mut e = Entity::new(EntityKind::Url, &url, RESULT_URL_CONFIDENCE, scan_id);
         e.tag("europepmc");
         e.tag("literature");
+        // The summary names the WORK (its DOI or PMID), not only the author:
+        // an evidence record's identity is `(source, summary)`, which `absorb`
+        // de-duplicates on and the GEXF co-occurrence edge keys on. One
+        // summary per author made every paper by that author look like one
+        // shared record naming them all — scan 7258fc07's graph drew 72 false
+        // Europe PMC edges between distinct DOIs.
         let (summary, matched_key) = match kind {
             TargetKind::Organisation => (
-                format!("Europe PMC work affiliated with '{matched}'"),
+                format!("Europe PMC work affiliated with '{matched}': {field} {id_value}"),
                 "matched_affiliation",
             ),
-            _ => (format!("Europe PMC work by '{matched}'"), "matched_author"),
+            _ => (
+                format!("Europe PMC work by '{matched}': {field} {id_value}"),
+                "matched_author",
+            ),
         };
         let mut ev = Evidence::new(SRC, summary)
             .with_attr(field, id_value)

@@ -878,6 +878,109 @@ fn debug_bundle_single_signal_fallback_fix_is_not_mislabelled_au059() {
 }
 
 #[test]
+fn environment_key_inventory_treats_template_placeholders_as_absent() {
+    // Scan 7258fc07's ENVIRONMENT listed SEEKNOW, DEHASHED, INTELX, … under
+    // `keys_present` with `keys_absent : 0`, while its SCAN SEQUENCE held 247
+    // "needs API key" skips for those very keys: presence was decided by the
+    // NAME being in the env file, and `hse provision` writes placeholder slots
+    // that every module rejects. Presence must be the modules' own test.
+    let mut m = std::collections::HashMap::new();
+    m.insert(
+        "HUNTSMAN_SEEKNOW_KEY".to_string(),
+        "insert_see_know_key_here".to_string(),
+    );
+    m.insert("HUNTSMAN_DEHASHED_KEY".to_string(), "   ".to_string());
+    m.insert(
+        "HUNTSMAN_HIBP_KEY".to_string(),
+        "abc123realvalue".to_string(),
+    );
+    let inv = super::environment::key_inventory(&m);
+    assert_eq!(inv.present, vec!["HUNTSMAN_HIBP_KEY"]);
+    assert!(
+        inv.absent.contains(&"HUNTSMAN_SEEKNOW_KEY"),
+        "a placeholder slot must be reported absent"
+    );
+    assert!(
+        inv.absent.contains(&"HUNTSMAN_DEHASHED_KEY"),
+        "a blank slot must be reported absent"
+    );
+    assert!(!inv.absent.contains(&"HUNTSMAN_HIBP_KEY"));
+    assert_eq!(inv.unfilled, 2, "two slots are provisioned but unfilled");
+    let mut sorted = inv.absent.clone();
+    sorted.sort_unstable();
+    assert_eq!(inv.absent, sorted, "absent list is deterministic (sorted)");
+}
+
+#[test]
+fn debug_bundle_recomputed_synergy_without_persisted_au059_is_not_labelled_single_signal() {
+    // Scan 7258fc07's bundle printed "BEST AU LOCATION FIX (single-signal)"
+    // directly above "basis=multi-source cross-class synergy": no AU-059
+    // correlation was persisted (CORRELATIONS (0)), so the export fell back to
+    // the estimate ladder — whose rung 1 IS the multi-source synergy — and the
+    // fallback stamped `source: "single-signal"` unconditionally. The strongest
+    // fix was labelled the weakest kind, on the bundle, report.json and the
+    // `/location` API alike. Same two-class fixture as the AU-059 test above,
+    // but WITHOUT storing the correlation.
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let dir = tempfile::tempdir().expect("should succeed");
+    let store = Store::open(
+        dir.path()
+            .join("au059b.db")
+            .to_str()
+            .expect("should succeed"),
+    )
+    .expect("should succeed");
+    let scan = Scan::new(
+        "scan-au059b",
+        Target::new(TargetKind::Email, "au059b@example-real.com"),
+    );
+    store.upsert_scan(&scan).expect("should succeed");
+    let sighting = |source: &str, lat: f64, lon: f64, conf: f64| {
+        let mut e = Entity::new(
+            EntityKind::Coordinates,
+            format!("{lat:.4},{lon:.4}"),
+            conf,
+            "scan-au059b",
+        );
+        e.tag("au-state:NSW");
+        e.tag("country:AU");
+        e.add_evidence(Evidence::new(source, "fixture"));
+        e
+    };
+    let entities = vec![
+        sighting("exif_geo", -33.8688, 151.2093, 0.85),
+        sighting("wigle", -33.8700, 151.2100, 0.78),
+    ];
+    store
+        .upsert_entities_batch(&entities)
+        .expect("should succeed");
+
+    let out = render_debug_bundle(&store, "scan-au059b").expect("should succeed");
+    assert!(
+        out.contains("basis=multi-source cross-class synergy"),
+        "fixture must reach rung 1 of the estimate ladder: {out}"
+    );
+    assert!(
+        !out.contains("BEST AU LOCATION FIX (single-signal)"),
+        "a recomputed multi-source synergy fix must not be labelled single-signal: {out}"
+    );
+    assert!(
+        out.contains("BEST AU LOCATION FIX (multi-source synergy, recomputed"),
+        "the header must say what the fix is: {out}"
+    );
+    assert!(
+        !out.contains("BEST AU LOCATION FIX (AU-059)"),
+        "no AU-059 correlation was persisted, so it must not claim one: {out}"
+    );
+    let fix = extract_au_location_fix(&[], &entities);
+    assert_eq!(fix["source"], "synergy-recomputed");
+    assert!(
+        fix.get("severity").is_none() && fix.get("rule_id").is_none(),
+        "no correlation was emitted — no severity/rule_id may be invented: {fix}"
+    );
+}
+
+#[test]
 fn debug_bundle_is_deterministic() {
     // DETERMINISM REQUIREMENT (evidence, not assertion): re-exporting the
     // same immutable stored scan must be byte-identical, so the artifact is

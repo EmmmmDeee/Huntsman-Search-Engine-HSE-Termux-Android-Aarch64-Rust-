@@ -253,14 +253,21 @@ fn render_event(kind: &crate::core::event::EventKind) -> String {
             anchors,
             probes,
             dropped,
+            dispatched,
+            stopped,
         } => {
             let over = if *dropped > 0 {
                 format!(" ({dropped} over cap)")
             } else {
                 String::new()
             };
+            // Dispatched-of-planned, and why it stopped: a plan the scan
+            // budget cut to zero must not read as a sweep that went out.
+            let stop = stopped
+                .as_deref()
+                .map_or_else(String::new, |r| format!(" — stopped: {r}"));
             format!(
-                "  breach sweep: {probes} probe{} from {anchors} anchor{}{over}",
+                "  breach sweep: {dispatched}/{probes} probe{} dispatched from {anchors} anchor{}{over}{stop}",
                 plural2(*probes),
                 plural2(*anchors)
             )

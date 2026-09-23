@@ -780,3 +780,37 @@ fn is_exempt_from_the_constrained_device_timeout_cap() {
         "still bounded by its own budget"
     );
 }
+
+/// Scan 7258fc07: three sweeps each found a twitter profile
+/// (`/ianthorpe`, `/ianthorpe26`, `/ianthorpe91`) and each carried the one
+/// summary "Profile found on twitter" — one evidence record, to the GEXF, that
+/// named all three, so they were wired into a false clique. The summary must
+/// name the profile.
+#[test]
+fn distinct_profiles_on_one_platform_carry_distinct_records() {
+    let p = a_status_only_platform();
+    let found = |handle: &str| -> ((&'static Platform, u16), ProbeResult) {
+        (
+            (p, 200),
+            ProbeResult::Found {
+                url: p.url_pattern.replace("{}", handle),
+                confidence: 0.74,
+                verified: false,
+                controlled: true,
+            },
+        )
+    };
+    let (result, _) = emit_judged(&[found("ianthorpe26"), found("ianthorpe91")], "scan-t");
+    let urls: Vec<Entity> = result
+        .entities
+        .into_iter()
+        .filter(|e| e.kind == EntityKind::Url)
+        .collect();
+    assert_eq!(urls.len(), 2);
+    assert_ne!(urls[0].evidence[0].summary, urls[1].evidence[0].summary);
+    let xml = crate::core::gexf::entities_to_gexf(&urls, &[], "scan-t");
+    assert!(
+        !xml.contains("<edge "),
+        "distinct profiles are not a joint record: {xml}"
+    );
+}

@@ -21049,3 +21049,206 @@ restored after each run, and the restore was checked against `git diff`.
 **12 of 12 killed.** The two `derives_from_target` declaration tests pin a
 switch and have no separate pre-fix form. `hse-core` is untouched, so
 `wasm-ui/pkg` needs no regeneration.
+
+## REQ-EXPORT-004 / REQ-KEYS-009 / REQ-ENGINE-003 / REQ-SWEEP-004 / REQ-GEXF-001 / REQ-GEXF-002 / REQ-GEXF-003 / REQ-SCANSTATUS-002 — the exports described a scan that did not happen: a synergy fix as single-signal, placeholders as keys, opt-outs as runs, a budget-cut sweep as dispatched, templates as shared records, namesakes as the victim, and a half-finalised scan as complete
+
+**Found** in the exports of the "Ian Thorpe" scan (7258fc07): the debug
+bundle, CSV, GEXF and events log. There were eight faults in how HSE accounts
+for a scan in its exports. Seven were adversarially verified against the
+exports and the code, and the eighth (the lifecycle order) was verified by
+reading the finalise path. Two verdicts were narrowed on re-reading the
+current code. The `au_geo` roll-up is already an annotation (REQ-GEO-008), so
+it no longer draws a co-occurrence edge and its summary is left alone. The
+proposed attribute-keyed GEXF edge was rejected. It would drop genuine joint
+records and keep templated ones, and a guard test now pins that.
+
+**REQ-EXPORT-004 — a recomputed synergy fix was labelled single-signal.** The
+bundle printed `BEST AU LOCATION FIX (single-signal)` directly above
+`basis=multi-source cross-class synergy · confidence=0.97`. No AU-059
+correlation had been persisted (`CORRELATIONS (0)`, see REQ-SCANSTATUS-002), so
+`extract_au_location_fix` fell back to `best_au_location_estimate`. Rung 1 of
+that ladder is the same `au059_synergy_fix` computation. The fallback stamped
+`"source": "single-signal"` unconditionally, and report.json's
+`best_location` and `GET /scans/{id}/location` carried the same label. The
+rung-1 basis is now one constant, `correlator::SYNERGY_BASIS`, and the
+fallback's `source` is read from the rung: `"synergy-recomputed"` for rung 1,
+`"single-signal"` for every coarser rung. The bundle header follows it:
+`(multi-source synergy, recomputed — AU-059 not persisted)`. The fallback still
+carries no `severity`, `rank` or `rule_id`, because no correlation was emitted
+to take them from. The CLI dossier appendix already labelled this correctly
+and is unchanged.
+
+**REQ-KEYS-009 — template placeholders were listed as present keys.** The
+bundle's ENVIRONMENT listed SEEKNOW, DEHASHED, INTELX, EXA, OATHNET and a dozen
+more under `keys_present` with `keys_absent : 0`, while its own SCAN SEQUENCE
+held 247 "needs API key" skips across 17 of those names.
+`render_environment` decided presence by the NAME being in the env file.
+`hse provision` writes a full template of `insert_..._here` slots, and modules
+reject those through `resolve_key` → `is_configured_value`. The inventory is
+now the pure `key_inventory`. A key is present only when
+`is_configured_value` accepts its value, absent otherwise (missing, blank or
+placeholder), and both lists are sorted. `keys_absent` also says how many
+absent slots are "provisioned but unfilled". The line prefixes are unchanged,
+so `strip_ambient_env_keys` still strips them. `selftest`'s `keys.load` had the
+same name-only count and now reports configured keys out of loaded slots.
+
+**REQ-ENGINE-003 — an opted-out module was counted as run and as skipped.**
+The header read `1003 run, 23 errored, 3 timed out, 349 skipped`. Pairing the
+SCAN SEQUENCE's events gives 730 done + 26 errored/timed out + 247 opted out
+after dispatch = 1003. `finalise_module_result` bumped `stats.run` for every
+non-cached dispatch before matching the result, and the `MissingKey` and
+`Error::Skipped` arms then bumped `skipped` as well. The dossier's dead-scan
+hint then told the operator that modules "ran and found nothing" when every
+one had opted out. `run` now counts only real executions (done, errored or
+timed out), so `run` and `skipped` partition the non-cached dispatches.
+`errored` and `timed_out` stay subsets of `run`, and a cache replay is still
+neither. The CLI's modules line is gated on `run + skipped`, so a scan whose
+every module opted out still prints its skip count. `ModuleStats::run` and
+`Scan::modules_run` document the partition.
+
+**REQ-SWEEP-004 — a budget-cut breach sweep reported probes it never sent.**
+The log read `expansion_stop max_entities=2500 reached`, then 21 s later
+`breach_sweep {"anchors":18,"probes":64,"dropped":51}`, then nothing. No sweep
+module ever started. `run_breach_sweep` checked only cancellation before the
+snapshot and compile, emitted the plan's shape before its dispatch loop, and
+the loop's budget guard broke on probe 0. The stop was recorded only in
+tracing. The sweep now checks the budget before compiling. If the budget is
+spent, it emits `BreachSweep { probes: 0, dispatched: 0, stopped:
+Some("max_entities=… reached") }` and returns. Otherwise it emits once after
+the loop, with `dispatched` (probes actually sent) and `stopped` (the
+`StopReason::label` of a budget cut or a cancel, `None` when the plan ran out).
+The persisted log line, the event summary (`{dispatched}/{probes} probes
+dispatched · stopped: …`) and the live CLI all carry both fields. Both fields
+are `serde(default)`, so an event persisted before this still deserialises. An
+empty plan still emits (`stopped: None`), so "ran with nothing to ask" stays
+distinct from "never ran".
+
+**REQ-GEXF-001 — templated summaries made distinct findings one shared
+record.** An evidence record's identity is `(source, summary)`. `Entity::absorb`
+de-duplicates on it, and the GEXF co-occurrence edge keys on it. Six emitters
+wrote one summary for distinct findings and kept the identifying value only in
+attributes, so the graph wired distinct findings into false cliques:
+
+| emitter | old summary | edges in 7258fc07 |
+|---|---|---|
+| `social_probe` | `Profile found on {platform}` | twitter `/ianthorpe`, `/ianthorpe26`, `/ianthorpe91` |
+| `europepmc_search` | `Europe PMC work by '{author}'` | 72 |
+| `crossref_search` | `Crossref work by '{author}'` | 18 |
+| `overpass` | `OSM {category} near {centre}` | 9 |
+| `qld_unclaimed` | `QLD unclaimed money: {owner}` | 27 |
+| `wikidata` truncation note | `Wikidata name search matched N item(s); …` | the Ian ↔ John Thorpe namesake edge |
+
+Each summary now names its record: the profile URL, the DOI or PMID, the DOI
+(or URL when a work has none), the node's own coordinate, the row's register
+reference (or postcode), and the searched name. The GEXF key is unchanged.
+Its doc now states the contract it depends on, and why attributes are not
+part of the key: `absorb` merges a record's attributes, and modules add
+per-entity ones. Replaying an attribute key over the scan's entities dropped 6
+genuine joint edges (4 `search_engines` username ↔ URL pairs, 2
+`huggingface_user` person ↔ profile pairs) and kept the Wikidata namesake edge.
+Evidence counts are unaffected, because corroboration counts sources, not
+records.
+
+**REQ-GEXF-002 — every identity node was exported as the victim.** The GEXF's
+`diamond_vertex` for person 254, username 324, email 237, organisation 57,
+abn_acn 8 and phone 6 was `victim`, which the module defines as "an identity
+facet of the subject". That set included a stranger's Instagram handle, a
+WikiTree relative and "Ian Thorpe Aquatic Centre". `write_node` exported
+`kind.diamond_vertex()`, a pure function of kind, so the one-click partition by
+attribution role merged strangers into the subject. The per-kind taxonomy is
+unchanged (the `/diamond` breakdown and `tests/api.rs` pin it). The node
+attribute is now `diamond::scoped_vertex_label`. An identity-kind node is
+`victim` only when it carries a subject claim, otherwise `unattributed`, and
+every other vertex is the kind's own. The subject-claim tags are now one
+constant, `core::scan::SUBJECT_CLAIM_TAGS`, read by the engine's
+`rescope_subject_claims`, `geo_family::subject_surname` and the export, so the
+three cannot drift. It lives in the main crate, not `hse_core::tags`, so
+`wasm-ui/pkg` is untouched.
+
+**REQ-GEXF-003 — two edge families on two weight scales, with no type.** The
+GEXF declared only node attributes. A typed relation (weight = confidence, at
+most 0.95) and a co-occurrence (weight = raw shared-record count, 1.0, 2.0, …)
+shared one `weight` attribute and could be told apart only by guessing which
+labels are relation kinds. So one shared search snippet outranked any
+verified relation in Gephi's weighted degree and modularity. About 276
+co-occurrence edges sat at 1.0 or more beside about 21,000 relations. Edges now
+carry an `edge_type` attribute (`relation` / `co_occurrence`), and a
+co-occurrence carries `shared_records` (the raw count). Its weight is `1 −
+0.7^count` (0.300, 0.510, 0.657, …), which is `coref::shared_evidence_weight`,
+now the single definition the co-reference scorer also uses. Every weight is on
+one `[0, 1]` scale. The byte-exact golden test is updated.
+
+**REQ-SCANSTATUS-002 — a scan read Complete before its exports' artefacts were
+stored.** The bundle said `status: Complete` and `CORRELATIONS (0)`, and its
+8190-event sequence had no `scan_complete`. `finalise_scan` wrote the terminal
+status before deriving relations, before the correlation pass and the
+cross-scan and boost phases, and before emitting `ScanComplete`. Events reach
+the store asynchronously through the DB-writer actor. Every export classifies
+a scan by its stored status (`partial_export_reason`: `Running` → "live"), so
+an export taken in that window was branded whole. The same window let an API
+client polling for `complete` read the correlations before they existed. The
+blocking phase now decides the terminal status but does not write it. After
+it, the engine drains the writer (`flush`) and then writes the scan row, which
+is the last write of the scan. The Failed path follows the same order, and its
+write stays best-effort and logged. The two import paths had the same order
+(`app::persist::persist_entities_as_scan` and the web upload in
+`api::scan_handlers::core`). They wrote `Complete` before storing entities,
+relations and correlations. They now write the row `Pending` first and
+`Complete` last, on every exit. `is_interrupted` reads only `Running`, so an
+import in flight is not reported as interrupted.
+
+### Locks
+
+- `app::export::tests::debug_bundle_recomputed_synergy_without_persisted_au059_is_not_labelled_single_signal`
+  (the existing AU-059 and lone-coordinate tests still pass unchanged).
+- `app::export::tests::environment_key_inventory_treats_template_placeholders_as_absent`.
+- `core::engine::tests::a_module_that_opts_out_in_band_is_skipped_not_run`
+  (MissingKey and Skipped are skipped, not run; an error is run and errored; a
+  completion is run; a cache replay is neither).
+- `core::engine::tests::a_budget_exhausted_breach_sweep_reports_zero_dispatched`;
+  `core::event::tests::a_budget_cut_breach_sweep_logs_what_it_dispatched_and_why_it_stopped`
+  (log line, summary, legacy deserialisation);
+  `a_scan_runs_the_final_breach_sweep_and_then_audits_it` now also asserts an
+  unbudgeted sweep dispatches its whole plan with `stopped: None`.
+- `modules::social_probe::tests::distinct_profiles_on_one_platform_carry_distinct_records`,
+  `modules::europepmc_search::tests::distinct_papers_carry_distinct_records`,
+  `modules::crossref_search::tests::distinct_works_carry_distinct_records`,
+  `modules::overpass::tests::distinct_nodes_of_one_category_carry_distinct_records`,
+  `modules::au_unclaimed::tests::qld::distinct_rows_of_one_owner_carry_distinct_records`,
+  `modules::wikidata::tests::truncation_notes_for_different_searches_are_distinct_records`
+  (each through `entities_to_gexf`: no edge); guard against the attribute key:
+  `core::gexf::tests::a_joint_record_links_despite_per_entity_attributes`.
+- `core::gexf::tests::a_namesake_identity_is_not_exported_as_victim`;
+  `gexf_exports_the_diamond_vertex_per_kind` now tags its email `seed`.
+- `core::gexf::tests::co_occurrence_weight_is_bounded_and_typed`;
+  `gexf_golden_output_is_byte_stable` (edge attributes, typed edges, crtsh at
+  0.300).
+- `core::engine::tests::a_scan_is_marked_complete_only_after_its_exported_artefacts_are_durable`.
+  `InMemoryStore` records a `TerminalWitness` of what it held when a scan row
+  first turned terminal.
+
+### Falsified
+
+Each mutation restores the defect. The fixed sources were saved first and
+restored after each run, and `git diff` was checked to be byte-identical
+(md5) before and after all fifteen runs.
+
+| # | mutation | result |
+|---|---|---|
+| E1 | fallback `source` back to the constant `"single-signal"` | killed by `debug_bundle_recomputed_synergy_without_persisted_au059_is_not_labelled_single_signal` |
+| K1 | `key_inventory` by name only (present = every `HUNTSMAN_*`, absent = name missing) | killed by `environment_key_inventory_treats_template_placeholders_as_absent` |
+| N1 | `run += 1` for every non-cached dispatch | killed by `a_module_that_opts_out_in_band_is_skipped_not_run` |
+| S1 | no pre-compile budget check | killed by `a_budget_exhausted_breach_sweep_reports_zero_dispatched` (a plan was compiled and announced) |
+| S2 | S1, and the event reports `dispatched = plan.len()`, `stopped = None` (the old claim) | killed by the same test |
+| S3 | `dispatched` / `stopped` dropped from the log line | killed by `a_budget_cut_breach_sweep_logs_what_it_dispatched_and_why_it_stopped` |
+| G1–G6 | each emitter's summary back to its template | each killed by its own `distinct_…_carry_distinct_records` test |
+| V1 | `write_node` back to `kind.diamond_vertex()` | killed by `a_namesake_identity_is_not_exported_as_victim` |
+| W1 | co-occurrence weight back to the raw count | killed by `co_occurrence_weight_is_bounded_and_typed` |
+| L1 | terminal status written before relations/correlations/`ScanComplete` | killed by `a_scan_is_marked_complete_only_after_its_exported_artefacts_are_durable` |
+
+**15 of 15 killed.** The import-path reordering (`app::persist`,
+`api::scan_handlers::core`) has no ordering lock of its own. Both write through
+the concrete SQLite store at `default_db_path`, which offers no seam to observe
+the order. The reorder applies the invariant REQ-SCANSTATUS-002's engine lock
+pins, and `tests/api.rs`'s import tests pass unchanged. `hse-core` is untouched,
+so `wasm-ui/pkg` needs no regeneration.

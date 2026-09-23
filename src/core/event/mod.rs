@@ -191,14 +191,26 @@ pub enum EventKind {
         /// `DispatchUtility::explanation` — one line per contributing factor.
         explanation: Vec<String>,
     },
-    /// The final bulk breach sweep dispatched its compiled plan. Reports the
-    /// plan's shape, INCLUDING what it declined to ask, so a sweep that hit its
-    /// cap is distinguishable from one that simply had less to ask about.
+    /// The final bulk breach sweep finished. Reports the plan's shape,
+    /// INCLUDING what it declined to ask, so a sweep that hit its cap is
+    /// distinguishable from one that simply had less to ask about — and how
+    /// much of that plan was actually dispatched, so a sweep the scan budget
+    /// cut short (or never let start) is never read as one that ran.
     BreachSweep {
         anchors: usize,
+        /// Probes the plan compiled (planned, not necessarily sent).
         probes: usize,
         /// Probes the plan derived but could not fit under the cap.
         dropped: usize,
+        /// Probes actually dispatched to the breach corpora.
+        #[serde(default)]
+        dispatched: usize,
+        /// Why dispatch stopped before the plan was exhausted
+        /// ([`crate::core::scan::StopReason::label`]) — a spent scan budget or
+        /// a cancel. `None` when every planned probe went out (including the
+        /// empty plan: ran, nothing to ask).
+        #[serde(default)]
+        stopped: Option<String>,
     },
     /// The autonomous audit of the breach corpus graded the scan's findings.
     /// `verdict` is the [`crate::core::breach_consensus::AuditVerdict`] label;
@@ -394,10 +406,14 @@ impl EventKind {
                 anchors,
                 probes,
                 dropped,
+                dispatched,
+                stopped,
             } => vec![
                 ("anchors", json!(anchors)),
                 ("probes", json!(probes)),
                 ("dropped", json!(dropped)),
+                ("dispatched", json!(dispatched)),
+                ("stopped", json!(stopped)),
             ],
             Self::ConsensusAudit {
                 verdict,
@@ -522,19 +538,26 @@ impl EventKind {
                 anchors,
                 probes,
                 dropped,
+                dispatched,
+                stopped,
             } => {
                 // The dropped count is part of the headline, not a footnote: a
                 // sweep that fit everything and one that was cut short read
-                // identically without it.
+                // identically without it. Likewise dispatched-of-planned and
+                // the stop reason: a plan the budget cut to zero is not a sweep
+                // that ran.
                 let over = if *dropped > 0 {
                     format!(" · {dropped} over cap")
                 } else {
                     String::new()
                 };
+                let stop = stopped
+                    .as_deref()
+                    .map_or_else(String::new, |r| format!(" · stopped: {r}"));
                 (
                     "expand",
                     format!(
-                        "⇉ breach sweep · {probes} probe{} from {anchors} anchor{}{over}",
+                        "⇉ breach sweep · {dispatched}/{probes} probe{} dispatched from {anchors} anchor{}{over}{stop}",
                         plural(*probes),
                         plural(*anchors)
                     ),

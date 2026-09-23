@@ -149,6 +149,47 @@ use crate::core::scan::ScanStatus;
         }
     }
 
+    #[test]
+    fn a_budget_cut_breach_sweep_logs_what_it_dispatched_and_why_it_stopped() {
+        // Scan 7258fc07's log read `breach_sweep {"anchors":18,"probes":64,
+        // "dropped":51}` straight after `expansion_stop max_entities=2500
+        // reached` — and not one sweep module ran. The line must carry the
+        // dispatched count and the stop reason, in the persisted log and the
+        // human summary alike.
+        let ev = Event::new(
+            "s",
+            EventKind::BreachSweep {
+                anchors: 18,
+                probes: 64,
+                dropped: 51,
+                dispatched: 0,
+                stopped: Some("max_entities=2500 reached".into()),
+            },
+        );
+        let line = ev.to_log_line();
+        assert!(line.contains("\"dispatched\":0"), "{line}");
+        assert!(
+            line.contains("\"stopped\":\"max_entities=2500 reached\""),
+            "{line}"
+        );
+        let (_, summary) = ev.kind.log_summary();
+        assert!(summary.contains("0/64 probes dispatched"), "{summary}");
+        assert!(summary.contains("stopped: max_entities=2500 reached"), "{summary}");
+        // An event persisted before these fields existed still deserialises.
+        let old: EventKind = serde_json::from_str(
+            r#"{"type":"breach_sweep","anchors":1,"probes":2,"dropped":0}"#,
+        )
+        .expect("legacy breach_sweep event deserialises");
+        assert!(matches!(
+            old,
+            EventKind::BreachSweep {
+                dispatched: 0,
+                stopped: None,
+                ..
+            }
+        ));
+    }
+
     /// The terminal event renders its true state: an aborted or failed scan
     /// must NOT read as a green success. This is the whole point of carrying
     /// `status` on the event — the downloaded `events.log` is the client-safe
@@ -350,6 +391,8 @@ use crate::core::scan::ScanStatus;
                 anchors: 3,
                 probes: 12,
                 dropped: 1,
+                dispatched: 0,
+                stopped: Some("max_entities=2500 reached".into()),
             },
             EventKind::ConsensusAudit {
                 verdict: "pass".into(),

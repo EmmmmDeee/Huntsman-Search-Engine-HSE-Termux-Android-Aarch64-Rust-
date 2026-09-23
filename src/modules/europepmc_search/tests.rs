@@ -292,3 +292,24 @@ fn an_organisation_is_attributed_by_its_affiliation_line() {
             .contains_key("matched_affiliation")
     );
 }
+
+#[test]
+fn distinct_papers_carry_distinct_records() {
+    // Scan 7258fc07: one summary per author ("Europe PMC work by 'Thorpe
+    // IF'") made every paper by that author one shared evidence record, and
+    // the GEXF drew 72 false co-occurrence edges between distinct DOIs. The
+    // summary must name the work.
+    let r = resp(vec![
+        by("10.1/a", Some("Thorpe IF.")),
+        by("10.1/b", Some("Thorpe IF.")),
+    ]);
+    let out = build_entities(&r, TargetKind::FullName, "Ian Thorpe", SCAN);
+    assert_eq!(out.len(), 2);
+    assert_ne!(out[0].evidence[0].summary, out[1].evidence[0].summary);
+    assert!(out[0].evidence[0].summary.contains("doi 10.1/a"));
+    let xml = crate::core::gexf::entities_to_gexf(&out, &[], SCAN);
+    assert!(
+        !xml.contains("<edge "),
+        "distinct papers are not a joint record: {xml}"
+    );
+}

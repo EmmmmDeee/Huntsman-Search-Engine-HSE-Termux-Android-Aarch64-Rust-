@@ -141,6 +141,11 @@ pub(crate) struct ScanOutcome {
 /// to the `Scan` record in `finalise_scan`.
 #[derive(Debug, Default)]
 pub(crate) struct ModuleStats {
+    /// Modules that actually executed against their provider: completed,
+    /// errored, or timed out. Excludes cache replays, gate-skips and in-band
+    /// opt-outs (`MissingKey` / `Error::Skipped`) — `run` and `skipped`
+    /// partition the non-cached dispatches, so no dispatch is in both.
+    /// `errored` and `timed_out` are subsets of `run`.
     pub run: usize,
     pub errored: usize,
     pub timed_out: usize,
@@ -1048,8 +1053,9 @@ impl ScanEngine {
         outcome
     }
 
-    /// Persist entities, run the correlator, and mark the scan terminal.
-    /// Runs on a dedicated blocking thread (`tokio::task::spawn_blocking`) so
+    /// Persist entities, run the correlator, and mark the scan terminal —
+    /// LAST, once every artefact an export reads is durable (see the commit
+    /// step at the end). The work runs on a dedicated blocking thread (`tokio::task::spawn_blocking`) so
     /// the four synchronous rusqlite round-trips never stall the async worker
     /// pool — critical on low-core aarch64 where the pool is typically 4–8
     /// threads and a single blocked worker visibly degrades concurrency.
@@ -1072,7 +1078,11 @@ impl ScanEngine {
         // Snapshot the cancellation state before crossing into the blocking
         // thread: CancellationToken is not 'static and cannot be moved.
         let cancelled = ctx.cancel.is_cancelled();
-        let scan = tokio::task::spawn_blocking(move || -> Result<Scan> {
+        // The blocking phase builds the terminal scan record but does NOT
+        // persist its terminal status — see the commit step after it. The
+        // flag says whether that final write is best-effort (the Failed
+        // record, whose loss is logged) or must propagate its error.
+        let (scan, best_effort_persist) = tokio::task::spawn_blocking(move || -> Result<(Scan, bool)> {
             // Mint ApiKey entities for every FOREIGN key identified in this scan's
             // endpoint responses, run the finalise-time offline enrichment passes,
             // then persist the batch (falling back to per-entity upserts on a
@@ -1161,18 +1171,6 @@ impl ScanEngine {
                 scan.entity_count = 0;
                 scan.error = first_err;
                 scan.finished_at = Some(crate::core::entity::unix_now());
-                // Persist the failed-scan record. Best-effort like the WAL
-                // checkpoint below — we still return the failed scan to the
-                // caller — but log on error rather than discarding it silently,
-                // matching the success path's `upsert_scan(scan)?` and the
-                // "no silent failures" invariant.
-                if let Err(e) = store.upsert_scan(&scan) {
-                    // error!, not warn!: this is the terminal Failed record for
-                    // a scan that persisted nothing. Losing the write means the
-                    // stored scan never reflects its own failure — an
-                    // unrecoverable integrity gap the operator can only see here.
-                    error!(scan_id = %scan.id, error = %e, "failed to persist failed-scan record");
-                }
                 emitter.emit(
                     &scan.id,
                     EventKind::ScanComplete {
@@ -1181,10 +1179,15 @@ impl ScanEngine {
                         status: scan.status,
                     },
                 );
-                return Ok(scan);
+                // Persisted by the commit step below, after the event is
+                // durable — best-effort there, logged on failure.
+                return Ok((scan, true));
             }
 
-            scan.status = if cancelled {
+            // The terminal status is DECIDED here but not yet written: the
+            // stored record stays `Running` until every artefact an export
+            // reads is durable — see the commit step after this closure.
+            let terminal = if cancelled {
                 ScanStatus::Aborted
             } else {
                 ScanStatus::Complete
@@ -1197,7 +1200,6 @@ impl ScanEngine {
                 ));
             }
             scan.finished_at = Some(crate::core::entity::unix_now());
-            store.upsert_scan(&scan)?;
 
             // Derive + persist the typed entity-relation edges (attribution
             // graph), then run the authoritative finalise-time correlation pass
@@ -1224,11 +1226,50 @@ impl ScanEngine {
                     entity_count,
                     // `Complete` or `Aborted` per the branch above — carried on
                     // the event so the log renders the true terminal state.
-                    status: scan.status,
+                    status: terminal,
                 },
             );
 
-            Ok(scan)
+            scan.status = terminal;
+            Ok((scan, false))
+        })
+        .await
+        .map_err(|e| crate::core::error::Error::Other(e.to_string()))??;
+
+        // COMMIT: the terminal status is the LAST thing written.
+        //
+        // It used to be written before the relations, the correlation pass,
+        // the boosts and the `ScanComplete` event — and the events themselves
+        // reach the store asynchronously through the DB-writer actor. Every
+        // export classifies a scan by its stored status
+        // (`partial_export_reason`: `Running` → "live", `Complete` → whole), so
+        // an export taken in that window was branded a complete scan while
+        // its correlations were still 0 and no `scan_complete` event existed
+        // — exactly scan 7258fc07's debug bundle: "status: Complete",
+        // "CORRELATIONS (0)", and no `scan_complete` among 8190 events. The
+        // same window let an API client polling for `complete` read the
+        // correlations before they existed.
+        //
+        // Invariant: a scan reads terminal only once everything its exports
+        // read — entities, relations, correlations, and every event through
+        // `ScanComplete` — is durable. So drain the writer first, then write
+        // the status.
+        self.writer.flush().await;
+        let commit_store = Arc::clone(&self.store);
+        let scan = tokio::task::spawn_blocking(move || -> Result<Scan> {
+            match commit_store.upsert_scan(&scan) {
+                Ok(()) => Ok(scan),
+                Err(e) if best_effort_persist => {
+                    // error!, not warn!: this is the terminal Failed record for
+                    // a scan that persisted nothing. Losing the write means the
+                    // stored scan never reflects its own failure — an
+                    // unrecoverable integrity gap the operator can only see
+                    // here. The failed scan is still returned to the caller.
+                    error!(scan_id = %scan.id, error = %e, "failed to persist failed-scan record");
+                    Ok(scan)
+                }
+                Err(e) => Err(e),
+            }
         })
         .await
         .map_err(|e| crate::core::error::Error::Other(e.to_string()))??;
@@ -1838,6 +1879,28 @@ impl ScanEngine {
         if ctx.cancel.is_cancelled() {
             return 0;
         }
+        // Budget first, for the same reason: a scan whose expansion already
+        // stopped on `max_entities` / `max_wall_time_secs` cannot dispatch a
+        // single probe (the per-probe guard below would break on probe 0), so
+        // compiling a plan is wasted work — and reporting that plan was worse.
+        // Scan 7258fc07 logged `expansion_stop max_entities=2500 reached`, then
+        // `breach_sweep {probes: 64}`, then nothing: 64 probes announced, none
+        // sent. The event says so explicitly instead, and stays distinct from
+        // "ran with nothing to ask" (`stopped: None`).
+        if let Some(reason) = budget_check(opts, started, entity_map.len()) {
+            self.emit(
+                scan_id,
+                EventKind::BreachSweep {
+                    anchors: 0,
+                    probes: 0,
+                    dropped: 0,
+                    dispatched: 0,
+                    stopped: Some(reason.label()),
+                },
+            );
+            info!(scan_id, reason = %reason.label(), "breach sweep not run — scan budget already spent");
+            return 0;
+        }
 
         let allow: Vec<String> = {
             let mut a = self.breach_sweep_modules(scan_id);
@@ -1863,17 +1926,6 @@ impl ScanEngine {
             },
         );
 
-        // Emit the plan's shape BEFORE dispatching, and emit it even when empty:
-        // "the sweep ran and had nothing to ask" and "the sweep never ran" are
-        // different outcomes and must not look the same in the event log.
-        self.emit(
-            scan_id,
-            EventKind::BreachSweep {
-                anchors: plan.anchors_used,
-                probes: plan.len(),
-                dropped: plan.dropped_over_cap,
-            },
-        );
         if plan.dropped_over_cap > 0 {
             warn!(
                 scan_id,
@@ -1882,7 +1934,20 @@ impl ScanEngine {
                 "breach sweep hit its probe cap — the plan is a bounded sample, not exhaustive"
             );
         }
+        // Emit even when the plan is empty: "the sweep ran and had nothing to
+        // ask" and "the sweep never ran" are different outcomes and must not
+        // look the same in the event log.
         if plan.is_empty() {
+            self.emit(
+                scan_id,
+                EventKind::BreachSweep {
+                    anchors: plan.anchors_used,
+                    probes: 0,
+                    dropped: plan.dropped_over_cap,
+                    dispatched: 0,
+                    stopped: None,
+                },
+            );
             return 0;
         }
 
@@ -1896,18 +1961,26 @@ impl ScanEngine {
 
         let mut newly_inserted: Vec<String> = Vec::new();
         let mut probed = 0usize;
+        let mut stopped: Option<StopReason> = None;
 
         for probe in &plan.probes {
-            if ctx.cancel.is_cancelled() || budget_check(opts, started, entity_map.len()).is_some()
-            {
+            let halt = if ctx.cancel.is_cancelled() {
+                Some(StopReason::Cancelled)
+            } else {
+                budget_check(opts, started, entity_map.len())
+            };
+            if let Some(reason) = halt {
                 // Not a silent stop: the operator must be able to tell a sweep
-                // that finished from one the budget cut short.
+                // that finished from one the budget cut short — recorded on
+                // the `BreachSweep` event below, not only in tracing.
                 warn!(
                     scan_id,
                     dispatched = probed,
                     planned = plan.len(),
-                    "breach sweep stopped early (cancelled or over budget)"
+                    reason = %reason.label(),
+                    "breach sweep stopped early"
                 );
+                stopped = Some(reason);
                 break;
             }
             let target = probe.target();
@@ -1949,6 +2022,20 @@ impl ScanEngine {
             visited.insert(visit_key(&target));
             probed += 1;
         }
+
+        // Emitted AFTER the dispatch loop, so the event states what the sweep
+        // DID — the plan's shape plus how much of it went out and why it
+        // stopped — rather than announcing a plan the budget then cut to zero.
+        self.emit(
+            scan_id,
+            EventKind::BreachSweep {
+                anchors: plan.anchors_used,
+                probes: plan.len(),
+                dropped: plan.dropped_over_cap,
+                dispatched: probed,
+                stopped: stopped.as_ref().map(StopReason::label),
+            },
+        );
 
         info!(
             scan_id,

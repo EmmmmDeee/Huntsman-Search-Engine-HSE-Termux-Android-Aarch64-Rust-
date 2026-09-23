@@ -78,14 +78,17 @@ pub(super) fn is_incidental_infra_entity(seed_kind: TargetKind, entity: &Entity)
     }
 }
 
-/// Tags a module sets to assert that an entity IS the scan subject (`seed`,
-/// `subject`) or that a register row's name EXACTLY matched it
-/// (`exact-name-match`). Every consumer reads them as statements about the scan's
-/// subject: `geo_family` anchors "the subject's confirmed location" on an
-/// `exact-name-match` address and reads the family surname off a `seed` Person,
-/// the relation builders bind identifiers to the `subject` Person, and the
-/// exports keep `seed` entities unconditionally.
-pub(super) const SUBJECT_CLAIM_TAGS: &[&str] = &["seed", "subject", "exact-name-match"];
+// Tags a module sets to assert that an entity IS the scan subject (`seed`,
+// `subject`) or that a register row's name EXACTLY matched it
+// (`exact-name-match`). Every consumer reads them as statements about the scan's
+// subject: `geo_family` anchors "the subject's confirmed location" on an
+// `exact-name-match` address and reads the family surname off a `seed` Person,
+// the relation builders bind identifiers to the `subject` Person, the exports
+// keep `seed` entities unconditionally, and the GEXF export labels only these
+// identity nodes the Diamond `victim`. One list for all of them — the canonical
+// definition is beside the scan subject it describes
+// (`crate::core::scan::SUBJECT_CLAIM_TAGS`).
+use crate::core::scan::SUBJECT_CLAIM_TAGS;
 
 /// Re-scope a module's subject claims to what the ENGINE knows about the target
 /// it dispatched. A module only ever sees the bare target it was run on, so it
@@ -797,7 +800,22 @@ impl super::ScanEngine {
         // is NOT a module run (no provider call was made), and `ModuleStats.run` is
         // documented "Not counted in run" for cached results. Gating here keeps the
         // reported `modules_run` honest instead of double-counting every replay.
-        if !from_cache {
+        //
+        // Nor is an in-band opt-out a run: a module that returned `MissingKey`
+        // or `Error::Skipped` declined to query its provider, and is counted
+        // under `skipped` by its own arm below. Counting it here as well put
+        // every such dispatch in BOTH `modules_run` and `modules_skipped` —
+        // scan 7258fc07 reported "1003 run … 349 skipped" where 247 of the 1003
+        // were "needs API key" opt-outs (730 done + 26 errored/timed out + 247
+        // = 1003), and the dossier's dead-scan hint then told the operator that
+        // modules "ran and found nothing" when they never ran. `run` and
+        // `skipped` partition the non-cached dispatches; `errored` and
+        // `timed_out` stay subsets of `run` (a failed attempt IS an attempt).
+        let executed = !matches!(
+            result,
+            Ok(Err(Error::MissingKey(_) | Error::Skipped { .. }))
+        );
+        if !from_cache && executed {
             state.stats.run += 1;
         }
         match result {

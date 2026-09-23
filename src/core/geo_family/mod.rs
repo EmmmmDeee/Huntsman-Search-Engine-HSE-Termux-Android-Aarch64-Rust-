@@ -271,7 +271,7 @@ pub fn subject_locations(entities: &[Entity]) -> Vec<(f64, f64)> {
 /// so "whose surname?" can't drift.
 #[must_use]
 pub fn subject_surname(entities: &[Entity]) -> Option<String> {
-    ["seed", "subject", "exact-name-match"]
+    crate::core::scan::SUBJECT_CLAIM_TAGS
         .iter()
         .find_map(|tag| {
             entities

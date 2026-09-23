@@ -207,8 +207,14 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
                 ce.tag(format!("osm:{ty}"));
             }
             crate::util::geo::tag_au_state(&mut ce, nlat, nlon);
-            let mut ev = Evidence::new(SRC, format!("OSM {category} near {coord}"))
-                .with_attr("category", category);
+            // The summary names the NODE (its own coordinate), not only the
+            // category and the queried centre: an evidence record's identity
+            // is `(source, summary)`, which the GEXF co-occurrence edge keys
+            // on, so "OSM cafe near X" on every cafe around X read as one
+            // record naming them all and wired them into a false clique.
+            let mut ev =
+                Evidence::new(SRC, format!("OSM {category} at {node_coords} near {coord}"))
+                    .with_attr("category", category);
             if let Some(ty) = elem.osm_type.as_deref().filter(|s| !s.is_empty()) {
                 ev = ev.with_attr("osm_type", ty);
             }

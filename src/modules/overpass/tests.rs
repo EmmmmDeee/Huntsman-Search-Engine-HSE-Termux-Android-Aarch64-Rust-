@@ -267,3 +267,21 @@ fn the_summary_annotates_the_point_while_nodes_stay_observations() {
     crate::core::test_support::assert_point_annotation(&out[0]);
     assert!(out[1..].iter().all(|n| n.evidence.iter().all(|ev| !ev.is_non_corroborating())));
 }
+
+#[test]
+fn distinct_nodes_of_one_category_carry_distinct_records() {
+    // Scan 7258fc07: "OSM {category} near {centre}" was one summary for every
+    // node of that category around the centre, so the GEXF read them as one
+    // shared record and wired distinct OSM nodes into a false clique. The
+    // summary must name the node.
+    let els = elements(
+        r#"[{"type":"node","id":1,"lat":-33.8690,"lon":151.2095,"tags":{"amenity":"cafe"}},
+            {"type":"node","id":2,"lat":-33.8700,"lon":151.2105,"tags":{"amenity":"cafe"}}]"#,
+    );
+    let out = build_entities("-33.868800,151.209300", &els, "s");
+    let nodes = &out[1..];
+    assert_eq!(nodes.len(), 2);
+    assert_ne!(nodes[0].evidence[0].summary, nodes[1].evidence[0].summary);
+    let xml = crate::core::gexf::entities_to_gexf(nodes, &[], "s");
+    assert!(!xml.contains("<edge "), "distinct nodes are not a joint record: {xml}");
+}

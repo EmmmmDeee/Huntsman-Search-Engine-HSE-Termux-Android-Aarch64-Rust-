@@ -60,6 +60,26 @@ struct Inner {
     /// returned `None` regardless of what was archived, so no dispatch-level
     /// test could ever exercise the module-skip-on-cache-hit path.
     raw_archive: HashMap<String, (u64, u64, crate::core::port::CachedModuleResult)>,
+    /// What the store held at the moment each scan's row FIRST turned
+    /// terminal — see [`TerminalWitness`].
+    terminal_witnesses: Vec<TerminalWitness>,
+}
+
+/// A snapshot the in-memory store takes when a scan's stored status first
+/// becomes terminal: what an export reading the store at that instant would
+/// have seen. The engine's lifecycle invariant is that a scan reads terminal
+/// only once everything its exports read is durable, so these let a test
+/// check it at the storage boundary rather than after the fact.
+#[derive(Debug, Clone)]
+pub struct TerminalWitness {
+    pub scan_id: String,
+    pub status: crate::core::scan::ScanStatus,
+    /// Correlations stored for the scan at that instant.
+    pub correlations: usize,
+    /// Relations stored for the scan at that instant.
+    pub relations: usize,
+    /// Whether the scan's `ScanComplete` event was already stored.
+    pub completion_event: bool,
 }
 
 impl Inner {
@@ -95,14 +115,42 @@ impl InMemoryStore {
     pub fn entity_count(&self) -> usize {
         self.inner.lock().entities.len()
     }
+
+    /// Every [`TerminalWitness`] taken so far, in order.
+    pub fn terminal_witnesses(&self) -> Vec<TerminalWitness> {
+        self.inner.lock().terminal_witnesses.clone()
+    }
 }
 
 impl StoragePort for InMemoryStore {
     fn upsert_scan(&self, scan: &Scan) -> Result<()> {
-        self.inner
-            .lock()
+        let mut inner = self.inner.lock();
+        let was_terminal = inner
             .scans
-            .insert(scan.id.clone(), scan.clone());
+            .get(&scan.id)
+            .is_some_and(|prev| prev.status.is_terminal());
+        if scan.status.is_terminal() && !was_terminal {
+            let witness = TerminalWitness {
+                scan_id: scan.id.clone(),
+                status: scan.status,
+                correlations: inner
+                    .correlations
+                    .iter()
+                    .filter(|c| c.scan_id == scan.id)
+                    .count(),
+                relations: inner
+                    .relations
+                    .iter()
+                    .filter(|r| r.scan_id == scan.id)
+                    .count(),
+                completion_event: inner.events.iter().any(|e| {
+                    e.scan_id == scan.id
+                        && matches!(e.kind, crate::core::event::EventKind::ScanComplete { .. })
+                }),
+            };
+            inner.terminal_witnesses.push(witness);
+        }
+        inner.scans.insert(scan.id.clone(), scan.clone());
         Ok(())
     }
 
