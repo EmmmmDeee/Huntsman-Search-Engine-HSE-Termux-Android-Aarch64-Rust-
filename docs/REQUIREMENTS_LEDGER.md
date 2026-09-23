@@ -21433,7 +21433,7 @@ Harness: `mutate2.py`, spec `mut_keyreg001.json`. The `-arch` and `L*` rows run 
 
 ### Residual
 
-- `wifi_intel` sends its own `ModuleError` straight onto the bus (`src/modules/wifi_intel/mod.rs:412-418`), so it bypasses this sink. Its text is built from `Lookup::Refused` reasons, which come from HSE's own error types. It does not quote a provider body.
+- `wifi_intel` sends its own `ModuleError` straight onto the bus (`src/modules/wifi_intel/mod.rs:412-418`), so it bypasses this sink. Its text is built from `Lookup::Refused` reasons, the `to_string()` of the error `util::wigle::get` returns. For a 401/403 that is HSE's own fixed message; for any other non-2xx it is `http_status_error`'s classification, whose provider-body snippet comes from `error_body` and is already credential-redacted there. So the bypass carries provider text, but not unredacted.
 - Whether IPQS, Criminal IP or Europeana ever echo a key in these fields remains unverified. The sink makes that question moot for the event log.
 
 ## REQ-KEYFLOOR-001 — an optional key never leaves a module worse than keyless: a refused key falls back to the keyless answer and is still reported to the pool
@@ -21485,6 +21485,15 @@ In both cases the operator who set a key got less than one who did not.
 | O6 | **over-correction**: a `500` counts as a key refusal | KILLED by `keyed_answer_separates_a_key_refusal_from_every_other_failure` |
 
 **14 of 14 killed**, run against the compiled patch. Clippy `-D warnings` is clean.
+
+**Review follow-up: the lock covers the new authority.** `keyed_answer` burns a refused key under its first argument, exactly as `keyed_ok_or_404` does, but REQ-KEYREG-001's lock `credential_registry_views_are_one_set` listed only `keyed_ok_or_404` among the pool-name arguments it checks (`POOL_NAME_ARGS`, `tests/architecture_parts/architecture_part3.rs`). A module calling `keyed_answer` directly with a name the pool does not hold would have had every burn silently dropped, with the lock green. `("keyed_answer", 0)` is now in `POOL_NAME_ARGS`, and the scanner fixture `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments` carries a `keyed_answer(SRC, …)` site it must flag. Falsified (`mutate2.py`, `--test architecture -- credential_registry`):
+
+| id | mutation | result |
+|---|---|---|
+| R1 | **baseline**: `keyed_answer` removed from `POOL_NAME_ARGS` | KILLED by `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments` |
+| R2 | `shodan` passes `"shodan_paid"` (no such pool) to `keyed_answer` | KILLED by `credential_registry_views_are_one_set` |
+| R3 | `keyed_answer` is read at the wrong argument (the key, index 1) | KILLED by 2: `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments`, `credential_registry_views_are_one_set` |
+| R4 | **over-correction**: `keyed_answer`'s first argument is also required to be a key env var | KILLED by 2: `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments`, `credential_registry_views_are_one_set` |
 
 ### Residual
 

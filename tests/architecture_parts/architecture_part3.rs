@@ -842,11 +842,16 @@ fn resolve_arg(arg: &str, consts: &StrConsts, files: &ModuleSources) -> ArgValue
 
 /// Calls whose argument at the index is a POOL-SERVICE name: it must be a
 /// name [`find_service`] resolves, or every report under it is a no-op.
+///
+/// `keyed_answer` is the keyed status policy `keyed_ok_or_404` delegates to
+/// (REQ-KEYFLOOR-001), and it burns a refused key under its first argument
+/// just the same; a caller reaching it directly must not escape this scan.
 const POOL_NAME_ARGS: &[(&str, usize)] = &[
     ("report_key_exhausted", 0),
     ("next_pooled_key", 0),
     ("entry_status", 0),
     ("keyed_ok_or_404", 0),
+    ("keyed_answer", 0),
     ("note_keyed_error", 1),
     ("handle_keyed_error", 3),
 ];
@@ -1102,6 +1107,7 @@ fn credential_registry_scanner_reads_calls_resolves_names_and_skips_comments() {
              crate::util::http::note_keyed_error(401, pool_service(), k, ctx);\n\
              keyed_cascade(ctx, SRC, KEY_ENV, k, &[], |k| b(k));\n\
              keyed_ok_or_404(key_service, k, ctx, resp);\n\
+             keyed_answer(SRC, k, ctx, resp);\n\
              ctx.report_key_exhausted(SRC, k, 401);\n\
              ctx.report_key_exhausted(other(), k, 401);\n\
              fetch_keyed_json(ctx, SRC, u, \"HUNTSMAN_NOT_OWNED_KEY\", \"h\");\n\
@@ -1111,7 +1117,7 @@ fn credential_registry_scanner_reads_calls_resolves_names_and_skips_comments() {
     )];
     let allow = [(module, "key_service", "fixture")];
     let scan = scan_pool_args(module, &files, &allow);
-    assert_eq!((scan.pool_sites, scan.env_sites), (5, 3));
+    assert_eq!((scan.pool_sites, scan.env_sites), (6, 3));
     assert_eq!(
         scan.allowlisted,
         [(module.to_string(), "key_service".to_string())]
@@ -1129,6 +1135,10 @@ fn credential_registry_scanner_reads_calls_resolves_names_and_skips_comments() {
              (every report is a silent no-op)",
             // A shim that does not ask the registry is not trusted.
             "report_key_exhausted(.., other(), ..) passes a name the key pool does not hold \
+             (every report is a silent no-op)",
+            // `keyed_answer` burns a refused key under its first argument too
+            // (REQ-KEYFLOOR-001), so it is read like `keyed_ok_or_404`.
+            "keyed_answer(.., SRC, ..) passes a name the key pool does not hold \
              (every report is a silent no-op)",
             "fetch_keyed_json(.., \"HUNTSMAN_NOT_OWNED_KEY\", ..) passes a key env var no \
              ServiceDef owns",
