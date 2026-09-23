@@ -709,8 +709,23 @@ impl Store {
     // ── Scans ──────────────────────────────────────────────────────────────
 
     /// Insert `scan`, or update every mutable column when its id already exists.
+    ///
+    /// `data_json` is the scan's serialised fields plus its runner, which
+    /// `Scan` itself never serialises (see `Scan::runner`), so the stored row
+    /// can tell another process who runs the scan while no API response or
+    /// export carries a process identity.
     pub fn upsert_scan(&self, scan: &Scan) -> Result<()> {
-        let json = serde_json::to_string(scan)?;
+        #[derive(serde::Serialize)]
+        struct StoredScan<'a> {
+            #[serde(flatten)]
+            scan: &'a Scan,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            runner: Option<&'a crate::core::scan::ScanRunner>,
+        }
+        let json = serde_json::to_string(&StoredScan {
+            scan,
+            runner: scan.runner.as_ref(),
+        })?;
         let conn = self.conn.lock();
         conn.prepare_cached(
             "INSERT INTO scans(id, target_kind, target_value, status, started_at, finished_at, entity_count, error, data_json)

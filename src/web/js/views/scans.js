@@ -3,7 +3,7 @@ import { $, $$, toast } from '/static/js/helpers.js';
 import { nav } from '/static/js/router.js';
 import { S } from '/static/js/state.js';
 import { render } from '/static/js/main.js';
-import { renderScansTableHtml } from '/static/hse_wasm_ui.js';
+import { renderScansTableHtml, scanIsActive, scanState } from '/static/hse_wasm_ui.js';
 
 /* ═══════════ Page: SCANLIST (#/scans) ═══════════ */
 export async function renderScans(v){
@@ -24,7 +24,7 @@ export async function renderScans(v){
     <div class="row">
       <div class="col-sm-3"><div class="stat-card"><div class="lab">Total</div><div class="val">${stats.total}</div></div></div>
       <div class="col-sm-3"><div class="stat-card"><div class="lab">Running</div><div class="val" style="color:${stats.running?'#31708f':'#888'}">${stats.running}</div></div></div>
-      <div class="col-sm-3"><div class="stat-card"><div class="lab">Complete</div><div class="val" style="color:${stats.complete?'#3c763d':'#888'}">${stats.complete}</div>${(stats.aborted||stats.failed)?`<div class="text-muted" style="font-size:10px">${stats.aborted?`${stats.aborted} aborted`:''}${stats.aborted&&stats.failed?' · ':''}${stats.failed?`${stats.failed} failed`:''}</div>`:''}</div></div>
+      <div class="col-sm-3"><div class="stat-card"><div class="lab">Complete</div><div class="val" style="color:${stats.complete?'#3c763d':'#888'}">${stats.complete}</div>${(stats.aborted||stats.failed||stats.interrupted)?`<div class="text-muted" style="font-size:10px">${[stats.aborted&&`${stats.aborted} aborted`, stats.failed&&`${stats.failed} failed`, stats.interrupted&&`${stats.interrupted} interrupted`].filter(Boolean).join(' · ')}</div>`:''}</div></div>
       <div class="col-sm-3"><div class="stat-card"><div class="lab">Entities found</div><div class="val">${stats.entities}</div></div></div>
     </div>
 
@@ -44,7 +44,7 @@ export async function renderScans(v){
     const rows = q ? S.scans.filter(s =>
       (s.target?.value||'').toLowerCase().includes(q)
       || (s.target?.kind||'').includes(q)
-      || (s.status||'').includes(q)
+      || scanState(s).includes(q)
       || (s.id||'').includes(q)
     ) : S.scans;
     $('#scans-table-host').innerHTML = renderScansTableHtml(rows);
@@ -52,18 +52,22 @@ export async function renderScans(v){
   });
 }
 export function scanStats(scans){
-  let running=0,complete=0,aborted=0,failed=0,entities=0;
+  let running=0,complete=0,aborted=0,failed=0,interrupted=0,entities=0;
   for(const s of scans){
-    if (s.status==='running'||s.status==='pending') running++;
-    else if (s.status==='complete') complete++;
+    // The display state, not the persisted status: a scan whose server died
+    // reads `running` in the store and is not running (REQ-SCANSTATUS-002).
+    const st = scanState(s);
+    if (scanIsActive(s)) running++;
+    else if (st==='complete') complete++;
     // `aborted` is a distinct terminal state (operator-stopped, data kept) —
     // without its own bucket it matched no branch and vanished from the tallies
     // while still inflating `total`. `failed` was counted but never rendered.
-    else if (s.status==='aborted') aborted++;
-    else if (s.status==='failed') failed++;
+    else if (st==='aborted') aborted++;
+    else if (st==='failed') failed++;
+    else if (st==='interrupted') interrupted++;
     entities += s.entity_count||0;
   }
-  return {total:scans.length,running,complete,aborted,failed,entities};
+  return {total:scans.length,running,complete,aborted,failed,interrupted,entities};
 }
 export function wireScansTable(){
   if (window.jQuery && jQuery.fn.tablesorter) {

@@ -1450,3 +1450,165 @@ use super::*;
             "the pre-paint theme script must run before the navbar is parsed"
         );
     }
+
+    /// No console view decides a scan is running from its `status` alone.
+    ///
+    /// The API keeps a dead server's scan at `status: "running"` and marks it
+    /// with a derived `interrupted: true` (REQ-SCANSTATUS-001). A view that
+    /// reads `status` by itself shows that scan as running forever, with a
+    /// Stop button that answers 404, a clock that climbs and, on Scan Info, a
+    /// refresh every 8 seconds (REQ-SCANSTATUS-002). The one rule is
+    /// wasm-ui's `scan_state`, reached from JS as `scanState` and
+    /// `scanIsActive`, so this fails on a JS comparison of a `.status` with any
+    /// scan state (an `interrupted` scan is neither running nor finished by its
+    /// `status`), and on a wasm-ui match of `running` or `pending` outside
+    /// `scan_state.rs`.
+    #[test]
+    fn no_console_view_decides_a_scan_is_running_from_its_status_alone() {
+        // A live session's status, not a scan's: sessions run until stopped
+        // and have no `interrupted`.
+        const LIVE_SESSION: &str = "x.status === 'running' && x.scan_options";
+        let mut offenders = Vec::new();
+        for (name, _, bytes) in APP_FILES {
+            if !name.ends_with(".js") {
+                continue;
+            }
+            let Ok(text) = std::str::from_utf8(bytes) else {
+                continue;
+            };
+            for (n, line) in text.lines().enumerate() {
+                let squeezed: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+                // `x.status === 'complete'`, `x.status != "failed"`, …, a
+                // `.status` inside an `.includes(` (`['complete', 'aborted']
+                // .includes(x.status)`, `(x.status||'').includes(q)`) and a
+                // `switch (x.status)`. `interrupted` is on the list because a
+                // `status` never holds it: comparing against it is always a
+                // mistake.
+                let compares = [
+                    "running",
+                    "pending",
+                    "complete",
+                    "aborted",
+                    "failed",
+                    "interrupted",
+                ]
+                .iter()
+                .any(|s| {
+                    ["===", "==", "!==", "!="].iter().any(|op| {
+                        squeezed.contains(&format!(".status{op}'{s}'"))
+                            || squeezed.contains(&format!(".status{op}\"{s}\""))
+                    })
+                }) || (squeezed.contains(".includes(") && squeezed.contains(".status"))
+                    || (squeezed.contains("switch(") && squeezed.contains(".status)"));
+                if compares && !line.contains(LIVE_SESSION) {
+                    offenders.push(format!("{name}:{}", n + 1));
+                }
+            }
+        }
+        for (path, views) in wasm_ui_production_sources() {
+            if path.file_name().is_some_and(|f| f == "scan_state.rs") {
+                continue;
+            }
+            for (n, line) in views.lines().enumerate() {
+                // `Some("running"` also catches `matches!(…, Some("running" | "pending"))`.
+                if line.contains("Some(\"running\"") || line.contains("Some(\"pending\"") {
+                    offenders.push(format!("{}:{}", path.display(), n + 1));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these read a scan's `status` without its `interrupted` flag; use \
+             scanState/scanIsActive (JS) or scan_state::scan_state (wasm-ui): \
+             {offenders:?}"
+        );
+        // And the rule itself is what the views import.
+        for file in [
+            "js/scan_info/index.js",
+            "js/scan_info/log.js",
+            "js/views/scans.js",
+            "js/views/radar.js",
+            "js/views/diff.js",
+        ] {
+            assert!(
+                app_file(file).contains("scanState") || app_file(file).contains("scanIsActive"),
+                "{file} shows a scan's state and must read it through scanState/scanIsActive"
+            );
+        }
+    }
+
+    /// Every wasm-ui source file's production code: its text before its test
+    /// module, since a fixture builds a raw `running` row or spells a pill
+    /// class on purpose. Split on the test MODULE, not on the first
+    /// `#[cfg(test)]`, which a test-only `use` near the top of a file would
+    /// turn into an exemption for the whole file.
+    fn wasm_ui_production_sources() -> Vec<(std::path::PathBuf, String)> {
+        let mut sources = Vec::new();
+        let mut dirs = vec![std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/wasm-ui/src"
+        ))];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).expect("wasm-ui/src is readable") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = std::fs::read_to_string(&path).expect("wasm-ui source is UTF-8");
+                    let production = text
+                        .split("#[cfg(test)]\nmod tests")
+                        .next()
+                        .unwrap_or_default()
+                        .to_string();
+                    sources.push((path, production));
+                }
+            }
+        }
+        // Vacuity guard: a walk that found nothing would pass every check.
+        assert!(sources.len() >= 20, "found only {} wasm-ui sources", sources.len());
+        sources
+    }
+
+    #[test]
+    fn a_scan_states_pill_has_one_copy_of_its_markup() {
+        // helpers.js's `statusPill` is wasm-ui's `status_pill`, so a state the
+        // console adds is styled in every view at once. The JS copy this
+        // replaced had no `interrupted` entry and drew it in the `pending`
+        // style (REQ-SCANSTATUS-002).
+        assert!(
+            app_file("js/helpers.js").contains("statusPillHtml("),
+            "helpers.js's statusPill must delegate to wasm-ui's statusPillHtml"
+        );
+        let copies: Vec<&str> = APP_FILES
+            .iter()
+            .filter(|(name, _, bytes)| {
+                name.ends_with(".js")
+                    && std::str::from_utf8(bytes)
+                        .is_ok_and(|t| t.contains("s-running") || t.contains("s-interrupted"))
+            })
+            .map(|(name, _, _)| *name)
+            .collect();
+        assert!(
+            copies.is_empty(),
+            "a scan-state pill class is spelled outside wasm-ui's scan_state::status_pill: {copies:?}"
+        );
+        // Two of the three old copies were in wasm-ui itself.
+        let wasm_copies: Vec<String> = wasm_ui_production_sources()
+            .into_iter()
+            .filter(|(path, text)| {
+                path.file_name().is_some_and(|f| f != "scan_state.rs")
+                    && (text.contains("s-running")
+                        || text.contains("s-interrupted")
+                        || text.contains("status-pill"))
+            })
+            .map(|(path, _)| path.display().to_string())
+            .collect();
+        assert!(
+            wasm_copies.is_empty(),
+            "a wasm-ui view spells the pill's markup instead of calling scan_state::status_pill: {wasm_copies:?}"
+        );
+        assert!(
+            app_file("css/app.css").contains(".s-interrupted{"),
+            "the interrupted pill's style is missing from app.css"
+        );
+    }

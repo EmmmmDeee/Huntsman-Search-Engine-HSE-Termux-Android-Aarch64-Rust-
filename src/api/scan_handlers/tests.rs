@@ -735,6 +735,44 @@ Victims:
     /// SQLite store behind `Arc<dyn StoragePort>`, so a reader left off the port,
     /// or a `Store` override forgotten, fails here rather than answering empty in
     /// production.
+    /// REQ-SCANSTATUS-002: the Radar view's sweep history reads a scan's
+    /// state from `/radar/history`, which sent the raw rows: no `interrupted`
+    /// flag, so a sweep whose process died read as running for good there
+    /// while its own Scan Info page said interrupted.
+    #[tokio::test]
+    async fn the_radar_history_says_which_sweeps_were_interrupted() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+
+        let state = crate::api::test_state();
+        let mut lost = radar_scan("sweep-lost");
+        lost.status = crate::core::scan::ScanStatus::Running;
+        state.store.upsert_scan(&lost).expect("write");
+        let app = axum::Router::new()
+            .route(
+                "/api/v1/radar/history",
+                axum::routing::get(super::core::radar_history),
+            )
+            .with_state(Arc::clone(&state));
+        let resp = app
+            .oneshot(
+                Request::get("/api/v1/radar/history")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        let sweep = &json["sweeps"][0];
+        assert_eq!(sweep["id"], "sweep-lost", "{json}");
+        assert_eq!(sweep["status"], "running");
+        assert_eq!(sweep["interrupted"], true, "{json}");
+    }
+
     fn radar_signals_router(state: Arc<crate::api::AppState>) -> axum::Router {
         axum::Router::new()
             .route(

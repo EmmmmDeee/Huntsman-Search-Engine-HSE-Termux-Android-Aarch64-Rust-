@@ -217,15 +217,32 @@ pub(crate) fn ok_paginated_list<T: Serialize>(
     (StatusCode::OK, Json(Value::Object(map))).into_response()
 }
 
-/// Dispatch a created `scan` to run on the async runtime — the HTTP layer's
-/// fire-and-forget hand-off to the engine (the request returns `202` immediately).
+/// Queue a created `scan`: register it as in flight, write its `pending` row,
+/// then hand it to the engine on the async runtime — the HTTP layer's
+/// fire-and-forget hand-off (the request returns `202` immediately). Every
+/// scan-creating handler goes through here.
+///
+/// Registering before the row exists is what lets a `pending` row with no
+/// registry entry mean what [`crate::core::scan::Scan::is_interrupted`] takes
+/// it to mean: the process that queued it died. The other order left a moment
+/// in which a reader saw a healthy queued scan as interrupted
+/// (REQ-SCANSTATUS-002).
 ///
 /// Wires up everything the background run needs: a [`crate::core::cancel::CancelHandle`]
 /// registered so `POST /scans/{id}/cancel` can stop it, a per-scan HTTP client
 /// stamped with the scan id (`x-huntsman-trace`) so outbound calls correlate in
 /// upstream logs, and the scan-concurrency semaphore that bounds how many scans
 /// run at once on a low-RAM device.
-pub(crate) fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, target: Target) {
+///
+/// # Errors
+///
+/// The store's error, as text, when the row could not be written. The scan is
+/// then neither registered nor run.
+pub(crate) async fn queue_scan(
+    state: &Arc<AppState>,
+    scan: crate::core::scan::Scan,
+    target: Target,
+) -> Result<(), String> {
     let sid = scan.id.clone();
     let cancel = crate::core::cancel::CancelHandle::new();
     let cancel_guard = super::CancelRegistryGuard::install(
@@ -233,6 +250,13 @@ pub(crate) fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, t
         sid.clone(),
         cancel.clone(),
     );
+    let store = Arc::clone(&state.store);
+    let row = scan.clone();
+    match tokio::task::spawn_blocking(move || store.upsert_scan(&row)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Err(e.to_string()),
+        Err(e) => return Err(format!("db task failed: {e}")),
+    }
     let bus_clone = state.bus.clone();
     // Per-scan client stamped with the scan id (x-huntsman-trace) so outbound
     // calls correlate to this scan in a proxy/upstream log, mirroring the CLI.
@@ -277,6 +301,7 @@ pub(crate) fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, t
             Err(e) => tracing::warn!(scan_id = %sid, error = %e, "scan failed"),
         }
     });
+    Ok(())
 }
 
 // ─── Core read/system handlers ──────────────────────────────────────────────
@@ -292,12 +317,12 @@ pub async fn health() -> Json<Value> {
 }
 
 /// The ids of every scan THIS process is running: the keys of the one in-flight
-/// registry, which `spawn_scan` populates for a one-shot scan and the live
+/// registry, which `queue_scan` populates for a one-shot scan and the live
 /// loop (`core::live`) for each iteration. Both install the entry before the
-/// engine starts and drop it after the engine's final status write, so within
-/// one process a row can never read `running` without an entry here. The only
-/// way to observe that combination is a process that died without the
-/// cooperative drain. (A registry only ONE of the two spawn paths filled
+/// scan's row is written and drop it after the engine's final status write, so
+/// within one process a row can never read `pending` or `running` without an
+/// entry here. The only way to observe that combination is a process that died
+/// without the cooperative drain. (A registry only ONE of the two spawn paths filled
 /// would have reported every live iteration as interrupted — observed on the
 /// first draft of this fix, and the reason the registry moved into `core`.)
 pub(crate) fn in_flight_scan_ids(
@@ -306,36 +331,16 @@ pub(crate) fn in_flight_scan_ids(
     registry.lock().keys().cloned().collect()
 }
 
-/// REQ-SCANSTATUS-001: a row that says `running` but that this process holds
-/// no handle for was interrupted — the process running it exited without the
-/// cooperative drain (SIGKILL, OOM, Android reclaiming a backgrounded process,
-/// which `storage::entities` calls routine on Termux). Observed on `ff4d63c`:
-/// after `kill -9` and a restart the row still read `running`, `/stats`
-/// counted it as in progress, and nothing would ever finish it.
-///
-/// Derived at READ time and never written back. The persisted row is left
-/// exactly as the dead process left it: a startup pass rewriting every
-/// `running` row to `failed` would be simpler and wrong, because a second
-/// instance sharing the database would have its live scan marked failed
-/// underneath it. Deriving from this process's own registry is exact per
-/// process and mutates nothing — the data these rows carry is already
-/// recovered by `entities_from_events`; only the reported state was stale.
-///
-/// Only `Running` qualifies. A `Pending` row has a real (microsecond) window
-/// between `upsert_scan` and `spawn_scan` in which it legitimately has no
-/// handle yet; claiming "interrupted" there would be a false positive on a
-/// healthy process. A pending scan orphaned by a kill inside that window never
-/// started, and `pending` is the honest word for it.
-pub(crate) fn is_interrupted(
-    scan: &crate::core::scan::Scan,
-    in_flight: &std::collections::HashSet<String>,
-) -> bool {
-    scan.status == crate::core::scan::ScanStatus::Running && !in_flight.contains(&scan.id)
-}
+// REQ-SCANSTATUS-001 derived `interrupted` here, from this process's
+// registry alone, for `running` rows only. `Scan::is_interrupted` is now the
+// one rule (REQ-SCANSTATUS-002): it also asks whether another `hse` process
+// on the same database is running the scan, and it covers a `pending` row,
+// since every create path registers a scan before writing its row
+// (`queue_scan`). The row is still never rewritten.
 
 /// The one way a `Scan` becomes API JSON: its serialised fields plus the
-/// derived, non-persisted `interrupted` flag. `GET /scans` and
-/// `GET /scans/{id}` both route through here so the two cannot disagree.
+/// derived, non-persisted `interrupted` flag. `GET /scans`, `GET /scans/{id}`
+/// and `GET /radar/history` all route through here so they cannot disagree.
 pub(crate) fn scan_json(
     scan: &crate::core::scan::Scan,
     in_flight: &std::collections::HashSet<String>,
@@ -347,7 +352,7 @@ pub(crate) fn scan_json(
     if let Value::Object(map) = &mut v {
         map.insert(
             "interrupted".to_string(),
-            Value::Bool(is_interrupted(scan, in_flight)),
+            Value::Bool(scan.is_interrupted(Some(in_flight))),
         );
     }
     v
@@ -369,10 +374,10 @@ pub(crate) fn aggregate_scan_stats(
 ) -> ScanStatsAgg {
     let mut agg = ScanStatsAgg::default();
     for scan in scans {
-        // An interrupted row is a `running` row nobody is running; counting it
-        // under `running` is what made `/stats` report a dead scan as in
-        // progress forever (REQ-SCANSTATUS-001).
-        let bucket = if is_interrupted(scan, in_flight) {
+        // An interrupted row is a `pending` or `running` row nobody is
+        // running; counting it under its status is what made `/stats` report
+        // a dead scan as in progress forever (REQ-SCANSTATUS-001, -002).
+        let bucket = if scan.is_interrupted(Some(in_flight)) {
             "interrupted"
         } else {
             scan.status.as_str()
@@ -1142,7 +1147,7 @@ pub async fn scan_events_sse(
     // reconnected to indefinitely. There is no window between the two checks,
     // because every id a client can hold was registered before it was handed
     // out and stays registered until the engine has written the row: a `202`
-    // from a `spawn_scan` handler, and a live iteration's `LiveTick` (the loop
+    // from a `queue_scan` handler, and a live iteration's `LiveTick` (the loop
     // reads the id back out of its registry guard, so it cannot announce one
     // that is not yet in flight).
     let in_flight = s.cancellations.lock().contains_key(&target_sid);

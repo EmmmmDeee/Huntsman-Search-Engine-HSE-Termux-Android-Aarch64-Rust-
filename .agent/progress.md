@@ -102,15 +102,47 @@ between the two.
   previous commit, the only differences are the three new tests. Doctests: 86
   twice, identical.
 
+### Change 4: [DEFECT] No console view decides a scan's state from its status alone, and the flag is true across processes (REQ-SCANSTATUS-002)
+
+- **What.** Every view that shows or acts on a scan's state now asks one
+  rule, `wasm-ui/src/scan_state.rs`: the scan table, Scan Info, its Log
+  tab, Scan Settings, the scan list's tallies and search, Compare, and
+  Radar. The status pill had three copies and now has one.
+  - The flag the rule reads is `Scan::is_interrupted` in core. Each scan
+    records the process running it, so a scan another `hse` process runs is
+    not called interrupted while that process lives.
+  - Every create path registers a scan before writing its row, so an
+    orphaned `pending` scan is flagged too.
+- **Why.** A scan whose process died kept showing as running. It offered a
+  Stop and an Abort button that answered 404, and its clock kept climbing.
+  Scan Info re-fetched it every 8 seconds for as long as the page stayed
+  open, and its Log tab held a stream open that would never carry an event.
+- **Review.** An independent review of the first draft found four
+  should-fix defects and six nits, none blocking. All are fixed. The worst
+  was a regression the first draft introduced: a scan `hse scan` was
+  running in a terminal read as interrupted. The runner fixes it. Copilot's
+  two stale 768px comments on PR #650 are fixed in the same commit.
+- **Evidence.**
+  - A scan killed mid-run: 3 of 17 browser checks pass before the change,
+    and 17 of 17 after.
+  - The review's scenarios: 2 of 6 on the first draft, 6 of 6 on the final
+    build.
+  - An open Log tab across a server restart: the first draft reads `live`,
+    the final build reads `interrupted`.
+  - Twenty-two mutations are each killed, two of them by the runtime check
+    alone.
+- **Fresh worktree.** The gate passed, and the suite ran twice: 8550 tests
+  (8523 passed, 27 ignored, 0 failed), identical in both runs. Against the
+  previous commit, 13 tests are new and one is renamed; nothing else
+  differs. Doctests: 86 twice, identical.
+- **Open defect recorded.** Stop on a scan another process runs answers 404.
+  That was true before this change.
+
 ## Next
 
-- **UI remake, continued.** The pages come next: the scan list, New Scan,
+- **REQ-SCANNAME-001.** New Scan's "Scan Name" field is never sent, so the
+  name is not stored and not shown. Queued next, because it is wrong
+  behaviour and not styling.
+- **UI remake, continued.** Then the pages: the scan list, New Scan,
   Settings, and a scan's own pages.
-- **Two defects the remake turned up.** They are queued first, because both
-  are wrong behaviour and not styling:
-  - REQ-SCANSTATUS-002: no console view reads the API's `interrupted` flag.
-    A scan whose server died shows as running forever. Its Stop button
-    returns 404, and Scan Info re-fetches it every 8 seconds.
-  - REQ-SCANNAME-001: New Scan's "Scan Name" field is never sent. The name
-    is not stored and not shown.
 - **Repair queue.** Then continue from #1 in `.agent/files.md`.

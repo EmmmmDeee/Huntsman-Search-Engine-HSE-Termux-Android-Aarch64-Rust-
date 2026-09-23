@@ -714,6 +714,9 @@ impl ScanEngine {
         mut ctx: ModuleContext,
         dispatched: &mut DispatchLog,
     ) -> Result<Scan> {
+        // This process runs it from here on, whoever created the row
+        // (REQ-SCANSTATUS-002: another process reads liveness from it).
+        scan.runner = Some(crate::core::scan::ScanRunner::current());
         scan.status = ScanStatus::Running;
         self.store.upsert_scan(&scan)?;
 

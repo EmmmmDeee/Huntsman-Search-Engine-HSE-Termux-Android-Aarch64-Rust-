@@ -1,4 +1,5 @@
 /* ─── Helpers ─── */
+import { statusPillHtml } from '/static/hse_wasm_ui.js';
 export const $ = (s,r)=>(r||document).querySelector(s);
 export const $$ = (s,r)=>Array.from((r||document).querySelectorAll(s));
 export function esc(s){return s==null?'':String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -19,7 +20,11 @@ export function fmtDuration(secs){
   return `${h}h ${mm}m`;
 }
 export function fmtClock(){const d=new Date(),p=n=>String(n).padStart(2,'0');return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;}
-export function statusPill(s){const m={complete:'s-complete',running:'s-running',failed:'s-failed',pending:'s-pending',aborted:'s-aborted'};return `<span class="status-pill ${m[s]||'s-pending'}">${esc(s||'pending')}</span>`;}
+/* The status pill for a state (`complete`, `running`, `interrupted`, …).
+   Its markup is wasm-ui's `status_pill`, the one copy every view draws with;
+   for a scan, pass `scanState(scan)` so a scan whose server died shows as
+   interrupted, not running (REQ-SCANSTATUS-002). */
+export function statusPill(s){ return statusPillHtml(s == null ? undefined : String(s)); }
 export function costPill(c){return `<span class="cost-pill cost-${attr(c)}">${esc(c)}</span>`;}
 // Render a per-service pool's mean health for a table cell, honestly. The
 // backend sends `avg_health: null` when a service has NO tested key yet (every

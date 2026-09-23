@@ -10,6 +10,7 @@ import { renderSummary } from '/static/js/scan_info/report.js';
 import { renderStealer } from '/static/js/scan_info/stealer.js';
 import { S } from '/static/js/state.js';
 import { clearScanTimer, pageHidden } from '/static/js/timers.js';
+import { scanIsActive, scanState } from '/static/hse_wasm_ui.js';
 import { render } from '/static/js/main.js';
 
 /* ═══════════ Page: SCANINFO (#/scaninfo?id=X[&tab=Y]) ═══════════ */
@@ -62,16 +63,21 @@ export async function renderScanInfo(v){
   // already normalises defensively, so every pill-only display is unaffected
   // either way.
 
+  // The scan's state as the console shows it: `interrupted` when the API says
+  // no live process holds a `running` scan (REQ-SCANSTATUS-002). Only an
+  // active scan gets an Abort button, a climbing clock and the refresh timer.
+  const state = scanState(scan);
+  const active = scanIsActive(scan);
   const dur = scan.finished_at && scan.started_at ? scan.finished_at - scan.started_at
-            : scan.status==='running' ? nowSec() - (scan.started_at||nowSec()) : null;
+            : state==='running' ? nowSec() - (scan.started_at||nowSec()) : null;
 
   v.innerHTML = `
     <div class="crumbs"><a href="#/scans">Scans</a> &raquo; ${esc(scan.target?.value||id)}</div>
     <h2>${esc(scan.target?.value||id)}
-        <small class="text-muted" style="margin-left:6px">${kindPill(scan.target?.kind)} ${statusPill(scan.status)}</small>
+        <small class="text-muted" style="margin-left:6px">${kindPill(scan.target?.kind)} ${statusPill(state)}</small>
         <div class="pull-right">
           <button class="btn btn-default btn-sm" onclick="render()" title="Refresh"><i class="glyphicon glyphicon-refresh"></i></button>
-          ${(scan.status==='running'||scan.status==='pending')
+          ${active
             ? `<button class="btn btn-warning btn-sm" data-cancel="${attr(id)}" title="Abort scan"><i class="glyphicon glyphicon-stop"></i>&nbsp;Abort</button>`
             : ''}
           <button class="btn btn-default btn-sm" data-rerun="${attr(id)}" title="Rescan"><i class="glyphicon glyphicon-repeat"></i>&nbsp;Rescan</button>
@@ -91,6 +97,11 @@ export async function renderScanInfo(v){
         </div>
     </h2>
     <hr style="margin:8px 0 14px 0">
+    ${state==='interrupted' ? `<div class="alert alert-warning">
+      <strong>Interrupted.</strong> The process running this scan stopped (a
+      restart, a crash, or the phone reclaiming it), so nothing will finish it.
+      Everything it found before then is kept below. Rescan to run it again.
+    </div>` : ''}
 
     <div class="row">
       <div class="col-sm-3 col-xs-6"><div class="stat-card"><div class="lab">Entities</div><div class="val">${scan.entity_count || S.entities.length}</div></div></div>
@@ -167,7 +178,7 @@ export async function renderScanInfo(v){
   // own. The Log tab is excluded — it owns a live SSE stream a re-render would
   // tear down. Re-render re-arms the timer; it stops once status != running.
   clearScanTimer();
-  if ((scan.status === 'running' || scan.status === 'pending') && activeTab !== 'log'){
+  if (active && activeTab !== 'log'){
     S.scanTimer = setTimeout(scanRefreshTick, SCAN_REFRESH_MS);
   }
 }

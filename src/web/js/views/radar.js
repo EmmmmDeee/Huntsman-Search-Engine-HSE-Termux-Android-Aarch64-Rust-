@@ -16,6 +16,7 @@ import { S } from '/static/js/state.js';
 import { clearRadarTimer, pageHidden } from '/static/js/timers.js';
 import { createMap } from '/static/js/radar_map.js';
 import { closeLiveSse, openLiveSse } from '/static/js/scan_info/log.js';
+import { scanIsActive, scanState } from '/static/hse_wasm_ui.js';
 
 const RADIOS = [['wifi','Wi-Fi'], ['ble','BLE'], ['bt','BT'], ['cell','Cell']];
 const RADIO_LABEL = Object.fromEntries(RADIOS);
@@ -358,7 +359,7 @@ function renderSweepHistory(sweeps){
     const cur = view.data && view.data.scan_id === sw.id;
     return `<tr${cur ? ' class="active"' : ''}>
       <td>${esc(fmtDate(sw.started_at))}</td>
-      <td>${statusPill(sw.status)}${sw.interrupted ? ' <span class="label label-warning">interrupted</span>' : ''}</td>
+      <td>${statusPill(scanState(sw))}</td>
       <td class="text-right">${dur == null ? '<span class="text-muted">—</span>' : (dur + 's')}</td>
       <td class="text-right">${sw.entity_count || 0}</td>
       <td class="text-right">
@@ -482,7 +483,8 @@ async function sweepOnce(){
       await new Promise(res => setTimeout(res, 2000));
       let sc = null;
       try { sc = await API.scan(r.scan_id); } catch (_) { continue; }
-      if (sc && ['complete', 'failed', 'aborted'].includes(sc.status)) break;
+      // Over once nothing runs it: finished, or interrupted by a server restart.
+      if (sc && !scanIsActive(sc)) break;
     }
     view.sid = null; closeTrack();
     await refreshSignals(false);

@@ -17405,10 +17405,19 @@ row legitimately has no handle for a microsecond, and a reader in that window
 must not be told the scan was interrupted. A pending scan orphaned by a kill
 inside that window never started; `pending` is the honest word for it, and the
 Pending control in `a_running_row_with_no_handle_is_histogrammed_as_interrupted`
-asserts the exclusion rather than leaving it incidental.
+asserts the exclusion rather than leaving it incidental. *(Superseded by
+REQ-SCANSTATUS-002: every create path now registers a scan before writing its
+row, so that window is gone, and a server killed with scans still queued left
+them `pending` for good. `pending` rows are flagged too.)*
 
 Scope: exactly the three read surfaces. No other API consumer branches on
-`Running` (grep-verified), so nothing else needed rewiring.
+`Running` (grep-verified), so nothing else needed rewiring. *(Corrected by
+REQ-SCANSTATUS-002: that grep covered the Rust sources only. The console's
+JavaScript and wasm-ui branch on `running` too, and none of them read the
+flag. Two more Rust readers classified on status alone: `/radar/history`, which
+sent raw rows, and the exports' completeness reason. And a derivation from one
+process's registry is wrong for a scan another `hse` process runs on the same
+database: REQ-SCANSTATUS-002 records each scan's runner so it can tell.)*
 
 #### Observed again, on the fixed binary
 
@@ -21069,3 +21078,211 @@ The existing all-routes sweep (24 routes, hostile ids and payloads included)
 found no page error, HTML injection, blank page or 5xx. The server logged no
 panic. The sweep's only console lines are the browser's "Failed to load
 resource" for a 404, from unknown scan ids and the empty Radar.
+
+## REQ-SCANSTATUS-002 — the console never read `interrupted`, and the flag was only true for the server's own scans
+
+**Found** while rebuilding the scan list for the SpiderFoot 4.0 remake
+(REQ-UI-002's follow-on). REQ-SCANSTATUS-001 made the API answer honestly for
+a scan whose server died under it: the row still reads `status: "running"`,
+and a derived `interrupted: true` beside it says no live process holds it.
+Its scope note says no other consumer branches on `running`
+("grep-verified"). That grep covered the Rust sources. The console's
+JavaScript and wasm-ui branch on a scan's status too, and none of them read
+the flag. The radar's sweep history tried to, with a label beside a
+`running` pill, but `/radar/history` never sent the flag, so the label could
+not appear.
+
+So, for a scan whose process was gone:
+
+| surface | what it showed or did | why that is wrong |
+|---|---|---|
+| scan list and the dashboard's Recent Scans | a `running` pill, a Stop button, a duration that kept climbing | Stop answers 404 ("no in-flight scan"): nothing is running to stop |
+| Scan Info header | `running`, an Abort button, a climbing duration | the same 404, and a clock for a scan that ended when its process did |
+| Scan Info, every tab but Log | re-fetched the scan, its entities and its correlations every 8 s, forever | the refresh stops only when the status leaves `running`, and this one never does |
+| Scan Info, Log tab | a `live` label over an open event stream | no event will ever arrive on it |
+| Scan Info, Insights → Scan Settings | a `running` Status row | the same stale state, drawn by a third copy of the pill |
+| the scan list's Running tally | counted it | it is not running |
+| the scan list's search box | found it under "running", and "interrupted" found nothing | it searched the stored status, not the one on screen |
+| the dashboard's status table | an `interrupted` pill in the `pending` style | `/stats` sends the bucket; the pill had no class for it |
+| Compare Scans | left it out of both pickers | it offers finished scans, and an interrupted scan is finished: like an aborted one it stopped early and keeps what it found |
+| Radar's Sweep button | would keep polling a sweep interrupted by a server restart, up to its 3-minute bound | it waited for `complete`, `failed` or `aborted`, which such a scan never reaches (read from the code; the sandbox has no radio to sweep) |
+| Radar's sweep history | `running` | `/radar/history` sent raw rows, without the flag |
+| a queued scan the server was killed with | `pending` for good, with every symptom above | the API flagged `running` rows only |
+| the Log download, the dossier and the debug bundle | `live` | the export classified on status alone |
+
+The 8-second refresh is the costly row: four requests and a full re-render
+every 8 s for as long as the tab stays open, on the phone that runs the
+server. Measured on a scan killed mid-run: 18 requests in 20 seconds.
+
+The first draft of this fix made the console read the flag, and exposed
+that the flag was wrong for one ordinary case. `hse scan`, `hse radar` and
+`hse live` run the engine in their own process against the server's
+database. The server's registry knows only its own scans, so REQ-SCANSTATUS-001
+flagged every scan a terminal was running as interrupted. Until the console
+read the flag nothing acted on it; with this change's first draft, such a
+scan lost its refresh, and Scan Info said nothing would finish it.
+
+### Implemented
+
+**The flag is true across processes.** `Scan::is_interrupted(registry)` in
+`core::scan` is the one rule: a `pending` or `running` scan whose process is
+gone. A scan records its runner, `core::scan::ScanRunner` (pid, the
+process's start time, the boot id), when it is created and again when the
+engine starts it.
+
+- The server's in-flight registry answers exactly for its own scans.
+- A scan another process runs is interrupted when that process is gone:
+  `/proc/<pid>/stat` must show the same pid with the same start time, on
+  the same boot, and not a zombie. A recycled pid or one from before a
+  reboot does not count.
+- A row with no runner predates the field, so only a registry can vouch for
+  it.
+- The runner is stored in the scan's row (`Store::upsert_scan` writes it
+  into `data_json`) and serialised nowhere else (`#[serde(skip_serializing)]`),
+  so no API response or export carries a process identity. No migration: an
+  older row reads back with no runner.
+
+Every create path (scan, batch, auto, auto-sweep, rerun, radar sweep) now
+goes through one `queue_scan`, which registers a scan before writing its
+row. So a `pending` row with no registry entry can only mean the process
+that queued it died, and `pending` rows are flagged too. REQ-SCANSTATUS-001
+had excluded them for the moment between the write and the registration,
+which is gone. `/radar/history` now goes through `scan_json` like every
+other scan read. The exports' completeness reason says `interrupted`, not
+`live`, for such a scan.
+
+**The console reads it.** One rule, `wasm-ui/src/scan_state.rs`:
+`scan_state(status, interrupted)` is `"interrupted"` for a row the API marks
+interrupted, the status itself otherwise, and `pending` when there is none.
+`is_active(state)` is `running` or `pending`: only those get a Stop or Abort
+control, a live log and a refresh timer, and only a `running` scan's clock
+climbs. The JS views reach both as `scanState(scan)` and
+`scanIsActive(scan)`:
+
+- the scan table (list and dashboard): the pill, the action button and the
+  duration. `row_duration` derives the state from the row itself, so no
+  caller can hand it the wrong one;
+- `scan_info/index.js`: the header pill, the Abort button, the duration and
+  the refresh timer. An interrupted scan also says what happened and what
+  to do: rescan it;
+- `scan_info/log.js`: no stream for a scan that is not active, and the label
+  reads `interrupted` over the stored events. A stream that reconnects after
+  a drop re-reads the scan, and closes if the scan finished or was
+  interrupted meanwhile;
+- Scan Settings' Status row (wasm-ui `scan_info/info.rs`);
+- `scans.js`: the tallies, with an `interrupted` count, and the search box;
+- `diff.js`: complete, aborted and interrupted scans are comparable, a scan
+  that stopped early is marked so in the picker, and the default pair is two
+  complete scans when a subject has them;
+- `radar.js`: the sweep history drops its private label for the shared
+  pill, and the Sweep button stops waiting once `scanIsActive` is false.
+
+The pill had three copies: `helpers.js`'s `statusPill` and two wasm-ui ports
+of it (the scan table's and Scan Settings'). All three needed the new class.
+Now `scan_state::status_pill` is the only one, and `helpers.js`'s
+`statusPill` calls it through `statusPillHtml`. `.s-interrupted` is styled in
+`app.css`, and dark mode reaches it through the theme's colour tokens.
+
+### Review
+
+An independent review of the first draft found four should-fix defects and
+six nits, none blocking. Each was checked against the code, and all are
+fixed here:
+
+1. `/radar/history` sent no flag. Fixed as above.
+2. An open Log tab never learned: it decided `live` once, at render, and a
+   restarted server opens a stream for any stored scan. Fixed by the
+   re-read after a reconnect.
+3. The regression above. Fixed by the runner.
+4. A queued scan the server was killed with stayed `pending`. Fixed by
+   `queue_scan` and by flagging `pending` rows.
+5. Gaps in the locks. The JS check now covers `interrupted`, a `.status`
+   inside `.includes(` and `switch (x.status)`. The pill lock now also scans
+   wasm-ui's production code, and both locks split a wasm-ui file at its
+   test module, not at its first `#[cfg(test)]`.
+6. `scanStats` repeated the active rule; it calls `scanIsActive`.
+7. `is_active`'s doc promised a climbing clock to `pending` scans.
+8. The pill test pinned only some classes; it pins every state's.
+9. The Log download ended with a `live` marker, and its tooltip said to
+   download again once the scan finishes. The marker now says
+   `interrupted`, and so does the tooltip.
+10. Compare's default pair could pick an interrupted scan.
+
+Copilot's review of PR #650 found two stale comments (`ui.js`, `spa.html`)
+still giving the navbar's breakpoint as 768px. Both now say 1100px, as the
+CSS does.
+
+**Residual.** Stop or Abort on a scan another `hse` process runs still
+answers 404: a server can only cancel the scans it runs. That was true
+before this change, and it is recorded as an open defect.
+
+### Locks
+
+- wasm-ui (native, run by CI and the gate): `scan_state`'s five tests, the
+  scan table's three, and Scan Settings' one.
+- `core::scan::runner`: the `/proc` parse (a command name with spaces and
+  parentheses); zombies are not running; this process is alive while a
+  recycled pid, another boot and an unread start time are not; a child is
+  alive until it exits.
+- `api::handlers`:
+  - `a_row_this_process_does_not_hold_is_histogrammed_as_interrupted`
+    (running and pending, with controls);
+  - `a_scan_another_live_process_runs_is_not_interrupted` (a real child
+    process, then killed);
+  - `without_a_registry_only_the_runner_can_vouch_for_a_scan`;
+  - `a_queued_scan_is_registered_before_its_row_is_written`, which holds a
+    write lock on the database from a second connection and checks the scan
+    is registered while its row cannot yet exist.
+- `storage`: the runner is stored and read back, and is absent from the
+  serialised `Scan`.
+- The export's `interrupted` reason, `/radar/history`'s flag, and the
+  engine's stamp.
+- The two route locks: no JS comparison of a scan's `.status` with a state,
+  and no wasm-ui production match of `Some("running"` or `Some("pending"`
+  outside `scan_state.rs`; the pill's markup exists once.
+
+Mutations, each applied alone to the final tree:
+
+| mutation | caught by |
+|---|---|
+| W1 `scan_state` ignores the flag | 4 wasm-ui tests |
+| W2 `interrupted` counts as active | 3 wasm-ui tests |
+| W3 the scan table drops the flag | `an_interrupted_row_offers_rescan_not_stop` |
+| W4 Scan Settings drops the flag | `an_interrupted_scans_status_row_says_interrupted` |
+| W5 the table's clock reads the raw status | `an_interrupted_scans_clock_does_not_climb` |
+| W6 the pill loses its `interrupted` class | 3 wasm-ui tests |
+| J1–J4 Scan Info, the log, the radar sweep and the compare picker decide from `.status` | the status lock, which names each line |
+| J5 `helpers.js` gets its own class map back | the pill lock |
+| J6 the tallies read `.status`; J7 Scan Info drops the notice | the runtime check, 2 of its 17 checks (no static test reaches either) |
+| R1 `queue_scan` writes the row before registering | `a_queued_scan_is_registered_before_its_row_is_written` |
+| R2 `/radar/history` sends raw rows | `the_radar_history_says_which_sweeps_were_interrupted` |
+| R3 a live runner in another process does not count | `a_scan_another_live_process_runs_is_not_interrupted` |
+| R4 only `running` rows qualify | `a_row_this_process_does_not_hold_is_histogrammed_as_interrupted` |
+| R5 the runner is serialised outward | `a_scans_runner_is_stored_with_its_row_and_serialised_nowhere_else`, and two more: the stored row then names `runner` twice and no longer reads back |
+| R6 the store writes the `Scan` alone | `a_scans_runner_is_stored_with_its_row_and_serialised_nowhere_else` |
+| R7 exports always say `live` | `an_interrupted_scans_export_says_interrupted_not_live` |
+| R8 the engine does not stamp its runner | `the_engine_records_itself_as_the_scans_runner` |
+| R9 liveness ignores the start time | `this_process_is_alive_and_a_recycled_pid_is_not` |
+
+W5 first survived: the clock test passed the state in, so a call site
+passing the raw status went unseen. `row_duration` now derives the state
+itself, and W5 is caught.
+
+### Runtime
+
+Every run uses a sandboxed `hse serve`, with no proxy and with auto-update,
+update notices and map tiles off. The scans run offline phone modules only.
+
+| check | before this change | first draft | final |
+|---|---|---|---|
+| 17 browser checks on a scan SIGKILLed mid-run | 3 | 17 | 17 |
+| positive control on a scan that really runs | 10 of 10 | 10 of 10 | 10 of 10 |
+| API: a scan the CLI runs, then the CLI SIGKILLed; 10 queued scans, then the server SIGKILLed and restarted; `/stats`; the log export | not run | 2 of 6 | 6 of 6 |
+| an open Log tab across a server SIGKILL and restart | not run | reads `live` again | reads `interrupted`, and stops |
+
+The first draft's 2 of 6 is the regression and the queued-scan gap,
+reproduced. It showed a scan the CLI was running as interrupted, left the two
+queued scans `pending` and not interrupted, bucketed them in `/stats` as
+pending, and ended the orphan's log with `live`. The Phase 1 shell check
+passed 51 of 51 on the final build, and the all-routes sweep's findings are
+identical to the pre-fix build's. No server panicked in any run.

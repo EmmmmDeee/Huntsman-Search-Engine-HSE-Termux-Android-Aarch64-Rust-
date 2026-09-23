@@ -884,6 +884,83 @@ export function renderTrustHtml(data, entities_js) {
         wasm.__wbindgen_export5(deferred2_0, deferred2_1, 1);
     }
 }
+
+/**
+ * [`is_active`] of [`scan_state`] for the JS views: `scanIsActive(scan)`.
+ * @param {any} scan_js
+ * @returns {boolean}
+ */
+export function scanIsActive(scan_js) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.scanIsActive(retptr, addHeapObject(scan_js));
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        if (r2) {
+            throw takeObject(r1);
+        }
+        return r0 !== 0;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+ * [`scan_state`] for the JS views: `scanState(scan)`.
+ * @param {any} scan_js
+ * @returns {string}
+ */
+export function scanState(scan_js) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.scanState(retptr, addHeapObject(scan_js));
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        var ptr1 = r0;
+        var len1 = r1;
+        if (r3) {
+            ptr1 = 0; len1 = 0;
+            throw takeObject(r2);
+        }
+        deferred2_0 = ptr1;
+        deferred2_1 = len1;
+        return getStringFromWasm0(ptr1, len1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export5(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * [`status_pill`] for the JS views: `statusPillHtml(state)`. `helpers.js`'s
+ * `statusPill` is this, so the markup exists once. `undefined`, `null` and
+ * `""` draw as `pending`.
+ * @param {string | null} [state]
+ * @returns {string}
+ */
+export function statusPillHtml(state) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        var ptr0 = isLikeNone(state) ? 0 : passStringToWasm0(state, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        var len0 = WASM_VECTOR_LEN;
+        wasm.statusPillHtml(retptr, ptr0, len0);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        deferred2_0 = r0;
+        deferred2_1 = r1;
+        return getStringFromWasm0(r0, r1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export5(deferred2_0, deferred2_1, 1);
+    }
+}
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
@@ -1173,7 +1250,7 @@ function __wbg_get_imports() {
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 16, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
-            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_311);
+            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_316);
             return addHeapObject(ret);
         },
         __wbindgen_cast_0000000000000002: function(arg0) {
@@ -1205,8 +1282,8 @@ function __wbg_get_imports() {
     };
 }
 
-function __wasm_bindgen_func_elem_311(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_311(arg0, arg1, addHeapObject(arg2));
+function __wasm_bindgen_func_elem_316(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_316(arg0, arg1, addHeapObject(arg2));
 }
 
 function addHeapObject(obj) {

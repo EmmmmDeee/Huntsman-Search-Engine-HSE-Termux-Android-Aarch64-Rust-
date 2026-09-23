@@ -17,6 +17,7 @@ use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
 use crate::html::{escape_html, fmt_date, kind_pill};
+use crate::scan_state::{is_active, scan_state, status_pill};
 use crate::to_js_error;
 
 /// One provider's session quota snapshot — `src/api/handlers/mod.rs`'s
@@ -185,33 +186,14 @@ struct ScanRow {
     id: String,
     target: Option<ScanTarget>,
     status: Option<String>,
+    /// Derived by the API on every read (REQ-SCANSTATUS-001): a `running` row
+    /// no live process holds. Absent from an older server, where it reads as
+    /// not interrupted.
+    #[serde(default)]
+    interrupted: bool,
     started_at: Option<u64>,
     finished_at: Option<u64>,
     entity_count: Option<u64>,
-}
-
-/// `helpers.js`'s `statusPill(s)`. The CSS class and the displayed text
-/// default independently, exactly as the original's `m[s]||'s-pending'` /
-/// `s||'pending'` do: an unrecognised non-empty status still shows its own
-/// text (with the fallback class), while a missing/empty one shows the
-/// literal text "pending" too.
-fn status_pill(status: Option<&str>) -> String {
-    let class = match status {
-        Some("complete") => "s-complete",
-        Some("running") => "s-running",
-        Some("failed") => "s-failed",
-        Some("pending") => "s-pending",
-        Some("aborted") => "s-aborted",
-        _ => "s-pending",
-    };
-    let text = match status {
-        Some(s) if !s.is_empty() => s,
-        _ => "pending",
-    };
-    format!(
-        "<span class=\"status-pill {class}\">{}</span>",
-        escape_html(text)
-    )
 }
 
 /// `helpers.js`'s `fmtDuration(secs)`.
@@ -234,7 +216,9 @@ fn fmt_duration(secs: Option<i64>) -> String {
 
 /// `renderScansTable`'s per-row `dur` computation: a finished scan's actual
 /// elapsed time, a running scan's elapsed-so-far against the current clock,
-/// or `None` for any other status with no `finished_at` yet.
+/// or `None` for any other state with no `finished_at`. An interrupted scan
+/// is one: it ended with its server, at a time nothing recorded, so its
+/// clock does not climb.
 fn row_duration(row: &ScanRow) -> Option<i64> {
     let started = row.started_at.filter(|&t| t != 0);
     let finished = row.finished_at.filter(|&t| t != 0);
@@ -242,7 +226,7 @@ fn row_duration(row: &ScanRow) -> Option<i64> {
         #[allow(clippy::cast_possible_wrap)]
         return Some(f as i64 - st as i64);
     }
-    if row.status.as_deref() == Some("running") {
+    if scan_state(row.status.as_deref(), row.interrupted) == "running" {
         let st = started.unwrap_or_else(hse_core::unix_now);
         #[allow(clippy::cast_possible_wrap)]
         return Some(hse_core::unix_now() as i64 - st as i64);
@@ -269,9 +253,11 @@ fn scan_row_html(row: &ScanRow) -> String {
         .filter(|v| !v.is_empty())
         .unwrap_or(&row.id);
     let id = escape_html(&row.id);
+    let state = scan_state(row.status.as_deref(), row.interrupted);
     let dur_secs = row_duration(row);
-    let is_active = matches!(row.status.as_deref(), Some("running" | "pending"));
-    let action_btn = if is_active {
+    // Only a scan something is running gets Stop; anything else, an
+    // interrupted one included, gets Rescan.
+    let action_btn = if is_active(state) {
         format!(
             "<button class=\"btn btn-warning btn-xs\" data-cancel=\"{id}\" title=\"Stop scan\"><i class=\"glyphicon glyphicon-stop\"></i></button>"
         )
@@ -300,7 +286,7 @@ fn scan_row_html(row: &ScanRow) -> String {
         kind_pill = kind_pill(kind),
         started = escape_html(&fmt_date(row.started_at.unwrap_or(0))),
         dur = escape_html(&fmt_duration(dur_secs)),
-        status = status_pill(row.status.as_deref()),
+        status = status_pill(state),
         entities = row.entity_count.unwrap_or(0),
         raw_id = row.id,
     )
@@ -336,20 +322,50 @@ pub fn render_scans_table_html(scans_js: JsValue) -> Result<String, JsValue> {
 mod tests {
     use super::*;
 
+    fn row(status: &str, interrupted: bool) -> ScanRow {
+        ScanRow {
+            id: "abc123".to_string(),
+            target: Some(ScanTarget {
+                kind: Some("email".to_string()),
+                value: Some("a@example.com".to_string()),
+            }),
+            status: Some(status.to_string()),
+            interrupted,
+            // No timestamps: `fmt_date` reads the browser's clock, which a
+            // native test does not have.
+            started_at: None,
+            finished_at: None,
+            entity_count: Some(3),
+        }
+    }
+
     #[test]
-    fn status_pill_defaults_class_and_text_independently() {
-        assert_eq!(
-            status_pill(None),
-            "<span class=\"status-pill s-pending\">pending</span>"
+    fn an_interrupted_row_offers_rescan_not_stop() {
+        let html = scan_row_html(&row("running", true));
+        assert!(html.contains("s-interrupted"), "{html}");
+        assert!(
+            !html.contains("data-cancel"),
+            "an interrupted scan has nothing to stop: {html}"
         );
-        assert_eq!(
-            status_pill(Some("weird")),
-            "<span class=\"status-pill s-pending\">weird</span>"
-        );
-        assert_eq!(
-            status_pill(Some("complete")),
-            "<span class=\"status-pill s-complete\">complete</span>"
-        );
+        assert!(html.contains("data-rerun"), "{html}");
+    }
+
+    #[test]
+    fn a_running_row_still_offers_stop() {
+        let html = scan_row_html(&row("running", false));
+        assert!(html.contains("s-running"), "{html}");
+        assert!(html.contains("data-cancel"), "{html}");
+        assert!(!html.contains("data-rerun"), "{html}");
+    }
+
+    #[test]
+    fn an_interrupted_scans_clock_does_not_climb() {
+        let mut r = row("running", true);
+        r.started_at = Some(1);
+        assert_eq!(row_duration(&r), None);
+        // The same row with a process behind it counts from its start.
+        r.interrupted = false;
+        assert!(row_duration(&r).is_some_and(|d| d > 0));
     }
 
     #[test]

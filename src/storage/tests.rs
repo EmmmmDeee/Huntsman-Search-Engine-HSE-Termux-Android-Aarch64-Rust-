@@ -3797,3 +3797,37 @@ fn radar_history_finds_a_sweep_by_its_sentinel_columns() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+/// REQ-SCANSTATUS-002: a scan's runner (which process runs it) is stored with
+/// its row, so another process can read it back, and serialised nowhere
+/// else: every API response and export serialises the `Scan` itself, and
+/// none may carry a process identity.
+#[test]
+fn a_scans_runner_is_stored_with_its_row_and_serialised_nowhere_else() {
+    use crate::core::scan::ScanRunner;
+
+    let store = Store::open(":memory:").expect("store");
+    let mut scan = Scan::new(
+        "with-runner",
+        Target::new(TargetKind::Domain, "cloudflare.com"),
+    );
+    let runner = ScanRunner {
+        pid: 4242,
+        start_ticks: 99,
+        boot_id: "boot".into(),
+    };
+    scan.runner = Some(runner.clone());
+    store.upsert_scan(&scan).expect("write");
+
+    assert_eq!(
+        store
+            .get_scan("with-runner")
+            .expect("read")
+            .expect("row")
+            .runner,
+        Some(runner.clone())
+    );
+    assert_eq!(store.list_scans(10).expect("list")[0].runner, Some(runner));
+    let outward = serde_json::to_value(&scan).expect("serialise");
+    assert!(outward.get("runner").is_none(), "{outward}");
+}

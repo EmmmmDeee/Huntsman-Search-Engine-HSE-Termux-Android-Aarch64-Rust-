@@ -28,11 +28,13 @@ mod scoring;
 
 mod options;
 pub(crate) use options::default_scan_options;
+mod runner;
 pub use options::{
     DEFAULT_MAX_ENTITIES, DEFAULT_MIN_EXPAND_CONFIDENCE, DEFAULT_SCAN_DEPTH, ExpansionStrategy,
     MAX_CONCURRENT, MAX_DEPTH, ScanOptions, THROTTLE_CEILING_MS, known_option_keys,
     nearest_option_key, unknown_option_keys,
 };
+pub use runner::ScanRunner;
 // Re-exported so external callers keep using `crate::core::scan::expansion_weight`
 // etc. unchanged after the expansion-economics model moved to `scoring`.
 pub use scoring::{
@@ -833,9 +835,43 @@ pub struct Scan {
     /// treats it exactly as it did before, with no schema migration.
     #[serde(default)]
     pub stop_reason: Option<StopReason>,
+    /// The process running this scan, stamped when the scan is created and
+    /// again when the engine starts it. Read back from the stored row, and
+    /// never serialised anywhere else: `Store::upsert_scan` writes it into
+    /// `data_json` itself, so no API response or export carries a process
+    /// identity. See [`Scan::is_interrupted`].
+    #[serde(default, skip_serializing)]
+    pub runner: Option<ScanRunner>,
 }
 
 impl Scan {
+    /// Whether this `pending` or `running` scan has lost the process running
+    /// it (REQ-SCANSTATUS-002). Nothing will finish it: its row reads as the
+    /// dead process left it, and is never rewritten.
+    ///
+    /// `registry` is the calling process's own in-flight registry, when it
+    /// has one (`hse serve` does). It is exact for the scans this process
+    /// runs: each is registered before its row is written and stays
+    /// registered until the engine's last write. A scan another process
+    /// runs is interrupted when that process is gone ([`ScanRunner::is_alive`]).
+    /// A caller with no registry (an export) takes a scan this process runs
+    /// as live. A row with no runner predates this field, so only a registry
+    /// can vouch for it.
+    #[must_use]
+    pub fn is_interrupted(&self, registry: Option<&std::collections::HashSet<String>>) -> bool {
+        if !matches!(self.status, ScanStatus::Pending | ScanStatus::Running) {
+            return false;
+        }
+        if registry.is_some_and(|r| r.contains(&self.id)) {
+            return false;
+        }
+        match &self.runner {
+            Some(r) if r.is_this_process() => registry.is_some(),
+            Some(r) => !r.is_alive(),
+            None => true,
+        }
+    }
+
     /// The six module-accounting counts as one canonical human sentence:
     /// `"{run} run, {errored} errored, {timed_out} timed out, {skipped} skipped,
     /// {cached} cached, {deduped} deduped"`. Single-sourced so every renderer
@@ -952,6 +988,7 @@ impl Scan {
             modules_cached: 0,
             options: ScanOptions::default(),
             stop_reason: None,
+            runner: Some(ScanRunner::current()),
         }
     }
 

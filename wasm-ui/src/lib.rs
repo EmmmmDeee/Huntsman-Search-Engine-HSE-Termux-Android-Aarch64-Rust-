@@ -7,6 +7,8 @@
 //! - [`confidence`] — the `effC`/`classify` exports that replaced the
 //!   `ENRICHMENT_SOURCES`/`sourceCount`/`effC`/`classify` cluster in
 //!   `src/web/js/helpers.js`
+//! - [`scan_state`] — a scan's display state (`interrupted` included) and
+//!   the status pill: the one rule and the one markup every view uses
 //! - [`scan_info`] — `src/web/js/scan_info/*.js`, one submodule per file
 //! - [`views`] — `src/web/js/views/*.js`'s pure, DOM-free rendering helpers
 //!   (dash.js's module-health panel; scans.js's budget panel and scan table;
@@ -52,6 +54,7 @@ pub mod confidence;
 pub mod entity_lookup;
 pub mod html;
 pub mod scan_info;
+pub mod scan_state;
 pub mod theme;
 pub mod views;
 

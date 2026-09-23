@@ -69,6 +69,41 @@ async fn injected_module_runtime_is_used_by_the_engine() {
     assert_eq!(resets.load(std::sync::atomic::Ordering::Relaxed), 1);
 }
 
+/// REQ-SCANSTATUS-002: the engine records the process running a scan when it
+/// starts it, whoever wrote the row, so another process reading the row can
+/// tell a live run from one whose process died.
+#[tokio::test]
+async fn the_engine_records_itself_as_the_scans_runner() {
+    use crate::core::test_support::InMemoryStore;
+
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(16);
+    let engine = ScanEngine::new(vec![], Arc::clone(&store), bus.clone());
+    let target = Target::new(TargetKind::Username, "subject");
+    let mut scan = Scan::new(
+        crate::core::entity::scan_id("username", "subject"),
+        target.clone(),
+    );
+    // A row that names no runner, as one written elsewhere might.
+    scan.runner = None;
+    let sid = scan.id.clone();
+    let ctx = ModuleContext {
+        scan_id: sid.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: Default::default(),
+        cancel: Default::default(),
+    };
+
+    engine.run(scan, target, ctx).await.expect("should succeed");
+
+    let stored = store.get_scan(&sid).expect("read").expect("row");
+    assert_eq!(
+        stored.runner,
+        Some(crate::core::scan::ScanRunner::current())
+    );
+}
+
 fn ctx_with_keys(keys: std::collections::HashMap<String, String>) -> ModuleContext {
     let (bus, _rx) = tokio::sync::broadcast::channel(1);
     ModuleContext {

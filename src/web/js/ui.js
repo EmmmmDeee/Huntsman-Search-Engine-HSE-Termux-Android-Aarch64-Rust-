@@ -10,8 +10,10 @@ import { esc } from '/static/js/helpers.js';
 
 /* ─── Navbar: collapse toggle and dropdowns (SpiderFoot's Bootstrap JS) ───
  *
- * Below 768px the navbar's links sit behind the three-bar toggle, exactly as
- * Bootstrap's collapse behaves in SpiderFoot 4.0. Dropdowns — the navbar's
+ * Below 1100px the navbar's links sit behind the three-bar toggle, as
+ * Bootstrap's collapse does in SpiderFoot 4.0 (whose bar collapses at 768px:
+ * HSE's text brand makes the full bar about 1,030px wide; see app.css's
+ * Navbar section). Dropdowns — the navbar's
  * "More" menu and any view's `data-toggle="dropdown"` button, such as an
  * Export menu — open on click, and close on a second click, a click anywhere
  * else, picking an item, Escape, or navigating. A menu left open after the

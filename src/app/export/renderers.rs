@@ -41,7 +41,9 @@ fn confirmed_entities(store: &Store, sid: &str) -> Result<Vec<crate::core::entit
 ///
 /// Determinism: every input here is immutable once the scan is terminal
 /// (`status` and `stop_reason` are both written once, at finalise), so this
-/// keeps the debug bundle's byte-identical-across-exports contract.
+/// keeps the debug bundle's byte-identical-across-exports contract. An
+/// interrupted scan never becomes terminal, but its runner stays gone, so its
+/// reason does not change either.
 fn partial_export_reason(scan: &Scan) -> Option<&'static str> {
     use crate::core::scan::ScanStatus;
     match scan.status {
@@ -52,8 +54,13 @@ fn partial_export_reason(scan: &Scan) -> Option<&'static str> {
         ScanStatus::Aborted => Some("aborted"),
         ScanStatus::Failed => Some("failed"),
         // A snapshot taken mid-flight is partial by construction: more findings
-        // may still land after this byte was written.
-        ScanStatus::Pending | ScanStatus::Running => Some("live"),
+        // may still land after this byte was written. One whose process died
+        // is partial for good: nothing will add to it (REQ-SCANSTATUS-002).
+        ScanStatus::Pending | ScanStatus::Running => Some(if scan.is_interrupted(None) {
+            "interrupted"
+        } else {
+            "live"
+        }),
     }
 }
 
@@ -683,7 +690,7 @@ pub(crate) fn render_event_log(events: &[crate::core::event::Event]) -> String {
 /// marker classifies through [`partial_export_reason`], the same decision the
 /// dossier and debug-bundle headers make, so the three artifacts agree:
 /// `{"time":…,"level":"warn","kind":"export_snapshot","state":"live","events":N}`,
-/// where `state` is that reason (`live` / `aborted` / `failed` /
+/// where `state` is that reason (`live` / `interrupted` / `aborted` / `failed` /
 /// `budget-truncated`) and `events` counts the lines above it. A whole run gets
 /// no marker, so its log is unchanged. The line keeps
 /// [`Event::to_log_line`](crate::core::event::Event::to_log_line)'s
@@ -1331,5 +1338,34 @@ mod tests {
             sc.status = status;
             assert_eq!(partial_export_reason(&sc), Some(want), "{status:?}");
         }
+    }
+
+    /// REQ-SCANSTATUS-002: a `running` row whose process is gone is not a
+    /// live snapshot. It will never gain another finding, and the artifact
+    /// said "live" (the log's last line, the dossier and bundle headers).
+    #[test]
+    fn an_interrupted_scans_export_says_interrupted_not_live() {
+        use crate::core::scan::{Scan, ScanRunner, ScanStatus, Target, TargetKind};
+
+        let mut sc = Scan::new(
+            "s1",
+            Target {
+                kind: TargetKind::Email,
+                value: "a@b.test".into(),
+            },
+        );
+        sc.status = ScanStatus::Running;
+        // This process runs it: live.
+        assert_eq!(partial_export_reason(&sc), Some("live"));
+        // A process that no longer exists runs it.
+        sc.runner = Some(ScanRunner {
+            pid: u32::MAX,
+            start_ticks: 1,
+            boot_id: ScanRunner::current().boot_id,
+        });
+        assert_eq!(partial_export_reason(&sc), Some("interrupted"));
+        // A row from before runners were recorded: nothing vouches for it.
+        sc.runner = None;
+        assert_eq!(partial_export_reason(&sc), Some("interrupted"));
     }
 }

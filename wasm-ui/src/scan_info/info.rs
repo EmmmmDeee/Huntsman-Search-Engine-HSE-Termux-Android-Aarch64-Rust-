@@ -18,6 +18,7 @@ use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
 use crate::html::{escape_html, fmt_date, kind_pill};
+use crate::scan_state::{scan_state, status_pill};
 use crate::to_js_error;
 
 /// The subset of `crate::core::exposure::ExposureComponent`'s fields this
@@ -164,6 +165,9 @@ struct ScanView {
     id: Option<String>,
     target: Option<TargetView>,
     status: Option<String>,
+    /// Derived by the API on every read (REQ-SCANSTATUS-001).
+    #[serde(default)]
+    interrupted: bool,
     started_at: Option<u64>,
     finished_at: Option<u64>,
     entity_count: Option<u64>,
@@ -186,35 +190,16 @@ fn fmt_list(xs: Option<&[String]>) -> String {
     }
 }
 
-/// `helpers.js`'s `statusPill()`. `s` is `None` when `scan.status` itself is
-/// absent (a bare `{}` caller) — matching `statusPill(undefined)`'s own
-/// `s-pending`/"pending" fallback exactly, distinct from `s` being present
-/// but an unrecognized value (which keeps its own text, just the `s-pending`
-/// class).
-fn status_pill(s: Option<&str>) -> String {
-    let cls = match s {
-        Some("complete") => "s-complete",
-        Some("running") => "s-running",
-        Some("failed") => "s-failed",
-        Some("pending") => "s-pending",
-        Some("aborted") => "s-aborted",
-        _ => "s-pending",
-    };
-    let text = match s {
-        Some(v) if !v.is_empty() => v,
-        _ => "pending",
-    };
-    format!(
-        "<span class=\"status-pill {cls}\">{}</span>",
-        escape_html(text)
-    )
-}
-
 /// Builds the "Scan settings" panel fragment. `scan_js` is the JS side's
 /// already-resolved `scan || S.scan || {}` — see the module doc comment.
 #[wasm_bindgen(js_name = renderScanSettingsHtml)]
 pub fn render_scan_settings_html(scan_js: JsValue) -> Result<String, JsValue> {
     let scan: ScanView = serde_wasm_bindgen::from_value(scan_js).map_err(to_js_error)?;
+    Ok(scan_settings_html(scan))
+}
+
+/// The "Scan settings" panel for a scan already read from JS.
+fn scan_settings_html(scan: ScanView) -> String {
     let target = scan.target.unwrap_or_default();
     let opts = scan.options.unwrap_or_default();
 
@@ -240,7 +225,10 @@ pub fn render_scan_settings_html(scan_js: JsValue) -> Result<String, JsValue> {
                 escape_html(target.value.as_deref().unwrap_or(""))
             ),
         ),
-        ("Status", status_pill(scan.status.as_deref())),
+        (
+            "Status",
+            status_pill(scan_state(scan.status.as_deref(), scan.interrupted)),
+        ),
         ("Started", fmt_date(scan.started_at.unwrap_or(0))),
         ("Finished", fmt_date(scan.finished_at.unwrap_or(0))),
         (
@@ -336,12 +324,41 @@ pub fn render_scan_settings_html(scan_js: JsValue) -> Result<String, JsValue> {
         })
         .collect();
 
-    Ok(format!(
+    format!(
         "\n    <div class=\"panel panel-default\">\n      \
          <div class=\"panel-heading\"><b>Scan settings</b></div>\n      \
          <table class=\"table table-striped table-condensed\" style=\"margin-bottom:0\">\n        \
          <tbody>{body}</tbody>\n      \
          </table>\n    \
          </div>"
-    ))
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_interrupted_scans_status_row_says_interrupted() {
+        // The API keeps a dead server's scan at `running` and marks it
+        // interrupted (REQ-SCANSTATUS-002).
+        let html = scan_settings_html(ScanView {
+            status: Some("running".into()),
+            interrupted: true,
+            ..ScanView::default()
+        });
+        assert!(
+            html.contains("<span class=\"status-pill s-interrupted\">interrupted</span>"),
+            "{html}"
+        );
+        // The same row with a live process behind it is running.
+        let html = scan_settings_html(ScanView {
+            status: Some("running".into()),
+            ..ScanView::default()
+        });
+        assert!(
+            html.contains("<span class=\"status-pill s-running\">running</span>"),
+            "{html}"
+        );
+    }
 }

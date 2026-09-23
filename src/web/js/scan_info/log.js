@@ -1,6 +1,7 @@
 import { $, esc, fmtClock, kindPill, saveShownRows } from '/static/js/helpers.js';
 import { S } from '/static/js/state.js';
 import { API } from '/static/js/api.js';
+import { scanIsActive, scanState } from '/static/hse_wasm_ui.js';
 
 /* ── Scan Log (history + live SSE) ──
    v0.10+ — engine persists every event to SQLite, so completed scans
@@ -26,7 +27,14 @@ import { API } from '/static/js/api.js';
    per-target, and targets vary across rounds) and a proper fix needs
    a monotonic per-event id on the engine side. */
 export async function renderLog(host, scan){
-  const running = scan.status==='running' || scan.status==='pending';
+  // Only a scan something is running has a live stream to open. One whose
+  // process died still reads `running`; the API marks it interrupted, and no
+  // event will ever arrive for it (REQ-SCANSTATUS-002).
+  const running = scanIsActive(scan);
+  const interrupted = scanState(scan) === 'interrupted';
+  const downloadTitle = interrupted
+    ? 'Download every event this scan logged before its process stopped, as a .log file (client-safe: each breach-source provider is a numbered placeholder). Its last line is an export_snapshot marker saying it was interrupted'
+    : 'Download every event persisted so far as a .log file (client-safe: each breach-source provider is a numbered placeholder). On a scan that is still running this is a partial snapshot — its last line is an export_snapshot marker saying so; download again once the scan finishes for the complete log';
   // Fresh tally per view — otherwise opening a second scan's log would add its
   // events to the previous scan's breakdown. The eviction counter resets with
   // it, for the same reason: it describes THIS view's box.
@@ -39,7 +47,7 @@ export async function renderLog(host, scan){
         <div class="pull-right">
           <span id="log-status" class="label label-default">loading…</span>
           &nbsp;<a class="btn btn-default btn-xs" href="${API.eventsLogUrl(scan.id)}" download data-download
-                 title="Download every event persisted so far as a .log file (client-safe: each breach-source provider is a numbered placeholder). On a scan that is still running this is a partial snapshot — its last line is an export_snapshot marker saying so; download again once the scan finishes for the complete log"><i class="glyphicon glyphicon-download-alt"></i>&nbsp;Download</a>
+                 title="${downloadTitle}"><i class="glyphicon glyphicon-download-alt"></i>&nbsp;Download</a>
           &nbsp;<button class="btn btn-default btn-xs" id="log-save-shown"
                  title="Save exactly the events shown here to a .log file — captures a live/streaming scan and works even if the server history failed to load">Save shown</button>
           &nbsp;<button class="btn btn-default btn-xs" id="log-clear">Clear</button>
@@ -69,7 +77,8 @@ export async function renderLog(host, scan){
     header: (n) =>
       `# HSE scan event log (as shown in the browser)\n` +
       `# scan ${scan.id}\n` +
-      `# ${n} event(s)` + (running ? ' — live capture, may be partial\n' : '\n') +
+      `# ${n} event(s)` + (running ? ' — live capture, may be partial\n'
+        : interrupted ? ' — interrupted scan, partial\n' : '\n') +
       // The box is row-capped, so "as shown" can be a suffix of the scan. Say
       // so in the artifact itself — a saved log that silently omits its start
       // is worse than no log, and the complete one is a click away.
@@ -107,6 +116,24 @@ export async function renderLog(host, scan){
                      : 'complete';
       closeSse();
     };
+    // A stream that comes back after a drop may be following a scan that
+    // ended meanwhile: it finished while the stream was down (its
+    // `scan_complete` went by unseen), or its process died, and the server
+    // that answers now will never send it anything. Ask the scan itself, and
+    // stop showing `live` for one that is over (REQ-SCANSTATUS-002).
+    let dropped = false;
+    const recheckAfterReconnect = async () => {
+      let fresh;
+      try { fresh = await API.scan(scan.id); } catch (_) { return; }
+      if (!S.sse || scanIsActive(fresh)) return;
+      const st = $('#log-status'); if (!st) return;
+      closeSse();
+      const over = scanState(fresh);
+      st.className = over === 'failed' ? 'label label-danger'
+                   : over === 'interrupted' || over === 'aborted' ? 'label label-warning'
+                   : 'label label-default';
+      st.textContent = over;
+    };
     openSse(scan.id, ev=>{
       if (bufferingMode) buffered.push(ev);
       else appendLog(ev);
@@ -120,10 +147,12 @@ export async function renderLog(host, scan){
       if (state === 'open'){
         st.className = 'label label-info';
         st.innerHTML = '<i class="glyphicon glyphicon-record"></i>&nbsp;live';
+        if (dropped){ dropped = false; recheckAfterReconnect(); }
       } else if (es.readyState === 2){ // CLOSED — server idle-closed or unreachable
         st.className = 'label label-default';
         st.textContent = 'disconnected';
       } else { // CONNECTING — auto-reconnecting
+        dropped = true;
         st.className = 'label label-warning';
         st.textContent = 'reconnecting…';
       }
@@ -202,8 +231,9 @@ export async function renderLog(host, scan){
   bufferingMode = false;
 
   if (!running){
-    status.className = 'label label-default';
-    status.textContent = history.length ? `${history.length} events` : 'not streaming';
+    const shown = history.length ? `${history.length} events` : 'not streaming';
+    status.className = interrupted ? 'label label-warning' : 'label label-default';
+    status.textContent = interrupted ? `interrupted · ${shown}` : shown;
   }
 }
 /* ── "By type" breakdown ──
