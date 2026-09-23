@@ -18829,3 +18829,358 @@ is bounded, so a release that never happens still fails.
 seen from the other side. When a test observes property P through a proxy Q,
 check which becomes true first. If Q can precede P, wait for P itself; never
 infer it from Q.
+
+---
+
+## REQ-PSL-001 — the site boundary knew 39 suffixes and no Vietnamese one
+
+**Requirement.** `registrable_domain` answers "which registrant owns this
+host?". Every decision that turns on that question must be answered by the
+Public Suffix List, the published authority, and not by a subset of it. Most
+of all, the answer must be right for the jurisdictions this tool is built for.
+
+### Found
+
+The audit wave's `dns_intel` finding (REQ-DNSINTEL-001) proposed adding the
+VNNIC second levels to `util::domains::MULTI_LABEL_SUFFIXES`. Reading that
+table showed the defect was the table itself. It held 39 hand-curated
+multi-label suffixes and not one Vietnamese second level, although
+`CLAUDE.md` makes Vietnam the primary jurisdiction and `util::domain_vn`
+already cites the VNNIC namespace and the PSL as its source.
+
+`registrable_domain("shop.acme.com.vn")` answered `com.vn`. It has 21
+production callers, and each was wrong for every `.vn` commercial domain at
+once:
+
+| Consumer | What the wrong boundary did |
+|---|---|
+| `util::http::ssrf::same_site` (the credentialed-redirect guard) | `api.provider.com.vn` → `attacker.com.vn` counted as **same-site**, so the caller's provider key replayed to a different registrant. The same held for every suffix the table lacked (`co.kr`, `com.tw`, `co.th`, …) and for every shared-hosting suffix (`github.io`, `blogspot.com`, …). |
+| AU-118 look-alike impersonation | `techcombank.com.vn` and `techc0mbank.com.vn` folded to one key, `com.vn`, so no Vietnamese impersonation could ever fire. |
+| AU-110 co-hosting | two different Vietnamese companies on one dedicated IP counted as one site, and the co-ownership lead never fired. |
+| `dns_intel` permutation | see REQ-DNSINTEL-001 |
+
+### Implemented
+
+`util/domains/psl.rs` implements the list's specification exactly:
+- an exception rule beats the rule it carves out of;
+- otherwise the longest match wins, with a wildcard matching one label;
+- otherwise the default rule `*` applies (the TLD alone);
+- rules are compared in Unicode, and a punycode host is answered in the form
+  it was asked in.
+
+A bare public suffix, a single label, and an empty label all answer `None`. The
+old table answered `com.au` for `com.au`, a "registrable domain" every
+Australian company shared. `registrable_domain` delegates to it, and
+`MULTI_LABEL_SUFFIXES` is deleted: one authority, not two.
+
+**The data** is `public_suffix_list.dat`, Mozilla's list vendored verbatim,
+version `2026-09-21_18-50-07_UTC`, commit `728555a`, sha256 `e81c6f5f…`. It
+includes both the ICANN and PRIVATE sections, because the boundary decides
+credential replay and attribution, and a `github.io` tenant is a different
+party.
+
+**Licence.** The list is MPL-2.0; its header is kept. MPL-2.0 is file-level:
+shipping the unmodified file inside a larger proprietary work is permitted,
+provided that file stays MPL-2.0 and available, as it is here. This is recorded
+so the owner can see the decision; no crate dependency was added. To refresh,
+replace the file and run the tests.
+
+### Locks
+
+- `the_official_conformance_suite_passes_in_full`: the PSL project's own
+  `test_psl.txt` (public domain, vendored verbatim), **78 of 78** live
+  cases. The vacuity guard pins the count, so a parser that stopped matching
+  cannot pass on zero cases.
+- `the_vendored_list_is_the_whole_list`: both section markers, the version
+  line, over 9 000 plain rules, and the rule shapes the algorithm
+  distinguishes, so a truncated refresh fails.
+- `every_vietnamese_second_level_is_a_suffix`,
+  `a_shared_hosting_tenant_is_its_own_registrant`,
+  `a_punycode_host_is_answered_in_the_form_it_was_asked_in`.
+- Consumer locks at their real call sites, since a helper's own tests never
+  establish its callers (REQ-ZOOMEYE-002):
+  `redirect_verdict_stops_a_hop_between_two_registrants_under_one_public_suffix`,
+  `au118_sees_an_impersonation_under_a_vietnamese_second_level`,
+  `au110_sees_two_vietnamese_companies_on_one_dedicated_ip`, and its
+  same-registrant control.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| P0 | **baseline**: the 39-entry table restored | killed by 6: the SSRF, AU-118, AU-110, two permutation and the multi-label locks |
+| P1 | exception rules ignored | killed by the conformance suite (4 cases) |
+| P2 | wildcard rules ignored | killed by the conformance suite (9 cases in the standalone run) |
+| P3 | IDN matched as written | killed by 2 |
+| P4 | the permutation gate back to a label count | killed by 1 |
+| P5 | a public suffix is its own registrable domain | killed by 4 |
+
+**6 of 6 killed.**
+
+**One claim was refuted by this matrix and is not made.** An inverse harm was
+suspected: a `.vn` domain's brand label `com` pairing with an unrelated
+`corn.com` as a High-severity impersonation. P0 did not kill the lock written
+for it, so that pairing does not occur. The test is kept only as a labelled
+control.
+
+---
+
+## REQ-DNSINTEL-001 — subdomain permutation turned every `.com.au` / `.com.vn` apex into other people's domains
+
+**Found** by the audit wave (both adversarial lenses confirmed it).
+`permute_subdomains` judged "is a subdomain" by counting labels. For the apex
+`acme.com.au` it split off `("acme", "com.au")`. It then resolved
+`acme1.com.au`, `dev-acme.com.au`, `acme-new.com.au` and the rest: separate
+registrable domains, owned by anyone. Each one that resolved was emitted as
+the target's `subdomain` at `VERY_HIGH`, with evidence "a structural
+permutation of discovered sibling acme.com.au", and re-dispatched into the
+target's dossier.
+
+That is every seed under `.com.au` and `.com.vn`, the two jurisdictions this
+tool is built for. `srv` and `dkim` in the same module already used the right
+test.
+
+**Fix.** `permutation_split` requires a label above the host's registrable
+domain (REQ-PSL-001), the same apex test `srv` and `dkim` apply. Every
+candidate generated therefore stays inside the target's own registrable
+domain, which is locked by asserting it over the full generator output.
+
+**Locks:**
+- `the_apex_under_a_multi_label_suffix_is_never_permuted`
+- `a_real_subdomain_is_still_permuted_within_its_own_registrable_domain`
+- `a_public_suffix_or_single_label_is_not_permuted`
+
+Falsified by P0 and P4 above.
+
+---
+
+## REQ-PULSEDIVE-001 — a benign vendor verdict raised a High threat-intel finding
+
+**Found** by the audit wave (both lenses confirmed it). The vendor's semantics
+were checked against its own risk model (`docs.pulsedive.com/model/risk.md`):
+
+| Risk | Pulsedive's definition |
+|---|---|
+| `none` / `very low` | "Pulsedive's assessment points to benign activity" |
+| `unknown` | "the data available doesn't point to an elevated or reduced risk level" |
+| `critical` | "risk factors with the highest severity, strongly indicating malicious activity" |
+
+**Defect.** `build_entities` tagged `THREAT_INTEL` on every non-unknown answer,
+`none` included. It tagged `MALICIOUS` whenever any threat was linked, even
+under a `none` verdict. `THREAT_INTEL` alone raises AU-015's High "present in
+a curated threat-intel feed" and AU-031's High adjacency grading, so a benign
+verdict became a High threat finding about the scan subject. The module's own
+doc called `none` "an actively-confirmed-benign verdict", three lines above the
+tagging that ignored it.
+
+**Fix.** The vendor's grade decides the tags:
+- `none` / `very low` → `pulsedive-benign`, and no bad tag. The linked threats
+  stay in evidence.
+- Every other verdict → `THREAT_INTEL`, an unadjudicated sighting.
+- `MALICIOUS` only for `high` / `critical`, the verdicts where the vendor
+  makes a conduct claim.
+
+`pulsedive-benign` is deliberately **not** added to `BENIGN_INFRA_TAGS`. That
+would let Pulsedive's verdict veto other sources' bad tags, which is a stronger
+claim than its risk model makes.
+
+**Changed lock, deliberately.** `unknown_risk_with_a_linked_threat_still_surfaces`
+asserted `MALICIOUS`. It now asserts `THREAT_INTEL` and not `MALICIOUS`. The
+finding still surfaces as AU-015; what it loses is a "malicious" vote in
+AU-004's two-source CRITICAL escalation, which an unassessed record does not
+earn.
+
+**Falsified**, with the matrix below.
+
+---
+
+## REQ-THREATSRC-001 — the list of who may vote "malicious" had drifted from who does
+
+`core::correlator::rules::THREAT_INTEL_SOURCES` decides whose `MALICIOUS` tag
+AU-004 counts toward its CRITICAL "≥2 independent sources agree", and whom
+AU-015 names. Its doc said "keep in sync with the `entity.tag(MALICIOUS)`
+call sites". That is a remembered procedure (ROADMAP §4 shape 3), and it had
+drifted: `emailrep` and `pulsedive` both tag `MALICIOUS` and were absent.
+
+**Fix.** Both are added. The doc now says the sync is enforced.
+`tests/architecture.rs::every_module_that_asserts_malicious_is_a_threat_intel_source`
+reads the list and every module's production code, resolves each module's
+`SRC`, and fails on any `MALICIOUS` emitter the list lacks. Its vacuity guard
+requires the scan to see a known emitter.
+
+### Falsified (both requirements)
+
+| # | mutation | result |
+|---|---|---|
+| T0 | **baseline** pulsedive tagging | killed by 4 |
+| T1 | **over-correction**: `MALICIOUS` on any non-benign verdict | killed by 2 |
+| T2 | `pulsedive` dropped from the list | killed by the architecture lock |
+| T3 | `emailrep` dropped from the list | killed by the architecture lock |
+
+**4 of 4 killed.**
+
+**The harness had a silent path, now closed.** T3's first spec matched
+`"emailrep"` three times: the file also has `EMAIL_CONFIRMATION_SOURCES` and a
+third list. The harness recorded that as BAD-SPEC but printed nothing, so the
+row simply went missing. That silent-vacuity shape is the one REQ-TYPOSQUAT-001
+names. It now prints every BAD-SPEC. Every row of every earlier matrix in this
+wave was re-checked: each printed a result, so nothing was skipped.
+
+---
+
+## REQ-LEAKIX-001 — the decoder read a shape LeakIX never sends, so every lookup was "no exposure"
+
+**Found** by the audit wave. The auditor could not verify the wire shape from
+inside the repository and said so. It was then established from LeakIX's own
+code:
+- the official Python client `leakix` 1.1.0 declares
+  `class HostResult(Model): Services: list[L9Event] | None; Leaks: list[L9Event] | None`,
+  built by `HostResult.from_dict(data)` over the raw body, and only
+  afterwards re-keys to lowercase for its own callers;
+- `l9format`'s `L9Event` declares `port: str`.
+
+An anonymous request to the live API answers `401 "Invalid API key"`, so no
+live capture was possible without a key.
+
+**Defect.** `HostResp` read lowercase `services`/`leaks`, both
+`#[serde(default)]`, with no rename. On a real body the capitalised arrays
+were unknown fields and were dropped, so both lists decoded empty and the
+module returned `Ok(empty)`: `CleanNegative`, "LeakIX holds no exposure for
+this host", for every host and domain ever asked. The same body also has
+string ports, which `port: Option<i64>` would have rejected as soon as the
+keys matched. Fixing the casing alone would have turned "empty" into a decode
+error on every response. Every existing fixture was author-written lowercase
+with numeric ports, the one shape LeakIX never sends, so none of them could
+see this. This is the REQ-FOFA-001 rule: test by deserialising the text the
+provider actually sends.
+
+**Fix.**
+- `Services`/`Leaks` are read as `Option<Vec<Event>>`, so they accept `null`.
+  The lowercase keys are kept as aliases.
+- `port` decodes from a string or a number, and any other shape is "no port"
+  rather than a failed event.
+- The pure seam `leakix_result` **fails closed** when a 200 body carries
+  neither key in either spelling: that is an unrecognised shape, not "no
+  exposure". A body with the keys set to `null` or `[]` stays the real clean
+  negative.
+- `ssh-exposed` now reads `protocol` too, because in L9 events `event_type`
+  is the event class and `protocol` names the service.
+
+**Locks:**
+- `the_real_wire_shape_is_an_exposure_not_a_clean_negative`
+- `null_or_empty_lists_are_the_real_clean_negative`
+- `a_body_with_neither_key_fails_closed`
+- `a_port_of_any_scalar_shape_or_none_never_fails_the_event`
+
+| # | mutation | result |
+|---|---|---|
+| X0 | **baseline**: lowercase keys only | killed by 2 |
+| X1 | numeric ports only | killed by 2 |
+| X2 | an unrecognised body is a clean negative again | killed by 1 |
+| X3 | SSH read from `event_type` only | killed by 1 |
+
+**4 of 4 killed.**
+
+**Residual.** No live capture was made. The shape rests on the vendor's own
+client and schema library, not on a response observed from this
+environment.
+
+---
+
+## REQ-CURL-001 — the shared curl fallback returned error responses as documents
+
+**Found** by the audit wave while it was reading `hexpm_user`. The finding is
+in the shared outbound path, not in that module.
+
+`util::http::fetch_json_inner` backs `fetch_json`, `fetch_json_or_404` and
+their callers. On a reqwest transport failure it retries once through
+`util::curl::fetch_json`, which the module comments describe as the working
+transport on Termux and datacenter IPs. That helper ran `curl -s` with no
+`-f` and no status capture. curl exits 0 for **any** response it receives, so
+a 404, 429 or 5xx came back as the document, and wherever the error body
+decoded as `T` (an all-default struct, `{}`, `[]`) the fallback returned it
+as **success**. The effects:
+- `fetch_json_or_404`'s "404 means absent" became "404 body is the data";
+- a throttle or an outage could read as a clean answer for every module on
+  the shared helper;
+- the breaker recorded all of these as successes.
+
+The code's own comment claimed "curl collapses every outcome (404, non-zero
+exit, parse failure) to `None`". That was false for any error body that
+decodes.
+
+### Implemented, at the shared authority
+
+- `run_curl_once` writes `%{http_code}` to stderr beside the redirect target
+  it already wrote, keeping stdout the pure body. The two formats are the
+  constants `WRITE_OUT_HOP` / `WRITE_OUT_FOLLOW`, and `parse_write_out`
+  splits them.
+- `curl_exec_response` returns `(status, body)`. The body-only helpers
+  (`fetch`, `fetch_with_ua`, the POST variant) keep their behaviour, because
+  their callers read challenge and error pages on purpose.
+- `util::curl::fetch_json` is **deleted**; its one caller moved to
+  `fetch_json_classified`, which returns `JsonFetch::{Decoded, Status,
+  Undecodable, NoAnswer}`. The classification is the pure `classify_json`.
+- `resolve_curl_fallback` answers as the reqwest arm would for the same
+  response:
+  - a 2xx body is decoded;
+  - an `absent_statuses` status becomes `Ok(None)`;
+  - any other status goes through `classify_status_error`, the same typed
+    error `http_status_error` builds (`RateLimited`, `BotChallenge`, …);
+  - no HTTP answer at all is a failure, never `Ok(None)`.
+- The breaker decision is shared too. `record_breaker_outcome` became a
+  wrapper over the new `record_breaker_status`, so both transports record
+  429, 5xx and success identically. The curl path uses the default back-off,
+  because it does not capture `Retry-After`.
+
+### Locks
+
+- `util::curl::tests`:
+  - `an_error_status_is_never_decoded_as_the_document`
+  - `a_2xx_body_decodes_or_is_undecodable_and_no_status_is_no_answer`
+  - `the_write_out_parser_reads_status_and_next_hop`
+  - `real_curl_writes_what_the_parser_reads`: the real `curl` binary (8.5.0
+    here) with the production format constants, against a loopback 404 and
+    302. A parser test alone could agree with itself while curl wrote
+    something else.
+- `util::http::tests`:
+  - `a_fallback_404_is_absent_only_where_the_caller_says_so`
+  - `a_fallback_throttle_is_the_typed_rate_limit_not_data`
+  - `a_fallback_with_no_answer_is_a_failure_never_absent`
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| K0 | **baseline**: the body is decoded whatever the status | killed by 2 |
+| K1 | an absent status is an error | killed by 1 |
+| K2 | no answer reads as absent | killed by 1 |
+| K3 | the parser drops the status | killed by 2 (incl. the real-curl lock) |
+| K4 | the hop write-out omits `%{http_code}` | killed by 1: **only** the real-curl lock can see this |
+
+**5 of 5 killed.** K2's first spec was reported **BAD-SPEC** (rustfmt had
+reflowed the targeted line) instead of going missing. That is the harness fix
+REQ-THREATSRC-001 recorded, catching its first case one requirement later.
+
+### Review round: the error body was not redacted on the curl arm
+
+Review of #641 found that the curl arm still differed from reqwest in one
+step. The reqwest arm's `error_body` caps an error body at 8 KiB, harvests
+it for leaked keys and redacts it (`redact_credentials`) **before**
+`classify_status_error` sees it. The curl arm classified the raw body. A
+provider that echoes the request URL in a 429 or 5xx body (`?api_key=…`)
+would therefore put the key into the typed error, the SSE event and the log.
+The redaction was verified to be missing, not assumed.
+
+The fix is one step both arms take: `sanitised_error_body` (cap →
+`scan_for_api_keys` → `redact_credentials`). `error_body` calls it, and so
+does `resolve_curl_fallback`. The cap is the shared `ERROR_BODY_CAP`, so a
+challenge fingerprint past 8 KiB is invisible to both arms alike.
+
+- Locks: `a_fallback_error_body_is_redacted_as_the_reqwest_path_redacts_it`
+  (429 and 500) and `a_fallback_error_body_is_capped_as_the_reqwest_path_caps_it`.
+  The second carries an in-cap control, so it cannot pass vacuously.
+- Falsified, **3 of 3 killed**:
+  - R1, the baseline (the raw body is classified): killed by 2;
+  - R2, the sanitiser does not redact: killed by 1;
+  - R3, the sanitiser does not cap: killed by 1.

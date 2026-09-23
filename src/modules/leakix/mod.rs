@@ -25,7 +25,8 @@ use crate::core::{
 const KEY_ENV: &str = "HUNTSMAN_LEAKIX_KEY";
 const SRC: &str = "leakix";
 
-/// Subset of the LeakIX event fields we actually consume.
+/// Subset of the LeakIX event fields we actually consume. The wire schema is
+/// LeakIX's `l9format` `L9Event`, whose `port` is a STRING (`"22"`).
 #[derive(Deserialize)]
 struct Event {
     #[serde(default)]
@@ -36,16 +37,81 @@ struct Event {
     protocol: Option<String>,
     #[serde(default)]
     time: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "port_scalar")]
     port: Option<i64>,
 }
 
+/// A port given as a JSON string (the `L9Event` wire type) or a number. Any
+/// other shape is no port, never a decode failure of the whole event.
+fn port_scalar<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<i64>, D::Error> {
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(v.as_ref()
+        .and_then(crate::util::json::scalar_str)
+        .and_then(|s| s.trim().parse::<i64>().ok()))
+}
+
+/// The host/domain response. LeakIX's wire keys are **`Services`** and
+/// **`Leaks`**, capitalised and nullable: its server serialises the Go
+/// `HostResult` struct's untagged fields, and its official Python client
+/// (`leakix` 1.1.0, `HostResult.Services` / `.Leaks`) reads exactly those. The
+/// struct read lowercase `services`/`leaks` only, so every real response
+/// decoded as two empty lists and every lookup was a clean "no exposure"
+/// (REQ-LEAKIX-001). The lowercase spellings are kept as aliases.
 #[derive(Deserialize)]
 struct HostResp {
-    #[serde(default)]
-    services: Vec<Event>,
-    #[serde(default)]
-    leaks: Vec<Event>,
+    #[serde(rename = "Services", alias = "services", default)]
+    services: Option<Vec<Event>>,
+    #[serde(rename = "Leaks", alias = "leaks", default)]
+    leaks: Option<Vec<Event>>,
+}
+
+impl HostResp {
+    fn services(&self) -> &[Event] {
+        self.services.as_deref().unwrap_or(&[])
+    }
+
+    fn leaks(&self) -> &[Event] {
+        self.leaks.as_deref().unwrap_or(&[])
+    }
+}
+
+/// The module's result for one 2xx body. **Pure** — the seam `process()`
+/// returns through.
+///
+/// Fails closed on a body that carries NEITHER key, in either spelling. That is
+/// not "no exposure": it is a shape this decoder does not recognise (an error
+/// envelope, schema drift, a challenge page that happens to be JSON), and
+/// reading it as an empty answer is exactly how the capitalisation defect stayed
+/// invisible. A body that carries the keys with `null` or `[]` is the real
+/// "nothing indexed" answer and stays a clean negative.
+fn leakix_result(
+    kind: EntityKind,
+    value: &str,
+    raw: serde_json::Value,
+    scan_id: &str,
+) -> Result<ModuleResult> {
+    let recognised = raw.as_object().is_some_and(|o| {
+        ["Services", "Leaks", "services", "leaks"]
+            .iter()
+            .any(|k| o.contains_key(*k))
+    });
+    if !recognised {
+        return Err(crate::core::error::Error::module(
+            SRC,
+            "LeakIX answered 200 with a body carrying neither `Services` nor `Leaks` — an unrecognised shape, not a clean \"no exposure\"",
+        ));
+    }
+    let body: HostResp = serde_json::from_value(raw).map_err(|e| {
+        crate::core::error::Error::module(SRC, format!("LeakIX body did not decode: {e}"))
+    })?;
+    let mut result = ModuleResult::new();
+    if body.services().is_empty() && body.leaks().is_empty() {
+        return Ok(result);
+    }
+    result.push(build_exposure_entity(kind, value, &body, scan_id));
+    Ok(result)
 }
 
 /// Per-attribute cap: a top-N frequency list (event types, sources, protocols)
@@ -63,18 +129,22 @@ const MAX_PORTS: usize = 20;
 fn build_exposure_entity(kind: EntityKind, value: &str, body: &HostResp, scan_id: &str) -> Entity {
     let mut entity = Entity::new(kind, value, confidence::EXPERT, scan_id);
     entity.tag("leakix");
-    if !body.leaks.is_empty() {
+    if !body.leaks().is_empty() {
         entity.tag("leak");
     }
-    if body.services.iter().any(|e| {
-        e.event_type
-            .as_deref()
-            .is_some_and(|t| t.eq_ignore_ascii_case("ssh"))
+    // In L9 events the service is named by `protocol` (`"ssh"`); `event_type`
+    // is the event class (`"service"`, `"leak"`). Both are read, so neither
+    // spelling can hide an exposed SSH service.
+    if body.services().iter().any(|e| {
+        [e.protocol.as_deref(), e.event_type.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(|t| t.eq_ignore_ascii_case("ssh"))
     }) {
         entity.tag("ssh-exposed");
     }
 
-    let all = || body.services.iter().chain(body.leaks.iter());
+    let all = || body.services().iter().chain(body.leaks().iter());
 
     // Aggregate event-type counts so the evidence row stays compact even when
     // leakix returns dozens of services.
@@ -82,7 +152,7 @@ fn build_exposure_entity(kind: EntityKind, value: &str, body: &HostResp, scan_id
 
     // Open ports across services, sorted + deduplicated.
     let ports: std::collections::BTreeSet<i64> =
-        body.services.iter().filter_map(|e| e.port).collect();
+        body.services().iter().filter_map(|e| e.port).collect();
     let total_ports = ports.len();
     let ports_capped = total_ports > MAX_PORTS;
     let port_str = ports
@@ -96,12 +166,12 @@ fn build_exposure_entity(kind: EntityKind, value: &str, body: &HostResp, scan_id
         SRC,
         format!(
             "LeakIX exposure: {} service event(s), {} leak event(s)",
-            body.services.len(),
-            body.leaks.len()
+            body.services().len(),
+            body.leaks().len()
         ),
     )
-    .with_attr("service_count", body.services.len().to_string())
-    .with_attr("leak_count", body.leaks.len().to_string());
+    .with_attr("service_count", body.services().len().to_string())
+    .with_attr("leak_count", body.leaks().len().to_string());
     if !top.is_empty() {
         ev = ev.with_attr("top_event_types", top);
     }
@@ -217,19 +287,8 @@ impl Module for LeakIx {
         };
         // json_scanned: leakix responses contain exposure/credential data —
         // scan the raw body for embedded API keys.
-        let body: HostResp = crate::util::http::json_scanned(resp, SRC).await?;
-        if body.services.is_empty() && body.leaks.is_empty() {
-            return Ok(ModuleResult::new());
-        }
-
-        let mut result = ModuleResult::new();
-        result.push(build_exposure_entity(
-            target.kind.to_entity_kind(),
-            value,
-            &body,
-            &ctx.scan_id,
-        ));
-        Ok(result)
+        let raw: serde_json::Value = crate::util::http::json_scanned(resp, SRC).await?;
+        leakix_result(target.kind.to_entity_kind(), value, raw, &ctx.scan_id)
     }
 }
 

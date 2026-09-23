@@ -316,3 +316,101 @@ use super::*;
             }
         );
     }
+
+// ── REQ-CURL-001: the JSON fallback reads the status, not only the body ─────
+
+#[derive(serde::Deserialize, Debug, Default)]
+struct AllDefault {
+    #[serde(default)]
+    results: Vec<String>,
+}
+
+#[test]
+fn an_error_status_is_never_decoded_as_the_document() {
+    // FAILS on the body-only fallback: a 404 / 429 / 503 whose JSON error body
+    // decodes as `T` (here an all-default struct) came back as DATA.
+    for status in [404u16, 429, 500, 503] {
+        match classify_json::<AllDefault>(status, r#"{"error":"nope"}"#) {
+            JsonFetch::Status { status: s, body } => {
+                assert_eq!(s, status);
+                assert!(body.contains("nope"), "the body is kept for classification");
+            }
+            other => panic!("{status} must be a status outcome, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_2xx_body_decodes_or_is_undecodable_and_no_status_is_no_answer() {
+    assert!(matches!(
+        classify_json::<AllDefault>(200, r#"{"results":["a"]}"#),
+        JsonFetch::Decoded(AllDefault { ref results }) if results == &["a"]
+    ));
+    assert!(matches!(
+        classify_json::<AllDefault>(200, "<html>challenge</html>"),
+        JsonFetch::Undecodable
+    ));
+    assert!(matches!(classify_json::<AllDefault>(0, "{}"), JsonFetch::NoAnswer));
+}
+
+#[test]
+fn the_write_out_parser_reads_status_and_next_hop() {
+    assert_eq!(parse_write_out("404\n", false), (404, None));
+    assert_eq!(
+        parse_write_out("302\nhttps://example.com/next\n", false),
+        (302, Some("https://example.com/next".to_string()))
+    );
+    assert_eq!(parse_write_out("200\n", true), (200, None));
+    assert_eq!(parse_write_out("", false), (0, None), "no write-out is no status");
+}
+
+/// The write-out contract against the real `curl` binary: the SAME format
+/// strings production passes, a loopback listener answering a 404 and a 302.
+/// A parser test alone could agree with itself while curl wrote something else.
+#[tokio::test]
+async fn real_curl_writes_what_the_parser_reads() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    if std::process::Command::new("curl").arg("--version").output().is_err() {
+        eprintln!("curl not installed; the pure parser tests above still run");
+        return;
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        for reply in [
+            "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+            "HTTP/1.1 302 Found\r\nLocation: /elsewhere\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        ] {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock.write_all(reply.as_bytes()).await;
+            let _ = sock.flush().await;
+        }
+    });
+    let run = |format: &'static str| {
+        let url = format!("http://{addr}/x");
+        async move {
+            tokio::process::Command::new("curl")
+                .args(["-s", "--max-time", "5", "-w", format, "--", &url])
+                .output()
+                .await
+                .expect("curl runs")
+        }
+    };
+    let out = run(WRITE_OUT_HOP).await;
+    assert_eq!(out.stdout, b"{}", "stdout stays the pure body");
+    assert_eq!(
+        parse_write_out(&String::from_utf8_lossy(&out.stderr), false),
+        (404, None)
+    );
+    let out = run(WRITE_OUT_HOP).await;
+    assert_eq!(
+        parse_write_out(&String::from_utf8_lossy(&out.stderr), false),
+        (302, Some(format!("http://{addr}/elsewhere")))
+    );
+}

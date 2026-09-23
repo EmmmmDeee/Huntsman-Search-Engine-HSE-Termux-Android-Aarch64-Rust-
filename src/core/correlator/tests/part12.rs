@@ -652,6 +652,32 @@ fn au110_fires_on_two_distinct_sites_one_dedicated_ip() {
 }
 
 #[test]
+fn au110_sees_two_vietnamese_companies_on_one_dedicated_ip() {
+    // REQ-PSL-001: FAILS on the 39-entry suffix table. With no `com.vn` in it
+    // both sites reduced to the one "registrable domain" `com.vn`, so two
+    // different companies on one dedicated IP counted as ONE site and the
+    // co-ownership lead never fired — for any Vietnamese commercial domain.
+    let d1 = Entity::new(EntityKind::Domain, "anphat.com.vn", 0.8, "s");
+    let d2 = Entity::new(EntityKind::Domain, "hoangminh.com.vn", 0.8, "s");
+    let ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
+    let rels = vec![resolves(&d1, &ip), resolves(&d2, &ip)];
+    let r = rule_au_110_shared_hosting_ip(&RuleContext::new(&[d1, d2, ip]), &rels, "s", 0);
+    assert_eq!(r.len(), 1, "two .com.vn registrants on one dedicated IP must fire");
+    assert!(r[0].description.contains("anphat.com.vn"));
+    assert!(r[0].description.contains("hoangminh.com.vn"));
+}
+
+#[test]
+fn au110_still_treats_one_vietnamese_sites_subdomains_as_one_site() {
+    let d1 = Entity::new(EntityKind::Domain, "www.anphat.com.vn", 0.8, "s");
+    let d2 = Entity::new(EntityKind::Domain, "shop.anphat.com.vn", 0.8, "s");
+    let ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
+    let rels = vec![resolves(&d1, &ip), resolves(&d2, &ip)];
+    let r = rule_au_110_shared_hosting_ip(&RuleContext::new(&[d1, d2, ip]), &rels, "s", 0);
+    assert!(r.is_empty(), "one registrant's subdomains are co-residence: {r:?}");
+}
+
+#[test]
 fn au110_no_fire_on_subdomains_of_one_site() {
     // Co-RESIDENCE, not co-ownership: www/api/blog of ONE site share its origin
     // IP. All reduce to one registrable domain → must NOT fire.

@@ -124,6 +124,15 @@ The reusable primitives every module leans on. Key sub-areas:
   controls, whole-word/boundary matching, canonicalisers (email subaddressing,
   AU/VN address & phone), boundary-aware relevance, geo validation, identity
   splitting.
+- `util/domains::registrable_domain` — **the site boundary**, read from the
+  vendored Public Suffix List (`util/domains/psl.rs`, the official conformance
+  suite run as a unit test). One authority for every decision that turns on
+  "same registrant?": the credentialed-redirect guard (`util::http::ssrf`),
+  the correlator's organisation, co-hosting and look-alike rules, `dns_intel`'s
+  apex test, typosquat and the crawler. It was a 39-entry table with no `.vn`
+  second level (REQ-PSL-001), so every one of those decisions was wrong for
+  Vietnamese domains at once — the argument for one authority, and for making
+  it the real list rather than a curated subset of it.
 
 **Canonicalisation priority lives here.** One canonical form per concept, one
 authority per canonicaliser — `to_e164_au`, `canonical_email_mailbox`,
