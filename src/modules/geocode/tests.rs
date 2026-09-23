@@ -464,3 +464,22 @@ fn reverse_geocode_is_the_nearest_proper_address_not_the_poi_and_never_verified_
         .is_none()
     );
 }
+
+/// REQ-GEOLABEL-006: the nearest address to a point is a lookup BY the point,
+/// not an observation of anyone there — its record is marked inferred (shown
+/// "(inferred)" in the dossier and the debug bundle).
+#[test]
+fn reverse_geocode_evidence_is_inferred() {
+    let data = resp(serde_json::json!({
+        "name": "Kazan Dining",
+        "address": {"house_number":"25","road":"Martin Place","city":"Sydney",
+                    "state":"New South Wales","postcode":"2000","country_code":"au"}
+    }));
+    let e = build_reverse_entity(-33.8676, 151.2099, &data, "s").expect("resolves");
+    assert!(!e.evidence.is_empty());
+    assert!(
+        e.evidence.iter().all(|ev| ev.is_inferred),
+        "{:?}",
+        e.evidence
+    );
+}

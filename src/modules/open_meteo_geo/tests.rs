@@ -265,9 +265,9 @@ fn a_row_skipped_for_a_missing_component_does_not_consume_the_cap() {
         r#"{{"results":[{}]}}"#,
         [
             r#"{"name":"NoLat","longitude":151.0,"country_code":"AU"}"#,
-            r#"{"name":"A","latitude":-27.4766,"longitude":153.0166,"country_code":"AU"}"#,
-            r#"{"name":"B","latitude":-33.8688,"longitude":151.2093,"country_code":"AU"}"#,
-            r#"{"name":"C","latitude":-37.8136,"longitude":144.9631,"country_code":"AU"}"#,
+            r#"{"name":"X","latitude":-27.4766,"longitude":153.0166,"country_code":"AU"}"#,
+            r#"{"name":"X","latitude":-33.8688,"longitude":151.2093,"country_code":"AU"}"#,
+            r#"{"name":"X","latitude":-37.8136,"longitude":144.9631,"country_code":"AU"}"#,
         ]
         .join(",")
     );
@@ -289,4 +289,32 @@ fn a_row_skipped_for_a_missing_component_does_not_consume_the_cap() {
         names.iter().all(|v| !v.starts_with("0.000000")),
         "a fabricated equatorial coordinate reached the output: {names:?}"
     );
+}
+
+/// REQ-OPENMETEO-002: GeoNames' fuzzy search answered "Sydney, Australia" with
+/// the headland "Sydney Heads" (feature code MT) near Isaac, Queensland,
+/// ~1,400 km from Sydney, and it became the anchor. A hit whose name is not a
+/// whole-word phrase of the query is not a geocode of it: skipped without
+/// taking the anchor slot, so the real match behind it anchors.
+#[test]
+fn a_fuzzy_neighbour_of_the_query_is_not_its_geocode() {
+    let heads = GeoResult {
+        feature_code: Some("MT".to_string()),
+        ..res("Sydney Heads", -21.95, 148.68, "AU")
+    };
+    let sydney = res("Sydney", -33.8688, 151.2093, "AU");
+    let ents = build_entities(&[heads, sydney], "Sydney, Australia", "s");
+    assert_eq!(ents.len(), 1, "{ents:?}");
+    assert_eq!(ents[0].value, "-33.868800,151.209300");
+    assert!(!ents[0].has_tag("candidate"), "the real match anchors");
+
+    let heads_alone = GeoResult {
+        feature_code: Some("MT".to_string()),
+        ..res("Sydney Heads", -21.95, 148.68, "AU")
+    };
+    assert!(build_entities(&[heads_alone], "Sydney, Australia", "s").is_empty());
+
+    // Case, punctuation and diacritics do not make a match a fragment.
+    let hanoi = res("Hà Nội", 21.0245, 105.8412, "VN");
+    assert_eq!(build_entities(&[hanoi], "ha noi, vietnam", "s").len(), 1);
 }

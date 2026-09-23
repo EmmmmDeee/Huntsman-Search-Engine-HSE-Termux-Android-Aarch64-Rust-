@@ -259,3 +259,18 @@ fn join_unique_preserves_first_casing() {
     let parts = [Some("PARIS"), Some("paris")];
     assert_eq!(join_unique(&parts), vec!["PARIS".to_string()]);
 }
+
+/// REQ-GEOLABEL-006: Photon's nearest address is inferred, exactly as
+/// `geocode`'s reverse leg marks its record.
+#[test]
+fn build_reverse_evidence_is_inferred() {
+    let p = props(
+        r#"{"name":"Nina Armando","street":"King Street Cycleway","city":"Sydney","state":"New South Wales","postcode":"2000","country":"Australia","countrycode":"AU","osm_key":"shop","osm_value":"clothes"}"#,
+    );
+    let e = build_reverse(-33.8688, 151.2093, &p, "s").expect("resolves");
+    assert!(
+        e.evidence.iter().all(|ev| ev.is_inferred),
+        "{:?}",
+        e.evidence
+    );
+}

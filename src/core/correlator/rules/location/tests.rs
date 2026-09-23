@@ -618,7 +618,10 @@ use super::*;
         // exactly what the class radius already describes, and the guard must
         // never SHARPEN a source beyond it: inventing precision is the one
         // direction this change must not move in.
-        let house = geocoded_coord("-33.8688,151.2093", Some("house"));
+        // Off every gazetteer table: at the tabulated Sydney centroid the same
+        // record is that centroid, a city (REQ-GEOLABEL-007), which is the
+        // precision authority's call, not this table's.
+        let house = geocoded_coord("-33.8702,151.2071", Some("house"));
         let radius = best_precision_radius_m(&house).expect("an anchoring source");
         assert!(
             (radius - precision_radius_m(GeoSourceClass::Geocode)).abs() < f64::EPSILON,
@@ -632,7 +635,8 @@ use super::*;
         // table does not know, must behave exactly as before rather than being
         // guessed at in either direction.
         for pt in [None, Some("some_new_osm_type"), Some("")] {
-            let e = geocoded_coord("-33.8688,151.2093", pt);
+            // Off the gazetteer tables, as above.
+            let e = geocoded_coord("-33.8702,151.2071", pt);
             let radius = best_precision_radius_m(&e).expect("an anchoring source");
             assert!(
                 (radius - precision_radius_m(GeoSourceClass::Geocode)).abs() < f64::EPSILON,
@@ -687,6 +691,10 @@ use super::*;
             "neighbourhood",
             "hamlet",
             "locality",
+            // A street's representative point is a street, not a rooftop
+            // (REQ-GEOLABEL-007): coarser than the class default too.
+            "street",
+            "road",
         ] {
             let r = geocode_grain_radius_m(pt)
                 .unwrap_or_else(|| panic!("{pt} must be recognised by the grain table"));
@@ -701,7 +709,7 @@ use super::*;
 
         // Grains at least as precise as the class default are deliberately not
         // in the table at all: there is nothing to correct.
-        for pt in ["house", "building", "street", "road", "amenity", ""] {
+        for pt in ["house", "building", "amenity", ""] {
             assert!(
                 geocode_grain_radius_m(pt).is_none(),
                 "{pt} is not coarser than the class default and must not be listed"

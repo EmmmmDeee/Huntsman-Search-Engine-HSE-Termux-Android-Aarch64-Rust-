@@ -181,6 +181,17 @@ re-implemented per module.
   asserts conduct; `threat-intel` is an unadjudicated sighting; `vulnerable`
   marks a VICTIM, usually the target's own asset), and a rule that flattens them
   headlines an exposure as an accusation (REQ-CLOUDSTORAGE-001).
+- `core/place/` — the **precision authority** for coordinates.
+  `grain::assess` grades a `Coordinates` value from the records that produced
+  it (point / street / suburb / locality / region / country, the coarsest
+  originating account), and says what a gazetteer centroid stands for. The
+  engine's admission `coarse` / `fix-grain:` stamp, its pivot gate
+  (`is_coarse_geo`) and the correlator's fusion radius
+  (`best_precision_radius_m`) all read it. A new module that accepts a
+  `Coordinates` target must be given a role in `COORDINATE_TARGET_MODULES`,
+  and a registry test enforces that (REQ-GEOLABEL-001). It reads the gazetteer
+  through `util::city_coords::tabulated_centroid_at` and a place string's
+  grain through `util::place_grain::place_naming`.
 - `core/exposure/` — the subject's exposure index. It reads evidence through
   ONE gate, `attributable`: a record whose ownership is `Unverified` (a
   name-matched genealogy profile, an ambiguous-name row) is shown but never

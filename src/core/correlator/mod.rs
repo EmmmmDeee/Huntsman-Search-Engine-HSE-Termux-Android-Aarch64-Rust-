@@ -308,7 +308,7 @@ type RuleFn = fn(&RuleContext, &str, u64) -> Vec<Correlation>;
 pub(crate) mod rules;
 pub(crate) use rules::location::{
     SYNERGY_BASIS, au_location_corroboration, au059_synergy_fix, best_au_location_estimate,
-    declares_area_grain, is_anchoring_geo_source, is_infrastructure_geo_signals,
+    is_anchoring_geo_source, is_infrastructure_geo_signals,
 };
 // The shared multi-pathway corroboration detector — the AU-062 rule and the
 // engine's `promote_multipath_corroborated` pass both call this one finder, so
@@ -340,7 +340,9 @@ pub(in crate::core) use rules::location::is_infrastructure_geo;
 // `core::geo_family`'s subject anchor asks the same "does this record observe
 // the subject's own device?" question AU-059's `locates_subject_directly` does,
 // so it reads the one class table rather than keeping a second source list.
-pub(in crate::core) use rules::location::{class_locates_subject_directly, geo_source_class};
+pub(in crate::core) use rules::location::{
+    GeoSourceClass, class_locates_subject_directly, geo_source_class, precision_radius_m,
+};
 // Shared with `core::relation::builders::persona_key` so the AliasOf handle-pivot
 // excludes the SAME generic role-mailbox / placeholder handles the correlator's
 // identity rules exclude — a `info@`/`support@` address must never fan a

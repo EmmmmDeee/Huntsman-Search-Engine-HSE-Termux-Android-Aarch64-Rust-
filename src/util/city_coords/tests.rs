@@ -473,3 +473,72 @@ fn a_bare_country_name_never_resolves_but_the_address_it_belongs_to_does() {
         assert!(!is_gazetteer_centroid(-27.4801, 152.9912));
         assert!(!is_gazetteer_centroid(-33.869844, 151.208285));
     }
+
+    /// REQ-GEOLABEL-001: the one centroid authority says WHICH place a value
+    /// stands for. The operator's example `-27.4698,153.0251` is both the
+    /// `brisbane` row and postcode 4000's centroid; the coarser reading, the
+    /// city, is kept, in the AU anchor's spelling.
+    #[test]
+    fn tabulated_centroid_at_names_what_a_centroid_stands_for() {
+        assert_eq!(
+            tabulated_centroid_at(-27.4698, 153.0251),
+            Some(TabulatedCentroid::City {
+                name: "Brisbane".to_string(),
+                state: Some("QLD"),
+            })
+        );
+        // A CITIES row with no anchor is title-cased, its state from the box.
+        assert_eq!(
+            tabulated_centroid_at(-27.4833, 152.9833),
+            Some(TabulatedCentroid::City {
+                name: "Toowong".to_string(),
+                state: Some("QLD"),
+            })
+        );
+        // A postcode centroid that is no city row or anchor (Mansfield).
+        let (lat, lon) = postcode_coords("4122").expect("Mansfield is tabulated");
+        assert!(matches!(
+            tabulated_centroid_at(lat, lon),
+            Some(TabulatedCentroid::Postcode { ref code, state: Some("QLD") }) if code == "4122"
+        ));
+        // Maleny's postcode centroid is also its anchor: the city reading wins.
+        let (lat, lon) = postcode_coords("4552").expect("Maleny is tabulated");
+        assert!(matches!(
+            tabulated_centroid_at(lat, lon),
+            Some(TabulatedCentroid::City { ref name, .. }) if name == "Maleny"
+        ));
+        // A leading-digit region centroid.
+        let (lat, lon) = au_postcode_region("4820").expect("the 48 region");
+        assert_eq!(
+            tabulated_centroid_at(lat, lon),
+            Some(TabulatedCentroid::PostcodeRegion {
+                prefix: "48",
+                state: Some("QLD"),
+            })
+        );
+        // Off every table.
+        assert_eq!(tabulated_centroid_at(-27.4801, 152.9912), None);
+        assert!(TabulatedCentroid::PostcodeRegion { prefix: "40", state: None }.rank()
+            > TabulatedCentroid::City { name: String::new(), state: None }.rank());
+    }
+
+    /// `is_gazetteer_centroid` is `tabulated_centroid_at` as a predicate — and
+    /// the curated AU locality anchors are centroids too.
+    #[test]
+    fn the_gazetteer_predicate_is_the_lookup() {
+        for (lat, lon) in [(-27.4698, 153.0251), (-28.8136, 153.2773), (-27.4801, 152.9912)] {
+            assert_eq!(
+                is_gazetteer_centroid(lat, lon),
+                tabulated_centroid_at(lat, lon).is_some()
+            );
+        }
+        // Lismore's anchor value is in no CITIES or postcode row: only the
+        // anchor table makes it a centroid.
+        assert_eq!(
+            tabulated_centroid_at(-28.8136, 153.2773),
+            Some(TabulatedCentroid::City {
+                name: "Lismore".to_string(),
+                state: Some("NSW"),
+            })
+        );
+    }

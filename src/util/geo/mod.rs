@@ -442,6 +442,30 @@ pub fn nearest_au_locality(lat: f64, lon: f64) -> Option<(&'static str, &'static
         .min_by(|a, b| a.2.total_cmp(&b.2))
 }
 
+/// The curated AU locality anchor `(lat, lon)` IS, as `(locality, state)`,
+/// compared at the 4-decimal grain the anchors are tabulated at — `None` for a
+/// point that is not exactly an anchor. [`nearest_au_locality`] answers "which
+/// centre is closest"; this answers "is this value that centre", which is what
+/// `util::city_coords::tabulated_centroid_at` needs to name a centroid in the
+/// anchor's own spelling ("Brisbane", "QLD"). Pure.
+#[must_use]
+#[allow(clippy::cast_possible_truncation)] // |lat|,|lon| ≤ 180 → ≤ 1.8e6.
+pub(crate) fn au_locality_anchor_at(lat: f64, lon: f64) -> Option<(&'static str, &'static str)> {
+    let cell = |a: f64| (a * 1e4).round() as i64;
+    AU_LOCALITY_ANCHORS
+        .iter()
+        .find(|&&(_, _, alat, alon)| cell(alat) == cell(lat) && cell(alon) == cell(lon))
+        .map(|&(name, state, _, _)| (name, state))
+}
+
+/// Every curated AU locality anchor as `(locality, state, lat, lon)`, in table
+/// order — so `util::city_coords::tabulated_centroid_at` can recognise an
+/// anchor's value as the centroid it is without a second copy of the table.
+pub(crate) fn au_locality_anchors() -> impl Iterator<Item = (&'static str, &'static str, f64, f64)>
+{
+    AU_LOCALITY_ANCHORS.iter().copied()
+}
+
 /// Tag `entity` with its Australian state and `country:AU` when `(lat, lon)`
 /// falls inside an AU state/territory; a no-op otherwise. Coordinate-emitting
 /// modules apply this exact AU-relevance pair (`au-state:{STATE}` + `country:AU`)

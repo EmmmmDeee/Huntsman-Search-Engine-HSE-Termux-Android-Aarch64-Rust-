@@ -458,3 +458,12 @@ fn the_central_stamp_does_not_disturb_the_confidence_contract() {
     let uncapped = coarse_provider_address("Brisbane, Australia", 0.60, None, "s");
     assert!((uncapped.confidence - 0.60).abs() < f64::EPSILON);
 }
+
+/// REQ-GEOLABEL-001: an anchor's exact value names the anchor; a point near it
+/// does not.
+#[test]
+fn au_locality_anchor_at_matches_only_the_anchor_value() {
+    assert_eq!(au_locality_anchor_at(-27.4698, 153.0251), Some(("Brisbane", "QLD")));
+    assert_eq!(au_locality_anchor_at(-27.47, 153.02), None);
+    assert!(au_locality_anchors().any(|(n, s, _, _)| n == "Sydney" && s == "NSW"));
+}

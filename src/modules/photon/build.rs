@@ -171,9 +171,12 @@ pub(super) fn build_reverse(lat: f64, lon: f64, props: &Props, scan_id: &str) ->
     ae.tag("reverse-geocoded");
     ae.tag("nearest-address");
     ae.tag("geoint");
+    // Inferred, not observed — the nearest address to a point, exactly as
+    // `geocode`'s reverse leg marks its record (REQ-GEOLABEL-006).
     let mut ev = Evidence::new(SRC, format!("Photon reverse geocode for {lat:.6},{lon:.6}"))
         .with_attr("latitude", format!("{lat:.6}"))
-        .with_attr("longitude", format!("{lon:.6}"));
+        .with_attr("longitude", format!("{lon:.6}"))
+        .with_inferred(true);
     if let Some(name) = name {
         ev = ev.with_attr("place_name", name);
         if !matches!(osm_key, Some("highway" | "place")) {

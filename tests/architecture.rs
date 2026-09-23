@@ -1010,6 +1010,24 @@ fn core_does_not_import_util_directly() {
                 // hyphen-splitting alone can't tell an elastic agent-name
                 // prefix from a multi-word suburb.
                 && !line.contains("util::city_coords::is_tabulated_au_city")
+                // Pure, offline lookups over the SAME gazetteer tables as
+                // `city_coords::is_gazetteer_centroid` above (which is now this
+                // lookup as a predicate): which tabulated centroid a 4-decimal
+                // value is, and the enum naming it. `core::place::grain` grades
+                // a coordinate at the grain of the place a centroid stands for
+                // and names that place (REQ-GEOLABEL-001). No I/O, no state
+                // beyond the lazily built table.
+                && !line.contains("util::city_coords::tabulated_centroid_at")
+                && !line.contains("util::city_coords::TabulatedCentroid")
+                // Pure string predicates (no I/O, no network, no state) over
+                // place names: `is_bare_country`, what grain a place string
+                // names (`place_naming` and its `AdminGrain`/`StreetGrain`
+                // vocabulary), and whole-word phrase containment. They call only
+                // other pure leaves already allowed here (`city_coords`,
+                // `address_au::single_state_code`, `str_util::fold_ascii_lower`).
+                // `core::place::grain` caps a forward geocode at the grain its
+                // input names (REQ-GEOLABEL-001).
+                && !line.contains("util::place_grain")
                 // Pure, dependency-free offline surname-distinctiveness heuristic
                 // (a small embedded common-surname set; no state, no I/O), same leaf
                 // category as `address_au::locality_key`. `core::leads` uses it to

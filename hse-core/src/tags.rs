@@ -97,11 +97,13 @@ pub const GEOLOCATION_LEAD: &str = "geolocation-lead";
 ///
 /// Every offline gazetteer centroid (`util::city_coords` returns a city, suburb
 /// or postcode centroid, never a street point) carries it once the engine has
-/// seen it: the engine's geospatial enrichment tags every `Coordinates` whose
-/// value is such a centroid (`util::city_coords::is_gazetteer_centroid`),
-/// whichever of the ~30 modules minted it, and every point a geocoder itself
-/// declared a city/suburb/postcode centroid through its `place_type`
-/// (REQ-GEO-017). A few minting sites also tag it themselves (`search_engines`'
+/// seen it: the engine's geospatial enrichment tags every `Coordinates` the
+/// precision authority (`core::place::grain::assess`) grades an area on
+/// positive evidence — a value that IS such a centroid, whichever of the ~30
+/// modules minted it; a point a geocoder declared a city/suburb/postcode
+/// centroid (`place_type`, a GeoNames feature class); a forward geocode of an
+/// input that names no street — and stamps the grain beside it as
+/// `fix-grain:<grain>` (REQ-GEO-017, REQ-GEOLABEL-005). A few minting sites also tag it themselves (`search_engines`'
 /// known-city lookup and recycled-snippet leg, the engine's
 /// address-to-coordinates pass, and the modules that know their own grain),
 /// which the enrichment only repeats. A module's raw output, before the engine

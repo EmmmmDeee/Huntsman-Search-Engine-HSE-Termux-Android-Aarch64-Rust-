@@ -289,6 +289,230 @@ pub fn negates_city_grain(s: &str) -> bool {
             .any(|q| norm.starts_with(q) && norm.len() > q.len())
 }
 
+/// The finest STREET-level component a place string names: a house number on a
+/// street, or a street alone. See [`PlaceNaming`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreetGrain {
+    /// A numbered address on a street (`"12 Smith St"`).
+    House,
+    /// A street with no number (`"Martin Place"`).
+    Street,
+}
+
+/// The finest ADMINISTRATIVE component a place string names, finest first.
+/// See [`PlaceNaming`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AdminGrain {
+    /// A postcode (`"… QLD 4066"`, `"4552"`).
+    Postcode,
+    /// A tabulated city, suburb or regional centre (`"Toowong"`, `"Sydney"`).
+    Locality,
+    /// A state or province and nothing finer (`"North Carolina"`, `"QLD"`).
+    Region,
+    /// A whole country ([`is_bare_country`]).
+    Country,
+}
+
+/// What a place string NAMES, at its finest: the street part and the
+/// administrative part, each `None` when the string names none.
+///
+/// Why a geocoder's INPUT matters to the precision of its OUTPUT: a forward
+/// geocode cannot be finer than what it was asked. `"Ian Thorpe, North
+/// Carolina"` names a state and two words that are not a place; Photon still
+/// answers with a street ("Thorpe-Abbotts Lane") because the surname is a
+/// fragment of a road name, and that street-grain hit then reads as a 40 m fix.
+/// `core::place::grain` caps a forward-geocode hit at the grain its input
+/// names, so the answer can never be more precise than the question
+/// (REQ-GEOLABEL-001).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaceNaming {
+    /// A house number on a street, or a street alone.
+    pub street: Option<StreetGrain>,
+    /// The finest administrative area named.
+    pub admin: Option<AdminGrain>,
+}
+
+/// Street-type words, the same vocabulary `util::address_au`'s address pattern
+/// ends a street with.
+const STREET_TYPES: &[&str] = &[
+    "street",
+    "st",
+    "road",
+    "rd",
+    "avenue",
+    "ave",
+    "lane",
+    "ln",
+    "drive",
+    "dr",
+    "court",
+    "ct",
+    "crescent",
+    "cres",
+    "place",
+    "pl",
+    "way",
+    "highway",
+    "hwy",
+    "parade",
+    "pde",
+    "terrace",
+    "tce",
+    "boulevard",
+    "blvd",
+    "circuit",
+    "cct",
+    "close",
+    "cl",
+    "esplanade",
+    "esp",
+    "square",
+    "sq",
+];
+
+/// The US states (and DC), lowercase, matched as whole-token phrases. A US
+/// state is region grain exactly as an Australian one is.
+const US_STATES: &[&str] = &[
+    "alabama",
+    "alaska",
+    "arizona",
+    "arkansas",
+    "california",
+    "colorado",
+    "connecticut",
+    "delaware",
+    "florida",
+    "georgia",
+    "hawaii",
+    "idaho",
+    "illinois",
+    "indiana",
+    "iowa",
+    "kansas",
+    "kentucky",
+    "louisiana",
+    "maine",
+    "maryland",
+    "massachusetts",
+    "michigan",
+    "minnesota",
+    "mississippi",
+    "missouri",
+    "montana",
+    "nebraska",
+    "nevada",
+    "new hampshire",
+    "new jersey",
+    "new mexico",
+    "new york",
+    "north carolina",
+    "north dakota",
+    "ohio",
+    "oklahoma",
+    "oregon",
+    "pennsylvania",
+    "rhode island",
+    "south carolina",
+    "south dakota",
+    "tennessee",
+    "texas",
+    "utah",
+    "vermont",
+    "virginia",
+    "washington",
+    "west virginia",
+    "wisconsin",
+    "wyoming",
+    "district of columbia",
+];
+
+/// `s` split into whole words, each folded to ASCII lowercase
+/// (`util::str_util::fold_ascii_lower`), empties dropped — so `"Hà Nội"` and
+/// `"Ha Noi"` tokenise alike and punctuation never joins or splits a word.
+fn folded_tokens(s: &str) -> Vec<String> {
+    s.split(|c: char| !c.is_alphanumeric())
+        .map(crate::util::str_util::fold_ascii_lower)
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
+/// True when `needle` occurs in `haystack` as a consecutive run of WHOLE words,
+/// compared diacritic- and case-insensitively. Whole words, so `"Sydney
+/// Heads"` is not a phrase of `"Sydney, Australia"` and `"Milton"` is not one
+/// of `"Hamilton"`. An empty `needle` is a phrase of nothing. Pure.
+///
+/// The test a geocoder's matched place name must pass to be an answer TO the
+/// query rather than a fuzzy neighbour of it: Open-Meteo answered
+/// `"Sydney, Australia"` with the headland "Sydney Heads", 1,400 km north in
+/// Queensland.
+#[must_use]
+pub fn is_whole_word_phrase(needle: &str, haystack: &str) -> bool {
+    let want = folded_tokens(needle);
+    let have = folded_tokens(haystack);
+    !want.is_empty()
+        && want.len() <= have.len()
+        && have.windows(want.len()).any(|w| w == want.as_slice())
+}
+
+/// What `s` names at its finest ([`PlaceNaming`]). Pure, offline, no I/O.
+///
+/// * **Street** — a street-type word ([`STREET_TYPES`]) that FOLLOWS a name word
+///   in its comma-separated segment (so the `St` of `"St Kilda"` is a saint,
+///   not a street); a **house** when a digit-bearing word precedes it in that
+///   segment (`"12 Smith St"`, `"3/15 Smith St"`).
+/// * **Administrative**, first match in this order:
+///   a tabulated locality or postcode (`util::city_coords::city_coords_with_grain`
+///   — `"city"` is [`AdminGrain::Locality`], a postcode centroid or postcode
+///   region is [`AdminGrain::Postcode`] because the string named a postcode);
+///   an Australian state (`util::address_au::single_state_code`) or a US state
+///   ([`US_STATES`]) → [`AdminGrain::Region`]; a bare country
+///   ([`is_bare_country`]) → [`AdminGrain::Country`]. Anything else names no
+///   administrative area this can recognise (`None`), which a caller must read
+///   as locality at best — an unrecognised word is not evidence of a street.
+#[must_use]
+pub fn place_naming(s: &str) -> PlaceNaming {
+    let mut street = None;
+    for segment in s.split(',') {
+        let words: Vec<&str> = segment.split_whitespace().collect();
+        for (i, w) in words.iter().enumerate() {
+            let bare = w
+                .trim_matches(|c: char| !c.is_alphanumeric())
+                .to_ascii_lowercase();
+            if i == 0 || !STREET_TYPES.contains(&bare.as_str()) {
+                continue;
+            }
+            let numbered = words[..i]
+                .iter()
+                .any(|p| p.chars().any(|c| c.is_ascii_digit()));
+            let found = if numbered {
+                StreetGrain::House
+            } else {
+                StreetGrain::Street
+            };
+            if street != Some(StreetGrain::House) {
+                street = Some(found);
+            }
+        }
+    }
+    let tokens = folded_tokens(s);
+    let names_us_state = US_STATES.iter().any(|st| {
+        let want: Vec<&str> = st.split(' ').collect();
+        tokens
+            .windows(want.len())
+            .any(|w| w.iter().map(String::as_str).eq(want.iter().copied()))
+    });
+    let admin = match crate::util::city_coords::city_coords_with_grain(s) {
+        Some((_, "city")) => Some(AdminGrain::Locality),
+        Some(_) => Some(AdminGrain::Postcode),
+        None if crate::util::address_au::single_state_code(s).is_some() || names_us_state => {
+            Some(AdminGrain::Region)
+        }
+        None if is_bare_country(s) => Some(AdminGrain::Country),
+        None => None,
+    };
+    PlaceNaming { street, admin }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,7 +542,7 @@ mod tests {
 
 #[cfg(test)]
 mod city_grain_tests {
-    use super::negates_city_grain;
+    use super::{AdminGrain, StreetGrain, is_whole_word_phrase, negates_city_grain, place_naming};
 
     /// REQ-SOCIALLOC-002: a region label must not earn the city's centroid.
     #[test]
@@ -377,5 +601,41 @@ mod city_grain_tests {
         assert!(!negates_city_grain("state"));
         assert!(!negates_city_grain("upstate"));
         assert!(!negates_city_grain(""));
+    }
+
+    /// REQ-GEOLABEL-001: what a place string names at its finest — the input
+    /// cap a forward geocode of it can never beat.
+    #[test]
+    fn place_naming_reads_the_finest_component() {
+        let n = place_naming("12 Smith St, Toowong QLD 4066");
+        assert_eq!(n.street, Some(StreetGrain::House));
+        assert_eq!(
+            place_naming("Martin Place, Sydney").street,
+            Some(StreetGrain::Street)
+        );
+        // `St Kilda` is a saint, not a street.
+        assert_eq!(place_naming("St Kilda, Victoria").street, None);
+        assert_eq!(place_naming("Toowong").admin, Some(AdminGrain::Locality));
+        assert_eq!(place_naming("4552").admin, Some(AdminGrain::Postcode));
+        let nc = place_naming("Ian Thorpe, North Carolina");
+        assert_eq!(nc.street, None);
+        assert_eq!(nc.admin, Some(AdminGrain::Region));
+        assert_eq!(place_naming("Queensland").admin, Some(AdminGrain::Region));
+        assert_eq!(place_naming("Australia").admin, Some(AdminGrain::Country));
+        assert_eq!(place_naming("Ian Thorpe").admin, None);
+    }
+
+    /// REQ-OPENMETEO-002: a match must be a whole-word phrase of the query.
+    #[test]
+    fn whole_word_phrase_matching() {
+        assert!(is_whole_word_phrase("Sydney", "Sydney, Australia"));
+        assert!(!is_whole_word_phrase("Sydney Heads", "Sydney, Australia"));
+        assert!(!is_whole_word_phrase("Milton", "Hamilton, NZ"));
+        assert!(is_whole_word_phrase("Hà Nội", "ha noi, vietnam"));
+        assert!(!is_whole_word_phrase(
+            "Thorpe-Abbotts Lane",
+            "Ian Thorpe, North Carolina"
+        ));
+        assert!(!is_whole_word_phrase("", "anything"));
     }
 }

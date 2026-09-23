@@ -121,19 +121,29 @@ pub(crate) fn enrich_geospatial(entity: &mut crate::core::entity::Entity) {
                 entity.tags.retain(|t| !stale_tags.contains(t));
 
                 // An area standing in for a place is COARSE whichever module
-                // minted it: a `util::city_coords` gazetteer centroid (the one
+                // minted it, and carries the grain it was admitted at. The
+                // grain authority (`core::place::grain::assess`) decides from
+                // positive evidence only — a gazetteer centroid (the one
                 // authority on those values, so the ~30 modules that mint one
-                // need not each remember the tag), or a point a geocoder itself
-                // declared to be a city/suburb/postcode centroid through its
-                // `place_type` (the correlator's grain table — the one reading
-                // of that vocabulary). Before the pivot gate reads the tag, and
-                // before the emit, so the event log and recovery carry it too.
-                // Never retracted: the value and the provider's evidence that
-                // decided it persist (REQ-GEO-017).
-                if crate::util::city_coords::is_gazetteer_centroid(lat, lon)
-                    || crate::core::correlator::declares_area_grain(entity)
-                {
+                // need not each remember the tag), a city lookup, an Address's
+                // centroid, a geocoder's declared area grain or GeoNames feature
+                // class, a forward geocode capped by an input that names no
+                // street — never the unknown-provenance default, so an
+                // unclassified precise emitter keeps its pivots. Before the
+                // pivot gate reads the tag, and before the emit, so the event
+                // log and recovery carry it too. `coarse` is never retracted
+                // (the value and the evidence that decided it persist); the
+                // `fix-grain:` stamp is re-decided each run from the same
+                // evidence, reading the earlier stamp as a floor, so it only
+                // ever coarsens and a merged point carries ONE grain
+                // (REQ-GEO-017, REQ-GEOLABEL-005).
+                let precision = crate::core::place::assess(entity);
+                entity
+                    .tags
+                    .retain(|t| !t.starts_with(crate::core::place::grain::FIX_GRAIN_TAG_PREFIX));
+                if precision.is_area() {
                     entity.tag(crate::core::tags::COARSE);
+                    entity.tag(precision.grain.tag());
                 }
 
                 let h = geohash::geohash(lat, lon, 7);
@@ -320,36 +330,28 @@ pub(crate) const ADDR_ENTITY_UID_ATTR: &str = "addr_entity_uid";
 /// gate (`ranking::is_autonomous_seed_candidate`), so the two can't disagree.
 ///
 /// A [`COARSE`](crate::core::tags::COARSE) tag decides it — and
-/// [`enrich_geospatial`] tags every gazetteer centroid and every
-/// geocoder-declared area centroid before the gate reads it. A `Coordinates`
-/// recalled from a scan that predates that tagging is re-hydrated with its
-/// stored tag set and has no `coarse`, so it is ALSO recognised here:
-///   * by its value, when it is a `util::city_coords` centroid
-///     (`is_gazetteer_centroid`, the same authority the enrichment asks); and
-///   * by the signature of each path that minted a centroid before the table
-///     it came from could have changed: `search_engines`' known-city lookup
-///     ([`SEARCH_GEOCODED`](crate::core::tags::SEARCH_GEOCODED)),
-///     [`address_to_coords_pass`] (its `addr_entity_uid` evidence), and
-///     `search_engines`' recycled-snippet leg (the
-///     [`RECYCLED`](crate::core::tags::RECYCLED) +
-///     [`ADDR_DERIVED`](crate::core::tags::ADDR_DERIVED) pair, which no other
-///     path mints on a `Coordinates`).
+/// [`enrich_geospatial`] stamps it on every `Coordinates` the grain authority
+/// grades an area before the gate reads it. A `Coordinates` recalled from a
+/// scan that predates that stamp is re-hydrated with its stored tag set and has
+/// no `coarse`, so it is graded here directly by the same authority,
+/// `core::place::grain::assess`
+/// ([`FixPrecision::is_area`](crate::core::place::FixPrecision::is_area)),
+/// which recognises the gazetteer value itself and the signature of each path
+/// that minted a centroid before the table it came from could have changed:
+/// `search_engines`' known-city lookup
+/// ([`SEARCH_GEOCODED`](crate::core::tags::SEARCH_GEOCODED)),
+/// [`address_to_coords_pass`] (its `addr_entity_uid` evidence), and
+/// `search_engines`' recycled-snippet leg (the
+/// [`RECYCLED`](crate::core::tags::RECYCLED) +
+/// [`ADDR_DERIVED`](crate::core::tags::ADDR_DERIVED) pair, which no other path
+/// mints on a `Coordinates`).
 ///
 /// Unrecognised, such a centroid went on being pivoted into reverse geocoders
 /// and cadastre lookups as a precise point (REQ-GEO-007, REQ-GEO-017).
 pub(super) fn is_coarse_geo(e: &crate::core::entity::Entity) -> bool {
     use crate::core::entity::EntityKind;
-    use crate::core::tags;
-    e.has_tag(tags::COARSE)
-        || (e.kind == EntityKind::Coordinates
-            && (e.has_tag(tags::SEARCH_GEOCODED)
-                || (e.has_tag(tags::RECYCLED) && e.has_tag(tags::ADDR_DERIVED))
-                || e.evidence
-                    .iter()
-                    .any(|ev| ev.attributes.contains_key(ADDR_ENTITY_UID_ATTR))
-                || crate::util::geohash::parse_coords(&e.value).is_some_and(|(lat, lon)| {
-                    crate::util::city_coords::is_gazetteer_centroid(lat, lon)
-                })))
+    e.has_tag(crate::core::tags::COARSE)
+        || (e.kind == EntityKind::Coordinates && crate::core::place::assess(e).is_area())
 }
 
 pub(super) fn address_to_coords_pass(
@@ -460,7 +462,11 @@ pub(super) fn address_to_coords_pass(
                 )
                 .with_attr(ADDR_ENTITY_UID_ATTR, &addr_entity.uid)
                 .with_attr("addr_value", &addr_entity.value)
-                .with_attr("place_type", grain),
+                .with_attr("place_type", grain)
+                // Calculated from an address string, not observed here: the
+                // `Evidence::is_inferred` flag's own definition, shown as
+                // "(inferred)" wherever the record is rendered.
+                .with_inferred(true),
             );
         }
         out.push(c);
@@ -1277,5 +1283,146 @@ mod tests {
         gps.add_evidence(Evidence::new("exif", "photo GPS"));
         enrich_geospatial(&mut gps);
         assert!(!gps.has_tag(crate::core::tags::COARSE));
+    }
+
+    /// REQ-GEOLABEL-005 (R1): admission stamps `coarse` and the grain the point
+    /// was admitted at on every emission the grain authority grades an area —
+    /// including the shapes the value-and-`place_type` test missed: a
+    /// known-city lookup off the tables, a forward geocode capped by an input
+    /// that names only a state, a GeoNames headland — and on nothing else.
+    #[test]
+    fn admission_stamps_coarse_and_the_fix_grain_on_positive_evidence_only() {
+        let fix_grains = |e: &Entity| -> Vec<String> {
+            e.tags
+                .iter()
+                .filter(|t| t.starts_with(crate::core::place::grain::FIX_GRAIN_TAG_PREFIX))
+                .cloned()
+                .collect()
+        };
+        // Off every gazetteer table, so the value alone decides nothing.
+        let off_table = "-27.4801,152.9912";
+
+        let mut lookup = Entity::new(EntityKind::Coordinates, off_table, 0.6, "s1");
+        lookup.add_evidence(
+            Evidence::new("search_engines", "Geocoded from search address: Toowong")
+                .with_attr("method", "known-city-lookup"),
+        );
+        enrich_geospatial(&mut lookup);
+        assert!(
+            lookup.has_tag(crate::core::tags::COARSE),
+            "{:?}",
+            lookup.tags
+        );
+        assert_eq!(fix_grains(&lookup), vec!["fix-grain:locality".to_string()]);
+
+        let mut nc = Entity::new(EntityKind::Coordinates, "35.102800,-77.102600", 0.55, "s1");
+        nc.add_evidence(
+            Evidence::new("photon", "Photon geocoded \"Ian Thorpe, North Carolina\"")
+                .with_attr("input_address", "Ian Thorpe, North Carolina")
+                .with_attr("place_name", "Thorpe-Abbotts Lane")
+                .with_attr("place_type", "street")
+                .with_attr("ambiguity_detected", "true"),
+        );
+        enrich_geospatial(&mut nc);
+        assert!(nc.has_tag(crate::core::tags::COARSE), "{:?}", nc.tags);
+        assert_eq!(fix_grains(&nc), vec!["fix-grain:region".to_string()]);
+
+        let mut headland = Entity::new(EntityKind::Coordinates, "-21.950000,148.680000", 0.4, "s1");
+        headland.add_evidence(
+            Evidence::new("open_meteo_geo", "Geocoded \"Sydney, Australia\"")
+                .with_attr("feature_code", "MT"),
+        );
+        enrich_geospatial(&mut headland);
+        assert!(headland.has_tag(crate::core::tags::COARSE));
+
+        let mut a = Entity::new(
+            EntityKind::Address,
+            "12 Example St, Toowong, Queensland",
+            0.7,
+            "s1",
+        );
+        a.add_evidence(Evidence::new("geocode", "forward geocode"));
+        let mut m = std::collections::HashMap::new();
+        m.insert(a.uid.clone(), a);
+        let mut derived = address_to_coords_pass(&m, "s1").remove(0);
+        enrich_geospatial(&mut derived);
+        assert_eq!(fix_grains(&derived), vec!["fix-grain:locality".to_string()]);
+
+        // Controls: a measured device fix and an unclassified emitter are
+        // never stamped — the unknown default is not positive evidence.
+        let mut gps = Entity::new(
+            EntityKind::Coordinates,
+            "-27.4801234,152.9912345",
+            0.9,
+            "s1",
+        );
+        gps.tag("accuracy:10m");
+        gps.add_evidence(Evidence::new("signal_radar", "GNSS fix"));
+        enrich_geospatial(&mut gps);
+        assert!(!gps.has_tag(crate::core::tags::COARSE));
+        assert!(fix_grains(&gps).is_empty());
+        let mut unknown = Entity::new(EntityKind::Coordinates, off_table, 0.6, "s1");
+        unknown.add_evidence(Evidence::new("some_new_module", "a point"));
+        enrich_geospatial(&mut unknown);
+        assert!(!unknown.has_tag(crate::core::tags::COARSE));
+        assert!(fix_grains(&unknown).is_empty());
+
+        // A merged point carries ONE grain, re-decided coarser-only: a later
+        // state-grain answer on the stamped locality re-stamps it a region.
+        lookup.add_evidence(
+            Evidence::new("geocode", "Geocoded \"Queensland\"").with_attr("place_type", "state"),
+        );
+        enrich_geospatial(&mut lookup);
+        assert_eq!(fix_grains(&lookup), vec!["fix-grain:region".to_string()]);
+        enrich_geospatial(&mut lookup);
+        assert_eq!(
+            fix_grains(&lookup),
+            vec!["fix-grain:region".to_string()],
+            "idempotent"
+        );
+    }
+
+    /// REQ-GEOLABEL-005: a coordinate `address_to_coords_pass` calculates from
+    /// an address is inferred, not observed — every record it carries says so.
+    #[test]
+    fn a_derived_centroid_records_are_inferred() {
+        let mut a = Entity::new(
+            EntityKind::Address,
+            "12 Example St, Toowong, Queensland",
+            0.7,
+            "s1",
+        );
+        a.add_evidence(Evidence::new("geocode", "forward geocode"));
+        a.add_evidence(Evidence::new("abn_lookup", "registered address"));
+        let mut m = std::collections::HashMap::new();
+        m.insert(a.uid.clone(), a);
+        let out = address_to_coords_pass(&m, "s1");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].evidence.len(), 2);
+        assert!(
+            out[0].evidence.iter().all(|ev| ev.is_inferred),
+            "{:?}",
+            out[0].evidence
+        );
+    }
+
+    /// REQ-GEOLABEL-005: the pivot gate reads the grain authority, so an
+    /// untagged point recalled from an older scan is judged by its evidence —
+    /// a geocode of a city-only input is that city — and a MEASURED fix that
+    /// happens to sit on a tabulated centroid is not demoted to one.
+    #[test]
+    fn is_coarse_geo_reads_the_grain_authority() {
+        let mut city_only =
+            Entity::new(EntityKind::Coordinates, "-27.482111,152.998765", 0.6, "s1");
+        city_only.add_evidence(
+            Evidence::new("geocode", "Geocoded \"Toowong\"")
+                .with_attr("input_address", "Toowong")
+                .with_attr("place_type", "house"),
+        );
+        assert!(is_coarse_geo(&city_only));
+
+        let mut gps = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.9, "s1");
+        gps.add_evidence(Evidence::new("exif_geo", "EXIF GPS").with_attr("gps_accuracy_m", "6"));
+        assert!(!is_coarse_geo(&gps));
     }
 }

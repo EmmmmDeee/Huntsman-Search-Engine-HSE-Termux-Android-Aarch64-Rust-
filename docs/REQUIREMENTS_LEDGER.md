@@ -21812,3 +21812,171 @@ each run, and its md5 was checked to be identical before and after.
 REQ-IDENTITY-GATE-004's lock guards kept behaviour, and L8 shows it would catch
 the proposed narrowing. `hse-core` changed, in the `tags::COARSE` and
 `corroborating_records` docs only, so `wasm-ui/pkg` must be regenerated.
+
+## REQ-GEOLABEL-001 / REQ-GEOLABEL-005 / REQ-GEOLABEL-006 / REQ-GEOLABEL-007 / REQ-OPENMETEO-002 — a coordinate's six decimals were read as its precision
+
+**Found** while designing the default nearest-place label for every
+`Coordinates` entity. The operator's example was `-27.4698,153.0251 → 123
+Adelaide St… (~30 m)`, and that value is the tabulated Brisbane centroid
+(`util::city_coords` `brisbane`, `util::geo` anchor "Brisbane", postcode
+4000's offline centroid). A street label on it would name whatever street
+contains the centre of a city. Nothing in the codebase could say how precise
+a coordinate was: the pivot gate, the fusion radius and the admission tag each
+used their own partial reading, and all three read that value wrongly in some
+shape scan 7258fc07 stored. This is part F1 of the label feature: the
+precision authority and the collection-side corrections. The labeller and the
+output surfaces are separate work (REQ-GEOLABEL-002..004).
+
+**REQ-GEOLABEL-001 — one precision authority, graded from provenance.**
+`core::place::grain::assess(&Entity) -> FixPrecision` grades a coordinate on
+a fixed ladder (`FixGrain`: point ≤ 50 m, street ≤ 300 m, suburb ≤ 5 km,
+locality ≤ 30 km, region ≤ 150 km, country). It also returns the basis
+(`FixBasis`), what a centroid stands for (`StandsFor`), and whether any
+account gave positive evidence of an area.
+
+- **Only originating records set precision.** `is_annotator_row` skips
+  records flagged `is_annotation`, the engine's own records (the enrichment,
+  recall, cross-scan, consensus and `*_corroboration` promotions, but not the
+  seed), and the legacy shapes of the coordinate-target annotators. The
+  legacy shapes are an ASGS roll-up, solar phases, a cadastral parcel without
+  `addr_entity_uid`, Overpass `node_count` / `categories`, and WiGLE
+  `density`. The roles live in `COORDINATE_TARGET_MODULES`, and a registry
+  test keeps that table equal to the modules that consume a `Coordinates`
+  target.
+- **The coarsest account wins.** Identical values from different origins are
+  one datum, and a centroid explanation is what makes them identical. Each
+  account is taken by the first rule that applies: the seed; an
+  `address_to_coords_pass` record (its declared `place_type`, a city before
+  it declared one); a known-city lookup; a register postcode; a stated
+  accuracy or range; a GeoNames `feature_code`; a declared `place_type` or
+  `osm_value`; otherwise the class default.
+- **A forward geocode is capped at the grain its input names**
+  (`util::place_grain::place_naming`). An ambiguous hit is one rung coarser.
+  A `place_name` that is not a whole-word phrase of an input naming no street
+  is a fragment match, and only the input's administrative grain stands.
+  "Ian Thorpe, North Carolina" → "Thorpe-Abbotts Lane" grades Region. A
+  Photon `house` hit under a non-address `osm_key` is a mapped feature, never
+  a street address.
+- **Floors.** A `fix-grain:` stamp, `coarse`, `postcode-centroid`, and the
+  legacy `search-geocoded` and `recycled` + `addr-derived` signatures each set
+  a minimum grain. A value equal at 4 decimals to a tabulated centroid
+  (`util::city_coords::tabulated_centroid_at`, the one authority that
+  `is_gazetteer_centroid` now wraps, extended to the `util::geo` AU anchors)
+  is graded at the grain of what it stands for and names it. The value's own
+  printed decimals set a quantisation floor: a one-decimal value is at least
+  5.5 km.
+- **The measurement exemption.** When a measured account good to a street or
+  better sits on the entity (device GPS, EXIF, a Wi-Fi or cell survey),
+  neither a coarser non-measured account nor the gazetteer coincidence
+  overrides it. The operator's typed seed is not a measurement.
+- **Unknown provenance is never evidence of an area.** It grades at the 30 km
+  default, but `positive_coarse` stays false, so an unclassified precise
+  emitter keeps its pivots.
+
+**REQ-GEOLABEL-005 (R1) — admission stamps the grain.** `enrich_geospatial`
+stamped `coarse` only on a gazetteer value or a declared area `place_type`
+(REQ-GEO-017). It now reads `assess`: every emission with positive area
+evidence gets `coarse` plus exactly one `fix-grain:<grain>` tag, before the
+emit, so the event log and recovery carry both. A re-run re-decides the stamp
+from the same evidence and reads the earlier stamp as a floor, so a merged
+point carries one grain and it only coarsens. Three shapes were missed before:
+a known-city lookup off the tables, the capped North Carolina street hit, and
+the GeoNames headland. `is_coarse_geo` (the pivot and autonomous-seed gates)
+now delegates to the same `assess`. A geocode of a city-only input is a
+centroid, and a measured fix on a centroid value is not demoted.
+`address_to_coords_pass` marks its records `is_inferred`, since the
+coordinate was calculated from an address. The tag prefix is
+`core::place::grain::FIX_GRAIN_TAG_PREFIX`. `hse-core` is unchanged apart from
+the `tags::COARSE` doc.
+
+**REQ-GEOLABEL-006 (R2, residual) — a reverse geocode's record is inferred.**
+REQ-GEO-010 had already made the reverse-geocode value honest: structured
+fields only, no POI, HIGH_PLUS, `None` when nothing resolves. The one gap
+left was the evidence flag. `geocode::build_reverse_entity` and
+`photon::build_reverse` now mark their record `is_inferred`, which renders as
+"(inferred)" in the dossier and the debug bundle. The design's shared
+User-Agent and pacer were for the dropped network pass and are not part of
+this work.
+
+**REQ-GEOLABEL-007 (R3) — the fusion radius is coarsen-only against the
+authority.** `best_precision_radius_m` and `geocode_grain_radius_m` moved from
+`correlator::rules::location` into `core::place::grain`, and the correlator
+re-exports them. The radius is now the finest anchoring class radius,
+maxed with `assess(e).radius_m`. `declared_geocode_grain_m` and
+`declares_area_grain` are gone, because `assess` reads the same grain table
+with the input cap. The Brisbane centroid carried under `geocode` had read
+40 m, and it now reads the city's 8 km. The grain table gains `street` /
+`road` / highway classes (a street, 300 m) and `administrative` (at least a
+city).
+
+**REQ-OPENMETEO-002 — a fuzzy neighbour is not the geocode of the query.**
+Open-Meteo answered "Sydney, Australia" with "Sydney Heads", a headland
+(feature code MT) near Isaac, Queensland, about 1,400 km away. It became the
+anchor. `build_entities` now skips any hit whose name is not a whole-word
+phrase of the query (`util::place_grain::is_whole_word_phrase`, diacritic-
+and case-folded) before it takes the anchor slot or `RESULT_LIMIT` budget, so
+the real match behind it anchors. Known conservative loss: an exonym or a
+renamed place ("Saigon") no longer geocodes through this module. The two
+street geocoders still answer it.
+
+### Deliberate test updates
+
+- `correlator::rules::location::tests::a_house_grain_match_keeps_the_class_default`
+  and `an_unrecorded_or_unknown_grain_keeps_the_class_default` used the
+  tabulated Sydney centroid as a "precise" fixture. They now use an off-table
+  value, and on the centroid the same record is the city.
+- `the_grain_table_can_only_ever_coarsen` lists `street` and `road` as
+  recognised (coarser than the class default) instead of absent.
+- `correlator::tests::best_location_uses_a_single_confirmed_coordinate` pinned
+  the operator's example centroid at ≤ 2 km. It now uses an off-table value
+  for that claim and asserts the centroid reads ≥ 5 km.
+- `open_meteo_geo::tests::a_row_skipped_for_a_missing_component_does_not_consume_the_cap`
+  names its fixture rows after the query, which the new name check requires.
+
+### Locks
+
+- `core::place::tests::*`: the Sydney and Brisbane 7258fc07 centroids
+  (including the operator's seed and the measured contrast), a carried
+  address record off the tables, a register postcode point, the forward input
+  cap, the Photon POI, GeoNames feature codes, annotators, the unclassified
+  emitter, order independence, a 300-set monotonicity sweep, the quantisation
+  floor, legacy floors, the ladder, the grain table, the fusion radius, the
+  role-table registry test and determinism.
+- `core::engine::enrich::tests::admission_stamps_coarse_and_the_fix_grain_on_positive_evidence_only`;
+  `a_derived_centroid_records_are_inferred`; `is_coarse_geo_reads_the_grain_authority`.
+- `modules::geocode::tests::reverse_geocode_evidence_is_inferred`;
+  `modules::photon::tests::build_reverse_evidence_is_inferred`.
+- `modules::open_meteo_geo::tests::a_fuzzy_neighbour_of_the_query_is_not_its_geocode`.
+- `util::city_coords::tests::tabulated_centroid_at_names_what_a_centroid_stands_for`;
+  `the_gazetteer_predicate_is_the_lookup`;
+  `util::place_grain::city_grain_tests::place_naming_reads_the_finest_component`;
+  `whole_word_phrase_matching`;
+  `util::geo::tests::au_locality_anchor_at_matches_only_the_anchor_value`.
+
+### Falsified
+
+Each mutation restores the defect, or removes the rule under test. The fixed
+file was held in memory, restored after each run, and its md5 was checked to
+be identical before and after.
+
+| # | mutation | result |
+|---|---|---|
+| G1 | admission stamp back to the value-only gazetteer condition | killed by `admission_stamps_coarse_and_the_fix_grain_on_positive_evidence_only` |
+| G2 | `is_coarse_geo` back to the gazetteer value alone | killed by `is_coarse_geo_reads_the_grain_authority` |
+| G3 | `address_to_coords_pass` records not inferred | killed by `a_derived_centroid_records_are_inferred` |
+| G4 | fusion radius without the `assess` floor | killed by `the_fusion_radius_honours_the_grain_authority` |
+| G5 | the same mutation, read through the estimate ladder | killed by `best_location_uses_a_single_confirmed_coordinate` |
+| G6 | measurement exemption removed | killed by `brisbane_centroid_is_not_a_street` |
+| G7 | forward-geocode input cap removed | killed by `a_forward_geocode_is_capped_at_its_input` |
+| G8 | Photon POI rule removed | killed by `a_photon_house_poi_is_a_mapped_feature` |
+| G9 | quantisation floor removed | killed by `quantisation_floor_caps_a_one_decimal_value` |
+| G10 | WiGLE `density` annotation signature removed | killed by `annotators_never_set_precision` |
+| G11 | a row dropped from `COORDINATE_TARGET_MODULES` | killed by `every_coordinate_target_module_has_a_role` |
+| G12 | Open-Meteo whole-word name check removed | killed by `a_fuzzy_neighbour_of_the_query_is_not_its_geocode` |
+| G13 | `geocode` reverse record not inferred | killed by `reverse_geocode_evidence_is_inferred` |
+| G14 | `photon` reverse record not inferred | killed by `build_reverse_evidence_is_inferred` |
+| G15 | AU anchors left out of the centroid table | killed by `the_gazetteer_predicate_is_the_lookup` (after its fixture was moved to an anchor that no other table holds; the first fixture, Sunshine Coast, is also a CITIES row and let the mutation survive) |
+
+**15 of 15 killed.** `hse-core` changed in the `tags::COARSE` doc only, so
+`wasm-ui/pkg` should be regenerated by the lead with the pinned toolchain.
+`wasm-ui/src` is untouched.

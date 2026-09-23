@@ -510,10 +510,15 @@ pub(super) fn build_reverse_entity(
         AuRelevance::Unknown => {}
     }
 
+    // Inferred, not observed: the nearest address to a point is a lookup BY the
+    // point, and nobody reported the subject at it. The flag is what renders
+    // the record "(inferred)" in the dossier and the debug bundle
+    // (REQ-GEOLABEL-006).
     let mut ev = Evidence::new(SRC, format!("Reverse geocode for {lat},{lon}"))
         .with_attr("latitude", lat.to_string())
         .with_attr("longitude", lon.to_string())
-        .with_attr("source", "OpenStreetMap Nominatim");
+        .with_attr("source", "OpenStreetMap Nominatim")
+        .with_inferred(true);
     if let Some(feature) = data
         .name
         .as_deref()
