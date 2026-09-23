@@ -133,6 +133,32 @@ pub fn auth_failing_sources(health: &[SourceHealth]) -> Vec<KeyAuthIssue> {
     issues
 }
 
+/// [`auth_failing_sources`] narrowed to the issues whose env var holds a
+/// CONFIGURED credential in `loaded`, the "replace or renew this key" list that
+/// `hse doctor` and `GET /api/v1/keys/health` both show.
+///
+/// An auth failure on a key the operator never set is expected: the module
+/// skips, and the acquisition guidance already covers that slot. So both
+/// surfaces keep only configured keys. Each used to filter inline with
+/// `loaded.contains_key(env)`, which is name presence. A slot still holding
+/// the `hse provision` template placeholder counted as configured, so a
+/// source's stale auth streak was reported as "configured key rejected" for a
+/// key that was never filled in. Both surfaces now share this one function, and
+/// "configured" is [`crate::util::keys::is_configured_slot`] (REQ-KEYREG-002).
+#[must_use]
+pub fn configured_key_rejections(
+    health: &[SourceHealth],
+    loaded: &std::collections::HashMap<String, String>,
+) -> Vec<KeyAuthIssue> {
+    auth_failing_sources(health)
+        .into_iter()
+        .filter(|i| {
+            i.likely_env_var
+                .is_some_and(|e| crate::util::keys::is_configured_slot(loaded, e))
+        })
+        .collect()
+}
+
 /// Best-effort map a source/module name to the `HUNTSMAN_*` env var carrying its
 /// key, via the service-def registry. Matches on an exact service-name hit first,
 /// then a prefix relationship in either direction (module `hunter_io` ↔ service

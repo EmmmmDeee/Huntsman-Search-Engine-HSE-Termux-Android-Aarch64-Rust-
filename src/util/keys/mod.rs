@@ -11,7 +11,7 @@ mod io;
 mod tests;
 
 pub use constants::{
-    DEFAULT_SEED_ENV, KNOWN_KEYS, is_compromised_embedded, is_configured_value,
+    DEFAULT_SEED_ENV, KNOWN_KEYS, is_compromised_embedded, is_configured_slot, is_configured_value,
     is_template_placeholder, own_api_keys, resolve_key, signup_hint, wigle_credentials,
 };
 pub use io::{

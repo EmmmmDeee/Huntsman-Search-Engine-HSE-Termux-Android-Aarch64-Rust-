@@ -21554,3 +21554,69 @@ Run with `mutate2.py` (spec `mut_CRED003.json`) over `--lib -- api::tiles util::
 - Other sites strip the URL inline and drop the cause chain: `core::error`'s `From<reqwest::Error>`, `app::cells` (`:261`, `:300`), `core::webhook` and three modules. None of them leaks. Moving them onto `transport_error_message` would give their messages a cause, and is left for a separate change.
 - `util::http::fetch` renders a header-keyed send error as `redact_credentials(&e.to_string())` (`fetch.rs:1102`). The key rides a header there, and the redactor masks any credential parameter, but the URL itself, including any searched target in its query, still reaches the module error. This was not part of the finding and was not changed here (unverified as a live leak).
 - The redactor's literal pass masks configured `HUNTSMAN_*` values only verbatim. `HUNTSMAN_TILE_UPSTREAM` holds the template, not the expanded URL, so that pass never matched a tile URL. The fix does not depend on it.
+
+## REQ-KEYREG-002 — a key slot counts as configured only when its value is a usable credential, on every surface that reports keys
+
+**Found** by the verified API-keys audit (finding KEYREG-06). Every line cited is at `6d9b86a`, whose tree is this branch's base.
+
+`hse provision` writes the shipped template's slots uncommented, each holding an `insert_<service>_key_here` placeholder. `src/cli/env_template.txt` has 62 such lines, and they cover every `KNOWN_KEYS` entry. `install.sh:1819` delegates to `hse provision --env-only --discover`, so every installed device starts with this file. `keys::load_from_file_only` (`util/keys/io.rs:283-316`) returns each placeholder verbatim, and `keys::load` keeps them too. The value-level authority already existed. `keys::is_configured_value` (`util/keys/constants.rs:362`) rejects blank and placeholder values. `hse doctor` had fixed its own unset-keys listing with a private `key_slot_is_filled` (`app/doctor/mod.rs:633`). Four other surfaces still decided "configured" by name presence:
+
+- **The web Settings key grid** (`api/settings_handlers/mod.rs:207`): `let set = loaded.contains_key(&name)`. On a provisioned device every row read `set`.
+- **The web acquisition list** (`api/settings_handlers/mod.rs:217`): `rank_unset_keys(|k| loaded.contains_key(k))`. Every known key was "present", so the list came back **empty**. This is the one place that tells a web operator which keys to register. It is the defect doctor's own comment describes (`app/doctor/mod.rs:257-260`).
+- **The debug bundle's key inventory** (`app/export/environment.rs:31-41`): `keys_present` listed every `HUNTSMAN_*` name, and `keys_absent` tested `!loaded.contains_key`. A provisioned device's bundle therefore listed every placeholder as present and gave `keys_absent : 0`, the wrong answer to "why did module X find nothing?".
+- **The "configured key rejected" diagnosis**: `hse doctor` (`app/doctor/mod.rs:328`) and `GET /api/v1/keys/health` (`api/settings_handlers/mod.rs:154`) each filtered `auth_failing_sources` inline with `loaded.contains_key(e)`. Modules read keys through `ModuleContext::key_opt`, which filters placeholders (`core/module/mod.rs:464-466`). So a placeholder slot's module never sends the placeholder, and an auth streak on that source is stale history from an earlier key. Both surfaces still told the operator to "replace or renew" a key they had never supplied.
+
+`tests/api.rs:1733-1757` checked the acquisition list only for an app with no key file. It also read whatever `~/.huntsman.env` the developer had, because the handler took its path from `$HOME` (`api/settings_handlers/mod.rs:197`). No test could give the grid a provisioned file without writing the developer's real one.
+
+### Implemented
+
+- **One slot predicate, promoted to the key registry.** `keys::is_configured_slot(loaded, name)` is `loaded.get(name).is_some_and(is_configured_value)`, doctor's `key_slot_is_filled` moved out of `app::doctor` and made the shared authority. Doctor's private copy is deleted and its unset-keys listing calls the shared one. (Removing it also returns the `sorted_huntsman_keys` doc comment, which had been attached to the wrong function, to its own function.)
+- **The Settings grid and acquisition list** use it for `set` and for `rank_unset_keys`. A placeholder row now reads `unset` and is listed for acquisition. A real value is still `set` and is not listed.
+- **The debug bundle's inventory** is a pure `export::environment::key_presence(loaded)`. `keys_present` keeps a `HUNTSMAN_*` entry only when `is_configured_value` accepts its value, and `keys_absent` is every `KNOWN_KEYS` entry `is_configured_slot` rejects. `render_environment` calls it.
+- **The rejected-key diagnosis** is one function, `key_health::configured_key_rejections(health, loaded)`: `auth_failing_sources` narrowed by `is_configured_slot`. `hse doctor` and `keys_health` both call it instead of their two inline filters.
+- **The key surface's file is state, not `$HOME`.** `AppState.key_file` is the env file `settings/keys` GET reads and PUT writes. `hse serve` sets it to `keys::env_path()`, so production reads and writes the same file as before. PUT now goes through `write_keys_at(&s.key_file, …)`, so a key saved from the page is written to the file the grid reads. Test states get `.huntsman.env` beside the isolated test home, which nothing writes. `tests/common::test_app_with_key_file` hands a test its own scratch file, so no test reads or writes the developer's real key file.
+
+**Rejected: filtering placeholders inside `load_from_file_only`.** The PUT editor has to see a placeholder slot to replace it in place, and `hse provision` reads the same parser to count placeholders. The question belongs at the point of decision, not in the reader.
+
+### Locks
+
+- `settings_acquisition_ignores_placeholders` (`tests/api.rs`, lock L8 of the audit plan) runs the real route over the shipped template, written to a scratch file with `HUNTSMAN_SHODAN_KEY` set to a real-looking value. Every known key still holding its placeholder has `set: false` and is in the acquisition list. `HUNTSMAN_SHODAN_KEY` has `set: true` and is not in the list (over-correction guard).
+- `settings_keys_put_writes_the_file_the_grid_reads` (`tests/api.rs`): a PUT from a write-enabled app lands in that app's key file, and the GET then shows the saved name as `set`. The name is not a real service's slot.
+- `util::keys::tests::a_provisioned_template_configures_no_slot_and_a_real_value_does`: the shipped template, parsed by `load_from_file_only`, configures no known key. Absent, blank and whitespace slots are unset. A real value is set for its own slot and not for another.
+- `util::key_health::tests::a_rejection_is_reported_only_for_a_slot_holding_a_real_key`: of three auth-failing sources, only the one whose slot holds a real key is reported. The placeholder slot and the absent slot are not.
+- `app::export::tests::the_bundle_key_inventory_lists_a_placeholder_slot_as_absent`: with every known key a placeholder except one real key, `keys_present` is that key plus a non-key knob with a value, and `keys_absent` is every other known key.
+- Standing control: `app::doctor::tests::a_placeholder_slot_still_appears_in_the_unset_keys_remediation`, now calling the shared predicate.
+
+### Falsified
+
+Run with `mutate2.py` (spec `mut_KEYREG002.json`) over `--lib --test api -- util::keys:: util::key_health:: app::doctor:: app::export::tests::the_bundle settings_`. Every mutation compiled, and each result below is the harness's own line.
+
+| # | mutation | result |
+|---|---|---|
+| KR-B1 | **baseline**: the grid's `set` is `loaded.contains_key(&name)` again | killed by `settings_acquisition_ignores_placeholders` |
+| KR-B2 | **baseline**: the acquisition list ranks by `loaded.contains_key(k)` again | killed by `settings_acquisition_ignores_placeholders` |
+| KR-B3 | **baseline**: `keys_absent` tests `!loaded.contains_key(k)` again | killed by `the_bundle_key_inventory_lists_a_placeholder_slot_as_absent` |
+| KR-B4 | **baseline**: `keys_present` lists every `HUNTSMAN_*` name again | killed by `the_bundle_key_inventory_lists_a_placeholder_slot_as_absent` |
+| KR-B5 | **baseline**: the rejected-key filter is `loaded.contains_key(e)` again | killed by `a_rejection_is_reported_only_for_a_slot_holding_a_real_key` |
+| KR-B6 | **baseline**: the shared predicate itself becomes `loaded.contains_key(name)` | killed by `a_placeholder_slot_still_appears_in_the_unset_keys_remediation`, `the_bundle_key_inventory_lists_a_placeholder_slot_as_absent`, `settings_acquisition_ignores_placeholders`, `a_rejection_is_reported_only_for_a_slot_holding_a_real_key`, `a_provisioned_template_configures_no_slot_and_a_real_value_does` |
+| KR-M1 | the predicate rejects only a blank value (a placeholder passes) | killed by the same five tests as KR-B6 |
+| KR-M2 | the GET reads `keys::env_path()` again instead of `s.key_file` | killed by `settings_acquisition_ignores_placeholders`, `settings_keys_put_writes_the_file_the_grid_reads` |
+| KR-O1 | over-correction: every row is `set: false` | killed by `settings_acquisition_ignores_placeholders`, `settings_keys_put_writes_the_file_the_grid_reads` |
+| KR-O2 | over-correction: the acquisition list names every known key | killed by `settings_acquisition_ignores_placeholders` |
+| KR-O3 | over-correction: the predicate answers `false` for every slot | killed by `the_bundle_key_inventory_lists_a_placeholder_slot_as_absent`, `settings_acquisition_ignores_placeholders`, `settings_keys_put_writes_the_file_the_grid_reads`, `a_rejection_is_reported_only_for_a_slot_holding_a_real_key`, `a_provisioned_template_configures_no_slot_and_a_real_value_does` |
+| KR-O4 | wrong scope: a slot is configured when ANY slot in the map holds a real value | killed by `the_bundle_key_inventory_lists_a_placeholder_slot_as_absent`, `settings_acquisition_ignores_placeholders`, `a_rejection_is_reported_only_for_a_slot_holding_a_real_key`, `a_provisioned_template_configures_no_slot_and_a_real_value_does` |
+| KR-O5 | over-correction: `keys_absent` lists every known key | killed by `the_bundle_key_inventory_lists_a_placeholder_slot_as_absent` |
+| KR-O6 | over-correction: no rejection is ever reported | killed by `a_rejection_is_reported_only_for_a_slot_holding_a_real_key` (rerun; see below) |
+| KR-O7 | over-correction: `keys_present` lists nothing | killed by `the_bundle_key_inventory_lists_a_placeholder_slot_as_absent` (rerun; see below) |
+
+**Falsification (compiled):** 15 of 15 killed.
+
+The first run reported KR-O6 and KR-O7 as `SURVIVED` (62 lib and 9 api tests passed). Those two verdicts were stale binaries, not live mutants. `CARGO_TARGET_DIR` is shared with other worktrees of this crate, and path packages hash relative to the workspace root, so every worktree writes the same artifact names (the dep-info files list `src/…` relative paths). When another worktree builds after the harness writes a mutation, cargo treats the newer artifact as fresh and runs that build instead. Both were run again through the harness (spec `mut_KEYREG002b.json`). KR-O6 was killed, and KR-O7 survived a second time. KR-O7 was then run alone (`mut_KEYREG002c.json`) and was killed. Both were also applied by hand, and each failed its lock under a direct `cargo test`. Every `killed` verdict above names at least one test that exists only in this branch, so it came from this branch's binary with that mutation in it.
+
+One mutation was deliberately not run: PUT reverted to `keys::write_keys` (the `$HOME` file). The harness runs the real test binary, and that mutation would write the test's value into the operator's real `~/.huntsman.env`. `settings_keys_put_writes_the_file_the_grid_reads` would fail on it (the scratch file would not contain the name), but proving that is not worth writing a live key file.
+
+### Residual
+
+- **Pooled keys cannot fill a placeholder slot (new; read from source at this base, not reproduced, not changed here).** `core::engine::passes::hot_inject_keys` (`core/engine/passes.rs:440`) and `key_pool::merge_pool_into_env` (`util/key_pool/validation.rs:338`) skip a service whose env var is present in the key map by name. On a provisioned device every slot is present as a placeholder. So a key added with `hse keys add` or `POST /api/v1/keys/pool/add` is never injected. `ModuleContext::key_opt` then filters the placeholder, and the module reports the key missing while the pool holds one. The fix is the same predicate (`!keys::is_configured_slot`) in both gap-fills. It changes which credential authenticates outbound requests, so it needs its own requirement, its own tests against the process-global pool, and review against the KEYREG-01/03 pool changes. It was left out of this display fix.
+- `selftest::check_keys` still reports `keys.len()` as "HUNTSMAN_* key(s) loaded". That count includes placeholders and non-key knobs. It is a load smoke check, not a "configured" decision, and was not changed.
+- KEYREG-09 (the lane that replaces `likely_env_var`'s prefix heuristic) restructures both rejected-key surfaces. It should keep calling `configured_key_rejections`, or apply `is_configured_slot` wherever it moves the filter.

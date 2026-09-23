@@ -15,6 +15,37 @@ pub(super) fn curl_present() -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// The key inventory the environment fingerprint prints: the sorted names of
+/// `HUNTSMAN_*` entries that hold a usable value (`keys_present`), and the
+/// `KNOWN_KEYS` whose slot does not (`keys_absent`), in `KNOWN_KEYS` order.
+///
+/// Presence is decided by the VALUE, through the shared
+/// [`crate::util::keys::is_configured_value`] and
+/// [`crate::util::keys::is_configured_slot`]. The name alone is not enough.
+/// `hse provision` writes every template slot as `insert_..._here`, and the name
+/// test put every one of them under `keys_present` and left `keys_absent` at 0.
+/// That is the wrong answer to the question the bundle exists for ("why did
+/// module X find nothing?"). The module had no key (REQ-KEYREG-002).
+///
+/// Pure over the loaded map, so the production renderer and its test run the
+/// same code without touching `$HOME`.
+pub(super) fn key_presence(
+    loaded: &std::collections::HashMap<String, String>,
+) -> (Vec<&str>, Vec<&'static str>) {
+    let mut present: Vec<&str> = loaded
+        .iter()
+        .filter(|(k, v)| k.starts_with("HUNTSMAN_") && crate::util::keys::is_configured_value(v))
+        .map(|(k, _)| k.as_str())
+        .collect();
+    present.sort_unstable();
+    let absent: Vec<&'static str> = crate::util::keys::KNOWN_KEYS
+        .iter()
+        .copied()
+        .filter(|k| !crate::util::keys::is_configured_slot(loaded, k))
+        .collect();
+    (present, absent)
+}
+
 /// Environment fingerprint for the debug bundle: the build, host, module set,
 /// and key-PRESENCE (names only — never values) under which a scan ran. This is
 /// what makes "why did module X find nothing?" answerable from the artifact
@@ -29,16 +60,7 @@ pub(super) fn curl_present() -> bool {
 pub(super) fn render_environment(curl: bool) -> String {
     use std::fmt::Write as _;
     let loaded = crate::util::keys::load();
-    let mut present: Vec<&str> = loaded
-        .keys()
-        .filter(|k| k.starts_with("HUNTSMAN_"))
-        .map(String::as_str)
-        .collect();
-    present.sort_unstable();
-    let absent: Vec<&&str> = crate::util::keys::KNOWN_KEYS
-        .iter()
-        .filter(|k| !loaded.contains_key(**k))
-        .collect();
+    let (present, absent) = key_presence(&loaded);
 
     let mods = crate::modules::registry();
     let mut by_cost: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
@@ -129,7 +151,6 @@ pub(super) fn render_environment(curl: bool) -> String {
                 ": {}",
                 absent
                     .iter()
-                    .map(|k| **k)
                     .enumerate()
                     .fold(String::new(), |mut acc, (i, s)| {
                         if i > 0 {

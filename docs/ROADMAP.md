@@ -118,6 +118,14 @@ The reusable primitives every module leans on. Key sub-areas:
   (`fetch_keyed_json`, `keyed_cascade*` take `key_env` and resolve the pool
   themselves; `module` only labels errors). A provider whose every endpoint
   bills is registered with `NO_PROBE`: pooled, never probed (REQ-KEYREG-001).
+- `util/keys/` — the env-file key store (`load`, `load_from_file_only`,
+  `write_keys_at`) and the **one answer to "is this key set?"**:
+  `is_configured_value` over a value, `is_configured_slot` over a loaded map. A
+  slot holding the `hse provision` placeholder is unset. `hse doctor`, the web
+  key grid and its acquisition list, the rejected-key diagnosis
+  (`key_health::configured_key_rejections`) and the debug bundle's key
+  inventory all ask it. A surface that tests `contains_key` instead reports
+  every provisioned slot as a key (REQ-KEYREG-002).
 - `util/namesake/` — whether one provider's own answer proves a name is held by
   more than one party, plus the ceiling and the marking rule for when it does
   (`AMBIGUOUS_CEILING`, `mark_ambiguous`). Keyed on `derive_uid`/`normalise`

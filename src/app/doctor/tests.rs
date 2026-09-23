@@ -128,10 +128,10 @@ use super::*;
         // test passed its own closure and so still passed with the defect fully
         // restored — a lock that locked nothing.
         assert!(
-            !key_slot_is_filled(&loaded, first),
+            !keys::is_configured_slot(&loaded, first),
             "a slot holding the template placeholder is not filled"
         );
-        let ranked = rank_unset_keys(|k| key_slot_is_filled(&loaded, k));
+        let ranked = rank_unset_keys(|k| keys::is_configured_slot(&loaded, k));
         assert!(
             ranked.iter().any(|(name, _)| *name == first),
             "a slot still holding the template placeholder is UNSET and must \

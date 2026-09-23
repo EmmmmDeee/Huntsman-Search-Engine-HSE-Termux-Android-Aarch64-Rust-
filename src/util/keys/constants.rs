@@ -364,6 +364,29 @@ pub fn is_configured_value(value: &str) -> bool {
     !value.trim().is_empty() && !is_template_placeholder(value)
 }
 
+/// True when the loaded key map holds a usable credential for `name`: the slot
+/// is present AND its value passes [`is_configured_value`].
+///
+/// This is the question every surface that reports keys actually asks: "is
+/// this key set?" The obvious spelling, `loaded.contains_key(name)`, answers
+/// a different question. It asks only whether the NAME is present, and
+/// `hse provision` writes all 62 template slots uncommented as
+/// `insert_..._here`. So on a freshly provisioned device every such surface
+/// counted every key as configured. `hse doctor` fixed its own copy (it
+/// suppressed the whole unset-keys section). The web Settings page kept the
+/// name test. Its key grid showed every row `set`, and its acquisition list,
+/// the one place that tells a web operator which keys to register, came back
+/// empty. The debug bundle listed every placeholder under `keys_present`.
+///
+/// One predicate over the map, built on the one predicate over the value, so
+/// the doctor listing, the Settings grid and its acquisition list, the
+/// rejected-key diagnosis and the debug bundle's key inventory cannot give
+/// different answers for the same slot (REQ-KEYREG-002).
+#[must_use]
+pub fn is_configured_slot(loaded: &std::collections::HashMap<String, String>, name: &str) -> bool {
+    loaded.get(name).is_some_and(|v| is_configured_value(v))
+}
+
 /// Resolve the WiGLE HTTP-Basic credentials (API name + token) from the module
 /// context. `None` unless BOTH are configured — WiGLE authenticates with the
 /// pair, so a half-configured account cannot make a request and must surface as

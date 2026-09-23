@@ -142,3 +142,46 @@ fn detail_capped_discloses_the_truncation_and_never_splits_a_codepoint() {
     assert!(got.starts_with(&"é".repeat(200)), "must not split a codepoint");
     assert!(got.contains("…(+50 more chars)"), "got: {got:?}");
 }
+
+/// REQ-KEYREG-002: the "configured key rejected, replace or renew" list
+/// `hse doctor` and `GET /api/v1/keys/health` share names a key only when its
+/// slot holds a usable credential. An unset slot and a slot still holding the
+/// `hse provision` placeholder are both left out, because the operator never
+/// supplied a key there.
+#[test]
+fn a_rejection_is_reported_only_for_a_slot_holding_a_real_key() {
+    let health = vec![
+        sh("onyphe", 21, Some("HTTP 400: Invalid API key format")),
+        sh("hunter_io", 20, Some("HTTP 401 Unauthorized: authentication_failed")),
+        sh("dehashed", 30, Some("HTTP 403 Forbidden: Issue with API Key")),
+    ];
+    // Sanity: all three are auth-failing and map to an env var, so every
+    // exclusion below is the slot predicate's doing.
+    assert!(
+        auth_failing_sources(&health)
+            .iter()
+            .all(|i| i.likely_env_var.is_some()),
+        "fixture: every source resolves its env var"
+    );
+
+    let mut loaded = std::collections::HashMap::new();
+    // A provisioned but unedited slot.
+    loaded.insert(
+        "HUNTSMAN_ONYPHE_KEY".to_string(),
+        "insert_onyphe_key_here".to_string(),
+    );
+    // A real key (over-correction guard: it must still be reported).
+    loaded.insert(
+        "HUNTSMAN_HUNTER_KEY".to_string(),
+        "a-real-looking-key".to_string(),
+    );
+    // HUNTSMAN_DEHASHED_KEY is absent.
+
+    let reported = configured_key_rejections(&health, &loaded);
+    assert_eq!(
+        reported.iter().map(|i| i.module.as_str()).collect::<Vec<_>>(),
+        vec!["hunter_io"],
+        "only the slot holding a real key is a configured key being rejected; \
+         the placeholder slot and the absent slot were never supplied"
+    );
+}

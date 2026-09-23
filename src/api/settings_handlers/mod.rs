@@ -148,10 +148,10 @@ pub async fn keys_health(
     let loaded = keys::load();
     // Only surface keys that are actually CONFIGURED and being rejected — the
     // actionable case. An auth failure on an unset key is expected (the module
-    // skips) and already covered by the acquisition guidance.
-    let rejected: Vec<Value> = crate::util::key_health::auth_failing_sources(&health)
+    // skips) and already covered by the acquisition guidance. Shared with
+    // `hse doctor`, and a placeholder slot is not configured (REQ-KEYREG-002).
+    let rejected: Vec<Value> = crate::util::key_health::configured_key_rejections(&health, &loaded)
         .into_iter()
-        .filter(|i| i.likely_env_var.is_some_and(|e| loaded.contains_key(e)))
         .map(|i| {
             json!({
                 "module": i.module,
@@ -186,6 +186,12 @@ pub async fn keys_status(ConnectInfo(peer): ConnectInfo<SocketAddr>) -> impl Int
 /// `keys_pool_get` / `keys_harvest` already treat as sensitive enough to
 /// gate loopback-only — this is that gate's missing sibling: the PUT on this
 /// SAME route already refuses a non-loopback peer, but the GET did not.
+///
+/// `set` means the slot holds a usable credential ([`keys::is_configured_slot`]),
+/// not that the name appears in the file. `hse provision` writes every template
+/// slot uncommented as `insert_..._here`, so a name test showed every row of a
+/// freshly provisioned device as `set` and emptied the acquisition list, the one
+/// place that tells a web operator which keys to register (REQ-KEYREG-002).
 pub async fn settings_keys_get(
     State(s): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -193,9 +199,7 @@ pub async fn settings_keys_get(
     if let Some(rejection) = reject_non_loopback(&peer, "key configuration is loopback-only") {
         return rejection;
     }
-    use std::path::PathBuf;
-    let path = keys::env_path();
-    let loaded = keys::load_from_file_only(&PathBuf::from(&path));
+    let loaded = keys::load_from_file_only(&s.key_file);
     let mut all_names: std::collections::BTreeSet<String> =
         keys::KNOWN_KEYS.iter().map(|s| (*s).to_string()).collect();
     for k in loaded.keys() {
@@ -204,7 +208,7 @@ pub async fn settings_keys_get(
     let entries: Vec<Value> = all_names
         .into_iter()
         .map(|name| {
-            let set = loaded.contains_key(&name);
+            let set = keys::is_configured_slot(&loaded, &name);
             json!({ "name": name, "set": set })
         })
         .collect();
@@ -213,22 +217,24 @@ pub async fn settings_keys_get(
     // (multiplier > expansion > terminal) with a free-signup hint each — the same
     // ranking `hse doctor` prints, surfaced to the web-UI operator so the single
     // highest-value action (register the free multiplier keys) is one tap away
-    // instead of CLI-only. Sourced from the one canonical `key_roi::rank_unset_keys`.
-    let acquisition: Vec<Value> = crate::util::key_roi::rank_unset_keys(|k| loaded.contains_key(k))
-        .into_iter()
-        .map(|(name, roi)| {
-            json!({
-                "name": name,
-                "tier": roi.label(),
-                "hint": keys::signup_hint(name),
+    // instead of CLI-only. Sourced from the one canonical `key_roi::rank_unset_keys`,
+    // over the same slot predicate the grid's `set` uses and doctor ranks by.
+    let acquisition: Vec<Value> =
+        crate::util::key_roi::rank_unset_keys(|k| keys::is_configured_slot(&loaded, k))
+            .into_iter()
+            .map(|(name, roi)| {
+                json!({
+                    "name": name,
+                    "tier": roi.label(),
+                    "hint": keys::signup_hint(name),
+                })
             })
-        })
-        .collect();
+            .collect();
     Json(json!({
         "keys": entries,
         "count": count,
         "write_enabled": s.allow_key_write,
-        "env_path": path,
+        "env_path": s.key_file.display().to_string(),
         "acquisition": acquisition,
     }))
     .into_response()
@@ -370,7 +376,8 @@ pub async fn settings_keys_put(
     if req.updates.is_empty() && req.deletes.is_empty() {
         return bad_request("no updates or deletes");
     }
-    match keys::write_keys(&req.updates, &req.deletes) {
+    // The same file the GET reports, so what was saved is what the grid shows.
+    match keys::write_keys_at(&s.key_file, &req.updates, &req.deletes) {
         Ok(()) => {
             tracing::info!(
                 updates = req.updates.len(),

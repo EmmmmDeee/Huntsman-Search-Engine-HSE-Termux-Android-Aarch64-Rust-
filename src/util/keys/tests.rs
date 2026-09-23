@@ -846,3 +846,59 @@ fn the_key_pool_never_registers_an_unfilled_template_slot() {
         );
     }
 }
+
+/// REQ-KEYREG-002: the shipped env template, as `hse provision` writes it and as
+/// the Settings page's reader parses it, configures no key. Every surface that
+/// reports keys (doctor, the web key grid and acquisition list, the rejected-key
+/// diagnosis and the debug bundle's inventory) asks `is_configured_slot`. So this
+/// is the one place where "a provisioned device has keys to acquire" is decided.
+#[test]
+fn a_provisioned_template_configures_no_slot_and_a_real_value_does() {
+    // The real template file and the real reader, not a hand-built map. The
+    // defect lived in the gap between them: the reader returns
+    // `insert_..._here` verbatim, and a name test counted it as a key.
+    let dir = tempdir().expect("should succeed");
+    let path = dir.path().join(".huntsman.env");
+    std::fs::write(&path, include_str!("../../cli/env_template.txt")).expect("should succeed");
+    let loaded = load_from_file_only(&path);
+    let in_template: Vec<&str> = KNOWN_KEYS
+        .iter()
+        .copied()
+        .filter(|k| loaded.contains_key(*k))
+        .collect();
+    assert!(
+        in_template.len() > 40,
+        "sanity: the template carries most known keys as uncommented slots, got {}",
+        in_template.len()
+    );
+    for k in &in_template {
+        assert!(
+            !is_configured_slot(&loaded, k),
+            "{k} holds only the template placeholder {:?} and must read as unset",
+            loaded[*k]
+        );
+    }
+
+    // Absent, blank and whitespace-only slots are unset too.
+    let mut m = std::collections::HashMap::new();
+    assert!(!is_configured_slot(&m, "HUNTSMAN_SHODAN_KEY"), "absent");
+    m.insert("HUNTSMAN_SHODAN_KEY".to_string(), String::new());
+    assert!(!is_configured_slot(&m, "HUNTSMAN_SHODAN_KEY"), "blank");
+    m.insert("HUNTSMAN_SHODAN_KEY".to_string(), "  ".to_string());
+    assert!(!is_configured_slot(&m, "HUNTSMAN_SHODAN_KEY"), "whitespace");
+
+    // Over-correction guard: a real value in the same slot IS configured, and
+    // the answer is about THAT slot, not any slot in the map.
+    m.insert(
+        "HUNTSMAN_SHODAN_KEY".to_string(),
+        "a-real-looking-key".to_string(),
+    );
+    assert!(
+        is_configured_slot(&m, "HUNTSMAN_SHODAN_KEY"),
+        "a real value"
+    );
+    assert!(
+        !is_configured_slot(&m, "HUNTSMAN_HIBP_KEY"),
+        "another slot is not configured by this one's value"
+    );
+}

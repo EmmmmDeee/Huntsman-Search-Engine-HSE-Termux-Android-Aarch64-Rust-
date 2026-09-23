@@ -2424,3 +2424,51 @@ fn extract_au_location_fix_reads_entities_not_prose() {
         direct.geohash
     );
 }
+
+/// REQ-KEYREG-002: the debug bundle's key inventory decides presence by the
+/// slot's VALUE. A freshly provisioned env file holds every template slot as
+/// `insert_..._here`. Listing those under `keys_present` (and reporting
+/// `keys_absent : 0`) answered "why did module X find nothing?" with "it had a
+/// key" when it had none.
+#[test]
+fn the_bundle_key_inventory_lists_a_placeholder_slot_as_absent() {
+    let first = crate::util::keys::KNOWN_KEYS[0];
+    let second = crate::util::keys::KNOWN_KEYS[1];
+    let mut loaded = std::collections::HashMap::new();
+    for k in crate::util::keys::KNOWN_KEYS {
+        loaded.insert((*k).to_string(), "insert_some_key_here".to_string());
+    }
+    // One real key (over-correction guard), and a non-key knob with a value,
+    // which the inventory has always listed by name.
+    loaded.insert(first.to_string(), "a-real-looking-key".to_string());
+    loaded.insert(
+        "HUNTSMAN_DOH_URL".to_string(),
+        "https://dns.example/dns-query".to_string(),
+    );
+    loaded.insert("HUNTSMAN_BLANK_KNOB".to_string(), "  ".to_string());
+    loaded.insert("OTHER_VAR".to_string(), "x".to_string());
+
+    let (present, absent) = super::environment::key_presence(&loaded);
+    assert_eq!(
+        present,
+        {
+            let mut want = vec![first, "HUNTSMAN_DOH_URL"];
+            want.sort_unstable();
+            want
+        },
+        "only slots holding a usable value are present, sorted"
+    );
+    assert!(
+        !absent.contains(&first),
+        "a real key is not absent: {absent:?}"
+    );
+    assert!(
+        absent.contains(&second),
+        "a placeholder slot is absent: {absent:?}"
+    );
+    assert_eq!(
+        absent.len(),
+        crate::util::keys::KNOWN_KEYS.len() - 1,
+        "every known key but the one real value is absent"
+    );
+}

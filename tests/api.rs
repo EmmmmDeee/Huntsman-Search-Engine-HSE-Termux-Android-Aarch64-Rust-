@@ -15,8 +15,8 @@ use huntsman_search_engine::core::{
 };
 
 use common::{
-    CancelCooperativeProbe, SyntheticModule, test_app, test_app_exposed, test_app_with_modules,
-    test_app_with_state, test_app_with_store,
+    CancelCooperativeProbe, SyntheticModule, test_app, test_app_exposed, test_app_with_key_file,
+    test_app_with_modules, test_app_with_state, test_app_with_store, tmp_dir,
 };
 
 /// Parse a response body into a `serde_json::Value`.
@@ -1758,6 +1758,150 @@ async fn settings_keys_get_lists_keys() {
         );
         prev = r;
     }
+}
+
+/// The env file `hse provision` writes on a fresh device: the shipped template,
+/// every slot uncommented as `insert_..._here`, with `real` (if any) set to a
+/// real-looking value instead. Written to a per-test scratch file, never to the
+/// operator's `~/.huntsman.env`.
+fn provisioned_key_file(test: &str, real: Option<&str>) -> std::path::PathBuf {
+    let path = tmp_dir("keyfile").join(format!("{test}.env"));
+    let mut body: String = include_str!("../src/cli/env_template.txt")
+        .lines()
+        .filter(|l| real.is_none_or(|r| !l.starts_with(&format!("{r}="))))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    if let Some(r) = real {
+        body.push_str(&format!("{r}=\"a-real-looking-key\"\n"));
+    }
+    std::fs::write(&path, body).unwrap();
+    path
+}
+
+/// GET `settings/keys` from loopback against an app whose key grid reads
+/// `key_file`.
+async fn settings_keys_for(test: &str, key_file: std::path::PathBuf) -> Value {
+    let resp = test_app_with_key_file(test, key_file, false)
+        .oneshot(get_loopback("/api/v1/settings/keys"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    body_json(resp).await
+}
+
+/// REQ-KEYREG-002 (lock L8): on a freshly provisioned device, where
+/// `hse provision` has written every template slot as `insert_..._here`, the web
+/// key grid shows each placeholder row `set: false` and the acquisition list
+/// names every one of them. The grid used to test only whether the NAME was in
+/// the file, so every row read `set` and the acquisition list, the one place
+/// that tells a web operator which keys to register, came back empty.
+#[tokio::test]
+async fn settings_acquisition_ignores_placeholders() {
+    use huntsman_search_engine::util::keys::KNOWN_KEYS;
+    let real = "HUNTSMAN_SHODAN_KEY";
+    assert!(KNOWN_KEYS.contains(&real), "fixture: {real} is a known key");
+    let key_file = provisioned_key_file("keyreg_placeholders", Some(real));
+    let placeholders: Vec<&str> = {
+        let loaded = huntsman_search_engine::util::keys::load_from_file_only(&key_file);
+        KNOWN_KEYS
+            .iter()
+            .copied()
+            .filter(|k| {
+                loaded
+                    .get(*k)
+                    .is_some_and(|v| v.starts_with("insert_") && v.ends_with("_here"))
+            })
+            .collect()
+    };
+    assert!(
+        placeholders.len() > 40,
+        "fixture: the template holds most known keys as placeholders, got {}",
+        placeholders.len()
+    );
+
+    let json = settings_keys_for("keyreg_placeholders", key_file).await;
+    let rows = json["keys"].as_array().expect("keys array");
+    let set_of = |name: &str| {
+        rows.iter()
+            .find(|r| r["name"] == name)
+            .unwrap_or_else(|| panic!("the grid must list {name}"))["set"]
+            .as_bool()
+            .expect("set is a bool")
+    };
+    for k in &placeholders {
+        assert!(
+            !set_of(k),
+            "{k} holds only the template placeholder and must show as unset"
+        );
+    }
+    // Over-correction guard: a slot holding a real value is still `set`.
+    assert!(
+        set_of(real),
+        "{real} holds a real value and must show as set"
+    );
+
+    let acquisition: Vec<&str> = json["acquisition"]
+        .as_array()
+        .expect("acquisition array")
+        .iter()
+        .map(|e| e["name"].as_str().expect("each entry has a name"))
+        .collect();
+    assert!(
+        !acquisition.is_empty(),
+        "a provisioned device has keys to acquire"
+    );
+    for k in &placeholders {
+        assert!(
+            acquisition.contains(k),
+            "{k} is still a placeholder and must be listed for acquisition"
+        );
+    }
+    assert!(
+        !acquisition.contains(&real),
+        "{real} is configured and must not be listed for acquisition"
+    );
+}
+
+/// REQ-KEYREG-002: the key grid's PUT writes the same file its GET reads, so a
+/// key saved from the web Settings page is the key the grid then shows as set.
+/// The name is deliberately not a real service's slot.
+#[tokio::test]
+async fn settings_keys_put_writes_the_file_the_grid_reads() {
+    let key_file = provisioned_key_file("keyreg_roundtrip", None);
+    let name = "HUNTSMAN_KEYREG_ROUNDTRIP_TEST_KEY";
+    let mut req = Request::builder()
+        .method("PUT")
+        .uri("/api/v1/settings/keys")
+        .header("content-type", "application/json")
+        .header("x-hse-csrf", "1")
+        .body(Body::from(format!(
+            r#"{{"updates":{{"{name}":"a-real-looking-key"}},"deletes":[]}}"#
+        )))
+        .unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo::<std::net::SocketAddr>(
+            "127.0.0.1:9999".parse().unwrap(),
+        ));
+    let resp = test_app_with_key_file("keyreg_roundtrip", key_file.clone(), true)
+        .oneshot(req)
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let on_disk = std::fs::read_to_string(&key_file).unwrap();
+    assert!(
+        on_disk.contains(&format!("{name}=\"a-real-looking-key\"")),
+        "PUT must write the grid's own key file"
+    );
+
+    let json = settings_keys_for("keyreg_roundtrip_get", key_file).await;
+    let row = json["keys"]
+        .as_array()
+        .expect("keys array")
+        .iter()
+        .find(|r| r["name"] == name)
+        .cloned()
+        .expect("the saved key is listed");
+    assert_eq!(row["set"], true, "the saved key shows as set");
 }
 
 #[tokio::test]

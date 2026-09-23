@@ -88,6 +88,8 @@ pub(super) async fn cmd_serve(
         tiles: Arc::new(crate::api::tiles::TileSource::from_env(
             crate::util::http::build_client_with_timeout(std::time::Duration::from_secs(20)),
         )),
+        // The operator's key file, the same one `keys::load` reads for scans.
+        key_file: std::path::PathBuf::from(crate::util::keys::env_path()),
     });
 
     // A separate clone for the shutdown path — `router` consumes `state` by
