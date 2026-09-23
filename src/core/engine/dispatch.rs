@@ -338,14 +338,33 @@ pub(super) struct DispatchOutcome {
     pub(super) attack_techniques: &'static [&'static str],
 }
 
-/// Stable archive key for the inter-scan entity cache: `module:kind:value`
-/// where `value` is normalised identically to the dispatch dedup key so a
-/// repeat scan of the same target always hits the same entry.
+/// Archive key for the inter-scan entity cache under THIS build's module logic:
+/// [`archive_key_with`] keyed by the build's
+/// [`LOGIC_FINGERPRINT`](crate::source_manifest::LOGIC_FINGERPRINT).
 #[inline]
 fn archive_key(name: &str, target: &Target) -> String {
+    archive_key_with(crate::source_manifest::LOGIC_FINGERPRINT, name, target)
+}
+
+/// Archive key for the inter-scan entity cache: `fingerprint:module:kind:value`,
+/// where `value` is normalised identically to the dispatch dedup key so a repeat
+/// scan of the same target hits the same entry.
+///
+/// `fingerprint` is the logic that produced the answer (REQ-CACHE-002). Without
+/// it, an upgrade that fixed a module kept replaying that module's PRE-fix
+/// answer until the entry's TTL lapsed — a day for most caching modules, a week
+/// for `builtwith` — silently restoring the fixed defect. Under a different
+/// fingerprint the key is a different row, so the lookup misses, the module
+/// re-asks once, and the stale row ages out under the existing TTL prune.
+/// Split from [`archive_key`] so a test can archive under one fingerprint and
+/// look up under another.
+pub(super) fn archive_key_with(fingerprint: &str, name: &str, target: &Target) -> String {
     let entity_kind = target.kind.to_entity_kind();
     let normalised = normalise(&entity_kind, &target.value);
-    format!("{}:{}:{}", name, target.kind.canonical_str(), normalised)
+    format!(
+        "{fingerprint}:{name}:{}:{normalised}",
+        target.kind.canonical_str()
+    )
 }
 
 /// Distinct *corroborating* evidence-source count for the entity a `target`

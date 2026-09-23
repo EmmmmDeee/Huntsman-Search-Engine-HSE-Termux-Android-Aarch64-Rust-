@@ -7372,3 +7372,177 @@ async fn a_pivots_subject_claims_are_rescoped_to_the_scan_subject() {
         "a company pivot's row must not anchor the subject's location"
     );
 }
+
+/// REQ-CACHE-002: an inter-scan cache entry is a hit only under the logic
+/// fingerprint that archived it. Pure key + the in-memory store, no dispatch,
+/// so the property is the key's alone: the fingerprint prefixes the unchanged
+/// `module:kind:normalised-value` key, a different fingerprint is a different
+/// row (the lookup misses), and the same fingerprint finds the answer.
+#[test]
+fn a_cached_answer_is_a_hit_only_under_the_logic_fingerprint_that_archived_it() {
+    use super::dispatch::archive_key_with;
+    use crate::core::test_support::InMemoryStore;
+
+    let store = InMemoryStore::new();
+    let target = Target::new(TargetKind::Username, "Fingerprint-Target");
+    let archived_by = archive_key_with("00000000000000a1", "cache_probe", &target);
+    assert_eq!(
+        archived_by, "00000000000000a1:cache_probe:username:fingerprint-target",
+        "the fingerprint prefixes the module:kind:normalised-value key"
+    );
+    let answer = Entity::new(EntityKind::Username, "pre-fix-answer", 0.9, "scan-a1");
+    store
+        .archive_module_result(&archived_by, 3600, std::slice::from_ref(&answer), None)
+        .expect("archive");
+
+    assert!(
+        store
+            .lookup_module_result_fresh(&archive_key_with(
+                "00000000000000b2",
+                "cache_probe",
+                &target
+            ))
+            .expect("lookup")
+            .is_none(),
+        "an answer archived by DIFFERENT module logic must be a miss — replaying \
+         it restores whatever defect the new logic fixed"
+    );
+    let hit = store
+        .lookup_module_result_fresh(&archive_key_with(
+            "00000000000000a1",
+            "cache_probe",
+            &target,
+        ))
+        .expect("lookup")
+        .expect("an answer archived by the SAME module logic must be a hit");
+    assert_eq!(
+        hit.entities
+            .iter()
+            .map(|e| e.value.as_str())
+            .collect::<Vec<_>>(),
+        ["pre-fix-answer"]
+    );
+}
+
+/// REQ-CACHE-002, end to end through the real `dispatch_target`: the upgrade.
+/// The store already holds this module's answer for the target under the key
+/// the previous binary wrote (no fingerprint at all) and under another build's
+/// fingerprint. Neither may be replayed — the module must run — and the fresh
+/// answer is archived under THIS build's fingerprint, which a later scan of the
+/// same build then hits (the fingerprint must not disable the cache).
+#[tokio::test]
+async fn an_upgrade_never_replays_an_answer_archived_by_other_module_logic() {
+    use super::dispatch::archive_key_with;
+    use crate::core::test_support::InMemoryStore;
+    use crate::source_manifest::LOGIC_FINGERPRINT;
+
+    const OTHER_BUILD: &str = "0000000000000000";
+    assert_ne!(LOGIC_FINGERPRINT, OTHER_BUILD, "premise: a different build");
+
+    let calls = Arc::new(AtomicU64::new(0));
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let target = Target::new(TargetKind::Username, "upgrade-target");
+    let stale = |value: &str| [Entity::new(EntityKind::Username, value, 0.9, "old-scan")];
+    // Exactly the key the pre-fingerprint binary wrote for this module+target.
+    store
+        .archive_module_result(
+            "cache_probe:username:upgrade-target",
+            3600,
+            &stale("stale-unfingerprinted"),
+            None,
+        )
+        .expect("seed the pre-upgrade row");
+    store
+        .archive_module_result(
+            &archive_key_with(OTHER_BUILD, "cache_probe", &target),
+            3600,
+            &stale("stale-other-build"),
+            None,
+        )
+        .expect("seed another build's row");
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(
+        vec![Arc::new(CachingProbe {
+            calls: calls.clone(),
+            ttl_secs: 3600,
+            truncation: None,
+        })],
+        store.clone(),
+        bus.clone(),
+    );
+
+    let (stats, values) = dispatch_one_scan(&engine, &bus, "upgrade-scan-1", &target).await;
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        1,
+        "the module must run: every row in the store was archived by other logic"
+    );
+    assert_eq!(stats.cached, 0, "nothing may be tallied as a cache hit");
+    assert!(
+        !values.iter().any(|v| v.starts_with("stale-")),
+        "a stale answer reached the scan: {values:?}"
+    );
+    assert!(
+        store
+            .lookup_module_result_fresh(&archive_key_with(
+                LOGIC_FINGERPRINT,
+                "cache_probe",
+                &target
+            ))
+            .expect("lookup")
+            .is_some(),
+        "the fresh answer must be archived under THIS build's fingerprint"
+    );
+
+    let (stats, values) = dispatch_one_scan(&engine, &bus, "upgrade-scan-2", &target).await;
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        1,
+        "the same build must replay its own answer, not re-ask the provider"
+    );
+    assert_eq!(stats.cached, 1, "the second scan is a cache hit");
+    assert_eq!(values, ["hit-for-upgrade-target"]);
+}
+
+/// One `dispatch_target` of `target` as scan `scan_id`: the scan's module stats
+/// and the values of the entities it recorded.
+async fn dispatch_one_scan(
+    engine: &ScanEngine,
+    bus: &EventBus,
+    scan_id: &str,
+    target: &Target,
+) -> (ModuleStats, Vec<String>) {
+    let opts = ScanOptions::default();
+    let mut ctx = ModuleContext {
+        scan_id: scan_id.to_string(),
+        bus: bus.clone(),
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let cx = DispatchCx {
+        scan_id,
+        target,
+        opts: &opts,
+        is_expansion: false,
+        seed_kind: target.kind,
+        quarantined: no_quarantine(),
+    };
+    let mut entity_map = TrackedEntityMap::new();
+    let mut stats = ModuleStats::default();
+    let mut dispatched = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
+    };
+    engine
+        .dispatch_target(&cx, &mut ctx, &mut state)
+        .await
+        .expect("dispatch runs");
+    let values = entity_map.values().map(|e| e.value.clone()).collect();
+    (stats, values)
+}

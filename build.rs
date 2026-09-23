@@ -5,9 +5,13 @@
 //! build); runs on the HOST during a cross-build, walking the source tree that is
 //! present at build time. Output is sorted by path so the generated constant —
 //! and therefore the debug bundle — is byte-deterministic.
+//!
+//! The same manifest carries `LOGIC_FINGERPRINT` (see [`logic_fingerprint`]), the
+//! content hash the inter-scan cache keys on so an upgrade never replays an
+//! answer computed by the logic it replaced.
 
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
@@ -34,18 +38,29 @@ fn main() {
         "/// Total source lines across {} files.\npub const SOURCE_TOTAL_LINES: u32 = {total};",
         files.len()
     );
+    let fingerprint = logic_fingerprint();
+    let _ = writeln!(
+        out,
+        "/// FNV-1a 64 of every file that can change a module's answer (build.rs\n\
+         /// `logic_fingerprint`). Prefixes every inter-scan cache key, so an answer\n\
+         /// archived by different module logic is a miss (REQ-CACHE-002).\n\
+         pub const LOGIC_FINGERPRINT: &str = \"{fingerprint:016x}\";"
+    );
 
     let dir = std::env::var("OUT_DIR").expect("OUT_DIR set by cargo");
     std::fs::write(Path::new(&dir).join("source_manifest.rs"), out)
         .expect("write source_manifest.rs");
 
     println!("cargo:rerun-if-changed=build.rs");
-    // NB: `collect` already emitted a `rerun-if-changed` for every file AND every
-    // directory it walked. A directory `rerun-if-changed` only watches its DIRECT
-    // children (cargo does not recurse), so a blanket `rerun-if-changed=src` would
-    // leave the manifest STALE for every file under src/core, src/modules, … after
-    // an edit. Declaring each file (content changes) AND each directory (file
-    // add/remove at any depth) is what keeps the manifest accurate.
+    // NB: `collect` and `collect_logic` already emitted a `rerun-if-changed` for
+    // every file AND every directory they walked. The Cargo reference says a
+    // directory path makes cargo "scan the entire directory for any
+    // modifications" (doc.rust-lang.org/cargo/reference/build-scripts.html), so
+    // the per-file and per-subdirectory watches are a redundant superset of the
+    // root-directory ones — kept because they cost nothing and do not depend on
+    // how a given cargo version scans a directory. An earlier version of this
+    // comment claimed cargo watches only a directory's DIRECT children; the
+    // reference says otherwise (REQ-CACHE-002).
 }
 
 /// Stamp the exact source revision into the binary as `HSE_GIT_SHA` /
@@ -189,4 +204,106 @@ fn collect(dir: &Path, out: &mut Vec<(String, u32)>) {
             out.push((rel, lines));
         }
     }
+}
+
+/// Directories whose files can change what a module answers: the crate's own
+/// sources, including the data they embed (`include_str!`/`include_bytes!` — the
+/// public suffix list, the OUI registry), and `hse-core`, the entity model every
+/// module normalises through. [`is_module_logic`] filters out what cannot.
+const LOGIC_ROOTS: &[&str] = &["src", "hse-core/src"];
+
+/// Single files outside [`LOGIC_ROOTS`] that are module logic too: the exact
+/// version of every dependency a module parses with.
+const LOGIC_FILES: &[&str] = &["Cargo.lock"];
+
+/// FNV-1a 64 offset basis and prime (draft-eastlake-fnv).
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0100_0000_01b3;
+
+/// The inter-scan cache's logic fingerprint (REQ-CACHE-002): FNV-1a 64 over the
+/// sorted `(path, contents)` of every module-logic file.
+///
+/// `core::engine::dispatch::archive_key` prefixes it to every cache key. Without
+/// it the key was `module:kind:value` alone, so after an upgrade a module's
+/// PRE-fix answer was replayed until its TTL lapsed (a week for `builtwith`),
+/// silently restoring the defect the upgrade fixed. It hashes content, not the
+/// commit: a docs- or test-only commit leaves every cache warm, and a prebuilt
+/// and a source build of the same tree share one cache.
+///
+/// Each file contributes its path, a NUL, its length (u64 LE) and its bytes, so
+/// two different trees never present the same byte stream; sorting by path makes
+/// the value independent of `read_dir` order. A listed file that cannot be read
+/// fails the build (rustc must read it too) rather than be skipped into a value
+/// that could equal the previous build's. `src/lib_tests.rs` re-derives the
+/// value from the tree on disk.
+fn logic_fingerprint() -> u64 {
+    let mut inputs: Vec<(String, PathBuf)> = Vec::new();
+    for root in LOGIC_ROOTS {
+        collect_logic(Path::new(root), &mut inputs);
+    }
+    for file in LOGIC_FILES {
+        if Path::new(file).is_file() {
+            println!("cargo:rerun-if-changed={file}");
+            inputs.push(((*file).to_string(), PathBuf::from(*file)));
+        }
+    }
+    inputs.sort();
+    let mut hash = FNV_OFFSET;
+    for (rel, path) in &inputs {
+        let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
+        hash = fnv1a(hash, rel.as_bytes());
+        hash = fnv1a(hash, &[0]);
+        hash = fnv1a(hash, &(bytes.len() as u64).to_le_bytes());
+        hash = fnv1a(hash, &bytes);
+    }
+    hash
+}
+
+/// Fold `bytes` into an FNV-1a 64 `hash`.
+fn fnv1a(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &b in bytes {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+/// Recursively collect every module-logic file under `dir` as (path with forward
+/// slashes, path), watching each directory and file exactly as [`collect`] does.
+fn collect_logic(dir: &Path, out: &mut Vec<(String, PathBuf)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    println!("cargo:rerun-if-changed={}", dir.display());
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_logic(&path, out);
+            continue;
+        }
+        let rel = path.to_string_lossy().replace('\\', "/");
+        if is_module_logic(&rel) {
+            println!("cargo:rerun-if-changed={}", path.display());
+            out.push((rel, path));
+        }
+    }
+}
+
+/// Whether the file at `rel` (forward slashes) can change what a module answers.
+/// Everything under [`LOGIC_ROOTS`] can, except:
+/// - test material, by the repo's own conventions for it: `tests.rs`,
+///   `*_tests.rs`, `test_*` support files (`test_support.rs`, `test_server.rs`,
+///   `test_psl.txt`), and anything under a `tests/` or `testdata/` directory;
+/// - `src/web/`, the browser UI, served verbatim and never read by a module.
+///
+/// Nothing else is excluded — not even a stray dotfile (an editor swap file).
+/// Over-inclusion only cools the cache one extra time; under-inclusion is the
+/// defect this fingerprint exists to close, so the rule errs toward hashing.
+fn is_module_logic(rel: &str) -> bool {
+    let (dirs, name) = rel.rsplit_once('/').unwrap_or(("", rel));
+    let test_material = name == "tests.rs"
+        || name.ends_with("_tests.rs")
+        || name.starts_with("test_")
+        || dirs.split('/').any(|d| d == "tests" || d == "testdata");
+    !(test_material || rel.starts_with("src/web/"))
 }

@@ -21620,3 +21620,167 @@ One mutation was deliberately not run: PUT reverted to `keys::write_keys` (the `
 - **Pooled keys cannot fill a placeholder slot (new; read from source at this base, not reproduced, not changed here).** `core::engine::passes::hot_inject_keys` (`core/engine/passes.rs:440`) and `key_pool::merge_pool_into_env` (`util/key_pool/validation.rs:338`) skip a service whose env var is present in the key map by name. On a provisioned device every slot is present as a placeholder. So a key added with `hse keys add` or `POST /api/v1/keys/pool/add` is never injected. `ModuleContext::key_opt` then filters the placeholder, and the module reports the key missing while the pool holds one. The fix is the same predicate (`!keys::is_configured_slot`) in both gap-fills. It changes which credential authenticates outbound requests, so it needs its own requirement, its own tests against the process-global pool, and review against the KEYREG-01/03 pool changes. It was left out of this display fix.
 - `selftest::check_keys` still reports `keys.len()` as "HUNTSMAN_* key(s) loaded". That count includes placeholders and non-key knobs. It is a load smoke check, not a "configured" decision, and was not changed.
 - KEYREG-09 (the lane that replaces `likely_env_var`'s prefix heuristic) restructures both rejected-key surfaces. It should keep calling `configured_key_rejections`, or apply `is_configured_slot` wherever it moves the filter.
+
+---
+
+## REQ-CACHE-002 — a cached module answer is replayed only by a build whose module logic produced it
+
+### Found
+
+At HEAD the inter-scan cache key was `archive_key(name, target)`
+(`src/core/engine/dispatch.rs:288`), which returned
+`module:kind:normalised-value`. Nothing in the key named the code that computed
+the archived row. All three dispatch paths build the key through `archive_key`
+before `lookup_module_result_fresh` and `archive_if_eligible`: sequential
+(`dispatch.rs:1407`), the paid phase (`:1557`) and the free phase (`:1693`). A
+hit goes to `replay_cached_result`, so the module's `process()` never runs.
+
+28 modules opt in through `cache_ttl_secs()`. Most cache for 86 400 s, `fofa`
+for 172 800 s and `builtwith` for 604 800 s. A new binary computes byte-identical
+keys, so after an upgrade that fixed one of these modules, a re-scan inside the
+TTL replayed the answer the defective code had computed. The fix appeared not to
+ship, for up to a week. Nothing said so: a replay is tallied as `cached`, not as
+stale.
+
+The stale rows do not accumulate. `Store::prune_module_result_cache`
+(`src/storage/archive.rs:59`) deletes every row past `archived_at + ttl_secs` and
+caps the table at `MODULE_RESULT_CACHE_MAX_ROWS` (20 000). It runs at startup and
+at every scan boundary. `lookup_module_result_fresh` (`archive.rs:90`) already
+ignores an expired row.
+
+### Implemented
+
+- `build.rs` computes `LOGIC_FINGERPRINT` into the generated `source_manifest`.
+  It is FNV-1a 64 over the sorted (path, NUL, u64-LE length, contents) of every
+  file under `src/` and `hse-core/src/`, plus `Cargo.lock`. The script stays pure
+  std, with no build dependencies.
+- Test material is excluded, following the repo's own conventions: `tests.rs`,
+  `*_tests.rs`, `test_*` files (`test_support.rs`, `test_server.rs` and
+  `test_psl.txt` are all `cfg(test)`-only) and anything under a `tests/` or
+  `testdata/` directory. The browser UI (`src/web/`) is excluded too. Editing a
+  test therefore does not cool every cache. Nothing else is excluded, because
+  over-inclusion costs only one extra re-ask. An earlier draft also skipped
+  dotfiles; no dotfile exists in either root, so no test could hold that rule,
+  and it was removed.
+- Embedded data counts as logic. `public_suffix_list.dat` (`include_str!`) and
+  `ieee.bin` (`include_bytes!`) change module output, so a data refresh cools
+  the cache the way a code fix does. `Cargo.lock` counts because a dependency
+  bump can change parsing.
+- It is a content hash, not the commit SHA. A docs-, test- or CI-only commit
+  leaves every cache warm, and a prebuilt binary and a source build of one tree
+  share one cache. `HSE_GIT_SHA` is also `unknown` for source-archive builds.
+- `archive_key` is now `archive_key_with(LOGIC_FINGERPRINT, name, target)`. The
+  key is `fingerprint:module:kind:value`, and its normalisation is unchanged, so
+  it still matches the dispatch dedup key. A row archived by other logic is a
+  different row, so the lookup misses. The module asks again once and archives
+  under the new key.
+- **No migration.** Old rows, including every row in the pre-fingerprint key
+  format, become unreachable and age out under the TTL prune and row cap above.
+- A listed file that cannot be read fails the build instead of being skipped.
+  Skipping it could produce a value equal to the previous build's.
+- Every hashed file and every walked directory is declared with
+  `cargo:rerun-if-changed`, matching the existing `collect`. The Cargo reference
+  (https://doc.rust-lang.org/cargo/reference/build-scripts.html) says that for a
+  directory path cargo "will scan the entire directory for any modifications".
+  The old comment at `build.rs:45` said cargo does not recurse, so it has been
+  corrected. The per-file watches are a redundant superset, kept deliberately.
+  The same page gives the build script's working directory as the package root,
+  which is what the relative `src`, `hse-core/src` and `Cargo.lock` paths rely
+  on.
+- FNV-1a 64 parameters: offset basis 14695981039346656037, prime 1099511628211.
+  Test vectors: `""` → `cbf29ce484222325`, `"a"` → `af63dc4c8601ec8c`,
+  `"foobar"` → `85944171f73967e8`. Source:
+  https://datatracker.ietf.org/doc/html/draft-eastlake-fnv. The lock test
+  asserts all three vectors.
+
+**One fingerprint for the build, not one per module.** Every logic change cools
+every caching module. A module asks again once per target re-scanned after the
+upgrade, which costs the same as an early TTL lapse and cannot loop. A
+per-module fingerprint would have saved about 10% of coolings over the
+2026-09-05..09-23 history. It would also be unsound without a transitive import
+closure: the caching `wikitree` imports `name_intel`, so a `name_intel` fix would
+leave `wikitree`'s pre-fix answers live. A text scan in a pure-std `build.rs`
+cannot close that graph reliably.
+
+### Locks
+
+- `core::engine::tests::a_cached_answer_is_a_hit_only_under_the_logic_fingerprint_that_archived_it`:
+  the key against `InMemoryStore`. The fingerprint prefixes the unchanged
+  `module:kind:normalised-value` key. Two different fingerprints never share a
+  row: a lookup under another fingerprint misses, and the same fingerprint hits.
+- `core::engine::tests::an_upgrade_never_replays_an_answer_archived_by_other_module_logic`:
+  runs the real `dispatch_target`. The store is seeded with the exact
+  pre-fingerprint key and with another build's key.
+  - The module must run, nothing may be tallied `cached`, no stale value may
+    reach the scan, and the fresh answer must land under this build's key.
+  - A second scan of the same build must then hit. This is the over-correction
+    guard.
+- `tests::logic_fingerprint_is_the_hash_of_the_module_logic_on_disk`
+  (`src/lib_tests.rs`): re-derives the value from the tree, independently of
+  `build.rs`, with a reference FNV-1a pinned to the draft vectors.
+  - It asserts its own premises: `dispatch.rs`, `hse-core/src/lib.rs` and the
+    PSL and OUI blobs are in; `lib_tests.rs`, `engine/tests.rs`,
+    `test_support.rs` and `src/web/` are out.
+  - It then asserts that the embedded constant equals the hash. The value is a
+    pure function of the sorted tree contents, with no timestamps and no walk
+    order, so two builds of one tree agree. On an incremental rebuild it also
+    catches a stale constant (a `rerun-if-changed` gap).
+- Standing: `cache_hit_skips_reprocessing_a_later_scan_of_the_same_target` and
+  `a_cache_replay_of_a_partial_answer_is_still_partial`.
+
+### Falsified
+
+Run with `mutate2.py` (spec `mut_CACHE002.json`) over
+`--lib -- fingerprint cache_ upgrade_never`. Every mutation compiled, and each
+result below is the harness's own line.
+
+The shared target directory is also built by other worktrees of this crate with
+the same package metadata hash. Their build script overwrote this lane's
+`OUT_DIR`, and their test binary replaced this lane's. That made a first run
+report `NO-RUN` (a `source_manifest` without `LOGIC_FINGERPRINT`) and one
+`SURVIVED` from a stale 44-test binary. The run was discarded. The run recorded
+here passed
+`--config=profile.dev.package.huntsman-search-engine.codegen-units=255`, which
+gives this crate a distinct metadata hash (checked: a distinct `OUT_DIR` and test
+executable) without rebuilding any dependency.
+
+| # | mutation | result |
+|---|---|---|
+| C2-B1 | **baseline**: `archive_key` writes the pre-fingerprint `module:kind:value` key | killed by `an_upgrade_never_replays_an_answer_archived_by_other_module_logic` |
+| C2-B2 | **baseline**: the fingerprint is formatted away (`{fingerprint:.0}`) | killed by `a_cached_answer_is_a_hit_only_under_the_logic_fingerprint_that_archived_it`, `an_upgrade_never_replays_an_answer_archived_by_other_module_logic` |
+| C2-O1 | over-correction: a per-call fingerprint (the cache never hits) | killed by `a_cache_replay_of_a_partial_answer_is_still_partial`, `an_upgrade_never_replays_an_answer_archived_by_other_module_logic`, `cache_hit_skips_reprocessing_a_later_scan_of_the_same_target` |
+| C2-O2 | under-inclusion: only `src/core/engine/` is hashed | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M4 | over-inclusion: all test material hashed (a test edit cools every cache) | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M4a | over-inclusion: `tests.rs` hashed | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M4b | over-inclusion: `*_tests.rs` hashed | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M4c | over-inclusion: `test_*` files hashed | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M4d | over-inclusion: files under `tests/` hashed | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M4e | over-inclusion: files under `testdata/` hashed | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M5 | determinism: inputs hashed in `read_dir` order, not sorted | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M6 | contents not hashed | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M7 | `hse-core` not hashed | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M8 | embedded data not hashed (`.rs` only) | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M9 | `Cargo.lock` not hashed | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M10 | not FNV-1a (multiply before the xor) | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M11 | no length framing | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M12 | the browser UI (`src/web/`) hashed | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M13 | paths not hashed (a rename is invisible) | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+
+**Falsification (compiled):** 19 of 19 killed.
+
+A removed `cargo:rerun-if-changed` line is equivalent under a clean build, so it
+is not in the table. It shows up only on an incremental rebuild, where the
+on-disk lock catches it.
+
+### Residual
+
+- Effective cache life becomes min(TTL, time between logic-changing upgrades).
+  An operator who updates on every `main` commit (about 2.2 logic commits a day
+  in the window above) re-asks each caching provider roughly twice a day per
+  re-scanned target. `builtwith`'s week-long cache loses the most, so batch
+  updates if its quota matters.
+- Adjacent, not changed here: the `Dockerfile` copies `Cargo.toml`,
+  `Cargo.lock`, `build.rs`, `src` and `benches` but not `hse-core`, which
+  `Cargo.toml` depends on by path. That comes from reading the files; no docker
+  build was run. The fingerprint's `hse-core/src` root is skipped when absent,
+  as `collect` does, so it adds no new failure there.
