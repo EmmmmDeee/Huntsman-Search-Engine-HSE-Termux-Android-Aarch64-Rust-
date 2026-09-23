@@ -135,7 +135,8 @@ layer**, not a coverage heatmap.
 3. Use `invalidate_test` / `invalidate_freshness` / `invalidate_reproducibility`
    to demonstrate auto-downgrade.
 4. Re-export Navigator JSON from the ledger — never hand-edit scores/colors.
-5. Never promote via Coverage / module maps / REQ ledger.
+5. Content-address evidence with `evidence_links_content_hash` / `evidence_provenance_binding` when persisting or comparing chains (hash ≠ Verified).
+6. Never promote via Coverage / module maps / REQ ledger.
 
 Until a full evidence chain exists for a technique, **Verified count stays 0**.
 
@@ -193,11 +194,52 @@ assert_eq!(ledger.verified_count(), 2);
 - **Not claimed:** live breach harvest, credential collection, or network
   victim enumeration.
 
+## Hashed evidence / provenance binding (v1)
+
+Verified claims are no longer Assertion-tier on the **evidence-store** axis:
+`CapabilityEvidenceLinks` are content-addressed.
+
+```rust
+use hse::core::capability::{
+    evidence_links_canonical_json, evidence_links_content_hash,
+    evidence_links_provenance_binding, apply_identity_geoint_evidence_v1,
+    apply_identity_evidence_v1, CapabilityLedger,
+};
+
+let mut ledger = CapabilityLedger::seed_v0();
+apply_identity_geoint_evidence_v1(&mut ledger)?;
+apply_identity_evidence_v1(&mut ledger)?;
+
+let h = ledger.evidence_content_hash("T1614").unwrap(); // 64-hex sha256
+let b = ledger.evidence_provenance_binding("T1614").unwrap();
+// b == "prov-geoint-offline-fixture-v1|sha256:{h}"
+assert_eq!(h.len(), 64);
+assert_eq!(ledger.verified_count(), 2); // hashing does not invent Verified
+```
+
+| API | Role |
+|---|---|
+| `EVIDENCE_CONTENT_HASH_SCHEMA` | `hse.capability.evidence_links.v1` schema tag |
+| `evidence_links_canonical_json` | Deterministic JSON (fixed key order; vec order preserved) |
+| `evidence_links_content_hash` / `CapabilityEvidenceLinks::content_hash` | SHA-256 lowercase hex of canonical UTF-8 |
+| `evidence_links_provenance_binding` / `…::provenance_binding` | `{claim_id}\|sha256:{hash}` (or `sha256:{hash}`) |
+| `CapabilityRow::evidence_content_hash` / `CapabilityLedger::evidence_content_hash` | Live row/ledger accessors (recomputed; no stale cache) |
+
+**Competition (this pass):** (A) content-addressed hash of links — **winner**
+(offline, sha2 already in-tree, tamper-falsifiable, Termux-safe); (B) minimal
+STIX 2.x bundle export from Verified rows — deferred (interop value, larger
+surface, does not bind evidence bytes as tightly); (C) reuse unrelated in-tree
+sha2 fingerprints (`key_pool`, `query_pack`) — rejected (wrong domain).
+
+**Honesty:** content hash is **not** an input to `derive_status`. Mutating any
+hashed field changes the digest; apply helpers still derive Verified from
+links alone. Seed `verified_count()` remains 0 until apply.
+
 ## Limiting factor (next)
 
-After GEOINT + identity claims, the next limiting factors are: (1) only **two**
-Verified techniques (seed still ships `verified_count() == 0` until apply);
-(2) Termux sensing claims (`T1016.002` / related) need device or recorded
-sensor fixtures for DirectObservation+; (3) hashed evidence ledger / STIX
-interop binding still Assertion-level; (4) breach-recon path remains unbound
-from Verified until a lawful clean evidence chain exists outside dirty WIP.
+After hashed-evidence binding: (1) only **two** Verified techniques (seed still
+ships `verified_count() == 0` until apply); (2) Termux sensing claims
+(`T1016.002` / related) need device or recorded sensor fixtures for
+DirectObservation+; (3) minimal STIX 2.x export from Verified ledger rows still
+absent; (4) breach-recon path remains unbound from Verified until a lawful
+clean evidence chain exists outside dirty WIP.

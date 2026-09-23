@@ -34,7 +34,9 @@
 //! under present constraints. Otherwise it stays Unverified or is marked
 //! NotApplicable. Default product surface: **OSINT in Rust**. First-class
 //! themes (future evidence, not auto-Verified): people-centric identity,
-//! GEOINT, public harvest + provenance, hashed evidence ledger, STIX interop.
+//! GEOINT, public harvest + provenance, STIX interop. Hashed evidence /
+//! provenance binding for links is available via
+//! [`evidence_links_content_hash`] / [`evidence_links_provenance_binding`].
 //! Capability Navigator export comes **only** from this ledger's
 //! `derive_status` — never from coverage heatmaps.
 //!
@@ -362,6 +364,121 @@ impl CapabilityEvidenceLinks {
             || !self.reproducibility_ok
             || self.evidence_level != EvidenceLevel::Assertion
     }
+
+    /// SHA-256 content hash (lowercase hex) of this links struct.
+    ///
+    /// Equivalent to [`evidence_links_content_hash`]. Not an input to
+    /// [`derive_status`] — hashing alone never invents Verified.
+    #[must_use]
+    pub fn content_hash(&self) -> String {
+        evidence_links_content_hash(self)
+    }
+
+    /// Provenance binding string: `{claim_id}|sha256:{hash}` (or `sha256:{hash}`
+    /// when no claim id). See [`evidence_links_provenance_binding`].
+    #[must_use]
+    pub fn provenance_binding(&self) -> String {
+        evidence_links_provenance_binding(self)
+    }
+}
+
+/// Schema id embedded in every canonical evidence payload (v1).
+///
+/// Bump only when the canonical field set or encoding changes in a
+/// digest-breaking way.
+pub const EVIDENCE_CONTENT_HASH_SCHEMA: &str = "hse.capability.evidence_links.v1";
+
+/// Deterministic canonical JSON for content-addressing [`CapabilityEvidenceLinks`].
+///
+/// - Keys appear in a **fixed schema order** (hand-built JSON; not `serde_json::Map`, which sorts keys).
+/// - `Vec` fields preserve **stored order** (order is part of evidence identity).
+/// - Booleans use JSON `true`/`false`; absent optionals use JSON `null`.
+/// - `evidence_level` uses [`EvidenceLevel::as_str`].
+///
+/// **Not an input to [`derive_status`].** Content-addressing binds the evidence
+/// store; it does not promote status.
+#[must_use]
+pub fn evidence_links_canonical_json(links: &CapabilityEvidenceLinks) -> String {
+    // Hand-built JSON: serde_json::Map sorts keys alphabetically on serialize,
+    // which would break the fixed schema order required for content-addressing.
+    fn esc(s: &str) -> String {
+        serde_json::to_string(s).expect("string JSON encode")
+    }
+    fn arr(xs: &[String]) -> String {
+        let parts: Vec<String> = xs.iter().map(|s| esc(s)).collect();
+        format!("[{}]", parts.join(","))
+    }
+    fn opt(v: &Option<String>) -> String {
+        match v {
+            Some(s) => esc(s),
+            None => "null".to_string(),
+        }
+    }
+    fn bool_json(b: bool) -> &'static str {
+        if b {
+            "true"
+        } else {
+            "false"
+        }
+    }
+
+    format!(
+        concat!(
+            r#"{{"schema":{schema},"source_ids":{source_ids},"input_ids":{input_ids},"#,
+            r#""execution_record_id":{execution_record_id},"output_ids":{output_ids},"#,
+            r#""provenance_claim_id":{provenance_claim_id},"corroboration_ids":{corroboration_ids},"#,
+            r#""test_ids":{test_ids},"benchmark_ids":{benchmark_ids},"#,
+            r#""regression_lock_ids":{regression_lock_ids},"passed_test_ids":{passed_test_ids},"#,
+            r#""failed_test_ids":{failed_test_ids},"corroboration_ok":{corroboration_ok},"#,
+            r#""regression_ok":{regression_ok},"freshness_ok":{freshness_ok},"#,
+            r#""reproducibility_ok":{reproducibility_ok},"evidence_level":{evidence_level}}}"#
+        ),
+        schema = esc(EVIDENCE_CONTENT_HASH_SCHEMA),
+        source_ids = arr(&links.source_ids),
+        input_ids = arr(&links.input_ids),
+        execution_record_id = opt(&links.execution_record_id),
+        output_ids = arr(&links.output_ids),
+        provenance_claim_id = opt(&links.provenance_claim_id),
+        corroboration_ids = arr(&links.corroboration_ids),
+        test_ids = arr(&links.test_ids),
+        benchmark_ids = arr(&links.benchmark_ids),
+        regression_lock_ids = arr(&links.regression_lock_ids),
+        passed_test_ids = arr(&links.passed_test_ids),
+        failed_test_ids = arr(&links.failed_test_ids),
+        corroboration_ok = bool_json(links.corroboration_ok),
+        regression_ok = bool_json(links.regression_ok),
+        freshness_ok = bool_json(links.freshness_ok),
+        reproducibility_ok = bool_json(links.reproducibility_ok),
+        evidence_level = esc(links.evidence_level.as_str()),
+    )
+}
+
+/// SHA-256 (lowercase hex) of the UTF-8 bytes of [`evidence_links_canonical_json`].
+///
+/// Tampering with any hashed field changes the digest. Does **not** feed
+/// [`derive_status`].
+#[must_use]
+pub fn evidence_links_content_hash(links: &CapabilityEvidenceLinks) -> String {
+    use sha2::{Digest, Sha256};
+    let canonical = evidence_links_canonical_json(links);
+    hex::encode(Sha256::digest(canonical.as_bytes()))
+}
+
+/// Bind `provenance_claim_id` to the content hash for the evidence-store axis.
+///
+/// Format:
+/// - with claim id: `{provenance_claim_id}|sha256:{64-hex}`
+/// - without: `sha256:{64-hex}`
+///
+/// This is a derived view — it does not rewrite `provenance_claim_id` on the
+/// links struct and is not an input to [`derive_status`].
+#[must_use]
+pub fn evidence_links_provenance_binding(links: &CapabilityEvidenceLinks) -> String {
+    let hash = evidence_links_content_hash(links);
+    match links.provenance_claim_id.as_deref() {
+        Some(id) if !id.is_empty() => format!("{id}|sha256:{hash}"),
+        _ => format!("sha256:{hash}"),
+    }
 }
 
 /// Static claim specification used when seeding the ledger.
@@ -409,6 +526,24 @@ pub struct CapabilityRow {
     pub scope: ClaimScope,
     /// Evidence links (status is never stored here).
     pub links: CapabilityEvidenceLinks,
+}
+
+impl CapabilityRow {
+    /// Live content hash of [`Self::links`] (sha256 hex).
+    ///
+    /// Always recomputed from current links so mutators (`set_links`,
+    /// `invalidate_*`) cannot leave a stale digest. Not stored separately and
+    /// not an input to [`derive_status`].
+    #[must_use]
+    pub fn evidence_content_hash(&self) -> String {
+        evidence_links_content_hash(&self.links)
+    }
+
+    /// Live provenance binding for [`Self::links`].
+    #[must_use]
+    pub fn evidence_provenance_binding(&self) -> String {
+        evidence_links_provenance_binding(&self.links)
+    }
 }
 
 /// Errors from ledger mutation APIs.
@@ -677,6 +812,26 @@ impl CapabilityLedger {
             .ok_or_else(|| CapabilityError::UnknownTechnique(technique_id.to_string()))?;
         row.links = links;
         Ok(())
+    }
+
+    /// Content hash of a row's evidence links, if the technique exists.
+    ///
+    /// See [`evidence_links_content_hash`]. Not an input to [`derive_status`].
+    #[must_use]
+    pub fn evidence_content_hash(&self, technique_id: &str) -> Option<String> {
+        self.rows
+            .get(technique_id)
+            .map(|r| r.evidence_content_hash())
+    }
+
+    /// Provenance binding for a row's evidence links, if present.
+    ///
+    /// See [`evidence_links_provenance_binding`].
+    #[must_use]
+    pub fn evidence_provenance_binding(&self, technique_id: &str) -> Option<String> {
+        self.rows
+            .get(technique_id)
+            .map(|r| r.evidence_provenance_binding())
     }
 
     /// Derived status for a technique, if present.
@@ -1599,5 +1754,152 @@ mod tests {
             .expect("T1589");
         assert_ne!(tech["score"], 100);
         assert_ne!(tech["color"], "#31a354");
+    }
+
+    #[test]
+    fn evidence_content_hash_is_stable_and_64_hex() {
+        let a = complete_links();
+        let b = complete_links();
+        let ha = evidence_links_content_hash(&a);
+        let hb = b.content_hash();
+        assert_eq!(ha, hb);
+        assert_eq!(ha.len(), 64);
+        assert!(ha.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(ha.chars().all(|c| !c.is_ascii_uppercase()));
+
+        let empty = CapabilityEvidenceLinks::empty();
+        let he = empty.content_hash();
+        assert_eq!(he.len(), 64);
+        assert_ne!(he, ha, "empty links must not collide with complete fixture");
+
+        let canonical = evidence_links_canonical_json(&a);
+        assert!(canonical.contains(EVIDENCE_CONTENT_HASH_SCHEMA));
+        let expected_prefix =
+            format!("{{\"schema\":\"{EVIDENCE_CONTENT_HASH_SCHEMA}\"");
+        assert!(
+            canonical.starts_with(&expected_prefix),
+            "canonical JSON must start with schema key; got {canonical}"
+        );
+    }
+
+    #[test]
+    fn evidence_hash_tamper_falsify_changes_digest() {
+        let base = complete_links();
+        let h0 = base.content_hash();
+
+        let mut mutated = base.clone();
+        mutated.source_ids.push("src-tamper".into());
+        assert_ne!(mutated.content_hash(), h0);
+
+        let mut mutated = base.clone();
+        mutated.provenance_claim_id = Some("claim-tampered".into());
+        assert_ne!(mutated.content_hash(), h0);
+
+        let mut mutated = base.clone();
+        mutated.corroboration_ok = false;
+        assert_ne!(mutated.content_hash(), h0);
+
+        let mut mutated = base.clone();
+        mutated.evidence_level = EvidenceLevel::Primary;
+        assert_ne!(mutated.content_hash(), h0);
+
+        // Vec order is part of identity: reverse source_ids → new digest.
+        let mut mutated = base.clone();
+        mutated.source_ids = vec!["z-last".into(), "a-first".into()];
+        let mut swapped = base.clone();
+        swapped.source_ids = vec!["a-first".into(), "z-last".into()];
+        assert_ne!(mutated.content_hash(), swapped.content_hash());
+    }
+
+    #[test]
+    fn evidence_provenance_binding_joins_claim_and_hash() {
+        let links = complete_links();
+        let binding = evidence_links_provenance_binding(&links);
+        let hash = links.content_hash();
+        assert_eq!(binding, format!("claim-1|sha256:{hash}"));
+        assert_eq!(links.provenance_binding(), binding);
+
+        let empty = CapabilityEvidenceLinks::empty();
+        let eb = empty.provenance_binding();
+        assert!(eb.starts_with("sha256:"));
+        assert_eq!(eb, format!("sha256:{}", empty.content_hash()));
+    }
+
+    #[test]
+    fn hashed_evidence_apply_helpers_still_derive_verified() {
+        // Seed stays Assertion-tier / verified_count 0 until apply.
+        let seed = CapabilityLedger::seed_v0();
+        assert_eq!(seed.verified_count(), 0);
+        let seed_hash_t1614 = seed.evidence_content_hash("T1614").expect("T1614");
+        let seed_hash_t1589 = seed.evidence_content_hash("T1589").expect("T1589");
+        // Empty links share the same content address across seed rows.
+        assert_eq!(seed_hash_t1614, seed_hash_t1589);
+
+        let mut ledger = CapabilityLedger::seed_v0();
+        apply_identity_geoint_evidence_v1(&mut ledger).expect("geoint");
+        apply_identity_evidence_v1(&mut ledger).expect("identity");
+        assert_eq!(ledger.verified_count(), 2);
+        assert_eq!(ledger.status_of("T1614"), Some(CapabilityStatus::Verified));
+        assert_eq!(ledger.status_of("T1589"), Some(CapabilityStatus::Verified));
+
+        let h_geo = ledger.evidence_content_hash("T1614").expect("geo hash");
+        let h_id = ledger.evidence_content_hash("T1589").expect("id hash");
+        assert_eq!(h_geo.len(), 64);
+        assert_eq!(h_id.len(), 64);
+        assert_ne!(h_geo, h_id, "distinct evidence chains must not share digest");
+        assert_ne!(h_geo, seed_hash_t1614);
+        assert_ne!(h_id, seed_hash_t1589);
+
+        let b_geo = ledger.evidence_provenance_binding("T1614").expect("geo bind");
+        let b_id = ledger.evidence_provenance_binding("T1589").expect("id bind");
+        assert!(b_geo.starts_with("prov-geoint-offline-fixture-v1|sha256:"));
+        assert!(b_id.starts_with("prov-identity-canonicalize-fixture-v1|sha256:"));
+        assert!(b_geo.ends_with(&h_geo));
+        assert!(b_id.ends_with(&h_id));
+
+        // Hash is not an input to derive_status: invalidate still downgrades,
+        // and the digest changes when links mutate.
+        let before = h_geo.clone();
+        ledger
+            .invalidate_test(
+                "T1614",
+                "util::geo::tests::haversine_km_matches_known_distances",
+            )
+            .expect("invalidate");
+        assert_ne!(ledger.status_of("T1614"), Some(CapabilityStatus::Verified));
+        let after = ledger.evidence_content_hash("T1614").expect("after");
+        assert_ne!(after, before, "tamper/invalidate must change content hash");
+        // Identity claim remains Verified — hashing did not weaken floor.
+        assert_eq!(ledger.status_of("T1589"), Some(CapabilityStatus::Verified));
+        assert_eq!(ledger.verified_count(), 1);
+    }
+
+    #[test]
+    fn content_hash_is_not_a_verified_shortcut() {
+        // Possessing a hash of empty/partial links must never yield Verified.
+        let empty = CapabilityEvidenceLinks::empty();
+        let _ = empty.content_hash();
+        assert_eq!(
+            derive_status(ClaimScope::InScope, &empty),
+            CapabilityStatus::Unverified
+        );
+
+        // regression_ok must be true so hard-fail path does not force Unverified;
+        // sparse links still cannot reach Verified via hashing alone.
+        let partial = CapabilityEvidenceLinks {
+            source_ids: vec!["s".into()],
+            provenance_claim_id: Some("p".into()),
+            regression_ok: true,
+            ..CapabilityEvidenceLinks::empty()
+        };
+        let _ = partial.content_hash();
+        assert_ne!(
+            derive_status(ClaimScope::InScope, &partial),
+            CapabilityStatus::Verified
+        );
+        assert_eq!(
+            derive_status(ClaimScope::InScope, &partial),
+            CapabilityStatus::Partial
+        );
     }
 }
