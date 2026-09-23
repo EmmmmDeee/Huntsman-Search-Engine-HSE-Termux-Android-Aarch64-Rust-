@@ -19898,20 +19898,20 @@ Separately, the AppView's `resolveHandle` "does not necessarily bi-directionally
 
 | # | mutation | result |
 |---|---|---|
-| P1 | **baseline**: a tombstone keeps the current handle | see apply log |
-| P2 | **baseline**: a tombstone keeps the current PDS | see apply log |
-| P3 | **baseline**: an empty `alsoKnownAs` keeps the previous handle current | see apply log |
-| P4 | **baseline**: a missing `services` keeps the previous PDS current | see apply log |
-| P5 | over-correction: a reverted (nullified) tombstone still clears the present | see apply log |
-| P6 | over-correction: a tombstone erases the handle/PDS history | see apply log |
-| W1 | **baseline**: a did:web seed confirms itself (no document read) | see apply log |
-| W2 | **baseline**: the document is read but not checked | see apply log |
-| W3 | **baseline**: did:web handle claim not checked | see apply log |
-| W4 | **baseline**: did:plc handle claim not checked | see apply log |
-| W5 | over-correction: a did:plc claim must be the *current* handle | see apply log |
-| W6 | over-correction: did:web demands a handle claim even for a DID seed | see apply log |
-| W7 | over-correction: document `id` compared case-sensitively | see apply log |
-| W8 | over-correction: handle claim compared case-sensitively | see apply log |
+| P1 | **baseline**: a tombstone keeps the current handle | killed |
+| P2 | **baseline**: a tombstone keeps the current PDS | killed |
+| P3 | **baseline**: an empty `alsoKnownAs` keeps the previous handle current | killed |
+| P4 | **baseline**: a missing `services` keeps the previous PDS current | killed |
+| P5 | over-correction: a reverted (nullified) tombstone still clears the present | killed |
+| P6 | over-correction: a tombstone erases the handle/PDS history | killed |
+| W1 | **baseline**: a did:web seed confirms itself (no document read) | killed |
+| W2 | **baseline**: the document is read but not checked | killed |
+| W3 | **baseline**: did:web handle claim not checked | killed |
+| W4 | **baseline**: did:plc handle claim not checked | killed |
+| W5 | over-correction: a did:plc claim must be the *current* handle | killed |
+| W6 | over-correction: did:web demands a handle claim even for a DID seed | killed |
+| W7 | over-correction: document `id` compared case-sensitively | killed |
+| W8 | over-correction: handle claim compared case-sensitively | killed |
 
 ### Residual
 
@@ -20001,29 +20001,29 @@ Two pieces of network glue are not unit-locked: `blocklist_check`'s `tokio::join
 
 | # | mutation | result |
 |---|---|---|
-| Q1 | **baseline**: Quad9's filtered service (`9.9.9.9`) back in the pool | see apply log |
-| Q2 | over-correction: Quad9 dropped from the pool | see apply log |
-| Q3 | over-correction: no member's NXDOMAIN trusted | see apply log |
-| B1 | **baseline**: Spamhaus's `127.255.255.x` errors read as values | see apply log |
-| B2 | **baseline**: a value outside `127/8` is a listing | see apply log |
-| B3 | **baseline**: an unknown ZEN value is a clean check | see apply log |
-| B4 | an answer with no A value counts as an answer | see apply log |
-| B5 | **baseline**: the RFC 5782 test entries not checked | see apply log |
-| B6 | the unlisted test entry need only resolve | see apply log |
-| B7 | **baseline**: an unresolved zone counted as answered | see apply log |
-| B8 | **baseline**: ZEN's XBL-allocated codes read as policy | see apply log |
-| B9 | over-correction: every `127/8` value unresolved | see apply log |
-| B10 | over-correction: PBL unresolved | see apply log |
-| B11 | over-correction: NXDOMAIN unresolved | see apply log |
-| W1 | **baseline**: two canaries with different sets read as no wildcard | see apply log |
-| W2 | **baseline**: a failed canary read as no wildcard | see apply log |
-| W3 | **baseline**: an unstable wildcard's hits reported | see apply log |
-| W4 | **baseline**: no majority backstop | see apply log |
-| W5 | over-correction: a catch-all withholds every hit | see apply log |
-| W6 | over-correction: the backstop overrides proven absence | see apply log |
-| W7 | **baseline**: the withheld pass is silent | see apply log |
-| W8 | regression: the stable catch-all's fingerprint lost | see apply log |
-| W9 | over-correction: one canary's sample withholds everything | see apply log |
+| Q1 | **baseline**: Quad9's filtered service (`9.9.9.9`) back in the pool | killed |
+| Q2 | over-correction: Quad9 dropped from the pool | killed |
+| Q3 | over-correction: no member's NXDOMAIN trusted | killed |
+| B1 | **baseline**: Spamhaus's `127.255.255.x` errors read as values | killed |
+| B2 | **baseline**: a value outside `127/8` is a listing | killed |
+| B3 | **baseline**: an unknown ZEN value is a clean check | killed |
+| B4 | an answer with no A value counts as an answer | killed |
+| B5 | **baseline**: the RFC 5782 test entries not checked | killed |
+| B6 | the unlisted test entry need only resolve | killed |
+| B7 | **baseline**: an unresolved zone counted as answered | killed |
+| B8 | **baseline**: ZEN's XBL-allocated codes read as policy | killed |
+| B9 | over-correction: every `127/8` value unresolved | killed |
+| B10 | over-correction: PBL unresolved | killed |
+| B11 | over-correction: NXDOMAIN unresolved | killed |
+| W1 | **baseline**: two canaries with different sets read as no wildcard | killed |
+| W2 | **baseline**: a failed canary read as no wildcard | killed |
+| W3 | **baseline**: an unstable wildcard's hits reported | killed |
+| W4 | **baseline**: no majority backstop | killed |
+| W5 | over-correction: a catch-all withholds every hit | killed |
+| W6 | over-correction: the backstop overrides proven absence | killed |
+| W7 | **baseline**: the withheld pass is silent | killed |
+| W8 | regression: the stable catch-all's fingerprint lost | killed |
+| W9 | over-correction: one canary's sample withholds everything | killed |
 
 **Falsification (compiled):** 23 of 23 killed.
 
@@ -20153,14 +20153,14 @@ control locks this.
 
 | # | mutation | result |
 |---|---|---|
-| CW-M1 | **baseline**: `username` defaulted again | see apply log |
-| CW-M2 | **baseline**: a blank `username` falls through to the mismatch | see apply log |
-| CW-W1 | the blank check does not trim | see apply log |
-| CW-O1 | over-correction: another account's record is a failure | see apply log |
-| CW-O2 | another account's record is minted as the handle's | see apply log |
-| CW-O3 | over-correction: the 404 is a failure | see apply log |
-| CW-O4 | over-correction: `deny_unknown_fields` | see apply log |
-| CW-P1 | the production path drifts | see apply log |
+| CW-M1 | **baseline**: `username` defaulted again | killed |
+| CW-M2 | **baseline**: a blank `username` falls through to the mismatch | killed |
+| CW-W1 | the blank check does not trim | killed |
+| CW-O1 | over-correction: another account's record is a failure | killed |
+| CW-O2 | another account's record is minted as the handle's | killed |
+| CW-O3 | over-correction: the 404 is a failure | killed |
+| CW-O4 | over-correction: `deny_unknown_fields` | killed |
+| CW-P1 | the production path drifts | killed |
 
 **Falsification (compiled):** 8 of 8 killed.
 
@@ -20247,10 +20247,10 @@ dropped: no refusal text is trusted as "IPQS holds nothing".
 
 | mutation | expected | result |
 |---|---|---|
-| baseline-rung (VERY_LOW -> HIGH_PLUSPLUS) | both locks fail | see apply log |
-| baseline-candidate-tag (drop demote_to_candidate) | quarantine lock fails | see apply log |
-| overcorrect-drop-emission | both locks fail (premise) | see apply log |
-| overcorrect-drop-date-evidence | annotate lock fails | see apply log |
+| baseline-rung (VERY_LOW -> HIGH_PLUSPLUS) | both locks fail | survived: equivalent, see below |
+| baseline-candidate-tag (drop demote_to_candidate) | quarantine lock fails | killed |
+| overcorrect-drop-emission | both locks fail (premise) | killed |
+| overcorrect-drop-date-evidence | annotate lock fails | killed |
 
 **Falsification (compiled):** 3 of 4 killed.
 
@@ -20264,6 +20264,7 @@ the rung's only authority. The construction value is immaterial by design, so
 a mutation of it is equivalent. `baseline-candidate-tag` (dropping the
 demotion, the real baseline) is killed. That demotion now carries the whole
 invariant.
+
 ## REQ-KEYSKIP-003 — PassiveTotal: a malformed `username:api_key` credential is refused, not a clean negative
 
 **Found:** In `src/modules/passivetotal/mod.rs`, when `HUNTSMAN_PASSIVETOTAL_KEY` was set but had no `:` or had a blank half (for example the bare api_key, `alice:` or `:key`), `process` returned `Ok(ModuleResult::new())` before sending any request. Dispatch recorded this as `ModuleDone{found:0}`, which coverage reads as `CleanNegative`, so a paid provider that was never asked was counted as a sweep. The REQ-KEYSKIP-001 comment eight lines above already states the rule this arm broke. The REQ-KEYSKIP-002 sweep did not cover it because the value was present but could not be split.
@@ -20274,10 +20275,10 @@ invariant.
 
 | Mutation | Expected failing test | Result |
 |---|---|---|
-| baseline (return Ok(empty)) | a_malformed_credential_is_refused_not_a_clean_negative | see apply log |
-| baseline-blank-half (filter always true) | a_malformed_credential_is_refused_not_a_clean_negative | see apply log |
-| overcorrect-refuse-all | a_well_formed_credential_is_not_refused | see apply log |
-| overcorrect-username-only | a_malformed_credential_is_refused_not_a_clean_negative | see apply log |
+| baseline (return Ok(empty)) | a_malformed_credential_is_refused_not_a_clean_negative | killed |
+| baseline-blank-half (filter always true) | a_malformed_credential_is_refused_not_a_clean_negative | killed |
+| overcorrect-refuse-all | a_well_formed_credential_is_not_refused | killed |
+| overcorrect-username-only | a_malformed_credential_is_refused_not_a_clean_negative | killed |
 
 **Falsification (compiled):** 4 of 4 killed.
 
@@ -20293,11 +20294,25 @@ invariant.
 
 | Mutation | Expected failing test | Result |
 |---|---|---|
-| baseline (restore denylist) | an_unknown_password_risk_on_a_passwordless_breach_is_not_password_at_risk | see apply log |
-| unknown-allowlisted | an_unknown_password_risk_on_a_passwordless_breach_is_not_password_at_risk | see apply log |
-| substring-password-class | a_password_hints_class_is_not_a_password | see apply log |
-| drop-data-class-clause | a_passwords_data_class_is_password_at_risk_even_when_the_risk_is_unknown | see apply log |
-| drop-rated-clause | a_rated_password_risk_is_password_at_risk | see apply log |
-| case-sensitive-trimless-label | a_rated_password_risk_is_password_at_risk | see apply log |
+| baseline (restore denylist) | an_unknown_password_risk_on_a_passwordless_breach_is_not_password_at_risk | killed |
+| unknown-allowlisted | an_unknown_password_risk_on_a_passwordless_breach_is_not_password_at_risk | killed |
+| substring-password-class | a_password_hints_class_is_not_a_password | killed |
+| drop-data-class-clause | a_passwords_data_class_is_password_at_risk_even_when_the_risk_is_unknown | killed |
+| drop-rated-clause | a_rated_password_risk_is_password_at_risk | killed |
+| case-sensitive-trimless-label | a_rated_password_risk_is_password_at_risk | killed |
 
-**Falsification (compiled):** 4 of 6 killed.
+**Falsification (compiled):** 6 of 6 killed. In the loop, 4 of 6 ran. The
+spec for `substring-password-class` and `case-sensitive-trimless-label` quoted
+the pre-`cargo fmt` single-line text, and the harness refused it (`old occurs
+0x`) rather than report a vacuous survivor. Both were re-specified against the
+formatted source and run on the integrated branch. Each was killed, by
+`a_password_hints_class_is_not_a_password` and
+`a_rated_password_risk_is_password_at_risk` respectively.
+
+**Vendor vocabulary, verified live** (`GET https://api.xposedornot.com/v1/breaches`,
+2026-09-23, 783 breaches). `passwordRisk` takes exactly four values: `unknown`
+(333), `easytocrack` (210), `hardtocrack` (156) and `plaintext` (84). `none`
+never occurs. Apollo is `unknown`, and its `exposedData` has no password class.
+Of the 333 `unknown` breaches, 74 list `Passwords` in `exposedData`, which is
+why the data-class clause is load-bearing and not redundant with the
+allowlist.
