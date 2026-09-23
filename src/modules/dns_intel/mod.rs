@@ -141,16 +141,17 @@ async fn process_domain(target: &Target, ctx: &ModuleContext) -> Result<ModuleRe
     let resolver_result = resolve_records(target, ctx).await?;
     result.extend(resolver_result);
 
-    // 2. Subdomain brute-force (generic common-name dictionary)
+    // 2. Subdomain brute-force (generic common-name dictionary). `absorb`, not
+    // `extend`: a pass a wildcard swallows declares its truncation.
     let brute_result = brute_subdomains(target, ctx).await?;
-    result.extend(brute_result);
+    result.absorb(brute_result);
 
     // 3. Structural permutation of the CURRENT target's own leftmost label
     // (a no-op on the bare apex; fires once this target is itself a discovered
     // subdomain — including one the brute-force pass just found, or one the
     // engine re-dispatches from a prior round). See `permute` module doc.
     let permute_result = permute_subdomains(target, ctx).await?;
-    result.extend(permute_result);
+    result.absorb(permute_result);
 
     // 4. SRV service-discovery enumeration (apex-only; a no-op on subdomains).
     // Exposes the concrete host:port of enterprise services — AD domain

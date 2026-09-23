@@ -19920,3 +19920,109 @@ Separately, the AppView's `resolveHandle` "does not necessarily bi-directionally
 - Whether the production AppView resolves handles one way over the network is UNVERIFIED. The open-source data plane only does a DB lookup under a `@TODO` for `lookupUnidirectional`. The back-check rests on the lexicon's stated contract and the handle spec.
 
 **Falsification (compiled):** 14 of 14 killed.
+
+## REQ-DNS-001 / REQ-DNSINTEL-002 / REQ-DNSINTEL-003 — a blocklisted domain resolved to nothing; a DNSBL's refusal read as a listing or a pass; a per-name wildcard read as no wildcard
+
+**Found** by the adversarially verified module audit: three findings in `dns_intel` and the shared resolver it runs on. Each vendor's behaviour was checked against its own documentation and live over DoH on 2026-09-23.
+
+**REQ-DNS-001 — Quad9's blocklist answered for the shared resolver.** `util::dns::PROVIDERS` used hickory's `QUAD9` preset. That preset is Quad9's *filtered* service (`9.9.9.9`, `149.112.112.112`).
+- Quad9 documents its block answer as NXDOMAIN with no authority records (docs.quad9.net FAQ).
+- Live, `isitblocked.org` got exactly that from `dns.quad9.net`. Cloudflare and `dns10.quad9.net` returned its A record.
+- hickory builds every preset server with `trust_negative_responses = true`. It ends a lookup on a trusted server's NXDOMAIN and drops the parallel query.
+
+So whenever a Quad9 server won the race (about 60% of cold-pool orderings put one in the first two), a live phishing or C2 domain read as having no records:
+- `resolve_records` passed its fail-closed gate on `is_no_records_found`;
+- CAA read as "none";
+- brute, permute, SRV and DKIM found nothing.
+
+`typosquat`, on the same resolver, classed a blocked look-alike as a `CleanMiss`.
+
+**REQ-DNSINTEL-002 — a DNSBL's refusal read as a listing or as a pass.** `blocklist_check` took any `Ok` answer as a listing. For ZEN it took any value that was not an abuse code as a clean check. The pool is made only of public resolvers, and Spamhaus answers ZEN and CBL queries arriving through one with `127.255.255.254`, its documented "query via public/open resolver" error. This was confirmed live through Cloudflare and both Quad9 services, for the `127.0.0.2` test entry too. The consequences:
+- Every IPv4 target, `8.8.8.8` included, read "listed on 1 of 8 blocklists (CBL)" and was tagged `blocklisted`. ZEN's refusal counted as clean.
+- Through Google, Spamhaus answers NXDOMAIN instead, even for `127.0.0.2`, which every list must hold (RFC 5782 §5). That was counted as clean.
+- SORBS is retired and answers NXDOMAIN for its own test entry. That was counted as clean.
+- A value outside `127.0.0.0/8` (an NXDOMAIN rewritten by a carrier) was a listing on seven zones. That is enough for `high-risk` and AU-007.
+- The ZEN table was wrong. 127.0.0.4 is XBL, not DROP. 127.0.0.9 is DROP. 127.0.0.5–7 are allocated to XBL, and the helper read them as PBL.
+
+**REQ-DNSINTEL-003 — a per-name wildcard read as no wildcard.** `detect_wildcard` returned a fingerprint only when both GUID canaries resolved to the same IP set. Otherwise it returned `None`, which means no filtering. A GUID label resolves only through a wildcard, so two canaries resolving to different sets prove one exists.
+- Live, `herokuapp.com` gives the two canaries different ingress CNAMEs and disjoint IP sets, both through one provider and across providers.
+- So every one of the 146 dictionary words (brute) or up to 80 siblings (permute) was emitted as a subdomain at 0.85 / 0.75 and re-dispatched.
+- A canary that timed out also read as "no wildcard".
+
+### Implemented
+
+**REQ-DNS-001**
+- `util::dns` defines `QUAD9_UNFILTERED` (`9.9.9.10`, `149.112.112.10`). Quad9's service table describes it as "No Malware blocking, DNSSEC validation". The pool uses it.
+- Negative answers stay trusted: an unfiltered resolver's NXDOMAIN is the zone's own.
+- Distrusting only Quad9's negatives would not be enough. hickory's `most_specific` prefers a `NoRecordsFound` over a timeout, so when Cloudflare and Google are unreachable (the case the pool exists for) the block would still win.
+- `answered()`'s doc now names the property it relies on.
+- The opt-in `HUNTSMAN_DNS_RESOLVERS` egress rotation keeps the filtered preset. It resolves hosts the engine connects to, where blocking protects the operator.
+
+**REQ-DNSINTEL-002 — one reading of a DNSBL answer**
+- `dnsbl_answer` returns `Listed` / `NotListed` / `Unresolved`:
+  - `127.255.255.0/24` (Spamhaus's error range) and anything outside `127.0.0.0/8` are `Unresolved`;
+  - for ZEN, abuse codes are `Listed`, PBL is `NotListed`, and any value outside the published table is `Unresolved`;
+  - any other `127/8` value is a listing (RFC 5782 §2.3), never a pass.
+- `zone_answer` counts a zone only when its RFC 5782 §5 test entries behave through the same path: `127.0.0.2` listed and `127.0.0.1` not. The entries are queried concurrently with the address and cached for their TTL.
+- `BlocklistTally::record` is the one place an answer becomes a count. An `Unresolved` zone is disclosed through the existing `unresolved_count` / `coverage: partial` and is never folded into "clean on N". `supports_a_verdict` and `is_wholly_unresolved` are unchanged.
+- `is_spamhaus_abuse_listing` uses Spamhaus's own table: 2–9 are abuse codes, 10–11 are policy. The ZEN zone name is single-sourced as `constants::SPAMHAUS_ZEN`.
+- Through public resolvers today, 5 zones answer and ZEN, CBL and SORBS are disclosed as unresolved. Nothing lists `8.8.8.8`.
+
+**REQ-DNSINTEL-003 — a typed wildcard verdict**
+- `wildcard_verdict` maps two `Canary` outcomes to a `Wildcard`:
+  - both "no such name" → `Absent`: every hit is reported;
+  - both resolved to different sets → `Unstable`: the pass reports nothing;
+  - one set that the other canary does not contradict → `CatchAll`: exact-match noise is filtered as before;
+  - a failed canary and none resolved → `Unknown`.
+- Under `CatchAll` and `Unknown`, hits that are a majority of the candidates are treated as the wildcard answering. That covers an upstream returning different edge addresses, and failed canaries on a wildcard zone.
+- `reportable_hits` is shared by brute and permute. It withholds those hits and **declares** the cut through `ModuleResult::mark_truncated` (REQ-COVERAGE-001).
+- Both passes now return a `ModuleResult`, and `process_domain` `absorb`s them.
+
+### Locks
+
+- `util::dns::tests`:
+  - `no_filtering_resolver_answers_for_the_pool`: Quad9 Recommended / ECS and 1.1.1.1 for Families are absent, and every member is trusted;
+  - `pool_spans_all_three_providers` now asserts `9.9.9.10`.
+- `modules::dns_intel::tests`:
+  - `a_dnsbl_error_code_is_neither_a_listing_nor_a_clean_answer`
+  - `an_answer_outside_127_slash_8_is_a_rewritten_nxdomain_not_a_listing`
+  - `a_documented_listing_code_is_still_a_listing` (over-correction guard)
+  - `a_zone_that_fails_its_rfc5782_test_entries_establishes_nothing`
+  - `the_public_resolver_sweep_lists_nothing_and_counts_no_refusal_as_clean`: the live Cloudflare sweep, zone by zone
+  - `spamhaus_abuse_listing_accepts_the_codes_allocated_to_xbl_and_sbl`. It replaces `spamhaus_abuse_listing_rejects_pbl_isp`, which encoded the defect. `…accepts_drop` / `…accepts_xbl` now carry Spamhaus's codes.
+  - `two_canaries_that_resolve_to_different_sets_are_a_wildcard_not_its_absence`
+  - `a_failed_canary_is_not_proof_there_is_no_wildcard`
+  - `hits_that_swamp_the_dictionary_under_a_catch_all_are_the_catch_all`
+  - `a_zone_the_canaries_prove_has_no_wildcard_reports_every_hit` (over-correction guard)
+
+Two pieces of network glue are not unit-locked: `blocklist_check`'s `tokio::join!` of the three names, and `process_domain`'s `absorb`. The type forces the `absorb`, because a `ModuleResult` cannot be `extend`ed into another.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| Q1 | **baseline**: Quad9's filtered service (`9.9.9.9`) back in the pool | see apply log |
+| Q2 | over-correction: Quad9 dropped from the pool | see apply log |
+| Q3 | over-correction: no member's NXDOMAIN trusted | see apply log |
+| B1 | **baseline**: Spamhaus's `127.255.255.x` errors read as values | see apply log |
+| B2 | **baseline**: a value outside `127/8` is a listing | see apply log |
+| B3 | **baseline**: an unknown ZEN value is a clean check | see apply log |
+| B4 | an answer with no A value counts as an answer | see apply log |
+| B5 | **baseline**: the RFC 5782 test entries not checked | see apply log |
+| B6 | the unlisted test entry need only resolve | see apply log |
+| B7 | **baseline**: an unresolved zone counted as answered | see apply log |
+| B8 | **baseline**: ZEN's XBL-allocated codes read as policy | see apply log |
+| B9 | over-correction: every `127/8` value unresolved | see apply log |
+| B10 | over-correction: PBL unresolved | see apply log |
+| B11 | over-correction: NXDOMAIN unresolved | see apply log |
+| W1 | **baseline**: two canaries with different sets read as no wildcard | see apply log |
+| W2 | **baseline**: a failed canary read as no wildcard | see apply log |
+| W3 | **baseline**: an unstable wildcard's hits reported | see apply log |
+| W4 | **baseline**: no majority backstop | see apply log |
+| W5 | over-correction: a catch-all withholds every hit | see apply log |
+| W6 | over-correction: the backstop overrides proven absence | see apply log |
+| W7 | **baseline**: the withheld pass is silent | see apply log |
+| W8 | regression: the stable catch-all's fingerprint lost | see apply log |
+| W9 | over-correction: one canary's sample withholds everything | see apply log |
+
+**Falsification (compiled):** 23 of 23 killed.

@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use tokio::sync::Semaphore;
 
-use super::wildcard::is_wildcard_noise;
-use crate::core::module::ModuleContext;
+use super::wildcard::{Wildcard, is_wildcard_noise};
+use crate::core::module::{ModuleContext, ModuleResult};
 use crate::util::dns::shared_resolver;
 
 /// A resolved hostname candidate: `(host, comma-joined resolved IPs, IP count)`.
@@ -21,8 +21,9 @@ pub(super) type ResolvedHost = (String, String, usize);
 /// Resolve every `candidates` hostname concurrently (bounded to `max_concurrent`
 /// in flight), keep only the ones with at least one A/AAAA record that is NOT
 /// indistinguishable from `wildcard_fingerprint`'s catch-all noise (`None` when
-/// the caller's zone has no detected wildcard — the common case, and the only
-/// behaviour prior to wildcard detection existing), and return them sorted by
+/// the caller's zone has no stable catch-all to filter, see
+/// [`Wildcard::fingerprint`]; what a wildcard leaves reportable is
+/// [`reportable_hits`]'s decision), and return them sorted by
 /// hostname for deterministic output regardless of DNS completion order —
 /// `join_next()` yields in network-completion order (nondeterministic
 /// run-to-run), so this collects first and sorts after, matching the
@@ -75,4 +76,33 @@ pub(super) async fn resolve_hosts_concurrently(
     }
     hits.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     hits
+}
+
+/// The `hits` a hostname-enumeration pass over `candidates` names under `zone`
+/// may report: all of them, or — when `zone`'s wildcard leaves them
+/// indistinguishable from its own answer
+/// ([`Wildcard::leaves_hits_distinguishable`]) — none, declared on `result`
+/// through [`ModuleResult::mark_truncated`] so the withheld pass reads as
+/// incomplete rather than as "no subdomains". Shared by the brute-force and
+/// permutation passes, which face the same wildcard. Pure.
+pub(super) fn reportable_hits(
+    zone: &str,
+    wildcard: &Wildcard,
+    candidates: usize,
+    hits: Vec<ResolvedHost>,
+    result: &mut ModuleResult,
+) -> Vec<ResolvedHost> {
+    if wildcard.leaves_hits_distinguishable(hits.len(), candidates) {
+        return hits;
+    }
+    result.mark_truncated(
+        0,
+        None,
+        &format!(
+            "the wildcard DNS record on {zone}, which answers for names that do not exist: {} of \
+             {candidates} candidate subdomains resolved and none can be told apart from it",
+            hits.len()
+        ),
+    );
+    Vec::new()
 }

@@ -30,17 +30,16 @@
 //! [`permutation_split`].
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::ModuleContext,
+    module::{ModuleContext, ModuleResult},
     scan::Target,
 };
 
-use super::resolve_batch::resolve_hosts_concurrently;
+use super::resolve_batch::{reportable_hits, resolve_hosts_concurrently};
 use super::wildcard::detect_wildcard;
 use super::{MAX_CONCURRENT_BRUTE, SRC};
 
@@ -147,31 +146,41 @@ fn permutation_split(host: &str) -> Option<(&str, &str)> {
 
 /// Structural permutation sweep for one target. No-op (returns empty) unless
 /// `target` is a subdomain ([`permutation_split`]) — the registrable apex has
-/// no informative leftmost label to mutate.
+/// no informative leftmost label to mutate. A pass a wildcard swallows comes
+/// back empty and declared truncated ([`reportable_hits`]).
 pub(super) async fn permute_subdomains(
     target: &Target,
     ctx: &ModuleContext,
-) -> Result<Vec<Entity>> {
+) -> Result<ModuleResult> {
     let host = target.value.trim().trim_end_matches('.').to_lowercase();
     if host.is_empty() || host.contains('/') || host.contains(' ') {
-        return Ok(Vec::new());
+        return Ok(ModuleResult::new());
     }
     let Some((label, rest)) = permutation_split(&host) else {
-        return Ok(Vec::new());
+        return Ok(ModuleResult::new());
     };
 
     let candidates = generate_permutations(label, rest);
     if candidates.is_empty() {
-        return Ok(Vec::new());
+        return Ok(ModuleResult::new());
     }
+    let candidate_count = candidates.len();
 
     // Same wildcard-DNS guard as `brute_subdomains` — these candidates are
     // siblings of `label` under `rest`, so the zone to fingerprint is `rest`
     // (matching the zone `brute_subdomains` would test if dispatched there).
-    let wildcard_fp = detect_wildcard(rest).await.map(Arc::new);
+    let wildcard = detect_wildcard(rest).await;
 
-    let hits = resolve_hosts_concurrently(candidates, MAX_CONCURRENT_BRUTE, wildcard_fp, ctx).await;
+    let hits = resolve_hosts_concurrently(
+        candidates,
+        MAX_CONCURRENT_BRUTE,
+        wildcard.fingerprint(),
+        ctx,
+    )
+    .await;
 
+    let mut result = ModuleResult::new();
+    let hits = reportable_hits(rest, &wildcard, candidate_count, hits, &mut result);
     let entities: Vec<Entity> = hits
         .into_iter()
         .map(|(resolved_host, ips_joined, count)| {
@@ -199,7 +208,8 @@ pub(super) async fn permute_subdomains(
             e
         })
         .collect();
-    Ok(entities)
+    result.extend(entities);
+    Ok(result)
 }
 
 #[cfg(test)]

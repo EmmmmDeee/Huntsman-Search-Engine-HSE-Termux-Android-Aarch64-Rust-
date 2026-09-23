@@ -173,9 +173,13 @@ pub(super) const SUBDOMAINS: &[&str] = &[
     "ap1",
 ];
 
+/// Spamhaus ZEN, the one zone here whose answer codes include policy
+/// (non-reputation) listings — see `resolve::is_spamhaus_abuse_listing`.
+pub(super) const SPAMHAUS_ZEN: &str = "zen.spamhaus.org";
+
 /// DNS-based blocklists — zone + human label.
 pub(super) const BLOCKLISTS: &[(&str, &str)] = &[
-    ("zen.spamhaus.org", "Spamhaus ZEN"),
+    (SPAMHAUS_ZEN, "Spamhaus ZEN"),
     ("bl.spamcop.net", "SpamCop"),
     ("dnsbl.sorbs.net", "SORBS"),
     ("b.barracudacentral.org", "Barracuda"),
