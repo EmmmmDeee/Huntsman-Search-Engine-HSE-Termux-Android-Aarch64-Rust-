@@ -4,28 +4,22 @@
 //! `modules::cert_intel` records the issuer, subject and issuer organisation
 //! as evidence (REQ-CERTINTEL-002).
 //!
-//! Not a general X.509 parser — no OID table, no chain validation. It DOES
-//! walk the `Certificate.tbsCertificate` `SEQUENCE` structurally (RFC 5280
-//! §4.1) far enough to find the byte range of the `issuer`/`subject` `Name`
-//! field being asked about, then scans only inside that bounded range for
-//! the target OID's `AttributeTypeAndValue`. That bound is load-bearing, not
-//! cosmetic: `der` is the peer's own certificate, so every byte before the
-//! issuer field — the version, the serial number, the signature algorithm —
-//! is attacker-controlled when the peer is a self-signed interception proxy.
-//! An earlier version of this scanner searched the *entire* buffer for the
-//! OID byte sequence and returned the first hit; a MITM certificate could
-//! plant a fake `organizationName` inside its own chosen serial-number bytes
-//! (which precede the real issuer in the DER encoding) and have it read back
-//! as an allow-listed CA, defeating the one check this module exists to
-//! make honest. Structurally locating the issuer/subject field first closes
-//! that: the only way to influence what this returns is to put the value in
-//! the field actually being asked about, which is the thing being checked
-//! either way.
+//! Not a general X.509 parser — no OID table, no chain validation — but
+//! structural all the way down: it walks `Certificate.tbsCertificate` (RFC
+//! 5280 §4.1) to the `issuer` or `subject` `Name` asked about, then that
+//! Name's RDNs, and returns the value of the attribute whose type is exactly
+//! the requested OID. It never searches bytes. `der` is the peer's own
+//! certificate, so all of it is attacker-controlled when the peer is a
+//! self-signed interception proxy, and searching for `organizationName`'s
+//! bytes was defeated twice: across fields, by a serial number carrying them
+//! ahead of the real issuer, and within a field, by a CN value carrying them
+//! ahead of the real O. Each time an allow-listed CA name was read back as
+//! the issuer's organisation.
 //!
-//! The bound also keeps legitimate certificates honest. `cert_intel` once had
-//! its own whole-buffer copy, which reported the subject's organisation as
-//! the issuer's whenever the issuer named none, and the last CN anywhere in
-//! the certificate — one inside an extension included — as the subject.
+//! Searching also misread legitimate certificates. `cert_intel`'s old
+//! whole-buffer copy reported the subject's organisation as the issuer's
+//! whenever the issuer named none, and the last CN anywhere in the
+//! certificate — one inside an extension included — as the subject.
 
 use std::ops::Range;
 
@@ -69,7 +63,7 @@ fn der_tlv(der: &[u8], pos: usize) -> Option<(usize, usize)> {
 /// `SEQUENCE { [0] version OPTIONAL, serialNumber INTEGER, signature
 /// AlgorithmIdentifier, issuer Name, validity Validity, subject Name, ... }`
 /// (RFC 5280 §4.1). Each range covers that field's own tag+length+content,
-/// so a caller scanning inside it can never see a byte from a sibling field.
+/// so a caller reading inside it can never see a byte from a sibling field.
 ///
 /// Returns `None` if `der` does not parse as this shape at all — never a
 /// partial or best-guess range, since a wrong range would defeat the one
@@ -135,40 +129,50 @@ fn issuer_and_subject_ranges(der: &[u8]) -> Option<(Range<usize>, Range<usize>)>
     Some((issuer, subject))
 }
 
-/// Scan a byte range already known to be exactly one certificate `Name`
-/// field's DER encoding for `oid`'s `AttributeTypeAndValue`, returning the
-/// first matching string value in that range. A raw scan is safe here
-/// (rather than a full RDN/`AttributeTypeAndValue` walk) only because the
-/// caller has already bounded the search to the one field being asked
-/// about — see [`issuer_and_subject_ranges`].
-fn scan_oid_value(field: &[u8], oid: &[u8]) -> Option<String> {
-    for i in 0..field.len().saturating_sub(oid.len()) {
-        if &field[i..i + oid.len()] != oid {
-            continue;
+/// The `(tag, content)` of each TLV laid end to end in `der`, or `None` if any
+/// of them does not parse or would read past `der`.
+fn tlvs(der: &[u8]) -> Option<Vec<(u8, &[u8])>> {
+    let mut out = Vec::new();
+    let mut pos = 0;
+    while pos < der.len() {
+        let (hdr, len) = der_tlv(der, pos)?;
+        out.push((der[pos], &der[pos + hdr..pos + hdr + len]));
+        pos += hdr + len;
+    }
+    Some(out)
+}
+
+/// The value of the first attribute whose type is exactly `oid` in `name`,
+/// one `Name`'s whole DER encoding, walked as RFC 5280 defines it:
+/// `SEQUENCE OF` RDN, each RDN a `SET OF` `AttributeTypeAndValue`, each of
+/// those a `SEQUENCE { type OID, value }`. Values in the three string forms a
+/// CA uses for these attributes (UTF8String, PrintableString, IA5String) are
+/// read; anything that is not this structure is `None`, never a best guess.
+fn name_attribute(name: &[u8], oid: &[u8]) -> Option<String> {
+    let outer = tlvs(name)?;
+    let &[(0x30, rdns)] = outer.as_slice() else {
+        return None;
+    };
+    for (tag, rdn) in tlvs(rdns)? {
+        if tag != 0x31 {
+            return None;
         }
-        let after = i + oid.len();
-        if after + 4 >= field.len() {
-            continue;
-        }
-        let mut pos = after;
-        while pos < field.len() && pos < after + 6 {
-            let tag = field[pos];
-            // 0x0C UTF8String, 0x13 PrintableString, 0x16 IA5String — the
-            // three DirectoryString/IA5String forms a CA is free to pick for
-            // an RDN value.
-            if tag == 0x0C || tag == 0x13 || tag == 0x16 {
-                let len = field.get(pos + 1).copied().unwrap_or(0) as usize;
-                if pos + 2 + len <= field.len()
-                    && let Ok(s) = std::str::from_utf8(&field[pos + 2..pos + 2 + len])
-                {
-                    let s = s.trim().to_string();
-                    if !s.is_empty() {
-                        return Some(s);
-                    }
-                }
-                break;
+        for (tag, atv) in tlvs(rdn)? {
+            if tag != 0x30 {
+                return None;
             }
-            pos += 1;
+            let parts = tlvs(atv)?;
+            let &[(0x06, attr_type), (value_tag, value)] = parts.as_slice() else {
+                return None;
+            };
+            if attr_type != oid || !matches!(value_tag, 0x0C | 0x13 | 0x16) {
+                continue;
+            }
+            if let Ok(s) = std::str::from_utf8(value)
+                && !s.trim().is_empty()
+            {
+                return Some(s.trim().to_string());
+            }
         }
     }
     None
@@ -196,7 +200,7 @@ pub fn extract_field_from_der(der: &[u8], oid: &[u8], field: NameField) -> Optio
         NameField::Issuer => issuer,
         NameField::Subject => subject,
     };
-    scan_oid_value(&der[range], oid)
+    name_attribute(&der[range], oid)
 }
 
 /// DER builders for synthetic certificates, shared by this module's tests and
@@ -358,6 +362,62 @@ mod tests {
             extract_field_from_der(&cert, OID_O, NameField::Issuer).as_deref(),
             Some("Evil MITM Proxy"),
             "the planted serial-number payload must not be read as the issuer org"
+        );
+    }
+
+    #[test]
+    fn another_attributes_value_holding_the_oids_bytes_is_not_read_as_it() {
+        // A valid UTF8String CN whose content is `organizationName`'s OID then
+        // a string header, placed ahead of the real O inside the SAME field:
+        // the field bound cannot separate them, only the attribute structure
+        // can.
+        let mut planted = vec![0x55, 0x04, 0x0A, 0x0C, 0x0C];
+        planted.extend_from_slice(b"DigiCert Inc");
+        let planted = String::from_utf8(planted).expect("control bytes are valid UTF-8");
+        let cert = certificate(
+            &[0x01],
+            &name(&[(OID_CN, &planted), (OID_O, "Evil MITM Proxy")]),
+            &tlv(0x30, &[]),
+            &[],
+        );
+
+        assert_eq!(
+            extract_field_from_der(&cert, OID_O, NameField::Issuer).as_deref(),
+            Some("Evil MITM Proxy")
+        );
+    }
+
+    #[test]
+    fn an_attribute_type_merely_ending_in_the_oids_bytes_is_not_it() {
+        // OID 1.2.3.85.4.10 is encoded `2A 03 55 04 0A`: it ends with
+        // `organizationName`'s bytes, and it is not `organizationName`.
+        let cert = certificate(
+            &[0x01],
+            &name(&[
+                (&[0x2A, 0x03, 0x55, 0x04, 0x0A], "Fake Org"),
+                (OID_O, "Real Org"),
+            ]),
+            &tlv(0x30, &[]),
+            &[],
+        );
+
+        assert_eq!(
+            extract_field_from_der(&cert, OID_O, NameField::Issuer).as_deref(),
+            Some("Real Org")
+        );
+    }
+
+    #[test]
+    fn a_name_that_is_not_rdns_of_attributes_yields_none_not_a_guess() {
+        // An `organizationName` attribute sitting directly in the Name
+        // SEQUENCE, without the RDN SET around it: not a Name.
+        let mut atv = tlv(0x06, OID_O);
+        atv.extend(tlv(0x0C, b"Loose Org"));
+        let cert = certificate(&[0x01], &tlv(0x30, &tlv(0x30, &atv)), &tlv(0x30, &[]), &[]);
+
+        assert_eq!(
+            extract_field_from_der(&cert, OID_O, NameField::Issuer),
+            None
         );
     }
 

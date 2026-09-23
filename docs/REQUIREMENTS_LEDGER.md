@@ -20699,3 +20699,35 @@ in `util::x509_field`.
 | CI2-S | `NameField::Issuer` and `NameField::Subject` arms swapped in the one reader | killed by 4: both `cert_intel` locks, `each_field_is_read_from_its_own_name`, and the forged-serial test. Both self-signed-fixture tests **survived**, which is why the distinct-value test exists |
 
 **2 of 2 killed**; the file was restored byte-identical (md5).
+
+### Review round: bounding the field was not enough
+
+PR review (Copilot, High) found the same defect one level down. The field
+bound separated the issuer from the serial number and from the subject, but
+inside the bound the reader still searched bytes. So a valid UTF8String CN
+whose content is `organizationName`'s OID followed by a string header, placed
+ahead of the real O, was read back as the issuer's organisation. That CN
+carried `"DigiCert Inc"`, which is an exact entry on `core::outage`'s
+allow-list. A suffix match did the same: an attribute type such as
+1.2.3.85.4.10, encoded `2A 03 55 04 0A`, ends in O's bytes and was read as O.
+This was the residual REQ-RESILIENCE-003 had scoped out as harmless because
+whoever controls an issuer field can set its O anyway. That is true for the
+interception check, but it does not make returning the wrong attribute
+correct.
+
+The reader now walks the `Name` itself: `SEQUENCE OF` RDN, each a `SET OF`
+`AttributeTypeAndValue`, each a `SEQUENCE { type, value }`. The type must
+equal the OID exactly, and every length goes through the bounds-checked
+`der_tlv`. It never searches bytes. Anything that is not that structure is
+`None`, as a malformed field range already was.
+
+| # | mutation | result |
+|---|---|---|
+| CI2-R1 | **baseline**: the byte search inside the bounded field, three tests written first | all three failed: `"DigiCert Inc"` for the planted CN, `"Fake Org"` for the suffix OID, `"Loose Org"` guessed from a non-`Name` |
+| CI2-R2 | `attr_type != oid` weakened to `!attr_type.ends_with(oid)` | killed by `an_attribute_type_merely_ending_in_the_oids_bytes_is_not_it` alone |
+
+**2 of 2 killed.** The run also surfaced an unrelated flake,
+`app::outage::tests::ip_literal_reachable_is_false_against_a_refused_port`.
+Its "refused" port is bound, dropped, then connected to, and a concurrent
+test can be handed the freed port in between. That is recorded for its own
+fix rather than folded into this change.
