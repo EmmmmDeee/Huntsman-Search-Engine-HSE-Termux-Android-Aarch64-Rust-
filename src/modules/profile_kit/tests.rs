@@ -170,3 +170,52 @@ fn bio_emails_extracts_every_address_uncapped() {
 fn bio_emails_empty_when_none_present() {
     assert!(bio_emails("no contact details here", 0.68, SCAN).is_empty());
 }
+
+// ── location_coordinates ─────────────────────────────────────────────────────
+
+#[test]
+fn a_bare_or_embedded_4_digit_code_on_a_global_profile_is_not_an_australian_fix() {
+    // Vienna / Auckland 1010, Zürich 8001, Copenhagen 2100, and developer joke
+    // locations: none names Australia, so none may borrow an AU postcode centroid.
+    for loc in [
+        "1010",
+        "8001",
+        "2100",
+        "1337",
+        "localhost:3000",
+        "127.0.0.1:8080",
+        "1010 Wien",
+        "3000 Bern",
+    ] {
+        assert!(
+            location_coordinates(loc, 0.28, SCAN).is_none(),
+            "{loc:?} must not geocode to an AU postcode centroid"
+        );
+    }
+}
+
+#[test]
+fn a_profile_location_that_names_australia_still_resolves_by_postcode() {
+    // Over-correction guard: an AU postcode with an explicit state, or the word
+    // Australia, keeps the offline postcode fallback; a named city (AU or not)
+    // resolves as before.
+    for loc in [
+        "Maleny QLD 4552",
+        "Australia 3000",
+        "Liverpool, NSW 2170",
+        "Brisbane 4000",
+        "Auckland 1010",
+        "Sydney",
+    ] {
+        assert!(
+            location_coordinates(loc, 0.28, SCAN).is_some(),
+            "{loc:?} must still resolve"
+        );
+    }
+    let c = location_coordinates("Liverpool, NSW 2170", 0.28, SCAN).expect("resolves");
+    assert!(
+        c.value.starts_with("-33."),
+        "AU Liverpool, not England: {}",
+        c.value
+    );
+}

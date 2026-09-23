@@ -20355,3 +20355,22 @@ The mapping moves into pure seams `reverse_ip_result` and `subdomain_result`, wh
 applied verbatim, because the surrounding code had moved on. It was applied with
 fuzz and reviewed. The reverse-IP cause string names `MAX_REVERSE_RECORDS`
 instead of repeating the literal `30`.
+**Falsification (compiled):** 4 of 6 killed.
+
+## REQ-PROFILEKIT-001 — A self-reported profile location earns an AU postcode centroid only when it names Australia
+
+**Found:** `profile_kit::location_coordinates` sent worldwide profile locations (gitlab, codeberg, gitea, stackoverflow, devto, dockerhub, codewars, steam, keybase) to `util::city_coords::city_coords`. That function has two postcode fallbacks meant for AU data: a bare 4-digit string (`is_shaped`, shape-only) and an embedded trailing run (`au_postcode_in`). Neither requires the text to name Australia. So `"1010"` (Vienna or Auckland) became Sydney, `"8001"` (Zürich) became Melbourne, and `"localhost:3000"` and `"1010 Wien"` became Melbourne CBD and Sydney. Keybase emits the result at `confidence::MEDIUM` and is an anchoring geo source, so the fabricated fix entered AU-052/053.
+
+**Implemented:** A new `util::city_coords::self_reported_city_coords` shares the body of `city_coords` through `resolve_city_coords(addr, postcodes_need_au_evidence)`. When no tabulated city matches, it permits the postcode fallbacks only if the existing `names_au_locality` holds (the word australia, or an AU postcode plus an explicit AU state). This is the same rule, "an AU postcode alone is not proof of Australia", that the file already applies on the homonym gate. `location_coordinates` now uses it. `city_coords` is unchanged for breach and search callers.
+
+**Locks:** `a_bare_or_embedded_4_digit_code_on_a_global_profile_is_not_an_australian_fix`, `a_profile_location_that_names_australia_still_resolves_by_postcode` (over-correction guard), and the `self_reported_city_coords` doc-test.
+
+| Falsification | Mutation | Expected failing test | Result |
+|---|---|---|---|
+| baseline-caller | profile_kit calls `city_coords` again | a_bare_or_embedded_4_digit_code… | see apply log |
+| baseline-gate | remove the `names_au_locality` gate | a_bare_or_embedded_4_digit_code… | see apply log |
+| baseline-flag | self_reported passes `false` | a_bare_or_embedded_4_digit_code… | see apply log |
+| overcorrect-no-postcode-fallback | gate every postcode fallback | a_profile_location_that_names_australia… | see apply log |
+| overcorrect-gate-before-city-match | gate before the city match | a_profile_location_that_names_australia… (Auckland 1010, Brisbane 4000) | see apply log |
+
+**Falsification (compiled):** 5 of 5 killed.

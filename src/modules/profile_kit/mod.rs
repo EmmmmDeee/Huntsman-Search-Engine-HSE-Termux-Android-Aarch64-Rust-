@@ -151,6 +151,11 @@ pub(crate) fn location_address(loc: &str, confidence: f64, scan_id: &str) -> Opt
 /// unrecognised or the location guard rejects it. `coord_confidence` should
 /// be slightly below the companion Address confidence (typically −0.10).
 /// The caller tags and evidences the returned entity.
+///
+/// A profile location is worldwide free text, so a 4-digit code earns an
+/// Australian postcode centroid only when the text itself names Australia
+/// ([`crate::util::city_coords::self_reported_city_coords`]): `"1010"` is
+/// Vienna or Auckland as often as Sydney.
 pub(crate) fn location_coordinates(
     loc: &str,
     coord_confidence: f64,
@@ -160,7 +165,7 @@ pub(crate) fn location_coordinates(
     if trimmed.is_empty() || trimmed.len() > 100 {
         return None;
     }
-    let (lat, lon) = crate::util::city_coords::city_coords(trimmed)?;
+    let (lat, lon) = crate::util::city_coords::self_reported_city_coords(trimmed)?;
     let coord_val = format!("{lat:.4},{lon:.4}");
     let mut c = Entity::new(
         EntityKind::Coordinates,

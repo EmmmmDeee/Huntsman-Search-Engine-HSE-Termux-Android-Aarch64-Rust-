@@ -39,6 +39,41 @@
 /// assert!(city_coords("Brisbane, Australia").is_some());
 /// ```
 pub fn city_coords(addr: &str) -> Option<(f64, f64)> {
+    resolve_city_coords(addr, false)
+}
+
+/// [`city_coords`] for a SELF-REPORTED, worldwide free-text location (a
+/// GitLab / Keybase / Steam profile "location" field), where the two
+/// Australian postcode fallbacks may fire only when the text itself names
+/// Australia (`names_au_locality`: `"australia"`, or an AU postcode plus an
+/// explicit AU state).
+///
+/// [`city_coords`] serves AU breach and search data, where a bare `"4000"` is
+/// an Australian postcode. A worldwide profile is not: at least a dozen
+/// countries use 4-digit postcodes (AT `1010` Vienna, NZ `1010` Auckland, CH
+/// `8001` Zürich, DK `2100` Copenhagen), and `"localhost:3000"` is a common
+/// developer joke. Through the fallbacks those became precise Sydney /
+/// Melbourne fixes for a subject who never named Australia. This is the
+/// same rule `names_au_locality` already enforces on the homonym gate — an
+/// in-range AU postcode ALONE is not proof of Australia — applied to the
+/// postcode branches. A tabulated city match is unaffected, so `"Auckland
+/// 1010"`, `"Brisbane 4000"` and `"Liverpool, NSW 2170"` keep resolving.
+///
+/// ```
+/// use huntsman_search_engine::util::city_coords::self_reported_city_coords;
+///
+/// assert_eq!(self_reported_city_coords("1010"), None);
+/// assert_eq!(self_reported_city_coords("localhost:3000"), None);
+/// assert!(self_reported_city_coords("Maleny QLD 4552").is_some());
+/// ```
+pub fn self_reported_city_coords(addr: &str) -> Option<(f64, f64)> {
+    resolve_city_coords(addr, true)
+}
+
+/// Shared body of [`city_coords`] and [`self_reported_city_coords`];
+/// `postcodes_need_au_evidence` gates the two AU postcode fallbacks on
+/// [`names_au_locality`].
+fn resolve_city_coords(addr: &str, postcodes_need_au_evidence: bool) -> Option<(f64, f64)> {
     let trimmed = addr.trim();
     let lower = trimmed.to_lowercase();
     // A REGION label must not earn the centroid of the city inside it. The
@@ -55,6 +90,9 @@ pub fn city_coords(addr: &str) -> Option<(f64, f64)> {
     }
     if let Some(hit) = match_tabulated_city(&lower) {
         return Some(hit);
+    }
+    if postcodes_need_au_evidence && !names_au_locality(&lower) {
+        return None;
     }
     // Last-resort: treat a bare 4-digit string as a postcode — the exact suburb
     // centroid when tabulated, else the region centroid by leading digits so the
