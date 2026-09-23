@@ -20163,3 +20163,70 @@ control locks this.
 | CW-P1 | the production path drifts | see apply log |
 
 **Falsification (compiled):** 8 of 8 killed.
+
+## REQ-IPQS-001 — an IPQS failure that was not about the key read as "IPQS holds nothing"
+
+**Found** by the adversarially verified module audit (`ipqs`) and re-verified
+on the current tree before anything was designed.
+
+`ipqs` hands its body verdict to the shared key cascade
+(`util::http::keyed_cascade_json`). The verdict separated `success:false`
+bodies in two: a key/quota message became `KeyFailure`, so the key burned and
+the next pooled key was tried, and **everything else** became
+`BodyVerdict::Absent`. The cascade reads `Absent` as a genuine miss, so
+`process` returned `Ok(empty)`. Dispatch records that as
+`ModuleDone { found: 0 }`, and `core::coverage` aggregates it as
+`CleanNegative`: "IPQS holds nothing on this IP / email / phone". But the
+branch was taken for an internal error, a suspended account, a plan
+restriction, or any wording `is_key_or_quota_message` does not recognise.
+This is the `success:false`-as-clean-miss shape REQ-SUCCESSFLAG-001 closed in
+`breachdirectory` and `c99`, reached here through the verdict closure rather
+than a fused `if`.
+
+**The audit's design was narrowed on re-verification.** It kept a clean miss
+for `success:false` bodies whose `message` began with an "invalid target"
+prefix. That prefix list could not be verified. IPQS's response-parameter
+reference describes `message` only as "generally success, but may contain …
+some form of an error notice", and names no invalid-target wording. It also
+answers an invalid email or phone with `success:true` and `valid:false`, which
+already reaches `build_reputation_entity` as an answer. The allow-list was
+dropped: no refusal text is trusted as "IPQS holds nothing".
+
+### Implemented
+
+- `body_verdict(&Common) -> BodyVerdict` is the module's verdict, now a named,
+  pure function. `success:false` with a key/quota message is `KeyFailure`,
+  carrying IPQS's own message, so rotation is unchanged. Every other body is
+  `Accept`.
+- `accepted(Common) -> Result<Common>` fails an accepted `success:false` body
+  closed with IPQS's own words: `IPQS answered success=false: <message>`. A
+  body with no `success` flag is an answer, not a failure. That is the
+  weakest condition that still rejects a provider-declared failure, the same
+  trade REQ-FOFA-001 and REQ-SUCCESSFLAG-001 made.
+- `query(ctx, client, api_base, endpoint, value, initial_key)` is the whole
+  request path: cascade, verdict, acceptance. `process` calls it with the
+  production `API_BASE`, so a loopback test runs the real path. A `404` is
+  still the clean miss.
+
+### Locks
+
+`modules::ipqs::tests`:
+- `a_non_key_provider_failure_is_never_a_clean_miss` covers a bare
+  `success:false`, an internal error and a plan restriction. None is `Absent`,
+  and each fails closed.
+- `an_unverified_refusal_text_fails_closed_and_a_dead_key_still_rotates`:
+  - invalid-target-looking wording fails closed with IPQS's own text;
+  - `Invalid API Key.` is still `KeyFailure`;
+  - `success:true`, and a body with no flag, are still answers.
+- `a_provider_failure_on_the_real_request_path_is_an_error_not_a_miss`: over
+  `util::http::test_server`, a `success:false` internal error is an `Err`
+  carrying IPQS's message, and the next `success:true` answer is `Some`.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| I1 | **baseline**: a non-key `success:false` is `Absent` again | killed by 3 |
+| I2 | wiring: `query` returns the body without `accepted` | killed by 1 |
+| I3 | over-correction: `accepted` fails every answer | killed by 2 |
+| I4 | a key/quota message no longer burns the key | killed by 1 |
