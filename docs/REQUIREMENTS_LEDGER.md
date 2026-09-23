@@ -20316,3 +20316,42 @@ never occurs. Apollo is `unknown`, and its `exposedData` has no password class.
 Of the 333 `unknown` breaches, 74 list `Passwords` in `exposedData`, which is
 why the data-class clause is load-bearing and not redundant with the
 allowlist.
+
+## REQ-SECURITYTRAILS-001 — reverse-IP and subdomain answers cut by paging and the 30-record cap were reported as complete
+
+**Requirement.** When SecurityTrails reports more associated domains or subdomains than the module processed, or when the client-side `MAX_REVERSE_RECORDS` cap drops records, the result must be declared partial through `ModuleResult::mark_truncated`. A partial answer must never reach coverage as `Observed`.
+
+### Found
+
+`reverse_ip` (mod.rs:260-267) and `subdomain_search` (:228-236) put the provider total only into the `total_associated` and `total_subdomains` evidence attributes, which have no reader. `truncation` was never set. For a shared host, 30 of 5000 co-tenants therefore read as a complete answer, and `settles_absence()` treated it as settled. This was the open residual listed under REQ-COVERAGE-001/002.
+
+### Implemented
+
+The mapping moves into pure seams `reverse_ip_result` and `subdomain_result`, which call the shared `mark_truncated`:
+- Reverse-IP compares `record_count` against records processed (`records.len().min(MAX_REVERSE_RECORDS)`, 30), counted before hostname rejection. With no count and more than 30 records, it marks the result with an unknown total.
+- Subdomain compares `subdomain_count` against the raw label count.
+
+### Locks
+
+- `a_paged_reverse_ip_answer_is_declared_truncated`
+- `a_reverse_ip_answer_over_the_cap_without_a_count_is_declared_truncated_with_no_total`
+- `a_subdomain_list_short_of_the_reported_count_is_declared_truncated`
+- `a_complete_reverse_ip_answer_with_a_rejected_record_stays_complete`
+- `a_reverse_ip_answer_of_exactly_the_cap_with_a_matching_count_stays_complete`
+- `a_complete_subdomain_list_with_a_www_echo_stays_complete`
+
+### Falsified
+
+| Mutation | Expected killer | Result |
+|---|---|---|
+| baseline-reverse-known-total | a_paged_reverse_ip_answer_is_declared_truncated | killed by 1 |
+| baseline-reverse-no-count-cap | a_reverse_ip_answer_over_the_cap_without_a_count_is_declared_truncated_with_no_total | killed by 1 |
+| baseline-subdomain | a_subdomain_list_short_of_the_reported_count_is_declared_truncated | killed by 1 |
+| overcorrect-reverse-counts-emitted-entities | a_complete_reverse_ip_answer_with_a_rejected_record_stays_complete | killed by 1 |
+| overcorrect-reverse-marks-full-page | a_reverse_ip_answer_of_exactly_the_cap_with_a_matching_count_stays_complete | killed by 2 |
+| overcorrect-subdomain-counts-entities | a_complete_subdomain_list_with_a_www_echo_stays_complete | killed by 1 |
+
+**Falsification (compiled):** 6 of 6 killed. The design's patch no longer
+applied verbatim, because the surrounding code had moved on. It was applied with
+fuzz and reviewed. The reverse-IP cause string names `MAX_REVERSE_RECORDS`
+instead of repeating the literal `30`.

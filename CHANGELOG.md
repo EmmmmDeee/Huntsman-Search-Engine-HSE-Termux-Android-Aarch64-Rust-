@@ -8,6 +8,7 @@ All notable changes to this project are documented here. Format per [Keep a Chan
 
 ### Fixed
 
+- securitytrails: reverse-IP answers cut by paging or the 30-record cap, and subdomain lists shorter than `subdomain_count`, are now declared truncated through `ModuleResult::mark_truncated` instead of being reported as complete (REQ-SECURITYTRAILS-001)
 - `ipqs` no longer reports an IPQS failure as "IPQS holds nothing". Its body verdict sent every `success:false` that was not about the key to the cascade as a genuine miss, so an internal error, a suspended account or a plan restriction became a clean negative on the IP, email or phone. Such a body is now the module's error, in IPQS's own words. A dead or exhausted key still rotates to the next pooled key, and a 404 is still the clean miss. The audit's proposed allow-list of "invalid target" messages was dropped: IPQS documents no such wording, and it answers an invalid email or phone with `success:true`, `valid:false` (REQ-IPQS-001).
 - xposed_or_not: `password-at-risk` is now set only when XposedOrNot rates the password risk (plaintext/easytocrack/hardtocrack) or the breach lists a `Passwords` data class. A breach whose risk is only "unknown" and that exposed no password is no longer reported as a credential exposure. (REQ-XON-001)
 - PassiveTotal now skips with MissingKey when `HUNTSMAN_PASSIVETOTAL_KEY` is set but malformed (no `:` or a blank half). It no longer returns an empty result that coverage recorded as a clean negative for a provider that was never queried. (REQ-KEYSKIP-003)
