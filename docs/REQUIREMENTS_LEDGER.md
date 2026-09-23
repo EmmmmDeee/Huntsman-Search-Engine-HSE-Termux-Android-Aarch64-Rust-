@@ -20391,3 +20391,67 @@ instead of repeating the literal `30`.
 | `an_actor_only_webfinger_is_still_a_fediverse_account` | baseline-actor-type-activity-json-only, overcorrect-require-profile-page, overcorrect-require-both | killed |
 
 **Falsification (compiled):** 5 of 5 killed.
+
+## REQ-OPENARCH-001 — ten register entries out of 9 539 were Open Archives' whole answer
+
+**Found** by the adversarially verified module audit. Re-verified on HEAD and against the live API.
+
+`openarch` requests one page from Open Archives (`number_show=10`). It decodes the index's own `number_found`, which the vendor's OpenAPI spec defines as "Total number of results found". That total was written only into a per-record `index_total` evidence attribute, and nothing outside the module reads it. `build_entities` never set `ModuleResult.truncation`. So `ModuleDone` carried `truncated: None`, and `core::coverage` recorded the provider as `Observed`: a complete answer whose silence settles an absence.
+
+- Live on 2026-09-23, "John Smith" returned `number_found` 9539 and 10 entries.
+- The drift canary "Jan Jansen" held 126 802 entries when it was chosen.
+- Every common-name FullName scan was affected.
+
+`ROWS`'s own doc promised that "the total is reported alongside". It was, but only in a place nothing reads. This is the REQ-COVERAGE-001 defect at one more site.
+
+The audit's harm claim was checked and narrowed:
+- The visible damage is the provider-coverage row. `report.json`, `GET /api/v1/scans/{id}/coverage` and the dossier appendix read "observed" with no reason, where they should read "truncated" and "10 of 9539 retrieved".
+- `settles_absence()` has no production consumer today. `IntelligenceLedger::record_provider`, `coverage_gaps` and `reject_claim` are called only from tests.
+- The note about the cache was stale. REQ-CACHE-001 already carries `truncation` through a replay, so openarch's 86 400 s TTL keeps the verdict.
+
+A second silent negative sat behind the first. The empty-page return ran before any verdict, so an answer with a positive `number_found` and no rows would read as "Open Archives holds nothing". REQ-WIKITREE-002's review round moved the same return in `wikitree`.
+
+### Implemented
+
+- `build_entities` takes the decoded `number_found: Option<u64>`. `process` passes it unchanged instead of collapsing an absent total into `0`.
+- The page's cut is declared before the empty-page return, through the existing authorities and in `hunter_io`'s shape:
+  - a total above the entries read: `mark_truncated_of(read, total, …)`, lossless for any `u64`;
+  - a total the page meets: complete;
+  - no total: `mark_truncated_if_capped(read, ROWS, …)`. A full page is bounded by the cap, a short one by the data.
+- "Read" means `docs.len().min(ROWS)`, the entries the loop actually takes.
+- A zero `number_found` counts as no total, as the `index_total` fallback always treated it. Beside returned rows it is false.
+- `index_total` is kept. It annotates each record in the dossier, which is a different job from deciding completeness (REQ-NETLAS-001's scope rule).
+- The module still fetches one page, by design. The vendor allows `number_show` up to 100 and paging with `start`, so the operator has a next step. The cut is now declared rather than hidden.
+
+### Locks
+
+`modules::openarch::tests`:
+- `a_page_short_of_the_index_total_is_declared_truncated`: 3 of 9539 on the live fixture, decoded the way `process` decodes it, plus an over-long page counted only up to the cap ("10 of 11").
+- `a_page_holding_the_whole_index_total_is_complete`: the over-correction guard, for a short page and a full page.
+- `with_no_index_total_a_full_page_is_declared_and_a_short_one_is_not`, including a zero total beside rows.
+- `an_empty_page_under_a_positive_index_total_is_declared_not_a_clean_negative`
+- `the_index_answering_no_match_is_a_clean_negative`: the over-correction guard on the live no-match shape captured 2026-09-23 (`number_found: 0`, `docs` omitted).
+- The four existing tests now pass the total as an `Option`. The missing-total test passes `None`, which is what it always meant.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| O1 | **baseline**: the cut is never declared | see apply log |
+| O2 | **baseline**: the empty-page return runs ahead of the verdict | see apply log |
+| O3 | over-correction: every page with a total is cut | see apply log |
+| O4 | over-correction, boundary: a page that meets the total is cut (`>=`) | see apply log |
+| O5 | **baseline**, no total: the full-page fallback dropped | see apply log |
+| O6 | over-correction: every page without a total is cut | see apply log |
+| O7 | read and total swapped ("9539 of 3") | see apply log |
+| O8 | a zero total beside rows trusted as complete | see apply log |
+| O9 | the read count not capped to `ROWS` | see apply log |
+| O10 | refactor guard: the `index_total` fallback lost | see apply log |
+
+### Residual
+
+- `process` hands `response.number_found` to `build_entities` with no offline test seam, because the endpoint is inlined. A mutation that passes `None` there would survive; its effect is to downgrade a full page to the unknown-total sentence, which is still honest.
+- `europeana` (`totalResults` → `matching_records`) and `chronicling_america` (`pagination.of` → `matching_pages`) came from the same genealogy PR. Both record a provider total the same way and never declare it. Each needs its own evidence.
+- `hunter_io`, `wikitree` and now `openarch` each carry the same match: use the known total, else fall back to the cap. The three spellings already differ slightly: `wikitree` goes through `usize::try_from`, and `hunter_io` trusts a zero. By `mark_truncated_if_capped`'s own rule, that decision belongs in `ModuleResult`, written once.
+
+**Falsification (compiled):** 10 of 10 killed.
