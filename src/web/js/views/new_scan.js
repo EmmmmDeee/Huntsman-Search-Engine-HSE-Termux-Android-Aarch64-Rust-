@@ -480,10 +480,11 @@ export async function uploadDossier(){
     const r = await API.importDossier(text, format);
     st.textContent = `Imported ${r.entity_count} entities` + (r.correlation_count ? `, ${r.correlation_count} correlations.` : '.');
     // `status: "partial"` — every entity is stored, but the store refused some
-    // of the derived relations/correlations. Say so here, where the counts
-    // above would otherwise read as the whole graph.
-    if (r.persist_error){
-      st.textContent += ` Stored incompletely: ${r.persist_error}`;
+    // of the derived relations/correlations, or the correlation pass failed.
+    // Say so here, where the counts above would otherwise read as the whole
+    // graph.
+    if (r.finalise_error){
+      st.textContent += ` Stored incompletely: ${r.finalise_error}`;
       toast(`Imported ${r.entity_count} entities — stored incompletely`, 'warn');
     } else {
       toast(`Imported ${r.entity_count} entities`);

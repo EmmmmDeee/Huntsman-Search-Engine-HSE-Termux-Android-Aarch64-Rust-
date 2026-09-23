@@ -327,10 +327,10 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
                      {} correlations) — view with `hse list`",
                     batch.relations, batch.correlations
                 );
-                if let Some(err) = &batch.persist_error {
+                if let Some(err) = &batch.finalise_error {
                     tracing::warn!(
                         "auto-scan: the scan is stored but INCOMPLETE — {err}; its exports \
-                         read partial (persist-incomplete)"
+                         read partial (finalise-incomplete)"
                     );
                 }
                 if !batch.enriched {

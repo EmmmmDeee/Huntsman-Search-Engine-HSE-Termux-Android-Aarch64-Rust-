@@ -141,8 +141,8 @@ struct AutoScanSummary {
     /// that genuinely yielded zero relations/correlations.
     enriched: bool,
     /// What the store refused, as recorded on the scan — see
-    /// `app::persist::PersistedBatch::persist_error`. `None` when whole.
-    persist_error: Option<String>,
+    /// `app::persist::PersistedBatch::finalise_error`. `None` when whole.
+    finalise_error: Option<String>,
 }
 
 /// Persist the extracted `entities` as a completed, correlated scan — the
@@ -190,7 +190,7 @@ async fn run_auto_scan(entities: &[ExtractedEntity], text: &str) -> Result<AutoS
         relations: batch.relations,
         correlations: batch.correlations,
         enriched: batch.enriched,
-        persist_error: batch.persist_error,
+        finalise_error: batch.finalise_error,
     })
 }
 
@@ -225,10 +225,10 @@ fn print_table(text: &str, entities: &[ExtractedEntity], scan: Option<&AutoScanS
              view with `hse list`",
             s.sid, s.entities, s.relations, s.correlations
         );
-        if let Some(err) = &s.persist_error {
+        if let Some(err) = &s.finalise_error {
             println!(
                 "  warning: the scan is stored but INCOMPLETE — {err}; its exports read \
-                 partial (persist-incomplete)"
+                 partial (finalise-incomplete)"
             );
         }
         if !s.enriched {
@@ -266,7 +266,7 @@ fn print_json(text: &str, entities: &[ExtractedEntity], scan: Option<&AutoScanSu
             "relations": s.relations,
             "correlations": s.correlations,
             "enrichment_skipped": !s.enriched,
-            "persist_error": s.persist_error,
+            "finalise_error": s.finalise_error,
         });
     }
     println!(

@@ -111,7 +111,7 @@ Victims:
         // Control: a store that keeps everything answers `complete`.
         let whole = import(open()).await;
         assert_eq!(whole["status"], "complete", "{whole}");
-        assert!(whole["persist_error"].is_null(), "{whole}");
+        assert!(whole["finalise_error"].is_null(), "{whole}");
         let edges = whole["relation_count"].as_u64().expect("relation_count");
         assert!(edges > 0, "the fixture must derive relations: {whole}");
 
@@ -122,7 +122,7 @@ Victims:
         .await;
         assert_eq!(json["status"], "partial", "{json}");
         assert_eq!(json["relation_count"], 0, "{json}");
-        let err = json["persist_error"].as_str().expect("persist_error named");
+        let err = json["finalise_error"].as_str().expect("finalise_error named");
         assert_eq!(
             err,
             format!("{edges}/{edges} relations failed to persist: {REFUSED_RELATION}")
@@ -136,6 +136,47 @@ Victims:
             .expect("the scan row exists");
         assert_eq!(scan.status, crate::core::scan::ScanStatus::Complete);
         assert_eq!(scan.error.as_deref(), Some(err));
+    }
+
+    /// Review of #649, second round: a correlator pass that failed outright on
+    /// the web upload (a refused read of the graph it evaluates) answered
+    /// `"status": "complete"` over a scan with no correlations and no error.
+    #[tokio::test]
+    async fn scan_import_reports_a_failed_correlation_pass_as_partial() {
+        use crate::core::test_support::{REFUSED_RELATION_READ, RefusingStore};
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+
+        const DOSSIER: &str = "Entry #1:\n   \u{2022} email: ops@acme-corp.io\n   \u{2022} name: Ops Lead\n";
+        let inner: Arc<dyn crate::core::StoragePort> =
+            Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"));
+        let app = axum::Router::new()
+            .route("/api/v1/scans/import", axum::routing::post(scan_import))
+            .with_state(crate::api::test_state_with_store(Arc::new(
+                RefusingStore::new(Arc::clone(&inner)).refusing_relation_reads(),
+            )));
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/scans/import")
+            .header("x-hse-csrf", "1")
+            .body(Body::from(DOSSIER))
+            .expect("should succeed");
+        let resp = app.oneshot(req).await.expect("should succeed");
+        assert_eq!(resp.status(), 200);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+            .await
+            .expect("should succeed");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("should succeed");
+        assert_eq!(json["status"], "partial", "{json}");
+        let expected = format!("correlation pass failed: {REFUSED_RELATION_READ}");
+        assert_eq!(json["finalise_error"], expected.as_str(), "{json}");
+        let sid = json["scan_id"].as_str().expect("scan_id");
+        let scan = inner
+            .get_scan(sid)
+            .expect("should succeed")
+            .expect("the scan row exists");
+        assert_eq!(scan.error.as_deref(), Some(expected.as_str()));
     }
 
     #[test]

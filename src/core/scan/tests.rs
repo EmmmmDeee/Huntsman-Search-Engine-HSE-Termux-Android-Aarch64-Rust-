@@ -1751,26 +1751,26 @@ fn a_truncated_complete_scan_is_caveated_and_an_exhaustive_one_is_not() {
     }
 }
 
-/// `PersistTally` is the one authority for the `scan.error` a finalise writes
+/// `FinaliseTally` is the one authority for the `scan.error` a finalise writes
 /// when the store refused some of what the scan produced (Copilot review of
 /// #649). Its message lists only the artefacts that lost a write, in finalise
 /// order, with the FIRST error — and keeps the entity-only wording the live
 /// engine wrote before the tally existed.
 #[test]
-fn persist_tally_message_lists_each_short_artefact_in_finalise_order() {
-    let clean = PersistTally::default();
+fn finalise_tally_message_lists_each_short_write_in_finalise_order() {
+    let clean = FinaliseTally::default();
     assert_eq!(clean.message(), None, "nothing attempted, nothing lost");
 
-    let mut all_ok = PersistTally::default();
-    all_ok.add(PersistArtefact::Entities, 40, 0, None);
-    all_ok.add(PersistArtefact::Relations, 12, 0, None);
-    assert!(all_ok.record(PersistArtefact::Correlations, Ok::<(), &str>(())));
+    let mut all_ok = FinaliseTally::default();
+    all_ok.add(FinaliseWrite::Entities, 40, 0, None);
+    all_ok.add(FinaliseWrite::Relations, 12, 0, None);
+    assert!(all_ok.record(FinaliseWrite::Correlations, Ok::<(), &str>(())));
     assert_eq!(all_ok.message(), None, "every write persisted");
-    assert_eq!(all_ok.persisted(PersistArtefact::Relations), 12);
+    assert_eq!(all_ok.persisted(FinaliseWrite::Relations), 12);
 
     // Entity-only: the pre-tally live-engine wording, word for word.
-    let mut ents = PersistTally::default();
-    ents.add(PersistArtefact::Entities, 50, 3, Some("disk full".into()));
+    let mut ents = FinaliseTally::default();
+    ents.add(FinaliseWrite::Entities, 50, 3, Some("disk full".into()));
     assert_eq!(
         ents.message().as_deref(),
         Some("3/50 entities failed to persist: disk full")
@@ -1778,23 +1778,69 @@ fn persist_tally_message_lists_each_short_artefact_in_finalise_order() {
 
     // Relations then correlations, recorded out of order: listed in finalise
     // order, the first RECORDED error kept.
-    let mut t = PersistTally::default();
-    assert!(!t.record(PersistArtefact::Correlations, Err::<(), _>("locked")));
+    let mut t = FinaliseTally::default();
+    assert!(!t.record(FinaliseWrite::Correlations, Err::<(), _>("locked")));
     for i in 0..40 {
         let outcome: Result<(), &str> = if i < 2 { Err("busy") } else { Ok(()) };
-        t.record(PersistArtefact::Relations, outcome);
+        t.record(FinaliseWrite::Relations, outcome);
     }
     for _ in 0..8 {
-        t.record(PersistArtefact::Correlations, Ok::<(), &str>(()));
+        t.record(FinaliseWrite::Correlations, Ok::<(), &str>(()));
     }
     assert_eq!(
         t.message().as_deref(),
         Some("2/40 relations, 1/9 correlations failed to persist: locked")
     );
-    assert_eq!(t.failed(PersistArtefact::Relations), 2);
-    assert_eq!(t.persisted(PersistArtefact::Correlations), 8);
+    assert_eq!(t.failed(FinaliseWrite::Relations), 2);
+    assert_eq!(t.persisted(FinaliseWrite::Correlations), 8);
     // Deterministic: the same tally renders the same text.
     assert_eq!(t.message(), t.clone().message());
+}
+
+/// The rest of what a finalise can fail to complete (review of #649, second
+/// round): a pass that failed outright — the correlator on a store read error
+/// or a panic, the cross-scan route learning, the boost pass — and the two
+/// writes that used to be log lines, the address-fold detach and the
+/// corroboration-boost re-persist. One message, deterministic: the write
+/// clause first, then one clause per failed pass, in finalise order.
+#[test]
+fn finalise_tally_message_names_failed_passes_and_every_write_kind() {
+    let mut passes = FinaliseTally::default();
+    passes.pass_failed(FinalisePass::CorroborationBoosts, "locked");
+    passes.pass_failed(
+        FinalisePass::Correlation,
+        crate::core::engine::CORRELATION_PASS_PANICKED,
+    );
+    // The first reason per pass is kept.
+    passes.pass_failed(FinalisePass::Correlation, "a later reason");
+    assert_eq!(
+        passes.message().as_deref(),
+        Some("correlation pass failed: panicked; corroboration boost pass failed: locked"),
+        "passes alone, in finalise order"
+    );
+    assert_eq!(
+        passes.pass_failure(FinalisePass::Correlation),
+        Some(crate::core::engine::CORRELATION_PASS_PANICKED)
+    );
+
+    let mut t = FinaliseTally::default();
+    t.add(
+        FinaliseWrite::CorroborationBoosts,
+        3,
+        3,
+        Some("full".into()),
+    );
+    t.add(FinaliseWrite::AddressFolds, 2, 2, Some("busy".into()));
+    t.add(FinaliseWrite::Entities, 40, 0, None);
+    t.pass_failed(FinalisePass::CrossScanRoutes, "unreadable");
+    assert_eq!(
+        t.message().as_deref(),
+        Some(
+            "2/2 address folds, 3/3 corroboration boosts failed to persist: full; \
+             cross-scan route pass failed: unreadable"
+        ),
+        "writes in finalise order with the first RECORDED error, then the pass"
+    );
 }
 
 /// A `Complete` scan whose finalise recorded a persistence shortfall is not a
@@ -1817,10 +1863,7 @@ fn a_complete_scan_missing_stored_records_is_caveated() {
     // Ahead of a truncation: the stronger statement wins.
     s.stop_reason = Some(StopReason::MaxEntities(500));
     let caveat = s.completeness_caveat("this scan").expect("still caveated");
-    assert!(
-        caveat.contains("not everything it produced was stored"),
-        "{caveat}"
-    );
+    assert!(caveat.contains("its finalise did not complete"), "{caveat}");
 
     // …and a whole scan stays silent.
     s.error = None;

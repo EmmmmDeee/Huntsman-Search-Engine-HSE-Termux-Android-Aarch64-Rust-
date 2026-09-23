@@ -237,7 +237,7 @@ impl Correlator {
     /// [`Self::evaluate`] and persist through
     /// `core::engine::correlate_and_persist`, which stores every firing it can
     /// and counts each refusal into the scan's
-    /// [`PersistTally`](crate::core::scan::PersistTally).
+    /// [`FinaliseTally`](crate::core::scan::FinaliseTally).
     pub fn run(&self, scan_id: &str) -> Result<Vec<Correlation>> {
         let firings = self.evaluate(scan_id)?;
         for c in &firings {

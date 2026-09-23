@@ -1036,18 +1036,32 @@ fn finalise_correlation_pass_survives_a_panicking_rule() {
     // abort `finalise_scan`. A rule panicking on adversarial persisted data (a
     // slice-index bug over a crafted entity) previously unwound the whole finalise
     // block — losing the terminal `ScanComplete` event and the API-key pool the
-    // scan harvested. The guard degrades a caught panic to `None` (no finalise
-    // correlations), exactly as the live incremental pass does, so the scan still
-    // finalises.
-    let panicked = guarded_correlation_pass("s", || panic!("kaboom in a correlation rule"));
-    assert!(
-        panicked.is_none(),
-        "a panicking finalise pass must be caught and degrade to no firings, not unwind"
+    // scan harvested. The guard degrades a caught panic to "no finalise
+    // correlations", exactly as the live incremental pass does, so the scan
+    // still finalises — and it now says WHY, so the finalise can record the
+    // failure on the scan (review of #649: a pass that never ran used to leave
+    // the scan reading whole).
+    //
+    // The reason for a panic is the fixed `CORRELATION_PASS_PANICKED`, never
+    // the payload: it is written into `scan.error`, which a debug bundle must
+    // reproduce byte for byte, and a payload can carry run-specific text such
+    // as an address.
+    let local = 0u8;
+    let panicked = guarded_correlation_pass("s", || {
+        panic!("kaboom in a correlation rule at {:p}", &local)
+    });
+    assert_eq!(
+        panicked.expect_err("a panicking finalise pass must be caught, not unwind"),
+        CORRELATION_PASS_PANICKED,
+        "the panic's reason is stable text, not its payload"
     );
 
-    // A returned error is likewise swallowed to `None` (unchanged behaviour).
+    // A returned error yields its own text as the reason.
     let errored = guarded_correlation_pass("s", || Err(Error::module("correlator", "boom")));
-    assert!(errored.is_none(), "a returned error yields no firings");
+    assert_eq!(
+        errored.expect_err("a returned error yields no firings"),
+        Error::module("correlator", "boom").to_string()
+    );
 
     // The happy path passes the firings straight through for emission.
     let ok = guarded_correlation_pass("s", || {
@@ -1061,7 +1075,7 @@ fn finalise_correlation_pass_survives_a_panicking_rule() {
             0,
         )])
     })
-    .expect("a successful pass returns Some(firings)");
+    .expect("a successful pass returns Ok(firings)");
     assert_eq!(ok.len(), 1);
     assert_eq!(ok[0].rule_id, "AU-000");
 }
@@ -6378,18 +6392,18 @@ fn correlate_and_persist_counts_every_refused_firing() {
         guarded_correlation_pass(sid, || {
             crate::core::correlator::Correlator::new(Arc::clone(&store)).run(sid)
         })
-        .is_none(),
+        .is_err(),
         "fail-fast persistence discards the pass — the defect"
     );
 
-    let mut tally = PersistTally::default();
+    let mut tally = FinaliseTally::default();
     let firings =
         correlate_and_persist(&store, sid, &mut tally).expect("the pass itself ran cleanly");
     assert!(!firings.is_empty(), "the fixture must fire");
     assert_eq!(
         (
-            tally.attempted(PersistArtefact::Correlations),
-            tally.failed(PersistArtefact::Correlations)
+            tally.attempted(FinaliseWrite::Correlations),
+            tally.failed(FinaliseWrite::Correlations)
         ),
         (firings.len(), firings.len()),
         "every firing attempted, every refusal counted"
@@ -6406,10 +6420,268 @@ fn correlate_and_persist_counts_every_refused_firing() {
 
     // Control: a store that keeps them stores every firing, and records none.
     let keeping: Arc<dyn StoragePort> = inner.clone();
-    let mut clean = PersistTally::default();
+    let mut clean = FinaliseTally::default();
     let again = correlate_and_persist(&keeping, sid, &mut clean).expect("ran");
     assert_eq!(clean.message(), None);
-    assert_eq!(clean.persisted(PersistArtefact::Correlations), again.len());
+    assert_eq!(clean.persisted(FinaliseWrite::Correlations), again.len());
+}
+
+/// An email every pass can read, seen by three independent sources so the
+/// correlator has something to fire on (AU-003).
+fn correlatable_email(sid: &str) -> Entity {
+    use crate::core::entity::Evidence;
+    let mut strong = Entity::new(EntityKind::Email, "a@b.com", 0.95, sid);
+    for src in ["hibp", "dehashed", "search_engines"] {
+        strong.add_evidence(Evidence::new(src, "seen"));
+    }
+    strong
+}
+
+/// Review of #649, second round: a correlator pass that failed OUTRIGHT — a
+/// store read error, or a panic — degraded to "no correlations" and nothing
+/// was recorded, so the scan read whole with its findings missing. The pass
+/// failure is now recorded in the one tally, and a panic's reason is fixed
+/// text: the payload (here carrying an address) never reaches the scan record.
+#[test]
+fn correlate_and_persist_records_a_pass_that_failed_outright() {
+    use crate::core::test_support::{InMemoryStore, REFUSED_RELATION_READ, RefusingStore};
+
+    let sid = "corr-pass-failed";
+    let inner = Arc::new(InMemoryStore::new());
+    inner
+        .upsert_entity(&correlatable_email(sid))
+        .expect("should succeed");
+
+    // A read the pass needs is refused.
+    let refusing: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).refusing_relation_reads());
+    let mut tally = FinaliseTally::default();
+    assert!(correlate_and_persist(&refusing, sid, &mut tally).is_none());
+    assert_eq!(
+        tally.message().as_deref(),
+        Some(format!("correlation pass failed: {REFUSED_RELATION_READ}").as_str()),
+        "the pass failure is on the scan, with the read's error"
+    );
+
+    // The pass panics — the payload carries a run-specific address.
+    let panicking: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).panicking_on_relation_reads());
+    let mut tally = FinaliseTally::default();
+    assert!(correlate_and_persist(&panicking, sid, &mut tally).is_none());
+    let msg = tally.message().expect("a panicked pass is recorded");
+    assert_eq!(msg, "correlation pass failed: panicked");
+    assert!(!msg.contains("0x"), "no payload detail leaks: {msg}");
+
+    // Control: a readable store records nothing.
+    let keeping: Arc<dyn StoragePort> = inner.clone();
+    let mut clean = FinaliseTally::default();
+    assert!(correlate_and_persist(&keeping, sid, &mut clean).is_some());
+    assert_eq!(clean.message(), None);
+}
+
+/// The same, end to end on the live engine: a scan whose correlator could
+/// not read its graph is recorded as such, and stays `Complete`.
+#[tokio::test]
+async fn a_live_scan_whose_correlation_pass_fails_records_it() {
+    use crate::core::test_support::{InMemoryStore, RefusingStore};
+
+    let inner = Arc::new(InMemoryStore::new());
+    let refusing: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).refusing_relation_reads());
+    let done = run_breach_corpus_fixture(refusing, "passfail@example.com").await;
+    assert_eq!(done.status, ScanStatus::Complete);
+    let err = done.error.expect("a correlator that never ran is recorded");
+    assert!(err.contains("correlation pass failed: "), "{err}");
+    let stored = inner
+        .get_scan(&done.id)
+        .expect("should succeed")
+        .expect("the scan row exists");
+    assert_eq!(stored.error.as_deref(), Some(err.as_str()));
+}
+
+/// A refused detach of folded address observations used to be a warning only:
+/// the scan read whole while its exports repeated the address spellings the
+/// fold had removed. It is counted now — and the lineage remap is unchanged.
+#[test]
+fn a_refused_address_fold_detach_is_counted() {
+    use crate::core::test_support::{InMemoryStore, REFUSED_DETACH, RefusingStore};
+
+    let sid = "fold-detach";
+    let victim = Entity::new(EntityKind::Address, "Sydney, NSW", 0.6, sid);
+    let survivor = Entity::new(EntityKind::Address, "Sydney, New South Wales", 0.7, sid);
+    let seed = Entity::new(EntityKind::Person, "Jane Citizen", 0.9, sid);
+    let lineage = vec![Relation::new(
+        seed.uid.as_str(),
+        victim.uid.as_str(),
+        RelationKind::DerivedFrom,
+        0.8,
+        sid,
+    )];
+    let folded = || vec![(victim.uid.clone(), survivor.uid.clone())];
+
+    let inner = Arc::new(InMemoryStore::new());
+    inner.upsert_entity(&victim).expect("should succeed");
+    let refusing = RefusingStore::new(inner.clone()).refusing_detach();
+    let mut tally = FinaliseTally::default();
+    let remapped = apply_address_folds(&refusing, sid, folded(), &lineage, &mut tally);
+    assert_eq!(
+        tally.message().as_deref(),
+        Some(format!("1/1 address folds failed to persist: {REFUSED_DETACH}").as_str())
+    );
+    assert_eq!(remapped.len(), 1);
+    assert_eq!(
+        remapped[0].to_uid, survivor.uid,
+        "the edge is re-pointed at the survivor"
+    );
+    assert_eq!(
+        inner.entities_for_scan(sid).expect("should succeed").len(),
+        1,
+        "the victim is still observed — which is what the tally now says"
+    );
+
+    // Control: the detach goes through and nothing is recorded.
+    let mut clean = FinaliseTally::default();
+    let _ = apply_address_folds(inner.as_ref(), sid, folded(), &lineage, &mut clean);
+    assert_eq!(clean.message(), None);
+    assert_eq!(clean.attempted(FinaliseWrite::AddressFolds), 1);
+    assert!(
+        inner
+            .entities_for_scan(sid)
+            .expect("should succeed")
+            .is_empty()
+    );
+}
+
+/// The corroboration-boost re-persist used to be a warning only: the stored
+/// entity kept no trace of the boost the scan computed, under a scan that read
+/// whole. A refused re-persist is counted, and a failed read of the relations
+/// the multipath boost needs is recorded as a failed pass.
+#[test]
+fn a_refused_boost_re_persist_and_an_unreadable_boost_pass_are_recorded() {
+    use crate::core::test_support::{
+        InMemoryStore, REFUSED_ENTITY, REFUSED_RELATION_READ, RefusingStore,
+    };
+
+    let sid = "boost-refused";
+    let fresh = || vec![Entity::new(EntityKind::Email, "x@y.com", 0.7, sid)];
+    let boost: HashMap<String, String> =
+        HashMap::from([(fresh()[0].uid.clone(), "a proven route".to_string())]);
+
+    let inner = Arc::new(InMemoryStore::new());
+    let refusing = RefusingStore::new(inner.clone()).refusing_entity_writes();
+    let mut entities = fresh();
+    let mut tally = FinaliseTally::default();
+    apply_corroboration_boosts(&refusing, sid, &mut entities, &boost, &mut tally);
+    assert!(
+        entities[0].has_tag("cross-scan-corroborated"),
+        "the boost fired"
+    );
+    assert_eq!(
+        tally.message().as_deref(),
+        Some(format!("1/1 corroboration boosts failed to persist: {REFUSED_ENTITY}").as_str())
+    );
+
+    let unreadable = RefusingStore::new(inner.clone()).refusing_relation_reads();
+    let mut entities = fresh();
+    let mut tally = FinaliseTally::default();
+    apply_corroboration_boosts(&unreadable, sid, &mut entities, &HashMap::new(), &mut tally);
+    assert_eq!(
+        tally.message().as_deref(),
+        Some(format!("corroboration boost pass failed: {REFUSED_RELATION_READ}").as_str())
+    );
+
+    // Control: a store that keeps the boost stores it and records nothing.
+    let mut entities = fresh();
+    let mut clean = FinaliseTally::default();
+    apply_corroboration_boosts(inner.as_ref(), sid, &mut entities, &boost, &mut clean);
+    assert_eq!(clean.message(), None);
+    assert_eq!(clean.persisted(FinaliseWrite::CorroborationBoosts), 1);
+    assert!(
+        inner
+            .entities_for_scan(sid)
+            .expect("should succeed")
+            .iter()
+            .any(|e| e.has_tag("cross-scan-corroborated"))
+    );
+}
+
+/// AU-065 / AU-066 are computed from the scan's own graph and each route's
+/// prior-scan count. A failed read of either skipped them silently (`if let
+/// (Ok, Ok)`, `unwrap_or(0)`), so a scan could lack those findings and read
+/// whole. Both are recorded as a failed cross-scan route pass.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unreadable_cross_scan_route_pass_is_recorded() {
+    use crate::core::test_support::{
+        InMemoryStore, REFUSED_RELATION_READ, REFUSED_TEMPLATE_COUNT, RefusingStore,
+    };
+
+    let sid = "route-pass";
+    // Person → Email → Username: one two-hop identity route, so the pass has
+    // a template whose prior count it must read.
+    let person = Entity::new(EntityKind::Person, "Jane Citizen", 0.9, sid);
+    let email = Entity::new(EntityKind::Email, "jane@citizen.example", 0.9, sid);
+    let user = Entity::new(EntityKind::Username, "janecitizen", 0.9, sid);
+    let inner = Arc::new(InMemoryStore::new());
+    for e in [&person, &email, &user] {
+        inner.upsert_entity(e).expect("should succeed");
+    }
+    for r in [
+        Relation::new(
+            person.uid.as_str(),
+            email.uid.as_str(),
+            RelationKind::IdentifiedBy,
+            0.9,
+            sid,
+        ),
+        Relation::new(
+            email.uid.as_str(),
+            user.uid.as_str(),
+            RelationKind::AliasOf,
+            0.9,
+            sid,
+        ),
+    ] {
+        inner.upsert_relation(&r).expect("should succeed");
+    }
+    let (ents, rels) = (
+        inner.entities_for_scan(sid).expect("should succeed"),
+        inner.relations_for_scan(sid).expect("should succeed"),
+    );
+    assert!(
+        !crate::core::relation::connection_templates(
+            &ents,
+            &rels,
+            4,
+            crate::core::relation::IDENTITY_LINK_MIN_CONF
+        )
+        .is_empty(),
+        "precondition: the fixture has a route to count"
+    );
+
+    let emitter = || {
+        let (bus, _rx) = tokio::sync::broadcast::channel(64);
+        let keeping: Arc<dyn StoragePort> = inner.clone();
+        EventEmitter::new(DbWriter::spawn(keeping), bus)
+    };
+    let run = |store: &dyn StoragePort| {
+        let mut tally = FinaliseTally::default();
+        let mut emitted = HashSet::new();
+        learn_cross_scan_pathway_templates(store, &emitter(), sid, &mut emitted, &mut tally);
+        tally.message()
+    };
+
+    let unreadable = RefusingStore::new(inner.clone()).refusing_relation_reads();
+    assert_eq!(
+        run(&unreadable).as_deref(),
+        Some(format!("cross-scan route pass failed: {REFUSED_RELATION_READ}").as_str())
+    );
+    let uncountable = RefusingStore::new(inner.clone()).refusing_template_counts();
+    assert_eq!(
+        run(&uncountable).as_deref(),
+        Some(format!("cross-scan route pass failed: {REFUSED_TEMPLATE_COUNT}").as_str())
+    );
+    // Control: a readable store records nothing.
+    assert_eq!(run(inner.as_ref()), None);
 }
 
 /// Scan 7258fc07: `expansion_stop max_entities=2500 reached`, then

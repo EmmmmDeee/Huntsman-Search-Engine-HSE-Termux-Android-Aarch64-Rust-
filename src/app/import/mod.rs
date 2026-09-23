@@ -572,7 +572,7 @@ pub(crate) fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>
 /// carries the same graph a live scan would. Not fatal on relations and
 /// correlations: an import whose entities already persisted must not fail on a
 /// hiccup there — but what the store refused is recorded on the scan and
-/// returned in [`PersistedBatch::persist_error`](crate::app::persist::PersistedBatch::persist_error)
+/// returned in [`PersistedBatch::finalise_error`](crate::app::persist::PersistedBatch::finalise_error)
 /// with the persisted counts, for the summary.
 ///
 /// The store-opening / finalise body is the shared [`crate::app::persist`] use
@@ -606,12 +606,12 @@ async fn persist_and_report(sid: &str, entities: &[crate::core::entity::Entity],
                     batch.correlations
                 ),
             );
-            if let Some(err) = &batch.persist_error {
+            if let Some(err) = &batch.finalise_error {
                 note(
                     output,
                     format!(
                         "  Warning:   the scan is stored but INCOMPLETE — {err}; its exports \
-                         read partial (persist-incomplete)"
+                         read partial (finalise-incomplete)"
                     ),
                 );
             }

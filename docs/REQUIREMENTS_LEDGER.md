@@ -21520,7 +21520,11 @@ regenerated.
 **Found** by Copilot review of #649 (five threads, C1–C5) and by the lead's
 follow-up review of the same PR (C6–C9). Every finding was checked against
 the code at `d4cae90b` before it was fixed, and all nine were real. C1 and C2
-are one defect on two paths, so there are eight ids.
+are one defect on two paths, so there are eight ids. A second commit closed
+the three gaps the first recorded as not fixed (a correlator pass that failed
+outright, the address-fold detach and the corroboration-boost re-persist),
+plus two failed reads of the same kind found while fixing them, all under
+REQ-SCANSTATUS-003.
 
 **REQ-SCANSTATUS-003 (C1, C2) — a scan read complete while records it
 produced failed to persist.** REQ-SCANSTATUS-002 made the terminal status the
@@ -21534,7 +21538,7 @@ pass as "no correlations" and nothing was counted. Only the live engine's
 entity shortfall reached `scan.error`, and the export classifier
 (`partial_export_reason`) never read `error`. The web upload also answered
 with a hardcoded `"status": "complete"`. The fix has one authority.
-`core::scan::PersistTally` counts attempted and failed writes per artefact
+`core::scan::FinaliseTally` counts attempted and failed writes per artefact
 (entities, relations, correlations) and keeps the first error. Its
 `message()` is the deterministic `scan.error` text, for example `"2/40
 relations, 1/9 correlations failed to persist: <first error>"`. For an
@@ -21545,17 +21549,53 @@ the new `Correlator::evaluate` (no writes) under the panic guard and stores
 each firing on its own. Both are used by all three paths, and the AU-065 /
 AU-066 upserts count too. The terminal write stores `tally.message()` and
 keeps the status `Complete` or `Aborted`, because the scan did run.
-`partial_export_reason` returns `persist-incomplete` for a `Complete` scan
+`partial_export_reason` returns `finalise-incomplete` for a `Complete` scan
 with `error` set. It checks this before the budget test, because records the
 scan produced being gone is the stronger statement. The dossier header,
 debug-bundle header and events `export_snapshot` all pick it up, and the
 dossier header now also prints the `error` line. `Scan::completeness_caveat`
 reads the same field in the same order, so `hse export`, `audit` and the
 dossier frontmatter agree with the export headers. The web response says
-`"status": "partial"` with a `persist_error` field (null when whole), and the
+`"status": "partial"` with a `finalise_error` field (null when whole), and the
 upload view shows it. The CLI summaries of `hse import`, `hse investigate
 --auto-scan` and `hse ingest --auto-scan` print it, carried by the new
 `app::persist::PersistedBatch`.
+
+*Second round — what a finalise did not complete, not only what it failed to
+write.* Three gaps were left open by the first commit, and each let an export
+show something other than what the scan produced. First, a correlator pass
+that failed outright (a store read error, or a panicking rule) still became
+"no correlations" in `guarded_correlation_pass`, with nothing on the scan.
+Second, a refused `detach_scan_observations` after the address-locality fold
+was only logged, so every export repeated the address spellings the fold had
+removed. Third, a refused corroboration-boost re-persist was only logged, so
+the stored entities lacked the boost the scan computed. While fixing these,
+two more silent reads of the same kind turned up. The cross-scan route
+learning skipped AU-065 / AU-066 on a failed graph read (`if let (Ok, Ok)`)
+or a failed route count (`unwrap_or(0)`). The boost pass skipped the
+multipath boost on a failed relations read.
+
+The tally is now `FinaliseTally`, and its message is the one authority for
+all of these. `FinaliseWrite` adds `AddressFolds` and `CorroborationBoosts`
+to the write kinds. The boost re-persist goes through the same per-entity
+fallback as the main entity persist. `FinalisePass` (`Correlation`,
+`CrossScanRoutes`, `CorroborationBoosts`) records a pass that produced
+nothing because it failed. The message is the write clause, then one
+`"<pass> failed: <reason>"` clause per failed pass, joined by `"; "`.
+
+`guarded_correlation_pass` now returns `Err(reason)` instead of `None`.
+`correlate_and_persist` records that reason on all three finalise paths. A
+panic's reason is the fixed `CORRELATION_PASS_PANICKED` (`"panicked"`), never
+the payload, which can carry an address and would break the debug bundle's
+byte-identical contract. The payload is logged instead. The fold handling
+moved into `apply_address_folds`, which counts the detach.
+
+The export reason was renamed from `persist-incomplete` to
+`finalise-incomplete`, the response field from `persist_error` to
+`finalise_error`, and the tally from `PersistTally` to `FinaliseTally`. A
+pass that never produced its result has nothing to persist, so "persist" no
+longer described every case. All three names are new in this PR, so no
+released client reads them.
 
 **REQ-REL-004 (C3) — the relation layer folded the separators the resolver
 keeps.** REQ-RESOLVE-001 stopped the resolver from fusing Instagram
@@ -21664,20 +21704,35 @@ through `attr_values`, not the whole joined string.
 
 ### Locks
 
-- `core::scan::tests::persist_tally_message_lists_each_short_artefact_in_finalise_order`,
+- `core::scan::tests::finalise_tally_message_lists_each_short_write_in_finalise_order`,
+  `core::scan::tests::finalise_tally_message_names_failed_passes_and_every_write_kind`,
   `core::scan::tests::a_complete_scan_missing_stored_records_is_caveated`.
 - `core::engine::tests::a_live_scan_whose_store_refuses_relations_records_the_shortfall`,
   `core::engine::tests::correlate_and_persist_counts_every_refused_firing`
   (through `core::test_support::RefusingStore`, which forwards every
   `StoragePort` method and refuses relation and/or correlation writes).
+- Second round, through `RefusingStore`'s new modes (refused or panicking
+  relation reads, refused detach, refused entity writes, refused route
+  counts):
+  `core::engine::tests::correlate_and_persist_records_a_pass_that_failed_outright`
+  (a refused read, and a panic whose payload carries an address that must
+  not leak), `core::engine::tests::a_live_scan_whose_correlation_pass_fails_records_it`,
+  `core::engine::tests::a_refused_address_fold_detach_is_counted`,
+  `core::engine::tests::a_refused_boost_re_persist_and_an_unreadable_boost_pass_are_recorded`,
+  `core::engine::tests::an_unreadable_cross_scan_route_pass_is_recorded`,
+  `core::engine::tests::finalise_correlation_pass_survives_a_panicking_rule`
+  (now pins the stable reasons),
+  `app::persist::tests::a_batch_whose_correlation_pass_fails_records_it`,
+  `api::scan_handlers::tests::scan_import_reports_a_failed_correlation_pass_as_partial`.
 - `app::persist::tests::a_batch_whose_store_refuses_its_graph_records_the_shortfall`
   (`persist_entities_as_scan`'s store-facing body is now the injectable
   `persist_batch_into`).
 - `api::scan_handlers::tests::scan_import_reports_a_refused_graph_as_partial`
   (over `api::test_state_with_store`); `tests/api.rs`'s
   `dossier_upload_*` tests still read `"status": "complete"` on a whole store.
-- `app::export::renderers::tests::a_complete_scan_with_a_persist_shortfall_is_a_partial_export`,
-  `app::export::renderers::tests::every_export_header_brands_a_persist_shortfall_partial`.
+- `app::export::renderers::tests::a_complete_scan_with_a_finalise_shortfall_is_a_partial_export`
+  (now with a pass-failure case),
+  `app::export::renderers::tests::every_export_header_brands_a_finalise_shortfall_partial`.
 - `core::relation::tests::handles_that_differ_only_by_a_separator_never_alias`,
   `core::relation::tests::mailbox_handles_alias_by_their_account_keys`;
   `core::coref::tests::separator_variants_are_a_lead_not_handle_equivalent`,
@@ -21707,13 +21762,13 @@ through `attr_values`, not the whole joined string.
 ### Falsified
 
 Each mutation restores the defect. The fixed files were saved first. After
-each of the three mutation builds they were copied back, checked against their
-saved md5 sums, and `git diff` was compared byte for byte with the
-pre-mutation diff.
+each mutation build (three in the first round, two in the second) they were
+copied back, checked against their saved md5 sums, and `git diff` was
+compared byte for byte with the pre-mutation diff.
 
 | # | mutation | result |
 |---|---|---|
-| S1 | `partial_export_reason` without the `persist-incomplete` arm | killed by `a_complete_scan_with_a_persist_shortfall_is_a_partial_export` and `every_export_header_brands_a_persist_shortfall_partial` |
+| S1 | `partial_export_reason` without the `finalise-incomplete` arm | killed by `a_complete_scan_with_a_persist_shortfall_is_a_partial_export` and `every_export_header_brands_a_persist_shortfall_partial` |
 | S2 | `completeness_caveat` without the `error` arm | killed by `a_complete_scan_missing_stored_records_is_caveated` |
 | S3 | `persist_relations`' fallback back to `.is_ok()` (a refused edge uncounted) | killed by `a_live_scan_whose_store_refuses_relations_records_the_shortfall`, `a_batch_whose_store_refuses_its_graph_records_the_shortfall` and `scan_import_reports_a_refused_graph_as_partial` |
 | S4 | `correlate_and_persist` back to the fail-fast `Correlator::run` | killed by `correlate_and_persist_counts_every_refused_firing` and `a_batch_whose_store_refuses_its_graph_records_the_shortfall` |
@@ -21733,21 +21788,26 @@ pre-mutation diff.
 | U1 | owner record summary without the row id, and no `_id` fallback | killed by `one_owner_across_rows_keeps_each_rows_postcode_and_co_owner` and `rows_without_reference_or_postcode_are_named_by_their_row_id` |
 | U2 | `au_postcode` back to the first valid record | killed by `au_postcode_anchors_only_on_a_single_distinct_postcode` |
 | U3 | declared associations read an attribute whole | killed by `declared_associations_read_every_value_of_a_pooled_attribute` |
+| F1 | `correlate_and_persist` drops the pass failure | killed by `correlate_and_persist_records_a_pass_that_failed_outright`, `a_live_scan_whose_correlation_pass_fails_records_it`, `a_batch_whose_correlation_pass_fails_records_it` and `scan_import_reports_a_failed_correlation_pass_as_partial` |
+| F2 | a panic's reason is its payload | killed by `finalise_correlation_pass_survives_a_panicking_rule` (the payload's `0x…` address reached the reason) |
+| F3 | `apply_address_folds` counts a refused detach as kept | killed by `a_refused_address_fold_detach_is_counted` |
+| F4 | the boost re-persist counts no refusals | killed by `a_refused_boost_re_persist_and_an_unreadable_boost_pass_are_recorded` |
+| F5 | the boost pass's failed relations read not recorded | killed by the same test (its second case) |
+| F6 | the route pass's failed graph read not recorded | killed by `an_unreadable_cross_scan_route_pass_is_recorded` |
+| F7 | a failed route count read as 0 silently | killed by the same test (its second case) |
+| F8 | `FinaliseTally::message` drops the pass clauses | killed by `finalise_tally_message_names_failed_passes_and_every_write_kind` |
 
-**20 of 20 killed.**
+**28 of 28 killed.** The second round ran in two mutation builds. F1 and F8
+touch the same assertions, so F1 was re-run in the second build without F8,
+where it was killed by all four of its tests on its own.
 
 ### Not fixed here (recorded)
 
-- A correlator pass that errors on a store READ or panics still degrades to
-  "no correlations" without marking the scan (`guarded_correlation_pass` is
-  unchanged). A refused write is now counted, but a pass that never produced
-  its firings has nothing to count. This is logged, and it is a separate
-  change.
 - The live incremental correlation pass only logs a refused write. The
   finalise pass re-persists every firing it finds and counts that, so a
   streamed correlation the finalise re-finds is covered. One it does not
-  re-find is not.
-- The finalise's best-effort side writes (`detach_scan_observations` after an
-  address fold, and the corroboration-boost re-persist) are logged, not
-  tallied. The records they touch are already stored, and only a
-  de-duplication or a boost tag is lost.
+  re-find is not. Its own pass failure is not recorded either: the finalise
+  pass supersedes it.
+- `record_pathway_template`, which stores this scan's routes for FUTURE scans,
+  is now logged on failure rather than ignored (`let _`). It is not tallied,
+  because it changes nothing this scan exports.

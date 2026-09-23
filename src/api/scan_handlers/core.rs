@@ -685,22 +685,22 @@ pub async fn scan_import(
     // caller must be able to tell that apart from a genuinely relation-free
     // dossier, both of which otherwise report `relation_count: 0`.
     let stealer_rows_parsed = stealer_rows.len();
-    let (relation_count, correlation_count, enriched, stealer_rows_stored, persist_error) =
+    let (relation_count, correlation_count, enriched, stealer_rows_stored, finalise_error) =
         match super::offload_store(move || -> crate::core::error::Result<_> {
-            use crate::core::scan::{PersistArtefact, PersistTally};
+            use crate::core::scan::{FinaliseTally, FinaliseWrite};
             let mut scan = scan;
             store.upsert_scan(&scan)?;
             store.upsert_entities_batch(&entities)?;
             // Every relation / correlation write below counts into this; its
-            // message is the scan's recorded shortfall (see `PersistTally`).
-            let mut tally = PersistTally::default();
+            // message is the scan's recorded shortfall (see `FinaliseTally`).
+            let mut tally = FinaliseTally::default();
             // The terminal write, run on every exit below — nothing after it
             // may add to what the scan's exports read. The upload was imported
             // in full, so the status is `Complete` either way; what the store
             // refused is recorded beside it, where every export's completeness
             // check reads it.
             let commit = |scan: &mut Scan,
-                          tally: &PersistTally|
+                          tally: &FinaliseTally|
              -> crate::core::error::Result<Option<String>> {
                 scan.status = ScanStatus::Complete;
                 scan.finished_at = Some(unix_now());
@@ -731,8 +731,8 @@ pub async fn scan_import(
             // Device-safety bound: skip the O(n²) enrichment on a pathologically
             // large import (entities are already persisted above; nothing lost).
             if entities.len() > IMPORT_ENRICH_MAX_ENTITIES {
-                let persist_error = commit(&mut scan, &tally)?;
-                return Ok((0usize, 0usize, false, stealer_rows_stored, persist_error));
+                let finalise_error = commit(&mut scan, &tally)?;
+                return Ok((0usize, 0usize, false, stealer_rows_stored, finalise_error));
             }
             // Wall-clock bound on the super-linear derivation chain, matching a
             // live scan (the entity-count guard above already skips the
@@ -755,14 +755,14 @@ pub async fn scan_import(
             // correlations", not an unwind after the entities were committed —
             // and counts every firing the store refuses.
             let _firings = crate::core::engine::correlate_and_persist(&store, &sid2, &mut tally);
-            let correlations = tally.persisted(PersistArtefact::Correlations);
-            let persist_error = commit(&mut scan, &tally)?;
+            let correlations = tally.persisted(FinaliseWrite::Correlations);
+            let finalise_error = commit(&mut scan, &tally)?;
             Ok((
                 relations,
                 correlations,
                 true,
                 stealer_rows_stored,
-                persist_error,
+                finalise_error,
             ))
         })
         .await
@@ -795,14 +795,15 @@ pub async fn scan_import(
             "stealer_rows_parsed": stealer_rows_parsed,
             "stealer_rows_stored": stealer_rows_stored,
             // `partial` when the store refused some of the relations or
-            // correlations derived above: the scan is stored `Complete` (the
+            // correlations derived above, or the correlation pass failed
+            // outright: the scan is stored `Complete` (the
             // upload was imported in full) with the shortfall in its `error`,
-            // and every export of it reads "partial, persist-incomplete".
+            // and every export of it reads "partial, finalise-incomplete".
             // Hardcoding `complete` here told the client the import was whole
             // while the counts above silently excluded what was lost.
-            // `persist_error` names the shortfall, `null` when there is none.
-            "status": if persist_error.is_some() { "partial" } else { "complete" },
-            "persist_error": persist_error,
+            // `finalise_error` names the shortfall, `null` when there is none.
+            "status": if finalise_error.is_some() { "partial" } else { "complete" },
+            "finalise_error": finalise_error,
         })),
     )
         .into_response()

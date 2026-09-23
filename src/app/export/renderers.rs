@@ -40,14 +40,21 @@ fn confirmed_entities(store: &Store, sid: &str) -> Result<Vec<crate::core::entit
 /// [`StopReason`](crate::core::scan::StopReason).
 ///
 /// A `Complete` scan with [`Scan::error`] set is the other such case
-/// (`"persist-incomplete"`). Every path that finalises a scan records there
-/// the entities, relations or correlations the store refused
-/// ([`PersistTally`](crate::core::scan::PersistTally)); the scan did run to
-/// the end, so its status stays `Complete`, but its exports are missing those
-/// records. Classifying on status and stop reason alone branded such a scan
-/// "complete". It is checked before the budget test because it is the
-/// stronger statement: records the scan did produce are absent, not merely
-/// ones it never reached. [`Scan::completeness_caveat`] uses the same order.
+/// (`"finalise-incomplete"`). Every path that finalises a scan records there
+/// what its finalise did not complete
+/// ([`FinaliseTally`](crate::core::scan::FinaliseTally)): writes the store
+/// refused (entities, relations, correlations, an address-fold detach, a
+/// corroboration boost) and passes that failed outright (the correlator, the
+/// cross-scan route learning, the boost pass). The scan did run to the end, so
+/// its status stays `Complete`, but its exports are not what it produced —
+/// records missing, or a folded address repeated. Classifying on status and
+/// stop reason alone branded such a scan "complete". It is checked before the
+/// budget test because it is the stronger statement: results the scan did
+/// produce are wrong or absent, not merely ones it never reached.
+/// [`Scan::completeness_caveat`] uses the same order. The reason was first
+/// named `persist-incomplete`; it became `finalise-incomplete` once a pass
+/// that never produced its result — nothing refused, nothing to persist — was
+/// recorded under it too.
 ///
 /// Determinism: every input here is immutable once the scan is terminal
 /// (`status`, `stop_reason` and `error` are all written once, at finalise,
@@ -56,7 +63,7 @@ fn confirmed_entities(store: &Store, sid: &str) -> Result<Vec<crate::core::entit
 fn partial_export_reason(scan: &Scan) -> Option<&'static str> {
     use crate::core::scan::ScanStatus;
     match scan.status {
-        ScanStatus::Complete if scan.error.is_some() => Some("persist-incomplete"),
+        ScanStatus::Complete if scan.error.is_some() => Some("finalise-incomplete"),
         ScanStatus::Complete => scan
             .stop_reason
             .is_some_and(|r| r.truncated())
@@ -375,7 +382,7 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
         let _ = writeln!(s, "stopped    : {}", r.label());
     }
     // WHAT a partial scan is missing, when the finalise recorded it — the
-    // "persist-incomplete" header above names the class, this the records
+    // "finalise-incomplete" header above names the class, this the detail
     // (e.g. "2/40 relations failed to persist: …"). Written once, at finalise,
     // with deterministic text, so the bundle stays byte-identical.
     if let Some(err) = scan.error.as_deref() {
@@ -1368,7 +1375,7 @@ mod tests {
     /// header "complete, unredacted", the debug bundle "complete scan
     /// snapshot", and no `export_snapshot` marker in the events log.
     #[test]
-    fn a_complete_scan_with_a_persist_shortfall_is_a_partial_export() {
+    fn a_complete_scan_with_a_finalise_shortfall_is_a_partial_export() {
         use crate::core::scan::{Scan, ScanStatus, StopReason, Target, TargetKind};
 
         let mk = |error: Option<&str>, stop: Option<StopReason>| {
@@ -1388,13 +1395,19 @@ mod tests {
 
         assert_eq!(
             partial_export_reason(&mk(short, None)),
-            Some("persist-incomplete")
+            Some("finalise-incomplete")
         );
         // Checked before the budget test: records the scan produced are gone,
         // which is the stronger statement.
         assert_eq!(
             partial_export_reason(&mk(short, Some(StopReason::MaxEntities(500)))),
-            Some("persist-incomplete")
+            Some("finalise-incomplete")
+        );
+        // A pass that never produced its result is the same class: nothing
+        // was refused, but the export still is not what the scan produced.
+        assert_eq!(
+            partial_export_reason(&mk(Some("correlation pass failed: panicked"), None)),
+            Some("finalise-incomplete")
         );
         // The converse keeps "complete" meaningful: no shortfall, no brand.
         assert_eq!(
@@ -1411,7 +1424,7 @@ mod tests {
     /// the full dossier, the debug bundle and the events-log snapshot marker,
     /// each also naming the loss where it prints the scan header.
     #[test]
-    fn every_export_header_brands_a_persist_shortfall_partial() {
+    fn every_export_header_brands_a_finalise_shortfall_partial() {
         use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
 
         let store = crate::storage::Store::open(":memory:").expect("in-memory store");
@@ -1428,7 +1441,7 @@ mod tests {
 
         let dossier = super::render_full(&store, &sc.id).expect("dossier");
         assert!(
-            dossier.contains("HUNTSMAN FULL DOSSIER — partial, persist-incomplete, unredacted"),
+            dossier.contains("HUNTSMAN FULL DOSSIER — partial, finalise-incomplete, unredacted"),
             "{dossier}"
         );
         assert!(
@@ -1437,12 +1450,12 @@ mod tests {
         );
         let bundle = super::render_debug_bundle(&store, &sc.id).expect("bundle");
         assert!(
-            bundle.contains("DEBUG BUNDLE — partial persist-incomplete scan snapshot"),
+            bundle.contains("DEBUG BUNDLE — partial finalise-incomplete scan snapshot"),
             "{bundle}"
         );
         let log = super::render_event_log_export(&store, &sc.id).expect("events");
         assert!(
-            log.contains("\"state\":\"persist-incomplete\""),
+            log.contains("\"state\":\"finalise-incomplete\""),
             "the events export marks the snapshot: {log}"
         );
     }

@@ -431,34 +431,96 @@ impl StoragePort for InMemoryStore {
     }
 }
 
-/// A [`StoragePort`] that forwards every call to `inner` but refuses the
-/// relation and/or correlation writes a test names — the store failing
-/// partway through a finalise (a full disk, a locked database) that
-/// [`crate::core::scan::PersistTally`] exists to record. Relations refuse
-/// both the batch and the per-relation fallback, so the fallback path is
-/// exercised and every edge is counted. Every other method forwards, including
-/// the optional ones, so the wrapped store behaves exactly as it would alone.
-/// Shared by the engine, `app::persist` and web-upload tests so all three
-/// finalise paths are proved against the same failure.
+/// A [`StoragePort`] that forwards every call to `inner` but fails the calls a
+/// test names — the store failing partway through a finalise (a full disk, a
+/// locked database) that [`crate::core::scan::FinaliseTally`] exists to
+/// record. Relation and entity writes refuse both the batch and the per-item
+/// fallback, so the fallback path is exercised and every item is counted. A
+/// relation READ can be refused or made to panic, which is how the correlator
+/// pass (and the route and boost passes that read the graph) fail outright.
+/// Every other method forwards, including the optional ones, so the wrapped
+/// store behaves exactly as it would alone. Shared by the engine,
+/// `app::persist` and web-upload tests so all three finalise paths are proved
+/// against the same failure.
+#[derive(Default)]
 pub struct RefusingStore {
-    inner: std::sync::Arc<dyn StoragePort>,
+    inner: Option<std::sync::Arc<dyn StoragePort>>,
     refuse_relations: bool,
     refuse_correlations: bool,
+    refuse_relation_reads: bool,
+    panic_on_relation_reads: bool,
+    refuse_detach: bool,
+    refuse_entity_writes: bool,
+    refuse_template_counts: bool,
 }
 
 /// The error text [`RefusingStore`] returns for a refused relation write.
 pub const REFUSED_RELATION: &str = "injected relation write failure";
 /// The error text [`RefusingStore`] returns for a refused correlation write.
 pub const REFUSED_CORRELATION: &str = "injected correlation write failure";
+/// The error text [`RefusingStore`] returns for a refused relation read.
+pub const REFUSED_RELATION_READ: &str = "injected relation read failure";
+/// The error text [`RefusingStore`] returns for a refused observation detach.
+pub const REFUSED_DETACH: &str = "injected detach failure";
+/// The error text [`RefusingStore`] returns for a refused entity write.
+pub const REFUSED_ENTITY: &str = "injected entity write failure";
+/// The error text [`RefusingStore`] returns for a refused route-count read.
+pub const REFUSED_TEMPLATE_COUNT: &str = "injected template count failure";
+
+fn injected(text: &str) -> crate::core::error::Error {
+    crate::core::error::Error::Other(text.to_string())
+}
 
 impl RefusingStore {
     /// Wrap `inner`, refusing nothing yet.
     pub fn new(inner: std::sync::Arc<dyn StoragePort>) -> Self {
         Self {
-            inner,
-            refuse_relations: false,
-            refuse_correlations: false,
+            inner: Some(inner),
+            ..Self::default()
         }
+    }
+
+    fn inner(&self) -> &dyn StoragePort {
+        self.inner
+            .as_deref()
+            .expect("RefusingStore::new sets the inner store")
+    }
+
+    /// Refuse every read of a scan's relations.
+    #[must_use]
+    pub fn refusing_relation_reads(mut self) -> Self {
+        self.refuse_relation_reads = true;
+        self
+    }
+
+    /// Panic on every read of a scan's relations — with a payload carrying a
+    /// run-specific address, so a test can prove the payload never reaches
+    /// the scan record.
+    #[must_use]
+    pub fn panicking_on_relation_reads(mut self) -> Self {
+        self.panic_on_relation_reads = true;
+        self
+    }
+
+    /// Refuse every detach of a scan's observations.
+    #[must_use]
+    pub fn refusing_detach(mut self) -> Self {
+        self.refuse_detach = true;
+        self
+    }
+
+    /// Refuse every entity write, batch and single.
+    #[must_use]
+    pub fn refusing_entity_writes(mut self) -> Self {
+        self.refuse_entity_writes = true;
+        self
+    }
+
+    /// Refuse every cross-scan route-count read.
+    #[must_use]
+    pub fn refusing_template_counts(mut self) -> Self {
+        self.refuse_template_counts = true;
+        self
     }
 
     /// Refuse every relation write.
@@ -478,28 +540,34 @@ impl RefusingStore {
 
 impl StoragePort for RefusingStore {
     fn upsert_scan(&self, scan: &Scan) -> Result<()> {
-        self.inner.upsert_scan(scan)
+        self.inner().upsert_scan(scan)
     }
     fn get_scan(&self, id: &str) -> Result<Option<Scan>> {
-        self.inner.get_scan(id)
+        self.inner().get_scan(id)
     }
     fn list_scans(&self, limit: usize) -> Result<Vec<Scan>> {
-        self.inner.list_scans(limit)
+        self.inner().list_scans(limit)
     }
     fn radar_history(&self, limit: usize) -> Result<Vec<Scan>> {
-        self.inner.radar_history(limit)
+        self.inner().radar_history(limit)
     }
     fn delete_scan(&self, scan_id: &str) -> Result<bool> {
-        self.inner.delete_scan(scan_id)
+        self.inner().delete_scan(scan_id)
     }
     fn upsert_entity(&self, entity: &Entity) -> Result<()> {
-        self.inner.upsert_entity(entity)
+        if self.refuse_entity_writes {
+            return Err(injected(REFUSED_ENTITY));
+        }
+        self.inner().upsert_entity(entity)
     }
     fn upsert_entities_batch(&self, entities: &[Entity]) -> Result<usize> {
-        self.inner.upsert_entities_batch(entities)
+        if self.refuse_entity_writes {
+            return Err(injected(REFUSED_ENTITY));
+        }
+        self.inner().upsert_entities_batch(entities)
     }
     fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>> {
-        self.inner.entities_for_scan(scan_id)
+        self.inner().entities_for_scan(scan_id)
     }
     fn entities_filtered(
         &self,
@@ -508,71 +576,75 @@ impl StoragePort for RefusingStore {
         min_confidence: Option<f64>,
         value_contains: Option<&str>,
     ) -> Result<Vec<Entity>> {
-        self.inner
+        self.inner()
             .entities_filtered(scan_id, kind, min_confidence, value_contains)
     }
     fn entity_facets(&self, scan_id: &str) -> Result<Vec<(String, u64)>> {
-        self.inner.entity_facets(scan_id)
+        self.inner().entity_facets(scan_id)
     }
     fn get_entity(&self, uid: &str) -> Result<Option<Entity>> {
-        self.inner.get_entity(uid)
+        self.inner().get_entity(uid)
     }
     fn search_entities(&self, query: &str, limit: usize) -> Result<Vec<Entity>> {
-        self.inner.search_entities(query, limit)
+        self.inner().search_entities(query, limit)
     }
     fn scan_ids_for_entity(&self, entity_uid: &str) -> Result<Vec<String>> {
-        self.inner.scan_ids_for_entity(entity_uid)
+        self.inner().scan_ids_for_entity(entity_uid)
     }
     fn observation_count(&self, entity_uid: &str) -> Result<usize> {
-        self.inner.observation_count(entity_uid)
+        self.inner().observation_count(entity_uid)
     }
     fn detach_scan_observations(&self, scan_id: &str, entity_uids: &[String]) -> Result<usize> {
-        self.inner.detach_scan_observations(scan_id, entity_uids)
+        if self.refuse_detach {
+            return Err(injected(REFUSED_DETACH));
+        }
+        self.inner().detach_scan_observations(scan_id, entity_uids)
     }
     fn upsert_correlation(&self, c: &Correlation) -> Result<()> {
         if self.refuse_correlations {
-            return Err(crate::core::error::Error::Other(
-                REFUSED_CORRELATION.to_string(),
-            ));
+            return Err(injected(REFUSED_CORRELATION));
         }
-        self.inner.upsert_correlation(c)
+        self.inner().upsert_correlation(c)
     }
     fn correlations_for_scan(&self, scan_id: &str) -> Result<Vec<Correlation>> {
-        self.inner.correlations_for_scan(scan_id)
+        self.inner().correlations_for_scan(scan_id)
     }
     fn upsert_relation(&self, r: &Relation) -> Result<()> {
         if self.refuse_relations {
-            return Err(crate::core::error::Error::Other(
-                REFUSED_RELATION.to_string(),
-            ));
+            return Err(injected(REFUSED_RELATION));
         }
-        self.inner.upsert_relation(r)
+        self.inner().upsert_relation(r)
     }
     fn upsert_relations_batch(&self, rels: &[Relation]) -> Result<usize> {
         if self.refuse_relations {
-            return Err(crate::core::error::Error::Other(
-                REFUSED_RELATION.to_string(),
-            ));
+            return Err(injected(REFUSED_RELATION));
         }
-        self.inner.upsert_relations_batch(rels)
+        self.inner().upsert_relations_batch(rels)
     }
     fn relations_for_scan(&self, scan_id: &str) -> Result<Vec<Relation>> {
-        self.inner.relations_for_scan(scan_id)
+        if self.panic_on_relation_reads {
+            let local = 0u8;
+            panic!("injected relation read panic at {:p}", &local);
+        }
+        if self.refuse_relation_reads {
+            return Err(injected(REFUSED_RELATION_READ));
+        }
+        self.inner().relations_for_scan(scan_id)
     }
     fn insert_event(&self, event: &Event) -> Result<()> {
-        self.inner.insert_event(event)
+        self.inner().insert_event(event)
     }
     fn insert_events_batch(&self, events: &[Event]) -> Result<usize> {
-        self.inner.insert_events_batch(events)
+        self.inner().insert_events_batch(events)
     }
     fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>> {
-        self.inner.events_for_scan(scan_id)
+        self.inner().events_for_scan(scan_id)
     }
     fn delete_events_for_scan(&self, scan_id: &str) -> Result<()> {
-        self.inner.delete_events_for_scan(scan_id)
+        self.inner().delete_events_for_scan(scan_id)
     }
     fn recent_module_outcome_events(&self, limit: usize) -> Result<Vec<Event>> {
-        self.inner.recent_module_outcome_events(limit)
+        self.inner().recent_module_outcome_events(limit)
     }
     fn archive_module_result(
         &self,
@@ -581,84 +653,87 @@ impl StoragePort for RefusingStore {
         entities: &[Entity],
         truncation: Option<&str>,
     ) -> Result<()> {
-        self.inner
+        self.inner()
             .archive_module_result(key, ttl_secs, entities, truncation)
     }
     fn lookup_module_result_fresh(
         &self,
         key: &str,
     ) -> Result<Option<crate::core::port::CachedModuleResult>> {
-        self.inner.lookup_module_result_fresh(key)
+        self.inner().lookup_module_result_fresh(key)
     }
     fn record_pathway_template(&self, template: &str) -> Result<()> {
-        self.inner.record_pathway_template(template)
+        self.inner().record_pathway_template(template)
     }
     fn pathway_template_count(&self, template: &str) -> Result<u32> {
-        self.inner.pathway_template_count(template)
+        if self.refuse_template_counts {
+            return Err(injected(REFUSED_TEMPLATE_COUNT));
+        }
+        self.inner().pathway_template_count(template)
     }
     fn insert_stealer_rows_batch(
         &self,
         scan_id: &str,
         rows: &[crate::core::stealer_row::StealerRow],
     ) -> Result<usize> {
-        self.inner.insert_stealer_rows_batch(scan_id, rows)
+        self.inner().insert_stealer_rows_batch(scan_id, rows)
     }
     fn stealer_rows_for_scan(
         &self,
         scan_id: &str,
     ) -> Result<Vec<crate::core::stealer_row::StealerRow>> {
-        self.inner.stealer_rows_for_scan(scan_id)
+        self.inner().stealer_rows_for_scan(scan_id)
     }
     fn insert_rf_sightings_batch(
         &self,
         scan_id: &str,
         rows: &[crate::core::rf::RfSighting],
     ) -> Result<usize> {
-        self.inner.insert_rf_sightings_batch(scan_id, rows)
+        self.inner().insert_rf_sightings_batch(scan_id, rows)
     }
     fn rf_latest_scan_id(&self) -> Result<Option<String>> {
-        self.inner.rf_latest_scan_id()
+        self.inner().rf_latest_scan_id()
     }
     fn rf_summary(&self, scan_id: &str) -> Result<crate::core::rf::RfSummary> {
-        self.inner.rf_summary(scan_id)
+        self.inner().rf_summary(scan_id)
     }
     fn rf_devices_for_scan(&self, scan_id: &str) -> Result<Vec<crate::core::rf::RfDeviceRow>> {
-        self.inner.rf_devices_for_scan(scan_id)
+        self.inner().rf_devices_for_scan(scan_id)
     }
     fn rf_trackable_devices(&self, scan_id: &str) -> Result<Vec<crate::core::rf::RfDeviceRow>> {
-        self.inner.rf_trackable_devices(scan_id)
+        self.inner().rf_trackable_devices(scan_id)
     }
     fn rf_sightings_for_device(
         &self,
         scan_id: &str,
         network_id: &str,
     ) -> Result<Vec<crate::core::rf::RfSighting>> {
-        self.inner.rf_sightings_for_device(scan_id, network_id)
+        self.inner().rf_sightings_for_device(scan_id, network_id)
     }
     fn rf_device_track(
         &self,
         network_id: &str,
         limit: usize,
     ) -> Result<Vec<crate::core::rf::RfTrackPoint>> {
-        self.inner.rf_device_track(network_id, limit)
+        self.inner().rf_device_track(network_id, limit)
     }
     fn insert_wifi_link(&self, scan_id: &str, link: &crate::core::link::LinkState) -> Result<()> {
-        self.inner.insert_wifi_link(scan_id, link)
+        self.inner().insert_wifi_link(scan_id, link)
     }
     fn wifi_link_for_scan(&self, scan_id: &str) -> Result<Option<crate::core::link::LinkState>> {
-        self.inner.wifi_link_for_scan(scan_id)
+        self.inner().wifi_link_for_scan(scan_id)
     }
     fn checkpoint_truncate(&self) -> Result<()> {
-        self.inner.checkpoint_truncate()
+        self.inner().checkpoint_truncate()
     }
     fn integrity_check(&self) -> Result<Vec<String>> {
-        self.inner.integrity_check()
+        self.inner().integrity_check()
     }
     fn prune_events(&self, max_age_secs: u64, max_rows: usize) -> Result<usize> {
-        self.inner.prune_events(max_age_secs, max_rows)
+        self.inner().prune_events(max_age_secs, max_rows)
     }
     fn prune_module_result_cache(&self, max_rows: usize) -> Result<usize> {
-        self.inner.prune_module_result_cache(max_rows)
+        self.inner().prune_module_result_cache(max_rows)
     }
 }
 
