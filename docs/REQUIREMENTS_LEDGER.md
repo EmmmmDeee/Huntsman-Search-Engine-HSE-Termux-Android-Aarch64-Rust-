@@ -19184,3 +19184,89 @@ challenge fingerprint past 8 KiB is invisible to both arms alike.
   - R1, the baseline (the raw body is classified): killed by 2;
   - R2, the sanitiser does not redact: killed by 1;
   - R3, the sanitiser does not cap: killed by 1.
+
+## REQ-AU-UNCLAIMED-001 / REQ-AU-UNCLAIMED-002 — one acceptance decision for a QLD unclaimed-money row
+
+**REQ-AU-UNCLAIMED-001** arrived in #637. It was cited by a test and never
+recorded here. It gated an Organisation seed on `owner_matches_full_name`, a
+**token-subset** test: every seed token appears somewhere in the owner. That
+stopped `"ABC CORP"` from claiming `"DEF CORP PTY LTD"`, but it also admitted
+the reverse cases, and the record found three defects around it.
+
+1. **A person was the organisation.** Organisation seed `"Ford"`, owner `"MR
+   JOHN FORD"`: every seed token is present, so the private individual's row
+   became the company's. His postcode became the company's address, and
+   `"John Ford"` became an `exact-name-match` Person at the pivot confidence.
+2. **A joint owner was judged over the raw string.** Person seed `"John
+   Smith"`, owner `"JOHN NGUYEN & MARY SMITH"`: the joint string holds both
+   tokens, so the row was the subject's own, at the exact-match address
+   confidence, although no one on it is John Smith.
+3. **`exact_postcodes` had its own, weaker predicate.** It decides which
+   postcodes are fanned out into candidate suburbs, and it took **every** row
+   as exact on a verbatim (Organisation) search. `records_to_entities`
+   rejected rows that CKAN's full-text search matched on another column; the
+   postcode pass did not. Measured on the module's own fixture: the
+   Organisation seed `"Insurance Australia Group Limited"` matches three rows
+   on `SenderName`. The entity pass emits nothing, and the postcode pass
+   enumerated all three payees' postcodes as the insurer's suburbs.
+
+### Implemented
+
+- `util::abn::same_company(a, b)`: **equality** after folding case,
+  punctuation, a leading `THE` and trailing legal-form words (`PTY`, `LTD`,
+  `LIMITED`, `INC`, `INCORPORATED`, `PROPRIETARY`, `NL`). A name that folds to
+  nothing matches nothing. It shares `company_tokens` with
+  `looks_like_company`, so "is this a company?" and "is this the same
+  company?" cannot fold a name differently.
+- `au_unclaimed::qld_helpers::row_verdict(owner, query, seed, broadened,
+  kind) -> Option<bool>` is **the one acceptance decision**. Both
+  `records_to_entities` and `exact_postcodes` call it, so a row one rejects
+  cannot reach the other.
+  - **Every seed:** the owner must share a token with the query.
+  - **Organisation seed:** exact when the owner, or one of its syndicate
+    companies, is `same_company` as the seed. A different company carrying
+    every seed token is kept as a non-exact lead. An individual is rejected.
+  - **Person seed:** exactness is judged per parsed co-owner. The
+    surname-position gate for broadened hits moved in unchanged.
+- On an Organisation seed's rows:
+  - a non-exact lead is tagged `similar-company`, not `family-candidate`,
+    which would have sent a company through the surname-kinship and geo-family
+    passes as the subject's relative;
+  - a named individual is a `co-owner`, never `exact-name-match`;
+  - a syndicate sibling that is not the seed company stays tentative.
+
+### Locks
+
+- `modules::au_unclaimed::tests::qld`:
+  - `an_individual_is_never_the_organisation_seed`
+  - `a_different_company_carrying_the_seed_tokens_is_a_lead_not_the_subject`
+  - `the_seed_company_is_exact_whatever_its_legal_form_spelling`
+  - `a_syndicate_sibling_of_the_seed_company_stays_tentative`
+  - `a_joint_owner_is_judged_per_co_owner_not_over_the_raw_string`
+  - `exact_postcodes_takes_only_rows_the_entity_pass_accepts_as_the_subject`
+  - `a_named_co_owner_on_the_seed_companys_row_is_not_the_subject`
+- `util::abn::tests::same_company_is_equality_whichever_side_is_the_seed`,
+  and `same_company`'s doc-test.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| U1 | **baseline**: the Organisation token-subset gate returns | killed by 2 |
+| U2 | **baseline**: a person seed's exactness judged over the raw joint string | killed by 2 |
+| U3 | **baseline**: `exact_postcodes` keeps its own weaker predicate | killed by 1 |
+| U4 | an Organisation lead tagged `family-candidate` | killed by 1 |
+| U5 | a syndicate sibling at full weight | killed by 1 |
+| U6 | a named individual on an Organisation row is exact | killed by 1 |
+| U7 | over-correction: Organisation leads dropped | killed by 2 |
+| U8 | `same_company` is a subset test (owner ⊆ seed) | killed by 1 |
+| U8b | `same_company` is a subset test (seed ⊆ owner) | killed by 4 |
+| U8c | U8, doc-tests only | killed by 1 |
+| U9 | `same_company` keeps legal-form words | killed by 2 |
+
+**11 of 11 killed.** U8 **survived** the first matrix. The subset test had
+been reversed, owner ⊆ seed, and no module test fed it a name in that
+direction; only the doc-test saw it, and doc-tests do not run under `--lib`.
+The symmetric unit test was added and U8 re-run. U8c also exposed a harness
+defect: a doc-test's name contains spaces, so the harness read a failed
+doc-test run as SURVIVED. It now counts any non-zero failed total as killed.

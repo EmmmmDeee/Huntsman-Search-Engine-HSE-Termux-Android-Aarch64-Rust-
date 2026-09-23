@@ -152,38 +152,15 @@ pub fn derive_acn(s: &str) -> Option<String> {
 /// ```
 pub fn looks_like_company(name: &str) -> bool {
     // Normalise so a legal-form suffix is recognised regardless of surrounding
-    // punctuation: uppercase, reduce every char that is not alphanumeric or `&`
-    // (the only punctuation that is itself part of a form — "& CO") to a space,
-    // and collapse runs of whitespace. This folds "Pty. Ltd.", "LTD,",
+    // punctuation (see [`company_tokens`]). This folds "Pty. Ltd.", "LTD,",
     // "LIMITED.", "Inc)" onto the canonical space-delimited tokens below —
     // previously a trailing comma/period/paren on the final token defeated the
     // match and a real company was misread as an individual.
-    let folded: String = name
-        .to_uppercase()
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '&' {
-                c
-            } else {
-                ' '
-            }
-        })
-        .collect();
-    // Double-pad the collapsed token stream so each suffix matches only as a
+    //
+    // Double-pad the token stream so each suffix matches only as a
     // whitespace-bounded token — otherwise " INC" would falsely fire inside
     // "INCANDESCENT", " LTD" inside "ALTDORF".
-    let u = {
-        let mut s = String::with_capacity(folded.len() + 2);
-        s.push(' ');
-        for (i, w) in folded.split_whitespace().enumerate() {
-            if i > 0 {
-                s.push(' ');
-            }
-            s.push_str(w);
-        }
-        s.push(' ');
-        s
-    };
+    let u = format!(" {} ", company_tokens(name).join(" "));
     const SUFFIXES: &[&str] = &[
         " PTY LTD ",
         " LIMITED ",
@@ -287,6 +264,69 @@ pub fn company_names(owner: &str) -> Vec<String> {
     } else {
         Vec::new()
     }
+}
+
+/// A company name as comparable tokens: uppercased, every character that is
+/// not alphanumeric or `&` (the only punctuation that is itself part of a form,
+/// "& CO") read as a separator. **Pure.** The one normalisation both
+/// [`looks_like_company`] and [`same_company`] use, so "is this a company?" and
+/// "is this the same company?" cannot fold names differently.
+fn company_tokens(name: &str) -> Vec<String> {
+    name.to_uppercase()
+        .split(|c: char| !(c.is_alphanumeric() || c == '&'))
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Legal-form words that do not distinguish one company from another: `ACME
+/// PTY LTD`, `ACME LIMITED` and `ACME` name one registrant.
+const LEGAL_FORM_WORDS: &[&str] = &[
+    "PTY",
+    "PROPRIETARY",
+    "LTD",
+    "LIMITED",
+    "INC",
+    "INCORPORATED",
+    "NL",
+];
+
+/// Whether `a` and `b` name the **same company**: equal after case,
+/// punctuation, a leading `THE`, and trailing legal-form words are folded away.
+/// **Pure.**
+///
+/// This is equality, deliberately not a token subset. A subset test is what let
+/// an Organisation seed `"Ford"` claim `"MR JOHN FORD"` — a private individual
+/// — as the company, because every seed token appeared somewhere in the owner
+/// (REQ-AU-UNCLAIMED-002). A name that folds to nothing (only legal-form words)
+/// is never the same as anything.
+///
+/// ```
+/// use huntsman_search_engine::util::abn::same_company;
+///
+/// assert!(same_company("ABC Corp", "ABC CORP PTY. LTD."));
+/// assert!(same_company("The Acme Group Limited", "acme group"));
+/// assert!(!same_company("Ford", "MR JOHN FORD"));
+/// assert!(!same_company("ABC CORP", "DEF CORP PTY LTD"));
+/// assert!(!same_company("Pty Ltd", "Limited"));
+/// ```
+#[must_use]
+pub fn same_company(a: &str, b: &str) -> bool {
+    fn core(name: &str) -> Vec<String> {
+        let mut tokens = company_tokens(name);
+        while tokens
+            .last()
+            .is_some_and(|t| LEGAL_FORM_WORDS.contains(&t.as_str()))
+        {
+            tokens.pop();
+        }
+        if tokens.first().is_some_and(|t| t == "THE") {
+            tokens.remove(0);
+        }
+        tokens
+    }
+    let (a, b) = (core(a), core(b));
+    !a.is_empty() && a == b
 }
 
 #[cfg(test)]

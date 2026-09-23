@@ -65,7 +65,8 @@ async fn au_unclaimed_live_finds_qld_records_for_a_common_surname() {
 // so the downstream correlator/relation rules keyed on it keep working.
 mod qld {
     use super::super::qld_helpers::{
-        SRC, owner_person_names, records_to_entities, suburbs_to_entities,
+        SRC, exact_postcodes, owner_person_names, records_to_entities, row_verdict,
+        suburbs_to_entities,
     };
     use crate::core::entity::{Entity, EntityKind};
     use crate::core::scan::TargetKind;
@@ -524,5 +525,151 @@ mod qld {
         assert_eq!(orgs[0].value, "ABC CORP");
         assert!(!orgs.iter().any(|o| o.value == "DEF INSURANCE LTD"),
             "sender organisation should not be emitted (does not match seed)");
+    }
+
+    fn records(raw: &str) -> Vec<serde_json::Map<String, serde_json::Value>> {
+        serde_json::from_str::<CkanResp>(raw)
+            .expect("fixture parses")
+            .result
+            .expect("fixture has a result")
+            .records
+    }
+
+    fn tagged<'a>(ents: &'a [Entity], tag: &str) -> Vec<&'a Entity> {
+        ents.iter().filter(|e| e.has_tag(tag)).collect()
+    }
+
+    #[test]
+    fn an_individual_is_never_the_organisation_seed() {
+        // REQ-AU-UNCLAIMED-002: FAILS on the token-subset gate, under which the
+        // Organisation "Ford" was every seed token present in "MR JOHN FORD" —
+        // the private individual's postcode became the company's address and
+        // "John Ford" the company's exact-name Person.
+        let recs = records(
+            r#"{"result":{"total":1,"records":[
+                {"_id":1,"Owner":"MR JOHN FORD","Amount":"80.00","PCode":"4000"}
+            ]}}"#,
+        );
+        let ents = records_to_entities(&recs, 1, "Ford", "Ford", false, TargetKind::Organisation, "s");
+        assert!(
+            ents.is_empty(),
+            "a person's row is not the company's: {:?}",
+            ents.iter().map(|e| &e.value).collect::<Vec<_>>()
+        );
+        assert_eq!(row_verdict("MR JOHN FORD", "Ford", "Ford", false, TargetKind::Organisation), None);
+    }
+
+    #[test]
+    fn a_different_company_carrying_the_seed_tokens_is_a_lead_not_the_subject() {
+        let recs = records(
+            r#"{"result":{"total":1,"records":[
+                {"_id":1,"Owner":"FORD CREDIT PTY LTD","Amount":"80.00","PCode":"4000"}
+            ]}}"#,
+        );
+        let ents = records_to_entities(&recs, 1, "Ford", "Ford", false, TargetKind::Organisation, "s");
+        assert!(!ents.is_empty(), "the lead is kept");
+        assert!(tagged(&ents, "exact-name-match").is_empty(), "it is not the subject");
+        assert!(
+            tagged(&ents, "family-candidate").is_empty(),
+            "a company is no one's relative — the kinship passes must not see it"
+        );
+        assert!(!tagged(&ents, "similar-company").is_empty());
+        assert!(ents.iter().all(|e| e.confidence < crate::core::confidence::MEDIUM));
+    }
+
+    #[test]
+    fn the_seed_company_is_exact_whatever_its_legal_form_spelling() {
+        let recs = records(
+            r#"{"result":{"total":1,"records":[
+                {"_id":1,"Owner":"ACME WIDGETS PTY. LTD.","Amount":"80.00","PCode":"4000"}
+            ]}}"#,
+        );
+        let ents = records_to_entities(&recs, 1, "Acme Widgets", "Acme Widgets", false, TargetKind::Organisation, "s");
+        let org = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Organisation)
+            .expect("the company is emitted");
+        assert!(org.confidence >= crate::core::confidence::MEDIUM, "the seed company keeps full weight");
+        assert!(!tagged(&ents, "exact-name-match").is_empty());
+    }
+
+    #[test]
+    fn a_syndicate_sibling_of_the_seed_company_stays_tentative() {
+        let recs = records(
+            r#"{"result":{"total":1,"records":[
+                {"_id":1,"Owner":"FORD PTY LTD & FORD HOLDINGS PTY LTD","Amount":"80.00","PCode":"4000"}
+            ]}}"#,
+        );
+        let ents = records_to_entities(&recs, 1, "Ford", "Ford", false, TargetKind::Organisation, "s");
+        let org = |v: &str| {
+            ents.iter()
+                .find(|e| e.kind == EntityKind::Organisation && e.value == v)
+                .unwrap_or_else(|| panic!("{v} emitted"))
+        };
+        assert!(org("FORD PTY LTD").confidence >= crate::core::confidence::MEDIUM);
+        assert!(org("FORD HOLDINGS PTY LTD").confidence < crate::core::confidence::MEDIUM);
+    }
+
+    #[test]
+    fn a_joint_owner_is_judged_per_co_owner_not_over_the_raw_string() {
+        // REQ-AU-UNCLAIMED-002: FAILS on the raw-string gate. "JOHN NGUYEN &
+        // MARY SMITH" holds both tokens of "John Smith", so the row was the
+        // subject's own, at the exact-match address confidence — yet no one on
+        // it is John Smith.
+        let recs = records(
+            r#"{"result":{"total":1,"records":[
+                {"_id":1,"Owner":"JOHN NGUYEN & MARY SMITH","Amount":"80.00","PCode":"4000"}
+            ]}}"#,
+        );
+        let ents = records_to_entities(&recs, 1, "John Smith", "Smith", true, TargetKind::FullName, "s");
+        assert!(tagged(&ents, "exact-name-match").is_empty(), "no one here is the subject");
+        assert!(ents.iter().all(|e| e.confidence < crate::core::confidence::MEDIUM));
+        // Mary Smith shares the surname in the surname position: a family lead.
+        assert!(
+            ents.iter()
+                .any(|e| e.kind == EntityKind::Person && e.value == "Mary Smith" && e.has_tag("family-candidate"))
+        );
+    }
+
+    #[test]
+    fn exact_postcodes_takes_only_rows_the_entity_pass_accepts_as_the_subject() {
+        // REQ-AU-UNCLAIMED-002: FAILS on the old predicate, under which a
+        // verbatim (Organisation) search took EVERY row as exact. CKAN matched
+        // these rows on SenderName; the entity pass rejects every one, but all
+        // three payees' postcodes were enumerated into the insurer's suburbs.
+        let recs = sample().result.expect("should succeed").records;
+        let iag = "Insurance Australia Group Limited";
+        assert!(records_to_entities(&recs, 3, iag, iag, false, TargetKind::Organisation, "s").is_empty());
+        assert!(exact_postcodes(&recs, iag, iag, false, TargetKind::Organisation).is_empty());
+
+        // A person seed keeps exactly its own rows, and the family's stay out.
+        assert_eq!(
+            exact_postcodes(&recs, "Avery", "Curt Avery", true, TargetKind::FullName),
+            vec!["4557".to_string(), "4555".to_string()]
+        );
+
+        // The joint row with no John Smith contributes nothing either.
+        let joint = records(
+            r#"{"result":{"total":1,"records":[
+                {"_id":1,"Owner":"JOHN NGUYEN & MARY SMITH","Amount":"80.00","PCode":"4000"}
+            ]}}"#,
+        );
+        assert!(exact_postcodes(&joint, "Smith", "John Smith", true, TargetKind::FullName).is_empty());
+    }
+
+    #[test]
+    fn a_named_co_owner_on_the_seed_companys_row_is_not_the_subject() {
+        let recs = records(
+            r#"{"result":{"total":1,"records":[
+                {"_id":1,"Owner":"FORD PTY LTD & JOHN FORD","Amount":"80.00","PCode":"4000"}
+            ]}}"#,
+        );
+        let ents = records_to_entities(&recs, 1, "Ford", "Ford", false, TargetKind::Organisation, "s");
+        let john = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Person && e.value == "John Ford")
+            .expect("the co-owner is recorded");
+        assert!(john.has_tag("co-owner") && !john.has_tag("exact-name-match"));
+        assert!(john.confidence < crate::core::confidence::MEDIUM);
     }
 }

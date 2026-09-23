@@ -221,3 +221,28 @@ use super::*;
         assert!(looks_like_company("SMITH & CO."));
         assert!(!looks_like_company("ACME COMPANY")); // bare "CO..." is not a form
     }
+
+    #[test]
+    fn same_company_is_equality_whichever_side_is_the_seed() {
+        // REQ-AU-UNCLAIMED-002: a subset test in EITHER direction is the defect —
+        // "Ford" ⊂ "MR JOHN FORD" made a private individual the company, and
+        // "FORD" ⊂ "FORD HOLDINGS" makes a sibling the seed. Both orders, both
+        // answers.
+        for (a, b) in [
+            ("Ford", "MR JOHN FORD"),
+            ("Ford", "FORD HOLDINGS PTY LTD"),
+            ("ABC CORP", "DEF CORP PTY LTD"),
+            ("Pty Ltd", "Limited"),
+        ] {
+            assert!(!same_company(a, b), "{a:?} vs {b:?}");
+            assert!(!same_company(b, a), "{b:?} vs {a:?}");
+        }
+        for (a, b) in [
+            ("ABC Corp", "ABC CORP PTY. LTD."),
+            ("The Acme Group Limited", "acme group"),
+            ("Foo Bar NL", "FOO BAR"),
+        ] {
+            assert!(same_company(a, b), "{a:?} vs {b:?}");
+            assert!(same_company(b, a), "{b:?} vs {a:?}");
+        }
+    }

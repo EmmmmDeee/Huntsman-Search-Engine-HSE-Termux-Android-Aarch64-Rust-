@@ -116,6 +116,73 @@ pub(super) fn owner_matches_query(owner: &str, query: &str) -> bool {
     crate::util::str_util::shares_whole_word_token(owner, query)
 }
 
+/// Whether a register row is about the seeded subject — `Some(exact)` — or
+/// not at all — `None`. **Pure.** The ONE acceptance decision: both
+/// [`records_to_entities`] and [`exact_postcodes`] take it, so a row one of them
+/// rejects can never reach the other (REQ-AU-UNCLAIMED-002 — `exact_postcodes`
+/// had its own weaker test and fanned rejected rows' postcodes out as the
+/// subject's suburbs).
+///
+/// - **Every seed:** the owner must share a token with what was queried
+///   ([`owner_matches_query`]) — the row did not match on some other column.
+/// - **Organisation seed:** a person is never the organisation. The row is the
+///   subject EXACTLY when the owner, or one of its syndicate companies, is the
+///   same company as the seed ([`crate::util::abn::same_company`] — equality,
+///   not a token subset). A *different* company carrying every seed token is
+///   kept as a non-exact lead. An individual owner is rejected: the token-subset
+///   test that stood here made `"MR JOHN FORD"` the company `"Ford"`.
+/// - **Person seed:** exactness is judged per parsed co-owner. Judged over the
+///   raw joint string, `"JOHN NGUYEN & MARY SMITH"` held both tokens of
+///   `"John Smith"` and was the subject. A surname-broadened, non-exact hit
+///   additionally needs the shared token in the SURNAME position
+///   ([`ends_with_surname`]).
+pub(super) fn row_verdict(
+    owner: &str,
+    query: &str,
+    seed: &str,
+    broadened: bool,
+    target_kind: TargetKind,
+) -> Option<bool> {
+    if !owner_matches_query(owner, query) {
+        return None;
+    }
+    if matches!(target_kind, TargetKind::Organisation) {
+        let companies = crate::util::abn::company_names(owner);
+        if crate::util::abn::same_company(owner, seed)
+            || companies
+                .iter()
+                .any(|c| crate::util::abn::same_company(c, seed))
+        {
+            return Some(true);
+        }
+        let company_shaped = !companies.is_empty() || crate::util::abn::looks_like_company(owner);
+        return (company_shaped && owner_matches_full_name(owner, seed)).then_some(false);
+    }
+    let owner_persons = owner_person_names(owner);
+    let exact = if owner_persons.is_empty() {
+        owner_matches_full_name(owner, seed)
+    } else {
+        owner_persons
+            .iter()
+            .any(|p| owner_matches_full_name(p, seed))
+    };
+    // A token can be a given name for one person and a surname for another
+    // (real case: "Ada" is both a common English given name and the seed
+    // surname of "Onur Ada"); only the surname-position reading licenses a
+    // family inference. A company owner has no given/surname structure
+    // (`owner_persons` is empty for one), so it keeps the any-shared-token
+    // floor: "MORLEY SQUARE INVESTMENT PTY LTD" sharing "Morley" with seed
+    // "Riley Morley" is the best signal available for a business name.
+    if broadened
+        && !exact
+        && !owner_persons.is_empty()
+        && !owner_persons.iter().any(|p| ends_with_surname(p, query))
+    {
+        return None;
+    }
+    Some(exact)
+}
+
 /// True if `surname` is the SURNAME position — the last whitespace token — of
 /// `name`, a single string already parsed by [`owner_person_names`] (so it is
 /// in that function's Given-\[Middle\]-Surname normalised order).
@@ -343,10 +410,8 @@ pub(super) fn merge_records(
 /// pivot on it), otherwise an `unclaimed_money` finding so the record is never
 /// dropped. Each carries owner / amount / sender / date / reference as evidence.
 ///
-/// For Organisation targets, only company names matching the seed exactly are
-/// emitted (avoiding false attribution via corporate form words like "CORP").
-/// For FullName targets, the existing surname-broadening and person-parsing
-/// logic applies.
+/// Which rows are about the subject, and whether exactly, is [`row_verdict`]'s
+/// decision alone — the same one [`exact_postcodes`] takes.
 pub(super) fn records_to_entities(
     records: &[Map<String, Value>],
     total: u64,
@@ -359,48 +424,13 @@ pub(super) fn records_to_entities(
     let mut out = Vec::new();
     for rec in records {
         let owner = field_str(rec, "Owner").unwrap_or_else(|| "(unknown owner)".to_string());
-        // CKAN full-text-matched this row on SOME column; if it wasn't the owner
-        // name, the row is about an unrelated party and nothing on it — address,
-        // Person, Organisation, or money finding — belongs in this scan. See
-        // [`owner_matches_query`] for the measured impact.
-        //
-        // For Organisation targets, apply strict exactness: only accept records where
-        // the owner exactly matches the seed, not merely shares a token — prevents
-        // false attribution via corporate form words (e.g., "ABC CORP" vs "DEF CORP").
-        let is_org_seed = matches!(target_kind, TargetKind::Organisation);
-        if !owner_matches_query(&owner, query)
-            || (is_org_seed && !owner_matches_full_name(&owner, seed))
-        {
+        // The one acceptance decision — see [`row_verdict`] for every gate.
+        let Some(exact) = row_verdict(&owner, query, seed, broadened, target_kind) else {
             continue;
-        }
-        // The exact-vs-family split only has meaning when the query was
-        // surname-*broadened* (a multi-token FullName). For a verbatim search
-        // (organisation, single-token name) every row already AND-matched the
-        // seed, so they're all direct hits — don't mislabel them as
-        // `family-candidate` (which also under-weights them).
-        let exact = !broadened || owner_matches_full_name(&owner, seed);
-        // Parsed once and reused below for the per-Person entity pass too.
+        };
+        let org_seed = matches!(target_kind, TargetKind::Organisation);
+        // Parsed once and reused below for the per-Person entity pass.
         let owner_persons = owner_person_names(&owner);
-        // A surname-broadened, non-exact hit whose owner parses into at least
-        // one named individual additionally needs the shared token to occupy
-        // the SURNAME position — see [`ends_with_surname`] for why: a name
-        // token can be a given name for one person and a surname for another
-        // (real case: "Ada" is both a common English given name and the seed
-        // surname of "Onur Ada"), and only the surname-position reading
-        // licenses a family inference. A company owner has no given/surname
-        // structure to check (`owner_persons` is empty for one — the
-        // Organisation pass owns companies), so it keeps the existing
-        // any-shared-token floor: "MORLEY SQUARE INVESTMENT PTY LTD" sharing
-        // "Morley" with seed "Riley Morley" is the best signal available for a
-        // business name, and this check has nothing positional to test it
-        // against.
-        if broadened
-            && !exact
-            && !owner_persons.is_empty()
-            && !owner_persons.iter().any(|p| ends_with_surname(p, query))
-        {
-            continue;
-        }
         let amount = field_str(rec, "Amount");
         let sender = field_str(rec, "SenderName");
         let date = field_str(rec, "DateRec");
@@ -492,6 +522,11 @@ pub(super) fn records_to_entities(
         entity.tag("country:AU");
         entity.tag(if exact {
             "exact-name-match"
+        } else if org_seed {
+            // A different company carrying the seed's tokens is a lead, not a
+            // relative: `family-candidate` would send it through the surname
+            // kinship and geo-family passes as the subject's family.
+            "similar-company"
         } else {
             "family-candidate"
         });
@@ -513,7 +548,9 @@ pub(super) fn records_to_entities(
             // record seeded with "Curt", Curt is the exact subject while Hayley is
             // a surname-only family candidate — so each co-owner is judged on its
             // own name, and a family candidate stays below the confidence::MEDIUM pivot floor.
-            let person_exact = owner_matches_full_name(person, seed);
+            // A person is never the organisation: on an Organisation seed's
+            // row, a named individual is a co-owner of the company's record.
+            let person_exact = !org_seed && owner_matches_full_name(person, seed);
             let pconf = if person_exact {
                 confidence::MEDIUM_PLUS
             } else {
@@ -525,6 +562,8 @@ pub(super) fn records_to_entities(
             p.tag("country:AU");
             p.tag(if person_exact {
                 "exact-name-match"
+            } else if org_seed {
+                "co-owner"
             } else {
                 "family-candidate"
             });
@@ -549,19 +588,18 @@ pub(super) fn records_to_entities(
         // expansion pivots each into abn_lookup / opencorporates and resolves its
         // ABN/ACN, connecting the unclaimed-money graph to the business registry.
         //
-        // For Organisation targets, apply exactness: only emit companies that match
-        // the seed exactly (whole-word token match), not merely those sharing a
-        // corporate form word like "CORP" — this prevents false attribution of
-        // stranger's unclaimed-money records via corporate-form-word collisions.
-        let org_is_seed = matches!(target_kind, TargetKind::Organisation);
+        // For Organisation targets, only companies carrying every seed token
+        // are emitted — not those merely sharing a corporate form word like
+        // "CORP" — and only the seed company itself at full weight.
+        let org_is_seed = org_seed;
         let companies = crate::util::abn::company_names(&owner);
 
         // When this is an Organisation seed, emit the owner itself as an
-        // organisation if it matches exactly AND no extracted companies are present.
+        // organisation if it IS the seed company AND no extracted companies are present.
         // This handles simplified names like "ABC CORP" that lack legal-form suffixes
         // while avoiding duplicates when the owner itself has legal form (e.g.,
         // "ABC CORP PTY LTD" which is extracted as a company name).
-        if org_is_seed && companies.is_empty() && owner_matches_full_name(&owner, seed) {
+        if org_is_seed && companies.is_empty() && crate::util::abn::same_company(&owner, seed) {
             let mut org = Entity::new(EntityKind::Organisation, &owner, find_conf, scan_id);
             org.tag(SRC);
             org.tag("unclaimed-money");
@@ -578,8 +616,15 @@ pub(super) fn records_to_entities(
                 .into_iter()
                 .filter(|company| !org_is_seed || owner_matches_full_name(company, seed))
                 .map(|company| {
-                    let mut org =
-                        Entity::new(EntityKind::Organisation, &company, find_conf, scan_id);
+                    // On an Organisation seed, a syndicate member is the
+                    // subject only if it IS the seed company; a sibling that
+                    // merely carries the seed's tokens stays a tentative lead.
+                    let conf = if org_is_seed && !crate::util::abn::same_company(&company, seed) {
+                        confidence::TENTATIVE
+                    } else {
+                        find_conf
+                    };
+                    let mut org = Entity::new(EntityKind::Organisation, &company, conf, scan_id);
                     org.tag(SRC);
                     org.tag("unclaimed-money");
                     org.tag("country:AU");
@@ -709,18 +754,22 @@ pub(super) fn suburbs_to_entities(
 /// lodged postcode(s) — deduplicated in first-seen order and capped at
 /// [`POSTCODE_CAP`]. Suburb enumeration is restricted to these so a surname-
 /// broadened search doesn't fan every relative's postcode out into a pile of
-/// candidate suburbs (the explosion this collapses). A verbatim
-/// (non-broadened) search has no family/exact split, so every row qualifies.
+/// candidate suburbs (the explosion this collapses). "Exactly" is
+/// [`row_verdict`]'s answer — the same decision [`records_to_entities`] makes —
+/// so a row that emits no entity can never contribute a postcode.
 pub(super) fn exact_postcodes(
     records: &[Map<String, Value>],
+    query: &str,
     seed: &str,
     broadened: bool,
+    target_kind: TargetKind,
 ) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for rec in records {
-        let exact = !broadened
-            || field_str(rec, "Owner").is_some_and(|o| owner_matches_full_name(&o, seed));
+        let exact = field_str(rec, "Owner")
+            .and_then(|o| row_verdict(&o, query, seed, broadened, target_kind))
+            .unwrap_or(false);
         if !exact {
             continue;
         }
