@@ -1182,6 +1182,41 @@ fn key_scan_tokeniser_bounds_query_string_keys_cleanly() {
     assert_eq!(csv_tokens, vec!["AKIAJK28SLQQV61MNG9X"]);
 }
 
+/// REQ-CRED-003: a credential parameter's name matches in any ASCII case.
+/// Thunderforest's documented tile template ends `?apikey={apikey}`: the
+/// case-exact `apiKey=` entry did not match it, and `key=` cannot see inside
+/// it (no boundary before the `k`), so the operator's tile key in reqwest's
+/// ` for url (…)` suffix passed through intact. The boundary still holds in any
+/// case — `monKEY=` is a word, not a parameter.
+#[test]
+fn redact_masks_a_credential_name_in_any_case() {
+    let r = redact_credentials(
+        "error sending request for url (https://api.thunderforest.com/cycle/4/1/1.png?apikey=TFKEY0123456789)",
+    );
+    assert!(!r.contains("TFKEY0123456789"), "got: {r}");
+    assert!(r.ends_with(".png?apikey=***"), "got: {r}");
+
+    let r = redact_credentials(
+        "?APIKEY=V1&ApiKey=V2&API_KEY=V3&Access_Token=V4&AccessToken=V5&Token=V6&Secret=V7&AUTH=V8&Key=V9&page=2",
+    );
+    for v in ["V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9"] {
+        assert!(!r.contains(v), "{v} survived: {r}");
+    }
+    // The name is kept as the text spelled it; only the value is masked.
+    assert!(
+        r.starts_with("?APIKEY=***&ApiKey=***&API_KEY=***"),
+        "got: {r}"
+    );
+    assert!(r.ends_with("&page=2"), "got: {r}");
+
+    let s = "monKEY=banana MonKey=plantain";
+    assert_eq!(
+        redact_credentials(s),
+        s,
+        "a mid-word match is not a parameter"
+    );
+}
+
 #[test]
 fn redact_over_masks_bare_key_param_after_boundary() {
     let r = redact_credentials("?key=sortorder&page=2");

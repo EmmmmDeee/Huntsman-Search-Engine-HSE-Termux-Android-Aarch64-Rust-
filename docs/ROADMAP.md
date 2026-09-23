@@ -79,7 +79,10 @@ depends on it; it depends on nothing in-repo.
 The reusable primitives every module leans on. Key sub-areas:
 - `util/http/` — the shared client, `send_tagged`, `read_body_capped_or_fail`
   (fail-closed body reads), `http_status_error` (typed 404/429/BotChallenge/…),
-  `json_body_error` (credential-redacting), the DNS-level `SsrfResolver`, url
+  `json_body_error` (credential-redacting), `transport_error_message` (a reqwest
+  error rendered for an operator-visible sink — URL stripped, cause chain kept,
+  credential-redacted; `send_tagged` and the tile proxy's `502` use it,
+  REQ-CRED-003), the DNS-level `SsrfResolver`, url
   encoders. **The single outbound-request authority.** The outage discipline
   lives here too: `breaker_gate` (refuse before dialling a tripped endpoint) and
   `record_breaker_outcome` (the typed `BreakerOutcome::{RateLimited, Failure,

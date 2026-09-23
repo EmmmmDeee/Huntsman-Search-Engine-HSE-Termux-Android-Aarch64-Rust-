@@ -150,8 +150,27 @@ impl RequestBuilderExt for reqwest::RequestBuilder {
     async fn send_tagged(self, module: &'static str) -> Result<reqwest::Response> {
         self.send()
             .await
-            .map_err(|e| Error::module(module, error_cause_chain(e.without_url())))
+            .map_err(|e| Error::module(module, transport_error_message(e)))
     }
+}
+
+/// A reqwest error as text an operator may see: the request URL **stripped**
+/// ([`reqwest::Error::without_url`]), the `source()` cause chain kept, the
+/// whole credential-redacted ([`super::redact_credentials`]).
+///
+/// For a reqwest error that leaves the process — a module error
+/// ([`RequestBuilderExt::send_tagged`]) or an HTTP error body a handler answers
+/// with (the map tile proxy's `502`, `api::tiles`). reqwest's own `Display`
+/// appends ` for url (<full request URL>)` whenever the error carries one — and
+/// its documentation warns that the URL may hold an API key in the query — so a
+/// bare `{e}` publishes whatever the URL carries: an operator's tile key
+/// (`?apikey=…`), a module's key, the target being searched (REQ-CRED-003).
+/// Stripping here, not at each site, means a caller that renders through this
+/// cannot forget it. (Older sites that strip inline — `core::error`'s
+/// `From<reqwest::Error>`, `app::cells`, `core::webhook` — drop the cause
+/// chain instead.)
+pub(crate) fn transport_error_message(e: reqwest::Error) -> String {
+    error_cause_chain(e.without_url())
 }
 
 /// Build a single `: `-joined string of the full `std::error::Error::source()`

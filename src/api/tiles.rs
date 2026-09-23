@@ -17,6 +17,13 @@
 //! the outbound fetch: switched off, tiles already cached still serve and an
 //! uncached one is a `403` the view draws as a blank tile — never a fetch the
 //! operator did not know about.
+//!
+//! An upstream other than OSM usually wants a key, and a tile server takes it
+//! in the URL — Thunderforest's documented template ends `?apikey={apikey}` —
+//! so the configured template is a secret wherever it may carry one. The
+//! route answers any client the server admits, so a failed fetch's `502` names
+//! the upstream's host and the failure's cause, never the URL it asked for
+//! (REQ-CRED-003).
 
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
@@ -78,14 +85,17 @@ impl TileSource {
         Self::new(upstream, crate::util::paths::subdir("tiles"), client)
     }
 
-    /// The upstream's host, for an error body — the template itself is not
-    /// secret, but the host is the part an operator needs to recognise.
+    /// The upstream's host, for an error body — the part an operator needs to
+    /// recognise, and the only part of the template ever disclosed: the
+    /// template may carry the operator's key (`?apikey=…`, or in the path or
+    /// userinfo), and `host_str` holds none of those. A template with no host
+    /// to name is described, never echoed back (REQ-CRED-003).
     #[must_use]
     pub fn upstream_host(&self) -> String {
         reqwest::Url::parse(&self.upstream)
             .ok()
             .and_then(|u| u.host_str().map(str::to_string))
-            .unwrap_or_else(|| self.upstream.clone())
+            .unwrap_or_else(|| format!("(no host: {TILE_UPSTREAM_ENV} is not an absolute URL)"))
     }
 
     /// The template with one tile's address substituted.
@@ -206,14 +216,22 @@ pub async fn tile(
 /// One tile from the upstream: a success status, an image content type and a
 /// body read to a hard cap — a "tile" that is really an error page or
 /// something enormous is refused before a byte of it is cached.
+///
+/// The `Err` is the `502`'s `detail`, so every reqwest error reaches it through
+/// [`transport_error_message`]: reqwest's own `Display` appends the full
+/// request URL — the expanded template, the operator's key in its query — and
+/// the route answers any client the server admits (REQ-CRED-003).
+///
+/// [`transport_error_message`]: crate::util::http::transport_error_message
 async fn fetch_upstream(src: &TileSource, z: u8, x: u32, y: u32) -> Result<Vec<u8>, String> {
+    use crate::util::http::transport_error_message;
     let url = src.upstream_url(z, x, y);
     let resp = src
         .client
         .get(&url)
         .send()
         .await
-        .map_err(|e| format!("request failed: {e}"))?;
+        .map_err(|e| format!("request failed: {}", transport_error_message(e)))?;
     let status = resp.status();
     if !status.is_success() {
         return Err(format!("upstream answered {status}"));
@@ -230,7 +248,8 @@ async fn fetch_upstream(src: &TileSource, z: u8, x: u32, y: u32) -> Result<Vec<u
     let mut bytes = Vec::new();
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("body read failed: {e}"))?;
+        let chunk =
+            chunk.map_err(|e| format!("body read failed: {}", transport_error_message(e)))?;
         if bytes.len() + chunk.len() > MAX_TILE_BYTES {
             return Err(format!("upstream body exceeds {MAX_TILE_BYTES} bytes"));
         }
@@ -261,6 +280,7 @@ mod tests {
     use tower::ServiceExt as _;
 
     use super::*;
+    use crate::util::http::test_server::{Canned, serve};
 
     /// A 1×1 PNG — the smallest thing that is honestly an image.
     const PNG_1X1: &[u8] = &[
@@ -403,6 +423,157 @@ mod tests {
         assert!(
             !src.cache_path(4, 1, 1).exists(),
             "a failure is never cached"
+        );
+    }
+
+    /// A loopback port nothing listens on — bound, read and released — so a
+    /// connect to it is refused at once, as on a device that is offline.
+    async fn closed_port() -> u16 {
+        tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind a loopback port")
+            .local_addr()
+            .expect("local addr")
+            .port()
+    }
+
+    /// A synthetic key, riding the template's query the way Thunderforest's
+    /// documented `?apikey={apikey}` does. Distinctive, and short of the
+    /// credential-shape guard's 16 characters: it marks a leak, it is no key.
+    const TILE_KEY: &str = "TILEKEY-4F1D2C";
+
+    /// REQ-CRED-003: a keyed upstream that fails answers a `502` naming its
+    /// host and the failure's cause, and nothing of the URL it asked for — not
+    /// the key, not the path, not the port. Three failures, each once a leak:
+    /// a refused connect (the device offline) and a redirect loop (a captive
+    /// portal, a misbehaving server) put reqwest's ` for url (…)` suffix into
+    /// `detail`; a template with no host had `upstream` echo the template
+    /// itself. The cause still reads, so the operator learns why.
+    #[tokio::test]
+    async fn a_failed_keyed_fetch_never_echoes_the_upstream_url_or_its_key() {
+        let refused = closed_port().await;
+        let looping = serve(
+            (0..12)
+                .map(|_| {
+                    Canned::text(302, "")
+                        .header("Location", format!("/4/1/1.png?apikey={TILE_KEY}"))
+                })
+                .collect(),
+        )
+        .await;
+        let hostless = format!("(no host: {TILE_UPSTREAM_ENV} is not an absolute URL)");
+        let cases = [
+            (
+                format!("http://127.0.0.1:{refused}/{{z}}/{{x}}/{{y}}.png?apikey={TILE_KEY}"),
+                "127.0.0.1",
+                "request failed: error sending request: ",
+            ),
+            (
+                format!("{looping}/{{z}}/{{x}}/{{y}}.png?apikey={TILE_KEY}"),
+                "127.0.0.1",
+                "request failed: error following redirect: ",
+            ),
+            (
+                format!("tiles.example/{{z}}/{{x}}/{{y}}.png?apikey={TILE_KEY}"),
+                hostless.as_str(),
+                "request failed: builder error: ",
+            ),
+        ];
+        for (i, (template, upstream, cause)) in cases.into_iter().enumerate() {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .expect("client");
+            let src = TileSource::new(
+                template.clone(),
+                scratch_cache(&format!("keyed-{i}")),
+                client,
+            );
+            let (status, origin, body) =
+                get_tile(&tile_router(src.clone()), "/api/v1/tiles/4/1/1.png").await;
+            let text = String::from_utf8_lossy(&body);
+            assert_eq!(status, StatusCode::BAD_GATEWAY, "{template}: {text}");
+            assert_eq!(origin, None, "{text}");
+            assert!(!text.contains(TILE_KEY), "the key leaked: {text}");
+            assert!(
+                !text.to_ascii_lowercase().contains("apikey"),
+                "the key's parameter leaked, masked or not: {text}"
+            );
+            assert!(
+                !text.contains("/4/1/1.png"),
+                "the upstream URL leaked: {text}"
+            );
+            for port in [
+                refused.to_string(),
+                looping.rsplit(':').next().unwrap_or("").to_string(),
+            ] {
+                assert!(
+                    !text.contains(&format!(":{port}")),
+                    "the upstream origin leaked: {text}"
+                );
+            }
+            let json: serde_json::Value = serde_json::from_slice(&body).expect("a JSON body");
+            assert_eq!(json["error"], "tile upstream unreachable", "{text}");
+            assert_eq!(json["upstream"], upstream, "{text}");
+            let detail = json["detail"].as_str().unwrap_or("");
+            assert!(
+                detail.starts_with(cause) && detail.len() > cause.len(),
+                "the failure's cause still reads: {detail}"
+            );
+            assert!(
+                !src.cache_path(4, 1, 1).exists(),
+                "a failure is never cached"
+            );
+        }
+    }
+
+    /// REQ-CRED-003: an upstream that drops the connection mid-tile is a `502`
+    /// whose `detail` carries the cause chain through the same renderer as the
+    /// send — not reqwest's bare category label — and caches nothing. (The
+    /// stub is hand-rolled because `test_server` always writes an honest
+    /// `Content-Length`.)
+    #[tokio::test]
+    async fn a_tile_cut_off_mid_body_is_a_502_with_its_cause_and_caches_nothing() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind a loopback port");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = vec![0u8; 8192];
+            let _ = sock.read(&mut buf).await;
+            // A promise of 4096 bytes, eight delivered, then the line drops.
+            let _ = sock
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 4096\r\n\r\n",
+                )
+                .await;
+            let _ = sock.write_all(&PNG_1X1[..8]).await;
+            let _ = sock.shutdown().await;
+        });
+        let src = TileSource::new(
+            format!("http://{addr}/{{z}}/{{x}}/{{y}}.png?apikey={TILE_KEY}"),
+            scratch_cache("cut"),
+            reqwest::Client::new(),
+        );
+        let (status, _, body) =
+            get_tile(&tile_router(src.clone()), "/api/v1/tiles/4/1/1.png").await;
+        let text = String::from_utf8_lossy(&body);
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{text}");
+        assert!(!text.contains(TILE_KEY), "the key leaked: {text}");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("a JSON body");
+        let detail = json["detail"].as_str().unwrap_or("");
+        assert!(
+            detail.starts_with("body read failed: ")
+                && detail.contains("error reading a body from connection"),
+            "the cut's cause reads, not just reqwest's label: {detail}"
+        );
+        assert!(
+            !src.cache_path(4, 1, 1).exists(),
+            "a truncated tile is never cached"
         );
     }
 
