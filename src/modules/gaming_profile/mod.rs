@@ -47,7 +47,7 @@ const MOJANG_BASE: &str = "https://api.mojang.com";
 /// Confidence for a Roblox account that resolves EXACTLY from the target handle
 /// — a single-source, exact-handle platform-existence lookup with a live public
 /// profile. HIGH_PLUSPLUS_PLUS is this codebase's settled tier for that evidence
-/// class (OD-19 in .agent/state.json; gitea_user/gitlab_user stamp the identical
+/// class (OD-19 in .agent/history.json; gitea_user/gitlab_user stamp the identical
 /// class), with the richer Roblox profile (creation date, description, verified
 /// badge) riding as evidence rather than a base-confidence premium — exactly how
 /// gitea/gitlab carry profile metadata at 0.85. NOT VERY_HIGH_PLUS (0.90): the

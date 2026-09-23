@@ -235,7 +235,16 @@ fn no_provider_credential_is_embedded_in_source() {
 #[test]
 fn no_provider_credential_is_embedded_in_narrative_files() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    const NARRATIVE_FILES: &[&str] = &[".agent/state.json"];
+    // `history.json` is the 42-cycle ledger that held the leaked key, moved
+    // out of `state.json` unchanged on 2026-09-23; `progress.md` is the run
+    // log written beside the new `state.json`, and `files.md` the repair
+    // queue it works through.
+    const NARRATIVE_FILES: &[&str] = &[
+        ".agent/state.json",
+        ".agent/history.json",
+        ".agent/progress.md",
+        ".agent/files.md",
+    ];
 
     let mut offenders = Vec::new();
     for rel in NARRATIVE_FILES {
