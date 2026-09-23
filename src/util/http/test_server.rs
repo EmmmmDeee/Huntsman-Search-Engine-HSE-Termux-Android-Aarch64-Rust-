@@ -65,10 +65,27 @@ impl Canned {
 /// of the queue gets a `599` with a message, so a test sees an unexpected extra
 /// request as a failure rather than a hang.
 pub(crate) async fn serve(answers: Vec<Canned>) -> String {
+    serve_recording(answers).await.0
+}
+
+/// The request heads a [`serve_recording`] listener received, in arrival order.
+pub(crate) type Requests = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+/// [`serve`], also handing back every request head it receives: the request
+/// line and headers, as text. A module's result shows what it did with the
+/// answer; the head shows what it sent, so a test can assert WHERE a module put
+/// something, such as a credential in a header and not in the URL
+/// (REQ-CRED-001).
+///
+/// A head is what one `read` returned, up to 8 KiB. A small loopback GET
+/// arrives in one read, and nothing here is meant for large requests.
+pub(crate) async fn serve_recording(answers: Vec<Canned>) -> (String, Requests) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind loopback");
     let addr = listener.local_addr().expect("local addr");
+    let requests = Requests::default();
+    let seen = requests.clone();
     tokio::spawn(async move {
         let mut queue = answers.into_iter();
         loop {
@@ -78,7 +95,10 @@ pub(crate) async fn serve(answers: Vec<Canned>) -> String {
             // The request head is all that is needed; the body (a POST's JSON)
             // is never inspected.
             let mut buf = vec![0u8; 8192];
-            let _ = sock.read(&mut buf).await;
+            let n = sock.read(&mut buf).await.unwrap_or(0);
+            seen.lock()
+                .expect("request log")
+                .push(String::from_utf8_lossy(&buf[..n]).into_owned());
             let (status, content_type, body, headers) = match queue.next() {
                 Some(c) => (c.status, c.content_type, c.body, c.headers),
                 None => (
@@ -112,7 +132,7 @@ pub(crate) async fn serve(answers: Vec<Canned>) -> String {
             let _ = sock.shutdown().await;
         }
     });
-    format!("http://{addr}")
+    (format!("http://{addr}"), requests)
 }
 
 /// A loopback address nothing listens on, held for as long as this value

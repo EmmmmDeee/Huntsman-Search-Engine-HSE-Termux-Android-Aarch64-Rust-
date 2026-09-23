@@ -1230,3 +1230,122 @@ fn the_binary_never_escalates_privilege() {
          never require or invoke one: {offenders:?}"
     );
 }
+
+// ─── REQ-CRED-001: an operator credential never rides a plaintext request ────
+
+/// The calls through which a module reads an operator credential:
+/// `ModuleContext::key`, `ModuleContext::key_opt` and the pool cascade's
+/// `next_pooled_key`. Every keyed module in `src/modules` reads through one of
+/// these.
+const CREDENTIAL_READS: &[&str] = &["ctx.key(", "ctx.key_opt(", ".next_pooled_key("];
+
+/// True iff `line` builds a plaintext `http://` URL. `line` is production source
+/// with comments blanked and literals kept. The test is an `"http://` literal
+/// with something after the scheme, on a line that is not merely testing or
+/// stripping that prefix (`starts_with`, `strip_prefix`, `trim_start_matches`).
+/// It matches `format!("http://host{path}")`, a `.get("http://…")` and a
+/// `const BASE: &str = "http://…"`. It does not match `url.strip_prefix(
+/// "http://github.com/")` or a bare `"http://"` scheme literal.
+fn builds_plaintext_url(line: &str) -> bool {
+    const PREFIX_OPS: &[&str] = &["starts_with(", "strip_prefix(", "trim_start_matches("];
+    if PREFIX_OPS.iter().any(|op| line.contains(op)) {
+        return false;
+    }
+    line.match_indices("\"http://")
+        .any(|(i, m)| !line[i + m.len()..].starts_with('"'))
+}
+
+/// REQ-CRED-001: no module that reads an operator credential builds a
+/// plaintext `http://` URL.
+///
+/// `contact_enrich` read `HUNTSMAN_NUMVERIFY_KEY`, put it in the query string,
+/// and on ANY failure of the HTTPS request resent the same URL as
+/// `format!("http://apilayer.net{qs}")`. The key and the subject's phone number
+/// then crossed the network in cleartext, readable by the Wi-Fi access point,
+/// the carrier, or any proxy on the path. The client does not refuse `http://`:
+/// no `https_only` is set anywhere in `util::http`. This test is where that
+/// refusal lives, for the modules a leak would cost a credential.
+///
+/// A keyless module may still speak plaintext. `ip_geo`'s free ip-api.com tier
+/// and `subdomain_takeover`'s `http://` probe do, and neither is flagged. The
+/// scope is the MODULE (its directory under `src/modules`), not the file, so a
+/// helper file cannot build the URL that its `mod.rs` fills with a key. A
+/// keyed module with a genuine need for a plaintext URL that carries no
+/// credential should move that URL out of the keyed module. Do not weaken this
+/// test to make room for it.
+#[test]
+fn a_credential_reading_module_never_builds_a_plaintext_http_url() {
+    // The predicate sees the defect's exact shape and the obvious variants, and
+    // leaves prefix handling and HTTPS alone.
+    assert!(builds_plaintext_url(r#"            let http = format!("http://apilayer.net{qs}");"#));
+    assert!(builds_plaintext_url(
+        r#"const API_BASE: &str = "http://api.apilayer.com/number_verification";"#
+    ));
+    assert!(builds_plaintext_url(r#"let resp = ctx.http.get("http://example.com/api").send()"#));
+    assert!(!builds_plaintext_url(r#"let https = format!("https://apilayer.net{qs}");"#));
+    assert!(!builds_plaintext_url(r#"    .or_else(|| url.strip_prefix("http://github.com/"))?;"#));
+    assert!(!builds_plaintext_url(r#"        .trim_start_matches("http://")"#));
+    assert!(!builds_plaintext_url(r#"let scheme = "http://";"#));
+
+    let modules = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/modules");
+    let mut files = Vec::new();
+    production_rs_files(&modules, &mut files);
+    let mut by_module: std::collections::BTreeMap<String, Vec<(String, String)>> =
+        std::collections::BTreeMap::new();
+    for path in files {
+        let rel = path
+            .strip_prefix(&modules)
+            .expect("under src/modules")
+            .to_path_buf();
+        let module = rel
+            .components()
+            .next()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let text = production_source_keep_literals(&fs::read_to_string(&path).unwrap());
+        by_module
+            .entry(module)
+            .or_default()
+            .push((rel.display().to_string(), text));
+    }
+
+    let mut keyed = 0usize;
+    let mut https_urls = 0usize;
+    let mut offenders = Vec::new();
+    for sources in by_module.values() {
+        let reads_credential = sources
+            .iter()
+            .any(|(_, text)| CREDENTIAL_READS.iter().any(|r| text.contains(r)));
+        if !reads_credential {
+            continue;
+        }
+        keyed += 1;
+        for (rel, text) in sources {
+            for (i, line) in text.lines().enumerate() {
+                https_urls += usize::from(line.contains("\"https://"));
+                if builds_plaintext_url(line) {
+                    offenders.push(format!("src/modules/{rel}:{}: {}", i + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        keyed >= 40,
+        "only {keyed} credential-reading modules found; has the key accessor been \
+         renamed? Update CREDENTIAL_READS or this test checks nothing"
+    );
+    // The scan reads literals: keyed modules' HTTPS URLs are visible to it. A
+    // literal-blanking preprocessor would leave this at zero and the check
+    // below blind.
+    assert!(
+        https_urls >= 40,
+        "only {https_urls} \"https:// literals seen in keyed modules; is the scan \
+         reading blanked source?"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a module that reads an operator credential builds a plaintext http:// URL. \
+         A key must never be sent where the path can read it (REQ-CRED-001):\n{}",
+        offenders.join("\n")
+    );
+}

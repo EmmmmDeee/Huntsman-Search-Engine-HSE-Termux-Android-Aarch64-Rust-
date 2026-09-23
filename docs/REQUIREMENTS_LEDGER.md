@@ -21184,3 +21184,101 @@ runs it, which also catches a guard dropped before the engine starts.
 `core::cancel::tests::a_guards_scan_id_is_registered_for_as_long_as_it_can_be_read`
 pins the accessor the structure depends on: it returns the registered key,
 and the key stays registered while the guard lives.
+
+## REQ-CRED-001 — the Numverify key has one caller (the HTTPS gateway, key in a header), and no keyed module builds a plaintext URL
+
+**Found** by the API-keys audit (CRED-01, KEYREG-08; one defect), then independently verified. Line numbers are at HEAD `22bc201`, whose tree matches `6d9b86a`.
+
+`contact_enrich` had its own Numverify phone leg. It read `HUNTSMAN_NUMVERIFY_KEY` (`contact_enrich/mod.rs:187`) and built `/api/validate?access_key=<KEY>&number=<phone>` (`:199-203`). It tried `https://apilayer.net{qs}` and, on **any** `Err`, resent the identical URL as `format!("http://apilayer.net{qs}")` (`:239-245`). `try_url` returned `Err` for three reasons:
+- a transport failure;
+- any non-2xx (`:221`);
+- the legacy host's in-body `success:false` (`:229-234`).
+
+So a timeout on café Wi-Fi, a captive portal or a 5xx sent the paid key and the subject's number across the network in cleartext. An on-path attacker could also answer the plaintext request with a forged `valid:true`, and the module minted that at EXPERT. The client does not refuse `http://`: `util/http/ssrf.rs:286-341` sets no `https_only`, and nothing under `src/` does.
+
+Three further effects came from the same leg:
+- **It poisoned the shared key.** On the in-body envelope it called `ctx.report_key_exhausted("numverify", key, 200)` (`:230`), and a non-429 status marks the key `KeyStatus::Invalid` in the process-global pool (`core/module/mod.rs:488-496`). The key `numverify`'s `ServiceDef` validates is the APILayer gateway's (`util/service_defs/mod.rs:157-181`, `api.apilayer.com` with an `apikey` header). Live, the legacy host answers a key it does not recognise with HTTP 200 and code 101. Whether it recognises a gateway key is **unverified** (no real key in hand). Where it does not, every Phone target marked a working key Invalid.
+- **It spent the quota twice.** The `numverify` module (`modules/mod.rs:542`) already queried the same target through the gateway (`numverify/mod.rs:96-112`) alongside `contact_enrich` (`modules/mod.rs:423`). Every Phone therefore cost two calls, plus a third on the fallback.
+- **It escaped the gates for keyed modules.** `contact_enrich` declares `ModuleCost::Free` (`:133`), so its keyed call ran in `--free-only` scans (`core/engine/dispatch.rs:426` skips only non-Free modules). It also escaped the once-per-target dispatch dedup, which applies only to non-Free modules (`dispatch.rs:1392`).
+
+**Were the two outputs equivalent?** Deleting the leg is only lossless if they were, and they were not. `numverify` minted the `Address` (`location, country`), its `Coordinates` and the carrier `Organisation`. `contact_enrich` also minted the **validated subject `Phone`**: EXPERT; tagged `numverify`/`validated`/`country:`/`line:`; eight evidence fields. That entity had to move to `numverify`, not disappear.
+
+**Vendor facts** (primary sources, read 2026-09-23):
+- The gateway's API reference (<https://marketplace.apilayer.com/number_verification-api/tabs/api_docs>) says: "All requests made to the API must hold a custom HTTP header named "apikey"" and "All API requests must be made over HTTPS. Calls made over plain HTTP will fail." Errors are non-2xx: 400, 401 "No valid API key provided", 404, 429 "API request limit exceeded", and 5xx.
+- The documented `/validate` sample response (<https://marketplace.apilayer.com/code/response?service_name=number_verification&method=get&endpoint=/validate>) carries exactly the ten fields the legacy decoder read: `valid`, `number`, `local_format`, `international_format`, `country_prefix`, `country_code`, `country_name`, `location`, `carrier`, `line_type`. So the gateway can feed everything `contact_enrich` minted.
+- Live keyless requests against the gateway: no key returns `401 {"message":"No API key found in request"}`; a garbage key returns `401 {"message":"Invalid authentication credentials"}`; plain `http://` returns 401. A refused key is a status, which `keyed_ok_or_404` already reads, not an in-body envelope.
+- Live against the legacy host: `https://apilayer.net/api/validate?access_key=garbage…` returns `HTTP 200 {"success":false,"error":{"code":101,"type":"invalid_access_key",…}}`.
+
+### Implemented, at the one authority
+
+- **`contact_enrich` has no phone leg.** It accepts `Email` only. It no longer declares `Phone` in `produces()`. Its Numverify types, `numverify_key_error_detail`, `build_phone_entities` and the `transport:` tag are deleted. It reads no key at all.
+- **`numverify` is the one Numverify caller.**
+  - `validate(ctx, base, key, number)` owns the request and its verdict. The host is `API_BASE`, the HTTPS gateway the `ServiceDef` probes. The key goes only in the `apikey` header. The status verdict is the shared `keyed_ok_or_404`, and the body is decoded by `json_scanned`.
+  - A failure is returned, never retried elsewhere. `base` is a parameter only so the loopback tests drive the real request path.
+- **The validated `Phone` is minted by `numverify`**, via `build_entities` → `validated_phone`, with the same tier, tags and evidence fields as before and no `transport:` tag. `NvResp` gains `number`, `local_format` and `country_prefix`, `produces()` gains `Phone`, and the region entities are unchanged.
+- **Not carried over: `contact_enrich`'s LOW `phone-registration` Address** of `location` alone. `numverify`'s own `Address` already carries that field, qualified with the country, so two rows from one answer would state one fact twice.
+- **`util::http::test_server::serve_recording`**, an extension of the shared loopback server (`serve` is now a wrapper around it). It hands back each request head, so a test can assert *where* a module put the key.
+- **`keyed_tests`:** the `contact_enrich` special case is removed. It was already unreachable: a `Free` module has `requires_key == false` and is skipped before it.
+- **Docs.** The README's Phone module count goes from 18 to 17. The `.env.example` Numverify block now describes the gateway contract instead of `access_key`.
+
+### Locks
+
+- `modules::numverify::tests`:
+  - `the_key_travels_in_the_apikey_header_and_never_in_the_url`: loopback via `serve_recording`. One request; the request line is exactly `GET /validate?number=%2B14158586273 HTTP/1.1`; the key appears once, in the `apikey` header.
+  - `a_failure_is_never_retried_and_a_miss_or_invalid_number_is_an_answer`: a 500 is an error after exactly one request. A 404 is the clean miss. A 200 `valid:false` is an answer that mints nothing.
+  - `the_one_numverify_host_is_the_https_gateway`: `API_BASE` is the HTTPS gateway, and the `ServiceDef`'s `test_url` is on it.
+  - `a_valid_answer_confirms_the_subject_phone`: the vendor's documented sample response. The Phone's tier, tags and all eight evidence fields are checked, with no `transport` tag or attribute.
+  - `blank_fields_add_nothing_and_a_regionless_answer_still_confirms_the_phone`
+  - `every_entity_minted_from_an_answer_is_attributed_to_numverify`, moved here from `contact_enrich`.
+  - `module_metadata_full` now asserts `Phone` in `produces()`.
+  - `invalid_number_yields_nothing` now also decodes `{}`.
+- `modules::contact_enrich::tests`:
+  - `accepts_email_only`
+  - `a_phone_target_sends_no_request_even_with_a_numverify_key`: the client goes through a recording loopback proxy with a key configured, and no request leaves.
+  - `an_email_target_still_asks_gravatar_and_carries_no_key` is that test's control: the same proxy sees exactly one Gravatar request. It is also the over-correction guard.
+- `tests/architecture.rs` → `a_credential_reading_module_never_builds_a_plaintext_http_url`: no module that reads a credential (`ctx.key(`, `ctx.key_opt(`, `.next_pooled_key(`) builds an `"http://…` URL.
+  - It scans per module directory, not per file.
+  - It has self-checks on the predicate, a floor of 40 keyed modules, and a floor on the `"https://` literals it can see, so it is not reading blanked source.
+  - At HEAD it flags exactly one line, `contact_enrich/mod.rs:243`. Keyless plaintext users (`ip_geo`, `subdomain_takeover`) are out of scope and not flagged.
+
+### Falsified
+
+Harness: `mutate2.py`, spec `mut_cred001.json`. The `-arch` rows run `--test architecture -- credential_reading`; the rest run `--lib -- numverify contact_enrich`. The result column is the harness's own output.
+
+| id | mutation | result |
+|---|---|---|
+| B1 | **baseline**: `contact_enrich` accepts `Phone` again | KILLED by `accepts_email_only` |
+| B2 | **baseline**: `contact_enrich`'s phone leg restored (`?access_key=` over HTTPS, then plaintext `http://apilayer.net` on any error) | KILLED by `a_phone_target_sends_no_request_even_with_a_numverify_key` |
+| B2-arch | B2, against the source lock | KILLED by `a_credential_reading_module_never_builds_a_plaintext_http_url` |
+| B3 | **baseline**: `validate` puts `access_key={key}` in the URL | KILLED by `the_key_travels_in_the_apikey_header_and_never_in_the_url` |
+| B4 | the key is sent under another header name | KILLED by `the_key_travels_in_the_apikey_header_and_never_in_the_url` |
+| B5 | **baseline**: a failed request is retried at a plaintext URL | KILLED by `a_failure_is_never_retried_and_a_miss_or_invalid_number_is_an_answer` |
+| B6 | `API_BASE` is `http://` | KILLED by `the_one_numverify_host_is_the_https_gateway` |
+| B6-arch | B6, against the source lock | KILLED by `a_credential_reading_module_never_builds_a_plaintext_http_url` |
+| B7-arch | `process` asks the legacy host over `http://` instead of `API_BASE` | KILLED by `a_credential_reading_module_never_builds_a_plaintext_http_url` |
+| N1 | the validated `Phone` is not minted (the capability is lost with the leg) | KILLED by 3: `a_valid_answer_confirms_the_subject_phone`, `blank_fields_add_nothing_and_a_regionless_answer_still_confirms_the_phone`, `every_entity_minted_from_an_answer_is_attributed_to_numverify` |
+| N2 | the `valid` gate is removed | KILLED by 2: `a_failure_is_never_retried_and_a_miss_or_invalid_number_is_an_answer`, `invalid_number_yields_nothing` |
+| N3 | the `country:` tag is not upper-cased | KILLED by `blank_fields_add_nothing_and_a_regionless_answer_still_confirms_the_phone` |
+| N4 | a blank country code is tagged | KILLED by `blank_fields_add_nothing_and_a_regionless_answer_still_confirms_the_phone` |
+| N5 | a blank line type is tagged | KILLED by `blank_fields_add_nothing_and_a_regionless_answer_still_confirms_the_phone` |
+| N6 | blank evidence fields are kept | KILLED by `blank_fields_add_nothing_and_a_regionless_answer_still_confirms_the_phone` |
+| N7 | `local` is read from the wrong field | KILLED by `a_valid_answer_confirms_the_subject_phone` |
+| N8 | the `transport:https` tag comes back | KILLED by `a_valid_answer_confirms_the_subject_phone` |
+| N9 | `numverify` does not declare `Phone` in `produces()` | KILLED by `module_metadata_full` |
+| N10 | `serve_recording` records nothing (a blind recorder would make the no-request test vacuous) | KILLED by 3: `an_email_target_still_asks_gravatar_and_carries_no_key`, `a_failure_is_never_retried_and_a_miss_or_invalid_number_is_an_answer`, `the_key_travels_in_the_apikey_header_and_never_in_the_url` |
+| O1 | over-correction: `numverify` confirms nothing | KILLED by 6: `a_valid_answer_confirms_the_subject_phone`, `blank_fields_add_nothing_and_a_regionless_answer_still_confirms_the_phone`, `every_entity_minted_from_an_answer_is_attributed_to_numverify`, `build_entity_emits_region_with_carrier_evidence`, `build_entity_line_type_tag`, `country_only_still_geolocates` |
+| O2 | over-correction: a 404 is an error, not the clean miss | KILLED by `a_failure_is_never_retried_and_a_miss_or_invalid_number_is_an_answer` |
+| O3 | over-correction: `contact_enrich` stops asking Gravatar too | KILLED by `an_email_target_still_asks_gravatar_and_carries_no_key` |
+| O4-arch | over-correction: the lock flags prefix handling (`strip_prefix("http://…")`) | KILLED by `a_credential_reading_module_never_builds_a_plaintext_http_url` (predicate self-check) |
+| O5-arch | over-correction: the lock flags a bare `"http://"` literal | KILLED by `a_credential_reading_module_never_builds_a_plaintext_http_url` (predicate self-check) |
+| L1-arch | the lock scans literal-blanked source (can never fire) | KILLED by `a_credential_reading_module_never_builds_a_plaintext_http_url` (`"https://` floor) |
+| L2-arch | the lock misses `ctx.key(` readers | KILLED by `a_credential_reading_module_never_builds_a_plaintext_http_url` (keyed-module floor) |
+
+**26 of 26 killed**, run against the compiled patch. Clippy `-D warnings` is clean.
+
+### Residual
+
+- **Legacy keys.** An operator whose key is a legacy numverify.com `access_key` now has it used nowhere. At HEAD the `numverify` module and the `ServiceDef` probe already sent it to the gateway. Whether the gateway accepts a legacy key is unverified.
+- **AU state tags.** The `au-state:`/`country:AU` tags `contact_enrich` put on its LOW `phone-registration` Address are not emitted for the Numverify location. `numverify`'s `Address` does not tag AU states. The correlator's coordinate fallback (`geo::coord_state`) still applies to its `Coordinates`.
+- **The lock is lexical.** A plaintext URL assembled from a bare `"http://"` literal or a scheme variable evades it. It is a class guard, not a proof.
+- **Signup hint.** `util/keys/constants.rs:127` still points operators at numverify.com. That is hint hygiene, tracked with the KEYREG rows.

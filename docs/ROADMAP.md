@@ -205,6 +205,11 @@ Breach/Stealer, Threat-Intel, Registry (AU/VN gov), Crypto, Archive, Presence,
 Search. Each module: `accepts` only the kinds its provider indexes; fails
 closed on non-2xx; emits entities with graded confidence + contract-checked
 tags; ships a falsified unit-test suite pinning found/clean/error paths.
+A keyed provider call has one owning module, and no module that reads an
+operator's key builds a plaintext URL. `contact_enrich` used to run a second
+Numverify caller that resent the key over plaintext; phone validation is now
+`numverify`'s alone, and `tests/architecture.rs` refuses a plaintext `http://`
+URL in any module that reads a credential (REQ-CRED-001).
 
 **Synergy is the point.** A module's value is the *pivots it opens*: `pgp`
 email→name→alternate-address feeds the identity correlator; `opensanctions`

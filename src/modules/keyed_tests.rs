@@ -80,15 +80,11 @@ async fn every_keyed_module_in_the_registry_refuses_without_its_key() {
             assert!(!why.is_empty(), "an exemption must carry its reason");
             continue;
         }
-        // contact_enrich is keyed only on its phone path; every other module is
-        // keyed on everything it consumes.
-        let kind = if module.name() == "contact_enrich" {
-            TargetKind::Phone
-        } else {
-            match module.consumes().first() {
-                Some(k) => *k,
-                None => continue,
-            }
+        // Every keyed module is keyed on everything it consumes. (contact_enrich
+        // was once keyed only on its Phone leg; that leg, and its key, are gone:
+        // REQ-CRED-001.)
+        let Some(kind) = module.consumes().first().copied() else {
+            continue;
         };
         let target = Target::new(kind, probe_value(kind));
         checked += 1;
