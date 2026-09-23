@@ -20731,3 +20731,42 @@ equal the OID exactly, and every length goes through the bounds-checked
 Its "refused" port is bound, dropped, then connected to, and a concurrent
 test can be handed the freed port in between. That is recorded for its own
 fix rather than folded into this change.
+
+## REQ-CI-011 — a "refused" test port could be handed to another test's server before the probe connected
+
+**Found** running the full suite for REQ-CERTINTEL-002:
+`app::outage::tests::ip_literal_reachable_is_false_against_a_refused_port`
+failed once and passed on every other run. Its `refused_addr()` bound
+`127.0.0.1:0`, dropped the listener, and returned the address. The freed port
+goes back to the kernel's pool at once. Under cargo's parallel harness, where
+thousands of tests bind `127.0.0.1:0`, another test's server can be given it
+before the probe connects, and the probe then reaches a live server. The
+same bind-then-drop idiom stood in two more tests:
+`util::http::fetch::tests::transport_is_transient_flags_a_connect_refusal` and
+`modules::webserver_banner::tests::both_transports_failing_is_not_a_clean_negative`.
+No other form of it exists: a sweep for block-scoped drops and port-picking
+helpers found none, and no test binds UDP.
+
+**The mechanism was reproduced on the kernel first**, before any Rust changed.
+A 20,000-iteration harness ran against 16 threads churning
+`bind(127.0.0.1:0)` + `listen`. With bind-then-close, **5** of the "refused"
+ports accepted a connection. With the port held bound but not listening,
+**0** did.
+
+### Implemented
+
+`util::http::test_server::ClosedPort` holds a loopback port bound but never
+listening, with `SO_REUSEADDR` off, for as long as the value lives. A connect
+is refused at once, and no other socket can be given the port meanwhile. It
+uses `tokio::net::TcpSocket`, which the crate already has, so there is no new
+dependency. All three tests hold one for their whole body.
+
+### Locks
+
+`a_closed_port_refuses_and_cannot_be_taken_while_held` checks both
+properties: the connect is refused, and another listener's bind of the held
+address fails.
+
+| # | mutation | result |
+|---|---|---|
+| CI11-R | `set_reuseaddr(false)` → `true` | killed: "a held port must not be bindable by another listener" |

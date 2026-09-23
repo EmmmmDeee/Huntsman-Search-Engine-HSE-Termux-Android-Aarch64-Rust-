@@ -2,22 +2,8 @@
 
 use super::*;
 use crate::core::outage::{OutageKind, OutageReport};
-use crate::util::http::test_server::{Canned, serve};
+use crate::util::http::test_server::{Canned, ClosedPort, serve};
 use std::time::Instant;
-
-/// Bind a loopback listener and immediately drop it, returning an address
-/// nothing is listening on — connecting to it fails fast (ECONNREFUSED)
-/// rather than hanging, unlike an unroutable address that would eat a whole
-/// timeout. The reliable way to get "definitely refused" without depending
-/// on any specific port being free in the test sandbox.
-async fn refused_addr() -> String {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind loopback");
-    let addr = listener.local_addr().expect("local addr").to_string();
-    drop(listener);
-    addr
-}
 
 #[tokio::test]
 async fn ip_literal_reachable_is_true_against_a_real_listener() {
@@ -40,7 +26,8 @@ async fn ip_literal_reachable_is_true_against_a_real_listener() {
 
 #[tokio::test]
 async fn ip_literal_reachable_is_false_against_a_refused_port() {
-    let addr = refused_addr().await;
+    let closed = ClosedPort::new();
+    let addr = closed.addr().to_string();
     assert!(!ip_literal_reachable(&addr).await);
 }
 
@@ -68,7 +55,8 @@ async fn connectivity_check_reports_a_200_body_as_some_200_the_captive_portal_sh
 
 #[tokio::test]
 async fn connectivity_check_reports_a_refused_port_as_none_not_a_fabricated_status() {
-    let addr = refused_addr().await;
+    let closed = ClosedPort::new();
+    let addr = closed.addr().to_string();
     let status = connectivity_check(&format!("http://{addr}/generate_204")).await;
     assert_eq!(status, None);
 }
@@ -111,14 +99,16 @@ async fn doh_dns_lookup_against_a_refused_endpoint_is_some_empty_not_none() {
     // private-IP guard, the observable contract is identical: the collector
     // attempted the query, so this is "ran, found nothing" (`Some(vec![])`),
     // never "the check did not run" (`None`) and never a hang.
-    let addr = refused_addr().await;
+    let closed = ClosedPort::new();
+    let addr = closed.addr().to_string();
     let result = doh_dns_lookup("example.invalid", &format!("http://{addr}/dns-query")).await;
     assert_eq!(result, Some(Vec::new()));
 }
 
 #[tokio::test]
 async fn tls_issuer_probe_against_an_unreachable_target_is_false_none() {
-    let addr = refused_addr().await;
+    let closed = ClosedPort::new();
+    let addr = closed.addr().to_string();
     let (captured, issuer) = tls_issuer_probe(&addr).await;
     assert!(!captured);
     assert_eq!(issuer, None);
@@ -137,7 +127,8 @@ async fn tls_issuer_probe_against_a_plain_http_responder_is_false_none() {
 
 #[tokio::test]
 async fn collect_against_stays_bounded_and_reads_offline_when_every_leg_is_unreachable() {
-    let addr = refused_addr().await;
+    let closed = ClosedPort::new();
+    let addr = closed.addr().to_string();
     let unreachable = format!("http://{addr}");
     let started = Instant::now();
     let path = collect_against(&addr, &addr, &unreachable, &unreachable).await;
@@ -174,7 +165,8 @@ async fn collect_against_composes_cleanly_when_only_the_direct_path_answers() {
             drop(sock);
         }
     });
-    let refused = refused_addr().await;
+    let closed = ClosedPort::new();
+    let refused = closed.addr().to_string();
     let unreachable = format!("http://{refused}");
     // A domain `lookup_host` cannot resolve without a real (and in this
     // sandbox, likely absent) resolver — using the RFC 2606-reserved TLD
