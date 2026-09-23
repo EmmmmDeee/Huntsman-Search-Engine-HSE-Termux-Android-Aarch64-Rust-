@@ -22509,7 +22509,11 @@ no radius:
 
 The correlator never weighs such a point, because `geo_intel` and
 `email_locale` are not anchoring sources, and under REQ-GEOLABEL-019 an
-anchoring record on the same value sets the signal aside. A geocoder's
+anchoring record on the same value sets the signal aside. (Review round 3
+showed this did not hold: a record from an anchoring source can be no
+account of the point at all, such as a legacy `wigle` density row, and it
+set nothing aside while passing the person-anchor gate. REQ-GEOLABEL-026
+makes it hold.) A geocoder's
 declared `country` hit keeps the table's 300 km. That is a different fact
 (the geocoder matched a country's polygon), and the finding did not cover
 it.
@@ -22643,3 +22647,211 @@ the whole run, every touched file's md5 matched again.
 are unchanged in this round, so this round adds nothing to regenerate in
 `wasm-ui/pkg`. REQ-GEOLABEL-015 still needs that regeneration, and it
 remains the lead's step.
+
+## REQ-GEOLABEL-024 / REQ-GEOLABEL-025 / REQ-GEOLABEL-026 / REQ-GEOLABEL-027 / REQ-GEOLABEL-028 — review round 3 on country signals
+
+**Found** by adversarial review of c3818c45 (review round 2). Seven findings
+were raised. Each was checked against the branch head, and all seven were
+real. Two of them are one defect (REQ-GEOLABEL-024), and one is a stale
+contract text (hse-core's `COARSE` doc). One worked example does not reach
+its defect: the `breach_timezone` path of REQ-GEOLABEL-026. That defect is
+real on another path, which its test uses. Every fix is at the layer that owns
+the rule, and every behavioural fix has a regression test that fails on the
+code before it.
+
+**REQ-GEOLABEL-024 — an unclassified city finding is not erased by a
+country signal.** REQ-GEOLABEL-019 set a country signal aside only when
+another account "explained" the value, and it counted every
+`FixBasis::Unknown` account (every `GeoSourceClass::Other` source) as
+explaining nothing. It also skipped the gazetteer coincidence whenever the
+signal was read. Most `city_coords` callers are unclassified:
+`profile_kit::location_coordinates` (gitlab_user, stackoverflow_user,
+codeberg_user, gitea_user, steam_profile, dockerhub_user, devto,
+codewars_user), numverify, asic_persons, whois, employer_pivot, gravatar,
+mastodon_user and urlscan. So a GitLab profile's "Sydney", a NumVerify
+line's "Wellington, New Zealand" or an ASIC register's Sydney address, each
+on the exact row the `.au` or `+64` stand-in sits on, merged with the signal
+and read "Australia" or "New Zealand (country-level signal)". Each read as
+its city alone. The round-2 test used only classified sources.
+
+The rule now asks whether a record is the SIGNAL, not whether its source is
+classified. Every account explains the value (`Account::explains`), except
+a country signal and the signal's own attribute-less CSV copy
+(`is_stripped_country_signal`: a record from `email_locale` or `geo_intel`
+with no attributes, the shape the CSV importer rebuilds, in which
+`geo_intel`'s `method` is lost). A live record of either module always
+carries attributes, so `geo_intel`'s IP geolocation is not mistaken for
+the stripped copy. Nothing lands on a city's row to six decimals except by
+looking that city up, and the gazetteer coincidence (no longer skipped,
+because the signal is set aside) names the city.
+
+**REQ-GEOLABEL-025 — a country signal is named in its own words.** The
+label named a country-signal point by its stored `country_code`, else the
+country box its stand-in falls in. Several signals name more than one
+country. `geo_intel` maps every NANP `+1` number, Canada included, to
+("United States/Canada", "US", US centroid), so a Toronto `+1 416` number
+read "United States (country-level signal …)". `+7` named only "Russia",
+though Kazakhstan shares it. `email_locale`'s name patterns name regions
+("Eastern Europe (Ukraine/Russia/Serbia)", "Iberia/Latin America",
+"Scandinavia (Sweden/Iceland)") at single capitals, so the labels read
+"Russia (approx.)", "Portugal (approx.)" and "Sweden (approx.)".
+
+`grain::country_signal_place` now reads the signal records' own `country`,
+else `region`. Several names on one stand-in are all given, sorted and
+joined with "or". `email_locale` writes `country` on its ccTLD record and
+`region` on its name-pattern record. `geo_intel` names `+7`
+"Russia/Kazakhstan", matching `phone_intl`'s "Russia / Kazakhstan". The
+reader goes over every signal record, not only the originating ones:
+`email_locale` is a derivation module, so `is_annotator_row` skips its
+records, but its record is still the one that says which place it meant.
+Only a signal whose records name nothing (a CSV copy) falls back to the
+stored country or the box. Not taken: the reviewers' alternative of not
+grading name-pattern locales as a country. Ungraded, the Moscow or Lisbon
+stand-in would take its gazetteer coincidence and read as that city, which
+is finer and worse. The `country:US` / `country:RU` tag `geo_intel` writes
+for `+1` / `+7` is unchanged, because the finding did not cover it.
+
+**REQ-GEOLABEL-026 — a country signal never reaches the correlator as a
+position.** A country-graded point has radius `COUNTRY_SIGNAL_RADIUS_M =
+inf`. When an anchoring record on it explained nothing, the point passed the
+person-anchor gate and `best_precision_radius_m` returned
+`Some(max(class, inf)) = Some(inf)`. The best-location rung 2 then set
+`radius_km = inf`. report.json and the JSON export wrote `"radius_km": null`
+and `place_label: null`, the debug bundle's `unwrap_or(0.0)` printed
+"± 0.0 km" (a claim of exact precision), and the CLI dossier printed
+"± inf km". The reviewers' path does not reach this.
+`breach_timezone` is listed in `ANCHORING_GEO_SOURCES`, but it is an
+`ENRICHMENT_ONLY_SOURCES` derivation. `corroborating_sources` drops it, and
+its record is an engine-side row (`is_annotator_row`), so a `.au` point
+carrying it is still gated out as having no anchoring source, and
+`best_precision_radius_m` returns `None`. A test keeps this as a control.
+The defect is real on another path: an anchoring source whose record is
+no account of the point. A legacy `wigle` density row, written before the
+annotation flag existed, is recognised by its shape as an annotation, so it
+sets nothing aside. It still names `wigle`, an anchoring source, so the
+country-graded point passed the gate with an infinite radius.
+
+Three changes:
+- `correlator::is_infrastructure_geo` now also excludes a `Coordinates`
+  that `grain::claims_no_position` grades a country signal. A stand-in is no
+  vertex of a footprint, no weight in a median and no best-location fix.
+  This check is on the entity only, like the radar-sentinel check, because
+  the grade needs the records and the string reader
+  (`is_infrastructure_geo_signals`) does not hold them. `claims_no_position`
+  runs `assess` only when a record or tag could make the point a signal.
+- `best_precision_radius_m` is always finite. It returns `None` for a point
+  graded with no radius.
+- `place::fix_radius_km_text` is the one formatter the debug bundle and the
+  CLI dossier use. It prints "± N.N km", or "(no radius)" for a null or
+  non-finite radius, never "± 0.0 km" or "± inf km".
+
+**REQ-GEOLABEL-027 — a city address merges onto a country signal's
+stand-in.** `address_to_coords_pass` skipped any Address whose centroid uid
+was already in the map. Seed `x@firm.com.au` and "10 Smith St, Sydney NSW
+2000". `email_locale` puts the `.au` point on Sydney's row in the seed round.
+The pass then found that uid present and yielded nothing, so the
+`existing.merge(derived)` branch that REQ-GEOLABEL-019's fix relied on was
+never reached, and the point kept reading "Australia". The round-2 engine
+test passed only because it built a map holding the Address alone and
+merged by hand. The pass now skips an existing point unless
+`assess(existing)` is a country signal. In that case it emits the centroid,
+and both scan-loop callers merge it and re-run the enrichment. Once merged,
+the point is the city's, so a later round skips it as before, and no point
+is re-emitted every round. The third caller, `engine::enrich_offline_geo`
+(the `hse import` and web-upload path), appended new uids only. It now merges
+an emitted centroid onto the existing point and re-enriches it.
+
+**REQ-GEOLABEL-028 — a carried grade is an explanation.** HSE's CSV keeps
+records' sources and summaries, not their attributes. A point a scan read as
+Sydney (an unclassified module's Address centroid merged with a `.au`
+point) came back with that record bare: it lost `addr_entity_uid`, and the
+signal was read again. A `geo_intel` IP geolocation on a `+64` stand-in came
+back as a record identical to the prefix record's stripped copy. The
+signal's infinite floor then beat the row's own `fix-grain:locality` stamp
+and its `fix-radius:` tag, and it also skipped the coincidence. The
+re-import read "Australia" or "New Zealand", and its `fix_radius_m` exported
+empty. REQ-GEOLABEL-024 closes the first case, because a bare unclassified
+record now explains. For the second, `assess` counts any `fix-grain:` stamp
+or finite `fix-radius:` tag as an explanation. Neither is ever written for
+a country signal: `enrich_geospatial` does not stamp a `CountrySignal`
+grade, and `fix_radius_ceil_m` writes no cell for one. So either tag means
+the exporting scan read the point as something finer.
+
+**Wording corrected.**
+- hse-core's `tags::COARSE` doc said every area point gets a `fix-grain:`
+  stamp beside `coarse`. A country signal gets `coarse` but no stamp, and
+  its grade is carried by its records and tags. The doc says so now.
+- The REQ-GEOLABEL-005 CHANGELOG entry makes the same claim. It now says
+  "unless it is a country signal".
+- The REQ-GEOLABEL-020 paragraph above said the correlator never weighs a
+  country signal. It now notes that this did not hold until
+  REQ-GEOLABEL-024 and REQ-GEOLABEL-026.
+- (The c3818c45 commit message cannot be changed, because history is not
+  rewritten.)
+
+**Observed, not changed.** `breach_timezone` mints its UTC-offset zone
+("Australia Eastern (Sydney/Melbourne)") through `city_coords` onto
+Sydney's row. Its record is an engine-side row, so ALONE the point has no
+account, and the gazetteer coincidence grades it as the Sydney city
+centroid (±30 km). That is a zone read as a city. It is independent of the
+country-signal rules (merged with a `.au` point it reads as the country,
+since neither record explains the value), and it is left for a separate
+change.
+
+### Deliberate test updates
+
+- `core::place::tests::a_country_signal_never_erases_a_city_finding_on_its_stand_in`:
+  the control that an unclassified record (`some_new_module`) leaves the
+  signal standing is inverted by REQ-GEOLABEL-024. The control now uses the
+  signal's own stripped copies (`geo_intel` and `email_locale` records with
+  no attributes), which still leave it standing.
+- `core::engine::enrich::tests::a_country_signal_admitted_first_never_pins_a_later_city_finding`:
+  the pass now runs over a map that already holds the signal point, as the
+  scan's map does. It asserts that the centroid is emitted, merges it
+  exactly as the callers do, and asserts that a later pass skips the merged
+  point.
+
+### Locks
+
+- `core::place::tests`: `an_unclassified_city_finding_is_never_erased_by_a_country_signal`;
+  `a_country_signal_is_named_in_its_own_words`;
+  `a_country_signal_is_never_a_best_location_candidate`.
+- `core::engine::tests::enrich_offline_geo_merges_a_city_address_onto_a_country_signal`.
+- `core::engine::enrich::tests::a_country_signal_admitted_first_never_pins_a_later_city_finding`
+  (rewritten, above).
+- `app::import::tests::a_city_read_under_a_country_signal_re_imports_as_the_city`.
+- `modules::email_locale::tests::every_coordinate_is_labelled_with_the_place_its_signal_names`.
+- `modules::geo_intel::tests::a_shared_prefix_is_labelled_with_every_country_it_names`.
+
+### Falsified
+
+Each mutation restores a defect or removes the rule under test. A script
+applied each one to the fixed file, ran the named tests, restored the file,
+and checked its md5 against a snapshot taken before the run. After the whole
+run, every touched file's md5 matched again.
+
+| # | mutation | result |
+|---|---|---|
+| M1 | unclassified accounts explain nothing (the round-2 rule) | killed by `an_unclassified_city_finding_is_never_erased_by_a_country_signal` and `a_city_read_under_a_country_signal_re_imports_as_the_city` |
+| M2 | a signal's stripped CSV copy explains the value | killed by `a_country_signal_never_erases_a_city_finding_on_its_stand_in` and `a_country_signal_is_labelled_the_country_never_a_city` |
+| M3 | a carried `fix-grain:` / `fix-radius:` grade is no explanation | killed by `a_city_read_under_a_country_signal_re_imports_as_the_city` |
+| M4 | `country_signal_place` never names anything | killed by `a_country_signal_is_named_in_its_own_words`, `every_coordinate_is_labelled_with_the_place_its_signal_names` and `a_shared_prefix_is_labelled_with_every_country_it_names` |
+| M5 | `email_locale`'s name-pattern record carries no `region` | killed by `every_coordinate_is_labelled_with_the_place_its_signal_names` |
+| M6 | `email_locale`'s ccTLD record carries no `country` | killed by `every_coordinate_is_labelled_with_the_place_its_signal_names` |
+| M7 | `+7` named "Russia" only | killed by `a_shared_prefix_is_labelled_with_every_country_it_names` |
+| M8 | signal names read from originating rows only (skips `email_locale`) | killed by `every_coordinate_is_labelled_with_the_place_its_signal_names` |
+| M9 | signal names left unsorted | killed by `a_country_signal_is_named_in_its_own_words` |
+| M10 | address pass skips every existing uid | killed by `a_country_signal_admitted_first_never_pins_a_later_city_finding` and `enrich_offline_geo_merges_a_city_address_onto_a_country_signal` |
+| M11 | import path appends new uids only | killed by `enrich_offline_geo_merges_a_city_address_onto_a_country_signal` |
+| M12 | person-anchor gate admits a country signal | killed by `a_country_signal_is_never_a_best_location_candidate` |
+| M13 | fusion radius may be infinite | killed by `a_country_signal_is_never_a_best_location_candidate` |
+| M14 | radius formatter prints a missing radius as "± 0.0 km" | killed by `a_country_signal_is_never_a_best_location_candidate` |
+| M15 | label names the stand-in's country, not the signal's place | killed by `a_country_signal_is_named_in_its_own_words`, `every_coordinate_is_labelled_with_the_place_its_signal_names` and `a_shared_prefix_is_labelled_with_every_country_it_names` |
+
+**15 of 15 killed.** Two changes have no regression test of their own. The
+first is the two call sites that now use `fix_radius_km_text` (the debug
+bundle's best-fix lines and the CLI dossier's `print_geo`). The formatter is
+tested (M14), and after M12/M13 the correlator hands those sites no
+non-finite radius. The second is the documentation corrections. `hse-core`
+changed (a doc comment on `tags::COARSE` only), so `wasm-ui/pkg` is left for
+the lead to regenerate. `wasm-ui/src` is unchanged.

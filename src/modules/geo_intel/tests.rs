@@ -304,3 +304,36 @@ fn freeipapi_coordinates_carry_the_originating_ip_for_login_ip_recognition() {
          person_login_ip_coords can recognise this as a login-IP fix"
     );
 }
+
+/// REQ-GEOLABEL-025: a phone-prefix point is labelled with the country the
+/// prefix names, which for a shared prefix is more than one. `+1` is minted at
+/// the US centroid with `country_code` US, so a Toronto number's point read
+/// "United States (country-level signal …)"; `+7` named only Russia, so a
+/// Kazakhstan number's read "Russia".
+#[tokio::test]
+async fn a_shared_prefix_is_labelled_with_every_country_it_names() {
+    let ctx = offline_ctx();
+    for (number, named, never) in [
+        ("+1 416 555 0100", "United States/Canada", "United States ("),
+        ("+7 701 555 0100", "Russia/Kazakhstan", "Russia ("),
+        ("+64 4 499 0000", "New Zealand", "Wellington"),
+    ] {
+        let t = Target::new(TargetKind::Phone, number);
+        let out = process_phone_prefix_only(&t, &ctx)
+            .await
+            .expect("should succeed");
+        assert_eq!(out.entities.len(), 1, "{number}: {:?}", out.entities);
+        let label = crate::core::place::describe(
+            &out.entities[0],
+            &crate::core::place::PlaceContext::default(),
+        )
+        .expect("labelled");
+        assert_eq!(
+            label.fix_grain,
+            crate::core::place::FixGrain::Country,
+            "{number}: {label:?}"
+        );
+        assert!(label.text.starts_with(named), "{number}: {label:?}");
+        assert!(!label.text.contains(never), "{number}: {label:?}");
+    }
+}

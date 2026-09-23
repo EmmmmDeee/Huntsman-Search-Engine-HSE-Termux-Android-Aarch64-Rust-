@@ -297,8 +297,12 @@ impl Collection {
         // finding carry — one computation, three renderings.
         if let Some(fix) = crate::core::correlator::au059_synergy_fix(entities) {
             println!(
-                "  Best location estimate: {:.4},{:.4} ± {:.1} km  (geohash={}, state={})",
-                fix.lat, fix.lon, fix.radius_km, fix.geohash, fix.state
+                "  Best location estimate: {:.4},{:.4} {}  (geohash={}, state={})",
+                fix.lat,
+                fix.lon,
+                crate::core::place::fix_radius_km_text(Some(fix.radius_km)),
+                fix.geohash,
+                fix.state
             );
             println!(
                 "    cross-seed synergy: {} AU coordinate(s) across {} orthogonal source class(es) [{}], confidence {:.2}",
@@ -332,8 +336,13 @@ impl Collection {
                 .state
                 .map_or_else(String::new, |s| format!(", state={s}"));
             println!(
-                "  Best location estimate: {:.4},{:.4} ± {:.1} km  (geohash={}{}{})",
-                est.lat, est.lon, est.radius_km, est.geohash, state, near
+                "  Best location estimate: {:.4},{:.4} {}  (geohash={}{}{})",
+                est.lat,
+                est.lon,
+                crate::core::place::fix_radius_km_text(Some(est.radius_km)),
+                est.geohash,
+                state,
+                near
             );
             // The basis line and the place label read the fix's kind from one
             // place, so they cannot call one sighting two different things.

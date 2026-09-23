@@ -5188,6 +5188,57 @@ fn enrich_offline_geo_parses_addresses_and_derives_city_coordinates() {
     );
 }
 
+/// REQ-GEOLABEL-027: the import path's address pass merges a city address
+/// onto a country signal's stand-in, as the scan loop does. `.au` / `en-au`
+/// is minted at Sydney's row, so an imported Sydney address's centroid IS that
+/// point; the pass skipped every existing uid and this caller appended only
+/// new ones, so the address never reached the point and it kept reading
+/// "Australia (country-level signal)".
+#[test]
+fn enrich_offline_geo_merges_a_city_address_onto_a_country_signal() {
+    use crate::core::engine::enrich_offline_geo;
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::place::{FixGrain, StandsFor, assess};
+
+    let mut signal = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.2, "s");
+    for t in ["geoint", "coarse", "cctld-inferred"] {
+        signal.tag(t);
+    }
+    signal.add_evidence(
+        Evidence::new("email_locale", "Email domain ccTLD .au indicates Australia")
+            .with_attr("cctld", "au")
+            .with_attr("locale", "en-au")
+            .with_attr("country", "Australia"),
+    );
+    assert_eq!(assess(&signal).grain, FixGrain::Country);
+    let mut addr = Entity::new(
+        EntityKind::Address,
+        "10 Smith St, Sydney NSW 2000",
+        0.70,
+        "s",
+    );
+    addr.add_evidence(Evidence::new("abn_lookup", "registered address"));
+    let mut ents = vec![signal, addr];
+    enrich_offline_geo(&mut ents, "s");
+
+    let coords: Vec<&Entity> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .collect();
+    assert_eq!(coords.len(), 1, "one point, merged: {coords:?}");
+    let p = assess(coords[0]);
+    assert_eq!(p.grain, FixGrain::Locality, "{p:?}");
+    assert!(
+        matches!(p.stands_for, Some(StandsFor::Gazetteer { ref name, .. }) if name == "Sydney"),
+        "{p:?}"
+    );
+    assert!(
+        coords[0].has_tag("fix-grain:locality"),
+        "{:?}",
+        coords[0].tags
+    );
+}
+
 #[test]
 fn enrich_offline_geo_is_a_noop_without_geocodable_addresses() {
     use crate::core::engine::enrich_offline_geo;

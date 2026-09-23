@@ -427,7 +427,18 @@ pub(super) fn address_to_coords_pass(
         if !seen_coords.insert(coord_val.clone()) {
             continue;
         }
-        // Already have a Coordinates entity for this point?
+        // Already have a Coordinates entity for this point? Then it is
+        // already explained — unless all it holds is a COUNTRY signal: an
+        // email's ccTLD or a phone prefix minted at a stand-in that IS this
+        // city's row (`.au` on Sydney's, `+64` on Wellington's). The signal
+        // says nothing about the value, the Address does, so the centroid is
+        // still emitted for the caller to merge onto the point (each caller
+        // merges an existing uid and re-runs the enrichment), and the precision
+        // authority then reads the point as the city. Skipped, the Address never
+        // reached any `Coordinates`: a seeded "10 Smith St, Sydney NSW 2000"
+        // beside a `.au` email left the point reading "Australia
+        // (country-level signal)". Once merged the point is the city's, so a
+        // later round skips it as before.
         let candidate_uid = Entity::new(
             EntityKind::Coordinates,
             &coord_val,
@@ -435,7 +446,10 @@ pub(super) fn address_to_coords_pass(
             scan_id,
         )
         .uid;
-        if entities.contains_key(&candidate_uid) {
+        if entities.get(&candidate_uid).is_some_and(|existing| {
+            crate::core::place::assess(existing).basis
+                != crate::core::place::FixBasis::CountrySignal
+        }) {
             continue;
         }
         // Confidence: inherit address confidence but cap at 0.72 (city centroid
@@ -1465,10 +1479,18 @@ mod tests {
             "s1",
         );
         a.add_evidence(Evidence::new("abn_lookup", "registered address"));
+        // The pass runs over the map the scan holds — the signal point is
+        // ALREADY in it (REQ-GEOLABEL-027: it skipped every existing uid, so
+        // the Sydney address never reached the point at all).
         let mut m = std::collections::HashMap::new();
         m.insert(a.uid.clone(), a);
-        let derived = address_to_coords_pass(&m, "s1").remove(0);
+        m.insert(point.uid.clone(), point.clone());
+        let mut out = address_to_coords_pass(&m, "s1");
+        assert_eq!(out.len(), 1, "the centroid is emitted onto the signal");
+        let mut derived = out.remove(0);
         assert_eq!(derived.uid, point.uid, "the stand-in IS Sydney's row");
+        // Exactly what the seed-round and per-round callers do.
+        enrich_geospatial(&mut derived);
         point.merge(derived);
         enrich_geospatial(&mut point);
         let p = crate::core::place::assess(&point);
@@ -1481,6 +1503,10 @@ mod tests {
             "{p:?}"
         );
         assert_eq!(fix_grains(&point), vec!["fix-grain:locality".to_string()]);
+
+        // Merged, the point is the city's: a later round skips it as before.
+        m.insert(point.uid.clone(), point);
+        assert!(address_to_coords_pass(&m, "s1").is_empty());
     }
 
     /// REQ-GEOLABEL-005: a coordinate `address_to_coords_pass` calculates from

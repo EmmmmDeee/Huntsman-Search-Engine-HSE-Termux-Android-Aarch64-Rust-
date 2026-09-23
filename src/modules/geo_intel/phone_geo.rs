@@ -96,7 +96,10 @@ pub(super) fn phone_prefix_to_country(
             if let Some(result) = match prefix {
                 // 1-digit
                 "1" => Some(("United States/Canada", "US", 39.8283, -98.5795)),
-                "7" => Some(("Russia", "RU", 61.5240, 105.3188)),
+                // `+7` is shared by Russia and Kazakhstan (as `+1` is by the
+                // US and Canada, above), so the name says both; the place
+                // label names a phone-prefix point by this name.
+                "7" => Some(("Russia/Kazakhstan", "RU", 61.5240, 105.3188)),
                 // 2-digit
                 "20" => Some(("Egypt", "EG", 26.8206, 30.8025)),
                 "27" => Some(("South Africa", "ZA", -30.5595, 22.9375)),

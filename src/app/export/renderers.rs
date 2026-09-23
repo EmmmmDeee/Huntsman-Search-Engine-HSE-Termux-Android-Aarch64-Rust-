@@ -921,14 +921,14 @@ pub(crate) fn render_debug_bundle(
     if fix != serde_json::Value::Null {
         let lat = fix["lat"].as_f64().unwrap_or(0.0);
         let lon = fix["lon"].as_f64().unwrap_or(0.0);
-        let radius = fix["radius_km"].as_f64().unwrap_or(0.0);
+        let radius = crate::core::place::fix_radius_km_text(fix["radius_km"].as_f64());
         let gh = fix["geohash"].as_str().unwrap_or("");
         let state = fix["state"].as_str().unwrap_or("");
         if let Some(sc) = fix["synergy_confidence"].as_f64() {
             let sev = fix["severity"].as_str().unwrap_or("");
             let _ = writeln!(
                 s,
-                "\n── BEST AU LOCATION FIX (AU-059) ──\n  {lat:.4},{lon:.4} ± {radius:.1} km · geohash={gh} · state={state} · synergy_conf={sc:.2} · severity={sev}"
+                "\n── BEST AU LOCATION FIX (AU-059) ──\n  {lat:.4},{lon:.4} {radius} · geohash={gh} · state={state} · synergy_conf={sc:.2} · severity={sev}"
             );
             write_fix_place(&mut s, &fix);
         } else {
@@ -945,7 +945,7 @@ pub(crate) fn render_debug_bundle(
             };
             let _ = writeln!(
                 s,
-                "\n── BEST AU LOCATION FIX ({header}) ──\n  {lat:.4},{lon:.4} ± {radius:.1} km · geohash={gh} · state={state} · basis={basis} · confidence={confidence:.2}"
+                "\n── BEST AU LOCATION FIX ({header}) ──\n  {lat:.4},{lon:.4} {radius} · geohash={gh} · state={state} · basis={basis} · confidence={confidence:.2}"
             );
             write_fix_place(&mut s, &fix);
         }

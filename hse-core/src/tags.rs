@@ -103,7 +103,15 @@ pub const GEOLOCATION_LEAD: &str = "geolocation-lead";
 /// modules minted it; a point a geocoder declared a city/suburb/postcode
 /// centroid (`place_type`, a GeoNames feature class); a forward geocode of an
 /// input that names no street — and stamps the grain beside it as
-/// `fix-grain:<grain>` (REQ-GEO-017, REQ-GEOLABEL-005). A few minting sites also tag it themselves (`search_engines`'
+/// `fix-grain:<grain>` (REQ-GEO-017, REQ-GEOLABEL-005). The one exception is a
+/// COUNTRY signal (a phone prefix's or an email ccTLD's stand-in point): it
+/// carries `coarse` but NO `fix-grain:` stamp, because a stamp is a floor
+/// that never yields and would pin a later real finding of the city its
+/// stand-in sits on at country grain; its grade is carried by its own
+/// records and its `phone-prefix` / `cctld-inferred` / `locale-inferred` tag
+/// instead (REQ-GEOLABEL-019). A reader keying a point's grade off
+/// `fix-grain:*` alone therefore misses every country signal. A few minting
+/// sites also tag it themselves (`search_engines`'
 /// known-city lookup and recycled-snippet leg, the engine's
 /// address-to-coordinates pass, and the modules that know their own grain),
 /// which the enrichment only repeats. A module's raw output, before the engine

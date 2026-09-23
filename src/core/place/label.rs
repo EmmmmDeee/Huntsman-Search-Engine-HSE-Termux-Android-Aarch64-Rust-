@@ -55,7 +55,8 @@
 use std::collections::BTreeMap;
 
 use super::grain::{
-    FixBasis, FixGrain, StandsFor, assess, is_annotator_row, quantisation_radius_m,
+    FixBasis, FixGrain, StandsFor, assess, country_signal_place, is_annotator_row,
+    quantisation_radius_m,
 };
 use crate::core::entity::{Entity, EntityKind, Evidence};
 
@@ -1115,8 +1116,19 @@ pub fn describe(e: &Entity, ctx: &PlaceContext) -> Option<PlaceLabel> {
             None,
         ));
     }
+    // A country signal is named in its OWN words ("United States/Canada",
+    // "Eastern Europe (Ukraine/Russia/Serbia)"), never by the one country its
+    // stand-in point falls in: the stand-in is where the module put the
+    // signal, not where the signal says the subject is
+    // ([`country_signal_place`]). Only a signal whose records name nothing (a
+    // CSV copy) falls back to the stored country or the box.
+    let signal_place = (fix.basis == FixBasis::CountrySignal)
+        .then(|| country_signal_place(e))
+        .flatten()
+        .map(|place| (place, FixGrain::Country));
     if out.is_none()
-        && let Some((phrase, g)) = offline_phrase(Some(e), lat, lon, grain, radius)
+        && let Some((phrase, g)) =
+            signal_place.or_else(|| offline_phrase(Some(e), lat, lon, grain, radius))
     {
         // A country signal names the country and no position in it: no disc
         // is drawn around its stand-in point (`grain::COUNTRY_SIGNAL_RADIUS_M`
@@ -1226,6 +1238,23 @@ pub fn describe_fused(lat: f64, lon: f64, radius_km: f64, kind: FixKind) -> Opti
         offset_m: None,
         basis,
     })
+}
+
+/// A best-location fix's radius as the text surfaces print it after the
+/// coordinate: "± 8.0 km", or "(no radius)" when there is none to state — a
+/// JSON `radius_km` that is `null` (serde's rendering of a non-finite float)
+/// or absent, or a non-finite figure. The one formatter the debug bundle and
+/// the CLI dossier share: the bundle's `unwrap_or(0.0)` printed a missing
+/// radius as "± 0.0 km", a claim of exact precision, and the dossier's `{:.1}`
+/// printed an infinite one as "± inf km". The correlator no longer produces
+/// a non-finite radius (`grain::best_precision_radius_m`); this keeps a
+/// surface honest if one ever arrives.
+#[must_use]
+pub fn fix_radius_km_text(radius_km: Option<f64>) -> String {
+    match radius_km {
+        Some(r) if r.is_finite() => format!("± {r:.1} km"),
+        _ => "(no radius)".to_string(),
+    }
 }
 
 /// The `place_label` JSON for `e`, or `None` when [`describe`] has none — the

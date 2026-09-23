@@ -3312,3 +3312,91 @@ fn a_country_signal_re_imports_as_the_country_with_no_radius() {
     assert!(p.radius_m.is_infinite(), "{p:?}");
     assert!(!back[0].tags.iter().any(|t| t.starts_with("fix-radius:")));
 }
+
+/// REQ-GEOLABEL-028: a point a scan read as a CITY re-imports as that city,
+/// though a country signal sits on it too. The CSV keeps records' sources and
+/// summaries, not their attributes, so the record that explained the value
+/// comes back bare: an unclassified module's Address centroid loses the
+/// `addr_entity_uid` that made it a centroid, and a `geo_intel` IP
+/// geolocation loses every attribute and becomes indistinguishable from the
+/// prefix record's own stripped copy. Either way the country signal was read
+/// again, overriding the row's `fix-grain:locality` stamp and its
+/// `fix_radius_m`, and "Sydney (city centroid)" / "Wellington" re-imported
+/// as "Australia" / "New Zealand (country-level signal)". A grade the
+/// exporting scan wrote is itself an explanation: neither the stamp nor the
+/// radius cell is ever written for a country signal.
+#[test]
+fn a_city_read_under_a_country_signal_re_imports_as_the_city() {
+    use crate::core::entity::{Entity, Evidence};
+    use crate::core::place::{FixBasis, FixGrain, assess};
+    let with = |value: &str, tags: &[&str], records: Vec<Evidence>| {
+        let mut e = Entity::new(EntityKind::Coordinates, value, 0.6, "s");
+        for t in tags {
+            e.tag(*t);
+        }
+        for r in records {
+            e.add_evidence(r);
+        }
+        crate::core::engine::enrich_geospatial(&mut e);
+        e
+    };
+    // An `asic_persons` register address carried onto Sydney's row by the
+    // address pass, merged with a `.au` email's ccTLD point.
+    let sydney = with(
+        "-33.8688,151.2093",
+        &["geoint", "coarse", "cctld-inferred", "addr-derived"],
+        vec![
+            Evidence::new(
+                "asic_persons",
+                "Inline geocode of address '10 Smith St, Sydney NSW 2000' → -33.8688,151.2093",
+            )
+            .with_attr("addr_entity_uid", "a1")
+            .with_attr("place_type", "city"),
+            Evidence::new("email_locale", "Email domain ccTLD .au indicates Australia")
+                .with_attr("cctld", "au")
+                .with_attr("locale", "en-au")
+                .with_attr("country", "Australia"),
+        ],
+    );
+    // A `geo_intel` IP geolocation on Wellington's row, merged with a `+64`
+    // prefix point.
+    let wellington = with(
+        "-41.2865,174.7762",
+        &["geoint", "phone-prefix", "coarse", "country:NZ"],
+        vec![
+            Evidence::new("geo_intel", "IP geo for 203.0.113.9 via ipapi.co")
+                .with_attr("ip", "203.0.113.9")
+                .with_attr("city", "Wellington")
+                .with_attr("source", "ipapi.co"),
+            Evidence::new("geo_intel", "Phone prefix -> New Zealand for +6444990000")
+                .with_attr("country", "New Zealand")
+                .with_attr("country_code", "NZ")
+                .with_attr("method", "e164-prefix"),
+        ],
+    );
+    let originals = [sydney, wellington];
+    for e in &originals {
+        let p = assess(e);
+        assert_eq!(p.grain, FixGrain::Locality, "{} before: {p:?}", e.value);
+        assert!(e.has_tag("fix-grain:locality"), "{:?}", e.tags);
+    }
+    let csv = crate::app::export::entities_to_csv(&originals, "s");
+    let (back, _stats) = parse_hse_csv(&csv, "s2");
+    assert_eq!(back.len(), originals.len());
+    for (original, back) in originals.iter().zip(&back) {
+        let (was, now) = (assess(original), assess(back));
+        assert_ne!(now.basis, FixBasis::CountrySignal, "{now:?}");
+        assert_eq!(
+            now.grain, was.grain,
+            "{}: {was:?} -> {now:?}",
+            original.value
+        );
+        assert_eq!(now.stands_for, was.stands_for, "{now:?}");
+        assert!(now.radius_m.is_finite(), "{now:?}");
+        let ctx = crate::core::place::PlaceContext::default();
+        let label = crate::core::place::describe(back, &ctx)
+            .expect("labelled")
+            .text;
+        assert!(!label.contains("country-level"), "{label}");
+    }
+}

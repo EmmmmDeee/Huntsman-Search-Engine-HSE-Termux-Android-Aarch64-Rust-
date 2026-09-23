@@ -26,7 +26,9 @@
 //! printed decimals grade it. The converse case is a COUNTRY signal (a phone
 //! prefix, an email's ccTLD): it is not an account of the value at all, only
 //! of a country, minted at a stand-in that is some real city's row — so it
-//! grades a point only when nothing else on it explains the value.
+//! grades a point only when nothing else on it explains the value. Any other
+//! originating record does, whether or not its source is classified: nothing
+//! lands on a city's row to six decimals except by looking that city up.
 //!
 //! # What is not an account of the point
 //!
@@ -576,6 +578,11 @@ struct Account {
     basis: FixBasis,
     positive: bool,
     stands_for: Option<StandsFor>,
+    /// Whether this account explains the VALUE — why the point sits exactly
+    /// where it does — and so sets a country signal on the same point aside
+    /// ([`assess`], step 2). False only for a country signal itself and for
+    /// the attribute-less copy of one ([`is_stripped_country_signal`]).
+    explains: bool,
 }
 
 impl Account {
@@ -585,6 +592,7 @@ impl Account {
             basis,
             positive,
             stands_for: None,
+            explains: basis != FixBasis::CountrySignal,
         }
     }
 }
@@ -643,6 +651,24 @@ fn tabulated_radius_m(c: &TabulatedCentroid) -> f64 {
     geocode_grain_radius_m(place_type).unwrap_or(f64::INFINITY)
 }
 
+/// The modules that mint country-signal points ([`is_country_signal`]):
+/// `email_locale` (every coordinate it mints) and `geo_intel` (its
+/// `method=e164-prefix` points).
+const COUNTRY_SIGNAL_SOURCES: &[&str] = &["email_locale", "geo_intel"];
+
+/// Whether a record is a country-signal emitter's record with NO attributes —
+/// the shape HSE's CSV importer rebuilds every record in (it keeps source and
+/// summary, never attributes). `geo_intel`'s prefix record loses the `method`
+/// that made it a country signal ([`is_country_signal`]) and becomes an
+/// unclassified record indistinguishable from any other; it is still only the
+/// signal's own copy, so it explains nothing about the value, and the point's
+/// tags ([`COUNTRY_SIGNAL_TAGS`]) decide. A LIVE record of either module
+/// always carries attributes, so its unclassified non-signal records (an IP
+/// geolocation) are not mistaken for one.
+fn is_stripped_country_signal(ev: &Evidence) -> bool {
+    COUNTRY_SIGNAL_SOURCES.contains(&ev.source.as_str()) && ev.attributes.is_empty()
+}
+
 /// The tags the country-grain inference modules stamp on the point they mint:
 /// `geo_intel`'s dialling-prefix country (`phone-prefix`) and `email_locale`'s
 /// ccTLD and name-pattern locales (`cctld-inferred`, `locale-inferred`). Read
@@ -678,16 +704,56 @@ const COUNTRY_SIGNAL_RADIUS_M: f64 = f64::INFINITY;
 ///
 /// The stand-in is a real city's row, so a genuine finding of that city — a
 /// `+64 4` landline's area code resolved through `city_coords` to Wellington,
-/// a Sydney ABN address — lands on the very same value and merges into the
-/// same entity. The signal then explains nothing about that value: the city
-/// finding does. [`assess`] therefore reads a country signal only when no
-/// other record on the point accounts for it (step 2 there).
+/// a Sydney ABN address, a GitLab profile's "Sydney", a NumVerify line's
+/// "Wellington, New Zealand" — lands on the very same value and merges into
+/// the same entity. The signal then explains nothing about that value: the
+/// city finding does. [`assess`] therefore reads a country signal only when
+/// no other record on the point accounts for it (step 2 there).
 fn is_country_signal(ev: &Evidence) -> bool {
     ev.source == "email_locale"
         || ev
             .attributes
             .get("method")
             .is_some_and(|m| m.trim() == "e164-prefix")
+}
+
+/// The place a point's country-signal records NAME, for the label of a point
+/// graded [`FixBasis::CountrySignal`] — `None` when no such record names one
+/// (a CSV copy keeps no attributes).
+///
+/// A signal is not always one country. `+1` is "United States/Canada", `+7`
+/// "Russia/Kazakhstan", and `email_locale`'s name patterns name regions
+/// ("Eastern Europe (Ukraine/Russia/Serbia)", "Iberia/Latin America"). Its
+/// stand-in, though, sits in ONE country — the US centroid, Moscow, Lisbon —
+/// so naming the point by its stored `country_code` or the country box the
+/// stand-in falls in labelled a Toronto `+1 416` number "United States" and
+/// `ivan.shevchenko@…` "Russia", a country the evidence never stated. The
+/// signal's own words are read instead: its `country` attribute, else its
+/// `region`. Several signals on one stand-in naming different places are all
+/// named, sorted, so the pick never depends on record order.
+///
+/// Read over every signal record, not only the originating ones:
+/// `email_locale` is a derivation module, so its records are engine-side
+/// ([`is_annotator_row`]) and its grade travels by its tags — but its record
+/// is still the one that says which place it meant.
+#[must_use]
+pub(crate) fn country_signal_place(e: &Entity) -> Option<String> {
+    let mut named: Vec<&str> = e
+        .evidence
+        .iter()
+        .filter(|ev| !ev.is_annotation && is_country_signal(ev))
+        .filter_map(|ev| {
+            ["country", "region"].into_iter().find_map(|k| {
+                ev.attributes
+                    .get(k)
+                    .map(|v| v.trim())
+                    .filter(|v| !v.is_empty())
+            })
+        })
+        .collect();
+    named.sort_unstable();
+    named.dedup();
+    (!named.is_empty()).then(|| named.join(" or "))
 }
 
 /// One originating record's account of the point, or `None` for an annotator
@@ -768,11 +834,12 @@ fn account_of(ev: &Evidence) -> Option<Account> {
     });
     // A declared grain is positive evidence of an AREA only when it is one: a
     // geocoder that said "street" located a street, not a suburb.
-    let hit = Account::new(
+    let mut hit = Account::new(
         declared.unwrap_or_else(|| precision_radius_m(class)),
         basis_of(src, class),
         declared.is_some_and(|r| FixGrain::from_radius_m(r) >= FixGrain::Suburb),
     );
+    hit.explains = !is_stripped_country_signal(ev);
     match attr("input_address") {
         Some(input) if FORWARD_GEOCODERS.contains(&src) => {
             Some(forward_geocode_account(ev, input, hit))
@@ -982,11 +1049,15 @@ fn cut_below_table_key(e: &Entity) -> bool {
 ///    measured accounts are combined (the measurement exemption, module docs).
 ///    A country signal ([`is_country_signal`], or its [`COUNTRY_SIGNAL_TAGS`])
 ///    is read only when no other account explains the value — every other
-///    account is a country signal or unclassified. Its point is a stand-in on
-///    a real city's row, so a real finding of that city lands on the same
-///    value; that finding is the reading of the point, and the signal is set
-///    aside like an annotator. Read, it grades the point at country grain
-///    with NO radius ([`COUNTRY_SIGNAL_RADIUS_M`]).
+///    account is a country signal or a signal's attribute-less CSV copy
+///    ([`is_stripped_country_signal`]), and the point carries no grade a
+///    scan wrote for it (a `fix-grain:` or `fix-radius:` tag, neither ever
+///    written for a country signal). Its point is a stand-in on a real
+///    city's row, so a real finding of that city — from any source,
+///    classified or not — lands on the same value; that finding is the
+///    reading of the point, and the signal is set aside like an annotator.
+///    Read, it grades the point at country grain with NO radius
+///    ([`COUNTRY_SIGNAL_RADIUS_M`]).
 /// 3. With no account at all the basis is [`FixBasis::Unknown`], graded at the
 ///    unclassified-source default (30 km, a locality at best) and never
 ///    positive evidence of an area.
@@ -1026,22 +1097,45 @@ pub fn assess(e: &Entity) -> FixPrecision {
         accounts.retain(|a| a.basis == FixBasis::Measured);
     }
     // A country signal's point is a stand-in on a real city's row, so a real
-    // finding of that city merges onto it. Any other account that explains the
-    // value — anything but an unclassified record, which explains nothing and
-    // is also what a country signal's own record becomes once a CSV round trip
-    // strips its `method` — is the reading of the point; the signal (record
-    // and tags alike) then says nothing about it and is set aside, as an
-    // annotator is. Before, the coarsest-wins rule let the signal erase the
-    // finding: a Sydney ABN address merged with a `.au` email's point read
-    // "Australia", and a Wellington area-code point merged with `+64`'s read
-    // "New Zealand".
-    let explained_otherwise = accounts
-        .iter()
-        .any(|a| !matches!(a.basis, FixBasis::CountrySignal | FixBasis::Unknown));
+    // finding of that city merges onto it. Any other account explains the
+    // value and is the reading of the point; the signal (record and tags
+    // alike) then says nothing about it and is set aside, as an annotator is.
+    // Before, the coarsest-wins rule let the signal erase the finding: a
+    // Sydney ABN address merged with a `.au` email's point read "Australia",
+    // and a Wellington area-code point merged with `+64`'s read "New
+    // Zealand".
+    //
+    // "Any other" includes an UNCLASSIFIED source. Excluding those (round 2)
+    // left every `profile_kit` location emitter (GitLab, Stack Overflow,
+    // Codeberg, Steam, …), NumVerify and the other `city_coords` callers
+    // erased by the signal: a GitLab "Sydney" merged with a `.au` point read
+    // "Australia", though it read "Sydney" alone. Such a record reached six
+    // decimals of a city's row only by looking that city up, which the
+    // gazetteer coincidence below then names. The one unclassified record
+    // that explains nothing is the signal's own CSV copy
+    // ([`is_stripped_country_signal`]).
+    //
+    // A carried grade explains the value too: the engine never stamps a
+    // `fix-grain:` on a country-signal grade, and the CSV export writes no
+    // `fix_radius_m` for one, so either tag says the exporting scan read the
+    // point as something finer than the country. A re-import strips the
+    // attributes that made the explaining record explain (an Address
+    // centroid's `addr_entity_uid`), and without this the round trip turned
+    // "Sydney (city centroid)" back into "Australia".
+    let has = |t: &str| e.has_tag(t);
+    let carried_grade = e.tags.iter().any(|t| {
+        t.strip_prefix(FIX_GRAIN_TAG_PREFIX)
+            .and_then(FixGrain::parse)
+            .is_some()
+            || t.strip_prefix(FIX_RADIUS_TAG_PREFIX)
+                .and_then(|r| r.strip_suffix('m'))
+                .and_then(positive_number)
+                .is_some()
+    });
+    let explained_otherwise = carried_grade || accounts.iter().any(|a| a.explains);
     if explained_otherwise {
         accounts.retain(|a| a.basis != FixBasis::CountrySignal);
     }
-    let has = |t: &str| e.has_tag(t);
     let country_signal = !explained_otherwise
         && (accounts.iter().any(|a| a.basis == FixBasis::CountrySignal)
             || COUNTRY_SIGNAL_TAGS.iter().any(|t| has(t)));
@@ -1162,6 +1256,25 @@ fn raise(held: &mut Account, incoming: Account) {
     }
 }
 
+/// Whether `e` is a `Coordinates` that locates NO position at all — a point
+/// [`assess`] grades a country signal ([`FixBasis::CountrySignal`], an
+/// unbounded radius). Its value is a stand-in the signal was minted at, not
+/// where anything is, so the correlator's person-anchor gate
+/// (`correlator::is_infrastructure_geo`) keeps it out of every footprint,
+/// fusion and best-location rung: fed in, its infinite radius reached the
+/// best-location estimate as `radius_km = inf`, which report.json wrote as
+/// `null`, the debug bundle as "± 0.0 km" and the CLI dossier as "± inf km".
+///
+/// Cheap for every other point: [`assess`] runs only when a record or tag
+/// could make the point a country signal at all.
+#[must_use]
+pub(crate) fn claims_no_position(e: &Entity) -> bool {
+    e.kind == EntityKind::Coordinates
+        && (e.evidence.iter().any(is_country_signal)
+            || COUNTRY_SIGNAL_TAGS.iter().any(|t| e.has_tag(t)))
+        && assess(e).basis == FixBasis::CountrySignal
+}
+
 /// The finest precision radius (metres) the correlator's fusion may weigh `e`
 /// at — its finest person-anchoring source's class radius, never finer than
 /// [`assess`] grades the point.
@@ -1172,6 +1285,11 @@ fn raise(held: &mut Account, incoming: Account) {
 /// not a 40 m rooftop (the tabulated Brisbane centroid read 40 m before), and a
 /// geocode of a city-only address as that city. `None` when the entity carries
 /// no anchoring source, exactly as before (REQ-GEOLABEL-007).
+///
+/// Always FINITE: a point graded with no radius (a country signal) returns
+/// `None` rather than infinity. The person-anchor gate already keeps such a
+/// point out of every rule that reads this ([`claims_no_position`]); this is
+/// the contract that makes a radius from here safe to print and to fold.
 #[must_use]
 pub(crate) fn best_precision_radius_m(e: &Entity) -> Option<f64> {
     let finest = e
@@ -1183,7 +1301,7 @@ pub(crate) fn best_precision_radius_m(e: &Entity) -> Option<f64> {
             Some(acc.map_or(r, |a| a.min(r)))
         })?;
     if e.kind == EntityKind::Coordinates {
-        Some(finest.max(assess(e).radius_m))
+        Some(finest.max(assess(e).radius_m)).filter(|r| r.is_finite())
     } else {
         Some(finest)
     }

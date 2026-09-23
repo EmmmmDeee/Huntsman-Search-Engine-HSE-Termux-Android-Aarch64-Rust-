@@ -1546,14 +1546,231 @@ fn a_country_signal_never_erases_a_city_finding_on_its_stand_in() {
         assert_eq!(p.basis, FixBasis::CountrySignal, "{p:?}");
         assert_eq!(p.stands_for, None, "{p:?}");
     }
-    // An unclassified record explains nothing, so it does not set the signal
-    // aside: a CSV copy of `geo_intel`'s record without its `method` is still
-    // read through its tag.
+    // The signal's own CSV copy explains nothing, so it does not set the
+    // signal aside: `geo_intel`'s record without its `method` is still read
+    // through its tag, and so is `email_locale`'s beside it.
     let mut bare = coord("-41.2865,174.7762");
     bare.tag("phone-prefix");
     bare.add_evidence(ev("geo_intel", "Phone prefix -> New Zealand for +000", &[]));
-    bare.add_evidence(ev("some_new_module", "unclassified", &[]));
+    bare.add_evidence(ev("email_locale", "Email domain ccTLD .nz", &[]));
     assert_eq!(assess(&bare).grain, FixGrain::Country);
+}
+
+/// REQ-GEOLABEL-024: a city finding from an UNCLASSIFIED source is not erased
+/// by a country signal either. REQ-GEOLABEL-019 let only a classified account
+/// set the signal aside, and skipped the gazetteer coincidence whenever a
+/// signal was read — so a GitLab profile's "Sydney" (`profile_kit`), a
+/// NumVerify line's "Wellington, New Zealand" or an ASIC register's Sydney
+/// address, each minted through `city_coords` onto the very row the `.au` /
+/// `+64` stand-in sits on, merged with the signal and read "Australia" /
+/// "New Zealand (country-level signal)". Alone, each reads as its city.
+#[test]
+fn an_unclassified_city_finding_is_never_erased_by_a_country_signal() {
+    let row = |place: &str| {
+        let (lat, lon) = crate::util::city_coords::city_coords(place).expect("tabulated");
+        format!("{lat:.4},{lon:.4}")
+    };
+    let finding = |place: &str, source: &str, attrs: &[(&str, &str)], tags: &[&str]| {
+        let mut e = coord(&row(place));
+        for t in tags {
+            e.tag(*t);
+        }
+        e.add_evidence(ev(source, &format!("{source}: {place}"), attrs));
+        e
+    };
+    let gitlab = finding(
+        "Sydney",
+        "gitlab_user",
+        &[("source_field", "location")],
+        &["addr-derived", "geoint", "gitlab"],
+    );
+    let numverify = finding(
+        "Wellington, New Zealand",
+        "numverify",
+        &[
+            ("carrier", "Spark"),
+            ("line_type", "landline"),
+            ("country_code", "NZ"),
+        ],
+        &["numverify", "addr-derived", "geoint", "phone-region"],
+    );
+    let asic = finding(
+        "Level 5, 10 Smith St, Sydney NSW 2000",
+        "asic_persons",
+        &[("source_address", "Level 5, 10 Smith St, Sydney NSW 2000")],
+        &["au", "asic", "addr-derived", "geoint", "country:AU"],
+    );
+    for (finding, signal, city) in [
+        (&gitlab, au_email_point(), "Sydney"),
+        (&numverify, nz_prefix_point(), "Wellington"),
+        (&asic, au_email_point(), "Sydney"),
+    ] {
+        assert_eq!(finding.uid, signal.uid, "the stand-in IS the city's row");
+        let alone = assess(finding);
+        assert_ne!(alone.grain, FixGrain::Country, "{alone:?}");
+        let alone_label = label_of(finding, std::slice::from_ref(finding));
+        assert!(alone_label.text.starts_with(city), "{alone_label:?}");
+        for (mut held, incoming) in [
+            (finding.clone(), signal.clone()),
+            (signal.clone(), finding.clone()),
+        ] {
+            held.merge(incoming);
+            let p = assess(&held);
+            assert_eq!(p, alone, "the signal changed the finding: {p:?}");
+            let l = label_of(&held, std::slice::from_ref(&held));
+            assert!(l.text.starts_with(city), "{l:?}");
+            assert!(!l.text.contains("country-level"), "{l:?}");
+            assert_honest(&l, &held);
+        }
+    }
+}
+
+/// REQ-GEOLABEL-025: a country signal is named in its own words, never as the
+/// one country its stand-in happens to sit in. `+1` is "United States/Canada"
+/// (a Toronto number read "United States"), and `email_locale`'s name
+/// patterns name regions ("ivan.shevchenko" → "Eastern Europe
+/// (Ukraine/Russia/Serbia)" read "Russia (approx.)" off the Moscow stand-in;
+/// "jose.…" → "Iberia/Latin America" read "Portugal (approx.)").
+#[test]
+fn a_country_signal_is_named_in_its_own_words() {
+    let mut nanp = coord("39.8283,-98.5795");
+    for t in ["geoint", "phone-prefix", "coarse", "country:US"] {
+        nanp.tag(t);
+    }
+    nanp.add_evidence(ev(
+        "geo_intel",
+        "Phone prefix -> United States/Canada for +14165550100",
+        &[
+            ("country", "United States/Canada"),
+            ("country_code", "US"),
+            ("method", "e164-prefix"),
+        ],
+    ));
+    let pattern = |value: &str, locale: &str, region: &str| {
+        let mut e = coord(value);
+        for t in ["geoint", "coarse", "locale-inferred"] {
+            e.tag(t);
+        }
+        e.add_evidence(ev(
+            "email_locale",
+            &format!("Email local part matches {locale} naming pattern"),
+            &[
+                ("locale", locale),
+                ("pattern", "surname_suffix"),
+                ("region", region),
+            ],
+        ));
+        e
+    };
+    let slavic = pattern(
+        "55.7512,37.6184",
+        "ru",
+        "Eastern Europe (Ukraine/Russia/Serbia)",
+    );
+    let iberian = pattern("38.7168,-9.1421", "pt", "Iberia/Latin America");
+    for (e, named, never) in [
+        (&nanp, "United States/Canada", "United States ("),
+        (
+            &slavic,
+            "Eastern Europe (Ukraine/Russia/Serbia)",
+            "Russia (",
+        ),
+        (&iberian, "Iberia/Latin America", "Portugal"),
+    ] {
+        let l = label_of(e, std::slice::from_ref(e));
+        assert_eq!(l.fix_grain, FixGrain::Country, "{l:?}");
+        assert!(l.text.starts_with(named), "{l:?}");
+        assert!(!l.text.contains(never), "{l:?}");
+        assert!(l.text.contains("country-level signal"), "{l:?}");
+        assert_honest(&l, e);
+    }
+    // Two signals on one stand-in are both named, in a fixed order.
+    let mut ru = slavic.clone();
+    ru.add_evidence(ev(
+        "email_locale",
+        "Email domain ccTLD .ru indicates Russia",
+        &[("cctld", "ru"), ("locale", "ru"), ("country", "Russia")],
+    ));
+    let mut reversed = ru.clone();
+    reversed.evidence.reverse();
+    let (a, b) = (label_of(&ru, &[]), label_of(&reversed, &[]));
+    assert_eq!(a, b);
+    assert!(
+        a.text
+            .starts_with("Eastern Europe (Ukraine/Russia/Serbia) or Russia"),
+        "{a:?}"
+    );
+    // A signal whose records name nothing (a CSV copy) falls back to the box.
+    let mut bare = coord("55.7512,37.6184");
+    bare.tag("locale-inferred");
+    bare.add_evidence(ev("email_locale", "Email local part matches", &[]));
+    let l = label_of(&bare, &[]);
+    assert_eq!(l.fix_grain, FixGrain::Country, "{l:?}");
+    assert!(l.text.contains("(approx.)"), "{l:?}");
+}
+
+/// REQ-GEOLABEL-026: a country signal never reaches the correlator as a
+/// position. A record from an ANCHORING source that is no account of the
+/// point — a legacy `wigle` density annotation written before the
+/// annotation flag existed — explains nothing on the `.au` stand-in, so the
+/// point graded as the country with an unbounded radius, passed the
+/// person-anchor gate on `wigle`, and `best_precision_radius_m` handed that
+/// infinity to the best-location rung: report.json wrote `radius_km: null`,
+/// the debug bundle "± 0.0 km" and the CLI dossier "± inf km". The point is
+/// now kept out of every footprint, and no radius the correlator reads is
+/// ever infinite.
+#[test]
+fn a_country_signal_is_never_a_best_location_candidate() {
+    let mut point = au_email_point();
+    point.add_evidence(ev(
+        "wigle",
+        "WiGLE: 12 networks within 500 m",
+        &[("density", "12")],
+    ));
+    point.confidence = 0.6;
+    assert_eq!(assess(&point).basis, FixBasis::CountrySignal);
+    assert!(super::grain::claims_no_position(&point));
+    assert_eq!(best_precision_radius_m(&point), None);
+    assert!(crate::core::correlator::is_infrastructure_geo(&point));
+    assert!(
+        crate::core::correlator::best_au_location_estimate(std::slice::from_ref(&point)).is_none()
+    );
+    // The reviewers' path: `breach_timezone` mints its UTC+10 zone onto the
+    // same Sydney row and is listed as an anchoring source — but it is an
+    // enrichment-only derivation, so its record is neither an account of the
+    // point nor a corroborating source. The merged point stays the country,
+    // and no anchoring source carries it past the gate (this held before the
+    // fix too; the `wigle` row above is the path that did not).
+    let mut zone = au_email_point();
+    zone.confidence = 0.6;
+    zone.add_evidence(ev(
+        "breach_timezone",
+        "Breach activity clusters at UTC+10",
+        &[("utc_offset", "10")],
+    ));
+    assert_eq!(assess(&zone).basis, FixBasis::CountrySignal);
+    assert_eq!(best_precision_radius_m(&zone), None);
+    assert!(crate::core::correlator::is_infrastructure_geo(&zone));
+    // Controls: a real city finding on the same row is a position again.
+    let mut sydney = point.clone();
+    sydney.add_evidence(ev(
+        "abn_lookup",
+        "Inline geocode of address 'Sydney NSW'",
+        &[("addr_entity_uid", "a1"), ("place_type", "city")],
+    ));
+    assert!(!super::grain::claims_no_position(&sydney));
+    assert!(!crate::core::correlator::is_infrastructure_geo(&sydney));
+    assert!(
+        best_precision_radius_m(&sydney).is_some_and(f64::is_finite),
+        "{sydney:?}"
+    );
+    // The shared radius formatter never prints a missing radius as zero.
+    assert_eq!(super::fix_radius_km_text(Some(8.0)), "± 8.0 km");
+    assert_eq!(super::fix_radius_km_text(None), "(no radius)");
+    assert_eq!(
+        super::fix_radius_km_text(Some(f64::INFINITY)),
+        "(no radius)"
+    );
 }
 
 /// REQ-GEOLABEL-020: a country signal claims no disc. Its point is a stand-in

@@ -58,7 +58,11 @@ pub fn enrich_offline_geo(entities: &mut Vec<Entity>, scan_id: &str) {
     }
 
     // 2) Address → Coordinates via the offline city table; enrich each new fix
-    //    and append it (the pass already skips coords that already exist).
+    //    and append it. The pass skips coords that already exist, except a
+    //    point only a country signal accounts for (its stand-in is a city's
+    //    row): that centroid is merged onto the existing point and the point
+    //    re-enriched, exactly as the scan loop's merges do, so an imported
+    //    Sydney address beside a `.au` email's point reads as Sydney there too.
     let map: HashMap<String, Entity> = entities
         .iter()
         .map(|e| (e.uid.clone(), e.clone()))
@@ -68,6 +72,9 @@ pub fn enrich_offline_geo(entities: &mut Vec<Entity>, scan_id: &str) {
         enrich_geospatial(&mut derived);
         if seen.insert(derived.uid.clone()) {
             entities.push(derived);
+        } else if let Some(existing) = entities.iter_mut().find(|e| e.uid == derived.uid) {
+            existing.merge(derived);
+            enrich_geospatial(existing);
         }
     }
 }

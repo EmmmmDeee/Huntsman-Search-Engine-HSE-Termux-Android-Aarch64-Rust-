@@ -146,6 +146,16 @@ pub(in crate::core) fn is_infrastructure_geo(e: &Entity) -> bool {
     {
         return true;
     }
+    // Nor does a point that locates no position at all: a country signal's
+    // stand-in (`place::grain::claims_no_position`). It says "somewhere in
+    // Australia", so it can be no vertex of a footprint, no weight in a
+    // median and no best-location fix — and its unbounded radius reached the
+    // headline estimate as `radius_km = inf` when an anchoring record that
+    // explained nothing sat on it. Entity-only, like the sentinel check: the
+    // grade needs the records, which the string reader below does not hold.
+    if crate::core::place::grain::claims_no_position(e) {
+        return true;
+    }
     is_infrastructure_geo_signals(
         e.kind == EntityKind::Coordinates,
         e.tags.iter().map(String::as_str),
