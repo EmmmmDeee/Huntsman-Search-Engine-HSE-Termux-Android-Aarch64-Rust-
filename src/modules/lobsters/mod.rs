@@ -135,7 +135,7 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
 
     // Confirmed Lobste.rs account from a single public-API lookup — the
     // HIGH_PLUSPLUS_PLUS single-source "confirmed account" tier (OD-19 in
-    // .agent/state.json; gitlab_user/gitea_user stamp the identical class), not
+    // .agent/history.json; gitlab_user/gitea_user stamp the identical class), not
     // VERY_HIGH_PLUS (0.90), which the ladder reserves for "exceeds multi-source
     // threshold". The github/mastodon cross-links are emitted as their own
     // entities below, not folded into this one's grade as corroboration.

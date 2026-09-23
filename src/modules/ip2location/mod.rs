@@ -19,7 +19,7 @@
 //! "Starter Plan" — this module intentionally stays
 //! [`crate::core::module::ModuleCost::Free`] (no `cost()` override), so that
 //! field is out of reach by design, not by oversight. See
-//! `.agent/state.json`'s OD-20 for the full investigation (including why a
+//! `.agent/history.json`'s OD-20 for the full investigation (including why a
 //! heuristic AS-name substitute wasn't pursued).
 
 use async_trait::async_trait;

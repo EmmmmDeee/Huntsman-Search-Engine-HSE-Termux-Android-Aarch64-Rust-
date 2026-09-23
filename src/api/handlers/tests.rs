@@ -576,3 +576,49 @@ use crate::app::export::csv_escape;
             "person-producing modules must pivot into full_name"
         );
     }
+
+    /// The scan-log stream answers only for a scan in flight here or stored:
+    /// an unknown id is a 404, which `EventSource` does not retry, not a pipe
+    /// that sits silent for the idle timeout and is then reconnected to
+    /// indefinitely. Each of the two is enough on its own. A scan is
+    /// registered before its id reaches a client, so "in flight, no row yet"
+    /// must stream too.
+    #[tokio::test]
+    async fn the_scan_stream_answers_only_for_a_scan_in_flight_or_stored() {
+        use crate::core::cancel::CancelHandle;
+        use crate::core::scan::{Scan, Target, TargetKind};
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+
+        let state = crate::api::test_state();
+        let status = |id: &str| {
+            let router = axum::Router::new()
+                .route(
+                    "/api/v1/scans/{id}/events",
+                    axum::routing::get(super::scan_events_sse),
+                )
+                .with_state(std::sync::Arc::clone(&state));
+            let uri = format!("/api/v1/scans/{id}/events");
+            async move {
+                router
+                    .oneshot(Request::builder().uri(uri).body(Body::empty()).expect("request"))
+                    .await
+                    .expect("response")
+                    .status()
+            }
+        };
+
+        assert_eq!(status("never-existed").await, 404);
+
+        let _in_flight = crate::api::CancelRegistryGuard::install(
+            std::sync::Arc::clone(&state.cancellations),
+            "in-flight-only".into(),
+            CancelHandle::new(),
+        );
+        assert_eq!(status("in-flight-only").await, 200, "registered, no row yet");
+
+        let scan = Scan::new("stored-only", Target::new(TargetKind::Domain, "example.com"));
+        state.store.upsert_scan(&scan).expect("store the scan");
+        assert_eq!(status("stored-only").await, 200, "stored, nothing in flight");
+    }

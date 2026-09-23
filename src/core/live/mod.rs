@@ -436,13 +436,48 @@ async fn session_loop(
             }
         };
 
-        // Spawn a fresh scan for this iteration. `scan_id` is collision-free per
-        // call (a process-wide monotonic counter + sub-second nanos, NOT just
-        // `unix_now()` at one-second resolution — see its doc), so back-to-back
-        // ticks and fast radar iterations within the same second still get
-        // distinct ids instead of overwriting each other. Canonical snake_case
-        // form matches CLI/API scan_id derivation.
-        let sid = crate::core::entity::scan_id(target.kind.canonical_str(), &target.value);
+        // Each iteration gets its OWN cancel handle, distinct from the session
+        // handle. The engine's per-iteration wall-time watchdog
+        // (`max_wall_time_secs`) cancels whatever handle it is given; giving it
+        // this per-iteration handle bounds just this iteration. Sharing the
+        // session handle here (as this once did) let a single iteration's
+        // wall-time timeout latch the whole session's cancel flag — a one-way
+        // atomic — silently ending the live session after one bounded iteration
+        // instead of continuing to re-scan every interval.
+        let iter_cancel = CancelHandle::new();
+
+        // Mint this iteration's scan id straight into the process-wide
+        // in-flight registry, under its OWN handle, exactly as `spawn_scan`
+        // registers a one-shot scan, and hold the entry until the engine has
+        // performed the scan's final status write (`run_*_panic_safe` returns
+        // only after it). Cancel-by-scan-id, the delete-while-running refusal,
+        // the shutdown drain, and the read-time `interrupted` derivation all
+        // consult that one registry; an iteration absent from it was
+        // uncancellable by scan id, deletable mid-run, and reported
+        // `interrupted` by the very process running it (REQ-SCANSTATUS-001).
+        // Cancelling this entry aborts just this iteration — the session
+        // carries on to its next tick, as with the wall-time watchdog.
+        //
+        // The id is born inside the guard and `sid` is read back OUT of it, so
+        // no line of this loop can hand the id to anyone — the session's scan
+        // list, the `LiveTick` every SSE client receives — before it is in
+        // flight. The scan's own event stream answers 404 for an id that is
+        // neither in flight nor stored (REQ-SSE-001); announcing first, as
+        // this once did, left a client that followed the tick to that stream
+        // at once a window in which it was told the scan does not exist.
+        //
+        // `scan_id` is collision-free per call (a process-wide monotonic
+        // counter + sub-second nanos, NOT just `unix_now()` at one-second
+        // resolution — see its doc), so back-to-back ticks and fast radar
+        // iterations within the same second still get distinct ids instead of
+        // overwriting each other. Canonical snake_case form matches CLI/API
+        // scan_id derivation.
+        let in_flight_guard = CancelRegistryGuard::install(
+            Arc::clone(&inner.in_flight),
+            crate::core::entity::scan_id(target.kind.canonical_str(), &target.value),
+            iter_cancel.clone(),
+        );
+        let sid = in_flight_guard.scan_id().to_owned();
 
         // Register the scan_id with the session BEFORE running, so the SSE
         // handler can forward its events the moment they fire.
@@ -459,16 +494,6 @@ async fn session_loop(
             },
         ));
 
-        // Each iteration gets its OWN cancel handle, distinct from the session
-        // handle. The engine's per-iteration wall-time watchdog
-        // (`max_wall_time_secs`) cancels whatever handle it is given; giving it
-        // this per-iteration handle bounds just this iteration. Sharing the
-        // session handle here (as this once did) let a single iteration's
-        // wall-time timeout latch the whole session's cancel flag — a one-way
-        // atomic — silently ending the live session after one bounded iteration
-        // instead of continuing to re-scan every interval.
-        let iter_cancel = CancelHandle::new();
-
         // Forward an operator session-stop into the in-flight iteration, so
         // `DELETE /api/v1/live/{id}` still aborts it at the next module boundary
         // (its scan completes `Aborted` with partial entities preserved, exactly
@@ -479,23 +504,6 @@ async fn session_loop(
         // aborted the instant the iteration returns (below), so it can never
         // outlive the iteration or leak across ticks.
         let cancel_forwarder = spawn_stop_forwarder(cancel.clone(), iter_cancel.clone());
-
-        // Register this iteration in the process-wide in-flight registry under
-        // its SCAN id with its OWN handle, exactly as `spawn_scan` does for a
-        // one-shot scan, and hold the entry until the engine has performed the
-        // scan's final status write (`run_*_panic_safe` returns only after
-        // it). Cancel-by-scan-id, the delete-while-running refusal, the
-        // shutdown drain, and the read-time `interrupted` derivation all
-        // consult that one registry; an iteration absent from it was
-        // uncancellable by scan id, deletable mid-run, and reported
-        // `interrupted` by the very process running it (REQ-SCANSTATUS-001).
-        // Cancelling this entry aborts just this iteration — the session
-        // carries on to its next tick, as with the wall-time watchdog.
-        let in_flight_guard = CancelRegistryGuard::install(
-            Arc::clone(&inner.in_flight),
-            sid.clone(),
-            iter_cancel.clone(),
-        );
 
         let scan = Scan::new(sid.clone(), target.clone()).with_options(scan_options.clone());
         let ctx = ModuleContext {

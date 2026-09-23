@@ -84,6 +84,14 @@ impl CancelRegistryGuard {
         registry.lock().insert(scan_id.clone(), handle);
         Self { registry, scan_id }
     }
+
+    /// The scan id this guard holds registered. A caller that takes its id
+    /// from here, rather than minting one beside the guard, cannot hand out an
+    /// id that is not yet in flight: the id exists only once it is registered.
+    #[must_use]
+    pub fn scan_id(&self) -> &str {
+        &self.scan_id
+    }
 }
 
 impl Drop for CancelRegistryGuard {

@@ -277,17 +277,13 @@ use super::*;
     /// all, and banking it as clean hides a dead host from the breaker, the
     /// doctor and the live-drift sweep.
     ///
-    /// Driven against a CLOSED LOCAL PORT: a bound-then-dropped listener gives
-    /// a deterministic connection-refused with no DNS and no external network,
-    /// so this runs in CI rather than being ignored.
+    /// Driven against a CLOSED LOCAL PORT (`ClosedPort`, held for the whole
+    /// test): a deterministic connection-refused with no DNS and no external
+    /// network, so this runs in CI rather than being ignored.
     #[tokio::test]
     async fn both_transports_failing_is_not_a_clean_negative() {
-        let port = {
-            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
-            let p = l.local_addr().expect("local addr").port();
-            drop(l); // closed: every connect is refused immediately
-            p
-        };
+        let closed = crate::util::http::test_server::ClosedPort::new();
+        let port = closed.addr().port();
         let (bus, _rx) = tokio::sync::broadcast::channel(1);
         let ctx = ModuleContext {
             scan_id: "t".into(),

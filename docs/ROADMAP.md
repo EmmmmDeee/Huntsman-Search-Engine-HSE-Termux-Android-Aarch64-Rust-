@@ -1257,7 +1257,7 @@ point-in-time autonomous-run reports; their disposition, **after verification**
 
 | Path | Verified status | Action |
 |---|---|---|
-| `docs/*_2026-08-27{,_czrqs1}.md` (AUTONOMOUS_DECISIONS, BENCHMARK_RESULTS, CREDENTIAL_AUDIT, DEPENDENCY_GRAPH, EXCEPTION_LEDGER, FINAL_REPORT, ISSUE_LEDGER, RUST_MIGRATION_AUDIT) | **Referenced** by README, CHANGELOG, PROBLEM_TREE, REQUIREMENTS_LEDGER, gap_register, `.gitleaks.toml`, `.agent/state.json`, and some module source | **Retain.** Not junk — a referenced historical audit trail. Do not delete. |
+| `docs/*_2026-08-27{,_czrqs1}.md` (AUTONOMOUS_DECISIONS, BENCHMARK_RESULTS, CREDENTIAL_AUDIT, DEPENDENCY_GRAPH, EXCEPTION_LEDGER, FINAL_REPORT, ISSUE_LEDGER, RUST_MIGRATION_AUDIT) | **Referenced** by README, CHANGELOG, PROBLEM_TREE, REQUIREMENTS_LEDGER, gap_register, `.gitleaks.toml`, `.agent/history.json`, and some module source | **Retain.** Not junk — a referenced historical audit trail. Do not delete. |
 | `CREDENTIAL_AUDIT_2026-08-27.md` vs `…_czrqs1.md`; `RUST_MIGRATION_AUDIT_2026-08-27.md` vs `…_czrqs1.md` | **Not** identical (182 / 606 differing lines) — two distinct reports, both referenced | **Retain both.** The "duplicate pair" hypothesis was falsified; merging would lose content and break references. |
 | `docs/OATHNET_API_GUIDE.txt` | `.txt` amid `.md`; referenced by the `oathnet` provider source | Normalise to `.md` only as part of a reference-updating pass, not a bare rename. |
 
