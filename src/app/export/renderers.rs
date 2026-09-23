@@ -24,9 +24,10 @@ fn confirmed_entities(store: &Store, sid: &str) -> Result<Vec<crate::core::entit
 /// Why an export of this scan is only a PARTIAL view, or `None` when the scan
 /// genuinely ran to completion.
 ///
-/// Single source of truth for the completeness decision, so the dossier header
-/// and the debug-bundle header can never disagree about whether an artifact is
-/// whole (they phrase it differently, but they classify identically). An
+/// Single source of truth for the completeness decision, so the dossier header,
+/// the debug-bundle header and the events-log snapshot marker
+/// ([`render_event_log_export`]) can never disagree about whether an artifact
+/// is whole (they phrase it differently, but they classify identically). An
 /// export of an aborted / failed / still-running scan carries only the findings
 /// produced before the stop, so branding it "complete" tells the operator the
 /// absence of a finding is a real negative when it may just be work that never
@@ -655,9 +656,10 @@ fn render_raw_response_body(raw: &serde_json::Value) -> String {
 /// the log is both machine-parseable (one object per line) and clean to read.
 /// Pure (no storage I/O) so callers fetch `events` once via
 /// [`StoragePort::events_for_scan`](crate::core::port::StoragePort::events_for_scan)
-/// and pass the slice in — shared by [`render_debug_bundle`]'s §3 and the
-/// standalone HTTP download endpoint `api::scan_export::scan_events_log`
-/// (`GET /api/v1/scans/{id}/events.log`), so the two never drift apart. Every
+/// and pass the slice in — shared by [`render_debug_bundle`]'s §3 and, via
+/// [`render_event_log_export`], the standalone HTTP download endpoint
+/// `api::scan_export::scan_events_log` (`GET /api/v1/scans/{id}/events.log`),
+/// so the two never drift apart. Every
 /// event and its exact ordering is preserved; only the raw JSON envelope is
 /// dropped in favour of the readable line — the full per-entity detail already
 /// lives in the debug bundle's dossier section, and the machine-readable events
@@ -670,6 +672,57 @@ pub(crate) fn render_event_log(events: &[crate::core::event::Event]) -> String {
         let _ = writeln!(s, "{}", ev.to_log_line());
     }
     s
+}
+
+/// The standalone events-log EXPORT: [`render_event_log`], plus one closing
+/// `export_snapshot` line when the scan is not a whole run.
+///
+/// The download is served at any moment, mid-scan included, and a log fetched
+/// then is a strict PREFIX of the eventual sequence — yet it read exactly like
+/// a finished scan's, so its last line passed for the end of the run. The
+/// marker classifies through [`partial_export_reason`], the same decision the
+/// dossier and debug-bundle headers make, so the three artifacts agree:
+/// `{"time":…,"level":"warn","kind":"export_snapshot","state":"live","events":N}`,
+/// where `state` is that reason (`live` / `aborted` / `failed` /
+/// `budget-truncated`) and `events` counts the lines above it. A whole run gets
+/// no marker, so its log is unchanged. The line keeps
+/// [`Event::to_log_line`](crate::core::event::Event::to_log_line)'s
+/// `time`/`level`/`kind` lead, so a line-by-line consumer parses it like any
+/// event.
+///
+/// The scan is read BEFORE its events. The other order lets the scan finish
+/// between the two reads — a prefix fetched while running, then a `Complete`
+/// status — and that prefix would ship unmarked. Status-first, the worst race
+/// marks a log that happens to be whole as `live`: a false alarm, never a false
+/// "complete". `time` is the last event's (the scan's start when there are
+/// none), not the wall clock, so a terminal scan's export stays byte-identical
+/// across downloads.
+///
+/// Shared by `GET /api/v1/scans/{id}/events.log` and `hse export {id} --format
+/// events`, so the two render identically (the download then genericises the
+/// provider names for the customer copy).
+pub(crate) fn render_event_log_export(
+    store: &dyn crate::core::port::StoragePort,
+    sid: &str,
+) -> Result<String> {
+    use std::fmt::Write as _;
+
+    let scan = store
+        .get_scan(sid)?
+        .ok_or_else(|| Error::Other(format!("scan {sid} not found")))?;
+    let events = store.events_for_scan(sid)?;
+    let mut s = render_event_log(&events);
+    if let Some(state) = partial_export_reason(&scan) {
+        let ts = events.last().map_or(scan.started_at, |e| e.ts);
+        let _ = writeln!(
+            s,
+            "{{\"time\":{},\"level\":\"warn\",\"kind\":\"export_snapshot\",\"state\":{},\"events\":{}}}",
+            serde_json::Value::from(crate::util::timefmt::hms_utc(ts)),
+            serde_json::Value::from(state),
+            events.len()
+        );
+    }
+    Ok(s)
 }
 
 /// The **one-file debug bundle** — everything needed to understand and improve a
@@ -960,33 +1013,29 @@ pub(crate) fn build_scan_report(
     // non-target breach-dump rows) are hidden by default so the report reads
     // as the target's confirmed footprint. `include_candidates=true` returns
     // the full set for investigation.
-    if !include_candidates {
-        entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
-    }
+    //
     // Strip platform/shared-infrastructure entities (cloud buckets, CDN IPs,
     // analytics IDs sourced from third-party platform pages) from default
     // output. They inflate the count and obscure subject-owned entities.
     // `include_infra=true` (via `--include-infra` or `--output full`) restores
-    // them.
-    if !include_infra {
-        // The operator-provided seed is the subject — it must ALWAYS appear in
-        // its own report, even when it is itself infrastructure (e.g. a scan
-        // seeded with a datacenter/CDN IP that an IP module re-emits as
-        // `hosting`, which then merges `platform-infra` onto the seed anchor).
-        entities.retain(|e| !e.has_tag(crate::core::tags::PLATFORM_INFRA) || e.has_tag("seed"));
-    }
-    // Self-resolving document: every `correlations[].entity_uids` entry must
-    // name an entity present in this same envelope. The correlator runs over
-    // the full infra-inclusive set (only candidates are excluded), so under the
-    // default `include_infra=false` a finding on a platform-infra entity — a
-    // compromised hosting IP that AU-004 fires Critical on — referenced a UID
-    // the `entities` array no longer carried, and the report's highest-severity
-    // finding could not be explained from the document itself. Union the
-    // referenced infra entities back (they are part of a finding, so they are
-    // subject-relevant by definition); a correlation that references a hidden
-    // CANDIDATE is dropped instead — the quarantine wins over completeness.
-    // `entities_to_gexf` enforces the same both-endpoints-present invariant for
-    // relation edges.
+    // them. The operator-provided seed is the subject — it must ALWAYS appear
+    // in its own report, even when it is itself infrastructure (e.g. a scan
+    // seeded with a datacenter/CDN IP that an IP module re-emits as
+    // `hosting`, which then merges `platform-infra` onto the seed anchor).
+    //
+    // What is hidden is KEPT, by uid, so the self-resolving step below can
+    // restore THIS scan's own, already-scrubbed copy of an entity a finding
+    // names. It used to re-read it with `get_entity` — the shared row every
+    // scan that ever saw the uid merges into — which put other scans' evidence
+    // (other subjects' names) and the operator's unscrubbed secrets back into
+    // this report (REQ-STORAGE-005).
+    let (kept, hidden): (Vec<_>, Vec<_>) = entities.into_iter().partition(|e| {
+        (include_candidates || !e.has_tag(crate::core::tags::CANDIDATE))
+            && (include_infra || !e.has_tag(crate::core::tags::PLATFORM_INFRA) || e.has_tag("seed"))
+    });
+    let mut entities = kept;
+    let mut hidden: std::collections::HashMap<String, crate::core::entity::Entity> =
+        hidden.into_iter().map(|e| (e.uid.clone(), e)).collect();
     let mut correlations = store.correlations_for_scan(scan_id)?;
     {
         let present: std::collections::HashSet<&str> =
@@ -1000,7 +1049,7 @@ pub(crate) fn build_scan_report(
         missing.sort_unstable();
         missing.dedup();
         for uid in missing {
-            if let Some(e) = store.get_entity(&uid)? {
+            if let Some(e) = hidden.remove(&uid) {
                 let hidden_candidate =
                     !include_candidates && e.has_tag(crate::core::tags::CANDIDATE);
                 if !hidden_candidate {

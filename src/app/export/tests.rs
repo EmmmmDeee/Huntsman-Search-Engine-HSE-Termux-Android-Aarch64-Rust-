@@ -2025,6 +2025,61 @@ fn report_correlations_always_resolve_against_its_own_entities() {
     assert_eq!(full["correlation_count"].as_u64(), Some(2));
 }
 
+/// REQ-STORAGE-005: a correlation-referenced infra entity is restored from
+/// THIS scan's own copy, not from the shared row every scan merges into —
+/// which carried another scan's evidence into this report.
+#[test]
+fn a_restored_finding_entity_is_this_scans_copy_not_the_shared_row() {
+    use crate::core::correlator::{Correlation, Severity};
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::scan::{Scan, Target, TargetKind};
+    let dir = tempfile::tempdir().expect("should succeed");
+    let db = dir.path().join("restore.db");
+    let store =
+        crate::storage::Store::open(db.to_str().expect("should succeed")).expect("should succeed");
+    for sid in ["other-subject-scan", "this-scan"] {
+        store
+            .upsert_scan(&Scan::new(sid, Target::new(TargetKind::Username, sid)))
+            .expect("should succeed");
+    }
+    let infra = |sid: &str, summary: &str| {
+        let mut e = Entity::new(EntityKind::IpAddress, "203.0.113.9", 0.7, sid);
+        e.tag("platform-infra");
+        e.add_evidence(Evidence::new("ip_geo", summary));
+        e
+    };
+    store
+        .upsert_entity(&infra("other-subject-scan", "seen for Jane Other"))
+        .expect("should succeed");
+    let mine = infra("this-scan", "seen for this subject");
+    store.upsert_entity(&mine).expect("should succeed");
+    store
+        .upsert_correlation(&Correlation::new(
+            "AU-004",
+            "Malicious infrastructure",
+            Severity::Critical,
+            "compromised hosting IP".into(),
+            vec![mine.uid.clone()],
+            "this-scan",
+            0,
+        ))
+        .expect("should succeed");
+
+    let port = &store as &dyn crate::core::port::StoragePort;
+    let report = build_scan_report(port, "this-scan", false, false)
+        .expect("should succeed")
+        .expect("should succeed");
+    let body = report.to_string();
+    assert!(
+        body.contains("seen for this subject"),
+        "the finding's entity is restored: {body}"
+    );
+    assert!(
+        !body.contains("Jane Other"),
+        "another scan's evidence must not reach this report: {body}"
+    );
+}
+
 #[test]
 fn default_report_always_keeps_the_seed_even_if_it_is_infrastructure() {
     // A scan seeded with a datacenter/CDN IP: an IP module re-emits the seed

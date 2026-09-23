@@ -108,6 +108,14 @@ impl Module for NameIntel {
         };
 
         // ── Subject anchor ──────────────────────────────────────────────────
+        // This module sees only the name it was run on, never whether that name
+        // is the scan's seed or a pivot, so it PROPOSES the anchor (`seed` +
+        // `subject`) and states only what it knows in the evidence. The engine
+        // keeps the role tags on the seed dispatch and strips them from a
+        // pivot's output (`engine::dispatch::rescope_subject_claims`); the old
+        // "provided as the seed" wording was a false claim on every pivoted
+        // name — relatives, namesakes, a swimming centre (REQ-SUBJECT-SCOPE-001).
+        //
         // Emit the Person the operator named as the seed FIRST, so every derived
         // username/email/pivot has an individual to attach to (without it the
         // dossier is a pile of orphan handles, and the person-cluster correlators
@@ -130,7 +138,10 @@ impl Module for NameIntel {
             person.add_evidence(
                 Evidence::new(
                     SRC,
-                    format!("Scan subject — '{}' provided as the seed", target.value),
+                    format!(
+                        "Name anchor — '{}' is the name this pass expanded",
+                        target.value
+                    ),
                 )
                 .with_attr("source_name", &display),
             );

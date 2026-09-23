@@ -8,6 +8,48 @@
 
 use super::*;
 
+/// Leading words that make a "<Word> <Surname>" run a PLACE, not a person —
+/// `Port Douglas`, `Mount Isa`, `Lake Macquarie` — so a place named like the
+/// subject survives [`is_person_listing_locality`].
+const PLACE_PREFIXES: &[&str] = &[
+    "port", "mount", "mt", "lake", "fort", "point", "cape", "glen", "saint", "st", "east", "west",
+    "north", "south", "new", "upper", "lower", "old", "little", "great",
+];
+
+/// True when an extracted `"City, State"` is really a people-search listing
+/// title — `"Ian Thorpe, North Carolina"` from `spokeo.com/Ian-Thorpe/North-
+/// Carolina` — whose "city" is a person named with the scanned `surname`.
+///
+/// [`extract_addresses_from_text`]'s word path takes the capitalised run before
+/// `", <State>"` as the city, and a listing title is exactly that shape. A real
+/// "Ian Thorpe" scan emitted fourteen such Addresses (Bill, Carol, David,
+/// Donald, Ian, William Thorpe, … each "in" a US state); Photon then geocoded
+/// four different names to one arbitrary North Carolina point, and the audit
+/// reported the resulting spread as geo-divergence (REQ-SEARCH-ADDR-001).
+///
+/// A multi-word "city" ending in the surname, and not led by a place word
+/// ([`PLACE_PREFIXES`]), is a person. A single word that IS the surname
+/// ("Lawnton, QLD" for a Lawnton) is a real suburb and is kept — that collision
+/// is capped, not dropped, by the caller. **Pure.**
+pub(in crate::modules::search_engines) fn is_person_listing_locality(
+    addr: &str,
+    surname: &str,
+) -> bool {
+    let Some((city, _state)) = addr.rsplit_once(',') else {
+        return false;
+    };
+    let words: Vec<&str> = city.split_whitespace().collect();
+    words.len() >= 2
+        && words
+            .last()
+            .is_some_and(|last| last.eq_ignore_ascii_case(surname.trim()))
+        && !words.first().is_some_and(|w| {
+            PLACE_PREFIXES
+                .iter()
+                .any(|p| w.trim_end_matches('.').eq_ignore_ascii_case(p))
+        })
+}
+
 /// Extract AU location strings from free text for geolocation, in three passes:
 /// (1) a comma-separated "City, State" where the city starts with an uppercase
 /// letter (filters random sentence fragments); (2) a known AU place name with

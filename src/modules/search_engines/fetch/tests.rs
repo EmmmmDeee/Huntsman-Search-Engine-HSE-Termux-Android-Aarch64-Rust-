@@ -671,11 +671,15 @@ use super::*;
     // referrer-style result anchors": the real page is a Cloudflare-gated
     // Next.js SPA (`__NEXT_DATA__` JSON payload only) with ZERO `<a
     // href="…">` result anchors anywhere in the body — every genuine result
-    // is hydrated client-side by JS this engine never executes. The
-    // Cloudflare challenge loader (`/cdn-cgi/challenge-platform/…`) is
-    // present verbatim, matching an existing `CHALLENGE_VENDOR_SIGNATURES`
-    // fingerprint, so `is_challenge_page` correctly classifies this specimen
-    // as `Blocked` rather than a fabricated "empty" success. It ALSO
+    // is hydrated client-side by JS this engine never executes. The only
+    // Cloudflare artefact in it is `/cdn-cgi/challenge-platform/scripts/jsd/
+    // main.js` — Bot Management's JS-detection snippet, which Cloudflare
+    // injects into EVERY page of a zone, served or challenged. It was read as a
+    // challenge loader until the same snippet on the real AHPRA register page
+    // turned a genuine 200 into a false "bot challenge" (REQ-AHPRA-002); a real
+    // challenge loads from `/cdn-cgi/challenge-platform/h/…`. This capture is
+    // therefore NOT a vendor challenge; you.com is no longer an engine
+    // (`engines.rs`), so nothing in production reads it. It ALSO
     // surfaced a real, separate chrome-leak defect: the generic
     // href-extraction pass reads ANY `href=` attribute, not just `<a>`
     // result anchors, and this capture's `<link rel="dns-prefetch"
@@ -687,18 +691,17 @@ use super::*;
     // canonical test seed, containing no third-party personal data.
     const GOLDEN_YOU_KYLO4KYLO: &str = include_str!("testdata/you_kylo4kylo.html");
 
-    /// Pins the block classification against the real capture: if
-    /// `CHALLENGE_VENDOR_SIGNATURES` ever regresses to no longer recognise this
-    /// exact Cloudflare challenge shape, this fails instead of silently
-    /// letting `fetch_and_parse` treat a real block as an honest "empty"
-    /// result (0 organic hits from `parse_results`, which would otherwise
-    /// look identical to a genuine no-match query).
+    /// Pins the vendor-signature boundary against the real capture: the
+    /// always-injected JSD snippet alone is not a challenge (REQ-AHPRA-002).
+    /// Re-widening `CHALLENGE_VENDOR_SIGNATURES` to the bare
+    /// `/cdn-cgi/challenge-platform` prefix makes this fail — and with it every
+    /// ordinary page of every Bot-Management zone reads as a wall.
     #[test]
-    fn is_challenge_page_detects_a_real_youcom_cloudflare_challenge_capture() {
+    fn cloudflares_injected_jsd_snippet_alone_does_not_make_a_youcom_page_a_challenge() {
         assert!(
-            is_challenge_page(GOLDEN_YOU_KYLO4KYLO),
-            "the real you.com capture's Cloudflare challenge loader must be \
-             detected as a block, not silently parsed as zero genuine results"
+            !is_challenge_page(GOLDEN_YOU_KYLO4KYLO),
+            "the you.com capture carries only Cloudflare's always-injected JSD \
+             snippet, which is not a challenge"
         );
     }
 

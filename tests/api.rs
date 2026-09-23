@@ -2229,12 +2229,12 @@ async fn shareable_downloads_redact_the_provider_name_while_the_debug_bundle_kee
     // to `download_response_operator`, or a dropped redact call, would have passed
     // every committed test.
     use huntsman_search_engine::core::entity::Evidence;
-    use huntsman_search_engine::core::event::{Event, EventKind};
+    use huntsman_search_engine::core::event::{Event, EventKind, SkipClass};
 
     // `dehashed` is a real `Breach`-category provider, so redact's registry sweep
-    // covers it; "breach-source" is the fixed label it is replaced with. The check
-    // is case-insensitive, so it also catches the capitalised brand "DeHashed"
-    // that lands in evidence summaries.
+    // covers it; "breach-source" is the stem of the `[breach-source-N]`
+    // placeholder it is replaced with. The check is case-insensitive, so it also
+    // catches the capitalised brand "DeHashed" that lands in evidence summaries.
     const PROVIDER: &str = "dehashed";
     const BRAND: &str = "DeHashed";
     const REDACTED: &str = "breach-source";
@@ -2275,6 +2275,25 @@ async fn shareable_downloads_redact_the_provider_name_while_the_debug_bundle_kee
             },
         ))
         .unwrap();
+    // A second provider's "needs API key" skip, worded exactly as the engine
+    // words it (`core::engine::dispatch`: "needs API key {env} — {signup_hint}").
+    // The reason carries the key env var, the display brand and the signup URL:
+    // the old `\b` redactor let `HUNTSMAN_SEEKNOW_KEY` through (`_` is a word
+    // character) and rewrote `https://see-know.ru` into the fabricated
+    // `https://breach-source.ru`.
+    const SKIP_ENV: &str = "HUNTSMAN_SEEKNOW_KEY";
+    let hint = huntsman_search_engine::util::keys::signup_hint(SKIP_ENV)
+        .expect("SeekNow has a signup hint");
+    store
+        .insert_event(&Event::new(
+            sid,
+            EventKind::ModuleSkipped {
+                module: "see_know".to_string(),
+                reason: format!("needs API key {SKIP_ENV} — {hint}"),
+                class: Some(SkipClass::Unavailable),
+            },
+        ))
+        .unwrap();
 
     // Every shareable download must hide the provider identity AND carry the
     // redaction label in its place — the label's presence proves the redactor
@@ -2303,6 +2322,50 @@ async fn shareable_downloads_redact_the_provider_name_while_the_debug_bundle_kee
              of the provider (proves redaction ran): {body}"
         );
     }
+
+    // events.log in detail. The skip reason names nobody and fabricates no
+    // address, and the two providers keep DISTINCT placeholders, so the log's
+    // per-module accounting survives (one shared label made every breach
+    // provider's module_start/module_done indistinguishable).
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/events.log")))
+        .await
+        .unwrap();
+    let log = download_body_text(resp).await;
+    let lower = log.to_ascii_lowercase();
+    for leaked in ["see-know", "see_know", "seeknow", "huntsman_seeknow_key"] {
+        assert!(
+            !lower.contains(leaked),
+            "events.log leaked {leaked:?} from the skip reason: {log}"
+        );
+    }
+    for fabricated in ["breach-source.", "].ru", "].com", "].io", "].org"] {
+        assert!(
+            !lower.contains(fabricated),
+            "events.log carries a redaction-made address ({fabricated:?}): {log}"
+        );
+    }
+    assert!(
+        log.contains("HUNTSMAN_[redacted]_KEY") && log.contains("[redacted-url]"),
+        "the skip reason's env var and signup URL must be replaced by fixed markers: {log}"
+    );
+    let module_of = |kind: &str| -> String {
+        log.lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .find(|v| v["kind"] == kind)
+            .and_then(|v| v["module"].as_str().map(str::to_string))
+            .unwrap_or_else(|| panic!("no {kind} line in events.log: {log}"))
+    };
+    let (errored, skipped) = (module_of("module_error"), module_of("module_skipped"));
+    assert!(
+        errored.starts_with("[breach-source-") && skipped.starts_with("[breach-source-"),
+        "both providers must be shown as a placeholder: {errored:?} / {skipped:?}"
+    );
+    assert_ne!(
+        errored, skipped,
+        "dehashed and see_know must keep distinct placeholders: {log}"
+    );
 
     // The operator debug bundle is the sole conscious opt-out: it KEEPS the real
     // provider name (via the non-redacting download_response_operator path).
@@ -4715,6 +4778,63 @@ async fn scan_events_log_404_unknown_and_text_attachment_for_known() {
         404,
         "events.log must 404 for an unknown scan"
     );
+}
+
+#[tokio::test]
+async fn events_log_of_running_scan_is_marked_partial() {
+    // Defect: events.log is served mid-scan, and a log fetched then is a strict
+    // prefix of the eventual sequence — yet nothing in it said so, and its
+    // endpoint doc promised the "complete, loss-less" sequence, so a partial
+    // upload read as a finished scan's whole log. A scan that is not a whole run
+    // now ends its log with one `export_snapshot` line; a finished scan's log is
+    // exactly its events, unmarked (the control).
+    use huntsman_search_engine::core::event::{Event, EventKind};
+    use huntsman_search_engine::core::scan::ScanStatus;
+
+    let (app, store) = test_app_with_store("events_log_partial");
+    let sid = "s-events-partial";
+    let path = format!("/api/v1/scans/{sid}/events.log");
+    let mut scan = Scan::new(sid, Target::new(TargetKind::Email, "subject@real.example"));
+    scan.status = ScanStatus::Running;
+    store.upsert_scan(&scan).unwrap();
+    for module in ["whois", "github_user"] {
+        store
+            .insert_event(&Event::new(
+                sid,
+                EventKind::ModuleStart {
+                    module: module.to_string(),
+                },
+            ))
+            .unwrap();
+    }
+
+    let resp = app.clone().oneshot(get(&path)).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let live = download_body_text(resp).await;
+    let lines: Vec<&str> = live.lines().collect();
+    assert_eq!(lines.len(), 3, "two events and one marker: {live}");
+    let marker: Value = serde_json::from_str(lines[2]).expect("the marker is a JSON line");
+    assert_eq!(marker["kind"], "export_snapshot", "{live}");
+    assert_eq!(marker["state"], "live", "{live}");
+    assert_eq!(marker["events"], 2, "{live}");
+    assert!(
+        marker["time"].is_string() && marker["level"].is_string(),
+        "the marker keeps the time/level/kind lead every log line has: {live}"
+    );
+
+    // Control: once the scan has finished, the same log carries no marker, and
+    // is otherwise byte-identical — the marker is purely appended.
+    scan.status = ScanStatus::Complete;
+    scan.finished_at = Some(scan.started_at);
+    store.upsert_scan(&scan).unwrap();
+    let resp = app.oneshot(get(&path)).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let done = download_body_text(resp).await;
+    assert!(
+        !done.contains("export_snapshot"),
+        "a finished scan's log must not be marked partial: {done}"
+    );
+    assert_eq!(format!("{done}{}\n", lines[2]), live);
 }
 
 // ── Security: DNS-rebind Host guard + scan-import CSRF ──────────────────────

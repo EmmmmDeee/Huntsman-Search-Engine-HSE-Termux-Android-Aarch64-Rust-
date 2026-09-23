@@ -21,7 +21,7 @@ pub(crate) use dossier::{dossier_dir, dossier_dir_path, write_full_dossier};
 pub(crate) use health_policy::{KeyPoolSummary, WAL_RUNAWAY_BYTES};
 pub(crate) use renderers::{
     build_scan_report, entities_to_csv, extract_au_location_fix, formula_guard,
-    render_debug_bundle, render_event_log, render_full,
+    render_debug_bundle, render_event_log_export, render_full,
 };
 pub(crate) use system_debug::{SystemDebugInputs, render_system_debug_bundle};
 // `csv_escape` has no production caller outside `renderers.rs` itself (only
@@ -32,6 +32,11 @@ pub(crate) use system_debug::{SystemDebugInputs, render_system_debug_bundle};
 // build never sees an unused-re-export warning for it.
 #[cfg(test)]
 pub(crate) use renderers::csv_escape;
+// Likewise `render_event_log`: its production callers are the debug bundle (in
+// `renderers.rs`) and `render_event_log_export`, which wraps it with the
+// snapshot marker for the `events` export; only `tests` names it from here.
+#[cfg(test)]
+pub(crate) use renderers::render_event_log;
 
 use crate::core::error::{Error, Result};
 use crate::default_db_path;
@@ -97,7 +102,9 @@ pub async fn cmd_export(
         // `full` always includes infra — it is the maximum-detail format.
         "full" => render_full(&store, &sid)?,
         "debug" => render_debug_bundle(&store, &sid)?,
-        "events" => render_event_log(&store.events_for_scan(&sid)?),
+        // The `events.log` download's renderer, snapshot marker included (the
+        // download then genericises provider names; the operator's shell keeps them).
+        "events" => render_event_log_export(&store, &sid)?,
         other => {
             return Err(Error::Other(format!(
                 "unknown --format '{other}'. Valid: json, csv, gexf, report, full, debug, events"

@@ -5,7 +5,7 @@
 //! composition layer — so this module and the `hse export` CLI subcommand call
 //! into the SAME implementation and stay byte-identical. This file owns only
 //! the axum handlers, the download/attachment response plumbing, and the
-//! customer-facing provider-name redaction (`redact` submodule, unchanged).
+//! customer-facing provider-name redaction (`redact` submodule).
 
 use axum::{
     extract::{Path, Query, State},
@@ -155,14 +155,19 @@ pub async fn scan_debug_bundle(
     }
 }
 
-/// `GET /api/v1/scans/{id}/events.log` — the complete, loss-less scan event
-/// sequence alone (module start/done/error, entities found, expansion
-/// ticks/stops, every admission/exclusion) as a per-type breakdown plus a
-/// readable, aligned per-event timeline (`HH:MM:SS  category  glyph summary`,
-/// matching the web "Scan Log" view) — everything the web "Scan Log" tab shows, as one downloadable
-/// file, without the rest of the [`scan_debug_bundle`] dossier. `hse export
-/// {id} --format events` produces the byte-identical body via
-/// [`crate::app::export::render_event_log`].
+/// `GET /api/v1/scans/{id}/events.log` — every scan event persisted SO FAR
+/// (module start/done/error/skip, entities found, expansion ticks/stops, every
+/// admission/exclusion), in order, as structured JSON lines (one
+/// [`Event::to_log_line`](crate::core::event::Event::to_log_line) object per
+/// event) — what the web "Scan Log" tab shows, as one downloadable file,
+/// without the rest of the [`scan_debug_bundle`] dossier.
+///
+/// It is whole only for a scan that ran to completion. Served mid-scan it is a
+/// strict prefix of the eventual sequence, so a scan that is not a whole run
+/// (still running, aborted, failed, or budget-truncated) gets one closing
+/// `{"kind":"export_snapshot","state":…,"events":N}` line saying so. `hse
+/// export {id} --format events` renders the same body (before redaction) via
+/// [`crate::app::export::render_event_log_export`].
 pub async fn scan_events_log(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -172,17 +177,14 @@ pub async fn scan_events_log(
     }
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
-    match offload_store(move || store.events_for_scan(&id2)).await {
-        // The event JSONL names the producing provider in module_start/done/error;
-        // `download_response` redacts those proprietary source names for the
+    match offload_store(move || crate::app::export::render_event_log_export(store.as_ref(), &id2))
+        .await
+    {
+        // The event JSONL names the producing provider in module_start/done/
+        // error/skip, and a "needs API key" skip reason carries its key env var
+        // and signup URL; `download_response` redacts all of them for the
         // customer copy.
-        Ok(events) => download_response(
-            crate::app::export::render_event_log(&events),
-            "text/plain; charset=utf-8",
-            &id,
-            "events",
-            "log",
-        ),
+        Ok(body) => download_response(body, "text/plain; charset=utf-8", &id, "events", "log"),
         Err(e) => e,
     }
 }

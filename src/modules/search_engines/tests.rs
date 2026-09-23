@@ -3224,3 +3224,45 @@ fn a_result_that_never_names_a_single_token_subject_mines_neither_email_nor_hand
         Some("1")
     );
 }
+
+/// REQ-SEARCH-ADDR-001 at the call site: a Spokeo listing result for the
+/// scanned name must not become the Address "Ian Thorpe, North Carolina",
+/// while a real locality in a result that names the subject still does.
+#[test]
+fn a_name_scan_emits_no_address_from_a_people_search_listing_title() {
+    let target = Target::new(TargetKind::FullName, "Ian Thorpe");
+    let mk = |url: &str, title: &str, snippet: &str| SearchResult {
+        url: url.to_string(),
+        title: title.to_string(),
+        snippet: snippet.to_string(),
+        engine: "brave",
+        query: "\"Ian Thorpe\"".to_string(),
+    };
+    let results = vec![
+        mk(
+            "https://www.spokeo.com/Ian-Thorpe/North-Carolina",
+            "Ian Thorpe, North Carolina (NC) | Spokeo",
+            "Ian Thorpe, North Carolina — phone, address and relatives.",
+        ),
+        mk(
+            "https://www.example.org/news/ian-thorpe",
+            "Ian Thorpe opens pool",
+            "Ian Thorpe visited Toowong, QLD 4066 on Monday.",
+        ),
+    ];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    let addrs: Vec<&str> = res
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        !addrs.iter().any(|a| a.contains("Ian Thorpe")),
+        "a listing title is not a locality: {addrs:?}"
+    );
+    assert!(
+        addrs.iter().any(|a| a.starts_with("Toowong")),
+        "a real locality in a subject-naming result is still extracted: {addrs:?}"
+    );
+}

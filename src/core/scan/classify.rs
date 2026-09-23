@@ -177,6 +177,137 @@ pub(crate) fn is_wrong_identity_pivot(
             .any(|s| identity_overlaps(s, value))
 }
 
+/// Honorifics dropped from the front of a person name and post-nominals dropped
+/// from its end before the given/surname positions are read. Lowercase, compared
+/// after `.` is stripped, so `"Mr."`, `"MR"` and `"mr"` all fold to `"mr"`.
+const NAME_AFFIXES: &[&str] = &[
+    "mr", "mrs", "ms", "miss", "mx", "dr", "prof", "rev", "sir", "dame", "hon", "lady", "lord",
+    "jr", "jnr", "sr", "snr", "ii", "iii", "iv", "oam", "am", "ao", "ac", "obe", "mbe", "cbe",
+    "phd", "esq",
+];
+
+/// A person name as `(given, surname)` — the first and last name tokens after
+/// honorifics, post-nominals and a parenthesised note (`"(swimmer)"`) are removed
+/// and a `"Surname, Given"` register reversal is reordered. Lowercase alphabetic
+/// tokens (an internal `-`/`'` is kept, so `O'Neill` and `Symes-Thorpe` survive
+/// as one token). `None` when fewer than two tokens remain: a mononym carries no
+/// given/surname structure to compare, so the caller must not treat it as proof
+/// of a different person.
+fn person_name_parts(name: &str) -> Option<(String, String)> {
+    let mut depth = 0u32;
+    let unparenthesised: String = name
+        .chars()
+        .filter(|&c| match c {
+            '(' => {
+                depth += 1;
+                false
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                false
+            }
+            _ => depth == 0,
+        })
+        .collect();
+    let reordered = match unparenthesised.split_once(',') {
+        Some((head, tail)) if head.split_whitespace().count() == 1 && !tail.contains(',') => {
+            format!("{tail} {head}")
+        }
+        _ => unparenthesised,
+    };
+    let mut tokens: Vec<String> = reordered
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .map(|t| {
+            t.trim_matches(|c: char| !c.is_alphabetic())
+                .chars()
+                .filter(|c| c.is_alphabetic() || matches!(c, '-' | '\''))
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        })
+        .filter(|t| !t.is_empty())
+        .collect();
+    while tokens
+        .first()
+        .is_some_and(|t| NAME_AFFIXES.contains(&t.as_str()))
+    {
+        tokens.remove(0);
+    }
+    while tokens.len() > 2
+        && tokens
+            .last()
+            .is_some_and(|t| NAME_AFFIXES.contains(&t.as_str()))
+    {
+        tokens.pop();
+    }
+    if tokens.len() < 2 {
+        return None;
+    }
+    let surname = tokens.pop()?;
+    Some((tokens.swap_remove(0), surname))
+}
+
+/// Two given names that can denote one person: equal, or one is a bare initial
+/// of the other (`"i"` ↔ `"ian"`). Nicknames (`Bob` ↔ `Robert`) are deliberately
+/// NOT folded — no dictionary is complete, and a miss here only withholds an
+/// automatic pivot (`--expand-all-identities` restores it), whereas a false
+/// fold would pivot on a stranger.
+fn given_names_compatible(a: &str, b: &str) -> bool {
+    let initial_of = |short: &str, long: &str| {
+        short.chars().count() == 1 && long.chars().next() == short.chars().next()
+    };
+    a == b || initial_of(a, b) || initial_of(b, a)
+}
+
+/// True when two person names can denote the same individual: the same surname
+/// and compatible given names (see [`given_names_compatible`]), read in either
+/// token order so a surname-first register row (`"THORPE IAN"`) still matches.
+/// `None` when either name lacks a given/surname structure (a mononym) — unknown,
+/// never "different".
+pub(crate) fn person_names_compatible(a: &str, b: &str) -> Option<bool> {
+    let (ga, sa) = person_name_parts(a)?;
+    let (gb, sb) = person_name_parts(b)?;
+    Some(
+        (sa == sb && given_names_compatible(&ga, &gb))
+            || (ga == sb && given_names_compatible(&sa, &gb)),
+    )
+}
+
+/// Decide whether a discovered `Person` is a *different, named individual* from
+/// the scan's subject — one whose expansion would run a whole identity sweep
+/// (name permutations → handle/email guesses → breach and profile probes) on a
+/// stranger.
+///
+/// [`is_wrong_identity_pivot`] cannot make this call for people. It asks whether
+/// a candidate shares any [`IDENTITY_OVERLAP_MIN`]-char run with the subject, and
+/// every relative or namesake sharing the surname does (`"meganthorpe"` ⊃
+/// `"thorpe"`), as does a near-surname (`"ianthorley"` ⊃ `"ianthor"`). Its
+/// corroboration escape is wrong for people too: two registers agreeing that
+/// "Megan Thorpe" exists is evidence she exists, not that she is Ian Thorpe. A
+/// real name scan of "Ian Thorpe" pivoted "Ian Thorley", "Aidan Thorpe", "Megan
+/// Thorpe", "Wendy Thorpe" and the facility "Ian Thorpe Aquatic Centre", minted
+/// ~200 speculative mailboxes and handles for them, and surfaced breach
+/// credentials belonging to strangers (REQ-IDENTITY-GATE-001).
+///
+/// A `Person` is gated here when the subject's own name is known
+/// (`subject_names` — the `FullName` seed) and the candidate's name is
+/// structurally incompatible with every one of them
+/// ([`person_names_compatible`] is `Some(false)`), whatever its confidence or
+/// source count. A mononym, or a scan with no named subject, returns `false` and
+/// falls through to [`is_wrong_identity_pivot`] unchanged. Only
+/// `--expand-all-identities` overrides it — the operator's explicit request to
+/// chase relatives.
+pub(crate) fn is_other_named_person(
+    kind: &crate::core::entity::EntityKind,
+    value: &str,
+    subject_names: &[String],
+) -> bool {
+    matches!(kind, crate::core::entity::EntityKind::Person)
+        && !subject_names.is_empty()
+        && subject_names
+            .iter()
+            .all(|s| person_names_compatible(s, value) == Some(false))
+}
+
 pub(super) fn domain_expansion_factor(domain: &str) -> f64 {
     if is_noncentral_domain(domain) {
         0.15

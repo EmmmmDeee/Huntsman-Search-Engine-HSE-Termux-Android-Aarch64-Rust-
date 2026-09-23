@@ -452,7 +452,15 @@ pub(super) fn build_entities(
                 .is_some_and(crate::util::postcode_au::is_shaped)
         };
         let snippet_addresses = if result_names_the_subject {
-            extract_addresses_from_text(&combined_text)
+            let mut found = extract_addresses_from_text(&combined_text);
+            // On a name scan, a "City, State" whose city is a person carrying
+            // the scanned surname is a people-search listing title, not a place.
+            if target.kind == TargetKind::FullName
+                && let Some(surname) = target.value.split_whitespace().next_back()
+            {
+                found.retain(|a| !is_person_listing_locality(a, surname));
+            }
+            found
         } else {
             Vec::new()
         };

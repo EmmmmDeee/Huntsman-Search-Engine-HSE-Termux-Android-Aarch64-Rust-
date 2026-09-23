@@ -199,32 +199,21 @@ pub(in crate::core::correlator) fn rule_au_061_family_geo_corroboration(
     }
     let coords: Vec<(f64, f64)> = subject.iter().map(|f| f.coord).collect();
 
-    // Family-candidates within FAMILY_GEO_KM of the subject — nearest first for a
-    // deterministic, readable description.
+    // Family-candidates of the subject within FAMILY_GEO_KM — nearest first for a
+    // deterministic, readable description. Membership is the shared
+    // `is_subject_family_candidate` (not the subject itself; a Person must carry
+    // the subject's surname when it is known), the same test the engine's
+    // promotion pass applies, so the finding and the promotion cannot disagree.
+    let subject_sn = crate::core::geo_family::subject_surname(entities);
     let mut in_area: Vec<(&Entity, f64)> = entities
         .iter()
-        .filter(|e| e.has_tag("family-candidate"))
+        .filter(|e| crate::core::geo_family::is_subject_family_candidate(e, subject_sn.as_deref()))
         .filter_map(|e| {
             distance_to_subject(e, &coords)
                 .filter(|&km| km <= FAMILY_GEO_KM)
                 .map(|km| (e, km))
         })
         .collect();
-    // Accuracy of the "shared surname" claim: the `family-candidate` tag is ALSO
-    // applied by the see_know household path to co-located people who do NOT share
-    // the subject's surname. When the subject's surname is known, drop such Person
-    // candidates — being in the same 150 km region without the shared surname is not
-    // a finding (millions share a metro), and asserting "shared surname relative"
-    // for them would be a FALSE evidentiary basis. Address family-candidates are
-    // surname-matched by their producing module (qld_unclaimed/au_people) and a bare
-    // Address carries no surname to re-check, so they are kept.
-    let subject_sn = crate::core::geo_family::subject_surname(entities);
-    if let Some(sn) = subject_sn.as_deref() {
-        in_area.retain(|(e, _)| {
-            e.kind != EntityKind::Person
-                || crate::util::surnames::surname_of(&e.value).as_deref() == Some(sn)
-        });
-    }
     if in_area.is_empty() {
         return Vec::new();
     }
