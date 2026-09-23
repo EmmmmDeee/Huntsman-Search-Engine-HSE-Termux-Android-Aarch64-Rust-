@@ -64,12 +64,13 @@ use dispatch::{DispatchCx, DispatchState};
 // exact same panic-message extraction `run_module_guarded` uses, rather than
 // maintaining a second copy that could drift.
 pub(crate) use dispatch::panic_payload_to_string;
+pub(crate) use enrich::ADDR_ENTITY_UID_ATTR;
 // The dispatch loops now live in `dispatch`; these items are referenced only by
 // the tests that stayed in this file, so the bridge is test-only.
 #[cfg(test)]
 use dispatch::{
-    admission_rejection, dispatch_key, log_module_dispatch, module_skip_reason, run_module_guarded,
-    target_distinct_sources,
+    ModuleAdmission, admission_rejection, dispatch_key, log_module_dispatch, module_skip_reason,
+    run_module_guarded, target_distinct_sources,
 };
 use enrich::{
     address_to_coords_pass, enrich_geospatial, is_coarse_geo, scan_entity_for_keys,

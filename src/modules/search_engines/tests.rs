@@ -3318,6 +3318,33 @@ fn the_listing_title_filter_reads_the_surname_of_a_decorated_or_reversed_seed() 
     }
 }
 
+/// REQ-SEARCH-ADDR-002 at the call site: a LinkedIn job ad naming the "Ian
+/// Thorpe Aquatic Centre" must not become an Address of the subject. Photon
+/// geocoded that venue at house grain and it became the headline best
+/// location fix (0.97) of scan 7258fc07.
+#[test]
+fn a_name_scan_emits_no_address_for_a_venue_named_after_the_subject() {
+    let target = Target::new(TargetKind::FullName, "Ian Thorpe");
+    let results = vec![SearchResult {
+        url: "https://au.linkedin.com/jobs/view/exercise-physiologist-nsw-ian-thorpe-aquatic-centre-at-workforce-australia-for-individuals-3675583641".to_string(),
+        title: "Workforce Australia for Individuals hiring Exercise Physiologist NSW, Ian Thorpe Aquatic Centre in Ultimo, New South Wales, Australia | LinkedIn".to_string(),
+        snippet: String::new(),
+        engine: "brave",
+        query: "\"Ian Thorpe\"".to_string(),
+    }];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    let addrs: Vec<&str> = res
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        !addrs.iter().any(|a| a.contains("Aquatic")),
+        "a venue named after a surname-bearer is not a locality: {addrs:?}"
+    );
+}
+
 // ── Scan 7258fc07 ("Ian Thorpe") search-extraction batch ─────────────────────
 
 fn thorpe_result(url: &str, title: &str, snippet: &str, query: &str) -> SearchResult {

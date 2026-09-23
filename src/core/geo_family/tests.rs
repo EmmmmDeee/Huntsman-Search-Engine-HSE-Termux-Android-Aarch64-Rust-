@@ -469,3 +469,66 @@ fn subject_surname_prefers_the_seed_over_a_register_name_match() {
     // With no seed anchor the register match is still used.
     assert_eq!(subject_surname(&[row]).as_deref(), Some("thorley"));
 }
+
+/// REQ-GEO-FAMILY-002: a city named in a search result, a centroid derived from
+/// an Address, and a forward geocode of a venue named after the subject all
+/// clear the confidence floor and the correlator's anchoring allowlist, yet
+/// none of them observed the subject. Scan 7258fc07 anchored "the subject's
+/// confirmed location" on exactly these three and promoted ~235 register rows
+/// within 150 km of them to corroborated relatives.
+#[test]
+fn a_search_snippet_city_or_forward_geocode_is_not_a_subject_fix() {
+    let mut city = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.72, "s");
+    city.tag("geoint");
+    city.tag(crate::core::tags::SEARCH_GEOCODED);
+    city.add_evidence(
+        Evidence::new(
+            "search_engines",
+            "Geocoded from search address: Sydney, New South Wales",
+        )
+        .with_attr("method", "known-city-lookup")
+        .with_attr("source_address", "Sydney, New South Wales"),
+    );
+
+    let mut derived = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.65, "s");
+    derived.tag(crate::core::tags::ADDR_DERIVED);
+    derived.add_evidence(
+        Evidence::new(
+            "search_engines",
+            "Inline geocode of address 'Brisbane, QLD'",
+        )
+        .with_attr(crate::core::engine::ADDR_ENTITY_UID_ATTR, "x")
+        .with_attr("addr_value", "Brisbane, QLD"),
+    );
+
+    let mut poi = Entity::new(EntityKind::Coordinates, "-33.877410,151.198900", 0.60, "s");
+    poi.tag("photon");
+    poi.add_evidence(
+        Evidence::new(
+            "photon",
+            "Photon geocoded \"Ian Thorpe Aquatic Centre in Ultimo, New South Wales\"",
+        )
+        .with_attr(
+            "input_address",
+            "Ian Thorpe Aquatic Centre in Ultimo, New South Wales",
+        ),
+    );
+
+    // A device-class source copied from an Address onto a centroid is still the
+    // Address's source, not a sighting of the subject.
+    let mut copied = Entity::new(EntityKind::Coordinates, "-31.9505,115.8605", 0.70, "s");
+    copied.add_evidence(
+        Evidence::new("exif_geo", "Inline geocode of address 'Perth, WA'")
+            .with_attr(crate::core::engine::ADDR_ENTITY_UID_ATTR, "y"),
+    );
+
+    assert!(
+        subject_fixes(&[city.clone(), derived, poi, copied]).is_empty(),
+        "no snippet city, derived centroid or forward geocode anchors the subject"
+    );
+
+    // Control: a handset GNSS fix on the very same point does.
+    let mut gps = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.9, "s");
+    gps.add_evidence(Evidence::new("signal_radar", "gps"));
+    assert_eq!(subject_fixes(&[city, gps]).len(), 1);
+}

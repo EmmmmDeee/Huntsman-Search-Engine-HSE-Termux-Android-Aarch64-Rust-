@@ -13,6 +13,16 @@ fn ent(kind: &str, value: &str, c: f64, corr: u32, tags: &[&str]) -> AuditEntity
     }
 }
 
+/// A coordinate fix from a person-anchoring source (`geocode`): the only kind
+/// the geo-consensus check admits (REQ-AUDIT-GEO-001). [`ent`]'s placeholder
+/// `"test"` source anchors nothing, so a coordinate built with it is excluded.
+fn fix(value: &str, c: f64, corr: u32, tags: &[&str]) -> AuditEntity {
+    AuditEntity {
+        sources: vec!["geocode".into()],
+        ..ent("coordinates", value, c, corr, tags)
+    }
+}
+
 #[test]
 fn quarantined_breach_co_occurrence_is_excluded_from_the_grade() {
     use crate::core::tags;
@@ -319,10 +329,10 @@ fn geo_divergence_flags_an_outlier_against_consensus() {
     // Three nearby fixes (a real metro) + one ~3800 km outlier (a datacenter
     // or mis-geocode). The outlier must be flagged, consensus recognised.
     let ents = vec![
-        ent("coordinates", "35.4137,-114.1762", 0.6, 1, &[]), // Bullhead City, AZ
-        ent("coordinates", "35.4200,-114.1800", 0.6, 1, &[]),
-        ent("coordinates", "35.4000,-114.2000", 0.6, 1, &[]),
-        ent("coordinates", "45.5019,-73.5674", 0.4, 1, &[]), // Montreal — outlier
+        fix("35.4137,-114.1762", 0.6, 1, &[]), // Bullhead City, AZ
+        fix("35.4200,-114.1800", 0.6, 1, &[]),
+        fix("35.4000,-114.2000", 0.6, 1, &[]),
+        fix("45.5019,-73.5674", 0.4, 1, &[]), // Montreal — outlier
     ];
     let r = audit(&ents, LogSignals::default());
     let f = r
@@ -340,8 +350,8 @@ fn geo_divergence_flags_an_outlier_against_consensus() {
 #[test]
 fn geo_consensus_produces_no_finding() {
     let ents = vec![
-        ent("coordinates", "35.4137,-114.1762", 0.6, 1, &[]),
-        ent("coordinates", "35.4200,-114.1800", 0.6, 2, &[]),
+        fix("35.4137,-114.1762", 0.6, 1, &[]),
+        fix("35.4200,-114.1800", 0.6, 2, &[]),
     ];
     let r = audit(&ents, LogSignals::default());
     assert!(!r.findings.iter().any(|f| f.category == "geo-divergence"));
@@ -364,15 +374,9 @@ fn geo_consensus_produces_no_finding() {
 #[test]
 fn radar_sentinel_seed_does_not_trigger_geo_divergence() {
     let ents = vec![
-        ent(
-            "coordinates",
-            "0.000000,0.000000",
-            0.9,
-            50,
-            &["seed", "subject"],
-        ),
-        ent("coordinates", "-27.587302,152.926999", 0.9, 2, &[]),
-        ent("coordinates", "-27.587396,152.926844", 0.9, 2, &[]),
+        fix("0.000000,0.000000", 0.9, 50, &["seed", "subject"]),
+        fix("-27.587302,152.926999", 0.9, 2, &[]),
+        fix("-27.587396,152.926844", 0.9, 2, &[]),
     ];
     let r = audit(&ents, LogSignals::default());
     assert!(
@@ -391,8 +395,8 @@ fn radar_sentinel_seed_does_not_trigger_geo_divergence() {
     // The raw sentinel form (pre-normalisation, "0,0") must be excluded too —
     // `is_radar_sentinel` recognises both the raw and normalised spellings.
     let ents_raw = vec![
-        ent("coordinates", "0,0", 0.9, 50, &["seed", "subject"]),
-        ent("coordinates", "-27.587302,152.926999", 0.9, 2, &[]),
+        fix("0,0", 0.9, 50, &["seed", "subject"]),
+        fix("-27.587302,152.926999", 0.9, 2, &[]),
     ];
     let r_raw = audit(&ents_raw, LogSignals::default());
     assert_eq!(
@@ -405,14 +409,8 @@ fn radar_sentinel_seed_does_not_trigger_geo_divergence() {
     // — this guard is scoped to the exact sentinel spellings, not "any
     // near-origin value" or "any seed-tagged coordinate".
     let ents_real_seed = vec![
-        ent(
-            "coordinates",
-            "35.4137,-114.1762",
-            0.9,
-            5,
-            &["seed", "subject"],
-        ),
-        ent("coordinates", "45.5019,-73.5674", 0.4, 1, &[]), // genuine outlier
+        fix("35.4137,-114.1762", 0.9, 5, &["seed", "subject"]),
+        fix("45.5019,-73.5674", 0.4, 1, &[]), // genuine outlier
     ];
     let r_real = audit(&ents_real_seed, LogSignals::default());
     assert!(
@@ -544,4 +542,97 @@ fn weak_corroboration_reads_the_per_record_verdict_of_a_stored_entity() {
         .find(|f| f.category == "weak-corroboration")
         .expect("annotations and name-only matches must not mask single-source dominance");
     assert!(f.message.starts_with("82%"), "got {:?}", f.message);
+}
+
+/// REQ-AUDIT-GEO-001: the self-audit's geo consensus admits only fixes that
+/// could locate the subject — the correlator's person-anchor gate. Scan
+/// 7258fc07's consensus was a cloud of Overpass substations and Wikipedia
+/// nearby-place POIs around one search-snippet city centroid, and the
+/// subject's real Brisbane/Perth fixes were reported as its outliers.
+#[test]
+fn self_audit_geo_consensus_ignores_nearby_poi_and_infrastructure() {
+    fn geo(v: &str, srcs: &[&str], tags: &[&str]) -> AuditEntity {
+        AuditEntity {
+            kind: "coordinates".into(),
+            value: v.into(),
+            c_effective: 0.6,
+            corroboration: 1,
+            sources: srcs.iter().map(|s| (*s).to_string()).collect(),
+            corroborating_sources: None,
+            tags: tags.iter().map(|s| (*s).to_string()).collect(),
+        }
+    }
+    let mut ents = vec![
+        geo(
+            "-27.469800,153.025100",
+            &["geo_normalize", "search_engines", "recall"],
+            &["search-geocoded"],
+        ),
+        geo("-31.950500,115.860500", &["geo_normalize", "geocode"], &[]),
+    ];
+    // Eight Overpass infrastructure nodes around the Sydney pivot.
+    for (i, v) in [
+        "-33.865500,151.213000",
+        "-33.866100,151.211200",
+        "-33.867000,151.210400",
+        "-33.868200,151.209900",
+        "-33.869400,151.208800",
+        "-33.870600,151.208100",
+        "-33.871900,151.209500",
+        "-33.873100,151.209000",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let tag = if i % 2 == 0 {
+            "infra:substation"
+        } else {
+            "infra:surveillance"
+        };
+        ents.push(geo(v, &["geo_normalize", "overpass", "recall"], &[tag]));
+    }
+    // Ten Wikipedia / Wikidata nearby-place POIs around the same pivot.
+    for i in 0..10 {
+        let v = format!("-33.86{:02}00,151.20{:02}00", 50 + i, 80 + i);
+        let srcs: &[&str] = if i % 2 == 0 {
+            &["geo_normalize", "wiki_geosearch", "recall"]
+        } else {
+            &["wikidata"]
+        };
+        ents.push(geo(&v, srcs, &["nearby-place", "wikipedia"]));
+    }
+
+    let r = audit(&ents, LogSignals::default());
+    assert_eq!(r.geo.coord_count, 2, "only the person-anchored fixes vote");
+    assert_eq!(
+        r.geo.source_count, 2,
+        "search_engines + geocode; passes and POI sources are not corroboration"
+    );
+    assert!(
+        !r.geo.has_consensus,
+        "two cities ~3,600 km apart agree on nothing"
+    );
+    let f = r
+        .findings
+        .iter()
+        .find(|f| f.category == "geo-divergence")
+        .expect("Brisbane and Perth genuinely disagree");
+    assert_eq!(f.severity, Severity::High);
+    assert!(
+        !f.examples
+            .iter()
+            .any(|e| e.contains("-33.86") || e.contains("-33.87")),
+        "no POI is an outlier or the consensus: {:?}",
+        f.examples
+    );
+
+    // Control: a geocoder's Sydney fix IS person-anchored and is admitted —
+    // the gate is the anchor allowlist, not a Sydney-specific drop.
+    ents.push(geo(
+        "-33.869844,151.208285",
+        &["geo_normalize", "geocode", "photon"],
+        &[],
+    ));
+    let r = audit(&ents, LogSignals::default());
+    assert_eq!(r.geo.coord_count, 3);
 }

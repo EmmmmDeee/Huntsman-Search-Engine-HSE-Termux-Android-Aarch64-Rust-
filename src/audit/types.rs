@@ -65,14 +65,25 @@ impl AuditEntity {
     /// known, and it is applied.
     #[must_use]
     pub fn corroborating_source_count(&self) -> usize {
+        self.corroborating_source_names().len()
+    }
+
+    /// The distinct source names that corroborate this entity, by the rule
+    /// [`Self::corroborating_source_count`] documents: the entity's own
+    /// per-record set when the input carries it, else its source names minus
+    /// the non-corroborating passes. The one reading both the weak-corroboration
+    /// grade and the geo-consensus person-anchor gate use.
+    #[must_use]
+    pub fn corroborating_source_names(&self) -> Vec<&str> {
         self.corroborating_sources.as_ref().map_or_else(
             || {
                 self.sources
                     .iter()
+                    .map(String::as_str)
                     .filter(|s| !crate::core::entity::is_non_corroborating_source(s))
-                    .count()
+                    .collect()
             },
-            Vec::len,
+            |c| c.iter().map(String::as_str).collect(),
         )
     }
 }

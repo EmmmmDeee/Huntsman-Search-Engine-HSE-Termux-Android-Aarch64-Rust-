@@ -45,7 +45,44 @@ pub const NAMESAKE_GEO_KM: f64 = 800.0;
 
 /// Minimum confidence for a `Coordinates` entity to anchor the subject's
 /// location — a confirmed fix (e.g. a GPS sensor reading), not a coarse guess.
+/// Confidence alone is not enough: the point must also be a direct observation
+/// of the subject ([`is_direct_subject_fix`]).
 const SUBJECT_FIX_MIN: f64 = 0.60;
+
+/// Whether a `Coordinates` entity carries a record that OBSERVED the subject's
+/// own position — a handset GNSS fix, a photo's EXIF GPS, the Wi-Fi access
+/// points their device can see (the classes
+/// `correlator::class_locates_subject_directly` names).
+///
+/// The confidence floor and the person-anchor gate (`is_infrastructure_geo`)
+/// were the whole test before, and that gate only asks for ONE source in the
+/// correlator's footprint allowlist — which deliberately includes
+/// `search_engines` (a snippet's known-city lookup), `geocode` and `photon`
+/// (forward geocodes of any Address string). So a city named in a search
+/// result about the subject became "the subject's confirmed location": scan
+/// 7258fc07 anchored the subject at the Sydney, Brisbane, Toowong and Perth
+/// centroids and at a public pool named after them, and ~111 register
+/// addresses and ~124 register persons within 150 km of any of them were
+/// promoted to corroborated relatives (REQ-GEO-FAMILY-002). A city named on a
+/// page that mentions the subject is a place the page mentions, not a fix on
+/// the subject (IDENTIFIER-MATCH ≠ ENTITY-IDENTITY).
+///
+/// Per record: a record `address_to_coords_pass` copied from an Address onto a
+/// gazetteer centroid (its `addr_entity_uid` attribute) is that Address's
+/// source, not an observation, whatever the source's class. Nothing useful is
+/// lost — the subject's own name-matched address still anchors through the
+/// `exact-name-match` arm of [`subject_fixes`], at postcode grain, which is
+/// fine-grained enough for the 150 km family radius.
+fn is_direct_subject_fix(e: &Entity) -> bool {
+    use crate::core::correlator::{class_locates_subject_directly, geo_source_class};
+    e.evidence.iter().any(|ev| {
+        !ev.is_non_corroborating()
+            && !ev
+                .attributes
+                .contains_key(crate::core::engine::ADDR_ENTITY_UID_ATTR)
+            && class_locates_subject_directly(geo_source_class(&ev.source))
+    })
+}
 
 /// The AU postcode (4 digits, 0800–7999) an entity names — a standalone token in
 /// its value (`"QLD 4518, Australia"`) or a `postcode` evidence attribute (the
@@ -149,9 +186,11 @@ pub struct SubjectFix {
 /// The subject's confirmed location(s), with provenance — the anchor every
 /// family-candidate's distance is measured against. Two free, offline sources:
 ///
-/// 1. a confirmed `Coordinates` fix — high confidence (≥ [`SUBJECT_FIX_MIN`], a
-///    GPS/sensor reading) OR one the scan name-matched to the subject
-///    (`exact-name-match`); and
+/// 1. a confirmed `Coordinates` fix — a direct observation of the subject at
+///    high confidence (≥ [`SUBJECT_FIX_MIN`] AND [`is_direct_subject_fix`]: a
+///    GPS/sensor/EXIF/Wi-Fi reading, never a search snippet's city or a forward
+///    geocode of an address string) OR one the scan name-matched to the
+///    subject (`exact-name-match`); and
 /// 2. the subject's OWN address locality — an `Address` tagged `exact-name-match`
 ///    (a register/directory record whose owner name exactly matched the subject),
 ///    resolved offline to its postcode-region centroid.
@@ -181,16 +220,20 @@ pub fn subject_fixes(entities: &[Entity]) -> Vec<SubjectFix> {
                 None
             }
             EntityKind::Coordinates
-                if (e.confidence >= SUBJECT_FIX_MIN || e.has_tag("exact-name-match"))
+                if (e.has_tag("exact-name-match")
+                    || (e.confidence >= SUBJECT_FIX_MIN && is_direct_subject_fix(e)))
                     && !crate::core::correlator::is_infrastructure_geo(e) =>
             {
                 // Infrastructure geo (a datacentre/hosting/CDN point, or any bare
                 // IP/WHOIS coordinate with no anchoring source) must NOT anchor the
                 // subject: a 0.60 ip_geo/hosting fix would otherwise widen the
                 // subject's "confirmed area" to the host's metro, so a same-surname
-                // candidate near the DATACENTRE reads as kin. Genuine person fixes
-                // (signal_radar/device_sensors/exif_geo/geocode/…) are anchoring and
-                // pass. Mirrors the correlator geo rules (AU-017/030/052/…).
+                // candidate near the DATACENTRE reads as kin. Mirrors the
+                // correlator geo rules (AU-017/030/052/…). On top of that gate a
+                // confidence-qualified fix must OBSERVE the subject
+                // (`is_direct_subject_fix`): a snippet city centroid or a geocode
+                // of a venue named after them is anchoring for the footprint
+                // rules, but it is not where the subject is (REQ-GEO-FAMILY-002).
                 crate::util::geohash::parse_coords(&e.value)
             }
             EntityKind::Address if e.has_tag("exact-name-match") => {

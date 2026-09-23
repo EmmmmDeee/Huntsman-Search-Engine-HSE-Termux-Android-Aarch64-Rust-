@@ -345,6 +345,55 @@ fn promote_breach_candidate_geo_corroborated_lifts_same_place_same_name_records(
     assert_eq!(promote_breach_candidate_geo_corroborated(&mut lone), 0);
 }
 
+/// REQ-GEO-FAMILY-002 through the engine passes: a search snippet's city
+/// centroid is not the subject's confirmed location, so neither a register
+/// relative nor a same-name breach row near it is promoted. A device fix on
+/// the same point is, which proves only the anchor gate changed.
+#[test]
+fn promote_geo_corroborated_family_ignores_snippet_city_anchors() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+
+    let mut seed = Entity::new(EntityKind::Person, "Ian Thorpe", 0.97, "s");
+    seed.tag("seed");
+    seed.tag("subject");
+    let mut city = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.72, "s");
+    city.tag("geoint");
+    city.tag(crate::core::tags::SEARCH_GEOCODED);
+    city.add_evidence(
+        Evidence::new(
+            "search_engines",
+            "Geocoded from search address: Sydney, New South Wales",
+        )
+        .with_attr("method", "known-city-lookup"),
+    );
+    let mut kin = Entity::new(EntityKind::Address, "NSW 2066, Australia", 0.32, "s");
+    kin.tag("family-candidate");
+    kin.add_evidence(
+        Evidence::new("qld_unclaimed", "QLD unclaimed money: SEAN THORPE")
+            .with_attr("owner", "SEAN THORPE")
+            .with_attr("postcode", "2066"),
+    );
+    let mut breach = Entity::new(EntityKind::Email, "ithorpe@example.com", 0.25, "s");
+    breach.tag(crate::core::tags::CANDIDATE);
+    breach.tag("breach");
+    breach.add_evidence(Evidence::new("oathnet_pro", "breach row").with_attr("postcode", "2000"));
+
+    let mut ents = vec![seed, city, kin, breach];
+    assert_eq!(promote_geo_corroborated_family(&mut ents), 0);
+    assert_eq!(promote_breach_candidate_geo_corroborated(&mut ents), 0);
+    let kin = ents
+        .iter()
+        .find(|e| e.value == "NSW 2066, Australia")
+        .expect("kin present");
+    assert!(!kin.has_tag("geo-corroborated"));
+    assert_eq!(kin.source_count(), 1);
+
+    let mut gps = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.9, "s");
+    gps.add_evidence(Evidence::new("signal_radar", "gps"));
+    ents.push(gps);
+    assert_eq!(promote_geo_corroborated_family(&mut ents), 1);
+}
+
 /// `TrackedEntityMap::version()` is the signal `should_reconsider` gates on —
 /// it must bump on every mutating operation the engine actually performs
 /// (`insert`, a successful `get_mut`) and MUST NOT bump on read-only access,
@@ -1418,7 +1467,7 @@ async fn a_modules_sightings_are_persisted_beside_its_entities_and_a_replay_pers
         "test_radar_sightings_real",
         Ok(Ok(mr)),
         &mut state,
-        &[],
+        ModuleAdmission::default(),
         false,
     );
 
@@ -1446,7 +1495,7 @@ async fn a_modules_sightings_are_persisted_beside_its_entities_and_a_replay_pers
         "test_radar_sightings_replay",
         Ok(Ok(ModuleResult::new())),
         &mut state,
-        &[],
+        ModuleAdmission::default(),
         true,
     );
     assert_eq!(
@@ -1509,7 +1558,7 @@ async fn cache_replay_does_not_feed_the_circuit_breaker_success_path() {
         replayed,
         Ok(Ok(ModuleResult::new())),
         &mut state,
-        &[],
+        ModuleAdmission::default(),
         true, // from_cache
     );
     super::circuit::record_soft_failure(replayed); // streak → 3 iff the replay left it
@@ -1527,7 +1576,7 @@ async fn cache_replay_does_not_feed_the_circuit_breaker_success_path() {
         dispatched_name,
         Ok(Ok(ModuleResult::new())),
         &mut state,
-        &[],
+        ModuleAdmission::default(),
         false, // real dispatch → record_success clears the streak
     );
     super::circuit::record_soft_failure(dispatched_name); // streak → 1 after a clear
@@ -1586,7 +1635,7 @@ async fn a_typed_unavailable_skip_never_feeds_the_circuit_breaker() {
                 "people-directory sweep not answered — not a confirmed absence",
             ))),
             &mut state,
-            &[],
+            ModuleAdmission::default(),
             false,
         );
     }
@@ -1602,7 +1651,7 @@ async fn a_typed_unavailable_skip_never_feeds_the_circuit_breaker() {
             erroring,
             Ok(Err(Error::module(erroring, "inconclusive"))),
             &mut state,
-            &[],
+            ModuleAdmission::default(),
             false,
         );
     }
@@ -1658,7 +1707,7 @@ async fn a_bot_challenge_error_benches_the_module_at_once_and_is_recorded_as_suc
                 .into(),
         ))),
         &mut state,
-        &[],
+        ModuleAdmission::default(),
         false,
     );
     assert!(
@@ -7586,4 +7635,207 @@ async fn a_target_annotation_is_exempt_from_the_min_confidence_floor() {
         entity_map.get_mut(&other_uid).is_none(),
         "a non-target entity below the floor is still refused"
     );
+}
+
+/// A target-derived lookup (au_geo's shape): an ASGS region at 0.90 and a
+/// plain re-emission of the queried point at 0.85.
+struct RegionLookup;
+
+#[async_trait::async_trait]
+impl Module for RegionLookup {
+    fn name(&self) -> &'static str {
+        "region_lookup"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        t.kind == TargetKind::Coordinates
+    }
+    fn derives_from_target(&self) -> bool {
+        true
+    }
+    async fn process(
+        &self,
+        target: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let mut region = Entity::new(
+            EntityKind::Other("au-federal-electorate".into()),
+            "Sydney",
+            0.90,
+            &ctx.scan_id,
+        );
+        region.add_evidence(Evidence::new(
+            "region_lookup",
+            format!("coordinates={}", target.value),
+        ));
+        let mut echo = Entity::new(EntityKind::Coordinates, &target.value, 0.85, &ctx.scan_id);
+        echo.add_evidence(Evidence::new("region_lookup", "point lookup"));
+        let mut r = crate::core::module::ModuleResult::new();
+        r.push(region);
+        r.push(echo);
+        Ok(r)
+    }
+}
+
+/// Run [`RegionLookup`] through the real dispatch path on the Sydney centroid
+/// (0.72) and return (region confidence, point confidence).
+async fn run_region_lookup(is_expansion: bool, seed: Target) -> (f64, f64) {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::test_support::InMemoryStore;
+
+    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(RegionLookup)];
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(modules, store, bus.clone());
+
+    let target = Target::new(TargetKind::Coordinates, "-33.868800,151.209300");
+    let opts = ScanOptions::default();
+    let mut ctx = ModuleContext {
+        scan_id: "derive-scan".to_string(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let cx = DispatchCx {
+        scan_id: "derive-scan",
+        target: &target,
+        opts: &opts,
+        is_expansion,
+        seed: &seed,
+        quarantined: no_quarantine(),
+    };
+    let mut point = Entity::new(EntityKind::Coordinates, &target.value, 0.72, "derive-scan");
+    point.add_evidence(Evidence::new(
+        "search_engines",
+        "Geocoded from search address: Sydney, Australia",
+    ));
+    let point_uid = point.uid.clone();
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+    entity_map.insert(point_uid.clone(), point);
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
+    };
+    engine
+        .dispatch_target(&cx, &mut ctx, &mut state)
+        .await
+        .expect("dispatch runs");
+    let region_uid =
+        crate::core::entity::uid_for(&EntityKind::Other("au-federal-electorate".into()), "Sydney");
+    let region = entity_map
+        .get_mut(&region_uid)
+        .expect("region admitted")
+        .confidence;
+    let point = entity_map
+        .get_mut(&point_uid)
+        .expect("point present")
+        .confidence;
+    (region, point)
+}
+
+/// REQ-GEO-012: a target-derived module's findings are capped one derivation
+/// step below the pivot they were computed from, and its re-emission of the
+/// pivot cannot raise it. Scan 7258fc07: au_geo on a 0.72 search-snippet city
+/// centroid emitted nine single-source VERIFIED region facts at 0.85-0.90.
+#[tokio::test]
+async fn a_target_derived_modules_findings_are_capped_one_step_below_their_parent() {
+    use crate::core::entity::{Classification, Entity, EntityKind};
+    let (region, point) =
+        run_region_lookup(true, Target::new(TargetKind::FullName, "Ian Thorpe")).await;
+    let want = crate::core::confidence::derived_from(0.72);
+    assert!((region - want).abs() < 1e-9, "region {region}, want {want}");
+    let probe = Entity::new(EntityKind::Other("x".into()), "x", region, "s");
+    assert_eq!(probe.classify(), Classification::Probable);
+    assert!(
+        (point - 0.72).abs() < 1e-9,
+        "the lookup's copy of the point must not raise it: {point}"
+    );
+}
+
+/// REQ-GEO-012 control: on the operator's own seed coordinate nothing is
+/// capped — the seed's confidence is the operator's assertion.
+#[tokio::test]
+async fn a_target_derived_module_on_the_seed_is_not_capped() {
+    let seed = Target::new(TargetKind::Coordinates, "-33.868800,151.209300");
+    let (region, _) = run_region_lookup(false, seed).await;
+    assert!((region - 0.90).abs() < 1e-9, "{region}");
+}
+
+/// REQ-GEO-013 at the admission point: a provider's country arriving in a
+/// LATER emission of a point the box already tagged is reconciled on the
+/// merged entity, so the map never holds both `country:US` and `country:CA`.
+#[tokio::test]
+async fn a_later_provider_country_replaces_the_box_answer_on_merge() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::test_support::InMemoryStore;
+
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(vec![], store, bus);
+    let target = Target::new(TargetKind::Address, "Fredericton, New Brunswick");
+    let opts = ScanOptions::default();
+    let cx = DispatchCx {
+        scan_id: "tz-scan",
+        target: &target,
+        opts: &opts,
+        is_expansion: true,
+        seed: &Target::new(TargetKind::FullName, "Ian Thorpe"),
+        quarantined: no_quarantine(),
+    };
+    let mut boxed = Entity::new(
+        EntityKind::Coordinates,
+        "45.956872,-66.630394",
+        0.55,
+        "tz-scan",
+    );
+    boxed.add_evidence(Evidence::new("search_engines", "a sighting"));
+    enrich_geospatial(&mut boxed);
+    assert!(boxed.has_tag("country:US"), "sanity: the box answer");
+    let uid = boxed.uid.clone();
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+    entity_map.insert(uid.clone(), boxed);
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
+    };
+    let mut photon = Entity::new(
+        EntityKind::Coordinates,
+        "45.956872,-66.630394",
+        0.40,
+        "tz-scan",
+    );
+    photon.add_evidence(Evidence::new("photon", "forward").with_attr("country_code", "CA"));
+    photon.tag("country:CA");
+    let mut mr = crate::core::module::ModuleResult::new();
+    mr.push(photon);
+    engine.finalise_module_result(
+        &cx,
+        "photon",
+        Ok(Ok(mr)),
+        &mut state,
+        ModuleAdmission::default(),
+        false,
+    );
+    let merged = entity_map.get_mut(&uid).expect("merged");
+    let cs: Vec<&String> = merged
+        .tags
+        .iter()
+        .filter(|t| t.starts_with("country:"))
+        .collect();
+    assert_eq!(cs, vec!["country:CA"]);
+    assert!(!merged.has_tag("tz:America/New_York"));
 }

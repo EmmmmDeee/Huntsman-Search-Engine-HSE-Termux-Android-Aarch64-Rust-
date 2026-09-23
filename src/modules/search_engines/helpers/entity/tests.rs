@@ -503,7 +503,7 @@ use super::*;
 
     /// REQ-SEARCH-ADDR-001: a people-search listing title "Name, State" is not a
     /// locality. The extractor itself stays text-only; the name-scan caller
-    /// drops these with `is_person_listing_locality`.
+    /// drops these with `city_names_a_surname_bearer`.
     #[test]
     fn a_people_search_listing_title_is_not_a_locality() {
         let listed = extract_addresses_from_text(
@@ -511,7 +511,7 @@ use super::*;
         );
         assert!(listed.iter().any(|a| a == "Ian Thorpe, North Carolina"), "{listed:?}");
         for person in ["Ian Thorpe, North Carolina", "Bill Thorpe, Florida"] {
-            assert!(is_person_listing_locality(person, "Thorpe"), "{person}");
+            assert!(city_names_a_surname_bearer(person, "Thorpe"), "{person}");
         }
         // Real places survive: a suburb that IS the surname, a place-prefixed
         // name, an unrelated city, and a comma-free string.
@@ -522,8 +522,35 @@ use super::*;
             "Houston, Texas",
             "Thorpe",
         ] {
-            assert!(!is_person_listing_locality(place, "Thorpe"), "{place}");
+            assert!(!city_names_a_surname_bearer(place, "Thorpe"), "{place}");
         }
-        assert!(!is_person_listing_locality("Lawnton, QLD", "Lawnton"));
+        assert!(!city_names_a_surname_bearer("Lawnton, QLD", "Lawnton"));
+    }
+
+    /// REQ-SEARCH-ADDR-002: a venue named after a surname-bearer is not a
+    /// locality. The verbatim LinkedIn job title from scan 7258fc07 yielded the
+    /// Address "Ian Thorpe Aquatic Centre in Ultimo, New South Wales"; the
+    /// surname sits mid-segment, so the old last-word test kept it and Photon's
+    /// (correct) geocode of the pool became the headline location fix.
+    #[test]
+    fn a_venue_named_after_a_surname_bearer_is_not_a_locality() {
+        let found = extract_addresses_from_text(
+            "Workforce Australia for Individuals hiring Exercise Physiologist NSW, \
+             Ian Thorpe Aquatic Centre in Ultimo, New South Wales, Australia | LinkedIn",
+        );
+        let venue = "Ian Thorpe Aquatic Centre in Ultimo, New South Wales";
+        assert!(found.iter().any(|a| a == venue), "input pinned: {found:?}");
+        assert!(city_names_a_surname_bearer(venue, "Thorpe"));
+        // Places survive: a one-word suburb that is the surname, a place-word
+        // prefix, a place that STARTS with the surname, an unrelated city.
+        for place in [
+            "Lawnton, QLD",
+            "Port Thorpe, Tasmania",
+            "Mount Thorpe, QLD",
+            "Thorpe Bay, Essex",
+            "Houston, Texas",
+        ] {
+            assert!(!city_names_a_surname_bearer(place, "Thorpe"), "{place}");
+        }
     }
 

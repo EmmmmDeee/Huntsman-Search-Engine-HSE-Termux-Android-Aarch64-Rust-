@@ -63,8 +63,12 @@ const ANCHORING_GEO_SOURCES: &[&str] = &[
     // them made `is_infrastructure_geo` return true for a 20 m GPS lock on the
     // subject's own phone — so AU-052/053/057/059, the headline location
     // estimate, `coord_state` and AU-099 all discarded it while
-    // `core::geo_family` (which has no such gate) happily used it. Family
-    // proximity worked off the GPS fix the headline answer refused to see.
+    // `core::geo_family` happily used it. Family proximity worked off the GPS
+    // fix the headline answer refused to see. (`geo_family` now applies this
+    // gate AND a stricter one of its own: its subject anchor must be a direct
+    // observation — device, photo or Wi-Fi class — because this allowlist also
+    // admits a search snippet's city and a geocode of any address string,
+    // REQ-GEO-FAMILY-002.)
     "signal_radar",
     "device_sensors",
     "wifi_intel",
@@ -142,9 +146,41 @@ pub(in crate::core) fn is_infrastructure_geo(e: &Entity) -> bool {
     {
         return true;
     }
+    is_infrastructure_geo_signals(
+        e.kind == EntityKind::Coordinates,
+        e.tags.iter().map(String::as_str),
+        e.corroborating_sources(),
+    )
+}
+
+/// [`is_infrastructure_geo`] over plain strings — the entity's tags and its
+/// CORROBORATING source names — for a reader that holds no [`Entity`].
+///
+/// The self-audit's geo-consensus check (`crate::audit`) reads an
+/// `AuditEntity`, which may come from a CSV export and carries only tag and
+/// source strings. With the gate reachable only through `&Entity` (and only
+/// inside `core`), the audit could not apply it and drifted: it let every
+/// Overpass infrastructure node and every `wiki_geosearch` / `wikidata`
+/// nearby-place POI vote on "the subject's location". Those modules scatter
+/// dozens of points around ONE pivot, so they formed the densest 50 km cluster
+/// and became the consensus, and the scan's real person-anchored fixes
+/// (Brisbane, Perth) were reported as 730-3,290 km outliers from a cloud of
+/// substations and Wikipedia articles (REQ-AUDIT-GEO-001). One rule, two
+/// readers: the correlator's gate is this function.
+///
+/// `corroborating_sources` must already exclude non-corroborating passes and
+/// records (`Entity::corroborating_sources` does); every anchoring source is a
+/// real source, so a caller that can only filter by source name
+/// (`is_non_corroborating_source`) reaches the same verdict for the anchoring
+/// test.
+pub(crate) fn is_infrastructure_geo_signals<'a>(
+    is_coordinates: bool,
+    tags: impl IntoIterator<Item = &'a str>,
+    corroborating_sources: impl IntoIterator<Item = &'a str>,
+) -> bool {
     // Single tag pass: detect the HOSTING tag, a WHOIS `registrant` location, and
     // any `infra:` map-feature tag together instead of separate `.iter()` scans.
-    for t in &e.tags {
+    for t in tags {
         if t == crate::core::tags::HOSTING
             || t == crate::core::tags::REGISTRANT
             || t.starts_with("infra:")
@@ -158,11 +194,10 @@ pub(in crate::core) fn is_infrastructure_geo(e: &Entity) -> bool {
     // (qld_unclaimed, opencorporates) that are NOT in
     // ANCHORING_GEO_SOURCES, so applying the anchoring test to an address would
     // discard a real home — addresses are gated by the infra TAGS above only.
-    e.kind == EntityKind::Coordinates
-        && !e
-            .corroborating_sources()
-            .iter()
-            .any(|s| is_anchoring_geo_source(s))
+    is_coordinates
+        && !corroborating_sources
+            .into_iter()
+            .any(is_anchoring_geo_source)
 }
 
 /// The coordinates admissible to a *person's* geo footprint: confirmed
@@ -496,7 +531,7 @@ pub(in crate::core::correlator) fn rule_au_053_out_of_area_location(
 ///
 /// Every person-anchoring geo source maps to exactly one class; an unrecognised
 /// source falls back to [`GeoSourceClass::Other`] so the classifier total-maps.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum GeoSourceClass {
     /// A live GNSS fix from the subject's own handset (`signal_radar`,
     /// `device_sensors`). The finest signal available: a real-time position
@@ -508,6 +543,15 @@ pub(crate) enum GeoSourceClass {
     /// Wi-Fi access-point geolocation (wardriving databases).
     WifiSensor,
     /// Geocoded street address (forward/reverse geocoders).
+    ///
+    /// A FORWARD geocode is a deterministic transform of the Address string it
+    /// was run on, so it is not an independent collection method: it carries
+    /// exactly the error of that string's own source. When the leg's
+    /// `input_address` resolves to an Address in the scan, the leg counts as the
+    /// class of THAT Address's anchoring sources (see [`effective_geo_classes`]);
+    /// only a geocode whose input the scan cannot trace (an operator seed
+    /// address, a reverse lookup) stands as its own `Geocode` class
+    /// (REQ-GEO-009).
     Geocode,
     /// Government/business registry registered address (ABR, ASIC, GLEIF, ACNC).
     Registry,
@@ -754,19 +798,123 @@ pub(in crate::core::correlator) fn precision_weight_multiplier(radius_m: f64) ->
         .clamp(MIN_MULTIPLIER, MAX_MULTIPLIER)
 }
 
-/// The distinct orthogonal source classes represented across a coordinate set.
-fn distinct_geo_classes(
-    parsed: &[(&Entity, (f64, f64))],
-) -> std::collections::HashSet<GeoSourceClass> {
-    let mut classes = std::collections::HashSet::new();
-    for (e, _) in parsed {
-        for src in e.corroborating_sources() {
-            if is_anchoring_geo_source(src) {
-                classes.insert(geo_source_class(src));
-            }
+/// The scan's `Address` entities by uid — the lookup a forward-geocode leg's
+/// `input_address` resolves through ([`effective_geo_classes`]). Built once per
+/// rule evaluation; only ever probed by key, so its iteration order is never
+/// observed.
+pub(in crate::core::correlator) struct AddressIndex<'a>(
+    std::collections::HashMap<&'a str, &'a Entity>,
+);
+
+impl<'a> AddressIndex<'a> {
+    pub(in crate::core::correlator) fn new(entities: &'a [Entity]) -> Self {
+        Self(
+            entities
+                .iter()
+                .filter(|e| e.kind == EntityKind::Address)
+                .map(|e| (e.uid.as_str(), e))
+                .collect(),
+        )
+    }
+
+    fn get(&self, value: &str) -> Option<&'a Entity> {
+        let uid = crate::core::entity::uid_for(&EntityKind::Address, value);
+        self.0.get(uid.as_str()).copied()
+    }
+}
+
+/// The orthogonal classes ONE anchoring evidence record contributes, into `out`.
+///
+/// A non-geocode record is its source's class. A `geocode` / `photon` record is
+/// a forward geocode when it names its `input_address` (several, `"; "`-joined,
+/// when `Evidence::with_attr` folded repeat answers into one record): that
+/// Address is resolved in the scan and the leg inherits the classes of the
+/// Address's OWN anchoring sources, Geocode excluded so the lineage is one
+/// level deep. A leg whose input cannot be traced — no `input_address`, an
+/// Address not in the scan, or one with no non-geocode anchoring source (an
+/// operator seed, a reverse-geocoded string) — stays `Geocode`, exactly as
+/// before.
+fn record_geo_classes(
+    ev: &crate::core::entity::Evidence,
+    addresses: &AddressIndex<'_>,
+    out: &mut std::collections::BTreeSet<GeoSourceClass>,
+) {
+    let class = geo_source_class(&ev.source);
+    if class != GeoSourceClass::Geocode {
+        out.insert(class);
+        return;
+    }
+    let Some(inputs) = ev.attributes.get("input_address") else {
+        out.insert(GeoSourceClass::Geocode);
+        return;
+    };
+    for input in inputs.split("; ") {
+        let inherited: std::collections::BTreeSet<GeoSourceClass> = addresses
+            .get(input)
+            .map(|addr| {
+                addr.evidence
+                    .iter()
+                    .filter(|a| !a.is_non_corroborating() && is_anchoring_geo_source(&a.source))
+                    .map(|a| geo_source_class(&a.source))
+                    .filter(|c| *c != GeoSourceClass::Geocode)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if inherited.is_empty() {
+            out.insert(GeoSourceClass::Geocode);
+        } else {
+            out.extend(inherited);
         }
     }
-    classes
+}
+
+/// The orthogonal [`GeoSourceClass`]es an entity's anchoring evidence REALLY
+/// represents — the independence count AU-059, its coherent-group ranking and
+/// [`au_location_corroboration`] must measure.
+///
+/// Classifying by source NAME counted a forward geocode as its own "Geocode"
+/// method. But `geocode` and `photon` run as pivots on an Address some other
+/// module reported, stamp their own source name, and keep the string only as
+/// `input_address`, so one search-snippet mention of "Sydney, Australia"
+/// became two "orthogonal" classes: `search_engines`' inline city lookup
+/// (Search) and the geocoder's answer for the SAME string (Geocode). In scan
+/// 7258fc07 every AU-059 contributor traced back to search-snippet text, yet
+/// the gate saw {Geocode, Search}, added the diversity bonus and reported the
+/// headline fix at 0.97 (REQ-GEO-009). A geocode of a snippet carries exactly
+/// the snippet's error; independent collection methods are what the class
+/// model exists to reward. The engine's own `address_to_coords_pass` already
+/// follows this lineage rule by carrying the Address's sources; this applies
+/// it to the module path. Precision is untouched: the geocoder still sets its
+/// leg's spatial grain ([`best_precision_radius_m`]).
+///
+/// Per record, over the corroborating anchoring records only (the same set
+/// [`is_infrastructure_geo`] admits on). A `BTreeSet` so every consumer reads
+/// the classes in one fixed order.
+pub(in crate::core::correlator) fn effective_geo_classes(
+    e: &Entity,
+    addresses: &AddressIndex<'_>,
+) -> std::collections::BTreeSet<GeoSourceClass> {
+    let mut out = std::collections::BTreeSet::new();
+    for ev in e
+        .evidence
+        .iter()
+        .filter(|ev| !ev.is_non_corroborating() && is_anchoring_geo_source(&ev.source))
+    {
+        record_geo_classes(ev, addresses, &mut out);
+    }
+    out
+}
+
+/// The distinct orthogonal source classes represented across a coordinate set,
+/// each point read through [`effective_geo_classes`].
+fn distinct_geo_classes(
+    parsed: &[(&Entity, (f64, f64))],
+    addresses: &AddressIndex<'_>,
+) -> std::collections::BTreeSet<GeoSourceClass> {
+    parsed
+        .iter()
+        .flat_map(|(e, _)| effective_geo_classes(e, addresses))
+        .collect()
 }
 
 /// True when a coordinate falls within Australia — either it carries an
@@ -892,7 +1040,10 @@ const COHERENT_LINK_KM: f64 = 50.0;
 /// vanished. Excluding sub-2 groups up front removes that non-monotonic
 /// suppression (more evidence must never erase a finding) without changing which
 /// viable group wins, since only a size ≥ 2 group can survive downstream anyway.
-fn dominant_coherent_group(parsed: Vec<(&Entity, (f64, f64))>) -> Vec<(&Entity, (f64, f64))> {
+fn dominant_coherent_group<'a>(
+    parsed: Vec<(&'a Entity, (f64, f64))>,
+    addresses: &AddressIndex<'_>,
+) -> Vec<(&'a Entity, (f64, f64))> {
     let points: Vec<(f64, f64)> = parsed.iter().map(|(_, ll)| *ll).collect();
     let groups = crate::util::geometry::coherent_groups(&points, COHERENT_LINK_KM);
     if groups.len() <= 1 {
@@ -909,7 +1060,7 @@ fn dominant_coherent_group(parsed: Vec<(&Entity, (f64, f64))>) -> Vec<(&Entity, 
         .filter(|idx| idx.len() >= 2)
         .map(|idx| {
             let members: Vec<(&Entity, (f64, f64))> = idx.iter().map(|&i| parsed[i]).collect();
-            let classes = distinct_geo_classes(&members).len();
+            let classes = distinct_geo_classes(&members, addresses).len();
             let weight: f64 = members.iter().map(|(e, _)| e.c_effective()).sum();
             (classes, weight, members)
         })
@@ -933,15 +1084,19 @@ pub(crate) fn au059_synergy_fix(entities: &[Entity]) -> Option<SynergyFix> {
         return None;
     }
 
+    // A forward geocode's class is the class of the Address it geocoded
+    // (REQ-GEO-009), so every class count below resolves through this index.
+    let addresses = AddressIndex::new(entities);
+
     // Coherence gate: sightings must describe ONE place before their centre
     // means anything. Fuse only the best-supported coherent group.
-    let parsed = dominant_coherent_group(parsed);
+    let parsed = dominant_coherent_group(parsed, &addresses);
     if parsed.len() < 2 {
         return None;
     }
 
     // The synergy gate: ≥2 *distinct orthogonal source classes* must agree.
-    let classes = distinct_geo_classes(&parsed);
+    let classes = distinct_geo_classes(&parsed, &addresses);
     if classes.len() < 2 {
         return None;
     }
@@ -958,15 +1113,8 @@ pub(crate) fn au059_synergy_fix(entities: &[Entity]) -> Option<SynergyFix> {
     // bonus is a silent no-op. Falls back to the weighted centroid on the rare
     // non-convergent/degenerate input (same fallback `LocationFix` and
     // `cluster_coordinates` use — PROBLEM_TREE C5).
-    let point_class_count = |e: &Entity| -> usize {
-        e.corroborating_sources()
-            .into_iter()
-            .filter(|s| is_anchoring_geo_source(s))
-            .map(geo_source_class)
-            .collect::<std::collections::HashSet<GeoSourceClass>>()
-            .len()
-            .max(1)
-    };
+    let point_class_count =
+        |e: &Entity| -> usize { effective_geo_classes(e, &addresses).len().max(1) };
     // Precision-aware on top of the class-diversity bonus: a GPS/geocode point
     // pulls harder than a phone-carrier or search-snippet point at the SAME
     // confidence, because it is spatially more precise, not just more trusted.
@@ -1342,12 +1490,27 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
 /// fallback, so a register postcode counts as `Directory`/`Electoral`/… (a real
 /// independent method) rather than collapsing to `Other`. Deterministic: scans the
 /// sorted source set and keeps the first non-`Other` class it meets.
-fn best_geo_class(e: &Entity) -> GeoSourceClass {
+///
+/// A forward-geocode source contributes the class of the Address it geocoded,
+/// not `Geocode` ([`effective_geo_classes`], REQ-GEO-009): sorted order put
+/// `geocode` first, so a geocode of a search-snippet city was classed Geocode
+/// here and counted as a second independent method beside the snippet.
+fn best_geo_class(e: &Entity, addresses: &AddressIndex<'_>) -> GeoSourceClass {
     let mut sources: Vec<&str> = e.corroborating_sources().into_iter().collect();
     sources.sort_unstable();
     sources
         .iter()
-        .map(|s| geo_source_class(s))
+        .flat_map(|src| {
+            let mut classes = std::collections::BTreeSet::new();
+            for ev in e
+                .evidence
+                .iter()
+                .filter(|ev| ev.source == *src && !ev.is_non_corroborating())
+            {
+                record_geo_classes(ev, addresses, &mut classes);
+            }
+            classes
+        })
         .find(|c| *c != GeoSourceClass::Other)
         .unwrap_or(GeoSourceClass::Other)
 }
@@ -1412,6 +1575,7 @@ pub(crate) fn au_location_corroboration(entities: &[Entity]) -> Option<LocationC
         uid: String,
     }
     let mut sigs: Vec<Sig> = Vec::new();
+    let addresses = AddressIndex::new(entities);
 
     for (e, (lat, lon)) in person_anchored_coords(entities)
         .into_iter()
@@ -1420,7 +1584,7 @@ pub(crate) fn au_location_corroboration(entities: &[Entity]) -> Option<LocationC
         sigs.push(Sig {
             lat,
             lon,
-            class: best_geo_class(e),
+            class: best_geo_class(e, &addresses),
             uid: e.uid.clone(),
         });
     }
@@ -1442,7 +1606,7 @@ pub(crate) fn au_location_corroboration(entities: &[Entity]) -> Option<LocationC
         sigs.push(Sig {
             lat,
             lon,
-            class: best_geo_class(e),
+            class: best_geo_class(e, &addresses),
             uid: e.uid.clone(),
         });
     }

@@ -113,10 +113,7 @@ pub(super) fn rescope_subject_claims(
     target: &Target,
     is_expansion: bool,
 ) {
-    let is_seed = !is_expansion
-        || (target.kind == seed.kind
-            && normalise(&target.kind.to_entity_kind(), &target.value)
-                == normalise(&seed.kind.to_entity_kind(), &seed.value));
+    let is_seed = dispatch_target_is_seed(seed, target, is_expansion);
     if is_seed
         || !entity
             .tags
@@ -133,6 +130,62 @@ pub(super) fn rescope_subject_claims(
         "exact-name-match" => is_name_variant,
         _ => true,
     });
+}
+
+/// Whether this dispatch ran on the operator's own seed rather than on an
+/// expansion pivot — the seed dispatch itself, or a pivot whose value
+/// normalises to the seed's. The one test behind [`rescope_subject_claims`] and
+/// [`cap_to_parent`]'s gate, so "is this the seed?" is answered once.
+fn dispatch_target_is_seed(seed: &Target, target: &Target, is_expansion: bool) -> bool {
+    !is_expansion
+        || (target.kind == seed.kind
+            && normalise(&target.kind.to_entity_kind(), &target.value)
+                == normalise(&seed.kind.to_entity_kind(), &seed.value))
+}
+
+/// Cap a finding of a target-derived module ([`Module::derives_from_target`])
+/// at what its parent — the pivot it was computed from — supports: one
+/// derivation step below the parent's confidence (`confidence::derived_from`),
+/// and the module's re-emission of the target itself at no more than the
+/// parent's own confidence, so the lookup can never raise the point it looked
+/// up. Only ever lowers.
+///
+/// Scan 7258fc07: `au_geo` on the search-snippet Sydney centroid (0.72,
+/// deliberately capped below Verified by `search_engines`) emitted the
+/// subject's postcode, suburb, LGA, both electorates, remoteness, SA2/SA4 and
+/// mesh-block land use at 0.85-0.90 — nine single-source VERIFIED location
+/// facts from one city name (REQ-GEO-012).
+pub(super) fn cap_to_parent(entity: &mut Entity, parent_conf: f64, target_uid: &str) {
+    let cap = if entity.uid == target_uid {
+        parent_conf
+    } else {
+        crate::core::confidence::derived_from(parent_conf)
+    };
+    if entity.confidence > cap {
+        entity.confidence = cap;
+    }
+}
+
+/// What admission needs to know about the PRODUCING module, captured once per
+/// dispatch — before a concurrent spawn, because the `Module` object is gone by
+/// join time (only a [`DispatchOutcome`] comes back).
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct ModuleAdmission {
+    /// [`Module::attack_techniques`]: each admitted entity is stamped with an
+    /// `attack:<ID>` tag per technique.
+    pub(super) attack_techniques: &'static [&'static str],
+    /// [`Module::derives_from_target`]: findings are capped to the pivot they
+    /// were computed from ([`cap_to_parent`]).
+    pub(super) derives_from_target: bool,
+}
+
+impl ModuleAdmission {
+    pub(super) fn of(module: &dyn Module) -> Self {
+        Self {
+            attack_techniques: module.attack_techniques(),
+            derives_from_target: module.derives_from_target(),
+        }
+    }
 }
 
 /// The engine's entity-admission policy as a PURE decision: given the scan's
@@ -331,11 +384,10 @@ pub(super) struct DispatchOutcome {
     /// (the module and target are no longer available at join time). Empty
     /// when `ttl_secs == 0`.
     pub(super) cache_key: String,
-    /// The producing module's ATT&CK Reconnaissance technique IDs
-    /// (`module.attack_techniques()`), captured before spawning because the
-    /// `Module` object is gone by join time. `finalise_module_result` stamps
-    /// each admitted entity with an `attack:<ID>` tag per technique.
-    pub(super) attack_techniques: &'static [&'static str],
+    /// The producing module's admission profile ([`ModuleAdmission`]: ATT&CK
+    /// technique IDs, target derivation), captured before spawning because the
+    /// `Module` object is gone by join time.
+    pub(super) admission: ModuleAdmission,
 }
 
 /// Stable archive key for the inter-scan entity cache: `module:kind:value`
@@ -724,20 +776,21 @@ impl super::ScanEngine {
     /// `dispatch_target_sequential` and `dispatch_target_concurrent`
     /// so the event payload shape is identical between the two paths.
     ///
-    /// `attack_techniques` is the producing module's
-    /// [`Module::attack_techniques`] —
-    /// every admitted entity is stamped with an `attack:<ID>` tag per technique,
-    /// so the ATT&CK Reconnaissance technique that collected each datum travels
-    /// with the finding. Sourced from the dispatched `Module` object at the call
-    /// site (never `crate::modules`, which `core` may not name), so the engine
-    /// stays module-agnostic.
+    /// `admission` is the producing module's profile ([`ModuleAdmission`]): its
+    /// [`Module::attack_techniques`] — every admitted entity is stamped with an
+    /// `attack:<ID>` tag per technique, so the ATT&CK Reconnaissance technique
+    /// that collected each datum travels with the finding — and whether its
+    /// findings derive from the target ([`Module::derives_from_target`]), which
+    /// caps them to the pivot's confidence ([`cap_to_parent`]). Sourced from the
+    /// dispatched `Module` object at the call site (never `crate::modules`,
+    /// which `core` may not name), so the engine stays module-agnostic.
     pub(super) fn finalise_module_result(
         &self,
         cx: &DispatchCx,
         name: &'static str,
         result: TimeoutResult,
         state: &mut DispatchState,
-        attack_techniques: &'static [&'static str],
+        admission: ModuleAdmission,
         from_cache: bool,
     ) {
         // A cache replay is tallied in `stats.cached` by `replay_cached_result`; it
@@ -918,7 +971,32 @@ impl super::ScanEngine {
                     &cx.target.kind.to_entity_kind(),
                     &cx.target.value,
                 );
+                // A target-derived module's findings are bounded by the pivot
+                // they were computed from (REQ-GEO-012). Base `confidence`, not
+                // `c_effective`: the parent's own source count must not launder
+                // a lookup of it back up. The operator's seed is not capped —
+                // its confidence is the operator's assertion, not a finding.
+                let parent_conf = if admission.derives_from_target
+                    && !dispatch_target_is_seed(cx.seed, cx.target, cx.is_expansion)
+                {
+                    let parent = state.entity_map.get(&target_uid).map(|p| p.confidence);
+                    if parent.is_none() {
+                        debug!(
+                            module = name,
+                            "target-derived module ran on a pivot absent from the entity map — \
+                             no parent confidence to cap to"
+                        );
+                    }
+                    parent
+                } else {
+                    None
+                };
                 for mut entity in mr.entities.drain(..) {
+                    // Before admission, so the `--min-confidence` floor sees the
+                    // honest value, and before the durable emit (REQ-ENGINE-001).
+                    if let Some(parent) = parent_conf {
+                        cap_to_parent(&mut entity, parent, &target_uid);
+                    }
                     // Admission drop-filters (pure policy in `admission_rejection`);
                     // emit the reason + skip on rejection, exactly as the inline
                     // chain did — same order, same reason strings, same continue.
@@ -949,7 +1027,7 @@ impl super::ScanEngine {
                     // describe its relation to the target it was RUN ON; only
                     // the engine knows whether that target is the scan subject.
                     rescope_subject_claims(&mut entity, cx.seed, cx.target, cx.is_expansion);
-                    for id in attack_techniques {
+                    for id in admission.attack_techniques {
                         entity.tag(format!("attack:{id}"));
                     }
                     for id in crate::core::attack::techniques_for_entity_kind(&entity.kind) {
@@ -993,6 +1071,15 @@ impl super::ScanEngine {
                     super::scan_entity_for_keys(&entity, self.module_runtime.as_ref());
                     if let Some(existing) = state.entity_map.get_mut(&entity.uid) {
                         existing.merge(entity);
+                        // Tags are unioned by the merge, so a provider's
+                        // country/timezone arriving now can sit beside the
+                        // offline box answer an earlier emission of this point
+                        // got. Re-deciding on the merged entity keeps one
+                        // answer (idempotent — it replaces its own record;
+                        // REQ-GEO-013).
+                        if existing.kind == crate::core::entity::EntityKind::Coordinates {
+                            super::enrich_geospatial(existing);
+                        }
                     } else {
                         state.newly_inserted.push(entity.uid.clone());
                         state.entity_map.insert(entity.uid.clone(), entity);
@@ -1066,7 +1153,7 @@ impl super::ScanEngine {
                 link: None,
             })),
             state,
-            module.attack_techniques(),
+            ModuleAdmission::of(module),
             true,
         );
     }
@@ -1525,7 +1612,14 @@ impl super::ScanEngine {
             // Inter-scan entity cache (C9): archive a successful result.
             self.archive_if_eligible(cache_key.as_deref(), ttl, &result);
 
-            self.finalise_module_result(cx, name, result, state, module.attack_techniques(), false);
+            self.finalise_module_result(
+                cx,
+                name,
+                result,
+                state,
+                ModuleAdmission::of(&**module),
+                false,
+            );
 
             super::hot_inject_keys(&mut ctx.keys);
 
@@ -1661,7 +1755,14 @@ impl super::ScanEngine {
             .await;
             // Inter-scan entity cache (C9): archive a successful result.
             self.archive_if_eligible(cache_key.as_deref(), ttl, &result);
-            self.finalise_module_result(cx, name, result, state, module.attack_techniques(), false);
+            self.finalise_module_result(
+                cx,
+                name,
+                result,
+                state,
+                ModuleAdmission::of(&**module),
+                false,
+            );
             // Hot-inject discovered keys so Phase 2 modules can use them.
             // Multiplier-tier keys (Shodan, Censys, Hunter, Proxycurl etc.)
             // cascade — their outputs feed web_crawler/search_engines, which
@@ -1791,12 +1892,12 @@ impl super::ScanEngine {
             let sid = Arc::clone(&scan_id_arc);
             let throttle_ms = cx.opts.effective_throttle_ms();
             let module_timeout_ms = super::resolve_timeout(cx.opts, &*module_arc);
-            // Capture the producing module's ATT&CK Reconnaissance techniques
-            // before the spawn: `module` is unavailable at the join site (only a
-            // `DispatchOutcome` is). `&'static [&'static str]` is Copy, so it
-            // moves into the task for free and rides back out in the outcome,
-            // where `finalise_module_result` stamps each admitted entity.
-            let attack_techniques = module.attack_techniques();
+            // Capture the producing module's admission profile (ATT&CK
+            // techniques, target derivation) before the spawn: `module` is
+            // unavailable at the join site (only a `DispatchOutcome` is). It is
+            // Copy, so it moves into the task for free and rides back out in
+            // the outcome, where `finalise_module_result` applies it.
+            let admission = ModuleAdmission::of(&**module);
 
             // Re-set the foreign-key scan-scope AND regional-search ambients
             // INSIDE the spawned task: tokio task-locals do NOT propagate
@@ -1857,7 +1958,7 @@ impl super::ScanEngine {
                             result,
                             ttl_secs,
                             cache_key,
-                            attack_techniques,
+                            admission,
                         }
                     }),
                 ),
@@ -1928,7 +2029,7 @@ impl super::ScanEngine {
             outcome.name,
             outcome.result,
             state,
-            outcome.attack_techniques,
+            outcome.admission,
             false,
         );
     }

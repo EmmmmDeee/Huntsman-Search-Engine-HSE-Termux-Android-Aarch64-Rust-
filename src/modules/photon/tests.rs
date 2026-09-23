@@ -125,8 +125,9 @@ fn build_forward_rejects_out_of_range_and_null_island() {
 
 // ── Reverse: Address with name folded in + OSM classification ────────
 #[test]
-fn build_reverse_uses_name_and_dedupes_against_city() {
-    // POI: the name is the most-specific component and must lead the display.
+fn build_reverse_is_the_address_not_the_landmark_and_dedupes_against_city() {
+    // POI: the landmark name is evidence (place_name / nearest_feature), not
+    // part of the address; the street leads the value (REQ-GEO-010).
     let p = props(
         r#"{"name":"Sydney Opera House","street":"Bennelong Point","city":"Sydney",
             "state":"NSW","country":"Australia","countrycode":"AU","postcode":"2000",
@@ -134,12 +135,12 @@ fn build_reverse_uses_name_and_dedupes_against_city() {
     );
     let e = build_reverse(-33.8568, 151.2153, &p, "s").expect("should succeed");
     assert_eq!(e.kind, EntityKind::Address);
-    assert_eq!(
-        e.value,
-        "Sydney Opera House, Bennelong Point, Sydney, NSW, Australia"
-    );
+    assert_eq!(e.value, "Bennelong Point, Sydney, NSW, 2000, Australia");
     assert!(
-        e.has_tag("reverse-geocoded") && e.has_tag("country:AU") && e.has_tag("osm:attraction")
+        e.has_tag("reverse-geocoded")
+            && e.has_tag("nearest-address")
+            && e.has_tag("country:AU")
+            && e.has_tag("osm:attraction")
     );
     let ev = &e.evidence[0];
     assert_eq!(
@@ -147,14 +148,55 @@ fn build_reverse_uses_name_and_dedupes_against_city() {
         Some("Sydney Opera House")
     );
     assert_eq!(
+        ev.attributes.get("nearest_feature").map(String::as_str),
+        Some("Sydney Opera House")
+    );
+    assert_eq!(
         ev.attributes.get("postcode").map(String::as_str),
         Some("2000")
     );
 
-    // A city whose name == city collapses to one occurrence.
-    let city = props(r#"{"name":"Sydney","city":"Sydney","country":"Australia"}"#);
+    // A place feature's name IS its locality; one equal to the city collapses.
+    let city = props(
+        r#"{"name":"Sydney","city":"Sydney","country":"Australia","osm_key":"place","osm_value":"city"}"#,
+    );
     let ce = build_reverse(-33.8, 151.2, &city, "s").expect("should succeed");
     assert_eq!(ce.value, "Sydney, Australia");
+
+    // A road feature's name is the street when Photon gives no `street`.
+    let road = props(
+        r#"{"name":"George Street","city":"Sydney","country":"Australia","osm_key":"highway","osm_value":"primary"}"#,
+    );
+    let re = build_reverse(-33.87, 151.2, &road, "s").expect("should succeed");
+    assert_eq!(re.value, "George Street, Sydney, Australia");
+}
+
+/// REQ-GEO-010: scan 7258fc07's "Nina Armando, King Street Cycleway, Sydney, …"
+/// led with a clothes shop, which the address parser then read as the city.
+#[test]
+fn build_reverse_value_never_carries_the_poi_name() {
+    let p = props(
+        r#"{"name":"Nina Armando","street":"King Street Cycleway","city":"Sydney","state":"New South Wales","postcode":"2000","country":"Australia","countrycode":"AU","osm_key":"shop","osm_value":"clothes"}"#,
+    );
+    let e = build_reverse(-33.8688, 151.2093, &p, "s").expect("resolves");
+    assert!(!e.value.contains("Nina Armando"));
+    assert_eq!(
+        e.value,
+        "King Street Cycleway, Sydney, New South Wales, 2000, Australia"
+    );
+    assert_eq!(
+        e.evidence[0]
+            .attributes
+            .get("place_name")
+            .map(String::as_str),
+        Some("Nina Armando")
+    );
+    assert_ne!(
+        crate::util::geohash::parse_address(&e.value)
+            .city
+            .as_deref(),
+        Some("Nina Armando")
+    );
 }
 
 #[test]

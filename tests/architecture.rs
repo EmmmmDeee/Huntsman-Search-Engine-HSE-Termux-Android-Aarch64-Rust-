@@ -970,6 +970,11 @@ fn core_does_not_import_util_directly() {
                 // (no I/O, no network). The engine's address_to_coords_pass uses
                 // it to convert Address entities into Coordinates for geo correlation.
                 && !line.contains("util::city_coords::city_coords")
+                // The same lookup, also returning the grain of what matched
+                // (`city` / `postcode` / `region`) — pure, same table, no I/O.
+                // address_to_coords_pass records it as the derived centroid's
+                // `place_type` so the correlator weighs it at its real grain.
+                && !line.contains("util::city_coords::city_coords_with_grain")
                 // Pure, dependency-free offline AU-locality exact-match lookup
                 // (no I/O, no network), same leaf category as `city_coords`
                 // immediately above — it reuses the identical `CITIES` table,

@@ -19833,7 +19833,11 @@ other — 12,319 of the export's 33,473 edges.
 untyped Wikidata item fell back to the seed's kind, so the venue "Ian Thorpe
 Aquatic and Fitness Centre" became a `Person`, tagged `exact-name-match`,
 and its P625 — emitted at HIGH, over the subject-fix floor — became the
-best AU location fix at 0.97. An untyped item carrying P625 is now a located
+best AU location fix at 0.97. *(Corrected by REQ-SEARCH-ADDR-002: `wikidata`
+is not an anchoring geo source, so its P625 could not have been that fix. The
+0.97 fix was Photon's geocode of the search-snippet Address "Ian Thorpe
+Aquatic Centre in Ultimo, New South Wales". The Wikidata fix here still
+stands on its own.)* An untyped item carrying P625 is now a located
 thing, not a person; a head that is not the seed's kind of thing is neither
 `exact-name-match` nor a source of the subject's coordinates.
 
@@ -19844,7 +19848,9 @@ as a city, so `spokeo.com/Ian-Thorpe/North-Carolina` became the Address
 different names to one arbitrary point. On a name scan
 `is_person_listing_locality` drops a multi-word "city" ending in the scanned
 surname unless a place word leads it; a one-word suburb that is the surname
-("Lawnton, QLD") is unaffected. Review of #645: the caller read the seed's
+("Lawnton, QLD") is unaffected. *(Widened by REQ-SEARCH-ADDR-002 to catch the
+surname anywhere after the first word, and renamed
+`city_names_a_surname_bearer`.)* Review of #645: the caller read the seed's
 surname as its last whitespace token, so `"Dr Ian Thorpe OAM"` searched for an
 "OAM"; it now uses the identity gate's own parser (`core::scan::person_surname`),
 locked by `a_name_scan_…` 's sibling
@@ -20840,3 +20846,206 @@ pins the accept and reject lists. It has no pre-fix form to falsify against.
 committed bundle must be regenerated with the pinned toolchain
 (`scripts/wasm_ui_drift_check.sh --write`) before CI's sibling-crates drift
 check can pass.
+
+## REQ-SEARCH-ADDR-002 / REQ-GEO-009 / REQ-AUDIT-GEO-001 / REQ-GEO-FAMILY-002 / REQ-GEO-010 / REQ-GEO-011 / REQ-GEO-012 / REQ-GEO-013 — a venue, a geocode of a snippet and a city centroid were the subject's location
+
+**Found** in the second read of the "Ian Thorpe" scan (7258fc07) after #645.
+There were eight faults in how HSE decides where the subject is. Each was
+adversarially verified against the exports and the code before it was fixed.
+Two claims did not survive verification. The photon "fuzzy top hit" was a
+correct geocode of the wrong thing. The "forged provenance" of derived
+centroids is the intended REQ-CORRELATOR-005 convention. Both are corrected
+below, not changed.
+
+**REQ-SEARCH-ADDR-002 — a venue named after the subject was an address.** The
+headline fix (-33.8774,151.1989 ± 1.3 km, 0.97) was the Ian Thorpe Aquatic
+Centre. Photon's raw response held exactly one feature: the real pool at 458
+Harris Street, Ultimo, which is a correct house-grain geocode. The fault came
+one layer earlier. On a full-name scan, the LinkedIn job title "…Exercise
+Physiologist NSW, Ian Thorpe Aquatic Centre in Ultimo, New South Wales,
+Australia | LinkedIn" names the subject only because the venue does. The
+comma path of `extract_addresses_from_text` kept the whole segment as the
+city. #645's filter dropped a city only when its LAST word was the surname,
+and here the last word is "Ultimo". The 0.45 Address was pivoted, and Photon
+placed it at 40 m, which is a 5x fusion weight. AU-059's Weiszfeld median
+then landed on the pool. The filter is now `city_names_a_surname_bearer`. It
+rejects a multi-word "city" that has the surname as a whole word anywhere
+after its first word, unless a place word leads it. A city that starts with
+the surname ("Thorpe Bay") is a place, and a one-word suburb that is the
+surname ("Lawnton") is kept. Photon's feature selection and precision are
+unchanged. The ledger's REQ-WIKIDATA-003 wrongly credited the 0.97 fix to
+Wikidata's P625 and is corrected in place. Known conservative loss: on a scan
+whose surname is also a place word, a multi-word place with that word after
+its first word (e.g. "Albert Park Lake" on a "Park" scan) is dropped. The old
+last-word rule had the same class of loss.
+
+**REQ-GEO-009 — a geocode of a snippet was a second independent method.**
+`distinct_geo_classes`, AU-059's per-point class count and `best_geo_class`
+classified a coordinate by the NAME of each source. `geocode` and `photon` run
+as pivots on an Address some other module reported. They stamp their own
+source name and keep the string only as `input_address`. So one snippet
+mention of "Sydney, Australia" was counted as two orthogonal classes: the
+search lookup (Search) and the geocoder's answer for the same string
+(Geocode). Every contributor to the scan's AU-059 fix traced back to
+search-snippet text. The gate saw {Geocode, Search}, and AU-059 reported the
+fix at 0.97. `effective_geo_classes` now reads each corroborating anchoring
+record. A geocoder record whose `input_address` resolves to an Address in the
+scan (through `AddressIndex`, by uid) takes the classes of that Address's own
+anchoring sources, one level deep. A geocoder record whose input cannot be
+traced stays `Geocode`: an operator seed, a reverse lookup, or a fixture with
+a bare `geocode` row. AU-059's gate, its coherent-group ranking, its per-point
+diversity bonus and `au_location_corroboration`'s `best_geo_class` all read
+it. Precision is untouched: the geocoder still sets its leg's grain.
+`GeoSourceClass` gains `Ord`, so every class set is a `BTreeSet`.
+
+**REQ-AUDIT-GEO-001 — the audit's consensus was a cloud of POIs.** The
+self-audit's `geo_consistency` admitted every non-candidate coordinate, so
+Overpass infrastructure nodes and `wiki_geosearch` / `wikidata` nearby-place
+POIs around one pivot formed the densest 50 km cluster. The subject's
+Brisbane and Perth fixes were reported as 730 km and 3,290 km outliers from
+that cluster. Its "13 source(s)" also counted `geo_normalize` and `recall`.
+The correlator already gated all of this, but its gate took `&Entity`, and an
+`AuditEntity` (possibly from a CSV) has only strings. The gate is now
+`core::correlator::is_infrastructure_geo_signals` over tags and corroborating
+source names. `is_infrastructure_geo` delegates to it, so there is one rule
+with two readers. The audit reads `AuditEntity::corroborating_source_names`,
+now shared with the weak-corroboration grade. `source_count` counts the
+admitted fixes' corroborating sources only. The divergence recommendation no
+longer tells the operator to drop datacenter fixes, since none can reach the
+comparison, and points at a namesake source instead. The three existing geo
+tests now give their coordinates an anchoring source (`fix()`).
+
+**REQ-GEO-FAMILY-002 — a city named in a result was the subject's confirmed
+location.** `subject_fixes` accepted any Coordinates at 0.60 or above that
+passed `is_infrastructure_geo`. That gate only asks for one source on the
+correlator's footprint allowlist, and the allowlist deliberately includes
+`search_engines` (the known-city lookup), `geocode` and `photon`. The scan
+anchored "the subject" at Sydney, Brisbane, Toowong, Perth and the pool.
+About 111 register addresses and 124 register persons within 150 km of those
+points gained `geo_corroboration` and were promoted to PROBABLE relatives. The
+same anchor also fed the breach re-promotion pass (25 km), the namesake flag
+and AU-061. The confidence arm now also requires `is_direct_subject_fix`: a
+corroborating record whose class observes the subject directly (device GPS,
+photo EXIF, Wi-Fi; `class_locates_subject_directly`) and that is not a record
+`address_to_coords_pass` copied onto a centroid (`ADDR_ENTITY_UID_ATTR`). The
+subject's own name-matched address still anchors at postcode grain.
+`ANCHORING_GEO_SOURCES` is unchanged, and its stale "geo_family has no such
+gate" comment is corrected.
+
+**REQ-GEO-010 — a reverse geocode was a restaurant at VERIFIED.**
+`geocode::build_reverse_entity` used Nominatim's `display_name` as the Address.
+At `zoom=18` that string leads with the object at the point, so the value
+began "Kazan Dining, 25, Martin Place, …". It was rated STRONG (0.78), which
+is VERIFIED from one lookup on a search-snippet city centroid. The address
+parser then read "Kazan Dining" as the city. Photon's `build_reverse` put the
+POI name first by design, and the "Nina Armando" clothes shop became a city
+the same way. `reverse_address_value` now builds the value from structured
+fields: street (the one `street_line` rule, shared with
+`fold_address_attrs`), locality, state, postcode, country. It returns `None`
+when neither a road nor a locality resolved, instead of falling back to
+`display_name` or `"-"`. Confidence is HIGH_PLUS in Australia. Photon uses the
+feature's name only when the feature IS an address component (a `highway` as
+the street, a `place` as the locality). Both tag `nearest-address` and keep the
+POI as `nearest_feature`. `reverse-geocoded` is kept for its readers.
+
+**REQ-GEO-011 — an offline centroid was weighed as a rooftop.**
+`address_to_coords_pass` carries the Address's own sources onto the city
+centroid, as REQ-CORRELATOR-005 intends. When one of those sources is
+`geocode` or `photon`, the correlator weighed that leg at its class default of
+40 m. `declared_geocode_grain_m` reads only `place_type`, and the pass wrote
+none. The scan's Bardon street address became the Brisbane CBD at 40 m: a 5x
+fusion weight and a 0.04 km radius floor. That address was itself a reverse
+geocode of a coordinate already in the map. The pass now skips a
+`reverse-geocoded` Address. Every carried record declares the grain that
+`city_coords_with_grain` matched (`city` for a tabulated name, whether capital
+or suburb, since the table does not say which; `postcode`; `region`). The
+source names are unchanged, and the carried sources are now written in sorted
+order, not HashSet order. Residual: a registry or directory leg carried onto a
+centroid still keeps its class radius (500 m / 2 km), because only the geocode
+class reads `place_type`.
+
+**REQ-GEO-012 — a lookup of a point was more certain than the point.**
+`au_geo` emits each ASGS region at a fixed 0.85–0.90. On the 0.72
+search-snippet Sydney centroid, which `search_engines` deliberately caps below
+Verified, it produced nine single-source VERIFIED facts about the subject:
+postcode, suburb, LGA, both electorates, remoteness, SA2/SA4 and land use.
+`ModuleContext` carries no parent confidence, so the module cannot bound
+itself. `Module::derives_from_target` (`au_geo`, `qld_cadastre`) now declares
+that every finding is a function of the target. `finalise_module_result`
+applies `cap_to_parent` before admission and before the durable emit. A
+finding is capped at `confidence::derived_from(parent)`, and a re-emission of
+the target is capped at the parent's own base confidence, so it can never
+raise it. The seed dispatch is exempt, as decided by
+`dispatch_target_is_seed`, which `rescope_subject_claims` now shares. The
+module's admission profile travels as `ModuleAdmission` (ATT&CK techniques
+plus this flag), including through the concurrent join. The REQ-GEO-008
+annotation had already stopped the echo raising the parent; this caps the
+regions. Recall still re-injects rows stored by earlier scans at their old
+confidences; only fresh data is capped.
+
+**REQ-GEO-013 — the offline box contradicted the provider.**
+`timezone_for` mapped Australia to three longitude bands. As a result every
+QLD point was `Australia/Sydney` (an hour wrong from October to April), VIC
+and TAS were Sydney, Darwin and Mount Isa were Adelaide, and the SA/NT strip
+was Perth. It now maps by state through `util::geo::au_state_for_coords`,
+with a Broken Hill box, and keeps the bands only outside that partition.
+`enrich_geospatial` always tagged the box's country and timezone. The US box
+is declared before CA and covers southern New Brunswick, so Fredericton
+carried photon's `country:CA` plus the box's `country:US` and
+`tz:America/New_York`. A provider's `country_code` (or a `country:` tag that
+disagrees with the box) now suppresses the box country tag, and the box
+answer is kept as `country_iso_box`. A provider's `timezone` wins, and a box
+country that disagrees with the provider emits no timezone. The choice is by
+`(source, value)` order, not evidence order. `Entity::merge` unions tags, so
+the function is idempotent: it retracts its own previous record and the tags
+that record lists. The dispatcher re-runs it on a merged Coordinates entity.
+
+### Locks
+
+- `modules::search_engines::helpers::entity::tests::a_venue_named_after_a_surname_bearer_is_not_a_locality`;
+  `modules::search_engines::tests::a_name_scan_emits_no_address_for_a_venue_named_after_the_subject`.
+- `core::correlator::rules::location::tests::a_geocoder_leg_inherits_the_class_of_the_address_it_geocoded`
+  (AU-059, the rule, and `au_location_corroboration`, with a registry-Address
+  control and an untraceable-input control).
+- `audit::tests::self_audit_geo_consensus_ignores_nearby_poi_and_infrastructure`
+  (with a geocoder-fix control).
+- `core::geo_family::tests::a_search_snippet_city_or_forward_geocode_is_not_a_subject_fix`;
+  `core::engine::tests::promote_geo_corroborated_family_ignores_snippet_city_anchors`.
+- `modules::geocode::tests::reverse_geocode_is_the_nearest_proper_address_not_the_poi_and_never_verified_from_one_lookup`,
+  `reverse_in_australia_by_country_code_is_on_region_but_not_verified`;
+  `modules::photon::tests::build_reverse_value_never_carries_the_poi_name`,
+  `build_reverse_is_the_address_not_the_landmark_and_dedupes_against_city`.
+- `core::engine::enrich::tests::a_reverse_geocoded_address_is_not_re_derived_to_a_centroid`,
+  `a_derived_centroid_declares_its_grain` (through AU-059's radius).
+- `core::engine::tests::a_target_derived_modules_findings_are_capped_one_step_below_their_parent`,
+  `a_target_derived_module_on_the_seed_is_not_capped` (both through
+  `dispatch_target`); `modules::au_geo::tests::au_geo_declares_its_findings_derive_from_the_target`,
+  `modules::qld_cadastre::tests::qld_cadastre_declares_its_findings_derive_from_the_target`.
+- `util::geohash::tests::timezone_for_splits_eastern_australia_by_state`;
+  `core::engine::enrich::tests::enrich_geospatial_defers_to_provider_country_and_timezone`,
+  `enrich_geospatial_reconciles_a_later_provider_answer_idempotently`;
+  `core::engine::tests::a_later_provider_country_replaces_the_box_answer_on_merge`.
+
+### Falsified
+
+Each mutation restores the defect. The fixed sources were saved first and
+restored after each run, and the restore was checked against `git diff`.
+
+| # | mutation | result |
+|---|---|---|
+| S1 | `city_names_a_surname_bearer` tests only the last word | killed by `a_venue_named_after_a_surname_bearer_is_not_a_locality`, `a_name_scan_emits_no_address_for_a_venue_named_after_the_subject` |
+| C1 | `record_geo_classes` keeps a geocoder record's own class | killed by `a_geocoder_leg_inherits_the_class_of_the_address_it_geocoded` |
+| C2 | only `best_geo_class` back to the source-name class | killed by the same test's `au_location_corroboration` assertion |
+| A1 | `geo_consistency` without the person-anchor gate; `srcs` from every source | killed by `self_audit_geo_consensus_ignores_nearby_poi_and_infrastructure` |
+| F1 | `subject_fixes` without `is_direct_subject_fix` | killed by `a_search_snippet_city_or_forward_geocode_is_not_a_subject_fix`, `promote_geo_corroborated_family_ignores_snippet_city_anchors` |
+| F2 | `is_direct_subject_fix` without the `addr_entity_uid` exclusion | killed by `a_search_snippet_city_or_forward_geocode_is_not_a_subject_fix` |
+| R1 | geocode reverse value from `display_name` at STRONG; photon name first | killed by the four reverse tests above, plus `reverse_without_country_code_falls_back_to_the_bounding_box` |
+| D1 | `address_to_coords_pass` re-derives a reverse-geocoded Address and writes no `place_type` | killed by `a_reverse_geocoded_address_is_not_re_derived_to_a_centroid`, `a_derived_centroid_declares_its_grain` |
+| P1 | `finalise_module_result` never calls `cap_to_parent` | killed by `a_target_derived_modules_findings_are_capped_one_step_below_their_parent` |
+| T1 | `timezone_for` on the old bands; `enrich_geospatial` ignoring provider answers | killed by `timezone_for_splits_eastern_australia_by_state`, `enrich_geospatial_defers_to_provider_country_and_timezone`, `enrich_geospatial_reconciles_a_later_provider_answer_idempotently` |
+| T2 | `enrich_geospatial` without retracting its own earlier record | killed by `enrich_geospatial_reconciles_a_later_provider_answer_idempotently` |
+| T3 | the dispatcher does not re-enrich a merged Coordinates entity | killed by `a_later_provider_country_replaces_the_box_answer_on_merge` |
+
+**12 of 12 killed.** The two `derives_from_target` declaration tests pin a
+switch and have no separate pre-fix form. `hse-core` is untouched, so
+`wasm-ui/pkg` needs no regeneration.

@@ -485,14 +485,17 @@ pub(super) fn build_entities(
         };
         let snippet_addresses = if result_names_the_subject {
             let mut found = extract_addresses_from_text(&combined_text);
-            // On a name scan, a "City, State" whose city is a person carrying
-            // the scanned surname is a people-search listing title, not a place.
+            // On a name scan, a "City, State" whose city names a person carrying
+            // the scanned surname — a people-search listing title, or a venue
+            // named after a surname-bearer ("Ian Thorpe Aquatic Centre in
+            // Ultimo") — is not a place the subject is at (REQ-SEARCH-ADDR-001,
+            // REQ-SEARCH-ADDR-002).
             // The surname through the identity gate's own name parser, not the
             // last whitespace token: `"Dr Ian Thorpe OAM"` is a Thorpe.
             if target.kind == TargetKind::FullName
                 && let Some(surname) = crate::core::scan::person_surname(&target.value)
             {
-                found.retain(|a| !is_person_listing_locality(a, &surname));
+                found.retain(|a| !city_names_a_surname_bearer(a, &surname));
             }
             found
         } else {

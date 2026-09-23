@@ -50,6 +50,16 @@ pub(super) fn is_fragment(kind: &str, value: &str) -> bool {
 /// with the most neighbours within [`GEO_CONSENSUS_KM`]) and flag any fix farther
 /// than [`GEO_OUTLIER_KM`] from it as divergent. Returns the summary plus an
 /// optional finding. Pure; uses the same haversine the correlator does.
+///
+/// Only fixes that could locate the SUBJECT vote: the same person-anchor gate
+/// every correlator location rule applies
+/// ([`crate::core::correlator::is_infrastructure_geo_signals`]) drops hosting,
+/// registrant and `infra:` points and any coordinate with no person-anchoring
+/// corroborating source — an Overpass node or a Wikipedia nearby-place POI
+/// scattered around a pivot point. Without it those POIs formed the consensus
+/// and the subject's real fixes were reported as its outliers
+/// (REQ-AUDIT-GEO-001). `source_count` counts the admitted fixes' corroborating
+/// sources only.
 fn geo_consistency(entities: &[AuditEntity]) -> (GeoSummary, Option<Finding>) {
     // Parse distinct coordinate points, keeping each one's source labels.
     let mut pts: Vec<(f64, f64, String, Vec<String>)> = Vec::new();
@@ -71,8 +81,18 @@ fn geo_consistency(entities: &[AuditEntity]) -> (GeoSummary, Option<Finding>) {
         ) {
             continue;
         }
+        // The person-anchor gate — the correlator's own rule, over strings,
+        // because an audit entity may come from a CSV and has no `Entity`.
+        let corroborating = e.corroborating_source_names();
+        if crate::core::correlator::is_infrastructure_geo_signals(
+            true,
+            e.tags.iter().map(String::as_str),
+            corroborating.iter().copied(),
+        ) {
+            continue;
+        }
         if let Some((lat, lon)) = crate::util::geohash::parse_coords(&e.value) {
-            srcs.extend(e.sources.iter().cloned());
+            srcs.extend(corroborating.iter().map(|s| (*s).to_owned()));
             if seen.insert(e.value.clone()) {
                 pts.push((lat, lon, e.value.clone(), e.sources.clone()));
             }
@@ -153,9 +173,12 @@ fn geo_consistency(entities: &[AuditEntity]) -> (GeoSummary, Option<Finding>) {
             summary.max_spread_km
         ),
         examples: examples(outlier_examples),
-        recommendation: "Cross-validate geocoders: drop datacenter/CDN-IP fixes, prefer \
-            multi-source consensus (WiGLE/EXIF over coarse IP-geo), and down-rank coordinates \
-            that no other source corroborates. Investigate the divergent source above."
+        recommendation: "Every fix compared here already passed the person-anchor gate \
+            (datacenter/CDN, infrastructure and nearby-POI points are excluded), so these \
+            sources genuinely disagree about the subject. Check whether the divergent source \
+            above describes the subject or a namesake (a surname-matched register row, a \
+            same-name page), prefer multi-source consensus (WiGLE/EXIF over coarse IP-geo), \
+            and down-rank coordinates that no other source corroborates."
             .into(),
     };
     (summary, Some(finding))

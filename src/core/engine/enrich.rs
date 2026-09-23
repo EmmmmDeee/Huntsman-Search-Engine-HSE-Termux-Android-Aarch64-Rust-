@@ -6,21 +6,116 @@
 
 use crate::core::confidence;
 
+/// The source name of the engine's own geospatial enrichment records.
+const GEO_NORMALIZE_SOURCE: &str = "geo_normalize";
+/// The summary of the Coordinates enrichment record — how a re-run finds (and
+/// replaces) the record an earlier run wrote.
+const COORD_ENRICHMENT_SUMMARY: &str = "Geospatial enrichment";
+
+/// The country and timezone a PROVIDER already reported for this coordinate,
+/// read from its evidence (`country_code` / `timezone` attributes of any source
+/// but the engine's own `geo_normalize`), or — for the country — from a
+/// `country:XX` tag that disagrees with the offline box (`box_iso`), which only
+/// a provider can have set.
+///
+/// Deterministic whatever order the entity's records were merged in: each is
+/// the first value by `(source, value)` order, not by evidence position.
+fn provider_geo(
+    entity: &crate::core::entity::Entity,
+    box_iso: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    let first_attr = |key: &str| -> Option<String> {
+        entity
+            .evidence
+            .iter()
+            .filter(|ev| ev.source != GEO_NORMALIZE_SOURCE)
+            .filter_map(|ev| {
+                ev.attributes
+                    .get(key)
+                    .map(|v| v.trim())
+                    .filter(|v| !v.is_empty())
+                    .map(|v| (ev.source.as_str(), v))
+            })
+            .min()
+            .map(|(_, v)| v.to_string())
+    };
+    let cc = first_attr("country_code")
+        .map(|c| c.to_ascii_uppercase())
+        .or_else(|| {
+            entity
+                .tags
+                .iter()
+                .filter_map(|t| t.strip_prefix("country:"))
+                .filter(|c| Some(*c) != box_iso)
+                .min()
+                .map(str::to_string)
+        });
+    (cc, first_attr("timezone"))
+}
+
 /// Attach deterministic geospatial enrichment to a Coordinates or Address entity:
 /// geohash (multiple precisions for proximity matching), timezone, hemisphere and
 /// reverse-geocoded country for Coordinates; a parsed street/city/state/postal/
 /// country breakdown for Address. No network — all from `util::geohash`. Other
 /// kinds are untouched.
+///
+/// # A provider's answer outranks the offline box
+///
+/// `reverse_country_iso` is a first-match bounding-box table (a hint, by its
+/// own doc) and `timezone_for` a coarse zone map. When a provider already
+/// reported the point's country or timezone (photon / geocode / open_meteo
+/// `country_code`, open_meteo `timezone`), the box never contradicts it: no box
+/// `country:` tag is added (a disagreeing box answer is kept only as the
+/// evidence attribute `country_iso_box`), the provider's timezone is the `tz:`
+/// tag, and when the box's country disagrees with the provider's no box
+/// timezone is emitted at all — it rests on the same wrong region. Fredericton,
+/// New Brunswick got `country:CA` from photon and `country:US` +
+/// `tz:America/New_York` from the box (the US box is declared before CA and
+/// covers southern New Brunswick), and a Queensland point got
+/// `tz:Australia/Sydney` beside open_meteo's `Australia/Brisbane`
+/// (REQ-GEO-013).
+///
+/// # Idempotent
+///
+/// Tags are unioned by `Entity::merge`, so a provider's answer can arrive in a
+/// later emission than the box's. The engine therefore re-runs this on a
+/// merged Coordinates entity, and each run first retracts what an earlier run
+/// wrote — its `geo_normalize` record, and the `country:` / `tz:` tags that
+/// record says it added — before deciding afresh. Re-running never duplicates
+/// the record.
 pub(super) fn enrich_geospatial(entity: &mut crate::core::entity::Entity) {
     use crate::core::entity::{EntityKind, Evidence};
     use crate::util::geohash;
     match entity.kind {
         EntityKind::Coordinates => {
             if let Some((lat, lon)) = geohash::parse_coords(&entity.value) {
+                // Retract an earlier run's record and the tags it recorded.
+                let is_own = |ev: &Evidence| {
+                    ev.source == GEO_NORMALIZE_SOURCE && ev.summary == COORD_ENRICHMENT_SUMMARY
+                };
+                let mut stale_tags: Vec<String> = Vec::new();
+                for ev in entity.evidence.iter().filter(|ev| is_own(ev)) {
+                    if let Some(c) = ev.attributes.get("country_iso") {
+                        stale_tags.push(format!("country:{c}"));
+                    }
+                    if let Some(t) = ev.attributes.get("timezone") {
+                        stale_tags.push(format!("tz:{t}"));
+                    }
+                }
+                entity.evidence.retain(|ev| !is_own(ev));
+                entity.tags.retain(|t| !stale_tags.contains(t));
+
                 let h = geohash::geohash(lat, lon, 7);
-                let tz = geohash::timezone_for(lat, lon);
-                let iso = geohash::reverse_country_iso(lat, lon);
-                let mut ev = Evidence::new("geo_normalize", "Geospatial enrichment");
+                let box_iso = geohash::reverse_country_iso(lat, lon);
+                let (provider_cc, provider_tz) = provider_geo(entity, box_iso);
+                let box_disagrees = matches!(
+                    (box_iso, provider_cc.as_deref()),
+                    (Some(b), Some(p)) if b != p
+                );
+                let tz: Option<String> = provider_tz.or_else(|| {
+                    (!box_disagrees).then(|| geohash::timezone_for(lat, lon).to_string())
+                });
+                let mut ev = Evidence::new(GEO_NORMALIZE_SOURCE, COORD_ENRICHMENT_SUMMARY);
                 if !h.is_empty() {
                     ev = ev.with_attr("geohash", &h);
                     // Multiple precision-tagged hashes for proximity matching
@@ -33,21 +128,34 @@ pub(super) fn enrich_geospatial(entity: &mut crate::core::entity::Entity) {
                         ev = ev.with_attr("geohash_9", &h9);
                     }
                 }
-                ev = ev.with_attr("timezone", tz);
+                if let Some(tz) = &tz {
+                    ev = ev.with_attr("timezone", tz);
+                }
                 ev = ev.with_attr("lat", format!("{lat:.6}"));
                 ev = ev.with_attr("lon", format!("{lon:.6}"));
                 let hemisphere = if lat >= 0.0 { "northern" } else { "southern" };
                 ev = ev.with_attr("hemisphere", hemisphere);
-                if let Some(iso) = iso {
-                    ev = ev.with_attr("country_iso", iso);
-                    if let Some(name) = geohash::country_name_for_iso(iso) {
-                        ev = ev.with_attr("country_name", name);
+                match (box_iso, provider_cc.is_some()) {
+                    // No provider answer: the box is the best available hint.
+                    (Some(iso), false) => {
+                        ev = ev.with_attr("country_iso", iso);
+                        if let Some(name) = geohash::country_name_for_iso(iso) {
+                            ev = ev.with_attr("country_name", name);
+                        }
+                        entity.tag(format!("country:{iso}"));
                     }
-                    entity.tag(format!("country:{iso}"));
+                    // A provider answered and the box disagrees: record the box
+                    // answer as the approximation it is, never as a tag.
+                    (Some(iso), true) if box_disagrees => {
+                        ev = ev.with_attr("country_iso_box", iso);
+                    }
+                    _ => {}
                 }
                 entity.add_evidence(ev);
                 entity.tag(format!("geohash:{}", &h[..h.len().min(5)]));
-                entity.tag(format!("tz:{tz}"));
+                if let Some(tz) = tz {
+                    entity.tag(format!("tz:{tz}"));
+                }
             }
         }
         EntityKind::Address => {
@@ -162,7 +270,10 @@ pub(super) fn seed_anchor_entity(
 /// The evidence attribute [`address_to_coords_pass`] stamps with the source
 /// Address's uid — written by that pass alone, so [`is_coarse_geo`] reads it as
 /// the pass's signature on a centroid recalled without its tag.
-const ADDR_ENTITY_UID_ATTR: &str = "addr_entity_uid";
+///
+/// `core::geo_family` reads it too: a record carrying it is the Address's
+/// source copied onto a centroid, never an observation of the subject.
+pub(crate) const ADDR_ENTITY_UID_ATTR: &str = "addr_entity_uid";
 
 /// Whether a geo entity is an area standing in for a place — the one predicate
 /// behind the engine's `coarse_geo_not_pivoted` gate and the autonomous-seed
@@ -233,7 +344,17 @@ pub(super) fn address_to_coords_pass(
         if addr_entity.corroborating_sources().is_empty() && !addr_entity.has_tag("seed") {
             continue;
         }
-        let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr_entity.value) else {
+        // A reverse-geocoded Address was itself derived FROM a Coordinates
+        // entity already in the map (`geocode` / `photon` reverse lookups tag
+        // it so). Re-deriving it can only add a coarser copy of a point the map
+        // has: scan 7258fc07 turned "390, Simpsons Road, Bardon …" back into
+        // the Brisbane CBD centroid, filed under `geocode` (REQ-GEO-011).
+        if addr_entity.has_tag("reverse-geocoded") {
+            continue;
+        }
+        let Some(((lat, lon), grain)) =
+            crate::util::city_coords::city_coords_with_grain(&addr_entity.value)
+        else {
             continue;
         };
         let coord_val = format!("{lat:.4},{lon:.4}");
@@ -266,8 +387,15 @@ pub(super) fn address_to_coords_pass(
             }
         }
         // Carry originating sources: the correlator's ANCHORING_GEO_SOURCES check
-        // looks at corroborating_sources(), which reads Evidence source fields.
-        for src in addr_entity.corroborating_sources() {
+        // looks at corroborating_sources(), which reads Evidence source fields
+        // (REQ-CORRELATOR-005 — no new source is invented). Each carried record
+        // declares the centroid's GRAIN as `place_type`: the correlator weighs a
+        // `geocode`/`photon` leg at 40 m unless a `place_type` says otherwise,
+        // so a city centroid carried under `geocode` was a 40 m rooftop fix in
+        // the fusion (REQ-GEO-011). The grain only ever coarsens a leg.
+        let mut srcs: Vec<&str> = addr_entity.corroborating_sources().into_iter().collect();
+        srcs.sort_unstable();
+        for src in srcs {
             c.add_evidence(
                 Evidence::new(
                     src,
@@ -277,7 +405,8 @@ pub(super) fn address_to_coords_pass(
                     ),
                 )
                 .with_attr(ADDR_ENTITY_UID_ATTR, &addr_entity.uid)
-                .with_attr("addr_value", &addr_entity.value),
+                .with_attr("addr_value", &addr_entity.value)
+                .with_attr("place_type", grain),
             );
         }
         out.push(c);
@@ -584,6 +713,98 @@ mod tests {
         assert_eq!(geo_attr(&n, "hemisphere").as_deref(), Some("northern"));
     }
 
+    /// REQ-GEO-013: a provider's country and timezone outrank the offline
+    /// box. Scan 7258fc07: Fredericton, New Brunswick carried photon's
+    /// `country:CA` AND the box's `country:US` + `tz:America/New_York`; a
+    /// Queensland point got `tz:Australia/Sydney` beside open_meteo's
+    /// `Australia/Brisbane`.
+    #[test]
+    fn enrich_geospatial_defers_to_provider_country_and_timezone() {
+        let mut e = Entity::new(
+            EntityKind::Coordinates,
+            "45.956872,-66.630394",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
+        e.add_evidence(Evidence::new("photon", "reverse").with_attr("country_code", "CA"));
+        e.tag("country:CA");
+        enrich_geospatial(&mut e);
+        let cs: Vec<&String> = e
+            .tags
+            .iter()
+            .filter(|t| t.starts_with("country:"))
+            .collect();
+        assert_eq!(cs, vec!["country:CA"]);
+        assert!(
+            !e.tags.iter().any(|t| t.starts_with("tz:")),
+            "the box timezone rests on the box's wrong country: {:?}",
+            e.tags
+        );
+        assert_eq!(geo_attr(&e, "country_iso_box").as_deref(), Some("US"));
+        assert_eq!(geo_attr(&e, "country_iso"), None);
+
+        let mut q = Entity::new(
+            EntityKind::Coordinates,
+            "-21.414720,148.579440",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
+        q.add_evidence(
+            Evidence::new("open_meteo_geo", "geo")
+                .with_attr("timezone", "Australia/Brisbane")
+                .with_attr("country_code", "AU"),
+        );
+        enrich_geospatial(&mut q);
+        assert!(q.has_tag("tz:Australia/Brisbane"));
+        assert!(!q.has_tag("tz:Australia/Sydney"));
+    }
+
+    /// REQ-GEO-013: the merge unions tags, so a provider answer that arrives
+    /// after the box answer must still win once the merged entity is
+    /// re-enriched — and re-running replaces the engine's own record rather
+    /// than adding another.
+    #[test]
+    fn enrich_geospatial_reconciles_a_later_provider_answer_idempotently() {
+        let mut e = Entity::new(
+            EntityKind::Coordinates,
+            "45.956872,-66.630394",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
+        enrich_geospatial(&mut e);
+        assert!(
+            e.has_tag("country:US"),
+            "no provider yet: the box hint stands"
+        );
+
+        let mut photon = Entity::new(
+            EntityKind::Coordinates,
+            "45.956872,-66.630394",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
+        photon.add_evidence(Evidence::new("photon", "reverse").with_attr("country_code", "CA"));
+        photon.tag("country:CA");
+        e.merge(photon);
+        enrich_geospatial(&mut e);
+        enrich_geospatial(&mut e);
+        let cs: Vec<&String> = e
+            .tags
+            .iter()
+            .filter(|t| t.starts_with("country:"))
+            .collect();
+        assert_eq!(cs, vec!["country:CA"]);
+        assert!(!e.has_tag("tz:America/New_York"));
+        assert_eq!(
+            e.evidence
+                .iter()
+                .filter(|ev| ev.source == "geo_normalize")
+                .count(),
+            1,
+            "a re-run replaces its own record"
+        );
+    }
+
     #[test]
     fn enrich_geospatial_leaves_other_kinds_untouched() {
         let mut e = Entity::new(EntityKind::Email, "a@b.com", confidence::MEDIUM_PLUS, "s");
@@ -766,6 +987,76 @@ mod tests {
         assert!(c.has_tag(crate::core::tags::ADDR_DERIVED));
         assert!(c.has_tag(crate::core::tags::COARSE), "{c:?}");
         assert!(is_coarse_geo(c));
+    }
+
+    /// REQ-GEO-011: a reverse-geocoded Address came FROM a coordinate already
+    /// in the map; re-deriving it only adds a coarser copy of that point, filed
+    /// under `geocode`. Scan 7258fc07 turned a Bardon street address back into
+    /// the Brisbane CBD centroid this way.
+    #[test]
+    fn a_reverse_geocoded_address_is_not_re_derived_to_a_centroid() {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let mut a = Entity::new(
+            EntityKind::Address,
+            "390, Simpsons Road, Bardon West, Bardon, Brisbane, Queensland, 4065, Australia",
+            0.80,
+            "s1",
+        );
+        a.tag("geoint");
+        a.tag("reverse-geocoded");
+        a.tag("country:AU");
+        a.add_evidence(Evidence::new(
+            "geocode",
+            "Reverse geocode for -27.4459,152.9422",
+        ));
+        let mut m = std::collections::HashMap::new();
+        m.insert(a.uid.clone(), a);
+        assert!(address_to_coords_pass(&m, "s1").is_empty());
+    }
+
+    /// REQ-GEO-011: every record the pass carries onto a centroid declares the
+    /// centroid's grain as `place_type`, keeping the Address's own source
+    /// (REQ-CORRELATOR-005 unchanged). Without it a `geocode` leg on a city
+    /// centroid was weighed as a 40 m rooftop fix — end to end, the AU-059
+    /// radius floored at 0.04 km for two city-grain sightings.
+    #[test]
+    fn a_derived_centroid_declares_its_grain() {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let mut a = Entity::new(
+            EntityKind::Address,
+            "12 Example St, Toowong, Queensland",
+            0.70,
+            "s1",
+        );
+        a.add_evidence(Evidence::new("geocode", "forward geocode"));
+        let mut m = std::collections::HashMap::new();
+        m.insert(a.uid.clone(), a);
+        let out = address_to_coords_pass(&m, "s1");
+        assert_eq!(out.len(), 1, "sanity: Toowong resolves: {out:?}");
+        let c = &out[0];
+        assert!(!c.evidence.is_empty());
+        for ev in &c.evidence {
+            assert_eq!(ev.source, "geocode", "the Address's own source is kept");
+            assert!(
+                matches!(
+                    ev.attributes.get("place_type").map(String::as_str),
+                    Some("city" | "suburb" | "postcode" | "region")
+                ),
+                "{ev:?}"
+            );
+        }
+
+        // End to end: beside a self-reported social location (5 km grain) on
+        // the same point, the fused radius is never the 40 m of a rooftop.
+        let mut social = Entity::new(EntityKind::Coordinates, &c.value, 0.70, "s1");
+        social.add_evidence(Evidence::new("social_location", "profile location"));
+        let fix = crate::core::correlator::au059_synergy_fix(&[c.clone(), social])
+            .expect("two classes on one point fuse");
+        assert!(
+            fix.radius_km >= 1.5,
+            "a gazetteer centroid is not a rooftop: radius {} km",
+            fix.radius_km
+        );
     }
 
     /// REQ-GEO-007: a centroid recalled from a scan that predates the COARSE

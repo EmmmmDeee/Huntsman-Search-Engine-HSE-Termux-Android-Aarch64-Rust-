@@ -737,3 +737,71 @@ use super::*;
             "the coarsest geocoder answer must set the geocode leg; got {radius} m"
         );
     }
+
+    /// REQ-GEO-009: one search-snippet mention of "Sydney, Australia",
+    /// geocoded twice — `search_engines`' inline city lookup and the geocode
+    /// module's pivot on the same Address — is one mention, one class. Scan
+    /// 7258fc07's headline 0.97 fix rested on exactly this {Geocode, Search}.
+    #[test]
+    fn a_geocoder_leg_inherits_the_class_of_the_address_it_geocoded() {
+        let mut addr = Entity::new(EntityKind::Address, "Sydney, Australia", 0.65, "s");
+        addr.tag("country:AU");
+        addr.add_evidence(Evidence::new("search_engines", "Address near example.com"));
+
+        let mut a = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.72, "s");
+        a.tag("country:AU");
+        a.tag("au-state:NSW");
+        a.add_evidence(
+            Evidence::new(
+                "search_engines",
+                "Geocoded from search address: Sydney, Australia",
+            )
+            .with_attr("source_address", "Sydney, Australia"),
+        );
+
+        let mut b = Entity::new(EntityKind::Coordinates, "-33.8698,151.2083", 0.55, "s");
+        b.tag("country:AU");
+        b.tag("au-state:NSW");
+        b.add_evidence(
+            Evidence::new("geocode", "Geocoded \"Sydney, Australia\"")
+                .with_attr("input_address", "Sydney, Australia")
+                .with_attr("place_type", "city"),
+        );
+
+        let ents = vec![addr.clone(), a.clone(), b.clone()];
+        assert!(
+            au059_synergy_fix(&ents).is_none(),
+            "a geocode of a search-snippet address is the snippet's datum, not an orthogonal class"
+        );
+        assert!(
+            rule_au_059_cross_seed_geo_synergy(&RuleContext::new(&ents), "s", 0).is_empty()
+        );
+        assert_eq!(
+            au_location_corroboration(&ents).map(|c| c.independent_classes),
+            Some(1),
+            "best_geo_class must read the geocoder leg's lineage too"
+        );
+
+        // Control 1: the geocoded Address came from a registry, so the leg is
+        // Registry — a genuinely independent method beside the snippet.
+        let mut reg = addr.clone();
+        reg.evidence.clear();
+        reg.add_evidence(Evidence::new("abn_lookup", "ABR registered address"));
+        let fix = au059_synergy_fix(&[reg, a.clone(), b.clone()])
+            .expect("a registry address geocoded + a search sighting are two classes");
+        assert_eq!(fix.class_names.len(), 2);
+        assert!(
+            !fix.class_names
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case("geocode")),
+            "{:?}",
+            fix.class_names
+        );
+
+        // Control 2: no resolvable Address in the slice (an operator seed): the
+        // leg keeps its own Geocode class.
+        assert!(
+            au059_synergy_fix(&[a, b]).is_some(),
+            "an untraceable geocoder input stays an independent Geocode leg"
+        );
+    }

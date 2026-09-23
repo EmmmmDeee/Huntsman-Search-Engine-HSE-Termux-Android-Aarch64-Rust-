@@ -278,3 +278,10 @@ fn the_queried_point_is_annotated_not_corroborated() {
         .expect("the queried point");
     crate::core::test_support::assert_point_annotation(echo);
 }
+
+/// REQ-GEO-012: every ASGS region is a lookup of the queried point, so the
+/// engine caps it to that point's confidence; the declaration is the switch.
+#[test]
+fn au_geo_declares_its_findings_derive_from_the_target() {
+    assert!(AuGeo.derives_from_target());
+}

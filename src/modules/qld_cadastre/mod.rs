@@ -226,6 +226,13 @@ impl Module for QldCadastre {
         const KINDS: &[EntityKind] = &[EntityKind::Coordinates, EntityKind::Address];
         KINDS
     }
+    fn derives_from_target(&self) -> bool {
+        // Every region/parcel this module reports is a lookup of the queried
+        // point, so the engine caps it one derivation step below that point's
+        // own confidence (REQ-GEO-012).
+        true
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         // Budget for two requests plus a bounded Retry-After sleep on a 429
         // (see the retry in `process`), not just the single original call —

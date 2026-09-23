@@ -214,6 +214,13 @@ impl Module for AuGeo {
         KINDS
     }
 
+    fn derives_from_target(&self) -> bool {
+        // Every region/parcel this module reports is a lookup of the queried
+        // point, so the engine caps it one derivation step below that point's
+        // own confidence (REQ-GEO-012).
+        true
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         15_000
     }

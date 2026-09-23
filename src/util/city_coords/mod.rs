@@ -39,6 +39,26 @@
 /// assert!(city_coords("Brisbane, Australia").is_some());
 /// ```
 pub fn city_coords(addr: &str) -> Option<(f64, f64)> {
+    city_coords_with_grain(addr).map(|(coord, _)| coord)
+}
+
+/// [`city_coords`], plus the GRAIN of what matched, in the geocoders'
+/// `place_type` vocabulary: `"city"` for a tabulated place name, `"postcode"`
+/// for a tabulated postcode centroid, `"region"` for the leading-digits region
+/// fallback ([`au_postcode_region`]).
+///
+/// A centroid is only as precise as the thing it is the centre of, and a
+/// consumer that weighs points by precision must be told which it got. The
+/// engine's address→coordinate pass carries the Address's own sources onto the
+/// centroid; when one of them is `geocode`/`photon` the correlator weighed that
+/// leg at its class default, 40 m — a Brisbane-CBD centroid for a Bardon
+/// street address pulled on the fusion 5x as hard as a 1 km fix, and floored
+/// the fix's radius at 40 m (REQ-GEO-011). The grain lets it read the truth.
+///
+/// A tabulated name is declared `"city"` whether the row is a capital or a
+/// suburb: [`CITIES`] does not record which, and the coarser grain is the
+/// direction that cannot manufacture precision.
+pub fn city_coords_with_grain(addr: &str) -> Option<((f64, f64), &'static str)> {
     let trimmed = addr.trim();
     let lower = trimmed.to_lowercase();
     // A REGION label must not earn the centroid of the city inside it. The
@@ -54,13 +74,19 @@ pub fn city_coords(addr: &str) -> Option<(f64, f64)> {
         return None;
     }
     if let Some(hit) = match_tabulated_city(&lower) {
-        return Some(hit);
+        return Some((hit, "city"));
     }
-    // Last-resort: treat a bare 4-digit string as a postcode — the exact suburb
-    // centroid when tabulated, else the region centroid by leading digits so the
-    // whole AU postcode space resolves offline.
+    // A postcode: the exact suburb centroid when tabulated, else the region
+    // centroid by leading digits so the whole AU postcode space resolves
+    // offline — each labelled with the grain it actually is.
+    let postcode_fix = |pc: &str| {
+        postcode_coords(pc)
+            .map(|c| (c, "postcode"))
+            .or_else(|| au_postcode_region(pc).map(|c| (c, "region")))
+    };
+    // Last-resort: treat a bare 4-digit string as a postcode.
     if crate::util::postcode_au::is_shaped(trimmed) {
-        return postcode_coords(trimmed).or_else(|| au_postcode_region(trimmed));
+        return postcode_fix(trimmed);
     }
     // Full address string with no tabulated suburb: pull the embedded AU
     // postcode (`"12 Smith St, Maleny QLD 4552"`) and resolve it offline. This
@@ -77,7 +103,7 @@ pub fn city_coords(addr: &str) -> Option<(f64, f64)> {
     if !mentions_non_au_country(&lower)
         && let Some(pc) = au_postcode_in(trimmed)
     {
-        return postcode_coords(pc).or_else(|| au_postcode_region(pc));
+        return postcode_fix(pc);
     }
     None
 }
