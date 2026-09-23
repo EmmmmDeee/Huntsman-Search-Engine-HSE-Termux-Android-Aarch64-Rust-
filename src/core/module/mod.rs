@@ -275,7 +275,10 @@ pub trait Module: Send + Sync {
     /// zero-data timeout on every constrained-device run rather than reclaim
     /// waste. The canonical case is `see_know`: its `/search` endpoint has a
     /// ~55 s server-side processing cap and routinely answers in 50–60 s, so a
-    /// 45 s clamp kills it before the upstream ever responds. An exempt module
+    /// 45 s clamp kills it before the upstream ever responds. `social_probe` is
+    /// the other: its sequential 37-platform sweep takes 42–45 s on a phone,
+    /// so the cap cut off normal runs and discarded every profile they had
+    /// confirmed (REQ-SOCIAL-004). An exempt module
     /// is bounded by its own
     /// [`constrained_timeout_ms`](Module::constrained_timeout_ms) instead
     /// (still finite — never unbounded).

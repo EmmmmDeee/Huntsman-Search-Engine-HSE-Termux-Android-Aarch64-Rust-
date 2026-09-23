@@ -898,3 +898,74 @@ fn a_place_named_after_a_person_seed_is_neither_the_person_nor_their_location() 
     assert!(ents[0].has_tag("exact-name-match"));
     assert!(ents.iter().any(|e| e.kind == EntityKind::Coordinates));
 }
+
+#[test]
+fn a_namesake_primary_s_pep_flag_does_not_reach_the_subject() {
+    // Scan 7258fc07 (REQ-NAMESAKE-002): Wikidata's first "Ian Thorpe" hit was
+    // Q61949509, a New Zealand soldier holding a P39 position; the swimmer
+    // Q185044 was only a candidate. The primary head was tagged `pep`, marked
+    // ambiguous, and fused into the seed anchor — the cap lost to the merge,
+    // the `pep` tag kept by the union — so the subject carried a namesake's
+    // PEP flag in every export and AU-114 would report it.
+    let mut all = primary_entities(
+        "Q61949509",
+        "Ian Thorpe",
+        &serde_json::json!({
+            "labels": {"en": {"value": "Ian Thorpe"}},
+            "claims": {
+                "P31": [{"mainsnak": {"datavalue": {"value": {"id": "Q5"}}}}],
+                "P39": [{"mainsnak": {"datavalue": {"value": {"id": "Q60769625"}}}}]
+            }
+        }),
+        TargetKind::FullName,
+        "s",
+    );
+    all.push(candidate_entity(
+        &SearchHit {
+            id: "Q185044".into(),
+            label: Some("Ian Thorpe".into()),
+            description: Some("Australian swimmer".into()),
+        },
+        TargetKind::FullName,
+        "s",
+    ));
+    super::builder::mark_shared_labels(
+        &mut all,
+        TargetKind::FullName,
+        &["Ian Thorpe", "Ian Thorpe"],
+    );
+    let mut seed = crate::core::entity::Entity::new(EntityKind::Person, "Ian Thorpe", 0.82, "s");
+    seed.tag("seed");
+    all.push(seed);
+    crate::core::entity::dedup_merge_entities(&mut all);
+
+    let subject = all
+        .iter()
+        .find(|e| e.kind == EntityKind::Person && e.value == "Ian Thorpe")
+        .expect("the merged subject anchor");
+    assert!(subject.has_tag("seed") && subject.has_tag("ambiguous-name"));
+    assert!(
+        !subject.has_tag("pep") && !subject.has_tag("politically-exposed"),
+        "a namesake's office reached the subject: {:?}",
+        subject.tags
+    );
+    let record = subject
+        .evidence
+        .iter()
+        .find(|ev| ev.attributes.get("position_held_qids").map(String::as_str) == Some("Q60769625"))
+        .expect("the namesake's position is still recorded, not dropped");
+    assert!(
+        record
+            .attributes
+            .get("unresolved_flags")
+            .is_some_and(|f| f.split(',').any(|x| x == "pep")),
+        "the flag is kept on the record it came from: {:?}",
+        record.attributes
+    );
+    assert!(
+        crate::core::correlator::correlate_entities(&all, "s")
+            .iter()
+            .all(|c| c.rule_id != "AU-114"),
+        "AU-114 must not report a namesake's PEP status against the subject"
+    );
+}

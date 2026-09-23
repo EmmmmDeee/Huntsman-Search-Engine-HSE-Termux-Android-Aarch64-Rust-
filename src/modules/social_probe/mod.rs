@@ -407,20 +407,33 @@ impl Module for SocialProbe {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[
-            EntityKind::Url,
-            EntityKind::Username,
-            EntityKind::Person,
-            EntityKind::Domain,
-        ];
+        // No `Domain`: a probed host is always the platform's own (see
+        // `emit_judged`), never an asset of the subject (REQ-SOCIAL-002).
+        const KINDS: &[EntityKind] = &[EntityKind::Url, EntityKind::Username, EntityKind::Person];
         KINDS
     }
 
     fn max_timeout_ms(&self) -> u64 {
         // The first wave is sequential and paced (37 platforms × up to 4 s of
         // curl + 250 ms), the control wave concurrent (one more curl per
-        // presence); the 40 s envelope was reached on this sandbox at 37 s.
+        // presence); the 40 s envelope was reached on this sandbox at 37 s,
+        // and on a phone a NORMAL sweep takes 42–45 s (Termux scan 7258fc07:
+        // completed sweeps of 43, 42, 45, 42 and 43 s). 60 s is ~15 s of
+        // headroom over the on-device happy path; a hung sweep still dies here.
         60_000
+    }
+
+    fn constrained_timeout_cap_exempt(&self) -> bool {
+        // The engine's 45 s constrained-device cap sits AT this module's
+        // on-device happy path, not above it: Termux scan 7258fc07 timed out 3
+        // of 8 full sweeps at exactly 45 s while the ones that finished took
+        // 42–45 s. The module builds its result only after both waves, so a
+        // cap timeout discards every profile already confirmed and adds a soft
+        // failure to the breaker streak — the cap was killing normal runs, not
+        // reclaiming a hung tail, which is exactly the case the exemption
+        // exists for (REQ-CORE-008). Still bounded: `constrained_timeout_ms`
+        // defaults to `max_timeout_ms`, 60 s (REQ-SOCIAL-004).
+        true
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -503,7 +516,7 @@ impl Module for SocialProbe {
                 checked_count,
             )
         {
-            return Err(Error::module(SRC, msg));
+            return Err(inconclusive_error(target.kind, msg));
         }
 
         // Add a summary echo of the target ONLY when at least one profile was
@@ -615,31 +628,18 @@ pub(super) fn emit_judged(
                 result.push(entity);
 
                 // A confirmed profile's value is the URL + handle, already
-                // emitted above. The platform's APEX domain (instagram.com,
-                // tiktok.com, …) is the provider's estate, never the subject's
-                // asset — emitting it as a Domain entity drags the scan into
-                // mapping the platform's DNS/CDN infrastructure and inflates
-                // correlations (a real on-device scan flagged exactly this as
-                // CRITICAL infrastructure-pollution). Only surface a platform host
-                // that is NOT a known mega/social/infra domain — i.e. a niche or
-                // self-hosted site that might genuinely belong to the subject.
-                if let Some(host) = url::Url::parse(url)
-                    .ok()
-                    .and_then(|u| u.host_str().map(str::to_lowercase))
-                    && host.contains('.')
-                    && !crate::core::scan::is_noncentral_domain(&host)
-                {
-                    let mut dom = Entity::new(EntityKind::Domain, &host, confidence::LOW, scan_id);
-                    dom.tag("social-platform");
-                    dom.add_evidence(
-                        Evidence::new(
-                            crate::modules::corpus_source(url, SRC),
-                            format!("Platform domain from {} profile", platform.name),
-                        )
-                        .with_attr("platform", platform.name),
-                    );
-                    result.push(dom);
-                }
+                // emitted above — and nothing else. Its host is NEVER a Domain:
+                // every probed URL is built from this module's own
+                // `url_pattern` table, where the handle is only ever in the
+                // path, so the host is always the platform's estate
+                // (behance.net, myspace.com, gitlab.com, …) and cannot be the
+                // subject's own site by construction. The earlier fallback —
+                // "surface a host that is not a known mega/infra domain, it might
+                // be the subject's" — read a denylist miss as ownership: scan
+                // 7258fc07 filed behance.net and myspace.com as the subject's
+                // Domains, linked `derived_from` to the username and queued for
+                // DNS/cert expansion (REQ-SOCIAL-002). No list can close that,
+                // because the next unlisted platform leaks the same way.
                 tally.found += found_count;
                 tally.verified += verified_count;
                 tally.found_platforms.extend(found_platforms);
@@ -648,6 +648,34 @@ pub(super) fn emit_judged(
     }
     tally.found_platforms.sort_unstable();
     (result, tally)
+}
+
+/// How an inconclusive M6 verdict (see [`inconclusive_sweep`]) is reported,
+/// by the table that was swept.
+///
+/// A **Username** sweep stays a module error: 35 handle platforms answering
+/// nothing is a blocked or broken egress, and benching the module after a
+/// streak of those (the circuit breaker) is the intended cost saving.
+///
+/// A **FullName** sweep is a typed `Unavailable` skip instead. Its table is two
+/// people directories — `facebook-public`, which answers "present" for any
+/// name, and `peekyou`, walled from a typical client — so its denominator is
+/// one platform and it is inconclusive by construction, on every name target.
+/// The breaker is keyed by module name alone, so each of those structural
+/// verdicts counted against the independent handle table: scan 7258fc07
+/// tripped `social_probe` three times, twice with name-sweep errors supplying
+/// the streak, and benched it for username targets that were answering
+/// (found 7, 3, 2). `Unavailable` is still a coverage gap, never a clean
+/// negative, so the M6 guarantee — not a confirmed absence — holds, and the
+/// reason says so (REQ-SOCIAL-003). **Pure.**
+pub(super) fn inconclusive_error(kind: TargetKind, msg: String) -> Error {
+    match kind {
+        TargetKind::FullName => Error::skipped(
+            crate::core::event::SkipClass::Unavailable,
+            format!("people-directory sweep not answered — {msg}"),
+        ),
+        _ => Error::module(SRC, msg),
+    }
 }
 
 /// Post-sweep M6 verdict: a zero-hit run is *inconclusive* — not a confirmed

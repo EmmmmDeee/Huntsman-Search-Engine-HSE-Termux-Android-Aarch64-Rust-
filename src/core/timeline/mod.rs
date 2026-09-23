@@ -19,7 +19,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::entity::Entity;
+use crate::core::entity::{Entity, VerificationMethod};
 
 /// The semantic class of a reconstructed event. Drives ordering ties,
 /// display grouping, and downstream attribution reasoning.
@@ -167,6 +167,15 @@ fn classify(attr_key: &str) -> Option<TimelineEventKind> {
 /// address / email must never appear as if it were the subject's life event. This
 /// mirrors the candidate exclusion the correlator and exposure index already
 /// apply.
+///
+/// For the same reason an evidence record marked
+/// [`VerificationMethod::Unverified`] is skipped — the one gate
+/// `core::exposure` already applies. Its source matched the entity by name and
+/// did not establish whose record it is (`util::namesake::mark_ambiguous`,
+/// `wikitree`), and entities merge by value, so it sits on the subject's own
+/// anchor: scan 7258fc07 put a New Zealand soldier's 1930 birth date and 2019
+/// death date on "Ian Thorpe" the swimmer (REQ-NAMESAKE-002). Skipping the
+/// record, not the entity, keeps every attributable event on that anchor.
 pub fn reconstruct(entities: &[Entity]) -> Vec<TimelineEvent> {
     let mut events: Vec<TimelineEvent> = Vec::new();
     for e in entities {
@@ -174,6 +183,9 @@ pub fn reconstruct(entities: &[Entity]) -> Vec<TimelineEvent> {
             continue;
         }
         for ev in &e.evidence {
+            if ev.verification == Some(VerificationMethod::Unverified) {
+                continue;
+            }
             for (key, raw) in &ev.attributes {
                 let Some(kind) = classify(key) else { continue };
                 let Some((ts, iso)) = parse_date(raw) else {

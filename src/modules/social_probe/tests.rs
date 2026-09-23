@@ -666,3 +666,117 @@ fn an_indiscriminate_platform_is_never_a_profile_and_the_summary_names_it() {
         Some("1")
     );
 }
+
+/// REQ-SOCIAL-002 (scan 7258fc07 [380]/[381]): a confirmed behance / myspace
+/// profile filed `behance.net` and `myspace.com` as the subject's Domains —
+/// `derived_from` the username, queued for DNS/cert expansion — because the
+/// host passed a mega/infra denylist. Every probed host comes from this
+/// module's own table, so none is ever the subject's.
+#[test]
+fn a_confirmed_profile_never_files_the_platforms_own_host_as_a_domain() {
+    let found = |p: &'static Platform, handle: &str| -> ((&'static Platform, u16), ProbeResult) {
+        (
+            (p, 200),
+            ProbeResult::Found {
+                url: p.url_pattern.replace("{}", handle),
+                confidence: 0.74,
+                verified: false,
+                controlled: true,
+            },
+        )
+    };
+    let judged: Vec<_> = USERNAME_PLATFORMS
+        .iter()
+        .chain(NAME_PLATFORMS.iter())
+        .map(|p| found(p, "ianthorpe"))
+        .collect();
+    let named = |n: &str| judged.iter().any(|((p, _), _)| p.name == n);
+    assert!(
+        named("behance") && named("myspace"),
+        "the scan's two platforms are in the sweep"
+    );
+    let (result, tally) = emit_judged(&judged, "scan-t");
+    let domains: Vec<&str> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        domains.is_empty(),
+        "a platform's host is its estate, never the subject's Domain: {domains:?}"
+    );
+    assert_eq!(tally.found as usize, judged.len(), "every profile is kept");
+    for u in [
+        "https://www.behance.net/ianthorpe",
+        "https://myspace.com/ianthorpe",
+    ] {
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Url && e.value == u),
+            "{u} is still the profile"
+        );
+    }
+    assert!(
+        !SocialProbe.produces().contains(&EntityKind::Domain),
+        "produces() must not claim a kind the module never emits"
+    );
+}
+
+/// REQ-SOCIAL-003 (scan 7258fc07): the two-entry people-directory table is
+/// inconclusive by construction (facebook-public indiscriminate, peekyou
+/// walled), and reported as a module error it tripped the module-wide breaker
+/// and benched the handle sweep. The name verdict is an `Unavailable` skip;
+/// the handle verdict is still the error the breaker should count.
+#[test]
+fn an_inconclusive_people_directory_sweep_is_an_unavailable_skip_not_a_breaker_fault() {
+    use crate::core::event::SkipClass;
+    let msg = inconclusive_sweep(0, 1, 1, 2)
+        .expect("the 7258fc07 name-table shape: facebook-public indiscriminate + peekyou walled");
+    match inconclusive_error(TargetKind::FullName, msg.clone()) {
+        Error::Skipped { class, reason } => {
+            assert_eq!(class, SkipClass::Unavailable);
+            assert!(
+                class.is_coverage_gap(),
+                "still a gap, never a clean negative"
+            );
+            assert!(reason.contains("not a confirmed absence"), "{reason}");
+        }
+        other => panic!("a people-directory verdict must be a typed skip, got {other:?}"),
+    }
+    assert!(
+        matches!(
+            inconclusive_error(TargetKind::Username, msg),
+            Error::Module { .. }
+        ),
+        "a blocked handle sweep is still the module error that benches it"
+    );
+}
+
+/// REQ-SOCIAL-004: on a phone a normal sweep takes 42–45 s (Termux scan
+/// 7258fc07); the engine's 45 s constrained-device cap timed out 3 of 8 and
+/// discarded their confirmed profiles. The module must be cap-exempt and its
+/// own constrained budget must clear that happy path with headroom — while
+/// staying finite.
+#[test]
+fn is_exempt_from_the_constrained_device_timeout_cap() {
+    // The engine's cap (`CONSTRAINED_MODULE_TIMEOUT_CAP_MS`, private to
+    // `core::engine`) is 45 s; the measured sweep reaches it, so the budget
+    // must clear it by a real margin, not by a millisecond.
+    const ON_DEVICE_SWEEP_WITH_HEADROOM_MS: u64 = 55_000;
+    assert!(
+        SocialProbe.constrained_timeout_cap_exempt(),
+        "social_probe's on-device happy path reaches the 45 s cap"
+    );
+    let budget = SocialProbe.constrained_timeout_ms();
+    assert!(
+        budget >= ON_DEVICE_SWEEP_WITH_HEADROOM_MS,
+        "constrained budget {budget} ms must clear the ~45 s on-device sweep"
+    );
+    assert!(
+        budget <= SocialProbe.max_timeout_ms(),
+        "still bounded by its own budget"
+    );
+}

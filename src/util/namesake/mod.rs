@@ -28,6 +28,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::core::confidence;
 use crate::core::entity::{Entity, EntityKind, VerificationMethod, derive_uid, normalise};
+use crate::core::tags;
 
 /// The tag stamped on an entity whose name this provider's own answer shows is
 /// held by more than one party.
@@ -49,6 +50,40 @@ pub const AMBIGUOUS_NAME: &str = "ambiguous-name";
 /// [`AMBIGUOUS_NAME`] and an evidence caution, where an operator can read it,
 /// not by a constant nobody can interpret.
 pub const AMBIGUOUS_CEILING: f64 = confidence::LOW_MEDIUM;
+
+/// Tags that assert a **determination about one specific party** — this person
+/// holds public office, that company is designated — rather than describe the
+/// record they came from.
+///
+/// On a proven-collision row such a tag cannot stand at the entity level. Tags
+/// are entity-level and `Entity::absorb` unions them, so the row's tag lands
+/// on the subject's same-named anchor through the merge exactly like the
+/// confidence cap is lost through it (REQ-WIKIDATA-001) — but where the lost
+/// cap only *overstates* a namesake, a surviving `pep` *asserts* the
+/// namesake's office as the subject's, and AU-114 reports it against the
+/// subject, gated on nothing but the tag and a confidence the anchor already
+/// has. Scan 7258fc07 is that case: Wikidata's first "Ian Thorpe" hit was a
+/// New Zealand soldier holding a P39 position, and the seed — the swimmer —
+/// carried `pep` / `politically-exposed` in every export (REQ-NAMESAKE-002).
+///
+/// `"politically-exposed"` is the literal `wikidata` stamps beside
+/// [`tags::PEP`]; it has no `tags` constant of its own, so it is named here
+/// once rather than through a new wire-vocabulary constant.
+pub const PARTY_DETERMINATION_TAGS: &[&str] = &[
+    tags::PEP,
+    "politically-exposed",
+    tags::SANCTIONED,
+    tags::DEBARRED,
+    tags::SANCTIONS_LINKED,
+];
+
+/// The evidence attribute a stripped [`PARTY_DETERMINATION_TAGS`] entry is
+/// recorded under: a sorted, comma-joined list of the flags the source raised
+/// for *one of* the name's holders. Kept on the evidence, not dropped, so
+/// nothing observed is lost — the record already reads
+/// [`VerificationMethod::Unverified`], which is precisely the status of a flag
+/// nobody has yet attributed to a party.
+pub const UNRESOLVED_FLAGS_ATTR: &str = "unresolved_flags";
 
 /// Cap, flag, and mark the ownership of one entity a proven-collision row
 /// produced. **The one way an entity is marked ambiguous** —
@@ -74,14 +109,62 @@ pub const AMBIGUOUS_CEILING: f64 = confidence::LOW_MEDIUM;
 /// exposure index. An ownership status the source already established (an
 /// account linked by email) is about a different question and is kept.
 ///
-/// Idempotent — the tag de-dupes, the cap is a `min`, and the mark fills only
-/// an empty status.
+/// The fourth mark is subtraction: a tag in [`PARTY_DETERMINATION_TAGS`] is a
+/// verdict about one holder of the name, and an entity-level tag survives the
+/// merge by union, so it is removed from the entity and recorded on every
+/// evidence record under [`UNRESOLVED_FLAGS_ATTR`] instead (REQ-NAMESAKE-002).
+/// A genuine designation of the subject is not lost by this: it arrives from a
+/// source that resolved the party (`opensanctions`), on its own entity, and
+/// the union restores it — which is also why AU-114 is deliberately **not**
+/// taught to read [`AMBIGUOUS_NAME`] as a veto, since one module's collision
+/// would then hide another module's real designation on the same anchor.
+///
+/// Idempotent — the tag de-dupes, the cap is a `min`, the mark fills only an
+/// empty status, and a second call finds no determination tag left to strip,
+/// so the recorded flags are left exactly as the first call wrote them.
 pub fn mark_ambiguous(entity: &mut Entity) {
+    strip_party_determinations(entity);
     entity.tag(AMBIGUOUS_NAME);
     entity.confidence = entity.confidence.min(AMBIGUOUS_CEILING);
     for ev in &mut entity.evidence {
         ev.verification
             .get_or_insert(VerificationMethod::Unverified);
+    }
+}
+
+/// Move every [`PARTY_DETERMINATION_TAGS`] entry off `entity` and onto each of
+/// its evidence records under [`UNRESOLVED_FLAGS_ATTR`].
+///
+/// The recorded list is the sorted union of what the record already held and
+/// what was stripped now, so the output does not depend on tag order or on how
+/// many times the entity was marked. A no-op when nothing is stripped.
+fn strip_party_determinations(entity: &mut Entity) {
+    let stripped: BTreeSet<String> = entity
+        .tags
+        .iter()
+        .filter(|t| PARTY_DETERMINATION_TAGS.contains(&t.as_str()))
+        .cloned()
+        .collect();
+    if stripped.is_empty() {
+        return;
+    }
+    entity
+        .tags
+        .retain(|t| !PARTY_DETERMINATION_TAGS.contains(&t.as_str()));
+    for ev in &mut entity.evidence {
+        let mut flags = stripped.clone();
+        if let Some(prior) = ev.attributes.get(UNRESOLVED_FLAGS_ATTR) {
+            flags.extend(
+                prior
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|f| !f.is_empty())
+                    .map(str::to_owned),
+            );
+        }
+        let joined = flags.into_iter().collect::<Vec<_>>().join(",");
+        ev.attributes
+            .insert(UNRESOLVED_FLAGS_ATTR.to_owned(), joined);
     }
 }
 

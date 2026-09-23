@@ -1538,6 +1538,81 @@ async fn cache_replay_does_not_feed_the_circuit_breaker_success_path() {
 }
 
 #[tokio::test]
+async fn a_typed_unavailable_skip_never_feeds_the_circuit_breaker() {
+    use crate::core::error::Error;
+    use crate::core::event::SkipClass;
+    use crate::core::test_support::InMemoryStore;
+
+    // REQ-SOCIAL-003: a module whose verdict on one kind of target is
+    // structurally inconclusive (social_probe's two-entry people-directory
+    // table) must be able to say so without benching itself for every other
+    // kind — the breaker is keyed by module name alone. Scan 7258fc07 tripped
+    // social_probe three times on name-sweep errors. The typed skip is what
+    // decides: three in a row leave the breaker closed; the same three as
+    // module errors open it. Unique names keep this independent of the
+    // process-global breaker state the other tests touch.
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(vec![], store, bus);
+
+    let target = Target::new(TargetKind::FullName, "Ian Thorpe");
+    let opts = ScanOptions::default();
+    let cx = DispatchCx {
+        scan_id: "skip-breaker-scan",
+        target: &target,
+        opts: &opts,
+        is_expansion: false,
+        seed: &Target::new(TargetKind::FullName, "seed"),
+        quarantined: no_quarantine(),
+    };
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
+    };
+
+    let skipping = "test_unavailable_skip_breaker";
+    for _ in 0..4 {
+        engine.finalise_module_result(
+            &cx,
+            skipping,
+            Ok(Err(Error::skipped(
+                SkipClass::Unavailable,
+                "people-directory sweep not answered — not a confirmed absence",
+            ))),
+            &mut state,
+            &[],
+            false,
+        );
+    }
+    assert!(
+        !super::circuit::is_open(skipping),
+        "a typed skip is a decision, not a fault — it must never bench the module"
+    );
+
+    let erroring = "test_unavailable_skip_breaker_contrast";
+    for _ in 0..3 {
+        engine.finalise_module_result(
+            &cx,
+            erroring,
+            Ok(Err(Error::module(erroring, "inconclusive"))),
+            &mut state,
+            &[],
+            false,
+        );
+    }
+    assert!(
+        super::circuit::is_open(erroring),
+        "the same verdict as a module error trips after the soft streak"
+    );
+}
+
+#[tokio::test]
 async fn a_bot_challenge_error_benches_the_module_at_once_and_is_recorded_as_such() {
     use crate::core::event::EventKind;
     use crate::core::test_support::InMemoryStore;

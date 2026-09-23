@@ -15,8 +15,15 @@
 //! hits for the same name. Keyless — EBI's public REST API needs no key.
 //!
 //! Endpoint:
-//! `https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=<q>&format=json&pageSize=5`
-//! → `{ "resultList": { "result": [ { "pmid": "...", "doi": "..." }, ... ] } }`.
+//! `https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=AUTH:"<name>"&format=json&pageSize=5`
+//! for a name, `query=AFF:"<organisation>"&resultType=core` for an
+//! organisation (see [`build_url`])
+//! → `{ "resultList": { "result": [ { "pmid": "...", "doi": "...",
+//! "authorString": "Carbonaro NJ, Thorpe IF.", "affiliation": "..." }, ... ] } }`.
+//! Only a work [`attribution`] ties to the seed — an author whose name matches,
+//! an affiliation naming the organisation — is emitted: the same rule
+//! `crossref_search` applies (`docs/PROVIDER_SWEEP_BACKLOG.md` #14), through
+//! the same two matchers, so the sibling literature sources cannot drift apart.
 //! A result's URL prefers its DOI resolver (works for preprints/patents that
 //! carry no PMID); falls back to the PubMed article page when only a `pmid`
 //! is present. A result with neither is skipped — there is nothing to link
@@ -54,12 +61,13 @@ const API_BASE: &str = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 /// larger page the endpoint already returned.
 const CAP: usize = 5;
 
-/// Confidence for a Europe PMC result URL from a name-search match. A
-/// keyless, unauthenticated hit against a free-text name/organisation query
-/// is real signal — the name appears in an indexed publication, preprint, or
-/// patent — but a name match alone doesn't confirm the same person authored
-/// it (common-name collisions), so this sits at a moderate, single-source
-/// level rather than a directly-confirmed identity pivot.
+/// Confidence for a Europe PMC result URL whose author (or affiliation)
+/// matches the seed. An author-list match is real signal — someone of the
+/// seed's name wrote an indexed publication, preprint, or patent — but it does
+/// not confirm the same person (common-name collisions; Europe PMC does no
+/// author disambiguation), so this sits at a moderate, single-source level
+/// rather than a directly-confirmed identity pivot: the value
+/// `crossref_search` gives the same attribution.
 const RESULT_URL_CONFIDENCE: f64 = confidence::MEDIUM_PLUS;
 
 #[derive(Debug, Default, Deserialize)]
@@ -80,6 +88,104 @@ pub(super) struct ResultItem {
     doi: Option<String>,
     #[serde(default)]
     pmid: Option<String>,
+    /// The work's author list as Europe PMC renders it in both result types:
+    /// `"Surname Initials, Surname Initials, …"` with a trailing `.`
+    /// (`"van Dorst RM, Argillier C."`; a consortium is a bare name). The one
+    /// field that says who WROTE the work, which is what a name seed is about.
+    #[serde(rename = "authorString", default)]
+    author_string: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    /// The work's affiliation line — present on `resultType=core`, which the
+    /// organisation query requests for exactly this field.
+    #[serde(default)]
+    affiliation: Option<String>,
+}
+
+/// The search URL for a target: author-fielded `AUTH:"<name>"` for a name,
+/// affiliation-fielded `AFF:"<organisation>"` (with `resultType=core`, the
+/// result type that carries the affiliation line) for an organisation; `None`
+/// for any other kind.
+///
+/// The unfielded `query=<seed>` this replaces matched the name anywhere —
+/// title, abstract, full text, a GPU product line: live 2026-09-23,
+/// `query=Ada Lovelace` returned "Ada Lovelace, a role model for the ages."
+/// (no author), a paper on NVIDIA's Ada Lovelace GPU, and
+/// "Charman-Anderson S." — every hit filed as the subject's literature, while
+/// `AUTH:"Ada Lovelace"` returns none. A `"` in the value is dropped rather
+/// than escaped: it would close the phrase early, and no name or organisation
+/// is spelled with one. **Pure.**
+pub(super) fn build_url(api_base: &str, kind: TargetKind, value: &str) -> Option<String> {
+    let (field, result_type) = match kind {
+        TargetKind::FullName => ("AUTH", ""),
+        TargetKind::Organisation => ("AFF", "&resultType=core"),
+        _ => return None,
+    };
+    let phrase: String = value.chars().filter(|&c| c != '"').collect();
+    let phrase = phrase.trim();
+    if phrase.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{api_base}?query={}&format=json&pageSize={CAP}{result_type}",
+        urlencode(&format!("{field}:\"{phrase}\""))
+    ))
+}
+
+/// One `authorString` entry split into `(given, family)` for
+/// `crossref_search::author_matches`.
+///
+/// Europe PMC writes `Surname Initials` (`"Thorpe IF"`, `"van Dorst RM"`): the
+/// trailing all-capitals token is the initials and everything before it the
+/// family name. Only the FIRST initial is passed as the given name —
+/// `author_matches` compares a one-character given name as a prefix, so `"I"`
+/// matches `Ian` where `"IF"` would not. An entry without an initials token (a
+/// consortium, a one-word name) is family-only, which `author_matches` decides
+/// on the family name alone. **Pure.**
+fn split_author(entry: &str) -> Option<(String, String)> {
+    let entry = entry.trim().trim_end_matches('.').trim();
+    let tokens: Vec<&str> = entry.split_whitespace().collect();
+    let (last, rest) = tokens.split_last()?;
+    let is_initials = !rest.is_empty()
+        && last.chars().count() <= 4
+        && last.chars().all(|c| c.is_alphabetic() && c.is_uppercase());
+    if is_initials {
+        let first = last.chars().next().map(String::from).unwrap_or_default();
+        Some((first, rest.join(" ")))
+    } else {
+        Some((String::new(), entry.to_string()))
+    }
+}
+
+/// Why a work is attributable to the seed: the `authorString` entry whose name
+/// matches a FullName seed (as Europe PMC wrote it, e.g. `"Thorpe IF"`), or the
+/// affiliation line naming an Organisation seed. `None` when nothing ties the
+/// work to the subject — a work that merely mentions the name, or one whose
+/// only same-surname author has a different initial (`"Thorpe A"` is not Ian
+/// Thorpe). The matching itself is `crossref_search`'s, so a name means the
+/// same thing to both literature sources. **Pure.**
+pub(super) fn attribution(kind: TargetKind, seed: &str, item: &ResultItem) -> Option<String> {
+    match kind {
+        TargetKind::FullName => item
+            .author_string
+            .as_deref()?
+            .split(',')
+            .map(|entry| entry.trim().trim_end_matches('.').trim())
+            .filter(|entry| !entry.is_empty())
+            .find(|entry| {
+                split_author(entry).is_some_and(|(given, family)| {
+                    crate::modules::crossref_search::author_matches(seed, &given, &family)
+                })
+            })
+            .map(str::to_string),
+        TargetKind::Organisation => item
+            .affiliation
+            .as_deref()
+            .map(str::trim)
+            .filter(|aff| crate::modules::crossref_search::affiliation_matches(seed, aff))
+            .map(str::to_string),
+        _ => None,
+    }
 }
 
 /// Project the search response onto entities. Pure, network-free,
@@ -87,13 +193,24 @@ pub(super) struct ResultItem {
 /// tested directly against captured responses rather than through
 /// `process`.
 ///
+/// Only a work [`attribution`] ties to the seed is emitted; the rest of a page
+/// is works that mention the name or were written by someone else. The field
+/// scoping of [`build_url`] narrows what Europe PMC returns, but its `AUTH:`
+/// match is its own (it normalises `Ian Thorpe` to `Thorpe I` and would admit
+/// any `Thorpe I*`), so the gate is here, on what the record itself says.
+///
 /// A result's URL prefers its DOI resolver (`https://doi.org/<doi>`), which
 /// resolves for preprints and patents that carry no PMID; falls back to the
 /// PubMed article page (`https://pubmed.ncbi.nlm.nih.gov/<pmid>/`) when only
 /// a `pmid` is present. A result with neither is skipped entirely — there is
 /// nothing to link to. Deduplicated case-insensitively on the resulting URL
 /// and capped at [`CAP`], mirroring the source module's judgement exactly.
-pub(super) fn build_entities(r: &SearchResp, query: &str, scan_id: &str) -> Vec<Entity> {
+pub(super) fn build_entities(
+    r: &SearchResp,
+    kind: TargetKind,
+    query: &str,
+    scan_id: &str,
+) -> Vec<Entity> {
     let mut out = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -101,6 +218,9 @@ pub(super) fn build_entities(r: &SearchResp, query: &str, scan_id: &str) -> Vec<
         if out.len() >= CAP {
             break;
         }
+        let Some(matched) = attribution(kind, query, item) else {
+            continue;
+        };
 
         let doi = item.doi.as_deref().map(str::trim).filter(|d| !d.is_empty());
         let pmid = item
@@ -126,11 +246,26 @@ pub(super) fn build_entities(r: &SearchResp, query: &str, scan_id: &str) -> Vec<
         let mut e = Entity::new(EntityKind::Url, &url, RESULT_URL_CONFIDENCE, scan_id);
         e.tag("europepmc");
         e.tag("literature");
-        e.add_evidence(
-            Evidence::new(SRC, format!("Europe PMC literature match for '{query}'"))
-                .with_attr(field, id_value)
-                .with_attr("query", query),
-        );
+        let (summary, matched_key) = match kind {
+            TargetKind::Organisation => (
+                format!("Europe PMC work affiliated with '{matched}'"),
+                "matched_affiliation",
+            ),
+            _ => (format!("Europe PMC work by '{matched}'"), "matched_author"),
+        };
+        let mut ev = Evidence::new(SRC, summary)
+            .with_attr(field, id_value)
+            .with_attr("query", query)
+            .with_attr(matched_key, &matched);
+        if let Some(t) = item
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
+            ev = ev.with_attr("title", t);
+        }
+        e.add_evidence(ev);
         out.push(e);
     }
 
@@ -138,7 +273,8 @@ pub(super) fn build_entities(r: &SearchResp, query: &str, scan_id: &str) -> Vec<
 }
 
 /// Europe PMC biomedical/life-sciences literature search — see the module
-/// docs for what it deliberately does (DOI-preferred URL, capped, deduped)
+/// docs for what it deliberately does (author/affiliation-fielded and gated,
+/// DOI-preferred URL, capped, deduped)
 /// and does not (relevance ranking, pagination beyond the first page).
 pub struct EuropePmcSearch;
 
@@ -147,13 +283,10 @@ pub struct EuropePmcSearch;
 /// `resultList` — so a 404 is the endpoint gone (or a WAF page), never "no
 /// publications by this author". Before this a 404 was mapped to an empty result,
 /// a clean negative about the named person (`docs/PROVIDER_SWEEP_BACKLOG.md` #21).
-async fn search(client: &reqwest::Client, api_base: &str, query: &str) -> Result<SearchResp> {
-    let url = format!(
-        "{api_base}?query={}&format=json&pageSize={CAP}",
-        urlencode(query)
-    );
+/// `url` is the fielded query [`build_url`] built.
+async fn search(client: &reqwest::Client, url: &str) -> Result<SearchResp> {
     let resp = client
-        .get(&url)
+        .get(url)
         .header("User-Agent", UA_OSINT)
         .header("Accept", "application/json")
         .send_tagged(SRC)
@@ -218,10 +351,13 @@ impl Module for EuropePmcSearch {
             return Ok(ModuleResult::new());
         }
 
-        let parsed = search(&ctx.http, API_BASE, query).await?;
+        let Some(url) = build_url(API_BASE, target.kind, query) else {
+            return Ok(ModuleResult::new());
+        };
+        let parsed = search(&ctx.http, &url).await?;
 
         let mut result = ModuleResult::new();
-        result.entities = build_entities(&parsed, query, &ctx.scan_id);
+        result.entities = build_entities(&parsed, target.kind, query, &ctx.scan_id);
         Ok(result)
     }
 }

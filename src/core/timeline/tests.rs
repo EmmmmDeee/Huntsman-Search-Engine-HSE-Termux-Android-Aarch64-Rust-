@@ -449,6 +449,33 @@ use super::*;
     }
 
     #[test]
+    fn reconstruct_skips_a_record_whose_ownership_was_never_established() {
+        // REQ-NAMESAKE-002 (scan 7258fc07): an ambiguous Wikidata namesake's
+        // record fused into the subject's anchor carrying birth_date 1930 and
+        // death_date 2019 — the subject's timeline showed a stranger's death.
+        // The record is Unverified; the anchor's own record is not, and must
+        // still produce its event.
+        let mut subject = entity_with_attrs(
+            EntityKind::Person,
+            "Ian Thorpe",
+            "name_intel",
+            &[("date_of_birth", "1982-10-13")],
+        );
+        subject.add_evidence(
+            Evidence::new("wikidata", "a namesake's item")
+                .with_attr("birth_date", "1930-05-28")
+                .with_attr("death_date", "2019-03-03")
+                .with_verification(crate::core::entity::VerificationMethod::Unverified),
+        );
+        let events = reconstruct(&[subject]);
+        assert_eq!(
+            events.iter().map(|e| e.iso.as_str()).collect::<Vec<_>>(),
+            vec!["1982-10-13"],
+            "only the attributable record's event survives"
+        );
+    }
+
+    #[test]
     fn online_tenure_spans_the_breach_history() {
         // Two breach exposures 2008 → 2025 reconstruct a 17-year online footprint.
         let a = entity_with_attrs(

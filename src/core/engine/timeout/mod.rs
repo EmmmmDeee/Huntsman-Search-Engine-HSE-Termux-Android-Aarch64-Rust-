@@ -16,13 +16,15 @@ use crate::core::scan::ScanOptions;
 /// responsive. Desktop and any explicit user timeout are unaffected.
 ///
 /// Lowered from 60 s after live device transcripts showed `search_engines`
-/// burning the full minute for zero results on a phone: 45 s still clears every
-/// legitimately-long module's happy path (social_probe ~36 s, oathnet/overpass
-/// <30 s) while reclaiming the dead tail of hung mobile requests. Per-module
-/// `constrained_timeout_ms()` can trim further below this; a module whose
-/// happy path genuinely exceeds it (see_know's ~55 s `/search` server cap)
-/// opts out via [`Module::constrained_timeout_cap_exempt`] rather than being
-/// killed every run.
+/// burning the full minute for zero results on a phone: 45 s clears the
+/// oathnet/overpass happy path (<30 s) while reclaiming the dead tail of hung
+/// mobile requests. Per-module `constrained_timeout_ms()` can trim further
+/// below this; a module whose happy path genuinely reaches it opts out via
+/// [`Module::constrained_timeout_cap_exempt`] rather than being killed every
+/// run — see_know (its ~55 s `/search` server cap) and social_probe (once
+/// quoted here at ~36 s from a sandbox; on a phone a normal sweep takes
+/// 42–45 s, and Termux scan 7258fc07 lost 3 of 8 sweeps at exactly 45 s,
+/// REQ-SOCIAL-004).
 pub(super) const CONSTRAINED_MODULE_TIMEOUT_CAP_MS: u64 = 45_000;
 
 pub(super) fn resolve_timeout(opts: &ScanOptions, module: &dyn Module) -> u64 {

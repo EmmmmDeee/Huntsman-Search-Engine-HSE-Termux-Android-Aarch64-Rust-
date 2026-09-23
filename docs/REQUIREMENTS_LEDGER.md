@@ -304,7 +304,7 @@ covers.
 | REQ-CORE-005 | `Module::cost()` defaults to `Free`; drives the `--free-only` CLI/API filter. | none | `ModuleCost` | Filters dispatch set | none | `src/core/module/mod.rs:162-165,19-42` | `module_cost_as_str_matches_serde`, `module_cost_serializes_to_snake_case`, `module_info_reflects_trait_defaults` (`src/core/module/tests.rs`) | Ran `cargo test --lib core::module::tests` this pass — passed. | VERIFIED |
 | REQ-CORE-006 | `Module::is_passive()` defaults to `false`; drives `--passive-only`. Modules with genuinely no network dependency (device sensors) must override `true`. | none | `bool` | Filters dispatch set | A module that is actually passive but doesn't override reports as active (under-inclusive `--passive-only`) — not compiler-checked. | `src/core/module/mod.rs:167-171` | No architecture test cross-checks `is_passive()` against actual network calls (would require dynamic analysis). `module_info_reflects_trait_defaults` covers only the default value. | Read-only. | IMPLEMENTED_UNVERIFIED |
 | REQ-CORE-007 | `Module::max_timeout_ms()` bounds one `process()` call; every non-passive module MUST override it above `MODULE_TIMEOUT_MS` (3000ms), or the engine kills it mid-request on the default budget. | none | `u64` | Engine timeout wrapper | Under-budget non-passive module ⇒ premature `ModuleError{error:"timeout"}` on every call. | `src/core/module/mod.rs:173-185`; `crate::MODULE_TIMEOUT_MS = 3000` (`src/lib.rs:109`) | `non_passive_modules_budget_above_default` (`tests/architecture_parts/architecture_part3.rs:72`) | Ran `cargo test --test architecture non_passive_modules_budget_above_default` this pass — passed. | VERIFIED |
-| REQ-CORE-008 | `Module::constrained_timeout_ms()` (default = `max_timeout_ms()`) sets the per-module budget the engine applies on a resource-constrained device (Termux/Android, or any small/metered container) when the operator hasn't pinned `ScanOptions::module_timeout_ms`; the engine additionally clamps to a 45s cap unless the module is cap-exempt. | none | `u64` | Engine timeout resolution on a constrained device | An exempt module bypasses the cap and is bounded only by its own value (still finite). | `src/core/module/mod.rs:187-220`; engine consumer `src/core/engine/timeout/mod.rs` | `constrained_cap_bounds_long_modules_only_when_constrained_without_override`, `cap_exempt_module_keeps_its_full_constrained_budget`, `resolve_timeout_uses_constrained_budget_then_cap` (`src/core/engine/timeout/tests.rs`) | **Citations updated in Pass 10** (renamed by PR #576's `CORE LOGIC != PLATFORM LOGIC` fix — `termux_timeout_ms`→`constrained_timeout_ms` etc.; the underlying gating logic is unchanged, confirmed by that PR's own zero-diff-in-behavior verification). Ran `cargo test --lib core::engine::timeout::tests` this pass — all 3 cited tests passed under their new names. | VERIFIED |
+| REQ-CORE-008 | `Module::constrained_timeout_ms()` (default = `max_timeout_ms()`) sets the per-module budget the engine applies on a resource-constrained device (Termux/Android, or any small/metered container) when the operator hasn't pinned `ScanOptions::module_timeout_ms`; the engine additionally clamps to a 45s cap unless the module is cap-exempt. | none | `u64` | Engine timeout resolution on a constrained device | An exempt module bypasses the cap and is bounded only by its own value (still finite). Exempt: `see_know`, `social_probe` (REQ-SOCIAL-004, `modules::social_probe::tests::is_exempt_from_the_constrained_device_timeout_cap`). | `src/core/module/mod.rs:187-220`; engine consumer `src/core/engine/timeout/mod.rs` | `constrained_cap_bounds_long_modules_only_when_constrained_without_override`, `cap_exempt_module_keeps_its_full_constrained_budget`, `resolve_timeout_uses_constrained_budget_then_cap` (`src/core/engine/timeout/tests.rs`) | **Citations updated in Pass 10** (renamed by PR #576's `CORE LOGIC != PLATFORM LOGIC` fix — `termux_timeout_ms`→`constrained_timeout_ms` etc.; the underlying gating logic is unchanged, confirmed by that PR's own zero-diff-in-behavior verification). Ran `cargo test --lib core::engine::timeout::tests` this pass — all 3 cited tests passed under their new names. | VERIFIED |
 | REQ-CORE-009 | `Module::cache_ttl_secs()` (default 0 = no caching) lets the engine serve a prior result from the inter-scan entity cache instead of re-querying, for modules with stable, cacheable data. | none | `u64` (seconds) | Engine reads/writes an entity cache keyed on module+target when `ttl > 0` | `ttl == 0` ⇒ cache path is a no-op | `src/core/module/mod.rs:272-278`; consumers `src/core/engine/dispatch.rs:848,984,1106`; cache-hit contract documented at `src/core/port/mod.rs:139-155` | **Fixed this pass (Pass 2).** No dedicated unit test found exercising a cache HIT/MISS for a nonzero-TTL module end-to-end. Root cause: `core::test_support::InMemoryStore` (the standard engine-test double) inherited `StoragePort`'s no-op defaults for `archive_module_result`/`lookup_module_result_fresh` — a lookup could never return a hit, so the dispatch-level "cache hit skips `process()`" behavior was structurally untestable through it, independent of the storage layer's own coverage (`storage::archive_tests` already fully covers the SQLite-backed round-trip). | Gave `InMemoryStore` genuine in-memory cache semantics mirroring `Store`'s exact freshness predicate (`archived_at + ttl_secs > now`), then added `core::engine::tests::cache_hit_skips_reprocessing_a_later_scan_of_the_same_target`: dispatches a `cache_ttl_secs()`-overriding probe against the same target under two different scan_ids and asserts `process()` runs exactly once (the second dispatch replays from cache, `ModuleStats::cached == 1`), plus a third dispatch against a *different* target proves the cache is keyed per-target, not a blanket hit. Ran `cargo test --lib core::engine::tests::cache_hit_skips_reprocessing_a_later_scan_of_the_same_target` — passed. Updating `InMemoryStore` also broke a pre-existing test's premise (`core::port::tests::default_optional_methods_are_documented_no_ops` asserted `InMemoryStore` overrides none of the 7 default methods) — updated that test's assertions and comment to reflect the new, deliberate 5-no-op/2-real-cache split. Ran `cargo test --lib --features dep-cooldown` (6836 passed, 0 failed), `cargo test --test architecture` (55 passed), `cargo clippy --all-targets --features dep-cooldown -- -D warnings` (clean), `cargo fmt --all`. | VERIFIED |
 | REQ-CORE-010 | `Module::attack_techniques()` defaults from `category()` via `attack::techniques_for_category`; every registered module must declare at least one real MITRE ATT&CK Reconnaissance technique ID from the catalogue. | none | `&'static [&'static str]` | Tags emitted entities with `attack:<ID>` | A module whose category is `Other` (unmapped) and has no override reports zero techniques. | `src/core/module/mod.rs:280-293`; category map `src/core/attack/mod.rs` | `every_module_maps_to_valid_attack_reconnaissance_techniques` (`tests/architecture_parts/architecture_part2.rs:14`) | Ran `cargo test --test architecture` this pass — passed (part of the 55/55 run). | VERIFIED |
 | REQ-CORE-011 | `Module::produces()` (default empty) documents `EntityKind`s the module emits; every module that literally constructs an `Entity::new(EntityKind::X, ...)` must declare `X` in its `produces()`. | none | `&'static [EntityKind]` | Drives the UI pivot-chain / capability map | A module minting an undeclared kind under-represents its own output map (sound-but-incomplete check: only catches literal constructions, not dynamically-classified ones). | `src/core/module/mod.rs:268-270` | `every_literal_constructed_entity_kind_is_declared_in_produces` (`tests/architecture_parts/architecture_part5.rs:90`) | Ran `cargo test --test architecture` this pass — passed. | VERIFIED |
@@ -20528,3 +20528,124 @@ Each mutation restores the defect; the sources were restored byte-identical
 | S7 | no `COARSE` on the three centroid sites, no legacy signature in `is_coarse_geo` | killed by all five REQ-GEO-007 locks |
 
 **7 of 7 killed.**
+
+## REQ-NAMESAKE-002 / REQ-EUROPEPMC-001 / REQ-SOCIAL-002 / REQ-SOCIAL-003 / REQ-SOCIAL-004 — a namesake's office, other people's papers and a platform's own domain filed as the subject's; a structural "cannot tell" and a normal sweep treated as faults
+
+**Found** in the second read of the "Ian Thorpe" scan (7258fc07) after #645:
+five faults in the people/identity modules. Each was adversarially verified
+against the exports and the code before it was fixed.
+
+**REQ-NAMESAKE-002 — an ambiguous namesake's PEP flag reached the subject.**
+Wikidata's first "Ian Thorpe" hit was Q61949509, a New Zealand soldier with a
+P39 position; the swimmer Q185044 was only a candidate. `wikidata`'s builder
+tagged the primary head `pep` / `politically-exposed`, `mark_shared_labels`
+marked it ambiguous, and the head fused into the seed anchor. REQ-NAMESAKE-001
+made the per-record `Unverified` mark the thing that survives that merge, but
+`util::namesake::mark_ambiguous` never touched tags. Tags are entity-level and
+`Entity::absorb` unions them, so the seed (0.82, VERIFIED) carried `pep` in
+every export, and AU-114 — gated on the tag and confidence ≥ 0.55 only — would
+have reported the soldier's office against the swimmer. `mark_ambiguous` now
+moves every `PARTY_DETERMINATION_TAGS` entry (`pep`, `politically-exposed`,
+`sanctioned`, `debarred`, `sanctions-linked`) off the entity and onto each of
+its evidence records as a sorted `unresolved_flags` attribute. The fix is at
+the namesake authority, so all five callers (ahpra, gleif_lei, opencorporates,
+wikidata, wikitree) get it. AU-114 is deliberately not taught to read
+`ambiguous-name`: one module's collision would then hide another module's
+genuine designation on the same anchor. The same records' `birth_date` 1930 and
+`death_date` 2019 also reached the subject's timeline, because
+`core::timeline::reconstruct` ignored the verification status that
+`core::exposure` already honours. It now skips `Unverified` records.
+
+**REQ-EUROPEPMC-001 — free-text search filed every hit as the subject's
+literature.** `europepmc_search` sent the unfielded `query=<seed>` and decoded
+only `doi`/`pmid`, so every returned work became a Url at 0.60 whether or not
+the seed wrote it. On this scan the visible no-author hits came through the
+facility pivot "Ian Thorpe Aquatic Centre", which #645 now gates. The
+module-level defect still applied to every name and organisation seed: live
+2026-09-23, `query=Ada Lovelace` returned an essay about her, an unsigned
+editorial and a paper on NVIDIA's Ada Lovelace GPU. This is the defect
+`crossref_search` fixed as backlog #14. The module now mirrors it:
+`build_url` sends `AUTH:"<name>"`, or for an organisation `AFF:"<org>"` with
+`resultType=core`, the result type that carries the affiliation line.
+`ResultItem` decodes `authorString`, `title` and `affiliation`. `attribution`
+splits each `Surname Initials` entry and gates it through crossref's own
+`author_matches` / `affiliation_matches` (widened to `pub(crate)`, so the two
+sources cannot drift), passing only the first initial. The generation-0 hits
+("Thorpe IF", "Thorpe I") still pass: they are namesake authors, which is a
+separate identity question.
+
+**REQ-SOCIAL-002 — the probed platform's own apex became a subject Domain.**
+`social_probe::emit_judged` emitted the host of each confirmed profile URL as a
+`Domain` unless `is_noncentral_domain` knew it. So `behance.net` [380] and
+`myspace.com` [381] were PROBABLE subject Domains, `derived_from` the username
+and queued for DNS/cert expansion. Sixteen more hosts in the module's own table
+would have leaked the same way. The fallback's premise — "a niche site that
+might be the subject's" — cannot hold: every probed URL comes from the
+module's `url_pattern` table with the handle in the path, so the host is always
+the platform's. The block is removed and `Domain` is dropped from `produces()`.
+No denylist was widened, because the next unlisted platform would leak the same way.
+
+**REQ-SOCIAL-003 — a structural people-directory verdict tripped the
+module-wide breaker.** The FullName table is two entries. facebook-public
+answers "present" for any name, and peekyou is walled, so every name target was
+inconclusive by construction and returned `Error::Module`. The breaker is keyed
+by module name alone. In this scan six name-sweep errors drove all three trips:
+one alone, and two combined with username-sweep timeouts. Together they benched
+the handle sweep for username targets that were answering (found 7, 3 and 2).
+`inconclusive_error` now types the verdict by table. A FullName sweep is an
+`Unavailable` skip, which is still a coverage gap, never a clean negative, and
+its reason keeps "not a confirmed absence". A Username sweep stays the module
+error that benches a blocked egress. `streaming_probe` and `username_search`
+accept only Username and are unchanged.
+
+**REQ-SOCIAL-004 — the constrained-device cap killed normal sweeps.** On
+Termux, `social_probe`'s sequential 37-platform first wave plus the control
+wave takes 42–45 s. The completed sweeps in this scan took 43, 42, 45, 42 and
+43 s. The engine's 45 s constrained cap (`CONSTRAINED_MODULE_TIMEOUT_CAP_MS`,
+REQ-CORE-008) timed out the other three at exactly 45 s. Each timeout dropped
+every profile already confirmed and added a soft failure to the breaker. The
+cap's own doc still quoted a sandbox figure of ~36 s. `social_probe` is now
+`constrained_timeout_cap_exempt`, the second exempt module after see_know. It
+stays bounded by its own 60 s budget. The cap doc and the trait doc name it.
+
+### Locks
+
+- `util::namesake::tests::a_party_determination_is_moved_off_an_ambiguous_entity_onto_its_evidence`
+  (with idempotence and the no-determination control);
+  `modules::wikidata::tests::a_namesake_primary_s_pep_flag_does_not_reach_the_subject`
+  (primary + same-label candidate + seed anchor through `dedup_merge_entities`
+  and `correlate_entities`: no `pep`, the position kept, no AU-114); the
+  unambiguous `person_with_position_held_is_flagged_pep` control stays green;
+  `core::timeline::tests::reconstruct_skips_a_record_whose_ownership_was_never_established`.
+- `modules::europepmc_search::tests::a_work_with_no_author_matching_the_seed_is_not_the_subjects`,
+  `an_initials_author_string_matches_the_seed` ("Thorpe IF" kept, "Thorpe A"
+  and "van Dorst RM" not), `a_multi_word_family_name_is_read_whole`,
+  `the_name_query_is_author_fielded`,
+  `an_organisation_is_attributed_by_its_affiliation_line`; the loopback 404
+  test now drives the URL `build_url` builds.
+- `modules::social_probe::tests::a_confirmed_profile_never_files_the_platforms_own_host_as_a_domain`
+  (every entry of both platform tables).
+- `modules::social_probe::tests::an_inconclusive_people_directory_sweep_is_an_unavailable_skip_not_a_breaker_fault`;
+  `core::engine::tests::a_typed_unavailable_skip_never_feeds_the_circuit_breaker`
+  (the engine side: four typed skips leave the breaker closed, three module
+  errors open it).
+- `modules::social_probe::tests::is_exempt_from_the_constrained_device_timeout_cap`.
+
+### Falsified
+
+Each mutation restores the defect. After every run the sources were restored
+byte-identical, checked with `md5sum -c` against the saved copies.
+
+| # | mutation | result |
+|---|---|---|
+| P1 | `mark_ambiguous` without `strip_party_determinations` | killed by `a_party_determination_is_moved_off_an_ambiguous_entity_onto_its_evidence`, `a_namesake_primary_s_pep_flag_does_not_reach_the_subject` |
+| P2 | `reconstruct` without the `Unverified` skip | killed by `reconstruct_skips_a_record_whose_ownership_was_never_established` |
+| P3 | `build_entities` emits without the attribution `continue` | killed by `a_work_with_no_author_matching_the_seed_is_not_the_subjects`, `an_initials_author_string_matches_the_seed` |
+| P4 | `build_url` sends the unfielded value | killed by `the_name_query_is_author_fielded` |
+| P5 | the `is_noncentral_domain` Domain block restored in `emit_judged` | killed by `a_confirmed_profile_never_files_the_platforms_own_host_as_a_domain` |
+| P6 | `inconclusive_error` no longer skips a FullName verdict | killed by `an_inconclusive_people_directory_sweep_is_an_unavailable_skip_not_a_breaker_fault` |
+| P7 | `constrained_timeout_cap_exempt` back to `false` | killed by `is_exempt_from_the_constrained_device_timeout_cap` |
+
+**7 of 7 killed.** `a_typed_unavailable_skip_never_feeds_the_circuit_breaker`
+locks existing engine behaviour that the REQ-SOCIAL-003 fix relies on. It
+passed before the fix, and it is recorded as a lock, not as a falsification.
