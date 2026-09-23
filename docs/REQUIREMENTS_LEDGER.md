@@ -20214,13 +20214,17 @@ dropped: no refusal text is trusted as "IPQS holds nothing".
 - `a_non_key_provider_failure_is_never_a_clean_miss` covers a bare
   `success:false`, an internal error and a plan restriction. None is `Absent`,
   and each fails closed.
-- `an_unverified_refusal_text_fails_closed_and_a_dead_key_still_rotates`:
+- `an_unverified_refusal_text_fails_closed_and_a_dead_key_is_still_key_shaped`:
   - invalid-target-looking wording fails closed with IPQS's own text;
   - `Invalid API Key.` is still `KeyFailure`;
   - `success:true`, and a body with no flag, are still answers.
 - `a_provider_failure_on_the_real_request_path_is_an_error_not_a_miss`: over
   `util::http::test_server`, a `success:false` internal error is an `Err`
   carrying IPQS's message, and the next `success:true` answer is `Some`.
+- `a_dead_key_on_the_real_request_path_rotates_to_the_next_pooled_key`
+  (review round on #646): over the loopback, an in-body `Invalid API Key.`
+  retires the key in the pool, and the next pooled key's answer is returned.
+  The classifier test alone could not show that the cascade acts on it.
 
 ### Falsified
 
@@ -20229,13 +20233,13 @@ dropped: no refusal text is trusted as "IPQS holds nothing".
 | I1 | **baseline**: a non-key `success:false` is `Absent` again | killed by 3 |
 | I2 | wiring: `query` returns the body without `accepted` | killed by 1 |
 | I3 | over-correction: `accepted` fails every answer | killed by 2 |
-| I4 | a key/quota message no longer burns the key | killed by 1 |
+| I4 | a key/quota message no longer burns the key | killed by 2, including the request-path rotation lock |
 
 ## REQ-DISCORDSNOWFLAKE-002 — An offline decode annotates a Discord handle; it never raises its confidence or releases it from quarantine
 
 **Found:** audit F3. `discord_snowflake` re-emitted the target's own `discord:<id>` Username at `confidence::HIGH_PLUSPLUS` (0.80) with no candidate tag. The engine merges by uid, and `Entity::absorb` takes the max confidence and drops `candidate` when the incoming side is not a candidate. The breach extractors mint these handles lower: oathnet_pro at 0.55, see_know at 0.60, and non-matching rows are quarantined at 0.25. The decode therefore promoted a Probable attribution to Verified (c_eff 0.74 to 0.87 at n=2) and released quarantined strangers' IDs, all from arithmetic that proves only that the number is Discord's.
 
-**Implemented:** `DISCORD_ID_CONF = confidence::VERY_LOW` (below `SEED_PRESENT_RUNG`, following the disposable_check / REQ-CANARY-003 precedent), and the annotation is passed through the shared `Entity::demote_to_candidate()`. The creation-date evidence and the discord/account-age tags still merge. The confidence and the quarantine state of the upstream handle are unchanged.
+**Implemented:** the annotation is passed through the shared `Entity::demote_to_candidate()`, which caps it at the candidate rung (below `SEED_PRESENT_RUNG`, following the disposable_check / REQ-CANARY-003 precedent) and stamps `candidate`. It is constructed inline at `confidence::VERY_LOW`, and the demotion is the rung's only authority (see the note after the falsification table). The creation-date evidence and the discord/account-age tags still merge. The confidence and the quarantine state of the upstream handle are unchanged.
 
 **Locks:** `the_decode_annotates_but_never_raises_the_handle`, `the_decode_never_releases_a_quarantined_handle` (src/modules/discord_snowflake/tests.rs).
 

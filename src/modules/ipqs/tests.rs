@@ -141,7 +141,7 @@ fn a_non_key_provider_failure_is_never_a_clean_miss() {
 }
 
 #[test]
-fn an_unverified_refusal_text_fails_closed_and_a_dead_key_still_rotates() {
+fn an_unverified_refusal_text_fails_closed_and_a_dead_key_is_still_key_shaped() {
     use crate::util::http::BodyVerdict;
     // No refusal wording is trusted as "IPQS holds nothing": the vendor's docs
     // name none, so an invalid-target-looking message is reported with IPQS's
@@ -195,3 +195,46 @@ async fn a_provider_failure_on_the_real_request_path_is_an_error_not_a_miss() {
     assert!(ok.is_some(), "a real answer is still an answer");
 }
 
+/// REQ-IPQS-001: the rotation half of the verdict, on the module's real
+/// request path. IPQS reports a dead key in-body on an HTTP 200, so the
+/// classifier test above cannot show that the cascade acts on it: a `query`
+/// that dropped the verdict, or read the key failure as an answer, would
+/// still pass there. Here the first key's in-body failure must retire it in
+/// the pool and the next pooled key must be asked, whose answer is returned.
+///
+/// The pool is the process-global one (`fofa`'s lock explains why that is
+/// safe in tests: `huntsman_dir_path()` is pid-scoped under `cfg(test)`); key
+/// VALUES are pid-unique so parallel tests cannot collide.
+#[tokio::test]
+async fn a_dead_key_on_the_real_request_path_rotates_to_the_next_pooled_key() {
+    use crate::util::http::test_server::{Canned, serve};
+    use crate::util::key_pool::{KeyEntry, KeyStatus, global_pool};
+    let pool = global_pool();
+    let dead = format!("ipqs-req-ipqs-001-dead-{}", std::process::id());
+    let live = format!("ipqs-req-ipqs-001-live-{}", std::process::id());
+    assert!(pool.add(SRC, KeyEntry::new(dead.clone())), "fixture: `ipqs` is poolable");
+    assert!(pool.add(SRC, KeyEntry::new(live.clone())), "fixture");
+    let base = serve(vec![
+        Canned::json(200, r#"{"success":false,"message":"Invalid API Key."}"#),
+        Canned::json(200, r#"{"success":true,"fraud_score":12}"#),
+    ])
+    .await;
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let ctx = ModuleContext {
+        scan_id: "s".into(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: Default::default(),
+        cancel: Default::default(),
+    };
+    let body = query(&ctx, &reqwest::Client::new(), &base, "ip", "8.8.8.8", &dead)
+        .await
+        .expect("the next pooled key answers")
+        .expect("an answer, not a miss");
+    assert_eq!(body.fraud_score, Some(12));
+    assert_eq!(
+        pool.entry_status(SRC, &dead),
+        Some(KeyStatus::Invalid),
+        "the in-body key failure must retire the key that sent it"
+    );
+}
