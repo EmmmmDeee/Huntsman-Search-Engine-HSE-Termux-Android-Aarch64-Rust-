@@ -19409,3 +19409,83 @@ the module's own spelling, so no test could see the drift.
 | E7 | a credential leak not counted as observation | killed by 1 |
 
 **7 of 7 killed.**
+
+## REQ-WIKITREE-001 / REQ-WIKITREE-002 — a namesake's vitals are not the subject's; every silent wikitree negative is typed
+
+**Found** by the adversarially verified module audit (four findings, one
+module).
+
+**REQ-WIKITREE-001 — a namesake's birth date was scored as the subject's.**
+`wikitree` mints one `Person` per profile, named `First [Middle] Last`. For a
+seed "John Smith" that is the seed itself, so the engine merges every
+namesake onto the subject's anchor. The merge is by uid, keeps the higher
+confidence, and appends the evidence. Each profile's evidence carries
+`born`, one of the `DOB_KEYS`. `core::exposure`'s sensitive-disclosure scan
+has no source gate, so a man born in 1880 in New Zealand scored as **the
+subject's disclosed date of birth**. The module's own docs promise that
+namesakes are the norm and that the operator decides which profile is the
+subject's; the merge made that decision automatically.
+
+The fix is structural, at the field that already exists for it.
+`Evidence.verification` is documented as the record's ownership status, but
+no rule read it; only the report renderer printed it.
+- `wikitree` marks every profile record `VerificationMethod::Unverified`:
+  whose profile it is, is exactly what is not known.
+- `core::exposure` reads evidence through one gate, `attributable(ev)`. An
+  `Unverified` record is shown but is not counted as the subject's DOB,
+  government ID, financial data or breach corpus.
+- The keys are **not** renamed to dodge the DOB detector. The next name-
+  matched source reuses the gate, not a vocabulary trick.
+- `hse-core`'s doc for the field no longer claims a correlator gate that
+  never existed. It states what reads it.
+
+**REQ-WIKITREE-002 — three silent negatives.**
+1. A seed the name parser cannot split (a mononym) returned `Ok(empty)`
+   before any request. Coverage reads that as CleanNegative, "WikiTree holds
+   no profile", for a tree that was never asked. It is now a typed
+   `query_too_weak(Scoped, …)` skip from the pure `search_names`: the
+   REQ-SKIPCLASS-001 defect at an eleventh site.
+2. One `limit=10` page was fetched, and WikiTree's `total` (602 for "John
+   Smith") was written only into a private `matches_total` attribute. The cut
+   is now declared through `mark_truncated`, or `mark_truncated_if_capped`
+   when there is no total.
+3. A **stub** (private profile: `Id` + `Name`) was "counted, not emitted",
+   and the count rode only on emitted entities. An answer made of stubs alone
+   emitted nothing and read as CleanNegative, although WikiTree holds
+   profiles under exactly that name. Private profiles are disproportionately
+   living people, the most relevant subjects. Each stub is now a
+   `private-profile` source Url at `LOW`: the page exists and the details are
+   withheld. It is never a Person.
+
+### Locks
+
+- `modules::wikitree::tests`:
+  - `a_namesakes_birth_date_on_the_subject_anchor_is_not_the_subjects_disclosure`
+    merges the module's output onto a seed anchor exactly as the engine does,
+    runs `exposure::assess`, and carries a control (the subject's own breach
+    DOB still counts);
+  - `a_seed_that_does_not_split_is_a_typed_skip_not_an_empty_answer`;
+  - `a_page_short_of_wikitrees_total_is_declared_truncated` (3 of 602, on the
+    live fixture);
+  - `a_page_holding_the_whole_total_is_complete`;
+  - `an_answer_of_only_private_profiles_is_not_a_clean_negative`;
+  - the live-shape test asserts the stub's private-profile Url.
+- `core::exposure::tests::a_record_whose_ownership_is_unverified_is_not_the_subjects_exposure`:
+  the gate at its own boundary, for both the sensitive and the breach
+  component, with the verified control.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| W1 | **baseline**: profile evidence not marked `Unverified` | killed by 1 |
+| W1b | the exposure gate removed (module suite) | killed by 1 |
+| W1b-core | the exposure gate removed (core suite only) | killed by 1 |
+| W2 | **baseline**: an unsplittable seed is an empty answer | killed by 1 |
+| W3 | **baseline**: the page's cut never declared | killed by 2 |
+| W4 | over-correction: every page truncated | killed by 1 |
+| W5 | no total: the full-page fallback dropped | killed by 1 |
+| W6 | **baseline**: stubs only counted | killed by 2 |
+
+**8 of 8 killed.** W2's first spec did not compile, and the harness reported
+it as **NO-RUN**, not as a survivor. It was re-specified and killed.

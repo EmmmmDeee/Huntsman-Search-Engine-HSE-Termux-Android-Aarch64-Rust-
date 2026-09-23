@@ -18,7 +18,7 @@
 use std::collections::BTreeSet;
 
 use crate::core::correlator::{Correlation, Severity};
-use crate::core::entity::{Entity, EntityKind};
+use crate::core::entity::{Entity, EntityKind, Evidence, VerificationMethod};
 
 #[cfg(test)]
 mod tests;
@@ -156,6 +156,17 @@ pub fn assess(entities: &[Entity], correlations: &[Correlation]) -> ExposureInde
     }
 }
 
+/// Whether an evidence record speaks for the entity it sits on. **Pure.** A
+/// record its source marks [`VerificationMethod::Unverified`] says the opposite:
+/// it matched by name, and whose it is was not established. Entities merge by
+/// value, so such a record lands on the subject's own anchor — a WikiTree
+/// namesake's birth date on the seed Person (REQ-WIKITREE-001) — and read from
+/// there it is a disclosure about somebody else. Exposure is a statement about
+/// the subject, so every evidence read here goes through this one gate.
+fn attributable(ev: &Evidence) -> bool {
+    ev.verification != Some(VerificationMethod::Unverified)
+}
+
 /// Breach corpus breadth: distinct named breach/stealer databases the subject
 /// appears in (12 pts each, capped). More corpora ⇒ wider, longer-lived exposure.
 fn breach_component(confirmed: &[&Entity]) -> ExposureComponent {
@@ -174,7 +185,7 @@ fn breach_component(confirmed: &[&Entity]) -> ExposureComponent {
         if !(e.has_tag(crate::core::tags::BREACH) || e.has_tag(crate::core::tags::STEALER_LOG)) {
             continue;
         }
-        for ev in &e.evidence {
+        for ev in e.evidence.iter().filter(|ev| attributable(ev)) {
             for key in CORPUS_KEYS {
                 let Some(raw) = ev.attributes.get(*key) else {
                     continue;
@@ -220,7 +231,7 @@ fn sensitive_component(confirmed: &[&Entity]) -> ExposureComponent {
         if matches!(e.kind, EntityKind::Password | EntityKind::Credential) {
             secret = true;
         }
-        for ev in &e.evidence {
+        for ev in e.evidence.iter().filter(|ev| attributable(ev)) {
             for k in ev.attributes.keys() {
                 let kl = k.to_ascii_lowercase();
                 gov |= GOV_IDS.iter().any(|g| g.keys.contains(&kl.as_str()));

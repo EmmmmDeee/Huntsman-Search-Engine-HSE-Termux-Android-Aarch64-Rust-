@@ -26,7 +26,18 @@
 //! "John Smith" profiles born around 1880), so every entity carries
 //! `needs-identity-verification` and a sub-medium confidence; the operator,
 //! or a later corroborating source, decides which profile is the subject's.
-//! Stubs carry nothing to corroborate and are counted, not emitted.
+//! Until then each profile's evidence is marked
+//! [`VerificationMethod::Unverified`]: the Person merges onto the subject's
+//! anchor by name, and a namesake's birth date must not read as the subject's
+//! own disclosed DOB (REQ-WIKITREE-001).
+//!
+//! A stub is a private profile: the page exists and its details are withheld.
+//! It carries nothing to corroborate, so it is never a Person, but it is a real
+//! match — each is a `private-profile` source Url, so an answer made only of
+//! private profiles (disproportionately living people) is not a clean negative.
+//! One page of [`LIMIT`] is fetched; WikiTree's own `total` beyond it is
+//! declared to the coverage layer. A name the parser cannot split into a first
+//! and a last name is a typed skip, never an empty answer (REQ-WIKITREE-002).
 //!
 //! MITRE ATT&CK: People-category default — T1589.003 / T1591.004; birth,
 //! death and kin are identity information.
@@ -43,7 +54,7 @@ use serde::Deserialize;
 
 use crate::core::{
     confidence,
-    entity::{Entity, EntityKind, Evidence},
+    entity::{Entity, EntityKind, Evidence, VerificationMethod},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
@@ -195,19 +206,11 @@ impl Module for WikiTree {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        // The one name parser the codebase has (particles, suffixes, initials)
-        // decides what the first and last names are — not a second splitter.
-        let Some(parsed) = crate::modules::name_intel::permute::parse(target.value.trim()) else {
-            return Ok(ModuleResult::new());
-        };
-        let (first, last) = (parsed.display_first(), parsed.display_last());
-        if first.is_empty() || last.is_empty() {
-            return Ok(ModuleResult::new());
-        }
+        let (first, last) = search_names(target.value.trim())?;
         let url = format!(
             "https://api.wikitree.com/api.php?action=searchPerson&FirstName={}&LastName={}&fields={FIELDS}&format=json&limit={LIMIT}&appId={CALLER_APP}",
-            crate::util::http::urlencode(first),
-            crate::util::http::urlencode(last)
+            crate::util::http::urlencode(&first),
+            crate::util::http::urlencode(&last)
         );
         let resp = ctx
             .http
@@ -232,20 +235,44 @@ impl Module for WikiTree {
         }
         Ok(build_entities(
             target.value.trim(),
-            envelope.total.unwrap_or(0),
+            envelope.total,
             &envelope.matches,
             &ctx.scan_id,
         ))
     }
 }
 
+/// The first and last names `searchPerson` is asked for. **Pure.** The one name
+/// parser the codebase has (particles, suffixes, initials) decides them — not a
+/// second splitter.
+///
+/// A seed it cannot split (a mononym, `"Madonna"`) is never sent, and that is
+/// a typed [`Error::query_too_weak`] skip, not an empty result: an empty result
+/// is what coverage reads as "WikiTree holds no profile for this subject", for
+/// a tree that was never asked (REQ-WIKITREE-002, the REQ-SKIPCLASS-001 defect
+/// at an eleventh site). `Scoped`: the tree could answer a fuller name.
+pub(super) fn search_names(seed: &str) -> Result<(String, String)> {
+    let names = crate::modules::name_intel::permute::parse(seed).and_then(|parsed| {
+        let (first, last) = (parsed.display_first(), parsed.display_last());
+        (!first.is_empty() && !last.is_empty()).then(|| (first.to_string(), last.to_string()))
+    });
+    names.ok_or_else(|| {
+        Error::query_too_weak(
+            crate::core::event::SkipClass::Scoped,
+            seed,
+            "WikiTree's person search needs a first and a last name, and this seed does not split into both",
+        )
+    })
+}
+
 /// One `Person` per distinct rendered profile name (each profile as its own
-/// evidence) plus one `Url` source per profile; stubs are counted, not
-/// emitted. Pure (no I/O) so the extraction is unit-tested directly; empty
-/// when the tree has no match.
+/// evidence) plus one `Url` source per profile; a stub (private profile) is a
+/// `private-profile` Url, never a Person. The page's cut against WikiTree's own
+/// `total` is declared. Pure (no I/O) so the extraction is unit-tested
+/// directly; empty when the tree has no match.
 pub(super) fn build_entities(
     seed: &str,
-    total: u64,
+    total: Option<u64>,
     matches: &[WtMatch],
     scan_id: &str,
 ) -> ModuleResult {
@@ -253,27 +280,36 @@ pub(super) fn build_entities(
     if matches.is_empty() {
         return result;
     }
+    let returned = matches.len().min(LIMIT);
+    let cause = format!("WikiTree's `limit={LIMIT}` page");
+    match total
+        .and_then(|t| usize::try_from(t).ok())
+        .filter(|t| *t > 0)
+    {
+        Some(t) if t > returned => result.mark_truncated(returned, Some(t), &cause),
+        Some(_) => {}
+        None => result.mark_truncated_if_capped(returned, LIMIT, &cause),
+    }
     // `total` is optional: if the API ever omits/renames it, `matches` are the
     // authoritative payload and must not be dropped. Fall back to the count
     // actually returned.
-    let total = if total > 0 {
-        total
-    } else {
-        matches.len() as u64
-    };
+    let total = total.filter(|t| *t > 0).unwrap_or(matches.len() as u64);
     let stubs = matches
         .iter()
         .filter(|m| m.display_name().is_none())
         .count();
     let mut seen_urls = std::collections::HashSet::new();
     for m in matches.iter().take(LIMIT) {
-        let (Some(display), Some(profile)) = (m.display_name(), m.name.as_deref().map(str::trim))
-        else {
+        let Some(profile) = m.name.as_deref().map(str::trim).filter(|p| !p.is_empty()) else {
             continue;
         };
-        if profile.is_empty() {
+        let Some(display) = m.display_name() else {
+            let profile_url = format!("https://www.wikitree.com/wiki/{profile}");
+            if seen_urls.insert(profile_url.clone()) {
+                result.push(private_profile(profile, &profile_url, total, scan_id));
+            }
             continue;
-        }
+        };
         let born = m.birth_date.as_deref().and_then(trim_wikitree_date);
         let died = m.death_date.as_deref().and_then(trim_wikitree_date);
         let birth_place = m
@@ -309,7 +345,10 @@ pub(super) fn build_entities(
                 summary.push_str(&format!(", {p}"));
             }
         }
+        // Whose profile this is, is exactly what is not known (see the module
+        // docs): the record's ownership is unverified.
         let mut ev = Evidence::new(SRC, summary)
+            .with_verification(VerificationMethod::Unverified)
             .with_attr("profile_id", profile)
             .with_attr("url", &profile_url)
             .with_attr("matches_total", total.to_string());
@@ -379,4 +418,30 @@ pub(super) fn build_entities(
         }
     }
     result
+}
+
+/// A stub — a private profile, `Id` + `Name` only — as the source Url it is.
+/// The page exists and its details are withheld, so it is a match the operator
+/// can follow up, and nothing a Person could be built from.
+fn private_profile(profile: &str, profile_url: &str, total: u64, scan_id: &str) -> Entity {
+    let mut url_e = Entity::new(EntityKind::Url, profile_url, confidence::LOW, scan_id);
+    url_e.tag(SRC);
+    url_e.tag("genealogy");
+    url_e.tag("private-profile");
+    url_e.tag(crate::core::tags::SOURCE_DOCUMENT);
+    url_e.tag("needs-identity-verification");
+    url_e.add_evidence(
+        Evidence::new(
+            SRC,
+            format!(
+                "WikiTree private profile {profile}: the name matches, the details are withheld"
+            ),
+        )
+        .with_verification(VerificationMethod::Unverified)
+        .with_attr("profile_id", profile)
+        .with_attr("url", profile_url)
+        .with_attr("private", "true")
+        .with_attr("matches_total", total.to_string()),
+    );
+    url_e
 }
