@@ -3575,3 +3575,86 @@ fn a_known_city_lookup_centroid_is_coarse_and_never_a_precise_pivot() {
         "{centroids:?}"
     );
 }
+
+/// REQ-SEARCH-015: an ABN seed still mines the ACN on its own register page
+/// whatever grouping the page and the seed use. Behind REQ-SEARCH-007's gate an
+/// `AbnAcn` seed fell to the single-term token match, which an unspaced seed
+/// never satisfies against a snippet's spaced `"ABN 11 005 357 522"`.
+#[test]
+fn an_abn_seed_names_its_register_page_in_any_digit_grouping() {
+    let page = vec![SearchResult {
+        url: "https://www.example.com.au/company/anz".to_string(),
+        title: "ANZ Banking Group Limited".to_string(),
+        snippet: "ABN 11 005 357 522 ACN 005 357 522 — registered 1977".to_string(),
+        engine: "bing",
+        query: "\"11005357522\"".to_string(),
+    }];
+    for seed in ["11005357522", "11 005 357 522"] {
+        let target = Target::new(TargetKind::AbnAcn, seed);
+        let res = build_entities(&target, "s", &page, &url_engine_counts(&page));
+        assert!(
+            res.entities
+                .iter()
+                .any(|e| e.kind == EntityKind::AbnAcn && e.value == "005357522"),
+            "seed {seed:?}: the linked ACN on the subject's own page is mined: {:?}",
+            res.entities
+                .iter()
+                .map(|e| (&e.kind, &e.value))
+                .collect::<Vec<_>>()
+        );
+    }
+    // Control: a page carrying another company's number still names nothing.
+    let other = vec![SearchResult {
+        url: "https://www.example.com.au/company/other".to_string(),
+        title: "Other Pty Ltd".to_string(),
+        snippet: "ABN 53 004 085 616".to_string(),
+        engine: "bing",
+        query: "\"11005357522\"".to_string(),
+    }];
+    let target = Target::new(TargetKind::AbnAcn, "11005357522");
+    let res = build_entities(&target, "s", &other, &url_engine_counts(&other));
+    assert!(!res.entities.iter().any(|e| e.kind == EntityKind::AbnAcn));
+}
+
+/// REQ-SEARCH-ADDR-003 at the call site: a result that locates the named
+/// subject `in` a suburb yields that suburb, not the whole "<Name> in <Place>"
+/// segment and not nothing; a suburb carrying a Hill's surname mid-name
+/// survives a scan for a Hill.
+#[test]
+fn a_name_scan_keeps_the_place_its_subject_is_located_in() {
+    let located = vec![thorpe_result(
+        "https://example.com.au/coaches/ian-thorpe",
+        "Swim coach, Ian Thorpe in Ultimo, New South Wales, Australia",
+        "",
+        "\"Ian Thorpe\"",
+    )];
+    let target = Target::new(TargetKind::FullName, "Ian Thorpe");
+    let res = build_entities(&target, "s", &located, &url_engine_counts(&located));
+    let addrs: Vec<&str> = res
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(addrs.contains(&"Ultimo, New South Wales"), "{addrs:?}");
+    assert!(!addrs.iter().any(|a| a.contains("Thorpe")), "{addrs:?}");
+
+    let hill = vec![thorpe_result(
+        "https://example.com.au/team/jane-hill",
+        "Jane Hill — Accountant",
+        "Jane Hill works from our offices in Box Hill North, Victoria",
+        "\"Jane Hill\"",
+    )];
+    let target = Target::new(TargetKind::FullName, "Jane Hill");
+    let res = build_entities(&target, "s", &hill, &url_engine_counts(&hill));
+    assert!(
+        res.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Address && e.value == "Box Hill North, Victoria"),
+        "{:?}",
+        res.entities
+            .iter()
+            .map(|e| (&e.kind, &e.value))
+            .collect::<Vec<_>>()
+    );
+}

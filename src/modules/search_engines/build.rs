@@ -65,7 +65,8 @@ pub(super) fn build_entities(
     // yield, tiered on its own merits.
     // Whether a result is about the subject at all: the one predicate behind
     // the seed's re-affirmation and every per-result extraction below. A
-    // location seed has no identity anchor; a phone must appear as a number;
+    // location seed has no identity anchor; a phone must appear as a number,
+    // an ABN/ACN as its digits in any grouping;
     // a person must appear as their surname with a compatible given name; a
     // multi-part handle as every one of its parts; any other subject's
     // distinctive term — a single-token subject's only term, an email local
@@ -78,6 +79,14 @@ pub(super) fn build_entities(
             false
         } else if matches!(target.kind, TargetKind::Phone) {
             result_mentions_phone(&format!("{combined_text} {}", r.url), &target.value)
+        } else if matches!(target.kind, TargetKind::AbnAcn) {
+            // A business number, like a phone, is a precise identifier named
+            // by its digits in any grouping: the single-term token match below
+            // failed an unspaced seed against the spaced `"ABN 74 067 173 835"`
+            // a snippet prints (and a spaced seed's `835` against the unspaced
+            // number a registry title prints), so an ABN seed stopped mining
+            // its own ACN once REQ-SEARCH-007 gated that loop (REQ-SEARCH-015).
+            result_mentions_business_number(&format!("{combined_text} {}", r.url), &target.value)
         } else if matches!(target.kind, TargetKind::Domain) {
             // A domain's distinctive term is the domain itself: its labels
             // are the web's own vocabulary (`com`, `index`, `mail`), and the
@@ -488,14 +497,24 @@ pub(super) fn build_entities(
             // On a name scan, a "City, State" whose city names a person carrying
             // the scanned surname — a people-search listing title, or a venue
             // named after a surname-bearer ("Ian Thorpe Aquatic Centre in
-            // Ultimo") — is not a place the subject is at (REQ-SEARCH-ADDR-001,
-            // REQ-SEARCH-ADDR-002).
+            // Ultimo") — is not a place the subject is at, while "Ian Thorpe in
+            // Ultimo" locates its bearer in Ultimo and "Box Hill North" is a
+            // suburb (REQ-SEARCH-ADDR-001/002/003). Deduplicated in order, since
+            // a recovered place can equal an address found beside it.
             // The surname through the identity gate's own name parser, not the
             // last whitespace token: `"Dr Ian Thorpe OAM"` is a Thorpe.
             if target.kind == TargetKind::FullName
                 && let Some(surname) = crate::core::scan::person_surname(&target.value)
             {
-                found.retain(|a| !city_names_a_surname_bearer(a, &surname));
+                let mut kept: Vec<String> = Vec::with_capacity(found.len());
+                for a in found {
+                    if let Some(place) = surname_bearer_locality(&a, &surname)
+                        && !kept.contains(&place)
+                    {
+                        kept.push(place);
+                    }
+                }
+                found = kept;
             }
             found
         } else {

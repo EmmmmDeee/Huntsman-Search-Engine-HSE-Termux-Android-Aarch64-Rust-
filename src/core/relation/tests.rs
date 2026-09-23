@@ -2270,3 +2270,42 @@ fn provenance_chain_is_cycle_safe() {
     // a → b → (a already seen → stop).
     assert_eq!(provenance_chain("a", &rels), vec!["a", "b"]);
 }
+
+/// REQ-IDENTITY-GATE-004: the co-reference promotion veto is deliberately wider
+/// than the surname case — a handle that spells nothing of the name is never
+/// tied to a person on shared module names alone (a relative's `megfan77`
+/// co-occurs in the same sweeps). What still binds it is a record that names
+/// its owner: `derive_identity_ownership`'s evidence path.
+#[test]
+fn an_unrelated_handle_is_bound_by_a_naming_record_never_by_co_occurrence() {
+    use crate::core::entity::Evidence;
+    const FIVE: [&str; 5] = [
+        "qld_unclaimed",
+        "search_engines",
+        "wikitree",
+        "openarch",
+        "wikidata",
+    ];
+    let mut person = ent(EntityKind::Person, "Ian Thorpe", 0.82);
+    person.tag("seed-anchor");
+    let mut handle = ent(EntityKind::Username, "swimfan82", 0.82);
+    for src in FIVE {
+        person.add_evidence(Evidence::new(src, "row for Ian Thorpe"));
+        handle.add_evidence(Evidence::new(src, "row"));
+    }
+    assert!(
+        !derive_coreferences(&[person.clone(), handle.clone()], &[], "s")
+            .iter()
+            .any(|r| r.kind == RelationKind::IdentifiedBy),
+        "five shared module names are no identity evidence for any handle"
+    );
+    // A record naming the handle's owner binds it through the structural path.
+    handle.add_evidence(Evidence::new("gravatar", "profile").with_attr("full_name", "Ian Thorpe"));
+    let owned = derive_identity_ownership(&[person.clone(), handle.clone()], "s");
+    assert!(
+        owned.iter().any(|r| r.kind == RelationKind::IdentifiedBy
+            && r.from_uid == person.uid
+            && r.to_uid == handle.uid),
+        "{owned:?}"
+    );
+}

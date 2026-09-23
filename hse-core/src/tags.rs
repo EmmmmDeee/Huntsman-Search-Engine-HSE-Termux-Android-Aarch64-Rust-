@@ -96,11 +96,18 @@ pub const GEOLOCATION_LEAD: &str = "geolocation-lead";
 /// only these inferences are withheld.
 ///
 /// Every offline gazetteer centroid (`util::city_coords` returns a city, suburb
-/// or postcode centroid, never a street point) carries it: `search_engines`'
-/// known-city lookup ([`SEARCH_GEOCODED`]) and its recycled-snippet leg, and the
-/// engine's address-to-coordinates pass. Untagged, a Sydney CBD centroid was
-/// reverse-geocoded into "Kazan Dining, 25 Martin Place" at VERIFIED and handed
-/// to cadastre lookups as if it were the subject's parcel (REQ-GEO-007).
+/// or postcode centroid, never a street point) carries it once the engine has
+/// seen it: the engine's geospatial enrichment tags every `Coordinates` whose
+/// value is such a centroid (`util::city_coords::is_gazetteer_centroid`),
+/// whichever of the ~30 modules minted it, and every point a geocoder itself
+/// declared a city/suburb/postcode centroid through its `place_type`
+/// (REQ-GEO-017). A few minting sites also tag it themselves (`search_engines`'
+/// known-city lookup and recycled-snippet leg, the engine's
+/// address-to-coordinates pass, and the modules that know their own grain),
+/// which the enrichment only repeats. A module's raw output, before the engine
+/// enriches it, may therefore still lack it. Untagged, a Sydney CBD centroid
+/// was reverse-geocoded into "Kazan Dining, 25 Martin Place" at VERIFIED and
+/// handed to cadastre lookups as if it were the subject's parcel (REQ-GEO-007).
 pub const COARSE: &str = "coarse";
 /// Datacenter / CDN / cloud-host location, not a residence. Carried by
 /// coordinates that geolocate a hosting IP (e.g. a Cloudflare edge), so the

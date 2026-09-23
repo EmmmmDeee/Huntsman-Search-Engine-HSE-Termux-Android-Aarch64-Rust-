@@ -774,6 +774,18 @@ fn declared_geocode_grain_m(e: &Entity) -> Option<f64> {
         })
 }
 
+/// Whether a geocoding source on `e` declared its hit an AREA — a city,
+/// suburb, postcode, region or country centroid ([`geocode_grain_radius_m`]
+/// recognises its `place_type`) — rather than a point. The engine's geospatial
+/// enrichment reads it to tag such a point `coarse`, so a Nominatim city
+/// centroid for a city-only Address is withheld from reverse geocoders and
+/// cadastre lookups exactly as a gazetteer centroid is (REQ-GEO-017). The same
+/// grain table the fusion weighs by, so the two never disagree on what an area
+/// is; an unrecognised `place_type` is not an area here either.
+pub(crate) fn declares_area_grain(e: &Entity) -> bool {
+    declared_geocode_grain_m(e).is_some()
+}
+
 /// A bounded fusion-weight multiplier derived from a precision radius: finer
 /// precision pulls harder on a weighted median/centroid, coarser precision
 /// pulls softer — but the ratio is compressed (inverse-sqrt, then clamped) so

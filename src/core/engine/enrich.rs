@@ -120,6 +120,22 @@ pub(crate) fn enrich_geospatial(entity: &mut crate::core::entity::Entity) {
                 entity.evidence.retain(|ev| !is_own(ev));
                 entity.tags.retain(|t| !stale_tags.contains(t));
 
+                // An area standing in for a place is COARSE whichever module
+                // minted it: a `util::city_coords` gazetteer centroid (the one
+                // authority on those values, so the ~30 modules that mint one
+                // need not each remember the tag), or a point a geocoder itself
+                // declared to be a city/suburb/postcode centroid through its
+                // `place_type` (the correlator's grain table — the one reading
+                // of that vocabulary). Before the pivot gate reads the tag, and
+                // before the emit, so the event log and recovery carry it too.
+                // Never retracted: the value and the provider's evidence that
+                // decided it persist (REQ-GEO-017).
+                if crate::util::city_coords::is_gazetteer_centroid(lat, lon)
+                    || crate::core::correlator::declares_area_grain(entity)
+                {
+                    entity.tag(crate::core::tags::COARSE);
+                }
+
                 let h = geohash::geohash(lat, lon, 7);
                 let box_iso = geohash::reverse_country_iso(lat, lon);
                 let (provider_cc, provider_tz) = provider_geo(entity, box_iso);
@@ -303,23 +319,37 @@ pub(crate) const ADDR_ENTITY_UID_ATTR: &str = "addr_entity_uid";
 /// behind the engine's `coarse_geo_not_pivoted` gate and the autonomous-seed
 /// gate (`ranking::is_autonomous_seed_candidate`), so the two can't disagree.
 ///
-/// A [`COARSE`](crate::core::tags::COARSE) tag decides it. A `Coordinates` is
-/// ALSO recognised as a gazetteer centroid by the signature of the two paths
-/// that mint one without a module-supplied grain: `search_engines`' known-city
-/// lookup ([`SEARCH_GEOCODED`](crate::core::tags::SEARCH_GEOCODED)) and
-/// [`address_to_coords_pass`] (its `addr_entity_uid` evidence). Both now tag
-/// `COARSE` themselves; the signature check is for a centroid recalled from a
-/// scan that predates that tag — it is re-hydrated with its stored tag set, has
-/// no `coarse`, and otherwise went on being pivoted into reverse geocoders and
-/// cadastre lookups as a precise point (REQ-GEO-007).
+/// A [`COARSE`](crate::core::tags::COARSE) tag decides it — and
+/// [`enrich_geospatial`] tags every gazetteer centroid and every
+/// geocoder-declared area centroid before the gate reads it. A `Coordinates`
+/// recalled from a scan that predates that tagging is re-hydrated with its
+/// stored tag set and has no `coarse`, so it is ALSO recognised here:
+///   * by its value, when it is a `util::city_coords` centroid
+///     (`is_gazetteer_centroid`, the same authority the enrichment asks); and
+///   * by the signature of each path that minted a centroid before the table
+///     it came from could have changed: `search_engines`' known-city lookup
+///     ([`SEARCH_GEOCODED`](crate::core::tags::SEARCH_GEOCODED)),
+///     [`address_to_coords_pass`] (its `addr_entity_uid` evidence), and
+///     `search_engines`' recycled-snippet leg (the
+///     [`RECYCLED`](crate::core::tags::RECYCLED) +
+///     [`ADDR_DERIVED`](crate::core::tags::ADDR_DERIVED) pair, which no other
+///     path mints on a `Coordinates`).
+///
+/// Unrecognised, such a centroid went on being pivoted into reverse geocoders
+/// and cadastre lookups as a precise point (REQ-GEO-007, REQ-GEO-017).
 pub(super) fn is_coarse_geo(e: &crate::core::entity::Entity) -> bool {
     use crate::core::entity::EntityKind;
-    e.has_tag(crate::core::tags::COARSE)
+    use crate::core::tags;
+    e.has_tag(tags::COARSE)
         || (e.kind == EntityKind::Coordinates
-            && (e.has_tag(crate::core::tags::SEARCH_GEOCODED)
+            && (e.has_tag(tags::SEARCH_GEOCODED)
+                || (e.has_tag(tags::RECYCLED) && e.has_tag(tags::ADDR_DERIVED))
                 || e.evidence
                     .iter()
-                    .any(|ev| ev.attributes.contains_key(ADDR_ENTITY_UID_ATTR))))
+                    .any(|ev| ev.attributes.contains_key(ADDR_ENTITY_UID_ATTR))
+                || crate::util::geohash::parse_coords(&e.value).is_some_and(|(lat, lon)| {
+                    crate::util::city_coords::is_gazetteer_centroid(lat, lon)
+                })))
 }
 
 pub(super) fn address_to_coords_pass(
@@ -1163,5 +1193,89 @@ mod tests {
         fix.tag("addr-derived");
         fix.add_evidence(Evidence::new("geocode", "forward geocode"));
         assert!(!is_coarse_geo(&fix));
+    }
+
+    /// REQ-GEO-017: the recycled-snippet leg's centroid, recalled from a scan
+    /// that predates its `coarse` tag, is recognised by that leg's own
+    /// signature — the `recycled` + `addr-derived` pair — even at a value the
+    /// gazetteer no longer tabulates; and any untagged point whose value IS a
+    /// gazetteer centroid is recognised by the value alone.
+    #[test]
+    fn is_coarse_geo_recognises_a_legacy_recycled_centroid_and_any_gazetteer_value() {
+        // Off every table (Toowong's street grid), so only the signature can
+        // decide it.
+        let mut recycled = Entity::new(EntityKind::Coordinates, "-27.4801,152.9912", 0.5, "s1");
+        for t in ["addr-derived", "geoint", "search-discovered", "recycled"] {
+            recycled.tag(t);
+        }
+        recycled.add_evidence(
+            Evidence::new("search_engines", "[bing] Coordinates from recycled search")
+                .with_attr("recycle_query", "\"x\""),
+        );
+        assert!(
+            !crate::util::city_coords::is_gazetteer_centroid(-27.4801, 152.9912),
+            "fixture must be off the tables, or this proves nothing"
+        );
+        assert!(is_coarse_geo(&recycled));
+        // `recycled` alone (a snippet's literal `geo:` coordinate) is a point.
+        let mut literal = Entity::new(EntityKind::Coordinates, "-27.4801,152.9912", 0.5, "s1");
+        literal.tag("recycled");
+        literal.tag("snippet-coord");
+        assert!(!is_coarse_geo(&literal));
+
+        // An untagged Sydney centroid minted by any module (asic_persons tags
+        // only `addr-derived`/`geoint`) is the gazetteer's value.
+        let mut asic = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.6, "s1");
+        asic.tag("addr-derived");
+        asic.tag("geoint");
+        asic.add_evidence(Evidence::new("asic_persons", "registered office"));
+        assert!(is_coarse_geo(&asic));
+    }
+
+    /// REQ-GEO-017: the engine's enrichment tags every gazetteer centroid and
+    /// every geocoder-declared area centroid `coarse`, whichever module minted
+    /// it — so `tags::COARSE`'s "every centroid carries it" holds by one
+    /// authority rather than by each of ~30 call sites remembering.
+    #[test]
+    fn enrichment_tags_every_gazetteer_and_declared_area_centroid_coarse() {
+        let mut asic = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.6, "s1");
+        asic.tag("addr-derived");
+        asic.add_evidence(Evidence::new("asic_persons", "registered office"));
+        enrich_geospatial(&mut asic);
+        assert!(asic.has_tag(crate::core::tags::COARSE), "{:?}", asic.tags);
+
+        // A region centroid (leading-digit table, 2-decimal row) too.
+        let (lat, lon) = crate::util::city_coords::au_postcode_region("4999").unwrap();
+        let mut region = Entity::new(
+            EntityKind::Coordinates,
+            format!("{lat:.4},{lon:.4}"),
+            0.5,
+            "s1",
+        );
+        enrich_geospatial(&mut region);
+        assert!(region.has_tag(crate::core::tags::COARSE));
+
+        // Nominatim declared its hit a city: the centroid of a city-only
+        // Address, one hop from the same reverse-geocode defect.
+        let mut city = Entity::new(EntityKind::Coordinates, "-33.869844,151.208285", 0.8, "s1");
+        city.tag("geocoded");
+        city.add_evidence(
+            Evidence::new("geocode", "Geocoded \"Sydney NSW\"").with_attr("place_type", "city"),
+        );
+        enrich_geospatial(&mut city);
+        assert!(city.has_tag(crate::core::tags::COARSE));
+
+        // Over-correction controls: a house-grain geocode and an off-table
+        // point stay points.
+        let mut house = Entity::new(EntityKind::Coordinates, "-27.480123,152.991234", 0.8, "s1");
+        house.add_evidence(
+            Evidence::new("geocode", "Geocoded \"12 Foo St\"").with_attr("place_type", "house"),
+        );
+        enrich_geospatial(&mut house);
+        assert!(!house.has_tag(crate::core::tags::COARSE));
+        let mut gps = Entity::new(EntityKind::Coordinates, "-27.4801,152.9912", 0.8, "s1");
+        gps.add_evidence(Evidence::new("exif", "photo GPS"));
+        enrich_geospatial(&mut gps);
+        assert!(!gps.has_tag(crate::core::tags::COARSE));
     }
 }

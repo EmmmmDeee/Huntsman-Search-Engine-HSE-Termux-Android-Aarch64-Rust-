@@ -837,8 +837,11 @@ impl super::ScanEngine {
         // reported `modules_run` honest instead of double-counting every replay.
         //
         // Nor is an in-band opt-out a run: a module that returned `MissingKey`
-        // or `Error::Skipped` declined to query its provider, and is counted
-        // under `skipped` by its own arm below. Counting it here as well put
+        // or `Error::Skipped` obtained no answer about the target — it declined
+        // to query its provider, or learned from the provider's (or a
+        // bootstrap's) own reply that the target is outside what it answers,
+        // as hackertarget and whois do (REQ-ENGINE-005) — and is counted under
+        // `skipped` by its own arm below. Counting it here as well put
         // every such dispatch in BOTH `modules_run` and `modules_skipped` —
         // scan 7258fc07 reported "1003 run … 349 skipped" where 247 of the 1003
         // were "needs API key" opt-outs (730 done + 26 errored/timed out + 247
@@ -901,9 +904,10 @@ impl super::ScanEngine {
                 );
             }
             Ok(Err(Error::Skipped { class, reason })) => {
-                // The module decided not to query the provider for this target
-                // and said so in-band (`Error::skipped`). A decision, not a
-                // fault: it is tallied under `skipped` (never `errored`), feeds
+                // The module obtained no answer about this target by decision —
+                // it did not query the provider, or the provider's own reply
+                // put the target outside what it answers — and said so in-band
+                // (`Error::skipped`). A decision, not a fault: it is tallied under `skipped` (never `errored`), feeds
                 // neither the circuit breaker nor module health, and is emitted
                 // as a typed `ModuleSkipped` so `core::coverage` reads it as
                 // "not attempted" — a `NotApplicable` skip vanishes from the

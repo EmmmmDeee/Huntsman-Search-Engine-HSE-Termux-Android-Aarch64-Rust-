@@ -2502,3 +2502,41 @@ fn person_name_gates_fold_diacritics_on_both_sides() {
         Some(false)
     );
 }
+
+/// REQ-SEARCH-014: the one-letter tokens `a` and `i` are the English article
+/// and pronoun before they are initials. Read as initials in prose, `"Find a
+/// Baker near you"` named every Andrew Baker on the surname alone — the
+/// REQ-SEARCH-008 bypass reopened for every subject whose given name starts
+/// with A or I. A `.` (`"A. Baker"`) or a slug position (`/i-thorpe`) still
+/// marks them as initials, and every other letter is unaffected.
+#[test]
+fn the_article_and_the_pronoun_are_not_given_name_initials() {
+    for (text, seed) in [
+        ("Find a Baker near you", "Andrew Baker"),
+        ("He was a Thorpe by birth", "Alice Thorpe"),
+        ("Why I Thorpe-proofed my pool", "Ian Thorpe"),
+        ("Could I Thorpe", "Ian Thorpe"),
+        ("https://example.com/find-a-baker-near-you", "Andrew Baker"),
+        ("A Baker and a Thorpe walk into a bar", "Andrew Baker"),
+    ] {
+        assert_eq!(
+            text_names_person(text, seed),
+            Some(false),
+            "{text:?} / {seed:?}"
+        );
+    }
+    for (text, seed) in [
+        ("A. Baker, pastry chef", "Andrew Baker"),
+        ("Dr. I. Thorpe OAM", "Ian Thorpe"),
+        ("/i-thorpe", "Ian Thorpe"),
+        ("https://example.com/people/a-baker", "Andrew Baker"),
+        ("J Baker, Sydney", "John Baker"),
+        ("Andrew Baker", "Andrew Baker"),
+    ] {
+        assert_eq!(
+            text_names_person(text, seed),
+            Some(true),
+            "{text:?} / {seed:?}"
+        );
+    }
+}

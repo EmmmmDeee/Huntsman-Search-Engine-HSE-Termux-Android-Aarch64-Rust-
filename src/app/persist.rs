@@ -54,6 +54,91 @@ fn confidence_rank(entities: &mut [Entity]) {
     crate::util::recon::sort_by_confidence_desc(entities);
 }
 
+/// An import's scan row, owned from its first write to its terminal one — the
+/// one lifecycle both import paths (`persist_entities_as_scan` and the web
+/// upload, `api::scan_handlers::core::scan_import`) write, so they cannot
+/// drift on it.
+///
+/// [`Self::begin`] writes the row `Running`: an import whose entities are being
+/// stored HAS started, and `Running` is the state the read-time `interrupted`
+/// derivation (`api::handlers::is_interrupted`, REQ-SCANSTATUS-001) watches.
+/// The round-2 order (REQ-SCANSTATUS-002) wrote it `Pending` instead, which
+/// that derivation deliberately ignores ("never started") — so a process
+/// killed mid-import (routine on Termux) left a row reading `pending` forever,
+/// counted as in progress by `/stats` and the scan list, where it had read
+/// `complete` before (REQ-SCANSTATUS-005).
+///
+/// [`Self::finish`] writes the terminal status. Dropped WITHOUT `finish` — an
+/// error returned by `?` after the first write, or a panic unwinding through
+/// the import — the row is written `Failed` (best-effort, logged), so no exit
+/// the process survives can leave it in progress. A kill leaves `Running`,
+/// which the web process that holds the import in its in-flight registry reads
+/// as interrupted once it is gone.
+pub(crate) struct ImportScanRow {
+    store: std::sync::Arc<dyn crate::core::StoragePort>,
+    scan: crate::core::scan::Scan,
+    finished: bool,
+}
+
+impl ImportScanRow {
+    /// Write `scan` as `Running` and take charge of its terminal status.
+    pub(crate) fn begin(
+        store: std::sync::Arc<dyn crate::core::StoragePort>,
+        mut scan: crate::core::scan::Scan,
+    ) -> Result<Self> {
+        scan.status = crate::core::scan::ScanStatus::Running;
+        store.upsert_scan(&scan)?;
+        Ok(Self {
+            store,
+            scan,
+            finished: false,
+        })
+    }
+
+    /// Write the terminal `status` — the import's last write — together with
+    /// what the import's finalise did not complete: `tally`'s message, the one
+    /// [`Scan::error`](crate::core::scan::Scan::error) authority
+    /// ([`FinaliseTally`](crate::core::scan::FinaliseTally)), so the status and
+    /// the error an export classifies the scan by are written in one place and
+    /// once. Returns that error, for the caller's summary. A failed write leaves
+    /// the row to [`Drop`], which records `Failed`.
+    pub(crate) fn finish(
+        mut self,
+        status: crate::core::scan::ScanStatus,
+        tally: &crate::core::scan::FinaliseTally,
+    ) -> Result<Option<String>> {
+        self.scan.status = status;
+        self.scan.finished_at = Some(crate::core::entity::unix_now());
+        self.scan.error = tally.message();
+        let written = self.store.upsert_scan(&self.scan);
+        self.finished = written.is_ok();
+        let error = self.scan.error.clone();
+        written.map(|()| error)
+    }
+}
+
+impl Drop for ImportScanRow {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.scan.status = crate::core::scan::ScanStatus::Failed;
+        self.scan.finished_at = Some(crate::core::entity::unix_now());
+        self.scan.error = Some(if std::thread::panicking() {
+            "import panicked before its terminal write".to_string()
+        } else {
+            "import failed before its terminal write".to_string()
+        });
+        if let Err(e) = self.store.upsert_scan(&self.scan) {
+            tracing::warn!(
+                scan_id = %self.scan.id,
+                error = %e,
+                "import: could not record the Failed status; the row still reads running"
+            );
+        }
+    }
+}
+
 /// Device-safety bound shared by every caller of [`persist_entities_as_scan`]
 /// (`hse import`, `hse investigate --auto-scan`, `hse ingest --auto-scan`).
 ///
@@ -144,34 +229,31 @@ fn persist_batch_into(
     kind: TargetKind,
     entities: &[Entity],
 ) -> Result<PersistedBatch> {
-    use crate::core::entity::unix_now;
     use crate::core::scan::{FinaliseTally, Scan, ScanStatus, Target};
 
-    // The scan row is written `Pending` and turned `Complete` only after its
+    // The scan row is written `Running` and turned `Complete` only after its
     // entities, relations and correlations are all stored. Exports classify a
     // scan by its stored status (`partial_export_reason`), so writing
-    // `Complete` first — as this did — let an export taken mid-import brand a
-    // half-written scan whole, the same window the live engine's finalise had
-    // (see `ScanEngine::finalise_scan`'s commit step).
+    // `Complete` first let an export taken mid-import brand a half-written
+    // scan whole, the same window the live engine's finalise had (see
+    // `ScanEngine::finalise_scan`'s commit step). Any exit before `finish` —
+    // an error below, a panic — records `Failed` (`ImportScanRow`).
     let mut scan = Scan::new(sid.to_string(), Target::new(kind, label));
     scan.entity_count = entities.len();
-    store.upsert_scan(&scan)?;
+    let row = ImportScanRow::begin(std::sync::Arc::clone(store), scan)?;
     store.upsert_entities_batch(entities)?;
     let mut tally = FinaliseTally::default();
     let (relations, correlations, enriched) =
         enrich_persisted_batch(store, sid, entities, &mut tally);
-    scan.status = ScanStatus::Complete;
-    scan.finished_at = Some(unix_now());
-    // The batch was imported in full, so the status stays `Complete`; what the
-    // store refused is recorded beside it, where every export's completeness
-    // check reads it.
-    scan.error = tally.message();
-    store.upsert_scan(&scan)?;
+    // The batch was imported in full, so the status is `Complete`; what the
+    // finalise did not complete is recorded beside it by the row's one
+    // terminal write, where every export's completeness check reads it.
+    let finalise_error = row.finish(ScanStatus::Complete, &tally)?;
     Ok(PersistedBatch {
         relations,
         correlations,
         enriched,
-        finalise_error: scan.error,
+        finalise_error,
     })
 }
 
@@ -221,6 +303,78 @@ fn enrich_persisted_batch(
 mod tests {
     use super::*;
     use crate::core::entity::{Entity, EntityKind};
+
+    /// REQ-SCANSTATUS-005: an import's row reads `Running` while it runs (the
+    /// state the read-time `interrupted` derivation watches — `Pending` is
+    /// "never started" to it), and any exit before its terminal write — an
+    /// error, a panic — records `Failed` instead of leaving it in progress
+    /// forever.
+    #[test]
+    fn an_import_row_never_outlives_its_import_in_progress() {
+        use crate::core::StoragePort;
+        use crate::core::scan::{Scan, ScanStatus, Target};
+        use std::sync::Arc;
+        let store: Arc<dyn StoragePort> = Arc::new(crate::core::test_support::InMemoryStore::new());
+        let status = |id: &str| store.get_scan(id).unwrap().expect("row written").status;
+        let scan = |id: &str| Scan::new(id.to_string(), Target::new(TargetKind::FullName, "x"));
+
+        let row = ImportScanRow::begin(Arc::clone(&store), scan("ok")).unwrap();
+        assert_eq!(
+            status("ok"),
+            ScanStatus::Running,
+            "an import in progress has started"
+        );
+        let recorded = row
+            .finish(
+                ScanStatus::Complete,
+                &crate::core::scan::FinaliseTally::default(),
+            )
+            .unwrap();
+        assert_eq!(recorded, None, "a finalise that completed records nothing");
+        assert_eq!(status("ok"), ScanStatus::Complete);
+
+        // An error returned by `?` after the first write.
+        let failing = || -> Result<()> {
+            let _row = ImportScanRow::begin(Arc::clone(&store), scan("err"))?;
+            Err(crate::core::error::Error::Other("disk full".into()))
+        };
+        assert!(failing().is_err());
+        let failed = store.get_scan("err").unwrap().unwrap();
+        assert_eq!(failed.status, ScanStatus::Failed);
+        assert!(failed.finished_at.is_some() && failed.error.is_some());
+
+        // A panic unwinding through the import.
+        let panicking = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _row = ImportScanRow::begin(Arc::clone(&store), scan("panic")).unwrap();
+            panic!("a rule panicked on adversarial data");
+        }));
+        assert!(panicking.is_err());
+        assert_eq!(status("panic"), ScanStatus::Failed);
+    }
+
+    /// The merge of REQ-SCANSTATUS-005's lifecycle with REQ-SCANSTATUS-003's
+    /// tally: the row's ONE terminal write carries both the status and what the
+    /// finalise did not complete, so no second write can race or contradict
+    /// it — and a shortfall never turns a finished import `Failed`.
+    #[test]
+    fn an_import_rows_terminal_write_carries_the_finalise_record() {
+        use crate::core::StoragePort;
+        use crate::core::scan::{FinaliseTally, FinaliseWrite, Scan, ScanStatus, Target};
+        use std::sync::Arc;
+        let store: Arc<dyn StoragePort> = Arc::new(crate::core::test_support::InMemoryStore::new());
+        let scan = Scan::new("short".to_string(), Target::new(TargetKind::FullName, "x"));
+        let row = ImportScanRow::begin(Arc::clone(&store), scan).unwrap();
+        let mut tally = FinaliseTally::default();
+        tally.add(FinaliseWrite::Relations, 4, 4, Some("disk full".into()));
+        let recorded = row.finish(ScanStatus::Complete, &tally).unwrap();
+        assert_eq!(recorded, tally.message());
+        let stored = store.get_scan("short").unwrap().expect("row written");
+        assert_eq!(stored.status, ScanStatus::Complete, "the import did finish");
+        assert_eq!(
+            stored.error.as_deref(),
+            Some("4/4 relations failed to persist: disk full")
+        );
+    }
 
     #[test]
     fn strongest_identity_prefers_person_then_email_then_fallback() {

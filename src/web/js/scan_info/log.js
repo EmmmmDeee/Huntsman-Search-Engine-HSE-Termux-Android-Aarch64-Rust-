@@ -384,12 +384,16 @@ export function mapEvent(ev){
   // budget never let start read "0 probes from 0 anchors" — the same line as a
   // sweep that ran with nothing to ask. Mirrors `EventKind::log_summary` and
   // cli/live's `render_event`, down to a legacy event without `dispatched`
-  // reading 0 (serde's default there), so the screen and the downloaded log
-  // never disagree.
+  // (null or absent): its dispatch was never recorded, so it reads the old
+  // "N probes from M anchors" line — never "0/N dispatched", which re-rendered
+  // every pre-upgrade sweep that ran as one that sent nothing (REQ-SWEEP-006).
+  // The screen and the downloaded log never disagree.
   if (t==='breach_sweep'){
-    const sent = (ev.dispatched ?? 0);
+    const known = ev.dispatched !== undefined && ev.dispatched !== null;
+    const sent = known ? `${ev.dispatched}/` : '';
+    const verb = known ? ' dispatched' : '';
     const stop = ev.stopped ? ` <span class="text-warning">— stopped: ${esc(ev.stopped)}</span>` : '';
-    return {typ:'expand', lv: ev.stopped ? 'warn' : 'info', msg:`breach sweep: ${sent}/${ev.probes} probe${plural(ev.probes)} dispatched from ${ev.anchors} anchor${plural(ev.anchors)}${ev.dropped?` <span class="text-muted">(${ev.dropped} over cap)</span>`:''}${stop}`};
+    return {typ:'expand', lv: ev.stopped ? 'warn' : 'info', msg:`breach sweep: ${sent}${ev.probes} probe${plural(ev.probes)}${verb} from ${ev.anchors} anchor${plural(ev.anchors)}${ev.dropped?` <span class="text-muted">(${ev.dropped} over cap)</span>`:''}${stop}`};
   }
   // Autonomous audit of the breach corpus. A non-passing verdict means two
   // corpora contradict each other, so it renders at warn level.

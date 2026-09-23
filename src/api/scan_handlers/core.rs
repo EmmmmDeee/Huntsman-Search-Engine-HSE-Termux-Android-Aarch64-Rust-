@@ -578,7 +578,7 @@ pub async fn scan_import(
     body: String,
 ) -> impl IntoResponse {
     use super::super::handlers::forbidden;
-    use crate::core::entity::{EntityKind, unix_now};
+    use crate::core::entity::EntityKind;
     use crate::core::scan::{ScanStatus, TargetKind};
 
     // CSRF guard. The body is `text/plain`, which is a CORS *simple request*
@@ -657,12 +657,16 @@ pub async fn scan_import(
         .map_or_else(|| "uploaded dossier".to_string(), |e| e.value.clone());
 
     let entity_count = entities.len();
-    // Written `Pending` first and turned `Complete` only once the entities,
+    // Written `Running` first and turned `Complete` only once the entities,
     // relations and correlations are all stored (the commit at the end of the
     // blocking closure below). Exports classify a scan by its stored status,
     // so a `Complete` written first let an export taken mid-import brand a
     // half-written scan whole — the window the live engine's finalise had too
-    // (`ScanEngine::finalise_scan`'s commit step).
+    // (`ScanEngine::finalise_scan`'s commit step). The row's lifecycle is
+    // `app::persist::ImportScanRow`'s, shared with the CLI import: any exit
+    // before the commit records `Failed`, and a kill leaves `Running`, which
+    // reads as interrupted once this process no longer holds the import in its
+    // in-flight registry (REQ-SCANSTATUS-005).
     let mut scan = Scan::new(sid.clone(), Target::new(TargetKind::FullName, label));
     scan.entity_count = entity_count;
 
@@ -685,91 +689,116 @@ pub async fn scan_import(
     // caller must be able to tell that apart from a genuinely relation-free
     // dossier, both of which otherwise report `relation_count: 0`.
     let stealer_rows_parsed = stealer_rows.len();
-    let (relation_count, correlation_count, enriched, stealer_rows_stored, finalise_error) =
-        match super::offload_store(move || -> crate::core::error::Result<_> {
-            use crate::core::scan::{FinaliseTally, FinaliseWrite};
-            let mut scan = scan;
-            store.upsert_scan(&scan)?;
-            store.upsert_entities_batch(&entities)?;
-            // Every relation / correlation write below counts into this; its
-            // message is the scan's recorded shortfall (see `FinaliseTally`).
-            let mut tally = FinaliseTally::default();
-            // The terminal write, run on every exit below — nothing after it
-            // may add to what the scan's exports read. The upload was imported
-            // in full, so the status is `Complete` either way; what the store
-            // refused is recorded beside it, where every export's completeness
-            // check reads it.
-            let commit = |scan: &mut Scan,
-                          tally: &FinaliseTally|
-             -> crate::core::error::Result<Option<String>> {
-                scan.status = ScanStatus::Complete;
-                scan.finished_at = Some(unix_now());
-                scan.error = tally.message();
-                store.upsert_scan(scan)?;
-                Ok(scan.error.clone())
+    // In flight in THIS process from before the row's first write until after
+    // its terminal one — the registry every "is this scan running here?" reader
+    // consults (`core::cancel::CancelRegistry`): so the import never reads as
+    // interrupted while it runs, cannot be deleted mid-write, and honours
+    // `POST /scans/{id}/cancel` at its two enrichment boundaries (the row then
+    // reads `Aborted`, entities and whatever enrichment finished kept, as for
+    // a cancelled live scan).
+    let cancel = crate::core::cancel::CancelHandle::new();
+    let _in_flight = crate::core::cancel::CancelRegistryGuard::install(
+        Arc::clone(&s.cancellations),
+        sid.clone(),
+        cancel.clone(),
+    );
+    let (
+        relation_count,
+        correlation_count,
+        enriched,
+        stealer_rows_stored,
+        terminal,
+        finalise_error,
+    ) = match super::offload_store(move || -> crate::core::error::Result<_> {
+        use crate::core::scan::{FinaliseTally, FinaliseWrite};
+        let row = crate::app::persist::ImportScanRow::begin(Arc::clone(&store), scan)?;
+        store.upsert_entities_batch(&entities)?;
+        // Every relation / correlation write below counts into this; its
+        // message is the scan's recorded shortfall (see `FinaliseTally`).
+        let mut tally = FinaliseTally::default();
+        // The terminal write, run on every exit below — nothing after it
+        // may add to what the scan's exports read. It is the row's one
+        // terminal write (`ImportScanRow::finish`): the status — `Complete`,
+        // or `Aborted` when a cancel reached an enrichment boundary — and,
+        // beside it, what the finalise did not complete (the tally's
+        // message, the one `scan.error` authority), where every export's
+        // completeness check reads it.
+        let commit =
+            |row: crate::app::persist::ImportScanRow, status: ScanStatus, tally: &FinaliseTally| {
+                row.finish(status, tally).map(|error| (status, error))
             };
-            // Best-effort: a stealer-row persistence hiccup must not fail an
-            // otherwise-successful import — the entity graph above already
-            // carries the same credentials, just unpaired. Logged and
-            // surfaced in the response below (never silently dropped),
-            // mirroring the CLI import path's own
-            // `persist_stealer_rows_best_effort`.
-            let stealer_rows_stored = match store.insert_stealer_rows_batch(&sid2, &stealer_rows) {
-                Ok(n) => n,
-                Err(e) => {
-                    tracing::warn!(
-                        scan_id = %sid2,
-                        rows = stealer_rows.len(),
-                        error = %e,
-                        "web upload: could not persist stealer rows — the entity \
-                         graph was still stored, but the paired credential rows \
-                         (Stealer Logs Viewer) were not"
-                    );
-                    0
-                }
-            };
-            // Device-safety bound: skip the O(n²) enrichment on a pathologically
-            // large import (entities are already persisted above; nothing lost).
-            if entities.len() > IMPORT_ENRICH_MAX_ENTITIES {
-                let finalise_error = commit(&mut scan, &tally)?;
-                return Ok((0usize, 0usize, false, stealer_rows_stored, finalise_error));
+        // Best-effort: a stealer-row persistence hiccup must not fail an
+        // otherwise-successful import — the entity graph above already
+        // carries the same credentials, just unpaired. Logged and
+        // surfaced in the response below (never silently dropped),
+        // mirroring the CLI import path's own
+        // `persist_stealer_rows_best_effort`.
+        let stealer_rows_stored = match store.insert_stealer_rows_batch(&sid2, &stealer_rows) {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!(
+                    scan_id = %sid2,
+                    rows = stealer_rows.len(),
+                    error = %e,
+                    "web upload: could not persist stealer rows — the entity \
+                     graph was still stored, but the paired credential rows \
+                     (Stealer Logs Viewer) were not"
+                );
+                0
             }
-            // Wall-clock bound on the super-linear derivation chain, matching a
-            // live scan (the entity-count guard above already skips the
-            // pathological case; this bounds the rest). Persisted through the
-            // same counted step the live finalise and the CLI import use, so a
-            // refused edge is recorded rather than dropped by `.is_ok()`.
-            let derive_deadline =
-                Some(std::time::Instant::now() + crate::core::relation::DERIVE_BUDGET);
-            let derived =
-                crate::core::relation::derive_all_within(&entities, &sid2, derive_deadline);
-            let relations =
-                crate::core::engine::persist_relations(store.as_ref(), &sid2, &derived, &mut tally);
-            // Run the correlator so cross-entry handle-reuse / breach clusters
-            // surface exactly as they would for a live scan. Not fatal: a
-            // correlator hiccup must not fail an otherwise-successful import.
-            // `correlate_and_persist` runs it under the canonical panic guard
-            // (`guarded_correlation_pass`), exactly as the CLI import path
-            // (`app::persist`) and the live finalise do — a correlator rule
-            // panicking on adversarial imported entities degrades to "no
-            // correlations", not an unwind after the entities were committed —
-            // and counts every firing the store refuses.
-            let _firings = crate::core::engine::correlate_and_persist(&store, &sid2, &mut tally);
-            let correlations = tally.persisted(FinaliseWrite::Correlations);
-            let finalise_error = commit(&mut scan, &tally)?;
-            Ok((
-                relations,
-                correlations,
-                true,
-                stealer_rows_stored,
-                finalise_error,
-            ))
-        })
-        .await
-        {
-            Ok(counts) => counts,
-            Err(resp) => return resp,
         };
+        // Device-safety bound: skip the O(n²) enrichment on a pathologically
+        // large import (entities are already persisted above; nothing lost).
+        if entities.len() > IMPORT_ENRICH_MAX_ENTITIES {
+            let (status, error) = commit(row, ScanStatus::Complete, &tally)?;
+            return Ok((0usize, 0usize, false, stealer_rows_stored, status, error));
+        }
+        if cancel.is_cancelled() {
+            let (status, error) = commit(row, ScanStatus::Aborted, &tally)?;
+            return Ok((0usize, 0usize, false, stealer_rows_stored, status, error));
+        }
+        // Wall-clock bound on the super-linear derivation chain, matching a
+        // live scan (the entity-count guard above already skips the
+        // pathological case; this bounds the rest). Persisted through the
+        // same counted step the live finalise and the CLI import use, so a
+        // refused edge is recorded rather than dropped by `.is_ok()`.
+        let derive_deadline =
+            Some(std::time::Instant::now() + crate::core::relation::DERIVE_BUDGET);
+        let derived = crate::core::relation::derive_all_within(&entities, &sid2, derive_deadline);
+        let relations =
+            crate::core::engine::persist_relations(store.as_ref(), &sid2, &derived, &mut tally);
+        // The second cancel boundary: the relations above are kept, and so is
+        // whatever the tally recorded about them.
+        if cancel.is_cancelled() {
+            let (status, error) = commit(row, ScanStatus::Aborted, &tally)?;
+            return Ok((relations, 0usize, false, stealer_rows_stored, status, error));
+        }
+        // Run the correlator so cross-entry handle-reuse / breach clusters
+        // surface exactly as they would for a live scan. Not fatal: a
+        // correlator hiccup must not fail an otherwise-successful import.
+        // `correlate_and_persist` runs it under the canonical panic guard
+        // (`guarded_correlation_pass`), exactly as the CLI import path
+        // (`app::persist`) and the live finalise do — a correlator rule
+        // panicking on adversarial imported entities degrades to "no
+        // correlations", not an unwind after the entities were committed —
+        // and records a pass that failed and every firing the store refuses.
+        let _firings = crate::core::engine::correlate_and_persist(&store, &sid2, &mut tally);
+        let correlations = tally.persisted(FinaliseWrite::Correlations);
+        let (status, error) = commit(row, ScanStatus::Complete, &tally)?;
+        Ok((
+            relations,
+            correlations,
+            true,
+            stealer_rows_stored,
+            status,
+            error,
+        ))
+    })
+    .await
+    {
+        Ok(counts) => counts,
+        Err(resp) => return resp,
+    };
 
     info!(scan_id = %sid, format, entities = entity_count, "file imported via web");
     (
@@ -794,15 +823,21 @@ pub async fn scan_import(
             // upload, nothing to store) or `parsed == stored` (success).
             "stealer_rows_parsed": stealer_rows_parsed,
             "stealer_rows_stored": stealer_rows_stored,
-            // `partial` when the store refused some of the relations or
+            // The status the row was committed with — `aborted` when a cancel
+            // reached the import before its enrichment finished — except that
+            // a `Complete` row whose finalise did not complete answers
+            // `partial`: the store refused some of the relations or
             // correlations derived above, or the correlation pass failed
-            // outright: the scan is stored `Complete` (the
-            // upload was imported in full) with the shortfall in its `error`,
-            // and every export of it reads "partial, finalise-incomplete".
-            // Hardcoding `complete` here told the client the import was whole
-            // while the counts above silently excluded what was lost.
-            // `finalise_error` names the shortfall, `null` when there is none.
-            "status": if finalise_error.is_some() { "partial" } else { "complete" },
+            // outright. That row is stored `Complete` (the upload was imported
+            // in full) with the shortfall in its `error`, and every export of
+            // it reads "partial, finalise-incomplete". Answering `complete`
+            // told the client the import was whole while the counts above
+            // silently excluded what was lost. `finalise_error` names the
+            // shortfall on any terminal status, `null` when there is none.
+            "status": match (terminal, &finalise_error) {
+                (ScanStatus::Complete, Some(_)) => "partial",
+                (status, _) => status.as_str(),
+            },
             "finalise_error": finalise_error,
         })),
     )

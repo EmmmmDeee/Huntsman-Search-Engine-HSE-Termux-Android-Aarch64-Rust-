@@ -83,9 +83,11 @@ pub enum SkipClass {
     /// spent quota or cost budget, or a capability quarantine.
     Unavailable,
     /// The provider had nothing to say about this target at all — a private or
-    /// reserved IP, a local domain, a URL with a private host. Asking would
-    /// have been rejected upstream, so its silence carries no information about
-    /// the subject either way.
+    /// reserved IP, a local domain, a URL with a private host, a host with no
+    /// DNS. Asking would have been rejected upstream — or was, when the module
+    /// learned it from the provider's own reply (hackertarget's "error invalid
+    /// host", whois's IANA bootstrap) — so its silence carries no information
+    /// about the subject either way.
     NotApplicable,
     /// Already dispatched for this target earlier in the same scan (or, for a
     /// local sensor, already run on the seed round), so its answer is already
@@ -202,9 +204,15 @@ pub enum EventKind {
         probes: usize,
         /// Probes the plan derived but could not fit under the cap.
         dropped: usize,
-        /// Probes actually dispatched to the breach corpora.
+        /// Probes actually dispatched to the breach corpora. `None` only on an
+        /// event persisted before the count was recorded: such a sweep's
+        /// dispatch is UNKNOWN, not zero, so it renders the old "N probes from
+        /// M anchors" line. Defaulting it to `0` re-rendered every pre-upgrade
+        /// sweep that ran normally as "0/12 probes dispatched" — the mirror
+        /// image of the misreport REQ-SWEEP-004 fixed (REQ-SWEEP-006). Every
+        /// new emission is `Some`.
         #[serde(default)]
-        dispatched: usize,
+        dispatched: Option<usize>,
         /// Why dispatch stopped before the plan was exhausted
         /// ([`crate::core::scan::StopReason::label`]) — a spent scan budget or
         /// a cancel. `None` when every planned probe went out (including the
@@ -554,10 +562,18 @@ impl EventKind {
                 let stop = stopped
                     .as_deref()
                     .map_or_else(String::new, |r| format!(" · stopped: {r}"));
+                // A legacy event never recorded its dispatch: say what it did
+                // record, not a count of zero it never claimed.
+                let sent = dispatched.map_or_else(String::new, |d| format!("{d}/"));
+                let verb = if dispatched.is_some() {
+                    " dispatched"
+                } else {
+                    ""
+                };
                 (
                     "expand",
                     format!(
-                        "⇉ breach sweep · {dispatched}/{probes} probe{} dispatched from {anchors} anchor{}{over}{stop}",
+                        "⇉ breach sweep · {sent}{probes} probe{}{verb} from {anchors} anchor{}{over}{stop}",
                         plural(*probes),
                         plural(*anchors)
                     ),

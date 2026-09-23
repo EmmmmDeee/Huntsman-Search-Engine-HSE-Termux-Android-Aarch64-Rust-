@@ -250,3 +250,25 @@ use super::*;
         assert!(failed.contains("failed"), "got: {failed}");
         assert!(!failed.contains("scan complete"));
     }
+
+    /// REQ-SWEEP-006: a BreachSweep persisted before `dispatched` existed renders
+    /// what it recorded, never "0/N dispatched" for a sweep that ran.
+    #[test]
+    fn render_event_reads_a_legacy_breach_sweep_as_unknown_dispatch() {
+        let legacy = render_event(&EventKind::BreachSweep {
+            anchors: 3,
+            probes: 12,
+            dropped: 0,
+            dispatched: None,
+            stopped: None,
+        });
+        assert_eq!(legacy, "  breach sweep: 12 probes from 3 anchors");
+        let recorded = render_event(&EventKind::BreachSweep {
+            anchors: 3,
+            probes: 12,
+            dropped: 0,
+            dispatched: Some(0),
+            stopped: Some("max_entities=2500 reached".into()),
+        });
+        assert!(recorded.contains("0/12 probes dispatched"), "{recorded}");
+    }

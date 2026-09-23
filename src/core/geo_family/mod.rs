@@ -69,10 +69,18 @@ const SUBJECT_FIX_MIN: f64 = 0.60;
 ///
 /// Per record: a record `address_to_coords_pass` copied from an Address onto a
 /// gazetteer centroid (its `addr_entity_uid` attribute) is that Address's
-/// source, not an observation, whatever the source's class. Nothing useful is
-/// lost — the subject's own name-matched address still anchors through the
-/// `exact-name-match` arm of [`subject_fixes`], at postcode grain, which is
-/// fine-grained enough for the 150 km family radius.
+/// source, not an observation, whatever the source's class.
+///
+/// What this drops is the forward geocode of the subject's own name-matched
+/// address: a geocoder's point carries none of the Address's tags, so it used
+/// to anchor only as a ≥ 0.60 `geocode` fix. The Address itself anchors instead
+/// through the `exact-name-match` arm of [`subject_fixes`], resolved offline —
+/// at its postcode's centroid, or, with no AU postcode, at the gazetteer
+/// city/suburb it names (`"12 Foo St, Toowong QLD"` → Toowong). Either grain is
+/// fine enough for the 150 km family radius. An exact-name-match address with
+/// neither a postcode nor a tabulated place (a non-AU street in an untabulated
+/// town) no longer anchors at all — the conservative side, since its only
+/// other route was the geocoder guess this refuses (REQ-GEO-FAMILY-003).
 fn is_direct_subject_fix(e: &Entity) -> bool {
     use crate::core::correlator::{class_locates_subject_directly, geo_source_class};
     e.evidence.iter().any(|ev| {
@@ -215,7 +223,8 @@ pub struct SubjectFix {
 ///    subject (`exact-name-match`); and
 /// 2. the subject's OWN address locality — an `Address` tagged `exact-name-match`
 ///    (a register/directory record whose owner name exactly matched the subject),
-///    resolved offline to its postcode-region centroid.
+///    resolved offline to its postcode's centroid or, with no AU postcode, to the
+///    tabulated city/suburb it names (`util::city_coords`).
 ///
 /// Source 2 is what lets the geo angle fire on the COMMON scan — no GPS, but the
 /// subject's suburb is known from a name-matched register hit — rather than only
@@ -258,9 +267,14 @@ pub fn subject_fixes(entities: &[Entity]) -> Vec<SubjectFix> {
                 // rules, but it is not where the subject is (REQ-GEO-FAMILY-002).
                 crate::util::geohash::parse_coords(&e.value)
             }
-            EntityKind::Address if e.has_tag("exact-name-match") => {
-                au_postcode(e).and_then(|pc| crate::util::city_coords::city_coords(&pc))
-            }
+            // The postcode's centroid first (the finer, register-grade grain);
+            // with no AU postcode, the tabulated city/suburb the address names.
+            // Without that second leg a postcode-less name-matched address had
+            // no anchor once its forward geocode stopped counting as a fix
+            // (REQ-GEO-FAMILY-003).
+            EntityKind::Address if e.has_tag("exact-name-match") => au_postcode(e)
+                .and_then(|pc| crate::util::city_coords::city_coords(&pc))
+                .or_else(|| crate::util::city_coords::city_coords(&e.value)),
             _ => None,
         };
         if let Some(coord) = coord {

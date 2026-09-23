@@ -6684,6 +6684,64 @@ async fn an_unreadable_cross_scan_route_pass_is_recorded() {
     assert_eq!(run(inner.as_ref()), None);
 }
 
+/// REQ-SCANSTATUS-004: SSE subscribers hear `scan_complete` only once the
+/// stored row is terminal. The event was broadcast inside the blocking
+/// finalise, before the commit wrote the status, so a client that re-fetched
+/// `/scans/{id}` on it (the radar view, on the documented promise that "the
+/// engine writes the row before it emits the event") read `running`.
+#[tokio::test]
+async fn scan_complete_reaches_live_subscribers_only_after_the_row_is_terminal() {
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, rx) = tokio::sync::broadcast::channel(8192);
+    store.watch_bus(rx);
+    let engine = ScanEngine::new(
+        vec![Arc::new(StubBreachCorpus {
+            name: "stub_breach_corpus",
+        })],
+        store_port,
+        bus.clone(),
+    );
+    let target = Target::new(TargetKind::Email, "sse@example.com");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("email", "sse@example.com"),
+        target.clone(),
+    )
+    .with_options(ScanOptions {
+        depth: 1,
+        max_roi: false,
+        ..Default::default()
+    });
+    let scan_id = scan.id.clone();
+    let mut late = bus.subscribe();
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    engine.run(scan, target, ctx).await.expect("should succeed");
+    let w = store
+        .terminal_witnesses()
+        .into_iter()
+        .find(|w| w.scan_id == scan_id)
+        .expect("the row turned terminal");
+    assert!(w.completion_event, "the event is durable before the row");
+    assert!(
+        !w.completion_broadcast,
+        "subscribers were told the scan completed while its row still read running"
+    );
+    // ...and they are still told, once.
+    let heard = drain_events(&mut late)
+        .into_iter()
+        .filter(|k| matches!(k, EventKind::ScanComplete { .. }))
+        .count();
+    assert_eq!(heard, 1);
+}
+
 /// Scan 7258fc07: `expansion_stop max_entities=2500 reached`, then
 /// `breach_sweep {probes: 64}`, then no sweep dispatch at all — the per-probe
 /// budget guard broke on probe 0, and the event (emitted before the loop)
@@ -6741,7 +6799,8 @@ async fn a_budget_exhausted_breach_sweep_reports_zero_dispatched() {
         })
         .expect("a budget-stopped sweep still records that it did not run");
     assert_eq!(
-        dispatched, 0,
+        dispatched,
+        Some(0),
         "no probe can go out once the budget is spent"
     );
     assert_eq!(
@@ -6824,8 +6883,8 @@ async fn a_scan_runs_the_final_breach_sweep_and_then_audits_it() {
          {anchors} anchors / {probes} probes"
     );
     assert!(
-        dispatched == probes && stopped.is_none(),
-        "an unbudgeted sweep dispatches its whole plan; got {dispatched}/{probes}, \
+        dispatched == Some(probes) && stopped.is_none(),
+        "an unbudgeted sweep dispatches its whole plan; got {dispatched:?}/{probes}, \
          stopped {stopped:?}"
     );
 
@@ -7022,7 +7081,9 @@ fn autonomous_sweep_seeds_specific_geo_pivots_and_refuses_generic_ones() {
     // A genuine person-anchored fix carries an anchoring geo source (here an
     // EXIF GPS tag); without one `is_infrastructure_geo` treats a bare lat/lon as
     // an IP/WHOIS-derived infrastructure location, correctly NOT seedable.
-    let mut fix = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.90, "s");
+    // Off the gazetteer's tables: the Sydney CBD centroid itself is coarse by
+    // value (`util::city_coords::is_gazetteer_centroid`, REQ-GEO-017).
+    let mut fix = Entity::new(EntityKind::Coordinates, "-33.8712,151.2069", 0.90, "s");
     fix.add_evidence(Evidence::new("exif_geo", "photo GPS"));
 
     // ── Refused: each geolocates nobody ─────────────────────────────────────
@@ -8128,9 +8189,13 @@ impl Module for CentroidModule {
     ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
         let mut r = crate::core::module::ModuleResult::new();
         if target.value == "seed" {
+            // Off the gazetteer's tables, so only the legacy SIGNATURE can make
+            // it a centroid: the control (no signature) is a precise point,
+            // where the tabulated Sydney CBD value would be coarse by value
+            // alone (REQ-GEO-017).
             let mut e = Entity::new(
                 EntityKind::Coordinates,
-                "-33.8688,151.2093",
+                "-33.8712,151.2069",
                 0.9,
                 &ctx.scan_id,
             );
@@ -8227,7 +8292,7 @@ async fn run_centroid_scan(legacy: bool) -> (Vec<String>, Vec<String>) {
     let mut reasons = Vec::new();
     while let Ok(ev) = rx.try_recv() {
         if let EventKind::EntityExcluded { value, reason, .. } = ev.kind
-            && value.starts_with("-33.8688")
+            && value.starts_with("-33.8712")
         {
             reasons.push(reason);
         }
@@ -8242,7 +8307,7 @@ async fn run_centroid_scan(legacy: bool) -> (Vec<String>, Vec<String>) {
 async fn a_legacy_untagged_centroid_is_never_pivoted() {
     let (values, reasons) = run_centroid_scan(true).await;
     assert!(
-        values.iter().any(|v| v.starts_with("-33.8688")),
+        values.iter().any(|v| v.starts_with("-33.8712")),
         "the centroid is still recorded as evidence: {values:?}"
     );
     assert!(

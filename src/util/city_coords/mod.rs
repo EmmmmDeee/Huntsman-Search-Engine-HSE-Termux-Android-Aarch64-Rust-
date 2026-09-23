@@ -367,6 +367,46 @@ pub(crate) fn is_tabulated_au_city(name: &str) -> bool {
         .any(|&(city, lat, lon)| city == name && crate::util::geo::is_in_australia(lat, lon))
 }
 
+/// Whether `(lat, lon)` is one of the centroids [`city_coords`] can return — a
+/// tabulated city/suburb row, a tabulated postcode centroid, or a leading-digit
+/// region centroid — compared at the 4-decimal grain every caller formats a
+/// centroid's `Coordinates` value with (`{lat:.4},{lon:.4}`).
+///
+/// The one authority on "this point is a gazetteer centroid, not a place":
+/// ~30 modules mint a `Coordinates` from [`city_coords`], and tagging each at
+/// its own call site left most of them untagged and pivoted into reverse
+/// geocoders and cadastre lookups as if the Sydney CBD centroid were the
+/// subject's parcel (REQ-GEO-007, REQ-GEO-017). The engine's geospatial
+/// enrichment asks this instead, whichever module minted the point.
+///
+/// A precise fix that happens to fall in the same ~11 m cell as a centroid is
+/// read as the centroid — the direction that withholds a pivot rather than
+/// manufacturing precision. Pure; deterministic; no I/O (the set is built once
+/// from the same tables [`city_coords`] reads).
+#[must_use]
+pub fn is_gazetteer_centroid(lat: f64, lon: f64) -> bool {
+    static CENTROIDS: std::sync::LazyLock<std::collections::HashSet<(i64, i64)>> =
+        std::sync::LazyLock::new(|| {
+            let mut set: std::collections::HashSet<(i64, i64)> = CITIES
+                .iter()
+                .map(|&(_, lat, lon)| grain_key(lat, lon))
+                .collect();
+            for pc in 0..10_000u32 {
+                let pc = format!("{pc:04}");
+                set.extend(postcode_coords(&pc).map(|(a, o)| grain_key(a, o)));
+                set.extend(au_postcode_region(&pc).map(|(a, o)| grain_key(a, o)));
+            }
+            set
+        });
+    CENTROIDS.contains(&grain_key(lat, lon))
+}
+
+/// A point keyed at the 4-decimal grain [`is_gazetteer_centroid`] compares at.
+#[allow(clippy::cast_possible_truncation)] // |lat|,|lon| ≤ 180 → ≤ 1.8e6.
+fn grain_key(lat: f64, lon: f64) -> (i64, i64) {
+    ((lat * 1e4).round() as i64, (lon * 1e4).round() as i64)
+}
+
 /// Resolve a bare 4-digit AU postcode to an approximate `(lat, lon)`.
 ///
 /// Delegates to the single source of truth — the ground-truth offline gazetteer

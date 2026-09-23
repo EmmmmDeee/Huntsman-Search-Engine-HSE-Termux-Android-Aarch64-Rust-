@@ -819,11 +819,14 @@ pub struct Scan {
     pub finished_at: Option<u64>,
     pub entity_count: usize,
     pub error: Option<String>,
-    /// Modules that actually executed against their provider this scan —
-    /// completed, errored or timed out. Disjoint from
-    /// [`modules_skipped`](Self::modules_skipped): a module that dispatched and
-    /// then opted out (no key, not applicable) is a skip, not a run. Includes
-    /// `modules_errored` and `modules_timed_out`.
+    /// Module dispatches this scan that returned a result, an error or a
+    /// timeout — that obtained an answer about their target, or failed trying.
+    /// Disjoint from [`modules_skipped`](Self::modules_skipped): a module that
+    /// dispatched and then opted out in-band (no key, not applicable) is a
+    /// skip, not a run — including one that contacted a provider to learn it
+    /// could not answer (hackertarget's "error invalid host", whois's IANA
+    /// bootstrap), since it obtained no answer about the target
+    /// (REQ-ENGINE-005). Includes `modules_errored` and `modules_timed_out`.
     #[serde(default)]
     pub modules_run: usize,
     #[serde(default)]

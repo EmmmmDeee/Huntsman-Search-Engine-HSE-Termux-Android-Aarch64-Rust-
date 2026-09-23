@@ -449,3 +449,27 @@ fn a_bare_country_name_never_resolves_but_the_address_it_belongs_to_does() {
         );
     }
 }
+
+    /// REQ-GEO-017: every value `city_coords` can return — a tabulated name, a
+    /// tabulated postcode, a leading-digit region — is recognised at the
+    /// 4-decimal grain callers format it with; a point off the tables is not.
+    #[test]
+    fn every_city_coords_answer_is_a_gazetteer_centroid() {
+        for addr in [
+            "Sydney NSW",
+            "Brisbane, QLD",
+            "Auckland",
+            "4552",
+            "4999",
+            "12 Smith St, Maleny QLD 4552",
+        ] {
+            let (lat, lon) = city_coords(addr).expect(addr);
+            let shown: Vec<f64> = format!("{lat:.4},{lon:.4}")
+                .split(',')
+                .map(|p| p.parse().unwrap())
+                .collect();
+            assert!(is_gazetteer_centroid(shown[0], shown[1]), "{addr}");
+        }
+        assert!(!is_gazetteer_centroid(-27.4801, 152.9912));
+        assert!(!is_gazetteer_centroid(-33.869844, 151.208285));
+    }

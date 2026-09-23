@@ -149,10 +149,14 @@ pub(crate) struct ScanOutcome {
 /// to the `Scan` record in `finalise_scan`.
 #[derive(Debug, Default)]
 pub(crate) struct ModuleStats {
-    /// Modules that actually executed against their provider: completed,
-    /// errored, or timed out. Excludes cache replays, gate-skips and in-band
-    /// opt-outs (`MissingKey` / `Error::Skipped`) — `run` and `skipped`
-    /// partition the non-cached dispatches, so no dispatch is in both.
+    /// Dispatches that returned a result, an error or a timeout — a module that
+    /// obtained an answer about its target, or failed trying. Excludes cache
+    /// replays, gate-skips and in-band opt-outs (`MissingKey` /
+    /// `Error::Skipped`) — `run` and `skipped` partition the non-cached
+    /// dispatches, so no dispatch is in both. An in-band skip is excluded even
+    /// when the module contacted a provider to decide it (hackertarget's "error
+    /// invalid host", whois's IANA bootstrap): it came back with no answer
+    /// about the target, which is what `run` counts (REQ-ENGINE-005).
     /// `errored` and `timed_out` are subsets of `run`.
     pub run: usize,
     pub errored: usize,
@@ -448,13 +452,26 @@ impl EventEmitter {
     }
 
     fn emit(&self, scan_id: &str, kind: EventKind) {
+        let event = self.record(scan_id, kind);
+        self.broadcast(event);
+    }
+
+    /// The durable half of [`Self::emit`]: enqueue the event to the DB-writer
+    /// actor (non-blocking; persisted asynchronously) and hand it back for a
+    /// later [`Self::broadcast`]. Split out for the one event whose live
+    /// fan-out must wait for a later write — `ScanComplete`, which SSE
+    /// subscribers read as "the scan row is terminal" (see `finalise_scan`).
+    fn record(&self, scan_id: &str, kind: EventKind) -> Event {
         let event = Event::new(scan_id, kind);
-        // Non-blocking enqueue to the DB-writer actor; persisted asynchronously.
         self.writer.submit(event.clone());
-        // Best-effort live fan-out to SSE subscribers. `broadcast::send` errors
-        // ONLY when there are zero active receivers — the normal case for a CLI
-        // scan with no `/events` client attached. Drop silently (see previous
-        // rationale: per-event logging floods the terminal on breach-heavy scans).
+        event
+    }
+
+    /// The live half of [`Self::emit`]: best-effort fan-out to SSE subscribers.
+    /// `broadcast::send` errors ONLY when there are zero active receivers — the
+    /// normal case for a CLI scan with no `/events` client attached. Dropped
+    /// silently (per-event logging floods the terminal on breach-heavy scans).
+    fn broadcast(&self, event: Event) {
         let _ = self.bus.send(event);
     }
 }
@@ -1090,7 +1107,7 @@ impl ScanEngine {
         // persist its terminal status — see the commit step after it. The
         // flag says whether that final write is best-effort (the Failed
         // record, whose loss is logged) or must propagate its error.
-        let (scan, best_effort_persist) = tokio::task::spawn_blocking(move || -> Result<(Scan, bool)> {
+        let (scan, best_effort_persist, completion) = tokio::task::spawn_blocking(move || -> Result<(Scan, bool, Event)> {
             // Mint ApiKey entities for every FOREIGN key identified in this scan's
             // endpoint responses, run the finalise-time offline enrichment passes,
             // then persist the batch (falling back to per-entity upserts on a
@@ -1145,7 +1162,10 @@ impl ScanEngine {
                 scan.entity_count = 0;
                 scan.error = first_err;
                 scan.finished_at = Some(crate::core::entity::unix_now());
-                emitter.emit(
+                // Recorded now, broadcast after the commit step below — see
+                // there. The row is persisted by that step, after the event is
+                // durable — best-effort there, logged on failure.
+                let completion = emitter.record(
                     &scan.id,
                     EventKind::ScanComplete {
                         scan_id: scan.id.clone(),
@@ -1153,9 +1173,7 @@ impl ScanEngine {
                         status: scan.status,
                     },
                 );
-                // Persisted by the commit step below, after the event is
-                // durable — best-effort there, logged on failure.
-                return Ok((scan, true));
+                return Ok((scan, true, completion));
             }
 
             // The terminal status is DECIDED here but not yet written: the
@@ -1207,15 +1225,19 @@ impl ScanEngine {
             run_finalise_housekeeping(store.as_ref(), &scan.id);
 
             // The scan did run to the end, so its status stays `Complete` (or
-            // `Aborted`); what it failed to keep is recorded beside it, where
-            // every export's completeness check reads it. `None` when every
-            // write persisted.
+            // `Aborted`); what its finalise did not complete is recorded beside
+            // it, where every export's completeness check reads it. `None` when
+            // everything completed. Set here, before the completion is recorded,
+            // so the row the commit step writes — the one a subscriber re-reads
+            // on the `scan_complete` broadcast — carries it.
             scan.error = tally.message();
             if let Some(err) = scan.error.as_deref() {
                 warn!(scan_id = %scan.id, error = %err, "scan finalised with records the store did not keep");
             }
 
-            emitter.emit(
+            // Recorded (durable through the writer) but NOT yet broadcast: see
+            // the broadcast after the commit step.
+            let completion = emitter.record(
                 &scan.id,
                 EventKind::ScanComplete {
                     scan_id: scan.id.clone(),
@@ -1227,7 +1249,7 @@ impl ScanEngine {
             );
 
             scan.status = terminal;
-            Ok((scan, false))
+            Ok((scan, false, completion))
         })
         .await
         .map_err(|e| crate::core::error::Error::Other(e.to_string()))??;
@@ -1269,6 +1291,18 @@ impl ScanEngine {
         })
         .await
         .map_err(|e| crate::core::error::Error::Other(e.to_string()))??;
+
+        // Only now does a live subscriber hear `scan_complete`. The event was
+        // recorded inside the blocking phase and is durable (the flush above),
+        // but its bus fan-out used to happen there too — before this commit —
+        // so an SSE client that re-fetched `/scans/{id}` on `scan_complete`
+        // (the radar view does exactly that, on the documented promise that
+        // "the engine writes the row before it emits the event") read
+        // `running` and the scan-start row's counts, and nothing prompted it to
+        // look again (REQ-SCANSTATUS-004). A commit that failed outright
+        // returned above, so no completion is announced for a row that never
+        // became terminal.
+        self.emitter.broadcast(completion);
 
         // Fire the operator's completion webhook, if one was configured via
         // `HUNTSMAN_WEBHOOK_URL` / `ScanOptions`. The URL was already threaded into
@@ -1890,7 +1924,7 @@ impl ScanEngine {
                     anchors: 0,
                     probes: 0,
                     dropped: 0,
-                    dispatched: 0,
+                    dispatched: Some(0),
                     stopped: Some(reason.label()),
                 },
             );
@@ -1940,7 +1974,7 @@ impl ScanEngine {
                     anchors: plan.anchors_used,
                     probes: 0,
                     dropped: plan.dropped_over_cap,
-                    dispatched: 0,
+                    dispatched: Some(0),
                     stopped: None,
                 },
             );
@@ -2028,7 +2062,7 @@ impl ScanEngine {
                 anchors: plan.anchors_used,
                 probes: plan.len(),
                 dropped: plan.dropped_over_cap,
-                dispatched: probed,
+                dispatched: Some(probed),
                 stopped: stopped.as_ref().map(StopReason::label),
             },
         );

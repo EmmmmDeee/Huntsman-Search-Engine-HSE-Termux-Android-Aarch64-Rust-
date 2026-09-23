@@ -1221,8 +1221,14 @@ impl Entity {
     }
 
     /// The set of DISTINCT corroborating evidence *records* — `(source, summary)`
-    /// pairs whose source counts toward corroboration (see
-    /// [`is_non_corroborating_source`]). Unlike [`Self::corroborating_sources`],
+    /// pairs of the records that count toward corroboration, judged per record
+    /// by [`Evidence::is_non_corroborating`]: a record from a non-corroborating
+    /// source ([`is_non_corroborating_source`]), an annotation of the value
+    /// ([`Evidence::is_annotation`]) and a name-only match
+    /// ([`VerificationMethod::Unverified`] — an openarch or wikitree row that
+    /// matched on the name alone) are all left out, so none of them draws a
+    /// co-occurrence edge in the GEXF export (`core::gexf`, the one consumer).
+    /// Unlike [`Self::corroborating_sources`],
     /// which collapses every record to the bare source NAME, this keeps
     /// per-record granularity: two entities share a record only when the same
     /// source produced the *same finding* for both.

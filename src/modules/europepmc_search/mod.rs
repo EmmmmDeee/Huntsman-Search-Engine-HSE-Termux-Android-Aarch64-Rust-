@@ -173,14 +173,31 @@ pub(super) fn build_url(api_base: &str, kind: TargetKind, value: &str) -> Option
 /// `author_matches` compares a one-character given name as a prefix, so `"I"`
 /// matches `Ian` where `"IF"` would not. An entry without an initials token (a
 /// consortium, a one-word name) is family-only, which `author_matches` decides
-/// on the family name alone. **Pure.**
+/// on the family name alone.
+///
+/// A generational suffix after the initials (`"Smith J Jr"`, `"Smith JA
+/// III"`, `"Smith J 2nd"` — Europe PMC keeps PubMed's rendering) is dropped
+/// first. Left in place it was the "last token", the initials check failed on
+/// it, and the whole entry became the family name `"Smith J Jr"`, which no
+/// seed can match: a FullName seed lost every paper it wrote under a suffix
+/// (REQ-EUROPEPMC-003). The suffix is dropped only when an initials token
+/// stands before it, because a roman numeral is also a pair of initials:
+/// `"Petrov IV"` is Ivan V. Petrov, not a fourth Petrov. **Pure.**
 fn split_author(entry: &str) -> Option<(String, String)> {
+    const GENERATIONAL: &[&str] = &["jr", "sr", "ii", "iii", "iv", "2nd", "3rd", "4th"];
+    let is_initials_token = |t: &str| {
+        t.chars().count() <= 4 && t.chars().all(|c| c.is_alphabetic() && c.is_uppercase())
+    };
     let entry = entry.trim().trim_end_matches('.').trim();
-    let tokens: Vec<&str> = entry.split_whitespace().collect();
+    let mut tokens: Vec<&str> = entry.split_whitespace().collect();
+    if tokens.len() >= 3
+        && GENERATIONAL.contains(&tokens[tokens.len() - 1].to_ascii_lowercase().as_str())
+        && is_initials_token(tokens[tokens.len() - 2])
+    {
+        tokens.pop();
+    }
     let (last, rest) = tokens.split_last()?;
-    let is_initials = !rest.is_empty()
-        && last.chars().count() <= 4
-        && last.chars().all(|c| c.is_alphabetic() && c.is_uppercase());
+    let is_initials = !rest.is_empty() && is_initials_token(last);
     if is_initials {
         let first = last.chars().next().map(String::from).unwrap_or_default();
         Some((first, rest.join(" ")))

@@ -315,12 +315,24 @@ use super::*;
             .and_then(|(_, rest)| rest.split_once("t==='consensus_audit'"))
             .map(|(branch, _)| branch)
             .expect("log.js maps breach_sweep");
-        for field in ["ev.dispatched", "ev.probes", "esc(ev.stopped)", "dispatched from"] {
+        for field in ["ev.dispatched", "ev.probes", "esc(ev.stopped)", " from ${ev.anchors}"] {
             assert!(
                 branch.contains(field),
                 "the breach_sweep line must render {field}: {branch}"
             );
         }
+        // REQ-SWEEP-006: a legacy event without `dispatched` never recorded
+        // its dispatch, so it must not be defaulted to 0 ("0/12 dispatched"
+        // for a sweep that ran) — it renders the line it was written with,
+        // exactly as `EventKind::log_summary` now does.
+        assert!(
+            !branch.contains("dispatched ?? 0"),
+            "a legacy sweep must not read as one that dispatched nothing: {branch}"
+        );
+        assert!(
+            branch.contains("ev.dispatched !== null"),
+            "the unknown dispatch must be distinguished: {branch}"
+        );
     }
 
     #[test]
