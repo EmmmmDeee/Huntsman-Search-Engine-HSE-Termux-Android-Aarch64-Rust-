@@ -124,11 +124,30 @@ fn an_unrecognised_issuer_is_tls_intercepted() {
 }
 
 #[test]
-fn a_recognised_issuer_by_substring_is_not_intercepted() {
+fn a_recognised_issuers_exact_full_name_is_not_intercepted() {
     let mut p = healthy_path();
     p.tls_issuer_org = Some("DigiCert Inc".to_string());
     let r = classify(&p);
     assert_ne!(r.kind, OutageKind::TlsIntercepted, "{r:?}");
+}
+
+#[test]
+fn an_issuer_name_that_merely_contains_an_allow_listed_fragment_is_still_intercepted() {
+    // Regression: EXPECTED_CA_ORGS was previously matched by
+    // `org.contains(..)`, so a self-signed interception certificate could
+    // name its own issuer organisation "Not DigiCert" or "DigiCert clone" —
+    // both contain the allow-listed fragment "DigiCert" — and pass. Exact
+    // equality must reject both.
+    for forged in ["Not DigiCert", "DigiCert clone", "XDigiCert Inc"] {
+        let mut p = healthy_path();
+        p.tls_issuer_org = Some(forged.to_string());
+        let r = classify(&p);
+        assert_eq!(
+            r.kind,
+            OutageKind::TlsIntercepted,
+            "{forged:?} must not pass as a recognised CA: {r:?}"
+        );
+    }
 }
 
 #[test]

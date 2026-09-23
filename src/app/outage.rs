@@ -88,9 +88,19 @@ pub async fn collect() -> OutagePath {
 /// tests can point every leg at a loopback stub rather than the live
 /// internet.
 ///
+/// `pub(crate)`, not `pub`: `ip_literal_anchor` reaches a raw
+/// `TcpStream::connect` and `connectivity_url` reaches
+/// `util::curl::fetch_with_status`, and neither carries the SSRF-safe
+/// host-checking this crate's shared reqwest client enforces — the exact
+/// gap the whole SSRF-hardening wave (REQ-SSRF-001/002) closed everywhere
+/// else a caller-supplied target reaches the network. Safe only because
+/// every real caller is [`collect`], which pins the four targets itself;
+/// widening this to `pub` would hand an external caller a bare
+/// loopback/metadata probing primitive.
+///
 /// All five legs run concurrently (`tokio::join!`): the wall-clock cost of
 /// [`collect_against`] is the slowest single leg, not their sum.
-pub async fn collect_against(
+pub(crate) async fn collect_against(
     domain: &str,
     ip_literal_anchor: &str,
     connectivity_url: &str,

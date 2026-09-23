@@ -179,25 +179,48 @@ impl OutageReport {
 }
 
 /// Organisations expected to appear as a leaf certificate's issuer for the
-/// pinned TLS probe domain — a conservative allow-list of major public CAs
-/// a stable, well-known HTTPS domain is realistically issued by. Absence
-/// from this list is the ONLY thing [`classify`] treats as suspicious; it is
-/// deliberately never a completeness claim about every legitimate CA in
-/// existence, only a check against known-good for the ONE stable domain the
-/// caller pins the probe to. Matched by substring (`org.contains(..)`) so an
-/// issuer string carrying a suite/jurisdiction suffix (`"DigiCert Inc"` vs a
-/// bare `"DigiCert"`) still matches.
+/// pinned TLS probe domain — a conservative allow-list of major public CAs'
+/// complete, exact `organizationName` values, a stable, well-known HTTPS
+/// domain is realistically issued by. Absence from this list is the ONLY
+/// thing [`classify`] treats as suspicious; it is deliberately never a
+/// completeness claim about every legitimate CA in existence, only a check
+/// against known-good for the ONE stable domain the caller pins the probe
+/// to.
+///
+/// Matched by exact string equality (see [`is_expected_ca_org`]), not
+/// substring or prefix: an earlier version matched by `org.contains(..)`,
+/// which a self-signed interception certificate can defeat for free by
+/// naming its own issuer organisation `"Not DigiCert"` or `"DigiCert
+/// clone"` — both contain the allow-listed fragment `"DigiCert"` anywhere
+/// in the string. `tls_issuer_org` is an unauthenticated display string
+/// read straight off the peer's own certificate (see
+/// `util::x509_field::extract_field_from_der`'s doc comment) with no chain
+/// or fingerprint validation behind it, so exact-match against a CA's real,
+/// complete name is the strongest claim this heuristic can honestly make —
+/// it is still a display-string comparison, not cryptographic proof, and a
+/// forger who copies a real CA's complete organisation name byte-for-byte
+/// into their own self-signed leaf still passes. Closing that residual
+/// needs actual chain/root-fingerprint validation, a materially larger,
+/// separately-scoped capability (tracked, not silently promised here).
 pub const EXPECTED_CA_ORGS: &[&str] = &[
-    "Google Trust Services",
-    "DigiCert",
+    "DigiCert Inc",
     "Let's Encrypt",
-    "GlobalSign",
+    "Internet Security Research Group",
+    "Google Trust Services",
+    "Google Trust Services LLC",
+    "GlobalSign nv-sa",
     "Amazon",
-    "Cloudflare",
-    "Sectigo",
-    "ISRG",
-    "GTS CA",
+    "Cloudflare, Inc.",
+    "Sectigo Limited",
 ];
+
+/// Exact-match `org` (already trimmed by the DER reader) against
+/// [`EXPECTED_CA_ORGS`]. A standalone `fn` rather than an inline closure so
+/// its one job — this is equality, not substring containment — is named and
+/// testable on its own.
+fn is_expected_ca_org(org: &str) -> bool {
+    EXPECTED_CA_ORGS.contains(&org)
+}
 
 /// True when neither address set is empty and they share no address —
 /// a real disagreement between two resolution paths for the same lookup,
@@ -263,7 +286,7 @@ pub fn classify(path: &OutagePath) -> OutageReport {
         let issuer_ok = path
             .tls_issuer_org
             .as_deref()
-            .is_some_and(|org| EXPECTED_CA_ORGS.iter().any(|ex| org.contains(ex)));
+            .is_some_and(is_expected_ca_org);
         if !issuer_ok {
             let issuer = path
                 .tls_issuer_org

@@ -676,6 +676,28 @@ fn sorted_huntsman_keys(loaded: &std::collections::HashMap<String, String>) -> V
     keys
 }
 
+/// Render one module's health line for the `hse doctor` report.
+///
+/// Pure over a [`crate::core::engine::ModuleHealth`] snapshot so it is
+/// unit-testable without touching real dispatch state.
+fn format_module_health(h: &crate::core::engine::ModuleHealth) -> String {
+    match h.last_success_at {
+        Some(t) => format!(
+            "{:<20} {} consecutive failure{} (last succeeded {})",
+            h.name,
+            h.consecutive_failures,
+            if h.consecutive_failures == 1 { "" } else { "s" },
+            crate::util::timefmt::compact_utc(t),
+        ),
+        None => format!(
+            "{:<20} {} consecutive failure{} (never succeeded this process)",
+            h.name,
+            h.consecutive_failures,
+            if h.consecutive_failures == 1 { "" } else { "s" },
+        ),
+    }
+}
+
 /// Probe the network path itself (REQ-RESILIENCE-003) and print what kind of
 /// trouble, if any, stands between this device and the internet — DNS down,
 /// DNS answering two different truths, a captive portal intercepting the

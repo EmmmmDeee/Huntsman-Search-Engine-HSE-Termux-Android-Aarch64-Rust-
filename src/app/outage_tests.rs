@@ -188,10 +188,23 @@ async fn collect_against_composes_cleanly_when_only_the_direct_path_answers() {
     )
     .await;
     assert!(path.ip_literal_reachable);
+    // `system_dns_lookup` calls the OS resolver directly (there is no inject
+    // point for it, unlike the HTTP-based legs above) — a sandbox whose
+    // network is locked down enough to make a RFC 2606-reserved TLD reliably
+    // NXDOMAIN is the common case, but not a guarantee: a resolver that
+    // sinkholes every unknown name would silently skip the assertion this
+    // test exists to make. Fail loudly instead of skipping quietly, so a
+    // sandbox where this domain unexpectedly resolves is a visible test
+    // failure to fix, not a permanently untested composition.
+    assert!(
+        path.system_dns.is_empty(),
+        "outage-test.invalid resolved to {:?} in this sandbox — the \
+         DnsUnavailable composition below was not exercised; this reserved \
+         TLD is expected to be NXDOMAIN everywhere this suite runs",
+        path.system_dns
+    );
     let report = crate::core::outage::classify(&path);
-    if path.system_dns.is_empty() {
-        assert_eq!(report.kind, OutageKind::DnsUnavailable, "{report:?}");
-    }
+    assert_eq!(report.kind, OutageKind::DnsUnavailable, "{report:?}");
 }
 
 #[test]

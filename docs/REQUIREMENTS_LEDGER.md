@@ -18474,3 +18474,246 @@ MATRIX_SUMMARY_PLACEHOLDER
   Both paths are locked at the unit level; only the blank one lacks an
   end-to-end demonstration through the real binary. Queued, not silently
   accepted.
+
+### REQ-RESILIENCE-003 — a connected link said nothing about whether the network actually reached the internet honestly: the radar now classifies offline, DNS-unavailable, DNS-hijacked, captive-portal and TLS-intercepted paths, and reports it live
+
+#### Where this sits
+
+T6, cycle 3 (`docs/ROADMAP.md`). Cycle 2 gave the radar a per-sweep record of
+the device's own Wi-Fi link and reviewed its history for disruptions. A
+`connected: true` link record says nothing about whether the network it is on
+actually reaches the internet — a dead resolver, a captive portal, a poisoned
+DNS answer and a TLS-intercepting proxy all read as connected. This cycle
+classifies which of those states the path is in, from probes gathered fresh
+at call time (a single-snapshot judgement, not a history review like
+`core::link::review` — cycle 2's own scope note named this as cycle 3's job).
+
+#### Observed, before any change (`da942745`)
+
+No code in the tree distinguished any of these states from a healthy
+connection. `hse doctor --live` and the radar's disruptions surfaces reported
+the device's own link and access points heard, nothing about whether the path
+beyond the link actually worked.
+
+#### The fix
+
+- **`core::outage`** (pure, no I/O, no clock — the `core::link` discipline):
+  `OutagePath` (what a caller's probes observed: the system resolver's
+  answer, an independent DoH answer, whether a raw IP-literal connect
+  succeeded, a neutral connectivity check's status, whether a TLS handshake
+  captured a certificate and its issuer organisation) → `classify(&OutagePath)
+  -> OutageReport`, a five-way precedence chain — `Offline > DnsUnavailable >
+  DnsHijacked > CaptivePortal > TlsIntercepted > Clear` — so a device with no
+  route at all is never also reported as having a bad certificate on a
+  connection it never made, and a hijacked resolver is reported over a
+  captive-portal symptom the same hijack could also produce. Each kind
+  carries `advice()`, a short actionable sentence.
+- **`app::outage`** (the I/O collector, `app::signal`'s split over
+  `core::link` applied here): `collect()`/`collect_against(..)` run five
+  probes concurrently via `tokio::join!` — the system resolver
+  (`tokio::net::lookup_host`), an independent DNS-over-HTTPS JSON query
+  direct to Cloudflare (deliberately **not** `util::curl_client`'s existing
+  DoH fallback, which only activates once the system resolver has already
+  *failed* — a hijack is exactly the case where it *succeeds* with a wrong
+  answer), a raw IP-literal TCP connect, the `generate_204` connectivity
+  probe (`util::egress::PROBE_URL`, `pub(crate)` and shared rather than
+  duplicated), and a TLS handshake reusing `cert_intel`'s certificate-capture
+  technique. Every leg is bounded (3 s) and degrades to an honest "no signal"
+  value on failure — never a fabricated negative.
+- **`util::x509_field`** — a minimal, dependency-free DER field reader for a
+  certificate's issuer/subject organisation. Structurally locates the
+  `issuer`/`subject` `Name` field inside `Certificate.tbsCertificate` (RFC
+  5280 §4.1: walk past the optional `[0] version`, `serialNumber`, and
+  `signature` `AlgorithmIdentifier` to reach `issuer`, then `validity` to
+  reach `subject`) before scanning for the OID's `AttributeTypeAndValue`
+  inside that bounded range only — see "A second security defect, found and
+  fixed the same cycle" below for why the bound is load-bearing, not
+  cosmetic.
+- Wired into `hse doctor --live` (a "Network path:" section), `hse signal
+  --disruptions --live` (a new `live: bool` field on `Command::Signal`, an
+  `"outage"` key merged into JSON output / a text line), and `GET
+  /api/v1/radar/disruptions?live=1` (opt-in — the auto-refresh poll must not
+  run five live network probes per tick; runs the existing DB read and the
+  outage collection concurrently via `tokio::join!` when requested). The
+  Radar view gained a "Check network path" button in the disruptions panel.
+
+#### A blind-push incident, and the real regression it caused
+
+Partway through this cycle's final verification pass, the session's local
+disk filled up completely — every local shell command, `cargo` invocation,
+and even trivial file writes began failing with `ENOSPC`. With no working
+local git or build tooling, the fully-built and locally-tested content
+(verified clean immediately before the disk filled) was pushed directly via
+the GitHub API from the last-known-good file contents, because that was the
+only way to get committed work off a session that could no longer commit
+anything itself. The wiring changes (`hse doctor`'s live section, the CLI
+`--live` flag, the API's `?live=1`) were relayed the same way in a follow-up
+push once the collector/classifier core was confirmed on the branch.
+
+That relay mechanism has no compiler in the loop: one of the API-pushed edits
+to `src/app/doctor/mod.rs` **replaced** the pre-existing `format_module_health`
+function's body with the new `print_outage_check` function, instead of adding
+the second function alongside the first — a plain diff-application mistake
+invisible without a build to catch it. `format_module_health` stayed called
+from four sites (`cmd_doctor` itself and three `doctor::tests`) with its
+definition gone, so the branch could not compile at all; CI caught it as the
+`Check & test`, `MSRV`, and `Build (aarch64-linux-android)` jobs all failing
+identically on the same missing-function error (`clippy` happened to pass —
+its earlier run on an earlier push, before this specific regression, was
+cached as still-green in the notification stream, which read at first glance
+like the compile error was intermittent rather than a straightforward
+introduced-then-fixed defect). Fixed by restoring `format_module_health`
+verbatim alongside `print_outage_check`, once a working session with real
+`cargo check` was available to catch it — the lesson (recorded, not just
+fixed) is that an API-relayed push is a last resort for getting work off a
+session that cannot commit its own history, never a substitute for a real
+compiler pass before the result is trusted; this cycle's own final gate run
+re-verifies that pass now exists.
+
+#### A second class of defect, found and fixed the same cycle: reviewer findings on the relayed push
+
+The relayed push above received automated review (Copilot, GitHub Advanced
+Security) before this session could act on it. Four findings were real and
+are fixed here, alongside the compile error:
+
+- **`collect_against` was `pub`, not `pub(crate)`.** Its `ip_literal_anchor`
+  parameter reaches a raw `TcpStream::connect` and its `connectivity_url`
+  reaches `util::curl::fetch_with_status` — neither carries the SSRF-safe
+  host-checking the crate's shared reqwest client enforces everywhere else a
+  caller-supplied target reaches the network (REQ-SSRF-001/002's whole
+  point). Every real caller is `collect()`, which pins the four targets
+  itself; nothing needed the wider visibility. Now `pub(crate)`.
+- **`EXPECTED_CA_ORGS` was matched by `org.contains(ex)`.** A self-signed
+  interception certificate can name its own issuer organisation `"Not
+  DigiCert"` or `"DigiCert clone"` — both contain the allow-listed fragment
+  `"DigiCert"` anywhere in the string — and pass. Changed to exact string
+  equality against each CA's complete, real organisation name
+  (`"DigiCert Inc"`, `"Let's Encrypt"`, `"Google Trust Services LLC"`, …).
+  This is still a display-string comparison with no chain or fingerprint
+  validation behind it — a forger who copies a real CA's complete name
+  byte-for-byte still passes, which only actual chain/root-fingerprint
+  validation closes, a materially larger capability out of this cycle's
+  scope and recorded below, not silently promised. Exact match closes the
+  cheap version of the bypass (an unrelated or merely-similar name), which
+  `.contains()` did not even attempt to resist.
+- **`util::x509_field::extract_field_from_der` scanned the entire DER
+  buffer** for the target OID and returned the first match, with no
+  structural bound. `serialNumber` — fully attacker-chosen bytes on a
+  self-signed or freshly-minted interception certificate — precedes `issuer`
+  in the DER encoding; a certificate crafted to embed a fake
+  `organizationName` `AttributeTypeAndValue` inside its own serial number
+  would have its forged value read back as the issuer's organisation before
+  the scan ever reached the real (unlisted) issuer field, defeating the one
+  check this module exists to make honest. Rewrote it to locate the
+  `issuer`/`subject` field's exact byte range first (see "The fix" above)
+  and scan only inside that bound — the only way to influence what it
+  returns is now to put the value in the field actually being asked about,
+  which is the thing being checked either way. Proven, not just argued: a
+  synthetic certificate with a forged `organizationName` in its serial
+  number ahead of a real, different, unlisted issuer organisation confirms
+  the real issuer is returned, not the forgery
+  (`a_forged_organisation_name_planted_in_the_serial_number_is_not_returned`);
+  the same property at the `classify` layer is locked by
+  `an_issuer_name_that_merely_contains_an_allow_listed_fragment_is_still_intercepted`.
+- **A DNS-unavailable test could silently test nothing.** The test drove
+  `system_dns_lookup` against the RFC 2606-reserved TLD `outage-test.invalid`
+  and only asserted the `DnsUnavailable` composition inside an `if
+  path.system_dns.is_empty()` guard — a sandbox whose resolver answers
+  (sinkholes) every unknown name rather than returning NXDOMAIN would skip
+  the assertion entirely and the test would still read green, having proven
+  nothing. `system_dns_lookup` calls the OS resolver directly with no inject
+  point (unlike the HTTP-based legs, which take a URL), so full determinism
+  needs a resolver seam this cycle does not add; the tractable fix makes the
+  gap loud instead of silent — the empty-DNS expectation is now a hard
+  `assert!` with a message naming exactly what to fix if it ever fires, not
+  a conditional that can quietly stop exercising the composition it exists
+  to cover.
+
+A fifth finding (a documentation typo, "input several" for "input itself")
+was fixed in passing; it did not survive into this file's final doc comment,
+which was rewritten for the structural-bound fix above.
+
+#### Locks
+
+20 `core::outage` tests (every precedence branch, false-positive and
+false-negative controls, plus the two new exact-match regression tests
+above), 16 `app::outage` tests (each collector leg against a real loopback
+server or listener — fully hermetic, no live-internet dependency; the
+DNS-unavailable leg now fails loudly rather than silently per the fix
+above), 6 `util::x509_field` tests (the real self-signed fixture
+`modules/cert_intel/testdata/selfsigned.der`'s issuer/subject CN and issuer
+O, a not-a-certificate-shape input reading `None` rather than falling back to
+an unbounded guess, an over-length DER claim refused rather than read past
+the buffer, and the forged-serial-number regression). The pre-existing
+`radar_disruptions_reads_the_link_records_and_the_access_points_heard` API
+test (no `live` param) passes unchanged — the `?live=1` opt-in does not
+touch the default path. Full-tree verification after all fixes above:
+`cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`,
+`cargo fmt --check`, `scripts/doc_coverage.sh` (held at the 1029 baseline —
+the two `OutageReport` field docs this cycle added were already required to
+hold it there, from an earlier pass this same cycle), and `cargo test
+--locked --all-targets` (7806 passed, 0 failed, 23 pre-existing ignores) all
+clean on the fixed tree.
+
+#### Falsification
+
+Two forms, at two layers. At `core::outage::classify`, the precedence-order
+falsification from this cycle's first pass still stands: swapping the
+`DnsHijacked`-before-`CaptivePortal` block order broke exactly
+`a_hijacked_resolver_is_reported_over_a_captive_portal_symptom_it_also_causes`
+and no other test, then was reverted. A full Q-matrix pass (the discipline
+REQ-RESILIENCE-002 used) was judged disproportionate here and still is: there
+is no storage/engine seam for a mutation's blast radius to be misjudged
+across, the class of misprediction the matrix caught twice on that cycle.
+
+At `util::x509_field::extract_field_from_der`, the falsification this time
+is a demonstrated exploit rather than a source mutation: the pre-fix global
+scan was the defect, not a hypothetical one — a synthetic certificate with a
+forged `organizationName` planted in its serial number, positioned before a
+real, different issuer, would have had the forged value returned under the
+old unbounded scan (confirmed by re-reading the pre-fix function: the loop
+returns on its first byte-pattern match anywhere in the buffer, and the
+serial number precedes the issuer in every DER-encoded certificate). The fix
+is proven by the same certificate now returning the real issuer instead.
+
+#### Scope, honestly
+
+- `util::x509_field::extract_field_from_der` and
+  `modules::cert_intel::extract_field_from_der` remain independently
+  written, not consolidated onto one implementation — tracked since this
+  cycle's first pass. `cert_intel`'s copy carries the *identical*
+  unbounded-scan weakness this cycle just closed here, but its output feeds
+  descriptive OSINT attributes (an `issuer`/`subject`/`org` string recorded
+  as evidence) rather than a security accept/reject decision, so a forged
+  value there is inaccurate intel, not a bypassed control — lower severity,
+  not zero, and the consolidation (plus porting the structural bound) is
+  queued, not silently dropped.
+- The CA allow-list is a display-string comparison with no chain or
+  root-fingerprint validation — exact match (this cycle's fix) closes the
+  cheap bypass (an unrelated or approximately-similar name) but not a
+  forger who copies a real CA's complete organisation name byte-for-byte
+  into their own self-signed leaf. Closing that needs actual X.509 chain
+  validation against a trusted root store, a materially larger capability
+  (this codebase hand-rolls its own DER reading rather than depending on a
+  TLS/PKI crate; a proper validator is a different-sized undertaking than
+  this cycle's minimal field reader) — out of scope here, and the
+  `EXPECTED_CA_ORGS` doc comment says so rather than overstating what exact
+  match proves.
+- DoH is queried from exactly one provider (Cloudflare); no fallback if
+  Cloudflare's own resolver is unreachable but the system resolver is
+  merely hijacked. A single independent vantage point is still strictly
+  better than none, and is what this cycle adds.
+- `app::outage` is deliberately not wired into the radar's auto-refresh
+  poll — five live network probes per tick would be disproportionate to a
+  30 s default cadence; every surface is opt-in (`--live` / `?live=1`).
+- No live, real-network end-to-end test exercises the DoH/TLS legs'
+  success path — the SSRF-guarded shared reqwest client refuses loopback by
+  design, so the hermetic test harness can only exercise those legs'
+  graceful-failure behaviour; the DoH-JSON parsing logic itself is
+  separately pure-tested (`parse_doh_a_records`) against fixed JSON bodies,
+  independent of network reachability.
+- "IP reassignment" for the device's own interface (named in the T6
+  directive) is not a kind this module classifies — it is already visible
+  as a change in `core::link::LinkState::ip` across sweeps, an extension of
+  the existing per-sweep record rather than a second mechanism for the same
+  fact.
