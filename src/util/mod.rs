@@ -90,4 +90,5 @@ pub mod union_find;
 pub mod url_util;
 pub mod wifi;
 pub mod wigle;
+pub mod x509_field;
 pub mod xmp;

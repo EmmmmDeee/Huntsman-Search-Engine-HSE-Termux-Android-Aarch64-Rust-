@@ -18477,6 +18477,249 @@ survived.
   end-to-end demonstration through the real binary. Queued, not silently
   accepted.
 
+### REQ-RESILIENCE-003 — a connected link said nothing about whether the network actually reached the internet honestly: the radar now classifies offline, DNS-unavailable, DNS-hijacked, captive-portal and TLS-intercepted paths, and reports it live
+
+#### Where this sits
+
+T6, cycle 3 (`docs/ROADMAP.md`). Cycle 2 gave the radar a per-sweep record of
+the device's own Wi-Fi link and reviewed its history for disruptions. A
+`connected: true` link record says nothing about whether the network it is on
+actually reaches the internet — a dead resolver, a captive portal, a poisoned
+DNS answer and a TLS-intercepting proxy all read as connected. This cycle
+classifies which of those states the path is in, from probes gathered fresh
+at call time (a single-snapshot judgement, not a history review like
+`core::link::review` — cycle 2's own scope note named this as cycle 3's job).
+
+#### Observed, before any change (`da942745`)
+
+No code in the tree distinguished any of these states from a healthy
+connection. `hse doctor --live` and the radar's disruptions surfaces reported
+the device's own link and access points heard, nothing about whether the path
+beyond the link actually worked.
+
+#### The fix
+
+- **`core::outage`** (pure, no I/O, no clock — the `core::link` discipline):
+  `OutagePath` (what a caller's probes observed: the system resolver's
+  answer, an independent DoH answer, whether a raw IP-literal connect
+  succeeded, a neutral connectivity check's status, whether a TLS handshake
+  captured a certificate and its issuer organisation) → `classify(&OutagePath)
+  -> OutageReport`, a five-way precedence chain — `Offline > DnsUnavailable >
+  DnsHijacked > CaptivePortal > TlsIntercepted > Clear` — so a device with no
+  route at all is never also reported as having a bad certificate on a
+  connection it never made, and a hijacked resolver is reported over a
+  captive-portal symptom the same hijack could also produce. Each kind
+  carries `advice()`, a short actionable sentence.
+- **`app::outage`** (the I/O collector, `app::signal`'s split over
+  `core::link` applied here): `collect()`/`collect_against(..)` run five
+  probes concurrently via `tokio::join!` — the system resolver
+  (`tokio::net::lookup_host`), an independent DNS-over-HTTPS JSON query
+  direct to Cloudflare (deliberately **not** `util::curl_client`'s existing
+  DoH fallback, which only activates once the system resolver has already
+  *failed* — a hijack is exactly the case where it *succeeds* with a wrong
+  answer), a raw IP-literal TCP connect, the `generate_204` connectivity
+  probe (`util::egress::PROBE_URL`, `pub(crate)` and shared rather than
+  duplicated), and a TLS handshake reusing `cert_intel`'s certificate-capture
+  technique. Every leg is bounded (3 s) and degrades to an honest "no signal"
+  value on failure — never a fabricated negative.
+- **`util::x509_field`** — a minimal, dependency-free DER field reader for a
+  certificate's issuer/subject organisation. Structurally locates the
+  `issuer`/`subject` `Name` field inside `Certificate.tbsCertificate` (RFC
+  5280 §4.1: walk past the optional `[0] version`, `serialNumber`, and
+  `signature` `AlgorithmIdentifier` to reach `issuer`, then `validity` to
+  reach `subject`) before scanning for the OID's `AttributeTypeAndValue`
+  inside that bounded range only — see "A second security defect, found and
+  fixed the same cycle" below for why the bound is load-bearing, not
+  cosmetic.
+- Wired into `hse doctor --live` (a "Network path:" section), `hse signal
+  --disruptions --live` (a new `live: bool` field on `Command::Signal`, an
+  `"outage"` key merged into JSON output / a text line), and `GET
+  /api/v1/radar/disruptions?live=1` (opt-in — the auto-refresh poll must not
+  run five live network probes per tick; runs the existing DB read and the
+  outage collection concurrently via `tokio::join!` when requested). The
+  Radar view gained a "Check network path" button in the disruptions panel.
+
+#### A blind-push incident, and the real regression it caused
+
+Partway through this cycle's final verification pass, the session's local
+disk filled up completely — every local shell command, `cargo` invocation,
+and even trivial file writes began failing with `ENOSPC`. With no working
+local git or build tooling, the fully-built and locally-tested content
+(verified clean immediately before the disk filled) was pushed directly via
+the GitHub API from the last-known-good file contents, because that was the
+only way to get committed work off a session that could no longer commit
+anything itself. The wiring changes (`hse doctor`'s live section, the CLI
+`--live` flag, the API's `?live=1`) were relayed the same way in a follow-up
+push once the collector/classifier core was confirmed on the branch.
+
+That relay mechanism has no compiler in the loop: one of the API-pushed edits
+to `src/app/doctor/mod.rs` **replaced** the pre-existing `format_module_health`
+function's body with the new `print_outage_check` function, instead of adding
+the second function alongside the first — a plain diff-application mistake
+invisible without a build to catch it. `format_module_health` stayed called
+from four sites (`cmd_doctor` itself and three `doctor::tests`) with its
+definition gone, so the branch could not compile at all; CI caught it as the
+`Check & test`, `MSRV`, and `Build (aarch64-linux-android)` jobs all failing
+identically on the same missing-function error (`clippy` happened to pass —
+its earlier run on an earlier push, before this specific regression, was
+cached as still-green in the notification stream, which read at first glance
+like the compile error was intermittent rather than a straightforward
+introduced-then-fixed defect). Fixed by restoring `format_module_health`
+verbatim alongside `print_outage_check`, once a working session with real
+`cargo check` was available to catch it — the lesson (recorded, not just
+fixed) is that an API-relayed push is a last resort for getting work off a
+session that cannot commit its own history, never a substitute for a real
+compiler pass before the result is trusted; this cycle's own final gate run
+re-verifies that pass now exists.
+
+#### A second class of defect, found and fixed the same cycle: reviewer findings on the relayed push
+
+The relayed push above received automated review (Copilot, GitHub Advanced
+Security) before this session could act on it. Four findings were real and
+are fixed here, alongside the compile error:
+
+- **`collect_against` was `pub`, not `pub(crate)`.** Its `ip_literal_anchor`
+  parameter reaches a raw `TcpStream::connect` and its `connectivity_url`
+  reaches `util::curl::fetch_with_status` — neither carries the SSRF-safe
+  host-checking the crate's shared reqwest client enforces everywhere else a
+  caller-supplied target reaches the network (REQ-SSRF-001/002's whole
+  point). Every real caller is `collect()`, which pins the four targets
+  itself; nothing needed the wider visibility. Now `pub(crate)`.
+- **`EXPECTED_CA_ORGS` was matched by `org.contains(ex)`.** A self-signed
+  interception certificate can name its own issuer organisation `"Not
+  DigiCert"` or `"DigiCert clone"` — both contain the allow-listed fragment
+  `"DigiCert"` anywhere in the string — and pass. Changed to exact string
+  equality against each CA's complete, real organisation name
+  (`"DigiCert Inc"`, `"Let's Encrypt"`, `"Google Trust Services LLC"`, …).
+  This is still a display-string comparison with no chain or fingerprint
+  validation behind it — a forger who copies a real CA's complete name
+  byte-for-byte still passes, which only actual chain/root-fingerprint
+  validation closes, a materially larger capability out of this cycle's
+  scope and recorded below, not silently promised. Exact match closes the
+  cheap version of the bypass (an unrelated or merely-similar name), which
+  `.contains()` did not even attempt to resist.
+- **`util::x509_field::extract_field_from_der` scanned the entire DER
+  buffer** for the target OID and returned the first match, with no
+  structural bound. `serialNumber` — fully attacker-chosen bytes on a
+  self-signed or freshly-minted interception certificate — precedes `issuer`
+  in the DER encoding; a certificate crafted to embed a fake
+  `organizationName` `AttributeTypeAndValue` inside its own serial number
+  would have its forged value read back as the issuer's organisation before
+  the scan ever reached the real (unlisted) issuer field, defeating the one
+  check this module exists to make honest. Rewrote it to locate the
+  `issuer`/`subject` field's exact byte range first (see "The fix" above)
+  and scan only inside that bound — the only way to influence what it
+  returns is now to put the value in the field actually being asked about,
+  which is the thing being checked either way. Proven, not just argued: a
+  synthetic certificate with a forged `organizationName` in its serial
+  number ahead of a real, different, unlisted issuer organisation confirms
+  the real issuer is returned, not the forgery
+  (`a_forged_organisation_name_planted_in_the_serial_number_is_not_returned`);
+  the same property at the `classify` layer is locked by
+  `an_issuer_name_that_merely_contains_an_allow_listed_fragment_is_still_intercepted`.
+- **A DNS-unavailable test could silently test nothing.** The test drove
+  `system_dns_lookup` against the RFC 2606-reserved TLD `outage-test.invalid`
+  and only asserted the `DnsUnavailable` composition inside an `if
+  path.system_dns.is_empty()` guard — a sandbox whose resolver answers
+  (sinkholes) every unknown name rather than returning NXDOMAIN would skip
+  the assertion entirely and the test would still read green, having proven
+  nothing. `system_dns_lookup` calls the OS resolver directly with no inject
+  point (unlike the HTTP-based legs, which take a URL), so full determinism
+  needs a resolver seam this cycle does not add; the tractable fix makes the
+  gap loud instead of silent — the empty-DNS expectation is now a hard
+  `assert!` with a message naming exactly what to fix if it ever fires, not
+  a conditional that can quietly stop exercising the composition it exists
+  to cover.
+
+A fifth finding (a documentation typo, "input several" for "input itself")
+was fixed in passing; it did not survive into this file's final doc comment,
+which was rewritten for the structural-bound fix above.
+
+#### Locks
+
+20 `core::outage` tests (every precedence branch, false-positive and
+false-negative controls, plus the two new exact-match regression tests
+above), 16 `app::outage` tests (each collector leg against a real loopback
+server or listener — fully hermetic, no live-internet dependency; the
+DNS-unavailable leg now fails loudly rather than silently per the fix
+above), 6 `util::x509_field` tests (the real self-signed fixture
+`modules/cert_intel/testdata/selfsigned.der`'s issuer/subject CN and issuer
+O, a not-a-certificate-shape input reading `None` rather than falling back to
+an unbounded guess, an over-length DER claim refused rather than read past
+the buffer, and the forged-serial-number regression). The pre-existing
+`radar_disruptions_reads_the_link_records_and_the_access_points_heard` API
+test (no `live` param) passes unchanged — the `?live=1` opt-in does not
+touch the default path. Full-tree verification after all fixes above:
+`cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`,
+`cargo fmt --check`, `scripts/doc_coverage.sh` (held at the 1029 baseline —
+the two `OutageReport` field docs this cycle added were already required to
+hold it there, from an earlier pass this same cycle), and `cargo test
+--locked --all-targets` (7806 passed, 0 failed, 23 pre-existing ignores) all
+clean on the fixed tree.
+
+#### Falsification
+
+Two forms, at two layers. At `core::outage::classify`, the precedence-order
+falsification from this cycle's first pass still stands: swapping the
+`DnsHijacked`-before-`CaptivePortal` block order broke exactly
+`a_hijacked_resolver_is_reported_over_a_captive_portal_symptom_it_also_causes`
+and no other test, then was reverted. A full Q-matrix pass (the discipline
+REQ-RESILIENCE-002 used) was judged disproportionate here and still is: there
+is no storage/engine seam for a mutation's blast radius to be misjudged
+across, the class of misprediction the matrix caught twice on that cycle.
+
+At `util::x509_field::extract_field_from_der`, the falsification this time
+is a demonstrated exploit rather than a source mutation: the pre-fix global
+scan was the defect, not a hypothetical one — a synthetic certificate with a
+forged `organizationName` planted in its serial number, positioned before a
+real, different issuer, would have had the forged value returned under the
+old unbounded scan (confirmed by re-reading the pre-fix function: the loop
+returns on its first byte-pattern match anywhere in the buffer, and the
+serial number precedes the issuer in every DER-encoded certificate). The fix
+is proven by the same certificate now returning the real issuer instead.
+
+#### Scope, honestly
+
+- `util::x509_field::extract_field_from_der` and
+  `modules::cert_intel::extract_field_from_der` remain independently
+  written, not consolidated onto one implementation — tracked since this
+  cycle's first pass. `cert_intel`'s copy carries the *identical*
+  unbounded-scan weakness this cycle just closed here, but its output feeds
+  descriptive OSINT attributes (an `issuer`/`subject`/`org` string recorded
+  as evidence) rather than a security accept/reject decision, so a forged
+  value there is inaccurate intel, not a bypassed control — lower severity,
+  not zero, and the consolidation (plus porting the structural bound) is
+  queued, not silently dropped.
+- The CA allow-list is a display-string comparison with no chain or
+  root-fingerprint validation — exact match (this cycle's fix) closes the
+  cheap bypass (an unrelated or approximately-similar name) but not a
+  forger who copies a real CA's complete organisation name byte-for-byte
+  into their own self-signed leaf. Closing that needs actual X.509 chain
+  validation against a trusted root store, a materially larger capability
+  (this codebase hand-rolls its own DER reading rather than depending on a
+  TLS/PKI crate; a proper validator is a different-sized undertaking than
+  this cycle's minimal field reader) — out of scope here, and the
+  `EXPECTED_CA_ORGS` doc comment says so rather than overstating what exact
+  match proves.
+- DoH is queried from exactly one provider (Cloudflare); no fallback if
+  Cloudflare's own resolver is unreachable but the system resolver is
+  merely hijacked. A single independent vantage point is still strictly
+  better than none, and is what this cycle adds.
+- `app::outage` is deliberately not wired into the radar's auto-refresh
+  poll — five live network probes per tick would be disproportionate to a
+  30 s default cadence; every surface is opt-in (`--live` / `?live=1`).
+- No live, real-network end-to-end test exercises the DoH/TLS legs'
+  success path — the SSRF-guarded shared reqwest client refuses loopback by
+  design, so the hermetic test harness can only exercise those legs'
+  graceful-failure behaviour; the DoH-JSON parsing logic itself is
+  separately pure-tested (`parse_doh_a_records`) against fixed JSON bodies,
+  independent of network reachability.
+- "IP reassignment" for the device's own interface (named in the T6
+  directive) is not a kind this module classifies — it is already visible
+  as a change in `core::link::LinkState::ip` across sweeps, an extension of
+  the existing per-sweep record rather than a second mechanism for the same
+  fact.
+
 ---
 
 ## REQ-CERTSPOTTER-001 — one page of a cursor, reported as the whole answer
@@ -23166,3 +23409,276 @@ tested (M14), and after M12/M13 the correlator hands those sites no
 non-finite radius. The second is the documentation corrections. `hse-core`
 changed (a doc comment on `tags::COARSE` only), so `wasm-ui/pkg` is left for
 the lead to regenerate. `wasm-ui/src` is unchanged.
+## REQ-CERTINTEL-002 — a certificate's issuer organisation and subject were read from the wrong field
+
+**Found** as a residual REQ-RESILIENCE-003 recorded against itself: the crate
+had two readers of certificate `Name` attributes. `util::x509_field` locates
+the `issuer`/`subject` field structurally (RFC 5280 §4.1) and scans only
+inside it. `modules::cert_intel` kept its own copy, which scanned the whole
+certificate. That entry called the copy's weakness a spoof, one that affects
+evidence rather than a security decision. Re-verified on `edec083b` before
+anything was designed, it turned out to be worse: it needs no attacker at
+all. It misreports **legitimate** certificates.
+
+### Observed, before any change (`edec083b`)
+
+`cert_intel::extract_field_from_der(der, oid, first)` returned the first
+match of `oid` anywhere in the certificate when `first` was true, and the
+last match anywhere when it was false. `parse_certificate` records three
+evidence attributes with it:
+
+- `issuer_org` (O, first match). When the issuer `Name` carries no O, which
+  is common for a private or enterprise CA named only by CN, the scan ran on
+  into the **subject** and recorded the certificate owner's company as its
+  signer.
+- `subject` (CN, last match). The last CN in the certificate is the subject's
+  only if nothing after the subject carries one. An Authority Key Identifier
+  that names its issuer by `directoryName` (§4.2.1.1, `authorityCertIssuer`)
+  puts a CN in the extensions, and that CN was recorded as the subject.
+- `issuer` (CN, first match) is right on a real certificate, since only the
+  version, serial and signature algorithm precede the issuer.
+
+Both wrong readings were reproduced through `parse_certificate` itself, on
+synthetic certificates with nothing planted: `issuer_org` came back
+`"Subject Pty Ltd"` where the issuer has none, and `subject` came back
+`"Issuing CA Root"` (the extension's CN) where the subject is
+`"host.example.com"`.
+
+The two readers also disagreed on their own interface. The same `bool`
+argument meant "last match anywhere" in `cert_intel` and "the subject field"
+in `util::x509_field`.
+
+### Implemented
+
+- `cert_intel`'s copy is deleted. `parse_certificate` and the fuzz entry
+  (`fuzz_entry_parse_der`) read through `util::x509_field`, so there is one
+  reader of certificate `Name` attributes, used by `core::outage`'s
+  TLS-interception check and by `cert_intel`'s evidence.
+- The `bool` is now `NameField::{Issuer, Subject}`. The meaning the two
+  readers disagreed on is spelled out at every call site, and a caller cannot
+  pass a position where a field is meant.
+- `cert_intel` uses the shared `OID_CN` / `OID_O` constants, not byte
+  literals.
+- `util::x509_field::test_der` is a `#[cfg(test)]` builder for synthetic
+  certificates (a `Name`, a v3 `Certificate`, one TLV), shared by both
+  modules' tests. `x509_field`'s forged-serial test moved onto it, which
+  retires the private builder that test used to carry.
+- Scope held: `cert_intel`'s SAN walk has a second DER length helper
+  (`der_tlv_len`) and a heuristic serial read. On a well-formed certificate
+  both agree with a structural reading, and neither was part of this defect.
+  They are left alone rather than churned.
+
+### Locks
+
+- `modules::cert_intel::tests` at the evidence boundary, through
+  `parse_certificate`:
+  - `an_issuer_without_an_organisation_does_not_borrow_the_subjects`;
+  - `a_common_name_inside_an_extension_is_not_read_as_the_subject`.
+- `util::x509_field::tests::each_field_is_read_from_its_own_name` sets
+  distinct issuer and subject values. The self-signed fixture every earlier
+  field test used has issuer == subject, so no earlier test could see the two
+  fields swapped.
+- The existing real-certificate tests in both modules pass unchanged (CN, O,
+  serial, SANs, and `parse_certificate`'s end-to-end evidence).
+
+### Falsification
+
+| # | mutation | result |
+|---|---|---|
+| CI2-B | **baseline**: `edec083b`'s whole-certificate reader, the two new `cert_intel` tests written first | both failed, with the exact values above |
+| CI2-S | `NameField::Issuer` and `NameField::Subject` arms swapped in the one reader | killed by 4: both `cert_intel` locks, `each_field_is_read_from_its_own_name`, and the forged-serial test. Both self-signed-fixture tests **survived**, which is why the distinct-value test exists |
+
+**2 of 2 killed**; the file was restored byte-identical (md5).
+
+### Review round: bounding the field was not enough
+
+PR review (Copilot, High) found the same defect one level down. The field
+bound separated the issuer from the serial number and from the subject, but
+inside the bound the reader still searched bytes. So a valid UTF8String CN
+whose content is `organizationName`'s OID followed by a string header, placed
+ahead of the real O, was read back as the issuer's organisation. That CN
+carried `"DigiCert Inc"`, which is an exact entry on `core::outage`'s
+allow-list. A suffix match did the same: an attribute type such as
+1.2.3.85.4.10, encoded `2A 03 55 04 0A`, ends in O's bytes and was read as O.
+This was the residual REQ-RESILIENCE-003 had scoped out as harmless because
+whoever controls an issuer field can set its O anyway. That is true for the
+interception check, but it does not make returning the wrong attribute
+correct.
+
+The reader now walks the `Name` itself: `SEQUENCE OF` RDN, each a `SET OF`
+`AttributeTypeAndValue`, each a `SEQUENCE { type, value }`. The type must
+equal the OID exactly, and every length goes through the bounds-checked
+`der_tlv`. It never searches bytes. Anything that is not that structure is
+`None`, as a malformed field range already was.
+
+| # | mutation | result |
+|---|---|---|
+| CI2-R1 | **baseline**: the byte search inside the bounded field, three tests written first | all three failed: `"DigiCert Inc"` for the planted CN, `"Fake Org"` for the suffix OID, `"Loose Org"` guessed from a non-`Name` |
+| CI2-R2 | `attr_type != oid` weakened to `!attr_type.ends_with(oid)` | killed by `an_attribute_type_merely_ending_in_the_oids_bytes_is_not_it` alone |
+
+**2 of 2 killed.** The run also surfaced an unrelated flake,
+`app::outage::tests::ip_literal_reachable_is_false_against_a_refused_port`.
+Its "refused" port is bound, dropped, then connected to, and a concurrent
+test can be handed the freed port in between. That is recorded for its own
+fix rather than folded into this change.
+
+## REQ-CI-011 — a "refused" test port could be handed to another test's server before the probe connected
+
+**Found** running the full suite for REQ-CERTINTEL-002:
+`app::outage::tests::ip_literal_reachable_is_false_against_a_refused_port`
+failed once and passed on every other run. Its `refused_addr()` bound
+`127.0.0.1:0`, dropped the listener, and returned the address. The freed port
+goes back to the kernel's pool at once. Under cargo's parallel harness, where
+thousands of tests bind `127.0.0.1:0`, another test's server can be given it
+before the probe connects, and the probe then reaches a live server.
+`refused_addr()` served six tests in `app::outage::tests`. The same idea
+stood in four more places, in three forms:
+
+- a named listener dropped before the connect:
+  `util::http::fetch::tests::transport_is_transient_flags_a_connect_refusal`
+  (an explicit `drop(listener)`) and
+  `modules::webserver_banner::tests::both_transports_failing_is_not_a_clean_negative`
+  (an inner block that ends first);
+- a listener that is never named, so the temporary is dropped at the end of
+  its statement: `modules::abn_lookup::tests::transport_failure_surfaces_as_error_not_a_false_no_match`
+  (`TcpListener::bind("127.0.0.1:0").unwrap().local_addr()…`);
+- a port guessed shut, never bound at all: `modules::portscan::tests::scan_detects_a_listening_local_port`
+  scanned its listener's port + 1 as "almost-certainly closed". It never
+  asserted that port was reported shut, so the guess could not fail its own
+  test. It could fail another one: a connect that lands on another test's
+  listener uses up a one-shot accept, or bumps a connection counter that
+  must stay at zero (`core::webhook::tests`, `core::engine::tests`). The
+  scanner's refused-port branch had no lock at all.
+
+The first sweep found only the first form and claimed no other form existed.
+It had searched for named listeners, and missed the unnamed temporary. The
+review on PR #648 pointed at it. A second sweep read every other
+ephemeral-port `bind` in `src/` and `tests/` (36 sites besides
+`ClosedPort`'s own) with the lines that follow it. Each binds a listener the
+test keeps for as long as it needs the port, in the task that accepts on it
+or, in `portscan`'s case, in a named binding. No test binds UDP.
+
+The only fixed ports tests connect to are `127.0.0.1:1` and `:9`. What keeps
+another test off them is the kernel's ephemeral range (32768–60999 on the
+test host), which `bind(127.0.0.1:0)` draws from. Privilege does not: the
+tests run as root. They are not racy, but they do assume nothing on the
+machine listens on port 1 or 9 (an inetd `discard` service would answer on
+9). That is recorded as an open defect, not fixed here.
+
+**The mechanism was reproduced on the kernel first**, before any Rust changed.
+A 20,000-iteration harness ran against 16 threads churning
+`bind(127.0.0.1:0)` + `listen`. With bind-then-close, **5** of the "refused"
+ports accepted a connection. With the port held bound but not listening,
+**0** did.
+
+### Implemented
+
+`util::http::test_server::ClosedPort` holds a loopback port bound but never
+listening, with `SO_REUSEADDR` off, for as long as the value lives. A connect
+is refused at once, and no other socket can be given the port meanwhile. It
+uses `tokio::net::TcpSocket`, which the crate already has, so there is no new
+dependency. All ten tests hold one for their whole body: the six that used
+`refused_addr()` (now deleted), plus `fetch`, `webserver_banner`,
+`abn_lookup` and `portscan`. Nine of them could flake. The tenth,
+`portscan`, could break another test. `portscan`'s test now also asserts the
+held port is reported shut, which it had claimed in its comment and never
+checked.
+
+### Locks
+
+`a_closed_port_refuses_and_cannot_be_taken_while_held` checks both
+properties: the connect is refused, and another listener's bind of the held
+address fails.
+
+| # | mutation | result |
+|---|---|---|
+| CI11-R | `set_reuseaddr(false)` → `true` | killed: "a held port must not be bindable by another listener" |
+| CI11-P | `scan_ports` reports a failed connect as open (`_ => None` → `_ => Some((port, svc))`) | killed: "a refused port must not be reported open" |
+
+## REQ-SSE-001 — the scan-log stream of a scan nobody has sat silent instead of answering 404
+
+**Found** by the adversarial probe of a live, sandboxed `hse serve`: about
+1,100 hostile requests over every route family, with no 5xx and no panic.
+`GET /api/v1/scans/{id}/events` held the connection open for any `id`,
+including one that never existed. The stream closes after
+`SSE_IDLE_TIMEOUT` (120 s) with nothing matched, and `EventSource` then
+reconnects to the same nothing indefinitely. REQ-RESILIENCE-001 had already
+closed exactly this for the live-session stream (`/live/{id}/events` answers
+404 for a session this process does not know), and the probe confirmed that
+fix still holds. The scan-log stream never got it, so a console left on a
+deleted scan, or given a mistyped id, read a dead stream as a quiet one.
+
+**Why an existence check is safe here.** It is safe only if every scan id a
+client can hold is registered or stored before the client gets it. The
+places that hand out a scan id:
+
+1. The `202` from a handler that calls `spawn_scan` (create, batch, rerun,
+   autonomous, the auto-sweep, the radar sweep). Each upserts the row, then
+   `spawn_scan` installs the in-flight entry, before the answer goes out.
+2. The import handler, the scan list and get endpoints, the radar history,
+   and the `scan_complete` event. Each writes or reads the row before the id
+   leaves.
+3. A live iteration's id, from the `LiveTick` event on the live stream and
+   from the session's scan list. **This one did not hold when the check was
+   first written.** The loop recorded the id on the session and sent the
+   tick, and only then installed the iteration's registry guard. The
+   engine writes the row later still. A client that followed the tick to the
+   scan's stream at once could be told the scan does not exist. Review on
+   PR #648 caught it.
+
+The registry entry is held until the engine returns, by which time it has
+written the row. The exception is an iteration whose very first write, the
+engine's opening `upsert_scan`, failed or panicked. Its id was announced but
+no row exists, so once the guard drops it reads as absent, which it is. So
+a scan whose id a client holds is in the registry, in the store, or never
+ran.
+
+### Implemented
+
+`scan_events_sse` checks the in-flight registry first, then the store through
+`offload_store`, and answers 404 when neither knows the id. A known scan
+streams exactly as before.
+
+The live loop now mints each iteration's id straight into its registry
+guard: `CancelRegistryGuard::install(…, scan_id(…), …)`. It reads `sid` back
+out through the new `CancelRegistryGuard::scan_id()`. No id exists in the
+loop before its guard does, so moving the session record or the `LiveTick`
+above the install no longer compiles. A rewrite that mints the id beside
+the guard again would compile, which is what the test below is for.
+
+### Locks
+
+`api::handlers::tests::the_scan_stream_answers_only_for_a_scan_in_flight_or_stored`
+covers three cases through a real router: an unknown id is 404; a registered
+scan with no row yet streams; a stored scan with nothing in flight streams.
+The existing `scan_events_endpoint_is_server_sent_events` and gzip-exemption
+tests pass unchanged.
+
+| # | mutation | result |
+|---|---|---|
+| SSE1-B | **baseline**: no existence check (`in_flight = true`) | killed: the unknown id streamed (200, not 404) |
+| SSE1-R | registry check dropped (`in_flight = false`) | killed: a registered scan with no row yet was 404, not 200 |
+| SSE1-L | live loop: `record_scan` + `LiveTick` moved back above the guard install | rejected by the compiler: `E0425 cannot find value 'sid' in this scope` (twice) |
+| SSE1-O | live loop: the original order restored in full (id minted beside the guard, announced, then installed) | killed: "LiveTick announced … while the registry was locked, so before its id was registered" |
+| SSE1-S | live loop: id minted beside the guard, and only `record_scan` moved above the install (the tick stays below it) | killed: "the session listed … while the registry was locked, so before its id was registered" |
+
+**5 of 5 caught: four killed by a test, one rejected by the compiler.** The
+second mutation is why the registry check exists: a store-only check would
+have 404'd a brand-new scan's stream. That is also the state of every live
+iteration until the engine writes its row.
+
+The live-loop order has two locks. The structure makes the reordering above
+fail to compile. `core::live::tests::a_live_iteration_never_hands_out_a_scan_id_before_it_is_registered`
+catches what the structure cannot: a rewrite that mints the id beside the
+guard again and hands it out first through either channel (SSE1-O, SSE1-S).
+Watching the gap directly does not work: the loop runs from the tick to the
+install without yielding, in a few microseconds. So the test holds the
+registry's lock on another thread while the first iteration starts.
+Registering needs that lock and announcing does not, so the loop stops at
+whichever step comes first. A tick, or a scan-list entry, seen while the
+lock is held was made for an id not yet registered. Once the lock is
+released, the test checks the announced id is in flight while the engine
+runs it, which also catches a guard dropped before the engine starts.
+`core::cancel::tests::a_guards_scan_id_is_registered_for_as_long_as_it_can_be_read`
+pins the accessor the structure depends on: it returns the registered key,
+and the key stays registered while the guard lives.

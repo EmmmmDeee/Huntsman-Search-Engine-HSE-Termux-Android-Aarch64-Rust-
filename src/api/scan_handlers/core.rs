@@ -1153,8 +1153,8 @@ pub async fn radar_recurring(
     }
 }
 
-/// `GET /api/v1/radar/disruptions?limit=<n>` — what the sweep history says
-/// about the device's own Wi-Fi link (REQ-RESILIENCE-002): forced
+/// `GET /api/v1/radar/disruptions?limit=<n>&live=1` — what the sweep history
+/// says about the device's own Wi-Fi link (REQ-RESILIENCE-002): forced
 /// disconnections (off the network while the access point is still heard),
 /// a deauthentication pattern, an evil twin, outages on a schedule, and the
 /// outage timeline, over the newest `limit` radar sweeps. Each sweep's link
@@ -1164,6 +1164,17 @@ pub async fn radar_recurring(
 /// `unrecorded_sweeps` and left out — the review is not padded with guesses.
 /// All analysis is the pure [`crate::core::link::review`]; every finding
 /// carries the same `advice` the CLI prints.
+///
+/// `live=1` additionally runs the network-path probe (REQ-RESILIENCE-003)
+/// and carries its verdict beside the Wi-Fi-link findings under an
+/// `"outage"` key — a new finding kind, not a separate surface. Opt-in and
+/// deliberately NOT part of the default response: unlike everything else
+/// this handler reads, it is live network I/O (a DNS lookup, an HTTP fetch,
+/// a TLS handshake), and the Radar view's auto-refreshing disruption panel
+/// polls this endpoint on every sweep/stream tick — issuing that probe on
+/// every poll would add real latency and traffic to a network HSE may
+/// already be struggling on. Requested, it runs concurrently with the DB
+/// read below, so opting in costs the slower of the two, not their sum.
 pub async fn radar_disruptions(
     State(s): State<Arc<AppState>>,
     Query(params): Query<std::collections::HashMap<String, String>>,
@@ -1173,22 +1184,37 @@ pub async fn radar_disruptions(
         .and_then(|v| v.parse().ok())
         .unwrap_or(100)
         .clamp(1, 1000);
+    let live = params.get("live").is_some_and(|v| v == "1" || v == "true");
     let store = Arc::clone(&s.store);
     // Off-reactor: the history plus two reads per sweep under the SQLite
     // mutex, then the pure review — the one assembly the CLI uses too.
     let read = super::offload_store(move || {
         let (sweeps, unrecorded) = crate::app::signal::link_sweeps_from_history(&*store, limit)?;
         Ok((crate::core::link::review(&sweeps), unrecorded))
-    })
-    .await;
+    });
+    let outage = async {
+        if live {
+            Some(crate::core::outage::classify(
+                &crate::app::outage::collect().await,
+            ))
+        } else {
+            None
+        }
+    };
+    let (read, outage) = tokio::join!(read, outage);
     match read {
-        Ok((report, unrecorded)) => (
-            StatusCode::OK,
-            Json(crate::app::signal::disruption_report_json(
-                &report, unrecorded,
-            )),
-        )
-            .into_response(),
+        Ok((report, unrecorded)) => {
+            let mut v = crate::app::signal::disruption_report_json(&report, unrecorded);
+            if let Some(o) = &outage
+                && let serde_json::Value::Object(m) = &mut v
+            {
+                m.insert(
+                    "outage".to_string(),
+                    crate::app::outage::outage_report_json(o),
+                );
+            }
+            (StatusCode::OK, Json(v)).into_response()
+        }
         Err(resp) => resp,
     }
 }

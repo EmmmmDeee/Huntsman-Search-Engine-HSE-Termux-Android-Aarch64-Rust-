@@ -237,6 +237,7 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
     // it. Network-bound, so it is opt-in; the default `doctor` run stays offline.
     if live {
         print_live_capability_report().await;
+        print_outage_check().await;
     }
 
     let loaded = keys::load();
@@ -638,7 +639,7 @@ fn key_slot_is_filled(loaded: &std::collections::HashMap<String, String>, k: &st
 ///
 /// Empty means one of two very different things and the code said the same
 /// thing for both. The section is per-process and reactive — `record_success` /
-/// `record_failure` fire only from `core::engine::dispatch` — and a standalone
+/// `record_failure` fire only from `core::engine::dispatch`, and a standalone
 /// `hse doctor` dispatches nothing, so the tracker is ALWAYS empty there and
 /// "no modules currently show a failure streak" was a constant, not a
 /// measurement. On a real device it printed that clean bill of health directly
@@ -694,6 +695,24 @@ fn format_module_health(h: &crate::core::engine::ModuleHealth) -> String {
             h.consecutive_failures,
             if h.consecutive_failures == 1 { "" } else { "s" },
         ),
+    }
+}
+
+/// Probe the network path itself (REQ-RESILIENCE-003) and print what kind of
+/// trouble, if any, stands between this device and the internet — DNS down,
+/// DNS answering two different truths, a captive portal intercepting the
+/// connectivity check, or a TLS issuer this build doesn't recognise. Shares
+/// [`crate::app::outage::collect`] and [`crate::core::outage::classify`] with
+/// `GET /api/v1/radar/disruptions?live=1` and `hse signal --disruptions
+/// --live`, so every surface reports the identical verdict for the identical
+/// probes.
+async fn print_outage_check() {
+    println!("\nNetwork path:");
+    let path = crate::app::outage::collect().await;
+    let report = crate::core::outage::classify(&path);
+    println!("  {:?} — {}", report.kind, report.evidence);
+    if report.kind != crate::core::outage::OutageKind::Clear {
+        println!("    {}", report.advice());
     }
 }
 

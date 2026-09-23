@@ -114,3 +114,41 @@ pub(crate) async fn serve(answers: Vec<Canned>) -> String {
     });
     format!("http://{addr}")
 }
+
+/// A loopback address nothing listens on, held for as long as this value
+/// lives. The port is bound but never listened on, so a connect is refused at
+/// once, and no other socket (another test's server included) can be given
+/// it meanwhile. Binding a listener to find a free port and dropping it hands
+/// that port back for the next `bind("127.0.0.1:0")`, which under the parallel
+/// test harness can be another test's server: the "refused" probe then
+/// connects.
+pub(crate) struct ClosedPort {
+    _held: tokio::net::TcpSocket,
+    addr: std::net::SocketAddr,
+}
+
+impl ClosedPort {
+    pub(crate) fn new() -> Self {
+        let held = tokio::net::TcpSocket::new_v4().expect("tcp socket");
+        held.set_reuseaddr(false).expect("no address reuse");
+        held.bind(([127, 0, 0, 1], 0).into())
+            .expect("bind loopback");
+        let addr = held.local_addr().expect("local addr");
+        Self { _held: held, addr }
+    }
+
+    pub(crate) fn addr(&self) -> std::net::SocketAddr {
+        self.addr
+    }
+}
+
+#[test]
+fn a_closed_port_refuses_and_cannot_be_taken_while_held() {
+    let closed = ClosedPort::new();
+    let refused = std::net::TcpStream::connect(closed.addr()).map_err(|e| e.kind());
+    assert_eq!(refused.err(), Some(std::io::ErrorKind::ConnectionRefused));
+    assert!(
+        std::net::TcpListener::bind(closed.addr()).is_err(),
+        "a held port must not be bindable by another listener"
+    );
+}

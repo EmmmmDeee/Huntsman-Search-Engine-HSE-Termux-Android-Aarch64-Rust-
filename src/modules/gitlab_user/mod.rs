@@ -159,7 +159,7 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
     // ~20 surveyed: bluesky_user, chess_profile, dockerhub_user, gitea_user,
     // launchpad_user, mastodon_user, plc_directory, pypi_user, rubygems_user,
     // gaming_profile's Minecraft check) — VERY_HIGH_PLUS was a minority
-    // outlier (OD-19, .agent/state.json) with no documented reason for
+    // outlier (OD-19, .agent/history.json) with no documented reason for
     // ranking a confirmed GitLab account above the equivalent signal
     // elsewhere.
     let mut u = Entity::new(

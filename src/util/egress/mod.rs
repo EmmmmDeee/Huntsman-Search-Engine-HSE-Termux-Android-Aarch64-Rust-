@@ -46,8 +46,12 @@ const KEEP_MIN: usize = 1;
 const PROBE_TIMEOUT_MS: u64 = 6_000;
 /// Neutral, stable connectivity endpoint that returns an empty `204 No Content`
 /// — the canonical captive-portal / reachability check, chosen so a probe
-/// transfers almost nothing and doesn't hit any scan target.
-const PROBE_URL: &str = "http://www.gstatic.com/generate_204";
+/// transfers almost nothing and doesn't hit any scan target. `pub(crate)`:
+/// [`crate::app::outage`] reuses the exact same URL for its own connectivity
+/// leg (REQ-RESILIENCE-003) rather than declaring a second copy of it — one
+/// constant, two health checks that both want "the identical URL Android's
+/// and Chrome's own captive-portal detectors use".
+pub(crate) const PROBE_URL: &str = "http://www.gstatic.com/generate_204";
 
 /// The process-wide validated proxy pool, seeded lazily from [`PROXY_ENV`].
 fn proxy_pool() -> &'static Mutex<EgressPool> {

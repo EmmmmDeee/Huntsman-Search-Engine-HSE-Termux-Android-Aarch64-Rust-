@@ -13,6 +13,7 @@ pub mod doctor;
 pub mod export;
 pub mod gap;
 pub mod import;
+pub mod outage;
 pub mod persist;
 pub mod report;
 pub mod runtime;

@@ -38,12 +38,19 @@ use super::*;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
         let port = listener.local_addr().expect("should succeed").port();
         let ip: IpAddr = "127.0.0.1".parse().expect("should succeed");
-        // A port almost-certainly closed.
-        let closed = port.wrapping_add(1).max(1);
+        // A port held shut for the whole test, not one guessed shut: the
+        // neighbouring port this once used belongs to whichever parallel test
+        // the kernel hands it to (REQ-CI-011).
+        let shut = crate::util::http::test_server::ClosedPort::new();
+        let closed = shut.addr().port();
         let open = scan_ports(ip, &[(port, "test"), (closed, "closed")], 4).await;
         assert!(
             open.iter().any(|(p, _)| *p == port),
             "listening port must be open: {open:?}"
+        );
+        assert!(
+            !open.iter().any(|(p, _)| *p == closed),
+            "a refused port must not be reported open: {open:?}"
         );
     }
 

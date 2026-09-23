@@ -41,7 +41,7 @@ fn emits_username_and_profile_url() {
 
 #[test]
 fn confirmed_username_sits_at_the_cohort_canon_confidence_tier() {
-    // OD-19 (.agent/state.json): a confirmed username from a direct,
+    // OD-19 (.agent/history.json): a confirmed username from a direct,
     // successful, single-source account-existence API lookup with no further
     // corroboration belongs at HIGH_PLUSPLUS_PLUS, this codebase's settled
     // tier for that evidence class (matching gitlab_user, hacker_news,

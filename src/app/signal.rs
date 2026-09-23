@@ -204,17 +204,38 @@ pub fn disruption_report_json(report: &DisruptionReport, unrecorded: usize) -> s
     })
 }
 
-/// `hse signal --disruptions` (REQ-RESILIENCE-002).
-fn print_disruptions(store: &Store, limit: usize, json: bool) -> Result<()> {
+/// `hse signal --disruptions` (REQ-RESILIENCE-002), plus the live
+/// network-path check (REQ-RESILIENCE-003) when `live` is set — the same
+/// opt-in gate `hse doctor --live` uses, since this is a live network probe,
+/// not a database read: the default `--disruptions` run stays offline.
+async fn print_disruptions(store: &Store, limit: usize, live: bool, json: bool) -> Result<()> {
     let (sweeps, unrecorded) = link_sweeps_from_history(store, limit)?;
     let report = review(&sweeps);
+    let outage = if live {
+        Some(crate::core::outage::classify(
+            &crate::app::outage::collect().await,
+        ))
+    } else {
+        None
+    };
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&disruption_report_json(&report, unrecorded))
-                .unwrap_or_default()
-        );
+        let mut v = disruption_report_json(&report, unrecorded);
+        if let Some(o) = &outage
+            && let serde_json::Value::Object(m) = &mut v
+        {
+            m.insert(
+                "outage".to_string(),
+                crate::app::outage::outage_report_json(o),
+            );
+        }
+        println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
         return Ok(());
+    }
+    if let Some(o) = &outage {
+        println!("Network path: {:?} — {}", o.kind, o.evidence);
+        if o.kind != crate::core::outage::OutageKind::Clear {
+            println!("  {}", o.advice());
+        }
     }
     println!(
         "Wi-Fi link across {} sweep(s): {} connected, {} off the network{}",
@@ -291,6 +312,7 @@ pub async fn cmd_signal(
     names: bool,
     track: Option<String>,
     disruptions: bool,
+    live: bool,
     limit: usize,
     json: bool,
 ) -> Result<()> {
@@ -299,7 +321,7 @@ pub async fn cmd_signal(
     // The disruption review is over the sweep HISTORY, not one scan, so it
     // resolves no scan id and outranks every per-scan view.
     if disruptions {
-        return print_disruptions(&store, limit, json);
+        return print_disruptions(&store, limit, live, json).await;
     }
 
     let sid = match scan_id {
