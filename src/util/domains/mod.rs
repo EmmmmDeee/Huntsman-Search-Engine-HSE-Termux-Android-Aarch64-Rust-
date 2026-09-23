@@ -170,46 +170,25 @@ const SOCIAL: &[&str] = &[
     "vk.com",
 ];
 
-/// Common **multi-label public suffixes** under which the public registers a
-/// name (so the registrable domain is `<label>.<suffix>`, not `<suffix>`). This
-/// is a deliberately small curated table — **not** the full Public Suffix List
-/// (which would be a ~9 000-entry dependency the project avoids). It covers the
-/// suffixes that actually appear in this AU-focused tool's data: the `.au`
-/// second levels plus the common international ones, so `example.com.au` and
-/// `example.co.uk` resolve to themselves instead of collapsing to the bare
-/// suffix. Sorted for `binary_search`.
-const MULTI_LABEL_SUFFIXES: &[&str] = &[
-    "ac.in", "ac.jp", "ac.nz", "ac.uk", "asn.au", "co.id", "co.in", "co.jp", "co.nz", "co.uk",
-    "co.za", "com.au", "com.br", "com.cn", "com.sg", "edu.au", "edu.sg", "go.jp", "gov.au",
-    "gov.br", "gov.in", "gov.sg", "gov.uk", "govt.nz", "id.au", "me.uk", "ne.jp", "net.au",
-    "net.br", "net.nz", "net.sg", "or.jp", "org.au", "org.br", "org.nz", "org.sg", "org.uk",
-    "org.za", "sch.uk",
-];
+mod psl;
 
 /// The registrable domain (eTLD+1) of `host`: the registered name plus its
-/// public suffix. **Pure.** Trims, lowercases, and drops a trailing dot, then
-/// keeps the last two labels — or the last three when the trailing two form a
-/// known [`MULTI_LABEL_SUFFIXES`] entry, so `shop.example.com.au` →
-/// `example.com.au` rather than the bare `com.au`. Returns `None` when `host` has
-/// fewer than two labels (e.g. `localhost`).
+/// public suffix, under Mozilla's Public Suffix List — so
+/// `shop.example.com.au` → `example.com.au`, `shop.acme.com.vn` →
+/// `acme.com.vn`, `alice.github.io` → `alice.github.io`. **Pure.** Trims,
+/// lowercases, and drops a trailing dot.
+///
+/// Returns `None` when `host` has no registrable domain: it is itself a public
+/// suffix (`com.au`, `github.io`), a single label (`localhost`), empty, or
+/// carries an empty label (a leading dot). A caller that needs a value for a
+/// suffix-only host falls back to the host itself, as the RDAP and typosquat
+/// callers already do.
+///
+/// This was a 39-entry hand-curated table with no Vietnamese second level
+/// (REQ-PSL-001); [`psl`] documents the list, its licence and its refresh.
 #[must_use]
 pub fn registrable_domain(host: &str) -> Option<String> {
-    let host = host.trim().trim_end_matches('.').to_lowercase();
-    let labels: Vec<&str> = host.split('.').filter(|l| !l.is_empty()).collect();
-    if labels.len() < 2 {
-        return None;
-    }
-    let last_two = format!("{}.{}", labels[labels.len() - 2], labels[labels.len() - 1]);
-    let take = if labels.len() >= 3
-        && MULTI_LABEL_SUFFIXES
-            .binary_search(&last_two.as_str())
-            .is_ok()
-    {
-        3
-    } else {
-        2
-    };
-    Some(labels[labels.len() - take..].join("."))
+    psl::registrable_domain(host)
 }
 
 /// True if `s` looks like an Android / iOS **reverse-DNS application identifier**

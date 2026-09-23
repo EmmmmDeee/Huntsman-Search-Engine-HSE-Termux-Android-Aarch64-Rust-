@@ -416,3 +416,30 @@ use super::*;
             "trailing sentence period trimmed; balanced ) kept"
         );
     }
+
+    /// REQ-SEARCH-ADDR-001: a people-search listing title "Name, State" is not a
+    /// locality. The extractor itself stays text-only; the name-scan caller
+    /// drops these with `is_person_listing_locality`.
+    #[test]
+    fn a_people_search_listing_title_is_not_a_locality() {
+        let listed = extract_addresses_from_text(
+            "Ian Thorpe, North Carolina (NC) | Spokeo — Bill Thorpe, Florida",
+        );
+        assert!(listed.iter().any(|a| a == "Ian Thorpe, North Carolina"), "{listed:?}");
+        for person in ["Ian Thorpe, North Carolina", "Bill Thorpe, Florida"] {
+            assert!(is_person_listing_locality(person, "Thorpe"), "{person}");
+        }
+        // Real places survive: a suburb that IS the surname, a place-prefixed
+        // name, an unrelated city, and a comma-free string.
+        for place in [
+            "Lawnton, QLD",
+            "Port Thorpe, Tasmania",
+            "Mount Thorpe, QLD",
+            "Houston, Texas",
+            "Thorpe",
+        ] {
+            assert!(!is_person_listing_locality(place, "Thorpe"), "{place}");
+        }
+        assert!(!is_person_listing_locality("Lawnton, QLD", "Lawnton"));
+    }
+

@@ -39,7 +39,7 @@ export async function renderLog(host, scan){
         <div class="pull-right">
           <span id="log-status" class="label label-default">loading…</span>
           &nbsp;<a class="btn btn-default btn-xs" href="${API.eventsLogUrl(scan.id)}" download data-download
-                 title="Download the complete persisted scan event log as a .log file — works while a scan is still running"><i class="glyphicon glyphicon-download-alt"></i>&nbsp;Download</a>
+                 title="Download every event persisted so far as a .log file (client-safe: each breach-source provider is a numbered placeholder). On a scan that is still running this is a partial snapshot — its last line is an export_snapshot marker saying so; download again once the scan finishes for the complete log"><i class="glyphicon glyphicon-download-alt"></i>&nbsp;Download</a>
           &nbsp;<button class="btn btn-default btn-xs" id="log-save-shown"
                  title="Save exactly the events shown here to a .log file — captures a live/streaming scan and works even if the server history failed to load">Save shown</button>
           &nbsp;<button class="btn btn-default btn-xs" id="log-clear">Clear</button>

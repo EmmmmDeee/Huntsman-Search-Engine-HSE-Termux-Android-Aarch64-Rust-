@@ -3,6 +3,15 @@
 //!
 //! Endpoint: `GET https://www.ahpra.gov.au/Registration/Registers-of-Practitioners.aspx`
 //! Query params: Spousesurname={name} or Organisation={org}
+//!
+//! **UNVERIFIED query contract — observed IGNORED (2026-09-23, REQ-AHPRA-002).**
+//! Live, with this module's default User-Agent, the register answers the GET
+//! above with its blank search page: an Angular POST form (`id="mainform"`,
+//! fields `name-reg`, `name-reg-detail`, `health-profession`), no `<table>`,
+//! the searched name nowhere in it. The query string is not read. Such a page
+//! is refused as a failure by [`register_rows`], never parsed into "not a
+//! registered practitioner"; the POST API behind the form is unverified and
+//! deliberately not guessed at.
 
 #[cfg(test)]
 mod tests;
@@ -12,13 +21,16 @@ use async_trait::async_trait;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "ahpra";
+
+/// AHPRA's public register page — the one URL this module requests.
+const REGISTER_URL: &str = "https://www.ahpra.gov.au/Registration/Registers-of-Practitioners.aspx";
 
 pub struct Ahpra;
 
@@ -47,6 +59,74 @@ pub(super) fn parse_ahpra_html(html: &str) -> Vec<(String, String, String)> {
         }
     }
     results
+}
+
+/// The practitioner rows on a fetched register page — or an `Err` when the page
+/// is the register's bare search form, which answers no query at all.
+///
+/// The register serves that form for the GET this module sends (see the module
+/// docs), and it parses to zero rows. Zero rows used to be `Ok(empty)`, which
+/// `core::coverage` files as `CleanNegative`: "the subject is not a registered
+/// health practitioner", minted from a page that never ran the search. Until
+/// REQ-AHPRA-002 that was masked only because the challenge detector misread
+/// the same page as a Cloudflare wall.
+///
+/// `Error::Module`, not `Error::Skipped`: the provider WAS asked (a skip's
+/// contract is "never queried"), and its answer broke the contract this module
+/// reads, which coverage files as `Failed` — never a negative. No genuine
+/// zero-match results page has been captured, so no row-less page carrying the
+/// form is trusted as one. Rows, when a page does carry them, are kept. Pure
+/// given `html`.
+pub(super) fn register_rows(html: &str) -> Result<Vec<(String, String, String)>> {
+    let rows = parse_ahpra_html(html);
+    if rows.is_empty() && carries_search_form(html) {
+        return Err(Error::module(
+            SRC,
+            "the register answered with its blank search form, not results — it ignores \
+             this module's GET query, so the subject was NOT looked up (not a finding \
+             that they are unregistered)",
+        ));
+    }
+    Ok(rows)
+}
+
+/// Whether `html` carries the register's own search form — the
+/// `<form … id="mainform" …>` of the live capture (REQ-AHPRA-002).
+fn carries_search_form(html: &str) -> bool {
+    crate::util::str_util::find_ascii_ci(html, "id=\"mainform\"").is_some()
+}
+
+/// GET the register page for `target` from `register_url` and return its HTML,
+/// or `None` for a `404`. The endpoint is a parameter so the whole request
+/// path — status typing, the bounded body read, the anti-bot-page guard — runs
+/// against a loopback in tests; production passes [`REGISTER_URL`].
+pub(super) async fn fetch_register_page(
+    client: &reqwest::Client,
+    register_url: &str,
+    target: &Target,
+) -> Result<Option<String>> {
+    let value = target.value.trim();
+    let param = match target.kind {
+        TargetKind::Organisation => {
+            format!("Organisation={}", crate::util::http::urlencode(value))
+        }
+        _ => format!("Spousesurname={}", crate::util::http::urlencode(value)),
+    };
+    let url = format!("{register_url}?{param}");
+
+    let resp = client.get(&url).send_tagged(SRC).await?;
+    let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[404]).await? else {
+        return Ok(None);
+    };
+    // An empty result from this registry is a NEGATIVE CLAIM about the
+    // subject, which an analyst will act on, so a connection reset while
+    // streaming the body must never be able to produce one — see
+    // `read_body_capped_or_fail`. Fail closed, as the sibling AU scrapers
+    // already do (`asic_director::fetch_register_page`, `app_links`'
+    // `FetchOutcome::TransportFailed`).
+    crate::util::http::read_body_capped_or_fail(SRC, resp, 512 * 1024)
+        .await
+        .map(Some)
 }
 
 /// Remove HTML tags from a table cell, returning its visible text — a
@@ -93,29 +173,12 @@ impl Module for Ahpra {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let value = target.value.trim();
-        let param = match target.kind {
-            TargetKind::Organisation => {
-                format!("Organisation={}", crate::util::http::urlencode(value))
-            }
-            _ => format!("Spousesurname={}", crate::util::http::urlencode(value)),
-        };
-        let url = format!(
-            "https://www.ahpra.gov.au/Registration/Registers-of-Practitioners.aspx?{param}"
-        );
-
-        let resp = ctx.http.get(&url).send_tagged(SRC).await?;
-        let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[404]).await? else {
+        let Some(html) = fetch_register_page(&ctx.http, REGISTER_URL, target).await? else {
             return Ok(ModuleResult::new());
         };
-        // An empty result from this registry is a NEGATIVE CLAIM about the
-        // subject, which an analyst will act on, so a connection reset while
-        // streaming the body must never be able to produce one — see
-        // `read_body_capped_or_fail`. Fail closed, as the sibling AU scrapers
-        // already do (`asic_director::fetch_register_page`, `app_links`'
-        // `FetchOutcome::TransportFailed`).
-        let html = crate::util::http::read_body_capped_or_fail(SRC, resp, 512 * 1024).await?;
 
-        let practitioners = parse_ahpra_html(&html);
+        // The blank search form is an `Err`, never zero practitioners.
+        let practitioners = register_rows(&html)?;
         // Only a FullName seed names a practitioner; an Organisation search
         // returns that organisation's practitioners, whose own names differ.
         let name_seed = match target.kind {
@@ -170,8 +233,10 @@ const MULTI_HOLDER_CAUTION: &str = "This search returned MORE THAN ONE registere
 /// A name this very result set holds more than once is a PROVEN collision: two
 /// different real practitioners share it, and because the entity value is the
 /// name the engine's merge would otherwise fuse them into one composite record
-/// carrying both registration numbers. Those rows are scored lower again and
-/// say so, so the merged entity describes its own ambiguity instead of
+/// carrying both registration numbers. Those rows go through
+/// [`crate::util::namesake::mark_ambiguous`] — below the expansion floor,
+/// flagged, and their records' ownership unverified — and their caution says
+/// why, so the merged entity describes its own ambiguity instead of
 /// fabricating a practitioner who does not exist. Pure and testable.
 pub(super) fn build_practitioner_entities(
     practitioners: &[(String, String, String)],
@@ -200,18 +265,10 @@ pub(super) fn build_practitioner_entities(
     let mut out = Vec::with_capacity(relevant.len());
     for (name, profession, reg_no) in relevant {
         let multi_holder = shared.is_shared(&EntityKind::Person, name);
-        let conf = if multi_holder {
-            confidence::MEDIUM
-        } else {
-            confidence::MEDIUM_PLUS
-        };
-        let mut person = Entity::new(EntityKind::Person, name, conf, scan_id);
+        let mut person = Entity::new(EntityKind::Person, name, confidence::MEDIUM_PLUS, scan_id);
         person.tag("ahpra");
         person.tag("health-practitioner");
         person.tag("needs-identity-verification");
-        if multi_holder {
-            person.tag(crate::util::namesake::AMBIGUOUS_NAME);
-        }
         if !profession.is_empty() {
             person.tag(format!(
                 "profession:{}",
@@ -232,6 +289,12 @@ pub(super) fn build_practitioner_entities(
                     },
                 ),
         );
+        // After the evidence: the mark also stamps each record's ownership
+        // (REQ-NAMESAKE-001). The partial copy this replaces scored the row at
+        // `confidence::MEDIUM` — the expansion floor itself, not below it.
+        if multi_holder {
+            crate::util::namesake::mark_ambiguous(&mut person);
+        }
         out.push(person);
     }
     out

@@ -311,7 +311,16 @@ fn decode_one_entity(body: &str) -> Option<char> {
 pub const CHALLENGE_VENDOR_SIGNATURES: &[&str] = &[
     // Cloudflare managed challenge / Turnstile / "Just a moment" interstitial
     "challenges.cloudflare.com",
-    "/cdn-cgi/challenge-platform",
+    // The interstitial's challenge LOADER, `/cdn-cgi/challenge-platform/h/<x>/
+    // orchestrate/…` (a live "Just a moment..." on 2026-09-23 loaded
+    // `/h/g/orchestrate/chl_page/v1?ray=…`). Never the bare
+    // `/cdn-cgi/challenge-platform` prefix: Bot Management injects its
+    // JavaScript-detection snippet — `window.__CF$cv$params={…};
+    // a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js'` — into EVERY
+    // HTML page a Cloudflare zone serves, so the prefix read AHPRA's real
+    // 169 KB register page, under its own title, as a wall (REQ-AHPRA-002,
+    // 2026-09-23). A `/scripts/…` reference is the zone, not a refusal.
+    "/cdn-cgi/challenge-platform/h/",
     "cf-chl-", // cf-chl-opt / cf-chl-bypass challenge tokens
     // Google reCAPTCHA + the classic "/sorry/" rate-limit interstitial
     "/recaptcha/api",
@@ -397,7 +406,9 @@ pub const CHALLENGE_PHRASE_SETS: &[&[&str]] = &[
     // carry (the register also fronts with Cloudflare). F5 ASM had no
     // signature of its own, so any F5-walled host without a Cloudflare front
     // answered a 200 wall that read as the document — for ahpra, "the subject
-    // is not a registered health practitioner".
+    // is not a registered health practitioner". That reference is Cloudflare's
+    // always-injected JSD script, which no longer counts at all
+    // (REQ-AHPRA-002), so these two sets are now what reads that wall as one.
     &["enable javascript to view the page content", "support id"],
     &["the requested url was rejected", "support id"],
 ];

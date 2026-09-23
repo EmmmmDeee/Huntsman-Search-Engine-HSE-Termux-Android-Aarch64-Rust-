@@ -264,3 +264,42 @@ use super::*;
             .count();
         assert_eq!(ips, 3, "an under-cap set must be emitted in full");
     }
+
+    fn attrs(json: &str) -> VtAttributes {
+        let r: VtResponse = serde_json::from_str(json).expect("should succeed");
+        r.data.expect("data").attributes.expect("attributes")
+    }
+
+    fn dns_json(n: usize) -> String {
+        let recs: Vec<String> = (0..n)
+            .map(|i| format!(r#"{{"type":"A","value":"10.0.{}.{}"}}"#, i / 256, i % 256))
+            .collect();
+        format!(
+            r#"{{"data":{{"attributes":{{"last_dns_records":[{}]}}}}}}"#,
+            recs.join(",")
+        )
+    }
+
+    #[test]
+    fn a_capped_passive_dns_list_is_declared_to_the_coverage_layer() {
+        // FAILS before the fix: the cap was a `truncated` tag on the scanned
+        // entity and a `tracing::warn!`, and the coverage layer recorded a
+        // 30-of-55 answer as complete.
+        let target = Target::new(TargetKind::Domain, "evil.example");
+        let r = vt_result(&target, &attrs(&dns_json(MAX_DNS_RECORDS + 25)), "s");
+        let why = r.truncation.as_deref().expect("a capped list is not complete");
+        assert!(
+            why.starts_with(&format!("{MAX_DNS_RECORDS} of {}", MAX_DNS_RECORDS + 25)),
+            "{why}"
+        );
+        assert!(r.entities[0].has_tag("truncated"), "the per-entity note is kept");
+    }
+
+    #[test]
+    fn a_list_within_the_cap_declares_nothing() {
+        let target = Target::new(TargetKind::Domain, "evil.example");
+        for n in [0, MAX_DNS_RECORDS] {
+            let r = vt_result(&target, &attrs(&dns_json(n)), "s");
+            assert!(r.truncation.is_none(), "{n}: {:?}", r.truncation);
+        }
+    }

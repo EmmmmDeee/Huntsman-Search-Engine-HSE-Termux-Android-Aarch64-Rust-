@@ -183,9 +183,9 @@ use super::*;
             extract_registrable_domain("example.com").as_deref(),
             Some("example.com")
         );
-        // Multi-label public suffixes are handled via util::domains'
-        // curated table (not a full PSL): a.b.co.uk → b.co.uk, the registrable
-        // domain, rather than the bare suffix co.uk.
+        // Multi-label public suffixes are read from the Public Suffix List
+        // (util::domains): a.b.co.uk → b.co.uk, the registrable domain, rather
+        // than the bare suffix co.uk.
         assert_eq!(
             extract_registrable_domain("a.b.co.uk").as_deref(),
             Some("b.co.uk")

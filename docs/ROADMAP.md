@@ -18,7 +18,7 @@
 > (`src/core/module/provider.rs`) — machine-readable and canonical, so this
 > document points at it rather than copying it.
 
-Last realigned: **2026-09-19**.
+Last realigned: **2026-09-23**.
 
 ---
 
@@ -75,7 +75,7 @@ same code compiles into the `wasm32` browser UI. `#![forbid(unsafe_code)]`.
 `crate::core::tags` so existing call sites are unchanged. Everything above
 depends on it; it depends on nothing in-repo.
 
-### Layer 1 — `src/util/` (213 files, stateless shared mechanism)
+### Layer 1 — `src/util/` (216 files, stateless shared mechanism)
 The reusable primitives every module leans on. Key sub-areas:
 - `util/http/` — the shared client, `send_tagged`, `read_body_capped_or_fail`
   (fail-closed body reads), `http_status_error` (typed 404/429/BotChallenge/…),
@@ -87,7 +87,12 @@ The reusable primitives every module leans on. Key sub-areas:
   5xx accumulates, anything else clears). A module that dials by hand and
   re-implements either half is a defect, not a variation: that was exactly
   REQ-HTTP-005 (`util::wigle` kept three hand-rolled copies) and
-  REQ-DOHRESOLVER-001 (the primary DNS transport had none).
+  REQ-DOHRESOLVER-001 (the primary DNS transport had none). Both transports —
+  reqwest and the curl fallback — answer alike for one response: the same
+  status typing (`classify_status_error`), the same breaker decision
+  (`record_breaker_status`), and one error-body step, `sanitised_error_body`
+  (cap → key harvest → redaction), so an echoed `?api_key=` never reaches a
+  typed error from either arm (REQ-CURL-001).
 - `util/circuit_breaker/` — per-endpoint outage state. `endpoint_of` is the
   **key authority**: host plus `port_or_known_default()`, so `https://h` and
   `https://h:443` cannot split into two breakers and two loopback servers cannot
@@ -118,19 +123,42 @@ The reusable primitives every module leans on. Key sub-areas:
   `f64::max(confidence)`, so a deliberately sub-floor candidate was absorbed
   into the primary and pivoted. A demotion applied to an entity that is about to
   fuse with a higher-confidence twin is not a demotion at all.
+
+  That is why `mark_ambiguous` marks at two levels. The cap and the tag are
+  entity-level and the merge folds them; each evidence record's ownership
+  (`Evidence.verification = Unverified`) is per record and survives it, so the
+  row's attributes stay "somebody of this name's" on the subject's anchor
+  (REQ-NAMESAKE-001). It is the ONLY way the tag is applied —
+  `tests/architecture.rs` refuses another — because the partial copy `ahpra`
+  kept scored a collision at the expansion floor instead of below it.
+  Consumers: `ahpra`, `gleif_lei`, `opencorporates`, `wikidata`, `wikitree`.
+- `util/abn::same_company` — **company identity**: equality after case,
+  punctuation, a leading `THE` and trailing legal-form words are folded, on the
+  same tokeniser as `looks_like_company`. Never a token subset: a subset let
+  the Organisation seed "Ford" claim the individual "MR JOHN FORD"
+  (REQ-AU-UNCLAIMED-002).
 - `util/html`, `util/probe`, `util/target_match`, `util/canonical`,
   `util/address_au`, `util/domains`, `util/domain_vn`, `util/geo`,
   `util/extract`, `util/gravatar` — challenge-page detection, presence
   controls, whole-word/boundary matching, canonicalisers (email subaddressing,
   AU/VN address & phone), boundary-aware relevance, geo validation, identity
   splitting.
+- `util/domains::registrable_domain` — **the site boundary**, read from the
+  vendored Public Suffix List (`util/domains/psl.rs`, the official conformance
+  suite run as a unit test). One authority for every decision that turns on
+  "same registrant?": the credentialed-redirect guard (`util::http::ssrf`),
+  the correlator's organisation, co-hosting and look-alike rules, `dns_intel`'s
+  apex test, typosquat and the crawler. It was a 39-entry table with no `.vn`
+  second level (REQ-PSL-001), so every one of those decisions was wrong for
+  Vietnamese domains at once — the argument for one authority, and for making
+  it the real list rather than a curated subset of it.
 
 **Canonicalisation priority lives here.** One canonical form per concept, one
 authority per canonicaliser — `to_e164_au`, `canonical_email_mailbox`,
 `TargetMatch`, `split_identity_secret` are each single-sourced and shared, never
 re-implemented per module.
 
-### Layer 2 — `src/core/` (203 files, the engine and its contracts)
+### Layer 2 — `src/core/` (207 files, the engine and its contracts)
 - `core/module/` — the **`Module` trait** (the capability contract: `accepts`,
   `process`, `produces`, `category`, `priority`, `attack_techniques`,
   `max_timeout_ms`) and `provider.rs` (`ProviderDescriptor`: cost/economics,
@@ -153,6 +181,12 @@ re-implemented per module.
   asserts conduct; `threat-intel` is an unadjudicated sighting; `vulnerable`
   marks a VICTIM, usually the target's own asset), and a rule that flattens them
   headlines an exposure as an accusation (REQ-CLOUDSTORAGE-001).
+- `core/exposure/` — the subject's exposure index. It reads evidence through
+  ONE gate, `attributable`: a record whose ownership is `Unverified` (a
+  name-matched genealogy profile, an ambiguous-name row) is shown but never
+  counted as the subject's DOB, identifier or breach (REQ-WIKITREE-001). The
+  engine merges by value, so this per-record gate is the only one a namesake
+  cannot slip past.
 - `core/resolve/`, `core/validation/`, `core/intelligence/`, `core/coverage/`,
   `core/roi/`, `core/entity_extractor`, `core/diff/` — entity resolution &
   grouping, admission validation (homograph/placeholder gates), provider-outcome
@@ -164,7 +198,7 @@ layer consume `core`. The correlator consumes only entities + tags — so a
 module changes what the correlator can conclude *only* through the tags/evidence
 it emits (the seam REQ-PGP-001 / REQ-OPENSANCTIONS-001 both turned on).
 
-### Layer 3 — `src/modules/` (516 files, 193 provider modules)
+### Layer 3 — `src/modules/` (520 files, 194 provider modules)
 One directory per provider, each an implementation of `Module`. Registered in
 `src/modules/mod.rs` (the canonical list). Categories: People, Network, Geo,
 Breach/Stealer, Threat-Intel, Registry (AU/VN gov), Crypto, Archive, Presence,
@@ -492,6 +526,18 @@ by looking for them rather than reading modules at random:**
    contradiction and close it**, because a shared authority standing beside two
    survivors is three authorities, and the next reader cannot tell which is
    canonical.
+
+   **Count the spellings, not only the ones spelled like the first.**
+   REQ-COVERAGE-001 swept for private truncation *attributes* and found five;
+   eight more were written as a bare `"truncated"` entity *tag*, which the sweep
+   never looked for, and the coverage layer read all eight as complete
+   (REQ-COVERAGE-002). Three of them were hiding false negatives: two register
+   lookups returned "not found" from a page the provider said was partial,
+   because the tag sat after the no-match return. Its rule: **when you migrate a
+   concept, search for it by meaning (every word a module might use for it, in
+   every channel it could write to), then lock the channel shut** —
+   `tests/architecture.rs` now refuses a module that tags a truncation without
+   declaring it.
 
    **A filter's SHAPE can contradict the thing it filters.**
    `is_plausible_provider_coord` exists to drop a no-fix placeholder that is a

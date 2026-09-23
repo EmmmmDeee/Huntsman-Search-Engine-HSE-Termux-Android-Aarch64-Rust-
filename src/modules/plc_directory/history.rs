@@ -48,11 +48,13 @@ pub(super) struct History {
     pub(super) tombstoned: Option<String>,
     /// Every handle ever effective, in order of first appearance.
     pub(super) handles: Vec<Spell>,
-    /// Handles declared by the most recent effective operation.
+    /// Handles declared by the most recent effective operation — none once a
+    /// tombstone has deleted the identity.
     pub(super) current_handles: Vec<String>,
     /// Every PDS host ever effective, in order of first appearance.
     pub(super) pds: Vec<Spell>,
-    /// PDS host declared by the most recent effective operation.
+    /// PDS host declared by the most recent effective operation — none once a
+    /// tombstone has deleted the identity.
     pub(super) current_pds: Option<String>,
     /// Distinct rotation keys across every effective operation, in order of
     /// first appearance. Not yet filtered — [`super::transform`] decides which
@@ -64,6 +66,15 @@ impl History {
     /// True if `handle` is not one the most recent effective operation declares.
     pub(super) fn is_former(&self, handle: &str) -> bool {
         !self.current_handles.iter().any(|h| h == handle)
+    }
+
+    /// True if any effective operation has declared `handle` — the identity's
+    /// own signed claim to it, whether still in force or since released.
+    pub(super) fn has_claimed(&self, handle: &str) -> bool {
+        let handle = handle.trim();
+        self.handles
+            .iter()
+            .any(|s| s.value.eq_ignore_ascii_case(handle))
     }
 }
 
@@ -113,10 +124,15 @@ pub(super) fn fold(log: &[AuditEntry]) -> History {
             h.created_at = Some(date.clone());
         }
 
-        // A tombstone deletes the DID and declares nothing else. The history
-        // before it stands — that is the whole reason this module exists.
+        // A tombstone "clears all of the data fields and permanently
+        // deactivates the DID" (the did:plc spec). The history before it
+        // stands — that is the whole reason this module exists — but none of
+        // it is current: a deleted identity holds no handle and no server, so
+        // the last ones it declared are former values, released like any other.
         if op.is_tombstone() {
             h.tombstoned = Some(date);
+            h.current_handles.clear();
+            h.current_pds = None;
             continue;
         }
 
@@ -127,15 +143,17 @@ pub(super) fn fold(log: &[AuditEntry]) -> History {
             .into_iter()
             .map(str::to_ascii_lowercase)
             .collect();
-        if !handles.is_empty() {
-            h.current_handles = handles.clone();
-        }
+        // Every creation or update restates the identity's whole state — the
+        // did:plc spec lists `alsoKnownAs` and `services` among the fields
+        // each one carries — so one that declares no handle or no server has
+        // dropped it: the previous value is not still in force.
+        h.current_handles = handles.clone();
         for handle in handles {
             note(&mut h.handles, handle, &date);
         }
 
-        if let Some(host) = op.pds_endpoint().and_then(host_from_url) {
-            h.current_pds = Some(host.clone());
+        h.current_pds = op.pds_endpoint().and_then(host_from_url);
+        if let Some(host) = h.current_pds.clone() {
             note(&mut h.pds, host, &date);
         }
 

@@ -78,7 +78,7 @@ export async function renderScanInfo(v){
           <a class="btn btn-default btn-sm" href="${API.csvUrl(id)}" data-download title="Export entities as CSV"><i class="glyphicon glyphicon-download-alt"></i>&nbsp;CSV</a>
           <a class="btn btn-default btn-sm" id="si-json-link" href="${API.reportUrl(id, false)}" data-download title="Export full report as JSON"><i class="glyphicon glyphicon-save"></i>&nbsp;JSON</a>
           <a class="btn btn-default btn-sm" href="${API.gexfUrl(id)}" data-download title="Export the entity graph as GEXF (open in Gephi / any graph tool)"><i class="glyphicon glyphicon-share-alt"></i>&nbsp;GEXF</a>
-          <a class="btn btn-default btn-sm" href="${API.eventsLogUrl(id)}" download data-download title="Download the scan event log (.log) — client-safe: your breach-source providers (SeekNow, OathNet, …) are shown as ‘breach-source’, never named"><i class="glyphicon glyphicon-download"></i>&nbsp;Log</a>
+          <a class="btn btn-default btn-sm" href="${API.eventsLogUrl(id)}" download data-download title="Download the scan event log (.log) — client-safe: each breach-source provider is a numbered placeholder (‘[breach-source-N]’) and its sites and key names are redacted, never named. On a running scan it is a partial snapshot, marked as such on its last line"><i class="glyphicon glyphicon-download"></i>&nbsp;Log</a>
           <a class="btn btn-warning btn-sm" href="${API.debugUrl(id)}" download data-download title="⚠ OPERATOR ONLY — the full debug bundle NAMES your breach-source providers (SeekNow, OathNet, …). For your own debugging; do NOT share it with a client."><i class="glyphicon glyphicon-list-alt"></i>&nbsp;Debug bundle (operator)</a>
           <a class="btn btn-warning btn-sm" href="${API.batchUrl(id)}" download data-download title="⚠ OPERATOR ONLY — every email, username, phone, domain, IP and name this scan found, as one plaintext list per breach provider (OathNet, SeekNow, …) in the syntax its search page accepts. Paste by hand; no API key needed. Same as the hse batch --scan-id command."><i class="glyphicon glyphicon-list"></i>&nbsp;Bulk queries (operator)</a>
           <button class="btn btn-danger btn-sm" data-delete="${attr(id)}" title="Delete"><i class="glyphicon glyphicon-trash"></i></button>
@@ -87,7 +87,7 @@ export async function renderScanInfo(v){
           <label style="font-weight:normal;cursor:pointer">
             <input type="checkbox" id="si-include-infra"> Include infrastructure entities (cloud buckets, CDN IPs, tracking IDs) in the JSON report
           </label>
-          <div style="margin-top:2px"><i class="glyphicon glyphicon-lock"></i>&nbsp;CSV / JSON / GEXF / Log downloads are <b>client-safe</b> — your breach-source providers are shown as “breach-source”, never named. Only the <span class="text-warning">Debug bundle (operator)</span> and <span class="text-warning">Bulk queries (operator)</span> downloads name them.</div>
+          <div style="margin-top:2px"><i class="glyphicon glyphicon-lock"></i>&nbsp;CSV / JSON / GEXF / Log downloads are <b>client-safe</b> — each breach-source provider is a numbered placeholder (“[breach-source-N]”), never named. Only the <span class="text-warning">Debug bundle (operator)</span> and <span class="text-warning">Bulk queries (operator)</span> downloads name them.</div>
         </div>
     </h2>
     <hr style="margin:8px 0 14px 0">

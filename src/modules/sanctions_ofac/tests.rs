@@ -469,3 +469,426 @@ async fn process_refusing_a_weak_name_must_not_answer_ok() {
     }
 }
 
+// ── REQ-OFAC-002: the list is reached through OFAC's pre-signed S3 redirect,
+// and a failed download is fetched once, not once per dispatch ──────────────
+//
+// Both download endpoints answer `302` to a pre-signed S3 URL. The shared
+// client stops that hop (it leaves `treas.gov`'s registrable domain), and the
+// fetcher read the `302` as a failed download — so screening never had a list
+// in production — and, because only a success was ever recorded, every
+// dispatch in a scan re-downloaded and re-failed.
+
+/// The `Location` shape OFAC was observed issuing for `SDN.CSV` (2026-09-23).
+/// Bucket, region, path and parameter layout are as captured; the session
+/// token, credential and signature VALUES are placeholders — this fixture
+/// proves the host/scheme judgement, never that a real URL is still signed.
+const S3_LOCATION: &str = "https://wc2h-sls-prod-public-published.s3.us-gov-west-1.amazonaws.com/Published/6f141e88-8b06-41e6-89e7-d4017d73a738/2026-09-17/ac391fbd-8ac6-4dce-b73b-115435194157/SDN.CSV?X-Amz-Expires=3600&X-Amz-Security-Token=PLACEHOLDER&response-content-disposition=attachment%3B%20filename%3D%22sdn.csv%22&response-content-type=text%2Fcsv&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=PLACEHOLDER%2F20260923%2Fus-gov-west-1%2Fs3%2Faws4_request&X-Amz-Date=20260923T040227Z&X-Amz-SignedHeaders=host&X-Amz-Signature=0000000000000000000000000000000000000000000000000000000000000000";
+
+/// A real SDN row (see `parse_tests.rs`), served by the loopback fixtures below.
+const SDN_ROW: &str =
+    r#"36,"AEROCARIBBEAN AIRLINES",-0- ,"CUBA",-0- ,-0- ,-0- ,-0- ,-0- ,-0- ,-0- ,-0- "#;
+
+/// A context on the SHARED client — the one production dispatches with. A bare
+/// `reqwest::Client::new()` follows every redirect itself, so a test on it
+/// would pass without this module's hop ever running.
+fn shared_client_ctx() -> ModuleContext {
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    ModuleContext {
+        scan_id: "ofac-hop".into(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    }
+}
+
+#[test]
+fn presigned_hop_accepts_the_s3_location_ofac_actually_issues() {
+    use super::list::presigned_hop;
+
+    let hop = presigned_hop(S3_LOCATION).expect("OFAC's own redirect target must be followed");
+    assert_eq!(
+        hop.host_str(),
+        Some("wc2h-sls-prod-public-published.s3.us-gov-west-1.amazonaws.com")
+    );
+    assert!(hop.path().ends_with("/SDN.CSV"), "{}", hop.path());
+    // The signature is the whole authorisation — the hop must carry the query
+    // through intact, not just the host.
+    let query = hop.query().unwrap_or_default();
+    assert!(
+        query.contains("X-Amz-Signature=") && query.contains("X-Amz-Expires=3600"),
+        "{query}"
+    );
+
+    // The Consolidated list lands on the same bucket.
+    let cons = S3_LOCATION.replace("/SDN.CSV?", "/CONS_PRIM.CSV?");
+    assert!(presigned_hop(&cons).is_some());
+    // `url` lowercases the host and drops a spelled-out default port, so
+    // neither is a way to be refused for a URL that is the same place.
+    assert!(
+        presigned_hop(
+            "https://WC2H-SLS-PROD-PUBLIC-PUBLISHED.S3.US-GOV-WEST-1.AMAZONAWS.COM/SDN.CSV"
+        )
+        .is_some()
+    );
+    assert!(
+        presigned_hop(
+            "https://wc2h-sls-prod-public-published.s3.us-gov-west-1.amazonaws.com:443/SDN.CSV"
+        )
+        .is_some()
+    );
+}
+
+#[test]
+fn presigned_hop_refuses_every_other_redirect_target() {
+    use super::list::presigned_hop;
+
+    const S3: &str = "wc2h-sls-prod-public-published.s3.us-gov-west-1.amazonaws.com";
+    let refused = [
+        (
+            format!("http://{S3}/SDN.CSV"),
+            "plaintext downgrade of the list the screen rests on",
+        ),
+        (
+            "https://evil.example/SDN.CSV".to_string(),
+            "a host that is not AWS",
+        ),
+        (
+            "https://amazonaws.com.evil.example/SDN.CSV".to_string(),
+            "the AWS suffix as a PREFIX",
+        ),
+        (
+            "https://evilamazonaws.com/SDN.CSV".to_string(),
+            "the suffix without its dot",
+        ),
+        (
+            "https://amazonaws.com/SDN.CSV".to_string(),
+            "the bare apex — no bucket label",
+        ),
+        (
+            "https://.amazonaws.com/SDN.CSV".to_string(),
+            "an empty label in front of the suffix",
+        ),
+        ("https://52.46.128.1/SDN.CSV".to_string(), "an IPv4 literal"),
+        (
+            "https://169.254.169.254/latest/meta-data/".to_string(),
+            "the cloud-metadata address",
+        ),
+        (
+            "https://2130706433/SDN.CSV".to_string(),
+            "an IPv4 literal spelled as one number (127.0.0.1)",
+        ),
+        (
+            "https://[2600:1f14::1]/SDN.CSV".to_string(),
+            "an IPv6 literal",
+        ),
+        (format!("https://user:pass@{S3}/SDN.CSV"), "userinfo"),
+        (format!("https://user@{S3}/SDN.CSV"), "a username alone"),
+        (
+            format!("https://{S3}@evil.example/SDN.CSV"),
+            "the S3 host as userinfo in front of another host",
+        ),
+        (format!("https://{S3}:8443/SDN.CSV"), "a non-default port"),
+        (format!("ftp://{S3}/SDN.CSV"), "another scheme"),
+        (
+            "/Published/SDN.CSV".to_string(),
+            "a relative Location (it would resolve onto treas.gov)",
+        ),
+        (String::new(), "an empty Location"),
+    ];
+    for (location, why) in &refused {
+        assert!(
+            presigned_hop(location).is_none(),
+            "{why}: `{location}` must not be followed"
+        );
+    }
+}
+
+/// Why the module takes the hop itself, recorded against the client production
+/// uses: the shared client does NOT follow a cross-site redirect to S3, it hands
+/// the `302` back — and that `302`'s `Location` is one [`presigned_hop`]
+/// accepts.
+///
+/// The decision is `util::http::ssrf::redirect_verdict`, which is private to
+/// `util::http` and cannot be called from here, so it is pinned through
+/// `build_client()` instead. The origin is a loopback fixture rather than
+/// `treas.gov`, but the next hop is a DNS name, so the private-IP arm (which
+/// judges IP literals only) is not what stops it: the cross-site arm is. That
+/// is the arm that stops `treas.gov` → `amazonaws.com` too, though this test
+/// cannot pin that exact pair — an IP origin and a name are never the same site
+/// however names are compared — so the pair itself is `redirect_verdict`'s to
+/// pin in `util::http`'s own tests. Hermetic while the rule holds; if the client
+/// ever followed this hop it would head for S3 and the test fails on the status
+/// (or the timeout) — the cue to revisit the hop and the module doc.
+///
+/// [`presigned_hop`]: super::list::presigned_hop
+#[tokio::test]
+async fn the_shared_client_hands_back_ofacs_s3_redirect_unfollowed() {
+    use crate::util::http::test_server::{Canned, serve};
+
+    let origin = serve(vec![Canned::text(302, "").header("Location", S3_LOCATION)]).await;
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        crate::util::http::build_client()
+            .get(format!("{origin}/api/download/SDN.CSV"))
+            .send(),
+    )
+    .await
+    .expect("a stopped redirect answers at once; only a followed one leaves loopback")
+    .expect("the stopped redirect surfaces as the 3xx response, not a request error");
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::FOUND,
+        "the shared client must hand back OFAC's cross-site 302 unfollowed"
+    );
+    let location = resp
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .expect("the 302 keeps its Location");
+    assert!(super::list::presigned_hop(location).is_some());
+}
+
+/// The hop is taken ONLY to a pre-signed S3 target, end to end through
+/// `fetch_one_list` on the shared client — even when the refused target would
+/// have served a perfectly valid list.
+///
+/// The decoy holds exactly one canned answer, so the direct fetch afterwards
+/// proves two things at once: the list there is valid (non-vacuity), and nothing
+/// consumed that answer first — the redirect was never followed, by the client
+/// or by the module.
+#[tokio::test]
+async fn fetch_one_list_follows_no_redirect_but_the_presigned_one() {
+    use super::list::{fetch_one_list, is_screenable};
+    use super::parse::OfacList;
+    use crate::util::http::test_server::{Canned, serve};
+
+    let decoy = serve(vec![Canned::text(200, SDN_ROW)]).await;
+    let origin = serve(vec![
+        Canned::text(302, "").header("Location", format!("{decoy}/SDN.CSV")),
+    ])
+    .await;
+    let ctx = shared_client_ctx();
+
+    assert!(
+        fetch_one_list(
+            &ctx,
+            &format!("{origin}/api/download/SDN.CSV"),
+            OfacList::Sdn
+        )
+        .await
+        .is_none(),
+        "a redirect to anything but OFAC's pre-signed S3 download must fail the list"
+    );
+    let direct = fetch_one_list(&ctx, &format!("{decoy}/SDN.CSV"), OfacList::Sdn)
+        .await
+        .expect("the decoy's single answer must still be unspent");
+    assert!(is_screenable(&direct));
+    assert_eq!(direct[0].name, "AEROCARIBBEAN AIRLINES");
+}
+
+/// The refresh decision, row by row. `(cache_age, since_failure)` are the two
+/// durations the store measures; `None` means "no screenable list" and "last
+/// attempt succeeded / none made" respectively.
+#[test]
+fn should_refetch_truth_table() {
+    use super::list::{FAILURE_COOLDOWN_SECS, LIST_CACHE_TTL_SECS, should_refetch};
+    use std::time::Duration;
+
+    let s = Duration::from_secs;
+    let ttl = s(LIST_CACHE_TTL_SECS);
+    let cool = s(FAILURE_COOLDOWN_SECS);
+    let rows = [
+        (
+            None,
+            None,
+            true,
+            "cold start: nothing cached, nothing failed",
+        ),
+        (Some(s(0)), None, false, "just downloaded"),
+        (
+            Some(ttl - s(1)),
+            None,
+            false,
+            "a list inside its TTL is served as-is",
+        ),
+        (Some(ttl), None, true, "the TTL has elapsed"),
+        // The defect: with no memo, every one of a scan's dispatches re-downloaded.
+        (
+            None,
+            Some(s(0)),
+            false,
+            "no list, a failure just now — do not re-download",
+        ),
+        (None, Some(cool - s(1)), false, "still inside the cool-down"),
+        (
+            None,
+            Some(cool),
+            true,
+            "the cool-down has elapsed — try again",
+        ),
+        (
+            Some(ttl + s(3600)),
+            Some(s(30)),
+            false,
+            "stale list + recent failure: serve the stale list",
+        ),
+        (
+            Some(ttl + s(3600)),
+            Some(cool + s(1)),
+            true,
+            "stale list + an old failure: refresh",
+        ),
+        (
+            Some(s(10)),
+            Some(s(10)),
+            false,
+            "a fresh list wins whatever the memo says",
+        ),
+    ];
+    for (cache_age, since_failure, want, why) in rows {
+        assert_eq!(
+            should_refetch(cache_age, since_failure),
+            want,
+            "{why}: cache_age={cache_age:?} since_failure={since_failure:?}"
+        );
+    }
+}
+
+/// Three dispatches arrive together on a cold cache and the download fails: one
+/// download, three honest errors — and a fourth dispatch inside the cool-down
+/// neither downloads nor answers anything but that same error.
+///
+/// Before: no gate and no memo, so each dispatch made its own attempt (a real
+/// scan logged the failure six times). The yield inside the scripted download
+/// is what makes this concurrent: the other two reach the gate while the first
+/// is still "downloading".
+#[tokio::test]
+async fn concurrent_dispatches_share_one_failed_download_and_it_is_remembered() {
+    use super::list::ListStore;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let store = ListStore::default();
+    let downloads = AtomicUsize::new(0);
+    let failing = || async {
+        downloads.fetch_add(1, Ordering::SeqCst);
+        tokio::task::yield_now().await;
+        None::<Vec<SdnRecord>>
+    };
+
+    let (a, b, c) = tokio::join!(
+        store.get_or_refresh(failing),
+        store.get_or_refresh(failing),
+        store.get_or_refresh(failing),
+    );
+    assert_eq!(
+        downloads.load(Ordering::SeqCst),
+        1,
+        "one download for the whole burst"
+    );
+    for r in [a, b, c] {
+        let err = r.expect_err("no list was ever loaded — this is not a clean screen");
+        assert!(err.to_string().contains("sanctions_ofac"), "{err}");
+    }
+
+    store
+        .get_or_refresh(failing)
+        .await
+        .expect_err("inside the cool-down the answer is still the honest error");
+    assert_eq!(
+        downloads.load(Ordering::SeqCst),
+        1,
+        "a failure inside the cool-down must not be re-downloaded"
+    );
+}
+
+/// The success side of the same gate: the burst shares one download, every
+/// dispatch gets the list, and a later one is served from the cache.
+#[tokio::test]
+async fn concurrent_dispatches_share_one_successful_download() {
+    use super::list::ListStore;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let store = ListStore::default();
+    let downloads = AtomicUsize::new(0);
+    let succeeding = || async {
+        downloads.fetch_add(1, Ordering::SeqCst);
+        tokio::task::yield_now().await;
+        Some(vec![individual_record()])
+    };
+
+    let (a, b, c) = tokio::join!(
+        store.get_or_refresh(succeeding),
+        store.get_or_refresh(succeeding),
+        store.get_or_refresh(succeeding),
+    );
+    assert_eq!(
+        downloads.load(Ordering::SeqCst),
+        1,
+        "one download for the whole burst"
+    );
+    for r in [a, b, c] {
+        let list = r.expect("every queued dispatch gets the list the first one fetched");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "ABBAS, Abu");
+    }
+
+    store
+        .get_or_refresh(succeeding)
+        .await
+        .expect("a fresh cache serves");
+    assert_eq!(
+        downloads.load(Ordering::SeqCst),
+        1,
+        "a fresh cache is never re-downloaded"
+    );
+}
+
+/// A download that parses to nothing is a failure to the store too: never
+/// cached as a (blind) screen, and remembered like any other failure.
+#[tokio::test]
+async fn an_empty_download_is_remembered_as_a_failure_not_cached() {
+    use super::list::ListStore;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let store = ListStore::default();
+    let downloads = AtomicUsize::new(0);
+    let empty = || async {
+        downloads.fetch_add(1, Ordering::SeqCst);
+        Some(Vec::<SdnRecord>::new())
+    };
+
+    store
+        .get_or_refresh(empty)
+        .await
+        .expect_err("an empty list is not a screen");
+    store
+        .get_or_refresh(empty)
+        .await
+        .expect_err("and it was not cached as one");
+    assert_eq!(
+        downloads.load(Ordering::SeqCst),
+        1,
+        "the empty result was memoised as a failure"
+    );
+}
+
+/// Live proof of the hop against the REAL service, on the production client:
+/// OFAC's `302`, the module's own hop to S3, and a parsed list. Uses the small
+/// Consolidated list (~263 KB) rather than SDN (~5.7 MB). Ignored by default
+/// (network); run with
+/// `cargo test sanctions_ofac::tests::ofac_live -- --ignored --nocapture`.
+/// The shared client ignores `HTTPS_PROXY` by design, so it needs direct egress.
+#[tokio::test]
+#[ignore = "hits the live OFAC Sanctions List Service and its S3 bucket; run manually"]
+async fn ofac_live_download_takes_the_presigned_s3_hop() {
+    use super::list::{CONS_URL, fetch_one_list, is_screenable};
+    use super::parse::OfacList;
+
+    let cons = fetch_one_list(&shared_client_ctx(), CONS_URL, OfacList::Consolidated)
+        .await
+        .expect("the live Consolidated list must download through the pre-signed hop");
+    assert!(is_screenable(&cons));
+    assert!(cons.iter().all(|r| r.list == OfacList::Consolidated));
+    eprintln!("sanctions_ofac live: {} Consolidated rows", cons.len());
+}

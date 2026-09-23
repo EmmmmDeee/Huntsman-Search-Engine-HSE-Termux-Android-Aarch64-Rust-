@@ -1,15 +1,13 @@
-use std::sync::Arc;
-
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::ModuleContext,
+    module::{ModuleContext, ModuleResult},
     scan::Target,
 };
 
 use super::constants::SUBDOMAINS;
-use super::resolve_batch::resolve_hosts_concurrently;
+use super::resolve_batch::{reportable_hits, resolve_hosts_concurrently};
 use super::wildcard::detect_wildcard;
 use super::{MAX_CONCURRENT_BRUTE, SRC};
 
@@ -24,11 +22,12 @@ pub(super) fn is_apex_echo(host: &str, parent: &str) -> bool {
         == crate::core::entity::normalise(&EntityKind::Domain, parent)
 }
 
-/// Subdomain brute-force via the common-name dictionary.
-pub(super) async fn brute_subdomains(target: &Target, ctx: &ModuleContext) -> Result<Vec<Entity>> {
+/// Subdomain brute-force via the common-name dictionary. A pass a wildcard
+/// swallows comes back empty and declared truncated ([`reportable_hits`]).
+pub(super) async fn brute_subdomains(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
     let parent = target.value.trim().trim_end_matches('.').to_lowercase();
     if parent.is_empty() || parent.contains('/') || parent.contains(' ') {
-        return Ok(Vec::new());
+        return Ok(ModuleResult::new());
     }
 
     let candidates: Vec<String> = SUBDOMAINS
@@ -39,15 +38,32 @@ pub(super) async fn brute_subdomains(target: &Target, ctx: &ModuleContext) -> Re
         })
         .map(|sub| format!("{sub}.{parent}"))
         .collect();
+    let candidate_count = candidates.len();
 
     // A wildcard-DNS zone (`*.parent A x.x.x.x`) makes every dictionary word
     // "resolve" — reproduced live against blogspot.com, where two unrelated
-    // random labels both answered with the same IP. Detect it once up front
-    // and filter out any hit that is nothing more than that catch-all noise.
-    let wildcard_fp = detect_wildcard(&parent).await.map(Arc::new);
+    // random labels both answered with the same IP. Detect it once up front:
+    // filter out any hit that is nothing more than a stable catch-all's noise,
+    // and report nothing a wildcard leaves indistinguishable.
+    let wildcard = detect_wildcard(&parent).await;
 
-    let hits = resolve_hosts_concurrently(candidates, MAX_CONCURRENT_BRUTE, wildcard_fp, ctx).await;
+    let (hits, failed) = resolve_hosts_concurrently(
+        candidates,
+        MAX_CONCURRENT_BRUTE,
+        wildcard.fingerprint(),
+        ctx,
+    )
+    .await;
 
+    let mut result = ModuleResult::new();
+    let hits = reportable_hits(
+        &parent,
+        &wildcard,
+        candidate_count,
+        hits,
+        failed,
+        &mut result,
+    );
     let entities: Vec<Entity> = hits
         .into_iter()
         .filter_map(|(host, ips_joined, count)| {
@@ -83,5 +99,6 @@ pub(super) async fn brute_subdomains(target: &Target, ctx: &ModuleContext) -> Re
             Some(e)
         })
         .collect();
-    Ok(entities)
+    result.extend(entities);
+    Ok(result)
 }

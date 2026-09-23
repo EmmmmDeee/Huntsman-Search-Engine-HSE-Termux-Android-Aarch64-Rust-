@@ -432,6 +432,43 @@ use crate::core::entity::Evidence;
     }
 
     #[test]
+    fn au118_sees_an_impersonation_under_a_vietnamese_second_level() {
+        // REQ-PSL-001: FAILS on the 39-entry suffix table. With no `com.vn`
+        // in it, both domains folded to the "registrable domain" `com.vn` —
+        // one key, so no pair, so no Vietnamese impersonation could ever fire.
+        let real = Entity::new(EntityKind::Domain, "techcombank.com.vn", 0.8, "scan-au118-vn");
+        let fake = Entity::new(EntityKind::Domain, "techc0mbank.com.vn", 0.8, "scan-au118-vn");
+        let results = super::rule_au_118_lookalike_domain_impersonation(
+            &RuleContext::new(&[real, fake]),
+            "scan-au118-vn",
+            0,
+        );
+        assert_eq!(results.len(), 1, "AU-118 must fire on the .com.vn pair");
+        assert!(results[0].description.contains("techc0mbank.com.vn"));
+    }
+
+    #[test]
+    fn au118_never_pairs_a_public_suffix_label_with_an_unrelated_brand() {
+        // A control, not a regression lock: the brand label is the first label
+        // of the REGISTRABLE domain, so it must never be a suffix label. This
+        // passed on the 39-entry table too (falsification P0 in REQ-PSL-001:
+        // the suspected `com`/`corn` pairing does not occur), and it pins that
+        // the PSL change did not introduce one either.
+        let vn = Entity::new(EntityKind::Domain, "anphat.com.vn", 0.8, "scan-au118-sfx");
+        let other = Entity::new(EntityKind::Domain, "corn.com", 0.8, "scan-au118-sfx");
+        let results = super::rule_au_118_lookalike_domain_impersonation(
+            &RuleContext::new(&[vn, other]),
+            "scan-au118-sfx",
+            0,
+        );
+        assert!(
+            results.is_empty(),
+            "a suffix label is not a brand: {:?}",
+            results.iter().map(|c| &c.description).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn au119_dating_platform_exposure_fires_on_confirmed_profiles() {
         // Two body-marker-confirmed dating profiles → a personal-exposure finding.
         let mk = |url: &str, platform: &str| {

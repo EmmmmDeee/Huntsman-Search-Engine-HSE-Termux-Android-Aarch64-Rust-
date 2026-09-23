@@ -172,7 +172,8 @@ impl Module for DnsAxfr {
             };
 
             match attempt_axfr(&ns_ip, &domain).await {
-                Ok((records, ancount)) if !records.is_empty() => {
+                Ok(msg) if !msg.records.is_empty() => {
+                    let records = &msg.records;
                     result.extend(records.iter().map(|record| {
                         let mut e = Entity::new(
                             EntityKind::Domain,
@@ -213,7 +214,7 @@ impl Module for DnsAxfr {
                     // single-message parser walks, or span multiple AXFR
                     // messages this module only reads the first of — signal
                     // when the emitted subdomains are a partial zone inventory.
-                    mark_axfr_truncation(&mut zone_e, ancount);
+                    mark_axfr_truncation(&mut result, &mut zone_e, &msg);
                     result.push(zone_e);
                     break;
                 }
@@ -291,12 +292,23 @@ fn is_canonical_subdomain_of_zone(name: &str, zone: &str) -> bool {
     crate::util::domains::is_proper_subdomain_of(&canonical, &canonical_zone)
 }
 
-/// Attempt a zone transfer. Returns the parsed in-zone subdomains AND the
-/// server-advertised `ANCOUNT` (the true number of answer records in this
-/// message) so the caller can detect when `ANCOUNT` exceeds
-/// [`MAX_ANSWER_RECORDS`] — i.e. when this parser's single-message read did
-/// not capture every record the server actually sent.
-async fn attempt_axfr(ns_ip: &str, domain: &str) -> std::io::Result<(Vec<String>, usize)> {
+/// What one AXFR response message held.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct AxfrMessage {
+    /// The in-zone subdomains parsed from it, deduplicated.
+    records: Vec<String>,
+    /// The server-advertised `ANCOUNT`: the answer records this message holds.
+    ancount: usize,
+    /// SOA records among the answers actually walked. An AXFR opens with the
+    /// zone's SOA and closes with the same SOA (RFC 5936 §2.2), so a transfer
+    /// the first message carries whole shows two; fewer means the zone goes
+    /// on in messages this module does not read.
+    soa_seen: usize,
+}
+
+/// Attempt a zone transfer: send the query and read the FIRST response
+/// message, which [`parse_axfr_message`] decodes.
+async fn attempt_axfr(ns_ip: &str, domain: &str) -> std::io::Result<AxfrMessage> {
     let addr = format!("{ns_ip}:53");
     let mut stream =
         tokio::time::timeout(std::time::Duration::from_secs(5), TcpStream::connect(&addr))
@@ -310,7 +322,6 @@ async fn attempt_axfr(ns_ip: &str, domain: &str) -> std::io::Result<(Vec<String>
     stream.write_all(&query).await?;
     stream.flush().await?;
 
-    let mut records = Vec::new();
     let mut buf = vec![0u8; 65535];
 
     let read = tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -326,29 +337,44 @@ async fn attempt_axfr(ns_ip: &str, domain: &str) -> std::io::Result<(Vec<String>
     .await
     .map_err(|_| std::io::Error::other("read timeout"))??;
 
-    let rcode = buf[3] & 0x0F;
+    Ok(parse_axfr_message(&buf[..read], domain))
+}
+
+/// DNS `TYPE` of a start-of-authority record.
+const TYPE_SOA: u16 = 6;
+
+/// Decode one AXFR response message. **Pure.** A refusal (non-zero rcode) or
+/// an empty answer decodes as the default: no records, `ancount` 0.
+fn parse_axfr_message(msg: &[u8], domain: &str) -> AxfrMessage {
+    let mut out = AxfrMessage::default();
+    let read = msg.len();
+    if read < 12 {
+        return out;
+    }
+    let rcode = msg[3] & 0x0F;
     if rcode != 0 {
-        return Ok((records, 0));
+        return out;
     }
 
-    let ancount = u16::from_be_bytes([buf[6], buf[7]]) as usize;
+    let ancount = u16::from_be_bytes([msg[6], msg[7]]) as usize;
     if ancount == 0 {
-        return Ok((records, 0));
+        return out;
     }
+    out.ancount = ancount;
 
     // Parse answer records for domain names (simplified parser)
     let mut pos = 12;
     // Skip question section
     if pos < read {
-        while pos < read && buf[pos] != 0 {
-            let label_len = buf[pos] as usize;
+        while pos < read && msg[pos] != 0 {
+            let label_len = msg[pos] as usize;
             if label_len >= 0xC0 {
                 pos += 2;
                 break;
             }
             pos += 1 + label_len;
         }
-        if pos < read && buf[pos] == 0 {
+        if pos < read && msg[pos] == 0 {
             pos += 1;
         }
         pos += 4; // QTYPE + QCLASS
@@ -365,10 +391,10 @@ async fn attempt_axfr(ns_ip: &str, domain: &str) -> std::io::Result<(Vec<String>
         if pos + 12 > read {
             break;
         }
-        let name = extract_name(&buf[..read], pos);
+        let name = extract_name(msg, pos);
         // Skip name
         while pos < read {
-            let b = buf[pos];
+            let b = msg[pos];
             if b == 0 {
                 pos += 1;
                 break;
@@ -382,41 +408,65 @@ async fn attempt_axfr(ns_ip: &str, domain: &str) -> std::io::Result<(Vec<String>
         if pos + 10 > read {
             break;
         }
-        let rdlength = u16::from_be_bytes([buf[pos + 8], buf[pos + 9]]) as usize;
+        if u16::from_be_bytes([msg[pos], msg[pos + 1]]) == TYPE_SOA {
+            out.soa_seen += 1;
+        }
+        let rdlength = u16::from_be_bytes([msg[pos + 8], msg[pos + 9]]) as usize;
         pos += 10 + rdlength;
 
         if let Some(name) = name {
             let lower = name.to_lowercase();
-            if is_canonical_subdomain_of_zone(&lower, &zone) && !records.contains(&lower) {
-                records.push(lower);
+            if is_canonical_subdomain_of_zone(&lower, &zone) && !out.records.contains(&lower) {
+                out.records.push(lower);
             }
         }
     }
 
-    Ok((records, ancount))
+    out
 }
 
-/// Signal on the zone entity when the server advertised more answer records
-/// (`ancount`) than this single-message parser can walk
-/// ([`MAX_ANSWER_RECORDS`]). **Pure** (no network/IO): a large zone split
-/// across multiple AXFR messages, or one whose first message alone exceeds the
-/// parse cap, means the emitted subdomain set is a PARTIAL zone inventory —
-/// the operator must know this is not the complete zone. No-op when the
-/// server's advertised count is within the cap.
-fn mark_axfr_truncation(zone_entity: &mut Entity, ancount: usize) {
-    if ancount <= MAX_ANSWER_RECORDS {
+/// Declare a transfer this module read only part of — to the coverage layer
+/// and on the zone entity. **Pure** (no network/IO). No-op for a transfer the
+/// first message carried whole.
+///
+/// Two ways the emitted subdomains are a PARTIAL zone inventory:
+/// - the message advertised more answer records (`ANCOUNT`) than this parser
+///   walks ([`MAX_ANSWER_RECORDS`]); or
+/// - the zone's closing SOA never arrived: AXFR opens and closes with the
+///   zone's SOA (RFC 5936 §2.2), so a first message without both is followed
+///   by more, which this module does not read. The previous check saw only the
+///   first cause, while this function's own caller described both — so a large
+///   zone split across messages, the ordinary shape of one, was reported
+///   complete.
+fn mark_axfr_truncation(result: &mut ModuleResult, zone_entity: &mut Entity, msg: &AxfrMessage) {
+    let note = if msg.ancount > MAX_ANSWER_RECORDS {
+        result.mark_truncated(
+            MAX_ANSWER_RECORDS,
+            Some(msg.ancount),
+            &format!("the parser's cap of {MAX_ANSWER_RECORDS} answer records per message"),
+        );
+        format!(
+            "AXFR response advertised {} answer record(s); only the first {MAX_ANSWER_RECORDS} were parsed",
+            msg.ancount
+        )
+    } else if msg.soa_seen < 2 {
+        result.mark_truncated(
+            msg.ancount,
+            None,
+            "the first AXFR message: the zone's closing SOA had not arrived, so the transfer continues in messages this module does not read",
+        );
+        format!(
+            "AXFR response's first message carried {} answer record(s) without the zone's closing SOA; the rest of the transfer was not read",
+            msg.ancount
+        )
+    } else {
         return;
-    }
+    };
     zone_entity.tag("truncated");
     zone_entity.add_evidence(
-        Evidence::new(
-            SRC,
-            format!(
-                "AXFR response advertised {ancount} answer record(s); only the first {MAX_ANSWER_RECORDS} were parsed"
-            ),
-        )
-        .with_attr("total_dns_records", ancount.to_string())
-        .with_attr("dns_records_capped", "true"),
+        Evidence::new(SRC, note)
+            .with_attr("total_dns_records", msg.ancount.to_string())
+            .with_attr("dns_records_capped", "true"),
     );
 }
 

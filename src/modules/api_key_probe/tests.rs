@@ -188,28 +188,6 @@ use super::*;
         assert!(!all_probes_failed_to_execute(0, 0, 0));
     }
 
-    /// A one-shot local HTTP server that answers with a fixed JSON body — a real
-    /// (not mocked) endpoint for the curl-subprocess `probe_endpoint` to hit.
-    async fn serve_once_json(body: &'static str) -> std::net::SocketAddr {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
-        let addr = listener.local_addr().expect("should succeed");
-        tokio::spawn(async move {
-            if let Ok((mut sock, _)) = listener.accept().await {
-                let mut buf = vec![0u8; 2048];
-                let _ = sock.read(&mut buf).await;
-                let head = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-                    body.len()
-                );
-                let _ = sock.write_all(head.as_bytes()).await;
-                let _ = sock.write_all(body.as_bytes()).await;
-                let _ = sock.flush().await;
-            }
-        });
-        addr
-    }
-
     #[tokio::test]
     async fn probe_endpoint_reports_transport_failure_on_an_unreachable_host() {
         // T2.123 regression: previously a probe that could not execute returned
@@ -227,14 +205,174 @@ use super::*;
     async fn probe_endpoint_reports_executed_when_the_host_answers() {
         // The host answered with a real body — that is `Executed(Some(..))`, a
         // negative the caller can evaluate, NOT a transport failure.
-        let addr = serve_once_json(r#"{"plan":"free"}"#).await;
-        let outcome = probe_endpoint(&format!("http://{addr}/"), "test-key-12345678", &[]).await;
+        use crate::util::http::test_server::{Canned, serve};
+        let base = serve(vec![Canned::json(200, r#"{"plan":"free"}"#)]).await;
+        let outcome = probe_endpoint(&base, "test-key-12345678", &[]).await;
         match outcome {
-            ProbeOutcome::Executed(Some(body)) => assert!(body.contains("free")),
+            ProbeOutcome::Executed(Some(reply)) => {
+                assert!(reply.body.contains("free"));
+                assert_eq!(reply.status, "200", "the status rides with the body");
+            }
             other @ (ProbeOutcome::Executed(None) | ProbeOutcome::TransportFailure) => {
                 let _ = other;
                 panic!("a host that answered with a JSON body must be Executed(Some(..))")
             }
+        }
+    }
+
+    // ── REQ-KEYPROBE-002: only an answer that accepts the key validates it ──
+    //
+    // `probe_endpoint` ran `curl -s` with no status capture, and without `-f`
+    // curl exits 0 for a 401 exactly as for a 200, so every refusal reached
+    // `process()` as an ordinary answer. Only the body heuristic
+    // `is_error_response` then stood between it and a `validated` ApiKey at
+    // VERY_HIGH_PLUSPLUS plus a service-domain pivot, and it read `error` only
+    // as a string: VirusTotal's documented 401 carries an `error` OBJECT, so any
+    // key at all was reported as a live VirusTotal credential. Hunter's
+    // `errors` list and Netlas' auth-failure 400 passed the same way.
+
+    /// VirusTotal's answer to a wrong key: `401 WrongCredentialsError` in its
+    /// documented error envelope (`docs.virustotal.com/reference/errors`). The
+    /// `message` text is illustrative; the envelope and the code are the vendor's.
+    const VT_WRONG_KEY: &str =
+        r#"{"error":{"code":"WrongCredentialsError","message":"Wrong API key"}}"#;
+
+    /// An answered probe, for the pure verdict tests.
+    fn answer(status: &str, body: &str) -> Answer {
+        Answer {
+            status: status.to_string(),
+            body: body.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_virustotal_refusal_is_an_answer_but_never_a_validated_key() {
+        use crate::util::http::test_server::{Canned, serve};
+        let base = serve(vec![Canned::json(401, VT_WRONG_KEY)]).await;
+        // Through the real curl subprocess: a parser test alone could agree with
+        // itself while curl wrote something else.
+        let ProbeOutcome::Executed(Some(refusal)) =
+            probe_endpoint(&base, "not-a-virustotal-key-0123", &[]).await
+        else {
+            panic!("a 401 is the host answering: not a transport failure, not an empty answer");
+        };
+        assert_eq!(
+            refusal.status, "401",
+            "the status the host sent must reach the verdict"
+        );
+        assert!(
+            accepted_body("virustotal", &refusal).is_none(),
+            "a key VirusTotal refused must not be reported as a validated VirusTotal key"
+        );
+    }
+
+    #[test]
+    fn a_refusal_only_the_status_carries_is_still_a_refusal() {
+        // Hunter's error envelope is an `errors` LIST (hunter.io/api-documentation/v2,
+        // "Errors": "401 - Unauthorized: No valid API key was provided"; the id
+        // and details text here are illustrative). Netlas answers a dead key with
+        // a 400 whose body `util::http`'s AUTH_400_SIGNATURES records as observed
+        // live. Neither body carries a field the heuristic reads.
+        let refusals = [
+            (
+                "hunter",
+                answer(
+                    "401",
+                    r#"{"errors":[{"id":"authentication_failed","code":401,"details":"No user found for the API key supplied"}]}"#,
+                ),
+            ),
+            (
+                "netlas",
+                answer(
+                    "400",
+                    r#"{"detail":"Request had invalid authorization credentials: API key not found"}"#,
+                ),
+            ),
+        ];
+        for (service, refusal) in &refusals {
+            let body: Value = serde_json::from_str(&refusal.body).expect("fixture is JSON");
+            assert!(
+                !is_error_response(&body),
+                "{service}: control: the body heuristic alone cannot see this refusal"
+            );
+            assert!(
+                accepted_body(service, refusal).is_none(),
+                "{service}: a key the service refused must not be reported as validated"
+            );
+        }
+    }
+
+    #[test]
+    fn an_answer_that_settles_nothing_about_the_key_is_not_a_validation() {
+        // AbuseIPDB's documented error body, verbatim (docs.abuseipdb.com, "Error
+        // Handling"). A 422 says nothing about whether the key is good, so it
+        // cannot prove it good; the shared verdict reads it Indeterminate, as it
+        // reads a throttle or an outage.
+        let unsettled = answer(
+            "422",
+            r#"{"errors":[{"detail":"The max age in days must be between 1 and 365.","status":422}]}"#,
+        );
+        assert!(accepted_body("abuseipdb", &unsettled).is_none());
+    }
+
+    #[test]
+    fn a_dead_key_reported_inside_a_200_body_is_a_refusal() {
+        // Criminal IP reports a dead or exhausted key as an in-body `status` on
+        // an HTTP 200 (`service_defs::body_rejects_key`, mirroring
+        // `modules::criminal_ip`'s live cascade). A 2xx gate of this module's
+        // own would pass it; the shared verdict does not.
+        for status in [401, 402, 429] {
+            let dead = answer("200", &format!(r#"{{"status":{status}}}"#));
+            assert!(
+                accepted_body("criminal_ip", &dead).is_none(),
+                "in-body status {status} is a dead key, not a validated one"
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_the_service_accepts_is_still_reported_validated() {
+        // The guard against over-correcting. VirusTotal's 200 for its own key
+        // (the shape its probe parser reads), and ONYPHE's success body, which
+        // carries `"error": 0` (0 = Success in ONYPHE's error-code table, see
+        // `modules::onyphe`).
+        let accepted = [
+            (
+                "virustotal",
+                answer(
+                    "200",
+                    r#"{"data":{"attributes":{"quotas":{"api_requests_daily":{"allowed":500}}}}}"#,
+                ),
+            ),
+            (
+                "onyphe",
+                answer("200", r#"{"count":1,"error":0,"status":"ok","results":[]}"#),
+            ),
+        ];
+        for (service, acceptance) in &accepted {
+            assert!(
+                accepted_body(service, acceptance).is_some(),
+                "{service}: an answer that accepts the key must still validate it"
+            );
+        }
+    }
+
+    #[test]
+    fn an_error_object_is_an_error_response_but_a_scalar_error_marker_is_not() {
+        // `error` was read only as a string, so VirusTotal's object envelope read
+        // as no error at all. The status verdict now refuses VirusTotal's own 401
+        // first; this arm keeps a 2xx body that IS an error envelope from proving
+        // a key good.
+        let vt: Value = serde_json::from_str(VT_WRONG_KEY).expect("fixture is JSON");
+        assert!(is_error_response(&vt));
+        // Over-correction guards: ONYPHE's success body carries `error: 0`, and a
+        // `null` or empty `error` names no failure.
+        for not_an_error in [
+            serde_json::json!({"count": 1, "error": 0, "status": "ok"}),
+            serde_json::json!({"data": {}, "error": null}),
+            serde_json::json!({"data": {}, "error": {}}),
+        ] {
+            assert!(!is_error_response(&not_an_error), "{not_an_error}");
         }
     }
 

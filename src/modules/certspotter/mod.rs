@@ -7,6 +7,13 @@
 //! simply surfaces as a module error and the engine moves on, exactly like any
 //! other transient free-source failure).
 //!
+//! Pagination: the endpoint is a cursor. The API reference says it "returns a
+//! limited number of issuances in a single response" and that a client takes
+//! the `id` of the last issuance, passes it back as `after=`, and repeats
+//! "until the issuances endpoint returns an empty array". One page is not the
+//! answer for a busy apex — see [`walk_issuances`] for how far the cursor is
+//! followed and how a walk that stops early is reported.
+//!
 //! This is the deliberate COMPANION to [`crate::modules::crtsh`], not a
 //! duplicate: no single Certificate-Transparency aggregator has complete log
 //! coverage, so offensive subdomain enumeration standardly queries several
@@ -34,11 +41,45 @@ use crate::util::http::urlencode;
 
 const SRC: &str = "certspotter";
 
+/// The issuances endpoint. [`walk_issuances`] takes the base as an argument so
+/// the hermetic tests can point the same walk at a loopback listener.
+const ISSUANCES_URL: &str = "https://api.certspotter.com/v1/issuances";
+
+/// Issuances in one full page. **Measured, not documented** (2026-09-22): the
+/// reference says only "a limited number"; `google.com` returned exactly 100,
+/// `github.com` returned 75 and then the terminating empty array. A page
+/// shorter than this is therefore the end of the data, and the cursor is not
+/// followed past it — so a small domain costs one request, as it always has,
+/// out of an anonymous budget of ten an hour (`x-ratelimit-limit: 10`).
+///
+/// If SSLMate ever shrinks the page, a short page would be misread as the end;
+/// that is the assumption this constant records. Growing it is harmless: a
+/// larger page is still `>=` this and still followed.
+const PAGE_SIZE: usize = 100;
+
+/// Pages of the `after=` cursor followed for one query. Each page spends one
+/// request of the anonymous hourly budget, so the walk is bounded rather than
+/// exhaustive; a walk that reaches the cap is reported as truncated, never as
+/// complete.
+const MAX_PAGES: usize = 5;
+
+/// A further page is only requested while the walk is younger than this. The
+/// engine's timeout discards everything a module collected, so a walk that
+/// kept paging until it was killed would lose the pages it already had; this
+/// stops it early enough that the page in flight can still finish inside
+/// [`Module::max_timeout_ms`] (the server itself gives up on a query at
+/// 10 s, answering `504 {"code":"timeout",…}`).
+const NEXT_PAGE_CUTOFF: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// One issuance object from the `v1/issuances` array, expanded with `dns_names`
 /// and `issuer`. Every field is optional so a partial/renamed response degrades
 /// to fewer entities rather than a hard deserialize error.
 #[derive(Deserialize)]
 struct Issuance {
+    /// The opaque cursor for the NEXT page: the last issuance's `id` is passed
+    /// back as `after=` (see [`walk_issuances`]).
+    #[serde(default)]
+    id: Option<String>,
     #[serde(default)]
     dns_names: Vec<String>,
     #[serde(default)]
@@ -189,6 +230,125 @@ fn build_entities(entries: &[Issuance], domain_base: &str, scan_id: &str) -> Vec
     out
 }
 
+/// What one walk of the issuance cursor retrieved and, when it stopped before
+/// the end of the data, why.
+struct Walk {
+    entries: Vec<Issuance>,
+    /// `None` iff the walk reached the end of the data — a short page (see
+    /// [`PAGE_SIZE`]) or the API's own terminating empty array — so the answer
+    /// is complete as far as Cert Spotter is concerned. `Some(cause)` names what
+    /// cut it short, in the words [`ModuleResult::mark_truncated`] reports.
+    cut: Option<String>,
+}
+
+fn issuances_url(base: &str, host: &str, after: Option<&str>) -> String {
+    // `include_subdomains=true` widens the query from the apex to every
+    // sub-name; the two `expand` params inline the dns_names + issuer so a
+    // single request yields full detail (unexpanded, they are bare refs).
+    let mut url = format!(
+        "{base}?domain={}&include_subdomains=true&expand=dns_names&expand=issuer",
+        urlencode(host)
+    );
+    if let Some(after) = after {
+        url.push_str("&after=");
+        url.push_str(&urlencode(after));
+    }
+    url
+}
+
+/// Follow Cert Spotter's `after=` cursor for `host`, up to `max_pages` pages,
+/// requesting another page only while the walk is younger than
+/// `next_page_cutoff`.
+///
+/// Before this, the module read the first page and reported it as the whole
+/// answer: an apex with more than a page of live certificates lost every
+/// subdomain past the first hundred issuances, and the coverage layer was told
+/// the answer was complete.
+///
+/// - A **short page** (fewer than [`PAGE_SIZE`]) or an empty one ends the walk
+///   as complete.
+/// - A **full page** is followed, from its last issuance's `id`.
+/// - Reaching `max_pages`, running out of time, or a full page whose last
+///   issuance carries no `id` ends it **incomplete** — `cut` names which.
+/// - A failed **first** request is the module's error, exactly as before: with
+///   nothing retrieved, returning `Ok(empty)` would be a clean negative
+///   fabricated from an outage. A failed **later** request keeps every page
+///   already retrieved and reports the walk incomplete — the evidence is real,
+///   and discarding it because a different page failed would be the partial
+///   outage `ModuleResult::or_hard_failure` exists to prevent.
+async fn walk_issuances(
+    client: &reqwest::Client,
+    base: &str,
+    host: &str,
+    max_pages: usize,
+    next_page_cutoff: std::time::Duration,
+) -> Result<Walk> {
+    let started = std::time::Instant::now();
+    let mut entries: Vec<Issuance> = Vec::new();
+    let mut after: Option<String> = None;
+    for page in 1..=max_pages {
+        if page > 1 && started.elapsed() >= next_page_cutoff {
+            return Ok(Walk {
+                entries,
+                cut: Some(format!(
+                    "the {}s time budget for following Cert Spotter's `after=` cursor, before page {page}",
+                    next_page_cutoff.as_secs()
+                )),
+            });
+        }
+        let url = issuances_url(base, host, after.as_deref());
+        let batch: Vec<Issuance> = match crate::util::http::fetch_json(client, SRC, &url).await {
+            Ok(batch) => batch,
+            Err(e) if entries.is_empty() => return Err(e),
+            Err(e) => {
+                return Ok(Walk {
+                    entries,
+                    cut: Some(format!(
+                        "a failed request for page {page} of Cert Spotter's `after=` cursor ({e})"
+                    )),
+                });
+            }
+        };
+        let full = batch.len() >= PAGE_SIZE;
+        let next = batch
+            .last()
+            .and_then(|last| last.id.clone())
+            .filter(|id| !id.trim().is_empty());
+        entries.extend(batch);
+        if !full {
+            return Ok(Walk { entries, cut: None });
+        }
+        let Some(next) = next else {
+            return Ok(Walk {
+                entries,
+                cut: Some(format!(
+                    "page {page} of Cert Spotter's `after=` cursor, a full page whose last issuance carried no `id` to continue from"
+                )),
+            });
+        };
+        after = Some(next);
+    }
+    Ok(Walk {
+        entries,
+        cut: Some(format!(
+            "the cap of {max_pages} pages of Cert Spotter's `after=` cursor"
+        )),
+    })
+}
+
+/// The module's result for one walk: the entities of every page retrieved,
+/// declared incomplete when the walk was cut short. **Pure** — this is the
+/// seam between the walk's `cut` and the coverage layer, kept out of
+/// `process()` so it is locked without a network.
+fn walk_result(walk: Walk, host: &str, scan_id: &str) -> ModuleResult {
+    let mut result = ModuleResult::new();
+    result.entities = build_entities(&walk.entries, host, scan_id);
+    if let Some(cause) = walk.cut {
+        result.mark_truncated(result.entities.len(), None, &cause);
+    }
+    result
+}
+
 pub struct CertSpotter;
 
 #[async_trait]
@@ -228,10 +388,14 @@ impl Module for CertSpotter {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        // Cert Spotter's issuance query over a busy apex can be slower than
-        // crt.sh; 10 s leaves headroom for a healthy JSON response while still
-        // failing a dead/rate-limited endpoint well within a scan round.
-        10_000
+        // The walk may take several requests, and the server itself allows a
+        // query 10 s before answering `504 {"code":"timeout",…}` — which the
+        // previous 10 s budget killed before it could arrive, so a too-big
+        // apex surfaced as an anonymous engine timeout instead of the server's
+        // own explanation. No page starts after NEXT_PAGE_CUTOFF (10 s), so
+        // one started just inside it still has the server's full 10 s plus
+        // transfer before this fires, and the pages already retrieved survive.
+        25_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -239,22 +403,14 @@ impl Module for CertSpotter {
             return Ok(ModuleResult::new());
         };
 
-        // `include_subdomains=true` widens the query from the apex to every
-        // sub-name; the two `expand` params inline the dns_names + issuer so a
-        // single request yields full detail (unexpanded, they are bare refs).
-        let url = format!(
-            "https://api.certspotter.com/v1/issuances?domain={}&include_subdomains=true&expand=dns_names&expand=issuer",
-            urlencode(&host)
-        );
+        // Shared `fetch_json` per page: Cert Spotter answers 200 with a JSON
+        // array, matching fetch_json's error-on-non-2xx contract, and inherits
+        // the curl/OpenSSL fallback + circuit breaker every keyless source uses
+        // on Termux/DC IPs.
+        let walk =
+            walk_issuances(&ctx.http, ISSUANCES_URL, &host, MAX_PAGES, NEXT_PAGE_CUTOFF).await?;
 
-        // Shared `fetch_json`: Cert Spotter answers 200 with a JSON array, matching
-        // fetch_json's error-on-non-2xx contract, and inherits the curl/OpenSSL
-        // fallback + circuit breaker every keyless source uses on Termux/DC IPs.
-        let entries: Vec<Issuance> = crate::util::http::fetch_json(&ctx.http, SRC, &url).await?;
-
-        let mut result = ModuleResult::new();
-        result.entities = build_entities(&entries, &host, &ctx.scan_id);
-        Ok(result)
+        Ok(walk_result(walk, &host, &ctx.scan_id))
     }
 }
 

@@ -125,24 +125,67 @@ fn unknown_risk_with_no_threats_or_riskfactors_yields_no_findings() {
 }
 
 #[test]
-fn unknown_risk_with_a_linked_threat_still_surfaces() {
-    // Defensive edge case: even an "unknown"-risk record is a real finding if
-    // Pulsedive has linked at least one threat to it.
+fn unknown_risk_with_a_linked_threat_still_surfaces_as_a_sighting_not_a_verdict() {
+    // An "unknown"-risk record is a real finding if Pulsedive has linked a
+    // threat to it — as a threat-intel SIGHTING. Pulsedive's own model says
+    // `unknown` means the data does "not point to an elevated or reduced risk
+    // level", so it is not a vote that the indicator is malicious
+    // (REQ-PULSEDIVE-001; this asserted MALICIOUS before).
     let b = body(r#"{"risk": "unknown", "threats": [{"name": "Emotet"}]}"#);
     let entities = build_entities(EntityKind::Domain, "x.test", &b, "s");
     assert_eq!(entities.len(), 1);
-    assert!(entities[0].has_tag(crate::core::tags::MALICIOUS));
+    assert!(entities[0].has_tag(crate::core::tags::THREAT_INTEL));
+    assert!(!entities[0].has_tag(crate::core::tags::MALICIOUS));
 }
 
 #[test]
-fn benign_none_risk_is_reported_at_medium_confidence_without_malicious_tag() {
+fn benign_none_risk_is_reported_at_medium_confidence_without_any_bad_tag() {
+    // REQ-PULSEDIVE-001: FAILS before the fix — THREAT_INTEL was tagged
+    // unconditionally, so AU-015 reported a benign verdict at High.
     let b = body(r#"{"risk": "none", "riskfactors": [{"description": "clean"}]}"#);
     let entities = build_entities(EntityKind::IpAddress, "8.8.8.8", &b, "s");
     assert_eq!(entities.len(), 1);
     let e = &entities[0];
     assert!((e.confidence - confidence::MEDIUM).abs() < 1e-9);
     assert!(!e.has_tag(crate::core::tags::MALICIOUS));
+    assert!(!e.has_tag(crate::core::tags::THREAT_INTEL));
     assert!(e.has_tag("pulsedive"));
+    assert!(e.has_tag("pulsedive-benign"));
+}
+
+#[test]
+fn a_benign_verdict_outranks_a_linked_threat() {
+    // REQ-PULSEDIVE-001: FAILS before the fix — any linked threat promoted
+    // the indicator to MALICIOUS even under the vendor's own benign verdict.
+    for risk in ["none", "very low", "NONE"] {
+        let b = body(&format!(
+            r#"{{"risk": "{risk}", "threats": [{{"name": "Emotet"}}]}}"#
+        ));
+        let e = &build_entities(EntityKind::Domain, "x.test", &b, "s")[0];
+        assert!(!e.has_tag(crate::core::tags::MALICIOUS), "{risk}");
+        assert!(!e.has_tag(crate::core::tags::THREAT_INTEL), "{risk}");
+        assert!(
+            attr(e, "threat_names").is_some_and(|n| n.contains("Emotet")),
+            "the linked threat is still reported as evidence"
+        );
+    }
+}
+
+#[test]
+fn only_the_vendors_high_and_critical_are_malicious() {
+    for (risk, malicious) in [
+        ("low", false),
+        ("medium", false),
+        ("high", true),
+        ("critical", true),
+    ] {
+        let b = body(&format!(
+            r#"{{"risk": "{risk}", "threats": [{{"name": "Emotet"}}]}}"#
+        ));
+        let e = &build_entities(EntityKind::Domain, "x.test", &b, "s")[0];
+        assert!(e.has_tag(crate::core::tags::THREAT_INTEL), "{risk}");
+        assert_eq!(e.has_tag(crate::core::tags::MALICIOUS), malicious, "{risk}");
+    }
 }
 
 #[test]

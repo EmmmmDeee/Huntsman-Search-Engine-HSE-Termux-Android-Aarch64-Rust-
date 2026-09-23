@@ -173,13 +173,27 @@ pub(super) const SUBDOMAINS: &[&str] = &[
     "ap1",
 ];
 
+/// Spamhaus ZEN, the one zone here whose answer codes include policy
+/// (non-reputation) listings — see `resolve::is_spamhaus_abuse_listing`.
+pub(super) const SPAMHAUS_ZEN: &str = "zen.spamhaus.org";
+
+/// The CBL — operated by Spamhaus (`www.abuseat.org` redirects to Spamhaus's
+/// Exploits Blocklist; its data is ZEN's XBL `127.0.0.4`).
+pub(super) const SPAMHAUS_CBL: &str = "cbl.abuseat.org";
+
+/// The zones Spamhaus answers, which share its reserved error range
+/// `127.255.255.0/24` — "ERRORS (not implying a 'listed' response)", for "Any"
+/// Spamhaus zone (Spamhaus DNSBL usage FAQ). Every other list follows RFC 5782,
+/// where any `127/8` value may be a listing (`resolve::dnsbl_code`).
+pub(super) const SPAMHAUS_ZONES: &[&str] = &[SPAMHAUS_ZEN, SPAMHAUS_CBL];
+
 /// DNS-based blocklists — zone + human label.
 pub(super) const BLOCKLISTS: &[(&str, &str)] = &[
-    ("zen.spamhaus.org", "Spamhaus ZEN"),
+    (SPAMHAUS_ZEN, "Spamhaus ZEN"),
     ("bl.spamcop.net", "SpamCop"),
     ("dnsbl.sorbs.net", "SORBS"),
     ("b.barracudacentral.org", "Barracuda"),
-    ("cbl.abuseat.org", "CBL"),
+    (SPAMHAUS_CBL, "CBL"),
     ("dnsbl-1.uceprotect.net", "UCEPROTECT-1"),
     ("psbl.surriel.com", "PSBL"),
     ("all.s5h.net", "S5H"),

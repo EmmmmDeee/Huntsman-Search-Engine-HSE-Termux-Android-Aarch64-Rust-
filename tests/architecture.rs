@@ -1939,3 +1939,198 @@ fn api_never_calls_the_store_on_the_async_reactor() {
         violations.join("\n  ")
     );
 }
+
+/// **A module that notes a truncation on an entity also declares it to the
+/// coverage layer.**
+///
+/// `core::coverage` reads completeness from ONE place, `ModuleResult`'s
+/// truncation (`mark_truncated` / `mark_truncated_if_capped` /
+/// `mark_truncated_of`), carried on the `ModuleDone` event. REQ-COVERAGE-001
+/// migrated five private spellings of "this answer is partial"; eight more
+/// survived because they were spelled as a bare `"truncated"` entity TAG,
+/// which nothing outside each module reads (REQ-COVERAGE-002). Each looked
+/// wired, and every one of them left the coverage layer reporting a partial
+/// answer as complete. The per-entity note is fine for an operator reading the
+/// entity; it is never the declaration.
+///
+/// The exemption is a cap on a DISPLAY value, not on the answer: `leakix`
+/// retrieves and counts every service, and only shortens the port list it
+/// renders into one evidence attribute. Declaring that module truncated would
+/// tell the coverage layer that services exist which it did not see.
+#[test]
+fn a_module_that_tags_a_truncation_declares_it_to_the_coverage_layer() {
+    const DISPLAY_CAP_ONLY: &[&str] = &["leakix"];
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/modules");
+
+    fn production_text(dir: &Path, out: &mut String) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n != "tests") {
+                    production_text(&path, out);
+                }
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && path.file_name().is_some_and(|n| n != "tests.rs")
+            {
+                out.push_str(&fs::read_to_string(&path).unwrap());
+            }
+        }
+    }
+
+    let mut taggers = Vec::new();
+    let mut undeclared = Vec::new();
+    for entry in fs::read_dir(&root).unwrap() {
+        let dir = entry.unwrap().path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        let mut text = String::new();
+        production_text(&dir, &mut text);
+        if !text.contains(".tag(\"truncated\")") {
+            continue;
+        }
+        taggers.push(name.clone());
+        if !text.contains(".mark_truncated") && !DISPLAY_CAP_ONLY.contains(&name.as_str()) {
+            undeclared.push(name);
+        }
+    }
+
+    // Vacuity guard: the scan must see the modules it exists for.
+    for known in ["netblock", "passivetotal", "leakix"] {
+        assert!(
+            taggers.iter().any(|t| t == known),
+            "the scan no longer sees `{known}`'s truncation tag — it would pass vacuously \
+             (found: {taggers:?})"
+        );
+    }
+    assert!(
+        undeclared.is_empty(),
+        "these modules note a truncation on an entity but never declare it through \
+         `ModuleResult::mark_truncated*`, so the coverage layer reads their partial \
+         answers as complete: {undeclared:?}"
+    );
+}
+
+/// **Every module that asserts MALICIOUS is a counted threat-intel source.**
+///
+/// The correlator's `THREAT_INTEL_SOURCES` decides which evidence sources may
+/// cast a vote in AU-004's CRITICAL "≥2 sources agree it's malicious" and which
+/// AU-015 names as the finding's attribution. Its doc said "keep in sync with
+/// the `entity.tag(MALICIOUS)` call sites" — a remembered procedure, and it had
+/// drifted: `emailrep` and `pulsedive` both tagged MALICIOUS and were absent
+/// (REQ-THREATSRC-001). This reads the list and every module's production code,
+/// so the next module to assert MALICIOUS without joining the list fails here.
+#[test]
+fn every_module_that_asserts_malicious_is_a_threat_intel_source() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let rules = fs::read_to_string(root.join("src/core/correlator/rules/mod.rs")).unwrap();
+    let start = rules
+        .find("const THREAT_INTEL_SOURCES: &[&str] = &[")
+        .expect("THREAT_INTEL_SOURCES is declared");
+    let body = &rules[start..start + rules[start..].find("];").expect("list ends")];
+    let listed: Vec<&str> = body.split('"').skip(1).step_by(2).collect();
+    assert!(listed.len() >= 8, "list parse broke: {listed:?}");
+
+    let mut asserting = Vec::new();
+    for entry in fs::read_dir(root.join("src/modules")).unwrap() {
+        let dir = entry.unwrap().path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let mut text = String::new();
+        for f in fs::read_dir(&dir).unwrap() {
+            let f = f.unwrap().path();
+            if f.extension().is_some_and(|e| e == "rs")
+                && f.file_name().is_some_and(|n| n != "tests.rs")
+            {
+                text.push_str(&fs::read_to_string(&f).unwrap());
+            }
+        }
+        if !text.contains("tags::MALICIOUS") {
+            continue;
+        }
+        // The evidence-source name the module writes: its `SRC` constant.
+        let src = text
+            .split("const SRC: &str = \"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .map_or_else(
+                || dir.file_name().unwrap().to_string_lossy().into_owned(),
+                str::to_string,
+            );
+        asserting.push(src);
+    }
+    assert!(
+        asserting.iter().any(|s| s == "virustotal"),
+        "vacuity: the scan must see a known MALICIOUS emitter: {asserting:?}"
+    );
+    let missing: Vec<&String> = asserting
+        .iter()
+        .filter(|s| !listed.contains(&s.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these sources tag MALICIOUS but are not in THREAT_INTEL_SOURCES, so AU-004 \
+         never counts their vote and AU-015 cannot name them: {missing:?}"
+    );
+}
+
+/// REQ-NAMESAKE-001: `util::namesake::mark_ambiguous` is the one way an entity
+/// is marked ambiguous. `ahpra` kept a partial copy — the tag, a confidence of
+/// its own choosing — and scored a proven collision AT the expansion floor
+/// (`confidence::MEDIUM`) rather than below it, and without the evidence-level
+/// ownership mark that survives the engine's merge. A second copy drifts; this
+/// refuses one.
+#[test]
+fn the_ambiguous_name_tag_is_applied_only_through_mark_ambiguous() {
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n != "tests") {
+                    walk(&path, out);
+                }
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && path.file_name().is_some_and(|n| n != "tests.rs")
+            {
+                out.push(path);
+            }
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    walk(&root.join("src"), &mut files);
+    let applies_the_tag = |line: &str| {
+        line.contains(".tag(")
+            && (line.contains("AMBIGUOUS_NAME") || line.contains("\"ambiguous-name\""))
+    };
+    let (mut authority, mut elsewhere) = (0, Vec::new());
+    for f in &files {
+        let rel = f
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let text = fs::read_to_string(f).unwrap();
+        for (i, line) in text.lines().enumerate() {
+            if !applies_the_tag(line) {
+                continue;
+            }
+            if rel == "src/util/namesake/mod.rs" {
+                authority += 1;
+            } else {
+                elsewhere.push(format!("{rel}:{}: {}", i + 1, line.trim()));
+            }
+        }
+    }
+    assert_eq!(
+        authority, 1,
+        "vacuity: the scan must see mark_ambiguous's own tag"
+    );
+    assert!(
+        elsewhere.is_empty(),
+        "tag `ambiguous-name` only through util::namesake::mark_ambiguous, which also \
+         caps below the expansion floor and marks each record's ownership: {elsewhere:#?}"
+    );
+}

@@ -5,22 +5,39 @@
 
 use rusqlite::params;
 
-use crate::core::{entity::Entity, error::Result};
+use crate::core::{entity::Entity, error::Result, port::CachedModuleResult};
 
 use super::Store;
 
 impl Store {
-    /// Persist `entities` under `key` with `ttl_secs`. Replaces any
+    /// Persist a module's `entities` and its `truncation` verdict under `key`
+    /// with `ttl_secs`. Replaces any
     /// existing entry for the same key (`INSERT OR REPLACE`) so a fresh
     /// query always overwrites a stale one. Best-effort — callers ignore
     /// errors so a storage failure cannot abort an in-progress scan.
+    ///
+    /// Stored as a JSON **object** (`{"entities": [...], "truncation": ...}`).
+    /// Rows written before REQ-CACHE-001 are a bare JSON array of entities with
+    /// no completeness verdict; [`Store::lookup_module_result_fresh`] treats
+    /// them as a miss rather than guess one.
     pub fn archive_module_result(
         &self,
         key: &str,
         ttl_secs: u64,
         entities: &[Entity],
+        truncation: Option<&str>,
     ) -> Result<()> {
-        let json = serde_json::to_string(entities)?;
+        /// The borrowed spelling of [`CachedModuleResult`]'s wire shape, so
+        /// archiving serialises the caller's entities without cloning them.
+        #[derive(serde::Serialize)]
+        struct Archived<'a> {
+            entities: &'a [Entity],
+            truncation: Option<&'a str>,
+        }
+        let json = serde_json::to_string(&Archived {
+            entities,
+            truncation,
+        })?;
         let conn = self.conn.lock();
         conn.prepare_cached(
             "INSERT OR REPLACE INTO raw_archive(id, archived_at, ttl_secs, result_json)
@@ -60,17 +77,24 @@ impl Store {
         Ok(total)
     }
 
-    /// Return archived entities for `key` if the entry exists and has not
+    /// Return the archived result for `key` if the entry exists and has not
     /// exceeded its TTL (`archived_at + ttl_secs > unixepoch()`). Returns
     /// `None` on a cache miss or expired entry so the caller falls through
     /// to the live provider.
-    pub fn lookup_module_result_fresh(&self, key: &str) -> Result<Option<Vec<Entity>>> {
+    ///
+    /// A row archived before REQ-CACHE-001 (a bare JSON array) is also a
+    /// miss. It recorded the entities and not whether the answer was complete,
+    /// and replaying it would state "complete" on the module's behalf — the
+    /// defect this shape exists to close. Re-asking once costs a query; the
+    /// fresh answer is archived in the new shape and the old row is replaced.
+    pub fn lookup_module_result_fresh(&self, key: &str) -> Result<Option<CachedModuleResult>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
             "SELECT result_json FROM raw_archive
              WHERE id = ?1 AND archived_at + ttl_secs > unixepoch()",
         )?;
         match stmt.query_row(params![key], |r| r.get::<_, String>(0)) {
+            Ok(json) if json.trim_start().starts_with('[') => Ok(None),
             Ok(json) => Ok(Some(serde_json::from_str(&json)?)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),

@@ -1,5 +1,5 @@
-use super::{AMBIGUOUS_NAME, NameCollisions};
-use crate::core::entity::{Entity, EntityKind};
+use super::{AMBIGUOUS_CEILING, AMBIGUOUS_NAME, NameCollisions, mark_ambiguous};
+use crate::core::entity::{Entity, EntityKind, Evidence, VerificationMethod};
 
 const ORG: EntityKind = EntityKind::Organisation;
 const PERSON: EntityKind = EntityKind::Person;
@@ -152,4 +152,71 @@ fn the_tag_is_not_the_candidate_quarantine() {
     // exports; this must never become that.
     assert_eq!(AMBIGUOUS_NAME, "ambiguous-name");
     assert_ne!(AMBIGUOUS_NAME, crate::core::tags::CANDIDATE);
+}
+
+fn dob_counted(subject: &Entity) -> bool {
+    crate::core::exposure::assess(std::slice::from_ref(subject), &[])
+        .components
+        .iter()
+        .any(|c| c.detail.contains("date of birth"))
+}
+
+#[test]
+fn the_ownership_mark_survives_the_merge_that_erases_the_cap() {
+    // REQ-NAMESAKE-001: FAILS while mark_ambiguous only caps and tags. The
+    // ambiguous row fuses into the subject's same-named anchor, the merge keeps
+    // the anchor's higher confidence (the cap is gone — REQ-WIKIDATA-001), and
+    // the row's date of birth was read as the subject's disclosure.
+    let mut row = Entity::new(PERSON, "John Smith", 0.70, "s");
+    row.add_evidence(Evidence::new("register", "a namesake's row").with_attr("dob", "1950-01-01"));
+    mark_ambiguous(&mut row);
+    assert!(row.confidence <= AMBIGUOUS_CEILING && row.has_tag(AMBIGUOUS_NAME));
+
+    let mut subject = Entity::new(PERSON, "John Smith", 0.60, "s");
+    subject.merge(row);
+    assert!(
+        subject.confidence > AMBIGUOUS_CEILING,
+        "the cap does not survive — as expected"
+    );
+    assert_eq!(
+        subject.evidence[0].verification,
+        Some(VerificationMethod::Unverified),
+        "the ownership mark does"
+    );
+    assert!(
+        !dob_counted(&subject),
+        "a namesake's DOB is not the subject's"
+    );
+
+    // Control: the same record without the mark counts.
+    subject.evidence[0].verification = None;
+    assert!(dob_counted(&subject));
+}
+
+#[test]
+fn an_ownership_the_source_established_is_kept() {
+    let mut e = Entity::new(PERSON, "Jane Doe", 0.70, "s");
+    e.add_evidence(
+        Evidence::new("github_user", "linked by email")
+            .with_verification(VerificationMethod::EmailLinked),
+    );
+    e.add_evidence(Evidence::new("register", "name match"));
+    mark_ambiguous(&mut e);
+    mark_ambiguous(&mut e);
+    assert_eq!(
+        e.evidence[0].verification,
+        Some(VerificationMethod::EmailLinked)
+    );
+    assert_eq!(
+        e.evidence[1].verification,
+        Some(VerificationMethod::Unverified)
+    );
+    assert_eq!(
+        e.tags
+            .iter()
+            .filter(|t| t.as_str() == AMBIGUOUS_NAME)
+            .count(),
+        1,
+        "idempotent"
+    );
 }

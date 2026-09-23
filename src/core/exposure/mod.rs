@@ -18,7 +18,7 @@
 use std::collections::BTreeSet;
 
 use crate::core::correlator::{Correlation, Severity};
-use crate::core::entity::{Entity, EntityKind};
+use crate::core::entity::{Entity, EntityKind, Evidence, VerificationMethod};
 
 #[cfg(test)]
 mod tests;
@@ -126,12 +126,26 @@ impl ExposureIndex {
 /// Candidate-quarantined entities (`tags::CANDIDATE`) and bare speculation below
 /// [`EXPOSURE_CONF_FLOOR`] are excluded — exposure is a statement about what is
 /// genuinely tied to the *subject*, not about how many guesses the engine emitted.
+///
+/// So is a `Person` whose name cannot be the subject's
+/// ([`crate::core::scan::is_other_named_person`], against the scan's `seed` /
+/// `subject` Person — the one rule the engine's pivot gate also applies). A
+/// relative's or namesake's own record is a disclosure about THEM: a real "Ian
+/// Thorpe" scan reported "disclosed: date of birth" from a Wikidata item for
+/// "Carol Thorpe Tully", born 1946 (REQ-IDENTITY-GATE-001).
 #[must_use]
 pub fn assess(entities: &[Entity], correlations: &[Correlation]) -> ExposureIndex {
+    let subject_names: Vec<String> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person && (e.has_tag("seed") || e.has_tag("subject")))
+        .map(|e| e.value.clone())
+        .collect();
     let confirmed: Vec<&Entity> = entities
         .iter()
         .filter(|e| {
-            !e.has_tag(crate::core::tags::CANDIDATE) && e.c_effective() >= EXPOSURE_CONF_FLOOR
+            !e.has_tag(crate::core::tags::CANDIDATE)
+                && e.c_effective() >= EXPOSURE_CONF_FLOOR
+                && !crate::core::scan::is_other_named_person(&e.kind, &e.value, &subject_names)
         })
         .collect();
 
@@ -156,6 +170,17 @@ pub fn assess(entities: &[Entity], correlations: &[Correlation]) -> ExposureInde
     }
 }
 
+/// Whether an evidence record speaks for the entity it sits on. **Pure.** A
+/// record its source marks [`VerificationMethod::Unverified`] says the opposite:
+/// it matched by name, and whose it is was not established. Entities merge by
+/// value, so such a record lands on the subject's own anchor — a WikiTree
+/// namesake's birth date on the seed Person (REQ-WIKITREE-001) — and read from
+/// there it is a disclosure about somebody else. Exposure is a statement about
+/// the subject, so every evidence read here goes through this one gate.
+fn attributable(ev: &Evidence) -> bool {
+    ev.verification != Some(VerificationMethod::Unverified)
+}
+
 /// Breach corpus breadth: distinct named breach/stealer databases the subject
 /// appears in (12 pts each, capped). More corpora ⇒ wider, longer-lived exposure.
 fn breach_component(confirmed: &[&Entity]) -> ExposureComponent {
@@ -174,7 +199,7 @@ fn breach_component(confirmed: &[&Entity]) -> ExposureComponent {
         if !(e.has_tag(crate::core::tags::BREACH) || e.has_tag(crate::core::tags::STEALER_LOG)) {
             continue;
         }
-        for ev in &e.evidence {
+        for ev in e.evidence.iter().filter(|ev| attributable(ev)) {
             for key in CORPUS_KEYS {
                 let Some(raw) = ev.attributes.get(*key) else {
                     continue;
@@ -220,7 +245,7 @@ fn sensitive_component(confirmed: &[&Entity]) -> ExposureComponent {
         if matches!(e.kind, EntityKind::Password | EntityKind::Credential) {
             secret = true;
         }
-        for ev in &e.evidence {
+        for ev in e.evidence.iter().filter(|ev| attributable(ev)) {
             for k in ev.attributes.keys() {
                 let kl = k.to_ascii_lowercase();
                 gov |= GOV_IDS.iter().any(|g| g.keys.contains(&kl.as_str()));

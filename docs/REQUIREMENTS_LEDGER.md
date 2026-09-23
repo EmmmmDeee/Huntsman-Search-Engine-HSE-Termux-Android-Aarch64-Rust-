@@ -666,7 +666,7 @@ this pass), 12 PARTIAL, 2 IMPLEMENTED_UNVERIFIED, 1 UNREACHABLE.
 
 | ID | Behavior | Runtime verification evidence | Status |
 |---|---|---|---|
-| REQ-API-EXPORT-001 | redact_sensitive_sources() replaces every proprietary breach/intel provider name appearing anywhere in an export body with the fixed label "breach-source", via one whole-token (\b...\b), case-insensitive regex alternation built once from the sensitive-name… | Ran `cargo test --lib api::scan_export -- --nocapture` this pass: `running 8 tests ... test api::scan_export::redact::tests::covers_every_spelling_of_the_named_providers ... ok / idempotent ... ok / redacts_named_paid_provider_but_keeps_public_sources ... ok / redacts_capitalised_brand_in_evidence_summaries ... ok / every_breach_category_source_is_redacted ... ok / whole_token_match_leaves_longer_tokens_intact ... ok ... test result: ok. 8 passed; 0 failed`. | VERIFIED |
+| REQ-API-EXPORT-001 | redact_sensitive_sources() replaces every proprietary breach/intel provider name appearing anywhere in an export body with the fixed label "breach-source", via one whole-token (\b...\b), case-insensitive regex alternation built once from the sensitive-name… | Ran `cargo test --lib api::scan_export -- --nocapture` this pass: `running 8 tests ... test api::scan_export::redact::tests::covers_every_spelling_of_the_named_providers ... ok / idempotent ... ok / redacts_named_paid_provider_but_keeps_public_sources ... ok / redacts_capitalised_brand_in_evidence_summaries ... ok / every_breach_category_source_is_redacted ... ok / whole_token_match_leaves_longer_tokens_intact ... ok ... test result: ok. 8 passed; 0 failed`. | SUPERSEDED by REQ-EXPORT-003 (the `\b` alternation rewrote URLs into fabricated `breach-source.<tld>` domains, missed `HUNTSMAN_*_KEY` names, and merged every provider onto one label) |
 | REQ-API-EXPORT-002 | The sensitive-name set is registry-derived: every module whose category() == ModuleCategory::Breach is swept automatically (so a newly added breach-category module needs no redact.rs edit); EXTRA_SENSITIVE is reserved for names the sweep structurally cannot… | Ran `cargo test --lib api::scan_export::redact::tests::every_breach_category_source_is_redacted` this pass (part of the 8/8 run above) — passed. Cross-checked categories by reading source directly: oathnet_pro::category() returns ModuleCategory::People (src/modules/oathnet_pro/mod.rs:109-110), see_know::category() and dehashed::category() both return ModuleCategory::Breach (src/modules/see_know/mod.rs:194-196, src/modules/dehashed/mod.rs:93-95) — confirming the comment's factual claims about… | VERIFIED |
 | REQ-API-EXPORT-003 | Redaction is enforced at one choke point: all four shareable download handlers (scan_entities_csv, scan_report_json, scan_export_gexf, scan_events_log) route their body through download_response(), which unconditionally calls redact_sensitive_sources(); only… | Ran `grep -n "download_response(\\|download_response_operator(" src/api/scan_export/mod.rs` this pass — output confirmed exactly 4 call sites (lines 49, 82, 120, 174) use download_response and exactly 1 (line 147, scan_debug_bundle) uses download_response_operator, matching the module doc comment's claim that the debug bundle is the sole conscious opt-out. **Fixed this pass (Pass 29):** that was structural (a grep of call sites), never a runtime proof the choke point actually masks a provider identity in each format — and the sibling REQ-API-EXPORT-004's end-to-end evidence rested on a since-reverted probe. Added the permanent HTTP-level `shareable_downloads_redact_the_provider_name_while_the_debug_bundle_keeps_it` (`tests/api.rs`): seeds two confirmed entities sharing one `dehashed` breach evidence record (so the provider name reaches the CSV `sources`/`evidence` columns, the report.json entity `evidence`, AND the GEXF via a co-occurrence edge labelled by the source) plus a `ModuleError{module:"dehashed"}` event (events.log); asserts each of entities.csv / report.json / graph.gexf / events.log hides `dehashed`/`DeHashed` (case-insensitive) AND carries the `breach-source` label — the label's presence proving the redactor ran on a body that held the name, not that the name was merely absent — while debug.txt KEEPS the real name. Ran `cargo test --test api shareable_downloads_redact_the_provider_name_while_the_debug_bundle_keeps_it` → 1 passed (all four formats redacted, bundle kept). Falsified per-handler: rewiring `scan_events_log` from `download_response` to `download_response_operator` and recompiling made the test FAIL (RC=101) at the events.log iteration only — leaked body `{…"module":"dehashed"…"provider DeHashed returned HTTP 503"}` — while CSV/report.json/GEXF still passed, proving the loop covers each of the four handlers and detects a per-handler bypass; restoring the call turned it green. | VERIFIED |
 | REQ-API-EXPORT-004 | End-to-end: a real Breach-category module's evidence (Evidence{source: module name(), summary: the module's own capitalised-brand text, e.g. "DeHashed record from Adobe"}) and its ModuleDone scan event, once persisted and downloaded through the live HTTP… | Ran `cargo test --test api temp_probe_end_to_end_redaction_across_all_four_download_formats -- --nocapture` this pass (test added then reverted). Real output: entities.csv `sources` column = `breach-source\|breach-source`, `evidence` column = `[breach-source] breach-source record from Adobe \|\| [breach-source] breach-source record from MyFitnessPal`; report.json `"source": "breach-source"`, `"summary": "breach-source record from Adobe"` / `"...MyFitnessPal"`; events.log both lines read… **Re-grounded in Pass 29:** that reverted probe is superseded by the permanent `shareable_downloads_redact_the_provider_name_while_the_debug_bundle_keeps_it` (`tests/api.rs`, see REQ-API-EXPORT-003) — it drives the same end-to-end redaction across all four download formats over live HTTP and is falsified per-handler, so this end-to-end contract is now locked by a committed test rather than a throwaway one. | VERIFIED |
@@ -18449,7 +18449,9 @@ rather than quietly corrected, per this project's own falsification
 discipline: a wrong prediction that is caught is more valuable evidence than
 a right one, and rewriting it after the run would throw that away.
 
-MATRIX_SUMMARY_PLACEHOLDER
+**Matrix: 6 of 6 mutations killed**, each by at least one lock. Q1 and Q4 were
+killed by fewer locks than predicted, for the reasons their rows give. None
+survived.
 
 #### Scope, honestly
 
@@ -18717,3 +18719,1902 @@ is proven by the same certificate now returning the real issuer instead.
   as a change in `core::link::LinkState::ip` across sweeps, an extension of
   the existing per-sweep record rather than a second mechanism for the same
   fact.
+
+---
+
+## REQ-CERTSPOTTER-001 — one page of a cursor, reported as the whole answer
+
+**Requirement.** A provider whose answer is a cursor must be followed as far as
+the module can afford. Where the walk stops before the end of the data, the
+result must say so. A small domain must not pay for the walk.
+
+### Observed, before any change (`069278d`)
+
+`certspotter::process` built one URL, made one `fetch_json`, and returned
+`build_entities` over that page. It never read an issuance `id` and never
+called `ModuleResult::mark_truncated`. The module's documentation did not
+mention pagination.
+
+The API reference (sslmate.com, *CT Search API v1*) says the endpoint "returns
+a limited number of issuances in a single response". A client takes the `id` of
+the last issuance, passes it back as `after=`, and repeats "until the issuances
+endpoint returns an empty array".
+
+Measured on 2026-09-22 with anonymous requests, `include_subdomains=true&expand=dns_names`:
+
+| query | observed |
+|---|---|
+| `google.com` | `200`, **exactly 100** issuances: a full page |
+| `github.com` | `200`, 75 issuances. The same query with `after=<last id>` returned `200 []`, `retry-after: 3600` |
+| `burntsushi.net` | `200`, 3 issuances, then `[]` for `after=<last id>` |
+| `amazon.com` | `504` after 10.6 s: `{"code":"timeout","message":"This query took longer than 10 seconds to complete. …"}` |
+| every response | `x-ratelimit-limit: 10`. An `after=` request decremented `x-ratelimit-remaining` like any other |
+
+Two things follow. The page holds 100, so any apex with more than 100 live
+certificates lost everything past the first page, and the coverage layer
+recorded `Observed` (complete). A short page is the end of the data, so a
+"follow until empty" loop would spend a second request on every small domain.
+The engine sends every discovered subdomain back through this module, and the
+anonymous tier allows only ten requests an hour, so that second request is not
+free.
+
+### The fix
+
+`walk_issuances(client, base, host, max_pages, next_page_cutoff) -> Result<Walk>`:
+
+- A page shorter than `PAGE_SIZE` (100) ends the walk as complete. An empty
+  page does too.
+- A full page is followed from its last issuance's `id`, which `Issuance` now
+  models.
+- The walk stops early, with the cause recorded in `Walk::cut`, on any of these:
+  the `MAX_PAGES` (5) cap; no page is started after `NEXT_PAGE_CUTOFF` (10 s);
+  a full page whose last issuance has no `id`.
+- A failed **first** request is still the module's `Err`. With nothing
+  retrieved, `Ok(empty)` would be a clean negative fabricated from an outage.
+  A failed **later** request keeps the pages already retrieved and records the
+  cause. Discarding real evidence because a different page failed is the
+  partial outage `ModuleResult::or_hard_failure` exists to prevent.
+
+`walk_result` is the pure seam `process()` returns through. A `cut` becomes
+`ModuleResult::mark_truncated(entities, None, cause)`. The provider reports no
+total, so the unknown-total arm is the honest one.
+
+`max_timeout_ms` rises from 10 s to 25 s. The server allows a query 10 s and
+then answers `504` with an explanation. The old budget killed the module at
+exactly 10 s, so an oversized apex surfaced as an anonymous engine timeout.
+No page starts after 10 s, so the page in flight gets the server's full 10 s
+plus transfer before the engine intervenes. The pages already held survive.
+
+**Assumption, recorded.** `PAGE_SIZE` is measured, not documented. If SSLMate
+shrank the page, a short page would be misread as the end. Growing it is
+harmless, because a larger page is still `>=` 100 and is still followed. The
+alternative, always requesting until an empty array, is robust to that change
+but doubles the cost of every small domain on a ten-an-hour budget. The
+measured constant is kept, with this trade stated where it is defined.
+
+### Locks (`src/modules/certspotter/tests.rs`)
+
+These are hermetic. A loopback listener answers a scripted sequence with
+`Connection: close` and records every request line, so the request count is
+part of each assertion. Failures are served as `503` rather than `429`: one 5xx
+cannot open the loopback endpoint's breaker, so no lock can change what another
+sees.
+
+- `a_short_page_is_the_whole_answer_and_costs_one_request`: 3 issuances, one
+  request, complete.
+- `a_full_page_is_followed_from_its_last_issuance_id`: 100 + 2 issuances, two
+  requests, the second carrying `&after=100`, with the query otherwise
+  unchanged.
+- `an_empty_page_after_a_full_one_is_the_end_not_a_truncation`: a corpus of
+  exactly 100.
+- `reaching_the_page_cap_is_reported_as_truncation`: the cap bounds requests,
+  not only entities.
+- `a_later_page_failure_keeps_the_pages_already_retrieved`: page one survives a
+  `503` on page two, and the cause names the status.
+- `a_first_page_failure_is_still_the_modules_error`.
+- `the_time_budget_stops_the_walk_before_requesting_another_page`.
+- `a_full_page_without_a_cursor_is_truncated_not_complete`.
+- `a_cut_walk_reaches_the_coverage_layer_and_a_complete_one_does_not`: the
+  emission seam.
+- `the_cursor_is_percent_encoded_onto_the_unchanged_query` and
+  `the_page_id_is_read_from_the_real_response_shape`, which uses the captured
+  `github.com` shape.
+
+### Falsified
+
+Each mutation was applied textually. The module's tests were run and the file
+was restored (md5-verified). A run that printed no `test result:` line was
+reported as NO-RUN, never as survived.
+
+| # | mutation | result |
+|---|---|---|
+| M0 | **baseline**: every page ends the walk as complete (the pre-fix behaviour) | killed by 6 |
+| M1 | **over-correction**: every page is followed, short or not | killed by 3 (incl. the one-request lock) |
+| M2 | a later page's failure discards the pages already held | killed by 1 |
+| M3 | the cursor is taken from the FIRST issuance | killed by 1 |
+| M4 | `walk_result` never declares the cut | killed by 1 (the seam lock) |
+| M5 | the time budget is never checked | killed by 1 |
+| M6 | a first-page failure is a clean empty result | killed by 1 |
+| M7 | a full page with no `id` reads as complete | killed by 1 (the first spec for this row was malformed; the harness reported NO-RUN, and the corrected spec was killed) |
+| M8 | off by one: an exactly-full page counts as short | killed by 6 |
+
+**9 of 9 killed.**
+
+### Residual
+
+- The module still has no key support. SSLMate's authenticated tiers raise the
+  hourly budget, which is what would make deeper walks affordable. That is a
+  capability addition, not part of this defect.
+- Each discovered subdomain re-queries with `include_subdomains=true`, so a
+  subdomain's answer is a subset of its apex's. Deduplicating that belongs to
+  the engine, across every host-keyed collector (`crtsh`, `anubis`,
+  `hackertarget`), and is not this module's to solve alone.
+
+---
+
+## REQ-COVERAGE-002 — eight more private truncation spellings, written as a tag; three were hiding false negatives
+
+**Requirement.** A module whose answer is partial must declare it through
+`ModuleResult` (`mark_truncated` / `mark_truncated_if_capped` /
+`mark_truncated_of`). That declaration is the only channel `core::coverage`
+reads. A partial answer must never become the clean negative that settles an
+absence.
+
+### Found
+
+REQ-COVERAGE-001 migrated five private spellings of "this answer is partial"
+(evidence attributes). Eight more survived because they were spelled as a bare
+`"truncated"` entity **tag**. `rg '"truncated"' src` finds only emitters, and
+no reader outside each module's own file: `netblock`, `virustotal`,
+`asic_banned_orgs`, `asic_business_names`, `dns_axfr`, `leakix`, `wikidata` and
+`passivetotal`. `netblock` was found independently by this wave's audit
+workflow. The tag has no `tags::` const, which ROADMAP §3 names as the tell.
+
+Reading each site showed that for three modules the missing declaration was
+the smaller defect:
+
+| Module | What the tag was hiding |
+|---|---|
+| `asic_banned_orgs`, `asic_business_names` | The tag sat **after** `if matched_count == 0 { return Ok(result) }`. CKAN's free-text search is broad and the module's whole-word filter is strict. A full `limit=100` page of rows that mention the name, none of which IS it, from a search CKAN says holds more, returned an empty, complete answer: a clean "not banned" / "no registration". That is the one outcome that settles an absence, and the real record may be in the rows never fetched. |
+| `passivetotal` | `build_entities` returned `(out, false)`, a constant. `is_truncated` compared `totalRecords` with the **returned** count. The API takes no limit, so a long-lived domain returns thousands of rows with `totalRecords` equal to what it sent, and the client-side `.take(200)` was invisible. That is precisely the case the module's header documents. An existing test, `build_entities_at_result_limit_returns_true_when_server_reports_more`, asserted `false`, with exactly 200 records, so the cap never engaged. Separately, the per-query note for an **IP** query was minted as `Entity::new(EntityKind::Domain, ip)`, a domain named after an IP, which the engine then expanded as a domain. |
+| `dns_axfr` | `mark_axfr_truncation`'s caller said the zone may "span multiple AXFR messages this module only reads the first of", but the check read only `ANCOUNT` against the parser cap. A large zone split across messages, the ordinary shape of one, was reported as the complete inventory. |
+| `netblock` | The module header names `2001:db8::/120` as a block it enumerates, yet every IPv6 block yielded only its base address, with `total = 1`: a 256-address block reported as a complete single host. |
+| `wikidata` | The same early-return shape as ASIC: a full `limit=10` search page with no whole-word label match returned `ModuleResult::new()`. |
+| `virustotal` | The cap at 30 passive-DNS records was a tag plus a `tracing::warn!`. |
+| `leakix` | **Not a truncation of the answer.** Every service is retrieved and counted; only the port list rendered into one evidence attribute is shortened. Declaring it would tell the coverage layer that services exist which it did not see. It is left alone and is the lock's one documented exemption. |
+
+### Implemented
+
+- `asic_*`: the result is now built by pure `banned_orgs_result` /
+  `business_names_result`, which declare the partial page **before** the
+  no-match return.
+- `passivetotal`: `cut(total_records, returned) -> Option<(processed, total)>`
+  sees both causes. `pdns_result` is the pure seam `process()` returns
+  through. The note takes the queried kind. The dead `bool` is gone from
+  `build_entities`.
+- `dns_axfr`: `attempt_axfr` is now transport only. `parse_axfr_message` is
+  pure and counts SOA records among the answers walked; per RFC 5936 §2.2 a
+  transfer opens and closes with the zone's SOA. `mark_axfr_truncation`
+  declares the cap (with the advertised count) or an unfinished transfer (with
+  the size unknown).
+- `netblock`: an IPv6 block that fits the cap is enumerated like an IPv4 one.
+  A wider one keeps base-only and is declared with its exact size.
+- `ModuleResult::mark_truncated_of(emitted, total: u128, cause)`: a /64's
+  `2^64` addresses does not fit `usize`, and `mark_truncated(_, None, _)`
+  would have rendered it as "the provider did not report how many exist",
+  which is false when the size is exact. Both entry points share one private
+  `known_total_sentence`, so the operator-facing wording still has one
+  spelling.
+- `wikidata`: `declare_search_truncation` at one call site on each exit
+  path. `SEARCH_LIMIT` is now the one constant both the request URL and the
+  full-page check use, so the two cannot drift (REQ-ZOOMEYE-002's surviving
+  M5).
+- `virustotal`: the pure seam `vt_result`.
+- The per-entity notes are kept, following REQ-COVERAGE-001's precedent: they
+  are useful to an operator reading the entity. They are no longer the
+  declaration.
+
+### Structural lock
+
+`tests/architecture.rs::a_module_that_tags_a_truncation_declares_it_to_the_coverage_layer`:
+any module directory whose production code writes `.tag("truncated")` must also
+call `.mark_truncated*`, with `leakix` exempted for the stated reason. A vacuity
+guard requires the scan to still see `netblock`, `passivetotal` and `leakix`.
+
+### Falsified
+
+Each mutation was applied textually, the locks were run, and the file was
+restored (md5-verified). Runs with no `test result:` line are NO-RUN, never
+"survived".
+
+| # | mutation | result |
+|---|---|---|
+| N1 | passivetotal: the client-side cap is invisible again (`processed = returned`) | killed by 3 |
+| N2 | passivetotal: an IP query's note is a Domain again | killed by 1 |
+| N3 | passivetotal: `pdns_result` never declares | killed by 2 |
+| N4 | asic_banned_orgs never declares | killed by 2, incl. the no-match full-page lock |
+| N5 | asic_business_names never declares | killed by 2 |
+| N6 | netblock: the cap is only a tag again | killed by 2 module locks, **and** by the architecture lock (see below) |
+| N7 | netblock: a small v6 block is not enumerated | killed by 2 |
+| N8 | dns_axfr: the closing SOA is not checked | killed by 1 |
+| N9 | dns_axfr **over-correction**: a whole transfer counts as partial | killed by 1 |
+| N10 | wikidata: a full page is not a cut | killed by 1 |
+| N11 | wikidata **over-correction**: off by one, a 9-hit page counts as full | killed by 2 |
+| N12 | virustotal never declares | killed by 1 |
+| N13 | asic_banned_orgs **over-correction**: every page is partial | killed by 1 (the short-page control) |
+
+**13 of 13 killed.**
+
+**The harness hid one result, and the matrix caught it.** The combined run
+passed `--lib --test architecture` without `--no-fail-fast`. When N6 failed the
+lib binary, cargo never ran the architecture binary, so the new structural lock
+was absent from N6's killers rather than present. That is the hidden-kill shape
+REQ-RESILIENCE-002's falsification notes warn about. Re-run alone, N6 is killed
+by `a_module_that_tags_a_truncation_declares_it_to_the_coverage_layer`, and
+the harness now always passes `--no-fail-fast`.
+
+### Residual
+
+- `dns_axfr` still reads only the first message. Reading the rest of a
+  multi-message transfer is a capability change. This fix makes the partial
+  answer honest; it does not make it complete.
+- The audit wave that found `netblock` also reported truncation-silent caps in
+  `plc_directory`, `wiki_geosearch`, `openarch`, `au_unclaimed`,
+  `securitytrails` and `hunter_io`. Those modules never wrote the tag, so this
+  lock does not see them. Each is tracked on its own evidence.
+
+---
+
+## REQ-CACHE-001 — the inter-scan cache replayed a partial answer as a complete one
+
+**Requirement.** A cache replay is the module's answer for the current scan. It
+must carry that answer's completeness verdict exactly as the live call did.
+
+### Found
+
+This wave's audit workflow found it while checking `openarch`'s fix path, and
+it was confirmed by reading the engine:
+
+- `archive_if_eligible` (`core::engine::dispatch`) stored `mr.entities` only.
+- `replay_cached_result` rebuilt the result with `truncation: None`
+  unconditionally.
+
+The engine emits the same `ModuleDone` for a replay as for a live call, and
+`core::coverage` reads completeness from that event alone. So on every re-scan
+inside a module's TTL, a partial answer was reported complete.
+
+The modules that both cache and truncate are the high-value paid ones:
+`netlas`, `see_know`, and `passivetotal` (whose truncation REQ-COVERAGE-002
+just made visible). REQ-COVERAGE-001's derivation lock could not see this: it
+tests live `ModuleDone` events, and a replay is a second, parallel emitter of
+the same field. This is the first recurring shape in ROADMAP §4, a guard applied
+to one emitter but not its neighbour.
+
+### Implemented
+
+- `core::port::CachedModuleResult { entities, truncation }` is what the cache
+  hands back.
+- `StoragePort::archive_module_result(key, ttl, entities, truncation)`
+  borrows, so archiving clones nothing. The SQLite store writes a JSON object.
+  `InMemoryStore` mirrors it.
+- `replay_cached_result` restores the archived verdict.
+
+**No schema migration.** A row written before this change is a bare JSON array.
+It holds the entities and no verdict. `lookup_module_result_fresh` treats it as
+a **miss**, not a replay: inventing "complete" on the module's behalf is the
+defect itself. Re-asking once costs one query; the fresh answer is archived in
+the new shape and replaces the row. Legacy rows also age out under the
+existing TTL prune.
+
+The archive runs before `finalise_module_result` takes the truncation, at all
+three dispatch call sites, and the engine lock proves it: a wrong order would
+archive `None`.
+
+### Locks
+
+- `core::engine::tests::a_cache_replay_of_a_partial_answer_is_still_partial`:
+  two scans of one target through the real `dispatch_target`. The second is
+  asserted to be a cache replay (the premise). Its `ModuleDone` must carry the
+  live answer's own sentence.
+- `storage::archive::tests::a_partial_answer_is_replayed_as_partial` and
+  `a_row_archived_before_the_verdict_was_recorded_is_a_miss`: the latter
+  inserts a legacy array row by hand.
+- `core::port::tests::default_optional_methods_are_documented_no_ops` now pins
+  that the in-memory double carries the verdict too.
+
+### Falsified
+
+The mutation harness now runs with `--no-fail-fast`.
+
+| # | mutation | result |
+|---|---|---|
+| C1 | **baseline**: the replay claims completeness | killed by 1 (the engine lock) |
+| C2 | the archive drops the verdict | killed by 1 |
+| C3 | a legacy row is replayed (no miss guard) | killed by 1 |
+| C4 | the in-memory double drops the verdict | killed by 2 |
+
+**4 of 4 killed.**
+
+---
+
+## REQ-LIVE-001 — a lock observed its property through a proxy that turns true too early
+
+**Observed.** CI on `d2980d3` failed
+`core::live::tests::a_live_iteration_holds_its_scan_id_in_the_shared_registry_only_while_the_engine_runs_it`
+at `tests.rs:600`, "AFTER: released once the engine returned". The same test
+passed in four full local runs.
+
+**Root cause, in the test.** The test polls the store until the cancelled
+iteration's row reads terminal, then asserts **in the same instant** that the
+in-flight registry entry is gone. The product writes the row *inside*
+`engine.run_*_panic_safe` and drops `in_flight_guard` only *after* that call
+returns (`core::live::mod`). REQ-SCANSTATUS-001 requires this order, so that a
+scan still running can never read `interrupted`. The row turning terminal is
+therefore a proxy that becomes true slightly **before** the property it stands
+for. A loaded runner lands in the gap.
+
+**Reproduced before fixing.** The test binary was run repeatedly with six CPU
+burners on four cores, at `d2980d3`: 7 failures at `tests.rs:600`, the same
+assertion as CI.
+
+**Fix.** The test waits for the release with the file's existing bounded
+`settle` helper (500 × 20 ms) instead of asserting it at the row's first
+terminal read. The doc comment now states the real ordering. The product is
+unchanged: its order is the correct one.
+
+**Verified.** 60 of 60 runs passed under the same load.
+
+**Falsified.** L1, the product never dropping the guard
+(`std::mem::forget(in_flight_guard)`), is still killed by this test. The wait
+is bounded, so a release that never happens still fails.
+
+**Rule.** This is ROADMAP §4's "assert the antecedent before the consequent"
+seen from the other side. When a test observes property P through a proxy Q,
+check which becomes true first. If Q can precede P, wait for P itself; never
+infer it from Q.
+
+---
+
+## REQ-PSL-001 — the site boundary knew 39 suffixes and no Vietnamese one
+
+**Requirement.** `registrable_domain` answers "which registrant owns this
+host?". Every decision that turns on that question must be answered by the
+Public Suffix List, the published authority, and not by a subset of it. Most
+of all, the answer must be right for the jurisdictions this tool is built for.
+
+### Found
+
+The audit wave's `dns_intel` finding (REQ-DNSINTEL-001) proposed adding the
+VNNIC second levels to `util::domains::MULTI_LABEL_SUFFIXES`. Reading that
+table showed the defect was the table itself. It held 39 hand-curated
+multi-label suffixes and not one Vietnamese second level, although
+`CLAUDE.md` makes Vietnam the primary jurisdiction and `util::domain_vn`
+already cites the VNNIC namespace and the PSL as its source.
+
+`registrable_domain("shop.acme.com.vn")` answered `com.vn`. It has 21
+production callers, and each was wrong for every `.vn` commercial domain at
+once:
+
+| Consumer | What the wrong boundary did |
+|---|---|
+| `util::http::ssrf::same_site` (the credentialed-redirect guard) | `api.provider.com.vn` → `attacker.com.vn` counted as **same-site**, so the caller's provider key replayed to a different registrant. The same held for every suffix the table lacked (`co.kr`, `com.tw`, `co.th`, …) and for every shared-hosting suffix (`github.io`, `blogspot.com`, …). |
+| AU-118 look-alike impersonation | `techcombank.com.vn` and `techc0mbank.com.vn` folded to one key, `com.vn`, so no Vietnamese impersonation could ever fire. |
+| AU-110 co-hosting | two different Vietnamese companies on one dedicated IP counted as one site, and the co-ownership lead never fired. |
+| `dns_intel` permutation | see REQ-DNSINTEL-001 |
+
+### Implemented
+
+`util/domains/psl.rs` implements the list's specification exactly:
+- an exception rule beats the rule it carves out of;
+- otherwise the longest match wins, with a wildcard matching one label;
+- otherwise the default rule `*` applies (the TLD alone);
+- rules are compared in Unicode, and a punycode host is answered in the form
+  it was asked in.
+
+A bare public suffix, a single label, and an empty label all answer `None`. The
+old table answered `com.au` for `com.au`, a "registrable domain" every
+Australian company shared. `registrable_domain` delegates to it, and
+`MULTI_LABEL_SUFFIXES` is deleted: one authority, not two.
+
+**The data** is `public_suffix_list.dat`, Mozilla's list vendored verbatim,
+version `2026-09-21_18-50-07_UTC`, commit `728555a`, sha256 `e81c6f5f…`. It
+includes both the ICANN and PRIVATE sections, because the boundary decides
+credential replay and attribution, and a `github.io` tenant is a different
+party.
+
+**Licence.** The list is MPL-2.0; its header is kept. MPL-2.0 is file-level:
+shipping the unmodified file inside a larger proprietary work is permitted,
+provided that file stays MPL-2.0 and available, as it is here. This is recorded
+so the owner can see the decision; no crate dependency was added. To refresh,
+replace the file and run the tests.
+
+### Locks
+
+- `the_official_conformance_suite_passes_in_full`: the PSL project's own
+  `test_psl.txt` (public domain, vendored verbatim), **78 of 78** live
+  cases. The vacuity guard pins the count, so a parser that stopped matching
+  cannot pass on zero cases.
+- `the_vendored_list_is_the_whole_list`: both section markers, the version
+  line, over 9 000 plain rules, and the rule shapes the algorithm
+  distinguishes, so a truncated refresh fails.
+- `every_vietnamese_second_level_is_a_suffix`,
+  `a_shared_hosting_tenant_is_its_own_registrant`,
+  `a_punycode_host_is_answered_in_the_form_it_was_asked_in`.
+- Consumer locks at their real call sites, since a helper's own tests never
+  establish its callers (REQ-ZOOMEYE-002):
+  `redirect_verdict_stops_a_hop_between_two_registrants_under_one_public_suffix`,
+  `au118_sees_an_impersonation_under_a_vietnamese_second_level`,
+  `au110_sees_two_vietnamese_companies_on_one_dedicated_ip`, and its
+  same-registrant control.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| P0 | **baseline**: the 39-entry table restored | killed by 6: the SSRF, AU-118, AU-110, two permutation and the multi-label locks |
+| P1 | exception rules ignored | killed by the conformance suite (4 cases) |
+| P2 | wildcard rules ignored | killed by the conformance suite (9 cases in the standalone run) |
+| P3 | IDN matched as written | killed by 2 |
+| P4 | the permutation gate back to a label count | killed by 1 |
+| P5 | a public suffix is its own registrable domain | killed by 4 |
+
+**6 of 6 killed.**
+
+**One claim was refuted by this matrix and is not made.** An inverse harm was
+suspected: a `.vn` domain's brand label `com` pairing with an unrelated
+`corn.com` as a High-severity impersonation. P0 did not kill the lock written
+for it, so that pairing does not occur. The test is kept only as a labelled
+control.
+
+---
+
+## REQ-DNSINTEL-001 — subdomain permutation turned every `.com.au` / `.com.vn` apex into other people's domains
+
+**Found** by the audit wave (both adversarial lenses confirmed it).
+`permute_subdomains` judged "is a subdomain" by counting labels. For the apex
+`acme.com.au` it split off `("acme", "com.au")`. It then resolved
+`acme1.com.au`, `dev-acme.com.au`, `acme-new.com.au` and the rest: separate
+registrable domains, owned by anyone. Each one that resolved was emitted as
+the target's `subdomain` at `VERY_HIGH`, with evidence "a structural
+permutation of discovered sibling acme.com.au", and re-dispatched into the
+target's dossier.
+
+That is every seed under `.com.au` and `.com.vn`, the two jurisdictions this
+tool is built for. `srv` and `dkim` in the same module already used the right
+test.
+
+**Fix.** `permutation_split` requires a label above the host's registrable
+domain (REQ-PSL-001), the same apex test `srv` and `dkim` apply. Every
+candidate generated therefore stays inside the target's own registrable
+domain, which is locked by asserting it over the full generator output.
+
+**Locks:**
+- `the_apex_under_a_multi_label_suffix_is_never_permuted`
+- `a_real_subdomain_is_still_permuted_within_its_own_registrable_domain`
+- `a_public_suffix_or_single_label_is_not_permuted`
+
+Falsified by P0 and P4 above.
+
+---
+
+## REQ-PULSEDIVE-001 — a benign vendor verdict raised a High threat-intel finding
+
+**Found** by the audit wave (both lenses confirmed it). The vendor's semantics
+were checked against its own risk model (`docs.pulsedive.com/model/risk.md`):
+
+| Risk | Pulsedive's definition |
+|---|---|
+| `none` / `very low` | "Pulsedive's assessment points to benign activity" |
+| `unknown` | "the data available doesn't point to an elevated or reduced risk level" |
+| `critical` | "risk factors with the highest severity, strongly indicating malicious activity" |
+
+**Defect.** `build_entities` tagged `THREAT_INTEL` on every non-unknown answer,
+`none` included. It tagged `MALICIOUS` whenever any threat was linked, even
+under a `none` verdict. `THREAT_INTEL` alone raises AU-015's High "present in
+a curated threat-intel feed" and AU-031's High adjacency grading, so a benign
+verdict became a High threat finding about the scan subject. The module's own
+doc called `none` "an actively-confirmed-benign verdict", three lines above the
+tagging that ignored it.
+
+**Fix.** The vendor's grade decides the tags:
+- `none` / `very low` → `pulsedive-benign`, and no bad tag. The linked threats
+  stay in evidence.
+- Every other verdict → `THREAT_INTEL`, an unadjudicated sighting.
+- `MALICIOUS` only for `high` / `critical`, the verdicts where the vendor
+  makes a conduct claim.
+
+`pulsedive-benign` is deliberately **not** added to `BENIGN_INFRA_TAGS`. That
+would let Pulsedive's verdict veto other sources' bad tags, which is a stronger
+claim than its risk model makes.
+
+**Changed lock, deliberately.** `unknown_risk_with_a_linked_threat_still_surfaces`
+asserted `MALICIOUS`. It now asserts `THREAT_INTEL` and not `MALICIOUS`. The
+finding still surfaces as AU-015; what it loses is a "malicious" vote in
+AU-004's two-source CRITICAL escalation, which an unassessed record does not
+earn.
+
+**Falsified**, with the matrix below.
+
+---
+
+## REQ-THREATSRC-001 — the list of who may vote "malicious" had drifted from who does
+
+`core::correlator::rules::THREAT_INTEL_SOURCES` decides whose `MALICIOUS` tag
+AU-004 counts toward its CRITICAL "≥2 independent sources agree", and whom
+AU-015 names. Its doc said "keep in sync with the `entity.tag(MALICIOUS)`
+call sites". That is a remembered procedure (ROADMAP §4 shape 3), and it had
+drifted: `emailrep` and `pulsedive` both tag `MALICIOUS` and were absent.
+
+**Fix.** Both are added. The doc now says the sync is enforced.
+`tests/architecture.rs::every_module_that_asserts_malicious_is_a_threat_intel_source`
+reads the list and every module's production code, resolves each module's
+`SRC`, and fails on any `MALICIOUS` emitter the list lacks. Its vacuity guard
+requires the scan to see a known emitter.
+
+### Falsified (both requirements)
+
+| # | mutation | result |
+|---|---|---|
+| T0 | **baseline** pulsedive tagging | killed by 4 |
+| T1 | **over-correction**: `MALICIOUS` on any non-benign verdict | killed by 2 |
+| T2 | `pulsedive` dropped from the list | killed by the architecture lock |
+| T3 | `emailrep` dropped from the list | killed by the architecture lock |
+
+**4 of 4 killed.**
+
+**The harness had a silent path, now closed.** T3's first spec matched
+`"emailrep"` three times: the file also has `EMAIL_CONFIRMATION_SOURCES` and a
+third list. The harness recorded that as BAD-SPEC but printed nothing, so the
+row simply went missing. That silent-vacuity shape is the one REQ-TYPOSQUAT-001
+names. It now prints every BAD-SPEC. Every row of every earlier matrix in this
+wave was re-checked: each printed a result, so nothing was skipped.
+
+---
+
+## REQ-LEAKIX-001 — the decoder read a shape LeakIX never sends, so every lookup was "no exposure"
+
+**Found** by the audit wave. The auditor could not verify the wire shape from
+inside the repository and said so. It was then established from LeakIX's own
+code:
+- the official Python client `leakix` 1.1.0 declares
+  `class HostResult(Model): Services: list[L9Event] | None; Leaks: list[L9Event] | None`,
+  built by `HostResult.from_dict(data)` over the raw body, and only
+  afterwards re-keys to lowercase for its own callers;
+- `l9format`'s `L9Event` declares `port: str`.
+
+An anonymous request to the live API answers `401 "Invalid API key"`, so no
+live capture was possible without a key.
+
+**Defect.** `HostResp` read lowercase `services`/`leaks`, both
+`#[serde(default)]`, with no rename. On a real body the capitalised arrays
+were unknown fields and were dropped, so both lists decoded empty and the
+module returned `Ok(empty)`: `CleanNegative`, "LeakIX holds no exposure for
+this host", for every host and domain ever asked. The same body also has
+string ports, which `port: Option<i64>` would have rejected as soon as the
+keys matched. Fixing the casing alone would have turned "empty" into a decode
+error on every response. Every existing fixture was author-written lowercase
+with numeric ports, the one shape LeakIX never sends, so none of them could
+see this. This is the REQ-FOFA-001 rule: test by deserialising the text the
+provider actually sends.
+
+**Fix.**
+- `Services`/`Leaks` are read as `Option<Vec<Event>>`, so they accept `null`.
+  The lowercase keys are kept as aliases.
+- `port` decodes from a string or a number, and any other shape is "no port"
+  rather than a failed event.
+- The pure seam `leakix_result` **fails closed** when a 200 body carries
+  neither key in either spelling: that is an unrecognised shape, not "no
+  exposure". A body with the keys set to `null` or `[]` stays the real clean
+  negative.
+- `ssh-exposed` now reads `protocol` too, because in L9 events `event_type`
+  is the event class and `protocol` names the service.
+
+**Locks:**
+- `the_real_wire_shape_is_an_exposure_not_a_clean_negative`
+- `null_or_empty_lists_are_the_real_clean_negative`
+- `a_body_with_neither_key_fails_closed`
+- `a_port_of_any_scalar_shape_or_none_never_fails_the_event`
+
+| # | mutation | result |
+|---|---|---|
+| X0 | **baseline**: lowercase keys only | killed by 2 |
+| X1 | numeric ports only | killed by 2 |
+| X2 | an unrecognised body is a clean negative again | killed by 1 |
+| X3 | SSH read from `event_type` only | killed by 1 |
+
+**4 of 4 killed.**
+
+**Residual.** No live capture was made. The shape rests on the vendor's own
+client and schema library, not on a response observed from this
+environment.
+
+---
+
+## REQ-CURL-001 — the shared curl fallback returned error responses as documents
+
+**Found** by the audit wave while it was reading `hexpm_user`. The finding is
+in the shared outbound path, not in that module.
+
+`util::http::fetch_json_inner` backs `fetch_json`, `fetch_json_or_404` and
+their callers. On a reqwest transport failure it retries once through
+`util::curl::fetch_json`, which the module comments describe as the working
+transport on Termux and datacenter IPs. That helper ran `curl -s` with no
+`-f` and no status capture. curl exits 0 for **any** response it receives, so
+a 404, 429 or 5xx came back as the document, and wherever the error body
+decoded as `T` (an all-default struct, `{}`, `[]`) the fallback returned it
+as **success**. The effects:
+- `fetch_json_or_404`'s "404 means absent" became "404 body is the data";
+- a throttle or an outage could read as a clean answer for every module on
+  the shared helper;
+- the breaker recorded all of these as successes.
+
+The code's own comment claimed "curl collapses every outcome (404, non-zero
+exit, parse failure) to `None`". That was false for any error body that
+decodes.
+
+### Implemented, at the shared authority
+
+- `run_curl_once` writes `%{http_code}` to stderr beside the redirect target
+  it already wrote, keeping stdout the pure body. The two formats are the
+  constants `WRITE_OUT_HOP` / `WRITE_OUT_FOLLOW`, and `parse_write_out`
+  splits them.
+- `curl_exec_response` returns `(status, body)`. The body-only helpers
+  (`fetch`, `fetch_with_ua`, the POST variant) keep their behaviour, because
+  their callers read challenge and error pages on purpose.
+- `util::curl::fetch_json` is **deleted**; its one caller moved to
+  `fetch_json_classified`, which returns `JsonFetch::{Decoded, Status,
+  Undecodable, NoAnswer}`. The classification is the pure `classify_json`.
+- `resolve_curl_fallback` answers as the reqwest arm would for the same
+  response:
+  - a 2xx body is decoded;
+  - an `absent_statuses` status becomes `Ok(None)`;
+  - any other status goes through `classify_status_error`, the same typed
+    error `http_status_error` builds (`RateLimited`, `BotChallenge`, …);
+  - no HTTP answer at all is a failure, never `Ok(None)`.
+- The breaker decision is shared too. `record_breaker_outcome` became a
+  wrapper over the new `record_breaker_status`, so both transports record
+  429, 5xx and success identically. The curl path uses the default back-off,
+  because it does not capture `Retry-After`.
+
+### Locks
+
+- `util::curl::tests`:
+  - `an_error_status_is_never_decoded_as_the_document`
+  - `a_2xx_body_decodes_or_is_undecodable_and_no_status_is_no_answer`
+  - `the_write_out_parser_reads_status_and_next_hop`
+  - `real_curl_writes_what_the_parser_reads`: the real `curl` binary (8.5.0
+    here) with the production format constants, against a loopback 404 and
+    302. A parser test alone could agree with itself while curl wrote
+    something else.
+- `util::http::tests`:
+  - `a_fallback_404_is_absent_only_where_the_caller_says_so`
+  - `a_fallback_throttle_is_the_typed_rate_limit_not_data`
+  - `a_fallback_with_no_answer_is_a_failure_never_absent`
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| K0 | **baseline**: the body is decoded whatever the status | killed by 2 |
+| K1 | an absent status is an error | killed by 1 |
+| K2 | no answer reads as absent | killed by 1 |
+| K3 | the parser drops the status | killed by 2 (incl. the real-curl lock) |
+| K4 | the hop write-out omits `%{http_code}` | killed by 1: **only** the real-curl lock can see this |
+
+**5 of 5 killed.** K2's first spec was reported **BAD-SPEC** (rustfmt had
+reflowed the targeted line) instead of going missing. That is the harness fix
+REQ-THREATSRC-001 recorded, catching its first case one requirement later.
+
+### Review round: the error body was not redacted on the curl arm
+
+Review of #641 found that the curl arm still differed from reqwest in one
+step. The reqwest arm's `error_body` caps an error body at 8 KiB, harvests
+it for leaked keys and redacts it (`redact_credentials`) **before**
+`classify_status_error` sees it. The curl arm classified the raw body. A
+provider that echoes the request URL in a 429 or 5xx body (`?api_key=…`)
+would therefore put the key into the typed error, the SSE event and the log.
+The redaction was verified to be missing, not assumed.
+
+The fix is one step both arms take: `sanitised_error_body` (cap →
+`scan_for_api_keys` → `redact_credentials`). `error_body` calls it, and so
+does `resolve_curl_fallback`. The cap is the shared `ERROR_BODY_CAP`, so a
+challenge fingerprint past 8 KiB is invisible to both arms alike.
+
+- Locks: `a_fallback_error_body_is_redacted_as_the_reqwest_path_redacts_it`
+  (429 and 500) and `a_fallback_error_body_is_capped_as_the_reqwest_path_caps_it`.
+  The second carries an in-cap control, so it cannot pass vacuously.
+- Falsified, **3 of 3 killed**:
+  - R1, the baseline (the raw body is classified): killed by 2;
+  - R2, the sanitiser does not redact: killed by 1;
+  - R3, the sanitiser does not cap: killed by 1.
+
+## REQ-AU-UNCLAIMED-001 / REQ-AU-UNCLAIMED-002 — one acceptance decision for a QLD unclaimed-money row
+
+**REQ-AU-UNCLAIMED-001** arrived in #637. It was cited by a test and never
+recorded here. It gated an Organisation seed on `owner_matches_full_name`, a
+**token-subset** test: every seed token appears somewhere in the owner. That
+stopped `"ABC CORP"` from claiming `"DEF CORP PTY LTD"`, but it also admitted
+the reverse cases, and the record found three defects around it.
+
+1. **A person was the organisation.** Organisation seed `"Ford"`, owner `"MR
+   JOHN FORD"`: every seed token is present, so the private individual's row
+   became the company's. His postcode became the company's address, and
+   `"John Ford"` became an `exact-name-match` Person at the pivot confidence.
+2. **A joint owner was judged over the raw string.** Person seed `"John
+   Smith"`, owner `"JOHN NGUYEN & MARY SMITH"`: the joint string holds both
+   tokens, so the row was the subject's own, at the exact-match address
+   confidence, although no one on it is John Smith.
+3. **`exact_postcodes` had its own, weaker predicate.** It decides which
+   postcodes are fanned out into candidate suburbs, and it took **every** row
+   as exact on a verbatim (Organisation) search. `records_to_entities`
+   rejected rows that CKAN's full-text search matched on another column; the
+   postcode pass did not. Measured on the module's own fixture: the
+   Organisation seed `"Insurance Australia Group Limited"` matches three rows
+   on `SenderName`. The entity pass emits nothing, and the postcode pass
+   enumerated all three payees' postcodes as the insurer's suburbs.
+
+### Implemented
+
+- `util::abn::same_company(a, b)`: **equality** after folding case,
+  punctuation, a leading `THE` and trailing legal-form words (`PTY`, `LTD`,
+  `LIMITED`, `INC`, `INCORPORATED`, `PROPRIETARY`, `NL`). A name that folds to
+  nothing matches nothing. It shares `company_tokens` with
+  `looks_like_company`, so "is this a company?" and "is this the same
+  company?" cannot fold a name differently.
+- `au_unclaimed::qld_helpers::row_verdict(owner, query, seed, broadened,
+  kind) -> Option<bool>` is **the one acceptance decision**. Both
+  `records_to_entities` and `exact_postcodes` call it, so a row one rejects
+  cannot reach the other.
+  - **Every seed:** the owner must share a token with the query.
+  - **Organisation seed:** exact when the owner, or one of its syndicate
+    companies, is `same_company` as the seed. A different company carrying
+    every seed token is kept as a non-exact lead. An individual is rejected.
+  - **Person seed:** exactness is judged per parsed co-owner. The
+    surname-position gate for broadened hits moved in unchanged.
+- On an Organisation seed's rows:
+  - a non-exact lead is tagged `similar-company`, not `family-candidate`,
+    which would have sent a company through the surname-kinship and geo-family
+    passes as the subject's relative;
+  - a named individual is a `co-owner`, never `exact-name-match`;
+  - a syndicate sibling that is not the seed company stays tentative.
+
+### Locks
+
+- `modules::au_unclaimed::tests::qld`:
+  - `an_individual_is_never_the_organisation_seed`
+  - `a_different_company_carrying_the_seed_tokens_is_a_lead_not_the_subject`
+  - `the_seed_company_is_exact_whatever_its_legal_form_spelling`
+  - `a_syndicate_sibling_of_the_seed_company_stays_tentative`
+  - `a_joint_owner_is_judged_per_co_owner_not_over_the_raw_string`
+  - `exact_postcodes_takes_only_rows_the_entity_pass_accepts_as_the_subject`
+  - `a_named_co_owner_on_the_seed_company_row_is_not_the_subject`
+- `util::abn::tests::same_company_is_equality_whichever_side_is_the_seed`,
+  and `same_company`'s doc-test.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| U1 | **baseline**: the Organisation token-subset gate returns | killed by 2 |
+| U2 | **baseline**: a person seed's exactness judged over the raw joint string | killed by 2 |
+| U3 | **baseline**: `exact_postcodes` keeps its own weaker predicate | killed by 1 |
+| U4 | an Organisation lead tagged `family-candidate` | killed by 1 |
+| U5 | a syndicate sibling at full weight | killed by 1 |
+| U6 | a named individual on an Organisation row is exact | killed by 1 |
+| U7 | over-correction: Organisation leads dropped | killed by 2 |
+| U8 | `same_company` is a subset test (owner ⊆ seed) | killed by 1 |
+| U8b | `same_company` is a subset test (seed ⊆ owner) | killed by 4 |
+| U8c | U8, doc-tests only | killed by 1 |
+| U9 | `same_company` keeps legal-form words | killed by 2 |
+
+**11 of 11 killed.** U8 **survived** the first matrix. The subset test had
+been reversed, owner ⊆ seed, and no module test fed it a name in that
+direction; only the doc-test saw it, and doc-tests do not run under `--lib`.
+The symmetric unit test was added and U8 re-run. U8c also exposed a harness
+defect: a doc-test's name contains spaces, so the harness read a failed
+doc-test run as SURVIVED. It now counts any non-zero failed total as killed.
+
+## REQ-HUNTER-001 / REQ-HUNTER-002 — a domain search's colleagues are not the subject; its page is not the whole list
+
+**Found** by the adversarially verified module audit.
+
+**REQ-HUNTER-001.** `hunter_io` answers `domain-search`: every address Hunter
+holds at a domain, which means the organisation's **employees**. Each
+employee's LinkedIn / Twitter was emitted as a `Url` or `Username` tagged
+`social-profile`. That copied fullcontact's convention, but fullcontact
+answers for the queried person. Two rules read `social-profile` as the
+subject's:
+- **AU-055** ("Subject's own confirmed account(s)/profile(s) … primary sources
+  the subject controls"): High from one URL, Critical from three platforms;
+- **AU-038**: a cross-platform identity.
+
+An Email seed `jane@acme.com` → Domain `acme.com` → three colleagues'
+profiles was therefore a Critical finding about Jane's own accounts.
+
+**REQ-HUNTER-002.** The module sent one request with Hunter's default page
+(10) and never read the response's `meta.results`, Hunter's own count of the
+addresses it holds. A domain with 35 known addresses came back as a complete
+answer of 10, and the subject's address may be among the 25 never fetched.
+
+### Implemented
+
+- The profile pivots are kept and tagged `employee-profile`, which says whose
+  they are. No owned-account rule reads it.
+- `Wrap` decodes `meta` into `HunterMeta{results, limit}`. The pure
+  `domain_search_result` declares the page to the coverage layer:
+  - `mark_truncated_of(returned, results, …)` when Hunter holds more than the
+    page carried;
+  - with no count, `mark_truncated_if_capped` against the page size;
+  - a page that meets Hunter's own count is complete.
+- One request is still the design, not paging. A free key has 25 searches a
+  month and every page costs one; the cut is now declared rather than hidden.
+
+### Locks
+
+`modules::hunter_io::tests`:
+- `a_domain_search_colleague_profiles_are_never_subject_accounts`. It
+  runs the module's output through `correlator::correlate_entities`, the
+  boundary where the harm happened, and asserts that neither AU-055 nor
+  AU-038 fires.
+- `a_page_short_of_hunters_own_count_is_declared_truncated`
+- `a_page_holding_every_address_hunter_has_is_complete`
+- `with_no_count_a_full_default_page_is_declared_and_a_short_one_is_not`
+- `the_wire_meta_object_is_decoded`
+- The linkedin / twitter tests encoded the defect (they asserted
+  `social-profile`) and now assert the opposite.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| H1 | **baseline**: colleague profiles tagged `social-profile` | killed by 2 |
+| H1b | both tags. The tag-count assertion is satisfied, so only the correlator assertion can see it | killed by 2 |
+| H2 | **baseline**: `meta` never read | killed by 2 |
+| H3 | over-correction: every page truncated | killed by 1 |
+| H4 | boundary: a page equal to Hunter's count read as cut | killed by 1 |
+| H5 | no count: the full-page fallback dropped | killed by 1 |
+
+**6 of 6 killed.** H1b proves that the correlator assertion is live on its
+own, not carried by the tag assertion before it.
+
+## REQ-EMAILREP-001 / REQ-EMAILREP-002 — EmailRep's confidence rests on the report; its leak flag is read under the vendor's name
+
+**Found** by the adversarially verified module audit. Field names were
+verified against the vendor's own documentation, the
+`sublime-security/emailrep.io` README, whose example response is now a
+verbatim test fixture.
+
+**REQ-EMAILREP-001.** `build_email_entity` re-emitted the target at a fixed
+`HIGH_PLUSPLUS_PLUS` (0.85) whatever the report said. The engine merges by
+uid and keeps the higher confidence, so **every address EmailRep answered
+for became VERIFIED** (≥ 0.75). That included:
+- an undeliverable address;
+- one on a nonexistent domain, which the module itself tagged
+  `domain-nonexistent` while emitting it at 0.85;
+- an empty `{}` report.
+
+This is the defect REQ-CANARY-003 fixed in `disposable_check`, at a second
+site.
+
+**REQ-EMAILREP-002.** The details field was read as `credential_leaked`. The
+vendor sends `credentials_leaked` (and `credentials_leaked_recent`). Every
+field is optional, so the misspelling decoded as absent. Every credential
+leak EmailRep reported was dropped: no `breach` tag and no attribute, while
+the module advertises T1589.001 Credentials. The fixtures had been written in
+the module's own spelling, so no test could see the drift.
+
+### Implemented
+
+- `report_observes_the_address` counts only evidence about the **address**:
+  - profiles it is used on;
+  - a breach or a credential leak;
+  - observed malicious, spam or blacklisted behaviour;
+  - a `first_seen` date, not the vendor's `never`.
+
+  `references` is excluded. The vendor documents that it "can include
+  reputation sources for the domain", so a mailbox nobody holds at a
+  reputable domain has references.
+- `report_confidence` sets the rung:
+  - an observed address earns `HIGH_PLUS` (0.70), which is `hibp`'s rung for
+    an address seen in a breach: a presence claim from one third-party
+    source, below VERIFIED until something corroborates it;
+  - any other report is an annotation at `SPECULATIVE`, below
+    `SEED_PRESENT_RUNG`.
+- `RepDetails` reads `credentials_leaked`, `credentials_leaked_recent` and
+  `malicious_activity_recent` under the vendor's names. The evidence
+  attribute is now `credentials_leaked`; nothing outside the module read the
+  old one.
+- `contact_enrich`'s comment no longer lists `emailrep` among the modules
+  that re-emit at 0.85.
+
+### Locks
+
+`modules::emailrep::tests`:
+- `the_vendors_documented_response_decodes`: the vendor's example, verbatim.
+- `a_credential_leak_alone_is_a_breach_signal`
+- `a_report_that_never_observed_the_address_confers_no_presence`. It covers
+  the audit's undeliverable case, `{}`, a nonexistent domain, and references
+  alone.
+- `an_observed_address_is_present_but_not_verified_by_this_source_alone`. It
+  covers six kinds of address-level evidence, each ≥ `SEED_PRESENT_RUNG` and
+  < `VERIFIED_MIN`.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| E1 | **baseline**: the fixed 0.85 re-emission | killed by 2 |
+| E2 | **baseline**: the module's own spelling, `credential_leaked` | killed by 5 |
+| E3 | `references` counted as address evidence | killed by 1 |
+| E4 | `never` counted as a first-seen date | killed by 1 |
+| E5 | over-correction: nothing earns presence | killed by 1 |
+| E6 | an observed address is VERIFIED | killed by 1 |
+| E7 | a credential leak not counted as observation | killed by 1 |
+
+**7 of 7 killed.**
+
+## REQ-WIKITREE-001 / REQ-WIKITREE-002 — a namesake's vitals are not the subject's; every silent wikitree negative is typed
+
+**Found** by the adversarially verified module audit (four findings, one
+module).
+
+**REQ-WIKITREE-001 — a namesake's birth date was scored as the subject's.**
+`wikitree` mints one `Person` per profile, named `First [Middle] Last`. For a
+seed "John Smith" that is the seed itself, so the engine merges every
+namesake onto the subject's anchor. The merge is by uid, keeps the higher
+confidence, and appends the evidence. Each profile's evidence carries
+`born`, one of the `DOB_KEYS`. `core::exposure`'s sensitive-disclosure scan
+has no source gate, so a man born in 1880 in New Zealand scored as **the
+subject's disclosed date of birth**. The module's own docs promise that
+namesakes are the norm and that the operator decides which profile is the
+subject's; the merge made that decision automatically.
+
+The fix is structural, at the field that already exists for it.
+`Evidence.verification` is documented as the record's ownership status, but
+no rule read it; only the report renderer printed it.
+- `wikitree` marks every profile record `VerificationMethod::Unverified`:
+  whose profile it is, is exactly what is not known.
+- `core::exposure` reads evidence through one gate, `attributable(ev)`. An
+  `Unverified` record is shown but is not counted as the subject's DOB,
+  government ID, financial data or breach corpus.
+- The keys are **not** renamed to dodge the DOB detector. The next name-
+  matched source reuses the gate, not a vocabulary trick.
+- `hse-core`'s doc for the field no longer claims a correlator gate that
+  never existed. It states what reads it.
+
+**REQ-WIKITREE-002 — three silent negatives.**
+1. A seed the name parser cannot split (a mononym) returned `Ok(empty)`
+   before any request. Coverage reads that as CleanNegative, "WikiTree holds
+   no profile", for a tree that was never asked. It is now a typed
+   `query_too_weak(Scoped, …)` skip from the pure `search_names`: the
+   REQ-SKIPCLASS-001 defect at an eleventh site.
+2. One `limit=10` page was fetched, and WikiTree's `total` (602 for "John
+   Smith") was written only into a private `matches_total` attribute. The cut
+   is now declared through `mark_truncated`, or `mark_truncated_if_capped`
+   when there is no total.
+3. A **stub** (private profile: `Id` + `Name`) was "counted, not emitted",
+   and the count rode only on emitted entities. An answer made of stubs alone
+   emitted nothing and read as CleanNegative, although WikiTree holds
+   profiles under exactly that name. Private profiles are disproportionately
+   living people, the most relevant subjects. Each stub is now a
+   `private-profile` source Url at `LOW`: the page exists and the details are
+   withheld. It is never a Person.
+
+### Locks
+
+- `modules::wikitree::tests`:
+  - `a_namesake_birth_date_on_the_subject_anchor_is_not_the_subject_disclosure`
+    merges the module's output onto a seed anchor exactly as the engine does,
+    runs `exposure::assess`, and carries a control (the subject's own breach
+    DOB still counts);
+  - `a_seed_that_does_not_split_is_a_typed_skip_not_an_empty_answer`;
+  - `a_page_short_of_wikitrees_total_is_declared_truncated` (3 of 602, on the
+    live fixture);
+  - `a_page_holding_the_whole_total_is_complete`;
+  - `an_answer_of_only_private_profiles_is_not_a_clean_negative`;
+  - the live-shape test asserts the stub's private-profile Url.
+- `core::exposure::tests::a_record_whose_ownership_is_unverified_is_not_the_subjects_exposure`:
+  the gate at its own boundary, for both the sensitive and the breach
+  component, with the verified control.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| W1 | **baseline**: profile evidence not marked `Unverified` | killed by 1 |
+| W1b | the exposure gate removed (module suite) | killed by 1 |
+| W1b-core | the exposure gate removed (core suite only) | killed by 1 |
+| W2 | **baseline**: an unsplittable seed is an empty answer | killed by 1 |
+| W3 | **baseline**: the page's cut never declared | killed by 2 |
+| W4 | over-correction: every page truncated | killed by 1 |
+| W5 | no total: the full-page fallback dropped | killed by 1 |
+| W6 | **baseline**: stubs only counted | killed by 2 |
+
+**8 of 8 killed.** W2's first spec did not compile, and the harness reported
+it as **NO-RUN**, not as a survivor. It was re-specified and killed.
+
+## REQ-NAMESAKE-001 — the ambiguity mark must survive the merge, and there must be one of it
+
+Two defects in the namesake family, found while mapping the authority after
+REQ-WIKIDATA-001 and REQ-WIKITREE-001.
+
+**The mark did not survive the merge it was written for.** `mark_ambiguous`
+capped confidence and stamped the `ambiguous-name` tag — both **entity-level**.
+The engine merges same-named entities and `Entity::absorb` keeps
+`f64::max(confidence)`, so an ambiguous row folded onto the subject's own
+same-named anchor kept the anchor's higher confidence: the cap was erased, the
+tag unioned in but the harm (a pivot-eligible confidence) gone. That is the
+exact erasure REQ-WIKIDATA-001 documented for one module; it is a property of
+the authority, not of any one caller. The row's evidence attributes — a date
+of birth, a registration number — then read as the subject's own.
+
+The durable mark is **per record**. `mark_ambiguous` now also sets
+`Evidence.verification = Unverified` on every record that has no ownership
+status, and records survive the merge. `core::exposure` already gates on that
+field (REQ-WIKITREE-001), so a namesake's DOB on the subject's anchor is shown
+and not scored. An ownership the source actually established (an account linked
+by email) answers a different question and is left untouched.
+
+**There was more than one copy of the rule.** `ahpra` open-coded the tag and a
+confidence of `confidence::MEDIUM` — the expansion floor **itself**, not below
+it — so a proven-collision practitioner sat exactly on the pivot boundary and
+carried no evidence-level mark. `tests/architecture.rs` now refuses the
+`ambiguous-name` tag applied anywhere but `util::namesake::mark_ambiguous`
+(`the_ambiguous_name_tag_is_applied_only_through_mark_ambiguous`), so a fifth
+copy cannot drift in. `ahpra` and `wikitree` both call the authority; the
+consumers are now `ahpra`, `gleif_lei`, `opencorporates`, `wikidata`,
+`wikitree`.
+
+### Locks
+
+- `util::namesake::tests::the_ownership_mark_survives_the_merge_that_erases_the_cap`
+  — merges an ambiguous row onto a same-named anchor, asserts the cap is gone
+  and the `Unverified` mark is not, and that exposure does not count the row's
+  DOB; with the verified control.
+- `util::namesake::tests::an_ownership_the_source_established_is_kept`, also the
+  idempotence of the tag and the mark.
+- `modules::ahpra::tests::a_proven_collision_sits_below_the_expansion_floor_with_its_ownership_unverified`.
+- `modules::wikitree::tests::a_name_the_answer_holds_twice_is_marked_by_the_namesake_authority`.
+- `tests::architecture::the_ambiguous_name_tag_is_applied_only_through_mark_ambiguous`.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| N1 | **baseline**: the mark only caps and tags | killed by 3 |
+| N2 | over-correction: an established ownership is overwritten | killed by 1 |
+| N3 | **baseline**: `ahpra`'s partial copy (floor score, tag only) | killed by 1 |
+| N3-arch | the same partial copy, against the architecture lock | killed by 1 |
+| N4 | `wikitree` never marks a collision | killed by 1 |
+| N5 | over-correction: `wikitree` marks every name | killed by 1 |
+
+**6 of 6 killed.**
+
+## REQ-HUNTER-003 / REQ-AU-UNCLAIMED-003 — review round on #643
+
+Found by review of #643 (Copilot). Every finding was verified against the code
+before it was acted on.
+
+**REQ-HUNTER-003 — a colleague's profile was still an ordinary pivot.**
+REQ-HUNTER-001 retagged the profiles `employee-profile`, which stopped
+AU-055/AU-038. But a tag is not a gate: the `Url` stayed pivot-eligible, so
+`web_crawler` and `search_engines` could mine a colleague's page and attribute
+their emails and phones to the subject. The fix is a canonical
+`tags::THIRD_PARTY`: a page about somebody else, kept and shown, not
+quarantined. `core::engine` reads it in the gate that already withheld
+`SOURCE_DOCUMENT`. The gate is now one table, `NEVER_PIVOTED`, so the two tags
+cannot be gated differently. Adding the tag touches `hse-core`: `tags.rs` holds
+only constants, and the `wasm-ui/pkg` byte check was run locally with the
+pinned toolchain to confirm the bytes did not change.
+
+**Also fixed in this round:**
+- **emailrep** did not count `*_recent` flags or `last_seen` as observations of
+  the address, although the vendor documents them as such.
+- **wikitree** returned early on an empty page before the truncation check, so
+  a positive `total` with no rows read as a clean negative.
+
+**REQ-AU-UNCLAIMED-003 — the company filters still used the token subset.**
+- The emit filter dropped **the seed company itself** whenever the seed's
+  article or legal form differed: "The Acme Group Limited" against "ACME GROUP
+  PTY LTD" on a row `row_verdict` had accepted as exact.
+- A sender company carrying the seed's words was emitted at the row's full
+  weight.
+- The fix: `company_carries_seed` = `same_company || token subset`, and only
+  the seed company itself is emitted at full weight.
+- `util::abn`'s tokeniser now folds `AND` and a scraped `&amp;` to `&`. This
+  retires the hand-kept `" AND CO "` suffix, which had been a workaround for the
+  missing fold.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| T1 | **baseline**: no `THIRD_PARTY` row in the gate | killed by 1 |
+| T2 | the table refactor drops `SOURCE_DOCUMENT` | killed by 1 |
+| T3 | **baseline**: hunter's pivot untagged | killed by 1 |
+| E8 / E9 | recent flags / `last_seen` ignored | killed by 1 each |
+| E10 | over-correction: `never` counted as a date | killed by 1 |
+| W7b | **baseline**: the empty return precedes the verdict | killed by 1 |
+| U10 / U11 | **baseline**: token-subset filter / sender paid at full weight | killed by 1 each |
+| U12 | over-correction: equality-only filter | killed by 2 |
+| A1 / A2 | no fold / folding any `AND…` token | killed by 1 each |
+
+**13 of 13 killed.** The first W7 spec *survived*: removing the return
+outright is an equivalent mutant, because the loop over no rows is empty. It
+was re-specified as the true baseline, the return moved ahead of the verdict,
+and that version was killed.
+
+### REQ-APIDISCOVERY-001 — a domain's published API and authorization surface had no reader; `api_discovery` reads four discovery well-knowns, validates each against the URL that served it, and follows declared authorization servers the Domain pivot cannot reach
+
+#### Where this sits
+
+T1/T2 (`docs/ROADMAP.md`). A new keyless Domain module, registered beside
+`app_links` — its sibling: `app_links` reads what a domain publishes about its
+mobile apps, `api_discovery` what it publishes about its programmable surface.
+Emits `Other("oauth-issuer" | "oauth-protected-resource" | "api-reference")`
+terminal records and `Domain` pivots. Module 194.
+
+#### Observed, before any code (live, 2026-09-22)
+
+- **OIDC / RFC 8414** — `gitlab.com` serves identical metadata at both
+  well-knowns, every endpoint on `gitlab.com`; `accounts.google.com` puts its
+  endpoints on siblings (`oauth2.googleapis.com`, `openidconnect.googleapis.com`,
+  `www.googleapis.com`) and names `service_documentation`.
+- **RFC 9728** on remote MCP servers — `mcp.linear.app`, `mcp.notion.com`,
+  `mcp.asana.com` (self-hosted AS, `resource_name`, `resource_documentation`),
+  `mcp.atlassian.com` (`resource` with a trailing slash; AS
+  `https://auth.atlassian.com/<tenant>` — a PATH), `mcp.stripe.com` (AS
+  `https://access.stripe.com/mcp` — a PATH). `mcp.sentry.dev`,
+  `api.githubcopilot.com`: 404.
+- **RFC 9727** — no sampled domain serves one (`www.rfc-editor.org`: 404). The
+  catalog leg is built to the RFC's shapes and pinned by fixtures; no live
+  confirmation exists.
+- No module read any of these. `web_crawler`'s `crawl_util` names
+  `security.txt` only in a regression comment about its config-leak list.
+
+#### What ships
+
+Four legs fetched concurrently. For each OAuth document the declared
+identifier must equal the one its **served** URL derives (OIDC appends the
+suffix; RFC 8414 / RFC 9728 insert it), canonicalised (trailing `/` and the
+default port are not identity; query, fragment, userinfo and non-`https`
+disqualify). A document failing that MUST NOT be used, and is not.
+
+Ownership is the second gate: endpoint hosts are pivots only when the served
+URL is the target or a host under it (`served_by`, the one authority, compared
+in canonical form). A cross-site redirect yields a *delegated* issuer — no
+scopes, no hosts — and a cross-site protected resource yields nothing. Every
+discovered URL goes through `public_https_url`: `https`, no userinfo, a
+registrable DNS name (the WHATWG parser turns `2130706433` into `127.0.0.1`, so
+numeric encodings cannot pass as names), not refused by
+`util::preflight::url_host_is_private`. At most 200 host pivots and 200 API
+references are emitted per target, and a shortfall is declared (R1 below).
+
+A second stage follows each **path-bearing** authorization server a protected
+resource declares to its RFC 8414 and OIDC metadata URLs. The followed issuer
+must validate at the URL that served it AND be the issuer that was declared.
+At most `MAX_DECLARED_SERVERS` (4) are followed — a bound on requests, not on
+output: every declared server is still recorded and its host still pivoted.
+
+Outage typing starts from `app_links`' (REQ-APPLINKS-001) and, after R5 below,
+goes further: a wall or a throttle at any status is `Blocked`, typed; a
+transport failure or a 5xx is `Failed`; a 404/410 or plain 4xx is the site's
+own answer. Only all four legs prevented with nothing found is an error. The decision is the pure
+`collect` → `Collected::finish`, so it is pinned without a network; the tests
+drive the same `collect` production does.
+
+#### Found along the way — by the engine's own canonicaliser
+
+The first cut expected `www.googleapis.com` and got `googleapis.com`:
+`Entity::new` strips a leading `www.`. The test was wrong — and the code under
+it was too. The self-pivot check compared the RAW host with the target, so for
+target `acme.com` an endpoint on `www.acme.com` passed `!= site` and was then
+born AS `acme.com`: the target echoed back as its own discovered pivot. Pivots
+are now keyed on `core::entity::normalise`, and the target itself is
+canonicalised once, in `collect`, which also fixed a second case the same
+comparison broke: a target given as `www.acme.com` whose well-known redirects
+to its apex read as a cross-site delegation. Both locked
+(`a_www_endpoint_is_never_the_target_echoed_back`,
+`a_www_target_redirected_to_its_apex_stays_owned`).
+
+#### Found along the way — by the production path
+
+Run through the `hse` binary (`hse scan -k domain -m api_discovery -d 1`), not
+only the test client:
+
+- `mcp.stripe.com` logged `rejected: 1`. Confirmed by hand: its
+  `/.well-known/oauth-authorization-server` serves metadata whose issuer is
+  `https://access.stripe.com/mcp`. RFC 8414 §3.3 forbids using it as
+  `mcp.stripe.com`'s; the relationship arrives correctly through the RFC 9728
+  leg instead. The rejection is right.
+- The engine expanded the `access.stripe.com` pivot and re-ran the module
+  there: `found: 0`. The issuer's metadata lives at
+  `/.well-known/oauth-authorization-server/mcp`, and a bare Domain pivot has
+  lost the path — the chain dead-ended on two of the five live MCP servers.
+  That is the second stage above; after it the same scan yields the validated
+  `https://access.stripe.com/mcp`, tagged `declared-authorization-server`.
+- `mcp.atlassian.com` yielded less through the binary than through the live
+  test, deterministically (4 of 4 runs). Isolated by variable: the same URL
+  returns `200` to the sandbox's egress proxy and `404` to the direct route
+  (`curl --noproxy '*'`, HTTP/1.1 and HTTP/2 alike; User-Agent irrelevant).
+  The engine's client is `no_proxy()` by design, so the module reported what
+  that server told that vantage — an honest clean miss, not a defect. The
+  defect was the live test: it used `reqwest::Client::new()`, which takes the
+  proxied route, so it proved a path production never takes. It now uses
+  `build_client()`, and asserts only on targets verified on the direct route.
+  The canary was chosen by the same rule (`accounts.google.com`, `Alive
+  { found: 6 }` through the sweep's own `probe_module`); `mcp.atlassian.com`
+  was rejected as one.
+
+#### Falsification — predicted before run, then compared
+
+Each row mutates one guard back to the naive form, predicts the one test that
+must fail, runs it, restores (byte-identical, `diff -q`).
+
+| # | mutation | predicted failing test | actual |
+|---|---|---|---|
+| M1 | accept any issuer | `an_impersonated_issuer_is_never_used` | killed |
+| M2 | self-pivot compared raw | `a_www_endpoint_is_never_the_target_echoed_back` | killed |
+| M3 | SSRF preflight removed | `private_and_special_use_endpoint_hosts_are_never_minted` | killed |
+| M4 | every served document owned | `a_cross_site_redirect_records_a_delegated_issuer_without_pivots` | killed |
+| M5 | served host compared raw | first run: `a_www_target_redirected_to_its_apex_stays_owned` | **survived — misprediction, corrected** |
+| M5′ | served host compared raw | `a_catalog_served_from_the_absolute_form_of_the_target_stays_owned` | killed |
+| M6 | target not canonicalised | `a_www_target_redirected_to_its_apex_stays_owned` | killed |
+| M7 | outage collapsed to a clean negative | `every_leg_prevented_is_an_outage_never_a_clean_negative` | killed |
+| M8 | wall folded into the ordinary negative | `a_wall_is_not_an_answer_about_api_discovery` | killed |
+| M9 | followed server need not be the declared issuer | `a_followed_server_answering_for_another_issuer_is_not_used` | killed |
+| M10 | follow-up fan-out unbounded | `declared_server_follow_ups_are_bounded_but_nothing_is_dropped` | killed |
+| M11 | path-less servers followed too | `path_less_or_already_validated_servers_are_not_followed` | killed |
+| M12 | follow-up skips the SSRF preflight | `a_private_declared_server_is_never_followed` | killed |
+
+M5 is recorded, not rewritten: the prediction put the load on the wrong half
+of the ownership fix. With the target already canonical, a raw `acme.com`
+served host still compares equal, so M5's test could not see M5. The half that
+carries the `www.` case is the TARGET's canonicalisation (M6); the served
+host's matters only for the absolute `acme.com.` form, and only on the catalog
+leg — the OAuth legs reject that origin at the identifier check first. Each
+half now has its own lock.
+
+The roadmap lock (`the_map_states_the_live_registry_size`) was falsified the
+same way: the heading set back to `193` fails it with the stale figure named;
+restored to `194`, it passes.
+
+#### Review hardening — five Copilot findings on PR #642, each verified before fixing
+
+All five checked out as real defects. Each was reproduced by the mutation
+that restores it, and fixed.
+
+| # | finding | verified how | fix |
+|---|---|---|---|
+| R1 | every discovered host and reference emitted, unbounded | `core::engine::dispatch` checks `max_entities` only BETWEEN dispatches and absorbs one module's result whole; the only bound on a target-controlled document was the 32 MiB body cap | `MAX_PIVOT_HOSTS` / `MAX_REFERENCES` = 200 (`sitemap`'s `MAX_URLS` order), and the shortfall DECLARED via `ModuleResult::mark_truncated` with the known total, so coverage never reads a capped answer as the whole one |
+| R2 | a URL with userinfo copied its credential into the findings | `public_https_url` accepted `https://user:secret@host/`, and the reference is persisted verbatim; `canonical_identifier` already refused the same shape, so one rule had two answers | userinfo refused in `public_https_url` — the safer fix for a security finding |
+| R3 | `strip_prefix` accepted a path that merely STARTS with the well-known | `/.well-known/oauth-authorization-server.google.com` derived `https://acme.com.google.com` — an issuer on another host, validated by a URL that is no derivation of it | the inserted suffix must end on a segment boundary (rest empty or `/…`); OIDC's append rule already could not, as its suffix begins with `/` |
+| R4 | RFC 9728 `resource_policy_uri` discarded | read the struct: only `resource_documentation` was kept; the same gap held for `resource_tos_uri` and for RFC 8414's `op_policy_uri` / `op_tos_uri` beside `service_documentation` | one `reference_urls()` per metadata type, every documentation/policy/terms field the spec defines, the field name as the relation |
+| R5 | a 429 read as a clean negative | `!is_success() → Answered` returned before any classification, so the `RateLimited` arm was unreachable and four throttled legs read as "publishes nothing" | 404/410 → `Answered`; everything else through the shared `http_status_error`: a 429 or a challenge page at any status → `Blocked`, typed; a 5xx → `Failed` (the variant renamed from `TransportFailed`, since a 5xx is not one); a plain 4xx stays `Answered` on purpose — a stock "deny dotfiles" rule 403s every `/.well-known/` path |
+
+The mutation table was re-run in full on the post-fix source, not only the new
+rows: all nineteen killed, source restored byte-identical. R2 needed a second
+run — its first anchor matched `canonical_identifier`'s identical userinfo
+check as well, so the harness refused to mutate an ambiguous line rather than
+guess which. That is a non-run, not a survivor, and is recorded as one; the
+unique anchor then killed it (`` `s3cret` reached the findings ``).
+
+`app_links` carries the same `!is_success() → Answered` shape R5 fixed here, and
+the same unreachable `RateLimited` arm. It is left for its own change: this PR
+does not widen into a module it did not otherwise touch.
+
+#### Scope, honestly
+
+- The first stage reads each well-known at the domain's apex only. An issuer
+  whose own identifier carries a path (a Keycloak realm at
+  `https://h/realms/x`) is found only when some protected resource declares
+  it; nothing guesses realm names.
+- API references are recorded, not fetched: an OpenAPI document's `servers`,
+  paths and security schemes are the next reader, not this one.
+- The `Link: <…>; rel="api-catalog"` response header (RFC 9727 §3.2) is not
+  read; only the well-known is.
+- RFC 9727 has no live confirmation from any sampled domain (above).
+- Provider answers can depend on the vantage: `mcp.atlassian.com`'s protected
+  resource 404s on this sandbox's direct route. A device elsewhere (the
+  Vietnam base) may see a different answer, and the module reports whichever
+  it is given.
+- The follow-up stage's failures are best-effort by design and move no outage
+  verdict; a declared server that could not be followed stays recorded as
+  declared, unvalidated.
+
+## REQ-IDENTITY-GATE-001 / REQ-SUBJECT-SCOPE-001 / REQ-GEO-FAMILY-001 / REQ-WIKIDATA-003 / REQ-SEARCH-ADDR-001 — a name scan's namesakes, relatives and namesake places are not its subject
+
+**Found** by reading one real scan end to end: a `full_name = "Ian Thorpe"`
+scan (7258fc07, 2026-09-23), exported as debug bundle, events log, CSV and
+GEXF. Its self-audit graded it 81/100 while 81 entities sat in VERIFIED,
+among them an "Aidan Thorpe" Instagram handle at `c_eff 1.00`, "Carol /
+Megan / Tracy Thorpe" as corroborated relatives, and a best location fix
+at 0.97 that was a public swimming pool.
+
+**REQ-IDENTITY-GATE-001 — the pivot gate could not tell a relative from the
+subject.** `is_wrong_identity_pivot` asks whether a `Person` shares a ≥4-char
+run with the subject; every surname-sharer does (`meganthorpe` ⊃ `thorpe`),
+and so does a near-surname (`ianthorley` ⊃ `ianthor`). Its corroboration
+escape then read "two registers list Megan Thorpe" as "Megan Thorpe is the
+subject". The scan pivoted Ian Thorley, Aidan, Megan, Wendy, Jon, Johnny and
+David Thorpe and "Ian Thorpe Aquatic Centre"; each got name permutations,
+~200 speculative mailboxes and handles, profile and breach probes. The new
+`scan::classify::person_names_compatible` reads given and surname positions
+(honorifics, post-nominals, `(notes)` and `Surname, Given` handled; initials
+fold; nicknames deliberately do not), and the engine's new
+`different_named_person` gate refuses a `Person` structurally incompatible
+with the `FullName` seed whatever its confidence or source count. Only
+`--expand-all-identities` lifts it. `core::exposure` applies the same rule:
+a record on another named person — "Carol Thorpe Tully", born 1946, from a
+relative's pivot — is no longer "disclosed: date of birth".
+
+**REQ-SUBJECT-SCOPE-001 — a module's subject claims were admitted
+unscoped.** A module sees only the target it ran on. `name_intel` tagged
+every pivoted name `seed` + `subject` with "Scan subject — provided as the
+seed" (eleven "subjects" in one scan); `qld_unclaimed` tagged every row that
+exactly matched a pivot's name `exact-name-match`, and `geo_family` anchors
+"the subject's confirmed location" on such rows — a company pivot's
+postcode, a relative's. `engine::dispatch::rescope_subject_claims`, at the
+single admission point, keeps the three claim tags on the seed dispatch,
+keeps only `exact-name-match` on a pivot that is a variant of the seed's
+own name, and strips all three elsewhere. `name_intel`'s evidence now
+states only what it knows.
+
+**REQ-GEO-FAMILY-001 — family membership was decided twice, differently.**
+AU-061 checked a `family-candidate` Person's surname against the subject's;
+the engine pass that writes the `geo_corroboration` evidence (and lifts
+`source_count`) did not, so 69 Thorleys became "shared-surname relatives"
+of a Thorpe and the seed Person was stamped its own relative "~0 km" away.
+`geo_family::is_subject_family_candidate` is now the one test: family tag,
+not the subject (`seed`/`subject`/`exact-name-match`), and the subject's
+surname on a Person. `subject_surname` prefers the seed over a register
+match. The GEXF co-occurrence key excludes engine-derived corroboration
+records: their templated summary wired every promoted relative to every
+other — 12,319 of the export's 33,473 edges.
+
+**REQ-WIKIDATA-003 — a place named after the subject was the subject.** An
+untyped Wikidata item fell back to the seed's kind, so the venue "Ian Thorpe
+Aquatic and Fitness Centre" became a `Person`, tagged `exact-name-match`,
+and its P625 — emitted at HIGH, over the subject-fix floor — became the
+best AU location fix at 0.97. An untyped item carrying P625 is now a located
+thing, not a person; a head that is not the seed's kind of thing is neither
+`exact-name-match` nor a source of the subject's coordinates.
+
+**REQ-SEARCH-ADDR-001 — a people-search title was an address.**
+`extract_addresses_from_text` reads the capitalised run before `", <State>"`
+as a city, so `spokeo.com/Ian-Thorpe/North-Carolina` became the Address
+"Ian Thorpe, North Carolina" (fourteen such), and Photon geocoded four
+different names to one arbitrary point. On a name scan
+`is_person_listing_locality` drops a multi-word "city" ending in the scanned
+surname unless a place word leads it; a one-word suburb that is the surname
+("Lawnton, QLD") is unaffected. Review of #645: the caller read the seed's
+surname as its last whitespace token, so `"Dr Ian Thorpe OAM"` searched for an
+"OAM"; it now uses the identity gate's own parser (`core::scan::person_surname`),
+locked by `a_name_scan_…` 's sibling
+`the_listing_title_filter_reads_the_surname_of_a_decorated_or_reversed_seed`
+(killed on the last-token reading).
+
+### Locks
+
+- `core::scan::tests::person_names_compatible_reads_given_and_surname_positions`,
+  `only_a_person_structurally_unlike_the_subject_is_another_named_person`;
+- `core::engine::tests::a_person_whose_name_cannot_be_the_subjects_is_never_pivoted`
+  (with the `--expand-all-identities` control) and
+  `a_pivots_subject_claims_are_rescoped_to_the_scan_subject` — both through
+  `ScanEngine::run`;
+- `core::geo_family::tests::only_the_subjects_surname_kin_and_never_the_subject_are_family`,
+  `subject_surname_prefers_the_seed_over_a_register_name_match`;
+- `core::gexf::tests::an_engine_derived_template_record_draws_no_co_occurrence_edge`;
+- `core::exposure::tests::another_named_persons_record_is_not_the_subjects_exposure`;
+- `modules::wikidata::tests::a_place_named_after_a_person_seed_is_neither_the_person_nor_their_location`;
+- `modules::search_engines::helpers::entity::tests::a_people_search_listing_title_is_not_a_locality`.
+
+### Falsified
+
+Each mutation re-introduces one removed root cause; the source was restored
+byte-identical (SHA-256 checked) after every run.
+
+| # | mutation | result |
+|---|---|---|
+| M1 | the engine's `different_named_person` gate removed | killed by `a_person_whose_name_cannot_be_the_subjects_is_never_pivoted` |
+| M2 | `rescope_subject_claims` not called at admission | killed by `a_pivots_subject_claims_are_rescoped_to_the_scan_subject` |
+| M3 | family surname check removed | killed by `only_the_subjects_surname_kin_and_never_the_subject_are_family` |
+| M4 | the subject's self-exclusion from family removed | killed by the same |
+| M5 | GEXF keeps engine-derived records in the co-occurrence key | killed by `an_engine_derived_template_record_draws_no_co_occurrence_edge` |
+| M6 | exposure's other-named-person gate removed | killed by `another_named_persons_record_is_not_the_subjects_exposure` |
+| M7 | wikidata's P625 clause in `classify` removed | killed by `a_place_named_after_a_person_seed_is_neither_the_person_nor_their_location` |
+| M8 | `is_person_listing_locality` unwired from `build_entities` | killed by `a_name_scan_emits_no_address_from_a_people_search_listing_title` |
+| M9 | the name rule's surname-position check removed | killed by `person_names_compatible_reads_given_and_surname_positions` |
+
+**9 of 9 killed.**
+
+## REQ-STORAGE-005 — a scan's exports carried other scans' evidence
+
+**Found** in the same bundle: `organisation = AGL SALES PTY LIMITED` showed
+`generation=0`, `corroboration=37` and a `qld_unclaimed` record `recorded_at`
+eight days before the scan whose `paid_to_owner` listed other scans'
+subjects; 506 evidence records predated the scan start. The entity uid is
+scan-independent, every persist merged into ONE shared `entities` row, and
+every per-scan reader (`entities_for_scan`, `entities_filtered` — so the
+bundle, CSV, report and recall) returned that row. An earlier scan's export
+also changed after it completed.
+
+**Fix.** `entity_observations.data_json` holds the scan's OWN copy, folded
+from that scan's writes only (merge, GREATEST corroboration, canonical
+order); per-scan readers select `COALESCE(o.data_json, e.data_json)`, and
+`entities_filtered` applies its floor and order to the copy. The shared row
+stays the cross-scan knowledge base (`get_entity`, search). Existing
+databases gain the column through `Store::open`'s idempotent
+`ensure_column` (additive: `SCHEMA_VERSION` unchanged; a legacy row reads
+through the shared row). `build_scan_report` restores correlation-referenced
+entities from the scan's own set instead of `get_entity`. The
+`InMemoryStore` double keeps per-scan copies the same way.
+
+**Locks:** `storage::tests::a_scan_reads_only_its_own_copy_of_an_entity_other_scans_also_observed`,
+`entities_filtered_applies_the_floor_to_the_scans_own_confidence`,
+`an_observations_table_without_the_copy_column_is_migrated_on_open`;
+`test_support::tests::per_scan_reads_return_the_scans_own_copy_not_the_shared_entry`.
+
+**Scope, honestly:** scans persisted before this change have no copies and
+still read the shared row until re-run; each observation row now stores an
+entity JSON, roughly doubling entity storage.
+
+## REQ-OFAC-002 — OFAC screening never had a list in production
+
+Both `/api/download/*.CSV` endpoints answer `302` to a one-hour pre-signed
+`*.s3.us-gov-west-1.amazonaws.com` URL (live, 2026-09-23). The shared
+client's cross-site redirect rule hands that `302` back — correctly, for
+keyed callers — and `fetch_one_list` read it as a failure, so every scan
+logged "no list has ever been cached". Only success was recorded, so each
+dispatch re-downloaded (6× in one scan). `list::presigned_hop` (https, DNS
+name under `.amazonaws.com`, no userinfo or port) gates one keyless manual
+hop; `ListStore` makes refreshes single-flight and remembers a failure for
+`FAILURE_COOLDOWN_SECS` (5 min) through the pure `should_refetch`. The global
+rule is unchanged and pinned
+(`util::http::tests::redirect_verdict_stops_ofacs_hop_to_its_presigned_s3_object`).
+**Locks** (`modules::sanctions_ofac::tests`): `presigned_hop_*`,
+`the_shared_client_hands_back_ofacs_s3_redirect_unfollowed`,
+`fetch_one_list_follows_no_redirect_but_the_presigned_one`,
+`should_refetch_truth_table`, `concurrent_dispatches_share_one_*`,
+`an_empty_download_is_remembered_as_a_failure_not_cached`.
+
+## REQ-AHPRA-002 — the real AHPRA register read as a Cloudflare wall, and behind it the query is ignored
+
+The bare `/cdn-cgi/challenge-platform` signature matched Bot Management's
+JavaScript-detection snippet (`/scripts/jsd/main.js`), which Cloudflare
+injects into every page of a zone, so the genuine 169 KB register page
+(HTTP 200, its own title) was typed `BotChallenge`. The signature is now the
+challenge loader path `/cdn-cgi/challenge-platform/h/`. Beneath that mask
+the register ignores `Spousesurname=` / `Organisation=` and returns its
+blank POST form (`id="mainform"`, no `<table>`), so the detector fix alone
+would have minted "not a registered practitioner": `ahpra::register_rows`
+refuses a row-less form page as `Error::Module` (coverage `Failed`, never
+`CleanNegative`). The POST API is not guessed at. The `you.com` fixture test
+asserted the old false positive (its capture carries only the JSD snippet)
+and now pins the boundary instead. **Locks:**
+`util::html::tests::cloudflares_always_injected_jsd_script_is_not_a_wall`,
+`a_real_cloudflare_challenge_loader_is_still_a_wall_on_its_own`;
+`modules::ahpra::tests::the_registers_blank_search_form_is_a_failure_not_zero_practitioners`,
+`the_real_register_page_is_neither_a_wall_nor_a_clean_negative`;
+`modules::search_engines::fetch::tests::cloudflares_injected_jsd_snippet_alone_does_not_make_a_youcom_page_a_challenge`.
+
+## REQ-EXPORT-003 — the client-safe redactor fabricated addresses, missed key names and merged providers; a live events.log was unmarked
+
+**Found** in the same scan's `hse-events-<id>.log`. The shareable-download
+redactor was one `(?i)\b(?:names)\b` → `"breach-source"` regex over the whole
+body. `\b` matches at `.` and `/`, so real addresses became plausible,
+registrable fakes: `https://see-know.ru` → `https://breach-source.ru`,
+`dehashed.com` → `breach-source.com`, `intelx.io/signup` →
+`breach-source.io/signup`. `_` is a word character, so `HUNTSMAN_SEEKNOW_KEY`
+and the other key names passed through, as did the `signup_hint` brands
+("Intelligence X", "Stolen.tax") — the "never named" promise was false. Ten
+modules collapsed onto one label (277 events), destroying per-module
+start/done accounting. Separately, the download served mid-scan was a strict
+5,350-event prefix of the 8,190-event sequence with nothing marking it
+partial, under a doc comment promising a "complete, loss-less" log.
+
+**Fix.** Three passes: any URL or hostname containing a sensitive name
+becomes `[redacted-url]` whole; a sensitive provider's key env var becomes
+`HUNTSMAN_[redacted]_KEY` (stems matched to modules from `KNOWN_KEYS`); every
+spelling of a provider (registry, aliases, its `signup_hint` brand and host)
+becomes its own stable `[breach-source-N]`, between non-alphanumeric
+boundaries. `render_event_log_export` reads the scan before its events and
+appends one `export_snapshot` line whenever `partial_export_reason` reports
+the scan partial; the API route and `hse export --format events` both use
+it. REQ-API-EXPORT-001 is superseded. **Locks:**
+`api::scan_export::redact::tests::redaction_never_fabricates_a_domain`,
+`redaction_covers_env_var_key_names`, `distinct_providers_keep_distinct_placeholders`,
+`every_sensitive_signup_hint_brand_and_domain_is_redacted`,
+`every_keyed_sensitive_module_has_its_key_env_redacted`; `tests/api.rs`
+`events_log_of_running_scan_is_marked_partial` (with the finished-scan
+control) and the extended shareable-download test.
+
+**Scope, honestly:** the placeholder numbering follows the public module
+list, so someone holding the same build can map `[breach-source-N]` back to a
+provider; per-export numbering would prevent that but break cross-export
+consistency. Kept stable.
+
+## REQ-KEYPROBE-002 — any key was a "validated" credential for every service whose refusal the body heuristic could not read
+
+**Found** by the adversarially verified module audit (`api_key_probe/mod.rs:366`). Vendor facts were checked against the vendors' own documentation: VirusTotal's error reference, and the Hunter and AbuseIPDB API docs.
+
+`probe_endpoint` ran `curl -s` with no `-f` and no status capture. curl exits 0 for **any** response it receives, so a 401 reached `process()` exactly as a 200 did. Past that point, one thing decided whether the answer became a `validated` `ApiKey` at `VERY_HIGH_PLUSPLUS`, plus a service-domain pivot and an `api_key_report` summary: `is_error_response`, a vocabulary of body shapes. It read `error` only as a string.
+
+VirusTotal's documented error envelope is `{"error": {"code": …, "message": …}}`, and a wrong key gets `401 WrongCredentialsError`. So **every key scanned** became a live VirusTotal credential with a `virustotal.com` pivot. An `ApiKey` target can come from a crawled page or a breach dump, and the module's own docs warn against exactly this false attribution.
+
+VirusTotal was one shape among several. The vendors document conventional status codes, not a common body:
+- Hunter: "401 - Unauthorized: No valid API key was provided", with an `{"errors": […]}` list;
+- AbuseIPDB: "HTTP status codes are the most reliable method of determining the status of the API response", with a JSON:API `errors` collection;
+- Netlas answers a dead key with `400 {"detail": …}`, the body `AUTH_400_SIGNATURES` records as observed live;
+- Criminal IP reports a dead key as an in-body `status: 401` on an HTTP 200.
+
+None of them matched an arm. REQ-KEYPROBE-001 (#637, recorded only in its commit message) had already added one arm, for `valid:false`. A further arm would have been the same patch again: the defect was the discarded status.
+
+### Implemented, at the shared authority
+
+- `probe_endpoint` writes `%{http_code}` after the body, using `-w "\n%{http_code}"`, the sentinel `key_pool::validation` already reads for the same `ServiceDef`. It returns `Answer { status, body }`. A refusal is still an answer, not a transport failure, so T2.123's outage detection is unchanged.
+- The verdict is not new code. `key_pool::validation::classify_probe_response` already judged answers from these test endpoints for the pool:
+  - a 2xx is valid unless `service_defs::body_rejects_key` says otherwise;
+  - 401/403, and a 400 matching `is_auth_failure_400_body`, are refusals;
+  - anything else settles nothing.
+
+  It and its `ProbeOutcome` are now `pub(crate)`. The pure `accepted_body` requires `Valid` before a body is parsed or minted. The probe therefore never validates a key on an answer the pool reads as a refusal.
+- `is_error_response` stays as the second gate, for 2xx answers only. It now reads a non-empty `error` object as an error envelope. A scalar marker is not one: ONYPHE's success carries `"error": 0`.
+- The hand-rolled `serve_once_json` is replaced by the shared `util::http::test_server`.
+
+### Locks
+
+`modules::api_key_probe::tests`:
+- `a_virustotal_refusal_is_an_answer_but_never_a_validated_key` runs the real curl binary against a loopback 401 carrying VirusTotal's envelope. It asserts that the status reaches the verdict and that the refusal is an answer, not a transport failure.
+- `a_refusal_only_the_status_carries_is_still_a_refusal`: Hunter's 401 and Netlas' 400, each with a control asserting that the body heuristic alone cannot see it.
+- `an_answer_that_settles_nothing_about_the_key_is_not_a_validation`: AbuseIPDB's documented 422, verbatim.
+- `a_dead_key_reported_inside_a_200_body_is_a_refusal`: Criminal IP's in-body 401/402/429. Only the shared verdict sees these, so a module-local 2xx gate cannot pass it.
+- `a_key_the_service_accepts_is_still_reported_validated`: the over-correction guard, with VirusTotal's 200 and ONYPHE's `"error": 0` success.
+- `an_error_object_is_an_error_response_but_a_scalar_error_marker_is_not`
+- `probe_endpoint_reports_executed_when_the_host_answers` now asserts the captured status too.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| P1 | **baseline**: the verdict never reads the status (every answer judged as a 200) | killed |
+| P2 | **baseline**: the probe drops the `-w` status write-out | killed |
+| P3 | **baseline**: the `error`-object arm removed | killed |
+| P4 | over-correction: any non-null `error` marker is an error | killed |
+| P5 | over-correction: a refusal is a transport failure (a rejected key reads as an outage) | killed |
+| P6 | over-correction: nothing validates | killed |
+| P7 | over-correction: an empty `error` object is an error | killed |
+| P8 | a 2xx gate of the module's own instead of the shared verdict | killed |
+| P9 | an answer that settles nothing counts as acceptance | killed |
+
+**killed of 9 killed.**
+
+### Residual
+
+- `hibp` probes `/api/v3/breaches`, which HIBP does not list among its authorised APIs. If HIBP ignores a supplied key there, any key answers 200 and is still validated. No verdict can see that; it is a test-endpoint defect (unverified).
+- The `valid:false` arm (REQ-KEYPROBE-001) reads numverify's verdict on the probe's number, a NANP 555-01xx fictional number. It may therefore refuse a valid key (unverified).
+- One `ServiceDef` still has two request builders, `probes::request_for` and `validate_against_endpoint`. Only the verdict is shared.
+
+**9 of 9 killed** (run against the compiled patch; clippy `-D warnings` clean).
+
+
+## REQ-PLC-001 / REQ-PLC-002 — a deleted identity's last handle is not current; a did:web string is not an identity
+
+**Found** by the adversarially verified module audit (two findings, one module). Wire facts were read on 2026-09-23 from:
+- the did:plc spec v0.1 (`web.plc.directory/spec/v0.1/did-plc`);
+- the W3C CCG did:web method;
+- the AT Protocol DID and handle specs (`atproto.com/specs/did`, `/specs/handle`);
+- the `com.atproto.identity.resolveHandle` lexicon and its AppView handler (`bluesky-social/atproto`, main).
+
+**REQ-PLC-001 — a deleted identity kept its "current" handle and server.** `history::fold` recorded a `plc_tombstone` only as a date. The handle and PDS declared by the op before it stayed in `current_handles` / `current_pds`. The spec says a tombstone "clears all of the data fields and permanently deactivates the DID". So the deleted account's last handle was emitted as its **current** handle:
+- the Username at 0.85, `handle_state=current`, with no released-handle caveat;
+- a domain handle as a 0.80 `verified-control` Domain with no `historical` tag;
+- the PDS as the "current personal data server";
+- the DID with `current_handle` / `current_pds` next to `tombstoned`.
+
+A deleted identity releases its handles, so a stranger may already hold that name. The same stickiness hit any op that declared no handle or no server: `if !handles.is_empty()` and `if let Some(host)` skipped it. The spec lists `alsoKnownAs` and `services` among the fields every creation or update carries, so an empty list means none.
+
+**REQ-PLC-002 — the module attributed an identity it never confirmed.** A `did:web:` seed was returned verbatim by `resolve_did` with no request. `process` then minted a `verified-control` Domain at 0.80 and the DID at `DID_CONF` (0.95), whose own doc said "read straight from the registry" although nothing was read. A typo named a stranger's domain as the subject's infrastructure. The did:web method's resolution step is to fetch `https://{host}/.well-known/did.json` and "verify that the ID of the resolved DID document matches the Web DID being resolved"; that step never ran.
+
+Separately, the AppView's `resolveHandle` "does not necessarily bi-directionally verify against the DID document" (its lexicon; the handler passes `lookupUnidirectional: true`). The handle spec requires the link be confirmed both ways, "otherwise anybody could create handle aliases for third-party accounts". Neither branch checked that the identity claims the handle it was reached through. A handle whose `_atproto` record names someone else's DID got that identity's anchor domain (did:web) or its entire handle and PDS history (did:plc).
+
+### Implemented
+
+- `history::fold`:
+  - a tombstone clears `current_handles` and `current_pds`;
+  - every other effective op assigns both unconditionally.
+
+  The existing former-value authority (`is_former`, `FORMER_HANDLE_CONF`, `FORMER_HANDLE_CAVEAT`, `former-handle`/`historical`, `handle_domain_confidence(false, ..)`, `PDS_CONF_FORMER`) now grades what a deleted identity released. `transform` gets no new branch. The caveat names deletion as a release.
+- `resolve_did` returns `Resolved { did, handle }`, keeping the handle the DID was reached through.
+- New `resolve::web_did_document` reads the did:web document through `util::http::fetch_json_or_404`:
+  - a 404 is a clean "no such identity";
+  - a transport, 5xx or breaker failure is an `Err`, the same contract as `audit_log`.
+- New wire type `types::DidDocument { id, alsoKnownAs }`. Its `confirms(did, handle)` requires:
+  - `id` to equal the DID (ASCII case-insensitive, because the seed is case-folded);
+  - for a handle-reached identity, an `at://` entry equal to that handle (handles are case-insensitive).
+- `web_did_entities` takes the fetched `&DidDocument`, so nothing can be minted without the read. It emits nothing unless the document confirms.
+- `history_to_entities` takes `&Resolved` and emits nothing when the log never declared the handle (`History::has_claimed`). A current or released claim both link, so a deleted or renamed account's history survives.
+- `at://` parsing is one helper, `at_handles`, shared with `PlcOperation::handles`.
+- `DID_CONF`'s doc now says nothing is emitted at that grade without reading the record.
+
+### Locks
+
+`modules::plc_directory::tests`:
+- `a_deleted_identity_holds_no_current_handle_or_server` covers the Username, Domain, PDS and DID attributes, and checks that a handle-reached deleted identity keeps its history.
+- `an_operation_that_drops_the_handle_and_server_leaves_neither_in_force`
+- `a_reverted_deletion_leaves_the_identity_as_it_was` (over-correction guard)
+- `a_log_reached_through_a_handle_it_never_claimed_attributes_nothing`, with a released and a re-cased control.
+- `a_web_did_is_an_identity_only_when_its_host_serves_a_document_naming_it`
+- `a_web_did_reached_through_a_handle_must_claim_that_handle_back`
+- `a_did_web_seed_nobody_confirmed_asserts_nothing`: the audit's scenario through `process`, on the `query_floor_skips` offline client.
+- `a_web_did_yields_its_anchor_domain_and_admits_it_has_no_log`: updated to pass a confirming document.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| P1 | **baseline**: a tombstone keeps the current handle | see apply log |
+| P2 | **baseline**: a tombstone keeps the current PDS | see apply log |
+| P3 | **baseline**: an empty `alsoKnownAs` keeps the previous handle current | see apply log |
+| P4 | **baseline**: a missing `services` keeps the previous PDS current | see apply log |
+| P5 | over-correction: a reverted (nullified) tombstone still clears the present | see apply log |
+| P6 | over-correction: a tombstone erases the handle/PDS history | see apply log |
+| W1 | **baseline**: a did:web seed confirms itself (no document read) | see apply log |
+| W2 | **baseline**: the document is read but not checked | see apply log |
+| W3 | **baseline**: did:web handle claim not checked | see apply log |
+| W4 | **baseline**: did:plc handle claim not checked | see apply log |
+| W5 | over-correction: a did:plc claim must be the *current* handle | see apply log |
+| W6 | over-correction: did:web demands a handle claim even for a DID seed | see apply log |
+| W7 | over-correction: document `id` compared case-sensitively | see apply log |
+| W8 | over-correction: handle claim compared case-sensitively | see apply log |
+
+### Residual
+
+- The atproto DID spec treats only the **first** valid `at://` entry in `alsoKnownAs` as the claimed handle ("Any other handle URIs should be ignored"). `fold` marks every one current. This is not changed here.
+- `MAX_HANDLES` / `MAX_PDS` / `MAX_ROTATION_KEYS` still state truncation only in DID evidence attributes, not through `ModuleResult::mark_truncated`. That is already tracked from REQ-COVERAGE-002's residual list.
+- Whether the production AppView resolves handles one way over the network is UNVERIFIED. The open-source data plane only does a DB lookup under a `@TODO` for `lookupUnidirectional`. The back-check rests on the lexicon's stated contract and the handle spec.
+
+**Falsification (compiled):** 14 of 14 killed.
+
+## REQ-DNS-001 / REQ-DNSINTEL-002 / REQ-DNSINTEL-003 — a blocklisted domain resolved to nothing; a DNSBL's refusal read as a listing or a pass; a per-name wildcard read as no wildcard
+
+**Found** by the adversarially verified module audit: three findings in `dns_intel` and the shared resolver it runs on. Each vendor's behaviour was checked against its own documentation and live over DoH on 2026-09-23.
+
+**REQ-DNS-001 — Quad9's blocklist answered for the shared resolver.** `util::dns::PROVIDERS` used hickory's `QUAD9` preset. That preset is Quad9's *filtered* service (`9.9.9.9`, `149.112.112.112`).
+- Quad9 documents its block answer as NXDOMAIN with no authority records (docs.quad9.net FAQ).
+- Live, `isitblocked.org` got exactly that from `dns.quad9.net`. Cloudflare and `dns10.quad9.net` returned its A record.
+- hickory builds every preset server with `trust_negative_responses = true`. It ends a lookup on a trusted server's NXDOMAIN and drops the parallel query.
+
+So whenever a Quad9 server won the race (about 60% of cold-pool orderings put one in the first two), a live phishing or C2 domain read as having no records:
+- `resolve_records` passed its fail-closed gate on `is_no_records_found`;
+- CAA read as "none";
+- brute, permute, SRV and DKIM found nothing.
+
+`typosquat`, on the same resolver, classed a blocked look-alike as a `CleanMiss`.
+
+**REQ-DNSINTEL-002 — a DNSBL's refusal read as a listing or as a pass.** `blocklist_check` took any `Ok` answer as a listing. For ZEN it took any value that was not an abuse code as a clean check. The pool is made only of public resolvers, and Spamhaus answers ZEN and CBL queries arriving through one with `127.255.255.254`, its documented "query via public/open resolver" error. This was confirmed live through Cloudflare and both Quad9 services, for the `127.0.0.2` test entry too. The consequences:
+- Every IPv4 target, `8.8.8.8` included, read "listed on 1 of 8 blocklists (CBL)" and was tagged `blocklisted`. ZEN's refusal counted as clean.
+- Through Google, Spamhaus answers NXDOMAIN instead, even for `127.0.0.2`, which every list must hold (RFC 5782 §5). That was counted as clean.
+- SORBS is retired and answers NXDOMAIN for its own test entry. That was counted as clean.
+- A value outside `127.0.0.0/8` (an NXDOMAIN rewritten by a carrier) was a listing on seven zones. That is enough for `high-risk` and AU-007.
+- The ZEN table was wrong. 127.0.0.4 is XBL, not DROP. 127.0.0.9 is DROP. 127.0.0.5–7 are allocated to XBL, and the helper read them as PBL.
+
+**REQ-DNSINTEL-003 — a per-name wildcard read as no wildcard.** `detect_wildcard` returned a fingerprint only when both GUID canaries resolved to the same IP set. Otherwise it returned `None`, which means no filtering. A GUID label resolves only through a wildcard, so two canaries resolving to different sets prove one exists.
+- Live, `herokuapp.com` gives the two canaries different ingress CNAMEs and disjoint IP sets, both through one provider and across providers.
+- So every one of the 146 dictionary words (brute) or up to 80 siblings (permute) was emitted as a subdomain at 0.85 / 0.75 and re-dispatched.
+- A canary that timed out also read as "no wildcard".
+
+### Implemented
+
+**REQ-DNS-001**
+- `util::dns` defines `QUAD9_UNFILTERED` (`9.9.9.10`, `149.112.112.10`). Quad9's service table describes it as "No Malware blocking, DNSSEC validation". The pool uses it.
+- Negative answers stay trusted: an unfiltered resolver's NXDOMAIN is the zone's own.
+- Distrusting only Quad9's negatives would not be enough. hickory's `most_specific` prefers a `NoRecordsFound` over a timeout, so when Cloudflare and Google are unreachable (the case the pool exists for) the block would still win.
+- `answered()`'s doc now names the property it relies on.
+- The opt-in `HUNTSMAN_DNS_RESOLVERS` egress rotation keeps the filtered preset. It resolves hosts the engine connects to, where blocking protects the operator.
+
+**REQ-DNSINTEL-002 — one reading of a DNSBL answer**
+- `dnsbl_answer` returns `Listed` / `NotListed` / `Unresolved`:
+  - `127.255.255.0/24` (Spamhaus's error range) and anything outside `127.0.0.0/8` are `Unresolved`;
+  - for ZEN, abuse codes are `Listed`, PBL is `NotListed`, and any value outside the published table is `Unresolved`;
+  - any other `127/8` value is a listing (RFC 5782 §2.3), never a pass.
+- `zone_answer` counts a zone only when its RFC 5782 §5 test entries behave through the same path: `127.0.0.2` listed and `127.0.0.1` not. The entries are queried concurrently with the address and cached for their TTL.
+- `BlocklistTally::record` is the one place an answer becomes a count. An `Unresolved` zone is disclosed through the existing `unresolved_count` / `coverage: partial` and is never folded into "clean on N". `supports_a_verdict` and `is_wholly_unresolved` are unchanged.
+- `is_spamhaus_abuse_listing` uses Spamhaus's own table: 2–9 are abuse codes, 10–11 are policy. The ZEN zone name is single-sourced as `constants::SPAMHAUS_ZEN`.
+- Through public resolvers today, 5 zones answer and ZEN, CBL and SORBS are disclosed as unresolved. Nothing lists `8.8.8.8`.
+
+**REQ-DNSINTEL-003 — a typed wildcard verdict**
+- `wildcard_verdict` maps two `Canary` outcomes to a `Wildcard`:
+  - both "no such name" → `Absent`: every hit is reported;
+  - both resolved to different sets → `Unstable`: the pass reports nothing;
+  - one set that the other canary does not contradict → `CatchAll`: exact-match noise is filtered as before;
+  - a failed canary and none resolved → `Unknown`.
+- Under `CatchAll` and `Unknown`, hits that are a majority of the candidates are treated as the wildcard answering. That covers an upstream returning different edge addresses, and failed canaries on a wildcard zone.
+- `reportable_hits` is shared by brute and permute. It withholds those hits and **declares** the cut through `ModuleResult::mark_truncated` (REQ-COVERAGE-001).
+- Both passes now return a `ModuleResult`, and `process_domain` `absorb`s them.
+
+### Locks
+
+- `util::dns::tests`:
+  - `no_filtering_resolver_answers_for_the_pool`: Quad9 Recommended / ECS and 1.1.1.1 for Families are absent, and every member is trusted;
+  - `pool_spans_all_three_providers` now asserts `9.9.9.10`.
+- `modules::dns_intel::tests`:
+  - `a_dnsbl_error_code_is_neither_a_listing_nor_a_clean_answer`
+  - `an_answer_outside_127_slash_8_is_a_rewritten_nxdomain_not_a_listing`
+  - `a_documented_listing_code_is_still_a_listing` (over-correction guard)
+  - `a_zone_that_fails_its_rfc5782_test_entries_establishes_nothing`
+  - `the_public_resolver_sweep_lists_nothing_and_counts_no_refusal_as_clean`: the live Cloudflare sweep, zone by zone
+  - `spamhaus_abuse_listing_accepts_the_codes_allocated_to_xbl_and_sbl`. It replaces `spamhaus_abuse_listing_rejects_pbl_isp`, which encoded the defect. `…accepts_drop` / `…accepts_xbl` now carry Spamhaus's codes.
+  - `two_canaries_that_resolve_to_different_sets_are_a_wildcard_not_its_absence`
+  - `a_failed_canary_is_not_proof_there_is_no_wildcard`
+  - `hits_that_swamp_the_dictionary_under_a_catch_all_are_the_catch_all`
+  - `a_zone_the_canaries_prove_has_no_wildcard_reports_every_hit` (over-correction guard)
+
+Two pieces of network glue are not unit-locked: `blocklist_check`'s `tokio::join!` of the three names, and `process_domain`'s `absorb`. The type forces the `absorb`, because a `ModuleResult` cannot be `extend`ed into another.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| Q1 | **baseline**: Quad9's filtered service (`9.9.9.9`) back in the pool | see apply log |
+| Q2 | over-correction: Quad9 dropped from the pool | see apply log |
+| Q3 | over-correction: no member's NXDOMAIN trusted | see apply log |
+| B1 | **baseline**: Spamhaus's `127.255.255.x` errors read as values | see apply log |
+| B2 | **baseline**: a value outside `127/8` is a listing | see apply log |
+| B3 | **baseline**: an unknown ZEN value is a clean check | see apply log |
+| B4 | an answer with no A value counts as an answer | see apply log |
+| B5 | **baseline**: the RFC 5782 test entries not checked | see apply log |
+| B6 | the unlisted test entry need only resolve | see apply log |
+| B7 | **baseline**: an unresolved zone counted as answered | see apply log |
+| B8 | **baseline**: ZEN's XBL-allocated codes read as policy | see apply log |
+| B9 | over-correction: every `127/8` value unresolved | see apply log |
+| B10 | over-correction: PBL unresolved | see apply log |
+| B11 | over-correction: NXDOMAIN unresolved | see apply log |
+| W1 | **baseline**: two canaries with different sets read as no wildcard | see apply log |
+| W2 | **baseline**: a failed canary read as no wildcard | see apply log |
+| W3 | **baseline**: an unstable wildcard's hits reported | see apply log |
+| W4 | **baseline**: no majority backstop | see apply log |
+| W5 | over-correction: a catch-all withholds every hit | see apply log |
+| W6 | over-correction: the backstop overrides proven absence | see apply log |
+| W7 | **baseline**: the withheld pass is silent | see apply log |
+| W8 | regression: the stable catch-all's fingerprint lost | see apply log |
+| W9 | over-correction: one canary's sample withholds everything | see apply log |
+
+**Falsification (compiled):** 23 of 23 killed.
+
+### Review round on #644: REQ-PLC-002 and REQ-DNSINTEL-002/003
+
+Copilot raised two findings as review threads and one more in its summary.
+Each was verified against the code and a primary source before any change.
+
+- **REQ-PLC-002 — the claimed handle is the FIRST valid one.** The AT
+  Protocol DID spec (<https://atproto.com/specs/did>) says: "The first
+  syntactically valid handle found in the ordered list is treated as the
+  claimed handle ... Any other handle URIs should be ignored."
+  `DidDocument::confirms` took **any** `at://` entry, so a document claiming
+  `other.example` first confirmed a lookup for its later alias
+  `wanted.example`. The same helper decided which handles a PLC operation
+  declares. The fix is one helper, `claimed_handle`, with syntax checked by the
+  existing `util::atproto::is_handle`; both the document check and
+  `PlcOperation::handles` use it.
+- **REQ-DNSINTEL-002 — Spamhaus's error range belongs to Spamhaus's zones.**
+  The Spamhaus DNSBL usage FAQ reserves `127.255.255.0/24` as "ERRORS (not
+  implying a 'listed' response)" for "Any" Spamhaus zone. `dnsbl_code` applied
+  that range to all eight zones, which suppressed an RFC 5782 listing code on
+  SpamCop, Barracuda and the rest. It is now scoped to `SPAMHAUS_ZONES`: ZEN,
+  and the CBL, which Spamhaus operates (`www.abuseat.org` redirects with a 301
+  to Spamhaus's Exploits Blocklist). The existing test had encoded the defect by
+  asserting SpamCop's value was "unresolved"; it now asserts the RFC reading.
+  A non-Spamhaus zone that answered everything with such a value would still
+  fail `zone_answer`'s `127.0.0.1` test entry.
+- **REQ-DNSINTEL-003 — a failed lookup is not "no such name"** (from the
+  review summary). `resolve_hosts_concurrently` mapped every lookup error to a
+  miss. The wildcard canaries tell `Resolved / NoSuchName / Failed` apart
+  (`wildcard::canary`), but the candidates did not. So a pass whose resolver was
+  failing, the same failure that leaves the canaries `Unknown`, found 0 hits
+  and read as "no subdomains". Now:
+  - the pure `outcome` restores the three answers per candidate;
+  - the pure `tally` counts failed and dead lookups;
+  - `reportable_hits`, the one decision shared by brute force and
+    permutation, declares a pass with failures as partial.
+
+| # | mutation | result |
+|---|---|---|
+| P1 | **baseline**: any `at://` entry confirms | killed by 1 |
+| P2 | over-correction: the first `at://` entry whatever its syntax | killed by 2 |
+| D1 | **baseline**: the error range applies on every zone | killed by 1 |
+| D2 | over-correction: only ZEN is Spamhaus | killed by 1 |
+| F1 | **baseline**: a failed lookup folds into no-such-name | killed by 1 |
+| F2 | **baseline**: failed lookups never declared | killed by 1 |
+| F3 | over-correction: every pass declared partial | killed by 4 |
+| F4 | the batch never counts a failure | killed by 1 |
+| F5 | a dead task is not a failure | killed by 1 |
+
+**9 of 9 killed.** F4 **survived** its first run: the counting sat inside the
+async drain loop, and a live resolver is needed to reach it there. It was
+moved into the pure `tally` with its own test, and the re-run killed it.
+
+## REQ-CODEWARS-001 — a body that names no Codewars account read as "no such user"
+
+**Found** by the adversarially verified module audit (one finding,
+`codewars_user`). It was re-verified on the current tree before anything was
+designed, and the re-verification narrowed it.
+
+`CwUser.username` carried `#[serde(default)]` like every other field, so any
+JSON object decoded. Both `{}` and a body shaped like Codewars' own error
+(`{"success":false,"reason":"not found"}`, observed live on a 404) became a
+user named `""`. The handle match (`"".eq_ignore_ascii_case(handle)`) then
+returned `Ok(empty)`. Dispatch records that as `ModuleDone { found: 0 }`, and
+coverage reads it as CleanNegative: "no Codewars account", for a handle the
+provider never answered about. This is the `#[serde(default)]` fail-open
+family (REQ-ZOOMEYE-001, REQ-HUDSONROCK-001) in its **field-level** spelling.
+REQ-FOFA-001's sweep enumerated container-level `#[serde(default)]` only, so
+it never reached this struct.
+
+**Narrowed on re-verification.** The audit named two routes. The second was
+the curl fallback returning a 429 / 5xx JSON body as the document. REQ-CURL-001
+had already closed it at the shared authority: `classify_json` decodes only a
+2xx, and `resolve_curl_fallback` types every other status the way the reqwest
+arm does. That also retires the audit's fix-risk, since a curl-arm 404 is now
+classified by status before any decode. What remains is a **2xx** body that is
+not a user object, on either transport. Codewars documents conventional status
+codes for its errors, so this route needs an off-spec 2xx, from an
+intermediary or from the v1 API that the vendor's own reference calls
+"minimal and inconsistent". The fix is defence in depth, not a response to an
+observed failure.
+
+**The sentinel is established, not assumed** (ROADMAP §4: a precedent
+transfers only with the fact that made it safe):
+- the vendor's API reference lists `username` in the User Object and in its
+  Get User example;
+- a live `GET /api/v1/users/g964` answers 200 with `username` (2026-09-23);
+- the module already emitted nothing unless `username` matched the handle, so
+  requiring the field cannot drop a true finding.
+
+### Implemented
+
+- `username` loses `#[serde(default)]`. A body without it fails to decode and
+  becomes the module's error through the shared decode path: `json_body_error`
+  on the reqwest arm, `JsonFetch::Undecodable` on the curl arm.
+- A user object whose `username` is blank names no account. That is now the
+  module's error, not a mismatch.
+- A present but different `username` stays the clean miss. The path takes
+  "Username or ID", so an ID-shaped handle resolves to another account (live:
+  `545207bac8e60b30fc000942` answers `g964`).
+- The body of `process` moved into `lookup(client, api_base, handle, scan_id)`.
+  That is the seam `chess_profile`, `gaming_profile` and `bitcoin` already
+  use, so the real request path now runs against `util::http::test_server`.
+
+**Rejected: `#[serde(deny_unknown_fields)]`.** It would refuse the envelope,
+but it would refuse every real profile too: a live answer carries `id`,
+`honor`, `ranks` and more that the struct does not read. The documented-shape
+control locks this.
+
+### Locks
+
+- `modules::codewars_user::tests`:
+  - `a_body_without_a_username_is_not_a_codewars_user` decodes `{}` and the
+    live envelope as text, and checks each fails for the missing `username`.
+    The documented User Object is the control;
+  - `a_2xx_that_names_no_account_is_a_failure_not_no_such_user` runs over the
+    loopback with `{}`, an envelope, an empty `username` and a whitespace
+    `username`, each checked for its reason;
+  - `a_404_or_another_accounts_record_is_a_clean_miss_that_mints_nothing` is
+    the over-correction guard;
+  - `the_documented_user_object_is_found_under_its_own_handle` is the positive
+    control, and also pins the production path.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| CW-M1 | **baseline**: `username` defaulted again | see apply log |
+| CW-M2 | **baseline**: a blank `username` falls through to the mismatch | see apply log |
+| CW-W1 | the blank check does not trim | see apply log |
+| CW-O1 | over-correction: another account's record is a failure | see apply log |
+| CW-O2 | another account's record is minted as the handle's | see apply log |
+| CW-O3 | over-correction: the 404 is a failure | see apply log |
+| CW-O4 | over-correction: `deny_unknown_fields` | see apply log |
+| CW-P1 | the production path drifts | see apply log |
+
+**Falsification (compiled):** 8 of 8 killed.

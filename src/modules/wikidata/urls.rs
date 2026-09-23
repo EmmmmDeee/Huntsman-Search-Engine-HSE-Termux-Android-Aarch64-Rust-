@@ -1,10 +1,10 @@
 use crate::util::http::urlencode;
 
-use super::API;
+use super::{API, SEARCH_LIMIT};
 
 pub(super) fn search_url(q: &str) -> String {
     format!(
-        "{API}?action=wbsearchentities&search={}&language=en&format=json&type=item&limit=10",
+        "{API}?action=wbsearchentities&search={}&language=en&format=json&type=item&limit={SEARCH_LIMIT}",
         urlencode(q)
     )
 }

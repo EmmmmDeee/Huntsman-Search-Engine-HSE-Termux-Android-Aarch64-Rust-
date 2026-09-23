@@ -221,3 +221,43 @@ use super::*;
         assert!(looks_like_company("SMITH & CO."));
         assert!(!looks_like_company("ACME COMPANY")); // bare "CO..." is not a form
     }
+
+    #[test]
+    fn same_company_is_equality_whichever_side_is_the_seed() {
+        // REQ-AU-UNCLAIMED-002: a subset test in EITHER direction is the defect —
+        // "Ford" ⊂ "MR JOHN FORD" made a private individual the company, and
+        // "FORD" ⊂ "FORD HOLDINGS" makes a sibling the seed. Both orders, both
+        // answers.
+        for (a, b) in [
+            ("Ford", "MR JOHN FORD"),
+            ("Ford", "FORD HOLDINGS PTY LTD"),
+            ("ABC CORP", "DEF CORP PTY LTD"),
+            ("Pty Ltd", "Limited"),
+        ] {
+            assert!(!same_company(a, b), "{a:?} vs {b:?}");
+            assert!(!same_company(b, a), "{b:?} vs {a:?}");
+        }
+        for (a, b) in [
+            ("ABC Corp", "ABC CORP PTY. LTD."),
+            ("The Acme Group Limited", "acme group"),
+            ("Foo Bar NL", "FOO BAR"),
+        ] {
+            assert!(same_company(a, b), "{a:?} vs {b:?}");
+            assert!(same_company(b, a), "{b:?} vs {a:?}");
+        }
+    }
+
+    #[test]
+    fn and_and_an_escaped_ampersand_are_one_conjunction() {
+        // REQ-AU-UNCLAIMED-003: registers write both, and a scraped `&amp;`
+        // survives as a token. Both directions, with the word-boundary guard.
+        for (a, b) in [
+            ("Acme & Sons Pty Ltd", "ACME AND SONS"),
+            ("Acme &amp; Sons", "Acme & Sons"),
+        ] {
+            assert!(same_company(a, b), "{a:?} vs {b:?}");
+            assert!(same_company(b, a), "{b:?} vs {a:?}");
+        }
+        assert!(!same_company("Anderson Holdings", "& Holdings"), "AND inside a word is not the conjunction");
+        assert!(looks_like_company("SMITH AND CO"), "AND CO folds onto & CO");
+    }

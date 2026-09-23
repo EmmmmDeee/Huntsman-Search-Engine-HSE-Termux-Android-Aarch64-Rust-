@@ -21,7 +21,7 @@ use super::profile_kit;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -29,9 +29,20 @@ use crate::util::http::{fetch_json_or_404, urlencode};
 
 const SRC: &str = "codewars_user";
 
+/// Codewars' users endpoint; [`lookup`] takes it as a parameter so the real
+/// request path runs against a loopback in tests.
+const API_BASE: &str = "https://www.codewars.com/api/v1/users";
+
 #[derive(Deserialize)]
 pub(super) struct CwUser {
-    #[serde(default)]
+    /// The account's handle: the one field every Codewars User Object carries
+    /// (the vendor's API reference, and a live profile), and the one
+    /// [`lookup`] decides on. Deliberately not `#[serde(default)]`: with it,
+    /// ANY JSON object decoded as a user named `""` — `{}`, or a body in the
+    /// shape of Codewars' own errors (`{"success":false,"reason":…}`) — so a
+    /// 2xx carrying one read as "no such Codewars user" for a handle the
+    /// provider never answered about. Such a body now fails to decode and is
+    /// the module's error (REQ-CODEWARS-001).
     pub(super) username: String,
     /// Optional display / real name set by the user.
     #[serde(default)]
@@ -167,22 +178,41 @@ impl Module for CodewarsUser {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let handle = target.value.trim();
-        let url = format!(
-            "https://www.codewars.com/api/v1/users/{}",
-            urlencode(handle)
-        );
-        // 404 (`Ok(None)`) = genuine "no such user" clean miss; every other
-        // failure (429/5xx/transport) propagates via `?` instead of a fake 404
-        // (T2.117 — `fetch_json_or_404`'s split is pinned in `util::http::tests`).
-        let Some(user) = fetch_json_or_404::<CwUser>(&ctx.http, SRC, &url).await? else {
-            return Ok(ModuleResult::new());
-        };
-        if !user.username.eq_ignore_ascii_case(handle) {
-            return Ok(ModuleResult::new());
-        }
-        let mut result = ModuleResult::new();
-        result.entities = build_entities(user, &ctx.scan_id);
-        Ok(result)
+        lookup(&ctx.http, API_BASE, target.value.trim(), &ctx.scan_id).await
     }
+}
+
+/// Look `handle` up and build what the answer proves. `Ok(empty)` is a
+/// genuine miss: Codewars' `404`, or a user object for ANOTHER account (the
+/// path segment is "Username or ID", so an ID-shaped handle can resolve to
+/// someone else). Every other answer that is not this account is the
+/// module's error, never "no such user": a non-404 failure, a body that is
+/// not a user object (no `username`, so it does not decode), and a user
+/// object whose `username` is blank, which names no account at all.
+async fn lookup(
+    client: &reqwest::Client,
+    api_base: &str,
+    handle: &str,
+    scan_id: &str,
+) -> Result<ModuleResult> {
+    let url = format!("{api_base}/{}", urlencode(handle));
+    // 404 (`Ok(None)`) = genuine "no such user" clean miss; every other
+    // failure (429/5xx/transport) propagates via `?` instead of a fake 404
+    // (T2.117 — `fetch_json_or_404`'s split is pinned in `util::http::tests`).
+    let Some(user) = fetch_json_or_404::<CwUser>(client, SRC, &url).await? else {
+        return Ok(ModuleResult::new());
+    };
+    if user.username.trim().is_empty() {
+        return Err(Error::module(
+            SRC,
+            "the user object carries a blank `username`: it names no Codewars \
+             account, so it is no answer about this handle",
+        ));
+    }
+    if !user.username.eq_ignore_ascii_case(handle) {
+        return Ok(ModuleResult::new());
+    }
+    let mut result = ModuleResult::new();
+    result.entities = build_entities(user, scan_id);
+    Ok(result)
 }

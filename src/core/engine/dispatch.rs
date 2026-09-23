@@ -78,6 +78,63 @@ pub(super) fn is_incidental_infra_entity(seed_kind: TargetKind, entity: &Entity)
     }
 }
 
+/// Tags a module sets to assert that an entity IS the scan subject (`seed`,
+/// `subject`) or that a register row's name EXACTLY matched it
+/// (`exact-name-match`). Every consumer reads them as statements about the scan's
+/// subject: `geo_family` anchors "the subject's confirmed location" on an
+/// `exact-name-match` address and reads the family surname off a `seed` Person,
+/// the relation builders bind identifiers to the `subject` Person, and the
+/// exports keep `seed` entities unconditionally.
+pub(super) const SUBJECT_CLAIM_TAGS: &[&str] = &["seed", "subject", "exact-name-match"];
+
+/// Re-scope a module's subject claims to what the ENGINE knows about the target
+/// it dispatched. A module only ever sees the bare target it was run on, so it
+/// cannot tell the seed from a pivot: `name_intel` tagged every pivoted name
+/// `seed`+`subject`, and `qld_unclaimed` tagged every register row that exactly
+/// matched a pivot's name — a relative, a namesake, a company —
+/// `exact-name-match`. A real "Ian Thorpe" scan therefore carried eleven
+/// "subjects" and anchored the subject's location at a dozen strangers'
+/// postcodes, then promoted every same-surname register row near any of them to
+/// a corroborated relative (REQ-SUBJECT-SCOPE-001).
+///
+/// * The seed dispatch — or a later dispatch of the seed value itself — keeps
+///   every claim.
+/// * A pivot on a variant of the subject's own name (a `FullName` structurally
+///   compatible with a `FullName` seed — `"Ian James Thorpe"` for `"Ian Thorpe"`)
+///   keeps `exact-name-match`: the row matched the subject's name. It loses
+///   `seed`/`subject`: the variant is not the operator's assertion.
+/// * Any other pivot loses all three — its "exact match" is to someone or
+///   something else.
+///
+/// Pure, so the scoping table is unit-testable without an engine.
+pub(super) fn rescope_subject_claims(
+    entity: &mut Entity,
+    seed: &Target,
+    target: &Target,
+    is_expansion: bool,
+) {
+    let is_seed = !is_expansion
+        || (target.kind == seed.kind
+            && normalise(&target.kind.to_entity_kind(), &target.value)
+                == normalise(&seed.kind.to_entity_kind(), &seed.value));
+    if is_seed
+        || !entity
+            .tags
+            .iter()
+            .any(|t| SUBJECT_CLAIM_TAGS.contains(&t.as_str()))
+    {
+        return;
+    }
+    let is_name_variant = target.kind == TargetKind::FullName
+        && seed.kind == TargetKind::FullName
+        && crate::core::scan::person_names_compatible(&seed.value, &target.value) == Some(true);
+    entity.tags.retain(|t| match t.as_str() {
+        "seed" | "subject" => false,
+        "exact-name-match" => is_name_variant,
+        _ => true,
+    });
+}
+
 /// The engine's entity-admission policy as a PURE decision: given the scan's
 /// `seed_kind`, the effective `min_confidence` floor, and a freshly-emitted
 /// `entity`, return the `entity_excluded` reason string if the entity should be
@@ -629,11 +686,12 @@ pub(super) struct DispatchCx<'a> {
     pub(super) target: &'a Target,
     pub(super) opts: &'a ScanOptions,
     pub(super) is_expansion: bool,
-    /// The kind of the scan's ORIGINAL seed (not the current dispatch target).
-    /// Drives the incidental-infrastructure admission gate: a CDN/registrar/DNS
+    /// The scan's ORIGINAL seed (not the current dispatch target). Its kind
+    /// drives the incidental-infrastructure admission gate: a CDN/registrar/DNS
     /// artifact is the legitimate subject only when the scan itself targets
     /// infrastructure (Domain/IP/CIDR/ASN/URL), and is noise on an identity scan.
-    pub(super) seed_kind: TargetKind,
+    /// Its value scopes a module's subject claims ([`rescope_subject_claims`]).
+    pub(super) seed: &'a Target,
     /// Modules quarantined for THIS scan by capability-aware dispatch — those
     /// whose parser has provably gone dead (persistent drift; see
     /// [`crate::util::scraper_health::quarantined_modules`]). Empty unless the
@@ -852,7 +910,7 @@ impl super::ScanEngine {
                     // emit the reason + skip on rejection, exactly as the inline
                     // chain did — same order, same reason strings, same continue.
                     if let Some(reason) = admission_rejection(
-                        cx.seed_kind,
+                        cx.seed.kind,
                         cx.opts.effective_min_confidence(),
                         &entity,
                     ) {
@@ -872,6 +930,10 @@ impl super::ScanEngine {
                     // Social module tagged with both `T1593.001`) are idempotent.
                     // Done at the single admission point AFTER every drop filter so
                     // only surviving findings are stamped.
+                    // A module's `seed` / `subject` / `exact-name-match` tags
+                    // describe its relation to the target it was RUN ON; only
+                    // the engine knows whether that target is the scan subject.
+                    rescope_subject_claims(&mut entity, cx.seed, cx.target, cx.is_expansion);
                     for id in attack_techniques {
                         entity.tag(format!("attack:{id}"));
                     }
@@ -954,7 +1016,7 @@ impl super::ScanEngine {
         &self,
         cx: &DispatchCx,
         module: &dyn Module,
-        cached: Vec<Entity>,
+        cached: crate::core::port::CachedModuleResult,
         state: &mut DispatchState,
     ) {
         let name = module.name();
@@ -967,7 +1029,10 @@ impl super::ScanEngine {
         // archiving scan's row and is dropped, so the finding silently vanishes
         // from this scan's read-back (entities_for_scan) while still being counted
         // — a count-vs-list inconsistency.
-        let mut cached = cached;
+        let crate::core::port::CachedModuleResult {
+            entities: mut cached,
+            truncation,
+        } = cached;
         for e in &mut cached {
             e.scan_id = cx.scan_id.to_owned();
         }
@@ -978,7 +1043,10 @@ impl super::ScanEngine {
             name,
             Ok(Ok(ModuleResult {
                 entities: cached,
-                truncation: None,
+                // The archived answer's own completeness verdict. `None` here
+                // unconditionally was REQ-CACHE-001: every replay of a partial
+                // answer was reported complete.
+                truncation,
                 sightings: Vec::new(),
                 link: None,
             })),
@@ -999,9 +1067,12 @@ impl super::ScanEngine {
             && let Ok(Ok(mr)) = result
             && !mr.entities.is_empty()
         {
-            let _ = self
-                .store
-                .archive_module_result(key, ttl_secs, &mr.entities);
+            let _ = self.store.archive_module_result(
+                key,
+                ttl_secs,
+                &mr.entities,
+                mr.truncation.as_deref(),
+            );
         }
     }
 

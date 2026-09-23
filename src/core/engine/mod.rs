@@ -445,6 +445,18 @@ impl EventEmitter {
     }
 }
 
+/// Tags whose entity the engine records as evidence but **never pivots on**, and
+/// the `EntityExcluded` reason each skip is recorded under. Both describe a page
+/// about somebody other than the subject — mining it would attribute strangers'
+/// PII to the subject — so both take the same gate in expansion (see there).
+const NEVER_PIVOTED: &[(&str, &str)] = &[
+    (
+        crate::core::tags::SOURCE_DOCUMENT,
+        "source_document_not_pivoted",
+    ),
+    (crate::core::tags::THIRD_PARTY, "third_party_not_pivoted"),
+];
+
 impl ScanEngine {
     pub fn new(modules: Vec<Arc<dyn Module>>, store: Arc<dyn StoragePort>, bus: EventBus) -> Self {
         Self::with_module_runtime(modules, store, bus, Arc::new(NoopModuleRuntime))
@@ -888,7 +900,7 @@ impl ScanEngine {
                 target: &target,
                 opts: &opts,
                 is_expansion: false,
-                seed_kind: target.kind,
+                seed: &target,
                 quarantined: &quarantined,
             };
             // Seed dispatch has no parent to attribute lineage to, so the
@@ -1695,7 +1707,7 @@ impl ScanEngine {
                     target: &target,
                     opts: &gap_opts,
                     is_expansion: true,
-                    seed_kind: seed.kind,
+                    seed,
                     quarantined,
                 };
                 let mut dstate = DispatchState {
@@ -1906,7 +1918,7 @@ impl ScanEngine {
                     target: &target,
                     opts: &sweep_opts,
                     is_expansion: true,
-                    seed_kind: seed.kind,
+                    seed,
                     quarantined,
                 };
                 let mut dstate = DispatchState {
@@ -2145,6 +2157,18 @@ impl ScanEngine {
                     }))
                     .collect()
             };
+            // The subject's own NAME, when the seed is one — the reference the
+            // different-named-person gate below compares a discovered `Person`
+            // against. Deliberately the seed only, never a VERIFIED Person: a
+            // namesake promoted to VERIFIED would otherwise widen "the subject's
+            // name" to a stranger's and admit their whole family. Empty (gate
+            // off) for a non-name seed or under `--expand-all-identities`.
+            let subject_names: Vec<String> =
+                if opts.expand_all_identities || seed.kind != TargetKind::FullName {
+                    Vec::new()
+                } else {
+                    vec![seed.value.clone()]
+                };
 
             // At most one candidate per working-set entity survives the gates;
             // reserve up front so the push loop never re-grows on a large round.
@@ -2217,6 +2241,24 @@ impl ScanEngine {
                     && entity.is_uncorroborated_name_permutation()
                 {
                     self.emit_excluded(scan_id, entity, "uncorroborated_speculative");
+                    continue;
+                }
+                // Different-named-person gate: a `Person` whose given/surname
+                // structure cannot be the subject's — a relative sharing the
+                // surname, a near-surname namesake ("Ian Thorley" off "Ian
+                // Thorpe"), a facility named after the subject — is another
+                // individual however many sources name them. Expanding one runs
+                // the full identity sweep (permuted mailboxes and handles, breach
+                // and profile probes) on a stranger. The wrong-identity gate below
+                // cannot catch these: every surname-sharer overlaps the subject by
+                // ≥4 characters, and its corroboration escape reads "two registers
+                // list Megan Thorpe" as "Megan Thorpe is the subject".
+                if crate::core::scan::is_other_named_person(
+                    &entity.kind,
+                    &entity.value,
+                    &subject_names,
+                ) {
+                    self.emit_excluded(scan_id, entity, "different_named_person");
                     continue;
                 }
                 // Wrong-identity gate: an uncorroborated, non-verified
@@ -2298,8 +2340,13 @@ impl ScanEngine {
                 // untouched. A module cannot self-guard: it only sees the bare
                 // (kind, value) Target, never the originating entity's tags, so
                 // the gate lives here, the one point that still has both.
-                if entity.has_tag(crate::core::tags::SOURCE_DOCUMENT) {
-                    self.emit_excluded(scan_id, entity, "source_document_not_pivoted");
+                //
+                // The same discipline holds for a page about a named third party
+                // (`tags::THIRD_PARTY` — a colleague's profile a domain search
+                // lists): one table, so the two can never be gated differently.
+                if let Some((_, reason)) = NEVER_PIVOTED.iter().find(|(tag, _)| entity.has_tag(tag))
+                {
+                    self.emit_excluded(scan_id, entity, reason);
                     continue;
                 }
                 // Never fetch a Tor `.onion` service. `ahmia` surfaces dark-web
@@ -2492,7 +2539,7 @@ impl ScanEngine {
                         target: nt,
                         opts,
                         is_expansion: true,
-                        seed_kind: seed.kind,
+                        seed,
                         quarantined,
                     };
                     let mut dstate = DispatchState {

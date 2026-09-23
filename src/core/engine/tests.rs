@@ -1381,7 +1381,7 @@ async fn a_modules_sightings_are_persisted_beside_its_entities_and_a_replay_pers
         target: &target,
         opts: &opts,
         is_expansion: false,
-        seed_kind: TargetKind::Coordinates,
+        seed: &Target::new(TargetKind::Coordinates, "seed"),
         quarantined: no_quarantine(),
     };
     let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
@@ -1482,7 +1482,7 @@ async fn cache_replay_does_not_feed_the_circuit_breaker_success_path() {
         target: &target,
         opts: &opts,
         is_expansion: false,
-        seed_kind: TargetKind::Email,
+        seed: &Target::new(TargetKind::Email, "seed"),
         quarantined: no_quarantine(),
     };
     let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
@@ -1559,7 +1559,7 @@ async fn a_bot_challenge_error_benches_the_module_at_once_and_is_recorded_as_suc
         target: &target,
         opts: &opts,
         is_expansion: false,
-        seed_kind: TargetKind::Domain,
+        seed: &Target::new(TargetKind::Domain, "seed"),
         quarantined: no_quarantine(),
     };
     let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
@@ -3419,7 +3419,7 @@ async fn admitted_entities_are_stamped_with_their_modules_attack_techniques() {
             target: &target,
             opts: &opts,
             is_expansion: false,
-            seed_kind: TargetKind::Email,
+            seed: &Target::new(TargetKind::Email, "seed"),
             quarantined: no_quarantine(),
         };
         let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
@@ -3556,7 +3556,7 @@ async fn concurrent_dispatch_stops_near_max_entities_not_after_the_full_module_s
         target: &target,
         opts: &opts,
         is_expansion: false,
-        seed_kind: TargetKind::Username,
+        seed: &Target::new(TargetKind::Username, "seed"),
         quarantined: no_quarantine(),
     };
     let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
@@ -3592,6 +3592,8 @@ async fn concurrent_dispatch_stops_near_max_entities_not_after_the_full_module_s
 struct CachingProbe {
     calls: Arc<AtomicU64>,
     ttl_secs: u64,
+    /// When set, every answer declares itself partial with this cause.
+    truncation: Option<&'static str>,
 }
 
 #[async_trait::async_trait]
@@ -3630,6 +3632,9 @@ impl Module for CachingProbe {
         ));
         let mut r = crate::core::module::ModuleResult::new();
         r.push(e);
+        if let Some(cause) = self.truncation {
+            r.mark_truncated(1, Some(40), cause);
+        }
         Ok(r)
     }
 }
@@ -3652,6 +3657,7 @@ async fn cache_hit_skips_reprocessing_a_later_scan_of_the_same_target() {
         vec![Arc::new(CachingProbe {
             calls: calls.clone(),
             ttl_secs: 3600,
+            truncation: None,
         })],
         store,
         bus.clone(),
@@ -3673,7 +3679,7 @@ async fn cache_hit_skips_reprocessing_a_later_scan_of_the_same_target() {
         target: &target,
         opts: &opts,
         is_expansion: false,
-        seed_kind: TargetKind::Username,
+        seed: &Target::new(TargetKind::Username, "seed"),
         quarantined: no_quarantine(),
     };
     let mut entity_map1: TrackedEntityMap = TrackedEntityMap::new();
@@ -3716,7 +3722,7 @@ async fn cache_hit_skips_reprocessing_a_later_scan_of_the_same_target() {
         target: &target,
         opts: &opts,
         is_expansion: false,
-        seed_kind: TargetKind::Username,
+        seed: &Target::new(TargetKind::Username, "seed"),
         quarantined: no_quarantine(),
     };
     let mut entity_map2: TrackedEntityMap = TrackedEntityMap::new();
@@ -3764,7 +3770,7 @@ async fn cache_hit_skips_reprocessing_a_later_scan_of_the_same_target() {
         target: &other_target,
         opts: &opts,
         is_expansion: false,
-        seed_kind: TargetKind::Username,
+        seed: &Target::new(TargetKind::Username, "seed"),
         quarantined: no_quarantine(),
     };
     let mut entity_map3: TrackedEntityMap = TrackedEntityMap::new();
@@ -3862,7 +3868,7 @@ async fn quarantined_module_is_skipped_at_dispatch_and_never_invoked() {
             target: &target,
             opts: &opts,
             is_expansion: false,
-            seed_kind: TargetKind::Username,
+            seed: &Target::new(TargetKind::Username, "seed"),
             quarantined: &quarantined,
         };
         let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
@@ -3946,7 +3952,7 @@ async fn unquarantined_module_in_a_nonempty_quarantine_set_still_dispatches() {
             target: &target,
             opts: &opts,
             is_expansion: false,
-            seed_kind: TargetKind::Username,
+            seed: &Target::new(TargetKind::Username, "seed"),
             quarantined: &quarantined,
         };
         let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
@@ -4060,7 +4066,7 @@ async fn unknown_cost_paid_provider_is_blocked_by_an_active_cost_budget() {
             target: &target,
             opts: &opts,
             is_expansion: false,
-            seed_kind: TargetKind::Username,
+            seed: &Target::new(TargetKind::Username, "seed"),
             quarantined: no_quarantine(),
         };
         let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
@@ -4192,7 +4198,7 @@ async fn quota_exhausted_provider_is_blocked_at_real_dispatch() {
             target: &target,
             opts: &opts,
             is_expansion: false,
-            seed_kind: TargetKind::Username,
+            seed: &Target::new(TargetKind::Username, "seed"),
             quarantined: no_quarantine(),
         };
         let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
@@ -4311,7 +4317,7 @@ async fn eligibility_gates_fire_before_dispatch_utility_is_ever_computed() {
         target: &target,
         opts: &opts,
         is_expansion: false,
-        seed_kind: TargetKind::Username,
+        seed: &Target::new(TargetKind::Username, "seed"),
         quarantined: no_quarantine(),
     };
     let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
@@ -4380,7 +4386,7 @@ async fn dispatch_utility_off_by_default_produces_zero_behavior_change() {
         target: &target,
         opts: &opts,
         is_expansion: false,
-        seed_kind: TargetKind::Username,
+        seed: &Target::new(TargetKind::Username, "seed"),
         quarantined: no_quarantine(),
     };
     let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
@@ -4448,7 +4454,7 @@ async fn dispatch_utility_requires_max_roi_to_actually_fire() {
         target: &target,
         opts: &opts,
         is_expansion: false,
-        seed_kind: TargetKind::Username,
+        seed: &Target::new(TargetKind::Username, "seed"),
         quarantined: no_quarantine(),
     };
     let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
@@ -4515,7 +4521,7 @@ async fn dispatch_utility_explanation_is_surfaced_on_a_real_dispatch() {
         target: &target,
         opts: &opts,
         is_expansion: false,
-        seed_kind: TargetKind::Username,
+        seed: &Target::new(TargetKind::Username, "seed"),
         quarantined: no_quarantine(),
     };
     let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
@@ -4690,7 +4696,7 @@ async fn convex_budget_dispatches_the_highest_query_value_module_first() {
             target: &target,
             opts: &opts,
             is_expansion: false,
-            seed_kind: TargetKind::Username,
+            seed: &Target::new(TargetKind::Username, "seed"),
             quarantined: no_quarantine(),
         };
         let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
@@ -6563,12 +6569,12 @@ async fn an_unbudgeted_scan_is_not_reported_as_truncated() {
     );
 }
 
-/// Emits one `Url` — a court-judgment page — for the `seed` Username. With
-/// `document` set the Url carries [`crate::core::tags::SOURCE_DOCUMENT`]; without
-/// it the same page is an ordinary Url, the control that proves the tag alone is
-/// what stops the pivot.
+/// Emits one `Url` — a court-judgment page — for the `seed` Username, carrying
+/// `tag` when set ([`crate::core::tags::SOURCE_DOCUMENT`] or
+/// [`crate::core::tags::THIRD_PARTY`]); without one the same page is an ordinary
+/// Url, the control that proves the tag alone is what stops the pivot.
 struct CourtRecordModule {
-    document: bool,
+    tag: Option<&'static str>,
 }
 
 #[async_trait::async_trait]
@@ -6599,8 +6605,8 @@ impl Module for CourtRecordModule {
                 0.9,
                 &ctx.scan_id,
             );
-            if self.document {
-                e.tag(crate::core::tags::SOURCE_DOCUMENT);
+            if let Some(tag) = self.tag {
+                e.tag(tag);
             }
             e.add_evidence(crate::core::entity::Evidence::new(
                 "court_record",
@@ -6651,7 +6657,7 @@ impl Module for PageMinerModule {
 /// with every other expansion gate opened (all identities, no floor, no ROI) and
 /// return the persisted entity values plus every `EntityExcluded` reason the
 /// engine recorded for the judgment Url.
-async fn run_court_record_scan(document: bool) -> (Vec<String>, Vec<String>) {
+async fn run_court_record_scan(tag: Option<&'static str>) -> (Vec<String>, Vec<String>) {
     use crate::core::test_support::InMemoryStore;
 
     let store = Arc::new(InMemoryStore::new());
@@ -6659,7 +6665,7 @@ async fn run_court_record_scan(document: bool) -> (Vec<String>, Vec<String>) {
     let (bus, mut rx) = tokio::sync::broadcast::channel(8192);
     let engine = ScanEngine::new(
         vec![
-            Arc::new(CourtRecordModule { document }),
+            Arc::new(CourtRecordModule { tag }),
             Arc::new(PageMinerModule),
         ],
         store_port,
@@ -6713,7 +6719,7 @@ async fn a_source_document_url_is_recorded_but_never_pivoted() {
     // stop: the Url is persisted as evidence, no Url-accepting module is ever
     // dispatched against it, and the skip is recorded under its own reason so
     // the audit ledger can account for it.
-    let (values, reasons) = run_court_record_scan(true).await;
+    let (values, reasons) = run_court_record_scan(Some(crate::core::tags::SOURCE_DOCUMENT)).await;
     assert!(
         values.iter().any(|v| v.contains("austlii.edu.au")),
         "the judgment Url must still be recorded as evidence: {values:?}"
@@ -6729,7 +6735,7 @@ async fn a_source_document_url_is_recorded_but_never_pivoted() {
 
     // Control: the identical page without the tag IS pivoted on, so the tag —
     // not the floor, the identity gate or the infra gate — is what stopped it.
-    let (values, reasons) = run_court_record_scan(false).await;
+    let (values, reasons) = run_court_record_scan(None).await;
     assert!(
         values.iter().any(|v| v == "mined-from-page"),
         "an untagged Url at 0.9 with every gate open must be pivoted on: {values:?}"
@@ -6895,5 +6901,325 @@ fn the_skip_gate_reads_the_circuit_only_through_its_argument() {
         super::dispatch::module_skip_reason_with(&m, &pub_target(), &opts, false, 0, false)
             .is_none(),
         "the stub must be dispatchable when no circuit is open"
+    );
+}
+
+/// REQ-CACHE-001: a cache replay is the module's answer for THIS scan, and it
+/// must carry the answer's completeness verdict. The engine emits the same
+/// `ModuleDone` for a replay as for a live call, and `core::coverage` reads
+/// completeness from that event alone — so a replay that dropped the verdict
+/// reported a partial answer as complete on every re-scan inside the TTL.
+#[tokio::test]
+async fn a_cache_replay_of_a_partial_answer_is_still_partial() {
+    use crate::core::event::EventKind;
+    use crate::core::test_support::InMemoryStore;
+
+    let calls = Arc::new(AtomicU64::new(0));
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _keep) = tokio::sync::broadcast::channel(256);
+    let mut rx = bus.subscribe();
+    let engine = ScanEngine::new(
+        vec![Arc::new(CachingProbe {
+            calls: calls.clone(),
+            ttl_secs: 3600,
+            truncation: Some("the page limit"),
+        })],
+        store,
+        bus.clone(),
+    );
+    let opts = ScanOptions::default();
+    let target = Target::new(TargetKind::Username, "partial-target");
+
+    for scan_id in ["partial-scan-1", "partial-scan-2"] {
+        let mut ctx = ModuleContext {
+            scan_id: scan_id.to_string(),
+            bus: bus.clone(),
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+        let cx = DispatchCx {
+            scan_id,
+            target: &target,
+            opts: &opts,
+            is_expansion: false,
+            seed: &Target::new(TargetKind::Username, "seed"),
+            quarantined: no_quarantine(),
+        };
+        let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+        let mut stats = ModuleStats::default();
+        let mut dispatched: DispatchLog = DispatchLog::new();
+        let mut newly_inserted: Vec<String> = Vec::new();
+        let mut state = DispatchState {
+            entity_map: &mut entity_map,
+            stats: &mut stats,
+            dispatched: &mut dispatched,
+            newly_inserted: &mut newly_inserted,
+        };
+        engine
+            .dispatch_target(&cx, &mut ctx, &mut state)
+            .await
+            .expect("dispatch runs");
+        if scan_id == "partial-scan-2" {
+            // Premise: the second scan was served from the cache.
+            assert_eq!(stats.cached, 1, "the second scan must be a cache replay");
+        }
+    }
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        1,
+        "the provider was asked once"
+    );
+
+    let mut verdicts = std::collections::HashMap::new();
+    while let Ok(ev) = rx.try_recv() {
+        if let EventKind::ModuleDone {
+            module, truncated, ..
+        } = ev.kind
+            && module == "cache_probe"
+        {
+            verdicts.insert(ev.scan_id.clone(), truncated);
+        }
+    }
+    let live = verdicts
+        .get("partial-scan-1")
+        .cloned()
+        .flatten()
+        .expect("the live answer declared itself partial");
+    assert!(live.starts_with("1 of 40"), "{live}");
+    assert_eq!(
+        verdicts.get("partial-scan-2").cloned().flatten().as_deref(),
+        Some(live.as_str()),
+        "the replay must carry the archived answer's own verdict, not claim it complete"
+    );
+}
+
+#[tokio::test]
+async fn a_third_party_page_is_recorded_but_never_pivoted() {
+    // REQ-HUNTER-003: a colleague's profile a domain search lists is a page about
+    // somebody else. Mining it would attribute their emails and phones to the
+    // subject, so it takes the same gate as a source document, under its own
+    // reason. The untagged control is `a_source_document_url_is_recorded_but_never_pivoted`'s.
+    let (values, reasons) = run_court_record_scan(Some(crate::core::tags::THIRD_PARTY)).await;
+    assert!(
+        values.iter().any(|v| v.contains("austlii.edu.au")),
+        "the page is still recorded as evidence: {values:?}"
+    );
+    assert!(
+        !values.iter().any(|v| v == "mined-from-page"),
+        "a third party's page must never be pivoted on: {values:?}"
+    );
+    assert!(
+        reasons.iter().any(|r| r == "third_party_not_pivoted"),
+        "recorded under its own reason, got {reasons:?}"
+    );
+}
+
+/// A name register that behaves like `name_intel` + `qld_unclaimed` on a name
+/// scan: whatever `FullName` it is run on, it proposes that name as the subject
+/// (`seed` + `subject`) and records a row that exactly matched it
+/// (`exact-name-match`) plus a `dispatched:<name>` marker, so a test can see
+/// which names the engine pivoted on and what survived admission. On the seed
+/// "Ian Thorpe" it also surfaces the people a real scan of that name pivoted on:
+/// a near-surname namesake, a relative (corroborated by two registers), a
+/// facility named after the subject, and a genuine variant of the subject's own
+/// name — plus a company, the non-name pivot.
+struct NameRegisterModule;
+
+#[async_trait::async_trait]
+impl Module for NameRegisterModule {
+    fn name(&self) -> &'static str {
+        "name_register"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::FullName | TargetKind::Organisation)
+    }
+    fn produces(&self) -> &'static [EntityKind] {
+        const K: &[EntityKind] = &[
+            EntityKind::Person,
+            EntityKind::Address,
+            EntityKind::Organisation,
+            EntityKind::Username,
+        ];
+        K
+    }
+    async fn process(
+        &self,
+        target: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        use crate::core::entity::Evidence;
+        let sid = &ctx.scan_id;
+        let mut r = crate::core::module::ModuleResult::new();
+        let slug = target.value.to_ascii_lowercase().replace(' ', "-");
+        let mut marker = Entity::new(EntityKind::Username, format!("dispatched-{slug}"), 0.1, sid);
+        marker.add_evidence(Evidence::new("name_register", "dispatch marker"));
+        r.push(marker);
+        // The row "exactly matching" whatever this dispatch was run on, and the
+        // subject proposal a name module makes for it.
+        let postcode = if target.kind == TargetKind::Organisation {
+            "2000"
+        } else {
+            "4350"
+        };
+        let mut row = Entity::new(
+            EntityKind::Address,
+            format!("QLD {postcode}, Australia"),
+            0.38,
+            sid,
+        );
+        row.tag("exact-name-match");
+        row.add_evidence(Evidence::new("name_register", "register row"));
+        r.push(row);
+        let mut anchor = Entity::new(EntityKind::Person, format!("Anchor Of {slug}"), 0.6, sid);
+        anchor.tag("seed");
+        anchor.tag("subject");
+        anchor.add_evidence(Evidence::new("name_register", "proposed anchor"));
+        r.push(anchor);
+        if target.value == "Ian Thorpe" {
+            for name in [
+                "Ian Thorley",
+                "Megan Thorpe",
+                "Ian Thorpe Aquatic Centre",
+                "Ian James Thorpe",
+            ] {
+                let mut p = Entity::new(EntityKind::Person, name, 0.9, sid);
+                p.add_evidence(Evidence::new("register_a", "listed"));
+                p.add_evidence(Evidence::new("register_b", "listed"));
+                r.push(p);
+            }
+            let mut org = Entity::new(EntityKind::Organisation, "ACME PTY LTD", 0.9, sid);
+            org.add_evidence(Evidence::new("register_a", "lodged"));
+            r.push(org);
+        }
+        Ok(r)
+    }
+}
+
+/// Run a `FullName` "Ian Thorpe" scan through [`NameRegisterModule`] with every
+/// other gate opened; return the persisted entities and the reasons recorded
+/// against each excluded value.
+async fn run_name_register_scan(
+    expand_all_identities: bool,
+) -> (Vec<Entity>, Vec<(String, String)>) {
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, mut rx) = tokio::sync::broadcast::channel(8192);
+    let engine = ScanEngine::new(vec![Arc::new(NameRegisterModule)], store_port, bus.clone());
+    let opts = ScanOptions {
+        depth: 2,
+        expand_all_identities,
+        max_roi: false,
+        min_expand_confidence: 0.0,
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::FullName, "Ian Thorpe");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("full_name", "Ian Thorpe"),
+        target.clone(),
+    )
+    .with_options(opts);
+    let scan_id = scan.id.clone();
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    engine.run(scan, target, ctx).await.expect("should succeed");
+    let entities = store.entities_for_scan(&scan_id).expect("should succeed");
+    let mut excluded = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        if let EventKind::EntityExcluded { value, reason, .. } = ev.kind {
+            excluded.push((value, reason));
+        }
+    }
+    (entities, excluded)
+}
+
+/// REQ-IDENTITY-GATE-001. A real "Ian Thorpe" name scan pivoted "Ian Thorley",
+/// "Aidan/Megan/Wendy Thorpe" and "Ian Thorpe Aquatic Centre": each shares a
+/// ≥4-char run with the seed, and register corroboration lifted the relatives
+/// past the single-source floor, so the wrong-identity gate passed them all and
+/// every one got a full identity sweep. A `Person` whose given/surname structure
+/// cannot be the subject's is another individual however many sources list it.
+#[tokio::test]
+async fn a_person_whose_name_cannot_be_the_subjects_is_never_pivoted() {
+    let (entities, excluded) = run_name_register_scan(false).await;
+    let values: Vec<&str> = entities.iter().map(|e| e.value.as_str()).collect();
+    for stranger in ["ian-thorley", "megan-thorpe", "ian-thorpe-aquatic-centre"] {
+        assert!(
+            !values.contains(&format!("dispatched-{stranger}").as_str()),
+            "{stranger} is a different person and must not be pivoted: {values:?}"
+        );
+    }
+    for name in ["Ian Thorley", "Megan Thorpe", "Ian Thorpe Aquatic Centre"] {
+        assert!(
+            values.contains(&name),
+            "{name} is still recorded as a finding: {values:?}"
+        );
+        assert!(
+            excluded
+                .iter()
+                .any(|(v, r)| v == name && r == "different_named_person"),
+            "the skip of {name} must be recorded under its own reason: {excluded:?}"
+        );
+    }
+    // A variant of the subject's own name still expands — and the company too.
+    assert!(
+        values.contains(&"dispatched-ian-james-thorpe"),
+        "a variant of the subject's own name must still be pivoted: {values:?}"
+    );
+    assert!(values.contains(&"dispatched-acme-pty-ltd"), "{values:?}");
+
+    // Control: the operator's explicit override chases relatives again, so the
+    // name rule — not a floor or another gate — is what stopped them.
+    let (entities, _) = run_name_register_scan(true).await;
+    let values: Vec<&str> = entities.iter().map(|e| e.value.as_str()).collect();
+    assert!(
+        values.contains(&"dispatched-ian-thorley"),
+        "--expand-all-identities must lift the gate: {values:?}"
+    );
+}
+
+/// REQ-SUBJECT-SCOPE-001. A module sees only the target it was run on, so its
+/// `seed` / `subject` / `exact-name-match` tags describe THAT target. Admitted
+/// unscoped, a pivot's output claimed the scan subject: `name_intel` minted a
+/// "seed" Person for every pivoted name, and a register row exact-matched to a
+/// company pivot anchored "the subject's confirmed location" at its postcode.
+#[tokio::test]
+async fn a_pivots_subject_claims_are_rescoped_to_the_scan_subject() {
+    let (entities, _) = run_name_register_scan(false).await;
+    let get = |v: &str| {
+        entities
+            .iter()
+            .find(|e| e.value == v)
+            .unwrap_or_else(|| panic!("{v} missing"))
+    };
+    // The seed dispatch keeps every claim.
+    let seed_anchor = get("Anchor Of ian-thorpe");
+    assert!(seed_anchor.has_tag("seed") && seed_anchor.has_tag("subject"));
+    // A pivot — even on a variant of the subject's own name — is not the seed.
+    for pivot in ["Anchor Of ian-james-thorpe", "Anchor Of acme-pty-ltd"] {
+        let e = get(pivot);
+        assert!(
+            !e.has_tag("seed") && !e.has_tag("subject"),
+            "{pivot} was proposed by a pivot, not the seed: {:?}",
+            e.tags
+        );
+    }
+    // The seed's and the name variant's exact register row (same postcode, one
+    // merged Address) stays an exact match of the subject's name…
+    assert!(get("QLD 4350, Australia").has_tag("exact-name-match"));
+    // …while the company pivot's "exact match" is to the company, not the subject.
+    assert!(
+        !get("QLD 2000, Australia").has_tag("exact-name-match"),
+        "a company pivot's row must not anchor the subject's location"
     );
 }

@@ -74,7 +74,6 @@ impl Module for AsicBannedOrgs {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut result = ModuleResult::new();
         let name = target.value.trim();
         let tokens = name_tokens(name);
         // A national company register needs a discriminating multi-token name.
@@ -94,51 +93,86 @@ impl Module for AsicBannedOrgs {
         // into a "pure" builder would make its tests depend on wall-clock
         // time — see `hudsonrock::compute_confidence`'s identical rationale).
         let today_days = (crate::core::entity::unix_now() / 86_400) as i64;
-        let mut matched_count = 0usize;
-        for rec in records
-            .iter()
-            .filter(|r| record_name_matches(r, name))
-            .take(MAX_HITS)
-        {
-            matched_count += 1;
-            emit_banned_org(rec, &ctx.scan_id, today_days, &mut result);
-        }
-
-        if matched_count == 0 {
-            return Ok(result);
-        }
-
-        // Signal if CKAN itself held more rows for this free-text query than
-        // this page fetched — `records` is already capped at MAX_HITS by the
-        // request's own `limit=`, so this can only ever be answered against
-        // CKAN's own reported total, never against a further-filtered slice
-        // of the already-capped `records` (which can never exceed MAX_HITS by
-        // construction, making that comparison always false).
-        let matches_capped = server_total > records.len() as u64;
-
-        let mut seed = Entity::new(
-            EntityKind::Organisation,
+        Ok(banned_orgs_result(
+            &records,
+            server_total,
             name,
-            confidence::MEDIUM_HIGH,
             &ctx.scan_id,
-        );
-        seed.tag("asic");
-        seed.tag("search-result");
-        let mut ev = Evidence::new(
-            SRC,
-            format!("ASIC Banned & Disqualified Organisations search for '{name}'"),
-        )
-        .with_attr("matched_count", matched_count.to_string())
-        .with_attr("total_matches", server_total.to_string());
-        if matches_capped {
-            ev = ev.with_attr("matches_capped", "true");
-            seed.tag("truncated");
-        }
-        seed.add_evidence(ev);
-        result.push(seed);
-
-        Ok(result)
+            today_days,
+        ))
     }
+}
+
+/// The module's result for one CKAN page. **Pure** — the emission path
+/// `process()` returns through, locked without a network.
+///
+/// The page is declared incomplete to the coverage layer BEFORE anything else,
+/// and in particular before the no-match return. CKAN's free-text search is
+/// broad and this module's whole-word filter is strict, so a full page can hold
+/// a hundred rows that mention the name and none that ARE it, while CKAN
+/// reports more rows than it sent. The previous order returned on "no whole-word
+/// match" first, so that page — the one where the real record may be in the
+/// rows never fetched — became a clean "not banned", the one outcome that
+/// settles an absence.
+fn banned_orgs_result(
+    records: &[Map<String, Value>],
+    server_total: u64,
+    name: &str,
+    scan_id: &str,
+    today_days: i64,
+) -> ModuleResult {
+    let mut result = ModuleResult::new();
+    // Signal if CKAN itself held more rows for this free-text query than
+    // this page fetched — `records` is already capped at MAX_HITS by the
+    // request's own `limit=`, so this can only ever be answered against
+    // CKAN's own reported total, never against a further-filtered slice
+    // of the already-capped `records` (which can never exceed MAX_HITS by
+    // construction, making that comparison always false).
+    let matches_capped = server_total > records.len() as u64;
+    if matches_capped {
+        result.mark_truncated(
+            records.len(),
+            usize::try_from(server_total).ok(),
+            &format!("CKAN's `limit={MAX_HITS}` page of the free-text search"),
+        );
+    }
+
+    let mut matched_count = 0usize;
+    for rec in records
+        .iter()
+        .filter(|r| record_name_matches(r, name))
+        .take(MAX_HITS)
+    {
+        matched_count += 1;
+        emit_banned_org(rec, scan_id, today_days, &mut result);
+    }
+
+    if matched_count == 0 {
+        return result;
+    }
+
+    let mut seed = Entity::new(
+        EntityKind::Organisation,
+        name,
+        confidence::MEDIUM_HIGH,
+        scan_id,
+    );
+    seed.tag("asic");
+    seed.tag("search-result");
+    let mut ev = Evidence::new(
+        SRC,
+        format!("ASIC Banned & Disqualified Organisations search for '{name}'"),
+    )
+    .with_attr("matched_count", matched_count.to_string())
+    .with_attr("total_matches", server_total.to_string());
+    if matches_capped {
+        ev = ev.with_attr("matches_capped", "true");
+        seed.tag("truncated");
+    }
+    seed.add_evidence(ev);
+    result.push(seed);
+
+    result
 }
 
 /// Query the Banned & Disqualified Organisations datastore by free-text name,

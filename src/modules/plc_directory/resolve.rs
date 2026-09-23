@@ -6,23 +6,42 @@
 //!
 //! # Cost
 //! At most two keyless requests per seed: one handle resolution against the
-//! public AppView, one audit-log read against `plc.directory`. A seed that is
-//! already a DID skips the first.
+//! public AppView, then one read of the identity's own record — the audit log
+//! from `plc.directory` for a `did:plc`, the DID document from its host for a
+//! `did:web`. A seed that is already a DID skips the first.
 
 use crate::core::module::ModuleContext;
 use crate::util::atproto::{is_dns_label, is_handle, is_plc_did, web_did_host};
 use crate::util::http::{fetch_json_or_404, fetch_json_or_absent, urlencode};
 
-use super::types::{AuditEntry, ResolvedHandle};
+use super::types::{AuditEntry, DidDocument, ResolvedHandle};
 use super::{PLC_BASE, RESOLVE_API, SRC};
+
+/// The identity a scan seed resolved to, and how it was reached.
+pub(super) struct Resolved {
+    pub(super) did: String,
+    /// The handle the DID was resolved through; `None` when the seed was
+    /// already a DID.
+    ///
+    /// Kept because handle resolution answers in one direction only. The
+    /// AppView's `resolveHandle` "does not necessarily bi-directionally verify
+    /// against the DID document" (its lexicon), so a handle whose `_atproto`
+    /// record names a stranger's DID resolves to that stranger. AT Protocol
+    /// requires the link be confirmed both ways, "otherwise anybody could
+    /// create handle aliases for third-party accounts" (the handle spec), so
+    /// [`super::transform`] attributes nothing to the seed until the identity's
+    /// own record claims this handle back.
+    pub(super) handle: Option<String>,
+}
 
 /// Resolve a scan seed to an AT Protocol DID.
 ///
 /// Accepts a DID verbatim (so a `did:plc:` or `did:web:` value scanned directly
-/// costs nothing to resolve) and otherwise treats the seed as a handle. Both
-/// candidate handle forms are gated on local validity first: the AppView answers
-/// a structurally invalid `actor` with HTTP 400, and issuing a request that
-/// cannot succeed is pure cost on every scan.
+/// costs nothing to resolve — which is not the same as confirming it exists:
+/// [`audit_log`] and [`web_did_document`] do that) and otherwise treats the
+/// seed as a handle. Both candidate handle forms are gated on local validity
+/// first: the AppView answers a structurally invalid `actor` with HTTP 400, and
+/// issuing a request that cannot succeed is pure cost on every scan.
 ///
 ///   * `{seed}.bsky.social` — only when `seed` is one valid DNS label, so a
 ///     username with an underscore never spends a request.
@@ -31,11 +50,14 @@ use super::{PLC_BASE, RESOLVE_API, SRC};
 pub(super) async fn resolve_did(
     ctx: &ModuleContext,
     seed: &str,
-) -> crate::core::error::Result<Option<String>> {
+) -> crate::core::error::Result<Option<Resolved>> {
     // The seed is already a DID — nothing to resolve, and no request is made,
     // so there is no outage to distinguish from an absence here.
     if is_plc_did(seed) || web_did_host(seed).is_some() {
-        return Ok(Some(seed.to_string()));
+        return Ok(Some(Resolved {
+            did: seed.to_string(),
+            handle: None,
+        }));
     }
 
     let mut candidates: Vec<String> = Vec::new();
@@ -65,7 +87,10 @@ pub(super) async fn resolve_did(
             Ok(Some(r)) => {
                 let did = r.did.trim();
                 if !did.is_empty() {
-                    return Ok(Some(did.to_string()));
+                    return Ok(Some(Resolved {
+                        did: did.to_string(),
+                        handle: Some(handle),
+                    }));
                 }
             }
             // A clean miss: this candidate handle genuinely does not exist.
@@ -127,6 +152,30 @@ pub(super) async fn audit_log(
     }
     let url = format!("{PLC_BASE}/{did}/log/audit");
     fetch_json_or_404::<Vec<AuditEntry>>(&ctx.http, SRC, &url).await
+}
+
+/// Fetch the DID document a `did:web` identity's host serves.
+///
+/// did:web has no registry. The identity exists exactly while
+/// `https://{host}/.well-known/did.json` serves a document naming it, and the
+/// method deletes one by taking that document down — so a syntactically valid
+/// `did:web:` string confirms nothing, and this read is what does.
+///
+/// `Ok(None)` from a 404 is the clean "no such identity here" answer. Any other
+/// failure is an `Err`, like [`audit_log`]: an unreachable host is recorded as
+/// a failure, not as a verdict on the identity. The host comes from target
+/// data, so it goes through the shared client's SSRF-filtering resolver like
+/// every other request, and [`web_did_host`] admits only dotted DNS labels —
+/// no path, query, port or userinfo can ride into the URL.
+pub(super) async fn web_did_document(
+    ctx: &ModuleContext,
+    did: &str,
+) -> crate::core::error::Result<Option<DidDocument>> {
+    let Some(host) = web_did_host(did) else {
+        return Ok(None);
+    };
+    let url = format!("https://{host}/.well-known/did.json");
+    fetch_json_or_404::<DidDocument>(&ctx.http, SRC, &url).await
 }
 
 /// Whether every candidate handle that was actually tried came back a failure.

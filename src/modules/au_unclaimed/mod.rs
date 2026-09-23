@@ -179,7 +179,7 @@ async fn process_qld(target: &Target, ctx: &ModuleContext, out: &mut ModuleResul
     let broadened = surname != full;
 
     let mut pc_localities = Vec::new();
-    for pc in exact_postcodes(&records, full, broadened) {
+    for pc in exact_postcodes(&records, surname, full, broadened, target.kind) {
         let locs = crate::util::postcode_au::localities(&ctx.http, &pc).await;
         if !locs.is_empty() {
             pc_localities.push((pc, locs));

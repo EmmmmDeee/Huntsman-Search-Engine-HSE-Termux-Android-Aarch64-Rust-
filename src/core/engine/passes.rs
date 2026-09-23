@@ -131,9 +131,12 @@ pub(super) fn promote_geo_corroborated_family(entities: &mut [Entity]) -> usize 
     if subject.is_empty() {
         return 0;
     }
+    let surname = crate::core::geo_family::subject_surname(entities);
     let mut promoted = 0usize;
     for e in entities.iter_mut() {
-        if e.has_tag("geo-corroborated") || !is_geo_corroborated_family(e, &subject) {
+        if e.has_tag("geo-corroborated")
+            || !is_geo_corroborated_family(e, &subject, surname.as_deref())
+        {
             continue;
         }
         let km = distance_to_subject(e, &subject).unwrap_or_default();
@@ -397,8 +400,8 @@ pub(super) fn flag_geo_discordant_namesakes(entities: &mut [Entity]) -> usize {
     }
     // The family surname every `family-candidate` shares — the subject's. Resolved
     // once; its commonness gates the whole pass (a rare surname → no namesakes).
-    let subject_surname_common = crate::core::geo_family::subject_surname(entities)
-        .map(|s| crate::util::surnames::is_common(&s));
+    let surname = crate::core::geo_family::subject_surname(entities);
+    let subject_surname_common = surname.as_deref().map(crate::util::surnames::is_common);
 
     let mut flagged = 0usize;
     for e in entities.iter_mut() {
@@ -412,7 +415,7 @@ pub(super) fn flag_geo_discordant_namesakes(entities: &mut [Entity]) -> usize {
             crate::util::surnames::surname_of(&e.value)
                 .is_some_and(|s| crate::util::surnames::is_common(&s))
         });
-        if !is_namesake(e, &subject, common) {
+        if !is_namesake(e, &subject, surname.as_deref(), common) {
             continue;
         }
         e.tag("geo-discordant");

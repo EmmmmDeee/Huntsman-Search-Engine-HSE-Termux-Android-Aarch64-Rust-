@@ -606,3 +606,100 @@ fn every_requirement_the_ledger_records_is_accounted_for_in_the_changelog() {
         missing.join("\n  ")
     );
 }
+
+/// **The map's module count is the registry's.** The Layer 3 heading states how
+/// many provider modules HSE registers. It is the same hand-maintained figure
+/// the README carries, and the README's copy has long been locked
+/// (`readme_module_overview_count_matches_registry`, `tests/architecture_parts`)
+/// — while this copy was not, and the three layer headings around it had all
+/// drifted from the tree (`src/util` 213 vs 215 files, `src/core` 203 vs 207,
+/// `src/modules` 516 vs 518) by the time `api_discovery` became module 194.
+/// A figure with a guard in one document and none in the other is the
+/// "guard applied to one consumer but not its neighbour" shape the map itself
+/// names; the module count is the one that means something, so it is the one
+/// locked.
+#[test]
+fn the_map_states_the_live_registry_size() {
+    let map = read_doc(ROADMAP_DOC);
+    let n = huntsman_search_engine::modules::registry().len();
+    let heading = map
+        .lines()
+        .find(|l| l.starts_with("### Layer 3 "))
+        .unwrap_or_else(|| panic!("{ROADMAP_DOC} must keep its `### Layer 3` modules heading"));
+    assert!(
+        heading.contains(&format!(", {n} provider modules)")),
+        "{ROADMAP_DOC}'s Layer 3 heading must state the live registry size ({n}); \
+         update it after adding or removing a module. Found: {heading}"
+    );
+}
+
+/// Every `WORD_PLACEHOLDER` template token in `text`: an upper-case,
+/// underscore-joined word ending in `_PLACEHOLDER`, standing alone.
+///
+/// Hand-scanned like [`req_ids`]. The boundary on both sides is what keeps the
+/// many legitimate uses of the English word "placeholder" in these documents
+/// (the shipped key placeholders, the placeholder-key gates) from matching.
+fn template_tokens(text: &str) -> Vec<String> {
+    const SUFFIX: &str = "_PLACEHOLDER";
+    let is_word = |b: u8| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_';
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut cursor = 0;
+    while let Some(found) = text[cursor..].find(SUFFIX) {
+        let at = cursor + found;
+        let end = at + SUFFIX.len();
+        let mut start = at;
+        while start > 0 && is_word(bytes[start - 1]) {
+            start -= 1;
+        }
+        let head = &text[start..at];
+        let stands_alone = bytes
+            .get(end)
+            .is_none_or(|&b| !(b.is_ascii_alphanumeric() || b == b'_'))
+            && (start == 0 || !bytes[start - 1].is_ascii_alphanumeric());
+        if stands_alone && head.bytes().any(|b| b.is_ascii_uppercase()) {
+            out.push(text[start..end].to_string());
+        }
+        cursor = end;
+    }
+    out
+}
+
+/// **An organising document may not ship an unfilled template token.**
+///
+/// REQ-CERTSPOTTER-001 found `MATRIX_SUMMARY_PLACEHOLDER` merged into the
+/// ledger by the wave before it: the scaffold for REQ-RESILIENCE-002's
+/// falsification summary was written, the table under it was filled in, and
+/// the line that was meant to summarise the table never was. Nothing read the
+/// document for it. These three files are written by tooling as often as by
+/// hand, which is exactly when a scaffold survives.
+#[test]
+fn the_organising_documents_carry_no_unfilled_template_token() {
+    // Vacuity guard: the scanner must find the token shape it exists for,
+    // and must not mistake the English word for one.
+    assert_eq!(
+        template_tokens("x\nMATRIX_SUMMARY_PLACEHOLDER\n(`RUN_2_PLACEHOLDER`)."),
+        ["MATRIX_SUMMARY_PLACEHOLDER", "RUN_2_PLACEHOLDER"]
+    );
+    for not_a_token in [
+        "a placeholder key",
+        "the `insert_key_here` placeholder",
+        "is_placeholder_key",
+        "NOT_A_PLACEHOLDERS",
+        "fooMATRIX_PLACEHOLDER",
+    ] {
+        assert!(
+            template_tokens(not_a_token).is_empty(),
+            "`{not_a_token}` is not a template token, but the scanner read one"
+        );
+    }
+
+    for rel in [LEDGER_DOC, ROADMAP_DOC, CHANGELOG_DOC] {
+        let found = template_tokens(&read_doc(rel));
+        assert!(
+            found.is_empty(),
+            "{rel} still carries unfilled template token(s): {found:?} — write \
+             the text the scaffold was holding a place for"
+        );
+    }
+}
