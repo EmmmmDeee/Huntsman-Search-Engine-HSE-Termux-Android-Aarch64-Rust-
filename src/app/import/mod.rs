@@ -569,9 +569,11 @@ pub(crate) fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>
 /// (entities, dossier, debug bundle, GEXF) works on it, and expansion seeds can
 /// later re-scan its pivots. Derives the deterministic entity relations and runs
 /// the correlator, exactly as the live scan finalise does, so an imported dossier
-/// carries the same graph a live scan would. Best-effort on relations and
+/// carries the same graph a live scan would. Not fatal on relations and
 /// correlations: an import whose entities already persisted must not fail on a
-/// hiccup there. Returns `(relations, correlations)` persisted, for the summary.
+/// hiccup there — but what the store refused is recorded on the scan and
+/// returned in [`PersistedBatch::persist_error`](crate::app::persist::PersistedBatch::persist_error)
+/// with the persisted counts, for the summary.
 ///
 /// The store-opening / finalise body is the shared [`crate::app::persist`] use
 /// case — `hse ingest --auto-scan` persists document-extracted entities through
@@ -579,7 +581,7 @@ pub(crate) fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>
 async fn persist_import(
     sid: &str,
     entities: &[crate::core::entity::Entity],
-) -> Result<(usize, usize, bool)> {
+) -> Result<crate::app::persist::PersistedBatch> {
     use crate::core::scan::TargetKind;
 
     // A readable scan label: the strongest identity in the file, else generic —
@@ -594,15 +596,26 @@ async fn persist_import(
 /// fatal — the entities were already rendered to the operator.
 async fn persist_and_report(sid: &str, entities: &[crate::core::entity::Entity], output: &str) {
     match persist_import(sid, entities).await {
-        Ok((relations, correlations, enriched)) => {
+        Ok(batch) => {
             note(
                 output,
                 format!(
-                    "  Stored:    scan {sid} ({} entities, {relations} relations, {correlations} correlations) — view with `hse list`",
-                    entities.len()
+                    "  Stored:    scan {sid} ({} entities, {} relations, {} correlations) — view with `hse list`",
+                    entities.len(),
+                    batch.relations,
+                    batch.correlations
                 ),
             );
-            if !enriched {
+            if let Some(err) = &batch.persist_error {
+                note(
+                    output,
+                    format!(
+                        "  Warning:   the scan is stored but INCOMPLETE — {err}; its exports \
+                         read partial (persist-incomplete)"
+                    ),
+                );
+            }
+            if !batch.enriched {
                 note(
                     output,
                     format!(

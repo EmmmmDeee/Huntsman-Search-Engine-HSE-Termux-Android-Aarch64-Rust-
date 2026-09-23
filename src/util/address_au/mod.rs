@@ -809,13 +809,16 @@ pub fn extract_phones(text: &str) -> Vec<String> {
     let is_word_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     for m in re.find_iter(text) {
         // Token boundary. The regex has no anchors, so it matches any run of
-        // six or more digits wherever it sits. A match that opens on `+` or
-        // `(` is delimited by that character itself; one that opens on a
-        // digit must not have a word byte before it. A match always closes on
-        // a digit, so the byte after it must never be a word byte.
-        let glued_before = bytes.get(m.start()).copied().is_some_and(is_word_byte)
-            && m.start() > 0
-            && is_word_byte(bytes[m.start() - 1]);
+        // six or more digits wherever it sits. The byte before the match must
+        // never be a word byte, WHATEVER the match opens on: a `+` or `(` is
+        // not a delimiter when a word is glued to it (`foo+61 2 8224 6704`,
+        // `ref(02) 8224 6704` are fragments of a longer token, not a phone).
+        // Only a match opening on a digit used to be checked, so those two
+        // shapes passed the whole-token rule the doc above promises. A match
+        // always closes on a digit, so the byte after it must never be a word
+        // byte either. `tel:+61…` and `Ph: (02) …` still scan: `:` and space
+        // are not word bytes.
+        let glued_before = m.start() > 0 && is_word_byte(bytes[m.start() - 1]);
         let glued_after = bytes.get(m.end()).copied().is_some_and(is_word_byte);
         if glued_before || glued_after {
             continue;

@@ -2,10 +2,12 @@
 //
 // Two entry points share the same deterministic rule set:
 //
-//   * [`Correlator::run`] — the authoritative finalise-time pass. Loads the
-//     scan's persisted entities *and* the typed relation edges, evaluates
-//     both the entity rules and the graph-aware relation rules, and persists
-//     every firing.
+//   * [`Correlator::evaluate`] — the authoritative finalise-time pass. Loads
+//     the scan's persisted entities *and* the typed relation edges and
+//     evaluates both the entity rules and the graph-aware relation rules. The
+//     finalise paths persist its firings through
+//     `core::engine::correlate_and_persist`, which counts every refused write;
+//     [`Correlator::run`] is evaluate-then-persist, failing fast.
 //   * [`correlate_entities`] — a live, in-memory pass the engine invokes
 //     during ingestion (after the seed round and after each expansion round)
 //     so high-confidence correlations stream out as the graph grows rather
@@ -222,7 +224,33 @@ impl Correlator {
         Self { store }
     }
 
+    /// Evaluate and persist: [`Self::evaluate`], then store every firing,
+    /// failing fast on the first store error. The storage self-test's form,
+    /// where one refused write is itself the finding.
+    ///
+    /// The three paths that finalise a scan (the live engine, `hse import` /
+    /// `hse ingest --auto-scan`, the web upload) do NOT use it. A store error
+    /// here aborts the loop, so the firings after it are neither stored nor
+    /// counted, and the caller's panic guard turns the `Err` into "no
+    /// correlations" with nothing recorded on the scan — which is how a scan
+    /// missing its findings used to be written `Complete`. They call
+    /// [`Self::evaluate`] and persist through
+    /// `core::engine::correlate_and_persist`, which stores every firing it can
+    /// and counts each refusal into the scan's
+    /// [`PersistTally`](crate::core::scan::PersistTally).
     pub fn run(&self, scan_id: &str) -> Result<Vec<Correlation>> {
+        let firings = self.evaluate(scan_id)?;
+        for c in &firings {
+            self.store.upsert_correlation(c)?;
+        }
+        Ok(firings)
+    }
+
+    /// Run every entity rule and every relation rule over the persisted scan
+    /// and return the ranked firings WITHOUT writing them — storing them is
+    /// the caller's job (see [`Self::run`]). Reads the scan's entities and its
+    /// relations, both of which the finalise persists before this runs.
+    pub fn evaluate(&self, scan_id: &str) -> Result<Vec<Correlation>> {
         let entities = self.store.entities_for_scan(scan_id)?;
         if entities.is_empty() {
             return Ok(Vec::new());
@@ -262,9 +290,6 @@ impl Correlator {
             .collect();
         rank_and_sort(&mut firings, &ceff);
 
-        for c in &firings {
-            self.store.upsert_correlation(c)?;
-        }
         // Report what was EXAMINED, not just what fired. `fired = 0` alone is
         // ambiguous between "the rules ran over the whole scan and nothing
         // correlated" and "almost every entity was quarantined, so the rules had
@@ -341,7 +366,7 @@ pub(in crate::core) use rules::location::is_infrastructure_geo;
 // the subject's own device?" question AU-059's `locates_subject_directly` does,
 // so it reads the one class table rather than keeping a second source list.
 pub(in crate::core) use rules::location::{class_locates_subject_directly, geo_source_class};
-// Shared with `core::relation::builders::persona_key` so the AliasOf handle-pivot
+// Shared with `core::relation::builders::persona_keys` so the AliasOf handle-pivot
 // excludes the SAME generic role-mailbox / placeholder handles the correlator's
 // identity rules exclude — a `info@`/`support@` address must never fan a
 // cross-org identity clique.

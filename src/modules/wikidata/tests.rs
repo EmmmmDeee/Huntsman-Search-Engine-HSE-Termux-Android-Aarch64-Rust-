@@ -986,6 +986,150 @@ fn a_namesake_primary_s_pep_flag_does_not_reach_the_subject() {
     );
 }
 
+/// A same-name search hit at rank `rank` (1-based), labelled `label`.
+fn hit(rank: usize, label: &str, description: &str) -> SearchHit {
+    SearchHit {
+        id: format!("Q{}", 900 + rank),
+        label: Some(label.into()),
+        description: Some(description.into()),
+    }
+}
+
+/// The NZ-soldier primary of scan 7258fc07: a human (P31 Q5) holding a P39
+/// position, labelled "Ian Thorpe".
+fn soldier_primary() -> Vec<crate::core::entity::Entity> {
+    primary_entities(
+        "Q61949509",
+        "Ian Thorpe",
+        &serde_json::json!({
+            "labels": {"en": {"value": "Ian Thorpe"}},
+            "claims": {
+                "P31": [{"mainsnak": {"datavalue": {"value": {"id": "Q5"}}}}],
+                "P39": [{"mainsnak": {"datavalue": {"value": {"id": "Q60769625"}}}}]
+            }
+        }),
+        TargetKind::FullName,
+        "s",
+    )
+}
+
+/// Merge `answer` with the subject's own seed anchor — a Person "Ian Thorpe"
+/// seen by ONE real source — and return the fused anchor.
+fn fused_subject(answer: Vec<crate::core::entity::Entity>) -> crate::core::entity::Entity {
+    let mut all = answer;
+    let mut seed = crate::core::entity::Entity::new(EntityKind::Person, "Ian Thorpe", 0.82, "s");
+    seed.tag("seed");
+    seed.add_evidence(crate::core::entity::Evidence::new(
+        "search_engines",
+        "a page naming the subject",
+    ));
+    all.push(seed);
+    crate::core::entity::dedup_merge_entities(&mut all);
+    all.into_iter()
+        .find(|e| e.kind == EntityKind::Person && e.value == "Ian Thorpe")
+        .expect("the merged subject anchor")
+}
+
+/// Scan 7258fc07 (review of #649): "Ian Thorpe" matched more than six items,
+/// so the truncation note went onto the NZ-soldier head — AFTER
+/// `mark_shared_labels` had stamped the head's records `Unverified`. The note
+/// carried no ownership status, so it was the one countable record on the
+/// ambiguous head; the head fused onto the seed and `wikidata` counted as a
+/// corroborating source of the swimmer. The note is an annotation now and is
+/// attached before the marking, as `mark_ambiguous`'s contract requires.
+#[test]
+fn a_truncation_note_on_an_ambiguous_head_does_not_corroborate_the_subject() {
+    let mut hits = vec![
+        hit(1, "Ian Thorpe", "New Zealand soldier"),
+        hit(2, "Ian Thorpe", "Australian swimmer"),
+    ];
+    for rank in 3..=SEARCH_LIMIT {
+        hits.push(hit(rank, &format!("Ian Thorpe Item {rank}"), "other"));
+    }
+    let name_matched: Vec<&SearchHit> = hits.iter().collect();
+
+    let mut out = ModuleResult::new();
+    out.extend(soldier_primary());
+    for h in &hits[1..MAX_CANDIDATES] {
+        out.push(candidate_entity(h, TargetKind::FullName, "s"));
+    }
+    super::finish_answer(
+        &mut out,
+        TargetKind::FullName,
+        "Ian Thorpe",
+        &name_matched,
+        SEARCH_LIMIT,
+    );
+    let note = out.entities[0]
+        .evidence
+        .iter()
+        .find(|ev| ev.attributes.contains_key("candidates_capped"))
+        .expect("precondition: the head carries the truncation note");
+    // Each half of the fix, pinned on its own: the note is an annotation, and
+    // it was attached before `mark_ambiguous` ran, so it was marked too.
+    assert!(note.is_annotation, "a fact about the search: {note:?}");
+    assert_eq!(
+        note.verification,
+        Some(crate::core::entity::VerificationMethod::Unverified),
+        "attached before the ambiguity marking, as its contract requires"
+    );
+
+    let subject = fused_subject(out.entities);
+    assert!(
+        !subject.corroborating_sources().contains("wikidata"),
+        "a note about the search is not an observation of the subject: {:?}",
+        subject.corroborating_sources()
+    );
+    assert_eq!(subject.source_count(), 1, "only the seed's own source");
+}
+
+/// The shared-label judgement covers every name-matched hit, not only the
+/// [`MAX_CANDIDATES`] surfaced: a label the primary shares with an item
+/// ranked 7th–10th still means the name does not identify one item. Judged
+/// over the first six only, the soldier primary here stayed unmarked, and its
+/// office (`pep`) and its records reached the subject as the subject's own.
+#[test]
+fn a_label_shared_beyond_the_candidate_cap_still_marks_the_primary() {
+    let mut hits = vec![hit(1, "Ian Thorpe", "New Zealand soldier")];
+    for rank in 2..=MAX_CANDIDATES {
+        hits.push(hit(rank, &format!("Ian Thorpe Item {rank}"), "other"));
+    }
+    // The swimmer, ranked past the cap.
+    hits.push(hit(MAX_CANDIDATES + 1, "Ian Thorpe Item 7", "other"));
+    hits.push(hit(MAX_CANDIDATES + 2, "Ian Thorpe", "Australian swimmer"));
+    let name_matched: Vec<&SearchHit> = hits.iter().collect();
+
+    let mut out = ModuleResult::new();
+    out.extend(soldier_primary());
+    for h in &hits[1..MAX_CANDIDATES] {
+        out.push(candidate_entity(h, TargetKind::FullName, "s"));
+    }
+    super::finish_answer(
+        &mut out,
+        TargetKind::FullName,
+        "Ian Thorpe",
+        &name_matched,
+        SEARCH_LIMIT - 1,
+    );
+    assert!(
+        out.entities[0].has_tag("ambiguous-name"),
+        "the primary's name is shared on this page: {:?}",
+        out.entities[0].tags
+    );
+
+    let subject = fused_subject(out.entities);
+    assert!(
+        !subject.has_tag("pep") && !subject.has_tag("politically-exposed"),
+        "a namesake's office reached the subject: {:?}",
+        subject.tags
+    );
+    assert!(
+        !subject.corroborating_sources().contains("wikidata"),
+        "{:?}",
+        subject.corroborating_sources()
+    );
+}
+
 #[test]
 fn truncation_notes_for_different_searches_are_distinct_records() {
     // Scan 7258fc07: the truncation note "Wikidata name search matched 10

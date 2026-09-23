@@ -6258,6 +6258,160 @@ async fn a_scan_is_marked_complete_only_after_its_exported_artefacts_are_durable
     );
 }
 
+/// Run the one-module breach-corpus fixture the lifecycle test above uses
+/// against `store`, returning the finished scan.
+async fn run_breach_corpus_fixture(store: Arc<dyn StoragePort>, seed: &str) -> Scan {
+    let (bus, _rx) = tokio::sync::broadcast::channel(4096);
+    let engine = ScanEngine::new(
+        vec![Arc::new(StubBreachCorpus {
+            name: "stub_breach_corpus",
+        })],
+        store,
+        bus.clone(),
+    );
+    let opts = ScanOptions {
+        depth: 1,
+        expand_all_identities: true,
+        max_roi: false,
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Email, seed);
+    let scan =
+        Scan::new(crate::core::entity::scan_id("email", seed), target.clone()).with_options(opts);
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    engine.run(scan, target, ctx).await.expect("should succeed")
+}
+
+/// Copilot review of #649: a live scan whose store refused its relations (and
+/// correlations) was written `Complete` with `error: None` — the refusals were
+/// only `warn!`-logged in `derive_and_persist_relations`, and a refused
+/// correlation made `Correlator::run` bail so nothing was recorded at all —
+/// so every export read the scan as whole while its graph was missing. The
+/// finalise must keep the status (the scan did run) and record the shortfall,
+/// counted, where the completeness classifiers read it.
+#[tokio::test]
+async fn a_live_scan_whose_store_refuses_relations_records_the_shortfall() {
+    use crate::core::test_support::{InMemoryStore, REFUSED_RELATION, RefusingStore};
+
+    // Control: the same fixture over a store that keeps everything is whole,
+    // and tells us how many edges the finalise writes.
+    let clean = Arc::new(InMemoryStore::new());
+    let whole = run_breach_corpus_fixture(clean.clone(), "shortfall@example.com").await;
+    assert_eq!(whole.status, ScanStatus::Complete);
+    assert_eq!(
+        whole.error, None,
+        "a store that keeps every write: no error"
+    );
+    let edges = clean
+        .relations_for_scan(&whole.id)
+        .expect("should succeed")
+        .len();
+    assert!(edges > 0, "the fixture must write relations");
+
+    let inner = Arc::new(InMemoryStore::new());
+    let refusing: Arc<dyn StoragePort> = Arc::new(
+        RefusingStore::new(inner.clone())
+            .refusing_relations()
+            .refusing_correlations(),
+    );
+    let done = run_breach_corpus_fixture(refusing, "shortfall@example.com").await;
+    assert_eq!(
+        done.status,
+        ScanStatus::Complete,
+        "the scan ran to the end; losing writes does not make it Failed"
+    );
+    let err = done
+        .error
+        .clone()
+        .expect("the refused relations must be recorded on the scan");
+    assert!(
+        err.starts_with(&format!("{edges}/{edges} relations")),
+        "every edge counted, none silently dropped: {err}"
+    );
+    assert!(
+        err.ends_with(&format!("failed to persist: {REFUSED_RELATION}")),
+        "the first refusal's error, deterministically: {err}"
+    );
+    // What the exports read is the stored row, and it says the same.
+    let stored = inner
+        .get_scan(&done.id)
+        .expect("should succeed")
+        .expect("the scan row exists");
+    assert_eq!(stored.status, ScanStatus::Complete);
+    assert_eq!(stored.error, done.error);
+    assert!(
+        stored.completeness_caveat("this scan").is_some(),
+        "a scan missing its graph is not a complete answer"
+    );
+}
+
+/// The correlation half of the same finding. `Correlator::run` persisted
+/// inside the pass and returned `Err` on the first refused write, which the
+/// panic guard turned into "no correlations": the firings after it were
+/// neither stored nor counted, and the finalise recorded nothing. The shared
+/// `correlate_and_persist` step every finalise path now runs attempts every
+/// firing and counts each refusal.
+#[test]
+fn correlate_and_persist_counts_every_refused_firing() {
+    use crate::core::entity::Evidence;
+    use crate::core::test_support::{InMemoryStore, REFUSED_CORRELATION, RefusingStore};
+
+    let sid = "corr-refused";
+    let inner = Arc::new(InMemoryStore::new());
+    // Three independent sources on one email: AU-003 fires.
+    let mut strong = Entity::new(EntityKind::Email, "a@b.com", 0.95, sid);
+    for src in ["hibp", "dehashed", "search_engines"] {
+        strong.add_evidence(Evidence::new(src, "seen"));
+    }
+    inner.upsert_entity(&strong).expect("should succeed");
+    let store: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).refusing_correlations());
+
+    // What the old path did with this store: the pass errors out whole.
+    assert!(
+        guarded_correlation_pass(sid, || {
+            crate::core::correlator::Correlator::new(Arc::clone(&store)).run(sid)
+        })
+        .is_none(),
+        "fail-fast persistence discards the pass — the defect"
+    );
+
+    let mut tally = PersistTally::default();
+    let firings =
+        correlate_and_persist(&store, sid, &mut tally).expect("the pass itself ran cleanly");
+    assert!(!firings.is_empty(), "the fixture must fire");
+    assert_eq!(
+        (
+            tally.attempted(PersistArtefact::Correlations),
+            tally.failed(PersistArtefact::Correlations)
+        ),
+        (firings.len(), firings.len()),
+        "every firing attempted, every refusal counted"
+    );
+    let msg = tally.message().expect("a refused firing is a shortfall");
+    assert!(msg.ends_with(REFUSED_CORRELATION), "{msg}");
+    assert!(
+        inner
+            .correlations_for_scan(sid)
+            .expect("should succeed")
+            .is_empty(),
+        "nothing was stored — and the tally says so"
+    );
+
+    // Control: a store that keeps them stores every firing, and records none.
+    let keeping: Arc<dyn StoragePort> = inner.clone();
+    let mut clean = PersistTally::default();
+    let again = correlate_and_persist(&keeping, sid, &mut clean).expect("ran");
+    assert_eq!(clean.message(), None);
+    assert_eq!(clean.persisted(PersistArtefact::Correlations), again.len());
+}
+
 /// Scan 7258fc07: `expansion_stop max_entities=2500 reached`, then
 /// `breach_sweep {probes: 64}`, then no sweep dispatch at all — the per-probe
 /// budget guard broke on probe 0, and the event (emitted before the loop)

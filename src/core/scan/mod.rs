@@ -928,10 +928,24 @@ impl Scan {
     /// `None` for a benign stop reason and for `stop_reason: None` — including
     /// every row written before the field existed — so no warning is ever
     /// retro-fitted onto a scan on no evidence.
+    ///
+    /// The same arm also reads [`Scan::error`]: on a `Complete` scan it is
+    /// written only by the finalise's [`PersistTally`] — records the scan
+    /// produced that the store failed to keep. That scan ran to completion,
+    /// but its stored answer is missing parts of itself, so it is caveated
+    /// ahead of any truncation, in the order the export classifier
+    /// (`app::export`'s `partial_export_reason`) uses.
     #[must_use]
     pub fn completeness_caveat(&self, subject: &str) -> Option<String> {
         match self.status {
             ScanStatus::Complete => {
+                if let Some(err) = self.error.as_deref() {
+                    return Some(format!(
+                        "{subject} finished, but not everything it produced was stored ({err}) \
+                         — the missing records are absent from every view and export of it, so \
+                         their absence is not a finding; re-run the scan to rebuild them"
+                    ));
+                }
                 let r = self.stop_reason?;
                 r.truncated().then(|| {
                     format!(
@@ -979,6 +993,157 @@ impl Scan {
     pub fn with_options(mut self, options: ScanOptions) -> Self {
         self.options = options;
         self
+    }
+}
+
+/// One kind of record a scan's finalise writes to the store, as counted by
+/// [`PersistTally`]. Declaration order is the order the finalise writes them
+/// in, and the order [`PersistTally::message`] lists them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersistArtefact {
+    /// The scan's entities (the live engine's batch, or its per-entity
+    /// fallback).
+    Entities,
+    /// The typed relation edges (the attribution graph).
+    Relations,
+    /// The correlator's findings, including the cross-scan AU-065/AU-066 ones.
+    Correlations,
+}
+
+impl PersistArtefact {
+    /// Every artefact, in declaration order.
+    const ALL: [Self; 3] = [Self::Entities, Self::Relations, Self::Correlations];
+
+    /// The plural noun [`PersistTally::message`] prints.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Entities => "entities",
+            Self::Relations => "relations",
+            Self::Correlations => "correlations",
+        }
+    }
+
+    /// Slot in [`PersistTally`]'s counters.
+    fn index(self) -> usize {
+        match self {
+            Self::Entities => 0,
+            Self::Relations => 1,
+            Self::Correlations => 2,
+        }
+    }
+}
+
+/// How many of each [`PersistArtefact`] a finalise attempted to store and how
+/// many the store refused, plus the first refusal's error — the single
+/// authority for what a scan records in [`Scan::error`] when it runs to the
+/// end but does not keep everything it produced.
+///
+/// # Why this exists
+///
+/// Every export decides whether a scan is whole from the stored record alone
+/// (`app::export`'s `partial_export_reason`, and [`Scan::completeness_caveat`]
+/// for the read paths). The three paths that finalise a scan — the live
+/// engine, `hse import` / `hse ingest --auto-scan` and the web upload — each
+/// treated a relation or correlation that failed to persist as a log line, or
+/// counted successes with `.is_ok()` and dropped the error. The scan was then
+/// written `Complete` with `error: None`, and every export of it read "complete"
+/// while the graph or the findings were missing. Only the live engine's
+/// entity shortfall reached `error`, and even that was not read by the export
+/// classifier. Each persist site now counts into one of these, and the
+/// terminal write stores [`Self::message`].
+///
+/// # Determinism
+///
+/// The message is a pure function of the counts and the first error — no
+/// timestamp, no map iteration order — so a debug bundle that prints it stays
+/// byte-identical across exports. "First" is the first failure in finalise
+/// order: entities, then relations, then correlations, each in the order its
+/// pass writes them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PersistTally {
+    /// `(failed, attempted)` per artefact, indexed by [`PersistArtefact::index`].
+    counts: [(usize, usize); 3],
+    /// The first store error recorded, in finalise order.
+    first_err: Option<String>,
+}
+
+impl PersistTally {
+    /// Record a batch of `attempted` writes of `artefact`, `failed` of which
+    /// did not persist; `first_err` is the first of those failures' errors.
+    /// A later call never replaces an earlier error.
+    pub fn add(
+        &mut self,
+        artefact: PersistArtefact,
+        attempted: usize,
+        failed: usize,
+        first_err: Option<String>,
+    ) {
+        let slot = &mut self.counts[artefact.index()];
+        slot.0 += failed;
+        slot.1 += attempted;
+        if failed > 0 && self.first_err.is_none() {
+            self.first_err = first_err;
+        }
+    }
+
+    /// Record one write of `artefact`, returning whether it persisted — so a
+    /// persist site reads `if tally.record(kind, store.upsert_x(..)) { .. }`
+    /// in place of the `.is_ok()` that used to drop the error.
+    pub fn record<T, E: std::fmt::Display>(
+        &mut self,
+        artefact: PersistArtefact,
+        outcome: std::result::Result<T, E>,
+    ) -> bool {
+        match outcome {
+            Ok(_) => {
+                self.add(artefact, 1, 0, None);
+                true
+            }
+            Err(e) => {
+                self.add(artefact, 1, 1, Some(e.to_string()));
+                false
+            }
+        }
+    }
+
+    /// How many writes of `artefact` failed.
+    #[must_use]
+    pub fn failed(&self, artefact: PersistArtefact) -> usize {
+        self.counts[artefact.index()].0
+    }
+
+    /// How many writes of `artefact` were attempted.
+    #[must_use]
+    pub fn attempted(&self, artefact: PersistArtefact) -> usize {
+        self.counts[artefact.index()].1
+    }
+
+    /// How many writes of `artefact` persisted — the count a caller's summary
+    /// reports, so it can never disagree with the shortfall beside it.
+    #[must_use]
+    pub fn persisted(&self, artefact: PersistArtefact) -> usize {
+        self.attempted(artefact) - self.failed(artefact)
+    }
+
+    /// The deterministic [`Scan::error`] text — `"2/40 relations, 1/9
+    /// correlations failed to persist: <first error>"`, listing only the
+    /// artefacts that lost a write — or `None` when every write persisted.
+    /// For an entity-only shortfall this is word for word the message the
+    /// live engine wrote before the tally existed.
+    #[must_use]
+    pub fn message(&self) -> Option<String> {
+        let parts: Vec<String> = PersistArtefact::ALL
+            .iter()
+            .filter(|a| self.failed(**a) > 0)
+            .map(|a| format!("{}/{} {}", self.failed(*a), self.attempted(*a), a.label()))
+            .collect();
+        (!parts.is_empty()).then(|| {
+            format!(
+                "{} failed to persist: {}",
+                parts.join(", "),
+                self.first_err.as_deref().unwrap_or("unknown")
+            )
+        })
     }
 }
 

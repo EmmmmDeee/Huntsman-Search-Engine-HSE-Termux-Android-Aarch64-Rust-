@@ -21514,3 +21514,240 @@ after.
 **15 of 15 killed.** `min_confidence_exempt`'s unit test pins each of its
 three conditions separately. `hse-core` changed, so `wasm-ui/pkg` must be
 regenerated.
+
+## REQ-SCANSTATUS-003 / REQ-REL-004 / REQ-AUDIT-GEO-002 / REQ-PHONEAU-003 / REQ-CORRELATOR-008 / REQ-TIMELINE-001 / REQ-WIKIDATA-004 / REQ-AU-UNCLAIMED-004 — review round on #649
+
+**Found** by Copilot review of #649 (five threads, C1–C5) and by the lead's
+follow-up review of the same PR (C6–C9). Every finding was checked against
+the code at `d4cae90b` before it was fixed, and all nine were real. C1 and C2
+are one defect on two paths, so there are eight ids.
+
+**REQ-SCANSTATUS-003 (C1, C2) — a scan read complete while records it
+produced failed to persist.** REQ-SCANSTATUS-002 made the terminal status the
+last write. It did not make the status honest about what failed. On all three
+paths that finalise a scan (the live engine, `hse import` / `hse ingest
+--auto-scan`, the web upload), a relation or correlation the store refused
+was only logged or counted with `.is_ok()`. The scan was then written
+`Complete` with `error: None`. `Correlator::run` persisted inside the pass and
+returned `Err` on the first refused write, so the panic guard read the whole
+pass as "no correlations" and nothing was counted. Only the live engine's
+entity shortfall reached `scan.error`, and the export classifier
+(`partial_export_reason`) never read `error`. The web upload also answered
+with a hardcoded `"status": "complete"`. The fix has one authority.
+`core::scan::PersistTally` counts attempted and failed writes per artefact
+(entities, relations, correlations) and keeps the first error. Its
+`message()` is the deterministic `scan.error` text, for example `"2/40
+relations, 1/9 correlations failed to persist: <first error>"`. For an
+entity-only shortfall that text is the old wording, word for word. Every
+persist site counts into it. `core::engine::persist_relations` is the shared
+batch-then-fallback relation step. `core::engine::correlate_and_persist` runs
+the new `Correlator::evaluate` (no writes) under the panic guard and stores
+each firing on its own. Both are used by all three paths, and the AU-065 /
+AU-066 upserts count too. The terminal write stores `tally.message()` and
+keeps the status `Complete` or `Aborted`, because the scan did run.
+`partial_export_reason` returns `persist-incomplete` for a `Complete` scan
+with `error` set. It checks this before the budget test, because records the
+scan produced being gone is the stronger statement. The dossier header,
+debug-bundle header and events `export_snapshot` all pick it up, and the
+dossier header now also prints the `error` line. `Scan::completeness_caveat`
+reads the same field in the same order, so `hse export`, `audit` and the
+dossier frontmatter agree with the export headers. The web response says
+`"status": "partial"` with a `persist_error` field (null when whole), and the
+upload view shows it. The CLI summaries of `hse import`, `hse investigate
+--auto-scan` and `hse ingest --auto-scan` print it, carried by the new
+`app::persist::PersistedBatch`.
+
+**REQ-REL-004 (C3) — the relation layer folded the separators the resolver
+keeps.** REQ-RESOLVE-001 stopped the resolver from fusing Instagram
+`_ianthorpe_` with GitHub `ianthorpe`. `builders::persona_key` still keyed on
+`identity_norm`, which keeps only alphanumerics, so `derive_handles` asserted
+a full-confidence `AliasOf` between those two accounts, and between
+`carolathorpe` / `carolathorpe_` and `_caroline.thorpe` / `caroline.thorpe`.
+Co-reference had the same fold. `string_signal`'s handle-equivalence tier
+compared `identity_norm` forms and scored 0.80, which is exactly
+`COREF_PROMOTE_MIN_SCORE`, so `derive_coreferences` re-emitted the same
+`AliasOf`. One account-key authority now lives in `util::canonical`, which
+`core` may already import. `username_account_key` is the resolver's former
+private `canonical_handle`, moved (lowercase, whitespace collapsed, every
+separator kept). `email_account_keys` returns the literal local part, with a
+`+tag` stripped only for a `PLUS_ADDRESSING_DOMAINS` provider, and for Gmail
+also the dot-free form. It shares its routing with `canonical_email_mailbox`
+through one private helper. `coref::account_keys` maps an entity onto them.
+`persona_keys` groups on those keys and keeps the length, all-digit and
+`is_generic_handle` gates on the folded form. Between two account handles,
+handle-equivalence now needs a shared key. A separator-only difference falls
+to the substring tier (0.45): it is still a lead in the read-only view, but it
+is below the promotion floor unless sources corroborate it. With a Person or a
+Phone on either side, `identity_norm` equality stands, because a name has no
+separators and a phone's separators are notation. So `ian.thorpe@gmail.com`
+aliases both `ian.thorpe` (literal key) and `ianthorpe` (Gmail key), and those
+two usernames do not alias each other. `ian.thorpe@outlook.com` does not alias
+`ianthorpe@outlook.com`. The existing coref test
+`same_domain_mailboxes_keep_the_full_string_ladder` asserted handle-equivalence
+for `j.smith@acme.com` ↔ `jsmith@acme.com`. That is the same separator fold,
+and it contradicts `canonical_email_mailbox`'s own stance that dots are
+significant off Gmail. The test now pins a Gmail pair as equivalent and the
+acme pair as a substring lead.
+
+**REQ-AUDIT-GEO-002 (C4) — an outlier example named sources that did not
+vote.** `geo_consistency` admitted a fix on its corroborating sources
+(REQ-AUDIT-GEO-001) but stored `e.sources` for the example text. So an
+outlier printed `[recall,photon,geo_normalize,geocode]`, which names the
+annotator and the recall pass as if they disagreed about the subject's
+location. It now stores the corroborating set, sorted and de-duplicated.
+
+**REQ-PHONEAU-003 (C5) — a word glued to `+` or `(` passed the whole-token
+rule.** `extract_phones` checked the byte before a match only when the match
+opened on a word byte. `foo+61 2 8224 6704` and `foo(02) 8224 6704` were
+therefore scanned as phones, although `id_0410959140x` was not. The byte
+before the match must now never be a word byte, whatever the match opens on.
+`Call +61 …`, `Ph: (02) …`, `tel:+61…` and a number at the start of the text
+still scan.
+
+**REQ-CORRELATOR-008 (C6) — AU-088 counted a name-only register row as the
+subject's confirmation.** The rule walked every evidence record. With a
+FullName seed "David Smith", `ahpra` returns two same-name practitioners,
+`mark_ambiguous` stamps them `Unverified`, and they merge onto the seed
+anchor by value. AU-088 then fired High, "Subject corroborated by 1
+authoritative Australian public register(s)". It went Critical when a real
+`abn_lookup` hit was also present. It now skips `Evidence::is_non_corroborating`
+records (name-only, annotation, or a non-corroborating source), which is the
+one per-record statement of that rule.
+
+**REQ-TIMELINE-001 (C7) — an annotation's date was the subject's latest
+activity.** `timeline::reconstruct` skipped `Unverified` records only.
+`sunrise_sunset` stamps `date = <the day the scan ran>` on the point it was
+asked about, as an annotation. The key `date` classifies as a generic event,
+so `online_tenure` ended on the run day and `footprint_recency` read
+"Active", and both depended on the day the scan ran. A new per-record gate,
+`records_subject_activity`, skips `Unverified`, annotation (`is_annotation`)
+and inferred (`is_inferred`, whose doc says "rather than a direct
+observation") records. It is deliberately narrower than
+`is_non_corroborating`. That predicate also excludes whole sources (recall,
+the cross-scan bridge) whose records restate an earlier genuine observation,
+and their dates are still the subject's.
+
+**REQ-WIKIDATA-004 (C8) — the truncation note stayed countable on an
+ambiguous head, and shared labels were judged on the surfaced six only.**
+`process` ran `mark_shared_labels`, which runs `mark_ambiguous` and stamps
+every record the head carries at that moment `Unverified`. Only afterwards did
+`mark_candidate_truncation` append its note, with no ownership status. That
+breaks `mark_ambiguous`'s "call after the evidence is attached" contract.
+In scan 7258fc07 ("Ian Thorpe", more than six matches, the NZ-soldier head)
+the note was the one countable record on the ambiguous head. The head fused
+onto the seed, and `wikidata` counted as a corroborating source of the
+swimmer. There are two fixes. The note is now `.as_annotation()`: it is a
+fact about the search, so it never corroborates, in any order. The
+post-processing also moved into a pure `finish_answer` that attaches the note
+first, so the contract holds anyway. The collision labels were built from the
+first `MAX_CANDIDATES`, so a same-label item ranked 7th–10th left the primary
+unmarked, and its `pep` tag and records reached the subject. They are now
+built from every name-matched hit.
+
+**REQ-AU-UNCLAIMED-004 (C9) — one owner's rows pooled into one record.** The
+QLD owner Person record's summary was `"QLD unclaimed money owner: {person}"`.
+`absorb` de-duplicates on `(source, summary)`, so N rows naming one owner
+collapsed into one record with pooled single-valued attributes: `postcode =
+"4555; 4557"`, which `geo_family::au_postcode` (exactly 4 digits) cannot read,
+and `co_owner = "A; B"`, which names no Person in
+`derive_declared_associations`. The owner record now carries the row id that
+the round-2 row record uses (`ClientId_ActNo`, else the postcode, else the
+CKAN `_id`). The row record also gained the `_id` fallback, so two rows with
+neither a reference nor a postcode no longer pool their amounts. Two small
+reader changes make several single-valued records read deterministically.
+`au_postcode`'s evidence path anchors only when the records name ONE
+distinct postcode, because rows lodged in two towns give no single town. It
+used to take the first in evidence order. It reads every value through
+`attr_values`, so a pooled attribute is judged the same way.
+`derive_declared_associations` reads each value of an association attribute
+through `attr_values`, not the whole joined string.
+
+### Locks
+
+- `core::scan::tests::persist_tally_message_lists_each_short_artefact_in_finalise_order`,
+  `core::scan::tests::a_complete_scan_missing_stored_records_is_caveated`.
+- `core::engine::tests::a_live_scan_whose_store_refuses_relations_records_the_shortfall`,
+  `core::engine::tests::correlate_and_persist_counts_every_refused_firing`
+  (through `core::test_support::RefusingStore`, which forwards every
+  `StoragePort` method and refuses relation and/or correlation writes).
+- `app::persist::tests::a_batch_whose_store_refuses_its_graph_records_the_shortfall`
+  (`persist_entities_as_scan`'s store-facing body is now the injectable
+  `persist_batch_into`).
+- `api::scan_handlers::tests::scan_import_reports_a_refused_graph_as_partial`
+  (over `api::test_state_with_store`); `tests/api.rs`'s
+  `dossier_upload_*` tests still read `"status": "complete"` on a whole store.
+- `app::export::renderers::tests::a_complete_scan_with_a_persist_shortfall_is_a_partial_export`,
+  `app::export::renderers::tests::every_export_header_brands_a_persist_shortfall_partial`.
+- `core::relation::tests::handles_that_differ_only_by_a_separator_never_alias`,
+  `core::relation::tests::mailbox_handles_alias_by_their_account_keys`;
+  `core::coref::tests::separator_variants_are_a_lead_not_handle_equivalent`,
+  `core::coref::tests::mailbox_and_username_are_handle_equivalent_by_account_key`,
+  `core::coref::tests::same_domain_mailboxes_keep_the_full_string_ladder`
+  (rewritten, see REQ-REL-004); `util::canonical::tests::username_account_key_keeps_every_separator`,
+  `util::canonical::tests::email_account_keys_follow_the_provider_rules` and
+  the two functions' doc-tests. The four existing handle tests
+  (`handles_alias_shared_persona_across_platforms`,
+  `role_mailboxes_do_not_alias_across_organisations`,
+  `unobserved_name_permutations_never_alias`,
+  `mailboxes_at_different_domains_do_not_alias_but_observed_handles_do`) and
+  the resolver's `username_edge_separators_do_not_merge` pass unchanged.
+- `audit::tests::geo_outlier_example_names_only_its_corroborating_sources`.
+- `util::address_au::tests::free_text_phone_scan_rejects_a_word_glued_to_the_plus_or_paren`.
+- `core::correlator::tests::au088_a_name_only_register_row_is_not_a_confirmation`
+  (with a verified-AHPRA positive control).
+- `core::timeline::tests::annotation_and_inferred_dates_are_not_subject_activity`.
+- `modules::wikidata::tests::a_truncation_note_on_an_ambiguous_head_does_not_corroborate_the_subject`
+  (pins the annotation and the ordering separately),
+  `modules::wikidata::tests::a_label_shared_beyond_the_candidate_cap_still_marks_the_primary`.
+- `modules::au_unclaimed::tests::qld::one_owner_across_rows_keeps_each_rows_postcode_and_co_owner`,
+  `modules::au_unclaimed::tests::qld::rows_without_reference_or_postcode_are_named_by_their_row_id`,
+  `core::geo_family::tests::au_postcode_anchors_only_on_a_single_distinct_postcode`,
+  `core::relation::tests::declared_associations_read_every_value_of_a_pooled_attribute`.
+
+### Falsified
+
+Each mutation restores the defect. The fixed files were saved first. After
+each of the three mutation builds they were copied back, checked against their
+saved md5 sums, and `git diff` was compared byte for byte with the
+pre-mutation diff.
+
+| # | mutation | result |
+|---|---|---|
+| S1 | `partial_export_reason` without the `persist-incomplete` arm | killed by `a_complete_scan_with_a_persist_shortfall_is_a_partial_export` and `every_export_header_brands_a_persist_shortfall_partial` |
+| S2 | `completeness_caveat` without the `error` arm | killed by `a_complete_scan_missing_stored_records_is_caveated` |
+| S3 | `persist_relations`' fallback back to `.is_ok()` (a refused edge uncounted) | killed by `a_live_scan_whose_store_refuses_relations_records_the_shortfall`, `a_batch_whose_store_refuses_its_graph_records_the_shortfall` and `scan_import_reports_a_refused_graph_as_partial` |
+| S4 | `correlate_and_persist` back to the fail-fast `Correlator::run` | killed by `correlate_and_persist_counts_every_refused_firing` and `a_batch_whose_store_refuses_its_graph_records_the_shortfall` |
+| S5 | live finalise records only an entity shortfall (the old `scan.error`) | killed by `a_live_scan_whose_store_refuses_relations_records_the_shortfall` |
+| S6 | `persist_batch_into` never sets `scan.error` | killed by `a_batch_whose_store_refuses_its_graph_records_the_shortfall` |
+| S7 | web upload never sets `scan.error` | killed by `scan_import_reports_a_refused_graph_as_partial` |
+| S8 | web response `"status": "complete"` hardcoded | killed by `scan_import_reports_a_refused_graph_as_partial` |
+| R1 | `persona_keys` back to the one `identity_norm` key | killed by `handles_that_differ_only_by_a_separator_never_alias` and `mailbox_handles_alias_by_their_account_keys` |
+| R2 | handle-equivalence between two handles back to `identity_norm` equality | killed by `separator_variants_are_a_lead_not_handle_equivalent` and `handles_that_differ_only_by_a_separator_never_alias` (the promoted `AliasOf`) |
+| A1 | outlier example prints `e.sources` | killed by `geo_outlier_example_names_only_its_corroborating_sources` |
+| P1 | glued-before check only when the match opens on a word byte | killed by `free_text_phone_scan_rejects_a_word_glued_to_the_plus_or_paren` |
+| C1 | AU-088 walks every record | killed by `au088_a_name_only_register_row_is_not_a_confirmation` |
+| T1 | timeline skips `Unverified` only | killed by `annotation_and_inferred_dates_are_not_subject_activity` |
+| W1 | truncation note without `.as_annotation()` | killed by `a_truncation_note_on_an_ambiguous_head_does_not_corroborate_the_subject` |
+| W2 | truncation note attached after `mark_shared_labels` | killed by the same test (the note is not `Unverified`) |
+| W3 | collision labels from the first `MAX_CANDIDATES` hits | killed by `a_label_shared_beyond_the_candidate_cap_still_marks_the_primary` |
+| U1 | owner record summary without the row id, and no `_id` fallback | killed by `one_owner_across_rows_keeps_each_rows_postcode_and_co_owner` and `rows_without_reference_or_postcode_are_named_by_their_row_id` |
+| U2 | `au_postcode` back to the first valid record | killed by `au_postcode_anchors_only_on_a_single_distinct_postcode` |
+| U3 | declared associations read an attribute whole | killed by `declared_associations_read_every_value_of_a_pooled_attribute` |
+
+**20 of 20 killed.**
+
+### Not fixed here (recorded)
+
+- A correlator pass that errors on a store READ or panics still degrades to
+  "no correlations" without marking the scan (`guarded_correlation_pass` is
+  unchanged). A refused write is now counted, but a pass that never produced
+  its firings has nothing to count. This is logged, and it is a separate
+  change.
+- The live incremental correlation pass only logs a refused write. The
+  finalise pass re-persists every firing it finds and counts that, so a
+  streamed correlation the finalise re-finds is covered. One it does not
+  re-find is not.
+- The finalise's best-effort side writes (`detach_scan_observations` after an
+  address fold, and the corroboration-boost re-persist) are logged, not
+  tallied. The records they touch are already stored, and only a
+  de-duplication or a boost tag is lost.

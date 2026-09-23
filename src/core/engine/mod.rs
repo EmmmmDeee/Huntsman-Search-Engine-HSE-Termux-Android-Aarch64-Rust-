@@ -100,7 +100,10 @@ use crate::core::{
     module_runtime::{ModuleRuntime, NoopModuleRuntime},
     port::StoragePort,
     relation::{Relation, RelationKind},
-    scan::{Scan, ScanOptions, ScanStatus, StopReason, Target, TargetKind},
+    scan::{
+        PersistArtefact, PersistTally, Scan, ScanOptions, ScanStatus, StopReason, Target,
+        TargetKind,
+    },
 };
 
 pub struct ScanEngine {
@@ -1157,7 +1160,17 @@ impl ScanEngine {
             let (persisted, first_err) =
                 persist_entities_with_fallback(store.as_ref(), &scan.id, &entities);
             let entity_count = persisted;
-            let failed = total - persisted;
+            // Every write this finalise makes to an exported artefact counts
+            // into one tally, whose message becomes `scan.error` at the end —
+            // see `PersistTally` for why a relation or correlation that failed
+            // to persist must not leave the scan reading whole.
+            let mut tally = PersistTally::default();
+            tally.add(
+                PersistArtefact::Entities,
+                total,
+                total - persisted,
+                first_err.clone(),
+            );
 
             scan.modules_run = stats.run;
             scan.modules_errored = stats.errored;
@@ -1198,19 +1211,25 @@ impl ScanEngine {
                 ScanStatus::Complete
             };
             scan.entity_count = entity_count;
-            if failed > 0 {
-                scan.error = Some(format!(
-                    "{failed}/{total} entities failed to persist: {}",
-                    first_err.as_deref().unwrap_or("unknown")
-                ));
-            }
             scan.finished_at = Some(crate::core::entity::unix_now());
 
             // Derive + persist the typed entity-relation edges (attribution
             // graph), then run the authoritative finalise-time correlation pass
             // over the persisted scan — see each phase helper's own doc comment.
-            derive_and_persist_relations(store.as_ref(), &scan.id, &entities, &lineage_relations);
-            run_finalise_correlation_and_emit(&store, &emitter, &scan.id, &mut emitted_corr);
+            derive_and_persist_relations(
+                store.as_ref(),
+                &scan.id,
+                &entities,
+                &lineage_relations,
+                &mut tally,
+            );
+            run_finalise_correlation_and_emit(
+                &store,
+                &emitter,
+                &scan.id,
+                &mut emitted_corr,
+                &mut tally,
+            );
 
             // Cross-scan pathway-template learning (C1 universal linking), then
             // the corroboration-boost feedback pass, then end-of-scan
@@ -1220,9 +1239,19 @@ impl ScanEngine {
                 &emitter,
                 &scan.id,
                 &mut emitted_corr,
+                &mut tally,
             );
             apply_corroboration_boosts(store.as_ref(), &scan.id, &mut entities, &xscan_boost);
             run_finalise_housekeeping(store.as_ref(), &scan.id);
+
+            // The scan did run to the end, so its status stays `Complete` (or
+            // `Aborted`); what it failed to keep is recorded beside it, where
+            // every export's completeness check reads it. `None` when every
+            // write persisted.
+            scan.error = tally.message();
+            if let Some(err) = scan.error.as_deref() {
+                warn!(scan_id = %scan.id, error = %err, "scan finalised with records the store did not keep");
+            }
 
             emitter.emit(
                 &scan.id,
@@ -2897,38 +2926,24 @@ fn persist_entities_with_fallback(
 /// finished scan carries — and persist them. Bounded: derivation stops
 /// starting new passes past `DERIVE_BUDGET` so a pathological graph can't run
 /// the super-linear pass chain for minutes; partial relations still persist.
-/// Best-effort: a relation that fails to persist is logged, never fatal.
+/// Not fatal: a relation that fails to persist is counted into `tally` (see
+/// [`persist_relations`]), which marks the finished scan as not whole.
 fn derive_and_persist_relations(
     store: &dyn StoragePort,
     scan_id: &str,
     entities: &[Entity],
     lineage_relations: &[Relation],
+    tally: &mut PersistTally,
 ) {
     let derive_deadline = Some(Instant::now() + crate::core::relation::DERIVE_BUDGET);
     let derived = crate::core::relation::derive_all_within(entities, scan_id, derive_deadline);
     if !lineage_relations.is_empty() || !derived.is_empty() {
         let lineage_n = lineage_relations.len();
         let derived_n = derived.len();
-        // Persist the whole edge set in ONE transaction (one fsync at finalise
-        // instead of one autocommit per edge). `derived` is consumed to avoid a
-        // clone; only the small lineage set is cloned into the combined batch.
+        // `derived` is consumed to avoid a clone; only the small lineage set is
+        // cloned into the combined batch.
         let all: Vec<Relation> = lineage_relations.iter().cloned().chain(derived).collect();
-        let rel_persisted = match store.upsert_relations_batch(&all) {
-            Ok(n) => n,
-            Err(e) => {
-                warn!(scan_id, error = %e, "relation batch persist failed — falling back to per-relation");
-                let mut n = 0usize;
-                for r in &all {
-                    match store.upsert_relation(r) {
-                        Ok(()) => n += 1,
-                        Err(e) => {
-                            warn!(scan_id, relation = %r.id, error = %e, "relation persist failed");
-                        }
-                    }
-                }
-                n
-            }
-        };
+        let rel_persisted = persist_relations(store, scan_id, &all, tally);
         info!(
             scan_id,
             lineage = lineage_n,
@@ -2939,21 +2954,97 @@ fn derive_and_persist_relations(
     }
 }
 
+/// Persist a finished scan's relation edges and count what the store refused
+/// into `tally` — the one relation-persist step every path that finalises a
+/// scan runs (the live engine's [`derive_and_persist_relations`], the CLI
+/// batch persist in `app::persist` and the web upload in
+/// `api::scan_handlers::core::scan_import`), so none of them can again log or
+/// `.is_ok()`-count a lost edge while the scan is written whole.
+///
+/// The whole set goes in ONE transaction (one fsync instead of one autocommit
+/// per edge — a material win on low-power aarch64). All-or-nothing: on a
+/// rolled-back batch, fall back to per-relation upserts so whatever is
+/// persistable is salvaged and each refusal is counted with its own error.
+/// Returns how many relations persisted.
+pub(crate) fn persist_relations(
+    store: &dyn StoragePort,
+    scan_id: &str,
+    relations: &[Relation],
+    tally: &mut PersistTally,
+) -> usize {
+    match store.upsert_relations_batch(relations) {
+        Ok(n) => {
+            tally.add(PersistArtefact::Relations, relations.len(), 0, None);
+            n
+        }
+        Err(e) => {
+            warn!(scan_id, error = %e, "relation batch persist failed — falling back to per-relation");
+            let mut n = 0usize;
+            for r in relations {
+                // Borrowed, so the warning can name the error before the tally
+                // takes it.
+                let outcome = store.upsert_relation(r);
+                if let Err(e) = &outcome {
+                    warn!(scan_id, relation = %r.id, error = %e, "relation persist failed");
+                }
+                if tally.record(PersistArtefact::Relations, outcome) {
+                    n += 1;
+                }
+            }
+            n
+        }
+    }
+}
+
+/// Run the authoritative finalise-time correlator over a persisted scan and
+/// store every firing, counting each one the store refuses into `tally` —
+/// the one correlation-persist step every path that finalises a scan runs
+/// (the live engine's [`run_finalise_correlation_and_emit`], `app::persist`
+/// and the web upload).
+///
+/// Evaluation and storage are deliberately separate calls. The correlator's
+/// own [`run`](crate::core::correlator::Correlator::run) stops at the first
+/// refused write and returns `Err`, which [`guarded_correlation_pass`] turns
+/// into "no correlations" — so one failing upsert used to discard every
+/// firing after it and leave no trace on the scan. Here each firing is
+/// attempted and counted on its own.
+///
+/// Returns every firing the pass produced, stored or not (the live path emits
+/// each as found, exactly as its incremental pass does), or `None` when the
+/// pass itself errored or panicked — see [`guarded_correlation_pass`].
+pub(crate) fn correlate_and_persist(
+    store: &Arc<dyn StoragePort>,
+    scan_id: &str,
+    tally: &mut PersistTally,
+) -> Option<Vec<crate::core::correlator::Correlation>> {
+    let firings = guarded_correlation_pass(scan_id, || {
+        crate::core::correlator::Correlator::new(Arc::clone(store)).evaluate(scan_id)
+    })?;
+    for c in &firings {
+        let outcome = store.upsert_correlation(c);
+        if let Err(e) = &outcome {
+            warn!(scan_id, rule = %c.rule_id, error = %e, "correlation persist failed");
+        }
+        tally.record(PersistArtefact::Correlations, outcome);
+    }
+    Some(firings)
+}
+
 /// Phase 5: the authoritative finalise-time correlation pass — runs the full
-/// rule set over the persisted scan, persists every firing, and emits
+/// rule set over the persisted scan, persists every firing through
+/// [`correlate_and_persist`] (counting refusals into `tally`), and emits
 /// `CorrelationFound` only for correlations not already streamed live during
 /// ingestion (deduped via `emitted_corr`); `CorrelationsDone`'s count is the
-/// authoritative total. Guarded against a rule panicking on adversarial
+/// authoritative total found. Guarded against a rule panicking on adversarial
 /// persisted data — see [`guarded_correlation_pass`]'s own doc comment.
 fn run_finalise_correlation_and_emit(
     store: &Arc<dyn StoragePort>,
     emitter: &EventEmitter,
     scan_id: &str,
     emitted_corr: &mut HashSet<String>,
+    tally: &mut PersistTally,
 ) {
-    if let Some(firings) = guarded_correlation_pass(scan_id, || {
-        crate::core::correlator::Correlator::new(Arc::clone(store)).run(scan_id)
-    }) {
+    if let Some(firings) = correlate_and_persist(store, scan_id, tally) {
         for c in &firings {
             if emitted_corr.insert(correlation_key(c)) {
                 emitter.emit(
@@ -2980,12 +3071,17 @@ fn run_finalise_correlation_and_emit(
 /// single-pathway link (the AU-063 gap) whose route shape is proven in ≥2
 /// prior scans is AU-066: accumulated cross-scan knowledge fills the gap, and
 /// its endpoints are returned in `xscan_boost` for the caller's corroboration
-/// boost pass. Best-effort: a storage hiccup never aborts a finalised scan.
+/// boost pass. A storage hiccup never aborts a finalised scan, but an AU-065 /
+/// AU-066 finding the store refuses is a correlation the scan's exports will
+/// lack, so it is counted into `tally` like any other; its `CorrelationFound`
+/// is still emitted, matching the main pass (the event records what was found,
+/// the tally what was not kept).
 fn learn_cross_scan_pathway_templates(
     store: &dyn StoragePort,
     emitter: &EventEmitter,
     scan_id: &str,
     emitted_corr: &mut HashSet<String>,
+    tally: &mut PersistTally,
 ) -> HashMap<String, String> {
     let mut xscan_boost: HashMap<String, String> = HashMap::new();
     if let (Ok(ents), Ok(rels)) = (
@@ -3031,8 +3127,8 @@ fn learn_cross_scan_pathway_templates(
                     scan_id,
                     crate::core::entity::unix_now(),
                 );
-                if store.upsert_correlation(&c).is_ok() && emitted_corr.insert(correlation_key(&c))
-                {
+                tally.record(PersistArtefact::Correlations, store.upsert_correlation(&c));
+                if emitted_corr.insert(correlation_key(&c)) {
                     emitter.emit(scan_id, EventKind::CorrelationFound { correlation: c });
                 }
             }
@@ -3062,9 +3158,8 @@ fn learn_cross_scan_pathway_templates(
                         scan_id,
                         crate::core::entity::unix_now(),
                     );
-                    if store.upsert_correlation(&c).is_ok()
-                        && emitted_corr.insert(correlation_key(&c))
-                    {
+                    tally.record(PersistArtefact::Correlations, store.upsert_correlation(&c));
+                    if emitted_corr.insert(correlation_key(&c)) {
                         emitter.emit(scan_id, EventKind::CorrelationFound { correlation: c });
                     }
                     xscan_boost

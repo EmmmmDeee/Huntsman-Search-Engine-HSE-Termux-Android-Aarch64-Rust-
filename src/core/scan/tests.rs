@@ -1751,6 +1751,83 @@ fn a_truncated_complete_scan_is_caveated_and_an_exhaustive_one_is_not() {
     }
 }
 
+/// `PersistTally` is the one authority for the `scan.error` a finalise writes
+/// when the store refused some of what the scan produced (Copilot review of
+/// #649). Its message lists only the artefacts that lost a write, in finalise
+/// order, with the FIRST error — and keeps the entity-only wording the live
+/// engine wrote before the tally existed.
+#[test]
+fn persist_tally_message_lists_each_short_artefact_in_finalise_order() {
+    let clean = PersistTally::default();
+    assert_eq!(clean.message(), None, "nothing attempted, nothing lost");
+
+    let mut all_ok = PersistTally::default();
+    all_ok.add(PersistArtefact::Entities, 40, 0, None);
+    all_ok.add(PersistArtefact::Relations, 12, 0, None);
+    assert!(all_ok.record(PersistArtefact::Correlations, Ok::<(), &str>(())));
+    assert_eq!(all_ok.message(), None, "every write persisted");
+    assert_eq!(all_ok.persisted(PersistArtefact::Relations), 12);
+
+    // Entity-only: the pre-tally live-engine wording, word for word.
+    let mut ents = PersistTally::default();
+    ents.add(PersistArtefact::Entities, 50, 3, Some("disk full".into()));
+    assert_eq!(
+        ents.message().as_deref(),
+        Some("3/50 entities failed to persist: disk full")
+    );
+
+    // Relations then correlations, recorded out of order: listed in finalise
+    // order, the first RECORDED error kept.
+    let mut t = PersistTally::default();
+    assert!(!t.record(PersistArtefact::Correlations, Err::<(), _>("locked")));
+    for i in 0..40 {
+        let outcome: Result<(), &str> = if i < 2 { Err("busy") } else { Ok(()) };
+        t.record(PersistArtefact::Relations, outcome);
+    }
+    for _ in 0..8 {
+        t.record(PersistArtefact::Correlations, Ok::<(), &str>(()));
+    }
+    assert_eq!(
+        t.message().as_deref(),
+        Some("2/40 relations, 1/9 correlations failed to persist: locked")
+    );
+    assert_eq!(t.failed(PersistArtefact::Relations), 2);
+    assert_eq!(t.persisted(PersistArtefact::Correlations), 8);
+    // Deterministic: the same tally renders the same text.
+    assert_eq!(t.message(), t.clone().message());
+}
+
+/// A `Complete` scan whose finalise recorded a persistence shortfall is not a
+/// complete answer: `completeness_caveat` says so, ahead of any truncation —
+/// the same classification (and order) the export headers use.
+#[test]
+fn a_complete_scan_missing_stored_records_is_caveated() {
+    let mut s = scan_for(ScanStatus::Complete, Some(StopReason::NoMoreCandidates));
+    s.error = Some("2/40 relations failed to persist: disk full".into());
+    let caveat = s
+        .completeness_caveat("this scan")
+        .expect("a scan missing stored records must be caveated");
+    assert!(caveat.starts_with("this scan finished"), "{caveat}");
+    assert!(
+        caveat.contains("2/40 relations"),
+        "names the loss: {caveat}"
+    );
+    assert!(caveat.contains("not a finding"), "{caveat}");
+
+    // Ahead of a truncation: the stronger statement wins.
+    s.stop_reason = Some(StopReason::MaxEntities(500));
+    let caveat = s.completeness_caveat("this scan").expect("still caveated");
+    assert!(
+        caveat.contains("not everything it produced was stored"),
+        "{caveat}"
+    );
+
+    // …and a whole scan stays silent.
+    s.error = None;
+    s.stop_reason = Some(StopReason::NoMoreCandidates);
+    assert_eq!(s.completeness_caveat("this scan"), None);
+}
+
 #[test]
 fn completeness_caveat_names_the_subject_it_was_given() {
     // Callers refer to the scan differently ("scan latest", "scan a1b2", "this

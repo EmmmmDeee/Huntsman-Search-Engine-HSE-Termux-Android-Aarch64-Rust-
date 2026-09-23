@@ -31,6 +31,47 @@ fn au_postcode_reads_value_token_then_evidence() {
     assert!(au_postcode(&bad).is_none());
 }
 
+/// An entity may carry several records that each name a postcode — one QLD
+/// unclaimed-money owner record per register row (review of #649). Taking the
+/// first valid one let evidence ORDER choose the owner's town; records that
+/// disagree give no single town, so none anchors, in either order. Records
+/// that agree still anchor, and a pooled attribute is judged the same way.
+#[test]
+fn au_postcode_anchors_only_on_a_single_distinct_postcode() {
+    let owner = |pcs: &[&str]| {
+        let mut e = Entity::new(EntityKind::Person, "Curt Avery", 0.32, "s");
+        for (i, pc) in pcs.iter().enumerate() {
+            e.add_evidence(
+                Evidence::new("au_unclaimed", format!("owner row {i}")).with_attr("postcode", *pc),
+            );
+        }
+        e
+    };
+    assert_eq!(au_postcode(&owner(&["4555", "4557"])), None);
+    assert_eq!(
+        au_postcode(&owner(&["4557", "4555"])),
+        None,
+        "order-independent"
+    );
+    assert_eq!(
+        au_postcode(&owner(&["4555", "4555"])).as_deref(),
+        Some("4555"),
+        "rows that agree anchor"
+    );
+    // An invalid value beside a valid one is not a second town.
+    assert_eq!(
+        au_postcode(&owner(&["65101", "4555"])).as_deref(),
+        Some("4555")
+    );
+    let mut pooled = Entity::new(EntityKind::Person, "Curt Avery", 0.32, "s");
+    pooled.add_evidence(Evidence::new("au_unclaimed", "owner").with_attr("postcode", "4555; 4557"));
+    assert_eq!(
+        au_postcode(&pooled),
+        None,
+        "a pooled attribute, judged alike"
+    );
+}
+
 #[test]
 fn au_postcode_ignores_a_leading_us_street_number() {
     // Real captured US breach addresses (Huntsman scan 90b936dc…). The leading

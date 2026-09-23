@@ -140,6 +140,9 @@ struct AutoScanSummary {
     /// stored either way; this disambiguates a size-skipped pass from a batch
     /// that genuinely yielded zero relations/correlations.
     enriched: bool,
+    /// What the store refused, as recorded on the scan — see
+    /// `app::persist::PersistedBatch::persist_error`. `None` when whole.
+    persist_error: Option<String>,
 }
 
 /// Persist the extracted `entities` as a completed, correlated scan — the
@@ -174,7 +177,7 @@ async fn run_auto_scan(entities: &[ExtractedEntity], text: &str) -> Result<AutoS
     crate::app::import::deduplicate_by_uid(&mut converted);
     let scan_label =
         crate::app::persist::strongest_identity_label(&converted, format!("investigate: {label}"));
-    let (relations, correlations, enriched) = crate::app::persist::persist_entities_as_scan(
+    let batch = crate::app::persist::persist_entities_as_scan(
         &sid,
         scan_label,
         crate::core::scan::TargetKind::FullName,
@@ -184,9 +187,10 @@ async fn run_auto_scan(entities: &[ExtractedEntity], text: &str) -> Result<AutoS
     Ok(AutoScanSummary {
         sid,
         entities: converted.len(),
-        relations,
-        correlations,
-        enriched,
+        relations: batch.relations,
+        correlations: batch.correlations,
+        enriched: batch.enriched,
+        persist_error: batch.persist_error,
     })
 }
 
@@ -221,6 +225,12 @@ fn print_table(text: &str, entities: &[ExtractedEntity], scan: Option<&AutoScanS
              view with `hse list`",
             s.sid, s.entities, s.relations, s.correlations
         );
+        if let Some(err) = &s.persist_error {
+            println!(
+                "  warning: the scan is stored but INCOMPLETE — {err}; its exports read \
+                 partial (persist-incomplete)"
+            );
+        }
         if !s.enriched {
             println!(
                 "  note: relations/correlations skipped — {} entities exceeds the \
@@ -256,6 +266,7 @@ fn print_json(text: &str, entities: &[ExtractedEntity], scan: Option<&AutoScanSu
             "relations": s.relations,
             "correlations": s.correlations,
             "enrichment_skipped": !s.enriched,
+            "persist_error": s.persist_error,
         });
     }
     println!(

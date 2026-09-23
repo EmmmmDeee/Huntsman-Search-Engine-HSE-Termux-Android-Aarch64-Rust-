@@ -61,7 +61,8 @@ pub(super) fn is_fragment(kind: &str, value: &str) -> bool {
 /// (REQ-AUDIT-GEO-001). `source_count` counts the admitted fixes' corroborating
 /// sources only.
 fn geo_consistency(entities: &[AuditEntity]) -> (GeoSummary, Option<Finding>) {
-    // Parse distinct coordinate points, keeping each one's source labels.
+    // Parse distinct coordinate points, keeping each one's corroborating
+    // source labels.
     let mut pts: Vec<(f64, f64, String, Vec<String>)> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut srcs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -94,7 +95,20 @@ fn geo_consistency(entities: &[AuditEntity]) -> (GeoSummary, Option<Finding>) {
         if let Some((lat, lon)) = crate::util::geohash::parse_coords(&e.value) {
             srcs.extend(corroborating.iter().map(|s| (*s).to_owned()));
             if seen.insert(e.value.clone()) {
-                pts.push((lat, lon, e.value.clone(), e.sources.clone()));
+                // The sources an outlier example names are the ones that
+                // VOTED — the same corroborating set the gate above admitted
+                // the fix on — not every module that touched the value.
+                // `e.sources` also lists the annotators (`geo_normalize`), the
+                // passes (`recall`) and any name-only match, none of which
+                // corroborates the point; printing them told the operator an
+                // annotator "disagrees about the subject's location" and hid
+                // which real source did. Sorted and de-duplicated so the
+                // example text does not depend on input order.
+                let mut voters: Vec<String> =
+                    corroborating.iter().map(|s| (*s).to_owned()).collect();
+                voters.sort_unstable();
+                voters.dedup();
+                pts.push((lat, lon, e.value.clone(), voters));
             }
         }
     }

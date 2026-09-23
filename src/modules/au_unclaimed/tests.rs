@@ -731,6 +731,93 @@ mod qld {
         let xml = crate::core::gexf::entities_to_gexf(&addrs, &[], "s");
         assert!(!xml.contains("<edge "), "distinct rows are not a joint record: {xml}");
     }
+
+    /// Review of #649: the owner Person's record was keyed on the name alone
+    /// ("QLD unclaimed money owner: {person}"), so every row naming one owner
+    /// collapsed into ONE record with the rows' single-valued attributes
+    /// pooled — `postcode = "4555; 4557"` (not a postcode) and `co_owner =
+    /// "Hayley Avery; Erik Avery; Leo Avery"` (not a person). One record per
+    /// row keeps each row's facts its own, and the relation layer then links
+    /// every declared co-owner.
+    #[test]
+    fn one_owner_across_rows_keeps_each_rows_postcode_and_co_owner() {
+        let raw = r#"{"result":{"total":2,"records":[
+            {"_id":1,"ClientId_ActNo":"111","Owner":"CURT AVERY; HAYLEY AVERY; ERIK AVERY","Amount":"1.00","PCode":"4555"},
+            {"_id":2,"ClientId_ActNo":"222","Owner":"CURT AVERY & LEO AVERY","Amount":"2.00","PCode":"4557"}
+        ]}}"#;
+        let resp: CkanResp = serde_json::from_str(raw).expect("should succeed");
+        let recs = resp.result.expect("should succeed").records;
+        let mut ents =
+            records_to_entities(&recs, 2, "Curt Avery", "Avery", true, TargetKind::FullName, "s");
+        crate::core::entity::dedup_merge_entities(&mut ents);
+        let curt = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Person && e.value == "Curt Avery")
+            .expect("the owner Person");
+        let owner_records: Vec<_> = curt
+            .evidence
+            .iter()
+            .filter(|ev| ev.attributes.contains_key("owner_name"))
+            .collect();
+        assert_eq!(owner_records.len(), 2, "one record per row: {owner_records:?}");
+        for ev in &owner_records {
+            for key in ["postcode", "co_owner"] {
+                assert_eq!(
+                    ev.attr_values(key).count(),
+                    1,
+                    "{key} is one row's fact, not a pool: {ev:?}"
+                );
+            }
+        }
+        // Each row's co-owner is a declared link the relation layer draws —
+        // including Curt → Hayley, which the three-owner row declares only on
+        // Curt's side (its cycle is Curt → Hayley → Erik → Curt).
+        let rels = crate::core::relation::derive_declared_associations(&ents, "s");
+        let person = |name: &str| {
+            ents.iter()
+                .find(|e| e.kind == EntityKind::Person && e.value == name)
+                .expect(name)
+                .uid
+                .clone()
+        };
+        for other in ["Hayley Avery", "Leo Avery"] {
+            let o = person(other);
+            assert!(
+                rels.iter().any(|r| (r.from_uid == curt.uid && r.to_uid == o)
+                    || (r.from_uid == o && r.to_uid == curt.uid)),
+                "Curt ↔ {other}: {rels:?}"
+            );
+        }
+        // Two different towns across the rows: no single town anchors the
+        // owner, whatever order the records sit in.
+        assert_eq!(crate::core::geo_family::au_postcode(curt), None);
+    }
+
+    /// A row with neither a reference nor a postcode is named by its CKAN
+    /// `_id`, so two such rows for one owner stay two records instead of
+    /// pooling their amounts into one.
+    #[test]
+    fn rows_without_reference_or_postcode_are_named_by_their_row_id() {
+        let raw = r#"{"result":{"total":2,"records":[
+            {"_id":5,"Owner":"CURT AVERY","Amount":"1.00"},
+            {"_id":6,"Owner":"CURT AVERY","Amount":"1.00"}
+        ]}}"#;
+        let resp: CkanResp = serde_json::from_str(raw).expect("should succeed");
+        let recs = resp.result.expect("should succeed").records;
+        let mut ents =
+            records_to_entities(&recs, 2, "Curt Avery", "Avery", true, TargetKind::FullName, "s");
+        crate::core::entity::dedup_merge_entities(&mut ents);
+        for e in &ents {
+            let summaries: std::collections::BTreeSet<&str> = e
+                .evidence
+                .iter()
+                .filter(|ev| ev.source == SRC)
+                .map(|ev| ev.summary.as_str())
+                .collect();
+            assert_eq!(summaries.len(), 2, "{}: {summaries:?}", e.value);
+            assert!(summaries.iter().any(|s| s.ends_with("(row 5)")), "{summaries:?}");
+        }
+    }
 }
 
 #[cfg(test)]
