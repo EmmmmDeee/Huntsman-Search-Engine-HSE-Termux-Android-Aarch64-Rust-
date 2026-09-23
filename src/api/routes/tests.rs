@@ -303,6 +303,27 @@ use super::*;
     }
 
     #[test]
+    fn the_log_view_renders_a_breach_sweeps_dispatch_and_stop_like_the_log_summary() {
+        // REQ-SWEEP-005: `EventKind::log_summary` and cli/live render
+        // dispatched-of-planned and the stop reason; the SPA's Log tab and live
+        // SSE view printed only `probes`/`anchors`, so a budget-cut sweep read
+        // "64 probes from 18 anchors" and a sweep the budget never let start
+        // read "0 probes from 0 anchors" — a sweep with nothing to ask.
+        let log = app_file("js/scan_info/log.js");
+        let branch = log
+            .split_once("t==='breach_sweep'")
+            .and_then(|(_, rest)| rest.split_once("t==='consensus_audit'"))
+            .map(|(branch, _)| branch)
+            .expect("log.js maps breach_sweep");
+        for field in ["ev.dispatched", "ev.probes", "esc(ev.stopped)", "dispatched from"] {
+            assert!(
+                branch.contains(field),
+                "the breach_sweep line must render {field}: {branch}"
+            );
+        }
+    }
+
+    #[test]
     fn embedded_spa_surfaces_the_exposure_index() {
         // `core::exposure::assess` headlines the CLI dossier and the debug
         // bundle, but had no API consumer at all — so the web console (the only

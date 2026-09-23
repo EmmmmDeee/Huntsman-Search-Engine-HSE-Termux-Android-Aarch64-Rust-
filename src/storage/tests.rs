@@ -3797,3 +3797,52 @@ fn radar_history_finds_a_sweep_by_its_sentinel_columns() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+/// REQ-GEO-016: the live dispatch re-decides a merged point's country and
+/// timezone after the merge; the event log holds the two un-reconciled
+/// emissions. A scan rebuilt from its events must reach the same one answer,
+/// or a recovered scan (routine on Termux) keeps the box's `country:US` +
+/// `tz:America/New_York` beside photon's `country:CA` — the contradiction the
+/// finalised scan no longer has.
+#[test]
+fn a_recovered_scan_reconciles_a_merged_points_country_like_the_live_one() {
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    insert_scan(&store, "scan-geo-recover");
+    // Event 1: a provider-less sighting, enriched before its emit — the box.
+    let mut boxed = Entity::new(
+        EntityKind::Coordinates,
+        "45.956872,-66.630394",
+        0.55,
+        "scan-geo-recover",
+    );
+    boxed.add_evidence(Evidence::new("search_engines", "a sighting"));
+    crate::core::engine::enrich_geospatial(&mut boxed);
+    assert!(boxed.has_tag("country:US"), "sanity: the box answer");
+    // Event 2: photon's answer for the same point, enriched alone.
+    let mut photon = Entity::new(
+        EntityKind::Coordinates,
+        "45.956872,-66.630394",
+        0.40,
+        "scan-geo-recover",
+    );
+    photon.add_evidence(Evidence::new("photon", "reverse").with_attr("country_code", "CA"));
+    photon.tag("country:CA");
+    crate::core::engine::enrich_geospatial(&mut photon);
+    for (i, entity) in [boxed, photon].into_iter().enumerate() {
+        let mut ev = Event::new("scan-geo-recover", EventKind::EntityFound { entity });
+        ev.ts = 5000 + i as u64;
+        store.insert_event(&ev).expect("should succeed");
+    }
+    let recovered = store
+        .entities_from_events("scan-geo-recover")
+        .expect("should succeed");
+    assert_eq!(recovered.len(), 1);
+    let cs: Vec<&String> = recovered[0]
+        .tags
+        .iter()
+        .filter(|t| t.starts_with("country:"))
+        .collect();
+    assert_eq!(cs, vec!["country:CA"], "{:?}", recovered[0].tags);
+    assert!(!recovered[0].has_tag("tz:America/New_York"));
+}

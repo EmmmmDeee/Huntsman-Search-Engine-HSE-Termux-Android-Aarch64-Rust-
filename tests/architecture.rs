@@ -966,6 +966,24 @@ fn core_does_not_import_util_directly() {
                 // the target auto-detector to strip separators from a candidate
                 // phone/registry number. No state, no I/O, no upward deps.
                 && !line.contains("util::str_util::ascii_digits")
+                // Pure, dependency-free Latin/Vietnamese diacritic fold (one
+                // `match` per char; no state, no I/O, no upward deps) — the
+                // same leaf category as `ascii_digits` immediately above.
+                // `core::scan::classify::fold_name_text` reads every person
+                // name and handle through it, so the identity gates compare
+                // `"Nguyễn Văn An"` and the handle `nguyenvanan` in one
+                // alphabet — the SAME fold `name_intel` permutes names with, so
+                // the handles it derives and the gates judging them can never
+                // disagree on what a name spells (REQ-IDENTITY-GATE-003).
+                // Scoped to the single function.
+                && !line.contains("util::str_util::fold_ascii_lower")
+                // The one evidence-attribute KEY (a `&str` const; no code
+                // runs) under which `util::namesake::mark_ambiguous` records a
+                // party flag it moved off an ambiguous entity. AU-114 reads it
+                // to surface that flag as an unresolved lead; naming the writer's
+                // own constant keeps writer and reader from drifting onto two
+                // spellings of the key (REQ-NAMESAKE-003). Scoped to the const.
+                && !line.contains("util::namesake::UNRESOLVED_FLAGS_ATTR")
                 // Pure, dependency-free offline city→coordinate lookup table
                 // (no I/O, no network). The engine's address_to_coords_pass uses
                 // it to convert Address entities into Coordinates for geo correlation.

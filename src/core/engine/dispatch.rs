@@ -169,6 +169,41 @@ pub(super) fn cap_to_parent(entity: &mut Entity, parent_conf: f64, target_uid: &
     }
 }
 
+/// Whether a freshly-emitted `entity` is exempt from the operator's
+/// `--min-confidence` floor: true only for a genuine ANNOTATION of the
+/// dispatch target the scan has already admitted.
+///
+/// A module that looks facts up BY its target — an ASGS region, a cadastral
+/// parcel, a password-corpus count — re-emits the target with those facts on
+/// an [`Evidence::as_annotation`](crate::core::entity::Evidence::as_annotation)
+/// record, at the confidence floor so the max-merge never raises the point
+/// (REQ-GEO-008, REQ-CORE-018). The floor is a question about NEW findings;
+/// applied to the annotation it would silently discard that evidence.
+///
+/// All three conditions are required. Exempting on the uid alone admitted
+/// every module's below-floor re-emission of the target that was a new claim,
+/// not an annotation: a FullName seed has no pre-inserted anchor, so a
+/// Wikidata namesake row (0.45, `ambiguous-name`), an OpenArch death register
+/// entry or a QLD unclaimed-money owner re-emitting "Ian Thorpe" under
+/// `--min-confidence 0.5` passed the operator's floor, and — landing before
+/// `name_intel`'s anchor — FOUNDED the subject node with a namesake's record
+/// (REQ-ENGINE-004). So:
+///   * `entity.uid == target_uid` — it re-emits the dispatch target;
+///   * `target_admitted` — the target is already in the entity map: an
+///     annotation annotates something admitted, never founds it;
+///   * every evidence record is an annotation (and there is at least one) — a
+///     single observation among them is a new claim, which the floor judges.
+pub(super) fn min_confidence_exempt(
+    entity: &Entity,
+    target_uid: &str,
+    target_admitted: bool,
+) -> bool {
+    entity.uid == target_uid
+        && target_admitted
+        && !entity.evidence.is_empty()
+        && entity.evidence.iter().all(|ev| ev.is_annotation)
+}
+
 /// What admission needs to know about the PRODUCING module, captured once per
 /// dispatch — before a concurrent spawn, because the `Module` object is gone by
 /// join time (only a [`DispatchOutcome`] comes back).
@@ -976,15 +1011,10 @@ impl super::ScanEngine {
                     }
                 }
                 let mut found = 0usize;
-                // The dispatch target's own uid. A module that re-emits its
-                // target is ANNOTATING an entity the scan already admitted (the
-                // seed anchor, or the entity this expansion pivoted on) — an
-                // ASGS region, a cadastral parcel, a password-corpus count — and
-                // does so at the confidence floor so the max-merge never raises
-                // it (REQ-GEO-008, REQ-CORE-018). The `--min-confidence` floor is
-                // a question about NEW findings; applied to the annotation it
-                // would silently discard that evidence, so the target's own uid
-                // is exempt from it. Every other admission filter still applies.
+                // The dispatch target's own uid — the pivot this dispatch's
+                // findings are capped to, and the uid an annotation of that
+                // pivot carries (see `min_confidence_exempt` for the one
+                // `--min-confidence` exemption it earns).
                 let target_uid = crate::core::entity::uid_for(
                     &cx.target.kind.to_entity_kind(),
                     &cx.target.value,
@@ -1018,7 +1048,11 @@ impl super::ScanEngine {
                     // Admission drop-filters (pure policy in `admission_rejection`);
                     // emit the reason + skip on rejection, exactly as the inline
                     // chain did — same order, same reason strings, same continue.
-                    let min_confidence = if entity.uid == target_uid {
+                    let min_confidence = if min_confidence_exempt(
+                        &entity,
+                        &target_uid,
+                        state.entity_map.contains_key(&target_uid),
+                    ) {
                         None
                     } else {
                         cx.opts.effective_min_confidence()

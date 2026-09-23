@@ -378,8 +378,19 @@ export function mapEvent(ev){
   // off by default) — purely additive telemetry, never gates dispatch.
   if (t==='dispatch_utility_computed') return {typ:'expand', lv:'info', msg:`utility ${Number(ev.final_utility).toFixed(2)}: ${esc(ev.module)} &rarr; ${esc(ev.target_kind)} ${esc(ev.target_value)}`};
   // Final bulk breach sweep. `dropped` is part of the line, not a tooltip: a
-  // capped plan and a complete one must not read the same.
-  if (t==='breach_sweep')   return {typ:'expand', lv:'info',  msg:`breach sweep: ${ev.probes} probe${plural(ev.probes)} from ${ev.anchors} anchor${plural(ev.anchors)}${ev.dropped?` <span class="text-muted">(${ev.dropped} over cap)</span>`:''}`};
+  // capped plan and a complete one must not read the same. Likewise
+  // dispatched-of-planned and the stop reason (REQ-SWEEP-005): a plan the
+  // budget cut short read "64 probes" as if all 64 went out, and a sweep the
+  // budget never let start read "0 probes from 0 anchors" — the same line as a
+  // sweep that ran with nothing to ask. Mirrors `EventKind::log_summary` and
+  // cli/live's `render_event`, down to a legacy event without `dispatched`
+  // reading 0 (serde's default there), so the screen and the downloaded log
+  // never disagree.
+  if (t==='breach_sweep'){
+    const sent = (ev.dispatched ?? 0);
+    const stop = ev.stopped ? ` <span class="text-warning">— stopped: ${esc(ev.stopped)}</span>` : '';
+    return {typ:'expand', lv: ev.stopped ? 'warn' : 'info', msg:`breach sweep: ${sent}/${ev.probes} probe${plural(ev.probes)} dispatched from ${ev.anchors} anchor${plural(ev.anchors)}${ev.dropped?` <span class="text-muted">(${ev.dropped} over cap)</span>`:''}${stop}`};
+  }
   // Autonomous audit of the breach corpus. A non-passing verdict means two
   // corpora contradict each other, so it renders at warn level.
   if (t==='consensus_audit') return {typ:'corr', lv:(ev.verdict==='PASS'||ev.verdict==='PASS_WITH_WARNINGS')?'ok':'warn', msg:`breach audit: ${esc(ev.verdict)}, ${ev.corroborated}/${ev.examined} corroborated <span class="text-muted">${ev.flags} flag${plural(ev.flags)}</span>`};

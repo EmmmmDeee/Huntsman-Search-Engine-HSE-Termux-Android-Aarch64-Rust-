@@ -72,9 +72,14 @@ use dispatch::{
     ModuleAdmission, admission_rejection, dispatch_key, log_module_dispatch, module_skip_reason,
     run_module_guarded, target_distinct_sources,
 };
+// `enrich_geospatial` is crate-visible because the event-log recovery
+// (`Store::entities_from_events`) re-runs the same idempotent geo
+// reconciliation on each merged point the live dispatch re-runs it on
+// (REQ-GEO-016) — one implementation, so the two can never disagree.
+pub(crate) use enrich::enrich_geospatial;
 use enrich::{
-    address_to_coords_pass, enrich_geospatial, is_coarse_geo, scan_entity_for_keys,
-    seed_anchor_entity, tag_breach_sector, tag_platform_infra,
+    address_to_coords_pass, is_coarse_geo, scan_entity_for_keys, seed_anchor_entity,
+    tag_breach_sector, tag_platform_infra,
 };
 use expansion::{
     apply_roi_cutoff, budget_check, cmp_expansion_candidates, correlation_key,

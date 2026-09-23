@@ -285,3 +285,35 @@ fn distinct_nodes_of_one_category_carry_distinct_records() {
     let xml = crate::core::gexf::entities_to_gexf(nodes, &[], "s");
     assert!(!xml.contains("<edge "), "distinct nodes are not a joint record: {xml}");
 }
+
+#[test]
+fn a_node_record_is_named_by_its_osm_identity_never_its_position() {
+    // REQ-EXPORT-005: the shareable redaction pass coarsens a Coordinates
+    // value and its coordinate attributes but not summaries, so a summary that
+    // spelled the node's own 6-decimal coordinate leaked the precise fix into
+    // a redacted export. Distinct nodes must still carry distinct records.
+    let els = elements(
+        r#"[{"type":"node","id":1,"lat":-27.470123,"lon":153.021456,"tags":{"amenity":"cafe"}},
+            {"type":"way","id":2,"center":{"lat":-27.471,"lon":153.022},"tags":{"amenity":"cafe"}},
+            {"type":"node","lat":-27.472,"lon":153.023,"tags":{"amenity":"cafe"}}]"#,
+    );
+    let out = build_entities("-27.470000,153.020000", &els, "s");
+    let nodes = &out[1..];
+    assert_eq!(nodes.len(), 3);
+    let summaries: Vec<&str> = nodes.iter().map(|n| n.evidence[0].summary.as_str()).collect();
+    assert_eq!(summaries[0], "OSM infrastructure node/1 near -27.470000,153.020000");
+    assert_eq!(summaries[1], "OSM infrastructure way/2 near -27.470000,153.020000");
+    assert_eq!(summaries[2], "OSM infrastructure element #2 near -27.470000,153.020000");
+    for (n, s) in nodes.iter().zip(&summaries) {
+        assert!(!s.contains(&n.value), "{s:?} spells the node's own coordinate");
+    }
+    // Shared as a redacted export, no node's precise position survives.
+    let mut shared = nodes.to_vec();
+    crate::util::redact::redact_entities(&mut shared);
+    for n in &shared {
+        for ev in &n.evidence {
+            assert!(!ev.summary.contains("-27.470123"), "{}", ev.summary);
+            assert!(!ev.summary.contains("153.021456"), "{}", ev.summary);
+        }
+    }
+}

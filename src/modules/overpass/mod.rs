@@ -185,7 +185,7 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
     // complete category breakdown are already surfaced on the summary above, so
     // this bound loses no aggregate information — only the individual far-node
     // points beyond the cap.
-    for elem in elements.iter().take(MAX_NODES) {
+    for (index, elem) in elements.iter().take(MAX_NODES).enumerate() {
         let Some(tags) = &elem.tags else {
             continue;
         };
@@ -207,14 +207,28 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
                 ce.tag(format!("osm:{ty}"));
             }
             crate::util::geo::tag_au_state(&mut ce, nlat, nlon);
-            // The summary names the NODE (its own coordinate), not only the
-            // category and the queried centre: an evidence record's identity
-            // is `(source, summary)`, which the GEXF co-occurrence edge keys
-            // on, so "OSM cafe near X" on every cafe around X read as one
-            // record naming them all and wired them into a false clique.
-            let mut ev =
-                Evidence::new(SRC, format!("OSM {category} at {node_coords} near {coord}"))
-                    .with_attr("category", category);
+            // The summary names the NODE, not only the category and the
+            // queried centre: an evidence record's identity is `(source,
+            // summary)`, which the GEXF co-occurrence edge keys on, so "OSM
+            // cafe near X" on every cafe around X read as one record naming
+            // them all and wired them into a false clique.
+            //
+            // It names the node by its OSM IDENTITY (`node/123`), never by its
+            // position: the shareable redaction pass coarsens a Coordinates
+            // entity's value and its coordinate attributes but not free-text
+            // summaries, so "OSM cafe at -27.470123,153.021456" carried the
+            // precise fix the redaction hid straight into a shared CSV/JSON
+            // (REQ-EXPORT-005). An element without an id (Overpass always
+            // sends one; a hand-built response may not) is named by its
+            // position in the response — deterministic for one response, and
+            // still no coordinate.
+            let identity = match (elem.osm_type.as_deref().filter(|s| !s.is_empty()), elem.id) {
+                (Some(ty), Some(id)) => format!("{ty}/{id}"),
+                (None, Some(id)) => format!("id {id}"),
+                (_, None) => format!("element #{index}"),
+            };
+            let mut ev = Evidence::new(SRC, format!("OSM {category} {identity} near {coord}"))
+                .with_attr("category", category);
             if let Some(ty) = elem.osm_type.as_deref().filter(|s| !s.is_empty()) {
                 ev = ev.with_attr("osm_type", ty);
             }

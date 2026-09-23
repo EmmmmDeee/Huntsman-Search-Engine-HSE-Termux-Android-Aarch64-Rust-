@@ -962,11 +962,27 @@ fn a_namesake_primary_s_pep_flag_does_not_reach_the_subject() {
         "the flag is kept on the record it came from: {:?}",
         record.attributes
     );
+    // AU-114 never reports the namesake's office as the subject's; it reports
+    // only the LOW "a same-named record is flagged — attribution unresolved"
+    // lead (REQ-NAMESAKE-003), so the flag is not lost from view either.
+    let au114: Vec<_> = crate::core::correlator::correlate_entities(&all, "s")
+        .into_iter()
+        .filter(|c| c.rule_id == "AU-114")
+        .collect();
     assert!(
-        crate::core::correlator::correlate_entities(&all, "s")
+        au114
             .iter()
-            .all(|c| c.rule_id != "AU-114"),
-        "AU-114 must not report a namesake's PEP status against the subject"
+            .all(|c| c.severity == crate::core::correlator::Severity::Low
+                && c.description.contains("attribution unresolved")
+                && !c
+                    .description
+                    .contains("is flagged as a politically-exposed person")),
+        "AU-114 must not report a namesake's PEP status against the subject: {au114:?}"
+    );
+    assert_eq!(
+        au114.len(),
+        1,
+        "the unresolved flag is surfaced once: {au114:?}"
     );
 }
 

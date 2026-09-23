@@ -113,11 +113,15 @@ pub const UNRESOLVED_FLAGS_ATTR: &str = "unresolved_flags";
 /// verdict about one holder of the name, and an entity-level tag survives the
 /// merge by union, so it is removed from the entity and recorded on every
 /// evidence record under [`UNRESOLVED_FLAGS_ATTR`] instead (REQ-NAMESAKE-002).
-/// A genuine designation of the subject is not lost by this: it arrives from a
-/// source that resolved the party (`opensanctions`), on its own entity, and
-/// the union restores it — which is also why AU-114 is deliberately **not**
-/// taught to read [`AMBIGUOUS_NAME`] as a veto, since one module's collision
-/// would then hide another module's real designation on the same anchor.
+/// A genuine designation of the subject is restored as a determination only
+/// when a source that resolves the party matches it — `opensanctions`, which is
+/// key-gated (`HUNTSMAN_OPENSANCTIONS_KEY`) — on its own entity, and the union
+/// restores the tag. Without that source nothing is asserted either way, but
+/// the flag is not lost from view: AU-114 reports a LOW "a same-named record is
+/// flagged — attribution unresolved" lead from [`UNRESOLVED_FLAGS_ATTR`]
+/// (REQ-NAMESAKE-003). That is also why AU-114 is deliberately **not** taught
+/// to read [`AMBIGUOUS_NAME`] as a veto, since one module's collision would
+/// then hide another module's real designation on the same anchor.
 ///
 /// Idempotent — the tag de-dupes, the cap is a `min`, the mark fills only an
 /// empty status, and a second call finds no determination tag left to strip,

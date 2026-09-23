@@ -20422,7 +20422,9 @@ pivots. `core::scan::text_names_person` is the search-admission sibling of
 `person_names_compatible`, sharing its parser: the surname must carry a
 compatible given name directly before it, two before it across an initial or
 a space-separated middle name, or (surname-first) the full given name after
-it. A mononym returns `None` and keeps the single-term check. A multi-part
+it. (Corrected by REQ-SEARCH-012: the subject's OWN middle and given-name
+parts are read across any separator, so their `-`-separated slug is minted.)
+A mononym returns `None` and keeps the single-term check. A multi-part
 handle is named by all of its parts (`url_matches_handle_target`), the shape
 of the Organisation gate.
 
@@ -20449,6 +20451,9 @@ Lithium Pty Ltd" and three other namesakes' employers. Suffixes are now tried
 longest-first and an overlapping occurrence is the same span; the walk also
 stops at ` - `, ` – `, ` — `, ` | `, ` · `, `•`, `›` and at the previous
 organisation's end; the unchanged term filter then runs on the company name.
+(Corrected by REQ-SEARCH-013: snippet prose has no separator, so the name is
+now the run of capitalised words before the suffix, and the term filter
+matches at word starts, not as a substring.)
 
 **REQ-SEARCH-011 — HSE's own `site:` dork was "independent" evidence.**
 `score_username`'s business-slug gate caps a compound handle whose other parts
@@ -20557,7 +20562,9 @@ its evidence records as a sorted `unresolved_flags` attribute. The fix is at
 the namesake authority, so all five callers (ahpra, gleif_lei, opencorporates,
 wikidata, wikitree) get it. AU-114 is deliberately not taught to read
 `ambiguous-name`: one module's collision would then hide another module's
-genuine designation on the same anchor. The same records' `birth_date` 1930 and
+genuine designation on the same anchor. (Corrected by REQ-NAMESAKE-003: the
+genuine designation is restored only when the key-gated `opensanctions`
+matches, so AU-114 now reports the unresolved flags as a LOW lead.) The same records' `birth_date` 1930 and
 `death_date` 2019 also reached the subject's timeline, because
 `core::timeline::reconstruct` ignored the verification status that
 `core::exposure` already honours. It now skips `Unverified` records.
@@ -20573,6 +20580,8 @@ editorial and a paper on NVIDIA's Ada Lovelace GPU. This is the defect
 `crossref_search` fixed as backlog #14. The module now mirrors it:
 `build_url` sends `AUTH:"<name>"`, or for an organisation `AFF:"<org>"` with
 `resultType=core`, the result type that carries the affiliation line.
+(Corrected by REQ-EUROPEPMC-002: that line is the first author's only; every
+author's affiliations are read.)
 `ResultItem` decodes `authorString`, `title` and `affiliation`. `attribution`
 splits each `Surname Initials` entry and gates it through crossref's own
 `author_matches` / `affiliation_matches` (widened to `pub(crate)`, so the two
@@ -20682,7 +20691,9 @@ scan in `source_count` now looks only at earlier countable records, so a source
 whose first record is a name-only match and whose second is a real sighting is
 still counted, once. Two producers matched on name alone without marking the
 record, and both now mark it: `openarch` (every register entry) and the
-`au_unclaimed` QLD owner Person.
+`au_unclaimed` QLD owner Person. (Corrected by REQ-CORE-019: when two copies
+of one record merge, the marks fold commutatively, so an unmarked copy
+persisted before this cannot shadow the marked one.)
 
 **REQ-CORE-018 — a password-list hit was a corroborating source and a breach
 corpus.** REQ-CORE-016 took the `breach` tag off `pwned_passwords` but left
@@ -20719,6 +20730,9 @@ pure `query_point_annotation` so it can be tested. The engine's dispatch
 exempts a module's re-emission of its own dispatch target from
 `--min-confidence`, so the floor never drops the annotation. That floor is a
 question about new findings, and the target was already admitted.
+(Corrected by REQ-ENGINE-004: only an all-annotation re-emission of a target
+already in the entity map is exempt; a FullName seed has no pre-inserted
+anchor, so the uid alone exempted namesake rows.)
 
 Consumers that marked or counted corroboration by source string now read the
 record: the debug bundle and dossier "(non-corroborating)" markers, the web
@@ -20759,6 +20773,9 @@ promotes such a pair: shared-source alone reaches the 0.80 floor at five shared
 module names. Everything here only narrows. A mononym (`None`) keeps the old
 behaviour. Known conservative loss: a nickname handle, a prefixed handle, and a
 person known by a middle name are no longer linked on string alone.
+(Corrected by REQ-IDENTITY-GATE-003: names and handles are compared
+diacritic-folded, and a full middle name — the subject's own, or a foreign one
+as a whole separated run — is accepted.)
 
 **REQ-REL-003 — `AliasOf` joined generator guesses and different mailboxes.**
 `derive_handles` joined every Email and Username sharing a persona key. 2,966 of
@@ -20890,8 +20907,10 @@ search lookup (Search) and the geocoder's answer for the same string
 search-snippet text. The gate saw {Geocode, Search}, and AU-059 reported the
 fix at 0.97. `effective_geo_classes` now reads each corroborating anchoring
 record. A geocoder record whose `input_address` resolves to an Address in the
-scan (through `AddressIndex`, by uid) takes the classes of that Address's own
-anchoring sources, one level deep. A geocoder record whose input cannot be
+scan (through `AddressIndex`, by uid; corrected by REQ-GEO-014 to resolve by
+locality too, so a spelling the finalise consolidation folded away still
+resolves) takes the classes of that Address's own anchoring sources, one level
+deep. A geocoder record whose input cannot be
 traced stays `Geocode`: an operator seed, a reverse lookup, or a fixture with
 a bare `geocode` row. AU-059's gate, its coherent-group ranking, its per-point
 diversity bonus and `au_location_corroboration`'s `best_geo_class` all read
@@ -20999,6 +21018,8 @@ country that disagrees with the provider emits no timezone. The choice is by
 `(source, value)` order, not evidence order. `Entity::merge` unions tags, so
 the function is idempotent: it retracts its own previous record and the tags
 that record lists. The dispatcher re-runs it on a merged Coordinates entity.
+(Corrected by REQ-GEO-015 — the provider's country is tagged, not merely
+left alone — and REQ-GEO-016 — the event-log recovery re-runs it too.)
 
 ### Locks
 
@@ -21118,7 +21139,8 @@ Some("max_entities=… reached") }` and returns. Otherwise it emits once after
 the loop, with `dispatched` (probes actually sent) and `stopped` (the
 `StopReason::label` of a budget cut or a cancel, `None` when the plan ran out).
 The persisted log line, the event summary (`{dispatched}/{probes} probes
-dispatched · stopped: …`) and the live CLI all carry both fields. Both fields
+dispatched · stopped: …`) and the live CLI all carry both fields (and, after
+REQ-SWEEP-005, the web console's Log tab). Both fields
 are `serde(default)`, so an event persisted before this still deserialises. An
 empty plan still emits (`stopped: None`), so "ran with nothing to ask" stays
 distinct from "never ran".
@@ -21139,7 +21161,8 @@ attributes, so the graph wired distinct findings into false cliques:
 | `wikidata` truncation note | `Wikidata name search matched N item(s); …` | the Ian ↔ John Thorpe namesake edge |
 
 Each summary now names its record: the profile URL, the DOI or PMID, the DOI
-(or URL when a work has none), the node's own coordinate, the row's register
+(or URL when a work has none), the node (its own coordinate; corrected by
+REQ-EXPORT-005 to its OSM identity, which the redaction pass cannot leak), the row's register
 reference (or postcode), and the searched name. The GEXF key is unchanged.
 Its doc now states the contract it depends on, and why attributes are not
 part of the key: `absorb` merges a record's attributes, and modules add
@@ -21252,3 +21275,242 @@ the concrete SQLite store at `default_db_path`, which offers no seam to observe
 the order. The reorder applies the invariant REQ-SCANSTATUS-002's engine lock
 pins, and `tests/api.rs`'s import tests pass unchanged. `hse-core` is untouched,
 so `wasm-ui/pkg` needs no regeneration.
+
+## REQ-SEARCH-012 / REQ-SEARCH-013 / REQ-EUROPEPMC-002 / REQ-NAMESAKE-003 / REQ-IDENTITY-GATE-003 / REQ-ENGINE-004 / REQ-CORE-019 / REQ-GEO-014 / REQ-GEO-015 / REQ-GEO-016 / REQ-SWEEP-005 / REQ-EXPORT-005 — review round on the round-2 batches
+
+**Found** by adversarial review of the five round-2 commits (search,
+people, identity, geo, exports; scan 7258fc07, "Ian Thorpe"). Thirteen
+findings were raised. Each was checked against the current code before it was
+fixed, and all thirteen were real. Two of them (the accented-name fold and the
+full middle name) share one requirement, so there are twelve ids. One finding
+is fixed only in part, and the residual is stated under REQ-GEO-014.
+
+**REQ-SEARCH-012 — the subject's own slug with a middle name was not their
+name.** `text_names_person` accepted a full middle name between the given
+name and the surname only when whitespace came before the surname. That rule
+exists for "Ian Symes-Thorpe", a double-barrelled surname. But a URL path has
+only `-` separators, so `/in/ian-james-thorpe-1234` did not name "Ian James
+Thorpe" and `/in/mary-jane-smith` did not name "Mary-Jane Smith". The
+subject's own profile was no longer minted as a `Url`. `person_name_parts` now
+returns the middle tokens too (`NameParts`). The subject's own name run before
+the surname is accepted across any separator: every given-name part then
+every middle name, every given-name part alone, or the first given-name part
+then every middle name. A token the subject's name does not carry still needs
+the whitespace, so `ian-symes-thorpe` stays a Symes-Thorpe.
+
+**REQ-SEARCH-013 — snippet prose glued the person onto the company.**
+REQ-SEARCH-010 bounded the organisation name at a title separator or at
+punctuation, and in doing so dropped the old 60-byte cap. Snippet prose has
+no separator. So `"Ian Thorpe | LinkedIn Ian Thorpe is the managing director
+of Harbour Holdings Pty Ltd"` produced `"LinkedIn Ian Thorpe is the managing
+director of Harbour Holdings Pty Ltd"`, which is longer than before, crosses
+the title/snippet join, and was admitted on the person's own name. The term
+filter also used a substring test, so the given name `"ian"` admitted
+`"Australian Unity Limited"`. The name is now the run of name words directly
+before the suffix: capitalised or digit-led words, `&`, and the connectors
+`and`/`of`/`the`/`for` between them (`Bank of Queensland Limited`), with a
+leading connector trimmed. Lowercase prose ends the run. A separator,
+punctuation, the previous organisation's end and a 60-byte floor still bound
+it, and a word the floor cuts through is not taken. The term filter matches at
+the start of a word of that name. It is a word-start match rather than a
+whole-word match, because a company named after its founder keeps the name as
+a word stem (`Thorpedo Inc.`, which REQ-SEARCH-010's test pins).
+
+**REQ-EUROPEPMC-002 — an organisation's co-author papers were dropped.** The
+Organisation gate read only the top-level `affiliation` of a
+`resultType=core` record. That field holds the first author's affiliation
+only, and some records have it null. The server-side `AFF:` query matches any
+author. A live check on 2026-09-23 of `AFF:"University of Wollongong"` found
+that all 25 hits name Wollongong for some author, and 4 of them would have
+been dropped: two with a null top-level line (one whose only Wollongong author
+is Braunack-Mayer A), plus 10.1111/inm.70283 and 10.3389/frhs.2026.1963260.
+`ResultItem` now decodes
+`authorList.author[].authorAffiliationDetailsList.authorAffiliation[].affiliation`.
+`attribution` reads the top-level line first, then each author's affiliations
+in the record's order. That is the same walk `crossref_search` makes over
+`author[].affiliation[]`.
+
+**REQ-NAMESAKE-003 — an unresolved party flag was invisible.** REQ-NAMESAKE-002
+moves `pep`, `sanctioned` and the other party flags off an ambiguous entity
+and onto its evidence as `unresolved_flags`. Its doc said a genuine
+designation "is not lost", because `opensanctions` restores it. But
+`opensanctions` is key-gated (`HUNTSMAN_OPENSANCTIONS_KEY`), and nothing read
+`unresolved_flags`. So on a keyless install, a subject who really holds office
+and has a same-named Wikidata item lost the scan's only PEP signal, and
+nothing said so. AU-114 now reports an entity that carries no determination
+tag but has evidence with unresolved flags. It is a LOW lead: "a record
+sharing the name … is flagged (pep, politically-exposed; source: wikidata) …
+attribution unresolved, NOT asserted about the subject". The lead lists the
+flags and sources sorted. It never doubles a resolved determination on the
+same entity. `util::namesake::UNRESOLVED_FLAGS_ATTR` is the key both the writer
+and AU-114 name, and it is allow-listed in
+`core_does_not_import_util_directly` as a single const. The `mark_ambiguous`
+doc now says the loss is restored only when `opensanctions` is configured and
+matches. The wikidata namesake test now expects exactly this lead and no
+determination.
+
+**REQ-IDENTITY-GATE-003 — accented names and full middle names were "not the
+person".** The name side kept `ễ` and `é` (`is_alphabetic`), while handles are
+ASCII, and `name_intel` derives its handles through
+`util::str_util::fold_ascii_lower`. So `handle_names_person("Nguyễn Văn An",
+"nguyenvanan")` and `("José García", "jose.garcia")` were `Some(false)`, and
+`person_names_compatible("Nguyễn Văn An", "Nguyen Van An")` judged two people.
+The fingerprint ownership path, the co-reference string tiers and
+co-reference promotion all vetoed those links, and Vietnam is HSE's primary
+jurisdiction. `core::scan::fold_name_text` now reads every name, handle and
+search text through the same fold, one character at a time, with NFD
+combining marks dropped. It works per character because `fold_ascii_lower`
+deletes what it cannot fold, and a Cyrillic name must stay a name rather than
+become an empty mononym. `person_surname` returns the folded surname, and
+`search_engines::city_names_a_surname_bearer` folds both sides. `fold_ascii_lower`
+is allow-listed in `core_does_not_import_util_directly` as a single function.
+Separately, `handle_names_person` accepted only a middle INITIAL, so
+`ian.james.thorpe` did not spell "Ian James Thorpe" (or "Ian Thorpe"). It now
+also accepts the subject's own middle name(s), written together or singly,
+with or without separators. It also accepts one foreign middle name that is a
+whole run between separators, when no `-` stands before the surname, which
+reads as a double-barrelled surname in a handle just as in text. The doc lists
+the losses that remain: a nickname, a prefix, and a foreign middle name run
+into its neighbours (`ianjamesthorpe` for "Ian Thorpe").
+
+**REQ-ENGINE-004 — `--min-confidence` exempted namesake rows of the seed.**
+REQ-GEO-008 exempted every entity whose uid equals the dispatch target, on the
+premise that the target was already admitted. For a FullName seed that premise
+is false: `seed_anchor_entity` returns `None` for a name, so no anchor is
+pre-inserted. Under `--min-confidence 0.5`, a Wikidata ambiguous-name row
+(0.45), an OpenArch death-register entry and a QLD unclaimed-money owner
+re-emitting "Ian Thorpe" all passed the operator's floor. When one landed
+before `name_intel`'s anchor, it founded the subject node. The exemption is now
+`dispatch::min_confidence_exempt`, and it requires three things: the entity is
+the target, the target is already in the entity map, and every evidence
+record is an annotation (at least one).
+
+**REQ-CORE-019 — a stale record shadowed its marked copy.** When two evidence
+records share `(source, summary)`, `absorb` merges them through
+`merge_evidence_attrs`, which merged attributes only. Whichever copy arrived
+first kept its `is_annotation` and `verification`. A record persisted before
+REQ-CORE-017 or REQ-GEO-008 (an `au_geo` point, an `openarch` entry, or one
+replayed from `openarch`'s 24 h cache) and then recalled into a re-scan
+therefore shadowed the fresh, marked copy. It kept corroborating, was
+re-persisted, and never healed. The flags now fold commutatively.
+`is_annotation` and `is_inferred` are OR-ed. An `Unverified` status on either
+side wins. Otherwise a status set on one side is kept, and two differing
+established statuses resolve by the fixed `verification_rank`. The result is
+the same in either merge order. `hse-core` changed, so `wasm-ui/pkg` must be
+regenerated (`scripts/wasm_ui_drift_check.sh --write`) before CI's
+sibling-crates drift check can pass.
+
+**REQ-GEO-014 — the finalise pass re-created the synergy REQ-GEO-009
+removed.** Finalise runs the correlator over the stored set after
+`consolidate_address_localities` has folded `"Sydney, NSW"` into `"Sydney, New
+South Wales"` (one `locality_key`) and removed the shorter spelling. A geocode
+leg whose `input_address` is the folded spelling found nothing in
+`AddressIndex`, which looked up by uid. It fell back to an independent
+`Geocode` class, and AU-059 fired on {Geocode, Search} at up to 0.97. That
+firing was not in `emitted_corr`, so it was emitted and persisted, and the
+export's `best_au_location_estimate` read the same consolidated set.
+`AddressIndex` now resolves an input by its locality group, which is the key
+consolidation groups by, and falls back to the exact uid. The live slice and
+the finalised slice therefore read the same classes. When one input of a
+folded multi-input record traces and another does not, the leg takes the
+traced classes only. **Residual:** an input Address tagged `candidate` is
+still removed from the rule slice by `confirmed_only`, so its geocode leg
+still counts as `Geocode`. Closing that means giving the lineage lookup the
+unquarantined set, a new parameter on `au059_synergy_fix` and its renderer
+and dossier callers. That is left for its own change.
+
+**REQ-GEO-015 — an agreeing provider's country was tagged by nobody.** When a
+provider's `country_code` agreed with the box, `enrich_geospatial` added no
+`country:` tag, on the assumption that the provider had tagged it. `geocode`'s
+forward results and `open_meteo_geo` carry `country_code` only as an
+attribute. So every forward-geocoded point lost the `country:AU` it used to
+have, and the Florida geocodes lost `country:US`. The retraction pass could
+also remove a recalled photon point's own `country:AU`, because an old engine
+record listed the same string. The provider's country is now the tag, whether
+the box agrees, disagrees or has no answer, just as the provider's timezone is
+the `tz:` tag. It is recorded as `country_provider`, which a re-run never
+retracts.
+
+**REQ-GEO-016 — a recovered scan kept both countries.** The dispatcher re-runs
+`enrich_geospatial` on a merged Coordinates entity, but only on the in-memory
+map, after the durable `EntityFound` emit. `Store::entities_from_events`
+merges the raw events and ran no enrichment. So a scan killed before finalise
+(routine on Termux) recovered Fredericton as `country:US` + `country:CA` +
+`tz:America/New_York`, which is the contradiction REQ-GEO-013 removed from the
+live scan. The rebuild now re-runs the same idempotent function on each
+merged point (`engine::enrich_geospatial` is crate-visible for this). A follow-up
+event could not have fixed it, because the replay unions tags.
+
+**REQ-SWEEP-005 — the web log still misreported a budget-cut sweep.**
+REQ-SWEEP-004 updated `EventKind::log_summary` and the live CLI, but not the
+SPA's `scan_info/log.js`. That file still printed `breach sweep: 64 probes
+from 18 anchors` for a sweep that sent 3. It printed `0 probes from 0
+anchors` both for a sweep the budget never let start and for one with nothing
+to ask. It now renders `{dispatched}/{probes} probes dispatched …` and `—
+stopped: {reason}` at warn level. A legacy event without `dispatched` reads 0,
+as serde's default does, so the screen and the downloaded log agree.
+
+**REQ-EXPORT-005 — the Overpass record leaked the node's position past
+redaction.** REQ-GEXF-001 named each Overpass node record `OSM {category} at
+{node_coords} near {centre}`. The shareable redaction pass coarsens a
+Coordinates value and its coordinate attributes, but not summaries. So a
+redacted CSV/JSON still carried the node's 6-decimal position in its
+`evidence` column. The record is now named by its OSM identity
+(`OSM {category} node/123 near {centre}`). An element without an id is named
+by its position in the response (`element #2`), which is deterministic and
+contains no coordinate. The queried centre in "near …" is a separate,
+pre-existing exposure and is unchanged.
+
+### Locks
+
+- `core::scan::tests::text_names_person_reads_the_subjects_own_middle_and_given_parts_across_any_separator`.
+- `modules::search_engines::helpers::entity::tests::an_org_in_snippet_prose_is_its_capitalised_name_run_matched_at_word_starts`
+  (the existing REQ-SEARCH-010 title test passes unchanged).
+- `modules::europepmc_search::tests::an_organisation_is_attributed_through_any_authors_affiliation`
+  (the live `resultType=core` shape, decoded).
+- `core::correlator::tests::au114_reports_an_unresolved_namesake_flag_as_a_low_lead_not_a_determination`;
+  `modules::wikidata::tests::a_namesake_primary_s_pep_flag_does_not_reach_the_subject`
+  now expects the one LOW lead.
+- `core::scan::tests::person_name_gates_fold_diacritics_on_both_sides`,
+  `core::scan::tests::handle_names_person_reads_a_full_middle_name`;
+  `a_people_search_listing_title_is_not_a_locality` gains a folded-surname case.
+- `core::engine::tests::a_below_floor_re_emission_of_the_target_that_is_no_annotation_is_refused`,
+  `core::engine::tests::only_an_all_annotation_re_emission_of_an_admitted_target_is_exempt_from_the_floor`
+  (`a_target_annotation_is_exempt_from_the_min_confidence_floor` passes
+  unchanged).
+- `hse-core` `tests::a_stale_unmarked_copy_never_shadows_the_marked_copy_of_one_record`
+  (both orders, both marks, and two established statuses).
+- `core::engine::tests::a_geocode_leg_keeps_its_lineage_after_its_input_spelling_is_consolidated`.
+- `core::engine::enrich::tests::a_provider_country_the_box_agrees_with_is_still_tagged`.
+- `storage::tests::a_recovered_scan_reconciles_a_merged_points_country_like_the_live_one`.
+- `api::routes::tests::the_log_view_renders_a_breach_sweeps_dispatch_and_stop_like_the_log_summary`.
+- `modules::overpass::tests::a_node_record_is_named_by_its_osm_identity_never_its_position`
+  (through `redact_entities`).
+
+### Falsified
+
+Each mutation restores the defect. The fixed file was saved first and
+restored after each run, and its md5 was checked to be identical before and
+after.
+
+| # | mutation | result |
+|---|---|---|
+| S1 | `own_name_before` disabled in `text_names_person` | killed by `text_names_person_reads_the_subjects_own_middle_and_given_parts_across_any_separator` |
+| S2 | org term filter back to substring `contains` | killed by `an_org_in_snippet_prose_is_its_capitalised_name_run_matched_at_word_starts` (the "Australian" case) |
+| S3 | name walk takes every word (no name-word stop) | killed by the same test (the glued-prose case) |
+| P1 | author-list affiliations ignored | killed by `an_organisation_is_attributed_through_any_authors_affiliation` |
+| N1 | AU-114 without the unresolved-flags lead | killed by `au114_reports_an_unresolved_namesake_flag_as_a_low_lead_not_a_determination` |
+| I1 | `fold_name_text` folds nothing | killed by `person_name_gates_fold_diacritics_on_both_sides` |
+| I2 | `city_names_a_surname_bearer` compares raw words | killed by `a_people_search_listing_title_is_not_a_locality` |
+| I3 | own-middle and foreign-middle-run arms disabled | killed by `handle_names_person_reads_a_full_middle_name` |
+| E1 | exemption by uid alone | killed by `a_below_floor_re_emission_of_the_target_that_is_no_annotation_is_refused` |
+| C1 | `merge_evidence_attrs` keeps the first copy's flags | killed by `a_stale_unmarked_copy_never_shadows_the_marked_copy_of_one_record` |
+| G1 | `AddressIndex` by uid only | killed by `a_geocode_leg_keeps_its_lineage_after_its_input_spelling_is_consolidated` |
+| G2 | provider country not tagged | killed by `a_provider_country_the_box_agrees_with_is_still_tagged` |
+| G3 | recovery without the reconciliation | killed by `a_recovered_scan_reconciles_a_merged_points_country_like_the_live_one` |
+| W1 | `log.js`'s old `breach_sweep` line | killed by `the_log_view_renders_a_breach_sweeps_dispatch_and_stop_like_the_log_summary` |
+| X1 | Overpass summary back to `at {node_coords}` | killed by `a_node_record_is_named_by_its_osm_identity_never_its_position` |
+
+**15 of 15 killed.** `min_confidence_exempt`'s unit test pins each of its
+three conditions separately. `hse-core` changed, so `wasm-ui/pkg` must be
+regenerated.

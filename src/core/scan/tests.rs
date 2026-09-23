@@ -2241,3 +2241,144 @@ fn handle_names_person_needs_the_given_name_beside_the_surname() {
     // A mononym has no structure to test.
     assert_eq!(handle_names_person("Thorpey", "thorpey"), None);
 }
+
+/// REQ-SEARCH-012: a URL path has only `-` separators, so the subject's own
+/// slug carrying their middle name, or every part of a hyphenated given name,
+/// failed the "a middle name must be space-separated" rule and the subject's
+/// own profile URL was not minted. Tokens the subject's name does not carry
+/// still need whitespace.
+#[test]
+fn text_names_person_reads_the_subjects_own_middle_and_given_parts_across_any_separator() {
+    assert_eq!(
+        text_names_person("/in/ian-james-thorpe-1234", "Ian James Thorpe"),
+        Some(true)
+    );
+    assert_eq!(
+        text_names_person("/in/mary-jane-smith", "Mary-Jane Smith"),
+        Some(true)
+    );
+    assert_eq!(
+        text_names_person("/in/john-paul-george-smith", "John Paul George Smith"),
+        Some(true)
+    );
+    // A foreign middle token on a slug is still a double-barrelled surname …
+    assert_eq!(
+        text_names_person("/in/ian-symes-thorpe", "Ian James Thorpe"),
+        Some(false)
+    );
+    assert_eq!(
+        text_names_person("ian-symes-thorpe", "Ian Thorpe"),
+        Some(false)
+    );
+    // … and a slug of only the subject's middle name + surname names nobody.
+    assert_eq!(
+        text_names_person("/in/james-thorpe", "Ian James Thorpe"),
+        Some(false)
+    );
+}
+
+/// REQ-IDENTITY-GATE-003: a handle may spell the subject's full middle name —
+/// their own, run together or separated, or a foreign one as a whole run
+/// between separators — where a `-` before the surname still reads as a
+/// double-barrelled surname.
+#[test]
+fn handle_names_person_reads_a_full_middle_name() {
+    for handle in ["ian.james.thorpe", "ianjamesthorpe", "ian_james_thorpe_88"] {
+        assert_eq!(
+            handle_names_person("Ian James Thorpe", handle),
+            Some(true),
+            "{handle}"
+        );
+    }
+    assert_eq!(
+        handle_names_person("John Paul George Smith", "johnpaulgeorgesmith"),
+        Some(true)
+    );
+    assert_eq!(
+        handle_names_person("John Paul George Smith", "john.george.smith"),
+        Some(true)
+    );
+    // A foreign middle name as its own run between separators.
+    assert_eq!(
+        handle_names_person("Ian Thorpe", "ian.james.thorpe"),
+        Some(true)
+    );
+    assert_eq!(
+        handle_names_person("Mary Jones", "mary.anne.jones"),
+        Some(true)
+    );
+    // Documented losses / refusals: a foreign middle run into its neighbours,
+    // a hyphen before the surname (a double-barrelled surname), a middle-name
+    // handle that does not start at the given name.
+    assert_eq!(
+        handle_names_person("Ian Thorpe", "ianjamesthorpe"),
+        Some(false)
+    );
+    assert_eq!(
+        handle_names_person("Ian Thorpe", "ian.symes-thorpe"),
+        Some(false)
+    );
+    assert_eq!(
+        handle_names_person("Ian Thorpe", "brian.james.thorpe"),
+        Some(false)
+    );
+    assert_eq!(
+        handle_names_person("Ian Thorpe", "ian.and.meg.thorpe"),
+        Some(false)
+    );
+}
+
+/// REQ-IDENTITY-GATE-003: names and handles are compared in one alphabet.
+/// Handles are ASCII, so an unfolded accented name judged every handle of a
+/// Vietnamese or Spanish subject "does not spell it", and its unaccented record
+/// "a different person" — vetoing ownership and co-reference for HSE's primary
+/// jurisdiction.
+#[test]
+fn person_name_gates_fold_diacritics_on_both_sides() {
+    assert_eq!(
+        handle_names_person("Nguyễn Văn An", "nguyenvanan"),
+        Some(true)
+    );
+    // NFD input (combining marks) folds the same as NFC.
+    assert_eq!(
+        handle_names_person("Nguye\u{0302}\u{0303}n Va\u{0306}n An", "nguyen.van.an"),
+        Some(true)
+    );
+    assert_eq!(
+        handle_names_person("José García", "jose.garcia"),
+        Some(true)
+    );
+    assert_eq!(handle_names_person("José García", "josegarcia"), Some(true));
+    assert_eq!(
+        person_names_compatible("Nguyễn Văn An", "Nguyen Van An"),
+        Some(true)
+    );
+    assert_eq!(
+        person_names_compatible("José García", "Jose Garcia"),
+        Some(true)
+    );
+    assert_eq!(
+        text_names_person("/in/nguyen-van-an-12", "Nguyễn Văn An"),
+        Some(true)
+    );
+    assert_eq!(
+        text_names_person("Nguyễn Văn An - Giám đốc", "Nguyen Van An"),
+        Some(true)
+    );
+    // The fold is per character: a non-Latin name is kept, not emptied into a
+    // mononym, and still tells two people apart.
+    assert_eq!(
+        person_names_compatible("Иван Петров", "Иван Петров"),
+        Some(true)
+    );
+    assert_eq!(
+        person_names_compatible("Иван Петров", "Мария Петрова"),
+        Some(false)
+    );
+    assert_eq!(person_surname("Nguyễn Văn Ân").as_deref(), Some("an"));
+    // A different accented person stays different.
+    assert_eq!(
+        person_names_compatible("Nguyễn Văn An", "Trần Văn An"),
+        Some(false)
+    );
+}

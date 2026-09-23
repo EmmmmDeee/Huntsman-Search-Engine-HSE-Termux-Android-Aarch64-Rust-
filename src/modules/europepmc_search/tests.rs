@@ -313,3 +313,48 @@ fn distinct_papers_carry_distinct_records() {
         "distinct papers are not a joint record: {xml}"
     );
 }
+
+/// REQ-EUROPEPMC-002: the top-level `affiliation` of a `resultType=core` record
+/// is the FIRST author's only (and null on some records), while the `AFF:`
+/// query matches any author's. A work whose only affiliated author is a
+/// co-author must still be attributed — the shape below is the live one.
+#[test]
+fn an_organisation_is_attributed_through_any_authors_affiliation() {
+    let body = r#"{"resultList":{"result":[
+      {"doi":"10.1/null-top","affiliation":null,"authorList":{"author":[
+        {"fullName":"Smith J"},
+        {"fullName":"Braunack-Mayer A","authorAffiliationDetailsList":{"authorAffiliation":[
+          {"affiliation":"Australian Centre for Health Engagement, University of Wollongong, NSW, Australia."}]}}]}},
+      {"doi":"10.1111/inm.70283","affiliation":"Imam Abdulrahman University, Dammam, Saudi Arabia.",
+       "authorList":{"author":[
+        {"fullName":"A B","authorAffiliationDetailsList":{"authorAffiliation":[
+          {"affiliation":"Imam Abdulrahman University, Dammam, Saudi Arabia."}]}},
+        {"fullName":"C D","authorAffiliationDetailsList":{"authorAffiliation":[
+          {"affiliation":"Other Place."},
+          {"affiliation":"School of Nursing, University of Wollongong, Australia."}]}}]}},
+      {"doi":"10.1/nobody","affiliation":"The Wollongong Hospital, Australia.",
+       "authorList":{"author":[{"fullName":"E F","authorAffiliationDetailsList":{"authorAffiliation":[
+          {"affiliation":"The Wollongong Hospital, Australia."}]}}]}}
+    ]}}"#;
+    let r: SearchResp = serde_json::from_str(body).expect("live core shape decodes");
+    let out = build_entities(
+        &r,
+        TargetKind::Organisation,
+        "University of Wollongong",
+        SCAN,
+    );
+    assert_eq!(
+        urls(&out),
+        vec![
+            "https://doi.org/10.1/null-top",
+            "https://doi.org/10.1111/inm.70283"
+        ]
+    );
+    assert_eq!(
+        out[1].evidence[0]
+            .attributes
+            .get("matched_affiliation")
+            .map(String::as_str),
+        Some("School of Nursing, University of Wollongong, Australia.")
+    );
+}

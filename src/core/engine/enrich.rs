@@ -64,26 +64,41 @@ fn provider_geo(
 /// `reverse_country_iso` is a first-match bounding-box table (a hint, by its
 /// own doc) and `timezone_for` a coarse zone map. When a provider already
 /// reported the point's country or timezone (photon / geocode / open_meteo
-/// `country_code`, open_meteo `timezone`), the box never contradicts it: no box
-/// `country:` tag is added (a disagreeing box answer is kept only as the
-/// evidence attribute `country_iso_box`), the provider's timezone is the `tz:`
-/// tag, and when the box's country disagrees with the provider's no box
-/// timezone is emitted at all — it rests on the same wrong region. Fredericton,
+/// `country_code`, open_meteo `timezone`), the box never contradicts it: the
+/// provider's country is the `country:` tag, just as the provider's timezone
+/// is the `tz:` tag (a disagreeing box answer is kept only as the evidence
+/// attribute `country_iso_box`), and when the box's country disagrees with the
+/// provider's no box timezone is emitted at all — it rests on the same wrong
+/// region. Fredericton,
 /// New Brunswick got `country:CA` from photon and `country:US` +
 /// `tz:America/New_York` from the box (the US box is declared before CA and
 /// covers southern New Brunswick), and a Queensland point got
 /// `tz:Australia/Sydney` beside open_meteo's `Australia/Brisbane`
 /// (REQ-GEO-013).
 ///
+/// The provider's country is TAGGED, not merely left alone: `geocode`'s
+/// forward results and `open_meteo_geo` carry `country_code` only as an
+/// evidence attribute and never tag `country:XX` themselves, so leaving the
+/// tag to the provider stripped every forward-geocoded point of its country
+/// (no `country:AU`, no `country:US` for the "Bill Thorpe, Florida" geocodes)
+/// in exports, CSV filters and the GEXF. It is recorded as `country_provider`,
+/// which a re-run never retracts — it rests on the provider's own evidence,
+/// which persists — so the retraction below cannot leave a point without the
+/// provider's tag even when the tag string is one an earlier run also wrote
+/// (REQ-GEO-015).
+///
 /// # Idempotent
 ///
 /// Tags are unioned by `Entity::merge`, so a provider's answer can arrive in a
 /// later emission than the box's. The engine therefore re-runs this on a
 /// merged Coordinates entity, and each run first retracts what an earlier run
-/// wrote — its `geo_normalize` record, and the `country:` / `tz:` tags that
+/// wrote — its `geo_normalize` record, and the box `country:` / `tz:` tags that
 /// record says it added — before deciding afresh. Re-running never duplicates
-/// the record.
-pub(super) fn enrich_geospatial(entity: &mut crate::core::entity::Entity) {
+/// the record. The event-log recovery (`Store::entities_from_events`) merges
+/// the same emissions and re-runs this on each merged point too, so a scan
+/// rebuilt from its events reaches the same one answer as the finalised scan
+/// (REQ-GEO-016).
+pub(crate) fn enrich_geospatial(entity: &mut crate::core::entity::Entity) {
     use crate::core::entity::{EntityKind, Evidence};
     use crate::util::geohash;
     match entity.kind {
@@ -135,21 +150,30 @@ pub(super) fn enrich_geospatial(entity: &mut crate::core::entity::Entity) {
                 ev = ev.with_attr("lon", format!("{lon:.6}"));
                 let hemisphere = if lat >= 0.0 { "northern" } else { "southern" };
                 ev = ev.with_attr("hemisphere", hemisphere);
-                match (box_iso, provider_cc.is_some()) {
+                match (box_iso, provider_cc.as_deref()) {
                     // No provider answer: the box is the best available hint.
-                    (Some(iso), false) => {
+                    (Some(iso), None) => {
                         ev = ev.with_attr("country_iso", iso);
                         if let Some(name) = geohash::country_name_for_iso(iso) {
                             ev = ev.with_attr("country_name", name);
                         }
                         entity.tag(format!("country:{iso}"));
                     }
-                    // A provider answered and the box disagrees: record the box
-                    // answer as the approximation it is, never as a tag.
-                    (Some(iso), true) if box_disagrees => {
-                        ev = ev.with_attr("country_iso_box", iso);
+                    // A provider answered: its answer is the tag, whether the
+                    // box agrees, disagrees or has none. A disagreeing box
+                    // answer is recorded as the approximation it is, never as
+                    // a tag.
+                    (box_answer, Some(provider)) => {
+                        if box_disagrees && let Some(iso) = box_answer {
+                            ev = ev.with_attr("country_iso_box", iso);
+                        }
+                        ev = ev.with_attr("country_provider", provider);
+                        if let Some(name) = geohash::country_name_for_iso(provider) {
+                            ev = ev.with_attr("country_name", name);
+                        }
+                        entity.tag(format!("country:{provider}"));
                     }
-                    _ => {}
+                    (None, None) => {}
                 }
                 entity.add_evidence(ev);
                 entity.tag(format!("geohash:{}", &h[..h.len().min(5)]));
@@ -803,6 +827,62 @@ mod tests {
             1,
             "a re-run replaces its own record"
         );
+    }
+
+    /// REQ-GEO-015: a provider's country is the tag even when the box agrees.
+    /// `geocode`'s forward results and `open_meteo_geo` put `country_code` on
+    /// their evidence and tag no country, so deferring to the provider without
+    /// tagging left every forward-geocoded point with none.
+    #[test]
+    fn a_provider_country_the_box_agrees_with_is_still_tagged() {
+        let mut fwd = Entity::new(
+            EntityKind::Coordinates,
+            "-33.868800,151.209300",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
+        fwd.add_evidence(
+            Evidence::new("geocode", "Geocoded \"Sydney, NSW\"")
+                .with_attr("country_code", "AU")
+                .with_attr("input_address", "Sydney, NSW"),
+        );
+        enrich_geospatial(&mut fwd);
+        enrich_geospatial(&mut fwd);
+        let cs: Vec<&String> = fwd
+            .tags
+            .iter()
+            .filter(|t| t.starts_with("country:"))
+            .collect();
+        assert_eq!(cs, vec!["country:AU"]);
+
+        // A US point off the AU box table, from a provider with no tag of its own.
+        let mut florida = Entity::new(
+            EntityKind::Coordinates,
+            "27.994402,-81.760254",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
+        florida.add_evidence(Evidence::new("geocode", "Geocoded").with_attr("country_code", "us"));
+        enrich_geospatial(&mut florida);
+        assert!(florida.has_tag("country:US"), "{:?}", florida.tags);
+
+        // A recalled point from before this fix: photon's own `country:AU`
+        // tag, and an old engine record that says the engine wrote the same
+        // string. Retracting that record's tag must not strip photon's.
+        let mut recalled = Entity::new(
+            EntityKind::Coordinates,
+            "-27.470500,153.026000",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
+        recalled.add_evidence(Evidence::new("photon", "reverse").with_attr("country_code", "AU"));
+        recalled.tag("country:AU");
+        recalled.add_evidence(
+            Evidence::new(GEO_NORMALIZE_SOURCE, COORD_ENRICHMENT_SUMMARY)
+                .with_attr("country_iso", "AU"),
+        );
+        enrich_geospatial(&mut recalled);
+        assert!(recalled.has_tag("country:AU"), "{:?}", recalled.tags);
     }
 
     #[test]

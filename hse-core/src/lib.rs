@@ -1610,7 +1610,32 @@ fn evidence_identity_hash(state: &RandomState, source: &str, summary: &str) -> u
 /// — but the values are SORTED (via the set) rather than appended in arrival
 /// order, so the fold stays independent of merge order (the Determinism
 /// Requirement) where `with_attr`'s append would not be.
+///
+/// The per-record CORROBORATION flags fold too, and commutatively, because
+/// [`Evidence::is_non_corroborating`] reads them and `source_count` follows:
+/// `is_annotation` and `is_inferred` are OR-ed, and an `Unverified`
+/// verification on either side wins (a record anyone found to be name-only is
+/// name-only); otherwise a status set on one side is kept, and two differing
+/// established statuses resolve by [`verification_rank`]. Merging only the
+/// attributes let whichever copy arrived first decide: a record persisted
+/// before a module learned to mark it (an `au_geo` point annotation, an
+/// `openarch` register entry) and recalled into a re-scan shadowed the fresh,
+/// marked copy of the identical `(source, summary)` — so the stale record kept
+/// corroborating, was re-persisted, and never healed (REQ-CORE-019).
 fn merge_evidence_attrs(existing: &mut Evidence, incoming: Evidence) {
+    existing.is_annotation |= incoming.is_annotation;
+    existing.is_inferred |= incoming.is_inferred;
+    existing.verification = match (existing.verification, incoming.verification) {
+        (Some(VerificationMethod::Unverified), _) | (_, Some(VerificationMethod::Unverified)) => {
+            Some(VerificationMethod::Unverified)
+        }
+        (Some(a), Some(b)) => Some(if verification_rank(b) < verification_rank(a) {
+            b
+        } else {
+            a
+        }),
+        (a, b) => a.or(b),
+    };
     for (k, v) in incoming.attributes {
         match existing.attributes.get_mut(&k) {
             Some(cur) => {
@@ -1625,6 +1650,24 @@ fn merge_evidence_attrs(existing: &mut Evidence, incoming: Evidence) {
                 existing.attributes.insert(k, v);
             }
         }
+    }
+}
+
+/// A fixed total order over the ESTABLISHED ownership statuses, used only to
+/// pick one deterministically when two copies of one evidence record carry
+/// different ones ([`merge_evidence_attrs`]): the most specific proof first
+/// (an email link, a platform's own badge), self-description last. Each is an
+/// ownership proof in its own right, so the choice never changes whether the
+/// record corroborates — only which proof it names, independent of merge order.
+/// `Unverified` never reaches it (it wins outright).
+fn verification_rank(v: VerificationMethod) -> u8 {
+    match v {
+        VerificationMethod::EmailLinked => 0,
+        VerificationMethod::PlatformVerified => 1,
+        VerificationMethod::LinkedProfile => 2,
+        VerificationMethod::ActivityProof => 3,
+        VerificationMethod::SelfDisclosed => 4,
+        VerificationMethod::Unverified => 5,
     }
 }
 

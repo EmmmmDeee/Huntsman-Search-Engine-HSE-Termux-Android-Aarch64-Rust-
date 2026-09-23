@@ -798,28 +798,58 @@ pub(in crate::core::correlator) fn precision_weight_multiplier(radius_m: f64) ->
         .clamp(MIN_MULTIPLIER, MAX_MULTIPLIER)
 }
 
-/// The scan's `Address` entities by uid — the lookup a forward-geocode leg's
-/// `input_address` resolves through ([`effective_geo_classes`]). Built once per
-/// rule evaluation; only ever probed by key, so its iteration order is never
-/// observed.
-pub(in crate::core::correlator) struct AddressIndex<'a>(
-    std::collections::HashMap<&'a str, &'a Entity>,
-);
+/// The scan's `Address` entities, by uid and by locality — the lookup a
+/// forward-geocode leg's `input_address` resolves through
+/// ([`effective_geo_classes`]). Built once per rule evaluation; only ever
+/// probed by key, and every probe's answer is folded into a `BTreeSet`, so no
+/// iteration order is ever observed.
+///
+/// By locality as well as by uid, because the slice a rule sees is not always
+/// the one the geocoder's input came from: finalise runs the correlator over
+/// the STORED set after `consolidate_address_localities` has folded
+/// `"Sydney, NSW"` into `"Sydney, New South Wales"` (one
+/// [`locality_key`](crate::util::address_au::locality_key)) and removed the
+/// shorter spelling. A leg whose `input_address` is the folded spelling found
+/// nothing by uid, fell back to an independent `Geocode` class, and the
+/// finalised correlation and the exported headline re-created the exact
+/// {Geocode, Search} synergy REQ-GEO-009 removes (REQ-GEO-014). The locality key
+/// is the same key consolidation groups by, so the survivor is always found;
+/// and in the live slice, where both spellings are still present, the whole
+/// locality group is read — so a leg resolves to the same classes before and
+/// after the fold.
+pub(in crate::core::correlator) struct AddressIndex<'a> {
+    by_uid: std::collections::HashMap<&'a str, &'a Entity>,
+    by_locality: std::collections::HashMap<String, Vec<&'a Entity>>,
+}
 
 impl<'a> AddressIndex<'a> {
     pub(in crate::core::correlator) fn new(entities: &'a [Entity]) -> Self {
-        Self(
-            entities
-                .iter()
-                .filter(|e| e.kind == EntityKind::Address)
-                .map(|e| (e.uid.as_str(), e))
-                .collect(),
-        )
+        let mut by_uid = std::collections::HashMap::new();
+        let mut by_locality: std::collections::HashMap<String, Vec<&'a Entity>> =
+            std::collections::HashMap::new();
+        for e in entities.iter().filter(|e| e.kind == EntityKind::Address) {
+            by_uid.insert(e.uid.as_str(), e);
+            let key = crate::util::address_au::locality_key(&e.value);
+            if !key.is_empty() {
+                by_locality.entry(key).or_default().push(e);
+            }
+        }
+        Self {
+            by_uid,
+            by_locality,
+        }
     }
 
-    fn get(&self, value: &str) -> Option<&'a Entity> {
+    /// Every Address in the slice that IS `value`'s locality: its locality
+    /// group (which holds the exact spelling when present), else the exact uid
+    /// alone (a value with no locality key). Empty when the slice holds neither.
+    fn resolve(&self, value: &str) -> Vec<&'a Entity> {
+        let key = crate::util::address_au::locality_key(value);
+        if let Some(group) = self.by_locality.get(&key).filter(|_| !key.is_empty()) {
+            return group.clone();
+        }
         let uid = crate::core::entity::uid_for(&EntityKind::Address, value);
-        self.0.get(uid.as_str()).copied()
+        self.by_uid.get(uid.as_str()).copied().into_iter().collect()
     }
 }
 
@@ -828,12 +858,15 @@ impl<'a> AddressIndex<'a> {
 /// A non-geocode record is its source's class. A `geocode` / `photon` record is
 /// a forward geocode when it names its `input_address` (several, `"; "`-joined,
 /// when `Evidence::with_attr` folded repeat answers into one record): that
-/// Address is resolved in the scan and the leg inherits the classes of the
-/// Address's OWN anchoring sources, Geocode excluded so the lineage is one
-/// level deep. A leg whose input cannot be traced — no `input_address`, an
-/// Address not in the scan, or one with no non-geocode anchoring source (an
-/// operator seed, a reverse-geocoded string) — stays `Geocode`, exactly as
-/// before.
+/// Address is resolved in the scan ([`AddressIndex::resolve`] — by locality, so
+/// a spelling consolidation folded away still finds its survivor) and the leg
+/// inherits the classes of the Address's OWN anchoring sources, Geocode
+/// excluded so the lineage is one level deep. A leg none of whose inputs can be
+/// traced — no `input_address`, no Address of that locality in the scan, or one
+/// with no non-geocode anchoring source (an operator seed, a reverse-geocoded
+/// string) — stays `Geocode`, exactly as before. When SOME of a folded record's
+/// inputs trace and others do not, the leg is the traced inputs' classes only:
+/// it is one answer, and a traced input already says where it came from.
 fn record_geo_classes(
     ev: &crate::core::entity::Evidence,
     addresses: &AddressIndex<'_>,
@@ -848,23 +881,18 @@ fn record_geo_classes(
         out.insert(GeoSourceClass::Geocode);
         return;
     };
-    for input in inputs.split("; ") {
-        let inherited: std::collections::BTreeSet<GeoSourceClass> = addresses
-            .get(input)
-            .map(|addr| {
-                addr.evidence
-                    .iter()
-                    .filter(|a| !a.is_non_corroborating() && is_anchoring_geo_source(&a.source))
-                    .map(|a| geo_source_class(&a.source))
-                    .filter(|c| *c != GeoSourceClass::Geocode)
-                    .collect()
-            })
-            .unwrap_or_default();
-        if inherited.is_empty() {
-            out.insert(GeoSourceClass::Geocode);
-        } else {
-            out.extend(inherited);
-        }
+    let inherited: std::collections::BTreeSet<GeoSourceClass> = inputs
+        .split("; ")
+        .flat_map(|input| addresses.resolve(input))
+        .flat_map(|addr| &addr.evidence)
+        .filter(|a| !a.is_non_corroborating() && is_anchoring_geo_source(&a.source))
+        .map(|a| geo_source_class(&a.source))
+        .filter(|c| *c != GeoSourceClass::Geocode)
+        .collect();
+    if inherited.is_empty() {
+        out.insert(GeoSourceClass::Geocode);
+    } else {
+        out.extend(inherited);
     }
 }
 

@@ -164,6 +164,64 @@ fn consolidate_address_localities_folds_postcode_variants_codebase_wide() {
     assert!(entities.iter().any(|e| e.kind == EntityKind::Email));
 }
 
+/// REQ-GEO-014: finalise correlates the STORED set after consolidation folded
+/// the geocoder's input spelling (`"Sydney, NSW"`) into its locality survivor
+/// (`"Sydney, New South Wales"`). The geocode leg must still resolve its input
+/// — or the finalised correlation and the exported headline re-create the
+/// {Geocode, Search} synergy REQ-GEO-009 removed from the live slice.
+#[test]
+fn a_geocode_leg_keeps_its_lineage_after_its_input_spelling_is_consolidated() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let address = |value: &str| {
+        let mut a = Entity::new(EntityKind::Address, value, 0.65, "s");
+        a.tag("country:AU");
+        a.add_evidence(Evidence::new(
+            "search_engines",
+            format!("Address in snippet: {value}"),
+        ));
+        a
+    };
+    let mut known_city = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.72, "s");
+    known_city.tag("country:AU");
+    known_city.tag("au-state:NSW");
+    known_city.add_evidence(
+        Evidence::new(
+            "search_engines",
+            "Geocoded from search address: Sydney, New South Wales",
+        )
+        .with_attr("source_address", "Sydney, New South Wales"),
+    );
+    let mut geocoded = Entity::new(EntityKind::Coordinates, "-33.8698,151.2083", 0.55, "s");
+    geocoded.tag("country:AU");
+    geocoded.tag("au-state:NSW");
+    geocoded.add_evidence(
+        Evidence::new("geocode", "Geocoded \"Sydney, NSW\"")
+            .with_attr("input_address", "Sydney, NSW")
+            .with_attr("place_type", "city"),
+    );
+    let mut entities = vec![
+        address("Sydney, NSW"),
+        address("Sydney, New South Wales"),
+        known_city,
+        geocoded,
+    ];
+    // Live slice: every Address present.
+    assert!(crate::core::correlator::au059_synergy_fix(&entities).is_none());
+    // Finalise slice: the input spelling is folded away.
+    let folded = consolidate_address_localities(&mut entities);
+    assert_eq!(folded.len(), 1, "{folded:?}");
+    assert!(!entities.iter().any(|e| e.value == "Sydney, NSW"));
+    assert!(
+        crate::core::correlator::au059_synergy_fix(&entities).is_none(),
+        "a geocode of a snippet address is still the snippet's datum after the fold"
+    );
+    assert_eq!(
+        crate::core::correlator::au_location_corroboration(&entities)
+            .map(|c| c.independent_classes),
+        Some(1)
+    );
+}
+
 #[test]
 fn consolidate_address_localities_preserves_earliest_generation_even_when_survivor_is_the_longer_later_value()
  {
@@ -7901,6 +7959,147 @@ async fn a_target_annotation_is_exempt_from_the_min_confidence_floor() {
         entity_map.get_mut(&other_uid).is_none(),
         "a non-target entity below the floor is still refused"
     );
+}
+
+/// Re-emits its FullName dispatch target as a below-floor namesake row — a
+/// plain, name-only record (the shape of `wikidata`'s ambiguous primary,
+/// `openarch`'s register entry and `qld_unclaimed`'s owner row), not an
+/// annotation.
+struct NamesakeReEmitter;
+
+#[async_trait::async_trait]
+impl Module for NamesakeReEmitter {
+    fn name(&self) -> &'static str {
+        "namesake_re_emitter"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, _: &Target) -> bool {
+        true
+    }
+    async fn process(
+        &self,
+        target: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let mut row = Entity::new(EntityKind::Person, &target.value, 0.35, &ctx.scan_id);
+        row.tag("ambiguous-name");
+        row.add_evidence(Evidence::new(
+            "namesake_re_emitter",
+            "a same-named register row",
+        ));
+        let mut r = crate::core::module::ModuleResult::new();
+        r.push(row);
+        Ok(r)
+    }
+}
+
+/// REQ-ENGINE-004: the `--min-confidence` exemption is for an ANNOTATION of an
+/// admitted target, not for every re-emission of the target's uid. A FullName
+/// seed has no pre-inserted anchor, so a below-floor namesake row re-emitting
+/// the name must still be refused — it would otherwise found the subject node.
+#[tokio::test]
+async fn a_below_floor_re_emission_of_the_target_that_is_no_annotation_is_refused() {
+    use crate::core::entity::EntityKind;
+    use crate::core::test_support::InMemoryStore;
+
+    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(NamesakeReEmitter)];
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(modules, store, bus.clone());
+
+    let target = Target::new(TargetKind::FullName, "Ian Thorpe");
+    let opts = ScanOptions {
+        min_confidence: Some(0.5),
+        ..Default::default()
+    };
+    let mut ctx = ModuleContext {
+        scan_id: "namesake-floor".to_string(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let cx = DispatchCx {
+        scan_id: "namesake-floor",
+        target: &target,
+        opts: &opts,
+        is_expansion: false,
+        seed: &target,
+        quarantined: no_quarantine(),
+    };
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
+    };
+    engine
+        .dispatch_target(&cx, &mut ctx, &mut state)
+        .await
+        .expect("dispatch runs");
+    let uid = crate::core::entity::uid_for(&EntityKind::Person, "Ian Thorpe");
+    assert!(
+        entity_map.get_mut(&uid).is_none(),
+        "a 0.35 namesake row founded the subject node past the 0.5 floor"
+    );
+}
+
+/// REQ-ENGINE-004: the exemption's three conditions, each necessary.
+#[test]
+fn only_an_all_annotation_re_emission_of_an_admitted_target_is_exempt_from_the_floor() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let point = "-33.868800,151.209300";
+    let annotated = |records: Vec<Evidence>| {
+        let mut e = Entity::new(EntityKind::Coordinates, point, 0.05, "s");
+        for r in records {
+            e.add_evidence(r);
+        }
+        e
+    };
+    let uid = crate::core::entity::uid_for(&EntityKind::Coordinates, point);
+    let annotation = || Evidence::new("au_geo", "ASGS region").as_annotation();
+    let observation = || Evidence::new("namesake", "a same-named row");
+    assert!(dispatch::min_confidence_exempt(
+        &annotated(vec![annotation()]),
+        &uid,
+        true
+    ));
+    // Not yet admitted: an annotation never founds its target.
+    assert!(!dispatch::min_confidence_exempt(
+        &annotated(vec![annotation()]),
+        &uid,
+        false
+    ));
+    // One observation among the records makes it a new claim.
+    assert!(!dispatch::min_confidence_exempt(
+        &annotated(vec![annotation(), observation()]),
+        &uid,
+        true
+    ));
+    assert!(!dispatch::min_confidence_exempt(
+        &annotated(vec![observation()]),
+        &uid,
+        true
+    ));
+    // No evidence at all is no annotation.
+    assert!(!dispatch::min_confidence_exempt(
+        &annotated(vec![]),
+        &uid,
+        true
+    ));
+    // Not the target.
+    assert!(!dispatch::min_confidence_exempt(
+        &annotated(vec![annotation()]),
+        "other-uid",
+        true
+    ));
 }
 
 /// A target-derived lookup (au_geo's shape): an ASGS region at 0.90 and a

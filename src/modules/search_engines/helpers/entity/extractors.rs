@@ -45,7 +45,9 @@ const PLACE_PREFIXES: &[&str] = &[
 /// word ([`PLACE_PREFIXES`]), names a surname-bearer. A "city" that STARTS with
 /// the surname names a place (`"Thorpe Bay, Essex"`), and a single word that
 /// IS the surname (`"Lawnton, QLD"` for a Lawnton) is a real suburb and is
-/// kept — that collision is capped, not dropped, by the caller. **Pure.**
+/// kept — that collision is capped, not dropped, by the caller. Words and
+/// surname are compared diacritic-folded
+/// ([`crate::core::scan::fold_name_text`]). **Pure.**
 pub(in crate::modules::search_engines) fn city_names_a_surname_bearer(
     addr: &str,
     surname: &str,
@@ -53,7 +55,10 @@ pub(in crate::modules::search_engines) fn city_names_a_surname_bearer(
     let Some((city, _state)) = addr.rsplit_once(',') else {
         return false;
     };
-    let surname = surname.trim();
+    // Both sides through the identity gate's name fold: the caller's surname
+    // comes from `person_surname`, which is diacritic-folded (`"nguyen"`), so
+    // a raw comparison would miss the `"Nguyễn"` the listing prints.
+    let surname = crate::core::scan::fold_name_text(surname.trim());
     if surname.is_empty() {
         return false;
     }
@@ -62,7 +67,7 @@ pub(in crate::modules::search_engines) fn city_names_a_surname_bearer(
         && words
             .iter()
             .skip(1)
-            .any(|w| w.eq_ignore_ascii_case(surname))
+            .any(|w| crate::core::scan::fold_name_text(w) == surname)
         && !words.first().is_some_and(|w| {
             PLACE_PREFIXES
                 .iter()
@@ -612,9 +617,25 @@ pub(in crate::modules::search_engines) fn extract_abn_acn_from_text(
 ///     and at the end of the previous organisation in the text;
 ///   * the subject-term filter then ran on that glued string, so the PERSON's
 ///     name, not the company's, satisfied it and a namesake's employer was filed
-///     as a scan organisation. On the bounded span the filter keeps the
-///     extractor's contract: a company is kept only when its own name carries a
-///     subject term.
+///     as a scan organisation.
+///
+/// A separator bound alone did not close the third fault: snippet PROSE has no
+/// separator, so `"… Ian Thorpe is the managing director of Harbour Holdings
+/// Pty Ltd"` still walked back across the person's name, and — with the old
+/// 60-byte cap replaced by the separator bound — even across the title/snippet
+/// join (REQ-SEARCH-013). The name is therefore the run of NAME WORDS directly
+/// before the suffix: capitalised or digit-led words, `&`, and the connectors
+/// `and`/`of`/`the`/`for` between them (`Bank of Queensland Limited`), with a
+/// leading connector trimmed. Lowercase prose (`is the managing director`)
+/// ends it; a separator, `, . ; ( \n`, the previous organisation's end and a
+/// 60-byte floor still bound it (an all-caps title is all "capitalised").
+///
+/// The term filter then runs on that name alone, and matches a term only at
+/// the START of one of its words: a raw substring test let the given name
+/// `"ian"` admit `"Australian Unity Limited"`. A word-start match, not a
+/// whole-word one, because a company named from its founder's name keeps the
+/// name as a word stem (`Thorpedo Inc.` for Ian Thorpe). So a company is kept
+/// only when its own name carries a subject term.
 pub(in crate::modules::search_engines) fn extract_organisations_from_text(
     text: &str,
     terms: &[String],
@@ -681,7 +702,13 @@ pub(in crate::modules::search_engines) fn extract_organisations_from_text(
         }
     }
     spans.sort_unstable();
-    // Phase 2: walk each span back to the start of its company name.
+    // Phase 2: walk each span back over the run of name words before it.
+    // Joiners a company name can carry between its capitalised words; never its
+    // first word (a leading one is trimmed below).
+    const CONNECTORS: [&str; 5] = ["&", "and", "of", "the", "for"];
+    let is_name_word = |w: &str| {
+        CONNECTORS.contains(&w) || w.starts_with(|c: char| c.is_uppercase() || c.is_ascii_digit())
+    };
     let mut orgs: Vec<String> = Vec::new();
     let mut prev_end = 0;
     for (i, end) in spans {
@@ -693,23 +720,63 @@ pub(in crate::modules::search_engines) fn extract_organisations_from_text(
             .iter()
             .filter_map(|sep| before.rfind(sep).map(|d| d + sep.len()))
             .max();
-        let raw_start = punct
-            .max(separator)
-            .unwrap_or_else(|| i.saturating_sub(60))
-            .max(prev_end);
+        // The `i-60` floor may land mid-code-point; snap forward to a boundary
+        // with the canonical primitive so every slice below is valid. `i` is an
+        // ASCII (space) boundary and the floor is `<= i`, so the snap never
+        // overshoots `i`.
+        let floor = crate::util::str_util::ceil_char_boundary(
+            text,
+            punct
+                .max(separator)
+                .unwrap_or(0)
+                .max(prev_end)
+                .max(i.saturating_sub(60)),
+        );
         prev_end = end;
-        // The `i-60` fallback may land mid-code-point; snap forward to a
-        // boundary with the canonical primitive so the slice below is always
-        // valid. `i` is an ASCII (space) boundary and `raw_start <= i`, so the
-        // next boundary never overshoots `i`.
-        let name_start = crate::util::str_util::ceil_char_boundary(text, raw_start);
-        let org = text[name_start..end].trim();
+        // Word by word back from the suffix while each word is a name word.
+        // `name_start` only ever moves to the start of a whole word, so a word
+        // the floor cuts through is never taken.
+        let mut name_start = i;
+        loop {
+            let head = &text[floor..name_start];
+            let trimmed = head.trim_end();
+            // Past the first step a word must be whitespace-separated from the
+            // one after it (a `-`/`'` inside a word is part of the word).
+            if name_start != i && trimmed.len() == head.len() {
+                break;
+            }
+            let word_at = trimmed.rfind(char::is_whitespace).map_or(0, |d| {
+                d + trimmed[d..].chars().next().map_or(1, char::len_utf8)
+            });
+            let word = &trimmed[word_at..];
+            if word.is_empty()
+                || !is_name_word(word)
+                || (word_at == 0 && floor > 0 && {
+                    // The floor cut into a word (no whitespace between the floor
+                    // and it): only a bound that ends at a word edge admits it.
+                    text[..floor].ends_with(|c: char| c.is_alphanumeric())
+                })
+            {
+                break;
+            }
+            name_start = floor + word_at;
+        }
+        let mut org = text[name_start..end].trim();
+        // A connector opens no company name (`of Harbour Holdings Pty Ltd`).
+        while let Some((first, rest)) = org.split_once(char::is_whitespace)
+            && CONNECTORS.contains(&first)
+        {
+            org = rest.trim_start();
+        }
         if org.len() >= 5 && org.starts_with(|c: char| c.is_ascii_uppercase()) {
             // Lowercase once per candidate rather than once per term.
             let org_lower = org.to_lowercase();
-            if terms.iter().any(|t| org_lower.contains(t.as_str()))
-                && !orgs.iter().any(|o| o == org)
-            {
+            let names_a_term = |t: &String| {
+                org_lower
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|w| !t.is_empty() && w.starts_with(t.as_str()))
+            };
+            if terms.iter().any(names_a_term) && !orgs.iter().any(|o| o == org) {
                 orgs.push(org.to_string());
             }
         }

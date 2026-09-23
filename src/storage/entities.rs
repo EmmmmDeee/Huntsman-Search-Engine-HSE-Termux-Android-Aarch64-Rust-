@@ -465,7 +465,19 @@ impl super::Store {
         for ev in self.events_for_scan(scan_id)? {
             if let crate::core::event::EventKind::EntityFound { entity } = ev.kind {
                 match map.get_mut(&entity.uid) {
-                    Some(existing) => existing.merge(entity),
+                    Some(existing) => {
+                        existing.merge(entity);
+                        // The live dispatch re-decides a merged point's
+                        // country/timezone after the merge (the merge unions
+                        // tags, so a box answer and a later provider answer
+                        // would otherwise both stand); the events hold the
+                        // un-reconciled emissions, so the rebuild must make the
+                        // same decision or a recovered scan contradicts the
+                        // finalised one (REQ-GEO-016). Same function, idempotent.
+                        if existing.kind == crate::core::entity::EntityKind::Coordinates {
+                            crate::core::engine::enrich_geospatial(existing);
+                        }
+                    }
                     None => {
                         map.insert(entity.uid.clone(), entity);
                     }

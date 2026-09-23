@@ -96,8 +96,40 @@ pub(super) struct ResultItem {
     author_string: Option<String>,
     #[serde(default)]
     title: Option<String>,
-    /// The work's affiliation line — present on `resultType=core`, which the
-    /// organisation query requests for exactly this field.
+    /// The work's top-level affiliation line on `resultType=core` — the FIRST
+    /// author's affiliation only, and null on some records. The authoritative
+    /// per-author affiliations are in [`ResultItem::author_list`].
+    #[serde(default)]
+    affiliation: Option<String>,
+    /// Every author with their own affiliations — returned by
+    /// `resultType=core`, which the organisation query requests for it.
+    #[serde(rename = "authorList", default)]
+    author_list: Option<AuthorList>,
+}
+
+/// `resultType=core`'s `authorList` — `{ "author": [ … ] }`.
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct AuthorList {
+    #[serde(default)]
+    author: Vec<Author>,
+}
+
+/// One author of a `resultType=core` record; only their affiliations are read.
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct Author {
+    #[serde(rename = "authorAffiliationDetailsList", default)]
+    affiliations: Option<AuthorAffiliations>,
+}
+
+/// `{ "authorAffiliation": [ { "affiliation": "…" }, … ] }`.
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct AuthorAffiliations {
+    #[serde(rename = "authorAffiliation", default)]
+    affiliation: Vec<AuthorAffiliation>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct AuthorAffiliation {
     #[serde(default)]
     affiliation: Option<String>,
 }
@@ -159,7 +191,8 @@ fn split_author(entry: &str) -> Option<(String, String)> {
 
 /// Why a work is attributable to the seed: the `authorString` entry whose name
 /// matches a FullName seed (as Europe PMC wrote it, e.g. `"Thorpe IF"`), or the
-/// affiliation line naming an Organisation seed. `None` when nothing ties the
+/// first affiliation — the record's own line, then any author's — naming an
+/// Organisation seed. `None` when nothing ties the
 /// work to the subject — a work that merely mentions the name, or one whose
 /// only same-surname author has a different initial (`"Thorpe A"` is not Ian
 /// Thorpe). The matching itself is `crossref_search`'s, so a name means the
@@ -178,11 +211,29 @@ pub(super) fn attribution(kind: TargetKind, seed: &str, item: &ResultItem) -> Op
                 })
             })
             .map(str::to_string),
+        // Every author's affiliations, not only the top-level line: that line
+        // is the FIRST author's alone (and null on some records), while the
+        // `AFF:` query matches ANY author's — so reading it alone dropped every
+        // work whose affiliated author is not first. Live 2026-09-23, 4 of 25
+        // `AFF:"University of Wollongong"` hits (10.1111/inm.70283,
+        // 10.3389/frhs.2026.1963260, two null-affiliation records) were lost
+        // that way (REQ-EUROPEPMC-002). This is the walk `crossref_search` makes
+        // over `author[].affiliation[]`. The top-level line is read first, so
+        // the record names the same affiliation it always did when it
+        // matches; then each author's, in the record's order — deterministic.
         TargetKind::Organisation => item
             .affiliation
-            .as_deref()
-            .map(str::trim)
-            .filter(|aff| crate::modules::crossref_search::affiliation_matches(seed, aff))
+            .iter()
+            .chain(
+                item.author_list
+                    .iter()
+                    .flat_map(|list| &list.author)
+                    .filter_map(|a| a.affiliations.as_ref())
+                    .flat_map(|affs| &affs.affiliation)
+                    .filter_map(|a| a.affiliation.as_ref()),
+            )
+            .map(|aff| aff.trim())
+            .find(|aff| crate::modules::crossref_search::affiliation_matches(seed, aff))
             .map(str::to_string),
         _ => None,
     }

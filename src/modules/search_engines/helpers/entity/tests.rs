@@ -410,6 +410,51 @@ use super::*;
         );
     }
 
+    #[test]
+    fn an_org_in_snippet_prose_is_its_capitalised_name_run_matched_at_word_starts() {
+        // REQ-SEARCH-013: prose carries no title separator, so the separator
+        // bound alone let the person's name — and the title/snippet join — glue
+        // onto the company, and the person's name then passed the term filter.
+        let terms = vec!["ian".to_string(), "thorpe".to_string()];
+        let glued = "Ian Thorpe | LinkedIn Ian Thorpe is the managing director of \
+                     Harbour Holdings Pty Ltd";
+        assert!(
+            extract_organisations_from_text(glued, &terms).is_empty(),
+            "{:?}",
+            extract_organisations_from_text(glued, &terms)
+        );
+        // A given name inside another word is not the subject's term.
+        let australian = "Australian Unity Limited - Ian Thorpe";
+        assert!(
+            extract_organisations_from_text(australian, &terms).is_empty(),
+            "{:?}",
+            extract_organisations_from_text(australian, &terms)
+        );
+        // The company's own name still carries the term, in prose too.
+        assert_eq!(
+            extract_organisations_from_text(
+                "Ian Thorpe is a director of Thorpe Family Holdings Pty Ltd since 2001",
+                &terms
+            ),
+            vec!["Thorpe Family Holdings Pty Ltd".to_string()]
+        );
+        // Connectors between capitalised words stay inside the name.
+        assert_eq!(
+            extract_organisations_from_text(
+                "she banks with Bank of Queensland Limited",
+                &["queensland".to_string()]
+            ),
+            vec!["Bank of Queensland Limited".to_string()]
+        );
+        // An all-caps run has no lowercase end: the 60-byte floor still bounds
+        // it, and a word the floor cuts through is not taken.
+        let caps = "IAN THORPE IS THE MANAGING DIRECTOR OF THE HARBOUR THORPE HOLDINGS PTY LTD";
+        for org in extract_organisations_from_text(caps, &terms) {
+            assert!(org.len() <= 60 + " PTY LTD".len(), "{org:?}");
+            assert!(caps.contains(&format!(" {org}")), "{org:?} starts mid-word");
+        }
+    }
+
     // ── normalise_address_key ────────────────────────────────────────────────
 
     #[test]
@@ -525,6 +570,9 @@ use super::*;
             assert!(!city_names_a_surname_bearer(place, "Thorpe"), "{place}");
         }
         assert!(!city_names_a_surname_bearer("Lawnton, QLD", "Lawnton"));
+        // `person_surname` hands this a diacritic-folded surname
+        // (REQ-IDENTITY-GATE-003); the listing prints the accented one.
+        assert!(city_names_a_surname_bearer("Bich Nguyễn, Hà Nội", "nguyen"));
     }
 
     /// REQ-SEARCH-ADDR-002: a venue named after a surname-bearer is not a

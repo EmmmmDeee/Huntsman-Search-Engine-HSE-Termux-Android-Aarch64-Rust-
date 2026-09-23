@@ -2847,3 +2847,58 @@ fn point_annotations_do_not_corroborate_the_point() {
     ap.add_evidence(Evidence::new("wifi_intel", "AP seen here"));
     assert_eq!(ap.source_count(), 2);
 }
+
+// ── REQ-CORE-019: one record's corroboration flags fold order-independently ──
+
+#[test]
+fn a_stale_unmarked_copy_never_shadows_the_marked_copy_of_one_record() {
+    // REQ-CORE-019: a record persisted before its module learned to mark it
+    // (an au_geo annotation, an openarch name-only entry) is recalled into a
+    // re-scan; the fresh copy has the identical `(source, summary)`. Whichever
+    // copy merged first decided whether it corroborated.
+    let old_style = || {
+        Evidence::new(
+            "au_geo",
+            "Australian ASGS geography (ABS, point-in-polygon)",
+        )
+    };
+    let new_style = || old_style().as_annotation();
+    let old_row = || Evidence::new("openarch", "Deceased register entry");
+    let new_row = || old_row().with_verification(VerificationMethod::Unverified);
+    let point = |records: Vec<Evidence>| {
+        let mut e = Entity::new(EntityKind::Coordinates, "-33.868800,151.209300", 0.72, "s");
+        e.add_evidence(Evidence::new("search_engines", "known-city centroid"));
+        for r in records {
+            let mut other =
+                Entity::new(EntityKind::Coordinates, "-33.868800,151.209300", 0.05, "s");
+            other.add_evidence(r);
+            e.absorb(other);
+        }
+        e
+    };
+    for (first, second) in [
+        (old_style(), new_style()),
+        (new_style(), old_style()),
+        (old_row(), new_row()),
+        (new_row(), old_row()),
+    ] {
+        let e = point(vec![first, second]);
+        assert_eq!(e.evidence.len(), 2, "one record, merged");
+        assert_eq!(e.source_count(), 1, "the marked copy wins in either order");
+    }
+    // Two established statuses resolve the same in either order.
+    let a =
+        || Evidence::new("github", "profile").with_verification(VerificationMethod::SelfDisclosed);
+    let b =
+        || Evidence::new("github", "profile").with_verification(VerificationMethod::EmailLinked);
+    let one = point(vec![a(), b()]);
+    let two = point(vec![b(), a()]);
+    let v = |e: &Entity| {
+        e.evidence
+            .iter()
+            .find(|r| r.source == "github")
+            .and_then(|r| r.verification)
+    };
+    assert_eq!(v(&one), v(&two));
+    assert_eq!(v(&one), Some(VerificationMethod::EmailLinked));
+}
