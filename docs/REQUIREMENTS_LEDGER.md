@@ -20784,17 +20784,43 @@ closed exactly this for the live-session stream (`/live/{id}/events` answers
 fix still holds. The scan-log stream never got it, so a console left on a
 deleted scan, or given a mistyped id, read a dead stream as a quiet one.
 
-**Why an existence check is safe here.** A client learns a scan id only from
-the `202` that `spawn_scan` answers. `spawn_scan` installs the scan in the
-in-flight registry before that answer, and the guard is held until the
-engine's run returns, by which time the row is written. So a scan whose id a
-client holds is in the registry, in the store, or never ran.
+**Why an existence check is safe here.** It is safe only if every scan id a
+client can hold is registered or stored before the client gets it. The
+places that hand out a scan id:
+
+1. The `202` from a handler that calls `spawn_scan` (create, batch, rerun,
+   autonomous, the auto-sweep, the radar sweep). Each upserts the row, then
+   `spawn_scan` installs the in-flight entry, before the answer goes out.
+2. The import handler, the scan list and get endpoints, the radar history,
+   and the `scan_complete` event. Each writes or reads the row before the id
+   leaves.
+3. A live iteration's id, from the `LiveTick` event on the live stream and
+   from the session's scan list. **This one did not hold when the check was
+   first written.** The loop recorded the id on the session and sent the
+   tick, and only then installed the iteration's registry guard. The
+   engine writes the row later still. A client that followed the tick to the
+   scan's stream at once could be told the scan does not exist. Review on
+   PR #648 caught it.
+
+The registry entry is held until the engine returns, by which time it has
+written the row. The exception is an iteration whose very first write, the
+engine's opening `upsert_scan`, failed or panicked. Its id was announced but
+no row exists, so once the guard drops it reads as absent, which it is. So
+a scan whose id a client holds is in the registry, in the store, or never
+ran.
 
 ### Implemented
 
 `scan_events_sse` checks the in-flight registry first, then the store through
 `offload_store`, and answers 404 when neither knows the id. A known scan
 streams exactly as before.
+
+The live loop now mints each iteration's id straight into its registry
+guard: `CancelRegistryGuard::install(…, scan_id(…), …)`. It reads `sid` back
+out through the new `CancelRegistryGuard::scan_id()`. No id exists in the
+loop before its guard does, so moving the session record or the `LiveTick`
+above the install no longer compiles. A rewrite that mints the id beside
+the guard again would compile, which is what the test below is for.
 
 ### Locks
 
@@ -20808,6 +20834,27 @@ tests pass unchanged.
 |---|---|---|
 | SSE1-B | **baseline**: no existence check (`in_flight = true`) | killed: the unknown id streamed (200, not 404) |
 | SSE1-R | registry check dropped (`in_flight = false`) | killed: a registered scan with no row yet was 404, not 200 |
+| SSE1-L | live loop: `record_scan` + `LiveTick` moved back above the guard install | rejected by the compiler: `E0425 cannot find value 'sid' in this scope` (twice) |
+| SSE1-O | live loop: the original order restored in full (id minted beside the guard, announced, then installed) | killed: "LiveTick announced … while the registry was locked, so before its id was registered" |
+| SSE1-S | live loop: id minted beside the guard, and only `record_scan` moved above the install (the tick stays below it) | killed: "the session listed … while the registry was locked, so before its id was registered" |
 
-**2 of 2 killed.** The second mutation is why the registry check exists: a
-store-only check would have 404'd a brand-new scan's stream.
+**5 of 5 caught: four killed by a test, one rejected by the compiler.** The
+second mutation is why the registry check exists: a store-only check would
+have 404'd a brand-new scan's stream. That is also the state of every live
+iteration until the engine writes its row.
+
+The live-loop order has two locks. The structure makes the reordering above
+fail to compile. `core::live::tests::a_live_iteration_never_hands_out_a_scan_id_before_it_is_registered`
+catches what the structure cannot: a rewrite that mints the id beside the
+guard again and hands it out first through either channel (SSE1-O, SSE1-S).
+Watching the gap directly does not work: the loop runs from the tick to the
+install without yielding, in a few microseconds. So the test holds the
+registry's lock on another thread while the first iteration starts.
+Registering needs that lock and announcing does not, so the loop stops at
+whichever step comes first. A tick, or a scan-list entry, seen while the
+lock is held was made for an id not yet registered. Once the lock is
+released, the test checks the announced id is in flight while the engine
+runs it, which also catches a guard dropped before the engine starts.
+`core::cancel::tests::a_guards_scan_id_is_registered_for_as_long_as_it_can_be_read`
+pins the accessor the structure depends on: it returns the registered key,
+and the key stays registered while the guard lives.

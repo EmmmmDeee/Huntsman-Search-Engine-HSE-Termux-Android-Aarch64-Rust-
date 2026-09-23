@@ -1139,9 +1139,12 @@ pub async fn scan_events_sse(
     // existed, or it was deleted) is a 404, the rule `live_events_sse` applies
     // to sessions (REQ-RESILIENCE-001). `EventSource` does not retry a non-200,
     // whereas an open stream would sit silent for the idle timeout and then be
-    // reconnected to indefinitely. There is no window between the two checks:
-    // `spawn_scan` registers a scan before its id reaches any client and keeps
-    // it registered until the engine has written the row.
+    // reconnected to indefinitely. There is no window between the two checks,
+    // because every id a client can hold was registered before it was handed
+    // out and stays registered until the engine has written the row: a `202`
+    // from a `spawn_scan` handler, and a live iteration's `LiveTick` (the loop
+    // reads the id back out of its registry guard, so it cannot announce one
+    // that is not yet in flight).
     let in_flight = s.cancellations.lock().contains_key(&target_sid);
     if !in_flight {
         let store = Arc::clone(&s.store);

@@ -2,7 +2,14 @@
   "baseline_sha": "cf86bded5bedbd6584b676af058c5a946072b7fe",
   "work_branch": "claude/charming-meitner-85h3aj",
   "baseline_failures": [],
-  "completed": [],
+  "completed": [
+    {
+      "contract": "A live iteration's scan id is in flight before any client learns it (core::live)",
+      "category": "DEFECT",
+      "evidence": "Revert check: baseline src/core/live/mod.rs restored (SSE1-O) fails a_live_iteration_never_hands_out_a_scan_id_before_it_is_registered with 'LiveTick announced ... while the registry was locked'; record_scan alone moved above the install (SSE1-S) fails with 'the session listed ... while the registry was locked'; moving the announcement above the install (SSE1-L) is rejected by the compiler (E0425 x2); restored, it passes. Targeted lib tests 36/36. Adversarial review: no path hands out an unregistered id; its test gap (the scan-list channel) and four wording errors were fixed.",
+      "fresh_worktree": "pending"
+    }
+  ],
   "rejected": [
     {
       "candidate": "Production unwrap/expect/panic reachable from external input",
@@ -22,5 +29,5 @@
     }
   ],
   "open_defects": [],
-  "cycle": 0
+  "cycle": 1
 }

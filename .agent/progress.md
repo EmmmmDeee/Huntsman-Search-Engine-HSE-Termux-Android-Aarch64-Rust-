@@ -37,3 +37,16 @@ before selecting a candidate, so a disproven one is not re-proposed.
     `ld … signal 7`), and its results are void.
 - **Repair queue.** `.agent/files.md` ranks all 1337 tracked files; its
   header gives the formula. Cursor: #1 `src/core/scan/mod.rs`, not started.
+
+### Change 1: [DEFECT] A live iteration's scan id is in flight before any client learns it (core::live)
+
+- **What.** The live loop mints each iteration's scan id inside
+  `CancelRegistryGuard::install` and reads it back through `scan_id()`.
+- **Why.** The loop sent the `LiveTick` and recorded the id on the session
+  before registering it, so `/scans/{id}/events` (REQ-SSE-001) could 404 a
+  running scan.
+- **Evidence.** The baseline order restored in full, and `record_scan` alone
+  moved above the install, both fail
+  `a_live_iteration_never_hands_out_a_scan_id_before_it_is_registered`.
+  Moving the announcement above the install does not compile. The fix
+  restored passes.

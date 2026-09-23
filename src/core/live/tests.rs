@@ -645,3 +645,105 @@ async fn a_live_iteration_holds_its_scan_id_in_the_shared_registry_only_while_th
         in_flight.lock().keys().collect::<Vec<_>>()
     );
 }
+
+/// The next `LiveTick`'s scan id on `rx`, skipping every other event.
+async fn next_tick(rx: &mut tokio::sync::broadcast::Receiver<Event>) -> String {
+    loop {
+        if let EventKind::LiveTick { scan_id, .. } = rx.recv().await.expect("bus open").kind {
+            return scan_id;
+        }
+    }
+}
+
+/// REQ-SSE-001: a live iteration's scan id is in the in-flight registry before
+/// either place a client can learn it (the `LiveTick`, and the session's scan
+/// list), so a client that follows it straight to `/scans/{id}/events` is
+/// never told the scan does not exist.
+///
+/// Another thread holds the registry's lock while the first iteration starts.
+/// Registering needs that lock and announcing does not, so the loop stops at
+/// whichever comes first: an install-first loop can do neither, and a tick or
+/// listing seen while the lock is held was made for an id not yet registered.
+/// The loop's announce-before-install order failed exactly this way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_live_iteration_never_hands_out_a_scan_id_before_it_is_registered() {
+    use crate::core::cancel::new_cancel_registry;
+    use crate::core::module::test_support::Gated;
+
+    let (module, gate) = Gated::pair();
+    let store: Arc<dyn crate::core::port::StoragePort> =
+        Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"));
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let mut ticks = bus.subscribe();
+    let engine = Arc::new(ScanEngine::new(
+        vec![module],
+        Arc::clone(&store),
+        bus.clone(),
+    ));
+    let in_flight = new_cancel_registry();
+    let live = LiveScanner::new(
+        engine,
+        bus,
+        reqwest::Client::new(),
+        Default::default(),
+        Arc::clone(&in_flight),
+    );
+
+    let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let registry = Arc::clone(&in_flight);
+    let holder = std::thread::spawn(move || {
+        let _held = registry.lock();
+        locked_tx.send(()).expect("test alive");
+        release_rx.recv().ok();
+    });
+    locked_rx.recv().expect("the registry is held");
+
+    let live_id = live.start(
+        Target::new(TargetKind::Domain, "cloudflare.com"),
+        ScanOptions::default(),
+        LiveOptions {
+            interval_secs: 1,
+            iterations: Some(1),
+            radar: false,
+        },
+    );
+    // The iteration counter is bumped before the id is minted, so from here
+    // an announce-first loop is a few instructions from sending its tick.
+    settle(|| (live.get(&live_id)?.iteration >= 1).then_some(()))
+        .await
+        .expect("the first iteration begins");
+    let early = tokio::time::timeout(Duration::from_millis(500), next_tick(&mut ticks)).await;
+    assert!(
+        early.is_err(),
+        "LiveTick announced {:?} while the registry was locked, so before its id was registered",
+        early.ok()
+    );
+    // The session's scan list is the other way a client learns the id
+    // (`GET /api/v1/live/{id}`), so it must not get ahead of the registry
+    // either.
+    let listed = live.get(&live_id).expect("the session exists").scan_ids;
+    assert!(
+        listed.is_empty(),
+        "the session listed {listed:?} while the registry was locked, so before its id was registered"
+    );
+
+    release_tx.send(()).expect("holder alive");
+    holder.join().expect("holder thread");
+    let scan_id = tokio::time::timeout(Duration::from_secs(10), next_tick(&mut ticks))
+        .await
+        .expect("the iteration announces once it can register");
+    assert!(
+        in_flight.lock().contains_key(&scan_id),
+        "the announced id {scan_id} is in flight while the engine runs it"
+    );
+
+    gate.add_permits(1);
+    settle(|| {
+        live.get(&live_id)
+            .filter(|s| s.status != LiveStatus::Running)
+            .map(|_| ())
+    })
+    .await
+    .expect("the session ends once its only iteration returns");
+}
