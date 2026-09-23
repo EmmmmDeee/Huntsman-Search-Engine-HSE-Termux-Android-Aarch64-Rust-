@@ -2111,3 +2111,17 @@ fn only_a_person_structurally_unlike_the_subject_is_another_named_person() {
         &two
     ));
 }
+
+#[test]
+fn person_surname_is_read_through_the_name_parser() {
+    assert_eq!(
+        person_surname("Dr Ian Thorpe OAM").as_deref(),
+        Some("thorpe")
+    );
+    assert_eq!(person_surname("Thorpe, Ian").as_deref(), Some("thorpe"));
+    assert_eq!(
+        person_surname("Ian Thorpe (swimmer)").as_deref(),
+        Some("thorpe")
+    );
+    assert_eq!(person_surname("Thorpey"), None);
+}

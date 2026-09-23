@@ -19844,7 +19844,12 @@ as a city, so `spokeo.com/Ian-Thorpe/North-Carolina` became the Address
 different names to one arbitrary point. On a name scan
 `is_person_listing_locality` drops a multi-word "city" ending in the scanned
 surname unless a place word leads it; a one-word suburb that is the surname
-("Lawnton, QLD") is unaffected.
+("Lawnton, QLD") is unaffected. Review of #645: the caller read the seed's
+surname as its last whitespace token, so `"Dr Ian Thorpe OAM"` searched for an
+"OAM"; it now uses the identity gate's own parser (`core::scan::person_surname`),
+locked by `a_name_scan_…` 's sibling
+`the_listing_title_filter_reads_the_surname_of_a_decorated_or_reversed_seed`
+(killed on the last-token reading).
 
 ### Locks
 

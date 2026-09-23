@@ -3266,3 +3266,32 @@ fn a_name_scan_emits_no_address_from_a_people_search_listing_title() {
         "a real locality in a subject-naming result is still extracted: {addrs:?}"
     );
 }
+
+/// The listing-title filter reads the seed's surname with the identity gate's
+/// parser, so an honorific, a post-nominal or a `"Surname, Given"` seed still
+/// finds it (review of #645: the last whitespace token made `"Dr Ian Thorpe
+/// OAM"` an "OAM").
+#[test]
+fn the_listing_title_filter_reads_the_surname_of_a_decorated_or_reversed_seed() {
+    for seed in ["Dr Ian Thorpe OAM", "Thorpe, Ian", "Ian Thorpe (swimmer)"] {
+        let target = Target::new(TargetKind::FullName, seed);
+        let results = vec![SearchResult {
+            url: "https://www.spokeo.com/Ian-Thorpe/North-Carolina".to_string(),
+            title: "Ian Thorpe, North Carolina (NC) | Spokeo".to_string(),
+            snippet: "Ian Thorpe, North Carolina — phone, address and relatives.".to_string(),
+            engine: "brave",
+            query: format!("\"{seed}\""),
+        }];
+        let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+        let addrs: Vec<&str> = res
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Address)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert!(
+            !addrs.iter().any(|a| a.contains("Ian Thorpe")),
+            "seed {seed:?}: a listing title is not a locality: {addrs:?}"
+        );
+    }
+}

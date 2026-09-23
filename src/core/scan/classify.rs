@@ -246,6 +246,15 @@ fn person_name_parts(name: &str) -> Option<(String, String)> {
     Some((tokens.swap_remove(0), surname))
 }
 
+/// The surname of a person name as [`person_name_parts`] reads it — honorifics,
+/// post-nominals and a `(note)` removed, a `"Surname, Given"` reversal reordered —
+/// lowercased. `None` for a mononym. The one surname reading for every caller
+/// that holds a scan's `FullName`, so `"Dr Ian Thorpe OAM"` is a Thorpe, not an
+/// "OAM" (the last whitespace token).
+pub(crate) fn person_surname(name: &str) -> Option<String> {
+    person_name_parts(name).map(|(_, surname)| surname)
+}
+
 /// Two given names that can denote one person: equal, or one is a bare initial
 /// of the other (`"i"` ↔ `"ian"`). Nicknames (`Bob` ↔ `Robert`) are deliberately
 /// NOT folded — no dictionary is complete, and a miss here only withholds an

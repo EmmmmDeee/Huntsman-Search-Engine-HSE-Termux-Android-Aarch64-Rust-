@@ -19,7 +19,7 @@
 //!
 //! Three passes, in this order, over the whole body:
 //!   1. a URL or hostname that names a provider is replaced WHOLE by
-//!      [`REDACTED_URL`] — before any name is touched, because swapping only the
+//!      `[redacted-url]` (`REDACTED_URL`) — before any name is touched, because swapping only the
 //!      name inside `https://see-know.ru` yields `https://<label>.ru`, a
 //!      plausible address nobody observed (the old single-label redactor wrote
 //!      `breach-source.com` / `breach-source.io` into customer files);

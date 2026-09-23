@@ -8,7 +8,7 @@
 
 use super::*;
 
-/// Leading words that make a "<Word> <Surname>" run a PLACE, not a person —
+/// Leading words that make a `<Word> <Surname>` run a PLACE, not a person —
 /// `Port Douglas`, `Mount Isa`, `Lake Macquarie` — so a place named like the
 /// subject survives [`is_person_listing_locality`].
 const PLACE_PREFIXES: &[&str] = &[
