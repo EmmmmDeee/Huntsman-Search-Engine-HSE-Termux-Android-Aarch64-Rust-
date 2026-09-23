@@ -20740,12 +20740,40 @@ failed once and passed on every other run. Its `refused_addr()` bound
 `127.0.0.1:0`, dropped the listener, and returned the address. The freed port
 goes back to the kernel's pool at once. Under cargo's parallel harness, where
 thousands of tests bind `127.0.0.1:0`, another test's server can be given it
-before the probe connects, and the probe then reaches a live server. The
-same bind-then-drop idiom stood in two more tests:
-`util::http::fetch::tests::transport_is_transient_flags_a_connect_refusal` and
-`modules::webserver_banner::tests::both_transports_failing_is_not_a_clean_negative`.
-No other form of it exists: a sweep for block-scoped drops and port-picking
-helpers found none, and no test binds UDP.
+before the probe connects, and the probe then reaches a live server.
+`refused_addr()` served six tests in `app::outage::tests`. The same idea
+stood in four more places, in three forms:
+
+- a named listener dropped before the connect:
+  `util::http::fetch::tests::transport_is_transient_flags_a_connect_refusal`
+  (an explicit `drop(listener)`) and
+  `modules::webserver_banner::tests::both_transports_failing_is_not_a_clean_negative`
+  (an inner block that ends first);
+- a listener that is never named, so the temporary is dropped at the end of
+  its statement: `modules::abn_lookup::tests::transport_failure_surfaces_as_error_not_a_false_no_match`
+  (`TcpListener::bind("127.0.0.1:0").unwrap().local_addr()…`);
+- a port guessed shut, never bound at all: `modules::portscan::tests::scan_detects_a_listening_local_port`
+  scanned its listener's port + 1 as "almost-certainly closed". It never
+  asserted that port was reported shut, so the guess could not fail its own
+  test. It could fail another one: a connect that lands on another test's
+  listener uses up a one-shot accept, or bumps a connection counter that
+  must stay at zero (`core::webhook::tests`, `core::engine::tests`). The
+  scanner's refused-port branch had no lock at all.
+
+The first sweep found only the first form and claimed no other form existed.
+It had searched for named listeners, and missed the unnamed temporary. The
+review on PR #648 pointed at it. A second sweep read every other
+ephemeral-port `bind` in `src/` and `tests/` (36 sites besides
+`ClosedPort`'s own) with the lines that follow it. Each binds a listener the
+test keeps for as long as it needs the port, in the task that accepts on it
+or, in `portscan`'s case, in a named binding. No test binds UDP.
+
+The only fixed ports tests connect to are `127.0.0.1:1` and `:9`. What keeps
+another test off them is the kernel's ephemeral range (32768–60999 on the
+test host), which `bind(127.0.0.1:0)` draws from. Privilege does not: the
+tests run as root. They are not racy, but they do assume nothing on the
+machine listens on port 1 or 9 (an inetd `discard` service would answer on
+9). That is recorded as an open defect, not fixed here.
 
 **The mechanism was reproduced on the kernel first**, before any Rust changed.
 A 20,000-iteration harness ran against 16 threads churning
@@ -20759,7 +20787,12 @@ ports accepted a connection. With the port held bound but not listening,
 listening, with `SO_REUSEADDR` off, for as long as the value lives. A connect
 is refused at once, and no other socket can be given the port meanwhile. It
 uses `tokio::net::TcpSocket`, which the crate already has, so there is no new
-dependency. All three tests hold one for their whole body.
+dependency. All ten tests hold one for their whole body: the six that used
+`refused_addr()` (now deleted), plus `fetch`, `webserver_banner`,
+`abn_lookup` and `portscan`. Nine of them could flake. The tenth,
+`portscan`, could break another test. `portscan`'s test now also asserts the
+held port is reported shut, which it had claimed in its comment and never
+checked.
 
 ### Locks
 
@@ -20770,6 +20803,7 @@ address fails.
 | # | mutation | result |
 |---|---|---|
 | CI11-R | `set_reuseaddr(false)` → `true` | killed: "a held port must not be bindable by another listener" |
+| CI11-P | `scan_ports` reports a failed connect as open (`_ => None` → `_ => Some((port, svc))`) | killed: "a refused port must not be reported open" |
 
 ## REQ-SSE-001 — the scan-log stream of a scan nobody has sat silent instead of answering 404
 

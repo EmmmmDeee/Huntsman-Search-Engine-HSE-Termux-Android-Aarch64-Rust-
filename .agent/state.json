@@ -7,7 +7,13 @@
       "contract": "A live iteration's scan id is in flight before any client learns it (core::live)",
       "category": "DEFECT",
       "evidence": "Revert check: baseline src/core/live/mod.rs restored (SSE1-O) fails a_live_iteration_never_hands_out_a_scan_id_before_it_is_registered with 'LiveTick announced ... while the registry was locked'; record_scan alone moved above the install (SSE1-S) fails with 'the session listed ... while the registry was locked'; moving the announcement above the install (SSE1-L) is rejected by the compiler (E0425 x2); restored, it passes. Targeted lib tests 36/36. Adversarial review: no path hands out an unregistered id; its test gap (the scan-list channel) and four wording errors were fixed.",
-      "fresh_worktree": "pending"
+      "fresh_worktree": "Passed. The gate (scripts/gate.sh --quick) passed in a fresh worktree of the commit, and the suite ran twice there: 8534 tests (8507 passed, 27 ignored, 0 failed) in both runs, identical test by test. Against the previous commit only the two new tests differ. Doctests: 86 (83 passed, 3 ignored) twice, identical."
+    },
+    {
+      "contract": "No test frees a port and then relies on it staying refused (test_server::ClosedPort)",
+      "category": "DEFECT",
+      "evidence": "Mechanism reproduced on the kernel before the fix: under bind(0) churn from 16 threads, 5 of 20,000 bind-then-close ports accepted a connection, 0 of 20,000 held ports did. a_closed_port_refuses_and_cannot_be_taken_while_held kills SO_REUSEADDR on (CI11-R); the new portscan assertion kills a scanner that reports a failed connect as open (CI11-P). Adversarial review: all 36 other ephemeral binds keep their listener; its wording findings were fixed.",
+      "fresh_worktree": "Passed. The gate (scripts/gate.sh --quick) passed in a fresh worktree of the commit, and the suite ran twice there: 8534 tests (8507 passed, 27 ignored, 0 failed) in both runs, identical test by test and identical to the previous commit's. Doctests: 86 (83 passed, 3 ignored) twice, identical."
     }
   ],
   "rejected": [
@@ -28,6 +34,23 @@
       "reason": "Already fixed: src/web/js/scan_info/log.js calls onTerminal on scan_complete."
     }
   ],
-  "open_defects": [],
-  "cycle": 1
+  "open_defects": [
+    {
+      "description": "Tests use fixed ports 127.0.0.1:1 and :9 as refused endpoints and assume nothing on the machine listens there (an inetd discard service answers on 9). Not a race: both sit below the 32768-60999 ephemeral range.",
+      "evidence": ":9 in src/api/mod.rs:233, src/api/tiles.rs:414, tests/common/mod.rs:716; :1 in src/modules/api_key_probe/tests.rs:197, src/util/egress/mod.rs:401, src/util/http/tests.rs:1396, src/modules/plc_directory/tests.rs:802, src/modules/wigle/tests.rs:1314, tests/query_floor_skips.rs:49"
+    },
+    {
+      "description": "abn_lookup's transport-failure test depends on the proxy environment: curl_with_status passes no --noproxy, so with http_proxy or ALL_PROXY set and 127.0.0.1 missing from NO_PROXY the proxy answers and the test sees Ok(None).",
+      "evidence": "src/modules/abn_lookup/fetch.rs curl arguments (no --noproxy); adversarial review of change 2"
+    },
+    {
+      "description": "keyed_cascade_gives_up_cleanly_on_401_with_no_extra_pooled_key cannot fail on the retry it guards against: its server accepts once and drops the listener, so an in-place retry is refused and never counted.",
+      "evidence": "src/util/http/tests.rs:1289-1325"
+    },
+    {
+      "description": "key_pool backup_and_fresh ignores a failed rename: its warning says the pool was backed up, and the next save_pool replaces the unreadable pool file.",
+      "evidence": "src/util/key_pool/persistence.rs:50-54 (let _ = std::fs::rename); reachable when the .json.bak path exists as a directory"
+    }
+  ],
+  "cycle": 2
 }

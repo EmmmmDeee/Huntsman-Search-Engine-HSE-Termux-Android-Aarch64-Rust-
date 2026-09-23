@@ -56,13 +56,12 @@ async fn placeholder_key_is_a_clean_skip_not_a_forwarded_credential() {
 /// the same transport-failure class and yields the same `Err`.
 #[tokio::test]
 async fn transport_failure_surfaces_as_error_not_a_false_no_match() {
-    // Bind then immediately drop a loopback socket to obtain a port with no
-    // listener behind it.
-    let dead_port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
+    // A port held with no listener behind it for the whole test. Binding and
+    // dropping one instead freed the port for any parallel test to take, and
+    // a stranger's listener there turns this refusal into a reply
+    // (REQ-CI-011).
+    let closed = crate::util::http::test_server::ClosedPort::new();
+    let dead_port = closed.addr().port();
     let url =
         format!("http://127.0.0.1:{dead_port}/AbnDetails.aspx?abn=19415776361&callback=cb&guid=x");
 

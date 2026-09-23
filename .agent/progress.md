@@ -50,3 +50,34 @@ before selecting a candidate, so a disproven one is not re-proposed.
   `a_live_iteration_never_hands_out_a_scan_id_before_it_is_registered`.
   Moving the announcement above the install does not compile. The fix
   restored passes.
+
+### Change 2: [DEFECT] No test frees a port and then relies on it staying refused (test_server::ClosedPort)
+
+- **What.** `abn_lookup` and `portscan` hold a `ClosedPort` for the whole
+  test, as the eight other refused-port tests already do.
+- **Why.** `abn_lookup` freed its port with an unnamed temporary, and
+  `portscan` guessed its listener's neighbouring port was shut, so a
+  parallel test could be handed either port.
+- **Evidence.** The kernel reproduction: 5 of 20,000 freed ports answered,
+  0 of 20,000 held ones. The new portscan assertion kills a scanner that
+  reports a failed connect as open.
+
+### Fresh-worktree verification of the run's three commits
+
+Each commit ran in its own fresh worktree: the gate, then the suite twice.
+
+| commit | gate | suite, both runs | doctests, both runs | against the previous commit |
+|---|---|---|---|---|
+| state-file split | passed | 8532 tests: 8505 passed, 27 ignored | 86: 83 passed, 3 ignored | the two tests PR #648 added |
+| change 1 | passed | 8534 tests: 8507 passed, 27 ignored | 86: 83 passed, 3 ignored | the two new tests |
+| change 2 | passed | 8534 tests: 8507 passed, 27 ignored | 86: 83 passed, 3 ignored | none |
+
+No test failed, and no test differed between a commit's two runs. The first
+row is compared with the baseline `cf86bded`, and the PR #648 commits sit
+between the two.
+
+## Next
+
+- **UI remake.** Requested 2026-09-23: remake the web UI and UX to mimic
+  SpiderFoot 4.0. It comes next, before the repair queue.
+- **Repair queue.** Then continue from #1 in `.agent/files.md`.
