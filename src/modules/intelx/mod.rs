@@ -556,7 +556,7 @@ impl Module for IntelX {
         // 4s-cap budget this loop used before) or a real failure — there is no
         // "no results" status for a search *start*.
         let Some((resp, key)) =
-            crate::util::http::keyed_cascade_with_key(ctx, SRC, initial_key, &[], |k| {
+            crate::util::http::keyed_cascade_with_key(ctx, SRC, KEY_ENV, initial_key, &[], |k| {
                 ctx.http
                     .post(format!("{BASE}/intelligent/search"))
                     .header("x-key", k)

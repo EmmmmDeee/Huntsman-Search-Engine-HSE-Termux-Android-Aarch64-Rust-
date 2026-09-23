@@ -21282,3 +21282,118 @@ Harness: `mutate2.py`, spec `mut_cred001.json`. The `-arch` rows run `--test arc
 - **AU state tags.** The `au-state:`/`country:AU` tags `contact_enrich` put on its LOW `phone-registration` Address are not emitted for the Numverify location. `numverify`'s `Address` does not tag AU states. The correlator's coordinate fallback (`geo::coord_state`) still applies to its `Coordinates`.
 - **The lock is lexical.** A plaintext URL assembled from a bare `"http://"` literal or a scheme variable evades it. It is a class guard, not a proof.
 - **Signup hint.** `util/keys/constants.rs:127` still points operators at numverify.com. That is hint hygiene, tracked with the KEYREG rows.
+
+## REQ-KEYREG-001 — every credential HSE reads is one the key pool holds, and a burned key is reported to the pool its env var names
+
+### Found
+
+At `6d9b86a`, HSE described its credentials in four views, and nothing tied them together.
+
+- **Four read credentials had no `ServiceDef`.** `KNOWN_KEYS` (`src/util/keys/constants.rs:6`) had 55 entries. The `env_var`s of `SERVICE_DEFS` (`src/util/service_defs/mod.rs`) covered 50. The difference was `HUNTSMAN_OATHNET_KEY`, `HUNTSMAN_ALIENVAULT_KEY`, `HUNTSMAN_AUSPOST_KEY`, `HUNTSMAN_STOLEN_TAX_KEY` and `HUNTSMAN_PROXYCURL_KEY`. Several paths only see an env var that has a def: pooling (`is_poolable_service` = `find_service(..).is_some()`), CSV-splitting (`register_configured_keys`, `keys/io.rs`), hot-injection, validation, `api_key_probe` and the key-health dashboard. So `hse keys add oathnet <k>` was refused as "not a poolable service" (`cli/keys_cmd/mod.rs:194`), and `HUNTSMAN_OATHNET_KEY=a,b` reached OathNet as the literal `a,b`.
+- **One listed credential was read by nothing.** `proxycurl::process` short-circuits (`modules/proxycurl/mod.rs:117-120`), because the vendor sunset the API. `KNOWN_KEYS` (`constants.rs:15`) and `signup_hint` (`constants.rs:99`, "paid, per-credit; see pricing") still asked the operator to buy the key, and `hse doctor` ranked it 44th of 55.
+- **Burn reports for three modules were silent no-ops.** The shared keyed helpers used their `module` argument as the pool service name. That covers `fetch_keyed_json` (`util/http/fetch.rs:1121,1125`), `keyed_cascade_with_key` (`:1222`), `attempt_with_key` (`:1290`) and `keyed_cascade_json` (`:1364,1383`). `ip_reputation` passes `SRC = "ip_reputation"` for its OTX key (`ip_reputation/mod.rs:281`), `auspost` passes `"auspost"` (`auspost/mod.rs:297`) and `stolen_tax` passes `"stolen_tax"` (`stolen_tax/mod.rs:183`). None of these was a pool name. `KeyPool::mark_status`/`record_error` do `services.get_mut(lower)` and skip an unknown name (`key_pool/pool.rs:340`), and `next_key_excluding` answers `None` (`:265`). The result: a burned OTX, AusPost or Stolen.tax key never became `Invalid` or `RateLimited`, and the call never rotated. `hunter_io` had shipped the same bug earlier and patched it locally with a `pool_service()` shim.
+- **Nothing guarded the sets.** The existing guards checked only consumed ⇒ `KNOWN_KEYS`, template ⇒ consumed, and `KNOWN_KEYS` ⇒ hint. `keyed_module_pool_services_are_registered` (`service_defs/tests.rs:318`) was a hand-kept table of four rows.
+
+### Implemented
+
+- **Four new `ServiceDef`s** (`util/service_defs/mod.rs`). Each `key_header` is the header that module sends:
+  - `oathnet` uses `x-api-key` (`util::oathnet`'s `AuthScheme::XApiKey`).
+  - `alienvault_otx` uses `X-OTX-API-KEY` (`ip_reputation::OTX_KEY_HEADER`).
+  - `auspost` uses `AUTH-KEY`.
+  - `stolen_tax` uses `Api-Key`.
+- **`NO_PROBE` and `ServiceDef::probe_url()`.** A def may be pooled and never probed. `validation::probe_request_args` builds no curl argv for such a def, so `validate_against_endpoint` returns `Indeterminate` without sending a request. `hse keys validate` reports it as "no validator for service" (`keys_cmd::has_validator`), not as an inconclusive probe. The per-provider probe choices are:
+  - **OathNet: `NO_PROBE`.** Every search spends a daily-quota lookup. The vendor documents no free key-status endpoint. `GET /service/scanners/quota` is listed, but its cost and its plan-gating are undocumented.
+  - **AusPost: `NO_PROBE`.** Rate limits are per credential per day, and no status endpoint is documented.
+  - **Stolen.tax: `NO_PROBE`.** It is a paid API, and its docs could not be reached to confirm a free endpoint. The code therefore takes the fail-closed choice.
+  - **OTX: probed at `/api/v1/users/me`.** This is the endpoint OTX documents for "Validate your API Key configuration".
+- **Proxycurl removed.** `HUNTSMAN_PROXYCURL_KEY` is gone from `KNOWN_KEYS`, `signup_hint` and `.env.example`. The `[RESERVED]` line stays in `env_template.txt`, where `NOT_YET_WIRED` still lists it.
+- **The helpers resolve the pool name themselves.** `util::http::fetch::pool_service(module, key_env)` returns `service_for_env(key_env).map_or(module, |d| d.name)`.
+  - `fetch_keyed_json` already took `key_env`. `keyed_cascade`, `keyed_cascade_with_key` and `keyed_cascade_json` now take it too, and all 16 call sites in `src/modules` pass their `KEY_ENV`. `stolen_tax` gained a `KEY_ENV` const.
+  - The pool name is used only for `report_key_exhausted`, `next_pooled_key` and `handle_keyed_error`. `module` still labels errors and breaker/request tags, so operator-facing errors still say `ip_reputation`, not `alienvault_otx`.
+  - This fixes `ip_reputation`, `auspost` and `stolen_tax` without any per-module shim.
+  - The `pool_service()` shims in `hunter_io`, `exa_search` and `hlr_cnam` are **kept**. They feed `keyed_ok_or_404` and direct `report_key_exhausted` calls, which take no `key_env`, so the new mechanism does not cover them. Lock L1 checks that each shim asks the registry.
+- **Lock L1, `credential_registry_views_are_one_set`** (`tests/architecture_parts/architecture_part3.rs`). It replaces the four-row table and asserts three things:
+  1. The credentials production `src/` reads are exactly `KNOWN_KEYS`. The check uses the existing three read forms, over comment-blanked source with test items stripped, filtered to `_KEY|_TOKEN|_USER|_SECRET|_ID|_GUID`.
+  2. `KNOWN_KEYS` is exactly the set of def `env_var`s. The `censys_secret` and `wigle_user` defs cover today's paired credentials; KEYREG-07 pairing is not invented here.
+  3. In `src/modules`, every pool-name argument (`report_key_exhausted`, `next_pooled_key`, `entry_status`, `keyed_ok_or_404`, `note_keyed_error`, `handle_keyed_error`) resolves through `find_service`. Every key-env argument (`fetch_keyed_json`, `keyed_cascade*`) resolves through `service_for_env`. A shim call is accepted only if its body asks `service_for_env`.
+
+  Sites the scan cannot resolve go on a shrink-only allowlist, with a reason for each and a cap. It has one entry, `urlhaus`'s runtime `key_service`, which is `"urlhaus"` or `"threatfox"`. A companion test drives the scanner itself on fixtures.
+
+### Locks
+
+- `util::service_defs::tests::the_four_unregistered_credentials_are_pool_services_with_their_modules_headers`
+- `util::service_defs::tests::billed_providers_are_never_probed_and_otx_is_probed_only_at_its_key_check`
+- `util::service_defs::tests::no_probe_is_opt_in_and_never_paired_with_a_probe_parser`
+- `util::key_pool::validation::tests::a_probe_less_provider_gets_no_probe_request`
+- `util::key_pool::validation::tests::validating_a_probe_less_key_is_indeterminate`
+- `util::key_pool::validation::tests::the_otx_probe_sends_the_key_as_x_otx_api_key_to_users_me`
+- `util::key_pool::validation::tests::probed_providers_keep_their_request_shapes` (over-correction guard)
+- `cli::keys_cmd::tests::a_probe_less_service_reads_as_having_no_validator`
+- `util::http::fetch::tests::pool_service_is_the_key_envs_def_not_the_module_label`
+- `util::http::tests::fetch_keyed_json_burns_and_rotates_in_the_pool_its_key_env_names`, over the loopback `test_server`
+- `util::http::tests::keyed_cascade_burns_and_rotates_in_the_pool_its_key_env_names`, over the loopback
+- `util::http::tests::keyed_cascade_json_burns_an_in_body_failure_in_the_pool_its_key_env_names`, over the loopback
+- `tests/architecture.rs` → `credential_registry_views_are_one_set` (**L1**)
+- `tests/architecture.rs` → `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments`
+
+Vendor facts relied on, each checked on 2026-09-23:
+- **OTX.** The API reference (`otx.alienvault.com/assets/static/external_api.html`) lists `GET /api/v1/users/me`: "Validate your API Key configuration. If valid, some basic information about the user account corresponding to the API Key supplied will be returned." A live keyless request answered 403.
+- **OathNet header.** `docs.oathnet.org` says: "The header name must be lowercase: `x-api-key`."
+- **OathNet quota.** `docs.oathnet.org/guides/rate-limiting.md` says: "daily quotas … Each plan has a set number of lookups available per day" and "Initialize session (counts as 1 lookup)". It shows quota metadata only on search responses.
+- **AusPost.** `auspost.com.au/developers/help-support/about-our-apis` documents the `AUTH-KEY` header and rate limits "from the same credentials".
+
+### Falsified
+
+Harness: `mutate2.py`, spec `mut_keyreg001.json`. The `-arch` and `L*` rows run `--test architecture -- credential_registry`; the rest run `--lib -- util::http util::key_pool util::service_defs cli::keys_cmd`. The result column is the harness's own output.
+
+| id | mutation | result |
+|---|---|---|
+| B1 | **baseline**: `fetch_keyed_json` reports the burn under `module` again | KILLED by `fetch_keyed_json_burns_and_rotates_in_the_pool_its_key_env_names` |
+| B2 | **baseline**: `fetch_keyed_json` rotates from `module`'s pool again | KILLED by `fetch_keyed_json_burns_and_rotates_in_the_pool_its_key_env_names` |
+| B3 | **baseline**: `pool_service` ignores `key_env` and returns `module` | KILLED by 4: `pool_service_is_the_key_envs_def_not_the_module_label`, `fetch_keyed_json_burns_and_rotates_in_the_pool_its_key_env_names`, `keyed_cascade_burns_and_rotates_in_the_pool_its_key_env_names`, `keyed_cascade_json_burns_an_in_body_failure_in_the_pool_its_key_env_names` |
+| B4 | **baseline**: `keyed_cascade_with_key` rotates from `module`'s pool | KILLED by `keyed_cascade_burns_and_rotates_in_the_pool_its_key_env_names` |
+| B5 | **baseline**: `attempt_with_key` hands `module` to `handle_keyed_error` | KILLED by `keyed_cascade_burns_and_rotates_in_the_pool_its_key_env_names` |
+| B6 | **baseline**: the cascade's auth-shaped-400 burn goes to `module` | KILLED by `keyed_cascade_burns_and_rotates_in_the_pool_its_key_env_names` |
+| B7 | **baseline**: `keyed_cascade_json`'s in-body burn goes to `module` | KILLED by `keyed_cascade_json_burns_an_in_body_failure_in_the_pool_its_key_env_names` |
+| B8 | **baseline**: `keyed_cascade_json` rotates from `module`'s pool | KILLED by `keyed_cascade_json_burns_an_in_body_failure_in_the_pool_its_key_env_names` |
+| B9 | **baseline**: OathNet's def is unregistered (renamed away from its env var) | KILLED by 6: `a_probe_less_service_reads_as_having_no_validator`, `keyed_cascade_burns_and_rotates_in_the_pool_its_key_env_names`, `a_probe_less_provider_gets_no_probe_request`, `billed_providers_are_never_probed_and_otx_is_probed_only_at_its_key_check`, `no_probe_is_opt_in_and_never_paired_with_a_probe_parser`, `the_four_unregistered_credentials_are_pool_services_with_their_modules_headers` |
+| B9-arch | B9, against L1 | KILLED by `credential_registry_views_are_one_set` |
+| B10-arch | **baseline**: `HUNTSMAN_PROXYCURL_KEY` is back in `KNOWN_KEYS` | KILLED by `credential_registry_views_are_one_set` |
+| B11-arch | **baseline**: `hunter_io` passes `SRC` as its pool name (the original shape of the bug) | KILLED by `credential_registry_views_are_one_set` |
+| B12-arch | `stolen_tax` passes a key env var that no def owns | KILLED by `credential_registry_views_are_one_set` |
+| G1 | the probe reads `test_url` directly, bypassing `probe_url` | KILLED by `a_probe_less_provider_gets_no_probe_request` |
+| G2 | `probe_url` ignores `NO_PROBE` | KILLED by 4: `a_probe_less_service_reads_as_having_no_validator`, `a_probe_less_provider_gets_no_probe_request`, `billed_providers_are_never_probed_and_otx_is_probed_only_at_its_key_check`, `no_probe_is_opt_in_and_never_paired_with_a_probe_parser` |
+| G3 | `has_validator` ignores `NO_PROBE` | KILLED by `a_probe_less_service_reads_as_having_no_validator` |
+| G4 | OathNet is probed at the unverified `/scanners/quota` | KILLED by 4: `a_probe_less_service_reads_as_having_no_validator`, `a_probe_less_provider_gets_no_probe_request`, `billed_providers_are_never_probed_and_otx_is_probed_only_at_its_key_check`, `no_probe_is_opt_in_and_never_paired_with_a_probe_parser` |
+| G5 | the OTX def sends the wrong header | KILLED by 2: `the_otx_probe_sends_the_key_as_x_otx_api_key_to_users_me`, `the_four_unregistered_credentials_are_pool_services_with_their_modules_headers` |
+| G6 | OTX is probed at a threat-data endpoint instead of `/users/me` | KILLED by 2: `the_otx_probe_sends_the_key_as_x_otx_api_key_to_users_me`, `billed_providers_are_never_probed_and_otx_is_probed_only_at_its_key_check` |
+| G7 | the AusPost def sends the wrong header | KILLED by `the_four_unregistered_credentials_are_pool_services_with_their_modules_headers` |
+| G8 | the Stolen.tax def sends the wrong header | KILLED by `the_four_unregistered_credentials_are_pool_services_with_their_modules_headers` |
+| G9 | `pool_service` falls back to `""` instead of `module` | KILLED by `pool_service_is_the_key_envs_def_not_the_module_label` |
+| G10 | a probe-less key is judged `Rejected` instead of `Indeterminate` | KILLED by `validating_a_probe_less_key_is_indeterminate` |
+| L1 | L1 scans source whose comments are not blanked | KILLED by `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments` |
+| L2 | L1 does not filter to credential suffixes | KILLED by 2: `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments`, `credential_registry_views_are_one_set` |
+| L3 | L1 scans test files | KILLED by `credential_registry_views_are_one_set` |
+| L4 | `calls_of` counts `fn` definitions as calls | KILLED by `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments` |
+| L5 | any shim is trusted, whether or not it asks the registry | KILLED by `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments` |
+| L6 | any named pool argument passes | KILLED by `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments` |
+| L7 | any named key-env argument passes | KILLED by `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments` |
+| L8 | a registry-derived shim is accepted as a key-env argument | KILLED by `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments` |
+| L9 | the allowlist never matches | KILLED by 2: `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments`, `credential_registry_views_are_one_set` |
+| L10 | the allowlist matches everything | KILLED by `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments` |
+| L11 | a stale allowlist entry is added | KILLED by `credential_registry_views_are_one_set` |
+| L12 | the allowlist cap is raised to admit a new entry | KILLED by `credential_registry_views_are_one_set` |
+| L13 | `calls_of` sees no calls (vacuous scan) | KILLED by 2: `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments`, `credential_registry_views_are_one_set` |
+| O1 | **over-correction**: no provider is ever probed | KILLED by 5: `a_probe_less_service_reads_as_having_no_validator`, `probed_providers_keep_their_request_shapes`, `the_otx_probe_sends_the_key_as_x_otx_api_key_to_users_me`, `billed_providers_are_never_probed_and_otx_is_probed_only_at_its_key_check`, `no_probe_is_opt_in_and_never_paired_with_a_probe_parser` |
+| O2 | **over-correction**: the error label becomes the pool name (`alienvault_otx`) | KILLED by `fetch_keyed_json_burns_and_rotates_in_the_pool_its_key_env_names` |
+| O3-arch | **over-correction**: OathNet is dropped from `KNOWN_KEYS` instead of being registered | KILLED by `credential_registry_views_are_one_set` |
+| O4 | **over-correction**: only defs with a `probe_parser` are probed | KILLED by 2: `probed_providers_keep_their_request_shapes`, `the_otx_probe_sends_the_key_as_x_otx_api_key_to_users_me` |
+
+**40 of 40 killed**, run against the compiled patch. Clippy `-D warnings` is clean. B1–G1 were run before a container restart and G2–O4 after it, on the same source.
+
+### Residual
+
+- **Shims kept.** `hunter_io`, `exa_search` and `hlr_cnam` keep their `pool_service()` shims, because `keyed_ok_or_404` and direct `report_key_exhausted` calls take no `key_env`. L1 verifies that each shim asks the registry. Removing them needs `keyed_ok_or_404` to take `key_env`.
+- **Allowlist.** `urlhaus`'s runtime `key_service` stays allowlisted (cap 1).
+- **Unprobed keys.** OathNet, AusPost and Stolen.tax keys stay `Untested` until a free status endpoint is confirmed from vendor docs. OathNet's `/service/scanners/quota` is the candidate.
+- **Out of scope here.** The KEYREG-07 companion-var pairing and the explicit `key_roi` tier for every def (KEYREG-05) are not part of this change.

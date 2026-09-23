@@ -275,13 +275,14 @@ impl Module for LeakIx {
         // spends every credential the pool holds. `absent_statuses: &[404]` —
         // LeakIX answers an unindexed host with 404, a clean miss rather than
         // an error, exactly as this module treated it before.
-        let Some(resp) = crate::util::http::keyed_cascade(ctx, SRC, initial_key, &[404], |key| {
-            ctx.http
-                .get(&url)
-                .header("api-key", key)
-                .header("Accept", "application/json")
-        })
-        .await?
+        let Some(resp) =
+            crate::util::http::keyed_cascade(ctx, SRC, KEY_ENV, initial_key, &[404], |key| {
+                ctx.http
+                    .get(&url)
+                    .header("api-key", key)
+                    .header("Accept", "application/json")
+            })
+            .await?
         else {
             return Ok(ModuleResult::new());
         };

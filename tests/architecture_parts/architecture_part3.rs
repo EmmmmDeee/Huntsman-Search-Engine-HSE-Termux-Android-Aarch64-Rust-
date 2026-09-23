@@ -501,51 +501,58 @@ fn collect_key_env_consts(dir: &Path, out: &mut std::collections::HashSet<String
         if path.is_dir() {
             collect_key_env_consts(&path, out);
         } else if path.extension().is_some_and(|e| e == "rs") {
-            let content = fs::read_to_string(&path).unwrap();
-            for line in content.lines() {
-                // 1. `const ..._ENV: &str = "HUNTSMAN_..."`.
-                if line.contains("const ")
-                    && line.contains("ENV")
-                    && let Some(q) = line.find("\"HUNTSMAN_")
-                {
-                    push_huntsman_literal(line, q, out);
-                }
-                // 2. `…key_opt("HUNTSMAN_…")` / `…key("HUNTSMAN_…")`. `key(`
-                //    cannot alias `key_opt(` (the char after `key` is `_`), and
-                //    every index below lands on an ASCII pattern boundary, so
-                //    the slicing is char-boundary safe.
-                for pat in ["key_opt(", "key("] {
-                    let mut from = 0;
-                    while let Some(i) = line[from..].find(pat) {
-                        let after = from + i + pat.len();
-                        if line[after..].starts_with('"') {
-                            push_huntsman_literal(line, after, out);
-                        }
-                        from = after;
-                    }
-                }
-            }
-            // 3. `fetch_keyed_json(ctx, SRC, &url, "HUNTSMAN_...", "header")` —
-            //    sometimes `fetch_keyed_json::<SomeResponse>(...)` when the
-            //    return type can't be inferred, so this matches the bare
-            //    function name rather than requiring an immediately-following
-            //    `(`. Scanned across the whole file rather than line-by-line
-            //    since a real call commonly wraps its arguments across several
-            //    lines; the search window after each call site is bounded so
-            //    an unrelated later literal can't be mistaken for its argument.
+            key_env_reads(&fs::read_to_string(&path).unwrap(), out);
+        }
+    }
+}
+
+/// The three read forms [`collect_key_env_consts`] documents, applied to one
+/// file's `content`. Split out so [`credential_registry_views_are_one_set`] can
+/// run the SAME detection over comment-blanked, test-stripped source — one
+/// definition of "a module reads this env var", two scopes.
+fn key_env_reads(content: &str, out: &mut std::collections::HashSet<String>) {
+    for line in content.lines() {
+        // 1. `const ..._ENV: &str = "HUNTSMAN_..."`.
+        if line.contains("const ")
+            && line.contains("ENV")
+            && let Some(q) = line.find("\"HUNTSMAN_")
+        {
+            push_huntsman_literal(line, q, out);
+        }
+        // 2. `…key_opt("HUNTSMAN_…")` / `…key("HUNTSMAN_…")`. `key(`
+        //    cannot alias `key_opt(` (the char after `key` is `_`), and
+        //    every index below lands on an ASCII pattern boundary, so
+        //    the slicing is char-boundary safe.
+        for pat in ["key_opt(", "key("] {
             let mut from = 0;
-            while let Some(i) = content[from..].find("fetch_keyed_json") {
-                let call_start = from + i;
-                let mut window_end = (call_start + 400).min(content.len());
-                while !content.is_char_boundary(window_end) {
-                    window_end -= 1;
+            while let Some(i) = line[from..].find(pat) {
+                let after = from + i + pat.len();
+                if line[after..].starts_with('"') {
+                    push_huntsman_literal(line, after, out);
                 }
-                if let Some(q) = content[call_start..window_end].find("\"HUNTSMAN_") {
-                    push_huntsman_literal(&content[call_start..], q, out);
-                }
-                from = call_start + "fetch_keyed_json".len();
+                from = after;
             }
         }
+    }
+    // 3. `fetch_keyed_json(ctx, SRC, &url, "HUNTSMAN_...", "header")` —
+    //    sometimes `fetch_keyed_json::<SomeResponse>(...)` when the
+    //    return type can't be inferred, so this matches the bare
+    //    function name rather than requiring an immediately-following
+    //    `(`. Scanned across the whole file rather than line-by-line
+    //    since a real call commonly wraps its arguments across several
+    //    lines; the search window after each call site is bounded so
+    //    an unrelated later literal can't be mistaken for its argument.
+    let mut from = 0;
+    while let Some(i) = content[from..].find("fetch_keyed_json") {
+        let call_start = from + i;
+        let mut window_end = (call_start + 400).min(content.len());
+        while !content.is_char_boundary(window_end) {
+            window_end -= 1;
+        }
+        if let Some(q) = content[call_start..window_end].find("\"HUNTSMAN_") {
+            push_huntsman_literal(&content[call_start..], q, out);
+        }
+        from = call_start + "fetch_keyed_json".len();
     }
 }
 
@@ -681,6 +688,481 @@ fn key_gated_modules_are_documented_everywhere_an_operator_would_look() {
          operator browsing the provider catalogue can't discover it): \
          {missing_from_example:?}"
     );
+}
+
+/// The credential suffixes `util::keys::own_api_keys` treats as secrets: the
+/// `_ID`/`_SECRET` Censys pair and the ABR `_GUID` are credentials as much as
+/// any `_KEY`. A `HUNTSMAN_*` read without one of these is a tuning knob
+/// (`HUNTSMAN_SEARCH_PROXY`, `HUNTSMAN_DOH_URL`), which has no place in the
+/// Settings key grid.
+const CREDENTIAL_SUFFIXES: &[&str] = &["_KEY", "_TOKEN", "_USER", "_SECRET", "_ID", "_GUID"];
+
+/// Whether `path` is test code as a whole file: a `tests.rs`, a `*_tests.rs`,
+/// or anything under a `tests/` directory (the `tests/partNN.rs` fragments a
+/// large `tests.rs` is split into). Inline `#[cfg(test)]` items in production
+/// files are removed separately, by [`credential_reads`].
+fn is_test_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n == "tests.rs" || n.ends_with("_tests.rs"))
+        || path.components().any(|c| c.as_os_str() == "tests")
+}
+
+/// The `HUNTSMAN_*` credentials one production source file reads: the three
+/// read forms of [`key_env_reads`], over the file with its `#[cfg(test)]`
+/// items removed and its comments blanked, kept to [`CREDENTIAL_SUFFIXES`]. A
+/// key named only in a comment (`constants.rs` documents
+/// `ctx.key_opt("HUNTSMAN_GITHUB_TOKEN")` in prose) or only by a test is not
+/// read by HSE, and a knob is not a credential; neither may count.
+fn credential_reads(source: &str) -> std::collections::BTreeSet<String> {
+    let mut reads = std::collections::HashSet::new();
+    key_env_reads(&production_source_keep_literals(source), &mut reads);
+    reads
+        .into_iter()
+        .filter(|k| CREDENTIAL_SUFFIXES.iter().any(|s| k.ends_with(s)))
+        .collect()
+}
+
+/// [`credential_reads`] over every non-test `.rs` file under `dir`.
+fn consumed_credentials(dir: &Path) -> std::collections::BTreeSet<String> {
+    let mut files = Vec::new();
+    collect_rs_files(dir, &mut files);
+    files
+        .iter()
+        .filter(|f| !is_test_file(f))
+        .flat_map(|f| credential_reads(&fs::read_to_string(f).unwrap()))
+        .collect()
+}
+
+/// Each call of `name` in `code` — a call, not a definition, an import or a
+/// longer name that merely starts with it — as its trimmed argument list
+/// (split by the shared `call_args`). Accepts a turbofish
+/// (`fetch_keyed_json::<Resp>(`).
+fn calls_of(code: &str, name: &str) -> Vec<Vec<String>> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(rel) = code[from..].find(name) {
+        let at = from + rel;
+        from = at + name.len();
+        let before = code[..at].chars().next_back();
+        if before.is_some_and(|c| c.is_alphanumeric() || c == '_')
+            || code[..at].trim_end().ends_with("fn")
+        {
+            continue;
+        }
+        let mut rest = from;
+        if code[rest..].starts_with("::<") {
+            let Some(close) = code[rest..].find('>') else {
+                continue;
+            };
+            rest += close + 1;
+        }
+        if code[rest..].starts_with('(')
+            && let Some(args) = call_args(&code[rest..])
+        {
+            out.push(args.iter().map(|a| a.trim().to_string()).collect());
+        }
+    }
+    out
+}
+
+/// One module directory's production sources, as `(path, cleaned code)`.
+type ModuleSources = [(std::path::PathBuf, String)];
+
+/// A module's `&str` constants: name → every value declared under it.
+type StrConsts = std::collections::BTreeMap<String, std::collections::BTreeSet<String>>;
+
+/// `&str` constants declared in `files`, by name: `const SRC: &str = "x"`,
+/// `pub(crate) const KEY_ENV: &str = "HUNTSMAN_X_KEY"`.
+fn str_consts(files: &ModuleSources) -> StrConsts {
+    let mut out = StrConsts::new();
+    for (_, code) in files {
+        for line in code.lines() {
+            let Some(decl) = line.split("const ").nth(1) else {
+                continue;
+            };
+            let Some((name, rest)) = decl.split_once(':') else {
+                continue;
+            };
+            let rest = rest.trim_start();
+            let Some(value) = rest
+                .strip_prefix("&str = \"")
+                .or_else(|| rest.strip_prefix("&'static str = \""))
+                .and_then(|v| v.split('"').next())
+            else {
+                continue;
+            };
+            out.entry(name.trim().to_string())
+                .or_default()
+                .insert(value.to_string());
+        }
+    }
+    out
+}
+
+/// A pool-service or key-env argument as the scan could read it.
+#[derive(Debug, PartialEq)]
+enum ArgValue {
+    /// A string literal, or a `&str` const resolving to exactly one literal.
+    Named(String),
+    /// A call to a function in the same module whose body asks the registry
+    /// (`service_for_env`) — the `pool_service()` shims.
+    RegistryDerived,
+    /// Anything else: a runtime variable, an ambiguous const.
+    Unresolved,
+}
+
+/// Read `arg` the way the compiler would, as far as a lexical scan can: a
+/// literal, a `&str` const of the same module (by its last path segment, so
+/// `build::SRC` resolves), or a registry-backed shim call.
+fn resolve_arg(arg: &str, consts: &StrConsts, files: &ModuleSources) -> ArgValue {
+    if let Some(lit) = arg.strip_prefix('"').and_then(|a| a.strip_suffix('"')) {
+        return ArgValue::Named(lit.to_string());
+    }
+    if let Some(fname) = arg.strip_suffix("()") {
+        let fname = fname.rsplit("::").next().unwrap_or(fname);
+        let asks_registry = files.iter().any(|(_, code)| {
+            code.find(&format!("fn {fname}(")).is_some_and(|at| {
+                let body: String = code[at..].chars().take(300).collect();
+                body.contains("service_for_env(")
+            })
+        });
+        return if asks_registry {
+            ArgValue::RegistryDerived
+        } else {
+            ArgValue::Unresolved
+        };
+    }
+    let name = arg.rsplit("::").next().unwrap_or(arg);
+    match consts.get(name) {
+        Some(values) if values.len() == 1 => ArgValue::Named(values.first().unwrap().clone()),
+        _ => ArgValue::Unresolved,
+    }
+}
+
+/// Calls whose argument at the index is a POOL-SERVICE name: it must be a
+/// name [`find_service`] resolves, or every report under it is a no-op.
+const POOL_NAME_ARGS: &[(&str, usize)] = &[
+    ("report_key_exhausted", 0),
+    ("next_pooled_key", 0),
+    ("entry_status", 0),
+    ("keyed_ok_or_404", 0),
+    ("note_keyed_error", 1),
+    ("handle_keyed_error", 3),
+];
+
+/// Calls whose argument at the index is the KEY ENV VAR the shared helper
+/// resolves the pool from (REQ-KEYREG-001): it must be one a `ServiceDef`
+/// owns.
+const KEY_ENV_ARGS: &[(&str, usize)] = &[
+    ("fetch_keyed_json", 3),
+    ("keyed_cascade", 2),
+    ("keyed_cascade_with_key", 2),
+    ("keyed_cascade_json", 2),
+];
+
+/// What [`scan_pool_args`] saw in one module.
+#[derive(Default)]
+struct PoolArgScan {
+    /// Pool-name arguments read.
+    pool_sites: usize,
+    /// Key-env arguments read.
+    env_sites: usize,
+    /// One line per argument that misses the pool.
+    problems: Vec<String>,
+    /// The `allow` entries this module actually needed.
+    allowlisted: Vec<(String, String)>,
+}
+
+/// Check every [`POOL_NAME_ARGS`] / [`KEY_ENV_ARGS`] argument in one module's
+/// production sources against the registry. An argument the scan cannot
+/// resolve passes only if `allow` lists `(module, argument text)`.
+fn scan_pool_args(
+    module: &str,
+    files: &ModuleSources,
+    allow: &[(&str, &str, &str)],
+) -> PoolArgScan {
+    use huntsman_search_engine::util::service_defs::{find_service, service_for_env};
+    let consts = str_consts(files);
+    let mut scan = PoolArgScan::default();
+    let sites = POOL_NAME_ARGS
+        .iter()
+        .map(|(c, i)| (*c, *i, false))
+        .chain(KEY_ENV_ARGS.iter().map(|(c, i)| (*c, *i, true)));
+    for (call, idx, is_env) in sites {
+        for (path, code) in files {
+            for args in calls_of(code, call) {
+                let shown = path.display();
+                let Some(arg) = args.get(idx) else {
+                    scan.problems
+                        .push(format!("{shown}: {call}(..) has no argument {idx}"));
+                    continue;
+                };
+                if is_env {
+                    scan.env_sites += 1;
+                } else {
+                    scan.pool_sites += 1;
+                }
+                let ok = match resolve_arg(arg, &consts, files) {
+                    ArgValue::Named(v) if is_env => service_for_env(&v).is_some(),
+                    ArgValue::Named(v) => find_service(&v).is_some(),
+                    ArgValue::RegistryDerived => !is_env,
+                    ArgValue::Unresolved => {
+                        let listed = allow.iter().any(|(m, a, _)| *m == module && a == arg);
+                        if listed {
+                            scan.allowlisted.push((module.to_string(), arg.clone()));
+                        }
+                        listed
+                    }
+                };
+                if !ok {
+                    let what = if is_env {
+                        "a key env var no ServiceDef owns"
+                    } else {
+                        "a name the key pool does not hold (every report is a silent no-op)"
+                    };
+                    scan.problems
+                        .push(format!("{shown}: {call}(.., {arg}, ..) passes {what}"));
+                }
+            }
+        }
+    }
+    scan
+}
+
+/// `(module directory, argument text, why it is safe)` for a pool-service
+/// argument the lexical scan cannot resolve. Shrink-only: see
+/// [`credential_registry_views_are_one_set`].
+const UNRESOLVED_POOL_ARGS: &[(&str, &str, &str)] = &[(
+    "urlhaus",
+    "key_service",
+    "urlhaus::resolve_key returns the literal \"urlhaus\" for its own key and \"threatfox\" \
+     for the shared abuse.ch fallback; both are registered pools",
+)];
+
+/// Today's length of [`UNRESOLVED_POOL_ARGS`]. Lower it as entries are
+/// resolved; never raise it.
+const UNRESOLVED_POOL_ARGS_CAP: usize = 1;
+
+/// **L1** — the credential registry's views are one set (REQ-KEYREG-001).
+///
+/// HSE describes its credentials four times, and each view drives something
+/// different:
+/// - `KNOWN_KEYS` is what the operator is asked to configure (the Settings
+///   grid, `hse doctor`'s acquisition ranking, `.env` export);
+/// - `service_defs()` is what can pool, rotate, CSV-split, hot-inject,
+///   validate and be marked exhausted;
+/// - the code's reads are what a key actually does;
+/// - the pool-service names modules pass are where a burned key is recorded.
+///
+/// No test tied them together. `KNOWN_KEYS` carried five credentials with no
+/// def (OathNet — the top Multiplier — AlienVault OTX, AusPost, Stolen.tax, and
+/// the sunset Proxycurl, which nothing read at all), and `ip_reputation`,
+/// `auspost` and `stolen_tax` reported burned keys under names the pool does
+/// not hold, so every report was a silent no-op. The same shape had already
+/// shipped once, for `hunter_io`. Every existing guard stayed green throughout.
+///
+/// Asserted:
+/// 1. the credentials production code reads ([`consumed_credentials`] over
+///    `src/`) are exactly `KNOWN_KEYS` — nothing read goes unlisted, and
+///    nothing listed is inert;
+/// 2. `KNOWN_KEYS` is exactly the set of def `env_var`s (the `censys_secret`
+///    and `wigle_user` defs carry today's paired credentials);
+/// 3. in `src/modules`, every [`POOL_NAME_ARGS`] argument resolves via
+///    `find_service`, and every [`KEY_ENV_ARGS`] argument via
+///    `service_for_env` ([`scan_pool_args`]).
+///
+/// A site the scan cannot resolve must be on [`UNRESOLVED_POOL_ARGS`], with a
+/// reason. That list may only shrink: an entry that no longer matches fails,
+/// and its length may not exceed [`UNRESOLVED_POOL_ARGS_CAP`].
+#[test]
+fn credential_registry_views_are_one_set() {
+    use huntsman_search_engine::util::keys::KNOWN_KEYS;
+    use huntsman_search_engine::util::service_defs::service_defs;
+    use std::collections::BTreeSet;
+
+    assert!(
+        UNRESOLVED_POOL_ARGS.len() <= UNRESOLVED_POOL_ARGS_CAP,
+        "UNRESOLVED_POOL_ARGS only shrinks: resolve the new site instead of listing it"
+    );
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let known: BTreeSet<String> = KNOWN_KEYS.iter().map(|k| (*k).to_string()).collect();
+    assert_eq!(
+        known.len(),
+        KNOWN_KEYS.len(),
+        "KNOWN_KEYS lists a key twice"
+    );
+
+    // 1. What production code reads == what the operator is asked for.
+    let consumed = consumed_credentials(&root.join("src"));
+    let unlisted: Vec<&String> = consumed.difference(&known).collect();
+    let inert: Vec<&String> = known.difference(&consumed).collect();
+    assert!(
+        unlisted.is_empty() && inert.is_empty(),
+        "KNOWN_KEYS must be exactly the credentials production code reads.\n\
+         read but not in KNOWN_KEYS (the operator is never asked for it): {unlisted:?}\n\
+         in KNOWN_KEYS but read by nothing (the operator is asked for an inert key): {inert:?}"
+    );
+
+    // 2. What the operator is asked for == what can pool.
+    let registered: BTreeSet<String> = service_defs()
+        .iter()
+        .map(|d| d.env_var.to_string())
+        .collect();
+    let unpooled: Vec<&String> = known.difference(&registered).collect();
+    let unlisted_defs: Vec<&String> = registered.difference(&known).collect();
+    assert!(
+        unpooled.is_empty() && unlisted_defs.is_empty(),
+        "KNOWN_KEYS must be exactly the ServiceDef env vars.\n\
+         in KNOWN_KEYS with no ServiceDef (never pooled, rotated, CSV-split or marked \
+         exhausted): {unpooled:?}\n\
+         a ServiceDef the operator is never asked to configure: {unlisted_defs:?}"
+    );
+
+    // 3. Every pool name a module hands the pool is one the pool holds.
+    let modules_dir = root.join("src/modules");
+    let mut by_module: std::collections::BTreeMap<String, Vec<(std::path::PathBuf, String)>> =
+        std::collections::BTreeMap::new();
+    let mut files = Vec::new();
+    collect_rs_files(&modules_dir, &mut files);
+    for f in files.into_iter().filter(|f| !is_test_file(f)) {
+        let rel = f.strip_prefix(&modules_dir).unwrap();
+        // A file directly in `src/modules` belongs to no module directory.
+        let module = if rel.components().count() == 1 {
+            String::new()
+        } else {
+            let first = rel.components().next().unwrap();
+            first.as_os_str().to_string_lossy().into_owned()
+        };
+        let code = production_source_keep_literals(&fs::read_to_string(&f).unwrap());
+        let shown = f.strip_prefix(root).unwrap().to_path_buf();
+        by_module.entry(module).or_default().push((shown, code));
+    }
+    let mut total = PoolArgScan::default();
+    for (module, files) in &by_module {
+        let scan = scan_pool_args(module, files, UNRESOLVED_POOL_ARGS);
+        total.pool_sites += scan.pool_sites;
+        total.env_sites += scan.env_sites;
+        total.problems.extend(scan.problems);
+        total.allowlisted.extend(scan.allowlisted);
+    }
+    assert!(
+        total.pool_sites >= 40 && total.env_sites >= 20,
+        "sanity: the scan must see the keyed call sites (saw {} pool-name and {} key-env \
+         arguments) or it certifies nothing",
+        total.pool_sites,
+        total.env_sites
+    );
+    assert!(
+        total.problems.is_empty(),
+        "pool-service arguments that miss the pool:\n{}",
+        total.problems.join("\n")
+    );
+    let stale: Vec<_> = UNRESOLVED_POOL_ARGS
+        .iter()
+        .filter(|(m, a, _)| !total.allowlisted.iter().any(|(hm, ha)| hm == m && ha == a))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "UNRESOLVED_POOL_ARGS entries no longer needed — delete them and lower the cap: {stale:?}"
+    );
+}
+
+/// The L1 scanner itself, driven on fixtures: a lock is only as good as what
+/// it can see, and most of its verdicts guard shapes today's tree does not
+/// contain (REQ-KEYREG-001).
+#[test]
+fn credential_registry_scanner_reads_calls_resolves_names_and_skips_comments() {
+    // Calls: a turbofish and a nested `format!` read correctly; an import, a
+    // longer name and a definition are not calls.
+    let code = "ctx.report_key_exhausted(SRC, &key, 401);\n\
+                crate::util::http::fetch_keyed_json::<R>(ctx, SRC, &format!(\"{a},{b}\"), \
+                KEY_ENV, \"h\")\n\
+                use crate::util::http::{keyed_cascade, keyed_cascade_json};\n\
+                keyed_cascade_json(ctx, SRC, KEY_ENV, k, &[], |key| { f(key, 1) }, v)\n\
+                pub fn report_key_exhausted(&self, service: &str) {}\n";
+    assert_eq!(
+        calls_of(code, "report_key_exhausted"),
+        [["SRC", "&key", "401"]]
+    );
+    assert_eq!(calls_of(code, "fetch_keyed_json")[0][3], "KEY_ENV");
+    assert!(calls_of(code, "keyed_cascade").is_empty());
+    assert_eq!(calls_of(code, "keyed_cascade_json")[0].len(), 7);
+
+    // Verdicts: one module that passes every shape the scan distinguishes.
+    let module = "fixture";
+    let files = vec![(
+        std::path::PathBuf::from("src/modules/fixture/mod.rs"),
+        "const SRC: &str = \"fixture\";\n\
+         pub(crate) const KEY_ENV: &str = \"HUNTSMAN_SHODAN_KEY\";\n\
+         fn pool_service() -> &'static str { service_for_env(KEY_ENV).map_or(SRC, |d| d.name) }\n\
+         fn other() -> &'static str { \"shodan\" }\n\
+         fn run() {\n\
+             ctx.next_pooled_key(\"shodan\", &tried);\n\
+             crate::util::http::note_keyed_error(401, pool_service(), k, ctx);\n\
+             keyed_cascade(ctx, SRC, KEY_ENV, k, &[], |k| b(k));\n\
+             keyed_ok_or_404(key_service, k, ctx, resp);\n\
+             ctx.report_key_exhausted(SRC, k, 401);\n\
+             ctx.report_key_exhausted(other(), k, 401);\n\
+             fetch_keyed_json(ctx, SRC, u, \"HUNTSMAN_NOT_OWNED_KEY\", \"h\");\n\
+             keyed_cascade_json(ctx, SRC, pool_service(), k, &[], b, v);\n\
+         }\n"
+        .to_string(),
+    )];
+    let allow = [(module, "key_service", "fixture")];
+    let scan = scan_pool_args(module, &files, &allow);
+    assert_eq!((scan.pool_sites, scan.env_sites), (5, 3));
+    assert_eq!(
+        scan.allowlisted,
+        [(module.to_string(), "key_service".to_string())]
+    );
+    let flagged: Vec<&str> = scan
+        .problems
+        .iter()
+        .map(|p| p.split(": ").nth(1).unwrap_or(p))
+        .collect();
+    assert_eq!(
+        flagged,
+        [
+            // SRC is the module's own name, which the pool does not hold.
+            "report_key_exhausted(.., SRC, ..) passes a name the key pool does not hold \
+             (every report is a silent no-op)",
+            // A shim that does not ask the registry is not trusted.
+            "report_key_exhausted(.., other(), ..) passes a name the key pool does not hold \
+             (every report is a silent no-op)",
+            "fetch_keyed_json(.., \"HUNTSMAN_NOT_OWNED_KEY\", ..) passes a key env var no \
+             ServiceDef owns",
+            // A pool name is not an env var, even a registry-derived one.
+            "keyed_cascade_json(.., pool_service(), ..) passes a key env var no ServiceDef owns",
+        ]
+    );
+    let unlisted = scan_pool_args(module, &files, &[]);
+    assert!(
+        unlisted.problems.iter().any(|p| p.contains("key_service")),
+        "an unresolvable argument passes only when listed"
+    );
+
+    // `build::SRC` resolves by its last segment.
+    let consts = str_consts(&files);
+    assert_eq!(
+        resolve_arg("build::KEY_ENV", &consts, &files),
+        ArgValue::Named("HUNTSMAN_SHODAN_KEY".into())
+    );
+
+    // Reads: a comment, a test item and a knob are not credential reads.
+    assert_eq!(
+        credential_reads(
+            "// ctx.key_opt(\"HUNTSMAN_A_KEY\")\n\
+             const KEY_ENV: &str = \"HUNTSMAN_B_KEY\";\n\
+             const PROXY_ENV: &str = \"HUNTSMAN_SEARCH_PROXY\";\n\
+             #[cfg(test)]\nmod t { const X_ENV: &str = \"HUNTSMAN_C_KEY\"; }\n",
+        ),
+        std::collections::BTreeSet::from(["HUNTSMAN_B_KEY".to_string()])
+    );
+    assert!(is_test_file(Path::new("src/util/http/tests.rs")));
+    assert!(is_test_file(Path::new("src/modules/keyed_tests.rs")));
+    assert!(is_test_file(Path::new("src/modules/x/tests/part01.rs")));
+    assert!(!is_test_file(Path::new("src/modules/x/mod.rs")));
 }
 
 #[test]

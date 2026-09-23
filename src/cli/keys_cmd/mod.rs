@@ -292,7 +292,7 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
                 // Whether `service_defs` even defines a probe for this service —
                 // the difference between "no validator exists" and "the probe ran
                 // but was inconclusive" (a blocked/timed-out/5xx endpoint).
-                let known = crate::util::service_defs::find_service(svc).is_some();
+                let known = has_validator(svc);
                 for entry in entries {
                     print!("  {svc}: testing {}… ", char_prefix(&entry.value, 8));
                     let outcome = key_pool::validate_key(svc, &entry.value).await;
@@ -660,6 +660,16 @@ pub(super) fn cmd_set_key(name: String, value: String) -> Result<()> {
     crate::util::keys::write_keys(&updates, &[]).map_err(|e| Error::Other(e.to_string()))?;
     println!("✓ {name} set in {}", crate::util::keys::env_path());
     Ok(())
+}
+
+/// Whether `hse keys validate` can actually probe `service`'s keys: it has a
+/// `ServiceDef` AND that def names a probe endpoint. A def registered with
+/// `NO_PROBE` (OathNet, AusPost, Stolen.tax — every endpoint bills or spends
+/// quota) is a service with no validator, and its `None` verdict must read as
+/// that, not as "probe inconclusive — transport error", which would send the
+/// operator chasing a network fault that never happened (REQ-KEYREG-001).
+fn has_validator(service: &str) -> bool {
+    crate::util::service_defs::find_service(service).is_some_and(|d| d.probe_url().is_some())
 }
 
 /// Human-readable status for one `hse keys validate` probe. `validate_key`

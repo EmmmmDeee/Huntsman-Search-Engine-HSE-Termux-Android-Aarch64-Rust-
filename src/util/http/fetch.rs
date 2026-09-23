@@ -1044,6 +1044,27 @@ pub async fn keyed_ok_or_404(
     Ok(Some(resp))
 }
 
+/// The key-pool service a keyed helper reports a burned key to and rotates
+/// from: the [`crate::util::service_defs::ServiceDef`] that owns `key_env`.
+///
+/// Never the caller's module name. A module's name is its error and
+/// breaker label, and it is not reliably a pool name: `ip_reputation` holds
+/// the `alienvault_otx` key, `hunter_io` the `hunter` one. The pool's
+/// `record_error` / `mark_status` skip an unknown service and its
+/// `next_key_excluding` answers `None`, so every report the helpers used to
+/// file under `module` for those callers was a silent no-op — a burned OTX key
+/// never became `Invalid`/`RateLimited` and never rotated (REQ-KEYREG-001).
+/// Resolving it here, from the env var the key arrives in, means no caller
+/// can hand the pool the wrong name.
+///
+/// Falls back to `module` only for an env var no `ServiceDef` owns, which
+/// `credential_registry_views_are_one_set` refuses for any credential a
+/// module reads; nothing is pooled under such a var, so there is nothing to
+/// mark either way.
+fn pool_service(module: &'static str, key_env: &str) -> &'static str {
+    crate::util::service_defs::service_for_env(key_env).map_or(module, |d| d.name)
+}
+
 /// Keyed GET: fetch JSON from a URL that requires an API key header.
 /// Handles 401/403/429 uniformly via report_key_exhausted, maps 404
 /// to Ok(None). Consolidates the error handling pattern duplicated
@@ -1053,9 +1074,9 @@ pub async fn keyed_ok_or_404(
 /// "maximise API key usage" policy the hand-rolled keyed modules
 /// (`dehashed`/`hibp`/`leakix`) implement: when the current key hits a terminal
 /// key-quota/auth failure (401/403/429), the call rotates to the next USABLE
-/// pooled key for `module` — the pool's service name is the module name, matching
-/// [`crate::core::module::ModuleContext::report_key_exhausted`] — and retries the
-/// request with it, so one call spends every credential the pool holds before it
+/// pooled key for `key_env`'s pool service ([`pool_service`] — not `module`,
+/// which only labels errors) and retries the request with it, so one call
+/// spends every credential the pool holds before it
 /// fails. A service with no extra pooled keys (the common single-key case) sees
 /// [`crate::core::module::ModuleContext::next_pooled_key`] return `None` on the
 /// first burn and behaves
@@ -1071,6 +1092,7 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
     // with the hot-injected env key before its first use below.
     let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut key = ctx.key(key_env)?.to_string();
+    let pool = pool_service(module, key_env);
     loop {
         tried.insert(key.clone());
         // Per-host circuit breaker (see `breaker_gate`): short-circuit a host that has failed
@@ -1118,11 +1140,11 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
                 is_keyed_error_status(code) || (code == 400 && is_auth_failure_400_body(&snippet));
             // Burn the key on a key problem so the pool rotates past it next scan…
             if keyed {
-                ctx.report_key_exhausted(module, &key, code);
+                ctx.report_key_exhausted(pool, &key, code);
             }
             // …and, if the pool still holds an untried usable key, cascade to it now
             // rather than failing this call.
-            if keyed && let Some(next) = ctx.next_pooled_key(module, &tried) {
+            if keyed && let Some(next) = ctx.next_pooled_key(pool, &tried) {
                 key = next;
                 continue;
             }
@@ -1150,6 +1172,12 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
 /// [`is_auth_failure_400_body`]) — rotate to the next usable pooled key and
 /// retry, so one call spends every credential the pool holds before it fails.
 ///
+/// `key_env` names the env var `initial_key` came from. It picks the pool
+/// service burned keys are reported to and rotation draws from
+/// ([`pool_service`]); `module` only labels errors and the request tag, so a
+/// module whose name is not its pool's (`ip_reputation`/`alienvault_otx`)
+/// still reaches the pool (REQ-KEYREG-001).
+///
 /// `build(key)` constructs a fresh [`reqwest::RequestBuilder`] for one attempt
 /// (a `RequestBuilder` isn't `Clone`, so it must be rebuilt per attempt, not
 /// reused). On a 2xx the caller decodes the returned `Response` itself — some
@@ -1175,6 +1203,7 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
 pub async fn keyed_cascade<F>(
     ctx: &crate::core::module::ModuleContext,
     module: &'static str,
+    key_env: &str,
     initial_key: &str,
     absent_statuses: &[u16],
     build: F,
@@ -1183,7 +1212,7 @@ where
     F: FnMut(&str) -> reqwest::RequestBuilder,
 {
     Ok(
-        keyed_cascade_with_key(ctx, module, initial_key, absent_statuses, build)
+        keyed_cascade_with_key(ctx, module, key_env, initial_key, absent_statuses, build)
             .await?
             .map(|(resp, _)| resp),
     )
@@ -1202,6 +1231,7 @@ where
 pub async fn keyed_cascade_with_key<F>(
     ctx: &crate::core::module::ModuleContext,
     module: &'static str,
+    key_env: &str,
     initial_key: &str,
     absent_statuses: &[u16],
     mut build: F,
@@ -1209,17 +1239,18 @@ pub async fn keyed_cascade_with_key<F>(
 where
     F: FnMut(&str) -> reqwest::RequestBuilder,
 {
+    let pool = pool_service(module, key_env);
     let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut key = initial_key.to_string();
     loop {
         // Record BEFORE attempting: a burned key must never be re-handed by
         // `next_pooled_key`, including the initial one.
         tried.insert(key.clone());
-        match attempt_with_key(ctx, module, &key, absent_statuses, &mut build).await {
+        match attempt_with_key(ctx, module, pool, &key, absent_statuses, &mut build).await {
             Attempt::Ok(resp) => return Ok(Some((resp, key))),
             Attempt::Absent | Attempt::Cancelled => return Ok(None),
             Attempt::Failed(e) => return Err(e),
-            Attempt::Rotate(e) => match ctx.next_pooled_key(module, &tried) {
+            Attempt::Rotate(e) => match ctx.next_pooled_key(pool, &tried) {
                 Some(next) => key = next,
                 None => return Err(e),
             },
@@ -1247,10 +1278,13 @@ enum Attempt {
 
 /// Drive ONE key: send, honour a 429 backoff in place (up to
 /// [`handle_keyed_error`]'s budget), and classify the outcome. Never rotates —
-/// key selection belongs to the caller, which owns the `tried` set.
+/// key selection belongs to the caller, which owns the `tried` set. A burned
+/// key is reported under `pool` (the caller's [`pool_service`]); `module`
+/// tags the request and labels the error.
 async fn attempt_with_key<F>(
     ctx: &crate::core::module::ModuleContext,
     module: &'static str,
+    pool: &str,
     key: &str,
     absent_statuses: &[u16],
     build: &mut F,
@@ -1275,7 +1309,7 @@ where
             return Attempt::Ok(resp);
         }
         let code = status.as_u16();
-        if handle_keyed_error(code, resp.headers(), &mut retries, module, key, ctx).await {
+        if handle_keyed_error(code, resp.headers(), &mut retries, pool, key, ctx).await {
             continue;
         }
         let snippet = error_snippet(resp).await;
@@ -1287,7 +1321,7 @@ where
         let err = Error::module(module, format!("HTTP {status}: {snippet}"));
         if keyed {
             if code == 400 {
-                ctx.report_key_exhausted(module, key, code);
+                ctx.report_key_exhausted(pool, key, code);
             }
             return Attempt::Rotate(err);
         }
@@ -1324,6 +1358,7 @@ pub enum BodyVerdict {
 
 /// [`keyed_cascade`] for a provider that reports key failures **in the response
 /// body on an HTTP 2xx**, which the status-only cascade cannot detect.
+/// `key_env` picks the pool exactly as it does for [`keyed_cascade`].
 ///
 /// Decodes each successful response and asks `verdict` what the body means. On
 /// [`BodyVerdict::KeyFailure`] it burns the key and rotates exactly as an
@@ -1334,6 +1369,7 @@ pub enum BodyVerdict {
 pub async fn keyed_cascade_json<T, F, V>(
     ctx: &crate::core::module::ModuleContext,
     module: &'static str,
+    key_env: &str,
     initial_key: &str,
     absent_statuses: &[u16],
     mut build: F,
@@ -1344,13 +1380,21 @@ where
     F: FnMut(&str) -> reqwest::RequestBuilder,
     V: Fn(&T) -> BodyVerdict,
 {
+    let pool = pool_service(module, key_env);
     let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut key = initial_key.to_string();
     loop {
         // Record BEFORE attempting — see `keyed_cascade_with_key`.
         tried.insert(key.clone());
-        let rotate_err = match attempt_with_key(ctx, module, &key, absent_statuses, &mut build)
-            .await
+        let rotate_err = match attempt_with_key(
+            ctx,
+            module,
+            pool,
+            &key,
+            absent_statuses,
+            &mut build,
+        )
+        .await
         {
             Attempt::Absent | Attempt::Cancelled => return Ok(None),
             Attempt::Failed(e) => return Err(e),
@@ -1361,7 +1405,7 @@ where
                     BodyVerdict::Accept => return Ok(Some(decoded)),
                     BodyVerdict::Absent => return Ok(None),
                     BodyVerdict::KeyFailure { code, detail } => {
-                        ctx.report_key_exhausted(module, &key, code);
+                        ctx.report_key_exhausted(pool, &key, code);
                         // Carry the provider's own words through: they are
                         // what distinguishes quota from auth from plan
                         // limit, and the status code alone cannot.
@@ -1380,7 +1424,7 @@ where
                 }
             }
         };
-        match ctx.next_pooled_key(module, &tried) {
+        match ctx.next_pooled_key(pool, &tried) {
             Some(next) => key = next,
             None => return Err(rotate_err),
         }
@@ -1390,7 +1434,27 @@ where
 #[cfg(test)]
 mod tests {
     use super::append_capped;
-    use super::{is_auth_failure_400_body, is_key_or_quota_message, is_keyed_error_status};
+    use super::{
+        is_auth_failure_400_body, is_key_or_quota_message, is_keyed_error_status, pool_service,
+    };
+
+    /// REQ-KEYREG-001. The pool a keyed helper burns into is the def that owns
+    /// `key_env` — `ip_reputation`'s OTX key pools as `alienvault_otx`,
+    /// `hunter_io`'s as `hunter` — and the module label is used only for an
+    /// env var no def owns, where nothing is pooled.
+    #[test]
+    fn pool_service_is_the_key_envs_def_not_the_module_label() {
+        assert_eq!(
+            pool_service("ip_reputation", "HUNTSMAN_ALIENVAULT_KEY"),
+            "alienvault_otx"
+        );
+        assert_eq!(pool_service("hunter_io", "HUNTSMAN_HUNTER_KEY"), "hunter");
+        assert_eq!(
+            pool_service("stolen_tax", "HUNTSMAN_STOLEN_TAX_KEY"),
+            "stolen_tax"
+        );
+        assert_eq!(pool_service("test_mod", "HUNTSMAN_TEST_KEY"), "test_mod");
+    }
 
     #[test]
     fn auth_400_body_matches_real_provider_bodies() {

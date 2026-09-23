@@ -3,6 +3,14 @@
 /// Names of HUNTSMAN_* keys recognised by current/planned modules. Drives
 /// the Settings UI so users see a populated grid before they've configured
 /// anything. Matches the template comments in `install.sh`.
+///
+/// Exactly the credentials some code reads, and exactly the `env_var`s of
+/// [`crate::util::service_defs::service_defs`] — a key listed here but read by
+/// nothing asks the operator to buy something inert (the sunset Proxycurl key
+/// ranked 44th of 55 in `hse doctor`), and one read but unregistered can never
+/// pool, rotate or be marked exhausted. `credential_registry_views_are_one_set`
+/// (tests/architecture_parts/architecture_part3.rs) holds all three views to
+/// one set (REQ-KEYREG-001).
 pub const KNOWN_KEYS: &[&str] = &[
     // Identity / breach
     "HUNTSMAN_OATHNET_KEY",
@@ -12,7 +20,6 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_STOLEN_TAX_KEY",
     "HUNTSMAN_DEHASHED_KEY",
     "HUNTSMAN_HUNTER_KEY",
-    "HUNTSMAN_PROXYCURL_KEY",
     "HUNTSMAN_INTELX_KEY",
     // Infrastructure / threat intel
     "HUNTSMAN_SHODAN_KEY",
@@ -93,12 +100,6 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
             "SecurityTrails — free tier at https://securitytrails.com/app/signup"
         }
         "HUNTSMAN_HUNTER_KEY" => "Hunter.io — free tier at https://hunter.io/users/sign_up",
-        // No free tier, unlike most of this list: proxycurl is `ModuleCost::Paid`
-        // and bills per credit, so the hint points at pricing rather than a
-        // signup that would imply the key costs nothing.
-        "HUNTSMAN_PROXYCURL_KEY" => {
-            "Proxycurl — paid, per-credit; see https://nubela.co/proxycurl/pricing"
-        }
         "HUNTSMAN_GREYNOISE_KEY" => "GreyNoise — free key at https://viz.greynoise.io/signup",
         "HUNTSMAN_URLSCAN_KEY" => "urlscan.io — free key at https://urlscan.io/user/signup",
         "HUNTSMAN_LEAKIX_KEY" => "LeakIX — free key at https://leakix.net/auth/register",

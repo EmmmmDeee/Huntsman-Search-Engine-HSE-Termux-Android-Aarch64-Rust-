@@ -238,6 +238,7 @@ async fn query(
     let Some(body): Option<Common> = crate::util::http::keyed_cascade_json(
         ctx,
         SRC,
+        KEY_ENV,
         initial_key,
         // 404 = unknown selector, a clean miss rather than a failure.
         &[404],

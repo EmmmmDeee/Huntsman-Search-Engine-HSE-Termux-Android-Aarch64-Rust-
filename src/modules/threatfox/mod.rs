@@ -333,14 +333,15 @@ impl Module for ThreatFox {
         // fixed POST endpoint never answers a per-query miss with 404 (that's
         // `query_status: "no_result"` in the body below), so nothing here was
         // ever treated as absent, and that stays true after the migration.
-        let Some(resp) = crate::util::http::keyed_cascade(ctx, SRC, initial_key, &[], |key| {
-            ctx.http
-                .post("https://threatfox-api.abuse.ch/api/v1/")
-                .header("Auth-Key", key)
-                .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
-                .json(&body)
-        })
-        .await?
+        let Some(resp) =
+            crate::util::http::keyed_cascade(ctx, SRC, KEY_ENV, initial_key, &[], |key| {
+                ctx.http
+                    .post("https://threatfox-api.abuse.ch/api/v1/")
+                    .header("Auth-Key", key)
+                    .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
+                    .json(&body)
+            })
+            .await?
         else {
             return Ok(ModuleResult::new());
         };

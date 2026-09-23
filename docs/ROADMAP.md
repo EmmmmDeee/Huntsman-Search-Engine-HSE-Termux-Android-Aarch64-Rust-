@@ -106,6 +106,15 @@ The reusable primitives every module leans on. Key sub-areas:
   (`discovered_by.is_some()`), `next_key_excluding` (the auth chokepoint that
   keeps harvested/breach-sourced credentials out of HSE's own requests),
   `add_and_validate` (provenance-stamped).
+- `util/service_defs/` — the credential registry, one `ServiceDef` per
+  credential HSE reads. It is what can pool, rotate, CSV-split, hot-inject,
+  validate and be marked exhausted, so `KNOWN_KEYS` (what the operator is asked
+  for), the code's reads and the def `env_var`s are held to one set by
+  `credential_registry_views_are_one_set` (lock L1). `service_for_env` is the
+  **pool-name authority** for the shared keyed helpers in `util/http`
+  (`fetch_keyed_json`, `keyed_cascade*` take `key_env` and resolve the pool
+  themselves; `module` only labels errors). A provider whose every endpoint
+  bills is registered with `NO_PROBE`: pooled, never probed (REQ-KEYREG-001).
 - `util/namesake/` — whether one provider's own answer proves a name is held by
   more than one party, plus the ceiling and the marking rule for when it does
   (`AMBIGUOUS_CEILING`, `mark_ambiguous`). Keyed on `derive_uid`/`normalise`

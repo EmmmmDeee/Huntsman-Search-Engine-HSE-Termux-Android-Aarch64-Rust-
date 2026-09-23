@@ -278,14 +278,15 @@ impl Module for BreachDirectory {
         // corroborated as this endpoint's "no data" signal (see the module doc);
         // a miss is read from the response BODY below instead, exactly as
         // `dehashed`'s fixed search endpoint does.
-        let Some(resp) = crate::util::http::keyed_cascade(ctx, SRC, initial_key, &[], |key| {
-            ctx.http
-                .get(&url)
-                .header("X-RapidAPI-Key", key)
-                .header("X-RapidAPI-Host", RAPIDAPI_HOST)
-                .header("Accept", "application/json")
-        })
-        .await?
+        let Some(resp) =
+            crate::util::http::keyed_cascade(ctx, SRC, KEY_ENV, initial_key, &[], |key| {
+                ctx.http
+                    .get(&url)
+                    .header("X-RapidAPI-Key", key)
+                    .header("X-RapidAPI-Host", RAPIDAPI_HOST)
+                    .header("Accept", "application/json")
+            })
+            .await?
         else {
             return Ok(ModuleResult::new());
         };

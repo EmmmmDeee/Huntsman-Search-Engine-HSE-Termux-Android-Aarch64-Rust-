@@ -398,6 +398,7 @@ impl Module for CriminalIp {
         let Some(body): Option<Resp> = crate::util::http::keyed_cascade_json(
             ctx,
             SRC,
+            KEY_ENV,
             initial_key,
             &[],
             |key| ctx.http.get(&url).header("x-api-key", key),

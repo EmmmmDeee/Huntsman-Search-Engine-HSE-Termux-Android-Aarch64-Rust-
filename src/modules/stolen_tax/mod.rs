@@ -18,6 +18,10 @@ use crate::core::{
 };
 
 const SRC: &str = "stolen_tax";
+/// The key this module reads. Named so the key cascade can resolve the
+/// `stolen_tax` pool from it (REQ-KEYREG-001) — the same var the missing-key
+/// error names.
+const KEY_ENV: &str = "HUNTSMAN_STOLEN_TAX_KEY";
 const API_BASE: &str = "https://api.stolen.tax/api/v1/search";
 
 /// The Stolen.tax [`Module`] marker type — see the module-level docs above.
@@ -159,11 +163,9 @@ impl Module for StolenTax {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
 
-        let Some(initial_key) = ctx.key_opt("HUNTSMAN_STOLEN_TAX_KEY") else {
+        let Some(initial_key) = ctx.key_opt(KEY_ENV) else {
             // PROVIDER FAILURE != ZERO EVIDENCE — see REQ-KEYSKIP-001.
-            return Err(crate::core::error::Error::MissingKey(
-                "HUNTSMAN_STOLEN_TAX_KEY".into(),
-            ));
+            return Err(crate::core::error::Error::MissingKey(KEY_ENV.into()));
         };
         let query_param = crate::util::http::urlencode(&target.value);
         let endpoint = match target.kind {
@@ -179,10 +181,14 @@ impl Module for StolenTax {
         // HTTP 200 — the same shape as ipqs/criminal_ip — so a status-only
         // cascade cannot see it: without this, a burned key read as a clean
         // empty result on every scan instead of rotating to the next pooled
-        // credential or surfacing an operator-visible failure.
+        // credential or surfacing an operator-visible failure. `KEY_ENV` is
+        // what names the pool: `stolen_tax` had no `ServiceDef`, so every
+        // burn here was a no-op and there was never a next credential to
+        // rotate to (REQ-KEYREG-001).
         let Some(response): Option<StolenTaxResponse> = crate::util::http::keyed_cascade_json(
             ctx,
             SRC,
+            KEY_ENV,
             initial_key,
             &[],
             |key| {

@@ -161,6 +161,7 @@ impl Module for Onyphe {
         let Some(resp) = crate::util::http::keyed_cascade(
             ctx,
             SRC,
+            KEY_ENV,
             initial_key,
             // Unknown selector returns 404 — not an error, just no data.
             &[404],

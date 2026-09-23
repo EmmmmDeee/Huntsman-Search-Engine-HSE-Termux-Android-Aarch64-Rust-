@@ -343,13 +343,14 @@ impl SecurityTrails {
         absent_statuses: &[u16],
         ctx: &ModuleContext,
     ) -> Result<Option<T>> {
-        let Some(resp) = crate::util::http::keyed_cascade(ctx, SRC, key, absent_statuses, |k| {
-            ctx.http
-                .get(url)
-                .header("APIKEY", k)
-                .header("Accept", "application/json")
-        })
-        .await?
+        let Some(resp) =
+            crate::util::http::keyed_cascade(ctx, SRC, KEY_ENV, key, absent_statuses, |k| {
+                ctx.http
+                    .get(url)
+                    .header("APIKEY", k)
+                    .header("Accept", "application/json")
+            })
+            .await?
         else {
             return Ok(None);
         };

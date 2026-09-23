@@ -170,15 +170,21 @@ impl Module for DeHashed {
         // the `api_key_origin` fingerprint stamped on every emitted record below
         // must identify the key that ACTUALLY served this response, not the one
         // the call started with.
-        let Some((resp, key)) =
-            crate::util::http::keyed_cascade_with_key(ctx, build::SRC, initial_key, &[], |key| {
+        let Some((resp, key)) = crate::util::http::keyed_cascade_with_key(
+            ctx,
+            build::SRC,
+            KEY_ENV,
+            initial_key,
+            &[],
+            |key| {
                 ctx.http
                     .post(V2_SEARCH_URL)
                     .header("Dehashed-Api-Key", key)
                     .header("Accept", "application/json")
                     .json(&payload)
-            })
-            .await?
+            },
+        )
+        .await?
         else {
             return Ok(ModuleResult::new());
         };

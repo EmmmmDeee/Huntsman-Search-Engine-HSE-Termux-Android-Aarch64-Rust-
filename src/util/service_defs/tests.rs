@@ -314,25 +314,80 @@ use super::*;
         assert!(service_for_env("HUNTSMAN_NOT_A_KEY").is_none());
     }
 
-    /// Every keyed module whose SRC differs from its pool `ServiceDef.name` must
-    /// resolve to a registered pool service via its own KEY_ENV, or every key
-    /// burn is a silent no-op. The table below is the authoritative assertion
-    /// set. Also asserts every service is resolvable by its own name.
+    // The hand-kept four-row `keyed_module_pool_services_are_registered`
+    // table that stood here is gone: `credential_registry_views_are_one_set`
+    // (tests/architecture_parts/architecture_part3.rs) now derives the same
+    // guarantee for EVERY keyed module from the source, and the pool name for
+    // the shared keyed helpers is resolved from `key_env` inside `util::http`
+    // (REQ-KEYREG-001).
+
+    /// REQ-KEYREG-001. The four credentials `KNOWN_KEYS` listed and live
+    /// modules read, but no def registered — so they could not pool, rotate,
+    /// CSV-split or be marked exhausted. Each must resolve from its env var to
+    /// its def, be poolable, and declare the header its own module sends:
+    /// `util::oathnet`'s `AuthScheme::XApiKey` (`x-api-key`),
+    /// `ip_reputation`'s `OTX_KEY_HEADER`, and the literal headers `auspost`
+    /// and `stolen_tax` pass to their requests. A wrong header would make the
+    /// validator refuse a valid key, the see_know/netlas bug class above.
     #[test]
-    fn keyed_module_pool_services_are_registered() {
-        for (env, svc) in [
-            ("HUNTSMAN_HUNTER_KEY", "hunter"),
-            ("HUNTSMAN_EXA_KEY", "exa"),
-            ("HUNTSMAN_HLR_KEY", "hlrlookups"),
-            ("HUNTSMAN_WHOISXML_KEY", "whoisxml"),
+    fn the_four_unregistered_credentials_are_pool_services_with_their_modules_headers() {
+        for (name, env, header) in [
+            ("oathnet", "HUNTSMAN_OATHNET_KEY", "x-api-key"),
+            ("alienvault_otx", "HUNTSMAN_ALIENVAULT_KEY", "X-OTX-API-KEY"),
+            ("auspost", "HUNTSMAN_AUSPOST_KEY", "AUTH-KEY"),
+            ("stolen_tax", "HUNTSMAN_STOLEN_TAX_KEY", "Api-Key"),
         ] {
-            assert_eq!(service_for_env(env).map(|d| d.name), Some(svc), "{env}");
-        }
-        for d in service_defs() {
-            assert!(
-                find_service(d.name).is_some(),
-                "{} must be resolvable by name",
-                d.name
+            assert!(is_poolable_service(name), "{name} must be poolable");
+            assert_eq!(
+                service_for_env(env).map(|d| d.name),
+                Some(name),
+                "{env} must resolve to the `{name}` pool"
             );
+            let def = find_service(name).expect("registered");
+            match &def.key_header {
+                KeyPlacement::Header(h) => assert_eq!(*h, header, "{name}"),
+                other => panic!("{name} must authenticate with {header}, got {other:?}"),
+            }
+        }
+    }
+
+    /// REQ-KEYREG-001. The validator must never spend a lookup: OathNet bills
+    /// every search against a daily quota, AusPost rate-limits per day from
+    /// the same credentials, and Stolen.tax is paid per query, with no
+    /// vendor-confirmed free endpoint for any of them — so they carry
+    /// `NO_PROBE`. OTX documents `/api/v1/users/me` for exactly this, so it
+    /// is probed there and nowhere else.
+    #[test]
+    fn billed_providers_are_never_probed_and_otx_is_probed_only_at_its_key_check() {
+        for name in ["oathnet", "auspost", "stolen_tax"] {
+            let def = find_service(name).expect("registered");
+            assert_eq!(def.probe_url(), None, "{name} must never be probed");
+        }
+        assert_eq!(
+            find_service("alienvault_otx").and_then(ServiceDef::probe_url),
+            Some("https://otx.alienvault.com/api/v1/users/me")
+        );
+    }
+
+    /// REQ-KEYREG-001, over-correction guard: `NO_PROBE` is opt-in per def.
+    /// Every other registered provider keeps the endpoint it declares, and no
+    /// def pairs `NO_PROBE` with a `probe_parser` — `api_key_probe` builds
+    /// its requests from `test_url` for exactly the defs with a parser, so
+    /// that pairing would send it a request with no URL.
+    #[test]
+    fn no_probe_is_opt_in_and_never_paired_with_a_probe_parser() {
+        let probe_less: Vec<&str> = service_defs()
+            .iter()
+            .filter(|d| d.probe_url().is_none())
+            .map(|d| d.name)
+            .collect();
+        assert_eq!(probe_less, ["oathnet", "auspost", "stolen_tax"]);
+        for d in service_defs() {
+            if let Some(url) = d.probe_url() {
+                assert_eq!(url, d.test_url, "{}", d.name);
+                assert!(url.starts_with("https://"), "{}: {url}", d.name);
+            } else {
+                assert!(d.probe_parser.is_none(), "{} pairs NO_PROBE with a parser", d.name);
+            }
         }
     }
