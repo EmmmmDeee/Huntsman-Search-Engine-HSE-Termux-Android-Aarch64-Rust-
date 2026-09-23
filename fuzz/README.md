@@ -18,11 +18,12 @@ stable, unaffected — and only `cargo fuzz` (nightly-only, its own CI lane:
 
 ## Targets
 
-- **`cert_der`** — `cert_intel`'s hand-rolled DER certificate scanner
-  (`extract_sans_from_der` / `extract_field_from_der` / `extract_serial_hex`,
-  reached via the crate's `#[doc(hidden)] pub fn fuzz_entry_parse_der`).
-  This parser reads a live TLS peer's certificate bytes directly — fully
-  attacker-controlled input.
+- **`cert_der`** — the crate's hand-rolled DER certificate readers:
+  `cert_intel`'s `extract_sans_from_der` / `extract_serial_hex` and the
+  shared `util::x509_field::extract_field_from_der` (which `core::outage`'s
+  TLS-interception check also relies on), reached via `cert_intel`'s
+  `#[doc(hidden)] pub fn fuzz_entry_parse_der`. These read a live TLS
+  peer's certificate bytes directly — fully attacker-controlled input.
 
 ## Running locally
 

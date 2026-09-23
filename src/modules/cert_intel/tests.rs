@@ -213,7 +213,7 @@ fn extract_serial_hex_wrapper_at_buffer_tail_does_not_panic() {
 
 #[test]
 fn extract_field_from_empty() {
-    assert!(extract_field_from_der(&[], &[0x55, 0x04, 0x03], true).is_none());
+    assert!(extract_field_from_der(&[], OID_CN, NameField::Issuer).is_none());
 }
 
 #[test]
@@ -310,20 +310,16 @@ fn extract_sans_output_is_lowercased() {
 // wrappers, or mistakes the version INTEGER for the serial) fails loudly here.
 const SELF_SIGNED_DER: &[u8] = include_bytes!("testdata/selfsigned.der");
 
-// X.500 AttributeType OIDs (value bytes only, as the scanners match).
-const OID_CN: &[u8] = &[0x55, 0x04, 0x03];
-const OID_O: &[u8] = &[0x55, 0x04, 0x0A];
-
 #[test]
 fn real_cert_extracts_common_name() {
     // Self-signed ⇒ issuer CN == subject CN.
     assert_eq!(
-        extract_field_from_der(SELF_SIGNED_DER, OID_CN, true).as_deref(),
+        extract_field_from_der(SELF_SIGNED_DER, OID_CN, NameField::Issuer).as_deref(),
         Some("huntsman-test.example.com"),
         "issuer CN from real DER"
     );
     assert_eq!(
-        extract_field_from_der(SELF_SIGNED_DER, OID_CN, false).as_deref(),
+        extract_field_from_der(SELF_SIGNED_DER, OID_CN, NameField::Subject).as_deref(),
         Some("huntsman-test.example.com"),
         "subject CN from real DER"
     );
@@ -332,7 +328,7 @@ fn real_cert_extracts_common_name() {
 #[test]
 fn real_cert_extracts_organisation() {
     assert_eq!(
-        extract_field_from_der(SELF_SIGNED_DER, OID_O, true).as_deref(),
+        extract_field_from_der(SELF_SIGNED_DER, OID_O, NameField::Issuer).as_deref(),
         Some("Huntsman SE Test"),
         "issuer O from real DER"
     );
@@ -412,6 +408,67 @@ fn real_cert_parse_certificate_emits_subdomains_and_evidence() {
     );
 }
 
+// ── Each Name attribute comes from its own field ────────────────────────────
+// Legitimate certificates — nothing planted — shaped so that a scan of the
+// whole certificate, rather than of the one `Name` field asked about, reports
+// a value from the wrong field (REQ-CERTINTEL-002).
+
+fn evidence_for(der: &[u8]) -> Evidence {
+    let target = "host.example.com";
+    let mut entity = Entity::new(EntityKind::Domain, target, 0.9, "scan");
+    let mut ev = Evidence::new("cert_intel", "TLS certificate");
+    let mut result = ModuleResult::new();
+    let mut seen = HashSet::new();
+    parse_certificate(der, target, "scan", &mut entity, &mut ev, &mut result, &mut seen);
+    ev
+}
+
+#[test]
+fn an_issuer_without_an_organisation_does_not_borrow_the_subjects() {
+    // A private CA whose issuer DN is a bare CN, on a server certificate whose
+    // subject carries an O. Reporting the subject's company as `issuer_org`
+    // names the certificate's owner as its signer.
+    use crate::util::x509_field::test_der::{certificate, name};
+    let der = certificate(
+        &[0x01],
+        &name(&[(OID_CN, "Corp Internal CA")]),
+        &name(&[(OID_CN, "host.example.com"), (OID_O, "Subject Pty Ltd")]),
+        &[],
+    );
+    let ev = evidence_for(&der);
+    assert_eq!(ev.attributes.get("issuer").map(String::as_str), Some("Corp Internal CA"));
+    assert_eq!(
+        ev.attributes.get("issuer_org"),
+        None,
+        "the issuer has no organisation: {:?}",
+        ev.attributes
+    );
+}
+
+#[test]
+fn a_common_name_inside_an_extension_is_not_read_as_the_subject() {
+    // An Authority Key Identifier that names its issuer by directoryName
+    // (RFC 5280 §4.2.1.1, authorityCertIssuer) places a second CN after the
+    // subject. The subject is the subject field's CN, not the last CN in the
+    // certificate.
+    use crate::util::x509_field::test_der::{certificate, name, tlv};
+    let directory_name = tlv(0xA4, &name(&[(OID_CN, "Issuing CA Root")])); // [4] directoryName
+    let aki = tlv(0x30, &tlv(0xA1, &directory_name)); // { [1] authorityCertIssuer }
+    let mut extension = tlv(0x06, &[0x55, 0x1D, 0x23]); // id-ce-authorityKeyIdentifier
+    extension.extend(tlv(0x04, &aki)); // extnValue
+    let mut after_subject = tlv(0x30, &[]); // subjectPublicKeyInfo stand-in
+    after_subject.extend(tlv(0xA3, &tlv(0x30, &tlv(0x30, &extension)))); // [3] extensions
+
+    let der = certificate(
+        &[0x01],
+        &name(&[(OID_CN, "Issuing CA")]),
+        &name(&[(OID_CN, "host.example.com")]),
+        &after_subject,
+    );
+    let ev = evidence_for(&der);
+    assert_eq!(ev.attributes.get("subject").map(String::as_str), Some("host.example.com"));
+}
+
 // ── Property tests: DER scanners never panic on hostile bytes ───────────────
 // The scanners run on `peer_certificate()` bytes — attacker-controlled (the
 // remote server presents the cert). A panic in any of them is a remote DoS of a
@@ -422,7 +479,8 @@ mod prop {
     use proptest::prelude::*;
 
     use super::super::{
-        der_tlv_len, extract_field_from_der, extract_sans_from_der, extract_serial_hex,
+        NameField, OID_CN, OID_O, der_tlv_len, extract_field_from_der, extract_sans_from_der,
+        extract_serial_hex,
     };
 
     proptest! {
@@ -434,8 +492,8 @@ mod prop {
             let sans = extract_sans_from_der(&der);
             prop_assert!(sans.domains.iter().all(|s| s.len() <= 253));
             prop_assert!(sans.emails.iter().all(|s| s.len() <= 253));
-            let _ = extract_field_from_der(&der, &[0x55, 0x04, 0x03], true);
-            let _ = extract_field_from_der(&der, &[0x55, 0x04, 0x0A], false);
+            let _ = extract_field_from_der(&der, OID_CN, NameField::Issuer);
+            let _ = extract_field_from_der(&der, OID_O, NameField::Subject);
             let serial = extract_serial_hex(&der);
             // Serial hex is ≤20 bytes ⇒ ≤ 20*3 chars ("xx:" each, minus one colon).
             prop_assert!(serial.len() <= 60);

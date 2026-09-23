@@ -20618,3 +20618,84 @@ control locks this.
 | CW-P1 | the production path drifts | see apply log |
 
 **Falsification (compiled):** 8 of 8 killed.
+
+## REQ-CERTINTEL-002 — a certificate's issuer organisation and subject were read from the wrong field
+
+**Found** as a residual REQ-RESILIENCE-003 recorded against itself: the crate
+had two readers of certificate `Name` attributes. `util::x509_field` locates
+the `issuer`/`subject` field structurally (RFC 5280 §4.1) and scans only
+inside it. `modules::cert_intel` kept its own copy, which scanned the whole
+certificate. That entry called the copy's weakness a spoof, one that affects
+evidence rather than a security decision. Re-verified on `edec083b` before
+anything was designed, it turned out to be worse: it needs no attacker at
+all. It misreports **legitimate** certificates.
+
+### Observed, before any change (`edec083b`)
+
+`cert_intel::extract_field_from_der(der, oid, first)` returned the first
+match of `oid` anywhere in the certificate when `first` was true, and the
+last match anywhere when it was false. `parse_certificate` records three
+evidence attributes with it:
+
+- `issuer_org` (O, first match). When the issuer `Name` carries no O, which
+  is common for a private or enterprise CA named only by CN, the scan ran on
+  into the **subject** and recorded the certificate owner's company as its
+  signer.
+- `subject` (CN, last match). The last CN in the certificate is the subject's
+  only if nothing after the subject carries one. An Authority Key Identifier
+  that names its issuer by `directoryName` (§4.2.1.1, `authorityCertIssuer`)
+  puts a CN in the extensions, and that CN was recorded as the subject.
+- `issuer` (CN, first match) is right on a real certificate, since only the
+  version, serial and signature algorithm precede the issuer.
+
+Both wrong readings were reproduced through `parse_certificate` itself, on
+synthetic certificates with nothing planted: `issuer_org` came back
+`"Subject Pty Ltd"` where the issuer has none, and `subject` came back
+`"Issuing CA Root"` (the extension's CN) where the subject is
+`"host.example.com"`.
+
+The two readers also disagreed on their own interface. The same `bool`
+argument meant "last match anywhere" in `cert_intel` and "the subject field"
+in `util::x509_field`.
+
+### Implemented
+
+- `cert_intel`'s copy is deleted. `parse_certificate` and the fuzz entry
+  (`fuzz_entry_parse_der`) read through `util::x509_field`, so there is one
+  reader of certificate `Name` attributes, used by `core::outage`'s
+  TLS-interception check and by `cert_intel`'s evidence.
+- The `bool` is now `NameField::{Issuer, Subject}`. The meaning the two
+  readers disagreed on is spelled out at every call site, and a caller cannot
+  pass a position where a field is meant.
+- `cert_intel` uses the shared `OID_CN` / `OID_O` constants, not byte
+  literals.
+- `util::x509_field::test_der` is a `#[cfg(test)]` builder for synthetic
+  certificates (a `Name`, a v3 `Certificate`, one TLV), shared by both
+  modules' tests. `x509_field`'s forged-serial test moved onto it, which
+  retires the private builder that test used to carry.
+- Scope held: `cert_intel`'s SAN walk has a second DER length helper
+  (`der_tlv_len`) and a heuristic serial read. On a well-formed certificate
+  both agree with a structural reading, and neither was part of this defect.
+  They are left alone rather than churned.
+
+### Locks
+
+- `modules::cert_intel::tests` at the evidence boundary, through
+  `parse_certificate`:
+  - `an_issuer_without_an_organisation_does_not_borrow_the_subjects`;
+  - `a_common_name_inside_an_extension_is_not_read_as_the_subject`.
+- `util::x509_field::tests::each_field_is_read_from_its_own_name` sets
+  distinct issuer and subject values. The self-signed fixture every earlier
+  field test used has issuer == subject, so no earlier test could see the two
+  fields swapped.
+- The existing real-certificate tests in both modules pass unchanged (CN, O,
+  serial, SANs, and `parse_certificate`'s end-to-end evidence).
+
+### Falsification
+
+| # | mutation | result |
+|---|---|---|
+| CI2-B | **baseline**: `edec083b`'s whole-certificate reader, the two new `cert_intel` tests written first | both failed, with the exact values above |
+| CI2-S | `NameField::Issuer` and `NameField::Subject` arms swapped in the one reader | killed by 4: both `cert_intel` locks, `each_field_is_read_from_its_own_name`, and the forged-serial test. Both self-signed-fixture tests **survived**, which is why the distinct-value test exists |
+
+**2 of 2 killed**; the file was restored byte-identical (md5).
