@@ -20264,3 +20264,19 @@ the rung's only authority. The construction value is immaterial by design, so
 a mutation of it is equivalent. `baseline-candidate-tag` (dropping the
 demotion, the real baseline) is killed. That demotion now carries the whole
 invariant.
+## REQ-KEYSKIP-003 — PassiveTotal: a malformed `username:api_key` credential is refused, not a clean negative
+
+**Found:** In `src/modules/passivetotal/mod.rs`, when `HUNTSMAN_PASSIVETOTAL_KEY` was set but had no `:` or had a blank half (for example the bare api_key, `alice:` or `:key`), `process` returned `Ok(ModuleResult::new())` before sending any request. Dispatch recorded this as `ModuleDone{found:0}`, which coverage reads as `CleanNegative`, so a paid provider that was never asked was counted as a sweep. The REQ-KEYSKIP-001 comment eight lines above already states the rule this arm broke. The REQ-KEYSKIP-002 sweep did not cover it because the value was present but could not be split.
+
+**Implemented:** The two arms are now one `split_once(':').filter(both halves non-blank)` let-else. It returns `Error::MissingKey(KEY_ENV)`, the same authority the `None` arm uses, and logs a `tracing::warn!` that names the expected format. The plain `KEY_ENV` keeps dispatch's signup hint and releases the paid dedup entry.
+
+**Locks:** `modules::passivetotal::tests::a_malformed_credential_is_refused_not_a_clean_negative` and the over-correction guard `a_well_formed_credential_is_not_refused`.
+
+| Mutation | Expected failing test | Result |
+|---|---|---|
+| baseline (return Ok(empty)) | a_malformed_credential_is_refused_not_a_clean_negative | see apply log |
+| baseline-blank-half (filter always true) | a_malformed_credential_is_refused_not_a_clean_negative | see apply log |
+| overcorrect-refuse-all | a_well_formed_credential_is_not_refused | see apply log |
+| overcorrect-username-only | a_malformed_credential_is_refused_not_a_clean_negative | see apply log |
+
+**Falsification (compiled):** 4 of 4 killed.

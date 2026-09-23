@@ -490,3 +490,63 @@ fn an_ip_querys_note_is_an_ip_not_a_domain_named_after_it() {
         .expect("the per-query note");
     assert_eq!(note.kind, EntityKind::IpAddress);
 }
+
+fn keyed_ctx(value: &str) -> ModuleContext {
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(KEY_ENV.to_string(), value.to_string());
+    ModuleContext {
+        scan_id: "pt".into(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys,
+        cancel: crate::core::cancel::CancelHandle::new(),
+    }
+}
+
+// REQ-KEYSKIP-003: a present credential that does not split into
+// `username:api_key` is refused as MissingKey, never Ok(empty) — the request
+// is never sent, so Ok(empty) was a false CleanNegative. Offline: every case
+// returns before any request is built.
+#[tokio::test]
+async fn a_malformed_credential_is_refused_not_a_clean_negative() {
+    for raw in [
+        "0123456789abcdef0123456789abcdef",
+        "alice:",
+        ":0123456789abcdef",
+        "alice:   ",
+        "   :0123456789abcdef",
+    ] {
+        let ctx = keyed_ctx(raw);
+        for (kind, v) in [
+            (TargetKind::Domain, "example.com"),
+            (TargetKind::IpAddress, "203.0.113.7"),
+        ] {
+            let r = PassiveTotal.process(&Target::new(kind, v), &ctx).await;
+            match r {
+                Err(crate::core::error::Error::MissingKey(k)) => assert_eq!(k, KEY_ENV),
+                other => panic!(
+                    "{raw:?} / {kind:?}: malformed key must be MissingKey, got {:?}",
+                    other.map(|m| m.entities.len())
+                ),
+            }
+        }
+    }
+}
+
+// Over-correction guard: a well-formed credential is NOT refused. With the
+// scan already cancelled the retry loop returns before any request, so this
+// stays offline while proving the split accepted the value.
+#[tokio::test]
+async fn a_well_formed_credential_is_not_refused() {
+    let ctx = keyed_ctx("alice:0123456789abcdef");
+    ctx.cancel.cancel();
+    let r = PassiveTotal
+        .process(&Target::new(TargetKind::Domain, "example.com"), &ctx)
+        .await;
+    assert!(
+        r.is_ok(),
+        "a username:api_key credential must reach the request loop: {:?}",
+        r.err()
+    );
+}
