@@ -412,6 +412,13 @@ pub const CANARY_PROBES: &[(&str, TargetKind, &str)] = &[
     ),
     // The Python documentation's sitemap: one URL per documented version — 8.
     ("sitemap", TargetKind::Domain, "docs.python.org"),
+    // Google's OIDC discovery document — the validated issuer, its sibling
+    // endpoint hosts and its service documentation, verified 2026-09-23 through `probe_module` — 6. Verified
+    // on the engine's own direct route (`build_client` is `no_proxy()`), which
+    // is what the sweep uses: `mcp.atlassian.com` was rejected as a canary
+    // because its protected-resource document 404s on that route while
+    // answering through a proxy (REQ-APIDISCOVERY-001).
+    ("api_discovery", TargetKind::Domain, "accounts.google.com"),
 ];
 
 /// Whether `module` is a curated must-yield canary (see [`CANARY_PROBES`]).
