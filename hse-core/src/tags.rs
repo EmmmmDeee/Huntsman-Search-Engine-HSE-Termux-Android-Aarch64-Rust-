@@ -89,10 +89,18 @@ pub const GEOLOCATION_LEAD: &str = "geolocation-lead";
 /// Three separate passes refuse to treat it as precise, and this is the tag's
 /// whole purpose. A coarse `Address` is not a cross-scan bridge
 /// (`engine::history`), never links a household (`relation::builders` —
-/// two people sharing a postcode are not co-residents), and is not pivoted for
-/// recursive expansion (`engine`, which records the skip as
-/// `coarse_geo_not_pivoted`). It is still admissible as evidence; only these
-/// three inferences are withheld.
+/// two people sharing a postcode are not co-residents), and neither a coarse
+/// `Address` nor a coarse `Coordinates` is pivoted for recursive expansion
+/// (`engine`, which records the skip as `coarse_geo_not_pivoted`) or seeds an
+/// autonomous scan (`engine::ranking`). It is still admissible as evidence;
+/// only these inferences are withheld.
+///
+/// Every offline gazetteer centroid (`util::city_coords` returns a city, suburb
+/// or postcode centroid, never a street point) carries it: `search_engines`'
+/// known-city lookup ([`SEARCH_GEOCODED`]) and its recycled-snippet leg, and the
+/// engine's address-to-coordinates pass. Untagged, a Sydney CBD centroid was
+/// reverse-geocoded into "Kazan Dining, 25 Martin Place" at VERIFIED and handed
+/// to cadastre lookups as if it were the subject's parcel (REQ-GEO-007).
 pub const COARSE: &str = "coarse";
 /// Datacenter / CDN / cloud-host location, not a residence. Carried by
 /// coordinates that geolocate a hosting IP (e.g. a Cloudflare edge), so the
@@ -216,6 +224,13 @@ pub const CANDIDATE: &str = "candidate";
 /// Found via a **search engine or web archive** result, rather than by querying
 /// a source that holds the data itself.
 pub const SEARCH_DISCOVERED: &str = "search-discovered";
+/// A `Coordinates` that `search_engines` resolved from a snippet address through
+/// the offline known-city table — a city/suburb centroid, always also
+/// [`COARSE`]. The engine's pivot and autonomous-seed gates also read it on its
+/// own, so a centroid recalled from a scan that predates the [`COARSE`] tag
+/// (its stored tag set has no `coarse`) is still recognised as one
+/// (REQ-GEO-007).
+pub const SEARCH_GEOCODED: &str = "search-geocoded";
 /// **Derived from** a breach record rather than published in one — a domain
 /// split out of a breached email address, for example.
 ///

@@ -577,27 +577,53 @@ pub(in crate::modules::search_engines) fn extract_abn_acn_from_text(
 
 /// Extract organisation names from text. Looks for patterns like
 /// "Pty Ltd", "Inc", "LLC", "Corporation" near the target context.
+///
+/// One title span yields at most one organisation, bounded to the company name
+/// itself (REQ-SEARCH-010). Live scan 7258fc07 ("Ian Thorpe") showed three faults
+/// in the earlier per-suffix scan:
+///   * the overlapping variants (` Inc.` / ` Inc`, ` Pty Ltd` / ` Ltd`) each
+///     matched the same span, so one LinkedIn title minted both "Ian Thorpe -
+///     Thorpedo Inc" and "… Inc." — the suffixes are now tried longest-first and
+///     a suffix occurrence overlapping one already claimed is the same span;
+///   * the backward walk stopped only at `, . ; ( \n`, never at a SERP title
+///     separator (` - `, ` – `, ` — `, ` | `, ` · `, `•`, `›`), so the person's
+///     name and page boilerplate were glued onto the company ("Megan Thorpe Email
+///     & Phone Number | Covalent Lithium Pty Ltd") — it now also stops at those
+///     and at the end of the previous organisation in the text;
+///   * the subject-term filter then ran on that glued string, so the PERSON's
+///     name, not the company's, satisfied it and a namesake's employer was filed
+///     as a scan organisation. On the bounded span the filter keeps the
+///     extractor's contract: a company is kept only when its own name carries a
+///     subject term.
 pub(in crate::modules::search_engines) fn extract_organisations_from_text(
     text: &str,
     terms: &[String],
 ) -> Vec<String> {
+    // Longest variant first within each family, so the dotted / longer form
+    // claims a span before the shorter form inside it can.
     let suffixes = [
-        " Pty Ltd",
         " Pty. Ltd.",
         " Pty Limited",
-        " Inc.",
-        " Inc",
-        " LLC",
-        " Ltd",
-        " Ltd.",
-        " Limited",
+        " Pty Ltd",
         " Corporation",
+        " Limited",
+        " Inc.",
+        " Ltd.",
         " Corp.",
-        " Corp",
         " Co.",
+        " Inc",
+        " Ltd",
+        " Corp",
+        " LLC",
     ];
-    let mut orgs = Vec::new();
+    // SERP title separators: what sits before one is another field of the
+    // title (a person's name, "Email & Phone Number"), never the company name.
+    const TITLE_SEPARATORS: [&str; 7] = [" - ", " – ", " — ", " | ", " · ", "•", "›"];
     let bytes = text.as_bytes();
+    // Phase 1: the suffix occurrences, one per span, as `(start, end)` byte
+    // ranges. A Vec scanned linearly and sorted afterwards — deterministic, and
+    // a page carries a handful of suffixes at most.
+    let mut spans: Vec<(usize, usize)> = Vec::new();
     for suffix in &suffixes {
         // Case-insensitive search over the ORIGINAL `text`. We deliberately do
         // NOT index `text` with byte offsets taken from `text.to_lowercase()`:
@@ -626,25 +652,46 @@ pub(in crate::modules::search_engines) fn extract_organisations_from_text(
                 i += 1;
                 continue;
             }
-            // Walk backwards to the start of the org name.
-            let before = &text[..i];
-            let raw_start = before
-                .rfind([',', '.', ';', '(', '\n'])
-                .map_or(i.saturating_sub(60), |d| d + 1);
-            // The `i-60` fallback may land mid-code-point; snap forward to a
-            // boundary with the canonical primitive so the slice below is always
-            // valid. `i` is an ASCII (space) boundary and `raw_start <= i`, so the
-            // next boundary never overshoots `i`.
-            let name_start = crate::util::str_util::ceil_char_boundary(text, raw_start);
-            let org = text[name_start..end].trim();
-            if org.len() >= 5 && org.starts_with(|c: char| c.is_ascii_uppercase()) {
-                // Lowercase once per candidate rather than once per term.
-                let org_lower = org.to_lowercase();
-                if terms.iter().any(|t| org_lower.contains(t.as_str())) {
-                    orgs.push(org.to_string());
-                }
+            // A shorter variant inside a span a longer one already claimed
+            // (` Inc` in ` Inc.`, ` Ltd` in ` Pty Ltd`) is that same span.
+            if !spans.iter().any(|&(s, e)| i < e && s < end) {
+                spans.push((i, end));
             }
             i = end;
+        }
+    }
+    spans.sort_unstable();
+    // Phase 2: walk each span back to the start of its company name.
+    let mut orgs: Vec<String> = Vec::new();
+    let mut prev_end = 0;
+    for (i, end) in spans {
+        let before = &text[..i];
+        let punct = before.rfind([',', '.', ';', '(', '\n']).map(|d| d + 1);
+        // Every separator is a complete UTF-8 sequence, so `d + sep.len()` is a
+        // char boundary.
+        let separator = TITLE_SEPARATORS
+            .iter()
+            .filter_map(|sep| before.rfind(sep).map(|d| d + sep.len()))
+            .max();
+        let raw_start = punct
+            .max(separator)
+            .unwrap_or_else(|| i.saturating_sub(60))
+            .max(prev_end);
+        prev_end = end;
+        // The `i-60` fallback may land mid-code-point; snap forward to a
+        // boundary with the canonical primitive so the slice below is always
+        // valid. `i` is an ASCII (space) boundary and `raw_start <= i`, so the
+        // next boundary never overshoots `i`.
+        let name_start = crate::util::str_util::ceil_char_boundary(text, raw_start);
+        let org = text[name_start..end].trim();
+        if org.len() >= 5 && org.starts_with(|c: char| c.is_ascii_uppercase()) {
+            // Lowercase once per candidate rather than once per term.
+            let org_lower = org.to_lowercase();
+            if terms.iter().any(|t| org_lower.contains(t.as_str()))
+                && !orgs.iter().any(|o| o == org)
+            {
+                orgs.push(org.to_string());
+            }
         }
     }
     orgs

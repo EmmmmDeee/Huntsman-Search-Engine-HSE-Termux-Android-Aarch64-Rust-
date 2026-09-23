@@ -37,7 +37,10 @@ pub(in crate::modules::search_engines) fn score_username(
     // For a multi-part NAME the surname (last significant term) is the identity
     // anchor: a shared FIRST name alone cross-attributes different people (target
     // "Jordan Meyers" must not claim a stranger's "jordan_blake"), the same reason
-    // `url_matches_target` requires the surname in a path. A single-token target
+    // the URL-path gates require the surname in a path. The surname is necessary,
+    // not sufficient: `build_entities` scores only results that already name the
+    // subject (`result_names_the_subject`, which for a person also requires a
+    // compatible given name — REQ-SEARCH-008). A single-token target
     // (email handle, one-word name, bare username) IS its own anchor, so any
     // overlap counts. Given names still corroborate through the weaker signals
     // below — landing a first-name-only hit at CANDIDATE, not PROBABLE.
@@ -130,7 +133,7 @@ pub(in crate::modules::search_engines) fn score_username(
         score += 2;
     }
 
-    // Precision gate (mirrors `url_matches_target`): for a multi-part NAME the
+    // Precision gate (mirrors the URL-path gates): for a multi-part NAME the
     // surname is the identity anchor. A handle that matches only the GIVEN name —
     // however much it co-occurs (Signal 3) or resembles the seed stem (Signal 5) —
     // is a stranger risk ("jordan_blake" for "Jordan Meyers"), so first-name
@@ -159,15 +162,22 @@ pub(in crate::modules::search_engines) fn score_username(
     // counted twice more — then got recycled into a further search purely
     // because "lawnton" is a substring, pulling the business's web presence
     // into the subject's identity graph. Only a signal genuinely INDEPENDENT of
-    // surname-substring text matching should be able to override this gate:
-    // people-search provenance (Signal 2, from the HOST, not text content) or
-    // an explicit platform-targeted query (Signal 4, from the QUERY structure).
-    // Signals 3/5 don't count — they're driven by the same surname text the
-    // business page legitimately contains about itself, not independent
-    // evidence the candidate is a personal handle. A genuine "brett_lawnton" is
-    // unaffected (no foreign part). For common surnames in controls ("John Smith"),
-    // a bare surname anchor must pair with independent corroboration to prevent
-    // collisions with unrelated business names ("smith_engineering").
+    // surname-substring text matching may override this gate, and there is
+    // exactly one: people-search provenance (Signal 2), where the HOST itself
+    // asserts the identity. Signals 3/5 don't count — they're driven by the
+    // same surname text the business page legitimately contains about itself.
+    // Nor does a platform-targeted query (Signal 4): the `site:` operator is
+    // HSE's OWN query construction (`build_queries_fullname` dorks every
+    // multi-part name as `… site:instagram.com OR site:github.com …`), so it is
+    // true for every result of that query by construction. It restricts the
+    // platform; it says nothing about whether the handle is personal, and the
+    // engine matched on the very surname text the confound is about. Counting
+    // it lifted the facility handle `ianthorpe_aquatic` ("Ian Thorpe Aquatic
+    // Centre") to PROBABLE on a live "Ian Thorpe" scan and pivoted it into a
+    // follow-up handle search (REQ-SEARCH-011). Signal 4 still adds its +1. A
+    // genuine "brett_lawnton" is unaffected (no foreign part); a common-surname
+    // compound ("smith_engineering" for "John Smith") stays CANDIDATE unless a
+    // people-search host links it.
     let has_foreign_part = signal1
         && parts.iter().any(|p| {
             !terms.iter().any(|t| {
@@ -175,7 +185,7 @@ pub(in crate::modules::search_engines) fn score_username(
                 p.contains(tl.as_str()) || tl.contains(*p)
             })
         });
-    let independently_corroborated = people_search_hit || site_query_hit;
+    let independently_corroborated = people_search_hit;
     let score = if has_foreign_part && !independently_corroborated {
         score.min(2)
     } else {

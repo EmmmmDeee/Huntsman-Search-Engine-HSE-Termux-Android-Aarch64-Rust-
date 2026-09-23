@@ -244,6 +244,28 @@ use super::*;
         assert!(pivots.is_empty(), "non-social host must be skipped: {pivots:?}");
     }
 
+    #[test]
+    fn a_facility_slug_from_hses_own_site_dork_is_not_pivoted() {
+        // REQ-SEARCH-011, live scan 7258fc07: `ianthorpe_aquatic` was searched
+        // as a handle because HSE's own `site:instagram.com` dork lifted it past
+        // the business-slug gate, and the follow-up minted a second facility
+        // handle (`ianthorpeaquaticcentre`).
+        let target = Target::new(TargetKind::FullName, "Ian Thorpe");
+        let results = [SearchResult {
+            url: "https://www.instagram.com/ianthorpe_aquatic/?hl=en".to_string(),
+            title: "Ian Thorpe Aquatic Centre (@ianthorpe_aquatic)".to_string(),
+            snippet: "Instagram instagram.com › ianthorpe_aquatic Ian Thorpe Aquatic Centre"
+                .to_string(),
+            engine: "test",
+            query: "Ian Thorpe site:instagram.com OR site:github.com OR site:reddit.com".to_string(),
+        }];
+        let pivots = extract_username_pivots(&results, &target);
+        assert!(
+            !pivots.iter().any(|p| p == "\"ianthorpe_aquatic\""),
+            "a facility slug must not be pivoted: {pivots:?}"
+        );
+    }
+
     // ── extract_display_names_from_titles ────────────────────────────────────
 
     fn instagram_sr(username: &str, display: &str, query: &str) -> SearchResult {
@@ -333,6 +355,68 @@ use super::*;
             entities.is_empty(),
             "no seed term match → should emit nothing"
         );
+    }
+
+    #[test]
+    fn display_name_on_a_full_name_scan_is_high_only_for_the_subject() {
+        // REQ-SEARCH-009, live scan 7258fc07 ("Ian Thorpe"): every
+        // "<X> Thorpe (@h)" social title was minted a HIGH Person because the
+        // surname alone satisfied the seed-term check, and that HIGH copy undid
+        // the candidate demotion of the same name's family-member lead on merge.
+        let target = Target::new(TargetKind::FullName, "Ian Thorpe");
+        let sr = |url: &str, title: &str| SearchResult {
+            url: url.to_string(),
+            title: title.to_string(),
+            snippet: String::new(),
+            engine: "test",
+            query: "Ian Thorpe".to_string(),
+        };
+        let results = [
+            sr("https://x.com/IanThorpe", "Ian Thorpe (@IanThorpe) / X"),
+            sr(
+                "https://instagram.com/carlathorpe",
+                "Carla Thorpe (@carlathorpe) • Instagram photos and videos",
+            ),
+            sr(
+                "https://instagram.com/ianthorpe_aquatic",
+                "Ian Thorpe Aquatic Centre (@ianthorpe_aquatic) • Instagram photos and videos",
+            ),
+            sr("https://x.com/AThorpe_", "Alistair (@AThorpe_) on X"),
+        ];
+        let es = extract_display_names_from_titles(&results, &target, "s");
+        let ian = es
+            .iter()
+            .find(|e| e.value == "Ian Thorpe")
+            .expect("the subject's own display name is kept");
+        assert!((ian.confidence - confidence::HIGH).abs() < 1e-9);
+        assert!(!ian.has_tag("candidate"));
+        let carla = es
+            .iter()
+            .find(|e| e.value == "Carla Thorpe")
+            .expect("a same-surname relative is kept as a lead");
+        assert!(
+            carla.confidence <= crate::core::entity::CANDIDATE_CONF + 1e-9
+                && carla.has_tag("candidate")
+                && carla.has_tag("family-member"),
+            "a relative is a candidate lead, never HIGH: {carla:?}"
+        );
+        assert!(
+            !es.iter().any(|e| e.value.contains("Aquatic")),
+            "a facility is not a person: {es:?}"
+        );
+        assert!(
+            !es.iter().any(|e| e.value == "Alistair"),
+            "a mononym is not the subject: {es:?}"
+        );
+
+        // The relative's two copies (this one and `build_entities`' family
+        // lead) merge as a candidate, not PROBABLE.
+        let mut family = Entity::new(EntityKind::Person, "Carla Thorpe", confidence::LOW_MEDIUM, "s");
+        family.tag("family-member");
+        family.demote_to_candidate();
+        family.merge(carla.clone());
+        assert!(family.has_tag("candidate"), "merge keeps the demotion: {family:?}");
+        assert!(family.confidence <= crate::core::entity::CANDIDATE_CONF + 1e-9);
     }
 
     // ── extract_bio_aggregator_urls ──────────────────────────────────────────
@@ -541,5 +625,32 @@ fn a_recycled_subject_embedded_in_a_longer_word_is_not_named_by_it() {
             .iter()
             .map(|e| (e.kind.clone(), e.value.clone()))
             .collect::<Vec<_>>()
+    );
+}
+
+/// REQ-GEO-007 (the recycler's leg): a recycled snippet address resolved
+/// through the offline city table is a gazetteer centroid, tagged COARSE so the
+/// engine never pivots it as a precise point.
+#[test]
+fn a_recycled_address_centroid_is_coarse() {
+    let query = "\"Carla Thorpe\" address OR location OR city";
+    let named = SearchResult {
+        url: "https://example.com/people/carla-thorpe".to_string(),
+        title: "Carla Thorpe".to_string(),
+        snippet: "Carla Thorpe lives in Gatton, Queensland.".to_string(),
+        engine: "bing",
+        query: query.to_string(),
+    };
+    let mined = mine_recycled_results(&ModuleResult::new(), &[named], "scan");
+    let centroids: Vec<_> = mined
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .collect();
+    assert!(!centroids.is_empty(), "sanity: the city resolves: {mined:?}");
+    assert!(
+        centroids
+            .iter()
+            .all(|e| e.has_tag(crate::core::tags::COARSE)),
+        "{centroids:?}"
     );
 }

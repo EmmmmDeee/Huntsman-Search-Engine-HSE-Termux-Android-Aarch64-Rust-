@@ -194,7 +194,7 @@ pub fn is_autonomous_seed_candidate(e: &Entity) -> bool {
         EntityKind::Coordinates => {
             e.confidence >= 0.50
                 && !crate::core::correlator::is_infrastructure_geo(e)
-                && !e.has_tag(crate::core::tags::COARSE)
+                && !is_coarse_geo(e)
                 && !e.has_tag("postcode-only")
                 && !e.has_tag("candidate-suburb")
         }

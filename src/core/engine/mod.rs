@@ -72,8 +72,8 @@ use dispatch::{
     target_distinct_sources,
 };
 use enrich::{
-    address_to_coords_pass, enrich_geospatial, scan_entity_for_keys, seed_anchor_entity,
-    tag_breach_sector, tag_platform_infra,
+    address_to_coords_pass, enrich_geospatial, is_coarse_geo, scan_entity_for_keys,
+    seed_anchor_entity, tag_breach_sector, tag_platform_infra,
 };
 use expansion::{
     apply_roi_cutoff, budget_check, cmp_expansion_candidates, correlation_key,
@@ -2319,8 +2319,10 @@ impl ScanEngine {
                 // (`engine::history::is_cross_scan_candidate`); this closes the
                 // third, most consequential place a coarse geo fix was still
                 // treated as precise.
+                // `is_coarse_geo` also recognises a gazetteer centroid recalled
+                // from a scan that predates its `COARSE` tag (REQ-GEO-007).
                 if matches!(tk, TargetKind::Coordinates | TargetKind::Address)
-                    && entity.has_tag(crate::core::tags::COARSE)
+                    && is_coarse_geo(entity)
                 {
                     self.emit_excluded(scan_id, entity, "coarse_geo_not_pivoted");
                     continue;

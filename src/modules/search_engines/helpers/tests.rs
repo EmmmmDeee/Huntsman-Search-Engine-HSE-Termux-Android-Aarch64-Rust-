@@ -1022,3 +1022,49 @@ fn extract_snippet_near_returns_empty_when_anchor_absent() {
         "",
     );
 }
+
+/// REQ-SEARCH-008: a person's URL path names them only with a compatible given
+/// name beside the surname; a multi-part handle only with every part.
+#[test]
+fn url_matches_person_target_needs_the_given_name_beside_the_surname() {
+    let terms = vec!["ian".to_string(), "thorpe".to_string()];
+    for url in [
+        "https://www.spokeo.com/Mark-Thorpe",
+        "https://www.spokeo.com/Bill-Thorpe/Florida",
+        "https://example.com/thorpe",
+    ] {
+        assert!(
+            !url_matches_person_target(url, "Ian Thorpe", &terms),
+            "{url}"
+        );
+    }
+    for url in [
+        "https://www.linkedin.com/in/ian-thorpe-4b080523/",
+        "https://example.com/i-thorpe",
+        "https://example.com/thorpe-ian",
+    ] {
+        assert!(
+            url_matches_person_target(url, "Ian Thorpe", &terms),
+            "{url}"
+        );
+    }
+    // A mononym keeps the single-anchor check.
+    let cher = vec!["cher".to_string()];
+    assert!(url_matches_person_target(
+        "https://example.com/cher",
+        "Cher",
+        &cher
+    ));
+
+    // A multi-part handle needs every part; a single-part handle is its own anchor.
+    assert!(!url_matches_handle_target(
+        "https://facebook.com/mark.thorpe.9",
+        &terms
+    ));
+    assert!(url_matches_handle_target(
+        "https://instagram.com/ian_thorpe",
+        &terms
+    ));
+    let one = vec!["ryno23".to_string()];
+    assert!(url_matches_handle_target("https://x.com/ryno23", &one));
+}

@@ -151,9 +151,42 @@ pub(super) fn seed_anchor_entity(
 /// bare, unsupported address string doesn't assert a footprint. The derived
 /// Coordinates entity inherits the Address's sources and confidence (capped at
 /// 0.72 — city-centroid precision is inherently coarser than a GPS fix), and is
-/// tagged `addr-derived` so it is distinguishable from a direct geocode. An
+/// tagged `addr-derived` so it is distinguishable from a direct geocode, and
+/// [`COARSE`](crate::core::tags::COARSE) because `city_coords` has no street-level
+/// result: even a full street address (`390, Simpsons Road, Bardon …`) resolves
+/// to the Brisbane CBD centroid, which the next round then pivoted into reverse
+/// geocoders and a cadastre lookup that returned a stranger's land parcel
+/// (REQ-GEO-007). An
 /// existing Coordinates uid (same `lat,lon` value) is detected by the caller via
 /// the normal merge path; we never re-emit duplicates within the same pass.
+/// The evidence attribute [`address_to_coords_pass`] stamps with the source
+/// Address's uid — written by that pass alone, so [`is_coarse_geo`] reads it as
+/// the pass's signature on a centroid recalled without its tag.
+const ADDR_ENTITY_UID_ATTR: &str = "addr_entity_uid";
+
+/// Whether a geo entity is an area standing in for a place — the one predicate
+/// behind the engine's `coarse_geo_not_pivoted` gate and the autonomous-seed
+/// gate (`ranking::is_autonomous_seed_candidate`), so the two can't disagree.
+///
+/// A [`COARSE`](crate::core::tags::COARSE) tag decides it. A `Coordinates` is
+/// ALSO recognised as a gazetteer centroid by the signature of the two paths
+/// that mint one without a module-supplied grain: `search_engines`' known-city
+/// lookup ([`SEARCH_GEOCODED`](crate::core::tags::SEARCH_GEOCODED)) and
+/// [`address_to_coords_pass`] (its `addr_entity_uid` evidence). Both now tag
+/// `COARSE` themselves; the signature check is for a centroid recalled from a
+/// scan that predates that tag — it is re-hydrated with its stored tag set, has
+/// no `coarse`, and otherwise went on being pivoted into reverse geocoders and
+/// cadastre lookups as a precise point (REQ-GEO-007).
+pub(super) fn is_coarse_geo(e: &crate::core::entity::Entity) -> bool {
+    use crate::core::entity::EntityKind;
+    e.has_tag(crate::core::tags::COARSE)
+        || (e.kind == EntityKind::Coordinates
+            && (e.has_tag(crate::core::tags::SEARCH_GEOCODED)
+                || e.evidence
+                    .iter()
+                    .any(|ev| ev.attributes.contains_key(ADDR_ENTITY_UID_ATTR))))
+}
+
 pub(super) fn address_to_coords_pass(
     entities: &std::collections::HashMap<String, crate::core::entity::Entity>,
     scan_id: &str,
@@ -224,6 +257,7 @@ pub(super) fn address_to_coords_pass(
         let conf = addr_entity.confidence.clamp(0.50, 0.72);
         let mut c = Entity::new(EntityKind::Coordinates, &coord_val, conf, scan_id);
         c.tag(crate::core::tags::ADDR_DERIVED);
+        c.tag(crate::core::tags::COARSE);
         c.tag("geoint");
         // Propagate au-state from the address so AU-056 jurisdiction check works.
         for tag in &addr_entity.tags {
@@ -242,7 +276,7 @@ pub(super) fn address_to_coords_pass(
                         addr_entity.value
                     ),
                 )
-                .with_attr("addr_entity_uid", &addr_entity.uid)
+                .with_attr(ADDR_ENTITY_UID_ATTR, &addr_entity.uid)
                 .with_attr("addr_value", &addr_entity.value),
             );
         }
@@ -709,5 +743,54 @@ mod tests {
                 coords[0].confidence
             );
         }
+    }
+
+    /// REQ-GEO-007: `city_coords` has no street-level result, so even a full
+    /// street address becomes a city centroid — tagged COARSE so the engine
+    /// never pivots it as a precise point.
+    #[test]
+    fn an_offline_address_centroid_is_coarse() {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let mut a = Entity::new(
+            EntityKind::Address,
+            "390, Simpsons Road, Bardon West, Bardon, Brisbane, Queensland, 4065, Australia",
+            0.78,
+            "s1",
+        );
+        a.add_evidence(Evidence::new("geocode", "forward geocode"));
+        let mut m = std::collections::HashMap::new();
+        m.insert(a.uid.clone(), a);
+        let out = address_to_coords_pass(&m, "s1");
+        assert_eq!(out.len(), 1, "sanity: the address resolves: {out:?}");
+        let c = &out[0];
+        assert!(c.has_tag(crate::core::tags::ADDR_DERIVED));
+        assert!(c.has_tag(crate::core::tags::COARSE), "{c:?}");
+        assert!(is_coarse_geo(c));
+    }
+
+    /// REQ-GEO-007: a centroid recalled from a scan that predates the COARSE
+    /// tag is still recognised by the signature of the path that minted it.
+    #[test]
+    fn is_coarse_geo_recognises_an_untagged_legacy_centroid() {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let mut search = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.6, "s1");
+        search.tag("search-geocoded");
+        search.add_evidence(
+            Evidence::new("search_engines", "Geocoded from search address: Sydney")
+                .with_attr("method", "known-city-lookup"),
+        );
+        assert!(is_coarse_geo(&search));
+
+        let mut pass = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.6, "s1");
+        pass.add_evidence(
+            Evidence::new("geocode", "Inline geocode").with_attr("addr_entity_uid", "x"),
+        );
+        assert!(is_coarse_geo(&pass));
+
+        // A precise fix from a geocoder is not coarse.
+        let mut fix = Entity::new(EntityKind::Coordinates, "-27.4766,153.0166", 0.8, "s1");
+        fix.tag("addr-derived");
+        fix.add_evidence(Evidence::new("geocode", "forward geocode"));
+        assert!(!is_coarse_geo(&fix));
     }
 }

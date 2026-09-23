@@ -1062,10 +1062,28 @@ fn address_corroboration_cannot_reach_verified_on_a_surname_placename_collision(
     // ("search_engines"), so `source_count()` is always 1 and `c_effective()`
     // equals the raw (capped) `confidence` — repetition alone must never be
     // able to cross `Classification::VERIFIED_MIN` (confidence::VERY_HIGH).
+    //
+    // Since REQ-SEARCH-008 a suburb page that carries only the surname no
+    // longer names the subject at all, so it mints nothing; the cap stays the
+    // defence for pages that DO name the subject (here in the URL) and repeat
+    // the same locality.
     let target = Target::new(TargetKind::FullName, "Brett Lawnton");
-    let mk = |n: usize| SearchResult {
+    let suburb_only = |n: usize| SearchResult {
         url: format!("https://view.com.au/property/qld/lawnton-4501/listing-{n}/"),
         title: "Property for sale".to_string(),
+        snippet: "Located in Lawnton, QLD 4501".to_string(),
+        engine: "brave",
+        query: "Brett Lawnton".to_string(),
+    };
+    let suburb: Vec<SearchResult> = (0..99).map(suburb_only).collect();
+    let res = build_entities(&target, "s", &suburb, &url_engine_counts(&suburb));
+    assert!(
+        !res.entities.iter().any(|e| e.kind == EntityKind::Address),
+        "a page about the suburb, not the subject, mints no address"
+    );
+    let mk = |n: usize| SearchResult {
+        url: format!("https://example.com/people/brett-lawnton/record-{n}"),
+        title: "Property record".to_string(),
         snippet: "Located in Lawnton, QLD 4501".to_string(),
         engine: "brave",
         query: "Brett Lawnton".to_string(),
@@ -1106,8 +1124,8 @@ fn address_corroboration_counts_each_result_once_despite_two_extracted_variants(
     // produce EXACTLY corroboration=2 (one per real result), not 4.
     let target = Target::new(TargetKind::FullName, "Brett Lawnton");
     let mk = |n: usize| SearchResult {
-        url: format!("https://view.com.au/property/qld/lawnton-4501/listing-{n}/"),
-        title: "Property for sale".to_string(),
+        url: format!("https://example.com/people/brett-lawnton/record-{n}"),
+        title: "Property record".to_string(),
         snippet: "Located in Lawnton, QLD 4501".to_string(),
         engine: "brave",
         query: "Brett Lawnton".to_string(),
@@ -3121,6 +3139,8 @@ fn court_record_hits_are_source_documents_never_pivots() {
     // judgment or a court list — a document that names every party, counsel and
     // witness in it — so the Url must carry the tag the engine refuses to pivot
     // on, whichever host in the dork set served it. An ordinary page is untagged.
+    // The paths name the subject (given name + surname): a path carrying only
+    // the surname does not name a person (REQ-SEARCH-008).
     let target = Target::new(TargetKind::FullName, "Jordan Avery");
     let mk = |url: &str| SearchResult {
         url: url.to_string(),
@@ -3130,10 +3150,12 @@ fn court_record_hits_are_source_documents_never_pivots() {
         query: "\"Jordan Avery\" site:austlii.edu.au".to_string(),
     };
     let results = vec![
-        mk("https://www.austlii.edu.au/cgi-bin/viewdoc/au/cases/nsw/NSWSC/2022/avery.html"),
-        mk("https://www.courts.qld.gov.au/__data/assets/pdf_file/0011/1234/avery-v-someone.pdf"),
-        mk("https://jade.io/article/9876/section/avery"),
-        mk("https://www.supremecourt.wa.gov.au/_files/avery-judgment.pdf"),
+        mk("https://www.austlii.edu.au/cgi-bin/viewdoc/au/cases/nsw/NSWSC/2022/jordan-avery.html"),
+        mk(
+            "https://www.courts.qld.gov.au/__data/assets/pdf_file/0011/1234/jordan-avery-v-someone.pdf",
+        ),
+        mk("https://jade.io/article/9876/section/jordan-avery"),
+        mk("https://www.supremecourt.wa.gov.au/_files/jordan-avery-judgment.pdf"),
         mk("https://example-portfolio.com/jordan-avery"),
     ];
     let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
@@ -3294,4 +3316,235 @@ fn the_listing_title_filter_reads_the_surname_of_a_decorated_or_reversed_seed() 
             "seed {seed:?}: a listing title is not a locality: {addrs:?}"
         );
     }
+}
+
+// ── Scan 7258fc07 ("Ian Thorpe") search-extraction batch ─────────────────────
+
+fn thorpe_result(url: &str, title: &str, snippet: &str, query: &str) -> SearchResult {
+    SearchResult {
+        url: url.to_string(),
+        title: title.to_string(),
+        snippet: snippet.to_string(),
+        engine: "brave",
+        query: query.to_string(),
+    }
+}
+
+/// REQ-PHONEAU-002: the numeric ID in a result's breadcrumb title is not an AU
+/// phone number. All six phones of scan 7258fc07 were `+61` + such an ID.
+#[test]
+fn a_breadcrumb_numeric_id_is_never_minted_as_a_phone() {
+    let target = Target::new(TargetKind::FullName, "Aidan Thorpe");
+    let results = vec![thorpe_result(
+        "https://www.findagrave.com/memorial/282246704/aidan-thorpe",
+        "www.findagrave.com › memorial › 282246704 › aidan-thorpe",
+        "Aidan Thorpe (1996-1996) Find a Grave Memorial",
+        "\"Aidan Thorpe\"",
+    )];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        !res.entities.iter().any(|e| e.kind == EntityKind::Phone),
+        "a memorial ID is not a phone: {:?}",
+        res.entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Phone)
+            .map(|e| &e.value)
+            .collect::<Vec<_>>()
+    );
+    assert!(extract_phones_from_text("rocketreach.co › aidan-thorpe-email_760001357").is_empty());
+}
+
+/// REQ-SEARCH-007: ABN/ACN mining sits behind the same subject-relevance gate
+/// as every other snippet extractor.
+#[test]
+fn abn_in_a_result_not_naming_the_subject_is_not_mined() {
+    let target = Target::new(TargetKind::FullName, "Ian Thorpe");
+    let bank = vec![SearchResult {
+        url: "https://www.anz.com.au/support/online-banking/internet-banking/".to_string(),
+        title: "Internet banking | ANZ".to_string(),
+        snippet: "Australia and New Zealand Banking Group Limited ABN 11 005 357 522".to_string(),
+        engine: "bing",
+        query: "\"Ian Thorpe\"".to_string(),
+    }];
+    let res = build_entities(&target, "s", &bank, &url_engine_counts(&bank));
+    assert!(
+        !res.entities.iter().any(|e| e.kind == EntityKind::AbnAcn),
+        "a bank's own ABN on a page that never names the subject is not theirs"
+    );
+
+    // A location seed never mines snippet PII at all.
+    let place = Target::new(TargetKind::Address, "Sydney, Australia");
+    let registry = vec![SearchResult {
+        url: "https://abr.business.gov.au/ABN/View/15211513464".to_string(),
+        title: "ABN Lookup".to_string(),
+        snippet: "ABN 15 211 513 464 Active".to_string(),
+        engine: "bing",
+        query: "\"Sydney, Australia\"".to_string(),
+    }];
+    let res = build_entities(&place, "s", &registry, &url_engine_counts(&registry));
+    assert!(!res.entities.iter().any(|e| e.kind == EntityKind::AbnAcn));
+
+    // Over-correction control: a result that names the subject still yields
+    // the ABN it carries.
+    let own = vec![SearchResult {
+        url: "https://example.com.au/about".to_string(),
+        title: "About us".to_string(),
+        snippet: "Ian Thorpe, director — Thorpe Holdings Pty Ltd ABN 11 005 357 522".to_string(),
+        engine: "bing",
+        query: "\"Ian Thorpe\"".to_string(),
+    }];
+    let res = build_entities(&target, "s", &own, &url_engine_counts(&own));
+    assert!(
+        res.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::AbnAcn && e.value == "11005357522"),
+        "an ABN on a page naming the subject is still mined"
+    );
+}
+
+/// REQ-SEARCH-008: a result that carries only the subject's surname — beside
+/// another given name, or alone — does not name a `FullName` subject, so it
+/// neither re-affirms the seed nor has its contacts, companies or URL mined.
+#[test]
+fn a_surname_only_result_does_not_name_a_full_name_subject() {
+    let target = Target::new(TargetKind::FullName, "Ian Thorpe");
+    let bill = || {
+        thorpe_result(
+            "https://www.spokeo.com/Bill-Thorpe/Florida",
+            "Bill Thorpe, Florida (73 matches): Phone Number, Email, Address - Spokeo",
+            "spokeo.com › people search › thorpe › bill thorpe › florida call 0410 959 140 \
+         bill.thorpe@example.com",
+            "\"Ian Thorpe\" site:spokeo.com",
+        )
+    };
+    let jamie = || {
+        thorpe_result(
+            "https://creditorwatch.com.au/credit/profile/74067173835",
+            "JAMIE THORPE PLUMBING PTY LTD - ABN 74067173835 - ACN 067173835 - Business Profile / \
+         Credit Report",
+            "CreditorWatch creditorwatch.com.au › credit › profile › JAMIE THORPE PLUMBING PTY LTD",
+            "\"Ian Thorpe\" ABN OR ACN OR \"Pty Ltd\" OR director",
+        )
+    };
+    let ian = thorpe_result(
+        "https://www.linkedin.com/in/ian-thorpe-4b080523/",
+        "Ian Thorpe - Commercial Portfolio Management Pty Ltd | LinkedIn",
+        "Ian Thorpe. Director, Thorpe Portfolio Management Pty Ltd.",
+        "\"Ian Thorpe\"",
+    );
+
+    let namesakes = vec![bill(), jamie()];
+    let res = build_entities(&target, "s", &namesakes, &url_engine_counts(&namesakes));
+    assert!(
+        !res.entities.iter().any(|e| e.has_tag("search-enriched")),
+        "namesake-only results must not re-affirm the seed"
+    );
+
+    let results = vec![bill(), jamie(), ian];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    let values = |k: EntityKind| -> Vec<&str> {
+        res.entities
+            .iter()
+            .filter(|e| e.kind == k)
+            .map(|e| e.value.as_str())
+            .collect()
+    };
+    assert!(
+        !values(EntityKind::Url)
+            .iter()
+            .any(|u| u.contains("Bill-Thorpe")),
+        "{:?}",
+        values(EntityKind::Url)
+    );
+    assert!(
+        values(EntityKind::Phone).is_empty(),
+        "{:?}",
+        values(EntityKind::Phone)
+    );
+    assert!(
+        values(EntityKind::Email).is_empty(),
+        "{:?}",
+        values(EntityKind::Email)
+    );
+    assert!(
+        values(EntityKind::AbnAcn).is_empty(),
+        "{:?}",
+        values(EntityKind::AbnAcn)
+    );
+    assert!(
+        !values(EntityKind::Organisation)
+            .iter()
+            .any(|o| o.contains("JAMIE THORPE")),
+        "{:?}",
+        values(EntityKind::Organisation)
+    );
+    // The subject's own result is still mined.
+    assert!(
+        values(EntityKind::Url)
+            .iter()
+            .any(|u| u.contains("linkedin.com/in/ian-thorpe-4b080523")),
+        "{:?}",
+        values(EntityKind::Url)
+    );
+    assert!(
+        values(EntityKind::Organisation)
+            .iter()
+            .any(|o| o.contains("Thorpe Portfolio Management")),
+        "{:?}",
+        values(EntityKind::Organisation)
+    );
+    assert!(res.entities.iter().any(|e| e.has_tag("search-enriched")));
+
+    // A multi-part handle is named by all of its parts, not the surname alone.
+    let handle = Target::new(TargetKind::Username, "ian_thorpe");
+    let mark = vec![SearchResult {
+        url: "https://facebook.com/mark.thorpe.9".to_string(),
+        title: "Mark Thorpe | Facebook".to_string(),
+        snippet: String::new(),
+        engine: "brave",
+        query: "\"ian_thorpe\"".to_string(),
+    }];
+    let res = build_entities(&handle, "s", &mark, &url_engine_counts(&mark));
+    assert!(
+        !res.entities.iter().any(|e| e.has_tag("search-enriched")),
+        "`thorpe` alone does not name the handle `ian_thorpe`"
+    );
+    assert!(!res.entities.iter().any(|e| e.kind == EntityKind::Url));
+}
+
+/// REQ-GEO-007: a known-city-lookup centroid is COARSE, so the engine never
+/// pivots it into reverse geocoders and cadastre lookups as a precise point.
+#[test]
+fn a_known_city_lookup_centroid_is_coarse_and_never_a_precise_pivot() {
+    let target = Target::new(TargetKind::FullName, "Brett Lawnton");
+    let results = vec![SearchResult {
+        url: "https://example.com/people/brett-lawnton".to_string(),
+        title: "Property record".to_string(),
+        snippet: "Located in Lawnton, QLD 4501".to_string(),
+        engine: "brave",
+        query: "\"Brett Lawnton\"".to_string(),
+    }];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    let centroids: Vec<_> = res
+        .entities
+        .iter()
+        .filter(|e| {
+            e.kind == EntityKind::Coordinates
+                && e.evidence.iter().any(|ev| {
+                    ev.attributes.get("method").map(String::as_str) == Some("known-city-lookup")
+                })
+        })
+        .collect();
+    assert!(
+        !centroids.is_empty(),
+        "sanity: the lookup must fire: {:?}",
+        res.entities
+    );
+    assert!(
+        centroids
+            .iter()
+            .all(|e| e.has_tag(crate::core::tags::COARSE)
+                && e.has_tag(crate::core::tags::SEARCH_GEOCODED)),
+        "{centroids:?}"
+    );
 }

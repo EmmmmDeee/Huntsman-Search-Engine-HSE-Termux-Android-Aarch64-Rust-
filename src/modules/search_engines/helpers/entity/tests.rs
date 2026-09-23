@@ -281,8 +281,8 @@ use super::*;
         // "smith" without an independent signal. The bare surname anchor is too weak
         // for common names — "smith_engineering" for "John Smith" is a business name
         // that happens to contain a popular surname, not a personal handle for John.
-        // Without independent corroboration (people-search host or site: query),
-        // Signal 1 alone must not clear the PROBABLE gate.
+        // Without independent corroboration (a people-search host), Signal 1
+        // alone must not clear the PROBABLE gate.
         let terms = vec!["john".to_string(), "smith".to_string()];
         let r = sr(
             "Smith Engineering",
@@ -297,7 +297,9 @@ use super::*;
         );
         assert_eq!(conf, 0.30);
 
-        // With a site: query targeting the platform, the surname anchor clears the gate
+        // A site: query targeting the platform is HSE's own query construction,
+        // not independent evidence (REQ-SEARCH-011): the business slug stays
+        // CANDIDATE under it.
         let r_with_site = sr(
             "Smith Engineering",
             "business profile",
@@ -306,10 +308,10 @@ use super::*;
         );
         let (score_site, conf_site) = score_username("smith_engineering", "github.com", &terms, &r_with_site);
         assert!(
-            score_site >= 3,
-            "surname anchor + platform-targeted query must reach PROBABLE: {score_site}"
+            score_site < 3,
+            "HSE's own site: dork must not lift a business slug to PROBABLE: {score_site}"
         );
-        assert_eq!(conf_site, confidence::MEDIUM_HIGH);
+        assert_eq!(conf_site, 0.30);
 
         // With people-search provenance, the surname anchor clears the gate
         let r_people_search = sr(
@@ -324,6 +326,88 @@ use super::*;
             "surname anchor + people-search host must reach PROBABLE: {score_ps}"
         );
         assert_eq!(conf_ps, confidence::MEDIUM_HIGH);
+    }
+
+    #[test]
+    fn score_username_site_query_does_not_lift_business_slug_gate() {
+        // REQ-SEARCH-011, live scan 7258fc07 ("Ian Thorpe"): the facility handle
+        // `ianthorpe_aquatic` reached PROBABLE and was pivoted into a follow-up
+        // handle search only because HSE's own `site:instagram.com` dork
+        // returned it.
+        let terms = vec!["ian".to_string(), "thorpe".to_string()];
+        let r = sr(
+            "Ian Thorpe Aquatic Centre (@ianthorpe_aquatic)",
+            "Instagram instagram.com › ianthorpe_aquatic Ian Thorpe Aquatic Centre (@ianthorpe_aquatic)",
+            "https://www.instagram.com/ianthorpe_aquatic/?hl=en",
+            "Ian Thorpe site:instagram.com OR site:github.com OR site:reddit.com",
+        );
+        let (score, conf) = score_username("ianthorpe_aquatic", "www.instagram.com", &terms, &r);
+        assert!(
+            score < 3,
+            "a facility slug must not reach PROBABLE via HSE's own site: dork: {score}"
+        );
+        assert_eq!(conf, 0.30);
+
+        // A genuine handle under the same query is unaffected.
+        let r2 = sr(
+            "Ian Thorpe (@ian_thorpe)",
+            "",
+            "https://www.instagram.com/ian_thorpe/",
+            "Ian Thorpe site:instagram.com",
+        );
+        let (s2, c2) = score_username("ian_thorpe", "www.instagram.com", &terms, &r2);
+        assert!(s2 >= 3, "a real firstname_lastname handle stays PROBABLE: {s2}");
+        assert_eq!(c2, confidence::MEDIUM_HIGH);
+    }
+
+    #[test]
+    fn an_org_title_span_yields_one_bounded_org_without_the_person_or_boilerplate() {
+        // REQ-SEARCH-010, live scan 7258fc07 ("Ian Thorpe"): one LinkedIn title
+        // minted 'Ian Thorpe - Thorpedo Inc' AND 'Ian Thorpe - Thorpedo Inc.',
+        // and namesakes' employers were admitted because the person's name,
+        // glued onto the company, carried the subject term.
+        let terms = vec!["ian".to_string(), "thorpe".to_string()];
+        assert_eq!(
+            extract_organisations_from_text("Ian Thorpe - Thorpedo Inc. | LinkedIn", &terms),
+            vec!["Thorpedo Inc.".to_string()],
+            "one org, no person prefix, no suffix-variant duplicate"
+        );
+        // A namesake's employer carries no subject term once the person prefix
+        // is cut off.
+        for title in [
+            "Ian Thorpe - Commercial Portfolio Management Pty Ltd | LinkedIn",
+            "Megan Thorpe Email & Phone Number | Covalent Lithium Pty Ltd",
+            "Ian Thorpe – SEL UK Ltd",
+            "Carol Thorpe — Perspective Financial Group Ltd",
+            "Ian Thorpe › Some Other Co.",
+        ] {
+            assert!(
+                extract_organisations_from_text(title, &terms).is_empty(),
+                "{title:?} -> {:?}",
+                extract_organisations_from_text(title, &terms)
+            );
+        }
+        // Every dotted/undotted and nested pair collapses to one org.
+        let t = vec!["acme".to_string()];
+        assert_eq!(
+            extract_organisations_from_text("Acme Corp. - Home", &t),
+            vec!["Acme Corp.".to_string()]
+        );
+        assert_eq!(
+            extract_organisations_from_text("Acme Holdings Pty Ltd", &t),
+            vec!["Acme Holdings Pty Ltd".to_string()]
+        );
+        assert_eq!(
+            extract_organisations_from_text("Acme Holdings Pty. Ltd. | Acme Pty Limited", &t),
+            vec!["Acme Holdings Pty. Ltd.".to_string(), "Acme Pty Limited".to_string()]
+        );
+        // Two companies in one run of prose are two spans, never one glued org.
+        let two = extract_organisations_from_text("Beta Ltd and Acme Pty Ltd", &t);
+        assert!(!two.iter().any(|o| o.starts_with("Beta")), "{two:?}");
+        assert_eq!(
+            extract_organisations_from_text("Beta Ltd, Acme Pty Ltd", &t),
+            vec!["Acme Pty Ltd".to_string()]
+        );
     }
 
     // ── normalise_address_key ────────────────────────────────────────────────

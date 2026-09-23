@@ -20375,3 +20375,156 @@ control locks this.
 | CW-P1 | the production path drifts | see apply log |
 
 **Falsification (compiled):** 8 of 8 killed.
+
+## REQ-PHONEAU-002 / REQ-SEARCH-007 / REQ-SEARCH-008 / REQ-SEARCH-009 / REQ-SEARCH-010 / REQ-SEARCH-011 / REQ-GEO-007 — search-result extraction minted a namesake's page, a breadcrumb ID and a city centroid as the subject's
+
+**Found** in the second read of the same "Ian Thorpe" scan (7258fc07) after
+#645: seven faults that survived it, all in how `search_engines` turns a
+result into entities. Each was verified adversarially against the exports and
+the code before it was fixed.
+
+**REQ-PHONEAU-002 — a breadcrumb ID was an AU phone.** All six Phone entities
+of the scan were `+61` prefixed to a 9-digit ID from a Brave breadcrumb title
+(`findagrave.com › memorial › 282246704`, `…-email_392575227`). The free-text
+scanner `util::address_au::extract_phones` has an optional country code, an
+optional area code and no token boundary, so any run of six or more digits
+matched, and it handed each match to `normalise_phone`, whose bare-9-digit
+branch exists only for a STRUCTURED import column that dropped its leading
+`0` (REQ-PHONEAU-001: a marker-less national number "carries zero evidence
+of being Australian"). The scanner now keeps a match only when it is a whole
+token and carries its own AU marker (`+61`/`0061`/`61`, a trunk `0`, or
+`1300`/`1800`). `normalise_phone` is unchanged — the import paths rely on it.
+The three free-text consumers (`search_engines` result and recycled
+snippets, `employer_pivot`, which minted such a number at HIGH with
+`country:AU`) inherit the fix.
+
+**REQ-SEARCH-007 — ABN/ACN mining skipped the relevance gate.** Every other
+snippet miner sits inside `if result_names_the_subject`; the ABN/ACN loop ran
+after the block closed, on every result. It minted ANZ's own ABN off a bank
+support page and two ABNs from registry pages a "Sydney, Australia" location
+seed returned — breaking the documented rule that a location seed never mines
+snippet PII. The loop moved inside the gate.
+
+**REQ-SEARCH-008 — the surname alone named a person.** `names_the_subject`
+(behind the seed's re-affirmation and every snippet miner) and
+`url_matches_target` (behind every result/snippet `Url`) accepted a
+`FullName` subject on its surname alone, and a handle `ian_thorpe` on
+`thorpe` alone. Thirteen Spokeo pages for Bill, David, Ivan, Mark and other Thorpes were
+the subject's own `Url`s at 0.50, and "JAMIE THORPE PLUMBING PTY LTD" an
+organisation at generation 0. #645's name-structure rule reached only Person
+pivots. `core::scan::text_names_person` is the search-admission sibling of
+`person_names_compatible`, sharing its parser: the surname must carry a
+compatible given name directly before it, two before it across an initial or
+a space-separated middle name, or (surname-first) the full given name after
+it. A mononym returns `None` and keeps the single-term check. A multi-part
+handle is named by all of its parts (`url_matches_handle_target`), the shape
+of the Organisation gate.
+
+**REQ-SEARCH-009 — a relative's social display name was HIGH.**
+`extract_display_names_from_titles` accepted any `<Caps words> (@h)` title
+containing a 4+-char seed term — for "Ian Thorpe" the surname — and minted it
+a `Person` at HIGH. `build_entities` emits the same name as a
+`demote_to_candidate`'d family lead; `Entity::merge` keeps the higher
+confidence and drops `candidate` when either side lacks it, so the HIGH copy
+undid the demotion and exported the namesake as PROBABLE. On a structured
+`FullName` seed the display name now goes through `person_names_compatible`:
+the subject keeps HIGH, a same-surname different person is a candidate
+`family-member` lead (the two copies merge as a candidate), and any other
+surname ("Ian Thorpe Aquatic Centre" parses as surname "centre") or a mononym
+is not minted.
+
+**REQ-SEARCH-010 — one title span, two glued organisations.** The org
+extractor scanned each suffix on its own pass, so ` Inc.` and ` Inc` both
+matched "Thorpedo Inc." and minted "Ian Thorpe - Thorpedo Inc" and "… Inc.";
+its backward walk never stopped at a title separator, so the person's name and
+"Email & Phone Number |" were glued onto the company, and the subject-term
+filter then passed on that glued name — admitting "Megan Thorpe - Covalent
+Lithium Pty Ltd" and three other namesakes' employers. Suffixes are now tried
+longest-first and an overlapping occurrence is the same span; the walk also
+stops at ` - `, ` – `, ` — `, ` | `, ` · `, `•`, `›` and at the previous
+organisation's end; the unchanged term filter then runs on the company name.
+
+**REQ-SEARCH-011 — HSE's own `site:` dork was "independent" evidence.**
+`score_username`'s business-slug gate caps a compound handle whose other parts
+are not the subject's name, unless "independently corroborated" — which
+counted `site_query_hit`. Every result of `build_queries_fullname`'s
+`… site:instagram.com OR site:github.com …` dork has it by construction, so
+the facility handle `ianthorpe_aquatic` reached PROBABLE and was searched as a
+handle, minting `ianthorpeaquaticcentre`. Only people-search provenance
+(Signal 2), where the host asserts the identity, now lifts the gate; the
+`site:` signal keeps its +1. This reverses the Cycle AM assertion that
+`smith_engineering` under `site:github.com john smith` is PROBABLE.
+
+**REQ-GEO-007 — a gazetteer centroid was pivoted as a precise point.**
+`util::city_coords` returns a city, suburb or postcode centroid, never a
+street point, but `search_engines`' known-city lookup, its recycled-snippet
+leg and the engine's `address_to_coords_pass` minted the result without
+`tags::COARSE`, the tag the engine's `coarse_geo_not_pivoted` gate reads. The
+Sydney CBD centroid was dispatched to reverse geocoders, Overpass and
+`au_geo`, and came back as "Kazan Dining, 25 Martin Place" at VERIFIED; in
+recalled data `390 Simpsons Road, Bardon` collapsed to the Brisbane CBD point
+and `qld_cadastre` attached a stranger's lot. All three now tag `COARSE`
+(`search-geocoded` became `tags::SEARCH_GEOCODED`). A centroid recalled from
+an earlier scan keeps its stored untagged tag set, so the pivot gate and the
+autonomous-seed gate share `engine::enrich::is_coarse_geo`, which also
+recognises a `Coordinates` by its minting signature (`search-geocoded`, or
+the `addr_entity_uid` evidence only `address_to_coords_pass` writes).
+
+### Not fixed here (recorded)
+
+- **Other `city_coords` centroid sites.** About thirty modules
+  (`proxycurl`, `github_user`, `abn_lookup`, `whois`, `phone_geo`, …) mint a
+  `Coordinates` from `city_coords` tagged `addr-derived` but not `COARSE`.
+  `addr-derived` is also carried by precise geocoder fixes, so it cannot be the
+  engine's signal. Tagging each is the same one-line change, applied per module
+  with that module's tests; this batch covers the search and engine paths only.
+- **The `@mention` pivot in `extract_username_pivots`** has no score gate.
+  In the observed shape the path-segment block claims the handle first and the
+  fix above stops it; a `(@facility_slug)` title on a post URL would still be
+  pivoted.
+- **`extract_addresses_from_text`'s word path** locates the city with
+  `pre_comma.find(first_word)`, the FIRST occurrence in the text, so
+  "Brett Lawnton … Located in Lawnton, QLD" reads the city from the name and
+  drops the address. Found while re-fixturing the Lawnton cap tests.
+
+### Locks
+
+- `util::address_au::tests::free_text_phone_scan_ignores_bare_nine_digit_ids`;
+  `modules::search_engines::tests::a_breadcrumb_numeric_id_is_never_minted_as_a_phone`;
+- `modules::search_engines::tests::abn_in_a_result_not_naming_the_subject_is_not_mined`
+  (with the over-correction control);
+- `core::scan::tests::text_names_person_needs_a_compatible_given_name_beside_the_surname`;
+  `modules::search_engines::tests::a_surname_only_result_does_not_name_a_full_name_subject`;
+  `modules::search_engines::helpers::tests::url_matches_person_target_needs_the_given_name_beside_the_surname`.
+  The Lawnton cap tests and `court_record_hits_are_source_documents_never_pivots`
+  were re-fixtured to results that name the subject; the suburb-only pages now
+  assert that they mint no address;
+- `modules::search_engines::extract::tests::display_name_on_a_full_name_scan_is_high_only_for_the_subject`
+  (including the merge with the family lead);
+- `modules::search_engines::helpers::entity::tests::an_org_title_span_yields_one_bounded_org_without_the_person_or_boilerplate`;
+- `modules::search_engines::helpers::entity::tests::score_username_site_query_does_not_lift_business_slug_gate`,
+  the flipped `score_username_common_surname_without_independent_signal_stays_candidate`,
+  `modules::search_engines::extract::tests::a_facility_slug_from_hses_own_site_dork_is_not_pivoted`;
+- `modules::search_engines::tests::a_known_city_lookup_centroid_is_coarse_and_never_a_precise_pivot`,
+  `modules::search_engines::extract::tests::a_recycled_address_centroid_is_coarse`,
+  `core::engine::enrich::tests::an_offline_address_centroid_is_coarse`,
+  `core::engine::enrich::tests::is_coarse_geo_recognises_an_untagged_legacy_centroid`,
+  `core::engine::tests::a_legacy_untagged_centroid_is_never_pivoted` (through
+  `ScanEngine::run`, with the precise-fix control).
+
+### Falsified
+
+Each mutation restores the defect; the sources were restored byte-identical
+(`cmp` against a saved copy) after every run.
+
+| # | mutation | result |
+|---|---|---|
+| S1 | `extract_phones` without the token boundary and the bare-9 rejection | killed by `free_text_phone_scan_ignores_bare_nine_digit_ids`, `a_breadcrumb_numeric_id_is_never_minted_as_a_phone` |
+| S2 | the ABN/ACN loop moved back outside the relevance gate | killed by `abn_in_a_result_not_naming_the_subject_is_not_mined` |
+| S3 | `names_the_subject` / `url_names_target` back to the surname / last term | killed by `a_surname_only_result_does_not_name_a_full_name_subject` |
+| S4 | display names skip the identity decision | killed by `display_name_on_a_full_name_scan_is_high_only_for_the_subject` |
+| S5 | `site_query_hit` counts as independent again | killed by all three REQ-SEARCH-011 locks |
+| S6 | overlapping suffix spans, no separator or previous-org bound, no output dedup | killed by `an_org_title_span_yields_one_bounded_org_without_the_person_or_boilerplate` |
+| S7 | no `COARSE` on the three centroid sites, no legacy signature in `is_coarse_geo` | killed by all five REQ-GEO-007 locks |
+
+**7 of 7 killed.**

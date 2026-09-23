@@ -596,3 +596,29 @@ use super::*;
             Some(("Optus", AuNetworkKind::Consumer))
         );
     }
+
+    /// REQ-PHONEAU-002: the free-text scanner needs an explicit AU marker. Live
+    /// scan 7258fc07 ("Ian Thorpe") minted six `+61` phones from the numeric
+    /// IDs in Brave breadcrumb titles; an employer page's "ACN 234 567 890"
+    /// would have become a HIGH `+61234567890` the same way.
+    #[test]
+    fn free_text_phone_scan_ignores_bare_nine_digit_ids() {
+        for s in [
+            "Find a Grave findagrave.com › memorial › 282246704 › aidan-thorpe Aidan Thorpe (1996-1996)",
+            "rocketreach.co › megan-thorpe-email_392575227 Megan Thorpe Email & Phone Number",
+            "linkedin.com › in › aidan-thorpe-576108331 Aidan Thorpe",
+            "itftennis.com › en › players › carol-thorpe › 800276181 › nzl",
+            "ACN 234 567 890",
+        ] {
+            assert!(extract_phones(s).is_empty(), "{s} -> {:?}", extract_phones(s));
+        }
+        // A marked number glued inside a longer token is an ID fragment.
+        assert!(extract_phones("id_0410959140x").is_empty());
+        // Every AU-marked form still scans.
+        assert_eq!(extract_phones("call 0410 959 140"), vec!["+61410959140"]);
+        assert_eq!(extract_phones("(02) 8224 6704"), vec!["+61282246704"]);
+        assert_eq!(extract_phones("Ph (02) 8224 6704"), vec!["+61282246704"]);
+        assert_eq!(extract_phones("+61 2 8224 6704"), vec!["+61282246704"]);
+        assert_eq!(extract_phones("Tel:0410959140."), vec!["+61410959140"]);
+        assert!(!extract_phones("1300 975 707").is_empty());
+    }

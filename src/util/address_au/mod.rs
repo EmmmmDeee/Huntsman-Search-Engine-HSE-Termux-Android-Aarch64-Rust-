@@ -779,6 +779,18 @@ pub fn locality_key(addr: &str) -> String {
 
 /// Crude AU phone scanner — pulls all plausible numbers out of a text
 /// blob, returning normalised E.164 forms (deduplicated).
+///
+/// Free text needs an explicit AU marker. A match is kept only when it is a
+/// whole token (no letter, digit or `_` glued to either end — otherwise it is
+/// a fragment of a longer ID or slug such as `email_392575227` or a 13-digit
+/// run) AND it carries its own Australian evidence: a `+61`/`0061`/`61`
+/// country code, a trunk `0`, or a `1300`/`1800` service prefix. A bare
+/// 9-digit national number carries zero evidence of being Australian
+/// (REQ-PHONEAU-001); [`normalise_phone`] still accepts it, deliberately, for a
+/// STRUCTURED import column that dropped the leading `0`, but a free-text
+/// scanner that reached that branch turned the numeric IDs in a SERP
+/// breadcrumb (`findagrave.com › memorial › 282246704`) into `+61282246704`
+/// phone numbers — six of them in one "Ian Thorpe" scan (REQ-PHONEAU-002).
 pub fn extract_phones(text: &str) -> Vec<String> {
     static R: OnceLock<Regex> = OnceLock::new();
     let re = R.get_or_init(|| {
@@ -793,7 +805,27 @@ pub fn extract_phones(text: &str) -> Vec<String> {
     });
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let bytes = text.as_bytes();
+    let is_word_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     for m in re.find_iter(text) {
+        // Token boundary. The regex has no anchors, so it matches any run of
+        // six or more digits wherever it sits. A match that opens on `+` or
+        // `(` is delimited by that character itself; one that opens on a
+        // digit must not have a word byte before it. A match always closes on
+        // a digit, so the byte after it must never be a word byte.
+        let glued_before = bytes.get(m.start()).copied().is_some_and(is_word_byte)
+            && m.start() > 0
+            && is_word_byte(bytes[m.start() - 1]);
+        let glued_after = bytes.get(m.end()).copied().is_some_and(is_word_byte);
+        if glued_before || glued_after {
+            continue;
+        }
+        // AU evidence. In the digits-and-plus form a 9-character match has no
+        // country code, no trunk `0` and no service prefix: it is a bare
+        // national number, which only a structured field may read as AU.
+        if crate::util::str_util::ascii_digits_and_plus(m.as_str()).len() == 9 {
+            continue;
+        }
         if let Some(n) = normalise_phone(m.as_str())
             && seen.insert(n.clone())
         {

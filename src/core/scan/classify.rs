@@ -281,6 +281,90 @@ pub(crate) fn person_names_compatible(a: &str, b: &str) -> Option<bool> {
     )
 }
 
+/// Whether free `text` (a search result's title + snippet + URL, or a bare URL
+/// path) NAMES the person `subject` — the search-admission sibling of
+/// [`person_names_compatible`], sharing its name parser so a result and a
+/// discovered `Person` are judged by one reading of the subject's name.
+///
+/// `Some(true)` iff the subject's surname occurs as a whole token run with a
+/// compatible given name (see [`given_names_compatible`]) beside it:
+///   * directly before it — `"ian thorpe"`, `"i thorpe"`, the slug
+///     `ian-thorpe-4b080523`;
+///   * two before it across one middle name or initial — `"ian j thorpe"`,
+///     `"Ian James Thorpe"`. A middle NAME must be space-separated from the
+///     surname: `"Ian Symes-Thorpe"` is a double-barrelled surname, a different
+///     person to [`person_names_compatible`] as well;
+///   * directly after it in surname-first order — `"THORPE IAN"`, `"Thorpe,
+///     Ian"` — and there only the FULL given name, since a bare initial after a
+///     surname is as often the pronoun (`"Mark Thorpe I think"`).
+///
+/// `Some(false)` otherwise: the surname alone, or only beside an incompatible
+/// given name (`"bill thorpe"`, `"JAMIE THORPE PLUMBING"`), does not name "Ian
+/// Thorpe" — a surname is shared by every relative and namesake, and a live "Ian
+/// Thorpe" scan minted a Spokeo `Bill-Thorpe` page, a plumbing company and their
+/// contact details as the subject's own on exactly that reading
+/// (REQ-SEARCH-008). `None` when `subject` is a mononym, which carries no
+/// given/surname structure to test — the caller keeps its own single-term check.
+///
+/// Tokens are the lowercase alphanumeric runs of `text`, so `-`, `_`, `/`, `.`,
+/// `,` and whitespace all separate and a URL slug tokenises like prose; a
+/// hyphenated or apostrophised name part (`Symes-Thorpe`, `O'Neill`) is matched
+/// as its run of sub-tokens. Pure; deterministic.
+pub(crate) fn text_names_person(text: &str, subject: &str) -> Option<bool> {
+    let (given, surname) = person_name_parts(subject)?;
+    // Lowercase alphanumeric runs, each with the separator text before it.
+    let tokenise = |s: &str| -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let mut sep = String::new();
+        let mut tok = String::new();
+        for c in s.chars() {
+            if c.is_alphanumeric() {
+                // `char::to_lowercase` per char, as `person_name_parts` does.
+                tok.extend(c.to_lowercase());
+            } else {
+                if !tok.is_empty() {
+                    out.push((std::mem::take(&mut tok), std::mem::take(&mut sep)));
+                }
+                sep.push(c);
+            }
+        }
+        if !tok.is_empty() {
+            out.push((tok, sep));
+        }
+        out
+    };
+    let surname_toks: Vec<String> = tokenise(&surname).into_iter().map(|(t, _)| t).collect();
+    // A multi-part given name (`Mary-Jane`) is compared on its first part — the
+    // part a register, a slug or an initial preserves.
+    let (given, _) = tokenise(&given).into_iter().next()?;
+    if surname_toks.is_empty() {
+        return None;
+    }
+    let toks = tokenise(text);
+    let k = surname_toks.len();
+    let tok = |j: usize| toks[j].0.as_str();
+    let compatible = |t: &str| given_names_compatible(t, &given);
+    let named = (0..toks.len().saturating_sub(k - 1))
+        .filter(|&i| {
+            toks[i..i + k]
+                .iter()
+                .map(|(t, _)| t)
+                .eq(surname_toks.iter())
+        })
+        .any(|i| {
+            let direct_before = i >= 1 && compatible(tok(i - 1));
+            let across_middle = i >= 2 && compatible(tok(i - 2)) && {
+                let middle = tok(i - 1);
+                let initial = middle.chars().count() == 1;
+                middle.chars().all(char::is_alphabetic)
+                    && (initial || toks[i].1.chars().any(char::is_whitespace))
+            };
+            let surname_first = toks.get(i + k).is_some_and(|(t, _)| *t == given);
+            direct_before || across_middle || surname_first
+        });
+    Some(named)
+}
+
 /// Decide whether a discovered `Person` is a *different, named individual* from
 /// the scan's subject — one whose expansion would run a whole identity sweep
 /// (name permutations → handle/email guesses → breach and profile probes) on a

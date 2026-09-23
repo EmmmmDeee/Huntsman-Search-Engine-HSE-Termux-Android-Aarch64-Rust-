@@ -2072,6 +2072,51 @@ fn person_names_compatible_reads_given_and_surname_positions() {
     assert_eq!(person_names_compatible(seed, "Mr Thorpe"), None);
 }
 
+/// REQ-SEARCH-008: a search result names the subject only when the surname
+/// carries a compatible given name — the surname alone is every relative's and
+/// namesake's, and a live "Ian Thorpe" scan minted the Spokeo `Bill-Thorpe`
+/// page and "JAMIE THORPE PLUMBING PTY LTD" as the subject's own on it.
+#[test]
+fn text_names_person_needs_a_compatible_given_name_beside_the_surname() {
+    let seed = "Ian Thorpe";
+    for named in [
+        "Ian Thorpe - Commercial Portfolio Management Pty Ltd | LinkedIn",
+        "/in/ian-thorpe-4b080523/",
+        "/i-thorpe",
+        "/thorpe-ian",
+        "thorpe, ian",
+        "THORPE IAN J",
+        "Ian J Thorpe",
+        "Ian James Thorpe, director",
+        "Dr. I. Thorpe OAM",
+    ] {
+        assert_eq!(text_names_person(named, seed), Some(true), "{named:?}");
+    }
+    for other in [
+        "bill thorpe florida",
+        "https://www.spokeo.com/Mark-Thorpe",
+        "JAMIE THORPE PLUMBING PTY LTD - ABN 74067173835",
+        "Thorpe said the club would appeal",
+        "Mark Thorpe I think",
+        "Ian Symes-Thorpe",
+        "ianthorpe",
+        "Ian and the Thorpe family",
+    ] {
+        assert_eq!(text_names_person(other, seed), Some(false), "{other:?}");
+    }
+    // A mononym subject has no structure to test: the caller decides.
+    assert_eq!(text_names_person("x", "Cher"), None);
+    // A double-barrelled subject surname is matched as its sub-token run.
+    assert_eq!(
+        text_names_person("ian-symes-thorpe", "Ian Symes-Thorpe"),
+        Some(true)
+    );
+    assert_eq!(
+        text_names_person("ian thorpe", "Ian Symes-Thorpe"),
+        Some(false)
+    );
+}
+
 #[test]
 fn only_a_person_structurally_unlike_the_subject_is_another_named_person() {
     use crate::core::entity::EntityKind;

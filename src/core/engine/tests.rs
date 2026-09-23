@@ -7223,3 +7223,171 @@ async fn a_pivots_subject_claims_are_rescoped_to_the_scan_subject() {
         "a company pivot's row must not anchor the subject's location"
     );
 }
+
+/// Emits one Sydney-CBD `Coordinates` for the `seed` Username: with `legacy`
+/// set it has the shape of a `search_engines` known-city centroid recalled from
+/// a scan that predates the `COARSE` tag (`search-geocoded`, no `coarse`);
+/// without it, a plain precise fix.
+struct CentroidModule {
+    legacy: bool,
+}
+
+#[async_trait::async_trait]
+impl Module for CentroidModule {
+    fn name(&self) -> &'static str {
+        "centroid_source"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Username)
+    }
+    fn produces(&self) -> &'static [EntityKind] {
+        const K: &[EntityKind] = &[EntityKind::Coordinates];
+        K
+    }
+    async fn process(
+        &self,
+        target: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        let mut r = crate::core::module::ModuleResult::new();
+        if target.value == "seed" {
+            let mut e = Entity::new(
+                EntityKind::Coordinates,
+                "-33.8688,151.2093",
+                0.9,
+                &ctx.scan_id,
+            );
+            let mut ev = crate::core::entity::Evidence::new("centroid_source", "synthetic fix");
+            if self.legacy {
+                e.tag(crate::core::tags::SEARCH_GEOCODED);
+                ev = ev.with_attr("method", "known-city-lookup");
+            }
+            e.add_evidence(ev);
+            r.push(e);
+        }
+        Ok(r)
+    }
+}
+
+/// Accepts any `Coordinates` and leaves a marker, so a test can tell whether the
+/// engine pivoted on a point.
+struct PointMinerModule;
+
+#[async_trait::async_trait]
+impl Module for PointMinerModule {
+    fn name(&self) -> &'static str {
+        "point_miner"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Coordinates)
+    }
+    fn produces(&self) -> &'static [EntityKind] {
+        const K: &[EntityKind] = &[EntityKind::Username];
+        K
+    }
+    async fn process(
+        &self,
+        _target: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        let mut r = crate::core::module::ModuleResult::new();
+        let mut e = Entity::new(EntityKind::Username, "mined-from-point", 0.9, &ctx.scan_id);
+        e.add_evidence(crate::core::entity::Evidence::new(
+            "point_miner",
+            "synthetic name mined from the point",
+        ));
+        r.push(e);
+        Ok(r)
+    }
+}
+
+async fn run_centroid_scan(legacy: bool) -> (Vec<String>, Vec<String>) {
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, mut rx) = tokio::sync::broadcast::channel(8192);
+    let engine = ScanEngine::new(
+        vec![
+            Arc::new(CentroidModule { legacy }),
+            Arc::new(PointMinerModule),
+        ],
+        store_port,
+        bus.clone(),
+    );
+    let opts = ScanOptions {
+        depth: 2,
+        expand_all_identities: true,
+        max_roi: false,
+        min_expand_confidence: 0.0,
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Username, "seed");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("username", "seed"),
+        target.clone(),
+    )
+    .with_options(opts);
+    let scan_id = scan.id.clone();
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    engine.run(scan, target, ctx).await.expect("should succeed");
+
+    let values = store
+        .entities_for_scan(&scan_id)
+        .expect("should succeed")
+        .into_iter()
+        .map(|e| e.value)
+        .collect();
+    let mut reasons = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        if let EventKind::EntityExcluded { value, reason, .. } = ev.kind
+            && value.starts_with("-33.8688")
+        {
+            reasons.push(reason);
+        }
+    }
+    (values, reasons)
+}
+
+/// REQ-GEO-007: a gazetteer centroid recalled from a scan that predates the
+/// `COARSE` tag is still never pivoted — it went on being reverse-geocoded into
+/// a CBD restaurant and handed to cadastre lookups as a precise point.
+#[tokio::test]
+async fn a_legacy_untagged_centroid_is_never_pivoted() {
+    let (values, reasons) = run_centroid_scan(true).await;
+    assert!(
+        values.iter().any(|v| v.starts_with("-33.8688")),
+        "the centroid is still recorded as evidence: {values:?}"
+    );
+    assert!(
+        !values.iter().any(|v| v == "mined-from-point"),
+        "a legacy centroid must never be pivoted on: {values:?}"
+    );
+    assert!(
+        reasons.iter().any(|r| r == "coarse_geo_not_pivoted"),
+        "the skip is recorded under the grain reason, got {reasons:?}"
+    );
+
+    // Control: the identical point without the centroid signature IS pivoted.
+    let (values, reasons) = run_centroid_scan(false).await;
+    assert!(
+        values.iter().any(|v| v == "mined-from-point"),
+        "a precise fix with every gate open must be pivoted on: {values:?}"
+    );
+    assert!(
+        !reasons.iter().any(|r| r == "coarse_geo_not_pivoted"),
+        "{reasons:?}"
+    );
+}
