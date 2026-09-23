@@ -98,12 +98,7 @@ pub(super) fn build_result(
                 let joined_types: Vec<&str> = data_types.into_iter().collect();
                 ev = ev.with_attr("exposed_data_types", joined_types.join(", "));
             }
-            let has_password_risk = details.iter().any(|d| {
-                d.password_risk
-                    .as_deref()
-                    .is_some_and(|r| !r.eq_ignore_ascii_case("none") && !r.is_empty())
-            });
-            if has_password_risk {
+            if details.iter().any(exposes_a_password) {
                 entity.tag(tags::PASSWORD_AT_RISK);
                 ev = ev.with_attr("password_risk", "true");
             }
@@ -117,6 +112,31 @@ pub(super) fn build_result(
     let mut result = ModuleResult::new();
     result.push(entity);
     result
+}
+
+/// Password-risk labels XposedOrNot uses for a breach whose corpus holds a
+/// password or hash. The provider's full vocabulary is `plaintext`,
+/// `easytocrack`, `hardtocrack` and `unknown` (live `/v1/breaches` catalogue,
+/// 2026-09); `unknown` is the label on password-less breaches such as Apollo,
+/// so it is not evidence on its own.
+const PASSWORD_RISK_LABELS: &[&str] = &["plaintext", "easytocrack", "hardtocrack"];
+
+/// True when this breach put a credential in the corpus — the contract of
+/// `tags::PASSWORD_AT_RISK`, which mere presence in a breach does not meet.
+/// Either the provider rated the password risk (an allowlisted label), or the
+/// breach's `;`-separated data classes include `Passwords` exactly (not
+/// `Password hints`, which is not a credential).
+fn exposes_a_password(d: &BreachDetail) -> bool {
+    let rated = d.password_risk.as_deref().is_some_and(|r| {
+        PASSWORD_RISK_LABELS
+            .iter()
+            .any(|l| r.trim().eq_ignore_ascii_case(l))
+    });
+    let classed = d.xposed_data.as_deref().is_some_and(|s| {
+        s.split(';')
+            .any(|c| c.trim().eq_ignore_ascii_case("passwords"))
+    });
+    rated || classed
 }
 
 fn attach_breach_detail_attrs(mut ev: Evidence, details: &[BreachDetail]) -> Evidence {

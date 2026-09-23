@@ -80,7 +80,7 @@ fn analytics_surfaces_breach_summaries_and_descriptions() {
                 xposed_records: Some(117_000_000),
                 xposure_desc: Some("LinkedIn suffered a data breach in 2012".into()),
                 xposed_date: Some("2012-06-05".into()),
-                password_risk: Some("none".into()),
+                password_risk: Some("easytocrack".into()),
             }]),
         }),
         pastes_summary: None,
@@ -168,6 +168,68 @@ fn analytics_surfaces_the_earliest_full_iso_breach_date() {
         Some("2012-06-05"),
         "the earliest full ISO date wins; a bare year is ignored"
     );
+}
+
+fn one_breach(data: &str, risk: Option<&str>) -> AnalyticsResp {
+    AnalyticsResp {
+        exposed_breaches: Some(AnalyticsBreaches {
+            breaches_details: Some(vec![BreachDetail {
+                breach: Some("Apollo".into()),
+                xposed_data: Some(data.into()),
+                password_risk: risk.map(String::from),
+                ..BreachDetail::default()
+            }]),
+        }),
+        pastes_summary: None,
+    }
+}
+
+fn password_at_risk(data: &str, risk: Option<&str>) -> bool {
+    let target = Target::new(TargetKind::Email, "a@b.com");
+    let r = build_result(
+        &["Apollo".into()],
+        Some(&one_breach(data, risk)),
+        &target,
+        "s",
+    );
+    let e = &r.entities[0];
+    let attr = e.evidence[0].attributes.contains_key("password_risk");
+    assert_eq!(e.has_tag("password-at-risk"), attr, "tag and attr agree");
+    attr
+}
+
+#[test]
+fn an_unknown_password_risk_on_a_passwordless_breach_is_not_password_at_risk() {
+    // The provider labels password-less scrapes (Apollo) "unknown".
+    assert!(!password_at_risk(
+        "Email addresses;Names;Phone numbers",
+        Some("unknown")
+    ));
+    assert!(!password_at_risk("Email addresses", Some("")));
+    assert!(!password_at_risk("Email addresses", None));
+}
+
+#[test]
+fn a_password_hints_class_is_not_a_password() {
+    assert!(!password_at_risk(
+        "Email addresses;Password hints",
+        Some("unknown")
+    ));
+}
+
+#[test]
+fn a_rated_password_risk_is_password_at_risk() {
+    for risk in ["plaintext", "EasyToCrack", " hardtocrack "] {
+        assert!(password_at_risk("Email addresses", Some(risk)), "{risk}");
+    }
+}
+
+#[test]
+fn a_passwords_data_class_is_password_at_risk_even_when_the_risk_is_unknown() {
+    assert!(password_at_risk(
+        "Email addresses; passwords ;Usernames",
+        Some("unknown")
+    ));
 }
 
 // Keep NOTABLE_BREACHES referenced so the import is used

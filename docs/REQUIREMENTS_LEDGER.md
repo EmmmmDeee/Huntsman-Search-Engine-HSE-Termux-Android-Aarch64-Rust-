@@ -20280,3 +20280,24 @@ invariant.
 | overcorrect-username-only | a_malformed_credential_is_refused_not_a_clean_negative | see apply log |
 
 **Falsification (compiled):** 4 of 4 killed.
+
+## REQ-XON-001 — an "unknown" password risk is not a credential exposure
+
+**Found:** At `src/modules/xposed_or_not/build.rs:101`, `PASSWORD_AT_RISK` was set whenever any breach's `password_risk` was not `"none"` or empty. XposedOrNot never sends `"none"`; its vocabulary is plaintext / easytocrack / hardtocrack / unknown, and `"unknown"` labels password-less breaches such as Apollo. So nearly every breached email was marked as having its password exposed, which violates the tag's contract in hse-core/src/tags.rs.
+
+**Implemented:** `exposes_a_password(&BreachDetail)` is an allowlist. It returns true when `password_risk` is one of plaintext, easytocrack or hardtocrack (trimmed, case-insensitive), or when `xposed_data` split on `;` contains exactly `Passwords` (so `Password hints` does not count). Anything else fails closed. A test fixture that used the fictitious `"none"` now uses `"easytocrack"`.
+
+**Locks:** `an_unknown_password_risk_on_a_passwordless_breach_is_not_password_at_risk`, `a_password_hints_class_is_not_a_password`, `a_rated_password_risk_is_password_at_risk`, `a_passwords_data_class_is_password_at_risk_even_when_the_risk_is_unknown`.
+
+**Falsified:**
+
+| Mutation | Expected failing test | Result |
+|---|---|---|
+| baseline (restore denylist) | an_unknown_password_risk_on_a_passwordless_breach_is_not_password_at_risk | see apply log |
+| unknown-allowlisted | an_unknown_password_risk_on_a_passwordless_breach_is_not_password_at_risk | see apply log |
+| substring-password-class | a_password_hints_class_is_not_a_password | see apply log |
+| drop-data-class-clause | a_passwords_data_class_is_password_at_risk_even_when_the_risk_is_unknown | see apply log |
+| drop-rated-clause | a_rated_password_risk_is_password_at_risk | see apply log |
+| case-sensitive-trimless-label | a_rated_password_risk_is_password_at_risk | see apply log |
+
+**Falsification (compiled):** 4 of 6 killed.
