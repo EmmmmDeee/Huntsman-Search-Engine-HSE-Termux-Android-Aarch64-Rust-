@@ -24,7 +24,7 @@
 //! beyond the fast/local checks" purpose.
 
 use crate::core::outage::OutagePath;
-use crate::util::x509_field::{OID_O, extract_field_from_der};
+use crate::util::x509_field::{NameField, OID_O, extract_field_from_der};
 use serde::Deserialize;
 use std::net::IpAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -261,7 +261,7 @@ async fn tls_issuer_probe(domain: &str) -> (bool, Option<String>) {
     else {
         return (false, None);
     };
-    (true, extract_field_from_der(der, OID_O, true))
+    (true, extract_field_from_der(der, OID_O, NameField::Issuer))
 }
 
 /// The classification as JSON, `advice` carried beside it — the same

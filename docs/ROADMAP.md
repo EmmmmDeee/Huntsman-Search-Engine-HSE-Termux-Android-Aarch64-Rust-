@@ -1202,9 +1202,10 @@ Ordered cycles:
    Cloudflare itself is unreachable); the CA allow-list is an unauthenticated
    display-string comparison with no chain/fingerprint validation behind it
    (exact match closes the cheap bypass, not a forger who copies a real CA's
-   complete name byte-for-byte); `util::x509_field` and
-   `modules::cert_intel`'s structurally-identical DER field reader remain
-   unconsolidated. Full detail, the mid-cycle disk-exhaustion incident that
+   complete name byte-for-byte). The third residual, `cert_intel`'s own
+   whole-certificate copy of the field reader, is closed by REQ-CERTINTEL-002:
+   re-verified, it misread *legitimate* certificates, and `cert_intel` now
+   reads through `util::x509_field`. Full detail, the mid-cycle disk-exhaustion incident that
    forced a GitHub-API relay push (and the compile regression that relay
    caused), and the security-hardening fixes a subsequent review found in
    that relayed push: `docs/REQUIREMENTS_LEDGER.md`, REQ-RESILIENCE-003.
