@@ -226,3 +226,76 @@ async fn process_emits_nothing_for_a_bare_cross_issuer_snowflake() {
         "bare Twitter/X IDs minted Discord findings: {emitted:?}"
     );
 }
+
+/// The `discord:<id>` a breach extractor minted, decoded by the module and
+/// merged back the way the engine folds module output (`existing.merge`).
+async fn merged_onto(mut found: Entity) -> Entity {
+    let id = found.value.clone();
+    let r = DiscordSnowflake
+        .process(&Target::new(TargetKind::Username, &id), &test_ctx())
+        .await
+        .expect("offline decode never errors");
+    assert!(!r.entities.is_empty(), "premise: the decode fired");
+    for e in r.entities {
+        found.merge(e);
+    }
+    found
+}
+
+fn discord_2020() -> String {
+    format!("discord:{}", (1_577_836_800_000u64 - DISCORD_EPOCH_MS) << 22)
+}
+
+/// REQ-DISCORDSNOWFLAKE-002: the decode proves the number is Discord's, not
+/// that the account is the subject's. At 0.80 it lifted oathnet_pro's 0.55
+/// handle to 0.80 under GREATEST-merge — Probable to Verified from arithmetic.
+#[tokio::test]
+async fn the_decode_annotates_but_never_raises_the_handle() {
+    let found = Entity::new(
+        EntityKind::Username,
+        discord_2020(),
+        confidence::MEDIUM_HIGH,
+        "t",
+    );
+    let merged = merged_onto(found).await;
+    assert!(
+        merged.confidence <= confidence::MEDIUM_HIGH + 1e-9,
+        "decode raised the handle to {}",
+        merged.confidence
+    );
+    // Over-correction guard: the annotation still lands — date and tags merge.
+    assert!(
+        merged
+            .evidence
+            .iter()
+            .any(|ev| ev.attributes.contains_key("discord_created_date")),
+        "the creation date must still reach the handle"
+    );
+    assert!(merged.has_tag("discord") && merged.has_tag("account-age"));
+    // And a genuine upstream handle is not newly quarantined by it.
+    assert!(!merged.has_tag(crate::core::tags::CANDIDATE));
+}
+
+/// A stranger's `discord:` ID from a non-matching breach row is quarantined
+/// at the candidate rung; the decode must not lift it out of quarantine.
+#[tokio::test]
+async fn the_decode_never_releases_a_quarantined_handle() {
+    let mut found = Entity::new(
+        EntityKind::Username,
+        discord_2020(),
+        confidence::MEDIUM_HIGH,
+        "t",
+    );
+    found.demote_to_candidate();
+    let before = found.confidence;
+    let merged = merged_onto(found).await;
+    assert!(
+        merged.has_tag(crate::core::tags::CANDIDATE),
+        "decode cleared the candidate quarantine"
+    );
+    assert!(
+        merged.confidence <= before + 1e-9,
+        "decode raised a quarantined handle to {}",
+        merged.confidence
+    );
+}

@@ -80,11 +80,19 @@ const DISCORD_EPOCH_MS: u64 = 1_420_070_400_000;
 const DISCORD_EPOCH_SECS: i64 = 1_420_070_400;
 const DAY_SECS: i64 = 86_400;
 
-/// Confidence for a creation date derived from a value already identified as a
-/// Discord ID upstream (a `discord:`-prefixed handle from the extractor). The
-/// decode itself is exact arithmetic; this rung carries the *attribution* —
-/// how sure we are the number is Discord's — which is what the prefix attests.
-const DISCORD_ID_CONF: f64 = confidence::HIGH_PLUSPLUS;
+/// Confidence of the re-emitted `discord:<id>` handle that carries the decoded
+/// creation date. The decode is exact arithmetic, but it attests only that the
+/// number is Discord's — never that the account is the subject's. The engine
+/// merges by uid with GREATEST semantics, so at the former
+/// [`confidence::HIGH_PLUSPLUS`] this re-emission lifted every upstream
+/// `discord:` handle (minted at 0.55 / 0.60 by the breach extractors) to 0.80
+/// and promoted a Probable attribution to Verified from arithmetic alone
+/// (REQ-DISCORDSNOWFLAKE-002). It is therefore an annotation, below
+/// [`crate::selftest::capability_probe::SEED_PRESENT_RUNG`] — the
+/// `disposable_check` precedent (REQ-CANARY-003) — and is additionally
+/// candidate-tagged in `process` so the merge can neither
+/// raise the handle nor lift a non-matching row out of quarantine.
+const DISCORD_ID_CONF: f64 = confidence::VERY_LOW;
 
 pub struct DiscordSnowflake;
 
@@ -157,9 +165,13 @@ impl Module for DiscordSnowflake {
         let date = utc_date(created_secs);
 
         // Enrich the seed Discord-ID Username with its derived creation date.
-        // GREATEST-merge means this only ever *adds* the temporal evidence and
-        // never lowers an existing higher confidence on the same handle.
+        // GREATEST-merge takes the max of both confidences, so the annotation
+        // sits at the candidate rung and carries the `candidate` tag: the merge
+        // adds the temporal evidence and tags but neither raises the handle's
+        // confidence nor clears a quarantine an upstream extractor stamped
+        // (`Entity::absorb` drops `candidate` only for a non-candidate side).
         let mut e = Entity::new(EntityKind::Username, v, DISCORD_ID_CONF, &ctx.scan_id);
+        e.demote_to_candidate();
         e.tag("discord");
         e.tag("derived");
         e.tag("account-age");

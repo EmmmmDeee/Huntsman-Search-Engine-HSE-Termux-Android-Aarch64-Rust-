@@ -20230,3 +20230,21 @@ dropped: no refusal text is trusted as "IPQS holds nothing".
 | I2 | wiring: `query` returns the body without `accepted` | killed by 1 |
 | I3 | over-correction: `accepted` fails every answer | killed by 2 |
 | I4 | a key/quota message no longer burns the key | killed by 1 |
+## REQ-DISCORDSNOWFLAKE-002 — An offline decode annotates a Discord handle; it never raises its confidence or releases it from quarantine
+
+**Found:** audit F3. `discord_snowflake` re-emitted the target's own `discord:<id>` Username at `confidence::HIGH_PLUSPLUS` (0.80) with no candidate tag. The engine merges by uid, and `Entity::absorb` takes the max confidence and drops `candidate` when the incoming side is not a candidate. The breach extractors mint these handles lower: oathnet_pro at 0.55, see_know at 0.60, and non-matching rows are quarantined at 0.25. The decode therefore promoted a Probable attribution to Verified (c_eff 0.74 to 0.87 at n=2) and released quarantined strangers' IDs, all from arithmetic that proves only that the number is Discord's.
+
+**Implemented:** `DISCORD_ID_CONF = confidence::VERY_LOW` (below `SEED_PRESENT_RUNG`, following the disposable_check / REQ-CANARY-003 precedent), and the annotation is passed through the shared `Entity::demote_to_candidate()`. The creation-date evidence and the discord/account-age tags still merge. The confidence and the quarantine state of the upstream handle are unchanged.
+
+**Locks:** `the_decode_annotates_but_never_raises_the_handle`, `the_decode_never_releases_a_quarantined_handle` (src/modules/discord_snowflake/tests.rs).
+
+**Falsified:**
+
+| mutation | expected | result |
+|---|---|---|
+| baseline-rung (VERY_LOW -> HIGH_PLUSPLUS) | both locks fail | see apply log |
+| baseline-candidate-tag (drop demote_to_candidate) | quarantine lock fails | see apply log |
+| overcorrect-drop-emission | both locks fail (premise) | see apply log |
+| overcorrect-drop-date-evidence | annotate lock fails | see apply log |
+
+**Falsification (compiled):** 3 of 4 killed.
