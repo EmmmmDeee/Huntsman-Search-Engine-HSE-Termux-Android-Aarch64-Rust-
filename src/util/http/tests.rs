@@ -747,6 +747,25 @@ fn redirect_verdict_stops_a_hop_to_a_different_host() {
 }
 
 #[test]
+fn redirect_verdict_stops_ofacs_hop_to_its_presigned_s3_object() {
+    // REQ-OFAC-002 records WHY `sanctions_ofac` takes its own, gated hop: the
+    // shared rule stops Treasury's 302 to a pre-signed S3 URL (a different
+    // site), and it must keep doing so — loosening it for one keyless public
+    // download would reopen the credential-replay hole for every keyed caller.
+    assert_eq!(
+        redirect_verdict(
+            &[u(
+                "https://sanctionslistservice.ofac.treas.gov/api/download/SDN.CSV"
+            )],
+            &u(
+                "https://wc2h-sls-prod-public-published.s3.us-gov-west-1.amazonaws.com/Published/SDN.CSV?X-Amz-Expires=3600"
+            )
+        ),
+        RedirectVerdict::Stop
+    );
+}
+
+#[test]
 fn redirect_verdict_follows_the_apex_to_www_hop_real_sites_depend_on() {
     // Measured, not assumed: of ten real sites HSE fetches, five serve their
     // content only through a cross-HOST redirect. Judging by host instead of by

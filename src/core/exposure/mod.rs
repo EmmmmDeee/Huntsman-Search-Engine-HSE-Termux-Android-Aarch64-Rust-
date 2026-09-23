@@ -126,12 +126,26 @@ impl ExposureIndex {
 /// Candidate-quarantined entities (`tags::CANDIDATE`) and bare speculation below
 /// [`EXPOSURE_CONF_FLOOR`] are excluded — exposure is a statement about what is
 /// genuinely tied to the *subject*, not about how many guesses the engine emitted.
+///
+/// So is a `Person` whose name cannot be the subject's
+/// ([`crate::core::scan::is_other_named_person`], against the scan's `seed` /
+/// `subject` Person — the one rule the engine's pivot gate also applies). A
+/// relative's or namesake's own record is a disclosure about THEM: a real "Ian
+/// Thorpe" scan reported "disclosed: date of birth" from a Wikidata item for
+/// "Carol Thorpe Tully", born 1946 (REQ-IDENTITY-GATE-001).
 #[must_use]
 pub fn assess(entities: &[Entity], correlations: &[Correlation]) -> ExposureIndex {
+    let subject_names: Vec<String> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person && (e.has_tag("seed") || e.has_tag("subject")))
+        .map(|e| e.value.clone())
+        .collect();
     let confirmed: Vec<&Entity> = entities
         .iter()
         .filter(|e| {
-            !e.has_tag(crate::core::tags::CANDIDATE) && e.c_effective() >= EXPOSURE_CONF_FLOOR
+            !e.has_tag(crate::core::tags::CANDIDATE)
+                && e.c_effective() >= EXPOSURE_CONF_FLOOR
+                && !crate::core::scan::is_other_named_person(&e.kind, &e.value, &subject_names)
         })
         .collect();
 

@@ -219,19 +219,57 @@ pub fn subject_locations(entities: &[Entity]) -> Vec<(f64, f64)> {
 }
 
 /// The subject's surname, if a named subject Person is present — the family surname
-/// every `family-candidate` is presumed to share. Picks a seed-anchored /
-/// name-matched Person (tagged `subject`, `seed`, or `exact-name-match`); `None`
-/// when the scan has no named subject. The single source shared by the engine's
-/// namesake pass and the AU-061 correlator, so "whose surname?" can't drift.
+/// every `family-candidate` is presumed to share. Prefers the engine-scoped subject
+/// anchor (a Person tagged `seed`, then `subject`) and only then a register row
+/// name-matched to the subject (`exact-name-match`): the first of those is the
+/// operator's own assertion, the last a register's, and a first-found `find_map`
+/// over all three let whichever the map yielded first decide "whose surname". The
+/// single source shared by the engine's namesake pass and the AU-061 correlator,
+/// so "whose surname?" can't drift.
 #[must_use]
 pub fn subject_surname(entities: &[Entity]) -> Option<String> {
-    entities
+    ["seed", "subject", "exact-name-match"]
         .iter()
-        .filter(|e| {
-            e.kind == EntityKind::Person
-                && (e.has_tag("subject") || e.has_tag("seed") || e.has_tag("exact-name-match"))
+        .find_map(|tag| {
+            entities
+                .iter()
+                .filter(|e| e.kind == EntityKind::Person && e.has_tag(tag))
+                .find_map(|e| crate::util::surnames::surname_of(&e.value))
         })
-        .find_map(|e| crate::util::surnames::surname_of(&e.value))
+}
+
+/// Whether `e` is a family-candidate OF THE SCAN'S SUBJECT — the one membership
+/// test every geo-family consumer applies before measuring a distance.
+///
+/// `family-candidate` is set by the module that produced the row, relative to the
+/// target IT was run on: `qld_unclaimed` run on a pivot "Ian Thorley" tags every
+/// Thorley on the register, and `see_know`'s household path tags co-residents who
+/// share no surname at all. Read as "the subject's relative" unchecked, a real
+/// "Ian Thorpe" scan promoted 69 Thorleys to corroborated relatives and stamped the
+/// seed Person itself "Shared-surname relative ~0 km from the subject" — a Thorpe
+/// row, fetched for a pivot, merged onto the subject's own node
+/// (REQ-GEO-FAMILY-001). Three conditions, all required:
+///
+/// * the entity carries `family-candidate`;
+/// * it is not the subject itself — no `seed` / `subject` / `exact-name-match`
+///   (the subject's own register row anchors the subject's location; it is not a
+///   relative of it);
+/// * a `Person` shares the subject's surname when that surname is known. A bare
+///   `Address` carries no name to re-check and is kept, as before.
+///
+/// AU-061 already applied the surname half inline while the engine's promotion
+/// pass — the one that writes the `geo_corroboration` evidence and lifts
+/// `source_count` — did not. Both now call this.
+#[must_use]
+pub fn is_subject_family_candidate(e: &Entity, subject_surname: Option<&str>) -> bool {
+    e.has_tag("family-candidate")
+        && !e.has_tag("seed")
+        && !e.has_tag("subject")
+        && !e.has_tag("exact-name-match")
+        && (e.kind != EntityKind::Person
+            || subject_surname.is_none_or(|sn| {
+                crate::util::surnames::surname_of(&e.value).as_deref() == Some(sn)
+            }))
 }
 
 /// Great-circle distance (km) from a family-candidate's resolved locality to the
@@ -249,11 +287,16 @@ pub fn distance_to_subject(e: &Entity, subject: &[(f64, f64)]) -> Option<f64> {
         })
 }
 
-/// True if `e` is a `family-candidate` whose locality is within [`FAMILY_GEO_KM`]
-/// of the subject — i.e. shared surname AND same area independently agree.
+/// True if `e` is a family-candidate of the subject
+/// ([`is_subject_family_candidate`]) whose locality is within [`FAMILY_GEO_KM`] of
+/// the subject — i.e. shared surname AND same area independently agree.
 #[must_use]
-pub fn is_geo_corroborated_family(e: &Entity, subject: &[(f64, f64)]) -> bool {
-    e.has_tag("family-candidate")
+pub fn is_geo_corroborated_family(
+    e: &Entity,
+    subject: &[(f64, f64)],
+    subject_surname: Option<&str>,
+) -> bool {
+    is_subject_family_candidate(e, subject_surname)
         && distance_to_subject(e, subject).is_some_and(|km| km <= FAMILY_GEO_KM)
 }
 
@@ -266,8 +309,12 @@ pub fn is_geo_corroborated_family(e: &Entity, subject: &[(f64, f64)]) -> bool {
 /// beyond the far larger [`NAMESAKE_GEO_KM`]). A candidate whose postcode doesn't
 /// resolve offline is neither (unknown, not far).
 #[must_use]
-pub fn is_geo_discordant_namesake(e: &Entity, subject: &[(f64, f64)]) -> bool {
-    e.has_tag("family-candidate")
+pub fn is_geo_discordant_namesake(
+    e: &Entity,
+    subject: &[(f64, f64)],
+    subject_surname: Option<&str>,
+) -> bool {
+    is_subject_family_candidate(e, subject_surname)
         && distance_to_subject(e, subject).is_some_and(|km| km > NAMESAKE_GEO_KM)
 }
 
@@ -282,8 +329,13 @@ pub fn is_geo_discordant_namesake(e: &Entity, subject: &[(f64, f64)]) -> bool {
 /// the geographic and onomastic signals into the one namesake decision, so a
 /// rare-surname subject's interstate kin are never mislabelled.
 #[must_use]
-pub fn is_namesake(e: &Entity, subject: &[(f64, f64)], surname_common: bool) -> bool {
-    surname_common && is_geo_discordant_namesake(e, subject)
+pub fn is_namesake(
+    e: &Entity,
+    subject: &[(f64, f64)],
+    subject_surname: Option<&str>,
+    surname_common: bool,
+) -> bool {
+    surname_common && is_geo_discordant_namesake(e, subject, subject_surname)
 }
 
 #[cfg(test)]

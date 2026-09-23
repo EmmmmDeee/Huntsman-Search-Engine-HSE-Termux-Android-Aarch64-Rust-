@@ -5,10 +5,30 @@
 
 use std::collections::HashMap;
 
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use crate::core::entity::Entity;
 use crate::core::error::Result;
+
+/// A scan's view of an entity it observed: the scan's OWN copy on its
+/// observation row, or, for a legacy row written before that copy existed
+/// (NULL), the shared `entities` row. Every per-scan reader selects this, never
+/// `e.data_json` alone. The shared row is the union of every scan that ever
+/// observed the uid (the uid is scan-independent), so reading it for one scan
+/// exported other subjects' evidence, generation and corroboration
+/// (REQ-STORAGE-005).
+const SCAN_COPY_JSON: &str = "COALESCE(o.data_json, e.data_json)";
+
+/// The scan copy's display `value`, for the `q=` filter of
+/// [`Store::entities_filtered`]. It differs from the shared column only for
+/// Person/Organisation, whose uid folds case and whitespace runs, so two scans
+/// can hold two spellings. `json_valid` guards `json_extract`, which raises on
+/// malformed input: one corrupt copy would otherwise fail the whole read instead
+/// of being dropped (with a log) by `deserialize_rows`.
+///
+/// [`Store::entities_filtered`]: super::Store::entities_filtered
+const SCAN_COPY_VALUE: &str = "COALESCE(CASE WHEN json_valid(o.data_json) \
+     THEN json_extract(o.data_json, '$.value') END, e.value)";
 
 /// A weak finding surfaced for analyst review: the engine admitted the entity, but
 /// at a stored confidence below the review threshold. The audit trail an LE/defence
@@ -214,6 +234,12 @@ impl super::Store {
             ],
         )?;
 
+        // This scan's own copy of the entity, written to its observation row at
+        // the end. `None` = the incoming entity as-is: the uid is new to the
+        // store, new to THIS scan (another scan's row is no part of its copy),
+        // or observed only by a legacy row (see the end of the slow path).
+        let mut scan_copy_json: Option<String> = None;
+
         if inserted == 0 {
             // Slow path: entity already exists — SELECT, merge, UPDATE.
             let mut stmt =
@@ -236,11 +262,16 @@ impl super::Store {
             // the magnitude is GREATEST (idempotent), not SUM. A conflict with
             // no observation row for this scan is a genuinely separate
             // observation and keeps summing.
-            let already_observed_by_this_scan = tx
+            //
+            // The same lookup reads the scan's copy: `None` = no observation by
+            // this scan, `Some(None)` = a legacy observation with no copy.
+            let prior_scan_copy: Option<Option<String>> = tx
                 .prepare_cached(
-                    "SELECT 1 FROM entity_observations WHERE entity_uid = ?1 AND scan_id = ?2",
+                    "SELECT data_json FROM entity_observations WHERE entity_uid = ?1 AND scan_id = ?2",
                 )?
-                .exists(params![entity.uid, entity.scan_id])?;
+                .query_row(params![entity.uid, entity.scan_id], |r| r.get(0))
+                .optional()?;
+            let already_observed_by_this_scan = prior_scan_copy.is_some();
             let (stored_corr, incoming_corr) = (merged.corroboration, entity.corroboration);
             merged.merge(entity.clone());
             if already_observed_by_this_scan {
@@ -300,6 +331,27 @@ impl super::Store {
                 )?
                 .execute(params![rowid, merged.value, kind_str])?;
             }
+            // The scan's copy folds the incoming entity by the same rules the
+            // shared row just used for a scan that already observed it (merge,
+            // GREATEST corroboration, canonical order), over this scan's own
+            // writes only. Until another scan touches the uid the copy and the
+            // shared row are byte-identical, so the merge above IS the copy's and
+            // is reused: a single-scan store reads back exactly what it did
+            // before copies existed. A legacy observation (`Some(None)`) takes the
+            // incoming entity: by the premise of the GREATEST rule above it is the
+            // scan's accumulated superset, and the shared row holds other scans.
+            if let Some(Some(prior)) = prior_scan_copy {
+                scan_copy_json = Some(if prior == existing_json {
+                    merged_json
+                } else {
+                    let mut copy = serde_json::from_str::<Entity>(&prior)?;
+                    let prior_corr = copy.corroboration;
+                    copy.merge(entity.clone());
+                    copy.corroboration = prior_corr.max(incoming_corr).max(1);
+                    copy.canonicalize_order();
+                    serde_json::to_string(&copy)?
+                });
+            }
         } else {
             // Fast path inserted a new entity — mirror it into the FTS index
             // under the same rowid, in the same transaction. Cached because
@@ -310,14 +362,19 @@ impl super::Store {
                 .execute(params![rowid, entity.value, kind_str])?;
         }
 
+        // One row per (uid, scan). A re-persist keeps the first `observed_at`
+        // (the cross-scan recency order `scan_ids_for_entity` reads) and
+        // replaces only the scan's copy.
         tx.prepare_cached(
-            "INSERT OR IGNORE INTO entity_observations(entity_uid, scan_id, observed_at)
-             VALUES(?1, ?2, ?3)",
+            "INSERT INTO entity_observations(entity_uid, scan_id, observed_at, data_json)
+             VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(entity_uid, scan_id) DO UPDATE SET data_json = excluded.data_json",
         )?
         .execute(params![
             entity.uid,
             entity.scan_id,
-            entity.observed_at as i64
+            entity.observed_at as i64,
+            scan_copy_json.as_deref().unwrap_or(json.as_str()),
         ])?;
         Ok(())
     }
@@ -325,13 +382,16 @@ impl super::Store {
     pub fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>> {
         let raw: Vec<String> = {
             let conn = self.conn.lock();
-            let mut stmt = conn.prepare_cached(
-                "SELECT e.data_json
+            // The scan's own copies (`SCAN_COPY_JSON`). The ORDER BY is only a
+            // pre-order, so it can stay on the shared column: the display sort
+            // below is total.
+            let mut stmt = conn.prepare_cached(&format!(
+                "SELECT {SCAN_COPY_JSON}
                  FROM entities e
                  JOIN entity_observations o ON o.entity_uid = e.uid
                  WHERE o.scan_id = ?1
-                 ORDER BY e.confidence DESC, e.uid ASC",
-            )?;
+                 ORDER BY e.confidence DESC, e.uid ASC"
+            ))?;
             let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
             super::collect_rows(rows, "entities_for_scan")
         };
@@ -449,10 +509,14 @@ impl super::Store {
         min_confidence: Option<f64>,
         value_contains: Option<&str>,
     ) -> Result<Vec<Entity>> {
-        let mut sql = String::from(
-            "SELECT e.data_json FROM entities e \
+        // The scan's own copies (`SCAN_COPY_JSON`), filtered and ordered on the
+        // COPY's fields, not the shared row's: the recall path
+        // (`ScanEngine::recall_prior_entities`) reads a prior scan through here.
+        // `kind` is part of the uid, so the shared column is exact for any copy.
+        let mut sql = format!(
+            "SELECT {SCAN_COPY_JSON} FROM entities e \
              JOIN entity_observations o ON o.entity_uid = e.uid \
-             WHERE o.scan_id = ?1",
+             WHERE o.scan_id = ?1"
         );
         let mut next_param = 2u32;
         if kind.is_some() {
@@ -460,11 +524,16 @@ impl super::Store {
             next_param += 1;
         }
         if min_confidence.is_some() {
+            // A coarse bound only. The shared confidence is the maximum over
+            // every observing scan, never below this scan's copy, so it cannot
+            // wrongly exclude one; the exact floor on the copy is applied below.
             sql.push_str(&format!(" AND e.confidence >= ?{next_param}"));
             next_param += 1;
         }
         if value_contains.is_some() {
-            sql.push_str(&format!(" AND e.value LIKE ?{next_param} ESCAPE '\\'"));
+            sql.push_str(&format!(
+                " AND {SCAN_COPY_VALUE} LIKE ?{next_param} ESCAPE '\\'"
+            ));
             let _ = next_param;
         }
         // No LIMIT: the filtered set is a SUBSET of the canonical `entities_for_scan`
@@ -473,31 +542,52 @@ impl super::Store {
         // matches past rank 500 with no total/flag/pagination (the facets endpoint still
         // reported the true larger count, an observable inconsistency). `confidence DESC,
         // uid ASC` is already a total deterministic order (uid tie-break), so the full
-        // result is deterministic.
+        // result is deterministic. Here it is only the pre-order: the same order
+        // is re-applied below on the copy's own confidence.
         sql.push_str(" ORDER BY e.confidence DESC, e.uid ASC");
 
         let raw: Vec<String> = {
+            use rusqlite::types::Value;
             let conn = self.conn.lock();
             let mut stmt = conn.prepare_cached(&sql)?;
 
             let like_pattern = value_contains.map(|v| format!("%{}%", super::escape_like(v)));
 
+            // The bound binds as REAL rather than text so SQLite compares the
+            // exact `f64`, not its own parse of the decimal string.
             let rows = stmt.query_map(
                 rusqlite::params_from_iter(
-                    std::iter::once(scan_id.to_string())
-                        .chain(kind.map(std::string::ToString::to_string))
-                        .chain(min_confidence.map(|c| c.to_string()))
-                        .chain(like_pattern),
+                    std::iter::once(Value::Text(scan_id.to_string()))
+                        .chain(kind.map(|k| Value::Text(k.to_string())))
+                        .chain(min_confidence.map(Value::Real))
+                        .chain(like_pattern.map(Value::Text)),
                 ),
                 |r| r.get::<_, String>(0),
             )?;
             super::collect_rows(rows, "entities_filtered")
         };
-        Ok(super::deserialize_rows(raw, "entities_filtered"))
+        let mut entities: Vec<Entity> = super::deserialize_rows(raw, "entities_filtered");
+        // The exact floor and the order, on the copy's own confidence. Decoded
+        // rather than read with `json_extract`: that would compare SQLite's parse
+        // of the JSON number text, and its exact round-trip of the `f64` serde
+        // wrote is not verified here, so a floor equal to a stored confidence
+        // could reject it.
+        if let Some(floor) = min_confidence {
+            entities.retain(|e| e.confidence >= floor);
+        }
+        entities.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.uid.cmp(&b.uid))
+        });
+        Ok(entities)
     }
 
     pub fn entity_facets(&self, scan_id: &str) -> Result<Vec<(String, u64)>> {
         let conn = self.conn.lock();
+        // Counts through the observation join, so already per-scan; `kind` is
+        // part of the uid, so the shared column agrees with every scan's copy.
         let mut stmt = conn.prepare_cached(
             "SELECT e.kind, COUNT(*) FROM entities e \
              JOIN entity_observations o ON o.entity_uid = e.uid \

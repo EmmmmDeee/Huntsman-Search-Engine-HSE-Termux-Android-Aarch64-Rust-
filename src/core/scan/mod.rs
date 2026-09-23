@@ -14,7 +14,8 @@ use classify::domain_expansion_factor;
 // and associates (rather than re-deriving a second, drift-prone copy).
 pub(crate) use classify::{
     IDENTITY_OVERLAP_MIN, identity_norm, identity_overlaps, is_infra_domain, is_mega_domain,
-    is_noncentral_domain, is_wrong_identity_pivot,
+    is_noncentral_domain, is_other_named_person, is_wrong_identity_pivot, person_names_compatible,
+    person_surname,
 };
 
 mod detect;

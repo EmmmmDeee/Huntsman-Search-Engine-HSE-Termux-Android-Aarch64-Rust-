@@ -283,6 +283,40 @@ async function refreshDisruptions(){
   host.innerHTML = findings.map(row).join('') + (outages.length ? `<details class="radar-outages"><summary class="text-muted">${outages.length} outage${outages.length === 1 ? '' : 's'} on the timeline</summary>${outages.map(row).join('')}</details>` : '');
 }
 
+/* The network-path check (REQ-RESILIENCE-003): a live DNS/connectivity/TLS
+   probe, run only on request — never on the auto-refresh poll
+   `refreshDisruptions` rides, since issuing five live network probes on
+   every sweep/stream tick would add real latency and traffic to a network
+   that may already be struggling. Shares `GET /api/v1/radar/disruptions`
+   (with `live=1`) and `core::outage::classify`'s verdict with `hse doctor
+   --live` and `hse signal --disruptions --live`. */
+const OUTAGE_LABEL = {
+  offline: ['Offline', 'label-danger'],
+  dns_unavailable: ['DNS unavailable', 'label-danger'],
+  dns_hijacked: ['DNS hijacked', 'label-danger'],
+  captive_portal: ['Captive portal', 'label-warning'],
+  tls_intercepted: ['TLS intercepted', 'label-danger'],
+  clear: ['Clear', 'label-success'],
+};
+async function checkOutage(){
+  const btn = $('#radar-outage-check'), out = $('#radar-outage-result');
+  if (!out) return;
+  if (btn) btn.disabled = true;
+  out.textContent = 'Probing DNS, connectivity and TLS…';
+  try {
+    const r = await API.radarDisruptions(1, true);
+    const o = r.outage;
+    if (!o) { out.textContent = 'No result.'; return; }
+    const [label, cls] = OUTAGE_LABEL[o.kind] || [o.kind, 'label-default'];
+    out.innerHTML = `<span class="label ${cls}">${esc(label)}</span> ${esc(o.evidence)}` +
+      (o.kind !== 'clear' ? `<div class="text-muted radar-advice">${esc(o.advice || '')}</div>` : '');
+  } catch (e) {
+    out.textContent = e.message;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 /* Devices recurring across sweeps — the counter-surveillance review
    (core::radar_track over the sighting table): fixed hardware addresses the
    phone is not bonded to, seen in ≥2 sweeps, with the strongest level and
@@ -527,6 +561,10 @@ export async function renderRadar(v){
       <div class="panel-heading"><b><i class="glyphicon glyphicon-flash" style="color:var(--danger)"></i>&nbsp;Network disruption</b> <span class="badge" id="radar-disruptions-count">…</span>
         <span id="radar-disruptions-note" class="text-muted" style="font-weight:400"></span></div>
       <div id="radar-disruptions"><div class="text-muted" style="padding:8px 12px">Loading…</div></div>
+      <div style="padding:8px 12px;border-top:1px solid rgba(128,128,128,0.25)">
+        <button class="btn btn-default btn-xs" id="radar-outage-check"><i class="glyphicon glyphicon-refresh"></i>&nbsp;Check network path</button>
+        <span id="radar-outage-result" class="text-muted" style="margin-left:8px"></span>
+      </div>
     </div>
     <div class="panel panel-default" id="radar-recurring-panel" style="border-color:var(--warning)">
       <div class="panel-heading"><b><i class="glyphicon glyphicon-eye-open" style="color:var(--warning)"></i>&nbsp;Recurring across sweeps</b> <span class="badge" id="radar-recurring-count">…</span>
@@ -544,6 +582,7 @@ export async function renderRadar(v){
   $('#radar-latest').addEventListener('click', async () => { view.sid = null; closeTrack(); await refreshSignals(false); await refreshHistory(); });
   $('#radar-csv').addEventListener('click', exportCsv);
   $('#radar-track-close').addEventListener('click', closeTrack);
+  $('#radar-outage-check').addEventListener('click', checkOutage);
   const sort = $('#radar-sort'); sort.value = view.sort;
   sort.addEventListener('change', () => { view.sort = sort.value; paintSignals(); });
   const tr = $('#radar-trackable'); tr.checked = view.trackable;

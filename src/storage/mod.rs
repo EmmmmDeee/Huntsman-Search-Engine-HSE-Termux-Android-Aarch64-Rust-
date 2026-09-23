@@ -81,10 +81,19 @@ const SCHEMA_DDL: &str = "
                 UNIQUE(scan_id, rule_id, description)
             );
 
+            -- `data_json` is the scan's OWN copy of the entity: only what that
+            -- scan persisted for the uid. `entities` holds ONE shared row per
+            -- uid, merged from every scan that ever observed it (the cross-scan
+            -- knowledge base `get_entity`/search read), so a per-scan read of
+            -- that row exported other subjects' evidence (REQ-STORAGE-005).
+            -- NULL on a row written before the column existed; per-scan readers
+            -- fall back to the shared row for it. Added to older databases by
+            -- `ensure_column` in `Store::open`.
             CREATE TABLE IF NOT EXISTS entity_observations (
                 entity_uid  TEXT NOT NULL,
                 scan_id     TEXT NOT NULL,
                 observed_at INTEGER NOT NULL,
+                data_json   TEXT,
                 PRIMARY KEY (entity_uid, scan_id)
             );
 
@@ -374,10 +383,45 @@ const SCHEMA_DDL: &str = "
 /// process restarts often). A victim that still carries an observation from
 /// another scan is now skipped here; a victim left with none is removed by the
 /// fold's own orphan cleanup, so neither can be resurrected.
+///
+/// A backfilled row leaves `data_json` NULL: a store that predates the junction
+/// table kept no per-scan copy, so the shared row is the only record there is
+/// and the per-scan readers fall back to it.
 const BACKFILL_OBSERVATIONS_SQL: &str =
     "INSERT OR IGNORE INTO entity_observations(entity_uid, scan_id, observed_at)
      SELECT uid, scan_id, observed_at FROM entities e
      WHERE NOT EXISTS (SELECT 1 FROM entity_observations o WHERE o.entity_uid = e.uid);";
+
+/// Add `column` (declared `decl`) to `table` when an existing database predates
+/// it. `CREATE TABLE IF NOT EXISTS` never alters a table that is already there,
+/// so a column added to [`SCHEMA_DDL`] reaches fresh databases only; this is the
+/// additive-migration half. Idempotent: the `pragma_table_info` probe skips a
+/// table that has the column, so it is safe on every open.
+///
+/// Two connections opening one file at once (every `cfg(test)` store shares one
+/// file, and two `hse` processes can) may both see the column missing; the
+/// loser's ALTER then fails with "duplicate column name". The re-probe accepts
+/// that, since the column this guarantees now exists, and propagates any other
+/// failure.
+fn ensure_column(conn: &Connection, table: &str, column: &str, decl: &str) -> rusqlite::Result<()> {
+    let has_column = || -> rusqlite::Result<bool> {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
+            params![table, column],
+            |r| r.get(0),
+        )
+    };
+    if has_column()? {
+        return Ok(());
+    }
+    let alter = format!("ALTER TABLE {table} ADD COLUMN {column} {decl};");
+    if let Err(e) = conn.execute_batch(&alter)
+        && !has_column()?
+    {
+        return Err(e);
+    }
+    Ok(())
+}
 
 /// Read an `i64` from an environment variable, falling back to `default` when
 /// unset or unparseable. Used for the env-tunable SQLite performance pragmas.
@@ -538,6 +582,13 @@ impl Store {
                 conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
             }
         }
+
+        // Additive migration: the per-scan entity copy on each observation row,
+        // which every entity write and per-scan read names. Additive, so
+        // `SCHEMA_VERSION` is unchanged: an older binary's INSERT names its
+        // columns and still works, and the rows it adds carry no copy, so they
+        // read through the shared row.
+        ensure_column(&conn, "entity_observations", "data_json", "TEXT")?;
 
         // Idempotent backfill: populate entity_observations for stores created
         // before that table existed (and for any rows missing an observation).

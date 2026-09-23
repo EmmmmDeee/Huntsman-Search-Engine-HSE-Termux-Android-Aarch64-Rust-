@@ -666,7 +666,7 @@ this pass), 12 PARTIAL, 2 IMPLEMENTED_UNVERIFIED, 1 UNREACHABLE.
 
 | ID | Behavior | Runtime verification evidence | Status |
 |---|---|---|---|
-| REQ-API-EXPORT-001 | redact_sensitive_sources() replaces every proprietary breach/intel provider name appearing anywhere in an export body with the fixed label "breach-source", via one whole-token (\b...\b), case-insensitive regex alternation built once from the sensitive-name… | Ran `cargo test --lib api::scan_export -- --nocapture` this pass: `running 8 tests ... test api::scan_export::redact::tests::covers_every_spelling_of_the_named_providers ... ok / idempotent ... ok / redacts_named_paid_provider_but_keeps_public_sources ... ok / redacts_capitalised_brand_in_evidence_summaries ... ok / every_breach_category_source_is_redacted ... ok / whole_token_match_leaves_longer_tokens_intact ... ok ... test result: ok. 8 passed; 0 failed`. | VERIFIED |
+| REQ-API-EXPORT-001 | redact_sensitive_sources() replaces every proprietary breach/intel provider name appearing anywhere in an export body with the fixed label "breach-source", via one whole-token (\b...\b), case-insensitive regex alternation built once from the sensitive-name… | Ran `cargo test --lib api::scan_export -- --nocapture` this pass: `running 8 tests ... test api::scan_export::redact::tests::covers_every_spelling_of_the_named_providers ... ok / idempotent ... ok / redacts_named_paid_provider_but_keeps_public_sources ... ok / redacts_capitalised_brand_in_evidence_summaries ... ok / every_breach_category_source_is_redacted ... ok / whole_token_match_leaves_longer_tokens_intact ... ok ... test result: ok. 8 passed; 0 failed`. | SUPERSEDED by REQ-EXPORT-003 (the `\b` alternation rewrote URLs into fabricated `breach-source.<tld>` domains, missed `HUNTSMAN_*_KEY` names, and merged every provider onto one label) |
 | REQ-API-EXPORT-002 | The sensitive-name set is registry-derived: every module whose category() == ModuleCategory::Breach is swept automatically (so a newly added breach-category module needs no redact.rs edit); EXTRA_SENSITIVE is reserved for names the sweep structurally cannot… | Ran `cargo test --lib api::scan_export::redact::tests::every_breach_category_source_is_redacted` this pass (part of the 8/8 run above) — passed. Cross-checked categories by reading source directly: oathnet_pro::category() returns ModuleCategory::People (src/modules/oathnet_pro/mod.rs:109-110), see_know::category() and dehashed::category() both return ModuleCategory::Breach (src/modules/see_know/mod.rs:194-196, src/modules/dehashed/mod.rs:93-95) — confirming the comment's factual claims about… | VERIFIED |
 | REQ-API-EXPORT-003 | Redaction is enforced at one choke point: all four shareable download handlers (scan_entities_csv, scan_report_json, scan_export_gexf, scan_events_log) route their body through download_response(), which unconditionally calls redact_sensitive_sources(); only… | Ran `grep -n "download_response(\\|download_response_operator(" src/api/scan_export/mod.rs` this pass — output confirmed exactly 4 call sites (lines 49, 82, 120, 174) use download_response and exactly 1 (line 147, scan_debug_bundle) uses download_response_operator, matching the module doc comment's claim that the debug bundle is the sole conscious opt-out. **Fixed this pass (Pass 29):** that was structural (a grep of call sites), never a runtime proof the choke point actually masks a provider identity in each format — and the sibling REQ-API-EXPORT-004's end-to-end evidence rested on a since-reverted probe. Added the permanent HTTP-level `shareable_downloads_redact_the_provider_name_while_the_debug_bundle_keeps_it` (`tests/api.rs`): seeds two confirmed entities sharing one `dehashed` breach evidence record (so the provider name reaches the CSV `sources`/`evidence` columns, the report.json entity `evidence`, AND the GEXF via a co-occurrence edge labelled by the source) plus a `ModuleError{module:"dehashed"}` event (events.log); asserts each of entities.csv / report.json / graph.gexf / events.log hides `dehashed`/`DeHashed` (case-insensitive) AND carries the `breach-source` label — the label's presence proving the redactor ran on a body that held the name, not that the name was merely absent — while debug.txt KEEPS the real name. Ran `cargo test --test api shareable_downloads_redact_the_provider_name_while_the_debug_bundle_keeps_it` → 1 passed (all four formats redacted, bundle kept). Falsified per-handler: rewiring `scan_events_log` from `download_response` to `download_response_operator` and recompiling made the test FAIL (RC=101) at the events.log iteration only — leaked body `{…"module":"dehashed"…"provider DeHashed returned HTTP 503"}` — while CSV/report.json/GEXF still passed, proving the loop covers each of the four handlers and detects a per-handler bypass; restoring the call turned it green. | VERIFIED |
 | REQ-API-EXPORT-004 | End-to-end: a real Breach-category module's evidence (Evidence{source: module name(), summary: the module's own capitalised-brand text, e.g. "DeHashed record from Adobe"}) and its ModuleDone scan event, once persisted and downloaded through the live HTTP… | Ran `cargo test --test api temp_probe_end_to_end_redaction_across_all_four_download_formats -- --nocapture` this pass (test added then reverted). Real output: entities.csv `sources` column = `breach-source\|breach-source`, `evidence` column = `[breach-source] breach-source record from Adobe \|\| [breach-source] breach-source record from MyFitnessPal`; report.json `"source": "breach-source"`, `"summary": "breach-source record from Adobe"` / `"...MyFitnessPal"`; events.log both lines read… **Re-grounded in Pass 29:** that reverted probe is superseded by the permanent `shareable_downloads_redact_the_provider_name_while_the_debug_bundle_keeps_it` (`tests/api.rs`, see REQ-API-EXPORT-003) — it drives the same end-to-end redaction across all four download formats over live HTTP and is falsified per-handler, so this end-to-end contract is now locked by a committed test rather than a throwaway one. | VERIFIED |
@@ -18477,6 +18477,249 @@ survived.
   end-to-end demonstration through the real binary. Queued, not silently
   accepted.
 
+### REQ-RESILIENCE-003 — a connected link said nothing about whether the network actually reached the internet honestly: the radar now classifies offline, DNS-unavailable, DNS-hijacked, captive-portal and TLS-intercepted paths, and reports it live
+
+#### Where this sits
+
+T6, cycle 3 (`docs/ROADMAP.md`). Cycle 2 gave the radar a per-sweep record of
+the device's own Wi-Fi link and reviewed its history for disruptions. A
+`connected: true` link record says nothing about whether the network it is on
+actually reaches the internet — a dead resolver, a captive portal, a poisoned
+DNS answer and a TLS-intercepting proxy all read as connected. This cycle
+classifies which of those states the path is in, from probes gathered fresh
+at call time (a single-snapshot judgement, not a history review like
+`core::link::review` — cycle 2's own scope note named this as cycle 3's job).
+
+#### Observed, before any change (`da942745`)
+
+No code in the tree distinguished any of these states from a healthy
+connection. `hse doctor --live` and the radar's disruptions surfaces reported
+the device's own link and access points heard, nothing about whether the path
+beyond the link actually worked.
+
+#### The fix
+
+- **`core::outage`** (pure, no I/O, no clock — the `core::link` discipline):
+  `OutagePath` (what a caller's probes observed: the system resolver's
+  answer, an independent DoH answer, whether a raw IP-literal connect
+  succeeded, a neutral connectivity check's status, whether a TLS handshake
+  captured a certificate and its issuer organisation) → `classify(&OutagePath)
+  -> OutageReport`, a five-way precedence chain — `Offline > DnsUnavailable >
+  DnsHijacked > CaptivePortal > TlsIntercepted > Clear` — so a device with no
+  route at all is never also reported as having a bad certificate on a
+  connection it never made, and a hijacked resolver is reported over a
+  captive-portal symptom the same hijack could also produce. Each kind
+  carries `advice()`, a short actionable sentence.
+- **`app::outage`** (the I/O collector, `app::signal`'s split over
+  `core::link` applied here): `collect()`/`collect_against(..)` run five
+  probes concurrently via `tokio::join!` — the system resolver
+  (`tokio::net::lookup_host`), an independent DNS-over-HTTPS JSON query
+  direct to Cloudflare (deliberately **not** `util::curl_client`'s existing
+  DoH fallback, which only activates once the system resolver has already
+  *failed* — a hijack is exactly the case where it *succeeds* with a wrong
+  answer), a raw IP-literal TCP connect, the `generate_204` connectivity
+  probe (`util::egress::PROBE_URL`, `pub(crate)` and shared rather than
+  duplicated), and a TLS handshake reusing `cert_intel`'s certificate-capture
+  technique. Every leg is bounded (3 s) and degrades to an honest "no signal"
+  value on failure — never a fabricated negative.
+- **`util::x509_field`** — a minimal, dependency-free DER field reader for a
+  certificate's issuer/subject organisation. Structurally locates the
+  `issuer`/`subject` `Name` field inside `Certificate.tbsCertificate` (RFC
+  5280 §4.1: walk past the optional `[0] version`, `serialNumber`, and
+  `signature` `AlgorithmIdentifier` to reach `issuer`, then `validity` to
+  reach `subject`) before scanning for the OID's `AttributeTypeAndValue`
+  inside that bounded range only — see "A second security defect, found and
+  fixed the same cycle" below for why the bound is load-bearing, not
+  cosmetic.
+- Wired into `hse doctor --live` (a "Network path:" section), `hse signal
+  --disruptions --live` (a new `live: bool` field on `Command::Signal`, an
+  `"outage"` key merged into JSON output / a text line), and `GET
+  /api/v1/radar/disruptions?live=1` (opt-in — the auto-refresh poll must not
+  run five live network probes per tick; runs the existing DB read and the
+  outage collection concurrently via `tokio::join!` when requested). The
+  Radar view gained a "Check network path" button in the disruptions panel.
+
+#### A blind-push incident, and the real regression it caused
+
+Partway through this cycle's final verification pass, the session's local
+disk filled up completely — every local shell command, `cargo` invocation,
+and even trivial file writes began failing with `ENOSPC`. With no working
+local git or build tooling, the fully-built and locally-tested content
+(verified clean immediately before the disk filled) was pushed directly via
+the GitHub API from the last-known-good file contents, because that was the
+only way to get committed work off a session that could no longer commit
+anything itself. The wiring changes (`hse doctor`'s live section, the CLI
+`--live` flag, the API's `?live=1`) were relayed the same way in a follow-up
+push once the collector/classifier core was confirmed on the branch.
+
+That relay mechanism has no compiler in the loop: one of the API-pushed edits
+to `src/app/doctor/mod.rs` **replaced** the pre-existing `format_module_health`
+function's body with the new `print_outage_check` function, instead of adding
+the second function alongside the first — a plain diff-application mistake
+invisible without a build to catch it. `format_module_health` stayed called
+from four sites (`cmd_doctor` itself and three `doctor::tests`) with its
+definition gone, so the branch could not compile at all; CI caught it as the
+`Check & test`, `MSRV`, and `Build (aarch64-linux-android)` jobs all failing
+identically on the same missing-function error (`clippy` happened to pass —
+its earlier run on an earlier push, before this specific regression, was
+cached as still-green in the notification stream, which read at first glance
+like the compile error was intermittent rather than a straightforward
+introduced-then-fixed defect). Fixed by restoring `format_module_health`
+verbatim alongside `print_outage_check`, once a working session with real
+`cargo check` was available to catch it — the lesson (recorded, not just
+fixed) is that an API-relayed push is a last resort for getting work off a
+session that cannot commit its own history, never a substitute for a real
+compiler pass before the result is trusted; this cycle's own final gate run
+re-verifies that pass now exists.
+
+#### A second class of defect, found and fixed the same cycle: reviewer findings on the relayed push
+
+The relayed push above received automated review (Copilot, GitHub Advanced
+Security) before this session could act on it. Four findings were real and
+are fixed here, alongside the compile error:
+
+- **`collect_against` was `pub`, not `pub(crate)`.** Its `ip_literal_anchor`
+  parameter reaches a raw `TcpStream::connect` and its `connectivity_url`
+  reaches `util::curl::fetch_with_status` — neither carries the SSRF-safe
+  host-checking the crate's shared reqwest client enforces everywhere else a
+  caller-supplied target reaches the network (REQ-SSRF-001/002's whole
+  point). Every real caller is `collect()`, which pins the four targets
+  itself; nothing needed the wider visibility. Now `pub(crate)`.
+- **`EXPECTED_CA_ORGS` was matched by `org.contains(ex)`.** A self-signed
+  interception certificate can name its own issuer organisation `"Not
+  DigiCert"` or `"DigiCert clone"` — both contain the allow-listed fragment
+  `"DigiCert"` anywhere in the string — and pass. Changed to exact string
+  equality against each CA's complete, real organisation name
+  (`"DigiCert Inc"`, `"Let's Encrypt"`, `"Google Trust Services LLC"`, …).
+  This is still a display-string comparison with no chain or fingerprint
+  validation behind it — a forger who copies a real CA's complete name
+  byte-for-byte still passes, which only actual chain/root-fingerprint
+  validation closes, a materially larger capability out of this cycle's
+  scope and recorded below, not silently promised. Exact match closes the
+  cheap version of the bypass (an unrelated or merely-similar name), which
+  `.contains()` did not even attempt to resist.
+- **`util::x509_field::extract_field_from_der` scanned the entire DER
+  buffer** for the target OID and returned the first match, with no
+  structural bound. `serialNumber` — fully attacker-chosen bytes on a
+  self-signed or freshly-minted interception certificate — precedes `issuer`
+  in the DER encoding; a certificate crafted to embed a fake
+  `organizationName` `AttributeTypeAndValue` inside its own serial number
+  would have its forged value read back as the issuer's organisation before
+  the scan ever reached the real (unlisted) issuer field, defeating the one
+  check this module exists to make honest. Rewrote it to locate the
+  `issuer`/`subject` field's exact byte range first (see "The fix" above)
+  and scan only inside that bound — the only way to influence what it
+  returns is now to put the value in the field actually being asked about,
+  which is the thing being checked either way. Proven, not just argued: a
+  synthetic certificate with a forged `organizationName` in its serial
+  number ahead of a real, different, unlisted issuer organisation confirms
+  the real issuer is returned, not the forgery
+  (`a_forged_organisation_name_planted_in_the_serial_number_is_not_returned`);
+  the same property at the `classify` layer is locked by
+  `an_issuer_name_that_merely_contains_an_allow_listed_fragment_is_still_intercepted`.
+- **A DNS-unavailable test could silently test nothing.** The test drove
+  `system_dns_lookup` against the RFC 2606-reserved TLD `outage-test.invalid`
+  and only asserted the `DnsUnavailable` composition inside an `if
+  path.system_dns.is_empty()` guard — a sandbox whose resolver answers
+  (sinkholes) every unknown name rather than returning NXDOMAIN would skip
+  the assertion entirely and the test would still read green, having proven
+  nothing. `system_dns_lookup` calls the OS resolver directly with no inject
+  point (unlike the HTTP-based legs, which take a URL), so full determinism
+  needs a resolver seam this cycle does not add; the tractable fix makes the
+  gap loud instead of silent — the empty-DNS expectation is now a hard
+  `assert!` with a message naming exactly what to fix if it ever fires, not
+  a conditional that can quietly stop exercising the composition it exists
+  to cover.
+
+A fifth finding (a documentation typo, "input several" for "input itself")
+was fixed in passing; it did not survive into this file's final doc comment,
+which was rewritten for the structural-bound fix above.
+
+#### Locks
+
+20 `core::outage` tests (every precedence branch, false-positive and
+false-negative controls, plus the two new exact-match regression tests
+above), 16 `app::outage` tests (each collector leg against a real loopback
+server or listener — fully hermetic, no live-internet dependency; the
+DNS-unavailable leg now fails loudly rather than silently per the fix
+above), 6 `util::x509_field` tests (the real self-signed fixture
+`modules/cert_intel/testdata/selfsigned.der`'s issuer/subject CN and issuer
+O, a not-a-certificate-shape input reading `None` rather than falling back to
+an unbounded guess, an over-length DER claim refused rather than read past
+the buffer, and the forged-serial-number regression). The pre-existing
+`radar_disruptions_reads_the_link_records_and_the_access_points_heard` API
+test (no `live` param) passes unchanged — the `?live=1` opt-in does not
+touch the default path. Full-tree verification after all fixes above:
+`cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`,
+`cargo fmt --check`, `scripts/doc_coverage.sh` (held at the 1029 baseline —
+the two `OutageReport` field docs this cycle added were already required to
+hold it there, from an earlier pass this same cycle), and `cargo test
+--locked --all-targets` (7806 passed, 0 failed, 23 pre-existing ignores) all
+clean on the fixed tree.
+
+#### Falsification
+
+Two forms, at two layers. At `core::outage::classify`, the precedence-order
+falsification from this cycle's first pass still stands: swapping the
+`DnsHijacked`-before-`CaptivePortal` block order broke exactly
+`a_hijacked_resolver_is_reported_over_a_captive_portal_symptom_it_also_causes`
+and no other test, then was reverted. A full Q-matrix pass (the discipline
+REQ-RESILIENCE-002 used) was judged disproportionate here and still is: there
+is no storage/engine seam for a mutation's blast radius to be misjudged
+across, the class of misprediction the matrix caught twice on that cycle.
+
+At `util::x509_field::extract_field_from_der`, the falsification this time
+is a demonstrated exploit rather than a source mutation: the pre-fix global
+scan was the defect, not a hypothetical one — a synthetic certificate with a
+forged `organizationName` planted in its serial number, positioned before a
+real, different issuer, would have had the forged value returned under the
+old unbounded scan (confirmed by re-reading the pre-fix function: the loop
+returns on its first byte-pattern match anywhere in the buffer, and the
+serial number precedes the issuer in every DER-encoded certificate). The fix
+is proven by the same certificate now returning the real issuer instead.
+
+#### Scope, honestly
+
+- `util::x509_field::extract_field_from_der` and
+  `modules::cert_intel::extract_field_from_der` remain independently
+  written, not consolidated onto one implementation — tracked since this
+  cycle's first pass. `cert_intel`'s copy carries the *identical*
+  unbounded-scan weakness this cycle just closed here, but its output feeds
+  descriptive OSINT attributes (an `issuer`/`subject`/`org` string recorded
+  as evidence) rather than a security accept/reject decision, so a forged
+  value there is inaccurate intel, not a bypassed control — lower severity,
+  not zero, and the consolidation (plus porting the structural bound) is
+  queued, not silently dropped.
+- The CA allow-list is a display-string comparison with no chain or
+  root-fingerprint validation — exact match (this cycle's fix) closes the
+  cheap bypass (an unrelated or approximately-similar name) but not a
+  forger who copies a real CA's complete organisation name byte-for-byte
+  into their own self-signed leaf. Closing that needs actual X.509 chain
+  validation against a trusted root store, a materially larger capability
+  (this codebase hand-rolls its own DER reading rather than depending on a
+  TLS/PKI crate; a proper validator is a different-sized undertaking than
+  this cycle's minimal field reader) — out of scope here, and the
+  `EXPECTED_CA_ORGS` doc comment says so rather than overstating what exact
+  match proves.
+- DoH is queried from exactly one provider (Cloudflare); no fallback if
+  Cloudflare's own resolver is unreachable but the system resolver is
+  merely hijacked. A single independent vantage point is still strictly
+  better than none, and is what this cycle adds.
+- `app::outage` is deliberately not wired into the radar's auto-refresh
+  poll — five live network probes per tick would be disproportionate to a
+  30 s default cadence; every surface is opt-in (`--live` / `?live=1`).
+- No live, real-network end-to-end test exercises the DoH/TLS legs'
+  success path — the SSRF-guarded shared reqwest client refuses loopback by
+  design, so the hermetic test harness can only exercise those legs'
+  graceful-failure behaviour; the DoH-JSON parsing logic itself is
+  separately pure-tested (`parse_doh_a_records`) against fixed JSON bodies,
+  independent of network reachability.
+- "IP reassignment" for the device's own interface (named in the T6
+  directive) is not a kind this module classifies — it is already visible
+  as a change in `core::link::LinkState::ip` across sweeps, an extension of
+  the existing per-sweep record rather than a second mechanism for the same
+  fact.
+
 ---
 
 ## REQ-CERTSPOTTER-001 — one page of a cursor, reported as the whole answer
@@ -19778,6 +20021,218 @@ does not widen into a module it did not otherwise touch.
 - The follow-up stage's failures are best-effort by design and move no outage
   verdict; a declared server that could not be followed stays recorded as
   declared, unvalidated.
+
+## REQ-IDENTITY-GATE-001 / REQ-SUBJECT-SCOPE-001 / REQ-GEO-FAMILY-001 / REQ-WIKIDATA-003 / REQ-SEARCH-ADDR-001 — a name scan's namesakes, relatives and namesake places are not its subject
+
+**Found** by reading one real scan end to end: a `full_name = "Ian Thorpe"`
+scan (7258fc07, 2026-09-23), exported as debug bundle, events log, CSV and
+GEXF. Its self-audit graded it 81/100 while 81 entities sat in VERIFIED,
+among them an "Aidan Thorpe" Instagram handle at `c_eff 1.00`, "Carol /
+Megan / Tracy Thorpe" as corroborated relatives, and a best location fix
+at 0.97 that was a public swimming pool.
+
+**REQ-IDENTITY-GATE-001 — the pivot gate could not tell a relative from the
+subject.** `is_wrong_identity_pivot` asks whether a `Person` shares a ≥4-char
+run with the subject; every surname-sharer does (`meganthorpe` ⊃ `thorpe`),
+and so does a near-surname (`ianthorley` ⊃ `ianthor`). Its corroboration
+escape then read "two registers list Megan Thorpe" as "Megan Thorpe is the
+subject". The scan pivoted Ian Thorley, Aidan, Megan, Wendy, Jon, Johnny and
+David Thorpe and "Ian Thorpe Aquatic Centre"; each got name permutations,
+~200 speculative mailboxes and handles, profile and breach probes. The new
+`scan::classify::person_names_compatible` reads given and surname positions
+(honorifics, post-nominals, `(notes)` and `Surname, Given` handled; initials
+fold; nicknames deliberately do not), and the engine's new
+`different_named_person` gate refuses a `Person` structurally incompatible
+with the `FullName` seed whatever its confidence or source count. Only
+`--expand-all-identities` lifts it. `core::exposure` applies the same rule:
+a record on another named person — "Carol Thorpe Tully", born 1946, from a
+relative's pivot — is no longer "disclosed: date of birth".
+
+**REQ-SUBJECT-SCOPE-001 — a module's subject claims were admitted
+unscoped.** A module sees only the target it ran on. `name_intel` tagged
+every pivoted name `seed` + `subject` with "Scan subject — provided as the
+seed" (eleven "subjects" in one scan); `qld_unclaimed` tagged every row that
+exactly matched a pivot's name `exact-name-match`, and `geo_family` anchors
+"the subject's confirmed location" on such rows — a company pivot's
+postcode, a relative's. `engine::dispatch::rescope_subject_claims`, at the
+single admission point, keeps the three claim tags on the seed dispatch,
+keeps only `exact-name-match` on a pivot that is a variant of the seed's
+own name, and strips all three elsewhere. `name_intel`'s evidence now
+states only what it knows.
+
+**REQ-GEO-FAMILY-001 — family membership was decided twice, differently.**
+AU-061 checked a `family-candidate` Person's surname against the subject's;
+the engine pass that writes the `geo_corroboration` evidence (and lifts
+`source_count`) did not, so 69 Thorleys became "shared-surname relatives"
+of a Thorpe and the seed Person was stamped its own relative "~0 km" away.
+`geo_family::is_subject_family_candidate` is now the one test: family tag,
+not the subject (`seed`/`subject`/`exact-name-match`), and the subject's
+surname on a Person. `subject_surname` prefers the seed over a register
+match. The GEXF co-occurrence key excludes engine-derived corroboration
+records: their templated summary wired every promoted relative to every
+other — 12,319 of the export's 33,473 edges.
+
+**REQ-WIKIDATA-003 — a place named after the subject was the subject.** An
+untyped Wikidata item fell back to the seed's kind, so the venue "Ian Thorpe
+Aquatic and Fitness Centre" became a `Person`, tagged `exact-name-match`,
+and its P625 — emitted at HIGH, over the subject-fix floor — became the
+best AU location fix at 0.97. An untyped item carrying P625 is now a located
+thing, not a person; a head that is not the seed's kind of thing is neither
+`exact-name-match` nor a source of the subject's coordinates.
+
+**REQ-SEARCH-ADDR-001 — a people-search title was an address.**
+`extract_addresses_from_text` reads the capitalised run before `", <State>"`
+as a city, so `spokeo.com/Ian-Thorpe/North-Carolina` became the Address
+"Ian Thorpe, North Carolina" (fourteen such), and Photon geocoded four
+different names to one arbitrary point. On a name scan
+`is_person_listing_locality` drops a multi-word "city" ending in the scanned
+surname unless a place word leads it; a one-word suburb that is the surname
+("Lawnton, QLD") is unaffected. Review of #645: the caller read the seed's
+surname as its last whitespace token, so `"Dr Ian Thorpe OAM"` searched for an
+"OAM"; it now uses the identity gate's own parser (`core::scan::person_surname`),
+locked by `a_name_scan_…` 's sibling
+`the_listing_title_filter_reads_the_surname_of_a_decorated_or_reversed_seed`
+(killed on the last-token reading).
+
+### Locks
+
+- `core::scan::tests::person_names_compatible_reads_given_and_surname_positions`,
+  `only_a_person_structurally_unlike_the_subject_is_another_named_person`;
+- `core::engine::tests::a_person_whose_name_cannot_be_the_subjects_is_never_pivoted`
+  (with the `--expand-all-identities` control) and
+  `a_pivots_subject_claims_are_rescoped_to_the_scan_subject` — both through
+  `ScanEngine::run`;
+- `core::geo_family::tests::only_the_subjects_surname_kin_and_never_the_subject_are_family`,
+  `subject_surname_prefers_the_seed_over_a_register_name_match`;
+- `core::gexf::tests::an_engine_derived_template_record_draws_no_co_occurrence_edge`;
+- `core::exposure::tests::another_named_persons_record_is_not_the_subjects_exposure`;
+- `modules::wikidata::tests::a_place_named_after_a_person_seed_is_neither_the_person_nor_their_location`;
+- `modules::search_engines::helpers::entity::tests::a_people_search_listing_title_is_not_a_locality`.
+
+### Falsified
+
+Each mutation re-introduces one removed root cause; the source was restored
+byte-identical (SHA-256 checked) after every run.
+
+| # | mutation | result |
+|---|---|---|
+| M1 | the engine's `different_named_person` gate removed | killed by `a_person_whose_name_cannot_be_the_subjects_is_never_pivoted` |
+| M2 | `rescope_subject_claims` not called at admission | killed by `a_pivots_subject_claims_are_rescoped_to_the_scan_subject` |
+| M3 | family surname check removed | killed by `only_the_subjects_surname_kin_and_never_the_subject_are_family` |
+| M4 | the subject's self-exclusion from family removed | killed by the same |
+| M5 | GEXF keeps engine-derived records in the co-occurrence key | killed by `an_engine_derived_template_record_draws_no_co_occurrence_edge` |
+| M6 | exposure's other-named-person gate removed | killed by `another_named_persons_record_is_not_the_subjects_exposure` |
+| M7 | wikidata's P625 clause in `classify` removed | killed by `a_place_named_after_a_person_seed_is_neither_the_person_nor_their_location` |
+| M8 | `is_person_listing_locality` unwired from `build_entities` | killed by `a_name_scan_emits_no_address_from_a_people_search_listing_title` |
+| M9 | the name rule's surname-position check removed | killed by `person_names_compatible_reads_given_and_surname_positions` |
+
+**9 of 9 killed.**
+
+## REQ-STORAGE-005 — a scan's exports carried other scans' evidence
+
+**Found** in the same bundle: `organisation = AGL SALES PTY LIMITED` showed
+`generation=0`, `corroboration=37` and a `qld_unclaimed` record `recorded_at`
+eight days before the scan whose `paid_to_owner` listed other scans'
+subjects; 506 evidence records predated the scan start. The entity uid is
+scan-independent, every persist merged into ONE shared `entities` row, and
+every per-scan reader (`entities_for_scan`, `entities_filtered` — so the
+bundle, CSV, report and recall) returned that row. An earlier scan's export
+also changed after it completed.
+
+**Fix.** `entity_observations.data_json` holds the scan's OWN copy, folded
+from that scan's writes only (merge, GREATEST corroboration, canonical
+order); per-scan readers select `COALESCE(o.data_json, e.data_json)`, and
+`entities_filtered` applies its floor and order to the copy. The shared row
+stays the cross-scan knowledge base (`get_entity`, search). Existing
+databases gain the column through `Store::open`'s idempotent
+`ensure_column` (additive: `SCHEMA_VERSION` unchanged; a legacy row reads
+through the shared row). `build_scan_report` restores correlation-referenced
+entities from the scan's own set instead of `get_entity`. The
+`InMemoryStore` double keeps per-scan copies the same way.
+
+**Locks:** `storage::tests::a_scan_reads_only_its_own_copy_of_an_entity_other_scans_also_observed`,
+`entities_filtered_applies_the_floor_to_the_scans_own_confidence`,
+`an_observations_table_without_the_copy_column_is_migrated_on_open`;
+`test_support::tests::per_scan_reads_return_the_scans_own_copy_not_the_shared_entry`.
+
+**Scope, honestly:** scans persisted before this change have no copies and
+still read the shared row until re-run; each observation row now stores an
+entity JSON, roughly doubling entity storage.
+
+## REQ-OFAC-002 — OFAC screening never had a list in production
+
+Both `/api/download/*.CSV` endpoints answer `302` to a one-hour pre-signed
+`*.s3.us-gov-west-1.amazonaws.com` URL (live, 2026-09-23). The shared
+client's cross-site redirect rule hands that `302` back — correctly, for
+keyed callers — and `fetch_one_list` read it as a failure, so every scan
+logged "no list has ever been cached". Only success was recorded, so each
+dispatch re-downloaded (6× in one scan). `list::presigned_hop` (https, DNS
+name under `.amazonaws.com`, no userinfo or port) gates one keyless manual
+hop; `ListStore` makes refreshes single-flight and remembers a failure for
+`FAILURE_COOLDOWN_SECS` (5 min) through the pure `should_refetch`. The global
+rule is unchanged and pinned
+(`util::http::tests::redirect_verdict_stops_ofacs_hop_to_its_presigned_s3_object`).
+**Locks** (`modules::sanctions_ofac::tests`): `presigned_hop_*`,
+`the_shared_client_hands_back_ofacs_s3_redirect_unfollowed`,
+`fetch_one_list_follows_no_redirect_but_the_presigned_one`,
+`should_refetch_truth_table`, `concurrent_dispatches_share_one_*`,
+`an_empty_download_is_remembered_as_a_failure_not_cached`.
+
+## REQ-AHPRA-002 — the real AHPRA register read as a Cloudflare wall, and behind it the query is ignored
+
+The bare `/cdn-cgi/challenge-platform` signature matched Bot Management's
+JavaScript-detection snippet (`/scripts/jsd/main.js`), which Cloudflare
+injects into every page of a zone, so the genuine 169 KB register page
+(HTTP 200, its own title) was typed `BotChallenge`. The signature is now the
+challenge loader path `/cdn-cgi/challenge-platform/h/`. Beneath that mask
+the register ignores `Spousesurname=` / `Organisation=` and returns its
+blank POST form (`id="mainform"`, no `<table>`), so the detector fix alone
+would have minted "not a registered practitioner": `ahpra::register_rows`
+refuses a row-less form page as `Error::Module` (coverage `Failed`, never
+`CleanNegative`). The POST API is not guessed at. The `you.com` fixture test
+asserted the old false positive (its capture carries only the JSD snippet)
+and now pins the boundary instead. **Locks:**
+`util::html::tests::cloudflares_always_injected_jsd_script_is_not_a_wall`,
+`a_real_cloudflare_challenge_loader_is_still_a_wall_on_its_own`;
+`modules::ahpra::tests::the_registers_blank_search_form_is_a_failure_not_zero_practitioners`,
+`the_real_register_page_is_neither_a_wall_nor_a_clean_negative`;
+`modules::search_engines::fetch::tests::cloudflares_injected_jsd_snippet_alone_does_not_make_a_youcom_page_a_challenge`.
+
+## REQ-EXPORT-003 — the client-safe redactor fabricated addresses, missed key names and merged providers; a live events.log was unmarked
+
+**Found** in the same scan's `hse-events-<id>.log`. The shareable-download
+redactor was one `(?i)\b(?:names)\b` → `"breach-source"` regex over the whole
+body. `\b` matches at `.` and `/`, so real addresses became plausible,
+registrable fakes: `https://see-know.ru` → `https://breach-source.ru`,
+`dehashed.com` → `breach-source.com`, `intelx.io/signup` →
+`breach-source.io/signup`. `_` is a word character, so `HUNTSMAN_SEEKNOW_KEY`
+and the other key names passed through, as did the `signup_hint` brands
+("Intelligence X", "Stolen.tax") — the "never named" promise was false. Ten
+modules collapsed onto one label (277 events), destroying per-module
+start/done accounting. Separately, the download served mid-scan was a strict
+5,350-event prefix of the 8,190-event sequence with nothing marking it
+partial, under a doc comment promising a "complete, loss-less" log.
+
+**Fix.** Three passes: any URL or hostname containing a sensitive name
+becomes `[redacted-url]` whole; a sensitive provider's key env var becomes
+`HUNTSMAN_[redacted]_KEY` (stems matched to modules from `KNOWN_KEYS`); every
+spelling of a provider (registry, aliases, its `signup_hint` brand and host)
+becomes its own stable `[breach-source-N]`, between non-alphanumeric
+boundaries. `render_event_log_export` reads the scan before its events and
+appends one `export_snapshot` line whenever `partial_export_reason` reports
+the scan partial; the API route and `hse export --format events` both use
+it. REQ-API-EXPORT-001 is superseded. **Locks:**
+`api::scan_export::redact::tests::redaction_never_fabricates_a_domain`,
+`redaction_covers_env_var_key_names`, `distinct_providers_keep_distinct_placeholders`,
+`every_sensitive_signup_hint_brand_and_domain_is_redacted`,
+`every_keyed_sensitive_module_has_its_key_env_redacted`; `tests/api.rs`
+`events_log_of_running_scan_is_marked_partial` (with the finished-scan
+control) and the extended shareable-download test.
+
+**Scope, honestly:** the placeholder numbering follows the public module
+list, so someone holding the same build can map `[breach-source-N]` back to a
+provider; per-export numbering would prevent that but break cross-export
+consistency. Kept stable.
 
 ## REQ-KEYPROBE-002 — any key was a "validated" credential for every service whose refusal the body heuristic could not read
 

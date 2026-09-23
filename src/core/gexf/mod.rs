@@ -284,8 +284,24 @@ fn write_shared_evidence_edges(xml: &mut String, entities: &[Entity], edge_id: &
     // Output is unchanged: the pair iteration order is identical, and `shared`
     // is consumed only by `.len()` and by `labels`, which is sorted and deduped
     // before it is written.
-    let records: Vec<std::collections::HashSet<(&str, &str)>> =
-        entities.iter().map(Entity::corroborating_records).collect();
+    //
+    // An ENGINE-DERIVED corroboration record (geo / multipath / cross-scan
+    // agreement) is excluded from the key. It is a per-entity inference, not a
+    // source naming two entities together, and its summary is a template: the
+    // geo-family pass writes "Shared-surname relative ~0 km from the subject's
+    // confirmed location …" onto every promoted entity at the same rounded
+    // distance, so the identical text wired every one of them to every other —
+    // 12,319 of a real "Ian Thorpe" export's 33,473 edges were that one false
+    // clique (REQ-GEO-FAMILY-001). The typed relation edges still carry any real
+    // link the pass established.
+    let records: Vec<std::collections::HashSet<(&str, &str)>> = entities
+        .iter()
+        .map(|e| {
+            let mut r = e.corroborating_records();
+            r.retain(|&(source, _)| !crate::core::entity::is_engine_corroboration_source(source));
+            r
+        })
+        .collect();
     for (i, src) in entities.iter().enumerate() {
         let src_records = &records[i];
         for (j, tgt) in entities.iter().enumerate().skip(i + 1) {

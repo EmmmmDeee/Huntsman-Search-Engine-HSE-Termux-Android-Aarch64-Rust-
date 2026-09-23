@@ -189,7 +189,10 @@ export const API = {
   radarRecurring: (min, limit)=>API._req('/api/v1/radar/recurring?min='+encodeURIComponent(min||2)+'&limit='+encodeURIComponent(limit||100)),
   // The device's own Wi-Fi link across the sweep history: forced disconnections,
   // deauthentication, evil twins, scheduled outages (REQ-RESILIENCE-002).
-  radarDisruptions: limit=>API._req('/api/v1/radar/disruptions?limit='+encodeURIComponent(limit||100)),
+  // `live=true` also runs the network-path probe (REQ-RESILIENCE-003) — DNS,
+  // captive portal, TLS issuer — a live network check, so callers opt in
+  // rather than it running on every auto-refresh poll.
+  radarDisruptions: (limit, live)=>API._req('/api/v1/radar/disruptions?limit='+encodeURIComponent(limit||100)+(live?'&live=1':'')),
   selftest:     ()=>API._req('/api/v1/selftest'),
   logsUrl:      ()=>'/api/v1/logs',
   // Live tail of the verbose debug-log ring (loopback-only): pass the cursor
@@ -220,4 +223,3 @@ export const API = {
   // scan. {entity, scan_ids:[…], observation_count}.
   entityGet:  uid=>API._req('/api/v1/entities/'+encodeURIComponent(uid))
 };
-

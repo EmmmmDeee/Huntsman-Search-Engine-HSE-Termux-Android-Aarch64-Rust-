@@ -407,8 +407,9 @@ mod prop {
     //     have been blocked", no challenge loader — only the title phrase set
     //     recognises it;
     //   * `www.austlii.edu.au/cgi-bin/sinosrch.cgi?query=…` → 403, the same
-    //     title plus the `/cdn-cgi/challenge-platform` loader — the vendor
-    //     fingerprint recognises it.
+    //     title plus a `/cdn-cgi/challenge-platform/scripts/precursor/`
+    //     reference — a `/scripts/` asset, not an `/h/` challenge loader, so
+    //     the title phrase set recognises this one too (REQ-AHPRA-002).
     // GitHub's runner received the same two pages on the 2026-09-15 live-drift
     // run (34985449332) and filed both providers as "unreachable". No PII: a
     // CDN's generic refusal for the project's own canonical sample targets.
@@ -432,8 +433,10 @@ mod prop {
             "the real Cloudflare block page must be a wall, not an outage"
         );
         assert!(
-            CF_CHALLENGE_AUSTLII.contains("/cdn-cgi/challenge-platform"),
-            "the austlii capture must carry the challenge loader — the vendor tier"
+            CF_CHALLENGE_AUSTLII.contains("/cdn-cgi/challenge-platform/scripts/")
+                && !CF_CHALLENGE_AUSTLII.contains("/cdn-cgi/challenge-platform/h/"),
+            "the austlii capture carries a Cloudflare `/scripts/` asset, not an `/h/` \
+             challenge loader — the phrase-set tier is what recognises it"
         );
         assert!(
             is_challenge_page(CF_CHALLENGE_AUSTLII),
@@ -498,11 +501,9 @@ mod prop {
             (
                 "cloudflare_challenge_austlii_2026-09-15",
                 include_str!("testdata/cloudflare_challenge_austlii_2026-09-15.html"),
-                &[
-                    "attention required",
-                    "cloudflare",
-                    "/cdn-cgi/challenge-platform",
-                ],
+                // Its `/cdn-cgi/challenge-platform/scripts/…` reference is no
+                // signature since REQ-AHPRA-002; the block page's own title is.
+                &["attention required", "cloudflare"],
             ),
             (
                 "wall_akamai_acma_403_2026-09-15",
@@ -580,7 +581,9 @@ mod prop {
         // nothing about F5 itself. Strip that one incidental marker and the
         // page must STILL be a wall, on its own F5 prose. Without this the
         // whole F5 ASM family is invisible the moment a walled host does not
-        // happen to sit behind Cloudflare too.
+        // happen to sit behind Cloudflare too. (The reference is Cloudflare's
+        // always-injected JSD script, no signature since REQ-AHPRA-002 — so
+        // the F5 prose is now the ONLY thing that reads these as walls.)
         for capture in [WALL, WALL_LATER] {
             let f5_only = capture.replace("/cdn-cgi/challenge-platform", "/assets/app");
             assert!(
@@ -612,6 +615,97 @@ mod prop {
              <body><table><tr><td>No practitioners matched your search.</td></tr></table>\
              </body></html>"
         ));
+    }
+
+    /// REQ-AHPRA-002: the REAL AHPRA register page (fetched 2026-09-23 with the
+    /// module's default User-Agent: HTTP 200, 169 KB, its own title) read as a
+    /// wall — `bot challenge: ahpra: HTTP 200 OK answered an anti-bot challenge
+    /// / WAF block page, not the document: Australian Health Practitioner
+    /// Regulation Agency - Register of practitioners`. Its only marker was the
+    /// JavaScript-detection snippet Cloudflare Bot Management injects into
+    /// EVERY page of a zone, which the bare `/cdn-cgi/challenge-platform` prefix
+    /// matched. An excerpt of that capture: the real opener, title, form tag
+    /// and results anchor, and the injected script verbatim (its ray id
+    /// scrubbed); the rest of the 169 KB elided. FAILS on the bare prefix.
+    #[test]
+    fn cloudflares_always_injected_jsd_script_is_not_a_wall() {
+        const REAL_REGISTER_PAGE_EXCERPT: &str = "<!DOCTYPE html>\n\
+            <html class=\"no-js\" lang=\"en\" ng-app=\"app\">\n<head>\n\
+            <title>Australian Health Practitioner Regulation Agency - \
+            Register of practitioners</title>\n</head><body>\
+            <form method=\"post\" action=\"/Registration/Registers-of-Practitioners\
+            #search-results-anchor\" id=\"mainform\" class=\"search-practitioner-page-component\">\
+            <input type=\"hidden\" name=\"name-reg-detail\" />\
+            <div id=\"SearchResultsPage\" class=\"main\" data-health-profession-filters=\"\" \
+            data-location-state-filter=\"\" data-location-suburb-filter=\"\" data-sex-filters=\"\" \
+            data-language-filters=\"\" data-page-num=\"1\">\
+            <a id=\"search-results-anchor\" name=\"search-results-anchor\"></a>\
+            <h1 class=\"heading\">Register of practitioners</h1></div></form>\
+            <script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&\
+            a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML=\
+            \"window.__CF$cv$params={r:'0123456789abcdef',t:'MTc5MDEzNTgzMw=='};\
+            var a=document.createElement('script');\
+            a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';\
+            document.getElementsByTagName('head')[0].appendChild(a);\";\
+            b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){\
+            var a=document.createElement('iframe');a.height=1;a.width=1;\
+            a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';\
+            a.style.visibility='hidden';document.body.appendChild(a);\
+            if('loading'!==document.readyState)c();else if(window.addEventListener)\
+            document.addEventListener('DOMContentLoaded',c);\
+            else{var e=document.onreadystatechange||function(){};\
+            document.onreadystatechange=function(b){e(b);\
+            'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();\
+            </script></body>\n</html>\n";
+        assert!(
+            REAL_REGISTER_PAGE_EXCERPT.contains("/cdn-cgi/challenge-platform/scripts/jsd/main.js"),
+            "the excerpt must keep the injected script, or this proves nothing"
+        );
+        assert!(
+            !is_challenge_document(REAL_REGISTER_PAGE_EXCERPT),
+            "a page carrying only Cloudflare's per-page JSD script is the document, not a wall"
+        );
+        assert!(!is_challenge_page(REAL_REGISTER_PAGE_EXCERPT));
+    }
+
+    /// The other half of REQ-AHPRA-002: narrowing the marker must not lose the
+    /// challenge it exists for. An excerpt of a REAL managed challenge answered
+    /// live on 2026-09-23 (`www.loc.gov`, "Just a moment..."): the
+    /// opener, title, `<noscript>` and loader verbatim, the ray id scrubbed and
+    /// the opaque `_cf_chl_opt` tokens and query echo elided. Every OTHER
+    /// signature is then rewritten out, so the `/h/` loader alone must be
+    /// decisive.
+    #[test]
+    fn a_real_cloudflare_challenge_loader_is_still_a_wall_on_its_own() {
+        const REAL_CHALLENGE_EXCERPT: &str = "<!DOCTYPE html><html lang=\"en-US\"><head>\
+            <title>Just a moment...</title><meta name=\"robots\" content=\"noindex,nofollow\">\
+            </head><body><div class=\"main-wrapper\" role=\"main\"><div class=\"main-content\">\
+            <noscript><div class=\"h2\"><span id=\"challenge-error-text\">Enable JavaScript and \
+            cookies to continue</span></div></noscript></div></div>\
+            <script>(function(){window._cf_chl_opt = {cvId: '3',cType: 'managed'};\
+            var a = document.createElement('script');\
+            a.src = '/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1?ray=0123456789abcdef';\
+            document.getElementsByTagName('head')[0].appendChild(a);}());</script></body></html>";
+        assert!(is_challenge_document(REAL_CHALLENGE_EXCERPT));
+
+        const LOADER: &str = "/cdn-cgi/challenge-platform/h/";
+        let mut loader_only = REAL_CHALLENGE_EXCERPT.to_ascii_lowercase();
+        for tok in CHALLENGE_VENDOR_SIGNATURES
+            .iter()
+            .copied()
+            .chain(CHALLENGE_PHRASE_SETS.iter().flat_map(|s| s.iter().copied()))
+            .filter(|tok| *tok != LOADER)
+        {
+            loader_only = loader_only.replace(tok, "x");
+        }
+        assert!(
+            loader_only.contains(LOADER),
+            "the loader must survive the strip for this to prove anything"
+        );
+        assert!(
+            is_challenge_document(&loader_only),
+            "the `/h/…/orchestrate/` challenge loader is a wall without any other marker"
+        );
     }
 
     /// Reddit's network-security block page opens with a bare `<body …>` and no

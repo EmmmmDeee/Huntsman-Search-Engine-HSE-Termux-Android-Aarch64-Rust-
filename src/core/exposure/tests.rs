@@ -399,3 +399,29 @@ fn a_record_whose_ownership_is_unverified_is_not_the_subjects_exposure() {
     assert!(component(&idx, "Sensitive PII").score > 0);
     assert!(component(&idx, "Breach exposure").score > 0);
 }
+
+#[test]
+fn another_named_persons_record_is_not_the_subjects_exposure() {
+    // REQ-IDENTITY-GATE-001: a real "Ian Thorpe" scan scored "disclosed: date of
+    // birth" from a Wikidata item for "Carol Thorpe Tully" (born 1946), reached by
+    // pivoting on a relative. Her record — verified as HERS — is not the subject's.
+    let mut seed = Entity::new(EntityKind::Person, "Ian Thorpe", 0.6, "s");
+    seed.tag("seed");
+    seed.tag("subject");
+    let mut relative = Entity::new(EntityKind::Person, "Carol Thorpe Tully", 0.72, "s");
+    relative.add_evidence(
+        Evidence::new("wikidata", "Q133787046").with_attr("birth_date", "1946-01-01"),
+    );
+    let idx = assess(&[seed.clone(), relative], &[]);
+    assert_eq!(component(&idx, "Sensitive PII").score, 0);
+
+    // Control: the same record on a variant of the subject's own name counts.
+    let mut variant = Entity::new(EntityKind::Person, "Ian James Thorpe", 0.72, "s");
+    variant.add_evidence(Evidence::new("wikidata", "Q1").with_attr("birth_date", "1982-10-13"));
+    let idx = assess(&[seed, variant.clone()], &[]);
+    assert!(component(&idx, "Sensitive PII").score > 0);
+
+    // With no named subject in the scan (an email seed) nothing is re-judged.
+    let idx = assess(&[variant], &[]);
+    assert!(component(&idx, "Sensitive PII").score > 0);
+}
