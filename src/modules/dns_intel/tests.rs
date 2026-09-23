@@ -668,7 +668,7 @@ fn nxdomain() -> DnsblLookup {
 /// on every IPv4 target, and as a clean ZEN check.
 #[test]
 fn a_dnsbl_error_code_is_neither_a_listing_nor_a_clean_answer() {
-    for zone in ["zen.spamhaus.org", "cbl.abuseat.org", "bl.spamcop.net"] {
+    for zone in ["zen.spamhaus.org", "cbl.abuseat.org"] {
         for last in [252, 254, 255] {
             assert_eq!(
                 dnsbl_answer(zone, &a_values(&[[127, 255, 255, last]])),
@@ -676,6 +676,17 @@ fn a_dnsbl_error_code_is_neither_a_listing_nor_a_clean_answer() {
                 "{zone}: 127.255.255.{last}"
             );
         }
+    }
+    // The range is Spamhaus's convention, not every list's: on another list
+    // RFC 5782 lets any 127/8 value be a listing, so it must not be suppressed
+    // there (REQ-DNSINTEL-002 review round). A list that answered everything
+    // with it would fail `zone_answer`'s 127.0.0.1 test entry anyway.
+    for zone in ["bl.spamcop.net", "b.barracudacentral.org", "all.s5h.net"] {
+        assert_eq!(
+            dnsbl_answer(zone, &a_values(&[[127, 255, 255, 254]])),
+            DnsblAnswer::Listed,
+            "{zone}"
+        );
     }
     let mut tally = BlocklistTally {
         attempted: 2,
@@ -814,7 +825,7 @@ fn the_public_resolver_sweep_lists_nothing_and_counts_no_refusal_as_clean() {
 
 // ─── A wildcard zone's catch-all is not a discovered subdomain ────────────────
 
-use super::resolve_batch::{ResolvedHost, reportable_hits};
+use super::resolve_batch::{Outcome, ResolvedHost, outcome, reportable_hits, tally};
 use super::wildcard::{Canary, Wildcard, wildcard_verdict};
 use crate::core::module::ModuleResult;
 
@@ -850,6 +861,7 @@ fn two_canaries_that_resolve_to_different_sets_are_a_wildcard_not_its_absence() 
         &verdict,
         49,
         resolved(49, "herokuapp.com"),
+        0,
         &mut result,
     );
     assert!(
@@ -882,6 +894,7 @@ fn a_failed_canary_is_not_proof_there_is_no_wildcard() {
         &unknown,
         146,
         resolved(146, "corp.example"),
+        0,
         &mut result,
     );
     assert!(kept.is_empty());
@@ -893,6 +906,7 @@ fn a_failed_canary_is_not_proof_there_is_no_wildcard() {
         &unknown,
         146,
         resolved(6, "corp.example"),
+        0,
         &mut result,
     );
     assert_eq!(kept.len(), 6);
@@ -915,6 +929,7 @@ fn hits_that_swamp_the_dictionary_under_a_catch_all_are_the_catch_all() {
         &verdict,
         146,
         resolved(120, "blogspot.com"),
+        0,
         &mut result,
     );
     assert!(kept.is_empty());
@@ -927,6 +942,7 @@ fn hits_that_swamp_the_dictionary_under_a_catch_all_are_the_catch_all() {
         &verdict,
         146,
         resolved(3, "blogspot.com"),
+        0,
         &mut result,
     );
     assert_eq!(kept.len(), 3);
@@ -947,8 +963,102 @@ fn a_zone_the_canaries_prove_has_no_wildcard_reports_every_hit() {
         &verdict,
         146,
         resolved(90, "example.com"),
+        0,
         &mut result,
     );
     assert_eq!(kept.len(), 90);
     assert!(result.truncation.is_none());
+}
+
+/// REQ-DNSINTEL-003 review round: a failed lookup (SERVFAIL, REFUSED, timeout)
+/// established nothing, unlike "no such name". Folded together, a pass whose
+/// resolver was failing — the same failure that leaves the canaries `Unknown` —
+/// found 0 "hits" and read as "no subdomains".
+#[test]
+fn a_failed_candidate_lookup_is_not_a_no_such_name() {
+    use hickory_resolver::proto::op::{Query, ResponseCode};
+    let nx = hickory_resolver::net::NoRecords::new(Query::default(), ResponseCode::NXDomain).into();
+    assert_eq!(
+        outcome("a.example.com".into(), Err(nx), None),
+        Outcome::Miss
+    );
+    assert_eq!(
+        outcome(
+            "a.example.com".into(),
+            Err(hickory_resolver::net::NetError::Timeout),
+            None
+        ),
+        Outcome::Failed
+    );
+}
+
+#[test]
+fn a_pass_whose_lookups_failed_is_declared_partial_not_a_clean_negative() {
+    // Every lookup failed: no answer at all, whatever the wildcard verdict.
+    let mut r = ModuleResult::new();
+    let kept = reportable_hits(
+        "example.com",
+        &Wildcard::Unknown,
+        100,
+        Vec::new(),
+        100,
+        &mut r,
+    );
+    assert!(kept.is_empty());
+    let why = r.truncation.as_deref().expect("declared");
+    assert!(why.contains("100 of 100 candidate lookups"), "{why}");
+
+    // Some failed: the hits stand, and the pass says it is partial.
+    let mut r = ModuleResult::new();
+    let kept = reportable_hits(
+        "example.com",
+        &Wildcard::Absent,
+        100,
+        resolved(2, "example.com"),
+        5,
+        &mut r,
+    );
+    assert_eq!(kept.len(), 2);
+    assert!(r.truncation.is_some());
+
+    // Control: none failed, nothing to declare.
+    let mut r = ModuleResult::new();
+    let kept = reportable_hits(
+        "example.com",
+        &Wildcard::Absent,
+        100,
+        resolved(2, "example.com"),
+        0,
+        &mut r,
+    );
+    assert_eq!(kept.len(), 2);
+    assert!(r.truncation.is_none());
+}
+
+#[test]
+fn a_batch_counts_every_failed_or_dead_lookup_and_sorts_its_hits() {
+    let (hits, failed) = tally([
+        Some(Outcome::Hit((
+            "b.example.com".into(),
+            "192.0.2.2".into(),
+            1,
+        ))),
+        Some(Outcome::Failed),
+        Some(Outcome::Miss),
+        None,
+        Some(Outcome::Hit((
+            "a.example.com".into(),
+            "192.0.2.1".into(),
+            1,
+        ))),
+    ]);
+    assert_eq!(
+        failed, 2,
+        "a failed lookup and a dead task both asked nothing"
+    );
+    assert_eq!(
+        hits.iter().map(|h| h.0.as_str()).collect::<Vec<_>>(),
+        ["a.example.com", "b.example.com"],
+        "sorted, for output independent of completion order"
+    );
 }

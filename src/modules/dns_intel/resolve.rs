@@ -10,7 +10,7 @@ use crate::core::{
 use crate::util::dns::shared_resolver;
 
 use super::SRC;
-use super::constants::SPAMHAUS_ZEN;
+use super::constants::{SPAMHAUS_ZEN, SPAMHAUS_ZONES};
 use super::helpers::{soa_rname_to_email, verification_vendor};
 
 /// Whether a lookup outcome *established* something about the zone.
@@ -893,8 +893,10 @@ fn dnsbl_code(zone: &str, code: std::net::Ipv4Addr) -> DnsblAnswer {
     match code.octets() {
         // Spamhaus: "127.255.255.0/24 — ERRORS (not implying a 'listed'
         // response)": .252 a typo in the zone name, .254 a query via a
-        // public/open resolver, .255 excessive queries.
-        [127, 255, 255, _] => DnsblAnswer::Unresolved,
+        // public/open resolver, .255 excessive queries. Spamhaus's convention,
+        // so only on the zones Spamhaus answers: on another list RFC 5782 makes
+        // the same value a listing, handled below (REQ-DNSINTEL-002 review).
+        [127, 255, 255, _] if SPAMHAUS_ZONES.contains(&zone) => DnsblAnswer::Unresolved,
         _ if zen && is_spamhaus_abuse_listing(std::net::IpAddr::V4(code)) => DnsblAnswer::Listed,
         [127, 0, 0, 10 | 11] if zen => DnsblAnswer::NotListed,
         // A value outside Spamhaus's published table establishes nothing.

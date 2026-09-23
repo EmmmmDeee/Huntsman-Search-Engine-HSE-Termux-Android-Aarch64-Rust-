@@ -902,3 +902,24 @@ fn the_did_entity_is_emitted_last_so_it_can_report_the_walk() {
     assert!(last.has_tag("did"));
     assert!(last.has_tag("account-age"));
 }
+
+#[test]
+fn only_the_first_valid_handle_a_document_claims_confirms_a_lookup() {
+    // REQ-PLC-002 review round: "The first syntactically valid handle found in
+    // the ordered list is treated as the claimed handle ... Any other handle
+    // URIs should be ignored" (AT Protocol DID spec). `any()` let a later alias
+    // confirm a lookup the document's own claimed handle does not match.
+    let doc: DidDocument = serde_json::from_str(
+        r#"{"id": "did:web:example.com",
+            "alsoKnownAs": ["https://example.com/about", "at://not a handle", "at://other.example", "at://wanted.example"]}"#,
+    )
+    .expect("fixture parses");
+    assert!(
+        !doc.confirms("did:web:example.com", Some("wanted.example")),
+        "a later alias is not the claimed handle"
+    );
+    assert!(
+        doc.confirms("did:web:example.com", Some("OTHER.example")),
+        "the first syntactically valid at:// entry is, case-insensitively"
+    );
+}

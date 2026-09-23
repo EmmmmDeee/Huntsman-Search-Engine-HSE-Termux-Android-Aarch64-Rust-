@@ -20026,3 +20026,55 @@ Two pieces of network glue are not unit-locked: `blocklist_check`'s `tokio::join
 | W9 | over-correction: one canary's sample withholds everything | see apply log |
 
 **Falsification (compiled):** 23 of 23 killed.
+
+### Review round on #644: REQ-PLC-002 and REQ-DNSINTEL-002/003
+
+Copilot raised two findings as review threads and one more in its summary.
+Each was verified against the code and a primary source before any change.
+
+- **REQ-PLC-002 — the claimed handle is the FIRST valid one.** The AT
+  Protocol DID spec (<https://atproto.com/specs/did>) says: "The first
+  syntactically valid handle found in the ordered list is treated as the
+  claimed handle ... Any other handle URIs should be ignored."
+  `DidDocument::confirms` took **any** `at://` entry, so a document claiming
+  `other.example` first confirmed a lookup for its later alias
+  `wanted.example`. The same helper decided which handles a PLC operation
+  declares. The fix is one helper, `claimed_handle`, with syntax checked by the
+  existing `util::atproto::is_handle`; both the document check and
+  `PlcOperation::handles` use it.
+- **REQ-DNSINTEL-002 — Spamhaus's error range belongs to Spamhaus's zones.**
+  The Spamhaus DNSBL usage FAQ reserves `127.255.255.0/24` as "ERRORS (not
+  implying a 'listed' response)" for "Any" Spamhaus zone. `dnsbl_code` applied
+  that range to all eight zones, which suppressed an RFC 5782 listing code on
+  SpamCop, Barracuda and the rest. It is now scoped to `SPAMHAUS_ZONES`: ZEN,
+  and the CBL, which Spamhaus operates (`www.abuseat.org` redirects with a 301
+  to Spamhaus's Exploits Blocklist). The existing test had encoded the defect by
+  asserting SpamCop's value was "unresolved"; it now asserts the RFC reading.
+  A non-Spamhaus zone that answered everything with such a value would still
+  fail `zone_answer`'s `127.0.0.1` test entry.
+- **REQ-DNSINTEL-003 — a failed lookup is not "no such name"** (from the
+  review summary). `resolve_hosts_concurrently` mapped every lookup error to a
+  miss. The wildcard canaries tell `Resolved / NoSuchName / Failed` apart
+  (`wildcard::canary`), but the candidates did not. So a pass whose resolver was
+  failing, the same failure that leaves the canaries `Unknown`, found 0 hits
+  and read as "no subdomains". Now:
+  - the pure `outcome` restores the three answers per candidate;
+  - the pure `tally` counts failed and dead lookups;
+  - `reportable_hits`, the one decision shared by brute force and
+    permutation, declares a pass with failures as partial.
+
+| # | mutation | result |
+|---|---|---|
+| P1 | **baseline**: any `at://` entry confirms | killed by 1 |
+| P2 | over-correction: the first `at://` entry whatever its syntax | killed by 2 |
+| D1 | **baseline**: the error range applies on every zone | killed by 1 |
+| D2 | over-correction: only ZEN is Spamhaus | killed by 1 |
+| F1 | **baseline**: a failed lookup folds into no-such-name | killed by 1 |
+| F2 | **baseline**: failed lookups never declared | killed by 1 |
+| F3 | over-correction: every pass declared partial | killed by 4 |
+| F4 | the batch never counts a failure | killed by 1 |
+| F5 | a dead task is not a failure | killed by 1 |
+
+**9 of 9 killed.** F4 **survived** its first run: the counting sat inside the
+async drain loop, and a live resolver is needed to reach it there. It was
+moved into the pure `tally` with its own test, and the re-run killed it.

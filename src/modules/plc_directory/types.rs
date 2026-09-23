@@ -71,10 +71,12 @@ pub(super) struct Service {
 }
 
 impl PlcOperation {
-    /// The handles this operation declares, in either shape, `at://` stripped.
+    /// The handle this operation claims, in either shape, `at://` stripped —
+    /// at most one: [`claimed_handle`] of `alsoKnownAs`, or the legacy shape's
+    /// `handle` field.
     pub(super) fn handles(&self) -> Vec<&str> {
         if !self.also_known_as.is_empty() {
-            return at_handles(&self.also_known_as);
+            return claimed_handle(&self.also_known_as).into_iter().collect();
         }
         self.handle
             .as_deref()
@@ -127,19 +129,24 @@ impl DidDocument {
             .as_deref()
             .is_some_and(|id| id.trim().eq_ignore_ascii_case(did))
             && handle.is_none_or(|want| {
-                at_handles(&self.also_known_as)
-                    .iter()
-                    .any(|h| h.eq_ignore_ascii_case(want.trim()))
+                claimed_handle(&self.also_known_as)
+                    .is_some_and(|h| h.eq_ignore_ascii_case(want.trim()))
             })
     }
 }
 
-/// The handles an `alsoKnownAs` list declares, `at://` stripped. An entry in
-/// any other URI scheme is not a handle.
-fn at_handles(also_known_as: &[String]) -> Vec<&str> {
+/// The handle an `alsoKnownAs` list claims, `at://` stripped. **Pure.**
+///
+/// The AT Protocol DID spec (<https://atproto.com/specs/did>): "The first
+/// syntactically valid handle found in the ordered list is treated as the
+/// claimed handle, even if it fails to resolve bi-directionally. Any other
+/// handle URIs should be ignored." Taking any entry let a document claiming
+/// `other.example` first confirm a lookup for its later alias `wanted.example`
+/// (REQ-PLC-002 review round). Syntax is [`crate::util::atproto::is_handle`];
+/// an entry in another URI scheme is not a handle.
+fn claimed_handle(also_known_as: &[String]) -> Option<&str> {
     also_known_as
         .iter()
-        .filter_map(|aka| aka.strip_prefix("at://").map(str::trim))
-        .filter(|h| !h.is_empty())
-        .collect()
+        .filter_map(|aka| aka.trim().strip_prefix("at://"))
+        .find(|h| crate::util::atproto::is_handle(h))
 }

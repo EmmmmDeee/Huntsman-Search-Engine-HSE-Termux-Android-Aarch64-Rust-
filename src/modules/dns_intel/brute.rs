@@ -47,7 +47,7 @@ pub(super) async fn brute_subdomains(target: &Target, ctx: &ModuleContext) -> Re
     // and report nothing a wildcard leaves indistinguishable.
     let wildcard = detect_wildcard(&parent).await;
 
-    let hits = resolve_hosts_concurrently(
+    let (hits, failed) = resolve_hosts_concurrently(
         candidates,
         MAX_CONCURRENT_BRUTE,
         wildcard.fingerprint(),
@@ -56,7 +56,14 @@ pub(super) async fn brute_subdomains(target: &Target, ctx: &ModuleContext) -> Re
     .await;
 
     let mut result = ModuleResult::new();
-    let hits = reportable_hits(&parent, &wildcard, candidate_count, hits, &mut result);
+    let hits = reportable_hits(
+        &parent,
+        &wildcard,
+        candidate_count,
+        hits,
+        failed,
+        &mut result,
+    );
     let entities: Vec<Entity> = hits
         .into_iter()
         .filter_map(|(host, ips_joined, count)| {

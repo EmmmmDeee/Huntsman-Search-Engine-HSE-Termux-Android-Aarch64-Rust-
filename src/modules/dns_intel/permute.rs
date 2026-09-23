@@ -171,7 +171,7 @@ pub(super) async fn permute_subdomains(
     // (matching the zone `brute_subdomains` would test if dispatched there).
     let wildcard = detect_wildcard(rest).await;
 
-    let hits = resolve_hosts_concurrently(
+    let (hits, failed) = resolve_hosts_concurrently(
         candidates,
         MAX_CONCURRENT_BRUTE,
         wildcard.fingerprint(),
@@ -180,7 +180,7 @@ pub(super) async fn permute_subdomains(
     .await;
 
     let mut result = ModuleResult::new();
-    let hits = reportable_hits(rest, &wildcard, candidate_count, hits, &mut result);
+    let hits = reportable_hits(rest, &wildcard, candidate_count, hits, failed, &mut result);
     let entities: Vec<Entity> = hits
         .into_iter()
         .map(|(resolved_host, ips_joined, count)| {
