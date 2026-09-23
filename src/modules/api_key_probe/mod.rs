@@ -28,6 +28,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::key_pool::validation::{ProbeOutcome as KeyVerdict, classify_probe_response};
 
 const SRC: &str = "api_key_probe";
 
@@ -118,8 +119,8 @@ impl Module for ApiKeyProbe {
                 continue;
             };
             let probe = &all_probes[i];
-            let response = match outcome {
-                ProbeOutcome::Executed(Some(body)) => body,
+            let answer = match outcome {
+                ProbeOutcome::Executed(Some(answer)) => answer,
                 // The host answered but with nothing usable — a real negative.
                 ProbeOutcome::Executed(None) => continue,
                 // The probe never executed — count it, don't treat it as a miss.
@@ -129,14 +130,11 @@ impl Module for ApiKeyProbe {
                 }
             };
 
-            let json: Value = match serde_json::from_str(&response) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-
-            if is_error_response(&json) {
+            // Only an answer that ACCEPTS the key names its service. A refusal,
+            // or an answer that settles nothing, is a real negative.
+            let Some(json) = accepted_body(probe.service, &answer) else {
                 continue;
-            }
+            };
 
             let info = (probe.parse_info)(&json);
 
@@ -281,12 +279,22 @@ impl Module for ApiKeyProbe {
 /// failing to execute) apart from a genuine "this key matches no known service"
 /// (T2.123); collapsing both into `None` hid the former as the latter.
 enum ProbeOutcome {
-    /// The host answered. `Some(body)` is a usable body to parse; `None` is an
-    /// empty / too-short / non-UTF-8 response — the host replied, but with
-    /// nothing to match (a legitimate negative).
-    Executed(Option<String>),
+    /// The host answered. `Some(answer)` carries its HTTP status and a usable
+    /// body to evaluate; `None` is an empty / too-short / non-UTF-8 response —
+    /// the host replied, but with nothing to match (a legitimate negative).
+    Executed(Option<Answer>),
     /// The probe never got an answer — it could not execute at all.
     TransportFailure,
+}
+
+/// What a host that answered a probe sent back.
+struct Answer {
+    /// The HTTP status curl reported (`%{http_code}`, e.g. `"401"`): where a
+    /// provider that follows HTTP conventions refuses a wrong key, in the one
+    /// shape all such providers share.
+    status: String,
+    /// The response body, without the status curl wrote after it.
+    body: String,
 }
 
 /// Whether `process()` should surface a hard error instead of a clean empty
@@ -329,6 +337,11 @@ async fn probe_endpoint(url: &str, key: &str, headers: &[(&str, String)]) -> Pro
     }
 
     cmd.args(["-H", "Accept: application/json"]);
+    // Write the HTTP status after the body. Without `-f` curl exits 0 for a 401
+    // exactly as for a 200 (see below), and the status is the one place a
+    // refusal takes the same shape for every provider; each body has its own.
+    // The same sentinel `key_pool::validation` reads for the same `ServiceDef`.
+    cmd.args(["-w", "\n%{http_code}"]);
     cmd.args(["--", url]);
     cmd.kill_on_drop(true);
 
@@ -348,15 +361,52 @@ async fn probe_endpoint(url: &str, key: &str, headers: &[(&str, String)]) -> Pro
 
     // The host answered. A non-UTF-8 or too-short body is a real (if unusable)
     // response — a negative, not a failure to execute.
-    let Ok(body) = String::from_utf8(output.stdout) else {
+    let Ok(raw) = String::from_utf8(output.stdout) else {
+        return ProbeOutcome::Executed(None);
+    };
+    // `-w` appends a newline and then the status, so the LAST newline in the
+    // output is always that separator, whatever newlines the body holds.
+    let Some((body, status)) = raw.rsplit_once('\n') else {
         return ProbeOutcome::Executed(None);
     };
     if body.len() < 2 {
         return ProbeOutcome::Executed(None);
     }
-    ProbeOutcome::Executed(Some(body))
+    ProbeOutcome::Executed(Some(Answer {
+        status: status.trim().to_string(),
+        body: body.to_string(),
+    }))
 }
 
+/// The parsed body of an answer in which `service` ACCEPTED the key, or `None`
+/// when it did not. **Pure.** The one gate between a probe's answer and a
+/// `validated` finding at `VERY_HIGH_PLUSPLUS`, with its service-domain pivot.
+///
+/// The verdict is [`classify_probe_response`]'s: `key_pool::validation`'s
+/// reading of an answer from the same `ServiceDef` test endpoint — the status
+/// first, then its narrow in-body and auth-shaped-400 checks — so this module
+/// never calls a key validated on an answer the key pool reads as a refusal or
+/// as settling nothing. It used to discard the status and judge the body alone,
+/// and no body heuristic knows every provider's error shape: VirusTotal's `401`
+/// with an `{"error": {…}}` object, Hunter's `401` with an `{"errors": […]}`
+/// list and Netlas' auth-failure `400` all read as success, so a key belonging
+/// to none of them was reported as a live credential for each
+/// (REQ-KEYPROBE-002). [`is_error_response`] still runs on an accepted answer,
+/// for a provider that reports a dead key inside a `200` body.
+fn accepted_body(service: &str, answer: &Answer) -> Option<Value> {
+    if classify_probe_response(service, &answer.body, &answer.status) != KeyVerdict::Valid {
+        return None;
+    }
+    let json: Value = serde_json::from_str(&answer.body).ok()?;
+    if is_error_response(&json) {
+        return None;
+    }
+    Some(json)
+}
+
+/// Whether the body of an answer the status verdict ACCEPTED still reports a
+/// failure — the second gate in [`accepted_body`], for a provider that answers
+/// a dead key with a `200` and says so only in the body.
 fn is_error_response(v: &Value) -> bool {
     if let Some(code) = v.get("status_code").and_then(serde_json::Value::as_u64)
         && (code == 401 || code == 403 || code == 429)
@@ -373,6 +423,15 @@ fn is_error_response(v: &Value) -> bool {
         {
             return true;
         }
+    }
+    // An `error` OBJECT is an error envelope whatever its words — VirusTotal's
+    // documented `{"error": {"code": "WrongCredentialsError", …}}` matches none
+    // of the words above, and the string arm read it as no error at all. A
+    // scalar marker is not one: ONYPHE's success body carries `"error": 0`.
+    if let Some(err) = v.get("error").and_then(Value::as_object)
+        && !err.is_empty()
+    {
+        return true;
     }
     if let Some(msg) = v.get("message").and_then(|m| m.as_str()) {
         let lower = msg.to_lowercase();

@@ -6,8 +6,9 @@
 use std::collections::BTreeMap;
 
 use super::history::{History, Spell};
+use super::resolve::Resolved;
 use super::transform::{history_to_entities, web_did_entities};
-use super::types::AuditEntry;
+use super::types::{AuditEntry, DidDocument};
 use super::{
     DID_KIND, MAX_HANDLES, MAX_PDS, MAX_ROTATION_KEYS, PlcDirectory, ROTATION_KEY_KIND,
     SHARED_ROTATION_KEYS,
@@ -72,8 +73,42 @@ fn bnewbold() -> Vec<AuditEntry> {
     ]"#)
 }
 
+/// An identity scanned as a DID directly, so no handle has to be claimed back.
+fn seeded(did: &str) -> Resolved {
+    Resolved {
+        did: did.to_string(),
+        handle: None,
+    }
+}
+
+/// An identity the AppView resolved `handle` to.
+fn reached_through(did: &str, handle: &str) -> Resolved {
+    Resolved {
+        did: did.to_string(),
+        handle: Some(handle.to_string()),
+    }
+}
+
 fn entities(raw: &[AuditEntry]) -> Vec<Entity> {
-    history_to_entities(DID, &super::history::fold(raw), "scan-1")
+    history_to_entities(&seeded(DID), &super::history::fold(raw), "scan-1")
+}
+
+/// A `did:web` account's document in the shape the AT Protocol DID spec
+/// describes: the DID it is for, the handle it claims, its signing key and its
+/// PDS. Only `id` and `alsoKnownAs` are read; the rest must not stop it parsing.
+fn web_doc(id: &str, handle: &str) -> DidDocument {
+    serde_json::from_str(&format!(
+        r##"{{
+      "@context": ["https://www.w3.org/ns/did/v1", "https://w3id.org/security/multikey/v1"],
+      "id": "{id}",
+      "alsoKnownAs": ["at://{handle}"],
+      "verificationMethod": [{{"id": "{id}#atproto", "type": "Multikey",
+        "controller": "{id}", "publicKeyMultibase": "zQ3shFixtureKeyNotParsed"}}],
+      "service": [{{"id": "#atproto_pds", "type": "AtprotoPersonalDataServer",
+        "serviceEndpoint": "https://pds.example.com"}}]
+    }}"##
+    ))
+    .expect("fixture parses")
 }
 
 fn find<'a>(ents: &'a [Entity], kind: &EntityKind, value: &str) -> &'a Entity {
@@ -400,6 +435,136 @@ fn a_deleted_account_still_yields_its_history() {
 }
 
 #[test]
+fn a_deleted_identity_holds_no_current_handle_or_server() {
+    // A tombstone clears every field. The last handle and server the identity
+    // declared were released with it, so neither is its current anything — and
+    // a released handle may already be a stranger's.
+    let deleted = log(r#"[
+      {"createdAt": "2022-11-17T00:35:16.391Z", "nullified": false, "operation": {
+        "type": "create", "handle": "ghost.dev", "service": "https://pds.ghost.dev"}},
+      {"createdAt": "2024-08-02T09:00:00.000Z", "nullified": false, "operation": {
+        "type": "plc_tombstone"}}
+    ]"#);
+    let ents = entities(&deleted);
+
+    let u = find(&ents, &EntityKind::Username, "ghost.dev");
+    conf_eq(u, confidence::MEDIUM_PLUS);
+    assert!(u.has_tag("former-handle"));
+    let attrs = &u.evidence[0].attributes;
+    assert_eq!(
+        attrs.get("handle_state").map(String::as_str),
+        Some("former")
+    );
+    assert!(
+        attrs
+            .get("coverage")
+            .is_some_and(|c| c.contains("NO LONGER")),
+        "a deleted identity's handle carries the released-handle caveat"
+    );
+
+    let d = find(&ents, &EntityKind::Domain, "ghost.dev");
+    conf_eq(d, confidence::MEDIUM_PLUS);
+    assert!(d.has_tag("historical"));
+
+    let pds = find(&ents, &EntityKind::Domain, "pds.ghost.dev");
+    conf_eq(pds, confidence::MEDIUM_HIGH);
+    assert_eq!(
+        pds.evidence[0]
+            .attributes
+            .get("pds_state")
+            .map(String::as_str),
+        Some("former")
+    );
+
+    let attrs = did_attrs(&ents);
+    assert!(!attrs.contains_key("current_handle"));
+    assert!(!attrs.contains_key("current_pds"));
+    assert_eq!(
+        attrs.get("tombstoned").map(String::as_str),
+        Some("2024-08-02")
+    );
+
+    // Reached through that handle, the deletion does not erase the link: the
+    // identity's own log declared it.
+    let fold = super::history::fold(&deleted);
+    let via = history_to_entities(&reached_through(DID, "ghost.dev"), &fold, "scan-1");
+    find(&via, &EntityKind::Username, "ghost.dev");
+}
+
+#[test]
+fn a_reverted_deletion_leaves_the_identity_as_it_was() {
+    // A tombstone undone inside the recovery window never took effect, so the
+    // handle and server it would have cleared are still in force.
+    let ents = entities(&log(r#"[
+      {"createdAt": "2023-01-01T00:00:00.000Z", "nullified": false, "operation": {
+        "type": "create", "handle": "ghost.dev", "service": "https://pds.ghost.dev"}},
+      {"createdAt": "2024-08-02T09:00:00.000Z", "nullified": true, "operation": {
+        "type": "plc_tombstone"}}
+    ]"#));
+
+    conf_eq(
+        find(&ents, &EntityKind::Username, "ghost.dev"),
+        confidence::HIGH_PLUSPLUS_PLUS,
+    );
+    let attrs = did_attrs(&ents);
+    assert_eq!(
+        attrs.get("current_handle").map(String::as_str),
+        Some("ghost.dev")
+    );
+    assert_eq!(
+        attrs.get("current_pds").map(String::as_str),
+        Some("pds.ghost.dev")
+    );
+    assert!(!attrs.contains_key("tombstoned"));
+}
+
+#[test]
+fn an_operation_that_drops_the_handle_and_server_leaves_neither_in_force() {
+    // Every PLC operation restates the whole identity, so one that declares no
+    // handle and no server has dropped both: the earlier ones are history.
+    let ents = entities(&log(r#"[
+      {"createdAt": "2023-01-01T00:00:00.000Z", "nullified": false, "operation": {
+        "type": "plc_operation", "alsoKnownAs": ["at://alice.dev"],
+        "services": {"atproto_pds": {"endpoint": "https://pds.alice.dev"}}}},
+      {"createdAt": "2024-01-01T00:00:00.000Z", "nullified": false, "operation": {
+        "type": "plc_operation", "alsoKnownAs": [], "services": {}}}
+    ]"#));
+
+    let u = find(&ents, &EntityKind::Username, "alice.dev");
+    conf_eq(u, confidence::MEDIUM_PLUS);
+    assert!(u.has_tag("former-handle"));
+    assert_eq!(
+        find(&ents, &EntityKind::Domain, "pds.alice.dev").evidence[0]
+            .attributes
+            .get("pds_state")
+            .map(String::as_str),
+        Some("former")
+    );
+    let attrs = did_attrs(&ents);
+    assert!(!attrs.contains_key("current_handle"));
+    assert!(!attrs.contains_key("current_pds"));
+}
+
+#[test]
+fn a_log_reached_through_a_handle_it_never_claimed_attributes_nothing() {
+    // `evil.dev`'s `_atproto` record names bnewbold's DID, and resolution
+    // follows it without asking the DID. The log — the identity's own signed
+    // record — never declared evil.dev, so none of it is evil.dev's.
+    let fold = super::history::fold(&bnewbold());
+    assert!(
+        history_to_entities(&reached_through(DID, "evil.dev"), &fold, "scan-1").is_empty(),
+        "an alias the identity never claimed attributes its history to a stranger"
+    );
+
+    // A handle the identity declared still links the two after it is dropped —
+    // the history is the point — and handles are case-insensitive.
+    for handle in ["bnewbold.net", "bnewbold.bsky.social", "BNewbold.Bsky.Team"] {
+        let ents = history_to_entities(&reached_through(DID, handle), &fold, "scan-1");
+        find(&ents, &EntityKind::Other(DID_KIND.into()), DID);
+    }
+}
+
+#[test]
 fn a_nullified_operation_contributes_nothing_but_is_reported() {
     // The classic takeover shape: an attacker rewrites the handle and hosting
     // server, and the rightful key holders revert it inside the recovery window.
@@ -537,7 +702,11 @@ fn an_entry_without_a_timestamp_does_not_get_an_invented_date() {
 
 #[test]
 fn a_web_did_yields_its_anchor_domain_and_admits_it_has_no_log() {
-    let ents = web_did_entities("did:web:example.com", "example.com", "scan-1");
+    let ents = web_did_entities(
+        &seeded("did:web:example.com"),
+        &web_doc("did:web:example.com", "example.com"),
+        "scan-1",
+    );
 
     let d = find(&ents, &EntityKind::Domain, "example.com");
     conf_eq(d, confidence::HIGH_PLUSPLUS);
@@ -561,6 +730,97 @@ fn a_web_did_yields_its_anchor_domain_and_admits_it_has_no_log() {
             .get("did_method")
             .map(String::as_str),
         Some("web")
+    );
+}
+
+#[test]
+fn a_web_did_is_an_identity_only_when_its_host_serves_a_document_naming_it() {
+    // A typo'd seed, answered by a host serving some other identity's document
+    // or a document with no id at all: the seed names a domain, and nothing
+    // says the subject controls it.
+    let typo = seeded("did:web:exmaple.com");
+    let unnamed: DidDocument =
+        serde_json::from_str(r#"{"@context": ["https://www.w3.org/ns/did/v1"]}"#)
+            .expect("fixture parses");
+    for doc in [web_doc("did:web:example.com", "example.com"), unnamed] {
+        assert!(
+            web_did_entities(&typo, &doc, "scan-1").is_empty(),
+            "a document that does not name the DID confirms nothing"
+        );
+    }
+
+    // The seed is case-folded before it gets here; the document need not be.
+    let ents = web_did_entities(
+        &typo,
+        &web_doc("did:web:EXMAPLE.com", "exmaple.com"),
+        "scan-1",
+    );
+    assert!(find(&ents, &EntityKind::Domain, "exmaple.com").has_tag("verified-control"));
+    conf_eq(
+        find(
+            &ents,
+            &EntityKind::Other(DID_KIND.into()),
+            "did:web:exmaple.com",
+        ),
+        confidence::VERY_HIGH_PLUSPLUS,
+    );
+}
+
+#[test]
+fn a_web_did_reached_through_a_handle_must_claim_that_handle_back() {
+    // `alice.dev`'s `_atproto` record can name any DID. acme.com's document
+    // claims acme.com, not alice.dev, so alice is not shown to control acme.com.
+    let via_alice = reached_through("did:web:acme.com", "alice.dev");
+    assert!(
+        web_did_entities(
+            &via_alice,
+            &web_doc("did:web:acme.com", "acme.com"),
+            "scan-1"
+        )
+        .is_empty(),
+        "a document that does not claim the handle attributes nothing to it"
+    );
+
+    // The same identity, claiming the handle it was reached through.
+    let ents = web_did_entities(
+        &via_alice,
+        &web_doc("did:web:acme.com", "alice.dev"),
+        "scan-1",
+    );
+    find(&ents, &EntityKind::Domain, "acme.com");
+}
+
+#[tokio::test]
+async fn a_did_web_seed_nobody_confirmed_asserts_nothing() {
+    // An operator seeds a did:web whose host serves no identity. `.invalid`
+    // never resolves (RFC 6761), and the client cannot reach anything (the
+    // `query_floor_skips` offline client), so no document can confirm it — and
+    // the seed string alone must not become a verified-control domain or a
+    // near-certain DID.
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let http = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all("http://127.0.0.1:1").expect("static proxy URL"))
+        .connect_timeout(std::time::Duration::from_millis(250))
+        .timeout(std::time::Duration::from_millis(250))
+        .build()
+        .expect("offline client");
+    let ctx = crate::core::module::ModuleContext {
+        scan_id: "scan-1".into(),
+        bus,
+        http,
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let seed = Target::new(TargetKind::Username, "did:web:nonexistent-hse.invalid");
+    let emitted = PlcDirectory
+        .process(&seed, &ctx)
+        .await
+        .map(|r| r.entities)
+        .unwrap_or_default();
+    assert!(
+        emitted.is_empty(),
+        "an unconfirmed did:web emitted {:?}",
+        values(&emitted)
     );
 }
 
@@ -592,7 +852,7 @@ fn every_cap_reports_what_it_dropped() {
         ..History::default()
     };
 
-    let ents = history_to_entities(DID, &h, "scan-1");
+    let ents = history_to_entities(&seeded(DID), &h, "scan-1");
     assert_eq!(
         ents.iter()
             .filter(|e| e.kind == EntityKind::Username)
@@ -641,4 +901,25 @@ fn the_did_entity_is_emitted_last_so_it_can_report_the_walk() {
     assert_eq!(DID_KIND, "bluesky-did");
     assert!(last.has_tag("did"));
     assert!(last.has_tag("account-age"));
+}
+
+#[test]
+fn only_the_first_valid_handle_a_document_claims_confirms_a_lookup() {
+    // REQ-PLC-002 review round: "The first syntactically valid handle found in
+    // the ordered list is treated as the claimed handle ... Any other handle
+    // URIs should be ignored" (AT Protocol DID spec). `any()` let a later alias
+    // confirm a lookup the document's own claimed handle does not match.
+    let doc: DidDocument = serde_json::from_str(
+        r#"{"id": "did:web:example.com",
+            "alsoKnownAs": ["https://example.com/about", "at://not a handle", "at://other.example", "at://wanted.example"]}"#,
+    )
+    .expect("fixture parses");
+    assert!(
+        !doc.confirms("did:web:example.com", Some("wanted.example")),
+        "a later alias is not the claimed handle"
+    );
+    assert!(
+        doc.confirms("did:web:example.com", Some("OTHER.example")),
+        "the first syntactically valid at:// entry is, case-insensitively"
+    );
 }

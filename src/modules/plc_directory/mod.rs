@@ -135,8 +135,10 @@ const SHARED_ROTATION_KEYS: &[&str] = &[
     "did:key:zQ3shpKnbdPx3g3CmPf5cRVTPe1HtSwVn5ish3wSnDPQCbLJK",
 ];
 
-/// The DID is read straight from the registry that defines it, so it is as
-/// certain as a public identifier gets.
+/// The DID is read straight from the record that defines it — the PLC
+/// directory's log, or the document a `did:web` host serves — so it is as
+/// certain as a public identifier gets. Nothing is emitted at this grade for a
+/// DID whose record was not read.
 const DID_CONF: f64 = confidence::VERY_HIGH_PLUSPLUS;
 
 /// A handle in force now, matching what `bluesky_user` grades the same handle,
@@ -159,11 +161,13 @@ const PDS_CONF_FORMER: f64 = confidence::MEDIUM_HIGH;
 /// A rotation key, emitted as a cross-account correlator.
 const ROTATION_KEY_CONF: f64 = confidence::MEDIUM_PLUS;
 
-/// Rides on every former handle.
+/// Rides on every former handle — including every handle of a deleted identity,
+/// which holds none.
 const FORMER_HANDLE_CAVEAT: &str = "This handle is NO LONGER in use by this identity. AT Protocol \
-     releases a handle when it is changed, so it may since have been registered by an unrelated \
-     party — the window above is when it demonstrably belonged to this account, and any later \
-     account bearing it is a separate finding requiring separate corroboration.";
+     releases a handle when it is changed or the identity is deleted, so it may since have been \
+     registered by an unrelated party — the window above is when it demonstrably belonged to \
+     this account, and any later account bearing it is a separate finding requiring separate \
+     corroboration.";
 
 /// Rides on every hosting server emitted.
 const PDS_CAVEAT: &str = "A personal data server may be run by the subject or be a shared host \
@@ -228,9 +232,10 @@ impl Module for PlcDirectory {
 
     fn max_timeout_ms(&self) -> u64 {
         // Up to two sequential keyless requests — one handle resolution against
-        // the AppView, one audit-log read against plc.directory — plus room for
-        // a long log on a mobile connection. Being killed between them would
-        // discard the resolution and return nothing at all.
+        // the AppView, then one read of the identity's own record (the audit
+        // log from plc.directory, or a did:web host's DID document) — plus room
+        // for a long log on a mobile connection. Being killed between them
+        // would discard the resolution and return nothing at all.
         12_000
     }
 
@@ -240,20 +245,26 @@ impl Module for PlcDirectory {
             return Ok(ModuleResult::new());
         }
 
-        let Some(did) = resolve::resolve_did(ctx, seed).await? else {
+        let Some(identity) = resolve::resolve_did(ctx, seed).await? else {
             return Ok(ModuleResult::new());
         };
+        let did = identity.did.as_str();
 
         // A `did:web` identity has no PLC log at all. Saying so — and keeping
         // the domain it is anchored to — beats returning nothing because the
-        // identity used the other DID method.
-        if let Some(host) = web_did_host(&did) {
+        // identity used the other DID method. Its host's DID document is its
+        // only record, so that is read first: without it the seed is a string
+        // naming a host, not an identity anchored to one.
+        if web_did_host(did).is_some() {
+            let Some(doc) = resolve::web_did_document(ctx, did).await? else {
+                return Ok(ModuleResult::new());
+            };
             let mut out = ModuleResult::new();
-            out.extend(transform::web_did_entities(&did, host, &ctx.scan_id));
+            out.extend(transform::web_did_entities(&identity, &doc, &ctx.scan_id));
             return Ok(out);
         }
 
-        let Some(log) = resolve::audit_log(ctx, &did).await? else {
+        let Some(log) = resolve::audit_log(ctx, did).await? else {
             return Ok(ModuleResult::new());
         };
 
@@ -270,7 +281,11 @@ impl Module for PlcDirectory {
         }
 
         let mut out = ModuleResult::new();
-        out.extend(transform::history_to_entities(&did, &history, &ctx.scan_id));
+        out.extend(transform::history_to_entities(
+            &identity,
+            &history,
+            &ctx.scan_id,
+        ));
         Ok(out)
     }
 }

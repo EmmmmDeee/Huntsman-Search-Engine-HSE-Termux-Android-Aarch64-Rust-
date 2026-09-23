@@ -118,3 +118,117 @@ fn attack_techniques_covers_every_entity_kind_this_module_produces() {
         );
     }
 }
+
+// ── What an answer is (REQ-CODEWARS-001) ───────────────────────────────
+
+/// Codewars' documented User Object: the "Get User" example in the vendor's
+/// API reference, with its per-language ranks trimmed.
+const DOCUMENTED_USER: &str = r#"{
+    "username": "some_user",
+    "name": "Some Person",
+    "honor": 544,
+    "clan": "some clan",
+    "leaderboardPosition": 134,
+    "skills": ["ruby", "c#", ".net", "javascript", "coffeescript", "nodejs", "rails"],
+    "ranks": {
+        "overall": {"rank": -3, "name": "3 kyu", "color": "blue", "score": 2116},
+        "languages": {}
+    },
+    "codeChallenges": {"totalAuthored": 3, "totalCompleted": 230}
+}"#;
+
+#[test]
+fn a_body_without_a_username_is_not_a_codewars_user() {
+    // Under `#[serde(default)]` both decoded as a user named "", which the
+    // handle match then read as "no such user". The envelope is Codewars' own
+    // error body, verbatim from a live 404.
+    for body in ["{}", r#"{"success":false,"reason":"not found"}"#] {
+        let Err(err) = serde_json::from_str::<CwUser>(body) else {
+            panic!("{body} decoded as a Codewars user");
+        };
+        assert!(
+            err.to_string().contains("missing field `username`"),
+            "{body}: {err}"
+        );
+    }
+    // Over-correction guard: the documented User Object still decodes, with
+    // every field this struct does not read. Refusing the envelope by its
+    // unknown keys (`deny_unknown_fields`) would refuse every real answer.
+    let user: CwUser =
+        serde_json::from_str(DOCUMENTED_USER).expect("the documented User Object decodes");
+    assert_eq!(user.username, "some_user");
+    assert!(user.city.is_none());
+}
+
+#[tokio::test]
+async fn a_2xx_that_names_no_account_is_a_failure_not_no_such_user() {
+    // The module's real request path against a loopback. Each of these came
+    // back `Ok(empty)`, which coverage reads as "no Codewars account", for a
+    // handle Codewars never answered about.
+    use crate::util::http::test_server::{Canned, serve};
+    let base = serve(vec![
+        Canned::json(200, "{}"),
+        Canned::json(200, r#"{"success":false,"reason":"Too many requests"}"#),
+        Canned::json(200, r#"{"username":"","name":null,"clan":""}"#),
+        Canned::json(200, r#"{"username":"  "}"#),
+    ])
+    .await;
+    let client = reqwest::Client::new();
+    for (shape, why) in [
+        ("an empty object", "missing field `username`"),
+        ("an error envelope", "missing field `username`"),
+        ("an empty username", "blank `username`"),
+        ("a whitespace username", "blank `username`"),
+    ] {
+        let Err(err) = lookup(&client, &base, "kata_warrior", "s").await else {
+            panic!("{shape} is no answer about the handle, never \"no such user\"");
+        };
+        assert!(err.to_string().contains(why), "{shape}: {err}");
+    }
+}
+
+#[tokio::test]
+async fn a_404_or_another_accounts_record_is_a_clean_miss_that_mints_nothing() {
+    // Over-correction guard. The 404 is Codewars' one documented miss (body
+    // verbatim from a live lookup). The path takes "Username or ID", so an
+    // ID-shaped handle answers with ANOTHER account: live, this ID is `g964`.
+    // Neither is this handle's account, and neither is a failure.
+    use crate::util::http::test_server::{Canned, serve};
+    let base = serve(vec![
+        Canned::json(404, r#"{"success":false,"reason":"not found"}"#),
+        Canned::json(
+            200,
+            r#"{"id":"545207bac8e60b30fc000942","username":"g964","honor":488914}"#,
+        ),
+    ])
+    .await;
+    let client = reqwest::Client::new();
+    let miss = lookup(&client, &base, "kata_warrior", "s")
+        .await
+        .expect("a 404 is the clean miss");
+    assert!(miss.is_empty());
+    let other = lookup(&client, &base, "545207bac8e60b30fc000942", "s")
+        .await
+        .expect("another account's record is a miss, not a failure");
+    assert!(
+        other.is_empty(),
+        "g964's profile is not this handle's: {other:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_documented_user_object_is_found_under_its_own_handle() {
+    use crate::util::http::test_server::{Canned, serve};
+    let base = serve(vec![Canned::json(200, DOCUMENTED_USER)]).await;
+    let client = reqwest::Client::new();
+    let hit = lookup(&client, &base, "some_user", "s")
+        .await
+        .expect("the documented profile decodes");
+    assert!(
+        hit.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Username && e.value == "some_user")
+    );
+    // Production asks the documented Get User path.
+    assert_eq!(API_BASE, "https://www.codewars.com/api/v1/users");
+}

@@ -1,4 +1,5 @@
-//! Wire types for `plc.directory` and AT Protocol handle resolution.
+//! Wire types for `plc.directory`, AT Protocol handle resolution, and the DID
+//! document a `did:web` host serves.
 //!
 //! Everything optional and everything defaulted. A PLC audit log spans four
 //! years of protocol evolution — the earliest entries use a `create` operation
@@ -70,15 +71,12 @@ pub(super) struct Service {
 }
 
 impl PlcOperation {
-    /// The handles this operation declares, in either shape, `at://` stripped.
+    /// The handle this operation claims, in either shape, `at://` stripped —
+    /// at most one: [`claimed_handle`] of `alsoKnownAs`, or the legacy shape's
+    /// `handle` field.
     pub(super) fn handles(&self) -> Vec<&str> {
         if !self.also_known_as.is_empty() {
-            return self
-                .also_known_as
-                .iter()
-                .filter_map(|aka| aka.strip_prefix("at://").map(str::trim))
-                .filter(|h| !h.is_empty())
-                .collect();
+            return claimed_handle(&self.also_known_as).into_iter().collect();
         }
         self.handle
             .as_deref()
@@ -103,4 +101,52 @@ impl PlcOperation {
     pub(super) fn is_tombstone(&self) -> bool {
         self.op_type.as_deref() == Some("plc_tombstone")
     }
+}
+
+/// A DID document, as a `did:web` host serves it from `/.well-known/did.json`.
+///
+/// Only the two fields that confirm an identity are read. `id` is the DID the
+/// document is for: the did:web method's resolution step is to "verify that the
+/// ID of the resolved DID document matches the Web DID being resolved".
+/// `alsoKnownAs` is where an AT Protocol account claims its handle, as an
+/// `at://` URI — the same field a PLC operation carries.
+#[derive(Deserialize)]
+pub(super) struct DidDocument {
+    #[serde(default)]
+    pub(super) id: Option<String>,
+    #[serde(rename = "alsoKnownAs", default)]
+    pub(super) also_known_as: Vec<String>,
+}
+
+impl DidDocument {
+    /// True if this is the document `did` resolves to and, when the identity was
+    /// reached through `handle`, it claims that handle back.
+    ///
+    /// Case-insensitive on both: the scan seed is case-folded before it gets
+    /// here, and handles are case-insensitive in AT Protocol.
+    pub(super) fn confirms(&self, did: &str, handle: Option<&str>) -> bool {
+        self.id
+            .as_deref()
+            .is_some_and(|id| id.trim().eq_ignore_ascii_case(did))
+            && handle.is_none_or(|want| {
+                claimed_handle(&self.also_known_as)
+                    .is_some_and(|h| h.eq_ignore_ascii_case(want.trim()))
+            })
+    }
+}
+
+/// The handle an `alsoKnownAs` list claims, `at://` stripped. **Pure.**
+///
+/// The AT Protocol DID spec (<https://atproto.com/specs/did>): "The first
+/// syntactically valid handle found in the ordered list is treated as the
+/// claimed handle, even if it fails to resolve bi-directionally. Any other
+/// handle URIs should be ignored." Taking any entry let a document claiming
+/// `other.example` first confirm a lookup for its later alias `wanted.example`
+/// (REQ-PLC-002 review round). Syntax is [`crate::util::atproto::is_handle`];
+/// an entry in another URI scheme is not a handle.
+fn claimed_handle(also_known_as: &[String]) -> Option<&str> {
+    also_known_as
+        .iter()
+        .filter_map(|aka| aka.trim().strip_prefix("at://"))
+        .find(|h| crate::util::atproto::is_handle(h))
 }

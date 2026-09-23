@@ -10,6 +10,7 @@ use crate::core::{
 use crate::util::dns::shared_resolver;
 
 use super::SRC;
+use super::constants::{SPAMHAUS_ZEN, SPAMHAUS_ZONES};
 use super::helpers::{soa_rname_to_email, verification_vendor};
 
 /// Whether a lookup outcome *established* something about the zone.
@@ -17,8 +18,10 @@ use super::helpers::{soa_rname_to_email, verification_vendor};
 /// `Ok` did. So did an `Err` that `is_no_records_found()`: hickory maps NXDOMAIN and
 /// NOERROR-with-no-answers there and routes SERVFAIL/REFUSED/FORMERR/timeout to other
 /// variants instead, so a failing resolver cannot reach this arm dressed as a clean
-/// negative. The DNSBL sweep further down this file relies on exactly that property.
-/// Every other `Err` means the resolver answered nothing at all.
+/// negative. A *filtering* resolver could — its policy block is an NXDOMAIN — which is
+/// why the shared pool holds none (`crate::util::dns`). The DNSBL sweep further down
+/// this file relies on the same property. Every other `Err` means the resolver
+/// answered nothing at all.
 fn answered<T>(outcome: &std::result::Result<T, hickory_resolver::net::NetError>) -> bool {
     match outcome {
         Ok(_) => true,
@@ -745,7 +748,9 @@ pub(super) struct BlocklistTally {
     /// Zones that actually answered — listed, or authoritatively not listed.
     /// This, not `attempted`, is the honest denominator for a verdict.
     pub(super) answered: u32,
-    /// Zones that established nothing (SERVFAIL, REFUSED, timeout, no route).
+    /// Zones that established nothing: SERVFAIL, REFUSED, timeout, no route, an
+    /// answer that is not a DNSBL listing code, or a zone that failed its
+    /// RFC 5782 test entries ([`zone_answer`]).
     pub(super) unresolved: u32,
 }
 
@@ -779,21 +784,69 @@ impl BlocklistTally {
     pub(super) fn supports_a_verdict(&self) -> bool {
         self.answered > 0
     }
+
+    /// Count one zone's [`DnsblAnswer`]; `true` when the zone lists the address.
+    ///
+    /// The one place a zone's answer becomes a count, so an
+    /// [`DnsblAnswer::Unresolved`] zone is disclosed as partial coverage and can
+    /// never be folded into "clean on N". Pure.
+    pub(super) fn record(&mut self, answer: DnsblAnswer) -> bool {
+        match answer {
+            DnsblAnswer::Listed => {
+                self.answered += 1;
+                true
+            }
+            DnsblAnswer::NotListed => {
+                self.answered += 1;
+                false
+            }
+            DnsblAnswer::Unresolved => {
+                self.unresolved += 1;
+                false
+            }
+        }
+    }
 }
 
+/// What one DNSBL zone established about the queried address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DnsblAnswer {
+    /// The zone lists the address.
+    Listed,
+    /// The zone does not list it: NXDOMAIN, or Spamhaus PBL policy-zone
+    /// membership, which carries no reputation.
+    NotListed,
+    /// Nothing established: the lookup failed, the answer is not one a DNSBL
+    /// gives about an address, or the zone failed its RFC 5782 test entries.
+    Unresolved,
+}
+
+/// One DNSBL lookup: the A values it returned, or why there were none. The A
+/// value is the whole of a DNSBL's answer (RFC 5782 §2.1).
+pub(super) type DnsblLookup =
+    std::result::Result<Vec<std::net::Ipv4Addr>, hickory_resolver::net::NetError>;
+
+/// The test entries every IPv4 DNSBL publishes, reversed as they are queried.
+/// RFC 5782 §5: "IPv4-based DNSxLs MUST contain an entry for 127.0.0.2 for
+/// testing purposes. IPv4-based DNSxLs MUST NOT contain an entry for
+/// 127.0.0.1."
+const LISTED_TEST_ENTRY: &str = "2.0.0.127";
+const UNLISTED_TEST_ENTRY: &str = "1.0.0.127";
+
 /// Spamhaus ZEN return codes: classify as reputation-grade listing or policy-code non-listing.
-/// Only 127.0.0.2 (SBL), 127.0.0.3 (CSS), 127.0.0.4 (DROP), 127.0.0.9 (SBL+CSS)
-/// are actual abuse listings; 127.0.0.5/10/11 (PBL variants) are policy-zone membership
-/// without reputation implication and must not fabricate an abuse finding.
+/// Per Spamhaus's DNSBL usage FAQ, 127.0.0.2 (SBL), 127.0.0.3 (SBL CSS), 127.0.0.4 (XBL,
+/// CBL data) and 127.0.0.9 (SBL DROP) are abuse listings, and 127.0.0.5–7 (XBL) and
+/// 127.0.0.8 (SBL) are allocated to those lists. 127.0.0.10/11 (PBL) are policy-zone
+/// membership without reputation implication and must not fabricate an abuse finding.
 /// Pure, independently unit-tested.
 pub(super) fn is_spamhaus_abuse_listing(addr: std::net::IpAddr) -> bool {
     if let std::net::IpAddr::V4(ipv4) = addr {
         let octets = ipv4.octets();
         if octets[0..3] == [127, 0, 0] {
             match octets[3] {
-                2 | 3 | 4 | 9 => true, // SBL, CSS, DROP, SBL|CSS
-                5 | 10 | 11 => false,  // PBL variants (policy, not reputation)
-                _ => false,            // Unknown code: conservative non-listing
+                2..=9 => true,    // SBL, CSS, XBL (4–7), SBL (8), DROP
+                10 | 11 => false, // PBL (policy, not reputation)
+                _ => false,       // not an abuse code
             }
         } else {
             false
@@ -801,6 +854,103 @@ pub(super) fn is_spamhaus_abuse_listing(addr: std::net::IpAddr) -> bool {
     } else {
         false
     }
+}
+
+/// Read one DNSBL lookup. Pure.
+///
+/// **The value is the answer.** The sweep took any `Ok` for a listing and, for
+/// ZEN, any value that was not an abuse code for a clean check. Through the
+/// public resolvers this engine queries by, Spamhaus answers ZEN and CBL with
+/// `127.255.255.254` — its documented "query via public/open resolver" error,
+/// observed live for the `127.0.0.2` test entry itself — so every IPv4 target
+/// read "listed on CBL" and ZEN's refusal counted as a clean check. A value
+/// outside `127.0.0.0/8` is no DNSBL answer either: it is an NXDOMAIN rewritten
+/// to a landing page, which read as a listing on every zone.
+pub(super) fn dnsbl_answer(zone: &str, lookup: &DnsblLookup) -> DnsblAnswer {
+    let codes = match lookup {
+        Ok(codes) => codes,
+        // NXDOMAIN, or NOERROR with no answers: the zone does not list it.
+        // hickory routes SERVFAIL/REFUSED/FORMERR and timeouts elsewhere, so a
+        // failing resolver cannot reach this arm (see [`answered`]). A zone
+        // that REFUSES a resolver can — which is what [`zone_answer`]'s test
+        // entries catch.
+        Err(e) if e.is_no_records_found() => return DnsblAnswer::NotListed,
+        Err(_) => return DnsblAnswer::Unresolved,
+    };
+    let each: Vec<DnsblAnswer> = codes.iter().map(|code| dnsbl_code(zone, *code)).collect();
+    if each.is_empty() || each.contains(&DnsblAnswer::Unresolved) {
+        DnsblAnswer::Unresolved
+    } else if each.contains(&DnsblAnswer::Listed) {
+        DnsblAnswer::Listed
+    } else {
+        DnsblAnswer::NotListed
+    }
+}
+
+/// One A value from `zone`. Pure.
+fn dnsbl_code(zone: &str, code: std::net::Ipv4Addr) -> DnsblAnswer {
+    let zen = zone == SPAMHAUS_ZEN;
+    match code.octets() {
+        // Spamhaus: "127.255.255.0/24 — ERRORS (not implying a 'listed'
+        // response)": .252 a typo in the zone name, .254 a query via a
+        // public/open resolver, .255 excessive queries. Spamhaus's convention,
+        // so only on the zones Spamhaus answers: on another list RFC 5782 makes
+        // the same value a listing, handled below (REQ-DNSINTEL-002 review).
+        [127, 255, 255, _] if SPAMHAUS_ZONES.contains(&zone) => DnsblAnswer::Unresolved,
+        _ if zen && is_spamhaus_abuse_listing(std::net::IpAddr::V4(code)) => DnsblAnswer::Listed,
+        [127, 0, 0, 10 | 11] if zen => DnsblAnswer::NotListed,
+        // A value outside Spamhaus's published table establishes nothing.
+        _ if zen => DnsblAnswer::Unresolved,
+        // RFC 5782 §2.3: values SHOULD lie in 127.0.0.0/8 and a list may use
+        // any of them for sublists, so an unfamiliar one is still a listing —
+        // never a clean answer.
+        [127, ..] => DnsblAnswer::Listed,
+        // Not a DNSBL value at all. Spamhaus: ignore "all response codes that
+        // are not in 127.0.0.0/8, because they come from a man in the middle".
+        _ => DnsblAnswer::Unresolved,
+    }
+}
+
+/// What `zone` established about the address, given its answer for the address
+/// and for its two RFC 5782 test entries, all through the same resolver path.
+/// Pure.
+///
+/// **A zone's silence counts only once the zone has shown it is answering.** A
+/// value check cannot see every refusal: through Google Public DNS, Spamhaus
+/// answers NXDOMAIN for ZEN and CBL names — `127.0.0.2` included, which
+/// RFC 5782 requires a list to hold permanently — so the refusal read as "not
+/// listed". A retired zone (SORBS: its `127.0.0.2` entry is gone) reads the
+/// same, and a list that "lists the world" answers `127.0.0.1` too. The zone's
+/// answer counts only when `127.0.0.2` is listed and `127.0.0.1` is not.
+pub(super) fn zone_answer(
+    zone: &str,
+    address: &DnsblLookup,
+    listed_test: &DnsblLookup,
+    unlisted_test: &DnsblLookup,
+) -> DnsblAnswer {
+    let answering = dnsbl_answer(zone, listed_test) == DnsblAnswer::Listed
+        && dnsbl_answer(zone, unlisted_test) == DnsblAnswer::NotListed;
+    if answering {
+        dnsbl_answer(zone, address)
+    } else {
+        DnsblAnswer::Unresolved
+    }
+}
+
+/// Look `name` up, keeping the A values — all a DNSBL answer carries.
+async fn dnsbl_lookup(name: String) -> DnsblLookup {
+    shared_resolver()
+        .lookup_ip(name.as_str())
+        .await
+        .map(|found| {
+            found
+                .iter()
+                .filter_map(|ip| match ip {
+                    std::net::IpAddr::V4(v4) => Some(v4),
+                    std::net::IpAddr::V6(_) => None,
+                })
+                .collect()
+        })
 }
 
 /// DNSBL reputation check against 8 blocklists.
@@ -818,7 +968,6 @@ pub(super) async fn blocklist_check(target: &Target, ctx: &ModuleContext) -> Res
         None => return Ok(Vec::new()),
     };
 
-    let resolver = shared_resolver();
     let mut listed_on: Vec<&str> = Vec::new();
     let mut tally = BlocklistTally::default();
 
@@ -827,42 +976,16 @@ pub(super) async fn blocklist_check(target: &Target, ctx: &ModuleContext) -> Res
             break;
         }
         tally.attempted += 1;
-        let query = format!("{reversed}.{zone}");
-        match resolver.lookup_ip(query.as_str()).await {
-            // A DNSBL publishes an A record (127.0.0.x) for a listed address.
-            // Spamhaus ZEN requires filtering: only abuse-grade codes (SBL/CSS/DROP)
-            // count as listings, not policy codes (PBL).
-            Ok(lookup) => {
-                let mut is_reputation_listing = true;
-                if *zone == "zen.spamhaus.org" {
-                    // Spamhaus returns policy codes that must be filtered
-                    is_reputation_listing = false;
-                    for answer in lookup.as_lookup().answers() {
-                        if let hickory_resolver::proto::rr::RData::A(a) = &answer.data
-                            && is_spamhaus_abuse_listing(std::net::IpAddr::V4(a.0))
-                        {
-                            is_reputation_listing = true;
-                            break;
-                        }
-                    }
-                }
-                if is_reputation_listing {
-                    listed_on.push(label);
-                }
-                tally.answered += 1;
-            }
-            // The zone authoritatively said "no such record" — NXDOMAIN, or
-            // NOERROR with no answers. That is the DNSBL saying *not listed*,
-            // and it is a real check.
-            //
-            // `is_no_records_found()` is exactly this and nothing more:
-            // hickory maps SERVFAIL/REFUSED/FORMERR and friends to
-            // `ResponseCode(..)`, never to `NoRecordsFound`, so a failing
-            // resolver cannot slip through here dressed as a clean result.
-            Err(e) if e.is_no_records_found() => tally.answered += 1,
-            // SERVFAIL, REFUSED, timeout, no route. The zone established
-            // nothing, so it must not be counted as a check that passed.
-            Err(_) => tally.unresolved += 1,
+        // The address and the zone's two test entries, concurrently, so the
+        // check adds no round trip. The resolver caches the test entries'
+        // answers for their TTL, so later addresses in a scan mostly reuse them.
+        let (address, listed_test, unlisted_test) = tokio::join!(
+            dnsbl_lookup(format!("{reversed}.{zone}")),
+            dnsbl_lookup(format!("{LISTED_TEST_ENTRY}.{zone}")),
+            dnsbl_lookup(format!("{UNLISTED_TEST_ENTRY}.{zone}")),
+        );
+        if tally.record(zone_answer(zone, &address, &listed_test, &unlisted_test)) {
+            listed_on.push(label);
         }
     }
 
