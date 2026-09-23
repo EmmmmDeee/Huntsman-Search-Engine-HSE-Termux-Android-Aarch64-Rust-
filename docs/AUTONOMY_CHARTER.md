@@ -112,6 +112,14 @@ The loop runs these stages in order. All are load-bearing; none may be skipped.
 
 ## Ledger — historical appendix (2026-08-02 to 2026-08-26)
 
+> **Moved 2026-09-23.** The 42-cycle ledger described below is now
+> `.agent/history.json`, content unchanged (`git log --follow
+> .agent/history.json`). `.agent/state.json` now holds the maintainer run
+> state (`baseline_sha`, `work_branch`, `baseline_failures`, `completed`,
+> `rejected`, `open_defects`, `cycle`), and `.agent/progress.md` sits beside
+> it. Any reference to `.agent/state.json` written before this date means the
+> file now at `.agent/history.json`.
+
 **Canonical mechanism: `.agent/state.json`.** This table's RECORD stage lapsed
 after the `▸`/#334 row (below) and per-cycle tracking continued exclusively in
 `.agent/state.json` from cycle 1 of *that* counter onward — see its own

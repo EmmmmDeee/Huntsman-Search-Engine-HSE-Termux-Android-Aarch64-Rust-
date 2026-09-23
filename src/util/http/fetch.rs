@@ -1502,12 +1502,10 @@ mod tests {
 
     #[tokio::test]
     async fn transport_is_transient_flags_a_connect_refusal() {
-        // A connection to a just-closed local port is a real connect error —
-        // exactly the transient class the keyed retry should re-send on. Bind a
-        // listener to grab a free port, then drop it so the port is closed.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("should succeed");
-        let addr = listener.local_addr().expect("should succeed");
-        drop(listener);
+        // A connection to a closed local port is a real connect error —
+        // exactly the transient class the keyed retry should re-send on.
+        let closed = crate::util::http::test_server::ClosedPort::new();
+        let addr = closed.addr();
         let err = reqwest::Client::builder()
             .no_proxy()
             .timeout(std::time::Duration::from_secs(2))

@@ -68,3 +68,21 @@ use super::*;
         let late = h.clone();
         assert!(late.is_cancelled(), "a clone taken after cancel must observe it");
     }
+
+    #[test]
+    fn a_guards_scan_id_is_registered_for_as_long_as_it_can_be_read() {
+        // The live loop reads its iteration's id back out of the guard rather
+        // than minting it beside one, so the id it announces is one the
+        // registry already holds (REQ-SSE-001). That only works if the guard
+        // hands back exactly the key it registered.
+        let registry = new_cancel_registry();
+        let guard = CancelRegistryGuard::install(
+            Arc::clone(&registry),
+            "live-iteration".into(),
+            CancelHandle::new(),
+        );
+        assert_eq!(guard.scan_id(), "live-iteration");
+        assert!(registry.lock().contains_key(guard.scan_id()));
+        drop(guard);
+        assert!(registry.lock().is_empty());
+    }

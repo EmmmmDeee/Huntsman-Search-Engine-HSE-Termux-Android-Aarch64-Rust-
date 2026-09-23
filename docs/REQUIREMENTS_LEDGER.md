@@ -21023,3 +21023,164 @@ equal the OID exactly, and every length goes through the bounds-checked
 Its "refused" port is bound, dropped, then connected to, and a concurrent
 test can be handed the freed port in between. That is recorded for its own
 fix rather than folded into this change.
+
+## REQ-CI-011 — a "refused" test port could be handed to another test's server before the probe connected
+
+**Found** running the full suite for REQ-CERTINTEL-002:
+`app::outage::tests::ip_literal_reachable_is_false_against_a_refused_port`
+failed once and passed on every other run. Its `refused_addr()` bound
+`127.0.0.1:0`, dropped the listener, and returned the address. The freed port
+goes back to the kernel's pool at once. Under cargo's parallel harness, where
+thousands of tests bind `127.0.0.1:0`, another test's server can be given it
+before the probe connects, and the probe then reaches a live server.
+`refused_addr()` served six tests in `app::outage::tests`. The same idea
+stood in four more places, in three forms:
+
+- a named listener dropped before the connect:
+  `util::http::fetch::tests::transport_is_transient_flags_a_connect_refusal`
+  (an explicit `drop(listener)`) and
+  `modules::webserver_banner::tests::both_transports_failing_is_not_a_clean_negative`
+  (an inner block that ends first);
+- a listener that is never named, so the temporary is dropped at the end of
+  its statement: `modules::abn_lookup::tests::transport_failure_surfaces_as_error_not_a_false_no_match`
+  (`TcpListener::bind("127.0.0.1:0").unwrap().local_addr()…`);
+- a port guessed shut, never bound at all: `modules::portscan::tests::scan_detects_a_listening_local_port`
+  scanned its listener's port + 1 as "almost-certainly closed". It never
+  asserted that port was reported shut, so the guess could not fail its own
+  test. It could fail another one: a connect that lands on another test's
+  listener uses up a one-shot accept, or bumps a connection counter that
+  must stay at zero (`core::webhook::tests`, `core::engine::tests`). The
+  scanner's refused-port branch had no lock at all.
+
+The first sweep found only the first form and claimed no other form existed.
+It had searched for named listeners, and missed the unnamed temporary. The
+review on PR #648 pointed at it. A second sweep read every other
+ephemeral-port `bind` in `src/` and `tests/` (36 sites besides
+`ClosedPort`'s own) with the lines that follow it. Each binds a listener the
+test keeps for as long as it needs the port, in the task that accepts on it
+or, in `portscan`'s case, in a named binding. No test binds UDP.
+
+The only fixed ports tests connect to are `127.0.0.1:1` and `:9`. What keeps
+another test off them is the kernel's ephemeral range (32768–60999 on the
+test host), which `bind(127.0.0.1:0)` draws from. Privilege does not: the
+tests run as root. They are not racy, but they do assume nothing on the
+machine listens on port 1 or 9 (an inetd `discard` service would answer on
+9). That is recorded as an open defect, not fixed here.
+
+**The mechanism was reproduced on the kernel first**, before any Rust changed.
+A 20,000-iteration harness ran against 16 threads churning
+`bind(127.0.0.1:0)` + `listen`. With bind-then-close, **5** of the "refused"
+ports accepted a connection. With the port held bound but not listening,
+**0** did.
+
+### Implemented
+
+`util::http::test_server::ClosedPort` holds a loopback port bound but never
+listening, with `SO_REUSEADDR` off, for as long as the value lives. A connect
+is refused at once, and no other socket can be given the port meanwhile. It
+uses `tokio::net::TcpSocket`, which the crate already has, so there is no new
+dependency. All ten tests hold one for their whole body: the six that used
+`refused_addr()` (now deleted), plus `fetch`, `webserver_banner`,
+`abn_lookup` and `portscan`. Nine of them could flake. The tenth,
+`portscan`, could break another test. `portscan`'s test now also asserts the
+held port is reported shut, which it had claimed in its comment and never
+checked.
+
+### Locks
+
+`a_closed_port_refuses_and_cannot_be_taken_while_held` checks both
+properties: the connect is refused, and another listener's bind of the held
+address fails.
+
+| # | mutation | result |
+|---|---|---|
+| CI11-R | `set_reuseaddr(false)` → `true` | killed: "a held port must not be bindable by another listener" |
+| CI11-P | `scan_ports` reports a failed connect as open (`_ => None` → `_ => Some((port, svc))`) | killed: "a refused port must not be reported open" |
+
+## REQ-SSE-001 — the scan-log stream of a scan nobody has sat silent instead of answering 404
+
+**Found** by the adversarial probe of a live, sandboxed `hse serve`: about
+1,100 hostile requests over every route family, with no 5xx and no panic.
+`GET /api/v1/scans/{id}/events` held the connection open for any `id`,
+including one that never existed. The stream closes after
+`SSE_IDLE_TIMEOUT` (120 s) with nothing matched, and `EventSource` then
+reconnects to the same nothing indefinitely. REQ-RESILIENCE-001 had already
+closed exactly this for the live-session stream (`/live/{id}/events` answers
+404 for a session this process does not know), and the probe confirmed that
+fix still holds. The scan-log stream never got it, so a console left on a
+deleted scan, or given a mistyped id, read a dead stream as a quiet one.
+
+**Why an existence check is safe here.** It is safe only if every scan id a
+client can hold is registered or stored before the client gets it. The
+places that hand out a scan id:
+
+1. The `202` from a handler that calls `spawn_scan` (create, batch, rerun,
+   autonomous, the auto-sweep, the radar sweep). Each upserts the row, then
+   `spawn_scan` installs the in-flight entry, before the answer goes out.
+2. The import handler, the scan list and get endpoints, the radar history,
+   and the `scan_complete` event. Each writes or reads the row before the id
+   leaves.
+3. A live iteration's id, from the `LiveTick` event on the live stream and
+   from the session's scan list. **This one did not hold when the check was
+   first written.** The loop recorded the id on the session and sent the
+   tick, and only then installed the iteration's registry guard. The
+   engine writes the row later still. A client that followed the tick to the
+   scan's stream at once could be told the scan does not exist. Review on
+   PR #648 caught it.
+
+The registry entry is held until the engine returns, by which time it has
+written the row. The exception is an iteration whose very first write, the
+engine's opening `upsert_scan`, failed or panicked. Its id was announced but
+no row exists, so once the guard drops it reads as absent, which it is. So
+a scan whose id a client holds is in the registry, in the store, or never
+ran.
+
+### Implemented
+
+`scan_events_sse` checks the in-flight registry first, then the store through
+`offload_store`, and answers 404 when neither knows the id. A known scan
+streams exactly as before.
+
+The live loop now mints each iteration's id straight into its registry
+guard: `CancelRegistryGuard::install(…, scan_id(…), …)`. It reads `sid` back
+out through the new `CancelRegistryGuard::scan_id()`. No id exists in the
+loop before its guard does, so moving the session record or the `LiveTick`
+above the install no longer compiles. A rewrite that mints the id beside
+the guard again would compile, which is what the test below is for.
+
+### Locks
+
+`api::handlers::tests::the_scan_stream_answers_only_for_a_scan_in_flight_or_stored`
+covers three cases through a real router: an unknown id is 404; a registered
+scan with no row yet streams; a stored scan with nothing in flight streams.
+The existing `scan_events_endpoint_is_server_sent_events` and gzip-exemption
+tests pass unchanged.
+
+| # | mutation | result |
+|---|---|---|
+| SSE1-B | **baseline**: no existence check (`in_flight = true`) | killed: the unknown id streamed (200, not 404) |
+| SSE1-R | registry check dropped (`in_flight = false`) | killed: a registered scan with no row yet was 404, not 200 |
+| SSE1-L | live loop: `record_scan` + `LiveTick` moved back above the guard install | rejected by the compiler: `E0425 cannot find value 'sid' in this scope` (twice) |
+| SSE1-O | live loop: the original order restored in full (id minted beside the guard, announced, then installed) | killed: "LiveTick announced … while the registry was locked, so before its id was registered" |
+| SSE1-S | live loop: id minted beside the guard, and only `record_scan` moved above the install (the tick stays below it) | killed: "the session listed … while the registry was locked, so before its id was registered" |
+
+**5 of 5 caught: four killed by a test, one rejected by the compiler.** The
+second mutation is why the registry check exists: a store-only check would
+have 404'd a brand-new scan's stream. That is also the state of every live
+iteration until the engine writes its row.
+
+The live-loop order has two locks. The structure makes the reordering above
+fail to compile. `core::live::tests::a_live_iteration_never_hands_out_a_scan_id_before_it_is_registered`
+catches what the structure cannot: a rewrite that mints the id beside the
+guard again and hands it out first through either channel (SSE1-O, SSE1-S).
+Watching the gap directly does not work: the loop runs from the tick to the
+install without yielding, in a few microseconds. So the test holds the
+registry's lock on another thread while the first iteration starts.
+Registering needs that lock and announcing does not, so the loop stops at
+whichever step comes first. A tick, or a scan-list entry, seen while the
+lock is held was made for an id not yet registered. Once the lock is
+released, the test checks the announced id is in flight while the engine
+runs it, which also catches a guard dropped before the engine starts.
+`core::cancel::tests::a_guards_scan_id_is_registered_for_as_long_as_it_can_be_read`
+pins the accessor the structure depends on: it returns the registered key,
+and the key stays registered while the guard lives.

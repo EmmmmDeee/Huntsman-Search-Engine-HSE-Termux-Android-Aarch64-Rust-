@@ -8,7 +8,7 @@
 > the scan; it never falls back to a saved `seeknow_session.txt`. Following
 > the steps below will save a session token to disk, but HSE will not yet
 > use it. Wiring it in is an open decision (would make SeekNow's web-login
-> path part of every scan's network footprint) — see `.agent/state.json`
+> path part of every scan's network footprint) — see `.agent/history.json`
 > cycle 34 for the audit that found this gap.
 
 ## Status: Investigating Cloudflare Turnstile Protection
