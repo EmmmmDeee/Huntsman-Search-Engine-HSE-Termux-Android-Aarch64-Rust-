@@ -19270,3 +19270,142 @@ direction; only the doc-test saw it, and doc-tests do not run under `--lib`.
 The symmetric unit test was added and U8 re-run. U8c also exposed a harness
 defect: a doc-test's name contains spaces, so the harness read a failed
 doc-test run as SURVIVED. It now counts any non-zero failed total as killed.
+
+## REQ-HUNTER-001 / REQ-HUNTER-002 — a domain search's colleagues are not the subject; its page is not the whole list
+
+**Found** by the adversarially verified module audit.
+
+**REQ-HUNTER-001.** `hunter_io` answers `domain-search`: every address Hunter
+holds at a domain, which means the organisation's **employees**. Each
+employee's LinkedIn / Twitter was emitted as a `Url` or `Username` tagged
+`social-profile`. That copied fullcontact's convention, but fullcontact
+answers for the queried person. Two rules read `social-profile` as the
+subject's:
+- **AU-055** ("Subject's own confirmed account(s)/profile(s) … primary sources
+  the subject controls"): High from one URL, Critical from three platforms;
+- **AU-038**: a cross-platform identity.
+
+An Email seed `jane@acme.com` → Domain `acme.com` → three colleagues'
+profiles was therefore a Critical finding about Jane's own accounts.
+
+**REQ-HUNTER-002.** The module sent one request with Hunter's default page
+(10) and never read the response's `meta.results`, Hunter's own count of the
+addresses it holds. A domain with 35 known addresses came back as a complete
+answer of 10, and the subject's address may be among the 25 never fetched.
+
+### Implemented
+
+- The profile pivots are kept and tagged `employee-profile`, which says whose
+  they are. No owned-account rule reads it.
+- `Wrap` decodes `meta` into `HunterMeta{results, limit}`. The pure
+  `domain_search_result` declares the page to the coverage layer:
+  - `mark_truncated_of(returned, results, …)` when Hunter holds more than the
+    page carried;
+  - with no count, `mark_truncated_if_capped` against the page size;
+  - a page that meets Hunter's own count is complete.
+- One request is still the design, not paging. A free key has 25 searches a
+  month and every page costs one; the cut is now declared rather than hidden.
+
+### Locks
+
+`modules::hunter_io::tests`:
+- `a_domain_searchs_colleague_profiles_are_never_the_subjects_accounts`. It
+  runs the module's output through `correlator::correlate_entities`, the
+  boundary where the harm happened, and asserts that neither AU-055 nor
+  AU-038 fires.
+- `a_page_short_of_hunters_own_count_is_declared_truncated`
+- `a_page_holding_every_address_hunter_has_is_complete`
+- `with_no_count_a_full_default_page_is_declared_and_a_short_one_is_not`
+- `the_wire_meta_object_is_decoded`
+- The linkedin / twitter tests encoded the defect (they asserted
+  `social-profile`) and now assert the opposite.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| H1 | **baseline**: colleague profiles tagged `social-profile` | killed by 2 |
+| H1b | both tags. The tag-count assertion is satisfied, so only the correlator assertion can see it | killed by 2 |
+| H2 | **baseline**: `meta` never read | killed by 2 |
+| H3 | over-correction: every page truncated | killed by 1 |
+| H4 | boundary: a page equal to Hunter's count read as cut | killed by 1 |
+| H5 | no count: the full-page fallback dropped | killed by 1 |
+
+**6 of 6 killed.** H1b proves that the correlator assertion is live on its
+own, not carried by the tag assertion before it.
+
+## REQ-EMAILREP-001 / REQ-EMAILREP-002 — EmailRep's confidence rests on the report; its leak flag is read under the vendor's name
+
+**Found** by the adversarially verified module audit. Field names were
+verified against the vendor's own documentation, the
+`sublime-security/emailrep.io` README, whose example response is now a
+verbatim test fixture.
+
+**REQ-EMAILREP-001.** `build_email_entity` re-emitted the target at a fixed
+`HIGH_PLUSPLUS_PLUS` (0.85) whatever the report said. The engine merges by
+uid and keeps the higher confidence, so **every address EmailRep answered
+for became VERIFIED** (≥ 0.75). That included:
+- an undeliverable address;
+- one on a nonexistent domain, which the module itself tagged
+  `domain-nonexistent` while emitting it at 0.85;
+- an empty `{}` report.
+
+This is the defect REQ-CANARY-003 fixed in `disposable_check`, at a second
+site.
+
+**REQ-EMAILREP-002.** The details field was read as `credential_leaked`. The
+vendor sends `credentials_leaked` (and `credentials_leaked_recent`). Every
+field is optional, so the misspelling decoded as absent. Every credential
+leak EmailRep reported was dropped: no `breach` tag and no attribute, while
+the module advertises T1589.001 Credentials. The fixtures had been written in
+the module's own spelling, so no test could see the drift.
+
+### Implemented
+
+- `report_observes_the_address` counts only evidence about the **address**:
+  - profiles it is used on;
+  - a breach or a credential leak;
+  - observed malicious, spam or blacklisted behaviour;
+  - a `first_seen` date, not the vendor's `never`.
+
+  `references` is excluded. The vendor documents that it "can include
+  reputation sources for the domain", so a mailbox nobody holds at a
+  reputable domain has references.
+- `report_confidence` sets the rung:
+  - an observed address earns `HIGH_PLUS` (0.70), which is `hibp`'s rung for
+    an address seen in a breach: a presence claim from one third-party
+    source, below VERIFIED until something corroborates it;
+  - any other report is an annotation at `SPECULATIVE`, below
+    `SEED_PRESENT_RUNG`.
+- `RepDetails` reads `credentials_leaked`, `credentials_leaked_recent` and
+  `malicious_activity_recent` under the vendor's names. The evidence
+  attribute is now `credentials_leaked`; nothing outside the module read the
+  old one.
+- `contact_enrich`'s comment no longer lists `emailrep` among the modules
+  that re-emit at 0.85.
+
+### Locks
+
+`modules::emailrep::tests`:
+- `the_vendors_documented_response_decodes`: the vendor's example, verbatim.
+- `a_credential_leak_alone_is_a_breach_signal`
+- `a_report_that_never_observed_the_address_confers_no_presence`. It covers
+  the audit's undeliverable case, `{}`, a nonexistent domain, and references
+  alone.
+- `an_observed_address_is_present_but_not_verified_by_this_source_alone`. It
+  covers six kinds of address-level evidence, each ≥ `SEED_PRESENT_RUNG` and
+  < `VERIFIED_MIN`.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| E1 | **baseline**: the fixed 0.85 re-emission | killed by 2 |
+| E2 | **baseline**: the module's own spelling, `credential_leaked` | killed by 5 |
+| E3 | `references` counted as address evidence | killed by 1 |
+| E4 | `never` counted as a first-seen date | killed by 1 |
+| E5 | over-correction: nothing earns presence | killed by 1 |
+| E6 | an observed address is VERIFIED | killed by 1 |
+| E7 | a credential leak not counted as observation | killed by 1 |
+
+**7 of 7 killed.**
