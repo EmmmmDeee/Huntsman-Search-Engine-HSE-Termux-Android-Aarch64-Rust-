@@ -21435,3 +21435,59 @@ Harness: `mutate2.py`, spec `mut_keyreg001.json`. The `-arch` and `L*` rows run 
 
 - `wifi_intel` sends its own `ModuleError` straight onto the bus (`src/modules/wifi_intel/mod.rs:412-418`), so it bypasses this sink. Its text is built from `Lookup::Refused` reasons, which come from HSE's own error types. It does not quote a provider body.
 - Whether IPQS, Criminal IP or Europeana ever echo a key in these fields remains unverified. The sink makes that question moot for the event log.
+
+## REQ-KEYFLOOR-001 — an optional key never leaves a module worse than keyless: a refused key falls back to the keyless answer and is still reported to the pool
+
+**Found** (plan lock L10, verified at HEAD d3c36f0d). Two modules with a working keyless path skipped it whenever a key was set:
+
+- `shodan`: `if let Some(key) = ctx.key_opt(KEY_ENV) { self.query_paid(..)?; } else { self.query_internetdb(..)?; }` (`src/modules/shodan/mod.rs:162-169`). `query_paid` classified the host-API answer with `keyed_ok_or_404` (`mod.rs:319`), which turns a `401`/`403` into `Err` after burning the key (`src/util/http/fetch.rs:1014-1045`). A key Shodan refused therefore made the module error out, and InternetDB, which needs no key, was never asked.
+- `greynoise`: the keyed branch `return`ed before the Community path on every outcome (`src/modules/greynoise/mod.rs:328-348`), and its refusal also came through `keyed_ok_or_404` (`mod.rs:340`). A refused key made the module error out, and the keyless `v3/community` endpoint was never asked.
+
+In both cases the operator who set a key got less than one who did not.
+
+**Vendor facts relied on** (fetched 2026-09-23):
+- InternetDB is keyless: "No, you don't need to have a Shodan account or a Shodan API key in order to use the InternetDB API" (https://internetdb.shodan.io/). Live, `GET https://internetdb.shodan.io/8.8.8.8` answered `200` with no key.
+- GreyNoise Community is keyless: "API Address: `api.greynoise.io/v3/community`", "Available to unauthenticated users with a limited number of lookups per day" (https://docs.greynoise.io/docs/using-the-greynoise-community-api). Live, `GET /v3/community/8.8.8.8` with no key answered GreyNoise's documented shape (`404` with `"IP not observed scanning the internet."`).
+- GreyNoise refuses a bad key on `v3/ip` with `401 {"message":"unauthorized"}` (live request with `key: invalidkey000`, 2026-09-23).
+- **Not relied on.** Shodan's developer docs (https://developer.shodan.io/api) do not say which plans may call `/shodan/host/{ip}` or which status a free key gets. Live on 2026-09-23, `/shodan/host/8.8.8.8` answered `200` both with an invalid key and with no key, so no refusal could be reproduced. The fix therefore does not depend on how Shodan treats a free key. It falls back on the statuses the repo already treats as a key refusal (`401`/`403`, and the auth-shaped `400`), whichever key receives them.
+
+**Implemented.**
+- `util::http::keyed_answer` is the single owner of the keyed status policy. It returns a `KeyedAnswer`: `Found(resp)` (2xx), `Absent` (404), or `KeyRejected { status, error }` (`401`, `403`, or a `400` that `is_auth_failure_400_body` recognises). In the `KeyRejected` case the key has already been reported exhausted, so it is marked `Invalid` in the pool. Every other non-2xx is still an `Err` with the same typed classification as before (`RateLimited`, `BotChallenge`, `Module`), and a `429` still burns `RateLimited`. `keyed_ok_or_404` is now `keyed_answer` with `KeyRejected` folded back into `Err`, so its 23 remaining call sites in 18 modules keep their behaviour and the policy lives in one place.
+- `shodan`: `process` delegates to `Shodan::lookup(api_base, internetdb_base, ip, ctx)`. On a paid-API `KeyRejected`, `lookup` logs a warning naming the status, then answers from InternetDB. A paid `2xx` or `404` still answers alone. A `429`, an outage or an unreadable body is still the module's error.
+- `greynoise`: `process` delegates to `GreyNoise::lookup(base, ip, ctx)`. On a `v3/ip` `KeyRejected`, `lookup` logs a warning, then answers from `v3/community`, which sends no key. Every other outcome is unchanged.
+- The refusal is never read as a negative about the subject (REQ-KEYSKIP-001). The module either returns the keyless provider's own answer or fails. The dead key is visible on the key-health views as `Invalid` and in the log.
+
+**Locks.**
+- `util::http::tests::keyed_answer_separates_a_key_refusal_from_every_other_failure`: `401`, `403` and the auth-shaped `400` are `KeyRejected` and burn `Invalid`. A `429` is `Err(RateLimited)` and burns `RateLimited`. A `500` and a bad-query `400` are `Err` and burn nothing.
+- `modules::shodan::tests::a_refused_key_still_gets_the_keyless_internetdb_answer`: loopback, with a key set and the host API answering `401`, then `403`. InternetDB's entities are returned and the key is `Invalid` in the `shodan` pool.
+- `modules::shodan::tests::only_a_key_refusal_falls_back_to_internetdb`: a paid `429` is `Err(RateLimited)`, and a paid `200` or `404` answers alone. InternetDB receives zero requests in all three cases.
+- `modules::greynoise::tests::a_refused_key_still_gets_the_keyless_community_answer`: loopback, with a key set and `v3/ip` answering `401`, then `403`. The second request is `GET /v3/community/…`, it carries no key, the Community verdict is returned, and the key is `Invalid` in the `greynoise` pool.
+- `modules::greynoise::tests::only_a_key_refusal_falls_back_to_the_community_api`: a `429` is `Err(RateLimited)`, and a `200` or `404` answers alone. The server sees exactly one request in each case.
+- The existing `keyed_ok_or_404_*` tests still pass unchanged. `keyed_ok_or_404_leaves_a_plain_refusal_a_module_fault` locks the fold-back.
+
+**Falsified** (`mutate2.py`, filters `keyed_answer keyed_ok_or_404 shodan greynoise`):
+
+| id | mutation | result |
+|---|---|---|
+| B1 | **baseline** (shodan): a paid-API key refusal is returned as the module's error again | KILLED by `a_refused_key_still_gets_the_keyless_internetdb_answer` |
+| B2 | **baseline** (greynoise): a `v3/ip` key refusal is returned as the module's error again | KILLED by `a_refused_key_still_gets_the_keyless_community_answer` |
+| M1 | `keyed_answer` does not count a `403` as a refusal | KILLED by 3: `a_refused_key_still_gets_the_keyless_community_answer`, `a_refused_key_still_gets_the_keyless_internetdb_answer`, `keyed_answer_separates_a_key_refusal_from_every_other_failure` |
+| M2 | `keyed_answer` does not count the auth-shaped `400` as a refusal | KILLED by `keyed_answer_separates_a_key_refusal_from_every_other_failure` |
+| M3 | a refusal is no longer reported to the pool (only a `429` burns) | KILLED by 3: `a_refused_key_still_gets_the_keyless_community_answer`, `a_refused_key_still_gets_the_keyless_internetdb_answer`, `keyed_answer_separates_a_key_refusal_from_every_other_failure` |
+| M4 | `keyed_ok_or_404` folds a refusal into a clean miss (`Ok(None)`) | KILLED by 2: `keyed_ok_or_404_leaves_a_plain_refusal_a_module_fault`, `keyed_ok_or_404_types_a_challenge_page_as_the_typed_wall` |
+| M5 | shodan reads a refusal as the paid API's clean miss (the REQ-KEYSKIP-001 defect) | KILLED by `a_refused_key_still_gets_the_keyless_internetdb_answer` |
+| M6 | greynoise reads a refusal as "never observed" (an empty result) | KILLED by `a_refused_key_still_gets_the_keyless_community_answer` |
+| O1 | **over-correction**: a `429` also falls back to the keyless path | KILLED by 3: `only_a_key_refusal_falls_back_to_the_community_api`, `only_a_key_refusal_falls_back_to_internetdb`, `keyed_answer_separates_a_key_refusal_from_every_other_failure` |
+| O2 | **over-correction**: shodan always asks InternetDB too, even when the key works | KILLED by `only_a_key_refusal_falls_back_to_internetdb` |
+| O3 | **over-correction**: shodan never uses the key (keyless only) | KILLED by 2: `a_refused_key_still_gets_the_keyless_internetdb_answer`, `only_a_key_refusal_falls_back_to_internetdb` |
+| O4 | **over-correction**: greynoise never uses the key (keyless only) | KILLED by 2: `a_refused_key_still_gets_the_keyless_community_answer`, `only_a_key_refusal_falls_back_to_the_community_api` |
+| O5 | **over-correction**: greynoise also falls back after a paid `404` | KILLED by `only_a_key_refusal_falls_back_to_the_community_api` |
+| O6 | **over-correction**: a `500` counts as a key refusal | KILLED by `keyed_answer_separates_a_key_refusal_from_every_other_failure` |
+
+**14 of 14 killed**, run against the compiled patch. Clippy `-D warnings` is clean.
+
+### Residual
+
+- **Other keyless floors.** The other plan rows are not in this change: hibp's Domain branch without a key, threatfox reading `HUNTSMAN_ABUSECH_KEY` first, pulsedive's key becoming optional, and netlas moving to `Authorization: Bearer`. The threatfox change touches pool-service resolution for a shared abuse.ch key and the `urlhaus` runtime `key_service` allowlist, so it is not a trivial one-liner. The 18 other modules that use `keyed_ok_or_404` have not been audited for a keyless path they could fall back to.
+- **Throttled key.** A `429` on the keyed call is still the module's error, not a fallback, because it is a throttle rather than a refusal. Whether InternetDB or GreyNoise Community would answer while the key is throttled is not verified.
+- **Pool label.** `keyed_answer`, like `keyed_ok_or_404`, still reports the burn under the caller's `module` label. For `shodan` and `greynoise` that label is also the pool name, so the burn reaches the right pool (the tests assert it). For the modules where the two differ, see the REQ-KEYREG-001 residual.

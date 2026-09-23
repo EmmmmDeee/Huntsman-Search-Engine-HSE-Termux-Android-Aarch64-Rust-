@@ -323,3 +323,138 @@ fn last_seen_recency_flows_into_evidence() {
         let flat = paid_resp(r#"{"ip":"8.8.8.8","seen":false,"noise":false,"riot":true}"#);
         recognised(&flat).expect("the flat shape is recognised");
     }
+
+// ── REQ-KEYFLOOR-001: a configured key never leaves the module worse than keyless ──
+
+/// A loopback-only context holding a fresh key as the GreyNoise key, pooled
+/// under `greynoise` so the refusal's burn is observable. Returns the key too.
+fn keyed_ctx(tag: &str) -> (ModuleContext, String) {
+    let key = format!(
+        "keyfloor-greynoise-{tag}-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    );
+    assert!(
+        crate::util::key_pool::global_pool()
+            .add("greynoise", crate::util::key_pool::KeyEntry::new(key.clone())),
+        "fixture: {key} must be new to the greynoise pool"
+    );
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = ModuleContext {
+        scan_id: "s".into(),
+        bus,
+        http: reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client"),
+        keys: std::collections::HashMap::from([(KEY_ENV.to_string(), key.clone())]),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    (ctx, key)
+}
+
+const COMMUNITY_HIT: &str = r#"{"ip":"1.2.3.4","noise":true,"riot":false,"classification":"malicious","name":"unknown","link":"https://viz.greynoise.io/ip/1.2.3.4","last_seen":"2026-09-01","message":"Success"}"#;
+
+/// REQ-KEYFLOOR-001. The keyed branch returned before the Community path, so
+/// a key GreyNoise refused (live, `v3/ip` answers a bad key
+/// `401 {"message":"unauthorized"}`) turned a working keyless lookup into a
+/// module error. Now the refusal is reported to the pool (the key reads
+/// `Invalid`) and the module answers from `v3/community`, which sends no key.
+/// Real request path on loopback; one run per refusal status.
+#[tokio::test]
+async fn a_refused_key_still_gets_the_keyless_community_answer() {
+    use crate::util::http::test_server::{Canned, serve_recording};
+    for status in [401u16, 403] {
+        let (base, seen) = serve_recording(vec![
+            Canned::json(status, r#"{"message":"unauthorized"}"#),
+            Canned::json(200, COMMUNITY_HIT),
+        ])
+        .await;
+        let (ctx, key) = keyed_ctx(&status.to_string());
+
+        let result = GreyNoise
+            .lookup(&base, "1.2.3.4", &ctx)
+            .await
+            .unwrap_or_else(|e| {
+                panic!("a refused key ({status}) must not cost the keyless answer: {e}")
+            });
+
+        let heads = seen.lock().expect("log").clone();
+        assert_eq!(heads.len(), 2, "the key was tried, then the Community API");
+        assert!(heads[0].starts_with("GET /v3/ip/1.2.3.4 "), "{}", heads[0]);
+        assert!(heads[1].starts_with("GET /v3/community/1.2.3.4 "), "{}", heads[1]);
+        assert!(
+            !heads[1].contains(&key),
+            "the keyless path sends no key: {}",
+            heads[1]
+        );
+        let ip = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::IpAddress)
+            .expect("the Community verdict is returned");
+        assert!(ip.has_tag("greynoise-malicious"), "the Community verdict is used");
+        assert!(!ip.has_tag("greynoise-seen"), "and it is the Community record, not a paid one");
+        assert_eq!(
+            crate::util::key_pool::global_pool().entry_status("greynoise", &key),
+            Some(crate::util::key_pool::KeyStatus::Invalid),
+            "the refused key is still reported to the pool ({status})"
+        );
+    }
+}
+
+/// REQ-KEYFLOOR-001, the other side of the floor: only a key REFUSAL falls
+/// back. A throttle on `v3/ip` is the module's error (typed `RateLimited`) and
+/// the Community API is not asked; an accepted key is answered by the paid
+/// record alone; a paid `404` is a clean miss with no second request.
+#[tokio::test]
+async fn only_a_key_refusal_falls_back_to_the_community_api() {
+    use crate::util::http::test_server::{Canned, serve_recording};
+
+    let (base, seen) = serve_recording(vec![
+        Canned::json(429, r#"{"message":"rate limit"}"#),
+        Canned::json(200, COMMUNITY_HIT),
+    ])
+    .await;
+    let (ctx, _) = keyed_ctx("429");
+    let err = GreyNoise
+        .lookup(&base, "1.2.3.4", &ctx)
+        .await
+        .expect_err("a throttled key is a failed lookup, not a fallback");
+    assert!(matches!(err, Error::RateLimited(_)), "{err:?}");
+    assert_eq!(seen.lock().expect("log").len(), 1, "no fallback on 429");
+
+    let (base, seen) = serve_recording(vec![
+        Canned::json(
+            200,
+            r#"{"ip":"1.2.3.4","seen":true,"noise":false,"riot":false,"classification":"benign","name":"Example Scanner"}"#,
+        ),
+        Canned::json(200, COMMUNITY_HIT),
+    ])
+    .await;
+    let (ctx, _) = keyed_ctx("200");
+    let result = GreyNoise
+        .lookup(&base, "1.2.3.4", &ctx)
+        .await
+        .expect("an accepted key answers");
+    let ip = result
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::IpAddress)
+        .expect("the paid verdict is returned");
+    assert!(ip.has_tag("greynoise-seen") && ip.has_tag("greynoise-benign"), "the paid record is used");
+    assert_eq!(seen.lock().expect("log").len(), 1, "Community not asked");
+
+    let (base, seen) = serve_recording(vec![
+        Canned::json(404, r#"{"message":"not found"}"#),
+        Canned::json(200, COMMUNITY_HIT),
+    ])
+    .await;
+    let (ctx, _) = keyed_ctx("404");
+    let result = GreyNoise
+        .lookup(&base, "1.2.3.4", &ctx)
+        .await
+        .expect("a paid 404 is a clean miss");
+    assert!(result.is_empty(), "the clean miss adds nothing");
+    assert_eq!(seen.lock().expect("log").len(), 1, "Community not asked");
+}

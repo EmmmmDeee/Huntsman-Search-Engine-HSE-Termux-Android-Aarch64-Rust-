@@ -1,9 +1,9 @@
 use super::client::{build_client, build_client_with_timeout, build_client_with_trace};
 use super::fetch::{
-    JSON_BODY_CAP, fetch_json, fetch_json_or_404, fetch_json_or_absent, fetch_json_probe,
-    is_keyed_error_status, key_tail, keyed_cascade, keyed_cascade_json, keyed_ok_or_404,
-    ok_or_absent, parse_retry_after_secs, read_body_capped, read_body_capped_or_fail,
-    retry_after_secs,
+    JSON_BODY_CAP, KeyedAnswer, fetch_json, fetch_json_or_404, fetch_json_or_absent,
+    fetch_json_probe, is_keyed_error_status, key_tail, keyed_answer, keyed_cascade,
+    keyed_cascade_json, keyed_ok_or_404, ok_or_absent, parse_retry_after_secs, read_body_capped,
+    read_body_capped_or_fail, retry_after_secs,
 };
 use super::redact::{pool_secret_values, redact_credentials, redact_literal_secrets};
 use super::ssrf::{
@@ -2631,4 +2631,86 @@ fn a_fallback_with_no_answer_is_a_failure_never_absent() {
         }),
     );
     assert_eq!(ok.expect("decoded").expect("some").results, ["a"]);
+}
+
+/// REQ-KEYFLOOR-001. `keyed_answer` keeps the provider's refusal of the
+/// CREDENTIAL apart from every other failure, so a module with a keyless path
+/// can fall back on it and on nothing else: `401`, `403` and Netlas' documented
+/// auth-shaped `400` are `KeyRejected` and burn the key `Invalid` in the pool;
+/// a `429` is still an `Err` (typed `RateLimited`) and still burns
+/// `RateLimited`; a `500` and a bad-query `400` are an `Err` and burn nothing.
+#[tokio::test]
+async fn keyed_answer_separates_a_key_refusal_from_every_other_failure() {
+    use super::test_server::{Canned, serve};
+    use crate::util::key_pool::KeyStatus;
+    let ctx = keyed_test_ctx();
+    let keys = pool_keys("shodan", 6);
+    let refused = [
+        (401, r#"{"message":"unauthorized"}"#),
+        (403, r#"{"error":"Access denied"}"#),
+        (
+            400,
+            r#"{"detail":"Request had invalid authorization credentials: API key not found"}"#,
+        ),
+    ];
+    for (i, (code, body)) in refused.into_iter().enumerate() {
+        let key = &keys[i];
+        let base = serve(vec![Canned::json(code, body)]).await;
+        let resp = reqwest::Client::new()
+            .get(&base)
+            .send()
+            .await
+            .expect("loopback");
+        match keyed_answer("shodan", key, &ctx, resp).await {
+            Ok(KeyedAnswer::KeyRejected { status, .. }) => assert_eq!(status, code),
+            other => panic!("case {i}: {code} is a key refusal, got {other:?}"),
+        }
+        assert_eq!(
+            pool_status("shodan", key),
+            Some(KeyStatus::Invalid),
+            "{code} burns"
+        );
+    }
+
+    let key = &keys[3];
+    let base = serve(vec![Canned::json(429, r#"{"error":"rate limit"}"#)]).await;
+    let resp = reqwest::Client::new()
+        .get(&base)
+        .send()
+        .await
+        .expect("loopback");
+    let err = keyed_answer("shodan", key, &ctx, resp)
+        .await
+        .expect_err("a throttle is not a key refusal");
+    assert!(
+        matches!(err, crate::core::error::Error::RateLimited(_)),
+        "{err:?}"
+    );
+    assert_eq!(pool_status("shodan", key), Some(KeyStatus::RateLimited));
+
+    for (key, (code, body)) in keys[4..]
+        .iter()
+        .zip([(500, r#"{"error":"boom"}"#), (400, r#"{"error":"bad ip"}"#)])
+    {
+        let base = serve(vec![Canned::json(code, body)]).await;
+        let resp = reqwest::Client::new()
+            .get(&base)
+            .send()
+            .await
+            .expect("loopback");
+        assert!(
+            keyed_answer("shodan", key, &ctx, resp).await.is_err(),
+            "{code} is an error, not a refusal"
+        );
+        assert_ne!(
+            pool_status("shodan", key),
+            Some(KeyStatus::Invalid),
+            "{code} burns nothing"
+        );
+        assert_ne!(
+            pool_status("shodan", key),
+            Some(KeyStatus::RateLimited),
+            "{code} burns nothing"
+        );
+    }
 }

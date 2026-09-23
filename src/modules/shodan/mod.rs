@@ -8,7 +8,13 @@
 //! `GET https://api.shodan.io/shodan/host/{ip}?key={KEY}` — detailed
 //! service-scan data, org/ISP/ASN/OS, and PTR hostnames.
 //!
-//! Both paths run for every IP address target; entities are merged.
+//! **One path per IP.** With no key, InternetDB answers. With a key, the
+//! paid host API answers — and when Shodan refuses the key itself (`401`/`403`,
+//! the answer a dead, revoked or under-privileged key gets), the module answers
+//! from InternetDB anyway, after the refusal is reported to the key pool. A
+//! configured key is an upgrade and must never leave the module worse than
+//! keyless: before this, a refused key turned a working InternetDB lookup into
+//! a module error (REQ-KEYFLOOR-001).
 
 #[cfg(test)]
 mod tests;
@@ -31,6 +37,11 @@ pub(super) const KEY_ENV: &str = "HUNTSMAN_SHODAN_KEY";
 
 /// The free, keyless InternetDB endpoint root (`GET {base}/{ip}`).
 const INTERNETDB_BASE: &str = "https://internetdb.shodan.io";
+
+/// The paid host API root (`GET {base}/shodan/host/{ip}?key=…`). A parameter of
+/// [`Shodan::lookup`] so the keyed → keyless fallback runs against a loopback
+/// server in tests.
+const API_BASE: &str = "https://api.shodan.io";
 
 // ── Paid API response ────────────────────────────────────────────────
 
@@ -157,22 +168,46 @@ impl Module for Shodan {
             return Ok(ModuleResult::new());
         }
 
-        let mut result = ModuleResult::new();
-
-        if let Some(key) = ctx.key_opt(KEY_ENV) {
-            // Paid API returns a strict superset (org, ISP, ASN, OS,
-            // country + everything InternetDB has). Skip free path.
-            self.query_paid(ip, key, ctx, &mut result).await?;
-        } else {
-            self.query_internetdb(INTERNETDB_BASE, ip, ctx, &mut result)
-                .await?;
-        }
-
-        Ok(result)
+        self.lookup(API_BASE, INTERNETDB_BASE, ip, ctx).await
     }
 }
 
 impl Shodan {
+    /// The module's whole request path, with both endpoint roots injectable.
+    ///
+    /// Keyed: the paid host record, a strict superset of InternetDB's (org,
+    /// ISP, ASN, OS, country + everything InternetDB has), so InternetDB is not
+    /// also asked. But the key is optional and InternetDB needs none, so a key
+    /// Shodan REFUSES must not cost the operator the keyless answer: the
+    /// refusal is already reported to the pool by [`crate::util::http::keyed_answer`]
+    /// (the key reads `Invalid` on the key-health views and the next scan
+    /// rotates past it), logged here, and the lookup continues on InternetDB
+    /// (REQ-KEYFLOOR-001). Only the refusal falls back: a throttle or an outage
+    /// on the paid API stays the module's error, and the refusal is never read
+    /// as "Shodan holds nothing" — the answer, if any, is InternetDB's own.
+    async fn lookup(
+        &self,
+        api_base: &str,
+        internetdb_base: &str,
+        ip: &str,
+        ctx: &ModuleContext,
+    ) -> Result<ModuleResult> {
+        let mut result = ModuleResult::new();
+        if let Some(key) = ctx.key_opt(KEY_ENV) {
+            let Some(status) = self.query_paid(api_base, ip, key, ctx, &mut result).await? else {
+                return Ok(result);
+            };
+            tracing::warn!(
+                target: "huntsman::shodan",
+                status,
+                "Shodan refused the configured key; answering from keyless InternetDB (REQ-KEYFLOOR-001)"
+            );
+        }
+        self.query_internetdb(internetdb_base, ip, ctx, &mut result)
+            .await?;
+        Ok(result)
+    }
+
     /// Query the free InternetDB endpoint. A `404` is InternetDB's documented
     /// "No information available" for an address it has never scanned — the one
     /// clean negative. A transport failure, a throttle (`429`), an outage (5xx)
@@ -300,28 +335,34 @@ impl Shodan {
         Ok(())
     }
 
-    /// Query the paid Shodan host API.
+    /// Query the paid Shodan host API. `Ok(None)` when Shodan answered (a
+    /// record, or `404`'s clean "not in Shodan"); `Ok(Some(status))` when it
+    /// refused the key — already reported to the pool — so the caller can fall
+    /// back to InternetDB; `Err` for every other failure (a `429` throttle, an
+    /// outage, an unreadable body).
     async fn query_paid(
         &self,
+        base: &str,
         ip: &str,
         key: &str,
         ctx: &ModuleContext,
         result: &mut ModuleResult,
-    ) -> Result<()> {
+    ) -> Result<Option<u16>> {
+        use crate::util::http::KeyedAnswer;
         let url = format!(
-            "https://api.shodan.io/shodan/host/{}?key={}",
+            "{base}/shodan/host/{}?key={}",
             urlencode(ip),
             urlencode(key),
         );
         let resp = ctx.http.get(&url).send_tagged(SRC).await?;
-        // 404 → host not in Shodan (clean miss); 401/403/429 → note_keyed_error + Err;
-        // other non-2xx → Err via http_status_error.
-        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
-            return Ok(());
+        let resp = match crate::util::http::keyed_answer(SRC, key, ctx, resp).await? {
+            KeyedAnswer::Found(resp) => resp,
+            KeyedAnswer::Absent => return Ok(None),
+            KeyedAnswer::KeyRejected { status, .. } => return Ok(Some(status)),
         };
         let body: HostResp = crate::util::http::json_decode(SRC, resp).await?;
         result.extend(build_paid_entities(ip, body, &ctx.scan_id));
-        Ok(())
+        Ok(None)
     }
 }
 

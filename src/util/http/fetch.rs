@@ -996,31 +996,61 @@ pub async fn ok_or_absent(
     Ok(Some(resp))
 }
 
-/// Classify a keyed-API response by status — the full post-send operation that
-/// the keyed modules repeat. `404` -> `Ok(None)` (a clean "not in this dataset"
-/// miss the caller maps to empty findings); any other non-2xx ->
-/// [`note_keyed_error`] (so 401/403/429 burn the key) then `Err` via
-/// [`http_status_error`]; `2xx` -> `Ok(Some(resp))` for the caller to decode.
+/// What one keyed response said, before the caller decides what to do about
+/// it: the three outcomes [`keyed_ok_or_404`] folds into `Result<Option<_>>`,
+/// with the provider's refusal of the CREDENTIAL kept apart from every other
+/// failure.
 ///
-/// Composes the keyed-error building blocks so the policy — which codes are a
-/// miss, which burn a key, which are a hard error — lives in one tested place.
-/// Pairs with `let-else`:
+/// That distinction is what a module with a keyless path needs. An optional
+/// key is an upgrade, and a module that has a keyless answer must never be
+/// made worse by setting one (the keyless floor, REQ-KEYFLOOR-001): `shodan`
+/// and `greynoise` each dropped their keyless path whenever a key was set, so a
+/// dead, expired or under-privileged key turned a working keyless lookup into
+/// a module error. [`keyed_answer`] lets such a module see "the key was
+/// refused" as its own outcome and answer from the keyless path instead,
+/// while every other failure — a throttle, an outage, a challenge page on a
+/// non-auth status — stays the module's error, exactly as before.
+#[derive(Debug)]
+pub enum KeyedAnswer {
+    /// A 2xx the caller reads.
+    Found(reqwest::Response),
+    /// A `404`: the provider's clean "not in this dataset" miss.
+    Absent,
+    /// The provider refused the credential itself: a `401`/`403`, or a `400`
+    /// whose body names an authentication failure (see
+    /// [`is_auth_failure_400_body`]). The key has ALREADY been reported to the
+    /// pool (marked `Invalid`), so a dead key is visible on the key-health
+    /// views and the next scan rotates past it; `error` is the typed failure a
+    /// caller with no keyless path surfaces as its own. It is never a clean
+    /// negative: the provider said nothing about the subject (REQ-KEYSKIP-001).
+    KeyRejected {
+        /// The HTTP status the provider answered with.
+        status: u16,
+        /// The classified failure, for a caller that has nothing to fall back to.
+        error: Error,
+    },
+}
+
+/// Classify a keyed-API response by status into a [`KeyedAnswer`]. `404` ->
+/// [`KeyedAnswer::Absent`]; a key refusal (`401`/`403`/auth-shaped `400`) ->
+/// the key is reported exhausted, then [`KeyedAnswer::KeyRejected`]; any other
+/// non-2xx -> [`note_keyed_error`]'s burn for a `429`, then `Err` via the
+/// typed classification; `2xx` -> [`KeyedAnswer::Found`].
 ///
-/// ```ignore
-/// let Some(resp) = http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
-///     return Ok(ModuleResult::new());
-/// };
-/// ```
-pub async fn keyed_ok_or_404(
+/// The single owner of the keyed status policy — which codes are a miss, which
+/// burn a key, which refuse the key, which are a hard error. [`keyed_ok_or_404`]
+/// is this with the refusal folded back into `Err`, for the callers that have
+/// no keyless path to fall back to.
+pub async fn keyed_answer(
     module: &str,
     key: &str,
     ctx: &crate::core::module::ModuleContext,
     resp: reqwest::Response,
-) -> Result<Option<reqwest::Response>> {
+) -> Result<KeyedAnswer> {
     let status = resp.status();
     let code = status.as_u16();
     if code == 404 {
-        return Ok(None);
+        return Ok(KeyedAnswer::Absent);
     }
     if !status.is_success() {
         // Read the body once — it is needed for the error message regardless, and it
@@ -1033,15 +1063,53 @@ pub async fn keyed_ok_or_404(
         // drops). Reading once serves both.
         let body = error_body(resp).await;
         let snippet = snippet_of(body.as_deref());
-        if is_keyed_error_status(code) || (code == 400 && is_auth_failure_400_body(&snippet)) {
+        let rejected =
+            matches!(code, 401 | 403) || (code == 400 && is_auth_failure_400_body(&snippet));
+        if rejected || is_keyed_error_status(code) {
             ctx.report_key_exhausted(module, key, code);
         }
         // Was a hand-built `Error::module` for every non-2xx, so a throttle and
         // a WAF block were indistinguishable from a provider defect for every
         // keyed caller (REQ-HTTP-004).
-        return Err(classify_status_error(module, status, body.as_deref()));
+        let error = classify_status_error(module, status, body.as_deref());
+        if rejected {
+            return Ok(KeyedAnswer::KeyRejected {
+                status: code,
+                error,
+            });
+        }
+        return Err(error);
     }
-    Ok(Some(resp))
+    Ok(KeyedAnswer::Found(resp))
+}
+
+/// Classify a keyed-API response by status — the full post-send operation that
+/// the keyed modules repeat. `404` -> `Ok(None)` (a clean "not in this dataset"
+/// miss the caller maps to empty findings); any other non-2xx ->
+/// [`note_keyed_error`] (so 401/403/429 burn the key) then `Err` via
+/// [`http_status_error`]; `2xx` -> `Ok(Some(resp))` for the caller to decode.
+///
+/// [`keyed_answer`] with a key refusal folded back into `Err` — for a module
+/// that has no keyless path. A module that DOES have one calls
+/// [`keyed_answer`] and falls back on [`KeyedAnswer::KeyRejected`]
+/// (REQ-KEYFLOOR-001). Pairs with `let-else`:
+///
+/// ```ignore
+/// let Some(resp) = http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
+///     return Ok(ModuleResult::new());
+/// };
+/// ```
+pub async fn keyed_ok_or_404(
+    module: &str,
+    key: &str,
+    ctx: &crate::core::module::ModuleContext,
+    resp: reqwest::Response,
+) -> Result<Option<reqwest::Response>> {
+    match keyed_answer(module, key, ctx, resp).await? {
+        KeyedAnswer::Found(resp) => Ok(Some(resp)),
+        KeyedAnswer::Absent => Ok(None),
+        KeyedAnswer::KeyRejected { error, .. } => Err(error),
+    }
 }
 
 /// The key-pool service a keyed helper reports a burned key to and rotates

@@ -469,3 +469,176 @@ fn a_uk_host_in_a_homonym_city_is_never_placed_in_australia() {
         );
     }
 }
+
+// ── REQ-KEYFLOOR-001: a configured key never leaves the module worse than keyless ──
+
+/// A loopback-only context holding `key` as the Shodan key, plus the key
+/// pooled under `shodan` so the refusal's burn is observable.
+fn keyed_ctx(key: &str) -> ModuleContext {
+    assert!(
+        crate::util::key_pool::global_pool().add(
+            "shodan",
+            crate::util::key_pool::KeyEntry::new(key.to_string())
+        ),
+        "fixture: {key} must be new to the shodan pool"
+    );
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    ModuleContext {
+        scan_id: "s".into(),
+        bus,
+        http: reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client"),
+        keys: std::collections::HashMap::from([(KEY_ENV.to_string(), key.to_string())]),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    }
+}
+
+/// A key value unique to this test and process, so parallel tests never share
+/// a pool entry.
+fn unique_key(tag: &str) -> String {
+    format!(
+        "keyfloor-shodan-{tag}-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    )
+}
+
+const INTERNETDB_HIT: &str = r#"{"cpes":[],"hostnames":["one.one.one.one"],"ip":"1.1.1.1","ports":[53,443],"tags":[],"vulns":[]}"#;
+
+/// REQ-KEYFLOOR-001. The keyed branch skipped InternetDB outright, so a key
+/// Shodan refused (`401`, and `403` — the status a key without the plan an
+/// endpoint needs gets) turned a working keyless lookup into a module error.
+/// Now the refusal is reported to the pool (the key reads `Invalid`) and the
+/// module answers from InternetDB. Real request path, both endpoints on
+/// loopback; one run per refusal status.
+#[tokio::test]
+async fn a_refused_key_still_gets_the_keyless_internetdb_answer() {
+    for status in [401u16, 403] {
+        let key = unique_key(&status.to_string());
+        let (api, paid_seen) = crate::util::http::test_server::serve_recording(vec![
+            crate::util::http::test_server::Canned::json(status, r#"{"error":"Access denied"}"#),
+        ])
+        .await;
+        let (idb, idb_seen) = crate::util::http::test_server::serve_recording(vec![
+            crate::util::http::test_server::Canned::json(200, INTERNETDB_HIT),
+        ])
+        .await;
+        let ctx = keyed_ctx(&key);
+
+        let result = Shodan
+            .lookup(&api, &idb, "1.1.1.1", &ctx)
+            .await
+            .unwrap_or_else(|e| {
+                panic!("a refused key ({status}) must not cost the keyless answer: {e}")
+            });
+
+        assert_eq!(
+            paid_seen.lock().expect("log").len(),
+            1,
+            "the key was tried first"
+        );
+        assert_eq!(
+            idb_seen.lock().expect("log").len(),
+            1,
+            "then InternetDB answered"
+        );
+        let ip = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::IpAddress)
+            .expect("InternetDB's port summary is returned");
+        assert!(
+            ip.has_tag("shodan-internetdb"),
+            "the answer is InternetDB's own"
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == "one.one.one.one")
+        );
+        assert_eq!(
+            crate::util::key_pool::global_pool().entry_status("shodan", &key),
+            Some(crate::util::key_pool::KeyStatus::Invalid),
+            "the refused key is still reported to the pool ({status})"
+        );
+    }
+}
+
+/// REQ-KEYFLOOR-001, the other side of the floor: only a key REFUSAL falls
+/// back. A throttle on the paid API is the module's error (typed
+/// `RateLimited`) and InternetDB is not asked; an accepted key is answered by
+/// the paid record alone; a paid `404` is Shodan's clean miss, and InternetDB
+/// is not asked then either.
+#[tokio::test]
+async fn only_a_key_refusal_falls_back_to_internetdb() {
+    use crate::util::http::test_server::{Canned, serve_recording};
+
+    // 429: an error, no fallback.
+    let (api, _) = serve_recording(vec![Canned::json(429, r#"{"error":"rate limit"}"#)]).await;
+    let (idb, idb_seen) = serve_recording(vec![Canned::json(200, INTERNETDB_HIT)]).await;
+    let ctx = keyed_ctx(&unique_key("429"));
+    let err = Shodan
+        .lookup(&api, &idb, "1.1.1.1", &ctx)
+        .await
+        .expect_err("a throttled key is a failed lookup, not a fallback");
+    assert!(
+        matches!(err, crate::core::error::Error::RateLimited(_)),
+        "{err:?}"
+    );
+    assert!(
+        idb_seen.lock().expect("log").is_empty(),
+        "no fallback on 429"
+    );
+
+    // 200: the paid record, and InternetDB not asked.
+    let (api, _) = serve_recording(vec![Canned::json(
+        200,
+        r#"{"ports":[22],"org":"Example Org","hostnames":["h.example.com"]}"#,
+    )])
+    .await;
+    let (idb, idb_seen) = serve_recording(vec![Canned::json(200, INTERNETDB_HIT)]).await;
+    let ctx = keyed_ctx(&unique_key("200"));
+    let result = Shodan
+        .lookup(&api, &idb, "1.1.1.1", &ctx)
+        .await
+        .expect("an accepted key answers");
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Organisation && e.value == "Example Org"),
+        "the paid record is used"
+    );
+    assert!(
+        !result
+            .entities
+            .iter()
+            .any(|e| e.has_tag("shodan-internetdb")),
+        "InternetDB is not merged in when the key works"
+    );
+    assert!(
+        idb_seen.lock().expect("log").is_empty(),
+        "InternetDB not asked"
+    );
+
+    // 404: the paid API's clean miss, and InternetDB not asked.
+    let (api, _) = serve_recording(vec![Canned::json(
+        404,
+        r#"{"error":"No information available for that IP."}"#,
+    )])
+    .await;
+    let (idb, idb_seen) = serve_recording(vec![Canned::json(200, INTERNETDB_HIT)]).await;
+    let ctx = keyed_ctx(&unique_key("404"));
+    let result = Shodan
+        .lookup(&api, &idb, "1.1.1.1", &ctx)
+        .await
+        .expect("a paid 404 is a clean miss");
+    assert!(result.is_empty(), "the clean miss adds nothing");
+    assert!(
+        idb_seen.lock().expect("log").is_empty(),
+        "InternetDB not asked"
+    );
+}
