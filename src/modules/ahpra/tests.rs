@@ -162,3 +162,35 @@ fn two_practitioners_sharing_a_name_are_marked_as_a_proven_collision() {
         );
     }
 }
+
+#[test]
+fn a_proven_collision_sits_below_the_expansion_floor_with_its_ownership_unverified() {
+    // REQ-NAMESAKE-001: FAILS on ahpra's partial copy of the rule, which scored
+    // the collision at confidence::MEDIUM — the expansion floor itself — and left
+    // each practitioner's registration attributable to whoever shares the name.
+    let rows = vec![
+        (
+            "Jane Smith".to_string(),
+            "Medical Practitioner".to_string(),
+            "MED0001234".to_string(),
+        ),
+        (
+            "Jane Smith".to_string(),
+            "Nurse".to_string(),
+            "NMW0005678".to_string(),
+        ),
+    ];
+    for p in build_practitioner_entities(&rows, Some("Jane Smith"), "s") {
+        assert!(p.confidence < confidence::MEDIUM, "{}", p.confidence);
+        assert!(
+            p.evidence
+                .iter()
+                .all(|ev| ev.verification
+                    == Some(crate::core::entity::VerificationMethod::Unverified))
+        );
+    }
+    // A singly-held name keeps the single-hit anchor.
+    let one = build_practitioner_entities(&rows[..1], Some("Jane Smith"), "s");
+    assert!((one[0].confidence - confidence::MEDIUM_PLUS).abs() < f64::EPSILON);
+    assert!(!one[0].has_tag("ambiguous-name"));
+}

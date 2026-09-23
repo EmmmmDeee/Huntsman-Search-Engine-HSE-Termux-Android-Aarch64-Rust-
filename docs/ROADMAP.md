@@ -87,7 +87,12 @@ The reusable primitives every module leans on. Key sub-areas:
   5xx accumulates, anything else clears). A module that dials by hand and
   re-implements either half is a defect, not a variation: that was exactly
   REQ-HTTP-005 (`util::wigle` kept three hand-rolled copies) and
-  REQ-DOHRESOLVER-001 (the primary DNS transport had none).
+  REQ-DOHRESOLVER-001 (the primary DNS transport had none). Both transports —
+  reqwest and the curl fallback — answer alike for one response: the same
+  status typing (`classify_status_error`), the same breaker decision
+  (`record_breaker_status`), and one error-body step, `sanitised_error_body`
+  (cap → key harvest → redaction), so an echoed `?api_key=` never reaches a
+  typed error from either arm (REQ-CURL-001).
 - `util/circuit_breaker/` — per-endpoint outage state. `endpoint_of` is the
   **key authority**: host plus `port_or_known_default()`, so `https://h` and
   `https://h:443` cannot split into two breakers and two loopback servers cannot
@@ -118,6 +123,20 @@ The reusable primitives every module leans on. Key sub-areas:
   `f64::max(confidence)`, so a deliberately sub-floor candidate was absorbed
   into the primary and pivoted. A demotion applied to an entity that is about to
   fuse with a higher-confidence twin is not a demotion at all.
+
+  That is why `mark_ambiguous` marks at two levels. The cap and the tag are
+  entity-level and the merge folds them; each evidence record's ownership
+  (`Evidence.verification = Unverified`) is per record and survives it, so the
+  row's attributes stay "somebody of this name's" on the subject's anchor
+  (REQ-NAMESAKE-001). It is the ONLY way the tag is applied —
+  `tests/architecture.rs` refuses another — because the partial copy `ahpra`
+  kept scored a collision at the expansion floor instead of below it.
+  Consumers: `ahpra`, `gleif_lei`, `opencorporates`, `wikidata`, `wikitree`.
+- `util/abn::same_company` — **company identity**: equality after case,
+  punctuation, a leading `THE` and trailing legal-form words are folded, on the
+  same tokeniser as `looks_like_company`. Never a token subset: a subset let
+  the Organisation seed "Ford" claim the individual "MR JOHN FORD"
+  (REQ-AU-UNCLAIMED-002).
 - `util/html`, `util/probe`, `util/target_match`, `util/canonical`,
   `util/address_au`, `util/domains`, `util/domain_vn`, `util/geo`,
   `util/extract`, `util/gravatar` — challenge-page detection, presence
@@ -162,6 +181,12 @@ re-implemented per module.
   asserts conduct; `threat-intel` is an unadjudicated sighting; `vulnerable`
   marks a VICTIM, usually the target's own asset), and a rule that flattens them
   headlines an exposure as an accusation (REQ-CLOUDSTORAGE-001).
+- `core/exposure/` — the subject's exposure index. It reads evidence through
+  ONE gate, `attributable`: a record whose ownership is `Unverified` (a
+  name-matched genealogy profile, an ambiguous-name row) is shown but never
+  counted as the subject's DOB, identifier or breach (REQ-WIKITREE-001). The
+  engine merges by value, so this per-record gate is the only one a namesake
+  cannot slip past.
 - `core/resolve/`, `core/validation/`, `core/intelligence/`, `core/coverage/`,
   `core/roi/`, `core/entity_extractor`, `core/diff/` — entity resolution &
   grouping, admission validation (homograph/placeholder gates), provider-outcome

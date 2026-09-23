@@ -60,6 +60,7 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::http::RequestBuilderExt;
+use crate::util::namesake::{NameCollisions, mark_ambiguous};
 
 const SRC: &str = "wikitree";
 /// The caller identifier WikiTree's API asks every client to send (a public
@@ -277,9 +278,9 @@ pub(super) fn build_entities(
     scan_id: &str,
 ) -> ModuleResult {
     let mut result = ModuleResult::new();
-    if matches.is_empty() {
-        return result;
-    }
+    // The cut is judged before the empty-page return: a page with no rows under
+    // a `total` above zero is the provider holding matches it did not send, not
+    // a clean negative.
     let returned = matches.len().min(LIMIT);
     let cause = format!("WikiTree's `limit={LIMIT}` page");
     match total
@@ -290,6 +291,9 @@ pub(super) fn build_entities(
         Some(_) => {}
         None => result.mark_truncated_if_capped(returned, LIMIT, &cause),
     }
+    if matches.is_empty() {
+        return result;
+    }
     // `total` is optional: if the API ever omits/renames it, `matches` are the
     // authoritative payload and must not be dropped. Fall back to the count
     // actually returned.
@@ -298,6 +302,14 @@ pub(super) fn build_entities(
         .iter()
         .filter(|m| m.display_name().is_none())
         .count();
+    // A name this answer holds more than once is a proven collision — the live
+    // "John Smith" answer holds it twice — and the one authority marks it.
+    let names: Vec<String> = matches
+        .iter()
+        .take(LIMIT)
+        .filter_map(WtMatch::display_name)
+        .collect();
+    let shared = NameCollisions::of(&EntityKind::Person, names.iter().map(String::as_str));
     let mut seen_urls = std::collections::HashSet::new();
     for m in matches.iter().take(LIMIT) {
         let Some(profile) = m.name.as_deref().map(str::trim).filter(|p| !p.is_empty()) else {
@@ -405,6 +417,10 @@ pub(super) fn build_entities(
         person.tag("family-tree");
         person.tag("needs-identity-verification");
         person.add_evidence(ev.clone());
+        let ambiguous = shared.is_shared(&EntityKind::Person, &display);
+        if ambiguous {
+            mark_ambiguous(&mut person);
+        }
         result.push(person);
 
         if seen_urls.insert(profile_url.clone()) {
@@ -414,6 +430,9 @@ pub(super) fn build_entities(
             url_e.tag(crate::core::tags::SOURCE_DOCUMENT);
             url_e.tag("needs-identity-verification");
             url_e.add_evidence(ev);
+            if ambiguous {
+                mark_ambiguous(&mut url_e);
+            }
             result.push(url_e);
         }
     }

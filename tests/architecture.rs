@@ -2075,3 +2075,62 @@ fn every_module_that_asserts_malicious_is_a_threat_intel_source() {
          never counts their vote and AU-015 cannot name them: {missing:?}"
     );
 }
+
+/// REQ-NAMESAKE-001: `util::namesake::mark_ambiguous` is the one way an entity
+/// is marked ambiguous. `ahpra` kept a partial copy — the tag, a confidence of
+/// its own choosing — and scored a proven collision AT the expansion floor
+/// (`confidence::MEDIUM`) rather than below it, and without the evidence-level
+/// ownership mark that survives the engine's merge. A second copy drifts; this
+/// refuses one.
+#[test]
+fn the_ambiguous_name_tag_is_applied_only_through_mark_ambiguous() {
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n != "tests") {
+                    walk(&path, out);
+                }
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && path.file_name().is_some_and(|n| n != "tests.rs")
+            {
+                out.push(path);
+            }
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    walk(&root.join("src"), &mut files);
+    let applies_the_tag = |line: &str| {
+        line.contains(".tag(")
+            && (line.contains("AMBIGUOUS_NAME") || line.contains("\"ambiguous-name\""))
+    };
+    let (mut authority, mut elsewhere) = (0, Vec::new());
+    for f in &files {
+        let rel = f
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let text = fs::read_to_string(f).unwrap();
+        for (i, line) in text.lines().enumerate() {
+            if !applies_the_tag(line) {
+                continue;
+            }
+            if rel == "src/util/namesake/mod.rs" {
+                authority += 1;
+            } else {
+                elsewhere.push(format!("{rel}:{}: {}", i + 1, line.trim()));
+            }
+        }
+    }
+    assert_eq!(
+        authority, 1,
+        "vacuity: the scan must see mark_ambiguous's own tag"
+    );
+    assert!(
+        elsewhere.is_empty(),
+        "tag `ambiguous-name` only through util::namesake::mark_ambiguous, which also \
+         caps below the expansion floor and marks each record's ownership: {elsewhere:#?}"
+    );
+}

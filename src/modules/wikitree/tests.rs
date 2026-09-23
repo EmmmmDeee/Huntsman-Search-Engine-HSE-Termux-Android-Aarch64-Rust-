@@ -202,7 +202,7 @@ fn live_matches() -> Vec<WtMatch> {
 }
 
 #[test]
-fn a_namesakes_birth_date_on_the_subject_anchor_is_not_the_subjects_disclosure() {
+fn a_namesake_birth_date_on_the_subject_anchor_is_not_the_subject_disclosure() {
     // REQ-WIKITREE-001: FAILS without the ownership mark. The seed Person and
     // every WikiTree "John Smith" share one uid, so the engine merges the
     // namesakes' vitals onto the subject's anchor — and the exposure index
@@ -332,5 +332,39 @@ fn an_answer_of_only_private_profiles_is_not_a_clean_negative() {
         res.entities
             .iter()
             .all(|e| e.confidence < crate::core::confidence::MEDIUM)
+    );
+}
+
+#[test]
+fn a_name_the_answer_holds_twice_is_marked_by_the_namesake_authority() {
+    // The live "John Smith" answer holds the name twice: a proven collision.
+    let res = build_entities("John Smith", Some(602), &live_matches(), "scan");
+    let detailed: Vec<_> = res
+        .entities
+        .iter()
+        .filter(|e| !e.has_tag("private-profile"))
+        .collect();
+    assert_eq!(detailed.len(), 4, "two Persons, two source Urls");
+    assert!(detailed.iter().all(|e| e.has_tag("ambiguous-name")));
+
+    // One profile under a name is not a collision.
+    let one = build_entities("John Smith", Some(1), &live_matches()[..1], "scan");
+    assert!(!one.entities.iter().any(|e| e.has_tag("ambiguous-name")));
+}
+
+#[test]
+fn an_empty_page_under_a_positive_total_is_declared_not_a_clean_negative() {
+    // REQ-WIKITREE-002 review round: the empty-page return used to come before
+    // the truncation verdict, so WikiTree reporting 602 matches and sending none
+    // read as "WikiTree holds nothing".
+    let res = build_entities("John Smith", Some(602), &[], "scan");
+    assert!(res.entities.is_empty());
+    let cut = res.truncation.as_deref().expect("declared");
+    assert!(cut.contains("0 of 602"), "{cut}");
+    // No total and no rows: a genuine empty answer.
+    assert!(
+        build_entities("John Smith", None, &[], "scan")
+            .truncation
+            .is_none()
     );
 }

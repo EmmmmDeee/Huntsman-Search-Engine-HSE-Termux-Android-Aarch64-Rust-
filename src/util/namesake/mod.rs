@@ -27,7 +27,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::core::confidence;
-use crate::core::entity::{Entity, EntityKind, derive_uid, normalise};
+use crate::core::entity::{Entity, EntityKind, VerificationMethod, derive_uid, normalise};
 
 /// The tag stamped on an entity whose name this provider's own answer shows is
 /// held by more than one party.
@@ -50,7 +50,11 @@ pub const AMBIGUOUS_NAME: &str = "ambiguous-name";
 /// not by a constant nobody can interpret.
 pub const AMBIGUOUS_CEILING: f64 = confidence::LOW_MEDIUM;
 
-/// Cap and flag one entity a proven-collision row produced.
+/// Cap, flag, and mark the ownership of one entity a proven-collision row
+/// produced. **The one way an entity is marked ambiguous** —
+/// `tests/architecture.rs` refuses [`AMBIGUOUS_NAME`] applied any other way,
+/// because the partial copy `ahpra` kept scored a collision AT the expansion
+/// floor instead of below it (REQ-NAMESAKE-001).
 ///
 /// Apply it to **every** entity the row yielded, not only the named one. A
 /// company row's registration number, registered address and derived
@@ -59,10 +63,26 @@ pub const AMBIGUOUS_CEILING: f64 = confidence::LOW_MEDIUM;
 /// leaving its `AbnAcn` at `confidence::EXPERT` moves the defect rather than
 /// removing it, because the number still pivots.
 ///
-/// Idempotent — the tag de-dupes and the cap is a `min`.
+/// Call it **after** the entity's evidence is attached. The cap and the tag
+/// are entity-level, and the engine's merge folds an entity into its
+/// same-named twin — often the subject's own anchor — keeping the higher
+/// confidence, so the cap does not survive the merge (REQ-WIKIDATA-001 is that
+/// erasure). The third mark does: every evidence record without an ownership
+/// status is stamped [`VerificationMethod::Unverified`], and records keep that
+/// through the merge. It is what stops the row's attributes — a date of birth,
+/// an identifier, a breach corpus — reading as the subject's own in the
+/// exposure index. An ownership status the source already established (an
+/// account linked by email) is about a different question and is kept.
+///
+/// Idempotent — the tag de-dupes, the cap is a `min`, and the mark fills only
+/// an empty status.
 pub fn mark_ambiguous(entity: &mut Entity) {
     entity.tag(AMBIGUOUS_NAME);
     entity.confidence = entity.confidence.min(AMBIGUOUS_CEILING);
+    for ev in &mut entity.evidence {
+        ev.verification
+            .get_or_insert(VerificationMethod::Unverified);
+    }
 }
 
 /// The names a single result set holds more than once.
