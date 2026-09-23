@@ -664,28 +664,44 @@ const PERSON_NAME_ATTRS: &[&str] = &[
     "display_name",
 ];
 
-/// The normalised identity fingerprint of an Email/Username, for detecting a
-/// shared persona across platforms. Emails key on the local-part (handled by
-/// [`crate::core::scan::identity_norm`], which splits on `@`); usernames on the
-/// whole value. `None` for a handle too short or all-digits to be a reliable
-/// persona key, so generic noise can't fan out into a false alias clique.
-fn persona_key(e: &Entity) -> Option<String> {
-    if !matches!(e.kind, EntityKind::Email | EntityKind::Username) {
-        return None;
-    }
-    let key = crate::core::scan::identity_norm(&e.value);
-    // 4 = IDENTITY_OVERLAP_MIN: shorter handles alias too readily. Also reject a
-    // generic role mailbox / placeholder handle (`info`, `support`, `sales`,
-    // `admin`, `noreply`, …) via the canonical `is_generic_handle` taxonomy every
-    // correlator identity rule already applies (AU-034/045/076). Without it
-    // `info@org-a` and `info@org-b` share the key `"info"` and `derive_handles`
-    // draws a full-confidence, undamped `AliasOf` edge that fuses two unrelated
-    // organisations' mailboxes into one identity cluster. `identity_norm` yields
-    // the alphanumeric-folded form `is_generic_handle` expects.
-    (key.len() >= 4
-        && !key.bytes().all(|b| b.is_ascii_digit())
-        && !crate::core::correlator::is_generic_handle(&key))
-    .then_some(key)
+/// The account keys of an Email/Username for detecting one persona across
+/// platforms — [`crate::core::coref::account_keys`]: a username's handle with
+/// case and whitespace folded and every separator kept; an email's local part
+/// (`+tag` stripped only where the provider routes it), plus the dot-free form
+/// for a Gmail address, which answers to both. Empty for any other kind, and
+/// for a key too short, all-digits or generic to be a reliable persona key, so
+/// generic noise can't fan out into a false alias clique.
+///
+/// Keyed on the account, not on [`crate::core::scan::identity_norm`]. That
+/// fold keeps only alphanumerics, so Instagram `_ianthorpe_` and GitHub
+/// `ianthorpe` shared the key `ianthorpe` and [`derive_handles`] asserted
+/// `AliasOf` between two accounts the resolver keeps apart (REQ-RESOLVE-001)
+/// — the false merge closed there, re-created one layer up (Copilot review of
+/// #649).
+fn persona_keys(e: &Entity) -> Vec<String> {
+    let Some(keys) = crate::core::coref::account_keys(e) else {
+        return Vec::new();
+    };
+    keys.into_iter()
+        .filter(|key| {
+            // The reliability gates read the alphanumeric fold — the form
+            // they were written for — while the key itself keeps its
+            // separators. 4 = IDENTITY_OVERLAP_MIN: shorter handles alias too
+            // readily. Also reject a generic role mailbox / placeholder handle
+            // (`info`, `support`, `sales`, `admin`, `noreply`, …) via the
+            // canonical `is_generic_handle` taxonomy every correlator identity
+            // rule already applies (AU-034/045/076). Without it `info@org-a`
+            // and `info@org-b` share the key `"info"` and `derive_handles`
+            // draws a full-confidence, undamped `AliasOf` edge that fuses two
+            // unrelated organisations' mailboxes into one identity cluster.
+            // `identity_norm` yields the alphanumeric-folded form
+            // `is_generic_handle` expects.
+            let folded = crate::core::scan::identity_norm(key);
+            folded.len() >= 4
+                && !folded.bytes().all(|b| b.is_ascii_digit())
+                && !crate::core::correlator::is_generic_handle(&folded)
+        })
+        .collect()
 }
 
 /// True for an identifier the scan GUESSED rather than observed: a name
@@ -771,10 +787,13 @@ pub(super) fn sort_edges(edges: &mut [Relation]) {
 }
 
 /// Derive `AliasOf` edges between Email/Username entities that share one
-/// normalised persona key — the cross-platform "same handle" pivot (username
-/// `jsmith` ↔ `jsmith@gmail.com`, or two observed accounts `jsmith` on two
-/// platforms). Purely structural (exact normalised-handle match), so precision
-/// is high; generic / numeric handles are excluded by [`persona_key`].
+/// persona key — the cross-platform "same handle" pivot (username `jsmith` ↔
+/// `jsmith@gmail.com`, or two observed accounts `jsmith` on two platforms).
+/// Purely structural (exact account-key match, every separator significant),
+/// so precision is high; generic / numeric handles are excluded by
+/// [`persona_keys`]. A Gmail address sits in two key groups (literal and
+/// dot-free), so `ian.thorpe@gmail.com` aliases both `ian.thorpe` and
+/// `ianthorpe` — which do not alias each other.
 ///
 /// Two pairs share the key without it meaning anything, and are skipped:
 ///   * two mailboxes at DIFFERENT domains (`jsmith@gmail.com` ↔
@@ -792,7 +811,7 @@ pub fn derive_handles(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
 
     let mut by_key: HashMap<String, Vec<&Entity>> = HashMap::new();
     for e in entities {
-        if let Some(k) = persona_key(e) {
+        for k in persona_keys(e) {
             by_key.entry(k).or_default().push(e);
         }
     }
@@ -1236,11 +1255,19 @@ pub fn derive_declared_associations(entities: &[Entity], scan_id: &str) -> Vec<R
     let mut out = Vec::new();
     for e in entities.iter().filter(|e| e.kind == EntityKind::Person) {
         for ev in &e.evidence {
-            for (k, v) in &ev.attributes {
-                if !ASSOCIATION_ATTRS.iter().any(|a| k.eq_ignore_ascii_case(a)) {
-                    continue;
-                }
-                if let Some(&other) = person_by_name.get(v.trim().to_lowercase().as_str())
+            // Each VALUE of an association attribute names one person: an
+            // attribute accumulates (`Evidence::with_attr` joins a repeated
+            // key with "; ", `absorb` pools same-summary records), and read
+            // whole, `co_owner = "A; B"` named nobody, so neither declared
+            // link was drawn. `attr_values` is the one correct way to read
+            // such an attribute.
+            let declared = ev
+                .attributes
+                .keys()
+                .filter(|k| ASSOCIATION_ATTRS.iter().any(|a| k.eq_ignore_ascii_case(a)))
+                .flat_map(|k| ev.attr_values(k));
+            for v in declared {
+                if let Some(&other) = person_by_name.get(v.to_lowercase().as_str())
                     && other.uid != e.uid
                 {
                     let (from, to) = if e.uid <= other.uid {

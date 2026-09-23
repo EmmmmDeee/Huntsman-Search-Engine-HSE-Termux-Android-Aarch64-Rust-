@@ -39,12 +39,31 @@ fn confirmed_entities(store: &Store, sid: &str) -> Result<Vec<crate::core::entit
 /// still queued. Taking the whole [`Scan`] closes that hole — see
 /// [`StopReason`](crate::core::scan::StopReason).
 ///
+/// A `Complete` scan with [`Scan::error`] set is the other such case
+/// (`"finalise-incomplete"`). Every path that finalises a scan records there
+/// what its finalise did not complete
+/// ([`FinaliseTally`](crate::core::scan::FinaliseTally)): writes the store
+/// refused (entities, relations, correlations, an address-fold detach, a
+/// corroboration boost) and passes that failed outright (the correlator, the
+/// cross-scan route learning, the boost pass). The scan did run to the end, so
+/// its status stays `Complete`, but its exports are not what it produced —
+/// records missing, or a folded address repeated. Classifying on status and
+/// stop reason alone branded such a scan "complete". It is checked before the
+/// budget test because it is the stronger statement: results the scan did
+/// produce are wrong or absent, not merely ones it never reached.
+/// [`Scan::completeness_caveat`] uses the same order. The reason was first
+/// named `persist-incomplete`; it became `finalise-incomplete` once a pass
+/// that never produced its result — nothing refused, nothing to persist — was
+/// recorded under it too.
+///
 /// Determinism: every input here is immutable once the scan is terminal
-/// (`status` and `stop_reason` are both written once, at finalise), so this
-/// keeps the debug bundle's byte-identical-across-exports contract.
+/// (`status`, `stop_reason` and `error` are all written once, at finalise,
+/// and `error`'s text is deterministic), so this keeps the debug bundle's
+/// byte-identical-across-exports contract.
 fn partial_export_reason(scan: &Scan) -> Option<&'static str> {
     use crate::core::scan::ScanStatus;
     match scan.status {
+        ScanStatus::Complete if scan.error.is_some() => Some("finalise-incomplete"),
         ScanStatus::Complete => scan
             .stop_reason
             .is_some_and(|r| r.truncated())
@@ -418,6 +437,13 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
     // terminal, so the bundle stays byte-identical across exports.
     if let Some(r) = scan.stop_reason {
         let _ = writeln!(s, "stopped    : {}", r.label());
+    }
+    // WHAT a partial scan is missing, when the finalise recorded it — the
+    // "finalise-incomplete" header above names the class, this the detail
+    // (e.g. "2/40 relations failed to persist: …"). Written once, at finalise,
+    // with deterministic text, so the bundle stays byte-identical.
+    if let Some(err) = scan.error.as_deref() {
+        let _ = writeln!(s, "error      : {err}");
     }
     let _ = writeln!(s, "entities   : {}", entities.len());
     let _ = writeln!(s, "relations  : {}", relations.len());
@@ -1462,6 +1488,98 @@ mod tests {
                 "{stop:?} is a complete export"
             );
         }
+    }
+
+    /// A `Complete` scan whose finalise recorded a persistence shortfall in
+    /// `error` is a partial export (Copilot review of #649). The classifier
+    /// read only `status` and `stop_reason`, so a scan whose relations or
+    /// correlations the store had refused exported as "complete" — the dossier
+    /// header "complete, unredacted", the debug bundle "complete scan
+    /// snapshot", and no `export_snapshot` marker in the events log.
+    #[test]
+    fn a_complete_scan_with_a_finalise_shortfall_is_a_partial_export() {
+        use crate::core::scan::{Scan, ScanStatus, StopReason, Target, TargetKind};
+
+        let mk = |error: Option<&str>, stop: Option<StopReason>| {
+            let mut sc = Scan::new(
+                "s1",
+                Target {
+                    kind: TargetKind::Email,
+                    value: "a@b.test".into(),
+                },
+            );
+            sc.status = ScanStatus::Complete;
+            sc.error = error.map(str::to_string);
+            sc.stop_reason = stop;
+            sc
+        };
+        let short = Some("2/40 relations failed to persist: disk full");
+
+        assert_eq!(
+            partial_export_reason(&mk(short, None)),
+            Some("finalise-incomplete")
+        );
+        // Checked before the budget test: records the scan produced are gone,
+        // which is the stronger statement.
+        assert_eq!(
+            partial_export_reason(&mk(short, Some(StopReason::MaxEntities(500)))),
+            Some("finalise-incomplete")
+        );
+        // A pass that never produced its result is the same class: nothing
+        // was refused, but the export still is not what the scan produced.
+        assert_eq!(
+            partial_export_reason(&mk(Some("correlation pass failed: panicked"), None)),
+            Some("finalise-incomplete")
+        );
+        // The converse keeps "complete" meaningful: no shortfall, no brand.
+        assert_eq!(
+            partial_export_reason(&mk(None, Some(StopReason::NoMoreCandidates))),
+            None
+        );
+        assert_eq!(
+            partial_export_reason(&mk(None, Some(StopReason::MaxEntities(500)))),
+            Some("budget-truncated")
+        );
+    }
+
+    /// The same classification reaches every artefact header that reads it:
+    /// the full dossier, the debug bundle and the events-log snapshot marker,
+    /// each also naming the loss where it prints the scan header.
+    #[test]
+    fn every_export_header_brands_a_finalise_shortfall_partial() {
+        use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
+
+        let store = crate::storage::Store::open(":memory:").expect("in-memory store");
+        let mut sc = Scan::new(
+            "persist-short-export",
+            Target {
+                kind: TargetKind::Email,
+                value: "a@b.test".into(),
+            },
+        );
+        sc.status = ScanStatus::Complete;
+        sc.error = Some("2/40 relations failed to persist: disk full".into());
+        store.upsert_scan(&sc).expect("scan row");
+
+        let dossier = super::render_full(&store, &sc.id).expect("dossier");
+        assert!(
+            dossier.contains("HUNTSMAN FULL DOSSIER — partial, finalise-incomplete, unredacted"),
+            "{dossier}"
+        );
+        assert!(
+            dossier.contains("error      : 2/40 relations failed to persist: disk full"),
+            "the header names what is missing: {dossier}"
+        );
+        let bundle = super::render_debug_bundle(&store, &sc.id).expect("bundle");
+        assert!(
+            bundle.contains("DEBUG BUNDLE — partial finalise-incomplete scan snapshot"),
+            "{bundle}"
+        );
+        let log = super::render_event_log_export(&store, &sc.id).expect("events");
+        assert!(
+            log.contains("\"state\":\"finalise-incomplete\""),
+            "the events export marks the snapshot: {log}"
+        );
     }
 
     /// The pre-existing classifications must survive unchanged — this function

@@ -636,3 +636,66 @@ fn self_audit_geo_consensus_ignores_nearby_poi_and_infrastructure() {
     let r = audit(&ents, LogSignals::default());
     assert_eq!(r.geo.coord_count, 3);
 }
+
+/// An outlier example names the sources that VOTED for the point — the
+/// corroborating set the person-anchor gate admitted it on — not every module
+/// that touched the value. `geo_consistency` gated on
+/// `corroborating_source_names()` but stored `e.sources`, so the example
+/// printed the annotator (`geo_normalize`) and the recall pass as if they
+/// disagreed about the subject's location (Copilot review of #649).
+#[test]
+fn geo_outlier_example_names_only_its_corroborating_sources() {
+    let geo = |v: &str, srcs: &[&str], corroborating: Option<&[&str]>| AuditEntity {
+        kind: "coordinates".into(),
+        value: v.into(),
+        c_effective: 0.6,
+        corroboration: 1,
+        sources: srcs.iter().map(|s| (*s).to_string()).collect(),
+        corroborating_sources: corroborating.map(|c| c.iter().map(|s| (*s).to_string()).collect()),
+        tags: Vec::new(),
+    };
+    let consensus = [
+        geo("35.4137,-114.1762", &["geocode"], None),
+        geo("35.4200,-114.1800", &["geocode"], None),
+        geo("35.4000,-114.2000", &["geocode"], None),
+    ];
+    let outlier_example = |outlier: AuditEntity| -> String {
+        let mut ents = consensus.to_vec();
+        ents.push(outlier);
+        let r = audit(&ents, LogSignals::default());
+        let f = r
+            .findings
+            .iter()
+            .find(|f| f.category == "geo-divergence")
+            .expect("the Montreal fix is an outlier");
+        f.examples
+            .iter()
+            .find(|e| e.contains("45.5019"))
+            .expect("the outlier is named")
+            .clone()
+    };
+
+    // A CSV-shaped entity (no per-record verdict): the annotator and the pass
+    // are dropped by the source-level rule; the voters print sorted.
+    let ex = outlier_example(geo(
+        "45.5019,-73.5674",
+        &["recall", "photon", "geo_normalize", "geocode"],
+        None,
+    ));
+    assert!(ex.contains("[geocode,photon]"), "{ex}");
+    assert!(
+        !ex.contains("geo_normalize") && !ex.contains("recall"),
+        "an annotator or pass never voted: {ex}"
+    );
+
+    // A stored entity carries its own per-record verdict: a source whose only
+    // record here is an annotation is excluded even though its name alone
+    // would pass.
+    let ex = outlier_example(geo(
+        "45.5019,-73.5674",
+        &["geocode", "photon", "geo_normalize"],
+        Some(&["geocode"]),
+    ));
+    assert!(ex.contains("[geocode]"), "{ex}");
+    assert!(!ex.contains("photon"), "{ex}");
+}

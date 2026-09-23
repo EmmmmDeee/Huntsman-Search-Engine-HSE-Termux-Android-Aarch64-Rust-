@@ -100,7 +100,10 @@ use crate::core::{
     module_runtime::{ModuleRuntime, NoopModuleRuntime},
     port::StoragePort,
     relation::{Relation, RelationKind},
-    scan::{Scan, ScanOptions, ScanStatus, StopReason, Target, TargetKind},
+    scan::{
+        FinalisePass, FinaliseTally, FinaliseWrite, Scan, ScanOptions, ScanStatus, StopReason,
+        Target, TargetKind,
+    },
 };
 
 pub struct ScanEngine {
@@ -1121,65 +1124,31 @@ impl ScanEngine {
             // the budget-owning modules' per-scan maps without bound.
             module_runtime.cleanup_scan_budgets(&scan.id);
             let folded = apply_finalise_enrichment_passes(store.as_ref(), &scan.id, &mut entities);
+            // Every write this finalise makes to what the scan's exports read
+            // counts into one tally, whose message becomes `scan.error` at the
+            // end — see `FinaliseTally` for why a write the store refused, or a
+            // correlation pass that failed outright, must not leave the scan
+            // reading whole.
+            let mut tally = FinaliseTally::default();
             if !folded.is_empty() {
-                // The address-locality fold removed each victim from the in-memory
-                // `entities` Vec, but the mid-scan checkpoint already made it a
-                // durable observation of this scan — so `entities_for_scan` (and
-                // the authoritative finalise correlator that reads it) would still
-                // see BOTH spellings. Detach the victim's observation for THIS
-                // scan (the entities row is retained for any other scan), and
-                // re-point any lineage edge that named a victim at its survivor
-                // BEFORE the edges are persisted, so folding never orphans a
-                // `DerivedFrom` edge. `Relation::new` re-derives the deterministic
-                // id from the new endpoints; a self-edge (both ends folded into
-                // one survivor) is dropped.
-                //
-                // Two victims folding into the SAME survivor can remap two edges
-                // onto one `(from, kind, to)` — hence one deterministic id. The
-                // persist layer's `ON CONFLICT(id) DO NOTHING` keeps whichever
-                // arrived first, so without collapsing here the stored edge's
-                // confidence would depend on discovery order. Collapse duplicates
-                // keeping the MAX confidence, then sort by id, so the persisted
-                // lineage is order-independent.
-                let map: HashMap<&str, &str> = folded
-                    .iter()
-                    .map(|(v, s)| (v.as_str(), s.as_str()))
-                    .collect();
-                let mut best: HashMap<(String, String, String), (RelationKind, f64)> =
-                    HashMap::new();
-                for r in &lineage_relations {
-                    let from = *map.get(r.from_uid.as_str()).unwrap_or(&r.from_uid.as_str());
-                    let to = *map.get(r.to_uid.as_str()).unwrap_or(&r.to_uid.as_str());
-                    if from == to {
-                        continue;
-                    }
-                    best.entry((from.to_string(), to.to_string(), r.kind.as_str().to_string()))
-                        .and_modify(|(_, c)| {
-                            if r.confidence > *c {
-                                *c = r.confidence;
-                            }
-                        })
-                        .or_insert((r.kind, r.confidence));
-                }
-                let mut collapsed: Vec<Relation> = best
-                    .into_iter()
-                    .map(|((from, to, _), (kind, conf))| {
-                        Relation::new(from, to, kind, conf, &scan.id)
-                    })
-                    .collect();
-                collapsed.sort_by(|a, b| a.id.cmp(&b.id));
-                lineage_relations = collapsed;
-                let victims: Vec<String> = folded.into_iter().map(|(v, _)| v).collect();
-                if let Err(e) = store.detach_scan_observations(&scan.id, &victims) {
-                    warn!(scan_id = %scan.id, error = %e,
-                          "failed to detach folded address observations — the scan may report duplicates");
-                }
+                lineage_relations = apply_address_folds(
+                    store.as_ref(),
+                    &scan.id,
+                    folded,
+                    &lineage_relations,
+                    &mut tally,
+                );
             }
             let total = entities.len();
             let (persisted, first_err) =
                 persist_entities_with_fallback(store.as_ref(), &scan.id, &entities);
             let entity_count = persisted;
-            let failed = total - persisted;
+            tally.add(
+                FinaliseWrite::Entities,
+                total,
+                total - persisted,
+                first_err.clone(),
+            );
 
             scan.modules_run = stats.run;
             scan.modules_errored = stats.errored;
@@ -1221,19 +1190,25 @@ impl ScanEngine {
                 ScanStatus::Complete
             };
             scan.entity_count = entity_count;
-            if failed > 0 {
-                scan.error = Some(format!(
-                    "{failed}/{total} entities failed to persist: {}",
-                    first_err.as_deref().unwrap_or("unknown")
-                ));
-            }
             scan.finished_at = Some(crate::core::entity::unix_now());
 
             // Derive + persist the typed entity-relation edges (attribution
             // graph), then run the authoritative finalise-time correlation pass
             // over the persisted scan — see each phase helper's own doc comment.
-            derive_and_persist_relations(store.as_ref(), &scan.id, &entities, &lineage_relations);
-            run_finalise_correlation_and_emit(&store, &emitter, &scan.id, &mut emitted_corr);
+            derive_and_persist_relations(
+                store.as_ref(),
+                &scan.id,
+                &entities,
+                &lineage_relations,
+                &mut tally,
+            );
+            run_finalise_correlation_and_emit(
+                &store,
+                &emitter,
+                &scan.id,
+                &mut emitted_corr,
+                &mut tally,
+            );
 
             // Cross-scan pathway-template learning (C1 universal linking), then
             // the corroboration-boost feedback pass, then end-of-scan
@@ -1243,9 +1218,27 @@ impl ScanEngine {
                 &emitter,
                 &scan.id,
                 &mut emitted_corr,
+                &mut tally,
             );
-            apply_corroboration_boosts(store.as_ref(), &scan.id, &mut entities, &xscan_boost);
+            apply_corroboration_boosts(
+                store.as_ref(),
+                &scan.id,
+                &mut entities,
+                &xscan_boost,
+                &mut tally,
+            );
             run_finalise_housekeeping(store.as_ref(), &scan.id);
+
+            // The scan did run to the end, so its status stays `Complete` (or
+            // `Aborted`); what its finalise did not complete is recorded beside
+            // it, where every export's completeness check reads it. `None` when
+            // everything completed. Set here, before the completion is recorded,
+            // so the row the commit step writes — the one a subscriber re-reads
+            // on the `scan_complete` broadcast — carries it.
+            scan.error = tally.message();
+            if let Some(err) = scan.error.as_deref() {
+                warn!(scan_id = %scan.id, error = %err, "scan finalised with records the store did not keep");
+            }
 
             // Recorded (durable through the writer) but NOT yet broadcast: see
             // the broadcast after the commit step.
@@ -2896,6 +2889,81 @@ fn apply_finalise_enrichment_passes(
     folded
 }
 
+/// Phase 2b: the store-side half of the address-locality fold, and the lineage
+/// edges it re-points. Returns the remapped lineage.
+///
+/// The fold removed each victim from the in-memory entity set, but the mid-scan
+/// checkpoint already made it a durable observation of this scan — so
+/// `entities_for_scan` (and the authoritative finalise correlator that reads
+/// it) would still see BOTH spellings. The victim's observation is detached for
+/// THIS scan (the entities row is retained for any other scan). A refused
+/// detach leaves both spellings in every export of the scan, so it is counted
+/// into `tally` ([`FinaliseWrite::AddressFolds`]); it used to be a warning
+/// only, and the scan read whole while its exports repeated the addresses the
+/// fold had removed.
+///
+/// Any lineage edge that named a victim is re-pointed at its survivor BEFORE
+/// the edges are persisted, so folding never orphans a `DerivedFrom` edge.
+/// `Relation::new` re-derives the deterministic id from the new endpoints; a
+/// self-edge (both ends folded into one survivor) is dropped. Two victims
+/// folding into the SAME survivor can remap two edges onto one `(from, kind,
+/// to)` — hence one deterministic id. The persist layer's `ON CONFLICT(id) DO
+/// NOTHING` keeps whichever arrived first, so without collapsing here the
+/// stored edge's confidence would depend on discovery order. Duplicates are
+/// collapsed keeping the MAX confidence, then sorted by id, so the persisted
+/// lineage is order-independent.
+fn apply_address_folds(
+    store: &dyn StoragePort,
+    scan_id: &str,
+    folded: Vec<(String, String)>,
+    lineage_relations: &[Relation],
+    tally: &mut FinaliseTally,
+) -> Vec<Relation> {
+    let map: HashMap<&str, &str> = folded
+        .iter()
+        .map(|(v, s)| (v.as_str(), s.as_str()))
+        .collect();
+    let mut best: HashMap<(String, String, String), (RelationKind, f64)> = HashMap::new();
+    for r in lineage_relations {
+        let from = *map.get(r.from_uid.as_str()).unwrap_or(&r.from_uid.as_str());
+        let to = *map.get(r.to_uid.as_str()).unwrap_or(&r.to_uid.as_str());
+        if from == to {
+            continue;
+        }
+        best.entry((
+            from.to_string(),
+            to.to_string(),
+            r.kind.as_str().to_string(),
+        ))
+        .and_modify(|(_, c)| {
+            if r.confidence > *c {
+                *c = r.confidence;
+            }
+        })
+        .or_insert((r.kind, r.confidence));
+    }
+    let mut collapsed: Vec<Relation> = best
+        .into_iter()
+        .map(|((from, to, _), (kind, conf))| Relation::new(from, to, kind, conf, scan_id))
+        .collect();
+    collapsed.sort_by(|a, b| a.id.cmp(&b.id));
+
+    let victims: Vec<String> = folded.into_iter().map(|(v, _)| v).collect();
+    let outcome = store.detach_scan_observations(scan_id, &victims);
+    if let Err(e) = &outcome {
+        warn!(scan_id, error = %e,
+              "failed to detach folded address observations — the scan reports duplicates");
+    }
+    let failed = if outcome.is_err() { victims.len() } else { 0 };
+    tally.add(
+        FinaliseWrite::AddressFolds,
+        victims.len(),
+        failed,
+        outcome.err().map(|e| e.to_string()),
+    );
+    collapsed
+}
+
 /// Phase 3: persist the scan's entities in a single transaction (collapsing N
 /// per-entity commits into one WAL fsync — a material win on low-power
 /// aarch64). All-or-nothing: on any error, fall back to per-entity upserts so
@@ -2936,38 +3004,24 @@ fn persist_entities_with_fallback(
 /// finished scan carries — and persist them. Bounded: derivation stops
 /// starting new passes past `DERIVE_BUDGET` so a pathological graph can't run
 /// the super-linear pass chain for minutes; partial relations still persist.
-/// Best-effort: a relation that fails to persist is logged, never fatal.
+/// Not fatal: a relation that fails to persist is counted into `tally` (see
+/// [`persist_relations`]), which marks the finished scan as not whole.
 fn derive_and_persist_relations(
     store: &dyn StoragePort,
     scan_id: &str,
     entities: &[Entity],
     lineage_relations: &[Relation],
+    tally: &mut FinaliseTally,
 ) {
     let derive_deadline = Some(Instant::now() + crate::core::relation::DERIVE_BUDGET);
     let derived = crate::core::relation::derive_all_within(entities, scan_id, derive_deadline);
     if !lineage_relations.is_empty() || !derived.is_empty() {
         let lineage_n = lineage_relations.len();
         let derived_n = derived.len();
-        // Persist the whole edge set in ONE transaction (one fsync at finalise
-        // instead of one autocommit per edge). `derived` is consumed to avoid a
-        // clone; only the small lineage set is cloned into the combined batch.
+        // `derived` is consumed to avoid a clone; only the small lineage set is
+        // cloned into the combined batch.
         let all: Vec<Relation> = lineage_relations.iter().cloned().chain(derived).collect();
-        let rel_persisted = match store.upsert_relations_batch(&all) {
-            Ok(n) => n,
-            Err(e) => {
-                warn!(scan_id, error = %e, "relation batch persist failed — falling back to per-relation");
-                let mut n = 0usize;
-                for r in &all {
-                    match store.upsert_relation(r) {
-                        Ok(()) => n += 1,
-                        Err(e) => {
-                            warn!(scan_id, relation = %r.id, error = %e, "relation persist failed");
-                        }
-                    }
-                }
-                n
-            }
-        };
+        let rel_persisted = persist_relations(store, scan_id, &all, tally);
         info!(
             scan_id,
             lineage = lineage_n,
@@ -2978,21 +3032,106 @@ fn derive_and_persist_relations(
     }
 }
 
+/// Persist a finished scan's relation edges and count what the store refused
+/// into `tally` — the one relation-persist step every path that finalises a
+/// scan runs (the live engine's [`derive_and_persist_relations`], the CLI
+/// batch persist in `app::persist` and the web upload in
+/// `api::scan_handlers::core::scan_import`), so none of them can again log or
+/// `.is_ok()`-count a lost edge while the scan is written whole.
+///
+/// The whole set goes in ONE transaction (one fsync instead of one autocommit
+/// per edge — a material win on low-power aarch64). All-or-nothing: on a
+/// rolled-back batch, fall back to per-relation upserts so whatever is
+/// persistable is salvaged and each refusal is counted with its own error.
+/// Returns how many relations persisted.
+pub(crate) fn persist_relations(
+    store: &dyn StoragePort,
+    scan_id: &str,
+    relations: &[Relation],
+    tally: &mut FinaliseTally,
+) -> usize {
+    match store.upsert_relations_batch(relations) {
+        Ok(n) => {
+            tally.add(FinaliseWrite::Relations, relations.len(), 0, None);
+            n
+        }
+        Err(e) => {
+            warn!(scan_id, error = %e, "relation batch persist failed — falling back to per-relation");
+            let mut n = 0usize;
+            for r in relations {
+                // Borrowed, so the warning can name the error before the tally
+                // takes it.
+                let outcome = store.upsert_relation(r);
+                if let Err(e) = &outcome {
+                    warn!(scan_id, relation = %r.id, error = %e, "relation persist failed");
+                }
+                if tally.record(FinaliseWrite::Relations, outcome) {
+                    n += 1;
+                }
+            }
+            n
+        }
+    }
+}
+
+/// Run the authoritative finalise-time correlator over a persisted scan and
+/// store every firing, counting each one the store refuses into `tally` —
+/// the one correlation-persist step every path that finalises a scan runs
+/// (the live engine's [`run_finalise_correlation_and_emit`], `app::persist`
+/// and the web upload).
+///
+/// Evaluation and storage are deliberately separate calls. The correlator's
+/// own [`run`](crate::core::correlator::Correlator::run) stops at the first
+/// refused write and returns `Err`, which [`guarded_correlation_pass`] turns
+/// into "no correlations" — so one failing upsert used to discard every
+/// firing after it and leave no trace on the scan. Here each firing is
+/// attempted and counted on its own.
+///
+/// Returns every firing the pass produced, stored or not (the live path emits
+/// each as found, exactly as its incremental pass does), or `None` when the
+/// pass itself errored or panicked — see [`guarded_correlation_pass`]. That
+/// failure is recorded too ([`FinaliseTally::pass_failed`]): a
+/// pass that never produced its firings leaves nothing to count as refused,
+/// and "no correlations" read as a whole scan whose rules simply did not fire.
+pub(crate) fn correlate_and_persist(
+    store: &Arc<dyn StoragePort>,
+    scan_id: &str,
+    tally: &mut FinaliseTally,
+) -> Option<Vec<crate::core::correlator::Correlation>> {
+    let firings = match guarded_correlation_pass(scan_id, || {
+        crate::core::correlator::Correlator::new(Arc::clone(store)).evaluate(scan_id)
+    }) {
+        Ok(firings) => firings,
+        Err(reason) => {
+            tally.pass_failed(FinalisePass::Correlation, reason);
+            return None;
+        }
+    };
+    for c in &firings {
+        let outcome = store.upsert_correlation(c);
+        if let Err(e) = &outcome {
+            warn!(scan_id, rule = %c.rule_id, error = %e, "correlation persist failed");
+        }
+        tally.record(FinaliseWrite::Correlations, outcome);
+    }
+    Some(firings)
+}
+
 /// Phase 5: the authoritative finalise-time correlation pass — runs the full
-/// rule set over the persisted scan, persists every firing, and emits
+/// rule set over the persisted scan, persists every firing through
+/// [`correlate_and_persist`] (counting refusals into `tally`), and emits
 /// `CorrelationFound` only for correlations not already streamed live during
 /// ingestion (deduped via `emitted_corr`); `CorrelationsDone`'s count is the
-/// authoritative total. Guarded against a rule panicking on adversarial
+/// authoritative total found. Guarded against a rule panicking on adversarial
 /// persisted data — see [`guarded_correlation_pass`]'s own doc comment.
 fn run_finalise_correlation_and_emit(
     store: &Arc<dyn StoragePort>,
     emitter: &EventEmitter,
     scan_id: &str,
     emitted_corr: &mut HashSet<String>,
+    tally: &mut FinaliseTally,
 ) {
-    if let Some(firings) = guarded_correlation_pass(scan_id, || {
-        crate::core::correlator::Correlator::new(Arc::clone(store)).run(scan_id)
-    }) {
+    if let Some(firings) = correlate_and_persist(store, scan_id, tally) {
         for c in &firings {
             if emitted_corr.insert(correlation_key(c)) {
                 emitter.emit(
@@ -3019,100 +3158,128 @@ fn run_finalise_correlation_and_emit(
 /// single-pathway link (the AU-063 gap) whose route shape is proven in ≥2
 /// prior scans is AU-066: accumulated cross-scan knowledge fills the gap, and
 /// its endpoints are returned in `xscan_boost` for the caller's corroboration
-/// boost pass. Best-effort: a storage hiccup never aborts a finalised scan.
+/// boost pass. A storage hiccup never aborts a finalised scan, but an AU-065 /
+/// AU-066 finding the store refuses is a correlation the scan's exports will
+/// lack, so it is counted into `tally` like any other; its `CorrelationFound`
+/// is still emitted, matching the main pass (the event records what was found,
+/// the tally what was not kept).
+///
+/// A store READ that fails here — the scan's entities or relations, or a
+/// route's prior-scan count — means AU-065 / AU-066 findings the scan should
+/// carry were never computed. That used to be silent (`if let (Ok, Ok)`,
+/// `unwrap_or(0)`), so the scan read whole without them; it is now recorded as
+/// a failed [`FinalisePass::CrossScanRoutes`]. Recording this scan's own
+/// templates for future scans changes nothing this scan exports, so a failure
+/// there is logged only.
 fn learn_cross_scan_pathway_templates(
     store: &dyn StoragePort,
     emitter: &EventEmitter,
     scan_id: &str,
     emitted_corr: &mut HashSet<String>,
+    tally: &mut FinaliseTally,
 ) -> HashMap<String, String> {
     let mut xscan_boost: HashMap<String, String> = HashMap::new();
-    if let (Ok(ents), Ok(rels)) = (
-        store.entities_for_scan(scan_id),
-        store.relations_for_scan(scan_id),
+    let read = store
+        .entities_for_scan(scan_id)
+        .and_then(|ents| store.relations_for_scan(scan_id).map(|rels| (ents, rels)));
+    let (ents, rels) = match read {
+        Ok(pair) => pair,
+        Err(e) => {
+            warn!(scan_id, error = %e, "cross-scan route pass could not read the scan");
+            tally.pass_failed(FinalisePass::CrossScanRoutes, e.to_string());
+            return xscan_boost;
+        }
+    };
+    // The fragile single-route identity pairs (a<b) — exactly AU-063's
+    // notion of an uncorroborated link, via the shared detector so the
+    // gap the lead flags is the gap the engine fills.
+    let context = crate::core::correlator::RuleContext::new(&ents);
+    let fragile: HashSet<(String, String)> =
+        crate::core::correlator::single_route_identity_links(&context, &rels)
+            .into_iter()
+            .map(|l| (l.a_uid, l.b_uid))
+            .collect();
+    for ct in crate::core::relation::connection_templates(
+        &ents,
+        &rels,
+        4,
+        crate::core::relation::IDENTITY_LINK_MIN_CONF,
     ) {
-        // The fragile single-route identity pairs (a<b) — exactly AU-063's
-        // notion of an uncorroborated link, via the shared detector so the
-        // gap the lead flags is the gap the engine fills.
-        let context = crate::core::correlator::RuleContext::new(&ents);
-        let fragile: HashSet<(String, String)> =
-            crate::core::correlator::single_route_identity_links(&context, &rels)
-                .into_iter()
-                .map(|l| (l.a_uid, l.b_uid))
-                .collect();
-        for ct in crate::core::relation::connection_templates(
-            &ents,
-            &rels,
-            4,
-            crate::core::relation::IDENTITY_LINK_MIN_CONF,
-        ) {
-            let prior = store.pathway_template_count(&ct.template).unwrap_or(0);
-            if prior >= 1 {
-                let mut uids: std::collections::BTreeSet<String> =
-                    std::collections::BTreeSet::new();
-                for (f, t) in &ct.pairs {
-                    uids.insert(f.clone());
-                    uids.insert(t.clone());
+        let prior = match store.pathway_template_count(&ct.template) {
+            Ok(n) => n,
+            Err(e) => {
+                // Read as "never seen before" so the rest of the pass still
+                // runs, but a route that may have earned AU-065/066 did not.
+                warn!(scan_id, error = %e, "cross-scan route count unreadable");
+                tally.pass_failed(FinalisePass::CrossScanRoutes, e.to_string());
+                0
+            }
+        };
+        if prior >= 1 {
+            let mut uids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            for (f, t) in &ct.pairs {
+                uids.insert(f.clone());
+                uids.insert(t.clone());
+            }
+            let c = crate::core::correlator::Correlation::new(
+                "AU-065",
+                "Cross-scan corroborated route",
+                crate::core::correlator::Severity::Medium,
+                format!(
+                    "the route [{}] connecting {} identity pair(s) here was \
+                     confirmed in {} prior scan(s) — a historically proven \
+                     attribution pattern, not a one-off",
+                    ct.template,
+                    ct.pairs.len(),
+                    prior,
+                ),
+                uids.into_iter().collect::<Vec<_>>(),
+                scan_id,
+                crate::core::entity::unix_now(),
+            );
+            tally.record(FinaliseWrite::Correlations, store.upsert_correlation(&c));
+            if emitted_corr.insert(correlation_key(&c)) {
+                emitter.emit(scan_id, EventKind::CorrelationFound { correlation: c });
+            }
+        }
+        // AU-066 — cross-scan route fills a single-pathway gap. A
+        // fragile link whose route shape is proven in ≥2 PRIOR scans
+        // (stricter than AU-065's ≥1, to keep the gap-fill conservative)
+        // is corroborated by the proven attribution method itself: the
+        // accumulated cross-scan pathway is the orthogonal route the
+        // AU-063 gap was missing. Its endpoints are queued for the boost.
+        if prior >= 2 {
+            for (f, t) in &ct.pairs {
+                if !fragile.contains(&(f.clone(), t.clone())) {
+                    continue; // only fragile (single-route) links are gaps to fill
                 }
+                let reason = format!(
+                    "the single-pathway link's route shape [{}] was independently \
+                     confirmed in {prior} prior scans — the proven attribution method \
+                     is the orthogonal pathway that fills the single-route gap",
+                    ct.template,
+                );
                 let c = crate::core::correlator::Correlation::new(
-                    "AU-065",
-                    "Cross-scan corroborated route",
+                    "AU-066",
+                    "Cross-scan route fills single-pathway gap",
                     crate::core::correlator::Severity::Medium,
-                    format!(
-                        "the route [{}] connecting {} identity pair(s) here was \
-                         confirmed in {} prior scan(s) — a historically proven \
-                         attribution pattern, not a one-off",
-                        ct.template,
-                        ct.pairs.len(),
-                        prior,
-                    ),
-                    uids.into_iter().collect::<Vec<_>>(),
+                    reason.clone(),
+                    vec![f.clone(), t.clone()],
                     scan_id,
                     crate::core::entity::unix_now(),
                 );
-                if store.upsert_correlation(&c).is_ok() && emitted_corr.insert(correlation_key(&c))
-                {
+                tally.record(FinaliseWrite::Correlations, store.upsert_correlation(&c));
+                if emitted_corr.insert(correlation_key(&c)) {
                     emitter.emit(scan_id, EventKind::CorrelationFound { correlation: c });
                 }
+                xscan_boost
+                    .entry(f.clone())
+                    .or_insert_with(|| reason.clone());
+                xscan_boost.entry(t.clone()).or_insert(reason);
             }
-            // AU-066 — cross-scan route fills a single-pathway gap. A
-            // fragile link whose route shape is proven in ≥2 PRIOR scans
-            // (stricter than AU-065's ≥1, to keep the gap-fill conservative)
-            // is corroborated by the proven attribution method itself: the
-            // accumulated cross-scan pathway is the orthogonal route the
-            // AU-063 gap was missing. Its endpoints are queued for the boost.
-            if prior >= 2 {
-                for (f, t) in &ct.pairs {
-                    if !fragile.contains(&(f.clone(), t.clone())) {
-                        continue; // only fragile (single-route) links are gaps to fill
-                    }
-                    let reason = format!(
-                        "the single-pathway link's route shape [{}] was independently \
-                         confirmed in {prior} prior scans — the proven attribution method \
-                         is the orthogonal pathway that fills the single-route gap",
-                        ct.template,
-                    );
-                    let c = crate::core::correlator::Correlation::new(
-                        "AU-066",
-                        "Cross-scan route fills single-pathway gap",
-                        crate::core::correlator::Severity::Medium,
-                        reason.clone(),
-                        vec![f.clone(), t.clone()],
-                        scan_id,
-                        crate::core::entity::unix_now(),
-                    );
-                    if store.upsert_correlation(&c).is_ok()
-                        && emitted_corr.insert(correlation_key(&c))
-                    {
-                        emitter.emit(scan_id, EventKind::CorrelationFound { correlation: c });
-                    }
-                    xscan_boost
-                        .entry(f.clone())
-                        .or_insert_with(|| reason.clone());
-                    xscan_boost.entry(t.clone()).or_insert(reason);
-                }
-            }
-            let _ = store.record_pathway_template(&ct.template);
+        }
+        if let Err(e) = store.record_pathway_template(&ct.template) {
+            warn!(scan_id, error = %e, "cross-scan route not recorded for future scans");
         }
     }
     xscan_boost
@@ -3125,17 +3292,31 @@ fn learn_cross_scan_pathway_templates(
 /// shape is proven in ≥2 PRIOR scans). Both tag + evidence-stamp only the
 /// identity ENDPOINTS, are idempotent via their tags, and use unscored
 /// ("other") evidence sources so they never feed back to inflate the in-scan
-/// orthogonality measure. Best-effort and conditional: the single re-persist
-/// runs only when a boost actually fires.
+/// orthogonality measure. Conditional: the re-persist runs only when a boost
+/// actually fires.
+///
+/// Not fatal, and no longer silent. The boosted identities were already stored
+/// without the boost, so a refused re-persist leaves every export of them
+/// lacking what the scan computed; it goes through the same per-entity
+/// fallback as the main entity persist and each refusal is counted into
+/// `tally` ([`FinaliseWrite::CorroborationBoosts`]). A failed read of the
+/// scan's relations means the multipath boost was never computed, which is
+/// recorded as a failed [`FinalisePass::CorroborationBoosts`]. Both used to be
+/// a log line under a scan that read whole.
 fn apply_corroboration_boosts(
     store: &dyn StoragePort,
     scan_id: &str,
     entities: &mut [Entity],
     xscan_boost: &HashMap<String, String>,
+    tally: &mut FinaliseTally,
 ) {
     let mut boosted_any = false;
-    if let Ok(rels) = store.relations_for_scan(scan_id) {
-        boosted_any |= promote_multipath_corroborated(entities, &rels) > 0;
+    match store.relations_for_scan(scan_id) {
+        Ok(rels) => boosted_any |= promote_multipath_corroborated(entities, &rels) > 0,
+        Err(e) => {
+            warn!(scan_id, error = %e, "multipath boost could not read the scan's relations");
+            tally.pass_failed(FinalisePass::CorroborationBoosts, e.to_string());
+        }
     }
     boosted_any |= promote_cross_scan_corroborated(entities, xscan_boost) > 0;
     if boosted_any {
@@ -3147,18 +3328,19 @@ fn apply_corroboration_boosts(
                 e.clone()
             })
             .collect();
-        match store.upsert_entities_batch(&boosted) {
-            Ok(n) => info!(
-                scan_id,
-                boosted = n,
-                "corroboration-boosted identities re-persisted (confirmed links strengthened the scan)"
-            ),
-            Err(e) => warn!(
-                scan_id,
-                error = %e,
-                "corroboration boost re-persist failed (non-fatal)"
-            ),
-        }
+        let (persisted, first_err) = persist_entities_with_fallback(store, scan_id, &boosted);
+        tally.add(
+            FinaliseWrite::CorroborationBoosts,
+            boosted.len(),
+            boosted.len() - persisted,
+            first_err,
+        );
+        info!(
+            scan_id,
+            boosted = boosted.len(),
+            persisted,
+            "corroboration-boosted identities re-persisted (confirmed links strengthened the scan)"
+        );
     }
 }
 
@@ -3188,11 +3370,22 @@ fn run_finalise_housekeeping(store: &dyn StoragePort, scan_id: &str) {
     }
 }
 
-/// Run a `Correlator::run` pass under a panic guard — the single canonical way
-/// any caller invokes the full finalise-time rule engine.
+/// The reason [`guarded_correlation_pass`] gives for a pass that panicked.
+/// Fixed text, never the payload: a panic message can carry a pointer, a
+/// thread id or other run-specific detail, and this reason is written into
+/// [`Scan::error`], which a debug bundle must reproduce byte for byte. The
+/// payload is still logged.
+pub(crate) const CORRELATION_PASS_PANICKED: &str = "panicked";
+
+/// Run a correlator pass under a panic guard — the single canonical way any
+/// caller invokes the full finalise-time rule engine.
 ///
-/// Returns `Some(firings)` on success, or `None` when the pass returned an error
-/// OR **panicked** — the caller degrades to "no correlations" and carries on.
+/// Returns `Ok(firings)` on success, or `Err(reason)` when the pass returned an
+/// error (its text) OR **panicked** ([`CORRELATION_PASS_PANICKED`]) — the
+/// caller carries on without correlations, and must record `reason` on the
+/// scan ([`FinaliseTally::pass_failed`], which
+/// [`correlate_and_persist`] does for every finalise path). This used to return
+/// `None` for both, and a scan whose correlator never ran was written whole.
 ///
 /// The live incremental pass already wraps `correlate_entities` in `catch_unwind`
 /// (`correlate_incremental`), but the full-engine `Correlator::run` used to be
@@ -3207,19 +3400,20 @@ fn run_finalise_housekeeping(store: &dyn StoragePort, scan_id: &str) {
 pub(crate) fn guarded_correlation_pass(
     scan_id: &str,
     run: impl FnOnce() -> crate::core::error::Result<Vec<crate::core::correlator::Correlation>>,
-) -> Option<Vec<crate::core::correlator::Correlation>> {
+) -> std::result::Result<Vec<crate::core::correlator::Correlation>, String> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
-        Ok(Ok(firings)) => Some(firings),
+        Ok(Ok(firings)) => Ok(firings),
         Ok(Err(e)) => {
             warn!(scan_id, error = %e, "correlator failed");
-            None
+            Err(e.to_string())
         }
-        Err(_) => {
+        Err(payload) => {
             warn!(
                 scan_id,
+                panic = %dispatch::panic_payload_to_string(&payload),
                 "correlation pass panicked — caller still completes, correlations skipped"
             );
-            None
+            Err(CORRELATION_PASS_PANICKED.to_string())
         }
     }
 }

@@ -96,7 +96,8 @@ fn is_direct_subject_fix(e: &Entity) -> bool {
 /// its value (`"QLD 4518, Australia"`) or a `postcode` evidence attribute (the
 /// `qld_unclaimed` owner Persons carry it). Used for both ends of the match: a
 /// family-candidate's locality and the subject's own address. `None` when no
-/// plausible AU postcode is present.
+/// plausible AU postcode is present, or when the entity's records name two
+/// different ones (see the evidence path below).
 #[must_use]
 pub fn au_postcode(e: &Entity) -> Option<String> {
     let valid = |t: &str| -> Option<String> {
@@ -132,9 +133,30 @@ pub fn au_postcode(e: &Entity) -> Option<String> {
     {
         return Some(pc);
     }
-    e.evidence
+    // The evidence path anchors only when the entity's records name ONE
+    // distinct postcode. An entity can carry several records that each name a
+    // postcode — one QLD unclaimed-money owner Person per register row, and
+    // rows lodged at different times name different towns — and taking the
+    // first valid one let evidence order pick the owner's town. Records that
+    // disagree give no single town to anchor on, so none is claimed (the
+    // pooled `"4555; 4557"` such rows once collapsed into was likewise read as
+    // none). Every value in an accumulated attribute is read
+    // (`Evidence::attr_values`), so a pooled attribute and separate records
+    // are judged alike.
+    let mut found: Option<String> = None;
+    for pc in e
+        .evidence
         .iter()
-        .find_map(|ev| ev.attributes.get("postcode").and_then(|v| valid(v)))
+        .flat_map(|ev| ev.attr_values("postcode"))
+        .filter_map(valid)
+    {
+        match &found {
+            None => found = Some(pc),
+            Some(seen) if *seen == pc => {}
+            Some(_) => return None,
+        }
+    }
+    found
 }
 
 /// [`au_postcode`], but refusing a postcode that an **IP geolocation** supplied.

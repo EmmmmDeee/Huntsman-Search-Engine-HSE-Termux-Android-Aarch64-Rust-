@@ -246,6 +246,13 @@ pub(crate) fn test_state_with_tiles(tiles: tiles::TileSource) -> Arc<AppState> {
     test_state_with_modules_and_tiles(Vec::new(), tiles)
 }
 
+/// [`test_state`] over a caller-supplied store — for a handler test that needs
+/// the store to misbehave (e.g. `core::test_support::RefusingStore`).
+#[cfg(test)]
+pub(crate) fn test_state_with_store(store: Arc<dyn crate::core::StoragePort>) -> Arc<AppState> {
+    test_state_from_parts(Vec::new(), test_tile_source(), store)
+}
+
 #[cfg(test)]
 fn test_state_with_modules_and_tiles(
     modules: Vec<Arc<dyn crate::core::module::Module>>,
@@ -253,6 +260,15 @@ fn test_state_with_modules_and_tiles(
 ) -> Arc<AppState> {
     let store: Arc<dyn crate::core::StoragePort> =
         Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"));
+    test_state_from_parts(modules, tiles, store)
+}
+
+#[cfg(test)]
+fn test_state_from_parts(
+    modules: Vec<Arc<dyn crate::core::module::Module>>,
+    tiles: tiles::TileSource,
+    store: Arc<dyn crate::core::StoragePort>,
+) -> Arc<AppState> {
     let (bus, _rx) = tokio::sync::broadcast::channel(16);
     let engine = Arc::new(crate::core::engine::ScanEngine::new(
         modules,

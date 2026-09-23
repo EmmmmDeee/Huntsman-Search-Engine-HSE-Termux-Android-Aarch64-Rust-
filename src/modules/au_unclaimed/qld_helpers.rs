@@ -461,10 +461,16 @@ pub(super) fn records_to_entities(
         // look like one shared record, wiring 27 false edges between distinct
         // register rows in scan 7258fc07's graph — and merging those rows'
         // money-trail attributes onto whichever address they shared.
+        //
+        // A row with neither a reference nor a postcode falls back to its CKAN
+        // `_id` — otherwise two such rows for one owner shared the summary and
+        // `absorb` pooled their amounts into one record. The same `row_id`
+        // names the owner Person records below, for the same reason.
         let row_id = reference
             .as_deref()
             .map(|r| format!(" (ref {r})"))
             .or_else(|| pc.as_deref().map(|p| format!(" (postcode {p})")))
+            .or_else(|| field_str(rec, "_id").map(|id| format!(" (row {id})")))
             .unwrap_or_default();
         let ev = [
             ("amount_aud", amount.as_deref()),
@@ -600,10 +606,20 @@ pub(super) fn records_to_entities(
             // row can never count as the subject's corroboration (scan 7258fc07:
             // an SA owner with co-owner "Megan Thorpe" corroborated "Ian
             // Thorpe"; REQ-CORE-017).
-            let mut pev = Evidence::new(SRC, format!("QLD unclaimed money owner: {person}"))
-                .with_attr("owner_name", person)
-                .with_attr("register", "QLD Public Trustee unclaimed monies")
-                .with_verification(crate::core::entity::VerificationMethod::Unverified);
+            //
+            // The summary names the ROW (`row_id`, as the row record's does),
+            // not only the person. It used to be the owner's name alone, so
+            // N rows naming one owner collapsed — `absorb` de-duplicates on
+            // `(source, summary)` — into ONE record with every row's
+            // single-valued attributes pooled: `postcode = "4555; 4557"`, which
+            // `geo_family::au_postcode` (exactly 4 digits) cannot read, and
+            // `co_owner = "A; B"`, which names no Person. One record per row
+            // keeps each row's postcode and co-owner a fact of its own.
+            let mut pev =
+                Evidence::new(SRC, format!("QLD unclaimed money owner: {person}{row_id}"))
+                    .with_attr("owner_name", person)
+                    .with_attr("register", "QLD Public Trustee unclaimed monies")
+                    .with_verification(crate::core::entity::VerificationMethod::Unverified);
             if let Some(p4) = pc.as_deref() {
                 pev = pev.with_attr("postcode", p4);
             }

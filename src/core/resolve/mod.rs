@@ -54,10 +54,14 @@
 //! side of the email rule (emitting a canonical `Email` entity for one seed),
 //! and `core::correlator`'s AU-081 tokenizes a person name for its own
 //! cross-source match. `core` must not depend on `modules`, so the email rule,
-//! the generational-suffix list, and the name/handle word-tokeniser live in
-//! [`crate::util::canonical`] — the one layer both `core` and `modules` may
-//! call into — and each caller uses the shared definition instead of keeping
-//! its own copy. [`canonical_phone`] has no sibling elsewhere in the tree
+//! the generational-suffix list, the name word-tokeniser and the username
+//! account key live in [`crate::util::canonical`] — the one layer both `core`
+//! and `modules` may call into — and each caller uses the shared definition
+//! instead of keeping its own copy. The account key in particular is shared
+//! with the relation layer's `AliasOf` builder and co-reference scoring, which
+//! once folded the separators this module keeps and so re-created, as
+//! `AliasOf`, the very merges REQ-RESOLVE-001 closed here.
+//! [`canonical_phone`] has no sibling elsewhere in the tree
 //! today, so it stays local; every helper's behaviour is documented per
 //! function so the provider-specific stance (which forms collapse, which are
 //! deliberately kept) is auditable in one place.
@@ -65,7 +69,9 @@
 use std::collections::BTreeMap;
 
 use crate::core::entity::{Entity, EntityKind};
-use crate::util::canonical::{GEN_SUFFIXES, canonical_email_mailbox, name_word_tokens};
+use crate::util::canonical::{
+    GEN_SUFFIXES, canonical_email_mailbox, name_word_tokens, username_account_key,
+};
 
 /// A suggested SAME-ENTITY group: a set of existing entities that are probably
 /// the one real-world identifier, surfaced because their provider-specific
@@ -110,8 +116,8 @@ pub struct ResolutionGroup {
 ///   (Gmail dots/`+tag`; `+tag` only for other domains, dots kept);
 /// * [`EntityKind::Phone`] → [`canonical_phone`] (digits only, optional
 ///   leading `+`; equality only — never country-code inference);
-/// * [`EntityKind::Username`] → [`canonical_handle`] (case/whitespace only —
-///   every separator, even one at a handle's edge, is significant);
+/// * [`EntityKind::Username`] → [`username_account_key`] (case/whitespace
+///   only — every separator, even one at a handle's edge, is significant);
 /// * [`EntityKind::Person`] → [`canonical_name`] (the above **plus** an
 ///   order-insensitive token multiset, so `"Jane Citizen" == "Citizen, Jane"`
 ///   but never a mere shared surname).
@@ -232,9 +238,8 @@ fn canonicalise(e: &Entity) -> Option<(String, &'static str)> {
         }),
         EntityKind::Phone => canonical_phone(&e.value)
             .map(|c| (c, "Phone reduced to canonical digits (exact-equality only)")),
-        EntityKind::Username => {
-            canonical_handle(&e.value).map(|c| (c, "Username canonicalised (case/whitespace only)"))
-        }
+        EntityKind::Username => username_account_key(&e.value)
+            .map(|c| (c, "Username canonicalised (case/whitespace only)")),
         EntityKind::Person => canonical_name(&e.value).map(|c| {
             (
                 c,
@@ -284,52 +289,6 @@ fn canonical_phone(value: &str) -> Option<String> {
         return None;
     }
     Some(out)
-}
-
-/// Canonical form of a username / handle: lowercase, whitespace runs collapsed
-/// to single spaces — and NOTHING else. Every other character, including a
-/// `.`, `_` or `-` at the very start or end of the handle, is kept verbatim.
-///
-/// Order is preserved for handles (unlike [`canonical_name`]): a handle is an
-/// opaque token, so its internal order is significant — only whitespace
-/// formatting noise is normalised away. (The leading `@` is already stripped
-/// by the entity normaliser before a value ever reaches this module.)
-///
-/// Regression: this used to route through a stricter tokeniser that treated
-/// EVERY non-alphanumeric character — `.`, `_`, `-` alike — as an equivalent
-/// separator, so `"jordan.avery"` and `"jordan_avery"` canonicalised
-/// identically and [`suggest_merges`] fused them into one full-trust `SameAs`
-/// edge via [`crate::core::relation::builders::derive_canonical_identities`].
-/// No platform actually treats those as interchangeable — GitHub handles allow
-/// only hyphens, Twitter/X only underscores, Instagram both dots and
-/// underscores as DISTINCT characters — so a separator difference is exactly
-/// the kind of "provider-specific" guess this module's own doc says it does
-/// not make (unlike Gmail dot-blindness, which IS a documented, provider-wide
-/// equivalence). Two independently-registered accounts that merely happen to
-/// share letters around a different separator are not the mechanically-exact
-/// collision this module requires; preserving the separator (like
-/// [`canonical_name`] already does for a name's internal hyphen/apostrophe)
-/// keeps that false-merge risk closed.
-///
-/// Second regression (scan `7258fc07`, target "Ian Thorpe"): the fix above
-/// still went through [`canonical_word_tokens`], whose person-name tokeniser
-/// trims every non-alphanumeric character from each token's EDGES (right for
-/// a name's stray comma or quote, wrong for a handle). Instagram and X allow a
-/// leading and trailing `_` (and Instagram a `.`) as registrable,
-/// account-distinguishing characters, so Instagram `_ianthorpe_` folded onto
-/// the subject's GitHub/Bluesky/Chess.com composite `ianthorpe` and was fused
-/// with it by an undamped `SameAs` at 0.95 — as were X `carolathorpe` with
-/// Instagram `carolathorpe_`, and two different Instagram accounts
-/// `_caroline.thorpe` / `caroline.thorpe`. An edge separator is no more
-/// formatting noise than an internal one, so neither is touched here
-/// (REQ-RESOLVE-001).
-fn canonical_handle(value: &str) -> Option<String> {
-    let folded = value
-        .to_lowercase()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    (!folded.is_empty()).then_some(folded)
 }
 
 /// True when `segment` — the side of a comma [`canonical_name`] would
@@ -390,9 +349,10 @@ fn canonical_name(value: &str) -> Option<String> {
 /// Canonical form of a value's whitespace-delimited tokens — lowercase, with
 /// each token's SURROUNDING punctuation stripped but internal punctuation (a
 /// hyphen, an apostrophe, a dot, an underscore) preserved. The core of
-/// [`canonical_name`] only — [`canonical_handle`] no longer uses it, because
-/// the edge trim that suits a name erases a handle's significant leading or
-/// trailing `_`/`.` (see that function's second regression note).
+/// [`canonical_name`] only — a username goes through [`username_account_key`]
+/// instead, because the edge trim that suits a name erases a handle's
+/// significant leading or trailing `_`/`.` (REQ-RESOLVE-001; see that
+/// function's doc for the history).
 ///
 /// Deliberately does NOT split on every non-alphanumeric character the way an
 /// earlier version of this helper did — that treated a hyphen/dot/underscore

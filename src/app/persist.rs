@@ -95,14 +95,25 @@ impl ImportScanRow {
         })
     }
 
-    /// Write the terminal `status` — the import's last write. A failed write
-    /// leaves the row to [`Drop`], which records `Failed`.
-    pub(crate) fn finish(mut self, status: crate::core::scan::ScanStatus) -> Result<()> {
+    /// Write the terminal `status` — the import's last write — together with
+    /// what the import's finalise did not complete: `tally`'s message, the one
+    /// [`Scan::error`](crate::core::scan::Scan::error) authority
+    /// ([`FinaliseTally`](crate::core::scan::FinaliseTally)), so the status and
+    /// the error an export classifies the scan by are written in one place and
+    /// once. Returns that error, for the caller's summary. A failed write leaves
+    /// the row to [`Drop`], which records `Failed`.
+    pub(crate) fn finish(
+        mut self,
+        status: crate::core::scan::ScanStatus,
+        tally: &crate::core::scan::FinaliseTally,
+    ) -> Result<Option<String>> {
         self.scan.status = status;
         self.scan.finished_at = Some(crate::core::entity::unix_now());
+        self.scan.error = tally.message();
         let written = self.store.upsert_scan(&self.scan);
         self.finished = written.is_ok();
-        written
+        let error = self.scan.error.clone();
+        written.map(|()| error)
     }
 }
 
@@ -128,16 +139,6 @@ impl Drop for ImportScanRow {
     }
 }
 
-/// Persist `entities` as a `Complete` scan `sid` (labelled `label`, target kind
-/// `kind`) in the default store, then derive the deterministic entity relations
-/// and run the correlator over it — exactly as a live scan's finalise does, so a
-/// batch-persisted scan carries the same graph a live scan would. The scan then
-/// appears in `hse list` and every view/export (entities, dossier, debug bundle,
-/// GEXF) works on it, and its pivots can later seed a re-scan.
-///
-/// Best-effort on relations and correlations: the entities are already
-/// persisted, so a hiccup deriving the graph must not fail the whole operation.
-/// Returns `(relations, correlations)` persisted, for the caller's summary.
 /// Device-safety bound shared by every caller of [`persist_entities_as_scan`]
 /// (`hse import`, `hse investigate --auto-scan`, `hse ingest --auto-scan`).
 ///
@@ -161,14 +162,46 @@ impl Drop for ImportScanRow {
 /// (well under the cap) still gets full relations + correlations.
 pub(crate) const PERSIST_ENRICH_MAX_ENTITIES: usize = 5_000;
 
+/// What [`persist_entities_as_scan`] stored, for the caller's summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PersistedBatch {
+    /// Relations persisted.
+    pub relations: usize,
+    /// Correlations persisted.
+    pub correlations: usize,
+    /// `false` when relations/correlations were skipped for size
+    /// ([`PERSIST_ENRICH_MAX_ENTITIES`]) — distinguishes that from a batch that
+    /// genuinely yielded none.
+    pub enriched: bool,
+    /// What the scan's finalise did not complete, as recorded in its `error`
+    /// field — relations or correlations the store refused, or a correlation
+    /// pass that failed outright — or `None` when it completed.
+    /// The scan is still `Complete`; every export of it now reads partial
+    /// ("finalise-incomplete"), and a caller's summary must say so too rather
+    /// than report the counts as if they were the whole graph.
+    pub finalise_error: Option<String>,
+}
+
+/// Persist `entities` as a `Complete` scan `sid` (labelled `label`, target kind
+/// `kind`) in the default store, then derive the deterministic entity relations
+/// and run the correlator over it — exactly as a live scan's finalise does, so a
+/// batch-persisted scan carries the same graph a live scan would. The scan then
+/// appears in `hse list` and every view/export (entities, dossier, debug bundle,
+/// GEXF) works on it, and its pivots can later seed a re-scan.
+///
+/// Not fatal on relations and correlations: the entities are already persisted,
+/// so a hiccup storing the graph must not fail the whole operation — but it is
+/// no longer silent either. Each refused write, and a correlation pass that
+/// fails outright, is counted into the scan's
+/// [`FinaliseTally`](crate::core::scan::FinaliseTally) and recorded on the scan
+/// (see [`PersistedBatch::finalise_error`]).
 pub(crate) async fn persist_entities_as_scan(
     sid: &str,
     label: String,
     kind: TargetKind,
     entities: &[Entity],
-) -> Result<(usize, usize, bool)> {
+) -> Result<PersistedBatch> {
     use crate::core::StoragePort;
-    use crate::core::scan::{Scan, ScanStatus, Target};
     use std::sync::Arc;
 
     // Offline geospatial enrichment, exactly as the live scan finalise does:
@@ -181,10 +214,22 @@ pub(crate) async fn persist_entities_as_scan(
     let mut entities = entities.to_vec();
     crate::core::engine::enrich_offline_geo(&mut entities, sid);
     confidence_rank(&mut entities);
-    let entities = &entities[..];
 
     let store: Arc<dyn StoragePort> =
         Arc::new(crate::storage::Store::open(&crate::default_db_path())?);
+    persist_batch_into(&store, sid, label, kind, &entities)
+}
+
+/// The store-facing body of [`persist_entities_as_scan`], over an injected
+/// store so a test can hand it one that refuses writes.
+fn persist_batch_into(
+    store: &std::sync::Arc<dyn crate::core::StoragePort>,
+    sid: &str,
+    label: String,
+    kind: TargetKind,
+    entities: &[Entity],
+) -> Result<PersistedBatch> {
+    use crate::core::scan::{FinaliseTally, Scan, ScanStatus, Target};
 
     // The scan row is written `Running` and turned `Complete` only after its
     // entities, relations and correlations are all stored. Exports classify a
@@ -195,23 +240,37 @@ pub(crate) async fn persist_entities_as_scan(
     // an error below, a panic — records `Failed` (`ImportScanRow`).
     let mut scan = Scan::new(sid.to_string(), Target::new(kind, label));
     scan.entity_count = entities.len();
-    let row = ImportScanRow::begin(Arc::clone(&store), scan)?;
+    let row = ImportScanRow::begin(std::sync::Arc::clone(store), scan)?;
     store.upsert_entities_batch(entities)?;
-    let counts = enrich_persisted_batch(&store, sid, entities);
-    row.finish(ScanStatus::Complete)?;
-    Ok(counts)
+    let mut tally = FinaliseTally::default();
+    let (relations, correlations, enriched) =
+        enrich_persisted_batch(store, sid, entities, &mut tally);
+    // The batch was imported in full, so the status is `Complete`; what the
+    // finalise did not complete is recorded beside it by the row's one
+    // terminal write, where every export's completeness check reads it.
+    let finalise_error = row.finish(ScanStatus::Complete, &tally)?;
+    Ok(PersistedBatch {
+        relations,
+        correlations,
+        enriched,
+        finalise_error,
+    })
 }
 
 /// The best-effort enrichment half of [`persist_entities_as_scan`]: relations
 /// and correlations over the already-stored batch, bounded by
-/// [`PERSIST_ENRICH_MAX_ENTITIES`]. Returns `(relations, correlations,
-/// enriched)`.
+/// [`PERSIST_ENRICH_MAX_ENTITIES`], each write counted into `tally` through the
+/// same persist steps the live finalise uses
+/// ([`persist_relations`](crate::core::engine::persist_relations),
+/// [`correlate_and_persist`](crate::core::engine::correlate_and_persist)).
+/// Returns `(relations, correlations, enriched)` — the counts that persisted.
 fn enrich_persisted_batch(
     store: &std::sync::Arc<dyn crate::core::StoragePort>,
     sid: &str,
     entities: &[Entity],
+    tally: &mut crate::core::scan::FinaliseTally,
 ) -> (usize, usize, bool) {
-    use std::sync::Arc;
+    use crate::core::scan::FinaliseWrite;
 
     // Device-safety bound: skip the O(n²) enrichment on a pathologically
     // large batch (entities are already persisted above; nothing lost) — see
@@ -220,35 +279,22 @@ fn enrich_persisted_batch(
         return (0, 0, false);
     }
 
-    let mut relations = 0usize;
     // Bound derivation by wall-clock, identically to a live scan
     // (engine::derive_and_persist_relations): a large batch must not run the
     // super-linear derivation pass chain for minutes. Partial relations persist.
     let derive_deadline = Some(std::time::Instant::now() + crate::core::relation::DERIVE_BUDGET);
-    for r in &crate::core::relation::derive_all_within(entities, sid, derive_deadline) {
-        if store.upsert_relation(r).is_ok() {
-            relations += 1;
-        }
-    }
+    let derived = crate::core::relation::derive_all_within(entities, sid, derive_deadline);
+    let relations = crate::core::engine::persist_relations(store.as_ref(), sid, &derived, tally);
 
-    // Run the full correlator under the canonical panic guard
-    // (`guarded_correlation_pass`) — the single sanctioned way any caller invokes
-    // the finalise-time rule engine. A rule panicking on adversarial batch data
-    // (a crafted imported dossier, or entities extracted from an arbitrary
-    // document via `ingest --auto-scan`) must degrade to "no correlations", not
-    // unwind the whole persist after the entities were already stored and shown
-    // to the operator.
-    let mut correlations = 0usize;
-    let guard_store = Arc::clone(store);
-    if let Some(hits) = crate::core::engine::guarded_correlation_pass(sid, move || {
-        crate::core::correlator::Correlator::new(guard_store).run(sid)
-    }) {
-        for c in &hits {
-            if store.upsert_correlation(c).is_ok() {
-                correlations += 1;
-            }
-        }
-    }
+    // The full correlator runs under the canonical panic guard inside
+    // `correlate_and_persist` — a rule panicking on adversarial batch data (a
+    // crafted imported dossier, or entities extracted from an arbitrary
+    // document via `ingest --auto-scan`) degrades to "no correlations" rather
+    // than unwinding the whole persist after the entities were already stored
+    // and shown to the operator. The firings themselves are not needed here,
+    // only how many the store kept.
+    let _firings = crate::core::engine::correlate_and_persist(store, sid, tally);
+    let correlations = tally.persisted(FinaliseWrite::Correlations);
 
     (relations, correlations, true)
 }
@@ -278,7 +324,13 @@ mod tests {
             ScanStatus::Running,
             "an import in progress has started"
         );
-        row.finish(ScanStatus::Complete).unwrap();
+        let recorded = row
+            .finish(
+                ScanStatus::Complete,
+                &crate::core::scan::FinaliseTally::default(),
+            )
+            .unwrap();
+        assert_eq!(recorded, None, "a finalise that completed records nothing");
         assert_eq!(status("ok"), ScanStatus::Complete);
 
         // An error returned by `?` after the first write.
@@ -298,6 +350,30 @@ mod tests {
         }));
         assert!(panicking.is_err());
         assert_eq!(status("panic"), ScanStatus::Failed);
+    }
+
+    /// The merge of REQ-SCANSTATUS-005's lifecycle with REQ-SCANSTATUS-003's
+    /// tally: the row's ONE terminal write carries both the status and what the
+    /// finalise did not complete, so no second write can race or contradict
+    /// it — and a shortfall never turns a finished import `Failed`.
+    #[test]
+    fn an_import_rows_terminal_write_carries_the_finalise_record() {
+        use crate::core::StoragePort;
+        use crate::core::scan::{FinaliseTally, FinaliseWrite, Scan, ScanStatus, Target};
+        use std::sync::Arc;
+        let store: Arc<dyn StoragePort> = Arc::new(crate::core::test_support::InMemoryStore::new());
+        let scan = Scan::new("short".to_string(), Target::new(TargetKind::FullName, "x"));
+        let row = ImportScanRow::begin(Arc::clone(&store), scan).unwrap();
+        let mut tally = FinaliseTally::default();
+        tally.add(FinaliseWrite::Relations, 4, 4, Some("disk full".into()));
+        let recorded = row.finish(ScanStatus::Complete, &tally).unwrap();
+        assert_eq!(recorded, tally.message());
+        let stored = store.get_scan("short").unwrap().expect("row written");
+        assert_eq!(stored.status, ScanStatus::Complete, "the import did finish");
+        assert_eq!(
+            stored.error.as_deref(),
+            Some("4/4 relations failed to persist: disk full")
+        );
     }
 
     #[test]
@@ -369,11 +445,14 @@ mod tests {
         let label = strongest_identity_label(&entities, "batch");
         assert_eq!(label, "Test Subject", "label should be the person");
 
-        let (_relations, _correlations, enriched) =
-            persist_entities_as_scan(sid, label, TargetKind::FullName, &entities)
-                .await
-                .expect("persist should succeed against the temp store");
-        assert!(enriched, "a small batch must not be size-capped");
+        let batch = persist_entities_as_scan(sid, label, TargetKind::FullName, &entities)
+            .await
+            .expect("persist should succeed against the temp store");
+        assert!(batch.enriched, "a small batch must not be size-capped");
+        assert_eq!(
+            batch.finalise_error, None,
+            "a store that keeps every write leaves no shortfall"
+        );
 
         let store =
             crate::storage::Store::open(&crate::default_db_path()).expect("reopen the temp store");
@@ -386,6 +465,7 @@ mod tests {
             scan.finished_at.is_some(),
             "a Complete scan has a finish time"
         );
+        assert_eq!(scan.error, None, "a whole import records no error");
 
         let stored = store.entities_for_scan(sid).expect("read entities back");
         assert!(
@@ -432,17 +512,20 @@ mod tests {
             })
             .collect();
 
-        let (relations, correlations, enriched) =
+        let batch =
             persist_entities_as_scan(sid, "batch".to_string(), TargetKind::FullName, &entities)
                 .await
                 .expect("persist should succeed even when enrichment is capped");
         assert!(
-            !enriched,
+            !batch.enriched,
             "a batch above PERSIST_ENRICH_MAX_ENTITIES must skip enrichment"
         );
-        assert_eq!(relations, 0, "capped enrichment reports zero relations");
         assert_eq!(
-            correlations, 0,
+            batch.relations, 0,
+            "capped enrichment reports zero relations"
+        );
+        assert_eq!(
+            batch.correlations, 0,
             "capped enrichment reports zero correlations"
         );
 
@@ -453,6 +536,131 @@ mod tests {
             stored.len(),
             count,
             "every entity must still be persisted even when enrichment is skipped"
+        );
+    }
+
+    /// A batch whose relations and correlations both derive — a username and
+    /// the mailbox sharing its handle (`AliasOf`), the mailbox seen by three
+    /// independent sources (AU-003).
+    fn enrichable_batch(sid: &str) -> Vec<Entity> {
+        use crate::core::entity::Evidence;
+        let mut email = Entity::new(EntityKind::Email, "jsmith@gmail.com", 0.95, sid);
+        for src in ["hibp", "dehashed", "search_engines"] {
+            email.add_evidence(Evidence::new(src, "seen"));
+        }
+        let mut user = Entity::new(EntityKind::Username, "jsmith", 0.9, sid);
+        user.add_evidence(Evidence::new("github_user", "profile"));
+        vec![email, user]
+    }
+
+    /// Review of #649, second round: a correlator pass that failed outright on
+    /// the import path (here, a refused read of the graph it evaluates) left
+    /// the scan `Complete` with no error and no correlations. The failure is
+    /// recorded on the scan and returned to the caller's summary.
+    #[test]
+    fn a_batch_whose_correlation_pass_fails_records_it() {
+        use crate::core::StoragePort as _;
+        use crate::core::test_support::{InMemoryStore, REFUSED_RELATION_READ, RefusingStore};
+        use std::sync::Arc;
+
+        let sid = "persist-pass-failed";
+        let inner = Arc::new(InMemoryStore::new());
+        let store: Arc<dyn crate::core::StoragePort> =
+            Arc::new(RefusingStore::new(inner.clone()).refusing_relation_reads());
+        let batch = persist_batch_into(
+            &store,
+            sid,
+            "jsmith".into(),
+            TargetKind::FullName,
+            &enrichable_batch(sid),
+        )
+        .expect("the import itself still succeeds");
+        assert_eq!(
+            batch.finalise_error.as_deref(),
+            Some(format!("correlation pass failed: {REFUSED_RELATION_READ}").as_str())
+        );
+        assert_eq!(batch.correlations, 0);
+        let scan = inner
+            .get_scan(sid)
+            .expect("query the scan")
+            .expect("the scan row exists");
+        assert_eq!(scan.status, crate::core::scan::ScanStatus::Complete);
+        assert_eq!(scan.error, batch.finalise_error);
+    }
+
+    /// Copilot review of #649: `hse import` / `hse ingest --auto-scan` counted
+    /// relation and correlation writes with `.is_ok()` and dropped the error,
+    /// then wrote the scan `Complete` with `error: None` — so a batch whose
+    /// graph the store refused exported as a whole scan. The scan must stay
+    /// `Complete` (the batch was imported in full) with the shortfall recorded
+    /// on it and returned to the caller's summary.
+    #[test]
+    fn a_batch_whose_store_refuses_its_graph_records_the_shortfall() {
+        use crate::core::StoragePort as _;
+        use crate::core::scan::ScanStatus;
+        use crate::core::test_support::{InMemoryStore, REFUSED_RELATION, RefusingStore};
+        use std::sync::Arc;
+
+        let sid = "persist-refused-graph";
+        let entities = enrichable_batch(sid);
+
+        // Control: a store that keeps every write — a whole scan.
+        let whole_store: Arc<dyn crate::core::StoragePort> = Arc::new(InMemoryStore::new());
+        let whole = persist_batch_into(
+            &whole_store,
+            sid,
+            "jsmith".into(),
+            TargetKind::FullName,
+            &entities,
+        )
+        .expect("persist succeeds");
+        assert_eq!(whole.finalise_error, None);
+        assert!(whole.relations > 0 && whole.correlations > 0, "{whole:?}");
+
+        let inner = Arc::new(InMemoryStore::new());
+        let store: Arc<dyn crate::core::StoragePort> = Arc::new(
+            RefusingStore::new(inner.clone())
+                .refusing_relations()
+                .refusing_correlations(),
+        );
+        let batch = persist_batch_into(
+            &store,
+            sid,
+            "jsmith".into(),
+            TargetKind::FullName,
+            &entities,
+        )
+        .expect("the import itself still succeeds — every entity is stored");
+        assert_eq!((batch.relations, batch.correlations), (0, 0));
+        let err = batch
+            .finalise_error
+            .clone()
+            .expect("the refused graph must be reported, not dropped");
+        // Every derived edge counted; every firing counted (how many fire can
+        // differ from the control, since the graph rules read the relations
+        // this store refused — so only its shape is pinned); the first
+        // refusal's error, which in finalise order is a relation's.
+        let (rels, rest) = err
+            .split_once(" relations, ")
+            .expect("relations listed first");
+        assert_eq!(rels, format!("{r}/{r}", r = whole.relations), "{err}");
+        let (corr, tail) = rest
+            .split_once(" correlations")
+            .expect("correlations listed");
+        let (failed, attempted) = corr.split_once('/').expect("n/m");
+        assert!(failed == attempted && failed != "0", "{err}");
+        assert_eq!(tail, format!(" failed to persist: {REFUSED_RELATION}"));
+
+        let scan = inner
+            .get_scan(sid)
+            .expect("query the scan")
+            .expect("the scan row exists");
+        assert_eq!(scan.status, ScanStatus::Complete);
+        assert_eq!(scan.error.as_deref(), Some(err.as_str()));
+        assert_eq!(
+            inner.entities_for_scan(sid).expect("read back").len(),
+            entities.len(),
+            "every entity is still stored"
         );
     }
 }

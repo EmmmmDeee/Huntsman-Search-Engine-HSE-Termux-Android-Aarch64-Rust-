@@ -17,7 +17,12 @@
 //!     tokenizes both sides of a cross-source person-name match, so a
 //!     hyphenated compound surname (`"Smith-Jones"`) can never collide with
 //!     an unrelated space-separated name (`"Smith Jones"`) the way it did
-//!     before it shared [`name_word_tokens`] with `core::resolve`.
+//!     before it shared [`name_word_tokens`] with `core::resolve`;
+//!   * the resolver's `SameAs` suggestions, the relation layer's structural
+//!     `AliasOf` builder and co-reference scoring's handle-equivalence tier
+//!     all decide "same account handle" by [`username_account_key`] /
+//!     [`email_account_keys`], so a separator one of them keeps can never be
+//!     folded away by another (Copilot review of #649).
 //!
 //! `core` must not depend on `modules` (see `tests/architecture.rs`'s
 //! `core_does_not_import_modules`), so no caller here can simply call
@@ -159,20 +164,7 @@ pub const GEN_SUFFIXES: &[&str] = &[
 #[must_use]
 pub fn canonical_email_mailbox(value: &str) -> Option<String> {
     let lower = value.trim().to_lowercase();
-    let (local, domain) = lower.split_once('@')?;
-    if local.is_empty() || domain.is_empty() {
-        return None;
-    }
-
-    // `+tag` subaddressing: the base mailbox before the first '+' is the
-    // identity — but ONLY where the provider is known to implement it. See
-    // `PLUS_ADDRESSING_DOMAINS` for why this is an allowlist rather than the
-    // universal rule it used to be (REQ-EMAILCANON-001).
-    let base = if PLUS_ADDRESSING_DOMAINS.contains(&domain) {
-        local.split('+').next().unwrap_or(local)
-    } else {
-        local
-    };
+    let (base, domain) = routed_local_part(&lower)?;
 
     let (local_canon, domain_canon) = if GMAIL_DOMAINS.contains(&domain) {
         // Gmail dot-blindness, and googlemail.com == gmail.com.
@@ -186,6 +178,132 @@ pub fn canonical_email_mailbox(value: &str) -> Option<String> {
         return None;
     }
     Some(format!("{local_canon}@{domain_canon}"))
+}
+
+/// The provider-routed local part of an already-lowercased address and its
+/// domain: `(local part with a `+tag` stripped ONLY for a
+/// [`PLUS_ADDRESSING_DOMAINS`] provider, domain)`, or `None` when there is no
+/// `@` or either side is empty. The one statement of the `+tag` rule, shared
+/// by [`canonical_email_mailbox`] (which additionally applies Gmail
+/// dot-blindness) and [`email_account_keys`], so the two can never disagree on
+/// which tags route to the base mailbox.
+fn routed_local_part(lower: &str) -> Option<(&str, &str)> {
+    let (local, domain) = lower.split_once('@')?;
+    if local.is_empty() || domain.is_empty() {
+        return None;
+    }
+    // `+tag` subaddressing: the base mailbox before the first '+' is the
+    // identity — but ONLY where the provider is known to implement it. See
+    // `PLUS_ADDRESSING_DOMAINS` for why this is an allowlist rather than the
+    // universal rule it used to be (REQ-EMAILCANON-001).
+    let base = if PLUS_ADDRESSING_DOMAINS.contains(&domain) {
+        local.split('+').next().unwrap_or(local)
+    } else {
+        local
+    };
+    Some((base, domain))
+}
+
+/// The account key of a username / handle: lowercase, whitespace runs
+/// collapsed to single spaces — and NOTHING else. Every other character,
+/// including a `.`, `_` or `-` at the very start or end of the handle, is kept
+/// verbatim. `None` for a value with nothing but whitespace.
+///
+/// Two handles are one account only when their account keys are equal. A
+/// separator is part of the account's name: no platform treats `.`, `_` and
+/// `-` as interchangeable — GitHub handles allow only hyphens, Twitter/X only
+/// underscores, Instagram dots and underscores as DISTINCT characters — and
+/// Instagram and X register a leading or trailing `_` (Instagram a `.` too) as
+/// an account-distinguishing character. So `jordan.avery` / `jordan_avery`,
+/// and `_ianthorpe_` / `ianthorpe`, are different accounts that merely share
+/// letters. Only case (handles are case-insensitive everywhere HSE reads
+/// them) and whitespace (formatting noise from a scraped page) are folded.
+/// The leading `@` is already stripped by the entity normaliser before a value
+/// reaches this.
+///
+/// The single authority for "same account handle", shared by
+/// [`crate::core::resolve`]'s `SameAs` merge suggestions, the relation layer's
+/// structural `AliasOf` builder and co-reference scoring's handle-equivalence
+/// tier. Each of them once folded separators — the resolver through a
+/// tokeniser that treated every non-alphanumeric character as a separator and
+/// then one that trimmed a token's edge punctuation (REQ-RESOLVE-001, scan
+/// `7258fc07`, target "Ian Thorpe": Instagram `_ianthorpe_` fused with the
+/// subject's `ianthorpe`, X `carolathorpe` with Instagram `carolathorpe_`, two
+/// Instagram accounts `_caroline.thorpe` / `caroline.thorpe`), and the relation
+/// layer through the alphanumeric-only `identity_norm`, which re-created the
+/// same false merges as `AliasOf` after the resolver stopped making them
+/// (Copilot review of #649).
+///
+/// ```
+/// use huntsman_search_engine::util::canonical::username_account_key;
+///
+/// assert_eq!(username_account_key(" IanThorpe ").as_deref(), Some("ianthorpe"));
+/// // Every separator is part of the account's name, even at an edge.
+/// assert_ne!(username_account_key("_ianthorpe_"), username_account_key("ianthorpe"));
+/// assert_ne!(username_account_key("jordan.avery"), username_account_key("jordan_avery"));
+/// assert_eq!(username_account_key("   "), None);
+/// ```
+#[must_use]
+pub fn username_account_key(value: &str) -> Option<String> {
+    let folded = value
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!folded.is_empty()).then_some(folded)
+}
+
+/// The account keys an email address answers to as a HANDLE — the forms of
+/// its local part that name the same account a username of that spelling
+/// would, for matching a mailbox against a username or another mailbox.
+///
+/// * The literal local part, lowercased, with a `+tag` stripped only for a
+///   [`PLUS_ADDRESSING_DOMAINS`] provider (the same routing rule
+///   [`canonical_email_mailbox`] applies): `ian.thorpe@gmail.com` answers to
+///   `ian.thorpe`, so it matches the username `ian.thorpe`.
+/// * For a [`GMAIL_DOMAINS`] mailbox only, ALSO the dot-free form: Gmail
+///   documents that dots in the local part do not distinguish accounts, so
+///   `ian.thorpe@gmail.com` is the account `ianthorpe` as well, and matches
+///   the username `ianthorpe` and the mailbox `ianthorpe@gmail.com`.
+///
+/// Everywhere else a dot, underscore or hyphen is kept: `ian.thorpe@outlook.com`
+/// and `ianthorpe@outlook.com` are two Outlook accounts and share no key. Empty
+/// when the address has no `@` or an empty side; a key that folds to nothing
+/// is omitted. At most two keys, literal first, never duplicated.
+///
+/// Emails are keyed on the local part alone — the domain is deliberately not
+/// part of the key, because a mailbox's local part matching a username IS the
+/// cross-kind handle pivot these keys exist for. Two mailboxes at different
+/// domains share a key without being one account; the callers withhold that
+/// pair through `core::coref::mailboxes_at_different_domains`.
+///
+/// ```
+/// use huntsman_search_engine::util::canonical::email_account_keys;
+///
+/// assert_eq!(email_account_keys("Ian.Thorpe+x@GMAIL.com"), vec!["ian.thorpe", "ianthorpe"]);
+/// assert_eq!(email_account_keys("jsmith@gmail.com"), vec!["jsmith"]);
+/// assert_eq!(email_account_keys("ian.thorpe@outlook.com"), vec!["ian.thorpe"]);
+/// // An arbitrary domain keeps its tag, exactly as `canonical_email_mailbox` does.
+/// assert_eq!(email_account_keys("jane+promo@corp.com"), vec!["jane+promo"]);
+/// assert!(email_account_keys("not-an-email").is_empty());
+/// ```
+#[must_use]
+pub fn email_account_keys(value: &str) -> Vec<String> {
+    let lower = value.trim().to_lowercase();
+    let Some((base, domain)) = routed_local_part(&lower) else {
+        return Vec::new();
+    };
+    let mut keys: Vec<String> = Vec::with_capacity(2);
+    if !base.is_empty() {
+        keys.push(base.to_string());
+    }
+    if GMAIL_DOMAINS.contains(&domain) {
+        let dot_free = base.replace('.', "");
+        if !dot_free.is_empty() && !keys.contains(&dot_free) {
+            keys.push(dot_free);
+        }
+    }
+    keys
 }
 
 /// Split `value` into its whitespace-delimited word tokens: lowercased
@@ -330,6 +448,74 @@ mod tests {
             vec!["bamford", "haigen"]
         );
         assert_eq!(name_word_tokens("\"quoted\""), vec!["quoted"]);
+    }
+
+    /// Copilot review of #649: the account key is the one "same handle"
+    /// authority for the resolver, the relation layer and co-reference
+    /// scoring. Case and whitespace fold; every separator, even at an edge,
+    /// stays part of the account's name.
+    #[test]
+    fn username_account_key_keeps_every_separator() {
+        assert_eq!(
+            username_account_key("  IanThorpe ").as_deref(),
+            Some("ianthorpe")
+        );
+        assert_eq!(
+            username_account_key("Ian   Thorpe").as_deref(),
+            Some("ian thorpe")
+        );
+        for (a, b) in [
+            ("_ianthorpe_", "ianthorpe"),
+            ("carolathorpe", "carolathorpe_"),
+            ("_caroline.thorpe", "caroline.thorpe"),
+            ("jordan.avery", "jordan_avery"),
+            ("jordan-avery", "jordan.avery"),
+        ] {
+            assert_ne!(
+                username_account_key(a),
+                username_account_key(b),
+                "{a} / {b}"
+            );
+        }
+        assert_eq!(username_account_key(" \t "), None);
+    }
+
+    /// An email's account keys: its literal (routed) local part, plus the
+    /// dot-free form for Gmail only — the provider rules shared with
+    /// `canonical_email_mailbox` through one helper.
+    #[test]
+    fn email_account_keys_follow_the_provider_rules() {
+        assert_eq!(
+            email_account_keys("ian.thorpe@gmail.com"),
+            vec!["ian.thorpe", "ianthorpe"]
+        );
+        assert_eq!(
+            email_account_keys("Ian.Thorpe+news@googlemail.com"),
+            vec!["ian.thorpe", "ianthorpe"],
+            "googlemail is Gmail; its +tag routes to the base mailbox"
+        );
+        assert_eq!(email_account_keys("ianthorpe@gmail.com"), vec!["ianthorpe"]);
+        assert_eq!(
+            email_account_keys("ian.thorpe+x@outlook.com"),
+            vec!["ian.thorpe"],
+            "Outlook strips the tag but keeps its dots"
+        );
+        assert_eq!(
+            email_account_keys("_ianthorpe_@corp.example"),
+            vec!["_ianthorpe_"]
+        );
+        assert_eq!(
+            email_account_keys("jane+promo@corp.com"),
+            vec!["jane+promo"],
+            "an arbitrary domain keeps its tag (REQ-EMAILCANON-001)"
+        );
+        assert!(email_account_keys("not-an-email").is_empty());
+        assert!(email_account_keys("+tag@gmail.com").is_empty());
+        // The mailbox rule is unchanged by the shared helper.
+        assert_eq!(
+            canonical_email_mailbox("Ian.Thorpe+news@googlemail.com").as_deref(),
+            Some("ianthorpe@gmail.com")
+        );
     }
 
     #[test]

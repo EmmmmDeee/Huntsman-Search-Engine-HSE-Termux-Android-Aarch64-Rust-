@@ -622,3 +622,26 @@ use super::*;
         assert_eq!(extract_phones("Tel:0410959140."), vec!["+61410959140"]);
         assert!(!extract_phones("1300 975 707").is_empty());
     }
+
+    /// The whole-token rule holds whatever the match opens on. A match opening
+    /// on `+` or `(` used to skip the preceding-byte check entirely (only a
+    /// digit-first match was checked), so a word glued to the sigil —
+    /// `foo+61 2 8224 6704`, `foo(02) 8224 6704` — was scanned as a phone
+    /// even though the same digits glued after a letter (`id_0410959140x`)
+    /// were not (Copilot review of #649).
+    #[test]
+    fn free_text_phone_scan_rejects_a_word_glued_to_the_plus_or_paren() {
+        for s in ["foo+61 2 8224 6704", "foo(02) 8224 6704", "ref_+61282246704"] {
+            assert!(extract_phones(s).is_empty(), "{s} -> {:?}", extract_phones(s));
+        }
+        // Delimited by a space, a colon, or the start of the text: still a phone.
+        for s in [
+            "Call +61 2 8224 6704",
+            "Ph: (02) 8224 6704",
+            "tel:+61282246704",
+            "+61 2 8224 6704 is the office",
+            "(02) 8224 6704",
+        ] {
+            assert_eq!(extract_phones(s), vec!["+61282246704"], "{s}");
+        }
+    }

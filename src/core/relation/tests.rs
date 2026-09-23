@@ -1120,7 +1120,7 @@ fn handles_alias_shared_persona_across_platforms() {
     let o1 = ent(EntityKind::Email, "jsmith@outlook.com", 0.6);
     let u1 = ent(EntityKind::Username, "jsmith", 0.5);
     let other = ent(EntityKind::Email, "bobjones@gmail.com", 0.8);
-    let numeric = ent(EntityKind::Username, "12345", 0.9); // excluded by persona_key
+    let numeric = ent(EntityKind::Username, "12345", 0.9); // excluded by persona_keys
 
     let rels = derive_handles(&[g1.clone(), o1.clone(), u1.clone(), other, numeric], "s");
     assert_eq!(
@@ -1145,7 +1145,7 @@ fn handles_alias_shared_persona_across_platforms() {
 #[test]
 fn role_mailboxes_do_not_alias_across_organisations() {
     // Regression: role / shared mailboxes (`info`, `support`, …) share a local
-    // part across unrelated orgs but are NOT one persona. `persona_key` rejects
+    // part across unrelated orgs but are NOT one persona. `persona_keys` rejects
     // them via the canonical `is_generic_handle`, so `derive_handles` draws no
     // `AliasOf` edge that would fuse two organisations into one identity cluster.
     let a = ent(EntityKind::Email, "info@redcross.org.au", 0.7);
@@ -1238,6 +1238,82 @@ fn mailboxes_at_different_domains_do_not_alias_but_observed_handles_do() {
     // Same domain keeps the alias.
     let g2 = obs(EntityKind::Email, "j.smith@gmail.com", "hibp");
     assert_eq!(derive_handles(&[g, g2], "s").len(), 1);
+}
+
+/// Copilot review of #649: `persona_key` keyed on `identity_norm`, which keeps
+/// only alphanumerics, so `derive_handles` asserted a full-confidence
+/// `AliasOf` between accounts that differ only by a separator — Instagram
+/// `_ianthorpe_` and the subject's GitHub `ianthorpe`, X `carolathorpe` and
+/// Instagram `carolathorpe_`, two Instagram accounts `_caroline.thorpe` /
+/// `caroline.thorpe` — the exact false merges REQ-RESOLVE-001 closed in the
+/// resolver, re-created one layer up. Every one is OBSERVED here (a real
+/// platform source), so no guess gate hides the defect.
+#[test]
+fn handles_that_differ_only_by_a_separator_never_alias() {
+    use crate::core::entity::Evidence;
+    let seen = |v: &str, src: &str| {
+        let mut e = ent(EntityKind::Username, v, 0.8);
+        e.add_evidence(Evidence::new(src, "profile"));
+        e
+    };
+    let ents = [
+        seen("_ianthorpe_", "instagram"),
+        seen("ianthorpe", "github_user"),
+        seen("carolathorpe", "twitter"),
+        seen("carolathorpe_", "instagram"),
+        seen("_caroline.thorpe", "instagram"),
+        seen("caroline.thorpe", "instagram"),
+    ];
+    let rels = derive_handles(&ents, "s");
+    assert!(
+        rels.is_empty(),
+        "a separator is part of an account's name: {rels:?}"
+    );
+    // …and the co-reference promotion must not re-emit them either (the
+    // handle-equivalence tier used the same fold, and 0.80 IS the floor).
+    let promoted = derive_coreferences(&ents, &[], "s");
+    assert!(
+        !promoted.iter().any(|r| r.kind == RelationKind::AliasOf),
+        "no promoted AliasOf between separator variants: {promoted:?}"
+    );
+}
+
+/// The account keys still link what IS one account: a mailbox's literal local
+/// part to the same-spelled username, and — for Gmail only, whose dots are
+/// documented as insignificant — its dot-free form too. Off Gmail a dot
+/// distinguishes two mailboxes.
+#[test]
+fn mailbox_handles_alias_by_their_account_keys() {
+    use crate::core::entity::Evidence;
+    let seen = |k, v: &str, src: &str| {
+        let mut e = ent(k, v, 0.8);
+        e.add_evidence(Evidence::new(src, "observed"));
+        e
+    };
+    let joins = |rels: &[Relation], a: &Entity, b: &Entity| {
+        rels.iter().any(|r| {
+            r.kind == RelationKind::AliasOf
+                && ((r.from_uid == a.uid && r.to_uid == b.uid)
+                    || (r.from_uid == b.uid && r.to_uid == a.uid))
+        })
+    };
+
+    let gmail = seen(EntityKind::Email, "ian.thorpe@gmail.com", "hibp");
+    let dotted = seen(EntityKind::Username, "ian.thorpe", "github_user");
+    let plain = seen(EntityKind::Username, "ianthorpe", "instagram");
+    let rels = derive_handles(&[gmail.clone(), dotted.clone(), plain.clone()], "s");
+    assert!(joins(&rels, &gmail, &dotted), "literal key: {rels:?}");
+    assert!(joins(&rels, &gmail, &plain), "Gmail dot-free key: {rels:?}");
+    assert!(
+        !joins(&rels, &dotted, &plain),
+        "the two usernames are different accounts: {rels:?}"
+    );
+    assert_eq!(rels.len(), 2, "{rels:?}");
+
+    // Outlook keeps its dots: two different mailboxes.
+    let a = seen(EntityKind::Email, "ian.thorpe@outlook.com", "hibp");
+    let b = seen(EntityKind::Email, "ianthorpe@outlook.com", "hibp");
+    assert!(derive_handles(&[a, b], "s").is_empty());
 }
 
 #[test]
@@ -1680,6 +1756,33 @@ fn declared_associations_link_related_and_co_owners() {
         connects(&curt, &hayley).is_some(),
         "co_owner binds joint owners"
     );
+}
+
+/// An association attribute accumulates (`with_attr` joins a repeated key with
+/// "; ", `absorb` pools same-summary records), so it can name several people.
+/// Read whole, `co_owner = "Hayley Avery; Erik Avery"` named nobody and the
+/// declared links were lost (review of #649, the QLD unclaimed-money owner
+/// records). Each value names one person.
+#[test]
+fn declared_associations_read_every_value_of_a_pooled_attribute() {
+    use crate::core::entity::Evidence;
+    let mut curt = ent(EntityKind::Person, "Curt Avery", 0.35);
+    curt.add_evidence(
+        Evidence::new("au_unclaimed", "owner")
+            .with_attr("co_owner", "Hayley Avery")
+            .with_attr("co_owner", "Erik Avery"),
+    );
+    let hayley = ent(EntityKind::Person, "Hayley Avery", 0.35);
+    let erik = ent(EntityKind::Person, "Erik Avery", 0.35);
+    let rels = derive_declared_associations(&[curt.clone(), hayley.clone(), erik.clone()], "s");
+    let joined = |a: &Entity, b: &Entity| {
+        rels.iter().any(|r| {
+            (r.from_uid == a.uid && r.to_uid == b.uid) || (r.from_uid == b.uid && r.to_uid == a.uid)
+        })
+    };
+    assert!(joined(&curt, &hayley), "{rels:?}");
+    assert!(joined(&curt, &erik), "{rels:?}");
+    assert_eq!(rels.len(), 2);
 }
 
 #[test]
