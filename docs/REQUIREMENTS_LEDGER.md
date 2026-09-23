@@ -20230,6 +20230,7 @@ dropped: no refusal text is trusted as "IPQS holds nothing".
 | I2 | wiring: `query` returns the body without `accepted` | killed by 1 |
 | I3 | over-correction: `accepted` fails every answer | killed by 2 |
 | I4 | a key/quota message no longer burns the key | killed by 1 |
+
 ## REQ-DISCORDSNOWFLAKE-002 — An offline decode annotates a Discord handle; it never raises its confidence or releases it from quarantine
 
 **Found:** audit F3. `discord_snowflake` re-emitted the target's own `discord:<id>` Username at `confidence::HIGH_PLUSPLUS` (0.80) with no candidate tag. The engine merges by uid, and `Entity::absorb` takes the max confidence and drops `candidate` when the incoming side is not a candidate. The breach extractors mint these handles lower: oathnet_pro at 0.55, see_know at 0.60, and non-matching rows are quarantined at 0.25. The decode therefore promoted a Probable attribution to Verified (c_eff 0.74 to 0.87 at n=2) and released quarantined strangers' IDs, all from arithmetic that proves only that the number is Discord's.
@@ -20248,3 +20249,14 @@ dropped: no refusal text is trusted as "IPQS holds nothing".
 | overcorrect-drop-date-evidence | annotate lock fails | see apply log |
 
 **Falsification (compiled):** 3 of 4 killed.
+
+**The survivor was redundant code, and it was removed.** `baseline-rung`
+(the constant back at `HIGH_PLUSPLUS`) survived because
+`Entity::demote_to_candidate` caps the confidence at `CANDIDATE_CONF` (0.25)
+whatever it was constructed at, and `confidence::VERY_LOW` is also 0.25. The
+module had two authorities for one rung. `DISCORD_ID_CONF` is deleted. The
+reasoning moved to the construction site, which names the shared demotion as
+the rung's only authority. The construction value is immaterial by design, so
+a mutation of it is equivalent. `baseline-candidate-tag` (dropping the
+demotion, the real baseline) is killed. That demotion now carries the whole
+invariant.
