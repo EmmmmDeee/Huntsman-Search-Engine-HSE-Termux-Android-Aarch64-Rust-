@@ -20078,3 +20078,88 @@ Each was verified against the code and a primary source before any change.
 **9 of 9 killed.** F4 **survived** its first run: the counting sat inside the
 async drain loop, and a live resolver is needed to reach it there. It was
 moved into the pure `tally` with its own test, and the re-run killed it.
+
+## REQ-CODEWARS-001 — a body that names no Codewars account read as "no such user"
+
+**Found** by the adversarially verified module audit (one finding,
+`codewars_user`). It was re-verified on the current tree before anything was
+designed, and the re-verification narrowed it.
+
+`CwUser.username` carried `#[serde(default)]` like every other field, so any
+JSON object decoded. Both `{}` and a body shaped like Codewars' own error
+(`{"success":false,"reason":"not found"}`, observed live on a 404) became a
+user named `""`. The handle match (`"".eq_ignore_ascii_case(handle)`) then
+returned `Ok(empty)`. Dispatch records that as `ModuleDone { found: 0 }`, and
+coverage reads it as CleanNegative: "no Codewars account", for a handle the
+provider never answered about. This is the `#[serde(default)]` fail-open
+family (REQ-ZOOMEYE-001, REQ-HUDSONROCK-001) in its **field-level** spelling.
+REQ-FOFA-001's sweep enumerated container-level `#[serde(default)]` only, so
+it never reached this struct.
+
+**Narrowed on re-verification.** The audit named two routes. The second was
+the curl fallback returning a 429 / 5xx JSON body as the document. REQ-CURL-001
+had already closed it at the shared authority: `classify_json` decodes only a
+2xx, and `resolve_curl_fallback` types every other status the way the reqwest
+arm does. That also retires the audit's fix-risk, since a curl-arm 404 is now
+classified by status before any decode. What remains is a **2xx** body that is
+not a user object, on either transport. Codewars documents conventional status
+codes for its errors, so this route needs an off-spec 2xx, from an
+intermediary or from the v1 API that the vendor's own reference calls
+"minimal and inconsistent". The fix is defence in depth, not a response to an
+observed failure.
+
+**The sentinel is established, not assumed** (ROADMAP §4: a precedent
+transfers only with the fact that made it safe):
+- the vendor's API reference lists `username` in the User Object and in its
+  Get User example;
+- a live `GET /api/v1/users/g964` answers 200 with `username` (2026-09-23);
+- the module already emitted nothing unless `username` matched the handle, so
+  requiring the field cannot drop a true finding.
+
+### Implemented
+
+- `username` loses `#[serde(default)]`. A body without it fails to decode and
+  becomes the module's error through the shared decode path: `json_body_error`
+  on the reqwest arm, `JsonFetch::Undecodable` on the curl arm.
+- A user object whose `username` is blank names no account. That is now the
+  module's error, not a mismatch.
+- A present but different `username` stays the clean miss. The path takes
+  "Username or ID", so an ID-shaped handle resolves to another account (live:
+  `545207bac8e60b30fc000942` answers `g964`).
+- The body of `process` moved into `lookup(client, api_base, handle, scan_id)`.
+  That is the seam `chess_profile`, `gaming_profile` and `bitcoin` already
+  use, so the real request path now runs against `util::http::test_server`.
+
+**Rejected: `#[serde(deny_unknown_fields)]`.** It would refuse the envelope,
+but it would refuse every real profile too: a live answer carries `id`,
+`honor`, `ranks` and more that the struct does not read. The documented-shape
+control locks this.
+
+### Locks
+
+- `modules::codewars_user::tests`:
+  - `a_body_without_a_username_is_not_a_codewars_user` decodes `{}` and the
+    live envelope as text, and checks each fails for the missing `username`.
+    The documented User Object is the control;
+  - `a_2xx_that_names_no_account_is_a_failure_not_no_such_user` runs over the
+    loopback with `{}`, an envelope, an empty `username` and a whitespace
+    `username`, each checked for its reason;
+  - `a_404_or_another_accounts_record_is_a_clean_miss_that_mints_nothing` is
+    the over-correction guard;
+  - `the_documented_user_object_is_found_under_its_own_handle` is the positive
+    control, and also pins the production path.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| CW-M1 | **baseline**: `username` defaulted again | see apply log |
+| CW-M2 | **baseline**: a blank `username` falls through to the mismatch | see apply log |
+| CW-W1 | the blank check does not trim | see apply log |
+| CW-O1 | over-correction: another account's record is a failure | see apply log |
+| CW-O2 | another account's record is minted as the handle's | see apply log |
+| CW-O3 | over-correction: the 404 is a failure | see apply log |
+| CW-O4 | over-correction: `deny_unknown_fields` | see apply log |
+| CW-P1 | the production path drifts | see apply log |
+
+**Falsification (compiled):** 8 of 8 killed.
