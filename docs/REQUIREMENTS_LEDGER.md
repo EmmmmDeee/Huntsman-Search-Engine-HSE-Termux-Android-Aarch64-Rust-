@@ -19842,3 +19842,81 @@ None of them matched an arm. REQ-KEYPROBE-001 (#637, recorded only in its commit
 
 **9 of 9 killed** (run against the compiled patch; clippy `-D warnings` clean).
 
+
+## REQ-PLC-001 / REQ-PLC-002 — a deleted identity's last handle is not current; a did:web string is not an identity
+
+**Found** by the adversarially verified module audit (two findings, one module). Wire facts were read on 2026-09-23 from:
+- the did:plc spec v0.1 (`web.plc.directory/spec/v0.1/did-plc`);
+- the W3C CCG did:web method;
+- the AT Protocol DID and handle specs (`atproto.com/specs/did`, `/specs/handle`);
+- the `com.atproto.identity.resolveHandle` lexicon and its AppView handler (`bluesky-social/atproto`, main).
+
+**REQ-PLC-001 — a deleted identity kept its "current" handle and server.** `history::fold` recorded a `plc_tombstone` only as a date. The handle and PDS declared by the op before it stayed in `current_handles` / `current_pds`. The spec says a tombstone "clears all of the data fields and permanently deactivates the DID". So the deleted account's last handle was emitted as its **current** handle:
+- the Username at 0.85, `handle_state=current`, with no released-handle caveat;
+- a domain handle as a 0.80 `verified-control` Domain with no `historical` tag;
+- the PDS as the "current personal data server";
+- the DID with `current_handle` / `current_pds` next to `tombstoned`.
+
+A deleted identity releases its handles, so a stranger may already hold that name. The same stickiness hit any op that declared no handle or no server: `if !handles.is_empty()` and `if let Some(host)` skipped it. The spec lists `alsoKnownAs` and `services` among the fields every creation or update carries, so an empty list means none.
+
+**REQ-PLC-002 — the module attributed an identity it never confirmed.** A `did:web:` seed was returned verbatim by `resolve_did` with no request. `process` then minted a `verified-control` Domain at 0.80 and the DID at `DID_CONF` (0.95), whose own doc said "read straight from the registry" although nothing was read. A typo named a stranger's domain as the subject's infrastructure. The did:web method's resolution step is to fetch `https://{host}/.well-known/did.json` and "verify that the ID of the resolved DID document matches the Web DID being resolved"; that step never ran.
+
+Separately, the AppView's `resolveHandle` "does not necessarily bi-directionally verify against the DID document" (its lexicon; the handler passes `lookupUnidirectional: true`). The handle spec requires the link be confirmed both ways, "otherwise anybody could create handle aliases for third-party accounts". Neither branch checked that the identity claims the handle it was reached through. A handle whose `_atproto` record names someone else's DID got that identity's anchor domain (did:web) or its entire handle and PDS history (did:plc).
+
+### Implemented
+
+- `history::fold`:
+  - a tombstone clears `current_handles` and `current_pds`;
+  - every other effective op assigns both unconditionally.
+
+  The existing former-value authority (`is_former`, `FORMER_HANDLE_CONF`, `FORMER_HANDLE_CAVEAT`, `former-handle`/`historical`, `handle_domain_confidence(false, ..)`, `PDS_CONF_FORMER`) now grades what a deleted identity released. `transform` gets no new branch. The caveat names deletion as a release.
+- `resolve_did` returns `Resolved { did, handle }`, keeping the handle the DID was reached through.
+- New `resolve::web_did_document` reads the did:web document through `util::http::fetch_json_or_404`:
+  - a 404 is a clean "no such identity";
+  - a transport, 5xx or breaker failure is an `Err`, the same contract as `audit_log`.
+- New wire type `types::DidDocument { id, alsoKnownAs }`. Its `confirms(did, handle)` requires:
+  - `id` to equal the DID (ASCII case-insensitive, because the seed is case-folded);
+  - for a handle-reached identity, an `at://` entry equal to that handle (handles are case-insensitive).
+- `web_did_entities` takes the fetched `&DidDocument`, so nothing can be minted without the read. It emits nothing unless the document confirms.
+- `history_to_entities` takes `&Resolved` and emits nothing when the log never declared the handle (`History::has_claimed`). A current or released claim both link, so a deleted or renamed account's history survives.
+- `at://` parsing is one helper, `at_handles`, shared with `PlcOperation::handles`.
+- `DID_CONF`'s doc now says nothing is emitted at that grade without reading the record.
+
+### Locks
+
+`modules::plc_directory::tests`:
+- `a_deleted_identity_holds_no_current_handle_or_server` covers the Username, Domain, PDS and DID attributes, and checks that a handle-reached deleted identity keeps its history.
+- `an_operation_that_drops_the_handle_and_server_leaves_neither_in_force`
+- `a_reverted_deletion_leaves_the_identity_as_it_was` (over-correction guard)
+- `a_log_reached_through_a_handle_it_never_claimed_attributes_nothing`, with a released and a re-cased control.
+- `a_web_did_is_an_identity_only_when_its_host_serves_a_document_naming_it`
+- `a_web_did_reached_through_a_handle_must_claim_that_handle_back`
+- `a_did_web_seed_nobody_confirmed_asserts_nothing`: the audit's scenario through `process`, on the `query_floor_skips` offline client.
+- `a_web_did_yields_its_anchor_domain_and_admits_it_has_no_log`: updated to pass a confirming document.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| P1 | **baseline**: a tombstone keeps the current handle | see apply log |
+| P2 | **baseline**: a tombstone keeps the current PDS | see apply log |
+| P3 | **baseline**: an empty `alsoKnownAs` keeps the previous handle current | see apply log |
+| P4 | **baseline**: a missing `services` keeps the previous PDS current | see apply log |
+| P5 | over-correction: a reverted (nullified) tombstone still clears the present | see apply log |
+| P6 | over-correction: a tombstone erases the handle/PDS history | see apply log |
+| W1 | **baseline**: a did:web seed confirms itself (no document read) | see apply log |
+| W2 | **baseline**: the document is read but not checked | see apply log |
+| W3 | **baseline**: did:web handle claim not checked | see apply log |
+| W4 | **baseline**: did:plc handle claim not checked | see apply log |
+| W5 | over-correction: a did:plc claim must be the *current* handle | see apply log |
+| W6 | over-correction: did:web demands a handle claim even for a DID seed | see apply log |
+| W7 | over-correction: document `id` compared case-sensitively | see apply log |
+| W8 | over-correction: handle claim compared case-sensitively | see apply log |
+
+### Residual
+
+- The atproto DID spec treats only the **first** valid `at://` entry in `alsoKnownAs` as the claimed handle ("Any other handle URIs should be ignored"). `fold` marks every one current. This is not changed here.
+- `MAX_HANDLES` / `MAX_PDS` / `MAX_ROTATION_KEYS` still state truncation only in DID evidence attributes, not through `ModuleResult::mark_truncated`. That is already tracked from REQ-COVERAGE-002's residual list.
+- Whether the production AppView resolves handles one way over the network is UNVERIFIED. The open-source data plane only does a DB lookup under a `@TODO` for `lookupUnidirectional`. The back-check rests on the lexicon's stated contract and the handle spec.
+
+**Falsification (compiled):** 14 of 14 killed.
