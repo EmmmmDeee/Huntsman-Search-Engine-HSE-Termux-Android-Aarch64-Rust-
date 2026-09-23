@@ -551,10 +551,12 @@ impl CapabilityLedger {
             },
             CapabilityClaimSpec {
                 technique_id: "T1589",
-                name: "Gather Victim Identity Information — breach/intel recon claim",
-                rust_component: "modules/stolen_tax",
-                method_id: "recon.breach",
-                objective: Some("Breach / credential-exposure OSINT recon claim (Unverified until evidenced)"),
+                name: "Gather Victim Identity Information — offline identity canonicalize claim",
+                rust_component: "util/canonical",
+                method_id: "identity.canonicalize",
+                objective: Some(
+                    "Offline email mailbox fold + name-token identity normaliser claim",
+                ),
                 scope: ClaimScope::InScope,
             },
             // --- Explicit NotApplicable: offensive / host-intrusion product caps ---
@@ -896,14 +898,116 @@ pub fn geoint_t1614_evidence_links_v1() -> CapabilityEvidenceLinks {
 ///
 /// Seed rows stay empty (Unverified). Call this after [`CapabilityLedger::seed_v0`]
 /// to wire `CapabilityEvidenceLinks` for the chosen technique. Identity
-/// (`T1589` / email+name normalisers) was the runner-up — see
-/// [`geoint_t1614_evidence_links_v1`] competition notes.
+/// (`T1589` / email+name normalisers) was the first-claim runner-up — see
+/// [`geoint_t1614_evidence_links_v1`] competition notes; second claim lands via
+/// [`apply_identity_evidence_v1`].
 ///
 /// Returns `Ok(())` when `T1614` is present; does not touch other rows.
 pub fn apply_identity_geoint_evidence_v1(
     ledger: &mut CapabilityLedger,
 ) -> Result<(), CapabilityError> {
     ledger.set_links("T1614", geoint_t1614_evidence_links_v1())
+}
+
+/// Known-good offline identity evidence fixture for [`CapabilityLedger`] technique
+/// `T1589` (second OSINT capability claim).
+///
+/// # Competition (v0 second claim)
+///
+/// Evaluated InScope candidates against host constraints (no live network,
+/// leave dirty `stolen_tax` / `crtsh` alone; do not invent Verified on breach
+/// recon). Seed `T1589` was rebound from `modules/stolen_tax` / `recon.breach`
+/// to the clean util path (same pattern as GEOINT rebind of `T1614`).
+///
+/// | Candidate | Technique | In-tree surface | Offline tests | Dirty risk | Rank |
+/// |---|---|---|---|---|---|
+/// | **A Email+name canonicalize (winner)** | `T1589` | `util/canonical` | gmail fold + name tokens | **None** | 1 |
+/// | B Demographic tags | `T1589` | `util/identity` | dob/gender/age fold | Low (breach-schema oriented) | 2 |
+/// | C Breach recon (rejected) | `T1589` | `modules/stolen_tax` | N/A dirty WIP | **High** | 3 |
+///
+/// Winner A: two independent offline corroboration channels (email mailbox
+/// canonicalization vs person-name tokenization), pure string fixtures, zero
+/// touch of dirty WIP, highest reproducibility under Termux/offline constraints.
+/// Method B remains available as a future demographic channel; C stays unbound
+/// from Verified until a lawful clean evidence path exists.
+///
+/// # Corroboration channels (IndependentCorroboration)
+///
+/// 1. **Email mailbox fold** — `util::canonical::tests::gmail_dots_and_plus_tag_both_fold`
+///    and `googlemail_alias_folds_to_gmail` (provider-aware local+domain fold).
+/// 2. **Name word tokens** — `util::canonical::tests::hyphen_apostrophe_and_underscore_stay_inside_their_token`
+///    and `edge_punctuation_is_stripped_not_split_on` (independent tokenizer surface).
+///
+/// # Honesty
+///
+/// Links record **existing** `#[test]` function paths as `test_ids`. They do
+/// not invent network observation, breach harvest, or credential collection.
+/// This claim is offline identity *normalization* — not live victim
+/// enumeration.
+#[must_use]
+pub fn identity_t1589_evidence_links_v1() -> CapabilityEvidenceLinks {
+    const T_GMAIL: &str = "util::canonical::tests::gmail_dots_and_plus_tag_both_fold";
+    const T_GOOGLEMAIL: &str = "util::canonical::tests::googlemail_alias_folds_to_gmail";
+    const T_HYPHEN: &str =
+        "util::canonical::tests::hyphen_apostrophe_and_underscore_stay_inside_their_token";
+    const T_EDGE: &str = "util::canonical::tests::edge_punctuation_is_stripped_not_split_on";
+
+    CapabilityEvidenceLinks {
+        source_ids: vec![
+            "src-util-canonical-email".into(),
+            "src-util-canonical-name".into(),
+        ],
+        input_ids: vec![
+            "in-gmail-plus-dot:jo.hn+promo@gmail.com".into(),
+            "in-name-compound:Anna Smith-Jones / Bamford, Haigen".into(),
+        ],
+        execution_record_id: Some("exec-identity-canonicalize-unit-v1".into()),
+        output_ids: vec![
+            "out-gmail-folded:john@gmail.com".into(),
+            "out-name-tokens:[anna,smith-jones]/[bamford,haigen]".into(),
+        ],
+        provenance_claim_id: Some("prov-identity-canonicalize-fixture-v1".into()),
+        corroboration_ids: vec![
+            "corr-identity-email-fold".into(),
+            "corr-identity-name-tokens".into(),
+        ],
+        test_ids: vec![
+            T_GMAIL.into(),
+            T_GOOGLEMAIL.into(),
+            T_HYPHEN.into(),
+            T_EDGE.into(),
+        ],
+        benchmark_ids: vec![],
+        regression_lock_ids: vec![
+            "lock-identity-t1589-v1".into(),
+            "lock-capability-derive-status".into(),
+        ],
+        passed_test_ids: vec![
+            T_GMAIL.into(),
+            T_GOOGLEMAIL.into(),
+            T_HYPHEN.into(),
+            T_EDGE.into(),
+        ],
+        failed_test_ids: vec![],
+        corroboration_ok: true,
+        regression_ok: true,
+        freshness_ok: true,
+        reproducibility_ok: true,
+        evidence_level: EvidenceLevel::IndependentCorroboration,
+    }
+}
+
+/// Attach the second honest OSINT capability evidence chain (identity / `T1589`).
+///
+/// Seed rows stay empty (Unverified) until this is called. Does not touch GEOINT
+/// `T1614` or other rows. Pair with [`apply_identity_geoint_evidence_v1`] when
+/// both claims should be Verified (`verified_count == 2`).
+///
+/// Returns `Ok(())` when `T1589` is present.
+pub fn apply_identity_evidence_v1(
+    ledger: &mut CapabilityLedger,
+) -> Result<(), CapabilityError> {
+    ledger.set_links("T1589", identity_t1589_evidence_links_v1())
 }
 
 
@@ -1013,6 +1117,14 @@ mod tests {
         assert_eq!(
             ledger.get("T1614").map(|r| r.rust_component.as_str()),
             Some("util/geo")
+        );
+        assert_eq!(
+            ledger.get("T1589").map(|r| r.method_id.as_str()),
+            Some("identity.canonicalize")
+        );
+        assert_eq!(
+            ledger.get("T1589").map(|r| r.rust_component.as_str()),
+            Some("util/canonical")
         );
         assert_eq!(
             ledger.get("T1566").map(|r| r.method_id.as_str()),
@@ -1400,6 +1512,91 @@ mod tests {
             .iter()
             .find(|t| t["techniqueID"] == "T1614")
             .expect("T1614");
+        assert_ne!(tech["score"], 100);
+        assert_ne!(tech["color"], "#31a354");
+    }
+
+    #[test]
+    fn identity_evidence_links_v1_are_mandatory_complete() {
+        let links = identity_t1589_evidence_links_v1();
+        assert!(links.mandatory_complete());
+        assert_eq!(links.evidence_level, EvidenceLevel::IndependentCorroboration);
+        assert!(links.corroboration_ids.len() >= 2);
+        assert!(links.test_ids.iter().all(|t| links.passed_test_ids.contains(t)));
+        assert!(links.failed_test_ids.is_empty());
+        assert!(links.test_ids.iter().any(|t| t.contains("gmail") || t.contains("googlemail")));
+        assert!(links.test_ids.iter().any(|t| t.contains("hyphen") || t.contains("edge_punctuation")));
+    }
+
+    #[test]
+    fn apply_identity_evidence_v1_derives_verified() {
+        let mut ledger = CapabilityLedger::seed_v0();
+        assert_eq!(ledger.verified_count(), 0);
+        apply_identity_evidence_v1(&mut ledger).expect("T1589 present");
+
+        assert_eq!(ledger.status_of("T1589"), Some(CapabilityStatus::Verified));
+        assert_eq!(ledger.verified_count(), 1);
+
+        // GEOINT and other InScope seeds remain Unverified until their own apply.
+        for tid in ["T1614", "T1590", "T1596.003", "T1040", "T1016.002"] {
+            assert_eq!(
+                ledger.status_of(tid),
+                Some(CapabilityStatus::Unverified),
+                "{tid} must stay Unverified"
+            );
+        }
+        assert_eq!(
+            ledger.status_of("T1566"),
+            Some(CapabilityStatus::NotApplicable)
+        );
+
+        let layer = ledger.navigator_layer("identity-v1", "enterprise-attack", "17.1");
+        let tech = layer["techniques"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["techniqueID"] == "T1589")
+            .expect("T1589 in layer");
+        assert_eq!(tech["score"], 100);
+        assert_eq!(tech["color"], "#31a354");
+        assert!(
+            tech["comment"]
+                .as_str()
+                .unwrap_or("")
+                .contains("status=Verified"),
+            "navigator comment must reflect derived Verified"
+        );
+    }
+
+    #[test]
+    fn apply_identity_and_geoint_verified_count_is_two() {
+        let mut ledger = CapabilityLedger::seed_v0();
+        apply_identity_geoint_evidence_v1(&mut ledger).expect("geoint");
+        apply_identity_evidence_v1(&mut ledger).expect("identity");
+        assert_eq!(ledger.status_of("T1614"), Some(CapabilityStatus::Verified));
+        assert_eq!(ledger.status_of("T1589"), Some(CapabilityStatus::Verified));
+        assert_eq!(ledger.verified_count(), 2);
+    }
+
+    #[test]
+    fn apply_identity_invalidate_still_downgrades() {
+        let mut ledger = CapabilityLedger::seed_v0();
+        apply_identity_evidence_v1(&mut ledger).expect("apply");
+        assert_eq!(ledger.status_of("T1589"), Some(CapabilityStatus::Verified));
+
+        let tid = "util::canonical::tests::gmail_dots_and_plus_tag_both_fold";
+        ledger.invalidate_test("T1589", tid).expect("invalidate");
+        let after = ledger.status_of("T1589");
+        assert_ne!(after, Some(CapabilityStatus::Verified));
+        assert_eq!(ledger.verified_count(), 0);
+
+        let layer = ledger.navigator_layer("identity-downgrade", "enterprise-attack", "17.1");
+        let tech = layer["techniques"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["techniqueID"] == "T1589")
+            .expect("T1589");
         assert_ne!(tech["score"], 100);
         assert_ne!(tech["color"], "#31a354");
     }

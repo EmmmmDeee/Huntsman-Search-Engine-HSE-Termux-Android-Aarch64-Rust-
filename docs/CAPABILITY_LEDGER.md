@@ -130,7 +130,8 @@ layer**, not a coverage heatmap.
 
 1. Add a `CapabilityClaimSpec` to `seed_v0` (or `insert_row` at runtime) with a
    `method_id` and optional `objective`.
-2. Attach evidence via `set_links` or `apply_identity_geoint_evidence_v1` when a real defensive evidence chain exists.
+2. Attach evidence via `set_links`, `apply_identity_geoint_evidence_v1`, or
+   `apply_identity_evidence_v1` when a real defensive evidence chain exists.
 3. Use `invalidate_test` / `invalidate_freshness` / `invalidate_reproducibility`
    to demonstrate auto-downgrade.
 4. Re-export Navigator JSON from the ledger — never hand-edit scores/colors.
@@ -155,18 +156,48 @@ assert_eq!(ledger.verified_count(), 1);
 - **Evidence level:** `IndependentCorroboration` via two channels — coord parse
   / validity unit tests, and haversine Sydney↔Melbourne known-distance tests
   (no live network; no Termux device required).
-- **Runner-up:** people-centric identity (`T1589` / `T1589.002` +
-  `util/canonical` / `util/identity`) — deferred to avoid coupling to dirty
-  `modules/stolen_tax` WIP and because geodesic fixtures are more reproducible.
+- **Runner-up (first claim):** people-centric identity — landed as the second
+  claim below after rebinding seed `T1589` off dirty `modules/stolen_tax`.
 - **Not claimed:** live Termux location observation (needs device) — remains a
   separate Unverified sensing path.
 
 `test_ids` are stable `module::tests::fn_name` strings matching real `#[test]`
 functions. Invalidate any cited test → auto-downgrade (Navigator loses green).
 
+## Second OSINT evidence claim (identity / T1589)
+
+Seed `T1589` is **rebound** from `modules/stolen_tax` / `recon.breach` to
+`util/canonical` / `identity.canonicalize` so Verified does not couple to dirty
+breach WIP. Attach the second honest evidence chain with:
+
+```rust
+let mut ledger = CapabilityLedger::seed_v0();
+apply_identity_evidence_v1(&mut ledger)?;
+assert_eq!(ledger.status_of("T1589"), Some(CapabilityStatus::Verified));
+assert_eq!(ledger.verified_count(), 1);
+
+// Both claims:
+apply_identity_geoint_evidence_v1(&mut ledger)?;
+apply_identity_evidence_v1(&mut ledger)?;
+assert_eq!(ledger.verified_count(), 2);
+```
+
+- **Winner:** offline identity canonicalize on `T1589` → `util/canonical`
+  (`method_id = identity.canonicalize`).
+- **Evidence level:** `IndependentCorroboration` via two channels — email
+  mailbox fold (gmail/googlemail fixtures) and person-name tokenization
+  (hyphen/apostrophe + edge-punctuation fixtures).
+- **Runner-up:** `util/identity` demographic tags (`identity_tags`) — deferred
+  (breach-schema oriented; lower independence vs email+name).
+- **Rejected:** inventing Verified on dirty `modules/stolen_tax` / `recon.breach`.
+- **Not claimed:** live breach harvest, credential collection, or network
+  victim enumeration.
+
 ## Limiting factor (next)
 
-After the GEOINT claim, the next limiting factors are: (1) only **one**
-Verified technique; (2) identity / breach rows (`T1589`) still lack an honest
-evidence chain unbound from dirty WIP; (3) Termux sensing claims need device
-or recorded sensor fixtures for DirectObservation+.
+After GEOINT + identity claims, the next limiting factors are: (1) only **two**
+Verified techniques (seed still ships `verified_count() == 0` until apply);
+(2) Termux sensing claims (`T1016.002` / related) need device or recorded
+sensor fixtures for DirectObservation+; (3) hashed evidence ledger / STIX
+interop binding still Assertion-level; (4) breach-recon path remains unbound
+from Verified until a lawful clean evidence chain exists outside dirty WIP.
