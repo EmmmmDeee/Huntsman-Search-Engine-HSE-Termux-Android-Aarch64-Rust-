@@ -20770,3 +20770,44 @@ address fails.
 | # | mutation | result |
 |---|---|---|
 | CI11-R | `set_reuseaddr(false)` → `true` | killed: "a held port must not be bindable by another listener" |
+
+## REQ-SSE-001 — the scan-log stream of a scan nobody has sat silent instead of answering 404
+
+**Found** by the adversarial probe of a live, sandboxed `hse serve`: about
+1,100 hostile requests over every route family, with no 5xx and no panic.
+`GET /api/v1/scans/{id}/events` held the connection open for any `id`,
+including one that never existed. The stream closes after
+`SSE_IDLE_TIMEOUT` (120 s) with nothing matched, and `EventSource` then
+reconnects to the same nothing indefinitely. REQ-RESILIENCE-001 had already
+closed exactly this for the live-session stream (`/live/{id}/events` answers
+404 for a session this process does not know), and the probe confirmed that
+fix still holds. The scan-log stream never got it, so a console left on a
+deleted scan, or given a mistyped id, read a dead stream as a quiet one.
+
+**Why an existence check is safe here.** A client learns a scan id only from
+the `202` that `spawn_scan` answers. `spawn_scan` installs the scan in the
+in-flight registry before that answer, and the guard is held until the
+engine's run returns, by which time the row is written. So a scan whose id a
+client holds is in the registry, in the store, or never ran.
+
+### Implemented
+
+`scan_events_sse` checks the in-flight registry first, then the store through
+`offload_store`, and answers 404 when neither knows the id. A known scan
+streams exactly as before.
+
+### Locks
+
+`api::handlers::tests::the_scan_stream_answers_only_for_a_scan_in_flight_or_stored`
+covers three cases through a real router: an unknown id is 404; a registered
+scan with no row yet streams; a stored scan with nothing in flight streams.
+The existing `scan_events_endpoint_is_server_sent_events` and gzip-exemption
+tests pass unchanged.
+
+| # | mutation | result |
+|---|---|---|
+| SSE1-B | **baseline**: no existence check (`in_flight = true`) | killed: the unknown id streamed (200, not 404) |
+| SSE1-R | registry check dropped (`in_flight = false`) | killed: a registered scan with no row yet was 404, not 200 |
+
+**2 of 2 killed.** The second mutation is why the registry check exists: a
+store-only check would have 404'd a brand-new scan's stream.

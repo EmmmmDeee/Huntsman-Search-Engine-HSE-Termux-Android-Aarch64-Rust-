@@ -1134,8 +1134,25 @@ where
 pub async fn scan_events_sse(
     State(s): State<Arc<AppState>>,
     Path(target_sid): Path<String>,
-) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
-    sse_event_stream(&s.bus, move |event| event.scan_id == target_sid)
+) -> axum::response::Response {
+    // A scan this process is neither running nor has stored (it never
+    // existed, or it was deleted) is a 404, the rule `live_events_sse` applies
+    // to sessions (REQ-RESILIENCE-001). `EventSource` does not retry a non-200,
+    // whereas an open stream would sit silent for the idle timeout and then be
+    // reconnected to indefinitely. There is no window between the two checks:
+    // `spawn_scan` registers a scan before its id reaches any client and keeps
+    // it registered until the engine has written the row.
+    let in_flight = s.cancellations.lock().contains_key(&target_sid);
+    if !in_flight {
+        let store = Arc::clone(&s.store);
+        let sid = target_sid.clone();
+        match offload_store(move || store.get_scan(&sid)).await {
+            Ok(Some(_)) => {}
+            Ok(None) => return not_found(),
+            Err(resp) => return resp,
+        }
+    }
+    sse_event_stream(&s.bus, move |event| event.scan_id == target_sid).into_response()
 }
 
 // ─── Tests (from scan.rs) ─────────────────────────────────────────────────
