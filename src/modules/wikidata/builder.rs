@@ -32,11 +32,21 @@ pub(super) fn primary_entities(
     };
     let desc = en_text(entity, "descriptions");
 
+    // Whether the item is the same KIND of thing the seed names — a human for a
+    // name seed, a non-human for an organisation seed. Only then is it a match
+    // of the subject at all: the label search matches every item whose label
+    // carries the seed's tokens, so an "Ian Thorpe" search also returns the
+    // swimming centre named after him. Such an item is still reported, but it
+    // is not the subject's `exact-name-match`, and its P625 is where IT stands,
+    // not where the subject is (REQ-WIKIDATA-003).
+    let same_kind_as_seed = kind == seed_kind(seed);
     let mut head = Entity::new(kind.clone(), label, conf, scan_id);
     head.tag(SRC);
     head.tag("wikidata");
     head.tag(qid);
-    head.tag("exact-name-match");
+    if same_kind_as_seed {
+        head.tag("exact-name-match");
+    }
     let mut ev = Evidence::new(SRC, format!("Wikidata {qid}: {label}"))
         .with_attr("wikidata_id", qid)
         .with_attr("register", "Wikidata");
@@ -137,8 +147,12 @@ pub(super) fn primary_entities(
         out.push(img);
     }
 
-    // Coordinate location (P625) → Coordinates entity for geo correlators.
-    if let Some((lat, lon)) = claim_p625(entity) {
+    // Coordinate location (P625) → Coordinates entity for geo correlators —
+    // only when the item is the same kind of thing as the seed (an organisation
+    // seed's own site). A place named after a person seed is not the person's
+    // location; emitted at HIGH it cleared the subject-fix floor and anchored
+    // the subject at a public swimming pool.
+    if same_kind_as_seed && let Some((lat, lon)) = claim_p625(entity) {
         let coord_val = format!("{lat:.6},{lon:.6}");
         let mut c = Entity::new(
             EntityKind::Coordinates,

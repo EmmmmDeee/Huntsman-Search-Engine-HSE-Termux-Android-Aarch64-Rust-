@@ -26,10 +26,22 @@
 //! recommends pulling the whole file and refreshing wholesale, not polling
 //! per query). A U.S. federal government work — not subject to domestic
 //! copyright (17 U.S.C. §105) — published specifically for third-party
-//! compliance/screening tools to consume programmatically. The endpoint
-//! redirects (302) to a time-limited, pre-signed S3 URL; the shared HTTP
-//! client follows redirects automatically (see `util::http::ssrf`), so no
-//! special handling is needed here.
+//! compliance/screening tools to consume programmatically.
+//!
+//! Both endpoints answer `302` to a time-limited (one-hour), pre-signed S3 URL
+//! on `*.s3.us-gov-west-1.amazonaws.com`, and the shared HTTP client does NOT
+//! follow it: its redirect policy (`util::http::ssrf::redirect_verdict`) stops
+//! every hop off the original request's registrable domain so a provider's API
+//! key is never replayed to a host the caller did not choose, and reqwest hands
+//! back the `302` itself. This module therefore takes that one hop itself, only
+//! to an `https` `.amazonaws.com` name ([`list::presigned_hop`]) and only
+//! because the download is keyless. An earlier version of this note claimed the
+//! client followed the redirect; it did not, the `302` was read as a failed
+//! download, and screening never had a list to screen against.
+//!
+//! A failed download is remembered for a short cool-down and every refresh is
+//! single-flight (see [`list::ListStore`]), so a scan that screens many names
+//! downloads the list at most once and does not repeat a failure per dispatch.
 //!
 //! There is no per-name search API, unlike the CKAN-backed AU registers
 //! (`asic_persons`/`asic_banned_orgs`), so the whole file is downloaded once

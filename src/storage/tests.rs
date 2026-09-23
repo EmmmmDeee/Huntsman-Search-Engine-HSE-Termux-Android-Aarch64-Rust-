@@ -832,6 +832,251 @@ fn re_observing_same_pair_is_idempotent() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// REQ-STORAGE-005. A uid is scan-independent, so two scans of two different
+/// subjects that both surface one organisation share ONE `entities` row, merged
+/// from both. Per-scan reads returned that row, so a live scan's debug bundle
+/// carried an AGL SALES PTY LIMITED record whose `paid_to_owner` listed other
+/// scans' subjects, stamped 8 days before the scan began, at generation 0 and
+/// corroboration 37. A scan reads its own copy; the shared row stays the
+/// cross-scan knowledge base.
+#[test]
+fn a_scan_reads_only_its_own_copy_of_an_entity_other_scans_also_observed() {
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    insert_scan(&store, "scan-knight");
+    insert_scan(&store, "scan-thorpe");
+    // Same (source, summary) in both scans: the shared row folds the two into
+    // ONE record listing both owners, stamped with the first scan's time.
+    let org = |scan: &str, owner: &str, recorded_at: u64, generation: u32| {
+        let mut e = Entity::new(EntityKind::Organisation, "AGL SALES PTY LIMITED", 0.8, scan);
+        e.generation = generation;
+        let mut ev = Evidence::new(
+            "qld_unclaimed",
+            "Unclaimed money held for AGL SALES PTY LIMITED",
+        )
+        .with_attr("paid_to_owner", owner);
+        ev.recorded_at = recorded_at;
+        e.add_evidence(ev);
+        e
+    };
+    let knight = org("scan-knight", "CATHY KNIGHT", 1_789_514_106, 0);
+    let thorpe = org("scan-thorpe", "Deanna Marie Thorpe", 1_790_134_048, 2);
+    assert_eq!(
+        knight.uid, thorpe.uid,
+        "precondition: one organisation, one uid"
+    );
+    store.upsert_entity(&knight).expect("should succeed");
+    store.upsert_entity(&thorpe).expect("should succeed");
+    // The engine re-persists its working set at each checkpoint and at finalise.
+    store
+        .upsert_entities_batch(std::slice::from_ref(&thorpe))
+        .expect("should succeed");
+
+    let owner_of = |e: &Entity| {
+        e.evidence[0]
+            .attributes
+            .get("paid_to_owner")
+            .cloned()
+            .unwrap_or_default()
+    };
+    let only = |scan: &str| {
+        let mut got = store.entities_for_scan(scan).expect("should succeed");
+        assert_eq!(got.len(), 1, "{scan} observed exactly one entity");
+        got.remove(0)
+    };
+
+    let t = only("scan-thorpe");
+    assert_eq!(
+        t.evidence.len(),
+        1,
+        "scan-thorpe's own record only: {:?}",
+        t.evidence
+    );
+    assert_eq!(
+        owner_of(&t),
+        "Deanna Marie Thorpe",
+        "no other scan's owner leaks in"
+    );
+    assert_eq!(
+        t.evidence[0].recorded_at, 1_790_134_048,
+        "its own recorded_at"
+    );
+    assert_eq!(t.generation, 2, "its own generation, not the first scan's");
+    assert_eq!(
+        t.corroboration, 1,
+        "its own magnitude, not the sum over scans"
+    );
+
+    // An earlier scan's export does not change after a later scan runs.
+    let k = only("scan-knight");
+    assert_eq!(k.evidence.len(), 1, "{:?}", k.evidence);
+    assert_eq!(owner_of(&k), "CATHY KNIGHT");
+    assert_eq!(k.evidence[0].recorded_at, 1_789_514_106);
+    assert_eq!((k.generation, k.corroboration), (0, 1));
+
+    // Recall reads a prior scan through `entities_filtered`: the same copy.
+    let recalled = store
+        .entities_filtered("scan-thorpe", None, None, None)
+        .expect("should succeed");
+    assert_eq!(recalled.len(), 1);
+    assert_eq!(owner_of(&recalled[0]), "Deanna Marie Thorpe");
+
+    // The shared row is still the merge of both scans.
+    let shared = store
+        .get_entity(&thorpe.uid)
+        .expect("should succeed")
+        .expect("the shared row exists");
+    assert_eq!(shared.corroboration, 2, "two scans observed it");
+    assert_eq!(owner_of(&shared), "CATHY KNIGHT; Deanna Marie Thorpe");
+    assert_eq!(
+        store
+            .observation_count(&thorpe.uid)
+            .expect("should succeed"),
+        2
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// REQ-STORAGE-005. `entities_filtered` filters and orders on the scan's own
+/// confidence. The shared column is the maximum over every scan, so a floor on
+/// it admitted a scan's copy that sits below the floor.
+#[test]
+fn entities_filtered_applies_the_floor_to_the_scans_own_confidence() {
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    insert_scan(&store, "scan-hi");
+    insert_scan(&store, "scan-lo");
+    let hi = Entity::new(EntityKind::Email, "shared@example.com", 0.9, "scan-hi");
+    let lo = Entity::new(EntityKind::Email, "shared@example.com", 0.3, "scan-lo");
+    store.upsert_entity(&hi).expect("should succeed");
+    store.upsert_entity(&lo).expect("should succeed");
+
+    assert!(
+        store
+            .entities_filtered("scan-lo", None, Some(0.5), None)
+            .expect("should succeed")
+            .is_empty(),
+        "scan-lo saw it at 0.3, below the 0.5 floor"
+    );
+    let got = store
+        .entities_filtered("scan-hi", Some("email"), Some(0.5), Some("shared@"))
+        .expect("should succeed");
+    assert_eq!(got.len(), 1, "scan-hi saw it at 0.9, above the floor");
+    assert!((got[0].confidence - 0.9).abs() < 1e-9);
+    let got = store
+        .entities_filtered("scan-lo", Some("email"), None, Some("shared@"))
+        .expect("should succeed");
+    assert_eq!(got.len(), 1);
+    assert!(
+        (got[0].confidence - 0.3).abs() < 1e-9,
+        "scan-lo's own confidence"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// An `entity_observations` table created before the per-scan copy column is
+/// migrated in place on open (additive `ALTER TABLE`), keeps its rows, and a
+/// legacy row (no copy) reads through the shared row. Re-opening is a no-op.
+#[test]
+fn an_observations_table_without_the_copy_column_is_migrated_on_open() {
+    let path = tmp_db();
+    let legacy = Entity::new(EntityKind::Email, "legacy@example.com", 0.7, "scan-legacy");
+    {
+        let conn = rusqlite::Connection::open(&path).expect("raw open");
+        conn.execute_batch(
+            "CREATE TABLE entities (
+                 uid TEXT PRIMARY KEY, scan_id TEXT NOT NULL, kind TEXT NOT NULL,
+                 value TEXT NOT NULL, confidence REAL NOT NULL,
+                 corroboration INTEGER NOT NULL DEFAULT 1,
+                 observed_at INTEGER NOT NULL, data_json TEXT NOT NULL);
+             CREATE TABLE entity_observations (
+                 entity_uid TEXT NOT NULL, scan_id TEXT NOT NULL,
+                 observed_at INTEGER NOT NULL,
+                 PRIMARY KEY (entity_uid, scan_id));",
+        )
+        .expect("seed the pre-copy schema");
+        conn.execute(
+            "INSERT INTO entities(uid, scan_id, kind, value, confidence, corroboration, observed_at, data_json)
+             VALUES(?1, 'scan-legacy', 'email', ?2, 0.7, 1, ?3, ?4)",
+            params![
+                legacy.uid,
+                legacy.value,
+                legacy.observed_at as i64,
+                serde_json::to_string(&legacy).expect("json"),
+            ],
+        )
+        .expect("seed the entity");
+        conn.execute(
+            "INSERT INTO entity_observations(entity_uid, scan_id, observed_at)
+             VALUES(?1, 'scan-legacy', ?2)",
+            params![legacy.uid, legacy.observed_at as i64],
+        )
+        .expect("seed the legacy observation");
+    }
+    let has_copy_column = |store: &Store| -> bool {
+        store
+            .conn
+            .lock()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('entity_observations')
+                  WHERE name = 'data_json')",
+                [],
+                |r| r.get(0),
+            )
+            .expect("pragma_table_info")
+    };
+
+    let store = Store::open(&path).expect("open migrates the old schema");
+    assert!(has_copy_column(&store), "open adds the copy column");
+    let copy: Option<String> = store
+        .conn
+        .lock()
+        .query_row(
+            "SELECT data_json FROM entity_observations WHERE scan_id = 'scan-legacy'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the legacy row survives the migration");
+    assert!(
+        copy.is_none(),
+        "a legacy row is left NULL, never filled from the shared row"
+    );
+    let got = store
+        .entities_for_scan("scan-legacy")
+        .expect("should succeed");
+    assert_eq!(got.len(), 1, "the legacy row reads through the shared row");
+    assert_eq!(got[0].uid, legacy.uid);
+    assert_eq!(
+        store
+            .entities_filtered("scan-legacy", Some("email"), Some(0.5), Some("legacy@"))
+            .expect("should succeed")
+            .len(),
+        1,
+        "the filtered read falls back to the shared columns too"
+    );
+    drop(store);
+
+    let store = Store::open(&path).expect("re-running the migration is a no-op");
+    assert!(has_copy_column(&store));
+    assert_eq!(
+        store
+            .entities_for_scan("scan-legacy")
+            .expect("should succeed")
+            .len(),
+        1
+    );
+    // A new scan observing the same uid writes a copy of its own.
+    let later = Entity::new(EntityKind::Email, "legacy@example.com", 0.9, "scan-later");
+    store.upsert_entity(&later).expect("should succeed");
+    let got = store
+        .entities_for_scan("scan-later")
+        .expect("should succeed");
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].scan_id, "scan-later", "the later scan's own copy");
+    assert_eq!(got[0].corroboration, 1);
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn delete_scan_cascade_removes_orphans_but_keeps_shared_entities() {
     let path = tmp_db();

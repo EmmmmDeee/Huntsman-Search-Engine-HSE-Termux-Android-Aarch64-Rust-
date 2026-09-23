@@ -2025,3 +2025,103 @@ fn derived_key_set_matches_the_struct_fields() {
         "the serde key set and the declared fields have diverged"
     );
 }
+
+/// REQ-IDENTITY-GATE-001: the structural person-name rule the engine's
+/// different-named-person gate applies. Surname-sharers and near-surnames all
+/// overlap the seed by ≥4 characters, so `identity_overlaps` alone could not
+/// tell a relative from the subject.
+#[test]
+fn person_names_compatible_reads_given_and_surname_positions() {
+    let seed = "Ian Thorpe";
+    for same in [
+        "Ian Thorpe",
+        "IAN THORPE",
+        "Ian James Thorpe",
+        "I. Thorpe",
+        "I J Thorpe",
+        "Thorpe, Ian",
+        "THORPE IAN",
+        "Dr Ian Thorpe OAM",
+        "Ian Thorpe (swimmer)",
+    ] {
+        assert_eq!(
+            person_names_compatible(seed, same),
+            Some(true),
+            "{same:?} can be the subject"
+        );
+    }
+    for other in [
+        "Ian Thorley",
+        "Aidan Thorpe",
+        "Megan Thorpe",
+        "Wendy Joan Thorpe",
+        "Ian Thorpe Aquatic Centre",
+        "Ian Symes-Thorpe",
+        "Jon Thorpe",
+    ] {
+        assert_eq!(
+            person_names_compatible(seed, other),
+            Some(false),
+            "{other:?} is a different person"
+        );
+    }
+    // A mononym carries no structure to compare: unknown, never "different".
+    assert_eq!(person_names_compatible(seed, "Thorpey"), None);
+    assert_eq!(person_names_compatible("Madonna", seed), None);
+    // Titles alone do not make a second token.
+    assert_eq!(person_names_compatible(seed, "Mr Thorpe"), None);
+}
+
+#[test]
+fn only_a_person_structurally_unlike_the_subject_is_another_named_person() {
+    use crate::core::entity::EntityKind;
+    let subject = vec!["Ian Thorpe".to_string()];
+    for other in ["Ian Thorley", "Megan Thorpe", "Ian Thorpe Aquatic Centre"] {
+        assert!(is_other_named_person(&EntityKind::Person, other, &subject));
+    }
+    // Every positional-agreement case, whatever its source count.
+    assert!(!is_other_named_person(
+        &EntityKind::Person,
+        "Ian James Thorpe",
+        &subject
+    ));
+    // A mononym falls through to the wrong-identity gate unchanged.
+    assert!(!is_other_named_person(
+        &EntityKind::Person,
+        "Thorpey",
+        &subject
+    ));
+    // Only people: a username is the wrong-identity gate's call.
+    assert!(!is_other_named_person(
+        &EntityKind::Username,
+        "meganthorpe",
+        &subject
+    ));
+    // No named subject (a non-name seed) → the rule has nothing to compare to.
+    assert!(!is_other_named_person(
+        &EntityKind::Person,
+        "Megan Thorpe",
+        &[]
+    ));
+    // Compatible with ANY subject name is enough to pivot.
+    let two = vec!["Ian Thorpe".to_string(), "Megan Thorpe".to_string()];
+    assert!(!is_other_named_person(
+        &EntityKind::Person,
+        "Megan Thorpe",
+        &two
+    ));
+}
+
+#[test]
+fn person_surname_is_read_through_the_name_parser() {
+    assert_eq!(
+        person_surname("Dr Ian Thorpe OAM").as_deref(),
+        Some("thorpe")
+    );
+    assert_eq!(person_surname("Thorpe, Ian").as_deref(), Some("thorpe"));
+    assert_eq!(
+        person_surname("Ian Thorpe (swimmer)").as_deref(),
+        Some("thorpe")
+    );
+    assert_eq!(person_surname("Thorpey"), None);
+}

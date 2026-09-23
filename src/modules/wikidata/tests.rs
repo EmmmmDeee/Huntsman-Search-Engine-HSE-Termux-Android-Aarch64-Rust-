@@ -859,3 +859,42 @@ fn a_short_page_within_the_cap_declares_nothing() {
 fn the_page_is_requested_at_the_size_it_is_measured_against() {
     assert!(search_url("x").ends_with(&format!("&limit={SEARCH_LIMIT}")));
 }
+
+/// REQ-WIKIDATA-003. An "Ian Thorpe" scan's label search also returned the
+/// swimming centre named after him. Untyped, it fell back to the seed's kind
+/// (Person), was tagged `exact-name-match`, and its P625 — emitted at HIGH —
+/// became the subject's best location fix at 0.97.
+#[test]
+fn a_place_named_after_a_person_seed_is_neither_the_person_nor_their_location() {
+    let venue = serde_json::json!({"claims": {
+        "P625": [{"mainsnak": {"datavalue": {"value": {"latitude": -33.8774, "longitude": 151.199}}}}]
+    }});
+    // Untyped but located → not a person, whatever the seed.
+    assert_eq!(
+        classify(&venue, TargetKind::FullName),
+        EntityKind::Organisation
+    );
+
+    let ents = primary_entities(
+        "Q16892619",
+        "Ian Thorpe Aquatic and Fitness Centre",
+        &venue,
+        TargetKind::FullName,
+        "s",
+    );
+    let head = &ents[0];
+    assert_eq!(head.kind, EntityKind::Organisation);
+    assert!(
+        !head.has_tag("exact-name-match"),
+        "a venue is not an exact match of a person seed"
+    );
+    assert!(
+        !ents.iter().any(|e| e.kind == EntityKind::Coordinates),
+        "the venue's location must not be emitted as a geo fix for a person scan"
+    );
+
+    // Control: an organisation seed's own site keeps its coordinate and match.
+    let ents = primary_entities("Q1", "Acme", &venue, TargetKind::Organisation, "s");
+    assert!(ents[0].has_tag("exact-name-match"));
+    assert!(ents.iter().any(|e| e.kind == EntityKind::Coordinates));
+}

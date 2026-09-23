@@ -900,7 +900,7 @@ impl ScanEngine {
                 target: &target,
                 opts: &opts,
                 is_expansion: false,
-                seed_kind: target.kind,
+                seed: &target,
                 quarantined: &quarantined,
             };
             // Seed dispatch has no parent to attribute lineage to, so the
@@ -1707,7 +1707,7 @@ impl ScanEngine {
                     target: &target,
                     opts: &gap_opts,
                     is_expansion: true,
-                    seed_kind: seed.kind,
+                    seed,
                     quarantined,
                 };
                 let mut dstate = DispatchState {
@@ -1918,7 +1918,7 @@ impl ScanEngine {
                     target: &target,
                     opts: &sweep_opts,
                     is_expansion: true,
-                    seed_kind: seed.kind,
+                    seed,
                     quarantined,
                 };
                 let mut dstate = DispatchState {
@@ -2157,6 +2157,18 @@ impl ScanEngine {
                     }))
                     .collect()
             };
+            // The subject's own NAME, when the seed is one — the reference the
+            // different-named-person gate below compares a discovered `Person`
+            // against. Deliberately the seed only, never a VERIFIED Person: a
+            // namesake promoted to VERIFIED would otherwise widen "the subject's
+            // name" to a stranger's and admit their whole family. Empty (gate
+            // off) for a non-name seed or under `--expand-all-identities`.
+            let subject_names: Vec<String> =
+                if opts.expand_all_identities || seed.kind != TargetKind::FullName {
+                    Vec::new()
+                } else {
+                    vec![seed.value.clone()]
+                };
 
             // At most one candidate per working-set entity survives the gates;
             // reserve up front so the push loop never re-grows on a large round.
@@ -2229,6 +2241,24 @@ impl ScanEngine {
                     && entity.is_uncorroborated_name_permutation()
                 {
                     self.emit_excluded(scan_id, entity, "uncorroborated_speculative");
+                    continue;
+                }
+                // Different-named-person gate: a `Person` whose given/surname
+                // structure cannot be the subject's — a relative sharing the
+                // surname, a near-surname namesake ("Ian Thorley" off "Ian
+                // Thorpe"), a facility named after the subject — is another
+                // individual however many sources name them. Expanding one runs
+                // the full identity sweep (permuted mailboxes and handles, breach
+                // and profile probes) on a stranger. The wrong-identity gate below
+                // cannot catch these: every surname-sharer overlaps the subject by
+                // ≥4 characters, and its corroboration escape reads "two registers
+                // list Megan Thorpe" as "Megan Thorpe is the subject".
+                if crate::core::scan::is_other_named_person(
+                    &entity.kind,
+                    &entity.value,
+                    &subject_names,
+                ) {
+                    self.emit_excluded(scan_id, entity, "different_named_person");
                     continue;
                 }
                 // Wrong-identity gate: an uncorroborated, non-verified
@@ -2509,7 +2539,7 @@ impl ScanEngine {
                         target: nt,
                         opts,
                         is_expansion: true,
-                        seed_kind: seed.kind,
+                        seed,
                         quarantined,
                     };
                     let mut dstate = DispatchState {

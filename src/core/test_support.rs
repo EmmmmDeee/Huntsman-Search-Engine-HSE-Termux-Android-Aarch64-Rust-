@@ -38,13 +38,18 @@ struct Inner {
     scans: HashMap<String, Scan>,
     entities: HashMap<String, Entity>,
     /// The `entity_observations` join table: entity uid → every `(scan_id,
-    /// observed_at)` that recorded it, deduplicated on `(uid, scan_id)` exactly
-    /// as the real store's `INSERT OR IGNORE` does.
+    /// observed_at, copy)` that recorded it, one per `(uid, scan_id)` exactly
+    /// as the real store's primary key keeps it.
     ///
     /// This is what makes an entity's *identity* (the uid) independent of the
     /// scan that first saw it. `Entity::scan_id` is only the originating scan;
     /// membership of a scan is this ledger, and reads must go through it.
-    observations: HashMap<String, Vec<(String, u64)>>,
+    ///
+    /// `copy` mirrors the real row's `data_json`: that scan's OWN view of the
+    /// entity, folded only from its own upserts. Per-scan reads return it; the
+    /// shared `entities` entry folds in every scan that ever saw the uid, and
+    /// returning that exported other subjects' evidence (REQ-STORAGE-005).
+    observations: HashMap<String, Vec<(String, u64, Entity)>>,
     correlations: Vec<Correlation>,
     relations: Vec<Relation>,
     events: Vec<Event>,
@@ -55,6 +60,29 @@ struct Inner {
     /// returned `None` regardless of what was archived, so no dispatch-level
     /// test could ever exercise the module-skip-on-cache-hit path.
     raw_archive: HashMap<String, (u64, u64, crate::core::port::CachedModuleResult)>,
+}
+
+impl Inner {
+    /// Every entity `scan_id` observed, as that scan's own copy — the double's
+    /// `SELECT COALESCE(o.data_json, e.data_json) … JOIN entity_observations o`.
+    fn scan_copies(&self, scan_id: &str) -> impl Iterator<Item = &Entity> {
+        self.observations
+            .values()
+            .flatten()
+            .filter(move |(s, _, _)| s == scan_id)
+            .map(|(_, _, copy)| copy)
+    }
+}
+
+/// Confidence desc, uid asc — the real store's `ORDER BY` for per-scan reads,
+/// so ties are deterministic across runs.
+fn sort_like_store(ents: &mut [Entity]) {
+    ents.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.uid.cmp(&b.uid))
+    });
 }
 
 impl InMemoryStore {
@@ -117,12 +145,20 @@ impl StoragePort for InMemoryStore {
     fn upsert_entity(&self, entity: &Entity) -> Result<()> {
         let mut g = self.inner.lock();
         // Record the observation first, mirroring the real store's
-        // `INSERT OR IGNORE INTO entity_observations` — one row per distinct
-        // (uid, scan_id), so re-upserting within a scan does not inflate the
-        // cross-scan degree.
+        // `entity_observations` upsert — one row per distinct (uid, scan_id), so
+        // re-upserting within a scan does not inflate the cross-scan degree.
+        // A re-upsert folds into THAT scan's copy by the real store's same-scan
+        // rules (merge, GREATEST corroboration, canonical order); a new scan
+        // starts its copy from the incoming entity alone.
         let obs = g.observations.entry(entity.uid.clone()).or_default();
-        if !obs.iter().any(|(s, _)| *s == entity.scan_id) {
-            obs.push((entity.scan_id.clone(), entity.observed_at));
+        match obs.iter_mut().find(|(s, _, _)| *s == entity.scan_id) {
+            Some((_, _, copy)) => {
+                let (stored_corr, incoming_corr) = (copy.corroboration, entity.corroboration);
+                copy.merge(entity.clone());
+                copy.corroboration = stored_corr.max(incoming_corr).max(1);
+                copy.canonicalize_order();
+            }
+            None => obs.push((entity.scan_id.clone(), entity.observed_at, entity.clone())),
         }
         match g.entities.get_mut(&entity.uid) {
             // Mirror the real store's GREATEST-merge contract exactly: on UID
@@ -150,26 +186,10 @@ impl StoragePort for InMemoryStore {
         // Mirror Store::entities_for_scan: JOIN through entity_observations, NOT
         // a filter on `Entity::scan_id`. A merged entity keeps the originating
         // scan's id in that field, so filtering on it hid the entity from every
-        // later scan that also observed it.
-        let g = self.inner.lock();
-        let mut ents: Vec<Entity> = g
-            .entities
-            .values()
-            .filter(|e| {
-                g.observations
-                    .get(&e.uid)
-                    .is_some_and(|obs| obs.iter().any(|(s, _)| s == scan_id))
-            })
-            .cloned()
-            .collect();
-        // Confidence desc, uid asc — the real store's ORDER BY, so ties are
-        // deterministic across runs.
-        ents.sort_by(|a, b| {
-            b.confidence
-                .partial_cmp(&a.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.uid.cmp(&b.uid))
-        });
+        // later scan that also observed it. And return the scan's own copy, not
+        // the shared entry, which carries every other scan's evidence too.
+        let mut ents: Vec<Entity> = self.inner.lock().scan_copies(scan_id).cloned().collect();
+        sort_like_store(&mut ents);
         Ok(ents)
     }
 
@@ -185,7 +205,7 @@ impl StoragePort for InMemoryStore {
         for uid in entity_uids {
             let now_empty = if let Some(obs) = g.observations.get_mut(uid) {
                 let before = obs.len();
-                obs.retain(|(s, _)| s != scan_id);
+                obs.retain(|(s, _, _)| s != scan_id);
                 removed += before - obs.len();
                 obs.is_empty()
             } else {
@@ -206,28 +226,24 @@ impl StoragePort for InMemoryStore {
         min_confidence: Option<f64>,
         value_contains: Option<&str>,
     ) -> Result<Vec<Entity>> {
-        Ok(self
+        // Mirror Store::entities_filtered: the scan's own copies, filtered on
+        // the copy's fields and ordered like the real store's ORDER BY.
+        let mut ents: Vec<Entity> = self
             .inner
             .lock()
-            .entities
-            .values()
-            .filter(|e| e.scan_id == scan_id)
+            .scan_copies(scan_id)
             .filter(|e| kind.is_none_or(|k| e.kind.to_string() == k))
             .filter(|e| min_confidence.is_none_or(|m| e.confidence >= m))
             .filter(|e| value_contains.is_none_or(|v| e.value.contains(v)))
             .cloned()
-            .collect())
+            .collect();
+        sort_like_store(&mut ents);
+        Ok(ents)
     }
 
     fn entity_facets(&self, scan_id: &str) -> Result<Vec<(String, u64)>> {
         let mut counts: HashMap<String, u64> = HashMap::new();
-        for e in self
-            .inner
-            .lock()
-            .entities
-            .values()
-            .filter(|e| e.scan_id == scan_id)
-        {
+        for e in self.inner.lock().scan_copies(scan_id) {
             *counts.entry(e.kind.to_string()).or_insert(0) += 1;
         }
         // Mirror Store::entity_facets (COUNT desc) for deterministic ordering.
@@ -255,7 +271,13 @@ impl StoragePort for InMemoryStore {
     fn scan_ids_for_entity(&self, entity_uid: &str) -> Result<Vec<String>> {
         // Real store: ORDER BY observed_at DESC, scan_id DESC.
         let g = self.inner.lock();
-        let mut obs = g.observations.get(entity_uid).cloned().unwrap_or_default();
+        let mut obs: Vec<(String, u64)> = g
+            .observations
+            .get(entity_uid)
+            .into_iter()
+            .flatten()
+            .map(|(s, t, _)| (s.clone(), *t))
+            .collect();
         obs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
         Ok(obs.into_iter().map(|(s, _)| s).collect())
     }
@@ -370,5 +392,56 @@ pub fn module_event(kind: crate::core::event::EventKind) -> Event {
         scan_id: "scan-1".to_string(),
         ts: 0,
         kind,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::entity::{EntityKind, Evidence};
+
+    /// The double keeps the real store's per-scan semantics (REQ-STORAGE-005,
+    /// `storage::tests::a_scan_reads_only_its_own_copy_of_an_entity_other_scans_also_observed`):
+    /// a per-scan read returns that scan's own copy, and `get_entity` the merge.
+    #[test]
+    fn per_scan_reads_return_the_scans_own_copy_not_the_shared_entry() {
+        let store = InMemoryStore::new();
+        let org = |scan: &str, owner: &str, generation: u32| {
+            let mut e = Entity::new(EntityKind::Organisation, "AGL SALES PTY LIMITED", 0.8, scan);
+            e.generation = generation;
+            e.add_evidence(
+                Evidence::new("qld_unclaimed", "record").with_attr("paid_to_owner", owner),
+            );
+            e
+        };
+        let knight = org("scan-knight", "CATHY KNIGHT", 0);
+        let thorpe = org("scan-thorpe", "Deanna Marie Thorpe", 2);
+        store.upsert_entity(&knight).expect("should succeed");
+        store.upsert_entity(&thorpe).expect("should succeed");
+        store
+            .upsert_entity(&thorpe)
+            .expect("a same-scan re-persist");
+
+        let owner = |e: &Entity| e.evidence[0].attributes["paid_to_owner"].clone();
+        for (scan, want, generation) in [
+            ("scan-thorpe", "Deanna Marie Thorpe", 2),
+            ("scan-knight", "CATHY KNIGHT", 0),
+        ] {
+            for got in [
+                store.entities_for_scan(scan).expect("should succeed"),
+                store
+                    .entities_filtered(scan, None, None, None)
+                    .expect("should succeed"),
+            ] {
+                assert_eq!(got.len(), 1, "{scan}");
+                assert_eq!(owner(&got[0]), want, "{scan} reads only its own record");
+                assert_eq!((got[0].generation, got[0].corroboration), (generation, 1));
+            }
+        }
+        let shared = store
+            .get_entity(&thorpe.uid)
+            .expect("should succeed")
+            .expect("row");
+        assert_eq!(owner(&shared), "CATHY KNIGHT; Deanna Marie Thorpe");
     }
 }

@@ -114,17 +114,20 @@ fn corroboration_needs_a_confirmed_subject_fix_and_proximity() {
         e.tag("family-candidate");
         e
     };
-    assert!(is_geo_corroborated_family(&near_addr, &subject));
-    assert!(is_geo_corroborated_family(&near_person, &subject));
-    assert!(!is_geo_corroborated_family(&far, &subject), "Cairns is far");
+    assert!(is_geo_corroborated_family(&near_addr, &subject, None));
+    assert!(is_geo_corroborated_family(&near_person, &subject, None));
+    assert!(
+        !is_geo_corroborated_family(&far, &subject, None),
+        "Cairns is far"
+    );
 
     // A non-family-candidate near the subject is not corroborated as family
     // (no `family-candidate` tag → the surname angle never applied).
     let other = Entity::new(EntityKind::Address, "QLD 4518, Australia", 0.3, "s");
-    assert!(!is_geo_corroborated_family(&other, &subject));
+    assert!(!is_geo_corroborated_family(&other, &subject, None));
 
     // No confirmed subject fix → nothing corroborates.
-    assert!(!is_geo_corroborated_family(&near_addr, &[]));
+    assert!(!is_geo_corroborated_family(&near_addr, &[], None));
 }
 
 #[test]
@@ -178,8 +181,8 @@ fn discordant_namesake_is_the_far_complement_of_corroboration() {
         e.tag("family-candidate");
         e
     };
-    assert!(is_geo_discordant_namesake(&perth, &subject));
-    assert!(!is_geo_corroborated_family(&perth, &subject));
+    assert!(is_geo_discordant_namesake(&perth, &subject, None));
+    assert!(!is_geo_corroborated_family(&perth, &subject, None));
 
     // The bands don't overlap: an in-area relative (Beerwah 4519) is corroborated
     // and NEVER discordant — the near band and the far band are disjoint.
@@ -188,28 +191,28 @@ fn discordant_namesake_is_the_far_complement_of_corroboration() {
         e.tag("family-candidate");
         e
     };
-    assert!(is_geo_corroborated_family(&near, &subject));
-    assert!(!is_geo_discordant_namesake(&near, &subject));
+    assert!(is_geo_corroborated_family(&near, &subject, None));
+    assert!(!is_geo_discordant_namesake(&near, &subject, None));
 
     // A non-family-candidate is never flagged (the surname angle never applied).
     let other = Entity::new(EntityKind::Address, "WA 6000, Australia", 0.32, "s");
-    assert!(!is_geo_discordant_namesake(&other, &subject));
+    assert!(!is_geo_discordant_namesake(&other, &subject, None));
     // No confirmed subject fix → nothing is judged discordant.
-    assert!(!is_geo_discordant_namesake(&perth, &[]));
+    assert!(!is_geo_discordant_namesake(&perth, &[], None));
 
     // The namesake decision composes geometry with surname distinctiveness: a far
     // bearer is a namesake only when the shared surname is COMMON. A distinctive
     // surname (the rare-surname subject's interstate kin) is never mislabelled.
     assert!(
-        is_namesake(&perth, &subject, true),
+        is_namesake(&perth, &subject, None, true),
         "far + common = namesake"
     );
     assert!(
-        !is_namesake(&perth, &subject, false),
+        !is_namesake(&perth, &subject, None, false),
         "far + distinctive surname = distant kin, not a namesake"
     );
     assert!(
-        !is_namesake(&near, &subject, true),
+        !is_namesake(&near, &subject, None, true),
         "a near relative is never a namesake, common surname or not"
     );
 }
@@ -268,14 +271,14 @@ fn subject_anchors_on_own_address_when_no_gps() {
     // With that address anchor alone, the geo angle still works: a nearby kin is
     // corroborated and a far namesake flagged — no GPS required.
     let subject = subject_locations(&[own]);
-    assert!(is_geo_corroborated_family(&kin_addr, &subject));
+    assert!(is_geo_corroborated_family(&kin_addr, &subject, None));
     let perth = {
         let mut e = Entity::new(EntityKind::Person, "Curt Moreau", 0.32, "s");
         e.tag("family-candidate");
         e.add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", "6000"));
         e
     };
-    assert!(is_geo_discordant_namesake(&perth, &subject));
+    assert!(is_geo_discordant_namesake(&perth, &subject, None));
 }
 
 #[test]
@@ -397,4 +400,72 @@ fn person_grain_postcode_survives_a_mixed_provenance_entity() {
         Some("4169"),
         "the real postal record must survive alongside an IP geolocation"
     );
+}
+
+/// REQ-GEO-FAMILY-001. A real "Ian Thorpe" scan promoted every Thorley that a
+/// pivot's register search returned to a "shared-surname relative" of the
+/// subject, and stamped the seed Person itself as its own relative: the engine's
+/// promotion pass read `family-candidate` (set relative to whichever name the
+/// module ran on) as "the subject's family" with no surname check, while AU-061
+/// applied one inline. One membership test now decides for both.
+#[test]
+fn only_the_subjects_surname_kin_and_never_the_subject_are_family() {
+    let mut own = Entity::new(EntityKind::Address, "QLD 4519, Australia", 0.38, "s");
+    own.tag("exact-name-match");
+    let subject = subject_locations(&[own]);
+    let kin = |name: &str| {
+        let mut e = Entity::new(EntityKind::Person, name, 0.35, "s");
+        e.tag("family-candidate");
+        e.add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", "4518"));
+        e
+    };
+
+    let relative = kin("Carol Thorpe");
+    let near_surname = kin("Anna Thorley");
+    assert!(is_geo_corroborated_family(
+        &relative,
+        &subject,
+        Some("thorpe")
+    ));
+    assert!(
+        !is_geo_corroborated_family(&near_surname, &subject, Some("thorpe")),
+        "a Thorley is not a Thorpe's shared-surname relative"
+    );
+    // Without a known subject surname the old behaviour holds (nothing to check).
+    assert!(is_geo_corroborated_family(&near_surname, &subject, None));
+
+    // The subject is never its own relative, however the tag reached it.
+    for role in ["seed", "subject", "exact-name-match"] {
+        let mut me = kin("Ian Thorpe");
+        me.tag(role);
+        assert!(
+            !is_geo_corroborated_family(&me, &subject, Some("thorpe")),
+            "a `{role}` entity must not be promoted as the subject's relative"
+        );
+        assert!(!is_subject_family_candidate(&me, Some("thorpe")));
+    }
+
+    // The far half shares the membership test.
+    let mut far = kin("Anna Thorley");
+    far.evidence.clear();
+    far.add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", "6000"));
+    assert!(!is_geo_discordant_namesake(&far, &subject, Some("thorpe")));
+    assert!(!is_namesake(&far, &subject, Some("thorpe"), true));
+}
+
+#[test]
+fn subject_surname_prefers_the_seed_over_a_register_name_match() {
+    // A register row exact-matched to some name, listed ahead of the seed anchor:
+    // the seed still decides "whose surname".
+    let mut row = Entity::new(EntityKind::Person, "Ian Thorley", 0.6, "s");
+    row.tag("exact-name-match");
+    let mut seed = Entity::new(EntityKind::Person, "Ian Thorpe", 0.6, "s");
+    seed.tag("seed");
+    seed.tag("subject");
+    assert_eq!(
+        subject_surname(&[row.clone(), seed]).as_deref(),
+        Some("thorpe")
+    );
+    // With no seed anchor the register match is still used.
+    assert_eq!(subject_surname(&[row]).as_deref(), Some("thorley"));
 }

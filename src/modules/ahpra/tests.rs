@@ -1,4 +1,6 @@
-use super::{Ahpra, build_practitioner_entities, parse_ahpra_html};
+use super::{
+    Ahpra, build_practitioner_entities, fetch_register_page, parse_ahpra_html, register_rows,
+};
 use crate::core::confidence;
 use crate::core::{
     entity::EntityKind,
@@ -193,4 +195,96 @@ fn a_proven_collision_sits_below_the_expansion_floor_with_its_ownership_unverifi
     let one = build_practitioner_entities(&rows[..1], Some("Jane Smith"), "s");
     assert!((one[0].confidence - confidence::MEDIUM_PLUS).abs() < f64::EPSILON);
     assert!(!one[0].has_tag("ambiguous-name"));
+}
+
+// ── REQ-AHPRA-002: the register's blank search form is not a negative ────────
+
+/// An excerpt of the REAL register page, fetched live 2026-09-23 with this
+/// module's default User-Agent for the GET it sends (HTTP 200, 169 KB): the
+/// opener, title, form tag, a form field, the empty results shell and
+/// Cloudflare's injected JSD script verbatim (its ray id scrubbed); the rest
+/// elided. The register ignored the query string — no `<table>` anywhere, the
+/// searched name nowhere.
+const REAL_REGISTER_FORM_EXCERPT: &str = "<!DOCTYPE html>\n\
+    <html class=\"no-js\" lang=\"en\" ng-app=\"app\">\n<head>\n\
+    <title>Australian Health Practitioner Regulation Agency - \
+    Register of practitioners</title>\n</head><body>\
+    <form method=\"post\" action=\"/Registration/Registers-of-Practitioners\
+    #search-results-anchor\" id=\"mainform\" class=\"search-practitioner-page-component\">\
+    <input type=\"hidden\" name=\"name-reg-detail\" />\
+    <div id=\"SearchResultsPage\" class=\"main\" data-health-profession-filters=\"\" \
+    data-location-state-filter=\"\" data-location-suburb-filter=\"\" data-sex-filters=\"\" \
+    data-language-filters=\"\" data-page-num=\"1\">\
+    <a id=\"search-results-anchor\" name=\"search-results-anchor\"></a>\
+    <h1 class=\"heading\">Register of practitioners</h1></div></form>\
+    <script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&\
+    a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML=\
+    \"window.__CF$cv$params={r:'0123456789abcdef',t:'MTc5MDEzNTgzMw=='};\
+    var a=document.createElement('script');\
+    a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';\
+    document.getElementsByTagName('head')[0].appendChild(a);\";\
+    b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){\
+    var a=document.createElement('iframe');a.height=1;a.width=1;\
+    a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';\
+    a.style.visibility='hidden';document.body.appendChild(a);\
+    if('loading'!==document.readyState)c();else if(window.addEventListener)\
+    document.addEventListener('DOMContentLoaded',c);\
+    else{var e=document.onreadystatechange||function(){};\
+    document.onreadystatechange=function(b){e(b);\
+    'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();\
+    </script></body>\n</html>\n";
+
+#[test]
+fn the_registers_blank_search_form_is_a_failure_not_zero_practitioners() {
+    // FAILS before REQ-AHPRA-002: the form parses to zero rows, and zero rows
+    // was `Ok(empty)` — coverage's `CleanNegative`, "the subject is not a
+    // registered health practitioner", from a page that never ran the search.
+    use crate::core::error::Error;
+    assert!(parse_ahpra_html(REAL_REGISTER_FORM_EXCERPT).is_empty());
+    let err = register_rows(REAL_REGISTER_FORM_EXCERPT)
+        .expect_err("the blank search form answers no query");
+    assert!(matches!(err, Error::Module { .. }), "{err}");
+    assert!(err.to_string().contains("NOT looked up"), "{err}");
+
+    // A page that does carry rows keeps them, form or no form.
+    let with_rows = REAL_REGISTER_FORM_EXCERPT.replace(
+        "</div></form>",
+        "<table><tr><td>Jane Smith</td><td>Medical Practitioner</td><td>MED0001234</td></tr>\
+         </table></div></form>",
+    );
+    let rows = register_rows(&with_rows).expect("real rows are an answer");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, "Jane Smith");
+}
+
+/// The whole request path, as `process` runs it, against a loopback serving
+/// the two pages the register has really answered: the F5 support-ID wall
+/// (still `BotChallenge`) and the real register page. FAILS before
+/// REQ-AHPRA-002 on the second, which the bare `/cdn-cgi/challenge-platform`
+/// marker typed as a wall — and with only the detector fixed it would have
+/// read as zero practitioners instead.
+#[tokio::test]
+async fn the_real_register_page_is_neither_a_wall_nor_a_clean_negative() {
+    use crate::core::error::Error;
+    use crate::util::http::test_server::{Canned, serve};
+    const F5_WALL: &str = include_str!("../../util/html/testdata/wall_ahpra_200_2026-09-18.html");
+    let base = serve(vec![
+        Canned::html(200, F5_WALL),
+        Canned::html(200, REAL_REGISTER_FORM_EXCERPT),
+    ])
+    .await;
+    let client = reqwest::Client::new();
+    let target = Target::new(TargetKind::FullName, "Jane Smith");
+
+    let wall = fetch_register_page(&client, &base, &target)
+        .await
+        .expect_err("the F5 interstitial is a wall");
+    assert!(matches!(wall, Error::BotChallenge(_)), "{wall}");
+
+    let page = fetch_register_page(&client, &base, &target)
+        .await
+        .expect("the real register page is the document, not a wall")
+        .expect("a 200 is a page");
+    let err = register_rows(&page).expect_err("and it answers no query");
+    assert!(matches!(err, Error::Module { .. }), "{err}");
 }

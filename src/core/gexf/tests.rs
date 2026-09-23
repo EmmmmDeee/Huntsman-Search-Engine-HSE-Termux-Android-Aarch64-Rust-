@@ -82,6 +82,29 @@ use super::*;
     }
 
     #[test]
+    fn an_engine_derived_template_record_draws_no_co_occurrence_edge() {
+        // REQ-GEO-FAMILY-001: the geo-family pass stamps the SAME templated
+        // summary on every relative it promotes at one rounded distance, so the
+        // identical (source, summary) wired all of them into a clique — 12,319
+        // false edges in a real export. An engine inference names no pair.
+        let summary = "Shared-surname relative ~0 km from the subject's confirmed location";
+        let mut a = Entity::new(EntityKind::Person, "Carol Thorpe", 0.5, "s");
+        a.add_evidence(Evidence::new("qld_unclaimed", "owner a"));
+        a.add_evidence(Evidence::new(crate::core::entity::GEO_CORROBORATION_SOURCE, summary));
+        let mut b = Entity::new(EntityKind::Person, "Megan Thorpe", 0.5, "s");
+        b.add_evidence(Evidence::new("qld_unclaimed", "owner b"));
+        b.add_evidence(Evidence::new(crate::core::entity::GEO_CORROBORATION_SOURCE, summary));
+        let xml = entities_to_gexf(&[a.clone(), b.clone()], &[], "s");
+        assert!(!xml.contains("<edge "), "a derived template drew an edge: {xml}");
+
+        // Control: a genuine joint record between the same two still links them.
+        a.add_evidence(Evidence::new("qld_unclaimed", "joint record"));
+        b.add_evidence(Evidence::new("qld_unclaimed", "joint record"));
+        let xml = entities_to_gexf(&[a, b], &[], "s");
+        assert!(xml.contains(r#"label="qld_unclaimed""#), "{xml}");
+    }
+
+    #[test]
     fn gexf_co_occurrence_is_record_level_not_source_level() {
         // MUST-NOT-FIRE: a one-to-many fan-out enumeration (`username_search`
         // probing one handle across platforms) attaches a DISTINCT per-platform
