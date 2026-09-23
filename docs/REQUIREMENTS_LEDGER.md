@@ -20374,3 +20374,20 @@ instead of repeating the literal `30`.
 | overcorrect-gate-before-city-match | gate before the city match | a_profile_location_that_names_australia… (Auckland 1010, Brisbane 4000) | see apply log |
 
 **Falsification (compiled):** 5 of 5 killed.
+
+## REQ-FEDIVERSE-001 — a WebFinger document is a Fediverse account only when it names an ActivityPub actor or profile page
+
+**Found.** `extract_webfinger` (src/modules/fediverse/mod.rs, HEAD 358b4a3 l.154) bailed out only when `links` and `aliases` were both empty. It then rejected only a present subject that did not match. Any other JRD minted a `fediverse`/`mastodon` Username (0.68) and tagged the seed Email `fediverse` at STRONG, with the evidence "Fediverse account (WebFinger)". WebFinger is a general discovery protocol. An OpenID Connect issuer lookup (OIDC Discovery 1.0 §2) answers the same endpoint, echoes `acct:<queried>`, and carries only an issuer link, so a custom mail domain fronted by an IdP reported every address as a Fediverse account. The source name `fediverse` maps to correlator family `other`, so the defect did not inflate cross-family corroboration. The harm was a false account claim plus a redundant username pivot.
+
+**Implemented.** The proof is now required, not implied. The module computes `profile_page` (rel=profile-page) and `actor` (rel=self, whose type `is_activitypub_type` accepts: activity+json, or ld+json with the activitystreams profile, W3C ActivityPub §3.2). Only http(s) hrefs count. When both are absent, the document is a clean miss, the same as a 404, and nothing is emitted. Alias-only and issuer-only documents no longer mint anything.
+
+### Locks
+
+| Test | Falsified by | Result |
+|---|---|---|
+| `an_oidc_issuer_webfinger_is_not_a_fediverse_account` | baseline-no-proof-gate | see apply log |
+| `a_webfinger_with_only_untyped_aliases_is_not_a_fediverse_account` | baseline-no-proof-gate | see apply log |
+| `a_profile_page_with_a_non_http_href_is_not_proof_of_an_account` | baseline-profile-http-filter-late | see apply log |
+| `an_actor_only_webfinger_is_still_a_fediverse_account` | baseline-actor-type-activity-json-only, overcorrect-require-profile-page, overcorrect-require-both | see apply log |
+
+**Falsification (compiled):** 5 of 5 killed.

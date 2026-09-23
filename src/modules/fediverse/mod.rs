@@ -142,6 +142,16 @@ fn subject_matches_queried_identity(subject: &str, email: &str) -> bool {
         .eq_ignore_ascii_case(email)
 }
 
+/// Whether a WebFinger `self` link's media type names an ActivityPub actor:
+/// `application/activity+json`, or `application/ld+json` with the
+/// activitystreams profile (W3C ActivityPub §3.2). Pure.
+fn is_activitypub_type(typ: &str) -> bool {
+    let t = typ.to_ascii_lowercase();
+    t.contains("activity+json")
+        || (t.starts_with("application/ld+json")
+            && t.contains("https://www.w3.org/ns/activitystreams"))
+}
+
 /// Build entities from a resolved WebFinger document. Pure (no I/O) so it is
 /// unit-tested against a fixture; the network shell in `process` stays thin.
 fn extract_webfinger(
@@ -151,9 +161,6 @@ fn extract_webfinger(
     scan_id: &str,
     result: &mut ModuleResult,
 ) {
-    if wf.links.is_empty() && wf.aliases.is_empty() {
-        return;
-    }
     // A WebFinger server is keyed by the `resource` query parameter, so its
     // `subject` should always echo the identity we asked about — but nothing
     // stops a misconfigured or catch-all responder from returning the SAME
@@ -165,33 +172,43 @@ fn extract_webfinger(
         return;
     }
 
+    // The human profile page (rel=profile-page) and the ActivityPub actor
+    // (rel=self, activity+json or the activitystreams ld+json profile). Both
+    // are first-class URL pivots, and only an http(s) href counts.
+    let profile_page = wf
+        .links
+        .iter()
+        .find(|l| l.rel.as_deref() == Some("http://webfinger.net/rel/profile-page"))
+        .and_then(|l| l.href.as_deref())
+        .filter(|u| u.starts_with("http"));
+    let actor = wf
+        .links
+        .iter()
+        .find(|l| {
+            l.rel.as_deref() == Some("self") && l.typ.as_deref().is_some_and(is_activitypub_type)
+        })
+        .and_then(|l| l.href.as_deref())
+        .filter(|u| u.starts_with("http"));
+
+    // WebFinger is a general discovery protocol, not a Fediverse one: an OpenID
+    // Connect issuer lookup (OIDC Discovery 1.0 §2) answers the same endpoint,
+    // echoes the queried `acct:` subject, and carries only an issuer link. A
+    // document is a Fediverse account only when it names a profile page or an
+    // ActivityPub actor; anything else (issuer-only, untyped aliases only) is
+    // a clean miss and mints no identity claim.
+    if profile_page.is_none() && actor.is_none() {
+        return;
+    }
+
     let local = crate::core::validation::email_local(email);
     let ev = Evidence::new(SRC, format!("Fediverse account `{email}` (WebFinger)"))
         .with_attr("handle", email)
         .with_attr("instance", domain)
         .with_attr("source", "webfinger");
 
-    // The human profile page (rel=profile-page) and the ActivityPub actor
-    // (rel=self, activity+json). Both are first-class URL pivots.
-    let profile_page = wf
-        .links
-        .iter()
-        .find(|l| l.rel.as_deref() == Some("http://webfinger.net/rel/profile-page"))
-        .and_then(|l| l.href.as_deref());
-    let actor = wf
-        .links
-        .iter()
-        .find(|l| {
-            l.rel.as_deref() == Some("self")
-                && l.typ
-                    .as_deref()
-                    .is_some_and(|t| t.contains("activity+json"))
-        })
-        .and_then(|l| l.href.as_deref());
-
     let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (href, conf) in [(profile_page, 0.82), (actor, 0.76)] {
-        if let Some(u) = href.filter(|u| u.starts_with("http")) {
+        if let Some(u) = href {
             seen_urls.insert(u.to_ascii_lowercase());
             let mut url_e = Entity::new(EntityKind::Url, u, conf, scan_id);
             url_e.tag("fediverse");
