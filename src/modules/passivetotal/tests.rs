@@ -74,7 +74,7 @@ fn resolve_dedups_an_expanded_and_a_compressed_ipv6_spelling() {
             &["riskiq"],
         ),
     ];
-    let (ents, _) = build_entities(&recs, "github.com", false, "s");
+    let ents = build_entities(&recs, "github.com", false, "s");
     let ips = of_kind(&ents, EntityKind::IpAddress);
     assert_eq!(
         ips.len(),
@@ -180,7 +180,7 @@ fn forward_maps_ip_answers_and_infra_domains_and_scopes_them() {
         // Blank resolve -> skipped.
         rec("github.com", "", "ip", "A", "", "", "", &[]),
     ];
-    let (ents, _) = build_entities(&recs, "github.com", false, "s");
+    let ents = build_entities(&recs, "github.com", false, "s");
 
     let ips = of_kind(&ents, EntityKind::IpAddress);
     assert_eq!(ips.len(), 1, "duplicate A folded: {ips:?}");
@@ -236,7 +236,7 @@ fn a_resolved_www_alias_of_the_target_is_not_emitted_as_a_mislabeled_domain() {
         "",
         &[],
     )];
-    let (ents, _) = build_entities(&recs, "github.com", false, "s");
+    let ents = build_entities(&recs, "github.com", false, "s");
     assert!(
         of_kind(&ents, EntityKind::Domain).is_empty(),
         "a resolved www-alias of the target must not mint a mislabeled duplicate: {ents:?}"
@@ -257,7 +257,7 @@ fn forward_falls_back_to_shape_when_resolve_type_is_blank() {
         "",
         &[],
     )];
-    let (ents, _) = build_entities(&recs, "example.com", false, "s");
+    let ents = build_entities(&recs, "example.com", false, "s");
     assert_eq!(ents.len(), 1);
     assert_eq!(ents[0].kind, EntityKind::IpAddress);
     assert_eq!(ents[0].value, "93.184.216.34");
@@ -268,7 +268,7 @@ fn forward_rejects_a_type_ip_answer_that_does_not_actually_parse() {
     // resolveType says "ip" but the value is garbage — never fabricate an
     // IpAddress entity from an unparsable string.
     let recs = vec![rec("example.com", "not-an-ip", "ip", "A", "", "", "", &[])];
-    let (ents, _) = build_entities(&recs, "example.com", false, "s");
+    let ents = build_entities(&recs, "example.com", false, "s");
     assert!(ents.is_empty());
 }
 
@@ -302,7 +302,7 @@ fn reverse_maps_value_side_to_domain_pivots() {
         // IP-shaped `value` -> not a hostname, skipped.
         rec("9.9.9.9", "140.82.114.3", "ip", "A", "", "", "", &[]),
     ];
-    let (ents, _) = build_entities(&recs, "140.82.114.3", true, "s");
+    let ents = build_entities(&recs, "140.82.114.3", true, "s");
 
     let mut vals: Vec<&str> = ents.iter().map(|e| e.value.as_str()).collect();
     vals.sort_unstable();
@@ -327,7 +327,7 @@ fn reverse_rejects_a_record_whose_resolve_names_a_different_ip() {
         // Resolves to a DIFFERENT IP entirely — must be rejected.
         rec("evil.example", "203.0.113.9", "ip", "A", "", "", "", &["riskiq"]),
     ];
-    let (ents, _) = build_entities(&recs, "140.82.114.3", true, "s");
+    let ents = build_entities(&recs, "140.82.114.3", true, "s");
     let vals: Vec<&str> = ents.iter().map(|e| e.value.as_str()).collect();
     assert_eq!(vals, vec!["github.com"], "the mismatched record must be rejected: {vals:?}");
 }
@@ -345,7 +345,7 @@ fn forward_rejects_a_record_whose_value_names_a_different_domain() {
         // Echoes a DIFFERENT domain entirely — must be rejected.
         rec("evil.example", "198.51.100.7", "ip", "A", "", "", "", &["riskiq"]),
     ];
-    let (ents, _) = build_entities(&recs, "github.com", false, "s");
+    let ents = build_entities(&recs, "github.com", false, "s");
     let vals: Vec<&str> = ents.iter().map(|e| e.value.as_str()).collect();
     assert_eq!(
         vals,
@@ -358,9 +358,9 @@ fn forward_rejects_a_record_whose_value_names_a_different_domain() {
 
 #[test]
 fn empty_response_yields_nothing() {
-    let (ents, _) = build_entities(&[], "github.com", false, "s");
+    let ents = build_entities(&[], "github.com", false, "s");
     assert!(ents.is_empty());
-    let (ents, _) = build_entities(&[], "140.82.114.3", true, "s");
+    let ents = build_entities(&[], "140.82.114.3", true, "s");
     assert!(ents.is_empty());
 }
 
@@ -377,7 +377,7 @@ fn missing_optional_fields_still_yield_an_entity_with_no_optional_attrs() {
         collected: None,
         source: vec![],
     }];
-    let (ents, _) = build_entities(&recs, "example.com", false, "s");
+    let ents = build_entities(&recs, "example.com", false, "s");
     assert_eq!(ents.len(), 1);
     assert_eq!(ents[0].value, "203.0.113.7");
     assert_eq!(attr(&ents[0], "record_type"), None);
@@ -393,53 +393,100 @@ fn record_count_is_capped_at_result_limit() {
             rec("example.com", &ip, "ip", "A", "", "", "", &[])
         })
         .collect();
-    let (ents, _) = build_entities(&recs, "example.com", false, "s");
+    let ents = build_entities(&recs, "example.com", false, "s");
     assert_eq!(ents.len(), RESULT_LIMIT);
 }
 
 // ── truncation signaling ──────────────────────────────────
 
 #[test]
-fn is_truncated_detects_when_server_reports_more_records_than_returned() {
-    // No truncation: server total equals what we got
-    assert!(!is_truncated(Some(5), 5));
-    // No truncation: empty response
-    assert!(!is_truncated(Some(0), 0));
-    // No truncation: server total not provided
-    assert!(!is_truncated(None, 5));
-    // Truncation: server has more than what we got
-    assert!(is_truncated(Some(250), 200));
-    // Truncation: even by one record
-    assert!(is_truncated(Some(201), 200));
+fn cut_sees_the_client_side_cap_and_the_providers_own_total() {
+    // Complete: everything returned was mapped and nothing more was reported.
+    assert_eq!(cut(Some(5), 5), None);
+    assert_eq!(cut(Some(0), 0), None);
+    assert_eq!(cut(None, 5), None);
+    assert_eq!(cut(None, RESULT_LIMIT), None, "exactly the cap is not a cut");
+    // The provider reported more than it returned.
+    assert_eq!(cut(Some(250), 200), Some((200, 250)));
+    assert_eq!(cut(Some(201), 200), Some((200, 201)));
+    // FAILS before the fix: the API takes no limit, so it returns everything
+    // and `totalRecords` EQUALS what it returned — the client-side cap is the
+    // only cut, and the old predicate compared the total with the returned
+    // count and called it complete.
+    assert_eq!(cut(Some(5000), 5000), Some((RESULT_LIMIT, 5000)));
+    assert_eq!(cut(None, RESULT_LIMIT + 1), Some((RESULT_LIMIT, RESULT_LIMIT + 1)));
 }
 
-#[test]
-fn build_entities_with_no_truncation_returns_false() {
-    let recs = vec![rec(
-        "example.com",
-        "203.0.113.7",
-        "ip",
-        "A",
-        "",
-        "",
-        "",
-        &[],
-    )];
-    let (ents, is_truncated) = build_entities(&recs, "example.com", false, "s");
-    assert_eq!(ents.len(), 1);
-    assert!(!is_truncated, "no truncation when records < RESULT_LIMIT");
-}
-
-#[test]
-fn build_entities_at_result_limit_returns_true_when_server_reports_more() {
-    // Simulate: server has 300 records, we capped at RESULT_LIMIT (200)
-    let recs: Vec<PdnsRecord> = (0..RESULT_LIMIT)
+/// `n` distinct forward A records for `example.com`.
+fn a_records(n: usize) -> Vec<PdnsRecord> {
+    (0..n)
         .map(|i| {
-            let ip = format!("10.0.{}.{}", i / 256, i % 256);
+            let ip = format!("10.{}.{}.{}", i / 65_536, (i / 256) % 256, i % 256);
             rec("example.com", &ip, "ip", "A", "", "", "", &[])
         })
+        .collect()
+}
+
+#[test]
+fn build_entities_maps_at_most_the_cap() {
+    assert_eq!(build_entities(&a_records(3), "example.com", false, "s").len(), 3);
+    assert_eq!(
+        build_entities(&a_records(RESULT_LIMIT + 50), "example.com", false, "s").len(),
+        RESULT_LIMIT
+    );
+}
+
+#[test]
+fn an_answer_cut_by_the_client_side_cap_is_declared_to_the_coverage_layer() {
+    // The documented case: thousands of rows, one response, `totalRecords`
+    // equal to what came back. Before the fix: no truncation, no note.
+    let body = PdnsResp {
+        results: a_records(RESULT_LIMIT + 50),
+        total_records: Some((RESULT_LIMIT + 50) as u64),
+    };
+    let r = pdns_result(&body, "example.com", false, "s");
+    let why = r.truncation.as_deref().expect("a capped answer is not complete");
+    assert!(
+        why.starts_with(&format!("{RESULT_LIMIT} of {}", RESULT_LIMIT + 50)),
+        "{why}"
+    );
+    let note = r
+        .entities
+        .iter()
+        .find(|e| e.tags.iter().any(|t| t == "truncated"))
+        .expect("the per-query note");
+    assert_eq!(note.kind, EntityKind::Domain);
+    assert_eq!(note.value, "example.com");
+}
+
+#[test]
+fn a_complete_answer_declares_nothing() {
+    let body = PdnsResp {
+        results: a_records(3),
+        total_records: Some(3),
+    };
+    let r = pdns_result(&body, "example.com", false, "s");
+    assert!(r.truncation.is_none(), "{:?}", r.truncation);
+    assert!(!r.entities.iter().any(|e| e.tags.iter().any(|t| t == "truncated")));
+}
+
+#[test]
+fn an_ip_querys_note_is_an_ip_not_a_domain_named_after_it() {
+    // FAILS before the fix: the note was `Entity::new(EntityKind::Domain, ip)`,
+    // and a Domain whose value is an IP is expanded by the engine as a domain.
+    let results: Vec<PdnsRecord> = (0..RESULT_LIMIT + 1)
+        .map(|i| rec(&format!("h{i}.example.org"), "140.82.114.3", "ip", "A", "", "", "", &[]))
         .collect();
-    let (ents, is_truncated) = build_entities(&recs, "example.com", false, "s");
-    assert_eq!(ents.len(), RESULT_LIMIT);
-    assert!(!is_truncated, "no truncation signal from build_entities itself (handled by caller)");
+    let body = PdnsResp {
+        results,
+        total_records: None,
+    };
+    let r = pdns_result(&body, "140.82.114.3", true, "s");
+    assert!(r.truncation.is_some());
+    let note = r
+        .entities
+        .iter()
+        .find(|e| e.tags.iter().any(|t| t == "truncated"))
+        .expect("the per-query note");
+    assert_eq!(note.kind, EntityKind::IpAddress);
 }

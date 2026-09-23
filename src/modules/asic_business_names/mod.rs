@@ -81,7 +81,6 @@ impl Module for AsicBusinessNames {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut result = ModuleResult::new();
         let name = target.value.trim();
         let tokens = name_tokens(name);
         if name.len() < 3 || tokens.is_empty() {
@@ -94,44 +93,74 @@ impl Module for AsicBusinessNames {
         }
 
         let (records, server_total) = ckan_query(ctx, name).await?;
-        let mut seen = std::collections::HashSet::new();
-        let mut matched_count = 0usize;
-        for rec in records
-            .iter()
-            .filter(|r| record_name_matches(r, name))
-            .take(MAX_HITS)
-        {
-            matched_count += 1;
-            emit_business_name(rec, &ctx.scan_id, &mut seen, &mut result);
-        }
-
-        if matched_count == 0 {
-            return Ok(result);
-        }
-
-        let matches_capped = is_truncated(server_total, records.len());
-
-        let mut seed = Entity::new(
-            EntityKind::Organisation,
+        Ok(business_names_result(
+            &records,
+            server_total,
             name,
-            confidence::MEDIUM_HIGH,
             &ctx.scan_id,
-        );
-        seed.tag("au");
-        seed.tag("asic");
-        seed.tag("search-result");
-        let mut ev = Evidence::new(SRC, format!("ASIC Business Names search for `{name}`"))
-            .with_attr("matched_count", matched_count.to_string())
-            .with_attr("total_matches", server_total.to_string());
-        if matches_capped {
-            ev = ev.with_attr("matches_capped", "true");
-            seed.tag("truncated");
-        }
-        seed.add_evidence(ev);
-        result.push(seed);
-
-        Ok(result)
+        ))
     }
+}
+
+/// The module's result for one CKAN page. **Pure** — the emission path
+/// `process()` returns through, locked without a network.
+///
+/// The page is declared incomplete to the coverage layer BEFORE the no-match
+/// return, for the reason `asic_banned_orgs::banned_orgs_result` gives: a full
+/// page of broad free-text hits with no whole-word match, from a search CKAN
+/// says holds more, is not "no registration by this name" — the registration
+/// may be in the rows never fetched.
+fn business_names_result(
+    records: &[Map<String, Value>],
+    server_total: u64,
+    name: &str,
+    scan_id: &str,
+) -> ModuleResult {
+    let mut result = ModuleResult::new();
+    let matches_capped = is_truncated(server_total, records.len());
+    if matches_capped {
+        result.mark_truncated(
+            records.len(),
+            usize::try_from(server_total).ok(),
+            &format!("CKAN's `limit={MAX_HITS}` page of the free-text search"),
+        );
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    let mut matched_count = 0usize;
+    for rec in records
+        .iter()
+        .filter(|r| record_name_matches(r, name))
+        .take(MAX_HITS)
+    {
+        matched_count += 1;
+        emit_business_name(rec, scan_id, &mut seen, &mut result);
+    }
+
+    if matched_count == 0 {
+        return result;
+    }
+
+    let mut seed = Entity::new(
+        EntityKind::Organisation,
+        name,
+        confidence::MEDIUM_HIGH,
+        scan_id,
+    );
+    seed.tag("au");
+    seed.tag("asic");
+    seed.tag("search-result");
+    let mut ev = Evidence::new(SRC, format!("ASIC Business Names search for `{name}`"))
+        .with_attr("matched_count", matched_count.to_string())
+        .with_attr("total_matches", server_total.to_string());
+    if matches_capped {
+        ev = ev.with_attr("matches_capped", "true");
+        seed.tag("truncated");
+    }
+    seed.add_evidence(ev);
+    result.push(seed);
+
+    result
 }
 
 /// Query the Business Names datastore by free-text name, via the shared CKAN

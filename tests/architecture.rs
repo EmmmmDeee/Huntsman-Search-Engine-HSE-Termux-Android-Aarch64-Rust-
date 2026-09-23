@@ -1939,3 +1939,75 @@ fn api_never_calls_the_store_on_the_async_reactor() {
         violations.join("\n  ")
     );
 }
+
+/// **A module that notes a truncation on an entity also declares it to the
+/// coverage layer.**
+///
+/// `core::coverage` reads completeness from ONE place, `ModuleResult`'s
+/// truncation (`mark_truncated` / `mark_truncated_if_capped` /
+/// `mark_truncated_of`), carried on the `ModuleDone` event. REQ-COVERAGE-001
+/// migrated five private spellings of "this answer is partial"; eight more
+/// survived because they were spelled as a bare `"truncated"` entity TAG,
+/// which nothing outside each module reads (REQ-COVERAGE-002). Each looked
+/// wired, and every one of them left the coverage layer reporting a partial
+/// answer as complete. The per-entity note is fine for an operator reading the
+/// entity; it is never the declaration.
+///
+/// The exemption is a cap on a DISPLAY value, not on the answer: `leakix`
+/// retrieves and counts every service, and only shortens the port list it
+/// renders into one evidence attribute. Declaring that module truncated would
+/// tell the coverage layer that services exist which it did not see.
+#[test]
+fn a_module_that_tags_a_truncation_declares_it_to_the_coverage_layer() {
+    const DISPLAY_CAP_ONLY: &[&str] = &["leakix"];
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/modules");
+
+    fn production_text(dir: &Path, out: &mut String) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n != "tests") {
+                    production_text(&path, out);
+                }
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && path.file_name().is_some_and(|n| n != "tests.rs")
+            {
+                out.push_str(&fs::read_to_string(&path).unwrap());
+            }
+        }
+    }
+
+    let mut taggers = Vec::new();
+    let mut undeclared = Vec::new();
+    for entry in fs::read_dir(&root).unwrap() {
+        let dir = entry.unwrap().path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        let mut text = String::new();
+        production_text(&dir, &mut text);
+        if !text.contains(".tag(\"truncated\")") {
+            continue;
+        }
+        taggers.push(name.clone());
+        if !text.contains(".mark_truncated") && !DISPLAY_CAP_ONLY.contains(&name.as_str()) {
+            undeclared.push(name);
+        }
+    }
+
+    // Vacuity guard: the scan must see the modules it exists for.
+    for known in ["netblock", "passivetotal", "leakix"] {
+        assert!(
+            taggers.iter().any(|t| t == known),
+            "the scan no longer sees `{known}`'s truncation tag — it would pass vacuously \
+             (found: {taggers:?})"
+        );
+    }
+    assert!(
+        undeclared.is_empty(),
+        "these modules note a truncation on an entity but never declare it through \
+         `ModuleResult::mark_truncated*`, so the coverage layer reads their partial \
+         answers as complete: {undeclared:?}"
+    );
+}

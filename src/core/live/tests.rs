@@ -523,8 +523,9 @@ async fn settle<T>(mut probe: impl FnMut() -> Option<T>) -> Option<T> {
 
 /// The registry entry a live iteration holds is keyed by its SCAN id, carries
 /// the ITERATION's own handle, and lasts exactly as long as the engine runs
-/// the iteration: present while the row reads `running`, gone once the engine
-/// has written the final status. Cancelling through that entry aborts the one
+/// the iteration: present while the row reads `running`, and released when the
+/// engine returns — just AFTER it writes the final status, so an observer that
+/// sees the terminal row must wait for the release rather than assume it. Cancelling through that entry aborts the one
 /// iteration and the session carries on to its next tick — the per-iteration
 /// semantics the wall-time watchdog already has, and the proof the entry is
 /// not the session's handle.
@@ -597,10 +598,16 @@ async fn a_live_iteration_holds_its_scan_id_in_the_shared_registry_only_while_th
     .await
     .expect("the cancelled iteration reaches a terminal status");
     assert_eq!(ended, ScanStatus::Aborted);
-    assert!(
-        !in_flight.lock().contains_key(&first),
-        "AFTER: released once the engine returned"
-    );
+    // AFTER: released once the engine returned. Waited for, not asserted the
+    // instant the row turns terminal: the row is written INSIDE the engine's
+    // run and the entry is dropped only after that run returns — the order
+    // REQ-SCANSTATUS-001 requires, so a running scan can never read
+    // `interrupted`. Asserting at the row's first terminal read raced that
+    // window and failed CI on a loaded runner (reproduced locally: 7 failures
+    // under CPU contention). A release that never happens still fails here.
+    settle(|| (!in_flight.lock().contains_key(&first)).then_some(()))
+        .await
+        .expect("AFTER: released once the engine returned");
 
     // …and the session is still running and starts a second iteration — the
     // entry was the ITERATION's handle, not the session's.
