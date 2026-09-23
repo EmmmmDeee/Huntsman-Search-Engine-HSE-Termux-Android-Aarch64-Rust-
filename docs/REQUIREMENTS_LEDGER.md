@@ -20437,16 +20437,16 @@ A second silent negative sat behind the first. The empty-page return ran before 
 
 | # | mutation | result |
 |---|---|---|
-| O1 | **baseline**: the cut is never declared | see apply log |
-| O2 | **baseline**: the empty-page return runs ahead of the verdict | see apply log |
-| O3 | over-correction: every page with a total is cut | see apply log |
-| O4 | over-correction, boundary: a page that meets the total is cut (`>=`) | see apply log |
-| O5 | **baseline**, no total: the full-page fallback dropped | see apply log |
-| O6 | over-correction: every page without a total is cut | see apply log |
-| O7 | read and total swapped ("9539 of 3") | see apply log |
-| O8 | a zero total beside rows trusted as complete | see apply log |
-| O9 | the read count not capped to `ROWS` | see apply log |
-| O10 | refactor guard: the `index_total` fallback lost | see apply log |
+| O1 | **baseline**: the cut is never declared | killed |
+| O2 | **baseline**: the empty-page return runs ahead of the verdict | killed |
+| O3 | over-correction: every page with a total is cut | killed |
+| O4 | over-correction, boundary: a page that meets the total is cut (`>=`) | killed |
+| O5 | **baseline**, no total: the full-page fallback dropped | killed |
+| O6 | over-correction: every page without a total is cut | killed |
+| O7 | read and total swapped ("9539 of 3") | killed |
+| O8 | a zero total beside rows trusted as complete | killed |
+| O9 | the read count not capped to `ROWS` | killed |
+| O10 | refactor guard: the `index_total` fallback lost | killed |
 
 ### Residual
 
