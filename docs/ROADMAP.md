@@ -1159,39 +1159,55 @@ Ordered cycles:
    sweep from before the record existed is counted as unrecorded, not
    guessed. Proven with the sensor scripted through a drop under a real
    `hse serve`, in the shell and in Chromium.
-3. **The radar through an outage, with the outage classified.** (Earns its
-   own `REQ-RESILIENCE-0xx` id and ledger entry once built and falsified —
-   not cited here in advance of that record.) A live radar with a network-bound module against a dead
-   host and hanging sensor shims keeps sweeping, every iteration bounded (no
-   change needed if the per-module timeouts the engine already enforces are
-   sound — verify, don't assume). A new pure `core::outage` (the `core::link`
-   precedent: no I/O, no clock, a `review`-shaped entry point over readings
-   the caller supplies) classifies what kind of trouble the path to the
-   internet is in, from signals HSE already produces or can cheaply add:
-   - **Offline** — DNS resolution fails (`util::curl_client`'s own
-     `CURL_EXIT_COULD_NOT_RESOLVE`, already surfaced per-provider) AND a
-     probe that never touches DNS (an IP-literal request to a stable anchor)
+3. **REQ-RESILIENCE-003 — the radar through an outage, with the outage
+   classified.** DONE. A pure `core::outage::classify` (the `core::link`
+   precedent: no I/O, no clock — a single-snapshot judgement, not a history
+   review, since "what kind of trouble is the path in right now" does not
+   need a timeline the way "was I disconnected repeatedly" does)
+   precedence-chains an `OutagePath` snapshot into `Offline >
+   DnsUnavailable > DnsHijacked > CaptivePortal > TlsIntercepted > Clear`:
+   - **Offline** — no address from the system resolver AND a probe that
+     never touches DNS (a raw IP-literal TCP connect to a stable anchor)
      also fails: no path exists at all, not just a bad resolver.
-   - **Captive portal** — DNS resolves and a TCP connect succeeds, but a
-     request to `util::egress`'s existing neutral connectivity-check URL
-     (`http://www.gstatic.com/generate_204`, already the pool's own health
-     probe, and the identical URL Android's and Chrome's own captive-portal
-     detectors use) answers anything other than an empty 204 — a 200 with a
-     body, or a redirect, is a login page intercepting the request.
-   - **DNS hijacked/filtered** — the system resolver's answer for a small set
-     of pinned, stable domains disagrees with (or the system resolver fails
-     while) the DoH fallback already wired into `util::curl_client` succeeds
-     for the same domain at roughly the same time: the two paths give
-     different truths.
-   - **TLS interception** — a request to a pinned domain completes but the
-     leaf certificate's issuer is not one of a small allow-list of public
-     CAs, reusing `cert_intel`'s existing `.tls_info(true)` capture
-     (REQ-CERTINTEL-001) rather than a second TLS-parsing path.
-   Exposed on `hse doctor`, the radar's disruption review (a new finding
-   kind carried beside the Wi-Fi-link findings, not a separate surface), and
-   the Radar view. Proven against a real captive-portal-shaped stub server
-   (200 + HTML where 204 is expected) and a DNS stub that disagrees with
-   itself, not asserted from the classifier's own logic.
+   - **DNS unavailable** — the system resolver fails but the IP-literal
+     path works: the network route is fine, only naming is down.
+   - **DNS hijacked** — the system resolver's answer for the probe domain
+     shares no address with an independent Cloudflare DoH-JSON query for
+     the same domain — a purpose-built query, deliberately not
+     `util::curl_client`'s existing DoH fallback, which activates only once
+     the system resolver has already *failed*, never when it *succeeds*
+     with a wrong answer (the exact hijack shape).
+   - **Captive portal** — the neutral connectivity check
+     (`util::egress::PROBE_URL`, the pool's own `generate_204` health
+     probe, the identical URL Android's and Chrome's own captive-portal
+     detectors use) answers anything other than an empty 204.
+   - **TLS interception** — a TLS handshake to the probe domain captures a
+     certificate whose issuer organisation (read via `util::x509_field`, a
+     minimal DER reader structurally bounded to the certificate's actual
+     `issuer` field — not a whole-buffer scan, which a self-signed
+     certificate could defeat by planting a forged organisation name in its
+     own attacker-chosen serial number ahead of the real issuer) is not an
+     exact match against a small allow-list of complete, real public-CA
+     names.
+   `app::outage::collect` runs all five probes concurrently
+   (`tokio::join!`), each bounded at 3 s, degrading to an honest "no
+   signal" value on failure. Exposed on `hse doctor --live`, `hse signal
+   --disruptions --live`, `GET /api/v1/radar/disruptions?live=1` (opt-in —
+   the auto-refresh poll does not run five live probes a tick) and a
+   "Check network path" button on the Radar view. Proven against real
+   loopback stub servers and listeners (fully hermetic, no live-internet
+   dependency) and, for the certificate-field reader, against a synthetic
+   certificate with a forged organisation name planted ahead of its real
+   issuer. Residuals: DoH is queried from one provider only (no fallback if
+   Cloudflare itself is unreachable); the CA allow-list is an unauthenticated
+   display-string comparison with no chain/fingerprint validation behind it
+   (exact match closes the cheap bypass, not a forger who copies a real CA's
+   complete name byte-for-byte); `util::x509_field` and
+   `modules::cert_intel`'s structurally-identical DER field reader remain
+   unconsolidated. Full detail, the mid-cycle disk-exhaustion incident that
+   forced a GitHub-API relay push (and the compile regression that relay
+   caused), and the security-hardening fixes a subsequent review found in
+   that relayed push: `docs/REQUIREMENTS_LEDGER.md`, REQ-RESILIENCE-003.
 4. **A session the OS kills is one tap from resumed.** (Likewise: its own
    id and ledger entry land with the implementation, not before it.)
    `core::live` says plainly: "Sessions are in-memory only. Restart →

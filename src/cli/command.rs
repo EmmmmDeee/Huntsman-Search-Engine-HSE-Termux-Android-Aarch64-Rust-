@@ -1108,6 +1108,14 @@ pub enum Command {
         /// serves, with the same advice.
         #[arg(long)]
         disruptions: bool,
+        /// With `--disruptions`, also probe the network path itself right
+        /// now — DNS, a direct route, the captive-portal check, the TLS
+        /// issuer (REQ-RESILIENCE-003) — and print what kind of trouble, if
+        /// any, stands between this device and the internet. Live network
+        /// probes, so opt-in like `hse doctor --live`; ignored without
+        /// `--disruptions`.
+        #[arg(long)]
+        live: bool,
         /// Cap on rows printed by the list views.
         #[arg(long, default_value_t = 50)]
         limit: usize,
