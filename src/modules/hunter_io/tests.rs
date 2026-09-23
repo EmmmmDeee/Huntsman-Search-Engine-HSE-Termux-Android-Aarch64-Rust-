@@ -209,7 +209,12 @@ use super::*;
             .iter()
             .find(|e| e.kind == EntityKind::Url && e.value == "https://linkedin.com/in/jdoe")
             .expect("linkedin URL pivot");
-        assert!(url.tags.iter().any(|t| t == "social-profile"));
+        assert!(url.has_tag("employee-profile"));
+        assert!(
+            url.has_tag(crate::core::tags::THIRD_PARTY),
+            "the engine's never-pivot gate reads this (REQ-HUNTER-003)"
+        );
+        assert!(!url.has_tag("social-profile"), "a colleague's, not the subject's");
     }
 
     #[test]
@@ -228,7 +233,9 @@ use super::*;
             .find(|e| e.kind == EntityKind::Username)
             .expect("twitter handle pivot");
         assert_eq!(user.value, "twitter:jdoe");
-        assert!(user.tags.iter().any(|t| t == "social-profile"));
+        assert!(user.has_tag("employee-profile"));
+        assert!(user.has_tag(crate::core::tags::THIRD_PARTY));
+        assert!(!user.has_tag("social-profile"), "a colleague's, not the subject's");
     }
 
     #[test]
@@ -237,7 +244,7 @@ use super::*;
         let es = build_entities(&d, "acme.com", "t");
         assert!(
             !es.iter()
-                .any(|e| e.tags.iter().any(|t| t == "social-profile"))
+                .any(|e| e.has_tag("social-profile") || e.has_tag("employee-profile"))
         );
     }
 
@@ -399,3 +406,84 @@ use super::*;
             email.confidence
         );
     }
+
+    #[test]
+    fn a_domain_search_colleague_profiles_are_never_subject_accounts() {
+        // REQ-HUNTER-001: FAILS on `social-profile`. A domain search lists every
+        // employee Hunter holds; three colleagues' LinkedIn / Twitter / GitHub
+        // URLs were read by AU-055 as "the subject's own confirmed accounts" on
+        // 3 platforms (Critical) and by AU-038 as one cross-platform identity.
+        let d = data(
+            r#"{
+                "emails": [
+                    {"value": "bob@acme.com", "linkedin": "https://www.linkedin.com/in/bobsmith"},
+                    {"value": "amy@acme.com", "twitter": "https://twitter.com/amyacme"},
+                    {"value": "raj@acme.com", "linkedin": "https://github.com/rajdev"}
+                ]
+            }"#,
+        );
+        let es = build_entities(&d, "acme.com", "t");
+        assert_eq!(
+            es.iter().filter(|e| e.kind == EntityKind::Url && e.has_tag("employee-profile")).count(),
+            3,
+            "the pivots are kept"
+        );
+        let fired: Vec<String> = crate::core::correlator::correlate_entities(&es, "t")
+            .into_iter()
+            .map(|c| c.rule_id)
+            .filter(|r| r == "AU-055" || r == "AU-038")
+            .collect();
+        assert!(fired.is_empty(), "colleagues' profiles fired {fired:?}");
+    }
+
+    fn page(emails: usize) -> String {
+        let rows: Vec<String> = (0..emails).map(|i| format!(r#"{{"value":"u{i}@acme.com"}}"#)).collect();
+        format!(r#"{{"emails":[{}]}}"#, rows.join(","))
+    }
+
+    fn meta(json: &str) -> HunterMeta {
+        serde_json::from_str(json).expect("valid meta")
+    }
+
+    #[test]
+    fn a_page_short_of_hunters_own_count_is_declared_truncated() {
+        // REQ-HUNTER-002: FAILS when `meta` is not read — 10 of 35 addresses
+        // came back as a complete answer, and the subject's address may be
+        // among the 25 never fetched.
+        let r = domain_search_result(
+            &data(&page(10)),
+            Some(&meta(r#"{"results":35,"limit":10,"offset":0}"#)),
+            "acme.com",
+            "t",
+        );
+        let cut = r.truncation.as_deref().expect("declared");
+        assert!(cut.contains("10 of 35"), "{cut}");
+    }
+
+    #[test]
+    fn a_page_holding_every_address_hunter_has_is_complete() {
+        // Over-correction guard: Hunter's count met by the page is a whole answer.
+        for (n, m) in [(10, r#"{"results":10,"limit":10}"#), (3, r#"{"results":3,"limit":10}"#)] {
+            let r = domain_search_result(&data(&page(n)), Some(&meta(m)), "acme.com", "t");
+            assert!(r.truncation.is_none(), "{n}: {:?}", r.truncation);
+        }
+    }
+
+    #[test]
+    fn with_no_count_a_full_default_page_is_declared_and_a_short_one_is_not() {
+        let full = domain_search_result(&data(&page(10)), None, "acme.com", "t");
+        assert!(full.truncation.is_some(), "a full page is bounded by the page, not the data");
+        let short = domain_search_result(&data(&page(4)), None, "acme.com", "t");
+        assert!(short.truncation.is_none());
+    }
+
+    #[test]
+    fn the_wire_meta_object_is_decoded() {
+        let w: Wrap = serde_json::from_str(
+            r#"{"data":{"emails":[]},"meta":{"results":35,"limit":10,"offset":0,"params":{"domain":"acme.com"}}}"#,
+        )
+        .expect("decodes");
+        let m = w.meta.expect("meta read");
+        assert_eq!((m.results, m.limit), (Some(35), Some(10)));
+    }
+

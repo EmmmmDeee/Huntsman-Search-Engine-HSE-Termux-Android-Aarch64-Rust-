@@ -445,6 +445,18 @@ impl EventEmitter {
     }
 }
 
+/// Tags whose entity the engine records as evidence but **never pivots on**, and
+/// the `EntityExcluded` reason each skip is recorded under. Both describe a page
+/// about somebody other than the subject — mining it would attribute strangers'
+/// PII to the subject — so both take the same gate in expansion (see there).
+const NEVER_PIVOTED: &[(&str, &str)] = &[
+    (
+        crate::core::tags::SOURCE_DOCUMENT,
+        "source_document_not_pivoted",
+    ),
+    (crate::core::tags::THIRD_PARTY, "third_party_not_pivoted"),
+];
+
 impl ScanEngine {
     pub fn new(modules: Vec<Arc<dyn Module>>, store: Arc<dyn StoragePort>, bus: EventBus) -> Self {
         Self::with_module_runtime(modules, store, bus, Arc::new(NoopModuleRuntime))
@@ -2298,8 +2310,13 @@ impl ScanEngine {
                 // untouched. A module cannot self-guard: it only sees the bare
                 // (kind, value) Target, never the originating entity's tags, so
                 // the gate lives here, the one point that still has both.
-                if entity.has_tag(crate::core::tags::SOURCE_DOCUMENT) {
-                    self.emit_excluded(scan_id, entity, "source_document_not_pivoted");
+                //
+                // The same discipline holds for a page about a named third party
+                // (`tags::THIRD_PARTY` — a colleague's profile a domain search
+                // lists): one table, so the two can never be gated differently.
+                if let Some((_, reason)) = NEVER_PIVOTED.iter().find(|(tag, _)| entity.has_tag(tag))
+                {
+                    self.emit_excluded(scan_id, entity, reason);
                     continue;
                 }
                 // Never fetch a Tor `.onion` service. `ahmia` surfaces dark-web

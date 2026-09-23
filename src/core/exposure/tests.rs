@@ -375,3 +375,27 @@ fn a_heavily_exposed_subject_reaches_critical() {
     );
     assert_eq!(idx.band, ExposureBand::Critical);
 }
+
+#[test]
+fn a_record_whose_ownership_is_unverified_is_not_the_subjects_exposure() {
+    // REQ-WIKITREE-001: entities merge by value, so a name-matched record from
+    // another person lands on the subject's anchor. Its source marks it
+    // Unverified; exposure must not read it as the subject's DOB or breach.
+    let mut subject = Entity::new(EntityKind::Person, "John Smith", 0.8, "s");
+    subject.tag(crate::core::tags::BREACH);
+    subject.add_evidence(
+        Evidence::new("wikitree", "a namesake's profile")
+            .with_verification(VerificationMethod::Unverified)
+            .with_attr("born", "1880-11-24")
+            .with_attr("dbname", "NamesakeCorpus"),
+    );
+    let idx = assess(std::slice::from_ref(&subject), &[]);
+    assert_eq!(component(&idx, "Sensitive PII").score, 0);
+    assert_eq!(component(&idx, "Breach exposure").score, 0);
+
+    // The same record with its ownership established counts.
+    subject.evidence[0].verification = Some(VerificationMethod::SelfDisclosed);
+    let idx = assess(std::slice::from_ref(&subject), &[]);
+    assert!(component(&idx, "Sensitive PII").score > 0);
+    assert!(component(&idx, "Breach exposure").score > 0);
+}

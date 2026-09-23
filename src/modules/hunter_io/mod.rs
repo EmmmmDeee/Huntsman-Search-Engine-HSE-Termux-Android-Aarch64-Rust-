@@ -45,7 +45,26 @@ struct Wrap {
     /// exhausted rather than silently emitting an empty result.
     #[serde(default)]
     errors: Vec<HunterApiError>,
+    /// The page's bounds and Hunter's own count of the addresses it holds for
+    /// the domain. Read by [`domain_search_result`] to declare a cut page.
+    #[serde(default)]
+    meta: Option<HunterMeta>,
 }
+
+/// `domain-search`'s `meta` object: `results` is how many addresses Hunter
+/// holds for the domain, `limit` the page size it applied (10 unless asked).
+#[derive(Deserialize, Default)]
+struct HunterMeta {
+    #[serde(default)]
+    results: Option<u64>,
+    #[serde(default)]
+    limit: Option<u64>,
+}
+
+/// Hunter's documented default page size for `domain-search` when no `limit`
+/// is sent, which is how this module asks (one page: a free key has 25
+/// searches a month, and each further page costs one).
+const DEFAULT_PAGE: usize = 10;
 
 #[derive(Deserialize)]
 struct HunterApiError {
@@ -230,13 +249,46 @@ impl Module for HunterIo {
         let Some(data) = wrap.data else {
             return Ok(ModuleResult::new());
         };
-
-        let mut result = ModuleResult::new();
-        for e in build_entities(&data, domain, &ctx.scan_id) {
-            result.push(e);
-        }
-        Ok(result)
+        Ok(domain_search_result(
+            &data,
+            wrap.meta.as_ref(),
+            domain,
+            &ctx.scan_id,
+        ))
     }
+}
+
+/// One `domain-search` page as a module result: [`build_entities`], plus the
+/// page's truncation declared to the coverage layer. **Pure.**
+///
+/// The module asks for one page. When Hunter says it holds more addresses than
+/// the page carried (`meta.results`), the rest were not retrieved, and the
+/// subject's own address may be among them. When it gives no count, a page that
+/// came back full is bounded by the page size, not by the data.
+fn domain_search_result(
+    data: &HunterData,
+    meta: Option<&HunterMeta>,
+    domain: &str,
+    scan_id: &str,
+) -> ModuleResult {
+    let mut result = ModuleResult::new();
+    for e in build_entities(data, domain, scan_id) {
+        result.push(e);
+    }
+    let returned = data.emails.len();
+    let page = meta
+        .and_then(|m| m.limit)
+        .and_then(|l| usize::try_from(l).ok())
+        .unwrap_or(DEFAULT_PAGE);
+    let cause = format!("Hunter's `domain-search` page of {page}");
+    match meta.and_then(|m| m.results) {
+        Some(total) if u128::from(total) > returned as u128 => {
+            result.mark_truncated_of(returned, u128::from(total), &cause);
+        }
+        Some(_) => {}
+        None => result.mark_truncated_if_capped(returned, page, &cause),
+    }
+    result
 }
 
 /// Map a Hunter.io `domain-search` payload to graph entities. **Pure** (no IO,
@@ -466,10 +518,21 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
             }
         }
 
-        // ── Social-profile pivots: LinkedIn/Twitter, previously deserialized
+        // ── Profile pivots: LinkedIn/Twitter, previously deserialized
         // straight past into nothing. A full URL becomes a Url pivot; a bare
         // handle becomes a platform-prefixed Username pivot, mirroring
-        // fullcontact's established convention for the same distinction.
+        // fullcontact's convention for the same distinction.
+        //
+        // The TAG does not mirror fullcontact. fullcontact answers for the
+        // queried person; a domain search lists everyone Hunter holds at the
+        // domain, so these are the organisation's EMPLOYEES' profiles.
+        // `social-profile` is what AU-055 ("the subject's own confirmed
+        // accounts") and AU-038 (cross-platform identity) read as the subject's,
+        // so it raised a colleague's LinkedIn to a High finding about the subject
+        // (REQ-HUNTER-001). `employee-profile` says whose. `THIRD_PARTY` keeps
+        // the engine from mining the page into the subject's scan — a crawl of a
+        // colleague's profile would attribute their emails and phones to the
+        // subject (REQ-HUNTER-003).
         for (network, value) in [("linkedin", &entry.linkedin), ("twitter", &entry.twitter)] {
             let Some(v) = nonempty(value) else {
                 continue;
@@ -478,7 +541,8 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
                 if seen.insert(format!("url:{}", v.to_lowercase())) {
                     let mut e = Entity::new(EntityKind::Url, &v, confidence::MEDIUM_HIGH, scan_id);
                     e.tag("hunter-io");
-                    e.tag("social-profile");
+                    e.tag("employee-profile");
+                    e.tag(crate::core::tags::THIRD_PARTY);
                     e.add_evidence(
                         Evidence::new(SRC, format!("Hunter.io {network} profile for {addr}"))
                             .with_attr("email", &addr)
@@ -496,7 +560,8 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
                         scan_id,
                     );
                     e.tag("hunter-io");
-                    e.tag("social-profile");
+                    e.tag("employee-profile");
+                    e.tag(crate::core::tags::THIRD_PARTY);
                     e.add_evidence(
                         Evidence::new(SRC, format!("Hunter.io {network} handle for {addr}"))
                             .with_attr("email", &addr)

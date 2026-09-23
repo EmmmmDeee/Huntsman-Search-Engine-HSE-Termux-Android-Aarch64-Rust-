@@ -268,3 +268,11 @@ pub const ADDR_DERIVED: &str = "addr-derived";
 /// the correlator's admissibility are untouched — only recursive expansion is
 /// withheld, the same discipline [`COARSE`] applies to an imprecise place.
 pub const SOURCE_DOCUMENT: &str = "source-document";
+/// A page **about somebody other than the subject**: a colleague's profile that
+/// a domain search lists (`hunter_io`). It is a real lead about the
+/// organisation, so it is kept and shown, not doubted: unlike [`CANDIDATE`] it
+/// is no quarantine. But mining it would attribute that person's emails,
+/// phones and addresses to the subject, so `core::engine` **never pivots on
+/// it** and records the skip as `third_party_not_pivoted`, exactly as it does
+/// for a [`SOURCE_DOCUMENT`].
+pub const THIRD_PARTY: &str = "third-party";

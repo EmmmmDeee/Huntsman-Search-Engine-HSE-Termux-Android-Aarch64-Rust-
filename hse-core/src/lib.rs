@@ -535,7 +535,7 @@ pub enum VerificationMethod {
     SelfDisclosed,
     /// Account linked to another entity's profile.
     LinkedProfile,
-    /// Unverified handle enumeration (present on platform, ownership unknown).
+    /// Ownership unknown: an enumerated handle, or a record matched only by name.
     Unverified,
 }
 
@@ -559,10 +559,10 @@ pub struct Evidence {
     pub attributes: BTreeMap<String, String>,
     /// Unix timestamp (seconds) when evidence was recorded.
     pub recorded_at: u64,
-    /// Verification status for account/handle ownership. None if not applicable.
-    /// Marked at evidence creation and propagated through correlations to gate
-    /// account-attribution rules — prevents unverified accounts from being linked
-    /// to persons.
+    /// How this record's ownership was established (whose record it is); `None`
+    /// if not applicable. Set at evidence creation. The exposure index does not
+    /// count an `Unverified` record as the subject's own: entities merge by
+    /// value, so a namesake's record can sit on the subject (REQ-WIKITREE-001).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification: Option<VerificationMethod>,
     /// True if this evidence represents a derivation or inference rather than

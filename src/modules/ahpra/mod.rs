@@ -170,8 +170,10 @@ const MULTI_HOLDER_CAUTION: &str = "This search returned MORE THAN ONE registere
 /// A name this very result set holds more than once is a PROVEN collision: two
 /// different real practitioners share it, and because the entity value is the
 /// name the engine's merge would otherwise fuse them into one composite record
-/// carrying both registration numbers. Those rows are scored lower again and
-/// say so, so the merged entity describes its own ambiguity instead of
+/// carrying both registration numbers. Those rows go through
+/// [`crate::util::namesake::mark_ambiguous`] — below the expansion floor,
+/// flagged, and their records' ownership unverified — and their caution says
+/// why, so the merged entity describes its own ambiguity instead of
 /// fabricating a practitioner who does not exist. Pure and testable.
 pub(super) fn build_practitioner_entities(
     practitioners: &[(String, String, String)],
@@ -200,18 +202,10 @@ pub(super) fn build_practitioner_entities(
     let mut out = Vec::with_capacity(relevant.len());
     for (name, profession, reg_no) in relevant {
         let multi_holder = shared.is_shared(&EntityKind::Person, name);
-        let conf = if multi_holder {
-            confidence::MEDIUM
-        } else {
-            confidence::MEDIUM_PLUS
-        };
-        let mut person = Entity::new(EntityKind::Person, name, conf, scan_id);
+        let mut person = Entity::new(EntityKind::Person, name, confidence::MEDIUM_PLUS, scan_id);
         person.tag("ahpra");
         person.tag("health-practitioner");
         person.tag("needs-identity-verification");
-        if multi_holder {
-            person.tag(crate::util::namesake::AMBIGUOUS_NAME);
-        }
         if !profession.is_empty() {
             person.tag(format!(
                 "profession:{}",
@@ -232,6 +226,12 @@ pub(super) fn build_practitioner_entities(
                     },
                 ),
         );
+        // After the evidence: the mark also stamps each record's ownership
+        // (REQ-NAMESAKE-001). The partial copy this replaces scored the row at
+        // `confidence::MEDIUM` — the expansion floor itself, not below it.
+        if multi_holder {
+            crate::util::namesake::mark_ambiguous(&mut person);
+        }
         out.push(person);
     }
     out

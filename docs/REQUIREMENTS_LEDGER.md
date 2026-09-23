@@ -19185,6 +19185,422 @@ challenge fingerprint past 8 KiB is invisible to both arms alike.
   - R2, the sanitiser does not redact: killed by 1;
   - R3, the sanitiser does not cap: killed by 1.
 
+## REQ-AU-UNCLAIMED-001 / REQ-AU-UNCLAIMED-002 — one acceptance decision for a QLD unclaimed-money row
+
+**REQ-AU-UNCLAIMED-001** arrived in #637. It was cited by a test and never
+recorded here. It gated an Organisation seed on `owner_matches_full_name`, a
+**token-subset** test: every seed token appears somewhere in the owner. That
+stopped `"ABC CORP"` from claiming `"DEF CORP PTY LTD"`, but it also admitted
+the reverse cases, and the record found three defects around it.
+
+1. **A person was the organisation.** Organisation seed `"Ford"`, owner `"MR
+   JOHN FORD"`: every seed token is present, so the private individual's row
+   became the company's. His postcode became the company's address, and
+   `"John Ford"` became an `exact-name-match` Person at the pivot confidence.
+2. **A joint owner was judged over the raw string.** Person seed `"John
+   Smith"`, owner `"JOHN NGUYEN & MARY SMITH"`: the joint string holds both
+   tokens, so the row was the subject's own, at the exact-match address
+   confidence, although no one on it is John Smith.
+3. **`exact_postcodes` had its own, weaker predicate.** It decides which
+   postcodes are fanned out into candidate suburbs, and it took **every** row
+   as exact on a verbatim (Organisation) search. `records_to_entities`
+   rejected rows that CKAN's full-text search matched on another column; the
+   postcode pass did not. Measured on the module's own fixture: the
+   Organisation seed `"Insurance Australia Group Limited"` matches three rows
+   on `SenderName`. The entity pass emits nothing, and the postcode pass
+   enumerated all three payees' postcodes as the insurer's suburbs.
+
+### Implemented
+
+- `util::abn::same_company(a, b)`: **equality** after folding case,
+  punctuation, a leading `THE` and trailing legal-form words (`PTY`, `LTD`,
+  `LIMITED`, `INC`, `INCORPORATED`, `PROPRIETARY`, `NL`). A name that folds to
+  nothing matches nothing. It shares `company_tokens` with
+  `looks_like_company`, so "is this a company?" and "is this the same
+  company?" cannot fold a name differently.
+- `au_unclaimed::qld_helpers::row_verdict(owner, query, seed, broadened,
+  kind) -> Option<bool>` is **the one acceptance decision**. Both
+  `records_to_entities` and `exact_postcodes` call it, so a row one rejects
+  cannot reach the other.
+  - **Every seed:** the owner must share a token with the query.
+  - **Organisation seed:** exact when the owner, or one of its syndicate
+    companies, is `same_company` as the seed. A different company carrying
+    every seed token is kept as a non-exact lead. An individual is rejected.
+  - **Person seed:** exactness is judged per parsed co-owner. The
+    surname-position gate for broadened hits moved in unchanged.
+- On an Organisation seed's rows:
+  - a non-exact lead is tagged `similar-company`, not `family-candidate`,
+    which would have sent a company through the surname-kinship and geo-family
+    passes as the subject's relative;
+  - a named individual is a `co-owner`, never `exact-name-match`;
+  - a syndicate sibling that is not the seed company stays tentative.
+
+### Locks
+
+- `modules::au_unclaimed::tests::qld`:
+  - `an_individual_is_never_the_organisation_seed`
+  - `a_different_company_carrying_the_seed_tokens_is_a_lead_not_the_subject`
+  - `the_seed_company_is_exact_whatever_its_legal_form_spelling`
+  - `a_syndicate_sibling_of_the_seed_company_stays_tentative`
+  - `a_joint_owner_is_judged_per_co_owner_not_over_the_raw_string`
+  - `exact_postcodes_takes_only_rows_the_entity_pass_accepts_as_the_subject`
+  - `a_named_co_owner_on_the_seed_company_row_is_not_the_subject`
+- `util::abn::tests::same_company_is_equality_whichever_side_is_the_seed`,
+  and `same_company`'s doc-test.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| U1 | **baseline**: the Organisation token-subset gate returns | killed by 2 |
+| U2 | **baseline**: a person seed's exactness judged over the raw joint string | killed by 2 |
+| U3 | **baseline**: `exact_postcodes` keeps its own weaker predicate | killed by 1 |
+| U4 | an Organisation lead tagged `family-candidate` | killed by 1 |
+| U5 | a syndicate sibling at full weight | killed by 1 |
+| U6 | a named individual on an Organisation row is exact | killed by 1 |
+| U7 | over-correction: Organisation leads dropped | killed by 2 |
+| U8 | `same_company` is a subset test (owner ⊆ seed) | killed by 1 |
+| U8b | `same_company` is a subset test (seed ⊆ owner) | killed by 4 |
+| U8c | U8, doc-tests only | killed by 1 |
+| U9 | `same_company` keeps legal-form words | killed by 2 |
+
+**11 of 11 killed.** U8 **survived** the first matrix. The subset test had
+been reversed, owner ⊆ seed, and no module test fed it a name in that
+direction; only the doc-test saw it, and doc-tests do not run under `--lib`.
+The symmetric unit test was added and U8 re-run. U8c also exposed a harness
+defect: a doc-test's name contains spaces, so the harness read a failed
+doc-test run as SURVIVED. It now counts any non-zero failed total as killed.
+
+## REQ-HUNTER-001 / REQ-HUNTER-002 — a domain search's colleagues are not the subject; its page is not the whole list
+
+**Found** by the adversarially verified module audit.
+
+**REQ-HUNTER-001.** `hunter_io` answers `domain-search`: every address Hunter
+holds at a domain, which means the organisation's **employees**. Each
+employee's LinkedIn / Twitter was emitted as a `Url` or `Username` tagged
+`social-profile`. That copied fullcontact's convention, but fullcontact
+answers for the queried person. Two rules read `social-profile` as the
+subject's:
+- **AU-055** ("Subject's own confirmed account(s)/profile(s) … primary sources
+  the subject controls"): High from one URL, Critical from three platforms;
+- **AU-038**: a cross-platform identity.
+
+An Email seed `jane@acme.com` → Domain `acme.com` → three colleagues'
+profiles was therefore a Critical finding about Jane's own accounts.
+
+**REQ-HUNTER-002.** The module sent one request with Hunter's default page
+(10) and never read the response's `meta.results`, Hunter's own count of the
+addresses it holds. A domain with 35 known addresses came back as a complete
+answer of 10, and the subject's address may be among the 25 never fetched.
+
+### Implemented
+
+- The profile pivots are kept and tagged `employee-profile`, which says whose
+  they are. No owned-account rule reads it.
+- `Wrap` decodes `meta` into `HunterMeta{results, limit}`. The pure
+  `domain_search_result` declares the page to the coverage layer:
+  - `mark_truncated_of(returned, results, …)` when Hunter holds more than the
+    page carried;
+  - with no count, `mark_truncated_if_capped` against the page size;
+  - a page that meets Hunter's own count is complete.
+- One request is still the design, not paging. A free key has 25 searches a
+  month and every page costs one; the cut is now declared rather than hidden.
+
+### Locks
+
+`modules::hunter_io::tests`:
+- `a_domain_search_colleague_profiles_are_never_subject_accounts`. It
+  runs the module's output through `correlator::correlate_entities`, the
+  boundary where the harm happened, and asserts that neither AU-055 nor
+  AU-038 fires.
+- `a_page_short_of_hunters_own_count_is_declared_truncated`
+- `a_page_holding_every_address_hunter_has_is_complete`
+- `with_no_count_a_full_default_page_is_declared_and_a_short_one_is_not`
+- `the_wire_meta_object_is_decoded`
+- The linkedin / twitter tests encoded the defect (they asserted
+  `social-profile`) and now assert the opposite.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| H1 | **baseline**: colleague profiles tagged `social-profile` | killed by 2 |
+| H1b | both tags. The tag-count assertion is satisfied, so only the correlator assertion can see it | killed by 2 |
+| H2 | **baseline**: `meta` never read | killed by 2 |
+| H3 | over-correction: every page truncated | killed by 1 |
+| H4 | boundary: a page equal to Hunter's count read as cut | killed by 1 |
+| H5 | no count: the full-page fallback dropped | killed by 1 |
+
+**6 of 6 killed.** H1b proves that the correlator assertion is live on its
+own, not carried by the tag assertion before it.
+
+## REQ-EMAILREP-001 / REQ-EMAILREP-002 — EmailRep's confidence rests on the report; its leak flag is read under the vendor's name
+
+**Found** by the adversarially verified module audit. Field names were
+verified against the vendor's own documentation, the
+`sublime-security/emailrep.io` README, whose example response is now a
+verbatim test fixture.
+
+**REQ-EMAILREP-001.** `build_email_entity` re-emitted the target at a fixed
+`HIGH_PLUSPLUS_PLUS` (0.85) whatever the report said. The engine merges by
+uid and keeps the higher confidence, so **every address EmailRep answered
+for became VERIFIED** (≥ 0.75). That included:
+- an undeliverable address;
+- one on a nonexistent domain, which the module itself tagged
+  `domain-nonexistent` while emitting it at 0.85;
+- an empty `{}` report.
+
+This is the defect REQ-CANARY-003 fixed in `disposable_check`, at a second
+site.
+
+**REQ-EMAILREP-002.** The details field was read as `credential_leaked`. The
+vendor sends `credentials_leaked` (and `credentials_leaked_recent`). Every
+field is optional, so the misspelling decoded as absent. Every credential
+leak EmailRep reported was dropped: no `breach` tag and no attribute, while
+the module advertises T1589.001 Credentials. The fixtures had been written in
+the module's own spelling, so no test could see the drift.
+
+### Implemented
+
+- `report_observes_the_address` counts only evidence about the **address**:
+  - profiles it is used on;
+  - a breach or a credential leak;
+  - observed malicious, spam or blacklisted behaviour;
+  - a `first_seen` date, not the vendor's `never`.
+
+  `references` is excluded. The vendor documents that it "can include
+  reputation sources for the domain", so a mailbox nobody holds at a
+  reputable domain has references.
+- `report_confidence` sets the rung:
+  - an observed address earns `HIGH_PLUS` (0.70), which is `hibp`'s rung for
+    an address seen in a breach: a presence claim from one third-party
+    source, below VERIFIED until something corroborates it;
+  - any other report is an annotation at `SPECULATIVE`, below
+    `SEED_PRESENT_RUNG`.
+- `RepDetails` reads `credentials_leaked`, `credentials_leaked_recent` and
+  `malicious_activity_recent` under the vendor's names. The evidence
+  attribute is now `credentials_leaked`; nothing outside the module read the
+  old one.
+- `contact_enrich`'s comment no longer lists `emailrep` among the modules
+  that re-emit at 0.85.
+
+### Locks
+
+`modules::emailrep::tests`:
+- `the_vendors_documented_response_decodes`: the vendor's example, verbatim.
+- `a_credential_leak_alone_is_a_breach_signal`
+- `a_report_that_never_observed_the_address_confers_no_presence`. It covers
+  the audit's undeliverable case, `{}`, a nonexistent domain, and references
+  alone.
+- `an_observed_address_is_present_but_not_verified_by_this_source_alone`. It
+  covers six kinds of address-level evidence, each ≥ `SEED_PRESENT_RUNG` and
+  < `VERIFIED_MIN`.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| E1 | **baseline**: the fixed 0.85 re-emission | killed by 2 |
+| E2 | **baseline**: the module's own spelling, `credential_leaked` | killed by 5 |
+| E3 | `references` counted as address evidence | killed by 1 |
+| E4 | `never` counted as a first-seen date | killed by 1 |
+| E5 | over-correction: nothing earns presence | killed by 1 |
+| E6 | an observed address is VERIFIED | killed by 1 |
+| E7 | a credential leak not counted as observation | killed by 1 |
+
+**7 of 7 killed.**
+
+## REQ-WIKITREE-001 / REQ-WIKITREE-002 — a namesake's vitals are not the subject's; every silent wikitree negative is typed
+
+**Found** by the adversarially verified module audit (four findings, one
+module).
+
+**REQ-WIKITREE-001 — a namesake's birth date was scored as the subject's.**
+`wikitree` mints one `Person` per profile, named `First [Middle] Last`. For a
+seed "John Smith" that is the seed itself, so the engine merges every
+namesake onto the subject's anchor. The merge is by uid, keeps the higher
+confidence, and appends the evidence. Each profile's evidence carries
+`born`, one of the `DOB_KEYS`. `core::exposure`'s sensitive-disclosure scan
+has no source gate, so a man born in 1880 in New Zealand scored as **the
+subject's disclosed date of birth**. The module's own docs promise that
+namesakes are the norm and that the operator decides which profile is the
+subject's; the merge made that decision automatically.
+
+The fix is structural, at the field that already exists for it.
+`Evidence.verification` is documented as the record's ownership status, but
+no rule read it; only the report renderer printed it.
+- `wikitree` marks every profile record `VerificationMethod::Unverified`:
+  whose profile it is, is exactly what is not known.
+- `core::exposure` reads evidence through one gate, `attributable(ev)`. An
+  `Unverified` record is shown but is not counted as the subject's DOB,
+  government ID, financial data or breach corpus.
+- The keys are **not** renamed to dodge the DOB detector. The next name-
+  matched source reuses the gate, not a vocabulary trick.
+- `hse-core`'s doc for the field no longer claims a correlator gate that
+  never existed. It states what reads it.
+
+**REQ-WIKITREE-002 — three silent negatives.**
+1. A seed the name parser cannot split (a mononym) returned `Ok(empty)`
+   before any request. Coverage reads that as CleanNegative, "WikiTree holds
+   no profile", for a tree that was never asked. It is now a typed
+   `query_too_weak(Scoped, …)` skip from the pure `search_names`: the
+   REQ-SKIPCLASS-001 defect at an eleventh site.
+2. One `limit=10` page was fetched, and WikiTree's `total` (602 for "John
+   Smith") was written only into a private `matches_total` attribute. The cut
+   is now declared through `mark_truncated`, or `mark_truncated_if_capped`
+   when there is no total.
+3. A **stub** (private profile: `Id` + `Name`) was "counted, not emitted",
+   and the count rode only on emitted entities. An answer made of stubs alone
+   emitted nothing and read as CleanNegative, although WikiTree holds
+   profiles under exactly that name. Private profiles are disproportionately
+   living people, the most relevant subjects. Each stub is now a
+   `private-profile` source Url at `LOW`: the page exists and the details are
+   withheld. It is never a Person.
+
+### Locks
+
+- `modules::wikitree::tests`:
+  - `a_namesake_birth_date_on_the_subject_anchor_is_not_the_subject_disclosure`
+    merges the module's output onto a seed anchor exactly as the engine does,
+    runs `exposure::assess`, and carries a control (the subject's own breach
+    DOB still counts);
+  - `a_seed_that_does_not_split_is_a_typed_skip_not_an_empty_answer`;
+  - `a_page_short_of_wikitrees_total_is_declared_truncated` (3 of 602, on the
+    live fixture);
+  - `a_page_holding_the_whole_total_is_complete`;
+  - `an_answer_of_only_private_profiles_is_not_a_clean_negative`;
+  - the live-shape test asserts the stub's private-profile Url.
+- `core::exposure::tests::a_record_whose_ownership_is_unverified_is_not_the_subjects_exposure`:
+  the gate at its own boundary, for both the sensitive and the breach
+  component, with the verified control.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| W1 | **baseline**: profile evidence not marked `Unverified` | killed by 1 |
+| W1b | the exposure gate removed (module suite) | killed by 1 |
+| W1b-core | the exposure gate removed (core suite only) | killed by 1 |
+| W2 | **baseline**: an unsplittable seed is an empty answer | killed by 1 |
+| W3 | **baseline**: the page's cut never declared | killed by 2 |
+| W4 | over-correction: every page truncated | killed by 1 |
+| W5 | no total: the full-page fallback dropped | killed by 1 |
+| W6 | **baseline**: stubs only counted | killed by 2 |
+
+**8 of 8 killed.** W2's first spec did not compile, and the harness reported
+it as **NO-RUN**, not as a survivor. It was re-specified and killed.
+
+## REQ-NAMESAKE-001 — the ambiguity mark must survive the merge, and there must be one of it
+
+Two defects in the namesake family, found while mapping the authority after
+REQ-WIKIDATA-001 and REQ-WIKITREE-001.
+
+**The mark did not survive the merge it was written for.** `mark_ambiguous`
+capped confidence and stamped the `ambiguous-name` tag — both **entity-level**.
+The engine merges same-named entities and `Entity::absorb` keeps
+`f64::max(confidence)`, so an ambiguous row folded onto the subject's own
+same-named anchor kept the anchor's higher confidence: the cap was erased, the
+tag unioned in but the harm (a pivot-eligible confidence) gone. That is the
+exact erasure REQ-WIKIDATA-001 documented for one module; it is a property of
+the authority, not of any one caller. The row's evidence attributes — a date
+of birth, a registration number — then read as the subject's own.
+
+The durable mark is **per record**. `mark_ambiguous` now also sets
+`Evidence.verification = Unverified` on every record that has no ownership
+status, and records survive the merge. `core::exposure` already gates on that
+field (REQ-WIKITREE-001), so a namesake's DOB on the subject's anchor is shown
+and not scored. An ownership the source actually established (an account linked
+by email) answers a different question and is left untouched.
+
+**There was more than one copy of the rule.** `ahpra` open-coded the tag and a
+confidence of `confidence::MEDIUM` — the expansion floor **itself**, not below
+it — so a proven-collision practitioner sat exactly on the pivot boundary and
+carried no evidence-level mark. `tests/architecture.rs` now refuses the
+`ambiguous-name` tag applied anywhere but `util::namesake::mark_ambiguous`
+(`the_ambiguous_name_tag_is_applied_only_through_mark_ambiguous`), so a fifth
+copy cannot drift in. `ahpra` and `wikitree` both call the authority; the
+consumers are now `ahpra`, `gleif_lei`, `opencorporates`, `wikidata`,
+`wikitree`.
+
+### Locks
+
+- `util::namesake::tests::the_ownership_mark_survives_the_merge_that_erases_the_cap`
+  — merges an ambiguous row onto a same-named anchor, asserts the cap is gone
+  and the `Unverified` mark is not, and that exposure does not count the row's
+  DOB; with the verified control.
+- `util::namesake::tests::an_ownership_the_source_established_is_kept`, also the
+  idempotence of the tag and the mark.
+- `modules::ahpra::tests::a_proven_collision_sits_below_the_expansion_floor_with_its_ownership_unverified`.
+- `modules::wikitree::tests::a_name_the_answer_holds_twice_is_marked_by_the_namesake_authority`.
+- `tests::architecture::the_ambiguous_name_tag_is_applied_only_through_mark_ambiguous`.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| N1 | **baseline**: the mark only caps and tags | killed by 3 |
+| N2 | over-correction: an established ownership is overwritten | killed by 1 |
+| N3 | **baseline**: `ahpra`'s partial copy (floor score, tag only) | killed by 1 |
+| N3-arch | the same partial copy, against the architecture lock | killed by 1 |
+| N4 | `wikitree` never marks a collision | killed by 1 |
+| N5 | over-correction: `wikitree` marks every name | killed by 1 |
+
+**6 of 6 killed.**
+
+## REQ-HUNTER-003 / REQ-AU-UNCLAIMED-003 — review round on #643
+
+Found by review of #643 (Copilot). Every finding was verified against the code
+before it was acted on.
+
+**REQ-HUNTER-003 — a colleague's profile was still an ordinary pivot.**
+REQ-HUNTER-001 retagged the profiles `employee-profile`, which stopped
+AU-055/AU-038. But a tag is not a gate: the `Url` stayed pivot-eligible, so
+`web_crawler` and `search_engines` could mine a colleague's page and attribute
+their emails and phones to the subject. The fix is a canonical
+`tags::THIRD_PARTY`: a page about somebody else, kept and shown, not
+quarantined. `core::engine` reads it in the gate that already withheld
+`SOURCE_DOCUMENT`. The gate is now one table, `NEVER_PIVOTED`, so the two tags
+cannot be gated differently. Adding the tag touches `hse-core`: `tags.rs` holds
+only constants, and the `wasm-ui/pkg` byte check was run locally with the
+pinned toolchain to confirm the bytes did not change.
+
+**Also fixed in this round:**
+- **emailrep** did not count `*_recent` flags or `last_seen` as observations of
+  the address, although the vendor documents them as such.
+- **wikitree** returned early on an empty page before the truncation check, so
+  a positive `total` with no rows read as a clean negative.
+
+**REQ-AU-UNCLAIMED-003 — the company filters still used the token subset.**
+- The emit filter dropped **the seed company itself** whenever the seed's
+  article or legal form differed: "The Acme Group Limited" against "ACME GROUP
+  PTY LTD" on a row `row_verdict` had accepted as exact.
+- A sender company carrying the seed's words was emitted at the row's full
+  weight.
+- The fix: `company_carries_seed` = `same_company || token subset`, and only
+  the seed company itself is emitted at full weight.
+- `util::abn`'s tokeniser now folds `AND` and a scraped `&amp;` to `&`. This
+  retires the hand-kept `" AND CO "` suffix, which had been a workaround for the
+  missing fold.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| T1 | **baseline**: no `THIRD_PARTY` row in the gate | killed by 1 |
+| T2 | the table refactor drops `SOURCE_DOCUMENT` | killed by 1 |
+| T3 | **baseline**: hunter's pivot untagged | killed by 1 |
+| E8 / E9 | recent flags / `last_seen` ignored | killed by 1 each |
+| E10 | over-correction: `never` counted as a date | killed by 1 |
+| W7b | **baseline**: the empty return precedes the verdict | killed by 1 |
+| U10 / U11 | **baseline**: token-subset filter / sender paid at full weight | killed by 1 each |
+| U12 | over-correction: equality-only filter | killed by 2 |
+| A1 / A2 | no fold / folding any `AND…` token | killed by 1 each |
+
+**13 of 13 killed.** The first W7 spec *survived*: removing the return
+outright is an equivalent mutant, because the loop over no rows is empty. It
+was re-specified as the true baseline, the return moved ahead of the verdict,
+and that version was killed.
+
 ### REQ-APIDISCOVERY-001 — a domain's published API and authorization surface had no reader; `api_discovery` reads four discovery well-knowns, validates each against the URL that served it, and follows declared authorization servers the Domain pivot cannot reach
 
 #### Where this sits
