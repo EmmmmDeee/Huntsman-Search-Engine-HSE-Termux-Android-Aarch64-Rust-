@@ -2259,6 +2259,63 @@ fn a_fallback_throttle_is_the_typed_rate_limit_not_data() {
 }
 
 #[test]
+fn a_fallback_error_body_is_redacted_as_the_reqwest_path_redacts_it() {
+    // FAILS on the raw-body fallback: the reqwest arm redacts an error body
+    // before classifying it, the curl arm did not, so a provider echoing the
+    // request URL put the key into the typed error, whatever the error type.
+    for code in [429, 500] {
+        let r = super::fetch::resolve_curl_fallback::<Loose>(
+            "m",
+            "https://api.example/x",
+            None,
+            &[404],
+            "t",
+            status(code, "failed: https://api.example/x?api_key=SEKRET123&q=a"),
+        );
+        let text = r.expect_err("an error status is not an answer").to_string();
+        assert!(
+            !text.contains("SEKRET123"),
+            "HTTP {code} leaked the key: {text}"
+        );
+        assert!(
+            text.contains("api_key=***"),
+            "redacted, not dropped: {text}"
+        );
+    }
+}
+
+#[test]
+fn a_fallback_error_body_is_capped_as_the_reqwest_path_caps_it() {
+    // A challenge fingerprint past the cap is invisible to the reqwest arm, so
+    // it must be to the curl arm too: the two answer alike for one response.
+    let wall = "<script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1\"></script>";
+    let pad = "x".repeat(8 * 1024);
+    let classify = |body: String| {
+        super::fetch::resolve_curl_fallback::<Loose>(
+            "m",
+            "https://api.example/x",
+            None,
+            &[404],
+            "t",
+            status(403, &body),
+        )
+        .expect_err("a 403 is not an answer")
+    };
+    // Control: the same wall inside the cap IS a challenge, so the case below
+    // is not vacuous.
+    let within = classify(format!("{wall}{pad}"));
+    assert!(
+        matches!(within, crate::core::error::Error::BotChallenge(_)),
+        "{within:?}"
+    );
+    let past = classify(format!("{pad}{wall}"));
+    assert!(
+        !matches!(past, crate::core::error::Error::BotChallenge(_)),
+        "past the cap, as reqwest sees it: {past:?}"
+    );
+}
+
+#[test]
 fn a_fallback_with_no_answer_is_a_failure_never_absent() {
     let r = super::fetch::resolve_curl_fallback::<Loose>(
         "m",

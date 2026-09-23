@@ -102,18 +102,17 @@ pub async fn error_snippet(resp: reqwest::Response) -> String {
 /// vendor fingerprint is a `<script>` URL in its head, which the summary (the
 /// page title) drops.
 async fn error_body(resp: reqwest::Response) -> Option<String> {
-    // Stream up to 8 KiB before deciding the snippet is "long
+    // Stream up to the cap before deciding the snippet is "long
     // enough" — a hostile or compromised upstream could otherwise
     // return a multi-GB body that reqwest's `resp.text()` happily
     // accumulates, exhausting RAM on a Termux device.
-    const SNIPPET_BYTES_CAP: usize = 8 * 1024;
     use futures::StreamExt as _;
     let mut stream = resp.bytes_stream();
     let mut buf: Vec<u8> = Vec::with_capacity(1024);
     while let Some(chunk) = stream.next().await {
         match chunk {
             Ok(bytes) => {
-                if append_capped(&mut buf, &bytes, SNIPPET_BYTES_CAP) {
+                if append_capped(&mut buf, &bytes, ERROR_BODY_CAP) {
                     break;
                 }
             }
@@ -124,9 +123,24 @@ async fn error_body(resp: reqwest::Response) -> Option<String> {
     // `from_utf8` would reject and report as "<unreadable>" even for a perfectly
     // readable body. We only need a human-facing snippet, so replace the (at most
     // one) split char rather than discard the whole message.
-    let body = String::from_utf8_lossy(&buf);
-    scan_for_api_keys(&body);
-    Some(redact_credentials(&body))
+    Some(sanitised_error_body(&String::from_utf8_lossy(&buf)))
+}
+
+/// The most of an error body HSE keeps, whichever transport read it: enough
+/// for a classifier to see a challenge page's head, and no more.
+const ERROR_BODY_CAP: usize = 8 * 1024;
+
+/// What an error response's body becomes once read, **whichever transport read
+/// it**: capped at [`ERROR_BODY_CAP`], harvested for leaked keys, then
+/// redacted. The one step both [`error_body`] (reqwest) and
+/// [`resolve_curl_fallback`] take before [`classify_status_error`] — a provider
+/// that echoes the request URL (`?api_key=…`) in a 429 or 5xx body must not
+/// put the key into the typed error, the SSE event, or the log. The curl
+/// fallback skipped this step and classified the raw body (REQ-CURL-001).
+fn sanitised_error_body(raw: &str) -> String {
+    let head = &raw[..raw.floor_char_boundary(ERROR_BODY_CAP)];
+    scan_for_api_keys(head);
+    redact_credentials(head)
 }
 
 /// Reduce an error body ([`error_body`]) to the one line a `ModuleError`
@@ -671,7 +685,11 @@ pub(super) fn resolve_curl_fallback<T>(
             if absent_statuses.contains(&status) {
                 return Ok(None);
             }
-            Err(classify_status_error(module, code, Some(&body)))
+            Err(classify_status_error(
+                module,
+                code,
+                Some(&sanitised_error_body(&body)),
+            ))
         }
         JsonFetch::Undecodable => {
             // The host answered 2xx: reachable, as the reqwest arm would record.

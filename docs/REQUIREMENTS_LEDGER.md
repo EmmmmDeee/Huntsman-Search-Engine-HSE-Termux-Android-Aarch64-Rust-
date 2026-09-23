@@ -19161,3 +19161,26 @@ decodes.
 **5 of 5 killed.** K2's first spec was reported **BAD-SPEC** (rustfmt had
 reflowed the targeted line) instead of going missing. That is the harness fix
 REQ-THREATSRC-001 recorded, catching its first case one requirement later.
+
+### Review round: the error body was not redacted on the curl arm
+
+Review of #641 found that the curl arm still differed from reqwest in one
+step. The reqwest arm's `error_body` caps an error body at 8 KiB, harvests
+it for leaked keys and redacts it (`redact_credentials`) **before**
+`classify_status_error` sees it. The curl arm classified the raw body. A
+provider that echoes the request URL in a 429 or 5xx body (`?api_key=…`)
+would therefore put the key into the typed error, the SSE event and the log.
+The redaction was verified to be missing, not assumed.
+
+The fix is one step both arms take: `sanitised_error_body` (cap →
+`scan_for_api_keys` → `redact_credentials`). `error_body` calls it, and so
+does `resolve_curl_fallback`. The cap is the shared `ERROR_BODY_CAP`, so a
+challenge fingerprint past 8 KiB is invisible to both arms alike.
+
+- Locks: `a_fallback_error_body_is_redacted_as_the_reqwest_path_redacts_it`
+  (429 and 500) and `a_fallback_error_body_is_capped_as_the_reqwest_path_caps_it`.
+  The second carries an in-cap control, so it cannot pass vacuously.
+- Falsified, **3 of 3 killed**:
+  - R1, the baseline (the raw body is classified): killed by 2;
+  - R2, the sanitiser does not redact: killed by 1;
+  - R3, the sanitiser does not cap: killed by 1.
