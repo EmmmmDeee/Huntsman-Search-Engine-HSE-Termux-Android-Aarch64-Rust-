@@ -19778,3 +19778,67 @@ does not widen into a module it did not otherwise touch.
 - The follow-up stage's failures are best-effort by design and move no outage
   verdict; a declared server that could not be followed stays recorded as
   declared, unvalidated.
+
+## REQ-KEYPROBE-002 — any key was a "validated" credential for every service whose refusal the body heuristic could not read
+
+**Found** by the adversarially verified module audit (`api_key_probe/mod.rs:366`). Vendor facts were checked against the vendors' own documentation: VirusTotal's error reference, and the Hunter and AbuseIPDB API docs.
+
+`probe_endpoint` ran `curl -s` with no `-f` and no status capture. curl exits 0 for **any** response it receives, so a 401 reached `process()` exactly as a 200 did. Past that point, one thing decided whether the answer became a `validated` `ApiKey` at `VERY_HIGH_PLUSPLUS`, plus a service-domain pivot and an `api_key_report` summary: `is_error_response`, a vocabulary of body shapes. It read `error` only as a string.
+
+VirusTotal's documented error envelope is `{"error": {"code": …, "message": …}}`, and a wrong key gets `401 WrongCredentialsError`. So **every key scanned** became a live VirusTotal credential with a `virustotal.com` pivot. An `ApiKey` target can come from a crawled page or a breach dump, and the module's own docs warn against exactly this false attribution.
+
+VirusTotal was one shape among several. The vendors document conventional status codes, not a common body:
+- Hunter: "401 - Unauthorized: No valid API key was provided", with an `{"errors": […]}` list;
+- AbuseIPDB: "HTTP status codes are the most reliable method of determining the status of the API response", with a JSON:API `errors` collection;
+- Netlas answers a dead key with `400 {"detail": …}`, the body `AUTH_400_SIGNATURES` records as observed live;
+- Criminal IP reports a dead key as an in-body `status: 401` on an HTTP 200.
+
+None of them matched an arm. REQ-KEYPROBE-001 (#637, recorded only in its commit message) had already added one arm, for `valid:false`. A further arm would have been the same patch again: the defect was the discarded status.
+
+### Implemented, at the shared authority
+
+- `probe_endpoint` writes `%{http_code}` after the body, using `-w "\n%{http_code}"`, the sentinel `key_pool::validation` already reads for the same `ServiceDef`. It returns `Answer { status, body }`. A refusal is still an answer, not a transport failure, so T2.123's outage detection is unchanged.
+- The verdict is not new code. `key_pool::validation::classify_probe_response` already judged answers from these test endpoints for the pool:
+  - a 2xx is valid unless `service_defs::body_rejects_key` says otherwise;
+  - 401/403, and a 400 matching `is_auth_failure_400_body`, are refusals;
+  - anything else settles nothing.
+
+  It and its `ProbeOutcome` are now `pub(crate)`. The pure `accepted_body` requires `Valid` before a body is parsed or minted. The probe therefore never validates a key on an answer the pool reads as a refusal.
+- `is_error_response` stays as the second gate, for 2xx answers only. It now reads a non-empty `error` object as an error envelope. A scalar marker is not one: ONYPHE's success carries `"error": 0`.
+- The hand-rolled `serve_once_json` is replaced by the shared `util::http::test_server`.
+
+### Locks
+
+`modules::api_key_probe::tests`:
+- `a_virustotal_refusal_is_an_answer_but_never_a_validated_key` runs the real curl binary against a loopback 401 carrying VirusTotal's envelope. It asserts that the status reaches the verdict and that the refusal is an answer, not a transport failure.
+- `a_refusal_only_the_status_carries_is_still_a_refusal`: Hunter's 401 and Netlas' 400, each with a control asserting that the body heuristic alone cannot see it.
+- `an_answer_that_settles_nothing_about_the_key_is_not_a_validation`: AbuseIPDB's documented 422, verbatim.
+- `a_dead_key_reported_inside_a_200_body_is_a_refusal`: Criminal IP's in-body 401/402/429. Only the shared verdict sees these, so a module-local 2xx gate cannot pass it.
+- `a_key_the_service_accepts_is_still_reported_validated`: the over-correction guard, with VirusTotal's 200 and ONYPHE's `"error": 0` success.
+- `an_error_object_is_an_error_response_but_a_scalar_error_marker_is_not`
+- `probe_endpoint_reports_executed_when_the_host_answers` now asserts the captured status too.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| P1 | **baseline**: the verdict never reads the status (every answer judged as a 200) | killed |
+| P2 | **baseline**: the probe drops the `-w` status write-out | killed |
+| P3 | **baseline**: the `error`-object arm removed | killed |
+| P4 | over-correction: any non-null `error` marker is an error | killed |
+| P5 | over-correction: a refusal is a transport failure (a rejected key reads as an outage) | killed |
+| P6 | over-correction: nothing validates | killed |
+| P7 | over-correction: an empty `error` object is an error | killed |
+| P8 | a 2xx gate of the module's own instead of the shared verdict | killed |
+| P9 | an answer that settles nothing counts as acceptance | killed |
+
+**killed of 9 killed.**
+
+### Residual
+
+- `hibp` probes `/api/v3/breaches`, which HIBP does not list among its authorised APIs. If HIBP ignores a supplied key there, any key answers 200 and is still validated. No verdict can see that; it is a test-endpoint defect (unverified).
+- The `valid:false` arm (REQ-KEYPROBE-001) reads numverify's verdict on the probe's number, a NANP 555-01xx fictional number. It may therefore refuse a valid key (unverified).
+- One `ServiceDef` still has two request builders, `probes::request_for` and `validate_against_endpoint`. Only the verdict is shared.
+
+**9 of 9 killed** (run against the compiled patch; clippy `-D warnings` clean).
+

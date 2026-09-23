@@ -185,10 +185,12 @@ pub async fn validate_key(service: &str, key: &str) -> Option<bool> {
 
 /// The three distinguishable outcomes of a key-validation probe. `Indeterminate`
 /// (transport failure, timeout, 429, 5xx, or any non-auth status) is deliberately
-/// NOT a rejection: only a definitive 401/403 proves a key bad. Conflating the two
-/// previously marked a valid key permanently Invalid on a transient outage.
+/// NOT a rejection: only a definitive refusal (see [`classify_probe_response`])
+/// proves a key bad. Conflating the two previously marked a valid key permanently
+/// Invalid on a transient outage. Shared with `api_key_probe`, which reports a
+/// discovered key as validated for a service only on `Valid`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProbeOutcome {
+pub(crate) enum ProbeOutcome {
     Valid,
     Rejected,
     Indeterminate,
@@ -292,7 +294,14 @@ async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> ProbeOutcome
 /// all — see [`crate::util::service_defs::body_rejects_key`] for exactly
 /// which services and why it is deliberately not every service with an
 /// always-200 shape.
-fn classify_probe_response(service: &str, body: &str, code: &str) -> ProbeOutcome {
+///
+/// The one verdict on an answer from a `ServiceDef` test endpoint, shared by
+/// both consumers of that endpoint: the pool validation above, and
+/// `api_key_probe`, which probes it with a discovered key and names the key's
+/// service only on `Valid`. That module once discarded the status and judged
+/// the body alone, and reported keys VirusTotal, Hunter or Netlas had refused
+/// as live credentials for each (REQ-KEYPROBE-002).
+pub(crate) fn classify_probe_response(service: &str, body: &str, code: &str) -> ProbeOutcome {
     match code {
         "200" => {
             // A 200 whose BODY says the key was actually rejected (see
