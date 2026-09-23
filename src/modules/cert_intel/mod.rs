@@ -22,6 +22,7 @@ use crate::core::{
     tags,
 };
 use crate::util::http::{RequestBuilderExt, fetch_json};
+use crate::util::x509_field::{NameField, OID_CN, OID_O, extract_field_from_der};
 
 // ── crt.sh response types ──────────────────────────────────────────
 
@@ -455,13 +456,13 @@ fn parse_certificate(
         result.push(e);
     }
 
-    if let Some(issuer) = extract_field_from_der(der, &[0x55, 0x04, 0x03], true) {
+    if let Some(issuer) = extract_field_from_der(der, OID_CN, NameField::Issuer) {
         ev.attributes.insert("issuer".into(), issuer);
     }
-    if let Some(subject) = extract_field_from_der(der, &[0x55, 0x04, 0x03], false) {
+    if let Some(subject) = extract_field_from_der(der, OID_CN, NameField::Subject) {
         ev.attributes.insert("subject".into(), subject);
     }
-    if let Some(org) = extract_field_from_der(der, &[0x55, 0x04, 0x0A], true) {
+    if let Some(org) = extract_field_from_der(der, OID_O, NameField::Issuer) {
         ev.attributes.insert("issuer_org".into(), org);
     }
 
@@ -570,38 +571,6 @@ fn extract_sans_from_der(der: &[u8]) -> CertSans {
     out
 }
 
-fn extract_field_from_der(der: &[u8], oid: &[u8], first: bool) -> Option<String> {
-    let mut last_match = None;
-    for i in 0..der.len().saturating_sub(oid.len()) {
-        if &der[i..i + oid.len()] == oid {
-            let after = i + oid.len();
-            if after + 4 < der.len() {
-                let mut pos = after;
-                while pos < der.len() && pos < after + 6 {
-                    let tag = der[pos];
-                    if tag == 0x0C || tag == 0x13 || tag == 0x16 {
-                        let len = der.get(pos + 1).copied().unwrap_or(0) as usize;
-                        if pos + 2 + len <= der.len()
-                            && let Ok(s) = std::str::from_utf8(&der[pos + 2..pos + 2 + len])
-                        {
-                            let s = s.trim().to_string();
-                            if !s.is_empty() {
-                                if first {
-                                    return Some(s);
-                                }
-                                last_match = Some(s);
-                            }
-                        }
-                        break;
-                    }
-                    pos += 1;
-                }
-            }
-        }
-    }
-    last_match
-}
-
 fn extract_serial_hex(der: &[u8]) -> String {
     if der.len() < 15 {
         return String::new();
@@ -676,9 +645,9 @@ fn extract_serial_hex(der: &[u8]) -> String {
 #[doc(hidden)]
 pub fn fuzz_entry_parse_der(der: &[u8]) {
     let _ = extract_sans_from_der(der);
-    let _ = extract_field_from_der(der, &[0x55, 0x04, 0x03], true);
-    let _ = extract_field_from_der(der, &[0x55, 0x04, 0x03], false);
-    let _ = extract_field_from_der(der, &[0x55, 0x04, 0x0A], true);
+    let _ = extract_field_from_der(der, OID_CN, NameField::Issuer);
+    let _ = extract_field_from_der(der, OID_CN, NameField::Subject);
+    let _ = extract_field_from_der(der, OID_O, NameField::Issuer);
     let _ = extract_serial_hex(der);
 }
 
