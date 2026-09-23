@@ -532,3 +532,32 @@ fn a_search_snippet_city_or_forward_geocode_is_not_a_subject_fix() {
     gps.add_evidence(Evidence::new("signal_radar", "gps"));
     assert_eq!(subject_fixes(&[city, gps]).len(), 1);
 }
+
+/// REQ-GEO-FAMILY-003: once a forward geocode stopped counting as a subject
+/// fix (REQ-GEO-FAMILY-002), a name-matched address with no AU postcode had no
+/// anchor at all — the doc claimed its `exact-name-match` arm still covered it,
+/// but that arm resolved only a postcode. It now falls back to the tabulated
+/// place the address names.
+#[test]
+fn a_postcode_less_name_matched_address_still_anchors_at_its_named_place() {
+    let mut own = Entity::new(EntityKind::Address, "12 Foo St, Toowong QLD", 0.70, "s");
+    own.tag("exact-name-match");
+    assert_eq!(au_postcode(&own), None, "fixture must carry no postcode");
+    let fixes = subject_fixes(std::slice::from_ref(&own));
+    assert_eq!(fixes.len(), 1, "the subject's own address anchors");
+    assert_eq!(
+        Some(fixes[0].coord),
+        crate::util::city_coords::city_coords("Toowong QLD")
+    );
+    // A postcode still wins over the place name (the finer grain), and an
+    // address naming no tabulated place and no postcode does not anchor.
+    let mut coded = Entity::new(EntityKind::Address, "1 Bar St, Toowong QLD 4000", 0.70, "s");
+    coded.tag("exact-name-match");
+    assert_eq!(
+        Some(subject_fixes(std::slice::from_ref(&coded))[0].coord),
+        crate::util::city_coords::city_coords("4000")
+    );
+    let mut nowhere = Entity::new(EntityKind::Address, "7 Qux Lane, Zzyzxville", 0.70, "s");
+    nowhere.tag("exact-name-match");
+    assert!(subject_fixes(&[nowhere]).is_empty());
+}

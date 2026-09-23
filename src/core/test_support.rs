@@ -63,6 +63,11 @@ struct Inner {
     /// What the store held at the moment each scan's row FIRST turned
     /// terminal — see [`TerminalWitness`].
     terminal_witnesses: Vec<TerminalWitness>,
+    /// A subscription to the engine's live event bus, when a test attached one
+    /// ([`InMemoryStore::watch_bus`]): read at the terminal write, so a
+    /// witness records whether SSE subscribers had ALREADY been told the scan
+    /// completed.
+    bus: Option<tokio::sync::broadcast::Receiver<Event>>,
 }
 
 /// A snapshot the in-memory store takes when a scan's stored status first
@@ -80,6 +85,10 @@ pub struct TerminalWitness {
     pub relations: usize,
     /// Whether the scan's `ScanComplete` event was already stored.
     pub completion_event: bool,
+    /// Whether the scan's `ScanComplete` had already been BROADCAST to live
+    /// subscribers — only recorded when a bus is watched
+    /// ([`InMemoryStore::watch_bus`]); `false` otherwise.
+    pub completion_broadcast: bool,
 }
 
 impl Inner {
@@ -120,6 +129,13 @@ impl InMemoryStore {
     pub fn terminal_witnesses(&self) -> Vec<TerminalWitness> {
         self.inner.lock().terminal_witnesses.clone()
     }
+
+    /// Watch the engine's live event bus: a broadcast is synchronous, so the
+    /// events queued on `rx` when a row first turns terminal are exactly the
+    /// ones subscribers had been sent by then.
+    pub fn watch_bus(&self, rx: tokio::sync::broadcast::Receiver<Event>) {
+        self.inner.lock().bus = Some(rx);
+    }
 }
 
 impl StoragePort for InMemoryStore {
@@ -130,7 +146,15 @@ impl StoragePort for InMemoryStore {
             .get(&scan.id)
             .is_some_and(|prev| prev.status.is_terminal());
         if scan.status.is_terminal() && !was_terminal {
+            let mut completion_broadcast = false;
+            if let Some(rx) = inner.bus.as_mut() {
+                while let Ok(ev) = rx.try_recv() {
+                    completion_broadcast |= ev.scan_id == scan.id
+                        && matches!(ev.kind, crate::core::event::EventKind::ScanComplete { .. });
+                }
+            }
             let witness = TerminalWitness {
+                completion_broadcast,
                 scan_id: scan.id.clone(),
                 status: scan.status,
                 correlations: inner

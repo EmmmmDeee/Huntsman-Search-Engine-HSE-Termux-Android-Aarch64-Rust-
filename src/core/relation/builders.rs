@@ -1589,7 +1589,11 @@ const COREF_PROMOTE_MIN_SCORE: f64 = 0.80;
 /// ([`crate::core::scan::person_names_compatible`] `Some(false)`); and a Person
 /// with an Email/Username that does not spell the name
 /// ([`crate::core::scan::handle_names_person`] `Some(false)`) — the last two
-/// REQ-IDENTITY-GATE-002.
+/// REQ-IDENTITY-GATE-002. The last is not limited to handles that share the
+/// surname: shared module names are all such a pair can have in common, and
+/// they are no identity evidence for any handle, so a handle that spells
+/// nothing of the name (`swimfan82`) is never promoted on co-occurrence alone
+/// (REQ-IDENTITY-GATE-004).
 ///
 /// **Strictly additive**: an edge already present in `existing` (same
 /// `from|kind|to`) is never re-emitted, so this pass can only *add* links and can
@@ -1633,14 +1637,22 @@ pub fn derive_coreferences(
         }
         let a_person = ea.kind == EntityKind::Person;
         let b_person = eb.kind == EntityKind::Person;
-        // A shared surname is not a shared identity (REQ-IDENTITY-GATE-002).
-        // The string tiers already withhold it (`coref::string_signal`), but
-        // shared-SOURCE alone reaches the promotion floor at five shared module
-        // names — bare module names every relative of a people-search or
-        // register sweep carries — so the graph edge is gated on the names too:
-        // no `SameAs` between structurally different people, and no
-        // `IdentifiedBy` from a person to a handle/mailbox that does not spell
-        // the name. Phones carry no name, so they stay evidence/score-bound.
+        // A shared surname is not a shared identity, and neither are shared
+        // module names (REQ-IDENTITY-GATE-002). The string tiers already
+        // withhold a surname match (`coref::string_signal`), but shared-SOURCE
+        // alone reaches the promotion floor at five shared module names — bare
+        // module names every relative of a people-search or register sweep
+        // carries — so the graph edge is gated on the names too: no `SameAs`
+        // between structurally different people, and no `IdentifiedBy` from a
+        // person to ANY handle/mailbox that does not spell the name. That is
+        // deliberately wider than the surname case: a relative's handle that
+        // spells nothing of the name (`megfan77`) co-occurs in the same sweeps
+        // as one that carries the surname, and five shared module names say no
+        // more about it. So an unrelated handle (`swimfan82`) is never tied to a
+        // person on co-occurrence alone — a known conservative loss; the
+        // structural builders (`derive_identity_ownership`'s evidence path)
+        // still bind a handle a record names as the person's (REQ-IDENTITY-GATE-004).
+        // Phones carry no name to test, so they stay evidence/score-bound.
         let names_conflict = match (a_person, b_person) {
             (true, true) => {
                 crate::core::scan::person_names_compatible(&ea.value, &eb.value) == Some(false)

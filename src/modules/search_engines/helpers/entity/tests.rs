@@ -548,7 +548,7 @@ use super::*;
 
     /// REQ-SEARCH-ADDR-001: a people-search listing title "Name, State" is not a
     /// locality. The extractor itself stays text-only; the name-scan caller
-    /// drops these with `city_names_a_surname_bearer`.
+    /// drops these with `surname_bearer_locality`.
     #[test]
     fn a_people_search_listing_title_is_not_a_locality() {
         let listed = extract_addresses_from_text(
@@ -556,7 +556,7 @@ use super::*;
         );
         assert!(listed.iter().any(|a| a == "Ian Thorpe, North Carolina"), "{listed:?}");
         for person in ["Ian Thorpe, North Carolina", "Bill Thorpe, Florida"] {
-            assert!(city_names_a_surname_bearer(person, "Thorpe"), "{person}");
+            assert!(surname_bearer_locality(person, "Thorpe").is_none(), "{person}");
         }
         // Real places survive: a suburb that IS the surname, a place-prefixed
         // name, an unrelated city, and a comma-free string.
@@ -567,12 +567,54 @@ use super::*;
             "Houston, Texas",
             "Thorpe",
         ] {
-            assert!(!city_names_a_surname_bearer(place, "Thorpe"), "{place}");
+            assert!(surname_bearer_locality(place, "Thorpe").is_some_and(|a| a == place), "{place}");
         }
-        assert!(!city_names_a_surname_bearer("Lawnton, QLD", "Lawnton"));
+        assert!(surname_bearer_locality("Lawnton, QLD", "Lawnton").is_some_and(|a| a == "Lawnton, QLD"));
         // `person_surname` hands this a diacritic-folded surname
         // (REQ-IDENTITY-GATE-003); the listing prints the accented one.
-        assert!(city_names_a_surname_bearer("Bich Nguyễn, Hà Nội", "nguyen"));
+        assert!(surname_bearer_locality("Bich Nguyễn, Hà Nội", "nguyen").is_none());
+    }
+
+    /// REQ-SEARCH-ADDR-003: the REQ-SEARCH-ADDR-002 rule dropped every
+    /// multi-word city with the surname after its first word, losing a suburb
+    /// that carries the surname mid-name and a statement locating the bearer.
+    /// A place suffix after the surname is a place; `in <Place>` after it is
+    /// the place; anything else (a facility, a trade) is a thing named after
+    /// a surname-bearer.
+    #[test]
+    fn a_suburb_carrying_the_surname_and_a_located_bearer_are_localities() {
+        let found = extract_addresses_from_text("Our offices in Box Hill North, Victoria");
+        assert!(
+            found.iter().any(|a| a == "Box Hill North, Victoria"),
+            "input pinned: {found:?}"
+        );
+        for place in ["Box Hill North, Victoria", "Box Hill South, VIC"] {
+            assert_eq!(surname_bearer_locality(place, "Hill").as_deref(), Some(place));
+        }
+        // REQ-SEARCH-ADDR-002's stated loss, closed: a lake named for a park.
+        assert_eq!(
+            surname_bearer_locality("Albert Park Lake, VIC", "Park").as_deref(),
+            Some("Albert Park Lake, VIC")
+        );
+        let found = extract_addresses_from_text(
+            "Swim coach, Ian Thorpe in Ultimo, New South Wales, Australia",
+        );
+        let located = "Ian Thorpe in Ultimo, New South Wales";
+        assert!(found.iter().any(|a| a == located), "input pinned: {found:?}");
+        assert_eq!(
+            surname_bearer_locality(located, "Thorpe").as_deref(),
+            Some("Ultimo, New South Wales")
+        );
+        // Still dropped: a listing title, a venue, a business, and a bare
+        // "in" with no place after it.
+        for bearer in [
+            "Ian Thorpe, North Carolina",
+            "Ian Thorpe Aquatic Centre in Ultimo, New South Wales",
+            "Jamie Thorpe Plumbing, QLD",
+            "Ian Thorpe in, NSW",
+        ] {
+            assert_eq!(surname_bearer_locality(bearer, "Thorpe"), None, "{bearer}");
+        }
     }
 
     /// REQ-SEARCH-ADDR-002: a venue named after a surname-bearer is not a
@@ -588,7 +630,7 @@ use super::*;
         );
         let venue = "Ian Thorpe Aquatic Centre in Ultimo, New South Wales";
         assert!(found.iter().any(|a| a == venue), "input pinned: {found:?}");
-        assert!(city_names_a_surname_bearer(venue, "Thorpe"));
+        assert!(surname_bearer_locality(venue, "Thorpe").is_none());
         // Places survive: a one-word suburb that is the surname, a place-word
         // prefix, a place that STARTS with the surname, an unrelated city.
         for place in [
@@ -598,7 +640,7 @@ use super::*;
             "Thorpe Bay, Essex",
             "Houston, Texas",
         ] {
-            assert!(!city_names_a_surname_bearer(place, "Thorpe"), "{place}");
+            assert!(surname_bearer_locality(place, "Thorpe").is_some_and(|a| a == place), "{place}");
         }
     }
 

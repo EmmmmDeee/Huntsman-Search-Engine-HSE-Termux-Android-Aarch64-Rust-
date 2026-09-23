@@ -70,6 +70,44 @@ Victims:
         let json: serde_json::Value = serde_json::from_slice(&bytes).expect("should succeed");
         assert_eq!(json["stealer_rows_parsed"], 1);
         assert_eq!(json["stealer_rows_stored"], 1);
+        assert_eq!(json["status"], "complete");
+    }
+
+    /// REQ-SCANSTATUS-005: the web import commits its row through the shared
+    /// `ImportScanRow` lifecycle — `Complete` on success, the response reports
+    /// the committed status, and the import leaves this process's in-flight
+    /// registry once it has returned.
+    #[tokio::test]
+    async fn scan_import_commits_its_row_and_leaves_the_in_flight_registry() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+        let state = crate::api::test_state();
+        let app = axum::Router::new()
+            .route("/api/v1/scans/import", axum::routing::post(scan_import))
+            .with_state(Arc::clone(&state));
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/scans/import?format=stealerlogs")
+            .header("x-hse-csrf", "1")
+            .body(Body::from(
+                "Module: Stealerlogs\nVictims:\n  [1]\n    Log Id:\n      abc123\n    Credentials:\n      [1]\n        Username:\n          alice\n        Password:\n          hunter2\n    Domains:\n      [1]\n        example.com\n    Credential Count:\n      1\n",
+            ))
+            .expect("should succeed");
+        let resp = app.oneshot(req).await.expect("should succeed");
+        assert_eq!(resp.status(), 200);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+            .await
+            .expect("should succeed");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        let sid = json["scan_id"].as_str().expect("scan id").to_string();
+        let row = state.store.get_scan(&sid).unwrap().expect("row");
+        assert_eq!(row.status, crate::core::scan::ScanStatus::Complete);
+        assert_eq!(json["status"], row.status.as_str());
+        assert!(
+            !state.cancellations.lock().contains_key(&sid),
+            "the import is no longer in flight once it has returned"
+        );
     }
 
     #[test]

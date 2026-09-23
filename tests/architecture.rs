@@ -993,6 +993,13 @@ fn core_does_not_import_util_directly() {
                 // address_to_coords_pass records it as the derived centroid's
                 // `place_type` so the correlator weighs it at its real grain.
                 && !line.contains("util::city_coords::city_coords_with_grain")
+                // Pure membership test over the SAME tables (no I/O, no
+                // network; the set is built once from them): whether a point
+                // is one of the centroids `city_coords` returns. The engine's
+                // geospatial enrichment and pivot gate use it to tag and
+                // withhold every gazetteer centroid whichever module minted it
+                // (REQ-GEO-017).
+                && !line.contains("util::city_coords::is_gazetteer_centroid")
                 // Pure, dependency-free offline AU-locality exact-match lookup
                 // (no I/O, no network), same leaf category as `city_coords`
                 // immediately above — it reuses the identical `CITIES` table,

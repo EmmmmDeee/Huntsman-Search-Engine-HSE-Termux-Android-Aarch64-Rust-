@@ -462,8 +462,12 @@ pub(crate) fn handle_names_person(name: &str, handle: &str) -> Option<bool> {
 ///
 /// `Some(true)` iff the subject's surname occurs as a whole token run with a
 /// compatible given name (see [`given_names_compatible`]) beside it:
-///   * directly before it — `"ian thorpe"`, `"i thorpe"`, the slug
-///     `ian-thorpe-4b080523`;
+///   * directly before it — `"ian thorpe"`, `"j thorpe"` for "John Thorpe",
+///     the slug `ian-thorpe-4b080523`. The initials `a` and `i` are also the
+///     English article and pronoun, so they count only when a `.` follows
+///     (`"I. Thorpe"`) or, in a slug, when they open a `-`-joined run with no
+///     whitespace around them (`/i-thorpe`): `"find a baker"` does not name
+///     "Andrew Baker" (REQ-SEARCH-014);
 ///   * two before it across one middle name or initial — `"ian j thorpe"`,
 ///     `"Ian James Thorpe"`. A FOREIGN middle name must be space-separated from
 ///     the surname: `"Ian Symes-Thorpe"` is a double-barrelled surname, a
@@ -544,7 +548,29 @@ pub(crate) fn text_names_person(text: &str, subject: &str) -> Option<bool> {
     let toks = tokenise(&fold_name_text(text));
     let k = surname_toks.len();
     let tok = |j: usize| toks[j].0.as_str();
-    let compatible = |t: &str| given_names_compatible(t, &given);
+    // Whether token `j` may stand as a given name (or its initial) at all. The
+    // one-letter tokens `a` and `i` are also English WORDS — the article and the
+    // pronoun — so in prose they are read as an initial only when a `.` marks
+    // them as one (`"A. Baker"`, `"Dr. I. Thorpe"`); otherwise `"Find a Baker
+    // near you"` named every Andrew Baker and `"He was a Thorpe by birth"` every
+    // Alice Thorpe on the surname alone — the REQ-SEARCH-008 bypass for every
+    // subject whose given name starts with A or I (REQ-SEARCH-014). In a URL
+    // slug (`/i-thorpe`) the letter carries no whitespace on either side and
+    // opens its `-`-joined run, which is where a slug writes an initial; an
+    // article inside a slug (`find-a-baker`) is joined to the word before it by
+    // `-`/`_` and stays a word. Every other letter is not a word, so `j thorpe`
+    // keeps reading as an initial wherever it stands.
+    let may_be_given = |j: usize| {
+        let (t, before) = (&toks[j].0, toks[j].1.as_str());
+        if t != "a" && t != "i" {
+            return true;
+        }
+        let after = toks.get(j + 1).map_or("", |(_, s)| s.as_str());
+        let spaced = |s: &str| s.chars().any(char::is_whitespace);
+        after.starts_with('.')
+            || (!spaced(after) && !spaced(before) && !before.ends_with(['-', '_']))
+    };
+    let compatible = |j: usize| may_be_given(j) && given_names_compatible(tok(j), &given);
     let named = (0..toks.len().saturating_sub(k - 1))
         .filter(|&i| {
             toks[i..i + k]
@@ -553,8 +579,8 @@ pub(crate) fn text_names_person(text: &str, subject: &str) -> Option<bool> {
                 .eq(surname_toks.iter())
         })
         .any(|i| {
-            let direct_before = i >= 1 && compatible(tok(i - 1));
-            let across_middle = i >= 2 && compatible(tok(i - 2)) && {
+            let direct_before = i >= 1 && compatible(i - 1);
+            let across_middle = i >= 2 && compatible(i - 2) && {
                 let middle = tok(i - 1);
                 let initial = middle.chars().count() == 1;
                 middle.chars().all(char::is_alphabetic)

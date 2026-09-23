@@ -308,7 +308,7 @@ type RuleFn = fn(&RuleContext, &str, u64) -> Vec<Correlation>;
 pub(crate) mod rules;
 pub(crate) use rules::location::{
     SYNERGY_BASIS, au_location_corroboration, au059_synergy_fix, best_au_location_estimate,
-    is_anchoring_geo_source, is_infrastructure_geo_signals,
+    declares_area_grain, is_anchoring_geo_source, is_infrastructure_geo_signals,
 };
 // The shared multi-pathway corroboration detector — the AU-062 rule and the
 // engine's `promote_multipath_corroborated` pass both call this one finder, so

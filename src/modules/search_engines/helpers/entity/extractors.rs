@@ -10,26 +10,38 @@ use super::*;
 
 /// Leading words that make a `<Word> <Surname>` run a PLACE, not a person —
 /// `Port Douglas`, `Mount Isa`, `Lake Macquarie` — so a place named like the
-/// subject survives [`city_names_a_surname_bearer`].
+/// subject survives [`surname_bearer_locality`].
 const PLACE_PREFIXES: &[&str] = &[
     "port", "mount", "mt", "lake", "fort", "point", "cape", "glen", "saint", "st", "east", "west",
     "north", "south", "new", "upper", "lower", "old", "little", "great",
 ];
 
-/// True when an extracted `"City, State"`'s "city" names a PERSON carrying the
-/// scanned `surname` — a people-search listing title, or a thing named after a
-/// surname-bearer — rather than a place.
+/// Words that may FOLLOW a surname inside a real place name — `Box Hill North`,
+/// `Castle Hill Heights`, `Thorpe Bay` — so a suburb that carries the subject's
+/// surname mid-name survives [`surname_bearer_locality`].
+const PLACE_SUFFIXES: &[&str] = &[
+    "north", "south", "east", "west", "central", "heights", "beach", "bay", "valley", "vale",
+    "creek", "springs", "junction", "village", "downs", "waters", "ridge", "lake", "lakes",
+    "grove", "estate",
+];
+
+/// The locality an extracted `"City, State"` may keep on a name scan for the
+/// scanned `surname` — the address itself when its "city" is a place, the
+/// place a surname-bearer is said to be `in` when that is all it names, or
+/// `None` when the "city" names a PERSON carrying the surname (a people-search
+/// listing title) or a THING named after one (a venue, a business).
 ///
 /// [`extract_addresses_from_text`]'s word path takes the capitalised run before
 /// `", <State>"` as the city, and its comma path takes the whole segment since
-/// the previous comma. Two shapes of text reach it on a name scan:
+/// the previous comma. Three shapes of text reach it on a name scan:
 ///
 /// - a people-search listing title — `"Ian Thorpe, North Carolina"` from
 ///   `spokeo.com/Ian-Thorpe/North-Carolina`. A real "Ian Thorpe" scan emitted
 ///   fourteen such Addresses (Bill, Carol, David, Donald, Ian, William Thorpe,
 ///   … each "in" a US state); Photon then geocoded four different names to one
 ///   arbitrary North Carolina point, and the audit reported the resulting
-///   spread as geo-divergence (REQ-SEARCH-ADDR-001);
+///   spread as geo-divergence (REQ-SEARCH-ADDR-001). The surname ENDS the
+///   city: `None`.
 /// - a venue named after a surname-bearer — the LinkedIn job title "…
 ///   Exercise Physiologist NSW, Ian Thorpe Aquatic Centre in Ultimo, New South
 ///   Wales, Australia" became the Address `"Ian Thorpe Aquatic Centre in
@@ -37,42 +49,72 @@ const PLACE_PREFIXES: &[&str] = &[
 ///   the venue does. Photon then geocoded the real pool correctly at house
 ///   grain (40 m), and that one point, at 5x fusion weight, pinned AU-059 and
 ///   the headline best location fix (0.97) to a public swimming pool
-///   (REQ-SEARCH-ADDR-002). The surname sits MID-segment there, so a test on
-///   the last word alone let it through.
+///   (REQ-SEARCH-ADDR-002). Words that are not a place's own suffix follow
+///   the surname (`Aquatic Centre`, `Plumbing`): `None`, wholesale — the
+///   venue's suburb is the venue's, not the subject's.
+/// - a statement locating the bearer — `"Swim coach, Ian Thorpe in Ultimo,
+///   New South Wales"` yields the segment `"Ian Thorpe in Ultimo"`. Nothing
+///   but `in` follows the surname, so the place after it is what the text
+///   locates: `Some("Ultimo, New South Wales")` (REQ-SEARCH-ADDR-003).
 ///
-/// So the test is positional, not last-word: a multi-word "city" in which the
-/// surname appears as a whole word AFTER the first word, not led by a place
-/// word ([`PLACE_PREFIXES`]), names a surname-bearer. A "city" that STARTS with
-/// the surname names a place (`"Thorpe Bay, Essex"`), and a single word that
-/// IS the surname (`"Lawnton, QLD"` for a Lawnton) is a real suburb and is
-/// kept — that collision is capped, not dropped, by the caller. Words and
-/// surname are compared diacritic-folded
-/// ([`crate::core::scan::fold_name_text`]). **Pure.**
-pub(in crate::modules::search_engines) fn city_names_a_surname_bearer(
+/// A surname followed only by place suffixes ([`PLACE_SUFFIXES`]) is a place:
+/// `"Box Hill North, Victoria"` survives a scan for a Hill. The REQ-SEARCH-ADDR-002
+/// rule dropped every multi-word city with the surname after its first word,
+/// which lost that suburb and the `in <Place>` statement with it
+/// (REQ-SEARCH-ADDR-003). The surname counts only as a whole word AFTER the
+/// first word, not led by a place word ([`PLACE_PREFIXES`]): a city that
+/// STARTS with the surname names a place (`"Thorpe Bay, Essex"`), and a single
+/// word that IS the surname (`"Lawnton, QLD"` for a Lawnton) is a real suburb
+/// and is kept — that collision is capped, not dropped, by the caller. A
+/// two-word suburb ending in the surname (`"Box Hill"` for a Hill) is
+/// indistinguishable from a listing title and is dropped: the conservative
+/// side, since a wrong locality is worse than a missed one. Words and surname
+/// are compared diacritic-folded ([`crate::core::scan::fold_name_text`]).
+/// **Pure.**
+pub(in crate::modules::search_engines) fn surname_bearer_locality(
     addr: &str,
     surname: &str,
-) -> bool {
-    let Some((city, _state)) = addr.rsplit_once(',') else {
-        return false;
+) -> Option<String> {
+    let Some((city, state)) = addr.rsplit_once(',') else {
+        return Some(addr.to_string());
     };
     // Both sides through the identity gate's name fold: the caller's surname
     // comes from `person_surname`, which is diacritic-folded (`"nguyen"`), so
     // a raw comparison would miss the `"Nguyễn"` the listing prints.
     let surname = crate::core::scan::fold_name_text(surname.trim());
     if surname.is_empty() {
-        return false;
+        return Some(addr.to_string());
     }
     let words: Vec<&str> = city.split_whitespace().collect();
-    words.len() >= 2
-        && words
+    let place_led = words.first().is_some_and(|w| {
+        PLACE_PREFIXES
             .iter()
-            .skip(1)
-            .any(|w| crate::core::scan::fold_name_text(w) == surname)
-        && !words.first().is_some_and(|w| {
-            PLACE_PREFIXES
-                .iter()
-                .any(|p| w.trim_end_matches('.').eq_ignore_ascii_case(p))
-        })
+            .any(|p| w.trim_end_matches('.').eq_ignore_ascii_case(p))
+    });
+    let Some(at) = words
+        .iter()
+        .skip(1)
+        .position(|w| crate::core::scan::fold_name_text(w) == surname)
+        .map(|p| p + 1)
+        .filter(|_| !place_led)
+    else {
+        return Some(addr.to_string());
+    };
+    let after = &words[at + 1..];
+    let is = |w: &str, set: &[&str]| set.iter().any(|s| w.eq_ignore_ascii_case(s));
+    match after {
+        // "Ian Thorpe, North Carolina": a person.
+        [] => None,
+        // "Box Hill North, Victoria": a place carrying the surname.
+        _ if after.iter().all(|w| is(w, PLACE_SUFFIXES)) => Some(addr.to_string()),
+        // "Ian Thorpe in Ultimo": the place the text locates the bearer in.
+        [first, place @ ..] if *first == "in" && !place.is_empty() => {
+            Some(format!("{},{state}", place.join(" ")))
+        }
+        // "Ian Thorpe Aquatic Centre in Ultimo", "Jamie Thorpe Plumbing": a
+        // thing named after a surname-bearer.
+        _ => None,
+    }
 }
 
 /// Extract AU location strings from free text for geolocation, in three passes:

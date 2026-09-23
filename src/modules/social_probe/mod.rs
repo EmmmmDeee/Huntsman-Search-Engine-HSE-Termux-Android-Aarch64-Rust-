@@ -498,26 +498,22 @@ impl Module for SocialProbe {
         })
         .await;
 
-        let (mut result, tally) = emit_judged(&judged, &ctx.scan_id);
+        let (result, tally) = emit_judged(&judged, &ctx.scan_id);
 
         // M6: a zero-hit run where at least half the probes returned no definitive
         // answer (curl code 0 — blocked / unreachable / no egress — or a platform
-        // that cannot tell) is *inconclusive*, not a confirmed absence. Surface it
-        // as a module error so a network-blocked sweep is never read as "this
-        // handle is on no social platform" — the same disambiguation
-        // `username_search` and `streaming_probe` make. A cancelled run is
-        // exempt: the operator stopped it, so the module asserts nothing about
-        // what it didn't probe.
-        if !ctx.cancel.is_cancelled()
-            && let Some(msg) = inconclusive_sweep(
-                tally.found,
-                tally.inconclusive,
-                tally.indiscriminate_platforms.len() as u32,
-                checked_count,
-            )
-        {
-            return Err(inconclusive_error(target.kind, msg));
-        }
+        // that cannot tell) is *inconclusive*, not a confirmed absence, and is
+        // never returned as a silent empty "not on any platform" — the same
+        // disambiguation `username_search` and `streaming_probe` make. How it is
+        // reported, and the cancelled-run exemption, live in `finish_sweep`, the
+        // one tested step between the probes and what this returns.
+        let mut result = finish_sweep(
+            target.kind,
+            result,
+            &tally,
+            checked_count,
+            ctx.cancel.is_cancelled(),
+        )?;
 
         // Add a summary echo of the target ONLY when at least one profile was
         // actually confirmed (see `should_echo_target`). The negative result is
@@ -657,31 +653,66 @@ pub(super) fn emit_judged(
     (result, tally)
 }
 
-/// How an inconclusive M6 verdict (see [`inconclusive_sweep`]) is reported,
-/// by the table that was swept.
+/// The post-sweep M6 verdict applied to the sweep's `result` — the one step
+/// between the probes and what [`SocialProbe`]'s `process` returns, so the
+/// verdict each table gets is tested as `process` applies it. **Pure.**
 ///
-/// A **Username** sweep stays a module error: 35 handle platforms answering
-/// nothing is a blocked or broken egress, and benching the module after a
-/// streak of those (the circuit breaker) is the intended cost saving.
+/// A cancelled run is returned as it stands: the operator stopped it, so the
+/// module asserts nothing about what it did not probe. Otherwise a sweep that
+/// [`inconclusive_sweep`] judges inconclusive is reported by what actually
+/// happened:
 ///
-/// A **FullName** sweep is a typed `Unavailable` skip instead. Its table is two
-/// people directories — `facebook-public`, which answers "present" for any
-/// name, and `peekyou`, walled from a typical client — so its denominator is
-/// one platform and it is inconclusive by construction, on every name target.
-/// The breaker is keyed by module name alone, so each of those structural
-/// verdicts counted against the independent handle table: scan 7258fc07
-/// tripped `social_probe` three times, twice with name-sweep errors supplying
-/// the streak, and benched it for username targets that were answering
-/// (found 7, 3, 2). `Unavailable` is still a coverage gap, never a clean
-/// negative, so the M6 guarantee — not a confirmed absence — holds, and the
-/// reason says so (REQ-SOCIAL-003). **Pure.**
-pub(super) fn inconclusive_error(kind: TargetKind, msg: String) -> Error {
+///   * A **Username** sweep is a module error. Thirty-odd handle platforms
+///     answering nothing is a blocked or broken egress, and benching the module
+///     after a streak of those (the circuit breaker) is the intended saving.
+///   * A **FullName** sweep in which some platform DID answer — the people
+///     directories were queried and reachable, but the ones that can tell gave
+///     no definitive answer — is an INCOMPLETE answer: `Ok`, with the result
+///     marked truncated (`ModuleResult::mark_truncated`). Its table is two
+///     entries: `facebook-public`, which answers "present" for any name, and
+///     `peekyou`, walled from a typical client, so it is inconclusive by
+///     construction on every name target. Returned as a module error, those
+///     structural verdicts fed the breaker, which is keyed by module name
+///     alone: in scan 7258fc07 six of them drove all three `social_probe`
+///     trips (one on its own, two with username-sweep timeouts) and benched
+///     the handle sweep for username targets that were answering (found 7, 3,
+///     2) (REQ-SOCIAL-003). An in-band skip (`Error::Skipped`) is no fit
+///     either: its contract is a provider the module deliberately did NOT
+///     query, and `core::coverage` reads it as `NotAttempted`, which the
+///     queried directories were not (REQ-SOCIAL-005). A truncated answer is
+///     exactly the shape: `core::coverage` reads zero findings with the caveat
+///     as `Truncated` — queried, answered, and never a clean negative, so the
+///     M6 guarantee holds — and the dispatch counts as a run.
+///   * A **FullName** sweep in which NO platform answered at all (every probe
+///     inconclusive, none indiscriminate) is the blocked-egress shape, and the
+///     same module error as a handle sweep: nothing was reachable, so an `Ok`
+///     would tell the breaker a provider answered that did not.
+pub(super) fn finish_sweep(
+    kind: TargetKind,
+    mut result: ModuleResult,
+    tally: &SweepTally,
+    checked: u32,
+    cancelled: bool,
+) -> Result<ModuleResult> {
+    if cancelled {
+        return Ok(result);
+    }
+    let indiscriminate = tally.indiscriminate_platforms.len() as u32;
+    let Some(msg) = inconclusive_sweep(tally.found, tally.inconclusive, indiscriminate, checked)
+    else {
+        return Ok(result);
+    };
+    let some_platform_answered = indiscriminate > 0 || tally.inconclusive < checked;
     match kind {
-        TargetKind::FullName => Error::skipped(
-            crate::core::event::SkipClass::Unavailable,
-            format!("people-directory sweep not answered — {msg}"),
-        ),
-        _ => Error::module(SRC, msg),
+        TargetKind::FullName if some_platform_answered => {
+            result.mark_truncated(
+                tally.found as usize,
+                None,
+                &format!("people directories that gave no definitive answer ({msg})"),
+            );
+            Ok(result)
+        }
+        _ => Err(Error::module(SRC, msg)),
     }
 }
 

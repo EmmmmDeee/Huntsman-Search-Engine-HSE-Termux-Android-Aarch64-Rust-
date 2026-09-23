@@ -725,33 +725,91 @@ fn a_confirmed_profile_never_files_the_platforms_own_host_as_a_domain() {
     );
 }
 
-/// REQ-SOCIAL-003 (scan 7258fc07): the two-entry people-directory table is
-/// inconclusive by construction (facebook-public indiscriminate, peekyou
-/// walled), and reported as a module error it tripped the module-wide breaker
-/// and benched the handle sweep. The name verdict is an `Unavailable` skip;
-/// the handle verdict is still the error the breaker should count.
+/// REQ-SOCIAL-003 / REQ-SOCIAL-005 (scan 7258fc07): the two-entry
+/// people-directory table is inconclusive by construction (facebook-public
+/// indiscriminate, peekyou walled). Reported as a module error it tripped the
+/// module-wide breaker and benched the handle sweep; reported as an in-band
+/// skip it told `core::coverage` the queried directories were "not attempted".
+/// Through `finish_sweep` — the step `process` returns through — the name
+/// verdict is an incomplete answer that coverage reads as `Truncated`; the
+/// handle verdict, and a name sweep nothing answered, stay the module error
+/// the breaker should count.
 #[test]
-fn an_inconclusive_people_directory_sweep_is_an_unavailable_skip_not_a_breaker_fault() {
-    use crate::core::event::SkipClass;
-    let msg = inconclusive_sweep(0, 1, 1, 2)
-        .expect("the 7258fc07 name-table shape: facebook-public indiscriminate + peekyou walled");
-    match inconclusive_error(TargetKind::FullName, msg.clone()) {
-        Error::Skipped { class, reason } => {
-            assert_eq!(class, SkipClass::Unavailable);
-            assert!(
-                class.is_coverage_gap(),
-                "still a gap, never a clean negative"
-            );
-            assert!(reason.contains("not a confirmed absence"), "{reason}");
-        }
-        other => panic!("a people-directory verdict must be a typed skip, got {other:?}"),
-    }
+fn an_inconclusive_people_directory_sweep_is_an_incomplete_answer_not_a_skip_or_a_fault() {
+    use crate::core::coverage::{ProviderOutcome, provider_coverage_from_events};
+    use crate::core::event::{Event, EventKind};
+    // The 7258fc07 name-table shape: facebook-public indiscriminate, peekyou
+    // refused.
+    let shape = || SweepTally {
+        inconclusive: 1,
+        indiscriminate_platforms: vec!["facebook-public"],
+        ..SweepTally::default()
+    };
+    let result = finish_sweep(
+        TargetKind::FullName,
+        ModuleResult::new(),
+        &shape(),
+        2,
+        false,
+    )
+    .expect("a structural people-directory verdict is no module error");
+    let caveat = result.truncation.clone().expect("marked incomplete");
+    assert!(caveat.contains("not a confirmed absence"), "{caveat}");
+    assert!(result.entities.is_empty());
+
+    // What coverage makes of the dispatch the engine records for it.
+    let done = Event::new(
+        "s",
+        EventKind::ModuleDone {
+            module: "social_probe".into(),
+            found: 0,
+            truncated: result.truncation.clone(),
+        },
+    );
+    let rows = provider_coverage_from_events(&[done]);
     assert!(
-        matches!(
-            inconclusive_error(TargetKind::Username, msg),
-            Error::Module { .. }
+        matches!(rows[0].outcome, ProviderOutcome::Truncated { .. }),
+        "queried and answered, never NotAttempted, never CleanNegative: {:?}",
+        rows[0].outcome
+    );
+    assert!(!rows[0].outcome.settles_absence(), "the M6 guarantee holds");
+
+    // A handle sweep in the same shape is the error that benches a blocked
+    // egress.
+    assert!(matches!(
+        finish_sweep(
+            TargetKind::Username,
+            ModuleResult::new(),
+            &shape(),
+            2,
+            false
         ),
-        "a blocked handle sweep is still the module error that benches it"
+        Err(Error::Module { .. })
+    ));
+    // A name sweep NOTHING answered is the blocked-egress shape too.
+    let silent = SweepTally {
+        inconclusive: 2,
+        ..SweepTally::default()
+    };
+    assert!(matches!(
+        finish_sweep(TargetKind::FullName, ModuleResult::new(), &silent, 2, false),
+        Err(Error::Module { .. })
+    ));
+    // A cancelled run asserts nothing, and a conclusive one is left alone.
+    let r = finish_sweep(TargetKind::Username, ModuleResult::new(), &silent, 2, true).unwrap();
+    assert!(r.truncation.is_none());
+    let answered = SweepTally::default();
+    let r = finish_sweep(
+        TargetKind::FullName,
+        ModuleResult::new(),
+        &answered,
+        2,
+        false,
+    )
+    .unwrap();
+    assert!(
+        r.truncation.is_none(),
+        "two definitive absences are a clean negative"
     );
 }
 
@@ -813,4 +871,26 @@ fn distinct_profiles_on_one_platform_carry_distinct_records() {
         !xml.contains("<edge "),
         "distinct profiles are not a joint record: {xml}"
     );
+}
+
+/// REQ-SOCIAL-005: `process` reaches the network, so no unit test drives it;
+/// this pins that it returns through `finish_sweep` — the tested verdict —
+/// and builds no verdict of its own beside it. Reverting the call site to an
+/// inline `Err(Error::module(..))` (the REQ-SOCIAL-003 regression the earlier
+/// helper-only test could not see) fails here.
+#[test]
+fn process_returns_its_sweep_verdict_through_finish_sweep() {
+    let src = include_str!("mod.rs");
+    let body = src
+        .split_once("async fn process(&self, target: &Target, ctx: &ModuleContext)")
+        .and_then(|(_, rest)| rest.split_once("\n    }\n}\n"))
+        .map(|(body, _)| body)
+        .expect("SocialProbe::process is present");
+    assert!(body.contains("finish_sweep("), "{body}");
+    for inline in ["inconclusive_sweep(", "Error::module(", "Error::skipped("] {
+        assert!(
+            !body.contains(inline),
+            "process must not decide the verdict itself ({inline})"
+        );
+    }
 }

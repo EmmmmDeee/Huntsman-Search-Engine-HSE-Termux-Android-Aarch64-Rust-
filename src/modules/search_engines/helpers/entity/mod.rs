@@ -7,9 +7,9 @@ use crate::core::confidence;
 
 mod extractors;
 pub(in crate::modules::search_engines) use extractors::{
-    city_names_a_surname_bearer, extract_abn_acn_from_text, extract_addresses_from_text,
-    extract_emails_from_text, extract_organisations_from_text, extract_phones_from_text,
-    extract_urls_from_text,
+    extract_abn_acn_from_text, extract_addresses_from_text, extract_emails_from_text,
+    extract_organisations_from_text, extract_phones_from_text, extract_urls_from_text,
+    surname_bearer_locality,
 };
 
 /// Score how strongly a discovered username is connected to the target.

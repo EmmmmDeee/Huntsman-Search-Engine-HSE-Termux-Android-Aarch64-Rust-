@@ -358,3 +358,36 @@ fn an_organisation_is_attributed_through_any_authors_affiliation() {
         Some("School of Nursing, University of Wollongong, Australia.")
     );
 }
+
+/// REQ-EUROPEPMC-003: Europe PMC keeps PubMed's generational suffix after the
+/// initials (`"Smith J Jr"`). Read as the last token it failed the initials
+/// check, the whole entry became the family name, and no seed could match it.
+/// A roman numeral with no initials before it is the initials themselves.
+#[test]
+fn a_generational_suffix_after_the_initials_is_not_the_family_name() {
+    for authors in [
+        "Doe A, Smith J Jr.",
+        "Doe A, Smith JA Sr",
+        "Doe A, Smith J III.",
+        "Doe A, Smith J 2nd",
+    ] {
+        let r = resp(vec![by("10.1/suffix", Some(authors))]);
+        assert_eq!(
+            build_entities(&r, TargetKind::FullName, "John Smith", SCAN).len(),
+            1,
+            "{authors}"
+        );
+    }
+    assert_eq!(
+        split_author("Smith J Jr"),
+        Some(("J".to_string(), "Smith".to_string()))
+    );
+    // "IV" with a family name before it is Ivan V., not a fourth Petrov.
+    assert_eq!(
+        split_author("Petrov IV"),
+        Some(("I".to_string(), "Petrov".to_string()))
+    );
+    // Control: a suffixed namesake with another initial is still not the seed.
+    let r = resp(vec![by("10.1/other", Some("Smith K Jr."))]);
+    assert!(build_entities(&r, TargetKind::FullName, "John Smith", SCAN).is_empty());
+}

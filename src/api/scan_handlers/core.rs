@@ -578,7 +578,7 @@ pub async fn scan_import(
     body: String,
 ) -> impl IntoResponse {
     use super::super::handlers::forbidden;
-    use crate::core::entity::{EntityKind, unix_now};
+    use crate::core::entity::EntityKind;
     use crate::core::scan::{ScanStatus, TargetKind};
 
     // CSRF guard. The body is `text/plain`, which is a CORS *simple request*
@@ -657,12 +657,16 @@ pub async fn scan_import(
         .map_or_else(|| "uploaded dossier".to_string(), |e| e.value.clone());
 
     let entity_count = entities.len();
-    // Written `Pending` first and turned `Complete` only once the entities,
+    // Written `Running` first and turned `Complete` only once the entities,
     // relations and correlations are all stored (the commit at the end of the
     // blocking closure below). Exports classify a scan by its stored status,
     // so a `Complete` written first let an export taken mid-import brand a
     // half-written scan whole — the window the live engine's finalise had too
-    // (`ScanEngine::finalise_scan`'s commit step).
+    // (`ScanEngine::finalise_scan`'s commit step). The row's lifecycle is
+    // `app::persist::ImportScanRow`'s, shared with the CLI import: any exit
+    // before the commit records `Failed`, and a kill leaves `Running`, which
+    // reads as interrupted once this process no longer holds the import in its
+    // in-flight registry (REQ-SCANSTATUS-005).
     let mut scan = Scan::new(sid.clone(), Target::new(TargetKind::FullName, label));
     scan.entity_count = entity_count;
 
@@ -685,17 +689,27 @@ pub async fn scan_import(
     // caller must be able to tell that apart from a genuinely relation-free
     // dossier, both of which otherwise report `relation_count: 0`.
     let stealer_rows_parsed = stealer_rows.len();
-    let (relation_count, correlation_count, enriched, stealer_rows_stored) =
+    // In flight in THIS process from before the row's first write until after
+    // its terminal one — the registry every "is this scan running here?" reader
+    // consults (`core::cancel::CancelRegistry`): so the import never reads as
+    // interrupted while it runs, cannot be deleted mid-write, and honours
+    // `POST /scans/{id}/cancel` at its two enrichment boundaries (the row then
+    // reads `Aborted`, entities and whatever enrichment finished kept, as for
+    // a cancelled live scan).
+    let cancel = crate::core::cancel::CancelHandle::new();
+    let _in_flight = crate::core::cancel::CancelRegistryGuard::install(
+        Arc::clone(&s.cancellations),
+        sid.clone(),
+        cancel.clone(),
+    );
+    let (relation_count, correlation_count, enriched, stealer_rows_stored, terminal) =
         match super::offload_store(move || -> crate::core::error::Result<_> {
-            let mut scan = scan;
-            store.upsert_scan(&scan)?;
+            let row = crate::app::persist::ImportScanRow::begin(Arc::clone(&store), scan)?;
             store.upsert_entities_batch(&entities)?;
             // The terminal write, run on every exit below — nothing after it
             // may add to what the scan's exports read.
-            let commit = |scan: &mut Scan| -> crate::core::error::Result<()> {
-                scan.status = ScanStatus::Complete;
-                scan.finished_at = Some(unix_now());
-                store.upsert_scan(scan)
+            let commit = |row: crate::app::persist::ImportScanRow, status: ScanStatus| {
+                row.finish(status).map(|()| status)
             };
             // Best-effort: a stealer-row persistence hiccup must not fail an
             // otherwise-successful import — the entity graph above already
@@ -720,8 +734,12 @@ pub async fn scan_import(
             // Device-safety bound: skip the O(n²) enrichment on a pathologically
             // large import (entities are already persisted above; nothing lost).
             if entities.len() > IMPORT_ENRICH_MAX_ENTITIES {
-                commit(&mut scan)?;
-                return Ok((0usize, 0usize, false, stealer_rows_stored));
+                let status = commit(row, ScanStatus::Complete)?;
+                return Ok((0usize, 0usize, false, stealer_rows_stored, status));
+            }
+            if cancel.is_cancelled() {
+                let status = commit(row, ScanStatus::Aborted)?;
+                return Ok((0usize, 0usize, false, stealer_rows_stored, status));
             }
             let mut relations = 0usize;
             // Wall-clock bound on the super-linear derivation chain, matching a
@@ -742,6 +760,10 @@ pub async fn scan_import(
             // rule panicking on adversarial imported entities must degrade to "no
             // correlations", not unwind the import after the entities were already
             // committed. (`Correlator::run` was left unguarded ONLY on this API path.)
+            if cancel.is_cancelled() {
+                let status = commit(row, ScanStatus::Aborted)?;
+                return Ok((relations, 0usize, false, stealer_rows_stored, status));
+            }
             let mut correlations = 0usize;
             let guard_store = Arc::clone(&store);
             let sid_run = sid2.clone();
@@ -754,8 +776,8 @@ pub async fn scan_import(
                     }
                 }
             }
-            commit(&mut scan)?;
-            Ok((relations, correlations, true, stealer_rows_stored))
+            let status = commit(row, ScanStatus::Complete)?;
+            Ok((relations, correlations, true, stealer_rows_stored, status))
         })
         .await
         {
@@ -786,7 +808,9 @@ pub async fn scan_import(
             // upload, nothing to store) or `parsed == stored` (success).
             "stealer_rows_parsed": stealer_rows_parsed,
             "stealer_rows_stored": stealer_rows_stored,
-            "status": "complete",
+            // The status the row was committed with — `aborted` when a cancel
+            // reached the import before its enrichment finished.
+            "status": terminal.as_str(),
         })),
     )
         .into_response()

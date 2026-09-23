@@ -266,8 +266,16 @@ fn render_event(kind: &crate::core::event::EventKind) -> String {
             let stop = stopped
                 .as_deref()
                 .map_or_else(String::new, |r| format!(" — stopped: {r}"));
+            // A legacy event never recorded its dispatch (`None`): render
+            // what it did record, never a zero it did not claim (REQ-SWEEP-006).
+            let sent = dispatched.map_or_else(String::new, |d| format!("{d}/"));
+            let verb = if dispatched.is_some() {
+                " dispatched"
+            } else {
+                ""
+            };
             format!(
-                "  breach sweep: {dispatched}/{probes} probe{} dispatched from {anchors} anchor{}{over}{stop}",
+                "  breach sweep: {sent}{probes} probe{}{verb} from {anchors} anchor{}{over}{stop}",
                 plural2(*probes),
                 plural2(*anchors)
             )

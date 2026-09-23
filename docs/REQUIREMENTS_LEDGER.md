@@ -20409,7 +20409,9 @@ snippet miner sits inside `if result_names_the_subject`; the ABN/ACN loop ran
 after the block closed, on every result. It minted ANZ's own ABN off a bank
 support page and two ABNs from registry pages a "Sydney, Australia" location
 seed returned — breaking the documented rule that a location seed never mines
-snippet PII. The loop moved inside the gate.
+snippet PII. The loop moved inside the gate. (Corrected by REQ-SEARCH-015: behind
+the gate an ABN/ACN seed fell to a formatting-dependent token match; it now
+matches by digits.)
 
 **REQ-SEARCH-008 — the surname alone named a person.** `names_the_subject`
 (behind the seed's re-affirmation and every snippet miner) and
@@ -20480,6 +20482,10 @@ an earlier scan keeps its stored untagged tag set, so the pivot gate and the
 autonomous-seed gate share `engine::enrich::is_coarse_geo`, which also
 recognises a `Coordinates` by its minting signature (`search-geocoded`, or
 the `addr_entity_uid` evidence only `address_to_coords_pass` writes).
+(Extended by REQ-GEO-017: ~30 other modules minted untagged centroids, and the
+recycled-snippet leg had no legacy signature. The engine's enrichment now tags
+every gazetteer centroid by value, and `is_coarse_geo` also reads the
+`recycled` + `addr-derived` pair.)
 
 ### Not fixed here (recorded)
 
@@ -20609,7 +20615,9 @@ one alone, and two combined with username-sweep timeouts. Together they benched
 the handle sweep for username targets that were answering (found 7, 3 and 2).
 `inconclusive_error` now types the verdict by table. A FullName sweep is an
 `Unavailable` skip, which is still a coverage gap, never a clean negative, and
-its reason keeps "not a confirmed absence". A Username sweep stays the module
+its reason keeps "not a confirmed absence". (Corrected by REQ-SOCIAL-005:
+a skip means "not queried", and coverage read the queried directories as
+`NotAttempted`; `finish_sweep` now returns a truncated answer.) A Username sweep stays the module
 error that benches a blocked egress. `streaming_probe` and `username_search`
 accept only Username and are unchanged.
 
@@ -20894,7 +20902,9 @@ unchanged. The ledger's REQ-WIKIDATA-003 wrongly credited the 0.97 fix to
 Wikidata's P625 and is corrected in place. Known conservative loss: on a scan
 whose surname is also a place word, a multi-word place with that word after
 its first word (e.g. "Albert Park Lake" on a "Park" scan) is dropped. The old
-last-word rule had the same class of loss.
+last-word rule had the same class of loss. (Refined by REQ-SEARCH-ADDR-003:
+a surname followed only by place suffixes is a place, and `<Name> in <Place>`
+yields the place; `surname_bearer_locality` replaces the predicate.)
 
 **REQ-GEO-009 — a geocode of a snippet was a second independent method.**
 `distinct_geo_classes`, AU-059's per-point class count and `best_geo_class`
@@ -20949,7 +20959,10 @@ photo EXIF, Wi-Fi; `class_locates_subject_directly`) and that is not a record
 `address_to_coords_pass` copied onto a centroid (`ADDR_ENTITY_UID_ATTR`). The
 subject's own name-matched address still anchors at postcode grain.
 `ANCHORING_GEO_SOURCES` is unchanged, and its stale "geo_family has no such
-gate" comment is corrected.
+gate" comment is corrected. (Corrected by REQ-GEO-FAMILY-003: only an address
+WITH a postcode still anchored; a postcode-less one lost its only route, the
+forward geocode. The Address arm now falls back to the tabulated place the
+address names.)
 
 **REQ-GEO-010 — a reverse geocode was a restaurant at VERIFIED.**
 `geocode::build_reverse_entity` used Nominatim's `display_name` as the Address.
@@ -21218,7 +21231,10 @@ write stays best-effort and logged. The two import paths had the same order
 `api::scan_handlers::core`). They wrote `Complete` before storing entities,
 relations and correlations. They now write the row `Pending` first and
 `Complete` last, on every exit. `is_interrupted` reads only `Running`, so an
-import in flight is not reported as interrupted.
+import in flight is not reported as interrupted. (Corrected by
+REQ-SCANSTATUS-005: that same rule left a failed or killed import `pending`
+forever; imports now write `Running` through `ImportScanRow`. And by
+REQ-SCANSTATUS-004: `scan_complete` was still broadcast before the row write.)
 
 ### Locks
 
@@ -21449,6 +21465,8 @@ anchors` both for a sweep the budget never let start and for one with nothing
 to ask. It now renders `{dispatched}/{probes} probes dispatched …` and `—
 stopped: {reason}` at warn level. A legacy event without `dispatched` reads 0,
 as serde's default does, so the screen and the downloaded log agree.
+(Corrected by REQ-SWEEP-006: a legacy event's dispatch is unknown, not 0; all
+three renderers print its original line.)
 
 **REQ-EXPORT-005 — the Overpass record leaked the node's position past
 redaction.** REQ-GEXF-001 named each Overpass node record `OSM {category} at
@@ -21514,3 +21532,283 @@ after.
 **15 of 15 killed.** `min_confidence_exempt`'s unit test pins each of its
 three conditions separately. `hse-core` changed, so `wasm-ui/pkg` must be
 regenerated.
+
+## REQ-SEARCH-014 / REQ-SEARCH-015 / REQ-GEO-017 / REQ-SOCIAL-005 / REQ-EUROPEPMC-003 / REQ-IDENTITY-GATE-004 / REQ-SEARCH-ADDR-003 / REQ-GEO-FAMILY-003 / REQ-SWEEP-006 / REQ-SCANSTATUS-004 / REQ-SCANSTATUS-005 / REQ-ENGINE-005 — the fifteen low-severity review findings on the round-2 commits
+
+**Found** by adversarial review of this branch's round-2 commits. The operator
+treats every defect or mismatch as blocking, so each of the fifteen was
+re-verified against the current code. All fifteen were real. Twelve were
+behaviour defects and are fixed with regression tests. Three were doc comments
+that did not say what the code does, and those comments now do. Two of the
+twelve also had doc errors, which were corrected with them.
+
+**REQ-SEARCH-014 — the article and the pronoun were given-name initials.**
+`text_names_person` accepted any one-letter token before the surname as the
+given name's initial. The English article "a" and the pronoun "I" are
+one-letter tokens, so "Find a Baker near you" named Andrew Baker and "He was a
+Thorpe by birth" named Alice Thorpe. For every subject whose given name starts
+with A or I, the surname alone again passed the REQ-SEARCH-008 gate, and
+snippet emails, phones, organisations, ABNs and addresses were mined from those
+pages. The two letters now count as an initial only when a `.` follows them
+("A. Baker", "Dr. I. Thorpe"). In a URL slug they count when they open a
+`-`-joined run with no whitespace around them (`/i-thorpe`, `/people/a-baker`).
+An article inside a slug (`find-a-baker`) is joined to the word before it, so
+it stays a word. Every other letter is unaffected. Known conservative loss: an
+unpunctuated "I Thorpe" in prose no longer names Ian Thorpe.
+
+**REQ-SEARCH-015 — an ABN seed's own register page failed its gate.**
+REQ-SEARCH-007 put the ABN/ACN loop behind `names_the_subject`. For an `AbnAcn`
+seed that predicate fell to `last_term()`, a whole-token match that depends
+on how the number is spaced. An unspaced seed `74067173835` was never a
+token of a snippet reading "ABN 74 067 173 835". A spaced seed's last term
+`835` was never a token of the unspaced number a registry title prints. So an
+ABN seed stopped mining the ACN on its own page. `names_the_subject` now has an
+`AbnAcn` branch, `result_mentions_business_number`, the sibling of the phone
+branch. It reads each run of digits and single spaces in the title, snippet and
+URL as one printed number. The seed is named when a run's digits equal the
+seed's. The test is equality, not containment, so a longer number that embeds
+the digits never matches.
+
+**REQ-GEO-017 — most gazetteer centroids were never tagged `coarse`.**
+REQ-GEO-007 tagged `COARSE` at three minting sites, and the `tags::COARSE` doc
+said every `util::city_coords` centroid carries it. About thirty other modules
+also mint a `Coordinates` from `city_coords` (asic_persons, abn_lookup,
+opencorporates, whois, employer_pivot, github_user, proxycurl, …). They tagged
+it only `addr-derived`/`geoint`, so those centroids were still pivoted into
+reverse geocoders and cadastre lookups. The claim is now made true by one
+authority instead of thirty call sites.
+`util::city_coords::is_gazetteer_centroid` tests a point against every value
+`city_coords` can return: tabulated names, tabulated postcodes and
+leading-digit regions. It compares at the 4-decimal grain every caller formats
+with. The engine's `enrich_geospatial` tags a matching `Coordinates` `coarse`
+before the emit, whichever module minted it. It also tags a point that a
+geocoder itself declared to be a city, suburb, postcode, region or country
+centroid through its `place_type`. That reading is
+`correlator::declares_area_grain`, which uses the correlator's own grain table. A
+Nominatim city centroid for a city-only Address had been one hop from the same
+reverse-geocode defect. Separately, `is_coarse_geo`'s legacy-signature check
+covered only two of the three REQ-GEO-007 sites. A pre-fix recycled-snippet
+centroid carried neither signature, so it was still pivoted. The check now also
+reads that leg's `recycled` + `addr-derived` pair, which no other path mints on
+a `Coordinates`, and it reads the gazetteer value. `is_gazetteer_centroid` is a
+pure leaf over the same tables and is allow-listed in `tests/architecture.rs`.
+Two engine tests had used the Sydney CBD centroid value as a "precise fix"
+control. They now use an off-table point, because the tabulated value is
+coarse by definition. Residual: a Nominatim hit typed `administrative` (a
+boundary relation) is not in the grain table, so it is not tagged.
+
+**REQ-SOCIAL-005 — an inconclusive name sweep was a skip although it queried.**
+REQ-SOCIAL-003 returned `Error::Skipped { Unavailable }` for an inconclusive
+FullName sweep. That variant's documented contract is a module that did not
+query the provider. `core::coverage` reads it as `NotAttempted` ("never
+queried"), but the sweep had fetched both people-directory URLs in both waves.
+Its test also called the helper directly, so reverting the call site in
+`process` still passed every test. The contract that fits is an incomplete
+answer.
+`core::coverage` reads zero findings with a truncation caveat as `Truncated`:
+queried and answered, `settles_absence` false, never a clean negative. The
+dispatch counts as a run and records a breaker success. That is true, because
+a directory did answer. `finish_sweep` is now the one tested step between the
+probes and what `process` returns. A FullName sweep that some platform answered
+is `Ok` and marked truncated. A handle sweep stays the module error the breaker
+should count. So does a name sweep that nothing answered, which is the
+blocked-egress shape. A source check pins that `process` returns through
+`finish_sweep` and builds no verdict of its own. The old doc said the trips
+happened "twice with name-sweep errors supplying the streak". That contradicted
+the ledger's own timeline, in which all three trips were fed by name-sweep
+errors. The doc now gives the ledger's account.
+
+**REQ-EUROPEPMC-003 — a generational suffix became the family name.**
+`split_author` recognised the initials only as the LAST token. Europe PMC keeps
+PubMed's suffix after the initials ("Smith J Jr", "Smith JA III", "Smith J
+2nd"), so the whole entry became the family name "Smith J Jr", and no seed
+could match it. A trailing Jr, Sr, II, III, IV, 2nd, 3rd or 4th is now dropped
+first. It is dropped only when an initials token stands before it, because a
+roman numeral is also a pair of initials: "Petrov IV" is Ivan V. Petrov.
+
+**REQ-IDENTITY-GATE-004 — the promotion veto's rationale was narrower than the
+rule.** `derive_coreferences` refuses `IdentifiedBy` from a Person to any
+Email/Username that does not spell the name. Its comment justified that only by
+"a shared surname is not a shared identity". That suggested the veto was meant
+for surname-bearing handles, and that it over-reached on an unrelated one
+(`swimfan82`). Re-examined, the wider rule is the right one. Such a pair can
+reach the 0.80 floor only through shared-source, with five shared module names,
+and those are no identity evidence for any handle. A relative's handle that
+spells nothing of the name (`megfan77`) co-occurs in the same people-search
+sweeps as one that carries the surname. The reviewer's targeted veto would have
+re-admitted it. The behaviour is kept. The comment and doc now state the real
+rule and its known conservative loss, and a lock test pins both halves: the
+unrelated handle is not promoted on co-occurrence, and a record naming its owner
+still binds it through `derive_identity_ownership`'s evidence path. This lock
+passes on the pre-change code, because no behaviour changed. Residual: a Phone
+carries no name to test, so it can still be promoted on shared module names
+alone.
+
+**`Entity::corroborating_records` doc (hse-core).** The doc still said the
+filter was by source. It is by record, through `Evidence::is_non_corroborating`,
+which also drops annotation and name-only (`Unverified`) records. The doc now
+says so, and says that none of those draws a GEXF co-occurrence edge. There is
+no behaviour change.
+
+**REQ-SEARCH-ADDR-003 — the venue rule dropped real suburbs.**
+REQ-SEARCH-ADDR-002 dropped every multi-word "city" with the scanned surname
+anywhere after its first word. That lost "Box Hill North, Victoria" on a scan
+for a Hill. It also lost "Ian Thorpe in Ultimo", which states where the subject
+is. `city_names_a_surname_bearer` is replaced by `surname_bearer_locality`,
+which returns the locality to keep. What follows the surname decides:
+
+- Nothing follows it. This is a listing title, and it is dropped.
+- Only place suffixes follow it (North, South, Heights, Bay, Lake, …). This is
+  a place, and it is kept.
+- A bare `in <Place>` follows it. This locates the bearer, so the place is kept
+  ("Ultimo, New South Wales").
+- Anything else follows it. This is a venue or business named after a
+  surname-bearer ("Aquatic Centre in Ultimo", "Plumbing"), and it is dropped
+  wholesale.
+
+The caller keeps each recovered place once, in order. "Albert Park Lake" on a
+"Park" scan, a loss REQ-SEARCH-ADDR-002 recorded, is now kept. Known
+conservative loss, unchanged: a two-word suburb ending in the surname ("Box
+Hill" for a Hill) reads exactly like a listing title and is dropped.
+
+**REQ-GEO-FAMILY-003 — a postcode-less name-matched address lost its anchor.**
+REQ-GEO-FAMILY-002 stopped counting a forward geocode as a subject fix. Its doc
+said nothing useful was lost, because the `exact-name-match` Address arm still
+anchors. That arm resolved only an AU postcode. A name-matched "12 Foo St,
+Toowong QLD" without one had no anchor left, so the family-geo passes and
+AU-061 silently did nothing. The arm now falls back to the tabulated place the
+address names (`city_coords` on the value), after the postcode. The doc states
+the remaining loss: an address with neither a postcode nor a tabulated place
+does not anchor.
+
+**REQ-SWEEP-006 — a legacy sweep read as one that dispatched nothing.**
+`BreachSweep.dispatched` was `#[serde(default)] usize`, so every event
+persisted before the field existed decoded as 0. It rendered "0/12 probes
+dispatched", the mirror image of the misreport REQ-SWEEP-004 fixed, and
+asserted a number the old record never held. It is now `Option<usize>`, and
+every new emission is `Some`. A legacy `None` renders its original "12 probes
+from 3 anchors" line in `EventKind::log_summary`, the live CLI's `render_event`
+and the SPA's `log.js`. The persisted log line carries `"dispatched":null`.
+
+**REQ-SCANSTATUS-005 — a failed or killed import stayed pending forever.**
+REQ-SCANSTATUS-002 had both import paths write the row `Pending` first. Any
+exit other than the success commit left it there: an error from `?` after the
+first write, a panic, or a kill during enrichment. `is_interrupted` reads only
+`Running`, by design ("pending" means never started), so nothing ever reported
+such a row as interrupted. The scan list counted it as running, `/stats`
+counted it as in progress, and `prune_events` exempted it.
+`app::persist::ImportScanRow` is now the one lifecycle both paths use:
+
+- `begin` writes `Running`.
+- `finish` writes the terminal status.
+- A drop without `finish` records `Failed` with an error. This covers an error
+  return and a panic.
+
+A kill leaves `Running`, which the web process reads as interrupted once the
+import is no longer in its in-flight registry. The web upload now holds the
+import in that registry from before its first write to after its last. As a
+result:
+
+- It is not reported interrupted while it runs.
+- `DELETE` refuses it mid-write.
+- `POST /scans/{id}/cancel` is honoured at the two enrichment boundaries. The
+  row then reads `Aborted`, and it keeps the entities and whatever enrichment
+  finished.
+
+The response's `status` is the committed one. A CLI import runs in its own
+process, so a server reads its `Running` row as interrupted while it runs. A
+concurrent CLI scan already follows the same per-process rule. (The id was
+chosen as 005 because a parallel review round on #649 uses
+REQ-SCANSTATUS-003.)
+
+**REQ-SCANSTATUS-004 — `scan_complete` reached SSE before the row was
+terminal.** REQ-SCANSTATUS-002 moved the terminal row write to the end, but
+`ScanComplete` was still emitted inside the blocking finalise.
+`EventEmitter::emit` both enqueues to the writer and broadcasts on the bus, so
+subscribers heard `scan_complete` while the stored row read `running`.
+`radar.js` re-fetches on it, on the documented promise that "the engine writes
+the row before it emits the event". `emit` is now `record` (the writer) plus
+`broadcast` (the bus). Finalise records `ScanComplete` inside the blocking
+phase, so the event is durable before the row, as REQ-SCANSTATUS-002 requires.
+It broadcasts only after the commit, and a commit that fails outright announces
+no completion. The in-memory store's terminal witness can now watch the bus.
+
+**REQ-ENGINE-005 — `modules_run` said "executed against their provider".**
+The REQ-ENGINE-003 docs defined `run` as modules that executed against their
+provider, and said an in-band skip "declined to query". hackertarget ("error
+invalid host") and whois (the IANA bootstrap) return `Error::Skipped
+{NotApplicable}` after contacting a provider. Until this round, so did
+social_probe's name sweep. The counting is right: none of these obtained an
+answer about the target, and `run` + `skipped` must partition the dispatches.
+The definitions were wrong. These docs now say what the code does:
+`ModuleStats::run`, `Scan::modules_run`, the dispatch comments, the
+`Error::Skipped` / `Error::skipped` contract and `SkipClass::NotApplicable`.
+
+- `run` is a dispatch that returned a result, an error or a timeout.
+- A skip obtained no answer about the target. Either the module did not ask,
+  or the provider's own reply put the target outside what it answers.
+- An answer that cannot settle the question is a truncated result, never a
+  skip.
+
+Every `Unavailable` skip in the tree is decided before any query.
+
+### Locks
+
+- `core::scan::tests::the_article_and_the_pronoun_are_not_given_name_initials`.
+- `modules::search_engines::helpers::relevance::tests::a_business_number_is_named_in_any_grouping_and_only_whole`;
+  `modules::search_engines::tests::an_abn_seed_names_its_register_page_in_any_digit_grouping`.
+- `core::engine::enrich::tests::is_coarse_geo_recognises_a_legacy_recycled_centroid_and_any_gazetteer_value`;
+  `core::engine::enrich::tests::enrichment_tags_every_gazetteer_and_declared_area_centroid_coarse`;
+  `util::city_coords::tests::every_city_coords_answer_is_a_gazetteer_centroid`.
+- `modules::social_probe::tests::an_inconclusive_people_directory_sweep_is_an_incomplete_answer_not_a_skip_or_a_fault`
+  (through `provider_coverage_from_events`);
+  `modules::social_probe::tests::process_returns_its_sweep_verdict_through_finish_sweep`.
+- `modules::europepmc_search::tests::a_generational_suffix_after_the_initials_is_not_the_family_name`.
+- `core::relation::tests::an_unrelated_handle_is_bound_by_a_naming_record_never_by_co_occurrence`
+  (a lock on kept behaviour).
+- `modules::search_engines::helpers::entity::tests::a_suburb_carrying_the_surname_and_a_located_bearer_are_localities`;
+  `modules::search_engines::tests::a_name_scan_keeps_the_place_its_subject_is_located_in`
+  (the REQ-SEARCH-ADDR-001/002 tests pass, adapted to the new signature).
+- `core::geo_family::tests::a_postcode_less_name_matched_address_still_anchors_at_its_named_place`.
+- `core::event::tests::a_legacy_breach_sweep_never_reads_as_one_that_dispatched_nothing`;
+  `cli::live::tests::render_event_reads_a_legacy_breach_sweep_as_unknown_dispatch`;
+  `api::routes::tests::the_log_view_renders_a_breach_sweeps_dispatch_and_stop_like_the_log_summary`
+  (extended).
+- `app::persist::tests::an_import_row_never_outlives_its_import_in_progress`;
+  `api::scan_handlers::tests::scan_import_commits_its_row_and_leaves_the_in_flight_registry`.
+- `core::engine::tests::scan_complete_reaches_live_subscribers_only_after_the_row_is_terminal`.
+
+### Falsified
+
+Each mutation restores the defect. For L5 and L8 it re-creates the shape the
+review warned of instead. The fixed file was saved first and restored after
+each run, and its md5 was checked to be identical before and after.
+
+| # | mutation | result |
+|---|---|---|
+| L1 | `compatible` without `may_be_given` (any one-letter token is an initial) | killed by `the_article_and_the_pronoun_are_not_given_name_initials` |
+| L2 | `AbnAcn` branch of `names_the_subject` disabled | killed by `an_abn_seed_names_its_register_page_in_any_digit_grouping` |
+| L3 | `is_coarse_geo` without the `recycled` + `addr-derived` signature | killed by `is_coarse_geo_recognises_a_legacy_recycled_centroid_and_any_gazetteer_value` |
+| L4a | enrichment never tags `coarse` | killed by `enrichment_tags_every_gazetteer_and_declared_area_centroid_coarse` |
+| L4b | enrichment ignores a geocoder's declared area grain | killed by the same test (the Nominatim city case) |
+| L5 | `process` decides an inline `Error::module` verdict beside `finish_sweep` | killed by `process_returns_its_sweep_verdict_through_finish_sweep` |
+| L6a | FullName inconclusive sweep back to an error | killed by `an_inconclusive_people_directory_sweep_is_an_incomplete_answer_not_a_skip_or_a_fault` |
+| L6b | a name sweep nothing answered treated as answered | killed by the same test |
+| L7 | generational suffix not dropped | killed by `a_generational_suffix_after_the_initials_is_not_the_family_name` |
+| L8 | promotion veto narrowed to surname-bearing handles (the reviewer's proposal) | killed by `an_unrelated_handle_is_bound_by_a_naming_record_never_by_co_occurrence` |
+| L10a | place-suffix arm removed | killed by `a_suburb_carrying_the_surname_and_a_located_bearer_are_localities` |
+| L10b | `in <Place>` recovery removed | killed by the same test |
+| L10c | caller keeps the raw segment instead of the recovered place | killed by `a_name_scan_keeps_the_place_its_subject_is_located_in` |
+| L11 | no place-name fallback for a postcode-less address | killed by `a_postcode_less_name_matched_address_still_anchors_at_its_named_place` |
+| L12a | `log_summary` renders a legacy sweep as `0/N` | killed by `a_legacy_breach_sweep_never_reads_as_one_that_dispatched_nothing` |
+| L12b | live CLI renders a legacy sweep as `0/N` | killed by `render_event_reads_a_legacy_breach_sweep_as_unknown_dispatch` |
+| L12c | `log.js` back to `dispatched ?? 0` | killed by `the_log_view_renders_a_breach_sweeps_dispatch_and_stop_like_the_log_summary` |
+| L13a | `ImportScanRow::begin` leaves the row `Pending` | killed by `an_import_row_never_outlives_its_import_in_progress` |
+| L13b | `ImportScanRow` drop never records `Failed` | killed by the same test |
+| L14 | `record` also broadcasts (the pre-fix order) | killed by `scan_complete_reaches_live_subscribers_only_after_the_row_is_terminal` |
+
+**20 of 20 killed.** The two doc-only corrections, REQ-ENGINE-005 and the
+`corroborating_records` doc, change no behaviour and have nothing to falsify.
+REQ-IDENTITY-GATE-004's lock guards kept behaviour, and L8 shows it would catch
+the proposed narrowing. `hse-core` changed, in the `tags::COARSE` and
+`corroborating_records` docs only, so `wasm-ui/pkg` must be regenerated.

@@ -162,7 +162,7 @@ use crate::core::scan::ScanStatus;
                 anchors: 18,
                 probes: 64,
                 dropped: 51,
-                dispatched: 0,
+                dispatched: Some(0),
                 stopped: Some("max_entities=2500 reached".into()),
             },
         );
@@ -183,11 +183,39 @@ use crate::core::scan::ScanStatus;
         assert!(matches!(
             old,
             EventKind::BreachSweep {
-                dispatched: 0,
+                dispatched: None,
                 stopped: None,
                 ..
             }
         ));
+    }
+
+    /// REQ-SWEEP-006: a BreachSweep persisted before `dispatched` existed never
+    /// recorded its dispatch. Read as `0`, every pre-upgrade sweep that ran
+    /// normally re-rendered as "0/12 probes dispatched" — the mirror image of
+    /// the budget-cut misreport REQ-SWEEP-004 fixed. It reads as unknown and
+    /// renders the line it was written with.
+    #[test]
+    fn a_legacy_breach_sweep_never_reads_as_one_that_dispatched_nothing() {
+        let old: EventKind = serde_json::from_str(
+            r#"{"type":"breach_sweep","anchors":3,"probes":12,"dropped":0}"#,
+        )
+        .expect("legacy breach_sweep event deserialises");
+        let (_, summary) = old.log_summary();
+        assert!(!summary.contains("0/12"), "{summary}");
+        assert!(!summary.contains("dispatched"), "{summary}");
+        assert!(summary.contains("12 probes from 3 anchors"), "{summary}");
+        let line = Event::new("s", old).to_log_line();
+        assert!(!line.contains("\"dispatched\":0"), "{line}");
+        // A recorded dispatch still renders dispatched-of-planned.
+        let new = EventKind::BreachSweep {
+            anchors: 3,
+            probes: 12,
+            dropped: 0,
+            dispatched: Some(12),
+            stopped: None,
+        };
+        assert!(new.log_summary().1.contains("12/12 probes dispatched"));
     }
 
     /// The terminal event renders its true state: an aborted or failed scan
@@ -391,7 +419,7 @@ use crate::core::scan::ScanStatus;
                 anchors: 3,
                 probes: 12,
                 dropped: 1,
-                dispatched: 0,
+                dispatched: Some(0),
                 stopped: Some("max_entities=2500 reached".into()),
             },
             EventKind::ConsensusAudit {
