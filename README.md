@@ -8,7 +8,7 @@
 **All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition —
 SpiderFoot-inspired breadth without the daemon or the footprint.**
 
-Pure-Rust OSINT / GEOINT platform with **193 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **194 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 dark-console Web UI, zero native dependencies, keyless-first.
 
@@ -196,7 +196,7 @@ single-instance constraint (local SQLite — do not scale replicas above 1).
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 193 modules
+hse modules                                                 # list all 194 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
 hse keys status                                             # multi-key pool: what's loaded, per source
@@ -369,7 +369,7 @@ HSE's engine.
 | Phone | `--kind phone` | `+61400000000` | 18 |
 | Full Name | `--kind name` | `Jordan Leigh Meyers` | 27 |
 | IP Address | `--kind ip` | `1.1.1.1` | 41 |
-| Domain | `--kind domain` | `example.com` | 60 |
+| Domain | `--kind domain` | `example.com` | 61 |
 | ASN | `--kind asn` | `AS13335` | 3 |
 | CIDR | `--kind cidr` | `1.1.1.0/24` | 2 |
 | Coordinates | `--kind coords` | `-27.47,153.02` | 18 |
@@ -391,7 +391,7 @@ respectively.
 
 ---
 
-## Module Overview (193 modules — 144 free, 49 key-gated/paid)
+## Module Overview (194 modules — 145 free, 49 key-gated/paid)
 
 > A curated highlight of the modules below (not the full list). The complete, always-current catalogue
 > with target kinds and output entities lives in the running software — run
@@ -409,7 +409,7 @@ respectively.
 - **Phone**: `phone_au`, `phone_intl`
 - **Corporate**: `acnc_charities`, `asic_director`, `au_unclaimed`, `austlii`, `gleif_lei`
 - **Search**: `chronicling_america`, `search_engines`
-- **Web analysis**: `cloud_storage`, `sitemap`, `waf_detect`, `wayback`, `web_crawler`, `webserver_banner`
+- **Web analysis**: `api_discovery`, `cloud_storage`, `sitemap`, `waf_detect`, `wayback`, `web_crawler`, `webserver_banner`
 - **Termux sensors**: `cell_intel`, `device_sensors`, `local_net`, `signal_radar`
 - **Other**: `api_key_probe`, `chain_intel`
 

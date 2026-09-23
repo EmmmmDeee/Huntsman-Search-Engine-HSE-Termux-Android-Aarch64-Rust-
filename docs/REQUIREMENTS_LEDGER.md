@@ -18474,3 +18474,154 @@ MATRIX_SUMMARY_PLACEHOLDER
   Both paths are locked at the unit level; only the blank one lacks an
   end-to-end demonstration through the real binary. Queued, not silently
   accepted.
+
+### REQ-APIDISCOVERY-001 — a domain's published API and authorization surface had no reader; `api_discovery` reads four discovery well-knowns, validates each against the URL that served it, and follows declared authorization servers the Domain pivot cannot reach
+
+#### Where this sits
+
+T1/T2 (`docs/ROADMAP.md`). A new keyless Domain module, registered beside
+`app_links` — its sibling: `app_links` reads what a domain publishes about its
+mobile apps, `api_discovery` what it publishes about its programmable surface.
+Emits `Other("oauth-issuer" | "oauth-protected-resource" | "api-reference")`
+terminal records and `Domain` pivots. Module 194.
+
+#### Observed, before any code (live, 2026-09-22)
+
+- **OIDC / RFC 8414** — `gitlab.com` serves identical metadata at both
+  well-knowns, every endpoint on `gitlab.com`; `accounts.google.com` puts its
+  endpoints on siblings (`oauth2.googleapis.com`, `openidconnect.googleapis.com`,
+  `www.googleapis.com`) and names `service_documentation`.
+- **RFC 9728** on remote MCP servers — `mcp.linear.app`, `mcp.notion.com`,
+  `mcp.asana.com` (self-hosted AS, `resource_name`, `resource_documentation`),
+  `mcp.atlassian.com` (`resource` with a trailing slash; AS
+  `https://auth.atlassian.com/<tenant>` — a PATH), `mcp.stripe.com` (AS
+  `https://access.stripe.com/mcp` — a PATH). `mcp.sentry.dev`,
+  `api.githubcopilot.com`: 404.
+- **RFC 9727** — no sampled domain serves one (`www.rfc-editor.org`: 404). The
+  catalog leg is built to the RFC's shapes and pinned by fixtures; no live
+  confirmation exists.
+- No module read any of these. `web_crawler`'s `crawl_util` names
+  `security.txt` only in a regression comment about its config-leak list.
+
+#### What ships
+
+Four legs fetched concurrently. For each OAuth document the declared
+identifier must equal the one its **served** URL derives (OIDC appends the
+suffix; RFC 8414 / RFC 9728 insert it), canonicalised (trailing `/` and the
+default port are not identity; query, fragment, userinfo and non-`https`
+disqualify). A document failing that MUST NOT be used, and is not.
+
+Ownership is the second gate: endpoint hosts are pivots only when the served
+URL is the target or a host under it (`served_by`, the one authority, compared
+in canonical form). A cross-site redirect yields a *delegated* issuer — no
+scopes, no hosts — and a cross-site protected resource yields nothing. Every
+discovered URL goes through `public_https_url`: `https`, a registrable DNS name
+(the WHATWG parser turns `2130706433` into `127.0.0.1`, so numeric encodings
+cannot pass as names), not refused by `util::preflight::url_host_is_private`.
+
+A second stage follows each **path-bearing** authorization server a protected
+resource declares to its RFC 8414 and OIDC metadata URLs. The followed issuer
+must validate at the URL that served it AND be the issuer that was declared.
+At most `MAX_DECLARED_SERVERS` (4) are followed — a bound on requests, not on
+output: every declared server is still recorded and its host still pivoted.
+
+Outage typing is `app_links`' (REQ-APPLINKS-001): a 2xx wall stays
+`Blocked(BotChallenge)`, a transport failure is `TransportFailed`, and only all
+four legs prevented with nothing found is an error. The decision is the pure
+`collect` → `Collected::finish`, so it is pinned without a network; the tests
+drive the same `collect` production does.
+
+#### Found along the way — by the engine's own canonicaliser
+
+The first cut expected `www.googleapis.com` and got `googleapis.com`:
+`Entity::new` strips a leading `www.`. The test was wrong — and the code under
+it was too. The self-pivot check compared the RAW host with the target, so for
+target `acme.com` an endpoint on `www.acme.com` passed `!= site` and was then
+born AS `acme.com`: the target echoed back as its own discovered pivot. Pivots
+are now keyed on `core::entity::normalise`, and the target itself is
+canonicalised once, in `collect`, which also fixed a second case the same
+comparison broke: a target given as `www.acme.com` whose well-known redirects
+to its apex read as a cross-site delegation. Both locked
+(`a_www_endpoint_is_never_the_target_echoed_back`,
+`a_www_target_redirected_to_its_apex_stays_owned`).
+
+#### Found along the way — by the production path
+
+Run through the `hse` binary (`hse scan -k domain -m api_discovery -d 1`), not
+only the test client:
+
+- `mcp.stripe.com` logged `rejected: 1`. Confirmed by hand: its
+  `/.well-known/oauth-authorization-server` serves metadata whose issuer is
+  `https://access.stripe.com/mcp`. RFC 8414 §3.3 forbids using it as
+  `mcp.stripe.com`'s; the relationship arrives correctly through the RFC 9728
+  leg instead. The rejection is right.
+- The engine expanded the `access.stripe.com` pivot and re-ran the module
+  there: `found: 0`. The issuer's metadata lives at
+  `/.well-known/oauth-authorization-server/mcp`, and a bare Domain pivot has
+  lost the path — the chain dead-ended on two of the five live MCP servers.
+  That is the second stage above; after it the same scan yields the validated
+  `https://access.stripe.com/mcp`, tagged `declared-authorization-server`.
+- `mcp.atlassian.com` yielded less through the binary than through the live
+  test, deterministically (4 of 4 runs). Isolated by variable: the same URL
+  returns `200` to the sandbox's egress proxy and `404` to the direct route
+  (`curl --noproxy '*'`, HTTP/1.1 and HTTP/2 alike; User-Agent irrelevant).
+  The engine's client is `no_proxy()` by design, so the module reported what
+  that server told that vantage — an honest clean miss, not a defect. The
+  defect was the live test: it used `reqwest::Client::new()`, which takes the
+  proxied route, so it proved a path production never takes. It now uses
+  `build_client()`, and asserts only on targets verified on the direct route.
+  The canary was chosen by the same rule (`accounts.google.com`, `Alive
+  { found: 6 }` through the sweep's own `probe_module`); `mcp.atlassian.com`
+  was rejected as one.
+
+#### Falsification — predicted before run, then compared
+
+Each row mutates one guard back to the naive form, predicts the one test that
+must fail, runs it, restores (byte-identical, `diff -q`).
+
+| # | mutation | predicted failing test | actual |
+|---|---|---|---|
+| M1 | accept any issuer | `an_impersonated_issuer_is_never_used` | killed |
+| M2 | self-pivot compared raw | `a_www_endpoint_is_never_the_target_echoed_back` | killed |
+| M3 | SSRF preflight removed | `private_and_special_use_endpoint_hosts_are_never_minted` | killed |
+| M4 | every served document owned | `a_cross_site_redirect_records_a_delegated_issuer_without_pivots` | killed |
+| M5 | served host compared raw | first run: `a_www_target_redirected_to_its_apex_stays_owned` | **survived — misprediction, corrected** |
+| M5′ | served host compared raw | `a_catalog_served_from_the_absolute_form_of_the_target_stays_owned` | killed |
+| M6 | target not canonicalised | `a_www_target_redirected_to_its_apex_stays_owned` | killed |
+| M7 | outage collapsed to a clean negative | `every_leg_prevented_is_an_outage_never_a_clean_negative` | killed |
+| M8 | wall folded into the ordinary negative | `a_wall_is_not_an_answer_about_api_discovery` | killed |
+| M9 | followed server need not be the declared issuer | `a_followed_server_answering_for_another_issuer_is_not_used` | killed |
+| M10 | follow-up fan-out unbounded | `declared_server_follow_ups_are_bounded_but_nothing_is_dropped` | killed |
+| M11 | path-less servers followed too | `path_less_or_already_validated_servers_are_not_followed` | killed |
+| M12 | follow-up skips the SSRF preflight | `a_private_declared_server_is_never_followed` | killed |
+
+M5 is recorded, not rewritten: the prediction put the load on the wrong half
+of the ownership fix. With the target already canonical, a raw `acme.com`
+served host still compares equal, so M5's test could not see M5. The half that
+carries the `www.` case is the TARGET's canonicalisation (M6); the served
+host's matters only for the absolute `acme.com.` form, and only on the catalog
+leg — the OAuth legs reject that origin at the identifier check first. Each
+half now has its own lock.
+
+The roadmap lock (`the_map_states_the_live_registry_size`) was falsified the
+same way: the heading set back to `193` fails it with the stale figure named;
+restored to `194`, it passes.
+
+#### Scope, honestly
+
+- The first stage reads each well-known at the domain's apex only. An issuer
+  whose own identifier carries a path (a Keycloak realm at
+  `https://h/realms/x`) is found only when some protected resource declares
+  it; nothing guesses realm names.
+- API references are recorded, not fetched: an OpenAPI document's `servers`,
+  paths and security schemes are the next reader, not this one.
+- The `Link: <…>; rel="api-catalog"` response header (RFC 9727 §3.2) is not
+  read; only the well-known is.
+- RFC 9727 has no live confirmation from any sampled domain (above).
+- Provider answers can depend on the vantage: `mcp.atlassian.com`'s protected
+  resource 404s on this sandbox's direct route. A device elsewhere (the
+  Vietnam base) may see a different answer, and the module reports whichever
+  it is given.
+- The follow-up stage's failures are best-effort by design and move no outage
+  verdict; a declared server that could not be followed stays recorded as
+  declared, unvalidated.
