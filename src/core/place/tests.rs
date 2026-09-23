@@ -569,3 +569,668 @@ fn assess_is_deterministic() {
     let b: FixPrecision = assess(&sydney_7258fc07());
     assert_eq!(a, b);
 }
+
+// ── The nearest-place label (REQ-GEOLABEL-002..004) ───────────────────────
+
+use super::label::{
+    LabelBasis, PlaceContext, PlaceLabel, bearing_8, describe, describe_fused, distance_display_m,
+    radius_display_m,
+};
+
+/// A measured fix good to a doorway, off every gazetteer table, at six
+/// significant decimals (so the quantisation floor does not coarsen it).
+const GPS: (f64, f64) = (-27.481234, 153.012345);
+
+fn gps_fix() -> Entity {
+    let mut e = coord(&format!("{:.6},{:.6}", GPS.0, GPS.1));
+    e.add_evidence(ev("signal_radar", "GNSS fix", &[("accuracy_m", "8")]));
+    e
+}
+
+/// A point `metres` due north of `GPS` (1 m of latitude ≈ 1/111 320 °).
+fn north_of_gps(metres: f64) -> (f64, f64) {
+    (GPS.0 + metres / 111_320.0, GPS.1)
+}
+
+/// The `Address` a reverse leg stores for a lookup OF `at`: `source` is
+/// `geocode` (Nominatim) or `photon`, `attrs` its structured parts.
+fn reverse_address(value: &str, source: &str, at: (f64, f64), attrs: &[(&str, &str)]) -> Entity {
+    let mut a = Entity::new(EntityKind::Address, value, 0.7, "s1");
+    a.tag("reverse-geocoded");
+    a.tag("nearest-address");
+    let mut r = ev(
+        source,
+        &format!("Reverse geocode for {},{}", at.0, at.1),
+        &[
+            ("latitude", &at.0.to_string()),
+            ("longitude", &at.1.to_string()),
+        ],
+    )
+    .with_inferred(true);
+    for (k, v) in attrs {
+        r = r.with_attr(*k, *v);
+    }
+    a.add_evidence(r);
+    a
+}
+
+/// A Nominatim reverse answer at a matched object `metres` north of the fix,
+/// ranked `rank`, with the POI name every such answer at zoom 18 carries.
+fn nominatim_at(metres: f64, rank: &str, road: &str, suburb: &str) -> Entity {
+    let (mlat, mlon) = north_of_gps(metres);
+    let (mlat, mlon) = (format!("{mlat:.6}"), format!("{mlon:.6}"));
+    reverse_address(
+        &format!("12 {road}, {suburb}, Queensland, 4066, Australia"),
+        "geocode",
+        GPS,
+        &[
+            ("house_number", "12"),
+            ("road", road),
+            ("street", &format!("12 {road}")),
+            ("suburb", suburb),
+            ("city", "Brisbane"),
+            ("state", "Queensland"),
+            ("postcode", "4066"),
+            ("country", "Australia"),
+            ("country_code", "AU"),
+            ("nearest_feature", "Kazan Dining"),
+            ("display_name", "Kazan Dining, 12, Smith Street, Toowong"),
+            ("matched_lat", &mlat),
+            ("matched_lon", &mlon),
+            ("place_rank", rank),
+        ],
+    )
+}
+
+fn label_of(e: &Entity, scan: &[Entity]) -> PlaceLabel {
+    describe(e, &PlaceContext::for_scan(scan, "s1")).expect("the point has a label")
+}
+
+/// P1 on every label: its grain is never finer than the fix's, and its
+/// structured radius never smaller.
+fn assert_honest(l: &PlaceLabel, e: &Entity) {
+    let fix = assess(e);
+    assert_eq!(l.fix_grain, fix.grain, "{l:?}");
+    assert!(
+        l.label_grain >= l.fix_grain,
+        "label finer than the fix: {l:?}"
+    );
+    let shown = l.to_json()["fix_radius_m"].as_u64().expect("an integer");
+    assert!(shown as f64 >= fix.radius_m.floor(), "{l:?} vs {fix:?}");
+}
+
+/// REQ-GEOLABEL-002 (P3/P6): the 7258fc07 Sydney centroid is labelled as the
+/// city it stands for — even when this scan holds a reverse geocode of that
+/// exact point naming the restaurant and the street that contain the centroid.
+#[test]
+fn the_sydney_centroid_is_labelled_the_city_never_the_street_containing_it() {
+    let e = sydney_7258fc07();
+    let kazan = reverse_address(
+        "25 Martin Place, Sydney, New South Wales, 2000, Australia",
+        "geocode",
+        (-33.8688, 151.2093),
+        &[
+            ("house_number", "25"),
+            ("road", "Martin Place"),
+            ("suburb", "Sydney"),
+            ("nearest_feature", "Kazan Dining"),
+            ("matched_lat", "-33.868800"),
+            ("matched_lon", "151.209300"),
+            ("place_rank", "30"),
+        ],
+    );
+    let nina = reverse_address(
+        "Nina Armando, Sydney",
+        "photon",
+        (-33.8688, 151.2093),
+        &[("place_name", "Nina Armando"), ("road", "Martin Place")],
+    );
+    let l = label_of(&e, &[e.clone(), kazan, nina]);
+    assert_eq!(
+        l.text,
+        "Sydney, NSW (city centroid — not a street location)"
+    );
+    assert_eq!(l.basis, LabelBasis::Centroid);
+    for leak in ["Kazan", "25", "Martin", "Nina", "2000"] {
+        assert!(!l.text.contains(leak), "{leak} leaked into {l:?}");
+    }
+    assert_honest(&l, &e);
+}
+
+/// REQ-GEOLABEL-002: the operator's own example. `-27.4698,153.0251 → 123
+/// Adelaide St…` is the tabulated Brisbane centroid; it renders as the city,
+/// never a street, a parcel, or the ASGS area that contains the centroid.
+#[test]
+fn the_operators_brisbane_example_renders_as_the_city_centroid() {
+    let mut e = coord("-27.469800,153.025100");
+    e.add_evidence(ev(
+        "geocode",
+        "Inline geocode of address '390, Simpsons Road, Bardon' → -27.4698,153.0251",
+        &[
+            ("addr_entity_uid", "a1"),
+            ("addr_value", "390, Simpsons Road, Bardon"),
+        ],
+    ));
+    e.add_evidence(ev(
+        "qld_cadastre",
+        "QLD DCDB cadastral parcel",
+        &[("lotplan", "49SP314954"), ("locality", "Brisbane City")],
+    ));
+    e.add_evidence(ev(
+        "au_geo",
+        "ASGS roll-up",
+        &[("au_suburb", "Brisbane City"), ("au_postcode", "4000")],
+    ));
+    let adelaide = reverse_address(
+        "123 Adelaide Street, Brisbane City",
+        "geocode",
+        (-27.4698, 153.0251),
+        &[
+            ("house_number", "123"),
+            ("road", "Adelaide Street"),
+            ("matched_lat", "-27.469900"),
+            ("matched_lon", "153.025100"),
+            ("place_rank", "30"),
+        ],
+    );
+    let l = label_of(&e, &[e.clone(), adelaide]);
+    assert_eq!(
+        l.text,
+        "Brisbane, QLD (city centroid — not a street location)"
+    );
+    for leak in [
+        "Adelaide",
+        "123",
+        "4000",
+        "Brisbane City",
+        "49SP",
+        "Simpsons",
+    ] {
+        assert!(!l.text.contains(leak), "{leak} leaked into {l:?}");
+    }
+    assert_eq!(l.label_grain, FixGrain::Locality);
+    assert_honest(&l, &e);
+}
+
+/// REQ-GEOLABEL-002 (P6): a postcode centroid names its postcode.
+#[test]
+fn a_postcode_centroid_names_its_postcode_area() {
+    let mut e = coord("-20.0041,145.9004");
+    e.add_evidence(ev(
+        "qld_unclaimed",
+        "QLD unclaimed monies postcode",
+        &[("postcode", "4820")],
+    ));
+    let l = label_of(&e, &[]);
+    assert_eq!(l.text, "Postcode 4820 area, QLD (postcode centroid, ±4 km)");
+    assert_eq!(l.label_grain, FixGrain::Suburb);
+    assert_honest(&l, &e);
+}
+
+/// REQ-GEOLABEL-002 (P5): a measured fix good to a doorway, reverse-geocoded
+/// by this scan, is labelled from the structured parts of that answer — the
+/// house number only for an address-point object within the fix's error bar,
+/// and never the POI or display name.
+#[test]
+fn a_measured_fix_takes_this_scans_reverse_observation_within_its_error_bar() {
+    let fix = gps_fix();
+    let near = nominatim_at(30.0, "30", "Smith Street", "Toowong");
+    let l = label_of(&fix, &[fix.clone(), near]);
+    assert_eq!(
+        l.text,
+        "≈ 12 Smith Street, Toowong QLD 4066 (nearest address, ~30 m from the fix; fix ±8 m)"
+    );
+    assert_eq!(l.basis, LabelBasis::NearestAddress);
+    assert_eq!(l.label_grain, FixGrain::Point);
+    assert_eq!(l.to_json()["offset_m"], 30);
+    assert!(!l.text.contains("Kazan"), "{l:?}");
+    assert_honest(&l, &fix);
+
+    // A street object (rank 26): the road, never a house number.
+    let street = nominatim_at(30.0, "26", "Smith Street", "Toowong");
+    let l = label_of(&fix, &[fix.clone(), street]);
+    assert!(
+        l.text.starts_with("≈ Smith Street, Toowong QLD 4066"),
+        "{l:?}"
+    );
+    assert_eq!(l.label_grain, FixGrain::Street);
+
+    // 400 m away: beyond max(3r, 150 m) — the suburb, no street.
+    let far = nominatim_at(400.0, "30", "Smith Street", "Toowong");
+    let l = label_of(&fix, &[fix.clone(), far]);
+    assert!(
+        l.text
+            .starts_with("Toowong QLD 4066 (nearest address, ~400 m"),
+        "{l:?}"
+    );
+    assert_eq!(l.label_grain, FixGrain::Suburb);
+
+    // Over 2 km away: only the locality stands.
+    let very_far = nominatim_at(2_500.0, "30", "Smith Street", "Toowong");
+    let l = label_of(&fix, &[fix.clone(), very_far]);
+    assert!(
+        l.text.starts_with("Brisbane, QLD (nearest address, ~2 km"),
+        "{l:?}"
+    );
+    assert_eq!(l.label_grain, FixGrain::Locality);
+}
+
+/// REQ-GEOLABEL-002 (P5): providers that disagree coarsen the label, a merge
+/// splice (`"a; b"`) names nothing, and an answer that never recorded where
+/// its object lies names no street.
+#[test]
+fn disagreement_splices_and_unrecorded_offsets_coarsen_the_nearest_address() {
+    let fix = gps_fix();
+    let nominatim = nominatim_at(20.0, "30", "Smith Street", "Toowong");
+    let (plat, plon) = north_of_gps(25.0);
+    let photon_other_road = reverse_address(
+        "14 Jones Road, Toowong",
+        "photon",
+        GPS,
+        &[
+            ("house_number", "14"),
+            ("road", "Jones Road"),
+            ("suburb", "Toowong"),
+            ("matched_lat", &format!("{plat:.6}")),
+            ("matched_lon", &format!("{plon:.6}")),
+        ],
+    );
+    let l = label_of(&fix, &[fix.clone(), nominatim.clone(), photon_other_road]);
+    assert!(
+        l.text.starts_with("Toowong QLD 4066"),
+        "road conflict → suburb: {l:?}"
+    );
+    let photon_other_suburb = reverse_address(
+        "Smith Street, Auchenflower",
+        "photon",
+        GPS,
+        &[("road", "Smith Street"), ("suburb", "Auchenflower")],
+    );
+    let l = label_of(&fix, &[fix.clone(), nominatim, photon_other_suburb]);
+    assert!(
+        l.text.starts_with("Brisbane, QLD"),
+        "suburb conflict → locality: {l:?}"
+    );
+
+    let spliced = nominatim_at(20.0, "30", "Smith Street; Jones Road", "Toowong");
+    let l = label_of(&fix, &[fix.clone(), spliced]);
+    assert!(
+        !l.text.contains("Smith") && !l.text.contains("Jones"),
+        "{l:?}"
+    );
+
+    let legacy = reverse_address(
+        "12 Smith Street, Toowong",
+        "geocode",
+        GPS,
+        &[
+            ("street", "12 Smith Street"),
+            ("suburb", "Toowong"),
+            ("state", "Queensland"),
+            ("postcode", "4066"),
+            ("country_code", "AU"),
+        ],
+    );
+    let l = label_of(&fix, &[fix.clone(), legacy]);
+    assert_eq!(
+        l.text,
+        "Toowong QLD 4066 (nearest address, offset unrecorded; fix ±8 m)"
+    );
+}
+
+/// REQ-GEOLABEL-002: only THIS scan's own, confirmed observation of the exact
+/// point is read — never another scan's recalled row, a quarantined answer,
+/// an answer for a neighbouring point, or one for a fix that is not measured.
+#[test]
+fn only_this_scans_confirmed_observation_of_the_exact_point_is_read() {
+    let fix = gps_fix();
+    let mut other_scan = nominatim_at(20.0, "30", "Smith Street", "Toowong");
+    other_scan.evidence[0].scan_id = "s0".to_string();
+    let l = label_of(&fix, &[fix.clone(), other_scan]);
+    assert_ne!(l.basis, LabelBasis::NearestAddress, "{l:?}");
+
+    let mut quarantined = nominatim_at(20.0, "30", "Smith Street", "Toowong");
+    quarantined.tag(crate::core::tags::CANDIDATE);
+    let l = label_of(&fix, &[fix.clone(), quarantined]);
+    assert_ne!(l.basis, LabelBasis::NearestAddress, "{l:?}");
+
+    let mut neighbour = nominatim_at(20.0, "30", "Smith Street", "Toowong");
+    neighbour.evidence[0]
+        .attributes
+        .insert("latitude".into(), format!("{}", GPS.0 + 0.00001));
+    let l = label_of(&fix, &[fix.clone(), neighbour]);
+    assert_ne!(l.basis, LabelBasis::NearestAddress, "{l:?}");
+
+    // A value from a snippet (unclassified provenance) is not measured.
+    let mut snippet = coord(&format!("{:.6},{:.6}", GPS.0, GPS.1));
+    snippet.add_evidence(ev("some_module", "a page printed it", &[]));
+    let obs = nominatim_at(20.0, "30", "Smith Street", "Toowong");
+    let l = label_of(&snippet, &[snippet.clone(), obs]);
+    assert_ne!(l.basis, LabelBasis::NearestAddress, "{l:?}");
+    assert!(!l.text.contains("Smith"), "{l:?}");
+    assert_honest(&l, &snippet);
+}
+
+/// REQ-GEOLABEL-002 (P9): a point that IS a mapped feature is labelled with
+/// its own stored name, worded so it cannot read as anyone's address.
+#[test]
+fn a_mapped_feature_labels_itself_as_a_mapped_place() {
+    let mut e = coord("-33.868000,151.209700");
+    e.tag("nearby-place");
+    e.add_evidence(ev(
+        "wiki_geosearch",
+        "Wikipedia place 'The Australia Hotel' near -33.8688,151.2093",
+        &[("title", "The Australia Hotel"), ("distance_m", "90")],
+    ));
+    let l = label_of(&e, &[]);
+    assert!(
+        l.text
+            .starts_with("The Australia Hotel — mapped place, Sydney, NSW"),
+        "{l:?}"
+    );
+    assert!(l.text.contains("not an address of the subject"), "{l:?}");
+    assert_eq!(l.basis, LabelBasis::MappedFeature);
+    assert_honest(&l, &e);
+
+    // A Wikidata item is a mapped feature too, though its records are written
+    // under the corpus's name.
+    let mut w = coord("-33.856700,151.215300");
+    w.add_evidence(ev(
+        "wikidata",
+        "Wikidata place 'Sydney Opera House' (Q45178)",
+        &[("qid", "Q45178"), ("label", "Sydney Opera House")],
+    ));
+    assert_eq!(assess(&w).basis, FixBasis::MappedFeature);
+    assert!(
+        label_of(&w, &[])
+            .text
+            .starts_with("Sydney Opera House — mapped place")
+    );
+
+    // An OSM infrastructure node is prefixed as infrastructure.
+    let mut cam = coord("-33.867900,151.208800");
+    cam.tag("infra:camera");
+    cam.add_evidence(ev(
+        "overpass",
+        "OSM camera node/1 near X",
+        &[("category", "camera")],
+    ));
+    let l = label_of(&cam, &[]);
+    assert!(
+        l.text
+            .starts_with("infrastructure: OSM camera — mapped place"),
+        "{l:?}"
+    );
+}
+
+/// REQ-GEOLABEL-002 (P4): a forward geocode is labelled from its own stored
+/// answer at the grain its input supports — a numbered address keeps its
+/// street, a surname-fragment street hit for a state-only input keeps only
+/// the country its record names, and a point of interest never lends its name.
+#[test]
+fn a_forward_geocode_labels_itself_at_its_input_grain() {
+    let mut house = coord("-27.482111,152.998765");
+    house.add_evidence(ev(
+        "geocode",
+        "Geocoded \"12 Smith St, Toowong QLD 4066\"",
+        &[
+            ("input_address", "12 Smith St, Toowong QLD 4066"),
+            ("place_type", "house"),
+            ("house_number", "12"),
+            ("road", "Smith Street"),
+            ("street", "12 Smith Street"),
+            ("suburb", "Toowong"),
+            ("city", "Brisbane"),
+            ("state", "Queensland"),
+            ("postcode", "4066"),
+            ("country_code", "AU"),
+        ],
+    ));
+    let l = label_of(&house, &[]);
+    assert_eq!(
+        l.text,
+        "12 Smith Street, Toowong QLD 4066 (forward geocode; point-level, ±40 m)"
+    );
+    assert_eq!(l.basis, LabelBasis::ForwardGeocode);
+    assert_honest(&l, &house);
+
+    let mut nc = coord("35.102800,-77.102600");
+    nc.add_evidence(ev(
+        "photon",
+        "Photon geocoded \"Ian Thorpe, North Carolina\"",
+        &[
+            ("input_address", "Ian Thorpe, North Carolina"),
+            ("place_name", "Thorpe-Abbotts Lane"),
+            ("place_type", "street"),
+            ("osm_key", "highway"),
+            ("country_code", "US"),
+            ("ambiguity_detected", "true"),
+        ],
+    ));
+    let l = label_of(&nc, &[]);
+    assert!(l.text.starts_with("United States"), "{l:?}");
+    assert!(!l.text.contains("Thorpe"), "{l:?}");
+    assert_honest(&l, &nc);
+
+    let mut poi = coord("-33.877400,151.198900");
+    poi.add_evidence(ev(
+        "photon",
+        "Photon geocoded \"Ian Thorpe Aquatic Centre in Ultimo, New South Wales\"",
+        &[
+            (
+                "input_address",
+                "Ian Thorpe Aquatic Centre in Ultimo, New South Wales",
+            ),
+            ("place_name", "Ian Thorpe Aquatic Centre"),
+            ("place_type", "house"),
+            ("osm_key", "leisure"),
+            ("country_code", "AU"),
+        ],
+    ));
+    let l = label_of(&poi, &[]);
+    assert!(
+        !l.text.contains("Aquatic") && !l.text.contains("Thorpe"),
+        "{l:?}"
+    );
+    assert!(l.label_grain >= FixGrain::Suburb, "{l:?}");
+    assert_honest(&l, &poi);
+}
+
+/// REQ-GEOLABEL-002 (P7): the ASGS area of a point is read only at the grain
+/// the fix supports, and never on a centroid.
+#[test]
+fn a_statistical_area_is_read_only_at_the_grain_it_supports() {
+    let mut phone = coord("-27.481234,153.012345");
+    phone.add_evidence(ev("social_location", "bio says Toowong", &[]));
+    phone.add_evidence(ev(
+        "au_geo",
+        "ASGS roll-up",
+        &[
+            ("au_suburb", "Toowong"),
+            ("au_postcode", "4066"),
+            ("au_lga", "Brisbane"),
+        ],
+    ));
+    // Social is 5 km: the suburb, but not the postcode (≤ 1.5 km only).
+    let l = label_of(&phone, &[]);
+    assert_eq!(l.text, "Toowong QLD (statistical-area lookup; fix ±5 km)");
+    assert_eq!(l.basis, LabelBasis::StatisticalArea);
+    assert_honest(&l, &phone);
+}
+
+/// REQ-GEOLABEL-002 (P10): a redacted export's one-decimal values label at a
+/// locality at best — no street, no house number, no mapped feature's name.
+#[test]
+fn redacted_values_never_label_finer_than_a_locality() {
+    let fix = gps_fix();
+    let obs = nominatim_at(20.0, "30", "Smith Street", "Toowong");
+    let mut feature = coord("-33.868000,151.209700");
+    feature.add_evidence(ev(
+        "wiki_geosearch",
+        "Wikipedia place 'The Australia Hotel'",
+        &[("title", "The Australia Hotel")],
+    ));
+    let mut all = vec![fix, obs, feature];
+    crate::util::redact::redact_entities(&mut all);
+    let ctx = PlaceContext::for_scan(&all, "s1");
+    for e in all.iter().filter(|e| e.kind == EntityKind::Coordinates) {
+        let l = describe(e, &ctx).expect("a redacted point still has a place");
+        assert!(l.label_grain >= FixGrain::Locality, "{l:?}");
+        for leak in ["Smith", "12 ", "4066", "Australia Hotel", "≈"] {
+            assert!(!l.text.contains(leak), "{leak} leaked: {l:?}");
+        }
+        assert_honest(&l, e);
+    }
+}
+
+/// REQ-GEOLABEL-002 (P8): a fused fix is offline, locality at best, never a
+/// street or a point of interest, and says it is fused. The 7258fc07 headline
+/// was the Ian Thorpe Aquatic Centre's position ±1.3 km.
+#[test]
+fn a_fused_fix_is_a_locality_and_says_so() {
+    let l = describe_fused(-33.8774, 151.1989, 1.3).expect("Sydney");
+    assert_eq!(l.text, "Sydney, NSW (fused fix ±2 km)");
+    assert_eq!(l.basis, LabelBasis::Fused);
+    assert!(l.label_grain >= FixGrain::Locality);
+    // Wider than a locality: the state.
+    let wide = describe_fused(-27.47, 153.02, 60.0).expect("QLD");
+    assert_eq!(wide.text, "Queensland, Australia (fused fix ±60 km)");
+    assert!(describe_fused(0.0, -140.0, 1.0).is_none(), "open ocean");
+    assert!(describe_fused(95.0, 0.0, 1.0).is_none(), "invalid");
+}
+
+/// REQ-GEOLABEL-002 (P13): the offline gazetteer words distance and an
+/// 8-point bearing only when they exceed the fix's own radius, names Vietnam's
+/// centrally-run cities, and says "remote" for an outback point.
+#[test]
+fn the_offline_gazetteer_words_distance_bearing_and_remoteness() {
+    let at = |lat: f64, lon: f64, radius_km: f64| {
+        describe_fused(lat, lon, radius_km).expect("placed").text
+    };
+    // ~16 km north-east of Toowoomba, from a fix good to 1 km.
+    let t = at(-27.45, 152.07, 0.5);
+    assert!(
+        t.starts_with("~15 km NE of Toowoomba, QLD") || t.contains("of "),
+        "{t}"
+    );
+    assert!(t.contains(" of "), "{t}");
+    // The same point from a 30 km fix: an offset inside the radius is not worded.
+    assert!(!at(-27.45, 152.07, 25.0).contains(" of "));
+    assert!(at(-23.0, 135.5, 1.0).starts_with("remote NT — nearest centre"));
+    assert_eq!(
+        at(21.0285, 105.8542, 1.0),
+        "Hà Nội, Vietnam (fused fix ±1 km)"
+    );
+    assert!(at(10.80, 106.66, 1.0).contains("TP. Hồ Chí Minh, Vietnam"));
+    // Vientiane is not "near Hà Nội" — the country box says VN, the anchors don't.
+    assert!(!at(17.97, 102.63, 1.0).contains("Hà Nội"));
+    assert!(
+        at(40.75, -73.99, 1.0).contains("of New York"),
+        "{}",
+        at(40.75, -73.99, 1.0)
+    );
+}
+
+/// REQ-GEOLABEL-003 (P13): rounding tables — radius UP to one significant
+/// figure, distances to fixed buckets, bearings from integer sectors, no
+/// `-0` anywhere.
+#[test]
+fn rounding_and_bearing_tables() {
+    assert_eq!(radius_display_m(55.66), 60);
+    assert_eq!(radius_display_m(1_300.0), 2_000);
+    assert_eq!(radius_display_m(8_000.0), 8_000);
+    assert_eq!(radius_display_m(FixGrain::Locality.floor_m()), 5_000);
+    assert_eq!(radius_display_m(0.0), 0);
+    assert_eq!(radius_display_m(-3.0), 0);
+    assert_eq!(distance_display_m(34.0), 30);
+    assert_eq!(distance_display_m(430.0), 450);
+    assert_eq!(distance_display_m(2_600.0), 3_000);
+    assert_eq!(distance_display_m(16_000.0), 15_000);
+    assert_eq!(distance_display_m(-0.0), 0);
+    assert_eq!(bearing_8(0.0, 0.0, 1.0, 0.0), "N");
+    assert_eq!(bearing_8(0.0, 0.0, 0.0, 1.0), "E");
+    assert_eq!(bearing_8(0.0, 0.0, -1.0, -1.0), "SW");
+    assert_eq!(bearing_8(0.0, 0.0, 1.0, 1.0), "NE");
+    assert_eq!(
+        bearing_8(0.0, 179.9, 0.0, -179.9),
+        "E",
+        "across the antimeridian"
+    );
+}
+
+/// REQ-GEOLABEL-003: a label depends on the records, never their order — the
+/// entity's evidence permuted, and the scan's entities permuted, give the
+/// same label byte for byte.
+#[test]
+fn labels_are_independent_of_record_and_entity_order() {
+    let fix = gps_fix();
+    let a = nominatim_at(20.0, "30", "Smith Street", "Toowong");
+    let (plat, plon) = north_of_gps(40.0);
+    let b = reverse_address(
+        "12 Smith Street, Toowong",
+        "photon",
+        GPS,
+        &[
+            ("house_number", "12"),
+            ("road", "Smith Street"),
+            ("suburb", "Toowong"),
+            ("matched_lat", &format!("{plat:.6}")),
+            ("matched_lon", &format!("{plon:.6}")),
+        ],
+    );
+    let want = label_of(&fix, &[fix.clone(), a.clone(), b.clone()]);
+    let got = label_of(&fix, &[b, fix.clone(), a]);
+    assert_eq!(want, got);
+
+    let mut e = sydney_7258fc07();
+    let want = label_of(&e, &[]);
+    e.evidence.reverse();
+    assert_eq!(want, label_of(&e, &[]));
+}
+
+/// REQ-GEOLABEL-003: two answers the same leg gave for the same point — same
+/// provider, same offset, same summary, different house numbers, stored on two
+/// `Address` entities — are told apart by the answer itself, so the label is
+/// the same whichever order the store returns them in. Before the content
+/// tie-break the first-listed answer won.
+#[test]
+fn a_tie_between_two_answers_is_broken_by_the_answer_not_the_order() {
+    let fix = gps_fix();
+    let (mlat, mlon) = north_of_gps(20.0);
+    let (mlat, mlon) = (format!("{mlat:.6}"), format!("{mlon:.6}"));
+    let answer = |n: &str| {
+        reverse_address(
+            &format!("{n} Smith Street, Toowong, Queensland, 4066, Australia"),
+            "geocode",
+            GPS,
+            &[
+                ("house_number", n),
+                ("road", "Smith Street"),
+                ("suburb", "Toowong"),
+                ("state", "Queensland"),
+                ("postcode", "4066"),
+                ("country_code", "AU"),
+                ("matched_lat", &mlat),
+                ("matched_lon", &mlon),
+                ("place_rank", "30"),
+            ],
+        )
+    };
+    let (twelve, fourteen) = (answer("12"), answer("14"));
+    let a = label_of(&fix, &[fix.clone(), fourteen.clone(), twelve.clone()]);
+    let b = label_of(&fix, &[fix.clone(), twelve, fourteen]);
+    assert_eq!(a, b);
+    assert!(a.text.starts_with("≈ 12 Smith Street"), "{}", a.text);
+}
+
+/// REQ-GEOLABEL-002: only coordinates are labelled; the radar sweep's `0,0`
+/// sentinel is not a place.
+#[test]
+fn only_real_coordinates_are_labelled() {
+    let ctx = PlaceContext::default();
+    let email = Entity::new(EntityKind::Email, "a@b.test", 0.9, "s1");
+    assert!(describe(&email, &ctx).is_none());
+    let sentinel = coord(crate::core::scan::RADAR_SENTINEL_COORD_NORMALISED);
+    assert!(describe(&sentinel, &ctx).is_none());
+    assert!(describe(&coord("not,a-point"), &ctx).is_none());
+}

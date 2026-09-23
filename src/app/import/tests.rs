@@ -3125,3 +3125,57 @@ fn dehashed_csv_detector_recognises_synonym_identity_columns() {
         "id,email_address,notes\n1,jane@example.org,hello\n"
     ));
 }
+
+/// REQ-GEOLABEL-004: the export's appended `place_label` / `place_grain`
+/// columns are never read back in as data. HSE's own CSV importer resolves
+/// columns by name, so a re-imported export yields exactly the exported
+/// entities — the street a label names mints no `Address`, and the label text
+/// lands in no value, tag or evidence record.
+#[test]
+fn a_reimported_csv_export_ignores_the_place_columns() {
+    use crate::core::entity::{Entity, Evidence};
+    let mut gps = Entity::new(EntityKind::Coordinates, "-27.481234,153.012345", 0.9, "s");
+    gps.add_evidence(Evidence::new("signal_radar", "GNSS fix").with_attr("accuracy_m", "8"));
+    let mut reverse = Entity::new(EntityKind::Address, "12 Smith Street, Toowong", 0.7, "s");
+    reverse.tag("reverse-geocoded");
+    reverse.add_evidence(
+        Evidence::new("geocode", "Reverse geocode for -27.481234,153.012345")
+            .with_attr("latitude", "-27.481234")
+            .with_attr("longitude", "153.012345")
+            .with_attr("house_number", "12")
+            .with_attr("road", "Smith Street")
+            .with_attr("suburb", "Toowong")
+            .with_attr("state", "Queensland")
+            .with_attr("postcode", "4066")
+            .with_attr("country_code", "AU")
+            .with_attr("matched_lat", "-27.481100")
+            .with_attr("matched_lon", "153.012345")
+            .with_attr("place_rank", "30"),
+    );
+    let csv = crate::app::export::entities_to_csv(&[gps, reverse], "s");
+    let label = "≈ 12 Smith Street, Toowong QLD 4066";
+    assert!(
+        csv.contains(label),
+        "the fixture must carry a street label: {csv}"
+    );
+    assert!(looks_like_hse_csv(&csv), "the sniffed prefix is unchanged");
+
+    let (ents, _stats) = parse_hse_csv(&csv, "s2");
+    assert_eq!(ents.len(), 2, "exactly the exported entities: {ents:?}");
+    assert_eq!(
+        ents.iter()
+            .filter(|e| e.kind == EntityKind::Address)
+            .count(),
+        1,
+        "no Address minted from the label"
+    );
+    for e in &ents {
+        assert!(!e.value.contains("QLD 4066"), "{e:?}");
+        assert!(!e.tags.iter().any(|t| t.contains("Toowong QLD")), "{e:?}");
+        assert!(
+            !e.evidence.iter().any(|ev| ev.summary.contains("QLD 4066")
+                || ev.attributes.values().any(|v| v.contains("QLD 4066"))),
+            "{e:?}"
+        );
+    }
+}

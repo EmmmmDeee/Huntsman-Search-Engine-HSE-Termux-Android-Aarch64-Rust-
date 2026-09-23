@@ -507,6 +507,9 @@ fn positive_number(v: &str) -> Option<f64> {
         .filter(|r| r.is_finite() && *r > 0.0)
 }
 
+/// The evidence source `wikidata_geo` (and the `wikidata` module) record under.
+const WIKIDATA_CORPUS_SOURCE: &str = "wikidata";
+
 /// The default basis of a record from `source`, by its role and its
 /// `GeoSourceClass`.
 fn basis_of(source: &str, class: GeoSourceClass) -> FixBasis {
@@ -518,6 +521,14 @@ fn basis_of(source: &str, class: GeoSourceClass) -> FixBasis {
             return FixBasis::MappedFeature;
         }
         _ => {}
+    }
+    // `wikidata_geo` writes its nearby-place records under the corpus's own
+    // name, `wikidata` (one Wikidata item must not count as two sources), so
+    // its role in [`COORDINATE_TARGET_MODULES`] never matches a record's
+    // source. A `wikidata` coordinate is always an item's own mapped position
+    // — a place, a building, a landmark — never a sighting of anyone.
+    if source == WIKIDATA_CORPUS_SOURCE {
+        return FixBasis::MappedFeature;
     }
     if class_locates_subject_directly(class) {
         FixBasis::Measured
@@ -689,7 +700,7 @@ fn forward_geocode_account(ev: &Evidence, input: &str, mut hit: Account) -> Acco
 /// `-33.9`), and the value and the raw value the module wrote are both read,
 /// taking the coarser: a redacted one-decimal value is ≥ 5.5 km whatever its
 /// provenance claims. `None` when neither parses as a coordinate pair.
-fn quantisation_radius_m(e: &Entity) -> Option<f64> {
+pub(crate) fn quantisation_radius_m(e: &Entity) -> Option<f64> {
     /// Metres per degree of latitude, the scale of the half-digit bound.
     const METRES_PER_DEGREE: f64 = 111_320.0;
     let decimals = |part: &str| -> Option<i32> {

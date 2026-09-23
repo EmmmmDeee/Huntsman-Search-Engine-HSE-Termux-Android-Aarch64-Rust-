@@ -57,11 +57,42 @@ fn partial_export_reason(scan: &Scan) -> Option<&'static str> {
     }
 }
 
+/// One entity as JSON, plus — for a `Coordinates` — its `place_label`
+/// (`core::place::describe`'s structured label, `null` when no tier can name
+/// the point). THE one place a JSON surface attaches the label, shared by
+/// [`render_json`], [`build_scan_report`] (`report.json`) and the API's
+/// `/entities` listings, so the field cannot be spelled, clipped or omitted
+/// differently on one of them (REQ-GEOLABEL-002).
+///
+/// Everything else in the object is the entity's own serde shape, untouched —
+/// the web client deserialises these objects straight into `hse_core::Entity`
+/// (whose `kind` must keep its raw wire shape), and `place_label` is an extra
+/// field serde ignores there and on every import, so the label can never be
+/// read back in as data. `ctx` is the scan's own stored records
+/// ([`PlaceContext::for_scan`](crate::core::place::PlaceContext::for_scan)).
+pub(crate) fn augment_entity_json(
+    e: &crate::core::entity::Entity,
+    ctx: &crate::core::place::PlaceContext,
+) -> Result<serde_json::Value> {
+    let mut v =
+        serde_json::to_value(e).map_err(|err| Error::Other(format!("entity serialise: {err}")))?;
+    if e.kind == crate::core::entity::EntityKind::Coordinates
+        && let serde_json::Value::Object(ref mut m) = v
+    {
+        m.insert(
+            "place_label".into(),
+            crate::core::place::place_label_json(e, ctx).unwrap_or(serde_json::Value::Null),
+        );
+    }
+    Ok(v)
+}
+
 pub(super) fn render_json(store: &Store, sid: &str, redact: bool) -> Result<String> {
     let mut entities = confirmed_entities(store, sid)?;
     if redact {
         crate::util::redact::redact_entities(&mut entities);
     }
+    let ctx = crate::core::place::PlaceContext::for_scan(&entities, sid);
     // Augment each entity object with its derived metrics so JSON consumers
     // don't have to re-implement the noisy-OR c_effective / source_count /
     // classification formulas themselves. The raw `confidence` and
@@ -69,8 +100,7 @@ pub(super) fn render_json(store: &Store, sid: &str, redact: bool) -> Result<Stri
     let augmented: Vec<serde_json::Value> = entities
         .iter()
         .map(|e| {
-            let mut v = serde_json::to_value(e)
-                .map_err(|err| Error::Other(format!("entity serialise: {err}")))?;
+            let mut v = augment_entity_json(e, &ctx)?;
             if let serde_json::Value::Object(ref mut m) = v {
                 // Normalise `kind` to a plain string. serde's default
                 // externally-tagged representation renders EntityKind's unit
@@ -101,7 +131,7 @@ pub(super) fn render_csv(store: &Store, sid: &str, redact: bool) -> Result<Strin
     if redact {
         crate::util::redact::redact_entities(&mut entities);
     }
-    Ok(entities_to_csv(&entities))
+    Ok(entities_to_csv(&entities, sid))
 }
 
 /// Canonical CSV rendering for a scan's entities. Shared by the HTTP
@@ -109,8 +139,17 @@ pub(super) fn render_csv(store: &Store, sid: &str, redact: bool) -> Result<Strin
 /// --format csv` CLI subcommand so both produce byte-identical
 /// output — operators piping the two interchangeably can rely on
 /// the column shape staying in sync.
-pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> String {
+///
+/// `place_label` and `place_grain` are APPENDED after `generation` for the same
+/// reason `uid` and `generation` were: the sniffed prefix and every by-name
+/// lookup keep working, and HSE's own CSV importer resolves columns by name,
+/// so it ignores both — a label is never read back in as data. They carry the
+/// `core::place::describe` label of a `Coordinates` row (its text and the grain
+/// it names) and are empty on every other kind. `scan_id` names the scan whose
+/// own stored records the label may read (`PlaceContext::for_scan`).
+pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity], scan_id: &str) -> String {
     use std::fmt::Write as _;
+    let ctx = crate::core::place::PlaceContext::for_scan(entities, scan_id);
     let mut body = String::with_capacity(192 + entities.len() * 192);
     // `evidence_urls` + `evidence` make every row self-verifiable: the operator
     // can follow the source links and read each module's finding without
@@ -131,7 +170,7 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> Strin
     // artifacts by string-matching kind+value. `generation` (hops from the seed)
     // travels with it for the same reason it was added to the bundle — it
     // separates a seed-adjacent finding from one three pivots out.
-    body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,source_count,classification,observed_at,sources,corroborating_sources,evidence_urls,evidence,tags,uid,generation\n");
+    body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,source_count,classification,observed_at,sources,corroborating_sources,evidence_urls,evidence,tags,uid,generation,place_label,place_grain\n");
     for e in entities {
         let eff = e.c_effective();
         let source_count = e.source_count();
@@ -184,9 +223,14 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> Strin
             .collect::<Vec<_>>()
             .join(" || ");
 
+        let place = crate::core::place::describe(e, &ctx);
+        let (place_label, place_grain) = place
+            .as_ref()
+            .map_or(("", ""), |p| (p.text.as_str(), p.label_grain.as_str()));
+
         let _ = writeln!(
             body,
-            "{},{},{},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             csv_escape(&e.kind.to_string()),
             csv_escape(&e.value),
             csv_escape(&e.raw_value),
@@ -203,6 +247,8 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> Strin
             csv_escape(&tags),
             csv_escape(&e.uid),
             e.generation,
+            csv_escape(place_label),
+            place_grain,
         );
     }
     body
@@ -454,8 +500,22 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
     }
 
     let _ = writeln!(s, "\n── ENTITIES (every field, fully unredacted) ──");
+    // The nearest-place label of every coordinate, from this scan's own stored
+    // records (REQ-GEOLABEL-002). The legend is printed once, and only when a
+    // place line follows, so a scan without coordinates reads as before.
+    let place_ctx = crate::core::place::PlaceContext::for_scan(&entities, sid);
+    let places: Vec<Option<crate::core::place::PlaceLabel>> = entities
+        .iter()
+        .map(|e| crate::core::place::describe(e, &place_ctx))
+        .collect();
+    if places.iter().any(Option::is_some) {
+        let _ = writeln!(s, "  ({})", crate::core::place::PLACE_LEGEND);
+    }
     for (i, e) in entities.iter().enumerate() {
         let _ = writeln!(s, "\n[{}] {} = {}", i + 1, e.kind, e.value);
+        if let Some(place) = &places[i] {
+            let _ = writeln!(s, "    place: {}  {}", place.text, place.detail());
+        }
         // "Nothing omitted" (see the module doc): the entity's own top-level
         // fields — the SHA-256 uid, the pre-normalisation raw_value, and the
         // decay timestamp — that `render_json`/CSV already carry but a human
@@ -859,6 +919,7 @@ pub(crate) fn render_debug_bundle(
                 s,
                 "\n── BEST AU LOCATION FIX (AU-059) ──\n  {lat:.4},{lon:.4} ± {radius:.1} km · geohash={gh} · state={state} · synergy_conf={sc:.2} · severity={sev}"
             );
+            write_fix_place(&mut s, &fix);
         } else {
             let confidence = fix["confidence"].as_f64().unwrap_or(0.0);
             let basis = fix["basis"].as_str().unwrap_or("");
@@ -875,6 +936,7 @@ pub(crate) fn render_debug_bundle(
                 s,
                 "\n── BEST AU LOCATION FIX ({header}) ──\n  {lat:.4},{lon:.4} ± {radius:.1} km · geohash={gh} · state={state} · basis={basis} · confidence={confidence:.2}"
             );
+            write_fix_place(&mut s, &fix);
         }
     }
 
@@ -986,6 +1048,18 @@ pub(crate) fn render_debug_bundle(
     Ok(s)
 }
 
+/// The `place:` line under a BEST AU LOCATION FIX header — the fix's own
+/// `place_label` ([`extract_au_location_fix`] attaches it, so the bundle, the
+/// report and the `/location` API print one label). The label says "fused
+/// fix": it names where several signals centre, never a street and never a
+/// point of interest (REQ-GEOLABEL-002, P8).
+fn write_fix_place(s: &mut String, fix: &serde_json::Value) {
+    use std::fmt::Write as _;
+    if let Some(text) = fix["place_label"]["text"].as_str() {
+        let _ = writeln!(s, "  place: {text}");
+    }
+}
+
 pub(super) fn render_report(store: &Store, sid: &str, include_infra: bool) -> Result<String> {
     // Default dossier hides quarantined `candidate` entities (non-target
     // breach-dump rows) — the confirmed-footprint view. They remain available
@@ -1022,6 +1096,11 @@ pub(crate) fn build_scan_report(
     // before the report (and the HTTP `report.json`) is built. Subject findings
     // are untouched.
     crate::util::redact::redact_operator_secrets(&mut entities);
+    // The place labels read the WHOLE scan's stored records, before any
+    // candidate / infrastructure filtering below, so a label never depends on
+    // which view of the scan is being exported (`PlaceContext` ignores
+    // quarantined rows itself).
+    let place_ctx = crate::core::place::PlaceContext::for_scan(&entities, scan_id);
     // Quarantine in the dossier too: speculative `candidate` entities (the
     // non-target breach-dump rows) are hidden by default so the report reads
     // as the target's confirmed footprint. `include_candidates=true` returns
@@ -1111,9 +1190,15 @@ pub(crate) fn build_scan_report(
             "providers": coverage,
         })
     };
+    // Each entity through the one JSON augmentation, so a `Coordinates` in
+    // report.json carries the same `place_label` as the JSON export and the API.
+    let entity_values: Vec<serde_json::Value> = entities
+        .iter()
+        .map(|e| augment_entity_json(e, &place_ctx))
+        .collect::<Result<_>>()?;
     Ok(Some(serde_json::json!({
         "scan": scan,
-        "entities": entities,
+        "entities": entity_values,
         "entity_count": entities.len(),
         "correlations": correlations,
         "correlation_count": correlations.len(),
@@ -1177,6 +1262,10 @@ pub(crate) fn extract_au_location_fix(
             "signal_count": c.signal_count,
             "classes": c.class_names,
             "confidence": c.confidence,
+            // Every fix object carries its own fused place label: offline,
+            // never finer than a locality, never a street or a point of
+            // interest (REQ-GEOLABEL-002, P8).
+            "place_label": crate::core::place::fused_label_json(c.lat, c.lon, c.radius_km),
         })
     });
 
@@ -1211,6 +1300,7 @@ pub(crate) fn extract_au_location_fix(
             // assert about the subject's own position.
             "locates_subject_directly": synergy.locates_subject_directly,
             "rule_id": "AU-059",
+            "place_label": crate::core::place::fused_label_json(synergy.lat, synergy.lon, synergy.radius_km),
         })
     } else {
         // Fallback: the best-location estimate ladder, so the web/JSON surface
@@ -1249,6 +1339,7 @@ pub(crate) fn extract_au_location_fix(
                 } else {
                     "single-signal"
                 },
+                "place_label": crate::core::place::fused_label_json(est.lat, est.lon, est.radius_km),
             }),
             None => serde_json::Value::Null,
         }

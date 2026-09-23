@@ -133,7 +133,20 @@ pub(super) fn build_forward(
 ///
 /// Confidence and off-region gating follow the same country-code-first,
 /// box-as-fallback order as [`build_forward`] — see its doc comment.
-pub(super) fn build_reverse(lat: f64, lon: f64, props: &Props, scan_id: &str) -> Option<Entity> {
+///
+/// `matched` is where the returned feature itself lies (its GeoJSON point),
+/// recorded as `matched_lat` / `matched_lon` so a reader can measure how far
+/// the "nearest address" is from the point asked about; the house number and
+/// the street are recorded separately (`house_number`, `road`) for the same
+/// reader — the place label names a road or a house number only when that
+/// offset is small against the fix's error bar (REQ-GEOLABEL-002).
+pub(super) fn build_reverse(
+    lat: f64,
+    lon: f64,
+    props: &Props,
+    matched: Option<(f64, f64)>,
+    scan_id: &str,
+) -> Option<Entity> {
     let name = nonempty(&props.name);
     let osm_key = nonempty(&props.osm_key);
     let street_name = nonempty(&props.street).or(name.filter(|_| osm_key == Some("highway")));
@@ -185,6 +198,17 @@ pub(super) fn build_reverse(lat: f64, lon: f64, props: &Props, scan_id: &str) ->
     }
     if let Some(st) = &street {
         ev = ev.with_attr("street", st);
+    }
+    if let Some(road) = street_name {
+        ev = ev.with_attr("road", road);
+        if let Some(n) = nonempty(&props.housenumber) {
+            ev = ev.with_attr("house_number", n);
+        }
+    }
+    if let Some((mlat, mlon)) = matched.filter(|&(a, o)| crate::util::geo::is_valid_coords(a, o)) {
+        ev = ev
+            .with_attr("matched_lat", format!("{mlat:.6}"))
+            .with_attr("matched_lon", format!("{mlon:.6}"));
     }
     if let Some(c) = nonempty(&props.city) {
         ev = ev.with_attr("city", c);

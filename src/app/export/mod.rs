@@ -20,8 +20,8 @@ mod tests;
 pub(crate) use dossier::{dossier_dir, dossier_dir_path, write_full_dossier};
 pub(crate) use health_policy::{KeyPoolSummary, WAL_RUNAWAY_BYTES};
 pub(crate) use renderers::{
-    build_scan_report, entities_to_csv, extract_au_location_fix, formula_guard,
-    render_debug_bundle, render_event_log_export, render_full,
+    augment_entity_json, build_scan_report, entities_to_csv, extract_au_location_fix,
+    formula_guard, render_debug_bundle, render_event_log_export, render_full,
 };
 pub(crate) use system_debug::{SystemDebugInputs, render_system_debug_bundle};
 // `csv_escape` has no production caller outside `renderers.rs` itself (only

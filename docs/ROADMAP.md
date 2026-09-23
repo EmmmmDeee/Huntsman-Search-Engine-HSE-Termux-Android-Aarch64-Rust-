@@ -158,7 +158,7 @@ authority per canonicaliser — `to_e164_au`, `canonical_email_mailbox`,
 `TargetMatch`, `split_identity_secret` are each single-sourced and shared, never
 re-implemented per module.
 
-### Layer 2 — `src/core/` (207 files, the engine and its contracts)
+### Layer 2 — `src/core/` (211 files, the engine and its contracts)
 - `core/module/` — the **`Module` trait** (the capability contract: `accepts`,
   `process`, `produces`, `category`, `priority`, `attack_techniques`,
   `max_timeout_ms`) and `provider.rs` (`ProviderDescriptor`: cost/economics,
@@ -191,7 +191,16 @@ re-implemented per module.
   `Coordinates` target must be given a role in `COORDINATE_TARGET_MODULES`,
   and a registry test enforces that (REQ-GEOLABEL-001). It reads the gazetteer
   through `util::city_coords::tabulated_centroid_at` and a place string's
-  grain through `util::place_grain::place_naming`.
+  grain through `util::place_grain::place_naming`. On top of it sits the one
+  nearest-place LABEL (`label::describe` for a stored coordinate,
+  `label::describe_fused` for a fused fix): never finer than `assess` grades
+  the point, computed at render time from the scan's own records
+  (`PlaceContext`, incl. this scan's reverse geocodes) and compiled-in
+  gazetteers (the AU and VN anchors in `util::geo`, `CITIES`) — no network.
+  Every output surface reads it: `app::export::augment_entity_json` (JSON,
+  report.json, the API listings), the CSV and GEXF writers, the full dossier /
+  debug bundle, `extract_au_location_fix`, the CLI dossier and the wasm-ui
+  Browse / Location panes (REQ-GEOLABEL-002..004).
 - `core/exposure/` — the subject's exposure index. It reads evidence through
   ONE gate, `attributable`: a record whose ownership is `Unverified` (a
   name-matched genealogy profile, an ambiguous-name row) is shown but never

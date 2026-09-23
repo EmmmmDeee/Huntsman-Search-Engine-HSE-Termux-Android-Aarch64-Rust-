@@ -202,6 +202,29 @@ const STATE_NAMES: &[(&str, &str)] = &[
     ("victoria", "VIC"),
 ];
 
+/// The full name of an AU state/territory code (`"QLD"` → `"Queensland"`,
+/// case-insensitive), read from the same [`STATE_NAMES`] table [`state_code`]
+/// matches against, so the two directions can never disagree. `None` for
+/// anything that is not one of the eight codes. Pure.
+#[must_use]
+pub fn state_name(code: &str) -> Option<String> {
+    let code = code.trim();
+    let (name, _) = STATE_NAMES
+        .iter()
+        .find(|(_, c)| c.eq_ignore_ascii_case(code))?;
+    Some(
+        name.split(' ')
+            .map(|w| {
+                let mut chars = w.chars();
+                chars.next().map_or_else(String::new, |first| {
+                    first.to_uppercase().chain(chars).collect::<String>()
+                })
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
 /// One-time compiled automaton over `STATE_NAMES` patterns (ASCII-CI).
 /// Replaces the 8-way `lower.contains(name)` loop in [`state_code`] step 2
 /// with a single Teddy/SIMD pass; `find_id` returns the pattern index so the

@@ -810,7 +810,9 @@ fn debug_bundle_labels_a_true_au059_synergy_fix_distinctly_from_single_signal() 
     let idx = out
         .find("BEST AU LOCATION FIX (AU-059)")
         .expect("AU-059 fix line must be present");
-    let fix_line = &out[idx..(idx + 300).min(out.len())];
+    // The header and the fix line itself, by LINE — a fixed byte window used
+    // to end mid-character once a `place:` line followed the fix.
+    let fix_line: String = out[idx..].lines().take(2).collect::<Vec<_>>().join("\n");
     assert!(
         fix_line.contains(" km ·"),
         "the fix line must include the radius_km field: {fix_line}"
@@ -1004,6 +1006,12 @@ fn debug_bundle_is_deterministic() {
             Entity::new(EntityKind::Domain, "example-real.com", 0.5, "scan-det"),
         ])
         .expect("should succeed");
+    // …and every place-label shape (REQ-GEOLABEL-003): a legacy centroid, a
+    // mapped feature, a stored-reverse measured fix, and the fused best
+    // location they produce — so a label reading anything unstable fails here.
+    store
+        .upsert_entities_batch(&place_fixture("scan-det"))
+        .expect("should succeed");
     for m in ["hibp", "gravatar", "crtsh"] {
         store
             .insert_event(&Event::new(
@@ -1017,6 +1025,10 @@ fn debug_bundle_is_deterministic() {
     assert_eq!(
         a, b,
         "debug bundle is not byte-deterministic across exports"
+    );
+    assert!(
+        a.contains("    place: ") && a.contains("(fused fix ±"),
+        "the fixture must exercise the place and fused-place lines"
     );
     // And it carries no wall-clock generation timestamp that would break that.
     assert!(!a.contains("generated_at"));
@@ -1049,6 +1061,10 @@ fn export_formats_determinism_audit() {
             Entity::new(EntityKind::Username, "zeta", 0.6, "scan-au"),
             Entity::new(EntityKind::Domain, "example-real.com", 0.5, "scan-au"),
         ])
+        .expect("should succeed");
+    // Every place-label shape (REQ-GEOLABEL-003) — see `place_fixture`.
+    store
+        .upsert_entities_batch(&place_fixture("scan-au"))
         .expect("should succeed");
 
     use crate::core::error::Result;
@@ -2230,14 +2246,14 @@ fn entities_to_csv_assembles_header_and_escaped_rows() {
     // Empty input still emits exactly the column header — export consumers
     // (the SPA download button, external tooling) parse this header row.
     assert_eq!(
-        entities_to_csv(&[]).trim_end(),
-        "kind,value,raw_value,confidence,c_effective,corroboration,source_count,classification,observed_at,sources,corroborating_sources,evidence_urls,evidence,tags,uid,generation"
+        entities_to_csv(&[], "src").trim_end(),
+        "kind,value,raw_value,confidence,c_effective,corroboration,source_count,classification,observed_at,sources,corroborating_sources,evidence_urls,evidence,tags,uid,generation,place_label,place_grain"
     );
 
     let mut e = Entity::new(EntityKind::Email, "a@b.com", 0.60, "src");
     e.tag("plain");
     e.tag("has,comma"); // a comma inside an assembled field must be quoted
-    let csv = entities_to_csv(&[e]);
+    let csv = entities_to_csv(&[e], "src");
     let lines: Vec<&str> = csv.lines().collect();
     assert_eq!(lines.len(), 2, "header + exactly one row per entity");
 
@@ -2257,10 +2273,11 @@ fn entities_to_csv_assembles_header_and_escaped_rows() {
     // `uid` + `generation` close the row: the uid is what every other
     // artifact (JSON export, debug bundle, Browse, /entities/{uid}) keys a
     // finding by, so a CSV row must be joinable back to them.
+    // The appended place columns are empty on anything but a coordinate.
     let e2 = Entity::new(EntityKind::Email, "a@b.com", 0.60, "src");
     assert!(
-        row.ends_with(&format!(",{},0", e2.uid)),
-        "row must end with the uid join key and generation: {row}"
+        row.ends_with(&format!(",{},0,,", e2.uid)),
+        "row must end with the uid join key, generation and two empty place cells: {row}"
     );
 }
 
@@ -2276,7 +2293,7 @@ fn csv_carries_verifiable_evidence_urls_and_summaries() {
         Evidence::new("github_user", "12 public events")
             .with_attr("profile_url", "https://github.com/jordanavery?tab=overview"),
     );
-    let csv = entities_to_csv(&[e]);
+    let csv = entities_to_csv(&[e], "src");
     let row = csv.lines().nth(1).expect("should succeed");
     assert!(
         row.contains("https://github.com/jordanavery"),
@@ -2312,7 +2329,7 @@ fn csv_evidence_column_carries_structured_attributes_not_just_summary() {
             .with_attr("date_of_birth", "1990-04-12")
             .with_attr("password_hash", "5f4dcc3b5aa765d61d8327deb882cf99"),
     );
-    let csv = entities_to_csv(&[e]);
+    let csv = entities_to_csv(&[e], "src");
     let row = csv.lines().nth(1).expect("should succeed");
     assert!(
         row.contains("date_of_birth=1990-04-12"),
@@ -2353,7 +2370,7 @@ fn csv_source_count_and_corroborating_sources_reflect_the_filtered_count_not_the
         "Address parse + normalization",
     ));
 
-    let csv = entities_to_csv(&[e]);
+    let csv = entities_to_csv(&[e], "src");
     let header: Vec<&str> = csv
         .lines()
         .next()
@@ -2395,7 +2412,7 @@ fn csv_evidence_column_omits_empty_attribute_values() {
     use crate::core::entity::{Entity, EntityKind, Evidence};
     let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.5, "src");
     e.add_evidence(Evidence::new("some_module", "found it").with_attr("country", ""));
-    let csv = entities_to_csv(&[e]);
+    let csv = entities_to_csv(&[e], "src");
     let row = csv.lines().nth(1).expect("should succeed");
     assert!(
         !row.contains("country="),
@@ -2525,5 +2542,361 @@ fn extract_au_location_fix_reads_entities_not_prose() {
     assert_eq!(
         fix["geohash"].as_str().expect("should succeed"),
         direct.geohash
+    );
+}
+
+// ── The nearest-place label on every export surface (REQ-GEOLABEL-002..004) ──
+
+/// The four label shapes one stored scan can hold: a legacy gazetteer centroid
+/// (the 7258fc07 Sydney row, no stamps), a mapped feature whose name needs XML
+/// escaping, a measured fix this scan reverse-geocoded (with the POI name the
+/// answer carried), and — from those AU points — a fused best-location fix.
+fn place_fixture(sid: &str) -> Vec<crate::core::entity::Entity> {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let mut centroid = Entity::new(EntityKind::Coordinates, "-33.868800,151.209300", 0.7, sid);
+    centroid.raw_value = "-33.8688,151.2093".into();
+    centroid.tag("au-state:NSW");
+    centroid.tag("country:AU");
+    centroid.add_evidence(
+        Evidence::new(
+            "search_engines",
+            "[brave] Geocoded from search address: Sydney",
+        )
+        .with_attr("method", "known-city-lookup"),
+    );
+    let mut feature = Entity::new(EntityKind::Coordinates, "-33.868000,151.209700", 0.6, sid);
+    feature.tag("nearby-place");
+    feature.add_evidence(
+        Evidence::new("wiki_geosearch", "Wikipedia place near -33.8688,151.2093")
+            .with_attr("title", "The <Australia> Hotel & \"Bar\""),
+    );
+    let mut gps = Entity::new(EntityKind::Coordinates, "-27.481234,153.012345", 0.9, sid);
+    gps.tag("au-state:QLD");
+    gps.tag("country:AU");
+    gps.add_evidence(Evidence::new("signal_radar", "GNSS fix").with_attr("accuracy_m", "8"));
+    let mut reverse = Entity::new(
+        EntityKind::Address,
+        "12 Smith Street, Toowong, Queensland, 4066, Australia",
+        0.7,
+        sid,
+    );
+    reverse.tag("reverse-geocoded");
+    reverse.tag("nearest-address");
+    reverse.add_evidence(
+        Evidence::new("geocode", "Reverse geocode for -27.481234,153.012345")
+            .with_attr("latitude", "-27.481234")
+            .with_attr("longitude", "153.012345")
+            .with_attr("house_number", "12")
+            .with_attr("road", "Smith Street")
+            .with_attr("suburb", "Toowong")
+            .with_attr("city", "Brisbane")
+            .with_attr("state", "Queensland")
+            .with_attr("postcode", "4066")
+            .with_attr("country_code", "AU")
+            .with_attr("nearest_feature", "Kazan Dining")
+            .with_attr("matched_lat", "-27.480964")
+            .with_attr("matched_lon", "153.012345")
+            .with_attr("place_rank", "30")
+            .with_inferred(true),
+    );
+    let email = Entity::new(EntityKind::Email, "place@example-real.com", 0.8, sid);
+    vec![centroid, feature, gps, reverse, email]
+}
+
+fn place_store(dir: &std::path::Path, name: &str, sid: &str) -> Store {
+    let store = Store::open(dir.join(name).to_str().expect("utf-8 path")).expect("open");
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::Email, "place@example-real.com"),
+        ))
+        .expect("scan");
+    store
+        .upsert_entities_batch(&place_fixture(sid))
+        .expect("entities");
+    store
+}
+
+const SYDNEY_LABEL: &str = "Sydney, NSW (city centroid — not a street location)";
+const GPS_LABEL: &str =
+    "≈ 12 Smith Street, Toowong QLD 4066 (nearest address, ~30 m from the fix; fix ±8 m)";
+
+/// REQ-GEOLABEL-002: `render_json` and `report.json` carry a `place_label` on
+/// every coordinate and on nothing else; the POI name the reverse answer
+/// carried never reaches a label.
+#[test]
+fn json_and_report_carry_the_place_label_on_coordinates_only() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = place_store(dir.path(), "json.db", "scan-place");
+    for body in [
+        render_json(&store, "scan-place", false).expect("json"),
+        serde_json::to_string(
+            &serde_json::from_str::<serde_json::Value>(
+                &render_report(&store, "scan-place", false).expect("report"),
+            )
+            .expect("parse")["entities"],
+        )
+        .expect("entities"),
+    ] {
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&body).expect("array");
+        let by_value = |v: &str| {
+            rows.iter()
+                .find(|r| r["value"] == v)
+                .unwrap_or_else(|| panic!("{v} missing"))
+        };
+        assert_eq!(
+            by_value("-33.868800,151.209300")["place_label"]["text"],
+            SYDNEY_LABEL
+        );
+        assert_eq!(
+            by_value("-27.481234,153.012345")["place_label"]["text"],
+            GPS_LABEL
+        );
+        assert_eq!(
+            by_value("-27.481234,153.012345")["place_label"]["caveat"],
+            crate::core::place::PLACE_CAVEAT
+        );
+        assert!(
+            by_value("place@example-real.com")
+                .get("place_label")
+                .is_none(),
+            "only coordinates are labelled"
+        );
+        for r in &rows {
+            let text = r["place_label"]["text"].as_str().unwrap_or("");
+            assert!(!text.contains("Kazan"), "{text}");
+        }
+    }
+    // Every exported object still reads back as the entity it was — the label
+    // is an extra field serde ignores, never data.
+    let json = render_json(&store, "scan-place", false).expect("json");
+    let back: Vec<crate::core::entity::Entity> =
+        serde_json::from_str(&json).expect("the label never blocks deserialisation");
+    assert_eq!(back.len(), 5);
+    assert!(
+        back.iter()
+            .all(|e| !e.tags.iter().any(|t| t.contains("Smith"))),
+        "no label text leaked into a tag"
+    );
+}
+
+/// REQ-GEOLABEL-002: the CSV appends `place_label,place_grain` after
+/// `generation` (the sniffed prefix unchanged), and GEXF declares attribute 9,
+/// escapes it, and labels the coordinate node `{place} [{value}]`.
+#[test]
+fn csv_and_gexf_carry_the_place_label() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = place_store(dir.path(), "cg.db", "scan-place");
+    let csv = render_csv(&store, "scan-place", false).expect("csv");
+    let header = csv.lines().next().expect("header");
+    assert!(header.starts_with("kind,value,raw_value,confidence,c_effective"));
+    assert!(
+        header.ends_with(",uid,generation,place_label,place_grain"),
+        "{header}"
+    );
+    let sydney_row = csv
+        .lines()
+        // Values are formula-guarded (`'-33…`), so match them past the quote.
+        .find(|l| l.starts_with("coordinates,") && l.contains("-33.868800,151.209300\","))
+        .expect("the centroid row");
+    assert!(
+        sydney_row.ends_with(&format!(",\"{SYDNEY_LABEL}\",locality")),
+        "{sydney_row}"
+    );
+    let gps_row = csv
+        .lines()
+        .find(|l| l.starts_with("coordinates,") && l.contains("-27.481234,153.012345\","))
+        .unwrap_or_else(|| panic!("the gps row: {csv}"));
+    assert!(gps_row.ends_with(",point"), "{gps_row}");
+
+    let gexf = render_gexf(&store, "scan-place", false).expect("gexf");
+    assert!(gexf.contains(r#"<attribute id="9" title="place_label" type="string"/>"#));
+    assert!(
+        gexf.contains(&format!(
+            r#"label="{SYDNEY_LABEL} [-33.868800,151.209300]""#
+        )),
+        "{gexf}"
+    );
+    assert!(
+        gexf.contains("The &lt;Australia&gt; Hotel &amp; &quot;Bar&quot; — mapped place"),
+        "the feature name must be XML-escaped: {gexf}"
+    );
+    assert!(!gexf.contains("The <Australia>"));
+    // A non-coordinate node carries an empty attvalue 9.
+    assert!(gexf.contains(r#"<attvalue for="9" value=""/>"#));
+}
+
+/// REQ-GEOLABEL-002 (P10): a shareable (redacted) export coarsens every
+/// coordinate to one decimal, and its label follows — locality grain at best,
+/// no street, no house number and no mapped-feature name, on every surface —
+/// even though this scan's reverse geocode of the precise point is still in
+/// the store.
+#[test]
+fn a_redacted_export_labels_no_finer_than_a_locality() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = place_store(dir.path(), "redact.db", "scan-place");
+    let json = render_json(&store, "scan-place", true).expect("json");
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&json).expect("array");
+    let coords: Vec<&serde_json::Value> =
+        rows.iter().filter(|r| r["kind"] == "coordinates").collect();
+    assert_eq!(coords.len(), 3, "{json}");
+    for r in coords {
+        let l = &r["place_label"];
+        let grain = l["label_grain"].as_str().expect("a labelled coordinate");
+        assert!(
+            matches!(grain, "locality" | "region" | "country"),
+            "a redacted value labelled at {grain}: {l}"
+        );
+        let text = l["text"].as_str().expect("text");
+        for leak in ["Smith", "12 ", "Hotel", "nearest address", "mapped place"] {
+            assert!(!text.contains(leak), "{leak:?} leaked into {text:?}");
+        }
+    }
+    // The CSV's place cells and the GEXF's node labels and attribute 9 — the
+    // label, not the evidence columns (whose verbatim record is a separate,
+    // pre-existing redaction scope).
+    let csv = render_csv(&store, "scan-place", true).expect("csv");
+    let mut reader = csv::Reader::from_reader(csv.as_bytes());
+    let headers = reader.headers().expect("header").clone();
+    let col = |name: &str| headers.iter().position(|h| h == name).expect(name);
+    let (kind, label, grain) = (col("kind"), col("place_label"), col("place_grain"));
+    let mut labelled = 0;
+    for row in reader.records() {
+        let row = row.expect("row");
+        if &row[kind] != "coordinates" {
+            continue;
+        }
+        labelled += 1;
+        assert!(
+            matches!(&row[grain], "locality" | "region" | "country"),
+            "{row:?}"
+        );
+        assert!(
+            !row[label].contains("Smith") && !row[label].contains("Hotel"),
+            "{row:?}"
+        );
+    }
+    assert_eq!(labelled, 3);
+    // A coordinate node is labelled `{place} [{value}]` (the Address node the
+    // reverse leg stored is its own entity, outside the label's scope).
+    let gexf = render_gexf(&store, "scan-place", true).expect("gexf");
+    let coordinate_nodes = gexf
+        .lines()
+        .filter(|l| l.contains("<node ") && l.ends_with("]\">"))
+        .count();
+    assert_eq!(coordinate_nodes, 3, "{gexf}");
+    for line in gexf
+        .lines()
+        .filter(|l| (l.contains("<node ") && l.ends_with("]\">")) || l.contains(r#"for="9""#))
+    {
+        assert!(!line.contains("Smith") && !line.contains("Hotel"), "{line}");
+    }
+}
+
+/// REQ-GEOLABEL-002: the full dossier (and so the debug bundle) prints one
+/// legend and a `place:` line under each coordinate, and the BEST AU LOCATION
+/// FIX its fused place.
+#[test]
+fn full_dossier_and_debug_bundle_print_place_lines_and_the_fused_place() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = place_store(dir.path(), "full.db", "scan-place");
+    let full = render_full(&store, "scan-place").expect("full");
+    assert_eq!(
+        full.matches(crate::core::place::PLACE_LEGEND).count(),
+        1,
+        "one legend: {full}"
+    );
+    assert!(
+        full.contains(&format!(
+            "    place: {SYDNEY_LABEL}  [label=locality, fix=locality ±8 km; centroid]"
+        )),
+        "{full}"
+    );
+    assert!(
+        full.contains(&format!("    place: {GPS_LABEL}  [label=point")),
+        "{full}"
+    );
+    assert_eq!(full.matches("    place: ").count(), 3, "one per coordinate");
+
+    let bundle = render_debug_bundle(&store, "scan-place").expect("bundle");
+    let at = bundle.find("── BEST AU LOCATION FIX").expect("a fix");
+    let tail = &bundle[at..];
+    let place = tail
+        .lines()
+        .find(|l| l.starts_with("  place: "))
+        .expect("a place line under the fix");
+    assert!(place.contains("(fused fix ±"), "{place}");
+    assert!(
+        !place.contains("Smith") && !place.contains("Hotel"),
+        "{place}"
+    );
+}
+
+/// REQ-GEOLABEL-002 (P8): every fix object `extract_au_location_fix` returns —
+/// AU-059, the estimate ladder, the corroboration — carries its fused label.
+#[test]
+fn every_best_location_object_carries_a_fused_place_label() {
+    let ents = vec![
+        au_sighting("-33.8688,151.2093", 0.80, "abn_lookup", "NSW"),
+        au_sighting("-33.8700,151.2100", 0.70, "exif_geo", "NSW"),
+    ];
+    let corrs = crate::core::correlator::correlate_entities(&ents, "s");
+    let fused = |v: &serde_json::Value| {
+        let t = v["place_label"]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(t.contains("fused fix ±"), "{v}");
+        assert_eq!(v["place_label"]["basis"], "fused");
+    };
+    let au059 = extract_au_location_fix(&corrs, &ents);
+    assert_eq!(au059["rule_id"], "AU-059");
+    fused(&au059);
+    let ladder = extract_au_location_fix(&[], &ents);
+    assert!(ladder.get("rule_id").is_none());
+    fused(&ladder);
+    if !ladder["corroboration"].is_null() {
+        fused(&ladder["corroboration"]);
+    }
+}
+
+/// REQ-GEOLABEL-003: every label-bearing export is byte-identical across
+/// renders AND after a store round-trip — the scan's entities read out of one
+/// store and written into a fresh one render the same bytes, so nothing a
+/// label reads depends on anything but the stored records.
+#[test]
+fn place_labels_survive_a_store_round_trip_byte_for_byte() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let a = place_store(dir.path(), "a.db", "scan-place");
+    let b = Store::open(dir.path().join("b.db").to_str().expect("utf-8")).expect("open");
+    b.upsert_scan(&a.get_scan("scan-place").expect("read").expect("scan"))
+        .expect("scan");
+    b.upsert_entities_batch(&a.entities_for_scan("scan-place").expect("read"))
+        .expect("copy");
+    for redact in [false, true] {
+        for (name, f) in [
+            (
+                "json",
+                render_json as fn(&Store, &str, bool) -> crate::core::error::Result<String>,
+            ),
+            ("csv", render_csv),
+            ("gexf", render_gexf),
+        ] {
+            let x = f(&a, "scan-place", redact).expect("render");
+            assert_eq!(
+                x,
+                f(&a, "scan-place", redact).expect("render"),
+                "{name} not stable"
+            );
+            assert_eq!(
+                x,
+                f(&b, "scan-place", redact).expect("render"),
+                "{name} changed by a round-trip"
+            );
+        }
+    }
+    assert_eq!(
+        render_full(&a, "scan-place").expect("full"),
+        render_full(&b, "scan-place").expect("full")
     );
 }

@@ -495,6 +495,7 @@ use super::*;
       <attribute id="6" title="tags" type="string"/>
       <attribute id="7" title="diamond_vertex" type="string"/>
       <attribute id="8" title="generation" type="integer"/>
+      <attribute id="9" title="place_label" type="string"/>
     </attributes>
     <attributes class="edge" mode="static">
       <attribute id="0" title="edge_type" type="string"/>
@@ -512,6 +513,7 @@ use super::*;
           <attvalue for="6" value="breach|geoint"/>
           <attvalue for="7" value="infrastructure"/>
           <attvalue for="8" value="0"/>
+          <attvalue for="9" value=""/>
         </attvalues>
       </node>
       <node id="df4bda23ac181f24c2f80cb94caa9745ce198e6164e5564186c27eeeaf90e273" label="blog.example.com">
@@ -525,6 +527,7 @@ use super::*;
           <attvalue for="6" value=""/>
           <attvalue for="7" value="infrastructure"/>
           <attvalue for="8" value="0"/>
+          <attvalue for="9" value=""/>
         </attvalues>
       </node>
     </nodes>

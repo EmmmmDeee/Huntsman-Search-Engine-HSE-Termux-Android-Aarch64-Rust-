@@ -458,6 +458,60 @@ pub(crate) fn au_locality_anchor_at(lat: f64, lon: f64) -> Option<(&'static str,
         .map(|&(name, state, _, _)| (name, state))
 }
 
+/// Vietnam's centrally-run cities (thành phố trực thuộc trung ương) after the
+/// 2025 administrative reform — Hà Nội, TP. Hồ Chí Minh, Hải Phòng, Đà Nẵng,
+/// Cần Thơ and Huế — as `(name, lat, lon)` at their city centres, in the
+/// official Vietnamese spelling. HSE operates from Vietnam
+/// (`docs/OPERATING_JURISDICTION.md`), so a coordinate there deserves a place
+/// name exactly as an Australian one gets [`nearest_au_locality`]'s. The list
+/// is deliberately short: these are the six first-tier centres, each a
+/// well-known, stable point, and [`nearest_vn_locality`] only answers within
+/// [`VN_ANCHOR_RADIUS_KM`] of one — the rest of the country is labelled at
+/// country grain rather than as "near" a city hundreds of kilometres away.
+const VN_LOCALITY_ANCHORS: &[(&str, f64, f64)] = &[
+    ("Hà Nội", 21.0285, 105.8542),
+    ("TP. Hồ Chí Minh", 10.7769, 106.7009),
+    ("Hải Phòng", 20.8449, 106.6881),
+    ("Đà Nẵng", 16.0544, 108.2022),
+    ("Cần Thơ", 10.0452, 105.7469),
+    ("Huế", 16.4637, 107.5909),
+];
+
+/// How far (km) from a [`VN_LOCALITY_ANCHORS`] centre [`nearest_vn_locality`]
+/// still names it. Vietnam has no state partition in this crate (unlike
+/// [`au_state_for_coords`]), and the country's bounding box
+/// (`util::geohash::reverse_country_iso`) overlaps Laos and Cambodia, so an
+/// unbounded "nearest centre" would call Vientiane "near Hà Nội". Within 50 km
+/// of a first-tier city centre a point is in that city's orbit whatever the
+/// box says.
+pub const VN_ANCHOR_RADIUS_KM: f64 = 50.0;
+
+/// Offline reverse geocode for Vietnam: the nearest centrally-run city
+/// ([`VN_LOCALITY_ANCHORS`]) to `(lat, lon)` as `(name, (centre_lat,
+/// centre_lon), distance_km)`, or `None` when no centre is within
+/// [`VN_ANCHOR_RADIUS_KM`]. The centre is returned so a caller can word the
+/// point's bearing from it. Pure; ties break on table order.
+///
+/// ```
+/// use huntsman_search_engine::util::geo::nearest_vn_locality;
+///
+/// let (name, _, km) = nearest_vn_locality(21.03, 105.85).expect("central Hà Nội");
+/// assert_eq!(name, "Hà Nội");
+/// assert!(km < 1.0);
+/// assert!(nearest_vn_locality(17.97, 102.63).is_none()); // Vientiane, Laos
+/// ```
+#[must_use]
+pub fn nearest_vn_locality(lat: f64, lon: f64) -> Option<(&'static str, (f64, f64), f64)> {
+    if !is_valid_coords(lat, lon) {
+        return None;
+    }
+    VN_LOCALITY_ANCHORS
+        .iter()
+        .map(|&(name, alat, alon)| (name, (alat, alon), haversine_km(lat, lon, alat, alon)))
+        .filter(|&(_, _, km)| km <= VN_ANCHOR_RADIUS_KM)
+        .min_by(|a, b| a.2.total_cmp(&b.2))
+}
+
 /// Every curated AU locality anchor as `(locality, state, lat, lon)`, in table
 /// order — so `util::city_coords::tabulated_centroid_at` can recognise an
 /// anchor's value as the centroid it is without a second copy of the table.

@@ -77,6 +77,16 @@ fn print_association_caveat(locates_subject_directly: bool) {
     }
 }
 
+/// The `place:` line under a best-location estimate: the fix's fused place
+/// label (`core::place::describe_fused` — offline, never finer than a
+/// locality, never a street or a point of interest, always "(fused fix ±N
+/// km)"), or `None` when no gazetteer can name the point. Pure, so the line is
+/// tested without capturing stdout (REQ-GEOLABEL-002, P8).
+pub(super) fn fused_place_line(lat: f64, lon: f64, radius_km: f64) -> Option<String> {
+    crate::core::place::describe_fused(lat, lon, radius_km)
+        .map(|p| format!("    place: {}", p.text))
+}
+
 /// Everything the collection/geo/lineage/hints appendices render, computed
 /// once up front.
 ///
@@ -271,7 +281,9 @@ impl Collection {
         println!();
     }
 
-    /// Where the subject is, how precisely, and on what basis.
+    /// Where the subject is, how precisely, and on what basis. Each headline
+    /// estimate is followed by its fused place label ([`fused_place_line`]) and
+    /// then the association caveat, so the place name is always read with it.
     pub(super) fn print_geo(&self, entities: &[Entity]) {
         // Headline answer first: the single best location estimate when AU-059's
         // cross-seed synergy gate fires (≥2 AU coordinates across ≥2 orthogonal
@@ -289,6 +301,9 @@ impl Collection {
                 fix.class_names.join(", "),
                 fix.synergy_confidence
             );
+            if let Some(line) = fused_place_line(fix.lat, fix.lon, fix.radius_km) {
+                println!("{line}");
+            }
             print_association_caveat(fix.locates_subject_directly);
             println!();
         } else if let Some(est) = crate::core::correlator::best_au_location_estimate(entities) {
@@ -313,6 +328,9 @@ impl Collection {
                 "    basis: {} (confidence {:.2}) — single-signal fix",
                 est.basis, est.confidence
             );
+            if let Some(line) = fused_place_line(est.lat, est.lon, est.radius_km) {
+                println!("{line}");
+            }
             print_association_caveat(est.locates_subject_directly);
             println!();
         }

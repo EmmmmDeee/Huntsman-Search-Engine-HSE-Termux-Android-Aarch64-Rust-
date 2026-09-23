@@ -35,10 +35,15 @@ pub fn entities_to_gexf(entities: &[Entity], relations: &[Relation], scan_id: &s
 
     write_preamble(&mut xml, scan_id);
 
+    // The nearest-place label of each coordinate, from this scan's own stored
+    // records among the nodes being written (REQ-GEOLABEL-002).
+    let place_ctx = crate::core::place::PlaceContext::for_scan(entities, scan_id);
+
     let _ = writeln!(xml, r#"    <nodes>"#);
     for e in entities {
         let c = coreness_map.get(e.uid.as_str()).copied().unwrap_or(0);
-        write_node(&mut xml, e, c);
+        let place = crate::core::place::describe(e, &place_ctx);
+        write_node(&mut xml, e, c, place.as_ref());
     }
     let _ = writeln!(xml, r#"    </nodes>"#);
 
@@ -151,6 +156,13 @@ fn write_preamble(xml: &mut String, scan_id: &str) {
         xml,
         r#"      <attribute id="8" title="generation" type="integer"/>"#
     );
+    // The nearest-place label of a coordinate (`core::place::describe`), empty
+    // on every other kind. Appended as the next id so every existing attribute
+    // keeps its number.
+    let _ = writeln!(
+        xml,
+        r#"      <attribute id="9" title="place_label" type="string"/>"#
+    );
     let _ = writeln!(xml, r#"    </attributes>"#);
 
     // Edge attributes. GEXF scopes attribute ids per class, so these ids do
@@ -173,7 +185,7 @@ fn write_preamble(xml: &mut String, scan_id: &str) {
     let _ = writeln!(xml, r#"    </attributes>"#);
 }
 
-/// One `<node>` element with its nine `<attvalue>`s. The id is the entity's
+/// One `<node>` element with its ten `<attvalue>`s. The id is the entity's
 /// full uid (the hex SHA-256 digest — always XML-`ID`-safe, no escaping
 /// needed) so relation/co-occurrence edges can reference it unambiguously.
 /// A PRIOR version truncated this to 12 hex chars (48 bits): two distinct
@@ -191,8 +203,20 @@ fn write_preamble(xml: &mut String, scan_id: &str) {
 /// purely from the Gephi import — e.g. to filter/colour `breach`/`candidate`
 /// (quarantine) nodes — isn't forced back to the CSV/JSON for data the SPA
 /// already shows as pills.
-fn write_node(xml: &mut String, e: &Entity, coreness: usize) {
-    let label = xml_escape(&e.value);
+///
+/// A `Coordinates` node with a place label is LABELLED `{place} [{value}]`, so
+/// a Gephi canvas reads "Brisbane, QLD (city centroid …) [-27.4698,153.0251]"
+/// instead of a bare pair of numbers; its id stays the uid, so no edge moves.
+fn write_node(
+    xml: &mut String,
+    e: &Entity,
+    coreness: usize,
+    place: Option<&crate::core::place::PlaceLabel>,
+) {
+    let label = match place {
+        Some(p) => xml_escape(&format!("{} [{}]", p.text, e.value)),
+        None => xml_escape(&e.value),
+    };
     let _ = writeln!(xml, r#"      <node id="{}" label="{label}">"#, e.uid);
     let _ = writeln!(xml, r#"        <attvalues>"#);
     // The `kind` attvalue must be escaped: `EntityKind::Other(s)` renders as
@@ -243,6 +267,11 @@ fn write_node(xml: &mut String, e: &Entity, coreness: usize) {
         xml,
         r#"          <attvalue for="8" value="{}"/>"#,
         e.generation
+    );
+    let _ = writeln!(
+        xml,
+        r#"          <attvalue for="9" value="{}"/>"#,
+        xml_escape(place.map_or("", |p| p.text.as_str()))
     );
     let _ = writeln!(xml, r#"        </attvalues>"#);
     let _ = writeln!(xml, r#"      </node>"#);

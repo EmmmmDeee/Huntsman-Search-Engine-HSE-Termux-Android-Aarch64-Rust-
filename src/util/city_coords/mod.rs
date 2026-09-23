@@ -517,6 +517,36 @@ pub fn is_gazetteer_centroid(lat: f64, lon: f64) -> bool {
     tabulated_centroid_at(lat, lon).is_some()
 }
 
+/// The nearest [`CITIES`] row to `(lat, lon)` within `max_km`, as its display
+/// name (title-cased key), its centre and the distance in km — or `None` when
+/// no tabulated city is that close. The offline "near which city" answer for a point outside
+/// the regions `util::geo` curates its own anchors for (Australia, Vietnam);
+/// `core::place::describe` bounds it so a mid-ocean point is never "near" a
+/// city across the sea. Pure; ties break on table order, so an alias row
+/// (`"colo springs"`) never displaces the canonical row before it.
+#[must_use]
+pub fn nearest_tabulated_city(
+    lat: f64,
+    lon: f64,
+    max_km: f64,
+) -> Option<(String, (f64, f64), f64)> {
+    if !crate::util::geo::is_valid_coords(lat, lon) {
+        return None;
+    }
+    CITIES
+        .iter()
+        .map(|&(key, clat, clon)| {
+            (
+                key,
+                (clat, clon),
+                crate::util::geo::haversine_km(lat, lon, clat, clon),
+            )
+        })
+        .filter(|&(_, _, km)| km <= max_km)
+        .min_by(|a, b| a.2.total_cmp(&b.2))
+        .map(|(key, centre, km)| (title_case(key), centre, km))
+}
+
 /// `"gold coast"` → `"Gold Coast"`: the display spelling of a [`CITIES`] key,
 /// whose rows are stored lowercase for matching.
 fn title_case(key: &str) -> String {

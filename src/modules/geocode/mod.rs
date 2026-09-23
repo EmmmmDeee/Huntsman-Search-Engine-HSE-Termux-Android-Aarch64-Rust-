@@ -56,6 +56,36 @@ pub(super) struct NominatimResp {
     #[serde(default)]
     pub(super) name: Option<String>,
     pub(super) address: Option<NominatimAddr>,
+    /// Where the matched OSM object itself lies (`jsonv2` sends both as
+    /// strings; a number is accepted too). Recorded as `matched_lat` /
+    /// `matched_lon` so a reader can measure how far the "nearest address" is
+    /// from the point that was asked about: at `zoom=18` Nominatim answers with
+    /// the nearest object it indexes, which in a park or a paddock can be a
+    /// street hundreds of metres away. The place label
+    /// (`core::place::describe`) prints a house number or a road only when that
+    /// offset is small against the fix's own error bar (REQ-GEOLABEL-002).
+    #[serde(default)]
+    pub(super) lat: Option<serde_json::Value>,
+    /// See [`NominatimResp::lat`].
+    #[serde(default)]
+    pub(super) lon: Option<serde_json::Value>,
+    /// Nominatim's search rank of the matched object: 30 is an address point
+    /// or a building, 26–27 a street, 16–25 a suburb or a town. Recorded as
+    /// `place_rank`; a house number is only ever read off an object ranked at
+    /// least 28 (a building or an address point), never off a street.
+    #[serde(default)]
+    pub(super) place_rank: Option<u32>,
+}
+
+/// A `jsonv2` coordinate field — a string (`"-33.868"`) or, from a proxy that
+/// re-encodes, a number — as a finite `f64`.
+fn json_degrees(v: Option<&serde_json::Value>) -> Option<f64> {
+    let x = match v? {
+        serde_json::Value::String(s) => s.trim().parse::<f64>().ok()?,
+        serde_json::Value::Number(n) => n.as_f64()?,
+        _ => return None,
+    };
+    x.is_finite().then_some(x)
 }
 
 #[derive(Deserialize)]
@@ -542,6 +572,18 @@ pub(super) fn build_reverse_entity(
         }
     }
 
+    if let (Some(mlat), Some(mlon)) = (
+        json_degrees(data.lat.as_ref()),
+        json_degrees(data.lon.as_ref()),
+    ) {
+        ev = ev
+            .with_attr("matched_lat", format!("{mlat:.6}"))
+            .with_attr("matched_lon", format!("{mlon:.6}"));
+    }
+    if let Some(rank) = data.place_rank {
+        ev = ev.with_attr("place_rank", rank.to_string());
+    }
+
     entity.add_evidence(ev);
     Some(entity)
 }
@@ -577,6 +619,18 @@ pub(super) fn fold_address_attrs(mut ev: Evidence, addr: &NominatimAddr) -> Evid
     }
     if let Some(street) = street_line(addr) {
         ev = ev.with_attr("street", street);
+    }
+    // The house number and the road SEPARATELY, beside the combined `street`:
+    // the place label (`core::place::describe`) may name the road of a
+    // street-grain fix but never its house number (REQ-GEOLABEL-002), and
+    // splitting a combined "25 Martin Place" back apart would be a guess.
+    for (key, part) in [
+        ("house_number", addr.house_number.as_deref()),
+        ("road", addr.road.as_deref()),
+    ] {
+        if let Some(v) = part.map(str::trim).filter(|v| !v.is_empty()) {
+            ev = ev.with_attr(key, v);
+        }
     }
     if let Some(sub) = addr.suburb.as_deref() {
         ev = ev.with_attr("suburb", sub);

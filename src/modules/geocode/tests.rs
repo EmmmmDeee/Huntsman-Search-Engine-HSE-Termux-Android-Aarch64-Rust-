@@ -483,3 +483,36 @@ fn reverse_geocode_evidence_is_inferred() {
         e.evidence
     );
 }
+
+/// REQ-GEOLABEL-002: the reverse leg records where the matched OSM object lies
+/// (`jsonv2` sends `lat`/`lon` as strings), its `place_rank`, and the house
+/// number and road SEPARATELY — what the place label needs to decide whether
+/// the nearest address is close enough to name a street or a house. Without
+/// them every observation is an unknown distance away and names a suburb at
+/// best.
+#[test]
+fn reverse_geocode_records_the_matched_object_rank_and_parts() {
+    let data = resp(serde_json::json!({
+        "name": "Kazan Dining",
+        "lat": "-33.8676123",
+        "lon": 151.2099,
+        "place_rank": 30,
+        "address": {"house_number":"25","road":"Martin Place","city":"Sydney",
+                    "state":"New South Wales","postcode":"2000","country_code":"au"}
+    }));
+    let e = build_reverse_entity(-33.8676, 151.2099, &data, "s").expect("resolves");
+    let a = &e.evidence[0].attributes;
+    let get = |k: &str| a.get(k).map(String::as_str);
+    assert_eq!(get("matched_lat"), Some("-33.867612"));
+    assert_eq!(get("matched_lon"), Some("151.209900"));
+    assert_eq!(get("place_rank"), Some("30"));
+    assert_eq!(get("house_number"), Some("25"));
+    assert_eq!(get("road"), Some("Martin Place"));
+    // An answer without them records nothing rather than a guess.
+    let bare = resp(serde_json::json!({"address": {"road": "Martin Place", "city": "Sydney"}}));
+    let e = build_reverse_entity(-33.8676, 151.2099, &bare, "s").expect("resolves");
+    let a = &e.evidence[0].attributes;
+    for k in ["matched_lat", "matched_lon", "place_rank", "house_number"] {
+        assert!(!a.contains_key(k), "{k} must be absent: {a:?}");
+    }
+}

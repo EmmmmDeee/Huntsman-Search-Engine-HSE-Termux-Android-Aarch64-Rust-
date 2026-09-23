@@ -948,6 +948,23 @@ fn core_does_not_import_util_directly() {
                 // anchor set; no I/O), same leaf category as `au_state_for_coords`.
                 // AU-099 uses it to label a bare coordinate with a human locality.
                 && !line.contains("util::geo::nearest_au_locality")
+                // The Vietnamese counterpart of `nearest_au_locality`: nearest
+                // centrally-run city by haversine over a six-row compiled-in
+                // table, bounded to 50 km (no I/O, no deps); `au_locality_anchors`
+                // is the read-only iterator over the AU anchor table the same
+                // function scans. `core::place::label` words an offline place
+                // label from them (REQ-GEOLABEL-002).
+                && !line.contains("util::geo::nearest_vn_locality")
+                && !line.contains("util::geo::au_locality_anchors")
+                // Pure dependency-free validity predicate on a lat/lon pair (range
+                // and NaN checks only), the same leaf category as
+                // `is_in_australia`; `core::place::label` rejects an invalid
+                // fused point with it.
+                && !line.contains("util::geo::is_valid_coords")
+                // Pure lookup of an AU state code's full name in the same
+                // compiled-in table `address_au::state_code` reads (no I/O);
+                // `core::place::label` names a region-grain point's state.
+                && !line.contains("util::address_au::state_name")
                 // Pure, dependency-free great-circle distance (haversine; no I/O,
                 // no deps), same leaf category as `nearest_au_locality`. The
                 // multi-source location-corroboration scorer
@@ -1018,6 +1035,11 @@ fn core_does_not_import_util_directly() {
                 // and names that place (REQ-GEOLABEL-001). No I/O, no state
                 // beyond the lazily built table.
                 && !line.contains("util::city_coords::tabulated_centroid_at")
+                // Nearest tabulated city within a bound, by haversine over the
+                // same compiled-in `CITIES` table `tabulated_centroid_at` reads
+                // (pure, no I/O); `core::place::label` words a non-AU/VN point
+                // as "near" it (REQ-GEOLABEL-002).
+                && !line.contains("util::city_coords::nearest_tabulated_city")
                 && !line.contains("util::city_coords::TabulatedCentroid")
                 // Pure string predicates (no I/O, no network, no state) over
                 // place names: `is_bare_country`, what grain a place string
