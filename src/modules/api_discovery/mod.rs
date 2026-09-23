@@ -51,7 +51,7 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::domains::is_or_subdomain_of;
-use crate::util::http::{RequestBuilderExt, read_text};
+use crate::util::http::{RequestBuilderExt, http_status_error, read_text};
 use crate::util::preflight::url_host_is_private;
 
 const SRC: &str = "api_discovery";
@@ -105,7 +105,17 @@ impl WellKnown {
         let rest = match self {
             Self::OpenIdConfiguration => path.strip_suffix(self.path())?,
             Self::OAuthAuthorizationServer | Self::OAuthProtectedResource => {
-                path.strip_prefix(self.path())?
+                // Inserted as whole path segments: what follows the suffix is
+                // empty or a further `/segment`. A bare `strip_prefix` read
+                // `/.well-known/oauth-authorization-server.google.com` as the
+                // suffix plus `.google.com`, deriving the identifier
+                // `https://<host>.google.com` — an issuer on ANOTHER host,
+                // validated by a URL that is no derivation of it.
+                let rest = path.strip_prefix(self.path())?;
+                if !(rest.is_empty() || rest.starts_with('/')) {
+                    return None;
+                }
+                rest
             }
             Self::ApiCatalog => return None,
         };
@@ -131,13 +141,16 @@ struct AuthMetadata {
     device_authorization_endpoint: Option<String>,
     pushed_authorization_request_endpoint: Option<String>,
     service_documentation: Option<String>,
+    op_policy_uri: Option<String>,
+    op_tos_uri: Option<String>,
     scopes_supported: Vec<String>,
     grant_types_supported: Vec<String>,
 }
 
 impl AuthMetadata {
     /// Every endpoint URL the document carries. `issuer` is an identity, emitted
-    /// on its own; `service_documentation` is an API reference, not an endpoint.
+    /// on its own; the documentation and policy URLs are API references
+    /// ([`Self::reference_urls`]), not endpoints.
     fn endpoint_urls(&self) -> impl Iterator<Item = &str> {
         [
             &self.authorization_endpoint,
@@ -154,6 +167,18 @@ impl AuthMetadata {
         .into_iter()
         .filter_map(|o| o.as_deref())
     }
+
+    /// Every URL RFC 8414 §2 defines for documenting the service to a human —
+    /// its documentation, policy and terms — with the field name as relation.
+    fn reference_urls(&self) -> impl Iterator<Item = (&str, &'static str)> {
+        [
+            (&self.service_documentation, "service_documentation"),
+            (&self.op_policy_uri, "op_policy_uri"),
+            (&self.op_tos_uri, "op_tos_uri"),
+        ]
+        .into_iter()
+        .filter_map(|(o, rel)| o.as_deref().map(|u| (u, rel)))
+    }
 }
 
 /// OAuth 2.0 Protected Resource Metadata (RFC 9728). `resource` is REQUIRED.
@@ -166,6 +191,22 @@ struct ResourceMetadata {
     scopes_supported: Vec<String>,
     resource_name: Option<String>,
     resource_documentation: Option<String>,
+    resource_policy_uri: Option<String>,
+    resource_tos_uri: Option<String>,
+}
+
+impl ResourceMetadata {
+    /// Every URL RFC 9728 §2 defines for documenting the resource to a human —
+    /// its documentation, policy and terms — with the field name as relation.
+    fn reference_urls(&self) -> impl Iterator<Item = (&str, &'static str)> {
+        [
+            (&self.resource_documentation, "resource_documentation"),
+            (&self.resource_policy_uri, "resource_policy_uri"),
+            (&self.resource_tos_uri, "resource_tos_uri"),
+        ]
+        .into_iter()
+        .filter_map(|(o, rel)| o.as_deref().map(|u| (u, rel)))
+    }
 }
 
 /// RFC 9727 API catalog in the RFC 9264 `application/linkset+json` form.
@@ -241,6 +282,18 @@ struct FollowUp {
 /// fan-out, and every declared server is still recorded (evidence + host pivot)
 /// whether or not it was followed. Real documents list one.
 const MAX_DECLARED_SERVERS: usize = 4;
+
+/// At most this many endpoint/API host pivots, and this many API references,
+/// are emitted per target — the same order as `sitemap`'s `MAX_URLS`. Every
+/// document read here is controlled by the target, and the engine checks its
+/// `max_entities` budget only BETWEEN dispatches, absorbing one module's result
+/// whole: an unbounded 32 MiB catalog would mint hundreds of thousands of
+/// high-confidence entities in a single call. Real documents yield single
+/// digits (Google's: 4 hosts, 1 reference). What is dropped is declared through
+/// `ModuleResult::mark_truncated`, so coverage never reads a capped answer as
+/// the whole one.
+const MAX_PIVOT_HOSTS: usize = 200;
+const MAX_REFERENCES: usize = 200;
 
 /// Everything collected across the four legs, emitted once. Every bucket is a
 /// sorted map/set, so output is deduplicated and deterministic: OIDC and
@@ -331,8 +384,8 @@ impl Discovery {
             for url in meta.endpoint_urls() {
                 self.add_pivot(url, site);
             }
-            if let Some(doc) = meta.service_documentation.as_deref() {
-                self.add_reference(doc, "service_documentation", site, owned);
+            for (url, relation) in meta.reference_urls() {
+                self.add_reference(url, relation, site, owned);
             }
         }
     }
@@ -377,8 +430,8 @@ impl Discovery {
         for server in servers.iter().chain(meta.jwks_uri.iter()) {
             self.add_pivot(server, site);
         }
-        if let Some(doc) = meta.resource_documentation.as_deref() {
-            self.add_reference(doc, "resource_documentation", site, owned);
+        for (url, relation) in meta.reference_urls() {
+            self.add_reference(url, relation, site, owned);
         }
     }
 
@@ -571,8 +624,8 @@ impl Discovery {
         }
 
         // Every distinct external endpoint/API host the owner published — an
-        // authoritative, dispatchable infrastructure pivot; no cap.
-        for host in &self.pivot_hosts {
+        // authoritative, dispatchable infrastructure pivot — up to the cap.
+        for host in self.pivot_hosts.iter().take(MAX_PIVOT_HOSTS) {
             let mut e = Entity::new(EntityKind::Domain, host, confidence::HIGH, scan_id);
             e.tag("api-discovery");
             e.tag("api-endpoint");
@@ -588,8 +641,8 @@ impl Discovery {
         }
 
         // Every distinct API reference — a terminal record of where the org
-        // exposes or documents its programmable surface.
-        for (url, relation) in &self.references {
+        // exposes or documents its programmable surface — up to the cap.
+        for (url, relation) in self.references.iter().take(MAX_REFERENCES) {
             let mut e = Entity::new(
                 EntityKind::Other("api-reference".into()),
                 url,
@@ -605,6 +658,20 @@ impl Discovery {
                     .with_attr("domain", domain),
             );
             result.push(e);
+        }
+
+        let total = self.pivot_hosts.len() + self.references.len();
+        let emitted =
+            self.pivot_hosts.len().min(MAX_PIVOT_HOSTS) + self.references.len().min(MAX_REFERENCES);
+        if emitted < total {
+            result.mark_truncated(
+                emitted,
+                Some(total),
+                &format!(
+                    "the per-target caps of {MAX_PIVOT_HOSTS} endpoint hosts and \
+                     {MAX_REFERENCES} API references"
+                ),
+            );
         }
     }
 }
@@ -718,7 +785,7 @@ fn collect(
         match outcome {
             FetchOutcome::Body { body, served } => c.found.ingest(wk, &body, &served, &c.site),
             FetchOutcome::Answered => {}
-            FetchOutcome::TransportFailed => c.prevented += 1,
+            FetchOutcome::Failed => c.prevented += 1,
             FetchOutcome::Blocked(e) => {
                 c.prevented += 1;
                 c.wall.get_or_insert(e);
@@ -759,7 +826,8 @@ impl Collected {
                 Error::module(
                     SRC,
                     format!(
-                        "every API-discovery well-known failed at the transport level for \
+                        "every API-discovery well-known failed to answer (transport failure or \
+                         server error) for \
                          {domain} — cannot determine whether it publishes a discovery document"
                     ),
                 )
@@ -781,9 +849,10 @@ fn conclude(
 }
 
 /// Outcome of fetching one discovery well-known: a non-empty 2xx body with the
-/// URL that actually served it, a genuine "answered, nothing here" (a non-2xx
-/// status, or a 2xx with an unreadable/empty body — an ordinary site's expected
-/// negative), a real transport failure, or a typed wall. Kept distinct so
+/// URL that actually served it, a genuine "answered, nothing here" (a 404/410 or
+/// plain 4xx, or a 2xx with an unreadable/empty body — an ordinary site's
+/// expected negative), a failure to answer (transport or 5xx), or a typed wall
+/// (a throttle or an anti-bot page, at any status). Kept distinct so
 /// [`Module::process`] can tell a real outage on EVERY well-known apart from the
 /// ordinary "this domain publishes no discovery document" clean miss.
 enum FetchOutcome {
@@ -792,7 +861,8 @@ enum FetchOutcome {
         served: Url,
     },
     Answered,
-    TransportFailed,
+    /// The site failed to answer: a transport failure, or a 5xx.
+    Failed,
     /// The edge refused to serve the well-known — an anti-bot / WAF challenge
     /// page or a rate limit, already typed by [`read_text`]'s shared
     /// `document_or_challenge`. Distinct from `Answered` because the site did
@@ -800,19 +870,39 @@ enum FetchOutcome {
     Blocked(Error),
 }
 
-/// Text GET classified into a [`FetchOutcome`]. Only a genuine `send()` failure
-/// counts as a transport failure; a non-2xx status and an unreadable/empty 2xx
-/// body both stay `Answered` (an ordinary domain 404s on every well-known — that
-/// must never read as an outage). A 2xx anti-bot/WAF wall stays typed as
-/// `Blocked`, never folded into the ordinary negative — the discarded-typed-error
-/// shape `app_links` had to fix (REQ-APPLINKS-001).
+/// Text GET classified into a [`FetchOutcome`]. A `send()` failure or a 5xx is
+/// `Failed`; a 429 or an anti-bot page (at any status) is `Blocked`, typed; a
+/// 404/410, a plain 4xx and an unreadable/empty 2xx body stay `Answered` (an
+/// ordinary domain 404s on every well-known — that must never read as an
+/// outage). A 2xx wall stays `Blocked` too, never folded into the ordinary
+/// negative — the discarded-typed-error shape `app_links` had to fix
+/// (REQ-APPLINKS-001).
 async fn fetch_text(ctx: &ModuleContext, url: &str) -> FetchOutcome {
     let resp = match ctx.http.get(url).send_tagged(SRC).await {
         Ok(r) => r,
-        Err(_) => return FetchOutcome::TransportFailed,
+        Err(_) => return FetchOutcome::Failed,
     };
-    if !resp.status().is_success() {
-        return FetchOutcome::Answered;
+    let status = resp.status();
+    if !status.is_success() {
+        // 404 / 410: the ordinary "not published here", with no body to read.
+        if matches!(status.as_u16(), 404 | 410) {
+            return FetchOutcome::Answered;
+        }
+        // Everything else through the shared classifier, so a throttle and a
+        // wall keep their type — the collapse `util::http::ok_or_absent` exists
+        // to prevent ("folds a 403 scraper block, a 429 throttle and a 5xx
+        // outage into the same answer as a genuine miss"). A bare
+        // `!is_success() → Answered` made four 429s read as a site that
+        // publishes nothing, and left the `RateLimited` arm below unreachable.
+        return match http_status_error(SRC, resp).await {
+            e @ (Error::RateLimited(_) | Error::BotChallenge(_)) => FetchOutcome::Blocked(e),
+            _ if status.is_server_error() => FetchOutcome::Failed,
+            // A plain 4xx (401, 403, 405 …) is the site's answer: this document
+            // is not public here. Deliberately not an outage — a stock
+            // "deny dotfiles" rule 403s every `/.well-known/` path, and reading
+            // that as a failure would error on ordinary sites by the thousand.
+            _ => FetchOutcome::Answered,
+        };
     }
     // Captured before the body stream consumes `resp`: the spec checks are
     // against the URL that answered, which a redirect may have changed.
@@ -862,8 +952,8 @@ fn canonical_identifier(raw: &str) -> Option<String> {
     ))
 }
 
-/// `raw` parsed when it is an `https` URL whose host is a public,
-/// registrable DNS name; `None` for anything else — another scheme, an IP
+/// `raw` parsed when it is an `https` URL with no userinfo whose host is a
+/// public, registrable DNS name; `None` for anything else — another scheme, an IP
 /// literal (the WHATWG parser canonicalises `2130706433` / `0x7f000001` to
 /// `127.0.0.1`, so numeric encodings cannot slip past), a single-label name, or
 /// a private / special-use name refused by the shared SSRF preflight
@@ -872,7 +962,16 @@ fn canonical_identifier(raw: &str) -> Option<String> {
 /// `https://db.internal/` as an endpoint therefore mints nothing.
 fn public_https_url(raw: &str) -> Option<Url> {
     let u = Url::parse(raw.trim()).ok()?;
-    if u.scheme() != "https" || url_host_is_private(u.as_str()) {
+    // Userinfo is refused like any other disqualifier, the same rule
+    // `canonical_identifier` applies to issuers: every accepted URL is
+    // persisted verbatim as an entity value, and `https://user:secret@host/`
+    // in a document the target controls would copy its credential into the
+    // scan's findings.
+    if u.scheme() != "https"
+        || !u.username().is_empty()
+        || u.password().is_some()
+        || url_host_is_private(u.as_str())
+    {
         return None;
     }
     match u.host() {

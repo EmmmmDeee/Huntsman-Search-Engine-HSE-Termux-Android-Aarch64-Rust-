@@ -781,7 +781,7 @@ fn metadata_redirected_to_a_non_well_known_url_is_not_used() {
 #[test]
 fn every_leg_prevented_is_an_outage_never_a_clean_negative() {
     let all = |f: fn() -> FetchOutcome| WellKnown::ALL.into_iter().map(move |wk| (wk, f()));
-    let err = conclude("acme.com", "s", all(|| FetchOutcome::TransportFailed))
+    let err = conclude("acme.com", "s", all(|| FetchOutcome::Failed))
         .expect_err("four transport failures must not read as 'publishes nothing'");
     assert!(matches!(err, Error::Module { .. }), "got {err:?}");
 
@@ -797,12 +797,12 @@ fn every_leg_prevented_is_an_outage_never_a_clean_negative() {
     // One genuine answer proves the site was reached: the rest's silence is a
     // clean negative.
     let mixed = [
-        (OpenIdConfiguration, FetchOutcome::TransportFailed),
+        (OpenIdConfiguration, FetchOutcome::Failed),
         (
             OAuthAuthorizationServer,
             FetchOutcome::Blocked(Error::BotChallenge("cf".into())),
         ),
-        (OAuthProtectedResource, FetchOutcome::TransportFailed),
+        (OAuthProtectedResource, FetchOutcome::Failed),
         (ApiCatalog, FetchOutcome::Answered),
     ];
     let r = conclude("acme.com", "s", mixed).expect("reached once → clean negative");
@@ -827,11 +827,206 @@ fn findings_survive_when_the_other_legs_are_walled() {
             OAuthAuthorizationServer,
             FetchOutcome::Blocked(Error::BotChallenge("cf".into())),
         ),
-        (OAuthProtectedResource, FetchOutcome::TransportFailed),
-        (ApiCatalog, FetchOutcome::TransportFailed),
+        (OAuthProtectedResource, FetchOutcome::Failed),
+        (ApiCatalog, FetchOutcome::Failed),
     ];
     let r = conclude("gitlab.com", "s", outcomes).expect("a finding is never discarded");
     assert_eq!(of_kind(&r, "oauth-issuer").len(), 1);
+}
+
+// ── Review hardening (PR #642) ──────────────────────────────────────────────
+
+/// Every document is target-controlled, and the engine absorbs one module's
+/// result whole before its `max_entities` gate runs again. A flooded catalog is
+/// capped — and the cap is DECLARED, so coverage never reads the capped answer
+/// as the whole one.
+#[test]
+fn a_flooded_catalog_is_capped_and_declared_truncated() {
+    let items: Vec<String> = (0..250)
+        .map(|i| format!(r#"{{"href":"https://h{i:03}.acme.net/api"}}"#))
+        .collect();
+    let catalog = format!(r#"{{"linkset":[{{"item":[{}]}}]}}"#, items.join(","));
+    let r = run("acme.com", &[(ApiCatalog, &catalog, "https://acme.com")]);
+    assert_eq!(domains(&r).len(), MAX_PIVOT_HOSTS);
+    assert_eq!(of_kind(&r, "api-reference").len(), MAX_REFERENCES);
+    let declared = r
+        .truncation
+        .as_deref()
+        .expect("a capped answer is declared");
+    assert!(
+        declared.starts_with("400 of 500 retrieved"),
+        "the known total is stated: {declared}"
+    );
+
+    // A real document never reaches the cap, and never claims to be partial.
+    let r = run(
+        "accounts.google.com",
+        &[(
+            OpenIdConfiguration,
+            GOOGLE_META,
+            "https://accounts.google.com",
+        )],
+    );
+    assert!(r.truncation.is_none());
+}
+
+/// Every accepted URL is persisted verbatim as an entity value: a URL with
+/// userinfo in a target-controlled document would copy its credential into the
+/// scan's findings.
+#[test]
+fn a_discovered_url_carrying_credentials_is_never_copied() {
+    let catalog = r#"{"linkset":[{"item":[
+        {"href":"https://user:s3cret@api.acme.com/v1"},
+        {"href":"https://tokenonly@docs.acme.com/v1"},
+        {"href":"https://public.acme.com/v1"}]}]}"#;
+    let meta = r#"{"issuer":"https://acme.com",
+                   "token_endpoint":"https://svc:p4ss@auth.acme.com/token"}"#;
+    let r = run(
+        "acme.com",
+        &[
+            (OpenIdConfiguration, meta, "https://acme.com"),
+            (ApiCatalog, catalog, "https://acme.com"),
+        ],
+    );
+    let dump = format!("{:?}", r.entities);
+    for secret in ["s3cret", "tokenonly", "p4ss"] {
+        assert!(!dump.contains(secret), "`{secret}` reached the findings");
+    }
+    assert_eq!(
+        domains(&r),
+        ["public.acme.com"],
+        "only the clean URL survives"
+    );
+}
+
+/// RFC 8414 / RFC 9728 insert the well-known as whole path segments. A path
+/// that merely STARTS with the suffix is no derivation of any identifier — and
+/// read as one, `…/oauth-authorization-server.google.com` validated an issuer on
+/// a Google host.
+#[test]
+fn a_well_known_path_that_only_starts_with_the_suffix_is_no_derivation() {
+    let url = |s: &str| Url::parse(s).unwrap();
+    assert_eq!(
+        OAuthAuthorizationServer.expected_identifier(&url(
+            "https://acme.com/.well-known/oauth-authorization-server.google.com"
+        )),
+        None
+    );
+    assert_eq!(
+        OAuthProtectedResource.expected_identifier(&url(
+            "https://acme.com/.well-known/oauth-protected-resourcex"
+        )),
+        None
+    );
+    // End to end: the document served there mints nothing.
+    let spoof = r#"{"issuer":"https://acme.com.google.com",
+                    "token_endpoint":"https://oauth.acme.com.google.com/t"}"#;
+    let outcomes = [(
+        OAuthAuthorizationServer,
+        FetchOutcome::Body {
+            body: spoof.into(),
+            served: url("https://acme.com/.well-known/oauth-authorization-server.google.com"),
+        },
+    )];
+    let r = conclude("acme.com", "scan", outcomes).unwrap();
+    assert!(r.entities.is_empty(), "got {:?}", r.entities);
+}
+
+#[test]
+fn every_documentation_and_policy_url_is_a_reference() {
+    let meta = r#"{"issuer":"https://acme.com",
+                   "service_documentation":"https://docs.acme.com/oauth",
+                   "op_policy_uri":"https://legal.acme.com/privacy",
+                   "op_tos_uri":"https://legal.acme.com/tos"}"#;
+    let prm = r#"{"resource":"https://acme.com",
+                  "resource_documentation":"https://docs.acme.com/api",
+                  "resource_policy_uri":"https://legal.acme.com/api-policy",
+                  "resource_tos_uri":"https://legal.acme.com/api-tos"}"#;
+    let r = run(
+        "acme.com",
+        &[
+            (OpenIdConfiguration, meta, "https://acme.com"),
+            (OAuthProtectedResource, prm, "https://acme.com"),
+        ],
+    );
+    let mut relations: Vec<&str> = of_kind(&r, "api-reference")
+        .into_iter()
+        .filter_map(|e| attr(e, "relation"))
+        .collect();
+    relations.sort_unstable();
+    assert_eq!(
+        relations,
+        [
+            "op_policy_uri",
+            "op_tos_uri",
+            "resource_documentation",
+            "resource_policy_uri",
+            "resource_tos_uri",
+            "service_documentation",
+        ]
+    );
+}
+
+/// A throttle, a wall and a server error are not "this site publishes nothing".
+/// The bare `!is_success() → Answered` made four 429s a clean negative and the
+/// `RateLimited` arm unreachable. Driven through the real HTTP path so the shared
+/// `http_status_error` classifier genuinely runs.
+#[tokio::test]
+async fn a_throttle_a_wall_or_a_server_error_is_not_a_clean_negative() {
+    use crate::util::http::test_server::{Canned, serve};
+    let base = serve(vec![
+        Canned::text(429, "Too Many Requests").header("Retry-After", "30"),
+        Canned::html(403, CF_CHALLENGE_PAGE),
+        Canned::text(503, "upstream unavailable"),
+        // Controls: the site's own answers, never an outage.
+        Canned::text(403, "Forbidden"),
+        Canned::text(401, "Unauthorized"),
+        Canned::text(410, "Gone"),
+    ])
+    .await;
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = ModuleContext {
+        scan_id: "t".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let url = format!("{base}/.well-known/oauth-protected-resource");
+
+    let throttled = fetch_text(&ctx, &url).await;
+    assert!(
+        matches!(throttled, FetchOutcome::Blocked(Error::RateLimited(_))),
+        "a 429 is a typed throttle"
+    );
+    assert!(
+        matches!(
+            fetch_text(&ctx, &url).await,
+            FetchOutcome::Blocked(Error::BotChallenge(_))
+        ),
+        "a 403 challenge page is a typed wall"
+    );
+    assert!(
+        matches!(fetch_text(&ctx, &url).await, FetchOutcome::Failed),
+        "a 5xx is a failure to answer"
+    );
+    for code in ["403", "401", "410"] {
+        assert!(
+            matches!(fetch_text(&ctx, &url).await, FetchOutcome::Answered),
+            "a plain {code} is the site's own answer"
+        );
+    }
+
+    // And four throttled legs are an outage, never a clean negative.
+    let err = conclude(
+        "acme.com",
+        "s",
+        WellKnown::ALL
+            .into_iter()
+            .map(|wk| (wk, FetchOutcome::Blocked(Error::RateLimited("429".into())))),
+    )
+    .expect_err("four throttles are not 'publishes nothing'");
+    assert!(matches!(err, Error::RateLimited(_)), "got {err:?}");
 }
 
 // ── Module contract ─────────────────────────────────────────────────────────

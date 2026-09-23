@@ -18870,9 +18870,11 @@ Ownership is the second gate: endpoint hosts are pivots only when the served
 URL is the target or a host under it (`served_by`, the one authority, compared
 in canonical form). A cross-site redirect yields a *delegated* issuer — no
 scopes, no hosts — and a cross-site protected resource yields nothing. Every
-discovered URL goes through `public_https_url`: `https`, a registrable DNS name
-(the WHATWG parser turns `2130706433` into `127.0.0.1`, so numeric encodings
-cannot pass as names), not refused by `util::preflight::url_host_is_private`.
+discovered URL goes through `public_https_url`: `https`, no userinfo, a
+registrable DNS name (the WHATWG parser turns `2130706433` into `127.0.0.1`, so
+numeric encodings cannot pass as names), not refused by
+`util::preflight::url_host_is_private`. At most 200 host pivots and 200 API
+references are emitted per target, and a shortfall is declared (R1 below).
 
 A second stage follows each **path-bearing** authorization server a protected
 resource declares to its RFC 8414 and OIDC metadata URLs. The followed issuer
@@ -18880,9 +18882,10 @@ must validate at the URL that served it AND be the issuer that was declared.
 At most `MAX_DECLARED_SERVERS` (4) are followed — a bound on requests, not on
 output: every declared server is still recorded and its host still pivoted.
 
-Outage typing is `app_links`' (REQ-APPLINKS-001): a 2xx wall stays
-`Blocked(BotChallenge)`, a transport failure is `TransportFailed`, and only all
-four legs prevented with nothing found is an error. The decision is the pure
+Outage typing starts from `app_links`' (REQ-APPLINKS-001) and, after R5 below,
+goes further: a wall or a throttle at any status is `Blocked`, typed; a
+transport failure or a 5xx is `Failed`; a 404/410 or plain 4xx is the site's
+own answer. Only all four legs prevented with nothing found is an error. The decision is the pure
 `collect` → `Collected::finish`, so it is pinned without a network; the tests
 drive the same `collect` production does.
 
@@ -18961,6 +18964,30 @@ half now has its own lock.
 The roadmap lock (`the_map_states_the_live_registry_size`) was falsified the
 same way: the heading set back to `193` fails it with the stale figure named;
 restored to `194`, it passes.
+
+#### Review hardening — five Copilot findings on PR #642, each verified before fixing
+
+All five checked out as real defects. Each was reproduced by the mutation
+that restores it, and fixed.
+
+| # | finding | verified how | fix |
+|---|---|---|---|
+| R1 | every discovered host and reference emitted, unbounded | `core::engine::dispatch` checks `max_entities` only BETWEEN dispatches and absorbs one module's result whole; the only bound on a target-controlled document was the 32 MiB body cap | `MAX_PIVOT_HOSTS` / `MAX_REFERENCES` = 200 (`sitemap`'s `MAX_URLS` order), and the shortfall DECLARED via `ModuleResult::mark_truncated` with the known total, so coverage never reads a capped answer as the whole one |
+| R2 | a URL with userinfo copied its credential into the findings | `public_https_url` accepted `https://user:secret@host/`, and the reference is persisted verbatim; `canonical_identifier` already refused the same shape, so one rule had two answers | userinfo refused in `public_https_url` — the safer fix for a security finding |
+| R3 | `strip_prefix` accepted a path that merely STARTS with the well-known | `/.well-known/oauth-authorization-server.google.com` derived `https://acme.com.google.com` — an issuer on another host, validated by a URL that is no derivation of it | the inserted suffix must end on a segment boundary (rest empty or `/…`); OIDC's append rule already could not, as its suffix begins with `/` |
+| R4 | RFC 9728 `resource_policy_uri` discarded | read the struct: only `resource_documentation` was kept; the same gap held for `resource_tos_uri` and for RFC 8414's `op_policy_uri` / `op_tos_uri` beside `service_documentation` | one `reference_urls()` per metadata type, every documentation/policy/terms field the spec defines, the field name as the relation |
+| R5 | a 429 read as a clean negative | `!is_success() → Answered` returned before any classification, so the `RateLimited` arm was unreachable and four throttled legs read as "publishes nothing" | 404/410 → `Answered`; everything else through the shared `http_status_error`: a 429 or a challenge page at any status → `Blocked`, typed; a 5xx → `Failed` (the variant renamed from `TransportFailed`, since a 5xx is not one); a plain 4xx stays `Answered` on purpose — a stock "deny dotfiles" rule 403s every `/.well-known/` path |
+
+The mutation table was re-run in full on the post-fix source, not only the new
+rows: all nineteen killed, source restored byte-identical. R2 needed a second
+run — its first anchor matched `canonical_identifier`'s identical userinfo
+check as well, so the harness refused to mutate an ambiguous line rather than
+guess which. That is a non-run, not a survivor, and is recorded as one; the
+unique anchor then killed it (`` `s3cret` reached the findings ``).
+
+`app_links` carries the same `!is_success() → Answered` shape R5 fixed here, and
+the same unreachable `RateLimited` arm. It is left for its own change: this PR
+does not widen into a module it did not otherwise touch.
 
 #### Scope, honestly
 
