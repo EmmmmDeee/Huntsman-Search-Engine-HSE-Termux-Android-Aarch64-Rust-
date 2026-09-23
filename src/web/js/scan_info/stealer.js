@@ -461,7 +461,7 @@ function ensureStyles() {
   if (stylesInjected) return;
   stylesInjected = true;
   const style = document.createElement('style');
-  // Reuses this app's own theme variables (see app.css :root / body.light-theme)
+  // Reuses this app's own theme variables (see app.css :root / body.dark-theme)
   // instead of hardcoded colors — .st-node-active mirrors the Browse tab's own
   // `#browse-rollup tr.active-kind` selected-row treatment for consistency.
   style.textContent = `
@@ -469,10 +469,11 @@ function ensureStyles() {
     .st-node-active { background: var(--accent) !important; color: var(--accent-text) !important; font-weight: 600; }
     .st-row-focused { outline: 2px solid var(--accent); outline-offset: -2px; }
     .st-row-dup td { background: var(--warning-dim); }
-    /* --warning doesn't flip between themes (see app.css :root), so a fixed
-       dark text color keeps <mark> readable in both instead of inheriting
-       --text (which flips light in dark mode — unreadable on amber). */
-    #st-tree mark, #stealer-table mark { background: var(--warning); color: #1b1200; padding: 0 1px; border-radius: 2px; }
+    /* --warning-solid is the saturated amber, the same in both themes (see
+       app.css), so a fixed dark text colour keeps <mark> readable in both,
+       where inheriting --text (light in dark mode) would not. --warning is a
+       text shade: dark in the light theme, so it cannot be the background. */
+    #st-tree mark, #stealer-table mark { background: var(--warning-solid); color: #1b1200; padding: 0 1px; border-radius: 2px; }
   `;
   document.head.appendChild(style);
 }

@@ -1,8 +1,8 @@
 /**
  * Re-reads the persisted theme choice and applies it: toggles `<body
- * class="light-theme">` and updates `#theme-label`'s text. Called once at
- * SPA bootstrap (by `main.js`, same as the JS original) and again on every
- * toggle click (see [`wire_toggle_click`]).
+ * class="dark-theme">` and sets the `#theme-toggle` checkbox to match.
+ * Called once at SPA bootstrap (by `main.js`) and again on every change of
+ * the switch (see [`wire_toggle_click`]).
  */
 export function applyTheme() {
     wasm.applyTheme();
@@ -985,10 +985,6 @@ function __wbg_get_imports() {
             const ret = getObject(arg0).classList;
             return addHeapObject(ret);
         },
-        __wbg_contains_db96d32718835087: function(arg0, arg1, arg2) {
-            const ret = getObject(arg0).contains(getStringFromWasm0(arg1, arg2));
-            return ret;
-        },
         __wbg_document_ac38448dbfd31a57: function(arg0) {
             const ret = getObject(arg0).document;
             return isLikeNone(ret) ? 0 : addHeapObject(ret);
@@ -1036,6 +1032,10 @@ function __wbg_get_imports() {
             const ret = getObject(arg0).getSeconds();
             return ret;
         },
+        __wbg_get_971a0c45d172643f: function() { return handleError(function (arg0, arg1) {
+            const ret = Reflect.get(getObject(arg0), getObject(arg1));
+            return addHeapObject(ret);
+        }, arguments); },
         __wbg_get_c0c8f8d7da0c03dd: function(arg0, arg1) {
             const ret = getObject(arg0)[arg1 >>> 0];
             return addHeapObject(ret);
@@ -1130,18 +1130,19 @@ function __wbg_get_imports() {
             const ret = Date.now();
             return ret;
         },
-        __wbg_preventDefault_19878c58b8010668: function(arg0) {
-            getObject(arg0).preventDefault();
-        },
         __wbg_prototypesetcall_de8e0d9553586985: function(arg0, arg1, arg2) {
             Uint8Array.prototype.set.call(getArrayU8FromWasm0(arg0, arg1), getObject(arg2));
         },
+        __wbg_remove_426d5806a1a02ede: function() { return handleError(function (arg0, arg1, arg2) {
+            getObject(arg0).remove(getStringFromWasm0(arg1, arg2));
+        }, arguments); },
         __wbg_setItem_b0bb6a578106db69: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
             getObject(arg0).setItem(getStringFromWasm0(arg1, arg2), getStringFromWasm0(arg3, arg4));
         }, arguments); },
-        __wbg_set_textContent_e027901c7bc836b5: function(arg0, arg1, arg2) {
-            getObject(arg0).textContent = arg1 === 0 ? undefined : getStringFromWasm0(arg1, arg2);
-        },
+        __wbg_set_8155bb79a948541b: function() { return handleError(function (arg0, arg1, arg2) {
+            const ret = Reflect.set(getObject(arg0), getObject(arg1), getObject(arg2));
+            return ret;
+        }, arguments); },
         __wbg_static_accessor_GLOBAL_THIS_466428f93b4eaa76: function() {
             const ret = typeof globalThis === 'undefined' ? null : globalThis;
             return isLikeNone(ret) ? 0 : addHeapObject(ret);
@@ -1158,6 +1159,10 @@ function __wbg_get_imports() {
             const ret = typeof window === 'undefined' ? null : window;
             return isLikeNone(ret) ? 0 : addHeapObject(ret);
         },
+        __wbg_target_13424fe1cdc436ac: function(arg0) {
+            const ret = getObject(arg0).target;
+            return isLikeNone(ret) ? 0 : addHeapObject(ret);
+        },
         __wbg_toggle_b3c8c8f750f23b8a: function() { return handleError(function (arg0, arg1, arg2, arg3) {
             const ret = getObject(arg0).toggle(getStringFromWasm0(arg1, arg2), arg3 !== 0);
             return ret;
@@ -1168,7 +1173,7 @@ function __wbg_get_imports() {
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 16, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
-            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_310);
+            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_311);
             return addHeapObject(ret);
         },
         __wbindgen_cast_0000000000000002: function(arg0) {
@@ -1200,8 +1205,8 @@ function __wbg_get_imports() {
     };
 }
 
-function __wasm_bindgen_func_elem_310(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_310(arg0, arg1, addHeapObject(arg2));
+function __wasm_bindgen_func_elem_311(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_311(arg0, arg1, addHeapObject(arg2));
 }
 
 function addHeapObject(obj) {

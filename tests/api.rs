@@ -3586,11 +3586,18 @@ async fn spa_served_with_required_ui_structure() {
     for marker in [
         "<html",    // a real HTML document
         "viewport", // touch / mobile-optimised
-        // Dark-by-default console background (`--bg`, with `body.light-theme`
-        // as the opt-in alternative). Tracks the palette, so it moves when the
-        // palette legitimately moves — it exists to catch shipping a *light*
-        // default, not to freeze one shade.
-        "#0a0d11",
+        // SpiderFoot 4.0's theme. This slot pinned the earlier console's
+        // dark default (#0a0d11) until the console was remade, on the
+        // operator's instruction, to mimic SpiderFoot 4.0, whose default is
+        // light. What must now be present is SpiderFoot's Dark Mode: its
+        // checkbox switch, and its dark.css palette opting in under
+        // `body.dark-theme`. (The earlier console had neither: its toggle was
+        // a link, and its palette opted out under `body.light-theme`.) The
+        // light default itself is pinned token by token in
+        // routes::tests::the_console_is_light_by_default_with_spiderfoots_dark_mode.
+        r#"class="theme-toggler" type="checkbox""#,
+        "body.dark-theme{",
+        "#1b1b1b",
         // SPA module entry point. This slot used to pin `/static/d3.min.js`,
         // the vendored force-graph engine; the graph is now a dependency-free
         // concentric SVG layout in `js/scan_info/graph.js`, so the thing worth

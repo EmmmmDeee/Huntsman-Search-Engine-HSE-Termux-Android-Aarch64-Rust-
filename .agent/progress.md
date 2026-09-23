@@ -76,8 +76,41 @@ No test failed, and no test differed between a commit's two runs. The first
 row is compared with the baseline `cf86bded`, and the PR #648 commits sit
 between the two.
 
+- **Integrated.** PR #648 was squash-merged into `main` as `e364a28c` once CI
+  passed on its head (8 of 8 checks). The merged tree is byte-identical to
+  the verified head. The work branch restarts from that commit.
+
+### Change 3: [FEATURE] The console's shell is SpiderFoot 4.0's (REQ-UI-002)
+
+- **What.** The first part of the operator's SpiderFoot 4.0 remake: the
+  navbar (New Scan, Scans, Settings, a More menu; Dark Mode and About), the
+  footer tip, light by default with SpiderFoot's `theme=dark-theme` switch,
+  and the scan list as the landing page.
+- **Found on the way.** Ten icons the console emitted drew as solid squares.
+  The first runtime check found a cascade bug in the new navbar and a phone
+  header that pushed the toggle off-screen. All three are fixed.
+- **Review.** An independent review found one blocking defect: from 768px
+  to about 1,020px wide the bar wrapped onto two rows and covered every page
+  title. It also found six should-fix ones. Each was confirmed on a real page
+  and fixed.
+- **Evidence.** All three new route tests fail on the baseline, and seven
+  mutations are each killed. The runtime check passed 51 of 51, from 1280px
+  down to a 320px phone. The build before the review failed 10 of those
+  checks. The all-routes sweep was clean.
+- **Fresh worktree.** The gate passed, and the suite ran twice: 8537 tests
+  (8510 passed, 27 ignored, 0 failed), identical in both runs. Against the
+  previous commit, the only differences are the three new tests. Doctests: 86
+  twice, identical.
+
 ## Next
 
-- **UI remake.** Requested 2026-09-23: remake the web UI and UX to mimic
-  SpiderFoot 4.0. It comes next, before the repair queue.
+- **UI remake, continued.** The pages come next: the scan list, New Scan,
+  Settings, and a scan's own pages.
+- **Two defects the remake turned up.** They are queued first, because both
+  are wrong behaviour and not styling:
+  - REQ-SCANSTATUS-002: no console view reads the API's `interrupted` flag.
+    A scan whose server died shows as running forever. Its Stop button
+    returns 404, and Scan Info re-fetches it every 8 seconds.
+  - REQ-SCANNAME-001: New Scan's "Scan Name" field is never sent. The name
+    is not stored and not shown.
 - **Repair queue.** Then continue from #1 in `.agent/files.md`.

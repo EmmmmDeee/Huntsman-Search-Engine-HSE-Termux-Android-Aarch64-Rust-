@@ -20892,3 +20892,180 @@ runs it, which also catches a guard dropped before the engine starts.
 `core::cancel::tests::a_guards_scan_id_is_registered_for_as_long_as_it_can_be_read`
 pins the accessor the structure depends on: it returns the registered key,
 and the key stays registered while the guard lives.
+
+## REQ-UI-002 — the console's shell is SpiderFoot 4.0's
+
+**Asked for** by the operator on 2026-09-23: "Completely remake the UI UX to
+mimic Spiderfoot 4.0". This entry covers the shell every page sits in. Each
+page's own layout has its own entry.
+
+**What SpiderFoot 4.0's shell is.** Read from its templates (`HEADER.tmpl`,
+`FOOTER.tmpl`), its `spiderfoot.css` and its `dark.css`:
+
+- a Bootstrap 3 `navbar navbar-default navbar-fixed-top` with three
+  destinations, New Scan, Scans and Settings, and About on the right;
+- a "Dark Mode" switch on a light default, persisted as
+  `localStorage.theme = "dark-theme"` and applied in the page head, before
+  the body renders;
+- a fixed footer that carries one tip;
+- `/` opens the scan list.
+
+**What HSE had.** A dark-first console: an app bar with a search box, a
+bottom tab bar on phones with a "More" sheet, and the dashboard as the
+landing page.
+
+### Implemented
+
+- `spa.html`: the navbar. The brand, then New Scan, Scans and Settings, then a
+  More dropdown holding HSE's ten other pages. More is a real `<button>`, so
+  Space opens it as well as Enter. On the right are the Dark Mode switch and
+  About. The footer carries one tip per page.
+- Below 1,100px wide the links collapse behind the three-bar toggle, as
+  Bootstrap's collapse does in SpiderFoot. SpiderFoot collapses below 768px,
+  but its brand is a small logo. HSE's brand is text, and the full bar is
+  about 1,030px wide, so a window between the two widths would wrap the bar
+  onto a second row. The page's top padding follows `--navbar-h`, the bar's
+  measured height (`syncNavbarHeight` in `ui.js`), so even a wrap from a
+  larger default font cannot cover the page.
+- `app.css`, rewritten on Bootstrap 3's metrics and palette over the class
+  vocabulary the views already emit (`.btn`, `.panel`, `.table-striped`,
+  `.nav-tabs`, `.badge`, `.alert`, …). The views' markup did not have to
+  change to take the look. The Search page changed because the search box
+  moved into it. The light palette is on `:root`. SpiderFoot's `dark.css`
+  palette is on `body.dark-theme`.
+- `wasm-ui/src/theme.rs`: the switch stores SpiderFoot's own value. Only
+  `"dark-theme"` selects dark. The earlier console stored the same two
+  strings, `"dark-theme"` and `"light-theme"`, so a choice saved there keeps
+  its meaning. A console that never chose now opens light, which is
+  SpiderFoot's default. `theme.rs` loads asynchronously, so a one-line
+  script at the top of `<body>` applies a stored dark choice before the
+  first paint, as SpiderFoot's `HEADER.tmpl` does.
+- `ui.js`: the collapse toggle and dropdowns. A dropdown opens on click and
+  closes on a second click, a click elsewhere, a pick, Escape (which returns
+  focus to its toggle) or navigation. `ui.js` also holds the footer tips; one
+  is picked when the page changes, not on every re-render.
+- `router.js`: `#/` and any unknown route open the scan list. The dashboard is
+  `#/dash`, under More.
+- `search.js`: the cross-scan search box moved from the app bar to the Search
+  page, since SpiderFoot's navbar has none. A query the API refuses (over 256
+  bytes) is reported on that page, beside the box, instead of on the generic
+  error page, which offered only a Retry of the same query.
+- The update badge stays visible on a phone. It sits beside the brand, outside
+  the collapse. Inside the Settings link, where the first draft put it, a phone
+  would hide it behind the toggle. The earlier console had placed it in the app
+  bar for exactly that reason.
+
+### Found on the way
+
+The glyphicons are masked SVG, so a class with no rule renders as a solid
+square. On the baseline, ten icons the console emits had no rule: `align-left`
+(the scan list's log download), `check` (the Assurance link), `console` (the
+Debug Log link), `copy` and `file` (Stealer Logs), `download` and `lock` (Scan
+Info's export row), `hourglass` (Search Engines), `road` (the timeline), and
+`remove` (the Settings toggles). The last is invisible to a static check,
+because the toggles built the class as `glyphicon-${on?'ok':'remove'}`. That
+template now spells out both names. Each of the ten has a rule now.
+
+**Found by the runtime check, on the first build of this change.** The generic
+`.nav>li` and `.nav>li>a` rules, lower in `app.css`, have the same specificity
+as the navbar's and won by coming later. Links were 40px tall in a 50px bar, so
+the active highlight stopped 10px short, and the Dark Mode switch sat 14px
+above the bar's midline. On a 360px phone the brand pushed the three-bar toggle
+17px off-screen, where a tap could not reach its centre. The navbar rules now
+carry `.navbar` in their selectors. On a phone the brand is 16px and drops the
+version, which About shows.
+
+### Review
+
+An independent read-only review of the draft found one blocking defect and
+several should-fix ones. Each was confirmed on a real page before it was
+fixed, and each fix has a runtime check below.
+
+| finding | fix |
+|---|---|
+| **Blocking.** From 768px to about 1,020px wide the bar wrapped to 101px while the page kept 60px of top padding. Every page title was half hidden, and a tap on the scan list's Refresh button landed on the bar. | Collapse below 1,100px; the top padding follows the measured bar. |
+| On a phone, the active page's More item was #777 on #337ab7 (contrast 1.02:1), a blank blue bar. | Bootstrap's collapsed-navbar active colours. |
+| The phone Dark Mode row rule never applied (the same specificity class as above): a 26px row, the switch 5px off its label. | A selector that outranks `.navbar .navbar-nav>li`. |
+| Stealer Logs' `<mark>` drew #1b1200 on `--warning`, which the remake made a dark text shade: contrast fell from 8.24:1 to 3.82:1. | `--warning-solid`, the saturated amber both themes share. |
+| The phone menu's height limit ignored the fixed footer, which sat over its last item; a tap on About hit the footer. | The bar sits above the footer (`z-index` 1031). |
+| The icon test skipped any name it could not read, so restoring the `glyphicon-${…}` template, and deleting `.glyphicon-remove{`, passed. | An unreadable name fails the test. |
+| Nits: a dark-mode page flashed white on every load; Space did not open More, and Escape left focus inside the closed menu; the footer tip changed on every 8-second re-render of a running scan; a refused search lost its box; at 320px the update badge overlapped the brand; the dark-mode divider was invisible (1.08:1); an unused `navlink` class; `.offline-banner` defined twice; two of the three `tests/api.rs` markers were already true of the old console. | Each fixed. The markers are now the checkbox switch, `body.dark-theme{` and `#1b1b1b`. |
+
+### Locks
+
+`routes::tests`:
+
+- `the_shell_is_spiderfoots_navbar_with_every_page_reachable`: the navbar,
+  toggle, collapse, Dark Mode switch, About and footer markers; New Scan,
+  Scans, Settings and More in that order; the update badge before the
+  collapse; and every page `router.js` resolves has a link in the shell. The
+  page list is read from `router.js` itself, so a page added there without a
+  link fails the test.
+- `every_glyphicon_the_spa_uses_is_drawn`: every `glyphicon-*` class in the
+  shell, the served JS modules and wasm-ui's Rust sources has a rule in
+  `app.css`, and no class name is built from a template.
+- `the_console_is_light_by_default_with_spiderfoots_dark_mode`: the light
+  tokens on `:root`, `dark.css`'s on `body.dark-theme`, no rule left on the
+  retired `body.light-theme`, `theme.rs` storing `"dark-theme"`, and the
+  pre-paint script applying the same rule ahead of the navbar.
+
+`wasm-ui`: `theme::tests::only_spiderfoots_dark_value_selects_dark_mode`.
+`tests/api.rs`: `spa_served_with_required_ui_structure` pins the checkbox
+switch, `body.dark-theme{` and `dark.css`'s page colour where it pinned the
+dark default's.
+
+| # | mutation | result |
+|---|---|---|
+| UI2-A | the Signal Radar link points at `#/radar-x` | killed: "these routed pages have no link in the shell: [\"radar\"]" |
+| UI2-B | `#update-badge` moves back inside the Settings link | killed: "#update-badge must sit outside the collapsing links" |
+| UI2-C | the `.glyphicon-console{` rule is deleted | killed: "these icons have no rule in app.css" (console) |
+| UI2-D | `:root`'s `--bg` goes back to the dark default `#0a0d11` | killed: "--bg is not #ffffff" |
+| UI2-E | `is_dark` becomes `stored != Some(LIGHT)` (dark unless light was chosen) | killed: `assertion failed: !is_dark(None)` |
+| UI2-F | the pre-paint script is removed | killed: "the shell applies a stored dark choice before the first paint" |
+| UI2-G | `opts.js` builds `glyphicon-${on?'ok':'remove'}` again | killed: "icon classes built from a template cannot be checked … js/views/opts.js:202" |
+
+On the unchanged baseline all three route tests fail, and the icon test lists
+the nine icons it can see.
+
+### Runtime
+
+A Playwright script drove a sandboxed `hse serve` (scratch `HOME`, update
+checks and map tiles off, no proxy). The script lived in the session's
+scratch space, not in the repository; what it checked is listed here so it
+can be repeated by hand. All 51 checks passed, at 1280, 1150, 1100, 1024, 915
+and 800px wide, and on 360px and 320px phones with touch:
+
+- the landing page is the scan list, light, with the switch off;
+- the navbar reads New Scan, Scans, Settings, More, and its links fill the bar;
+- the switch and its label sit on the bar's midline;
+- at 800, 915, 1024 and 1100px, and with the brand lengthened to force a
+  wrap, the bar never covers the page title;
+- More opens on a click and on Space, and lists ten pages. It closes on an
+  outside click, on Escape (with focus back on More), and after a pick, which
+  navigates and lights both the page and More;
+- About opens, shows the running version and closes on Escape;
+- the switch turns dark on, stores `theme=dark-theme` and paints `#1b1b1b`.
+  Dark survives a reload. Off stores `theme=light-theme`;
+- a stored `dark-theme` opens dark, and a stored `light-theme` opens light;
+- on a first load with a stored `dark-theme`, the page is dark while the
+  wasm download is still held back, before the theme module has run;
+- the footer tip stays the same through four re-renders of a page;
+- a 300-character search stays on the Search page, with its box and the
+  API's reason;
+- on the phones the toggle is fully on screen, the links are collapsed, an
+  update badge shows with the menu closed, the toggle opens the links, More
+  expands inline, the active page's item is readable (contrast at least
+  4.5:1), the Dark Mode row is centred, the menu's last item can be tapped
+  over the footer, and a pick navigates and collapses the menu. At 320px the
+  brand, badge and toggle do not overlap;
+- there were no page errors. The only failed request was the Radar view's
+  "no sweep yet" 404, which is its documented answer.
+
+The build before the review failed ten of the checks the review added, and
+it could not reach the menu's last item past the footer. The first build of
+this change failed four checks: the layout findings above.
+
+The existing all-routes sweep (24 routes, hostile ids and payloads included)
+found no page error, HTML injection, blank page or 5xx. The server logged no
+panic. The sweep's only console lines are the browser's "Failed to load
+resource" for a 404, from unknown scan ids and the empty Radar.

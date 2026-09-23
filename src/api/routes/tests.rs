@@ -1222,3 +1222,231 @@ use super::*;
              cannot drift from the code: {missing:?}"
         );
     }
+
+    // ─── The console is SpiderFoot 4.0's (UI remake, 2026-09-23) ───
+
+    /// The chrome is SpiderFoot 4.0's HEADER.tmpl and FOOTER.tmpl, and every
+    /// page the router resolves has a link in it.
+    ///
+    /// The route half matters most. The remake moved HSE's own pages from a
+    /// bottom tab bar into a "More" dropdown, and a page the router knows but
+    /// no link reaches is dead to anyone who does not type its hash. So the
+    /// route list is read from `router.js` itself, not restated here: a page
+    /// added there later without a link fails this test.
+    #[test]
+    fn the_shell_is_spiderfoots_navbar_with_every_page_reachable() {
+        for marker in [
+            r#"class="navbar navbar-default navbar-fixed-top""#,
+            r#"id="navbar-toggle""#,
+            r#"id="main-navbar-collapse""#,
+            r#"id="theme-toggle" class="theme-toggler" type="checkbox""#,
+            ">Dark Mode<",
+            r##"data-target="#aboutmodal""##,
+            r#"class="navbar-default navbar-fixed-bottom""#,
+            r#"id="footer-tip""#,
+        ] {
+            assert!(
+                SPA_HTML.contains(marker),
+                "the SpiderFoot 4.0 shell lacks {marker}"
+            );
+        }
+
+        // SpiderFoot's three destinations lead, in its order, and HSE's own
+        // pages follow them in the More menu.
+        let at = |m: &str| {
+            SPA_HTML
+                .find(m)
+                .unwrap_or_else(|| panic!("shell lacks {m}"))
+        };
+        let order = [
+            at(r#"id="nav-newscan""#),
+            at(r#"id="nav-scans""#),
+            at(r#"id="nav-opts""#),
+            at(r#"id="nav-more""#),
+        ];
+        assert!(
+            order.windows(2).all(|w| w[0] < w[1]),
+            "the navbar must read New Scan, Scans, Settings, More — SpiderFoot's order"
+        );
+        // On a phone everything inside the collapse sits behind the toggle, so
+        // the update notice must come before it.
+        assert!(
+            at(r#"id="update-badge""#) < at(r#"id="main-navbar-collapse""#),
+            "#update-badge must sit outside the collapsing links, or a phone never shows it"
+        );
+
+        let router = app_file("js/router.js");
+        let pages: std::collections::BTreeSet<&str> = router
+            .match_indices("{name:'")
+            .filter_map(|(i, m)| {
+                let rest = &router[i + m.len()..];
+                rest.find('\'').map(|end| &rest[..end])
+            })
+            .collect();
+        assert!(
+            pages.len() >= 14,
+            "expected the router's page names, found {pages:?} — the extractor likely broke"
+        );
+        let unreachable: Vec<&str> = pages
+            .iter()
+            .copied()
+            // A scan's own page needs a scan id; the scan list links to it.
+            .filter(|p| *p != "scaninfo")
+            .filter(|p| !SPA_HTML.contains(&format!(r##"href="#/{p}""##)))
+            .collect();
+        assert!(
+            unreachable.is_empty(),
+            "these routed pages have no link in the shell: {unreachable:?}"
+        );
+    }
+
+    /// Every `glyphicon-*` class the console emits has a rule in app.css.
+    ///
+    /// The icons are masked SVG. The base `.glyphicon` rule paints the box in
+    /// `currentColor` and only an icon's own mask cuts its shape, so a class
+    /// with no rule renders as a solid square. Before the remake, ten did
+    /// (`download`, `check`, `console`, `lock`, `remove`, …). The scan covers
+    /// the shell, every served JS module, and wasm-ui's Rust sources, which
+    /// render part of the markup. Class names built from a template, such as
+    /// `glyphicon-${x}`, cannot be checked this way, so the views spell them
+    /// out in full.
+    #[test]
+    fn every_glyphicon_the_spa_uses_is_drawn() {
+        let css = app_file("css/app.css");
+        let mut sources: Vec<(String, String)> = vec![("spa.html".into(), SPA_HTML.to_string())];
+        for (name, _, bytes) in APP_FILES {
+            if name.ends_with(".js")
+                && let Ok(text) = std::str::from_utf8(bytes)
+            {
+                sources.push(((*name).to_string(), text.to_string()));
+            }
+        }
+        let mut dirs = vec![std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/wasm-ui/src"
+        ))];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).expect("wasm-ui/src is readable") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = std::fs::read_to_string(&path).expect("wasm-ui source is UTF-8");
+                    sources.push((path.display().to_string(), text));
+                }
+            }
+        }
+
+        // Modifier classes, not icons.
+        const MODIFIERS: &[&str] = &["white", "spin"];
+        let mut seen = std::collections::BTreeSet::new();
+        let mut missing = std::collections::BTreeSet::new();
+        let mut unreadable = Vec::new();
+        for (file, text) in &sources {
+            for (i, m) in text.match_indices("glyphicon-") {
+                let after = &text[i + m.len()..];
+                let name: String = after
+                    .chars()
+                    .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+                    .collect();
+                let name = name.trim_end_matches('-');
+                if name.is_empty() {
+                    // `glyphicon-*` in prose names the family, not a class.
+                    // Anything else is a name this scan cannot read, such as
+                    // `glyphicon-${…}`: exactly how `remove` went undrawn.
+                    if !after.starts_with('*') {
+                        let line = text[..i].lines().count() + 1;
+                        unreadable.push(format!("{file}:{line}"));
+                    }
+                    continue;
+                }
+                if MODIFIERS.contains(&name) {
+                    continue;
+                }
+                seen.insert(name.to_string());
+                if !css.contains(&format!(".glyphicon-{name}{{")) {
+                    missing.insert(format!("glyphicon-{name} (first seen in {file})"));
+                }
+            }
+        }
+        assert!(
+            unreadable.is_empty(),
+            "icon classes built from a template cannot be checked; spell each \
+             class out in full: {unreadable:?}"
+        );
+        assert!(
+            seen.len() >= 40,
+            "expected the console's icon vocabulary, found {} names — the scan likely broke",
+            seen.len()
+        );
+        assert!(
+            missing.is_empty(),
+            "these icons have no rule in app.css and render as solid squares: {missing:?}"
+        );
+    }
+
+    /// The console defaults to SpiderFoot 4.0's light theme, and its Dark Mode
+    /// switch turns on SpiderFoot's dark palette under SpiderFoot's own
+    /// storage value.
+    #[test]
+    fn the_console_is_light_by_default_with_spiderfoots_dark_mode() {
+        let css = app_file("css/app.css");
+        let block = |selector: &str| -> String {
+            let start = css
+                .find(&format!("\n{selector}{{"))
+                .unwrap_or_else(|| panic!("app.css has no `{selector}` block"));
+            let body = &css[start..];
+            body[..body.find('}').expect("block closes")]
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect()
+        };
+        let root = block(":root");
+        for (token, value) in [("--bg", "#ffffff"), ("--navbar-bg", "#f8f8f8"), ("--accent", "#337ab7")] {
+            assert!(
+                root.contains(&format!("{token}:{value};")),
+                "the default (:root) theme must be SpiderFoot's light one: {token} is not {value}"
+            );
+        }
+        let dark = block("body.dark-theme");
+        for (token, value) in [
+            ("--bg", "#1b1b1b"),
+            ("--navbar-bg", "#171717"),
+            ("--bg-elevated", "#3a3a3a"),
+            ("--accent", "#059cd7"),
+        ] {
+            assert!(
+                dark.contains(&format!("{token}:{value};")),
+                "dark mode must be SpiderFoot's dark.css palette: {token} is not {value}"
+            );
+        }
+        // The earlier dark-first console marked light mode with this class; no
+        // rule may still depend on it.
+        assert!(
+            !css.contains("body.light-theme"),
+            "app.css still styles the retired `body.light-theme`"
+        );
+        let theme = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/wasm-ui/src/theme.rs"
+        ))
+        .expect("wasm-ui/src/theme.rs is readable");
+        assert!(
+            theme.contains(r#"const DARK: &str = "dark-theme";"#),
+            "the Dark Mode switch must persist SpiderFoot's own value, `dark-theme`"
+        );
+        // The theme module loads asynchronously, so the shell applies a stored
+        // dark choice itself before the first paint, with the same rule, or
+        // every dark-mode load flashes white. It must run before the navbar.
+        let pre_paint = "if(localStorage.getItem('theme')==='dark-theme')document.body.classList.add('dark-theme')";
+        let script_at = SPA_HTML
+            .find(pre_paint)
+            .expect("the shell applies a stored dark choice before the first paint");
+        let nav_at = SPA_HTML
+            .find(r#"<nav class="navbar"#)
+            .expect("the shell has its navbar");
+        assert!(
+            script_at < nav_at,
+            "the pre-paint theme script must run before the navbar is parsed"
+        );
+    }
