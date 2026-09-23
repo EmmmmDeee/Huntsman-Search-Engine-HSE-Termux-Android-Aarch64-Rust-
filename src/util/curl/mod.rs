@@ -195,6 +195,21 @@ async fn curl_exec(
     ua: &str,
     post_data: Option<&str>,
 ) -> Option<String> {
+    curl_exec_response(url, timeout_ms, ua, post_data)
+        .await
+        .map(|(_, body)| body)
+}
+
+/// [`curl_exec`] with the final response's HTTP status: `(status, body)`, or
+/// `None` when curl got no HTTP answer at all. The body-only helpers keep their
+/// behaviour (their callers read a challenge or error page on purpose); the
+/// JSON fallback reads the status ([`fetch_json_classified`]).
+async fn curl_exec_response(
+    url: &str,
+    timeout_ms: u64,
+    ua: &str,
+    post_data: Option<&str>,
+) -> Option<(u16, String)> {
     // The validated proxy pool with per-request FAILOVER. Try up to
     // MAX_PROXY_FAILOVER healthy proxies, reporting each real outcome so the
     // pool self-heals (a dead proxy accrues failures and drops out of
@@ -250,7 +265,7 @@ async fn curl_exec(
                 true,
             )
             .await
-            .map(|o| o.body);
+            .map(|o| (o.status, o.body));
             #[allow(clippy::cast_possible_truncation)]
             let latency = started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
             crate::util::egress::report_proxy(&proxy, res.is_some(), latency);
@@ -301,8 +316,8 @@ async fn curl_exec(
         )
         .await?;
         let Some(next) = outcome.next else {
-            // Terminal response (no redirect) — this is the body to return.
-            return Some(outcome.body);
+            // Terminal response (no redirect) — this is the answer to return.
+            return Some((outcome.status, outcome.body));
         };
         // A redirect: vet the resolved target before following it. A non-http(s)
         // scheme or a private/reserved IP-literal is refused outright; a hostname
@@ -354,6 +369,34 @@ const MAX_PROXY_FAILOVER: usize = 3;
 struct CurlOnce {
     body: String,
     next: Option<String>,
+    /// The final response's HTTP status (`%{http_code}`); `0` when curl
+    /// reported none.
+    status: u16,
+}
+
+/// curl's `-w` write-out in hop-by-hop mode: the status, then the resolved
+/// next-hop URL, both to stderr (see [`parse_write_out`]).
+const WRITE_OUT_HOP: &str = "%{stderr}%{http_code}\n%{redirect_url}";
+/// curl's `-w` write-out when curl follows redirects itself (`-L`).
+const WRITE_OUT_FOLLOW: &str = "%{stderr}%{http_code}\n";
+
+/// Split curl's [`WRITE_OUT_HOP`] / [`WRITE_OUT_FOLLOW`] write-out into
+/// the status and — in hop-by-hop mode — the next-hop URL. **Pure.**
+///
+/// The status is what the JSON fallback needs to tell an answer from an error
+/// response: without `-f`, curl exits 0 for ANY response it received, 4xx/5xx
+/// included, and hands back the error body as if it were the document
+/// (REQ-CURL-001).
+fn parse_write_out(stderr: &str, follow: bool) -> (u16, Option<String>) {
+    let (code, rest) = stderr.split_once('\n').unwrap_or((stderr, ""));
+    let status = code.trim().parse::<u16>().unwrap_or(0);
+    let next = if follow {
+        None
+    } else {
+        let target = rest.trim();
+        (!target.is_empty()).then(|| target.to_string())
+    };
+    (status, next)
 }
 
 /// `follow = true`  → curl follows redirects itself (`-L`), bounded by
@@ -391,13 +434,15 @@ async fn run_curl_once(
         cmd.args(pin);
     }
     cmd.args(FETCH_HARDENING_ARGS);
+    // `%{stderr}` sends the write-out to STDERR, keeping stdout the pure body:
+    // first the final response's HTTP status, then (hop-by-hop mode only) the
+    // resolved absolute redirect target, empty when the response is terminal.
+    // `-s` without `-S` keeps curl's own messages off stderr.
     if follow {
-        cmd.args(["-L"]);
+        cmd.args(["-L", "-w", WRITE_OUT_FOLLOW]);
     } else {
-        // No `-L`: return the 3xx as-is. `%{stderr}` sends the rest of the
-        // write-out (the resolved absolute redirect target, empty when the
-        // response is terminal) to STDERR, keeping stdout the pure body.
-        cmd.args(["-w", "%{stderr}%{redirect_url}"]);
+        // No `-L`: return the 3xx as-is, for the caller to vet.
+        cmd.args(["-w", WRITE_OUT_HOP]);
     }
     cmd.args(["--", url]);
     cmd.kill_on_drop(true);
@@ -416,14 +461,8 @@ async fn run_curl_once(
     // matches `http::read_body_capped`.
     let body = String::from_utf8_lossy(&output.stdout).into_owned();
     super::http::scan_for_api_keys(&body);
-    let next = if follow {
-        None
-    } else {
-        let target = String::from_utf8_lossy(&output.stderr);
-        let target = target.trim();
-        (!target.is_empty()).then(|| target.to_string())
-    };
-    Some(CurlOnce { body, next })
+    let (status, next) = parse_write_out(&String::from_utf8_lossy(&output.stderr), follow);
+    Some(CurlOnce { body, next, status })
 }
 
 /// Fetch a URL via curl subprocess. Returns the response body on
@@ -447,19 +486,66 @@ pub async fn fetch_post_with_ua(
     curl_exec(url, timeout_ms, ua, Some(data)).await
 }
 
-/// Fetch JSON from a URL via curl, deserialise as T.
-pub async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str, timeout_ms: u64) -> Option<T> {
-    let body = fetch(url, timeout_ms).await?;
-    // Archive the raw JSON body before parsing (universal raw retention). The
+/// What the curl JSON fallback got back. Four outcomes, because the caller
+/// must treat each differently — collapsing them is the defect this type
+/// replaces (REQ-CURL-001).
+#[derive(Debug)]
+pub(crate) enum JsonFetch<T> {
+    /// A 2xx body that decoded as `T`.
+    Decoded(T),
+    /// The host answered with a non-2xx status. The body is kept so the
+    /// caller can classify it (a challenge page, a quota message).
+    Status {
+        /// The HTTP status.
+        status: u16,
+        /// The error response's body.
+        body: String,
+    },
+    /// A 2xx body that is not the expected JSON.
+    Undecodable,
+    /// No HTTP answer: transport failure, timeout, a refused redirect hop,
+    /// no curl, or a status curl could not report.
+    NoAnswer,
+}
+
+/// Classify one curl answer for a JSON fetch. **Pure.**
+fn classify_json<T: serde::de::DeserializeOwned>(status: u16, body: &str) -> JsonFetch<T> {
+    match status {
+        200..=299 => serde_json::from_str(body).map_or(JsonFetch::Undecodable, JsonFetch::Decoded),
+        0 => JsonFetch::NoAnswer,
+        _ => JsonFetch::Status {
+            status,
+            body: body.to_string(),
+        },
+    }
+}
+
+/// Fetch JSON from a URL via curl, reading the HTTP status as well as the
+/// body.
+///
+/// This replaced a `fetch_json` that read the body alone. curl without `-f`
+/// exits 0 for any response it receives, so a 404, a 429 or a 5xx came back as
+/// the document; wherever the error body happened to decode as `T` — an
+/// all-default struct, an empty list — the reqwest fallback in
+/// `util::http::fetch_json_inner` returned it as a SUCCESS. On the Termux / DC
+/// IPs where that fallback is the working transport, `fetch_json_or_404`'s
+/// "404 means absent" became "404 body is the data", and a throttle or outage
+/// could read as a clean answer for every module on the shared helper.
+pub(crate) async fn fetch_json_classified<T: serde::de::DeserializeOwned>(
+    url: &str,
+    timeout_ms: u64,
+) -> JsonFetch<T> {
+    let Some((status, body)) = curl_exec_response(url, timeout_ms, UA_MOBILE, None).await else {
+        return JsonFetch::NoAnswer;
+    };
+    // Archive the raw body before classifying (universal raw retention). The
     // curl path carries no module name, so the URL host is the provider label.
     crate::util::raw_archive::record_http(crate::util::url_util::host_only(url), url, &body);
-    match serde_json::from_str(&body) {
-        Ok(v) => Some(v),
-        Err(e) => {
-            tracing::debug!(url = %crate::util::http::redact_credentials(url), error = %e, "curl JSON parse failed ({} bytes)", body.len());
-            None
-        }
+    let fetched = classify_json(status, &body);
+    if matches!(fetched, JsonFetch::Undecodable) {
+        tracing::debug!(url = %crate::util::http::redact_credentials(url), status, "curl JSON parse failed ({} bytes)", body.len());
     }
+    fetched
 }
 
 /// Cap on the body a status probe captures, passed to curl as `--max-filesize`.

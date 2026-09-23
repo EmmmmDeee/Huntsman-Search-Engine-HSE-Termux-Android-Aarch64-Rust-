@@ -2011,3 +2011,67 @@ fn a_module_that_tags_a_truncation_declares_it_to_the_coverage_layer() {
          answers as complete: {undeclared:?}"
     );
 }
+
+/// **Every module that asserts MALICIOUS is a counted threat-intel source.**
+///
+/// The correlator's `THREAT_INTEL_SOURCES` decides which evidence sources may
+/// cast a vote in AU-004's CRITICAL "≥2 sources agree it's malicious" and which
+/// AU-015 names as the finding's attribution. Its doc said "keep in sync with
+/// the `entity.tag(MALICIOUS)` call sites" — a remembered procedure, and it had
+/// drifted: `emailrep` and `pulsedive` both tagged MALICIOUS and were absent
+/// (REQ-THREATSRC-001). This reads the list and every module's production code,
+/// so the next module to assert MALICIOUS without joining the list fails here.
+#[test]
+fn every_module_that_asserts_malicious_is_a_threat_intel_source() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let rules = fs::read_to_string(root.join("src/core/correlator/rules/mod.rs")).unwrap();
+    let start = rules
+        .find("const THREAT_INTEL_SOURCES: &[&str] = &[")
+        .expect("THREAT_INTEL_SOURCES is declared");
+    let body = &rules[start..start + rules[start..].find("];").expect("list ends")];
+    let listed: Vec<&str> = body.split('"').skip(1).step_by(2).collect();
+    assert!(listed.len() >= 8, "list parse broke: {listed:?}");
+
+    let mut asserting = Vec::new();
+    for entry in fs::read_dir(root.join("src/modules")).unwrap() {
+        let dir = entry.unwrap().path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let mut text = String::new();
+        for f in fs::read_dir(&dir).unwrap() {
+            let f = f.unwrap().path();
+            if f.extension().is_some_and(|e| e == "rs")
+                && f.file_name().is_some_and(|n| n != "tests.rs")
+            {
+                text.push_str(&fs::read_to_string(&f).unwrap());
+            }
+        }
+        if !text.contains("tags::MALICIOUS") {
+            continue;
+        }
+        // The evidence-source name the module writes: its `SRC` constant.
+        let src = text
+            .split("const SRC: &str = \"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .map_or_else(
+                || dir.file_name().unwrap().to_string_lossy().into_owned(),
+                str::to_string,
+            );
+        asserting.push(src);
+    }
+    assert!(
+        asserting.iter().any(|s| s == "virustotal"),
+        "vacuity: the scan must see a known MALICIOUS emitter: {asserting:?}"
+    );
+    let missing: Vec<&String> = asserting
+        .iter()
+        .filter(|s| !listed.contains(&s.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these sources tag MALICIOUS but are not in THREAT_INTEL_SOURCES, so AU-004 \
+         never counts their vote and AU-015 cannot name them: {missing:?}"
+    );
+}

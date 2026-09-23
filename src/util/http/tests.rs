@@ -793,6 +793,44 @@ fn redirect_verdict_follows_the_apex_to_www_hop_real_sites_depend_on() {
 }
 
 #[test]
+fn redirect_verdict_stops_a_hop_between_two_registrants_under_one_public_suffix() {
+    // REQ-PSL-001: FAILS on the 39-entry suffix table. It held no `com.vn`, so
+    // `api.provider.com.vn` and `attacker.com.vn` both reduced to the
+    // "registrable domain" `com.vn`, the hop was judged same-site, and the
+    // caller's provider key replayed to a different registrant. The same held
+    // for every suffix the table lacked and for every shared-hosting suffix.
+    for (from, to) in [
+        (
+            "https://api.provider.com.vn/v1/lookup",
+            "https://attacker.com.vn/collect",
+        ),
+        (
+            "https://api.provider.co.kr/v1",
+            "https://attacker.co.kr/collect",
+        ),
+        (
+            "https://provider.github.io/api",
+            "https://attacker.github.io/collect",
+        ),
+    ] {
+        assert_eq!(
+            redirect_verdict(&[u(from)], &u(to)),
+            RedirectVerdict::Stop,
+            "{from} -> {to} leaves one registrant for another"
+        );
+    }
+    // Control: within ONE Vietnamese registrant the hop is still followed.
+    assert_eq!(
+        redirect_verdict(
+            &[u("https://provider.com.vn/v1")],
+            &u("https://api.provider.com.vn/v1")
+        ),
+        RedirectVerdict::Follow,
+        "provider.com.vn and api.provider.com.vn are one registrable domain"
+    );
+}
+
+#[test]
 fn redirect_verdict_compares_ip_literals_exactly_never_by_registrable_domain() {
     // `registrable_domain` is a name helper: its last-two-labels rule reads
     // 10.20.30.40 and 99.88.30.40 as the same "site" (30.40). Routing IP
@@ -2159,4 +2197,144 @@ async fn a_single_5xx_does_not_open_the_breaker() {
         allow_host(&endpoint, t0),
         "one 5xx is evidence, not a contract — the endpoint stays reachable"
     );
+}
+
+// ── REQ-CURL-001: the curl fallback answers exactly as the reqwest path ─────
+
+#[derive(serde::Deserialize, Debug, Default)]
+struct Loose {
+    #[serde(default)]
+    results: Vec<String>,
+}
+
+fn status(status: u16, body: &str) -> crate::util::curl::JsonFetch<Loose> {
+    crate::util::curl::JsonFetch::Status {
+        status,
+        body: body.to_string(),
+    }
+}
+
+#[test]
+fn a_fallback_404_is_absent_only_where_the_caller_says_so() {
+    let absent = super::fetch::resolve_curl_fallback::<Loose>(
+        "m",
+        "https://api.example/x",
+        None,
+        &[404],
+        "t",
+        status(404, "{}"),
+    );
+    assert!(
+        matches!(absent, Ok(None)),
+        "fetch_json_or_404: a 404 is absent"
+    );
+    let error = super::fetch::resolve_curl_fallback::<Loose>(
+        "m",
+        "https://api.example/x",
+        None,
+        &[],
+        "t",
+        status(404, "{}"),
+    );
+    assert!(error.is_err(), "fetch_json: a 404 is an error, never data");
+}
+
+#[test]
+fn a_fallback_throttle_is_the_typed_rate_limit_not_data() {
+    // FAILS on the body-only fallback: `{}` decodes as `Loose`, so a 429 was
+    // returned as Ok(Some(empty)) — a clean answer from a throttled provider.
+    let r = super::fetch::resolve_curl_fallback::<Loose>(
+        "m",
+        "https://api.example/x",
+        None,
+        &[404],
+        "t",
+        status(429, "{}"),
+    );
+    let e = r.expect_err("a 429 is not an answer");
+    assert!(
+        matches!(e, crate::core::error::Error::RateLimited(_)),
+        "typed exactly as http_status_error types it: {e:?}"
+    );
+}
+
+#[test]
+fn a_fallback_error_body_is_redacted_as_the_reqwest_path_redacts_it() {
+    // FAILS on the raw-body fallback: the reqwest arm redacts an error body
+    // before classifying it, the curl arm did not, so a provider echoing the
+    // request URL put the key into the typed error, whatever the error type.
+    for code in [429, 500] {
+        let r = super::fetch::resolve_curl_fallback::<Loose>(
+            "m",
+            "https://api.example/x",
+            None,
+            &[404],
+            "t",
+            status(code, "failed: https://api.example/x?api_key=SEKRET123&q=a"),
+        );
+        let text = r.expect_err("an error status is not an answer").to_string();
+        assert!(
+            !text.contains("SEKRET123"),
+            "HTTP {code} leaked the key: {text}"
+        );
+        assert!(
+            text.contains("api_key=***"),
+            "redacted, not dropped: {text}"
+        );
+    }
+}
+
+#[test]
+fn a_fallback_error_body_is_capped_as_the_reqwest_path_caps_it() {
+    // A challenge fingerprint past the cap is invisible to the reqwest arm, so
+    // it must be to the curl arm too: the two answer alike for one response.
+    let wall = "<script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1\"></script>";
+    let pad = "x".repeat(8 * 1024);
+    let classify = |body: String| {
+        super::fetch::resolve_curl_fallback::<Loose>(
+            "m",
+            "https://api.example/x",
+            None,
+            &[404],
+            "t",
+            status(403, &body),
+        )
+        .expect_err("a 403 is not an answer")
+    };
+    // Control: the same wall inside the cap IS a challenge, so the case below
+    // is not vacuous.
+    let within = classify(format!("{wall}{pad}"));
+    assert!(
+        matches!(within, crate::core::error::Error::BotChallenge(_)),
+        "{within:?}"
+    );
+    let past = classify(format!("{pad}{wall}"));
+    assert!(
+        !matches!(past, crate::core::error::Error::BotChallenge(_)),
+        "past the cap, as reqwest sees it: {past:?}"
+    );
+}
+
+#[test]
+fn a_fallback_with_no_answer_is_a_failure_never_absent() {
+    let r = super::fetch::resolve_curl_fallback::<Loose>(
+        "m",
+        "https://api.example/x",
+        None,
+        &[404],
+        "connect refused",
+        crate::util::curl::JsonFetch::NoAnswer,
+    );
+    assert!(r.is_err(), "an outage must never read as `not found`");
+    let ok = super::fetch::resolve_curl_fallback::<Loose>(
+        "m",
+        "https://api.example/x",
+        None,
+        &[],
+        "t",
+        crate::util::curl::JsonFetch::Decoded(Loose {
+            results: vec!["a".into()],
+        }),
+    );
+    assert_eq!(ok.expect("decoded").expect("some").results, ["a"]);
 }
