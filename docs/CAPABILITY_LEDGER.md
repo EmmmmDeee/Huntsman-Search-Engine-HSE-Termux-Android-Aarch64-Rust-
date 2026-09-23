@@ -130,7 +130,7 @@ layer**, not a coverage heatmap.
 
 1. Add a `CapabilityClaimSpec` to `seed_v0` (or `insert_row` at runtime) with a
    `method_id` and optional `objective`.
-2. Attach evidence via `set_links` when a real defensive evidence chain exists.
+2. Attach evidence via `set_links` or `apply_identity_geoint_evidence_v1` when a real defensive evidence chain exists.
 3. Use `invalidate_test` / `invalidate_freshness` / `invalidate_reproducibility`
    to demonstrate auto-downgrade.
 4. Re-export Navigator JSON from the ledger — never hand-edit scores/colors.
@@ -138,14 +138,35 @@ layer**, not a coverage heatmap.
 
 Until a full evidence chain exists for a technique, **Verified count stays 0**.
 
-## Limiting factor (post-v0)
+## First OSINT evidence claim (GEOINT / T1614)
 
-v0's highest-impact limiting factor was **absence of this ledger**. After
-accept, the next limiting factor is: **zero techniques with real evidence
-chains** (`verified_count` stays 0 until a full chain exists).
+`seed_v0()` still ships **empty** links (`verified_count() == 0`). Attach the
+first honest evidence chain with:
 
-**Recommended next claim (highest OSINT gain under constraints):** attach a
-real in-tree test evidence chain for either a **people-centric identity**
-claim (e.g. seed `T1589`) **or** a **GEOINT** claim (Termux location /
-geo family), with `evidence_level >= IndependentCorroboration`. Do not expand
-seed surface first; do not invent Verified from mapping alone.
+```rust
+let mut ledger = CapabilityLedger::seed_v0();
+apply_identity_geoint_evidence_v1(&mut ledger)?;
+assert_eq!(ledger.status_of("T1614"), Some(CapabilityStatus::Verified));
+assert_eq!(ledger.verified_count(), 1);
+```
+
+- **Winner:** offline GEOINT on `T1614` → `util/geo` + `util/geohash`
+  (`method_id = geoint.offline`).
+- **Evidence level:** `IndependentCorroboration` via two channels — coord parse
+  / validity unit tests, and haversine Sydney↔Melbourne known-distance tests
+  (no live network; no Termux device required).
+- **Runner-up:** people-centric identity (`T1589` / `T1589.002` +
+  `util/canonical` / `util/identity`) — deferred to avoid coupling to dirty
+  `modules/stolen_tax` WIP and because geodesic fixtures are more reproducible.
+- **Not claimed:** live Termux location observation (needs device) — remains a
+  separate Unverified sensing path.
+
+`test_ids` are stable `module::tests::fn_name` strings matching real `#[test]`
+functions. Invalidate any cited test → auto-downgrade (Navigator loses green).
+
+## Limiting factor (next)
+
+After the GEOINT claim, the next limiting factors are: (1) only **one**
+Verified technique; (2) identity / breach rows (`T1589`) still lack an honest
+evidence chain unbound from dirty WIP; (3) Termux sensing claims need device
+or recorded sensor fixtures for DirectObservation+.

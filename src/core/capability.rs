@@ -541,10 +541,12 @@ impl CapabilityLedger {
             },
             CapabilityClaimSpec {
                 technique_id: "T1614",
-                name: "System Location Discovery — Termux location sensing claim",
-                rust_component: "util/termux",
-                method_id: "sensing.termux",
-                objective: Some("Device location observation via Termux helpers"),
+                name: "System Location Discovery — offline GEOINT coord/geodesic claim",
+                rust_component: "util/geo",
+                method_id: "geoint.offline",
+                objective: Some(
+                    "Offline coordinate parse + geodesic distance (haversine) GEOINT claim",
+                ),
                 scope: ClaimScope::InScope,
             },
             CapabilityClaimSpec {
@@ -806,6 +808,105 @@ impl CapabilityLedger {
     }
 }
 
+/// Known-good offline GEOINT evidence fixture for [`CapabilityLedger`] technique
+/// `T1614` (first OSINT capability claim).
+///
+/// # Competition (v0 first claim)
+///
+/// Evaluated two InScope candidates against host constraints (no live network,
+/// leave dirty `stolen_tax` / `crtsh` alone):
+///
+/// | Candidate | Technique | In-tree surface | Offline tests | Dirty risk |
+/// |---|---|---|---|---|
+/// | A Identity | `T1589` / `T1589.002` | `util/canonical`, `util/identity` | email fold + name tokens | Medium — seed `T1589` still labels `modules/stolen_tax` |
+/// | **B GEOINT (winner)** | `T1614` | `util/geo`, `util/geohash` | `parse_coords` + `haversine_km` | **None** |
+///
+/// GEOINT wins: two independent offline corroboration channels (coord-parse
+/// validation vs spherical-geodesic known Sydney↔Melbourne distance), pure
+/// numeric fixtures, zero touch of dirty WIP modules, highest reproducibility.
+///
+/// # Corroboration channels (IndependentCorroboration)
+///
+/// 1. **Coord parse / validity** — `util::geo::tests::parse_coords_*` /
+///    `valid_coords_*` (string→(lat,lon) gate; Null Island / range / non-finite).
+/// 2. **Geodesic distance** — `util::geo::tests::haversine_km_matches_known_distances`
+///    and `util::geohash::tests::haversine_known_distance_sydney_to_melbourne`
+///    (independent arithmetic surface; same known ~714 km Syd–Mel fixture).
+///
+/// # Honesty
+///
+/// Links record **existing** `#[test]` function paths as `test_ids`. They do
+/// not invent network or device observation. Termux live location remains
+/// Unverified without a device — this claim is the offline GEOINT method that
+/// already ships and passes under `cargo test --lib`.
+#[must_use]
+pub fn geoint_t1614_evidence_links_v1() -> CapabilityEvidenceLinks {
+    // Stable test_id strings = rustc test paths matching #[test] fn names.
+    const T_PARSE: &str = "util::geo::tests::parse_coords_accepts_well_formed_pairs";
+    const T_VALID: &str = "util::geo::tests::valid_coords_accepts_real_positions";
+    const T_HAV_GEO: &str = "util::geo::tests::haversine_km_matches_known_distances";
+    const T_HAV_HASH: &str = "util::geohash::tests::haversine_known_distance_sydney_to_melbourne";
+
+    CapabilityEvidenceLinks {
+        source_ids: vec![
+            "src-util-geo".into(),
+            "src-util-geohash-distance".into(),
+        ],
+        input_ids: vec![
+            "in-brisbane-coord-string:-27.4766,153.0166".into(),
+            "in-sydney-melbourne-pair:(-33.8688,151.2093)->(-37.8136,144.9631)".into(),
+        ],
+        execution_record_id: Some("exec-geoint-offline-unit-v1".into()),
+        output_ids: vec![
+            "out-parsed-brisbane:(-27.4766,153.0166)".into(),
+            "out-haversine-syd-mel:~714km".into(),
+        ],
+        provenance_claim_id: Some("prov-geoint-offline-fixture-v1".into()),
+        corroboration_ids: vec![
+            "corr-geoint-coord-parse".into(),
+            "corr-geoint-haversine-syd-mel".into(),
+        ],
+        test_ids: vec![
+            T_PARSE.into(),
+            T_VALID.into(),
+            T_HAV_GEO.into(),
+            T_HAV_HASH.into(),
+        ],
+        benchmark_ids: vec![],
+        regression_lock_ids: vec![
+            "lock-geoint-t1614-v1".into(),
+            "lock-capability-derive-status".into(),
+        ],
+        passed_test_ids: vec![
+            T_PARSE.into(),
+            T_VALID.into(),
+            T_HAV_GEO.into(),
+            T_HAV_HASH.into(),
+        ],
+        failed_test_ids: vec![],
+        corroboration_ok: true,
+        regression_ok: true,
+        freshness_ok: true,
+        reproducibility_ok: true,
+        evidence_level: EvidenceLevel::IndependentCorroboration,
+    }
+}
+
+/// Attach the first honest OSINT capability evidence chain (GEOINT / `T1614`).
+///
+/// Seed rows stay empty (Unverified). Call this after [`CapabilityLedger::seed_v0`]
+/// to wire `CapabilityEvidenceLinks` for the chosen technique. Identity
+/// (`T1589` / email+name normalisers) was the runner-up — see
+/// [`geoint_t1614_evidence_links_v1`] competition notes.
+///
+/// Returns `Ok(())` when `T1614` is present; does not touch other rows.
+pub fn apply_identity_geoint_evidence_v1(
+    ledger: &mut CapabilityLedger,
+) -> Result<(), CapabilityError> {
+    ledger.set_links("T1614", geoint_t1614_evidence_links_v1())
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -904,6 +1005,14 @@ mod tests {
         assert_eq!(
             ledger.get("T1040").map(|r| r.method_id.as_str()),
             Some("sensing.wifi")
+        );
+        assert_eq!(
+            ledger.get("T1614").map(|r| r.method_id.as_str()),
+            Some("geoint.offline")
+        );
+        assert_eq!(
+            ledger.get("T1614").map(|r| r.rust_component.as_str()),
+            Some("util/geo")
         );
         assert_eq!(
             ledger.get("T1566").map(|r| r.method_id.as_str()),
@@ -1217,5 +1326,81 @@ mod tests {
         // Explicit: seed ledger verified_count stays 0 even though attack catalogue
         // and coverage APIs exist — mapping alone ≠ Verified.
         assert_eq!(CapabilityLedger::seed_v0().verified_count(), 0);
+    }
+
+    #[test]
+    fn geoint_evidence_links_v1_are_mandatory_complete() {
+        let links = geoint_t1614_evidence_links_v1();
+        assert!(links.mandatory_complete());
+        assert_eq!(links.evidence_level, EvidenceLevel::IndependentCorroboration);
+        assert!(links.corroboration_ids.len() >= 2);
+        assert!(links.test_ids.iter().all(|t| links.passed_test_ids.contains(t)));
+        assert!(links.failed_test_ids.is_empty());
+        // Cited tests are real #[test] path strings (module::tests::fn_name).
+        assert!(links.test_ids.iter().any(|t| t.contains("parse_coords")));
+        assert!(links.test_ids.iter().any(|t| t.contains("haversine")));
+    }
+
+    #[test]
+    fn apply_identity_geoint_evidence_v1_derives_verified() {
+        let mut ledger = CapabilityLedger::seed_v0();
+        assert_eq!(ledger.verified_count(), 0);
+        apply_identity_geoint_evidence_v1(&mut ledger).expect("T1614 present");
+
+        assert_eq!(ledger.status_of("T1614"), Some(CapabilityStatus::Verified));
+        assert_eq!(ledger.verified_count(), 1);
+
+        // Other InScope seeds remain Unverified; N/A untouched.
+        for tid in ["T1590", "T1596.003", "T1040", "T1016.002", "T1589"] {
+            assert_eq!(
+                ledger.status_of(tid),
+                Some(CapabilityStatus::Unverified),
+                "{tid} must stay Unverified"
+            );
+        }
+        assert_eq!(
+            ledger.status_of("T1566"),
+            Some(CapabilityStatus::NotApplicable)
+        );
+
+        let layer = ledger.navigator_layer("geoint-v1", "enterprise-attack", "17.1");
+        let tech = layer["techniques"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["techniqueID"] == "T1614")
+            .expect("T1614 in layer");
+        assert_eq!(tech["score"], 100);
+        assert_eq!(tech["color"], "#31a354");
+        assert!(
+            tech["comment"]
+                .as_str()
+                .unwrap_or("")
+                .contains("status=Verified"),
+            "navigator comment must reflect derived Verified"
+        );
+    }
+
+    #[test]
+    fn apply_geoint_invalidate_still_downgrades() {
+        let mut ledger = CapabilityLedger::seed_v0();
+        apply_identity_geoint_evidence_v1(&mut ledger).expect("apply");
+        assert_eq!(ledger.status_of("T1614"), Some(CapabilityStatus::Verified));
+
+        let tid = "util::geo::tests::haversine_km_matches_known_distances";
+        ledger.invalidate_test("T1614", tid).expect("invalidate");
+        let after = ledger.status_of("T1614");
+        assert_ne!(after, Some(CapabilityStatus::Verified));
+        assert_eq!(ledger.verified_count(), 0);
+
+        let layer = ledger.navigator_layer("geoint-downgrade", "enterprise-attack", "17.1");
+        let tech = layer["techniques"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["techniqueID"] == "T1614")
+            .expect("T1614");
+        assert_ne!(tech["score"], 100);
+        assert_ne!(tech["color"], "#31a354");
     }
 }
