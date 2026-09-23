@@ -823,6 +823,22 @@ impl super::ScanEngine {
             }
             Ok(Err(e)) => {
                 state.stats.errored += 1;
+                // REQ-CRED-002: this arm is THE sink for every module's failure
+                // text — the one place it reaches the breaker, the log, and the
+                // `ModuleError` event (persisted to `events`, streamed over SSE,
+                // folded into the debug bundle). Much of that text is built from
+                // a provider's own response body (`keyed_cascade_json`'s
+                // in-body `KeyFailure` detail, europeana's `error`, any
+                // `Error::module(format!(…, body))`), and a provider that echoes
+                // the request URL or the key there would otherwise publish it.
+                // Redacting ONCE here covers every module, present and future,
+                // with the one redactor `util::http` already applies to the
+                // error bodies it builds itself — instead of trusting each call
+                // site to remember. `core` reaches it through the injected
+                // `EngineHost` (never `crate::util`, see `core::engine_host`).
+                // Redaction only masks credential VALUES, so the breaker still
+                // classifies "429"/quota prose correctly.
+                let msg = self.host.redact_credentials(&e.to_string());
                 // Feed the breaker: a rate-limit/quota error trips immediately; an
                 // anti-bot challenge / WAF block benches the module at once under
                 // its own reason (the wall is per client, so every further target
@@ -840,15 +856,15 @@ impl super::ScanEngine {
                     crate::core::error::Error::BotChallenge(_) => {
                         super::circuit::record_bot_challenge(name);
                     }
-                    _ => super::circuit::record_error(name, &e.to_string()),
+                    _ => super::circuit::record_error(name, &msg),
                 }
                 super::health::record_failure(name);
-                warn!(module = name, error = %e, "module error");
+                warn!(module = name, error = %msg, "module error");
                 self.emit(
                     cx.scan_id,
                     EventKind::ModuleError {
                         module: name.into(),
-                        error: e.to_string(),
+                        error: msg,
                     },
                 );
             }
@@ -1875,7 +1891,7 @@ impl super::ScanEngine {
     /// inside it, so a completed module is finalised exactly once, from one
     /// place, however it was collected. A cancelled or panicked join has
     /// nothing to finalise.
-    fn absorb_dispatch_outcome(
+    pub(super) fn absorb_dispatch_outcome(
         &self,
         cx: &DispatchCx<'_>,
         joined: std::result::Result<DispatchOutcome, tokio::task::JoinError>,
@@ -1888,12 +1904,17 @@ impl super::ScanEngine {
                 return;
             }
             Err(e) => {
-                warn!(error = %e, "concurrent module task panicked");
+                // REQ-CRED-002: a panic's message is arbitrary module text — a
+                // `panic!("{url}")` or an `unwrap()` on a provider body carries
+                // whatever the module held — so it takes the same redaction as
+                // the module-error sink in `finalise_module_result`.
+                let msg = self.host.redact_credentials(&e.to_string());
+                warn!(error = %msg, "concurrent module task panicked");
                 self.emit(
                     cx.scan_id,
                     EventKind::ModuleError {
                         module: "unknown (panicked)".into(),
-                        error: e.to_string(),
+                        error: msg,
                     },
                 );
                 return;

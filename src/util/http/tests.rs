@@ -1088,6 +1088,19 @@ fn redact_strips_apikey_camel_case() {
     assert!(r.contains("apiKey=***"));
 }
 
+/// REQ-CRED-002: all-lowercase `apikey=` (Thunderforest's documented query
+/// parameter) is masked — the case-sensitive `apiKey=` entry does not fold it,
+/// and the bare `key=` entry cannot reach it past the `i` boundary. A mid-word
+/// `xapikey=` still does not trip.
+#[test]
+fn redact_strips_lowercase_apikey() {
+    let s = "tile https://tile.example.invalid/1/2/3.png?apikey=0123abcd4567ef89 failed";
+    let r = redact_credentials(s);
+    assert!(!r.contains("0123abcd4567ef89"), "got: {r}");
+    assert!(r.contains("?apikey=*** failed"), "got: {r}");
+    assert_eq!(redact_credentials("xapikey=visible"), "xapikey=visible");
+}
+
 #[test]
 fn redact_strips_token_and_secret() {
     let s = "?token=THEACTUALTOKEN&secret=ALSOSECRET&other=keep";

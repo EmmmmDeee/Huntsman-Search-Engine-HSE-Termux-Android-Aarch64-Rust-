@@ -1611,6 +1611,155 @@ async fn a_bot_challenge_error_benches_the_module_at_once_and_is_recorded_as_suc
     super::circuit::record_success(name);
 }
 
+/// Test fixture for the REQ-CRED-002 sink tests: an engine with its event
+/// receiver, and the per-dispatch state `finalise_module_result` /
+/// `absorb_dispatch_outcome` write into.
+fn sink_fixture() -> (
+    ScanEngine,
+    tokio::sync::broadcast::Receiver<crate::core::event::Event>,
+    Target,
+    ScanOptions,
+) {
+    use crate::core::test_support::InMemoryStore;
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, rx) = tokio::sync::broadcast::channel(64);
+    // The shipped host (what `app::runtime` injects): the redactor is reached
+    // through it, so the no-op host would test nothing.
+    (
+        ScanEngine::with_runtime_and_host(
+            vec![],
+            store,
+            bus,
+            Arc::new(NoopModuleRuntime),
+            Arc::new(crate::util::engine_host::UtilEngineHost),
+        ),
+        rx,
+        Target::new(TargetKind::Domain, "example.com"),
+        ScanOptions::default(),
+    )
+}
+
+/// The `ModuleError` text recorded for `module`, if any was emitted.
+fn recorded_module_error(
+    rx: &mut tokio::sync::broadcast::Receiver<crate::core::event::Event>,
+    module: &str,
+) -> Option<String> {
+    use crate::core::event::EventKind;
+    let mut recorded = None;
+    while let Ok(ev) = rx.try_recv() {
+        if let EventKind::ModuleError { module: m, error } = ev.kind
+            && m == module
+        {
+            recorded = Some(error);
+        }
+    }
+    recorded
+}
+
+/// L6 (REQ-CRED-002): the module-error sink redacts. An `Error::module` whose
+/// text was built from a provider body that echoed the keyed request URL — the
+/// `keyed_cascade_json` in-body `KeyFailure` shape — must not reach the
+/// persisted/streamed `ModuleError` event with the credential in it, whatever
+/// the module forgot to do. The credential-free rest of the message (status,
+/// the non-secret query) must survive: redaction masks values, it does not
+/// blank the diagnosis. And the breaker reads the REDACTED text: a key whose
+/// value happens to contain a `429` token must not hard-trip the module as a
+/// rate limit, so one such error leaves it closed (a soft strike, not a bench).
+#[tokio::test]
+async fn module_error_sink_is_redacted() {
+    let (engine, mut rx, target, opts) = sink_fixture();
+    let cx = DispatchCx {
+        scan_id: "cred-sink-scan",
+        target: &target,
+        opts: &opts,
+        is_expansion: false,
+        seed_kind: TargetKind::Domain,
+        quarantined: no_quarantine(),
+    };
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
+    };
+
+    let name = "test_cred_sink_redacts";
+    engine.finalise_module_result(
+        &cx,
+        name,
+        Ok(Err(Error::module(
+            name,
+            "reported an in-body key failure (status 401): Invalid key for \
+             https://api.example.invalid/v1/lookup?api_key=sk-429-SINKSECRET&q=target@example.com \
+             and https://tile.example.invalid/1/2/3.png?apikey=TFSECRET4567",
+        ))),
+        &mut state,
+        &[],
+        false,
+    );
+    let error = recorded_module_error(&mut rx, name).expect("a ModuleError is emitted");
+    assert!(!error.contains("SINKSECRET"), "query key leaked: {error}");
+    assert!(!error.contains("TFSECRET4567"), "apikey= leaked: {error}");
+    assert!(error.contains("api_key=***"), "{error}");
+    assert!(error.contains("apikey=***"), "{error}");
+    assert!(
+        error.contains("status 401") && error.contains("q=target@example.com"),
+        "the non-secret diagnosis must survive redaction: {error}"
+    );
+    assert!(
+        !super::circuit::is_open(name),
+        "a `429` inside a masked key value must not trip the breaker as a rate limit"
+    );
+    super::circuit::record_success(name);
+}
+
+/// REQ-CRED-002: the other `ModuleError` emitter — a concurrent task that
+/// panicked past the guard — redacts the panic text too. A panic message is
+/// arbitrary module text (a formatted URL, an `unwrap` on a provider body), so
+/// it gets the same one redactor as the module-error sink.
+#[tokio::test]
+async fn a_panicked_module_task_error_is_redacted() {
+    let (engine, mut rx, target, opts) = sink_fixture();
+    let cx = DispatchCx {
+        scan_id: "cred-panic-scan",
+        target: &target,
+        opts: &opts,
+        is_expansion: false,
+        seed_kind: TargetKind::Domain,
+        quarantined: no_quarantine(),
+    };
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
+    };
+
+    let handle: tokio::task::JoinHandle<()> = tokio::spawn(async {
+        panic!("provider body echoed https://api.example.invalid/v1?token=PANICSECRET987 back")
+    });
+    let joined = handle.await.expect_err("the task panicked");
+    engine.absorb_dispatch_outcome(&cx, Err(joined), &mut state);
+    let error = recorded_module_error(&mut rx, "unknown (panicked)")
+        .expect("a panicked task is reported as a ModuleError");
+    assert!(
+        !error.contains("PANICSECRET987"),
+        "panic text leaked: {error}"
+    );
+    assert!(
+        error.contains("token=***") && error.contains("provider body echoed"),
+        "{error}"
+    );
+}
+
 fn free_active() -> StubModule {
     StubModule {
         name: "test_free",

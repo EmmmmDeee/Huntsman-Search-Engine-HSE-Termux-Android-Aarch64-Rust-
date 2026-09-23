@@ -76,6 +76,24 @@ pub trait EngineHost: Send + Sync {
     fn quarantined_modules(&self, _events_newest_first: &[Event]) -> HashSet<String> {
         HashSet::new()
     }
+
+    /// Mask every credential in `text`, a module's failure text on its way to
+    /// the breaker, the log and the persisted/streamed `ModuleError` event
+    /// (REQ-CRED-002).
+    ///
+    /// The engine applies this once, at its module-error sink, so every
+    /// module's failure text is covered by one authority rather than by each
+    /// call site remembering to redact. The redactor lives in `util` because it
+    /// is stateful: it reads the configured `HUNTSMAN_*` values and the key pool
+    /// to mask a key echoed verbatim anywhere, not only as a `name=value` pair.
+    ///
+    /// The default returns `text` unchanged. It is correct only for the no-op
+    /// host, which configures no keys and so has nothing of its own to mask. The
+    /// shipped binary's host, injected by `app::runtime`, delegates to
+    /// `util::http::redact_credentials`.
+    fn redact_credentials(&self, text: &str) -> String {
+        text.to_string()
+    }
 }
 
 /// Host used by tests and deliberately isolated engine instances: no egress

@@ -46,6 +46,10 @@ impl EngineHost for UtilEngineHost {
             &crate::util::scraper_health::aggregate_source_health(events_newest_first),
         )
     }
+
+    fn redact_credentials(&self, text: &str) -> String {
+        crate::util::http::redact_credentials(text)
+    }
 }
 
 #[cfg(test)]

@@ -6,7 +6,7 @@
 /// request URL in their error response, and HSE keys often ride in
 /// the URL as a `?api_key=…` / `?apiKey=…` query parameter.
 ///
-/// The matched names (`api_key`, `apiKey`, `key`, `token`, `secret`,
+/// The matched names (`api_key`, `apiKey`, `apikey`, `key`, `token`, `secret`,
 /// `access_token`, `auth`) cover the providers HSE keys directly
 /// (Hunter, WhoisXML, OpenCellID, Shodan, etc.). The redaction
 /// replaces the value with `***` and preserves the surrounding
@@ -21,6 +21,13 @@ pub(crate) fn redact_credentials(text: &str) -> String {
     const CREDENTIAL_PARAMS: &[&str] = &[
         "api_key=",
         "apiKey=",
+        // All-lowercase `apikey` is a distinct spelling the match below (which
+        // is case-sensitive) never folds into `apiKey=`, and `key=` cannot
+        // catch it either — the `i` before `key=` fails the boundary check.
+        // Thunderforest documents exactly this form
+        // (`https://api.thunderforest.com/…/{z}/{x}/{y}.png?apikey=<key>`,
+        // thunderforest.com/docs/apikeys/), as do other providers (REQ-CRED-002).
+        "apikey=",
         "access_token=",
         "accessToken=",
         "secret=",

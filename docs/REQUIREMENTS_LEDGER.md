@@ -19651,7 +19651,7 @@ the module's own spelling, so no test could see the drift.
 | E6 | an observed address is VERIFIED | killed by 1 |
 | E7 | a credential leak not counted as observation | killed by 1 |
 
-**7 of 7 killed.**
+**8 of 8 killed**, run against the compiled patch. Clippy `-D warnings` is clean.
 
 ## REQ-WIKITREE-001 / REQ-WIKITREE-002 — a namesake's vitals are not the subject's; every silent wikitree negative is typed
 
@@ -21397,3 +21397,41 @@ Harness: `mutate2.py`, spec `mut_keyreg001.json`. The `-arch` and `L*` rows run 
 - **Allowlist.** `urlhaus`'s runtime `key_service` stays allowlisted (cap 1).
 - **Unprobed keys.** OathNet, AusPost and Stolen.tax keys stay `Untested` until a free status endpoint is confirmed from vendor docs. OathNet's `/service/scanners/quota` is the candidate.
 - **Out of scope here.** The KEYREG-07 companion-var pairing and the explicit `key_roi` tier for every def (KEYREG-05) are not part of this change.
+
+## REQ-CRED-002 — module failure text is credential-redacted once, at the engine's ModuleError sink
+
+**Found** (audit finding CRED-07, verified). Every module failure reaches three places through one arm of `ScanEngine::finalise_module_result`: the circuit breaker, the `warn!` log and the `ModuleError` event, which is persisted to `events`, streamed over SSE and folded into the debug bundle. At HEAD 66e5a76 that arm passed the raw text to all three: `circuit::record_error(name, &e.to_string())`, `warn!(…, error = %e, …)` and `error: e.to_string()` (`src/core/engine/dispatch.rs:785-793`). The panicked-task arm of `absorb_dispatch_outcome` did the same (`dispatch.rs:1829-1834`). `util::http` redacts the error text it builds itself (`error_snippet`, `json_body_error`, `read_capped_or_err`), but module errors built from a provider's body skip that. Examples are `keyed_cascade_json`'s in-body `KeyFailure { detail }` (`src/util/http/fetch.rs:1407-1421`, used by `ipqs` and `criminal_ip`) and europeana's `body.error` (`src/modules/europeana/mod.rs:150-157`). Any other `Error::module(format!(…, body))` is the same. If one of those providers echoed the keyed URL or the key, HSE would persist and stream it. Whether any of them does is **unverified**; the fix does not depend on it. It closes the path for every module, whatever a provider echoes. Separately, `redact_credentials` is case-sensitive, so the list's `apiKey=` never matched all-lowercase `apikey=`. The bare `key=` entry cannot catch it either, because the `i` before `key=` fails its boundary check. Thunderforest documents exactly this form: `https://api.thunderforest.com/outdoors/{z}/{x}/{y}.png?apikey=<insert-your-apikey-here>` (https://www.thunderforest.com/docs/apikeys/, fetched 2026-09-23).
+
+**Implemented.**
+- `redact_credentials` is stateful (it reads the env and the key pool), and `core` may not import `util` (`core_does_not_import_util_directly`). The engine therefore reaches it through a new `EngineHost::redact_credentials` method on the existing host contract (`src/core/engine_host.rs`). `UtilEngineHost` delegates it to `util::http::redact_credentials`, and `app::runtime` injects that host. The no-op default returns the text unchanged; it is used only by test and isolated engines, which configure no keys.
+- The `Ok(Err(e))` arm computes `msg = self.host.redact_credentials(&e.to_string())` once. It passes `msg` to `circuit::record_error`, to `warn!` and to the emitted `ModuleError`. The one redactor covers every module, present and future. It masks query-param credentials plus every configured `HUNTSMAN_*` or pooled key value found verbatim. Because only credential values are masked, the diagnosis survives.
+- The breaker now classifies the redacted text. A key value that happens to contain a `429` or `402` token therefore no longer hard-trips the module as a rate limit. `circuit` keeps no message text; it only classifies.
+- The panicked-task arm redacts the same way. `absorb_dispatch_outcome` becomes `pub(super)` so the engine tests can drive it.
+- `"apikey="` joins `redact_credentials`'s `CREDENTIAL_PARAMS`.
+- The per-site wraps the finding first proposed (fetch.rs, europeana) are unnecessary: the sink covers them. The Numverify leg in `contact_enrich` was already removed by REQ-CRED-001.
+
+**Locks.**
+- `core::engine::tests::module_error_sink_is_redacted` (L6). An `Error::module` carrying `?api_key=sk-429-…` and `?apikey=…` is emitted with both values masked. `status 401` and `q=target@example.com` survive. The breaker stays closed after it.
+- `core::engine::tests::a_panicked_module_task_error_is_redacted`. A `JoinError` panic message carrying `?token=…` is emitted masked.
+- Both engine tests build the engine with the shipped `UtilEngineHost`, so they also lock the host's delegation.
+- `util::http::tests::redact_strips_lowercase_apikey`. `?apikey=` is masked, and a mid-word `xapikey=` is left alone.
+
+**Falsified** (`mutate2.py`, filters `module_error_sink_is_redacted a_panicked_module_task_error_is_redacted redact_strips_lowercase_apikey`):
+
+| id | mutation | result |
+|---|---|---|
+| M1 | **baseline**: the sink emits the raw `e.to_string()` | KILLED by `module_error_sink_is_redacted` |
+| M2 | the breaker classifies the raw text | KILLED by `module_error_sink_is_redacted` |
+| M3 | the panicked-task arm emits the raw `JoinError` text | KILLED by `a_panicked_module_task_error_is_redacted` |
+| M4 | `"apikey="` is removed from `CREDENTIAL_PARAMS` | KILLED by 2: `module_error_sink_is_redacted`, `redact_strips_lowercase_apikey` |
+| M5 | **over-correction**: the sink replaces every module error with a fixed "redacted" string | KILLED by `module_error_sink_is_redacted` |
+| M6 | **over-correction**: the panic arm replaces the panic text with a fixed string | KILLED by `a_panicked_module_task_error_is_redacted` |
+| M7 | **over-correction**: `apikey=` skips the boundary check and masks mid-word | KILLED by `redact_strips_lowercase_apikey` |
+| M8 | `UtilEngineHost::redact_credentials` returns the text unchanged instead of delegating | KILLED by 2: `a_panicked_module_task_error_is_redacted`, `module_error_sink_is_redacted` |
+
+**8 of 8 killed**, run against the compiled patch. Clippy `-D warnings` is clean.
+
+### Residual
+
+- `wifi_intel` sends its own `ModuleError` straight onto the bus (`src/modules/wifi_intel/mod.rs:412-418`), so it bypasses this sink. Its text is built from `Lookup::Refused` reasons, which come from HSE's own error types. It does not quote a provider body.
+- Whether IPQS, Criminal IP or Europeana ever echo a key in these fields remains unverified. The sink makes that question moot for the event log.
