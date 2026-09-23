@@ -278,6 +278,32 @@ fn username_separator_variants_do_not_merge() {
     );
 }
 
+#[test]
+fn username_edge_separators_do_not_merge() {
+    // Regression (scan 7258fc07, target "Ian Thorpe"): `canonical_handle`
+    // still went through the person-name tokeniser, which trims every
+    // non-alphanumeric character from a token's EDGES, so Instagram
+    // `_ianthorpe_` folded onto the subject's GitHub/Bluesky composite
+    // `ianthorpe` and was fused with it by an undamped 0.95 SameAs — likewise
+    // X `carolathorpe` with Instagram `carolathorpe_`, and two different
+    // Instagram accounts `_caroline.thorpe` / `caroline.thorpe`. An edge `_`
+    // or `.` is a registrable, account-distinguishing character there.
+    for (x, y) in [
+        ("_ianthorpe_", "ianthorpe"),
+        ("carolathorpe", "carolathorpe_"),
+        ("_caroline.thorpe", "caroline.thorpe"),
+        (".jordan", "jordan"),
+    ] {
+        let a = ent(EntityKind::Username, x);
+        let b = ent(EntityKind::Username, y);
+        assert_ne!(a.value, b.value);
+        assert!(
+            suggest_merges(&[a, b]).is_empty(),
+            "{x} and {y} are distinct handles and must not merge"
+        );
+    }
+}
+
 // ── No-duplicate / empty cases ────────────────────────────────────────────────
 
 #[test]

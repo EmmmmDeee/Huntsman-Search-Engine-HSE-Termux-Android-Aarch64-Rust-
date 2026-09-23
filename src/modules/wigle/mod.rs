@@ -258,7 +258,7 @@ impl Module for Wigle {
         &["T1591.001", "T1591.002", "T1596"]
     }
     fn produces(&self) -> &'static [EntityKind] {
-        // WiGLE corroborates Coordinates with WiFi density, emits
+        // WiGLE annotates the queried Coordinates with WiFi density, emits
         // city/region/country as Address, surfaces top APs as
         // MacAddress entities, and (with cell-tower observations
         // enabled) extracts cellular carrier names as Organisation.
@@ -357,64 +357,20 @@ impl Module for Wigle {
 
         let mut result = ModuleResult::new();
 
-        // ── Primary: Coordinates entity with WiFi corroboration ─────
-        let mut coords_entity = Entity::new(
-            EntityKind::Coordinates,
-            &target.value,
-            confidence::HIGH_PLUSPLUS_PLUS,
-            &ctx.scan_id,
-        );
-        coords_entity.tag("wigle");
-        coords_entity.tag("wifi-observed");
-        if let Some((lat, lon)) = crate::util::geohash::parse_coords(&target.value)
-            && let Some(state) = crate::util::geo::au_state_for_coords(lat, lon)
-        {
-            coords_entity.tag(format!("au-state:{state}"));
-            coords_entity.tag("country:AU");
-        }
-
-        let enc_types: Vec<String> = body
-            .results
-            .iter()
-            .filter_map(|n| n.encryption.clone())
-            .collect();
-        let top_encryption = crate::util::freq::top_n(enc_types.iter().map(String::as_str), 5);
-
+        // ── Primary: the queried point, annotated with its WiFi density ─────
         let most_recent = body
             .results
             .iter()
             .filter_map(|n| n.lastupdt.as_deref())
             .max()
             .map(String::from);
-
-        let mut ev = Evidence::new(
-            SRC,
-            format!("WiGLE: {total} WiFi network(s) near {}", target.value),
-        )
-        .with_attr("total", total.to_string())
-        .with_attr("returned", body.results.len().to_string());
-        if !top_encryption.is_empty() {
-            ev = ev.with_attr("top_encryption", top_encryption);
-        }
-        if let Some(ref t) = most_recent {
-            ev = ev.with_attr("most_recent_observation", t);
-        }
-
-        // WiFi density classification — intelligence value
-        let density = if total >= 50 {
-            "dense-urban"
-        } else if total >= 10 {
-            "suburban"
-        } else if total >= 2 {
-            "sparse"
-        } else {
-            "isolated"
-        };
-        ev = ev.with_attr("density", density);
-        coords_entity.tag(format!("wifi-density:{density}"));
-
-        coords_entity.add_evidence(ev);
-        result.push(coords_entity);
+        result.push(query_point_annotation(
+            &target.value,
+            total,
+            &body.results,
+            most_recent.as_deref(),
+            &ctx.scan_id,
+        ));
 
         // ── Address from WiGLE city/region/country (free geo!) ──────
         // Use the most common city/region/country across results for
@@ -491,11 +447,13 @@ impl Module for Wigle {
 
         // ── SSID intelligence: extract names and business identifiers ──
         // Named-looking SSIDs ("Smith-Family") → identity leads.
+        // Attached to the queried point, so — like the density read — it is an
+        // annotation of the point, never corroboration of it (REQ-GEO-008).
         if let Some(ssid_ev) =
             named_ssid_evidence(&body.results, &target.value, most_recent.as_deref())
             && let Some(first) = result.entities.first_mut()
         {
-            first.add_evidence(ssid_ev);
+            first.add_evidence(ssid_ev.as_annotation());
         }
         // …and as pivotable entities, so the expansion loop can resolve each
         // name back to every location that network has been observed at.
@@ -584,6 +542,77 @@ impl NetworkKind {
             Self::Bluetooth => "https://api.wigle.net/api/v2/bluetooth/search",
         }
     }
+}
+
+/// The queried point re-emitted with WiGLE's density read of it — an
+/// ANNOTATION of a `Coordinates` entity the scan already holds (the dispatch
+/// target), not a sighting of the subject there. **Pure.**
+///
+/// Its evidence is marked [`crate::core::entity::Evidence::as_annotation`] and
+/// it carries [`confidence::DERIVED_FLOOR`], so it neither counts as a
+/// corroborating source nor raises the point through the engine's
+/// max-confidence merge. It used to re-emit the point at `HIGH_PLUSPLUS_PLUS`
+/// (0.85) as an independent source, which — with `au_geo`, `overpass`,
+/// `qld_cadastre` and `sunrise_sunset` doing the same — graded a 0.72
+/// known-city centroid VERIFIED at c_eff 1.00 (REQ-GEO-008). The networks'
+/// OWN wardriven positions ([`wifi_ap_entities`]) are observations and are
+/// left as they are.
+fn query_point_annotation(
+    target_value: &str,
+    total: u64,
+    results: &[Network],
+    most_recent: Option<&str>,
+    scan_id: &str,
+) -> Entity {
+    let mut coords_entity = Entity::new(
+        EntityKind::Coordinates,
+        target_value,
+        confidence::DERIVED_FLOOR,
+        scan_id,
+    );
+    coords_entity.tag("wigle");
+    coords_entity.tag("wifi-observed");
+    if let Some((lat, lon)) = crate::util::geohash::parse_coords(target_value)
+        && let Some(state) = crate::util::geo::au_state_for_coords(lat, lon)
+    {
+        coords_entity.tag(format!("au-state:{state}"));
+        coords_entity.tag("country:AU");
+    }
+
+    let enc_types: Vec<String> = results
+        .iter()
+        .filter_map(|n| n.encryption.clone())
+        .collect();
+    let top_encryption = crate::util::freq::top_n(enc_types.iter().map(String::as_str), 5);
+
+    let mut ev = Evidence::new(
+        SRC,
+        format!("WiGLE: {total} WiFi network(s) near {target_value}"),
+    )
+    .with_attr("total", total.to_string())
+    .with_attr("returned", results.len().to_string());
+    if !top_encryption.is_empty() {
+        ev = ev.with_attr("top_encryption", top_encryption);
+    }
+    if let Some(t) = most_recent {
+        ev = ev.with_attr("most_recent_observation", t);
+    }
+
+    // WiFi density classification — intelligence value
+    let density = if total >= 50 {
+        "dense-urban"
+    } else if total >= 10 {
+        "suburban"
+    } else if total >= 2 {
+        "sparse"
+    } else {
+        "isolated"
+    };
+    ev = ev.with_attr("density", density);
+    coords_entity.tag(format!("wifi-density:{density}"));
+
+    coords_entity.add_evidence(ev.as_annotation());
+    coords_entity
 }
 
 /// Build the per-AP entities for the WiFi geo path: the five nearest BSSIDs as

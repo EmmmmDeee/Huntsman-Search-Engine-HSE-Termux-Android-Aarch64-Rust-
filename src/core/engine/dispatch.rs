@@ -905,15 +905,30 @@ impl super::ScanEngine {
                     }
                 }
                 let mut found = 0usize;
+                // The dispatch target's own uid. A module that re-emits its
+                // target is ANNOTATING an entity the scan already admitted (the
+                // seed anchor, or the entity this expansion pivoted on) — an
+                // ASGS region, a cadastral parcel, a password-corpus count — and
+                // does so at the confidence floor so the max-merge never raises
+                // it (REQ-GEO-008, REQ-CORE-018). The `--min-confidence` floor is
+                // a question about NEW findings; applied to the annotation it
+                // would silently discard that evidence, so the target's own uid
+                // is exempt from it. Every other admission filter still applies.
+                let target_uid = crate::core::entity::uid_for(
+                    &cx.target.kind.to_entity_kind(),
+                    &cx.target.value,
+                );
                 for mut entity in mr.entities.drain(..) {
                     // Admission drop-filters (pure policy in `admission_rejection`);
                     // emit the reason + skip on rejection, exactly as the inline
                     // chain did — same order, same reason strings, same continue.
-                    if let Some(reason) = admission_rejection(
-                        cx.seed.kind,
-                        cx.opts.effective_min_confidence(),
-                        &entity,
-                    ) {
+                    let min_confidence = if entity.uid == target_uid {
+                        None
+                    } else {
+                        cx.opts.effective_min_confidence()
+                    };
+                    if let Some(reason) = admission_rejection(cx.seed.kind, min_confidence, &entity)
+                    {
                         self.emit_excluded(cx.scan_id, &entity, reason);
                         continue;
                     }

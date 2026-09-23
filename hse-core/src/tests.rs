@@ -2739,3 +2739,111 @@ fn dedup_merge_entities_is_order_independent() {
     assert_eq!(forward[0].confidence, backward[0].confidence);
     assert_eq!(forward[0].uid, backward[0].uid);
 }
+
+// ── REQ-CORE-017 / REQ-CORE-018 / REQ-GEO-008: records that do not corroborate ──
+
+#[test]
+fn an_unverified_ownership_record_does_not_corroborate() {
+    // REQ-CORE-017 (scan 7258fc07): a name-only register match merged onto the
+    // subject counted as independent corroboration.
+    let mut e = Entity::new(EntityKind::Person, "Ian Thorpe", 0.60, "s");
+    e.add_evidence(Evidence::new("search_engines", "profile"));
+    e.add_evidence(
+        Evidence::new("wikitree", "b. 1863 Clerkenwell")
+            .with_verification(VerificationMethod::Unverified),
+    );
+    assert_eq!(e.source_count(), 1);
+    assert!((e.c_effective() - 0.60).abs() < 1e-9);
+    assert_eq!(
+        e.corroborating_sources(),
+        std::collections::HashSet::from(["search_engines"])
+    );
+    assert!(
+        e.corroborating_records()
+            .iter()
+            .all(|(s, _)| *s == "search_engines")
+    );
+
+    // Control: the same record without the mark does corroborate.
+    let mut c = Entity::new(EntityKind::Person, "Ian Thorpe", 0.60, "s");
+    c.add_evidence(Evidence::new("search_engines", "profile"));
+    c.add_evidence(Evidence::new("wikitree", "b. 1863 Clerkenwell"));
+    assert_eq!(c.source_count(), 2);
+}
+
+#[test]
+fn two_ambiguous_rows_stay_under_the_ambiguity_ceiling() {
+    // REQ-CORE-017: two ambiguous-name rows from different registers, each
+    // capped at 0.45, reached c_eff 0.64 — above the expansion floor.
+    let mut e = Entity::new(EntityKind::Person, "David Thorpe", 0.45, "s");
+    for src in ["wikidata", "qld_unclaimed"] {
+        e.add_evidence(
+            Evidence::new(src, "namesake row").with_verification(VerificationMethod::Unverified),
+        );
+    }
+    assert_eq!(e.source_count(), 1);
+    assert!(e.c_effective() < 0.50, "{}", e.c_effective());
+}
+
+#[test]
+fn a_source_counts_once_by_its_first_countable_record() {
+    // A source whose FIRST record is a name-only match and whose second is a
+    // real sighting still counts — once — and the set agrees with the count.
+    let mut e = Entity::new(EntityKind::Person, "Ian Thorpe", 0.60, "s");
+    e.add_evidence(Evidence::new("search_engines", "profile"));
+    e.add_evidence(
+        Evidence::new("wikitree", "namesake").with_verification(VerificationMethod::Unverified),
+    );
+    e.add_evidence(Evidence::new("wikitree", "self-disclosed profile"));
+    assert_eq!(e.source_count(), 2);
+    assert_eq!(e.corroborating_sources().len(), 2);
+}
+
+#[test]
+fn password_corpus_hit_is_not_a_corroborating_source() {
+    // REQ-CORE-018 (scan 7258fc07): `pwned_passwords` gave four handles a
+    // phantom extra source.
+    let mut e = Entity::new(EntityKind::Username, "ianthorpe26", 0.95, "s");
+    e.add_evidence(Evidence::new("username_search", "found on X"));
+    e.add_evidence(
+        Evidence::new("pwned_passwords", "appears 12 time(s) as a PASSWORD")
+            .with_attr("password_occurrences", "12"),
+    );
+    assert!(is_non_corroborating_source(PASSWORD_CORPUS_SOURCE));
+    assert_eq!(e.source_count(), 1);
+    assert!(!e.corroborating_sources().contains("pwned_passwords"));
+}
+
+#[test]
+fn point_annotations_do_not_corroborate_the_point() {
+    // REQ-GEO-008 (scan 7258fc07, entity [353]): five point-lookup modules
+    // re-emitted a 0.72 search-engine centroid as independent sources and graded
+    // it VERIFIED at c_eff 1.00.
+    let mut p = Entity::new(EntityKind::Coordinates, "-33.868800,151.209300", 0.72, "s");
+    p.add_evidence(Evidence::new("search_engines", "known-city centroid"));
+    for src in [
+        "au_geo",
+        "overpass",
+        "sunrise_sunset",
+        "qld_cadastre",
+        "wigle",
+    ] {
+        let mut echo = Entity::new(EntityKind::Coordinates, "-33.868800,151.209300", 0.10, "s");
+        echo.add_evidence(Evidence::new(src, "lookup keyed on the point").as_annotation());
+        p.merge(echo);
+    }
+    assert_eq!(p.source_count(), 1);
+    assert_eq!(
+        p.corroborating_sources(),
+        std::collections::HashSet::from(["search_engines"])
+    );
+    assert!(p.c_effective() < Classification::VERIFIED_MIN);
+    assert_ne!(p.classify(), Classification::Verified);
+
+    // Per record, not per source: the same module's genuine observation (a
+    // Wi-Fi network's wardriven position) still corroborates.
+    let mut ap = Entity::new(EntityKind::Coordinates, "-27.476600,153.028000", 0.6, "s");
+    ap.add_evidence(Evidence::new("wigle", "AP trilaterated here"));
+    ap.add_evidence(Evidence::new("wifi_intel", "AP seen here"));
+    assert_eq!(ap.source_count(), 2);
+}

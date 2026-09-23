@@ -110,7 +110,8 @@ pub struct ResolutionGroup {
 ///   (Gmail dots/`+tag`; `+tag` only for other domains, dots kept);
 /// * [`EntityKind::Phone`] → [`canonical_phone`] (digits only, optional
 ///   leading `+`; equality only — never country-code inference);
-/// * [`EntityKind::Username`] → [`canonical_handle`] (case/space/punctuation);
+/// * [`EntityKind::Username`] → [`canonical_handle`] (case/whitespace only —
+///   every separator, even one at a handle's edge, is significant);
 /// * [`EntityKind::Person`] → [`canonical_name`] (the above **plus** an
 ///   order-insensitive token multiset, so `"Jane Citizen" == "Citizen, Jane"`
 ///   but never a mere shared surname).
@@ -231,8 +232,9 @@ fn canonicalise(e: &Entity) -> Option<(String, &'static str)> {
         }),
         EntityKind::Phone => canonical_phone(&e.value)
             .map(|c| (c, "Phone reduced to canonical digits (exact-equality only)")),
-        EntityKind::Username => canonical_handle(&e.value)
-            .map(|c| (c, "Username canonicalised (case/whitespace/punctuation)")),
+        EntityKind::Username => {
+            canonical_handle(&e.value).map(|c| (c, "Username canonicalised (case/whitespace only)"))
+        }
         EntityKind::Person => canonical_name(&e.value).map(|c| {
             (
                 c,
@@ -284,13 +286,14 @@ fn canonical_phone(value: &str) -> Option<String> {
     Some(out)
 }
 
-/// Canonical form of a username / handle: [`canonical_word_tokens`] applied to
-/// the value (lowercase, collapse whitespace runs to single spaces, strip each
-/// token's surrounding punctuation — internal punctuation is preserved).
+/// Canonical form of a username / handle: lowercase, whitespace runs collapsed
+/// to single spaces — and NOTHING else. Every other character, including a
+/// `.`, `_` or `-` at the very start or end of the handle, is kept verbatim.
 ///
 /// Order is preserved for handles (unlike [`canonical_name`]): a handle is an
 /// opaque token, so its internal order is significant — only whitespace
-/// formatting noise is normalised away.
+/// formatting noise is normalised away. (The leading `@` is already stripped
+/// by the entity normaliser before a value ever reaches this module.)
 ///
 /// Regression: this used to route through a stricter tokeniser that treated
 /// EVERY non-alphanumeric character — `.`, `_`, `-` alike — as an equivalent
@@ -307,8 +310,26 @@ fn canonical_phone(value: &str) -> Option<String> {
 /// collision this module requires; preserving the separator (like
 /// [`canonical_name`] already does for a name's internal hyphen/apostrophe)
 /// keeps that false-merge risk closed.
+///
+/// Second regression (scan `7258fc07`, target "Ian Thorpe"): the fix above
+/// still went through [`canonical_word_tokens`], whose person-name tokeniser
+/// trims every non-alphanumeric character from each token's EDGES (right for
+/// a name's stray comma or quote, wrong for a handle). Instagram and X allow a
+/// leading and trailing `_` (and Instagram a `.`) as registrable,
+/// account-distinguishing characters, so Instagram `_ianthorpe_` folded onto
+/// the subject's GitHub/Bluesky/Chess.com composite `ianthorpe` and was fused
+/// with it by an undamped `SameAs` at 0.95 — as were X `carolathorpe` with
+/// Instagram `carolathorpe_`, and two different Instagram accounts
+/// `_caroline.thorpe` / `caroline.thorpe`. An edge separator is no more
+/// formatting noise than an internal one, so neither is touched here
+/// (REQ-RESOLVE-001).
 fn canonical_handle(value: &str) -> Option<String> {
-    canonical_word_tokens(value)
+    let folded = value
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!folded.is_empty()).then_some(folded)
 }
 
 /// True when `segment` — the side of a comma [`canonical_name`] would
@@ -368,8 +389,10 @@ fn canonical_name(value: &str) -> Option<String> {
 
 /// Canonical form of a value's whitespace-delimited tokens — lowercase, with
 /// each token's SURROUNDING punctuation stripped but internal punctuation (a
-/// hyphen, an apostrophe, a dot, an underscore) preserved. Shared core of
-/// [`canonical_name`] and [`canonical_handle`].
+/// hyphen, an apostrophe, a dot, an underscore) preserved. The core of
+/// [`canonical_name`] only — [`canonical_handle`] no longer uses it, because
+/// the edge trim that suits a name erases a handle's significant leading or
+/// trailing `_`/`.` (see that function's second regression note).
 ///
 /// Deliberately does NOT split on every non-alphanumeric character the way an
 /// earlier version of this helper did — that treated a hyphen/dot/underscore

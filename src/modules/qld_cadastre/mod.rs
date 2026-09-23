@@ -116,10 +116,16 @@ fn build_query_url(lat: f64, lon: f64) -> String {
 
 /// Build entities from one parcel feature's attributes. **Pure** (no network).
 /// Emits a `Coordinates` entity for the queried point carrying the parcel's
-/// lot/plan/locality/tenure as evidence (an authoritative cadastre
-/// corroborating the location), plus an `Address` for the locality when
-/// present. Returns empty when the feature has neither a lot/plan nor a
+/// lot/plan/locality/tenure as evidence, plus an `Address` for the locality
+/// when present. Returns empty when the feature has neither a lot/plan nor a
 /// locality.
+///
+/// The point's record is an ANNOTATION, not corroboration: a point-in-polygon
+/// lookup names the parcel that contains whatever point it was asked about, so
+/// it confirms nothing about whether the subject is there. It carries the
+/// confidence floor and `Evidence::as_annotation` — it used to carry `STRONG`
+/// as an independent source, lifting a search-engine city centroid to VERIFIED
+/// (scan 7258fc07, REQ-GEO-008).
 fn build_entities(coord: &str, attrs: &HashMap<String, Value>, scan_id: &str) -> Vec<Entity> {
     let lot = attr(attrs, "lot");
     let plan = attr(attrs, "plan");
@@ -138,7 +144,12 @@ fn build_entities(coord: &str, attrs: &HashMap<String, Value>, scan_id: &str) ->
 
     let mut out = Vec::new();
 
-    let mut coords = Entity::new(EntityKind::Coordinates, coord, confidence::STRONG, scan_id);
+    let mut coords = Entity::new(
+        EntityKind::Coordinates,
+        coord,
+        confidence::DERIVED_FLOOR,
+        scan_id,
+    );
     coords.tag(SRC);
     coords.tag("geoint");
     coords.tag("country:AU");
@@ -161,7 +172,7 @@ fn build_entities(coord: &str, attrs: &HashMap<String, Value>, scan_id: &str) ->
         Evidence::new(SRC, format!("QLD DCDB cadastral parcel at {coord}")),
         |ev, (key, v)| ev.with_attr(key, v),
     );
-    coords.add_evidence(ev);
+    coords.add_evidence(ev.as_annotation());
     out.push(coords);
 
     if let Some(loc) = &locality {

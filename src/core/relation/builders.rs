@@ -688,6 +688,27 @@ fn persona_key(e: &Entity) -> Option<String> {
     .then_some(key)
 }
 
+/// True for an identifier the scan GUESSED rather than observed: a name
+/// permutation no reliable source has corroborated
+/// ([`Entity::is_uncorroborated_name_permutation`]), or any generator output
+/// (tagged [`crate::core::tags::DERIVED`] — `name_intel`, `username_variants`)
+/// that no corroborating source has since seen. Such values share a persona key
+/// with each other and with the subject BY CONSTRUCTION — the generator spelled
+/// them from one name — so an identity edge between them only restates what the
+/// generator did (and [`derive_name_lineage`]'s `DerivedFrom` already records
+/// that). `DERIVED` is required so a seed-supplied identifier, whose `seed`
+/// evidence is also non-corroborating, is never mistaken for a guess.
+///
+/// Regression (scan `7258fc07`, target "Ian Thorpe"): 2,966 of the scan's
+/// 2,992 `alias_of` edges had such a guess at one end or joined mailboxes at
+/// different domains — `ian.thorpe@ymail.com` (CANDIDATE, `name_intel` only)
+/// asserted as an alias of `ian.thorpe@gmail.com`, and so on through every
+/// permutation (REQ-REL-003).
+fn is_unobserved_guess(e: &Entity) -> bool {
+    e.is_uncorroborated_name_permutation()
+        || (e.has_tag(crate::core::tags::DERIVED) && e.corroborating_sources().is_empty())
+}
+
 /// The folded last whitespace token of a Person value — a family key. `None` when
 /// it's < 4 chars (initials / very short surnames alias too readily).
 fn surname_key(value: &str) -> Option<String> {
@@ -750,12 +771,22 @@ pub(super) fn sort_edges(edges: &mut [Relation]) {
 }
 
 /// Derive `AliasOf` edges between Email/Username entities that share one
-/// normalised persona key — the cross-platform "same handle" pivot
-/// (`jsmith@gmail.com` ↔ `jsmith@outlook.com` ↔ username `jsmith`). Purely
-/// structural (exact normalised-handle match), so precision is high; generic /
-/// numeric handles are excluded by [`persona_key`]. Symmetric edges are emitted
-/// once in canonical direction (smaller UID → larger) and deduped, then sorted —
-/// deterministic regardless of entity order.
+/// normalised persona key — the cross-platform "same handle" pivot (username
+/// `jsmith` ↔ `jsmith@gmail.com`, or two observed accounts `jsmith` on two
+/// platforms). Purely structural (exact normalised-handle match), so precision
+/// is high; generic / numeric handles are excluded by [`persona_key`].
+///
+/// Two pairs share the key without it meaning anything, and are skipped:
+///   * two mailboxes at DIFFERENT domains (`jsmith@gmail.com` ↔
+///     `jsmith@outlook.com`) — two different accounts by construction, the rule
+///     [`crate::core::coref::mailboxes_at_different_domains`] states once for
+///     this builder and co-reference scoring alike;
+///   * any pair with an unobserved guess at one end ([`is_unobserved_guess`]) —
+///     every permutation of one name shares the key because the generator made
+///     it so.
+///
+/// Symmetric edges are emitted once in canonical direction (smaller UID →
+/// larger) and deduped, then sorted — deterministic regardless of entity order.
 pub fn derive_handles(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     use std::collections::HashMap;
 
@@ -772,8 +803,14 @@ pub fn derive_handles(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
         scan_id,
         |a, b| a.confidence.min(b.confidence),
         // Two spellings that normalise identically — not an alias between
-        // *distinct* identifiers.
-        |a, b| a.value == b.value,
+        // *distinct* identifiers; a generator's guess, whose key is shared by
+        // construction; or two mailboxes at different domains (REQ-REL-003).
+        |a, b| {
+            a.value == b.value
+                || is_unobserved_guess(a)
+                || is_unobserved_guess(b)
+                || crate::core::coref::mailboxes_at_different_domains(&a.value, &b.value)
+        },
     )
 }
 
@@ -874,10 +911,17 @@ pub fn derive_reused_secret_link(entities: &[Entity], scan_id: &str) -> Vec<Rela
 ///     itself attributed it). High confidence (min of endpoints).
 ///   * **fingerprint** — an Email-local/Username whose identity fingerprint
 ///     overlaps the *subject*'s name ([`crate::core::scan::identity_overlaps`],
-///     the same primitive the engine uses to gate wrong-identity pivots). A
-///     candidate, so damped by [`IDENTITY_CANDIDATE_DAMP`]; bound only to the
-///     subject so it can't mis-attach to an incidental Person. Phones have no
-///     fingerprint, so they link by evidence only.
+///     the same primitive the engine uses to gate wrong-identity pivots) AND
+///     that, when the subject's name has given/surname structure, actually
+///     spells it ([`crate::core::scan::handle_names_person`]: the given name or
+///     its initial beside the surname, from a word start). A surname is a ≥4-char
+///     run every relative's and namesake's handle shares, so the overlap alone
+///     bound `carolthorpe70`, `megthorpeart`, `aidan_thorpe` and even
+///     `tharleschorpe` (`"horpe"`) to "Ian Thorpe" in scan `7258fc07`
+///     (REQ-IDENTITY-GATE-002). A candidate, so damped by
+///     [`IDENTITY_CANDIDATE_DAMP`]; bound only to the subject so it can't
+///     mis-attach to an incidental Person. Phones have no fingerprint, so they
+///     link by evidence only.
 ///
 /// Deduped per (person, identifier); deterministic output order.
 pub fn derive_identity_ownership(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
@@ -922,10 +966,15 @@ pub fn derive_identity_ownership(entities: &[Entity], scan_id: &str) -> Vec<Rela
         if linked || !matches!(h.kind, EntityKind::Email | EntityKind::Username) {
             continue;
         }
-        // Fingerprint-grounded ownership, subject-only and damped.
+        // Fingerprint-grounded ownership, subject-only and damped. The overlap
+        // is necessary but not sufficient: a structured name must also be
+        // SPELLED by the handle — its surname alone is shared by every relative
+        // and namesake. Narrowing only: a mononym subject (`None`) keeps the
+        // overlap test as before.
         for s in &subjects {
             if s.uid != h.uid
                 && crate::core::scan::identity_overlaps(&s.value, &h.value)
+                && crate::core::scan::handle_names_person(&s.value, &h.value) != Some(false)
                 && seen.insert((s.uid.clone(), h.uid.clone()))
             {
                 out.push(Relation::new(
@@ -1010,11 +1059,47 @@ pub fn derive_residency(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     out
 }
 
+/// Max DISTINCT identities ([`crate::core::scan::identity_norm`]) a same-surname
+/// group may hold and still be read as a family. A household-sized bound, the
+/// same order as [`CO_RESIDENCE_MAX_PER_PLACE`]: a surname carried by more
+/// distinct people than that in one scan is not individuating HERE — it is a
+/// namesake crowd returned by people-search listings and public registers, not
+/// a family — so the whole group mints no kinship edge, exactly the treatment
+/// [`crate::util::surnames::is_common`] gives a nationally common surname.
+///
+/// Regression (scan `7258fc07`, target "Ian Thorpe"): a full-name scan on the
+/// subject's own distinctive surname surfaced ~200 namesake `Thorpe` Persons
+/// (search-engine people listings, unclaimed-money rows, WikiTree, OpenArch,
+/// Wikidata). The uncapped pairing turned them into a C(199,2) = 19,701-edge
+/// clique plus a C(69,2) = 2,346-edge `Thorley` clique — 22,073 of the scan's
+/// 30,093 relations — and gave the subject and 147 strangers the same top
+/// k-core coreness in the GEXF export (REQ-REL-002).
+const KINSHIP_MAX_PER_SURNAME: usize = 8;
+
+/// Number of DISTINCT people in a same-surname group — distinct
+/// [`crate::core::scan::identity_norm`] values, so two spellings of one person
+/// (`"Kyle Diegmann"` / `"kyle diegmann"`, which [`emit_pairwise`]'s skip never
+/// pairs anyway) never push a genuine family over [`KINSHIP_MAX_PER_SURNAME`].
+/// A `BTreeSet` keeps the count independent of input order.
+fn distinct_identities(group: &[&Entity]) -> usize {
+    group
+        .iter()
+        .map(|e| crate::core::scan::identity_norm(&e.value))
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
 /// Derive `AssociatedWith` kinship-candidate edges between Person entities that
-/// share a surname ([`surname_key`]) but are distinct people. People surface in a
-/// scan because they're relevant to the subject, so a shared surname is a strong
-/// associate lead — but coincidental, so the edge is damped by [`KINSHIP_DAMP`]
-/// and clearly typed as a candidate. Symmetric, canonically directed, deduped,
+/// share a surname ([`surname_key`]) but are distinct people. Within a small
+/// same-surname group a shared DISTINCTIVE surname is an associate lead — but
+/// coincidental, so the edge is damped by [`KINSHIP_DAMP`] and clearly typed as
+/// a candidate. A group of more than [`KINSHIP_MAX_PER_SURNAME`] distinct people
+/// is a namesake crowd (a full-name scan returns every listed carrier of the
+/// subject's surname), not a family, and is skipped outright — no premise that
+/// "a Person in the scan is relevant to the subject" survives a people-search
+/// sweep. Genuine relatives in such a crowd are still reached through the
+/// evidence-grounded passes: [`derive_co_residence`], [`derive_co_mention`] and
+/// [`derive_declared_associations`]. Symmetric, canonically directed, deduped,
 /// deterministic.
 pub fn derive_kinship(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     use std::collections::HashMap;
@@ -1033,12 +1118,18 @@ pub fn derive_kinship(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     // the commonness discount the leads/engine paths already apply. (A genuine
     // relative of a common-surname subject still surfaces through the
     // evidence-grounded co-residence / declared-association passes.)
+    // A group of more distinct people than a household holds is a namesake
+    // crowd, not a family (see KINSHIP_MAX_PER_SURNAME) — skipped whole rather
+    // than truncated, since no member of a crowd is more likely kin than another.
     // Distinct people only — not the same Person surfaced twice, and
     // not two spellings of one full name.
     emit_pairwise(
         by_surname
             .into_iter()
-            .filter(|(surname, _)| !crate::util::surnames::is_common(surname))
+            .filter(|(surname, group)| {
+                !crate::util::surnames::is_common(surname)
+                    && distinct_identities(group) <= KINSHIP_MAX_PER_SURNAME
+            })
             .map(|(_, group)| group),
         RelationKind::AssociatedWith,
         scan_id,
@@ -1070,8 +1161,10 @@ const REGIONAL_KINSHIP_DAMP: f64 = 0.45;
 ///
 /// **Strictly additive / disjoint**: it fires *only* for common surnames (exactly
 /// the set `derive_kinship` skips) and only on a shared postcode, so it never
-/// touches an edge `derive_kinship` emitted. Distinct people only (different UID
-/// and folded name); symmetric, canonically directed, deduped, deterministic.
+/// touches an edge `derive_kinship` emitted. A (surname, postcode) group of more
+/// than [`KINSHIP_MAX_PER_SURNAME`] distinct people is a town's namesake crowd and
+/// is skipped the same way. Distinct people only (different UID and folded
+/// name); symmetric, canonically directed, deduped, deterministic.
 pub fn derive_regional_kinship(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     use std::collections::HashMap;
 
@@ -1091,8 +1184,12 @@ pub fn derive_regional_kinship(entities: &[Entity], scan_id: &str) -> Vec<Relati
         by_town.entry((surname, postcode)).or_default().push(p);
     }
 
+    // The same crowd bound as derive_kinship: a postcode-sized crowd of Smiths
+    // (a register or people-search sweep of one town) is namesakes, not a family.
     emit_pairwise(
-        by_town.into_values(),
+        by_town
+            .into_values()
+            .filter(|group| distinct_identities(group) <= KINSHIP_MAX_PER_SURNAME),
         RelationKind::AssociatedWith,
         scan_id,
         |a, b| a.confidence.min(b.confidence) * REGIONAL_KINSHIP_DAMP,
@@ -1486,6 +1583,14 @@ const COREF_PROMOTE_MIN_SCORE: f64 = 0.80;
 ///   * **identifier ↔ identifier** → [`AliasOf`](RelationKind::AliasOf) — two
 ///     selectors of one persona.
 ///
+/// **Never promoted**, whatever the score: a pair with an unobserved guess at
+/// either end ([`is_unobserved_guess`], REQ-REL-003); two Persons whose names
+/// are structurally different people
+/// ([`crate::core::scan::person_names_compatible`] `Some(false)`); and a Person
+/// with an Email/Username that does not spell the name
+/// ([`crate::core::scan::handle_names_person`] `Some(false)`) — the last two
+/// REQ-IDENTITY-GATE-002.
+///
 /// **Strictly additive**: an edge already present in `existing` (same
 /// `from|kind|to`) is never re-emitted, so this pass can only *add* links and can
 /// never lower the confidence of an edge a higher-trust builder (handles /
@@ -1506,25 +1611,50 @@ pub fn derive_coreferences(
         .iter()
         .map(|r| (r.from_uid.as_str(), r.kind.as_str(), r.to_uid.as_str()))
         .collect();
-    // UID → confidence, to damp each promoted edge by its weaker endpoint.
-    let conf_of: std::collections::HashMap<&str, f64> = entities
-        .iter()
-        .map(|e| (e.uid.as_str(), e.confidence))
-        .collect();
-    let kind_of: std::collections::HashMap<&str, EntityKind> = entities
-        .iter()
-        .map(|e| (e.uid.as_str(), e.kind.clone()))
-        .collect();
+    // UID → entity: its kind picks the edge, its names gate it, and the weaker
+    // endpoint's confidence damps it.
+    let by_uid: std::collections::HashMap<&str, &Entity> =
+        entities.iter().map(|e| (e.uid.as_str(), e)).collect();
 
     let mut seen: HashSet<(String, String, String)> = HashSet::new();
     let mut out = Vec::new();
     for c in crate::core::coref::resolve_coreferences(entities, COREF_PROMOTE_MIN_SCORE, 512) {
-        let (Some(ka), Some(kb)) = (kind_of.get(c.uid_a.as_str()), kind_of.get(c.uid_b.as_str()))
+        let (Some(&ea), Some(&eb)) = (by_uid.get(c.uid_a.as_str()), by_uid.get(c.uid_b.as_str()))
         else {
             continue;
         };
-        let a_person = *ka == EntityKind::Person;
-        let b_person = *kb == EntityKind::Person;
+        // A generator's guess at either end restates the generator, whatever
+        // the score: handle-equivalence alone (0.80) meets the promotion floor
+        // for every same-domain or email↔username pair of permutations, so
+        // without this the pairs `derive_handles` withholds would come back
+        // here as `AliasOf` (REQ-REL-003).
+        if is_unobserved_guess(ea) || is_unobserved_guess(eb) {
+            continue;
+        }
+        let a_person = ea.kind == EntityKind::Person;
+        let b_person = eb.kind == EntityKind::Person;
+        // A shared surname is not a shared identity (REQ-IDENTITY-GATE-002).
+        // The string tiers already withhold it (`coref::string_signal`), but
+        // shared-SOURCE alone reaches the promotion floor at five shared module
+        // names — bare module names every relative of a people-search or
+        // register sweep carries — so the graph edge is gated on the names too:
+        // no `SameAs` between structurally different people, and no
+        // `IdentifiedBy` from a person to a handle/mailbox that does not spell
+        // the name. Phones carry no name, so they stay evidence/score-bound.
+        let names_conflict = match (a_person, b_person) {
+            (true, true) => {
+                crate::core::scan::person_names_compatible(&ea.value, &eb.value) == Some(false)
+            }
+            (true, false) | (false, true) => {
+                let (p, h) = if a_person { (ea, eb) } else { (eb, ea) };
+                matches!(h.kind, EntityKind::Email | EntityKind::Username)
+                    && crate::core::scan::handle_names_person(&p.value, &h.value) == Some(false)
+            }
+            (false, false) => false,
+        };
+        if names_conflict {
+            continue;
+        }
         // Choose the typed edge and its canonical direction for the pair's kinds.
         let (from, to, kind) = match (a_person, b_person) {
             // Person → identifier (the person owns the selector).
@@ -1541,11 +1671,7 @@ pub fn derive_coreferences(
         if !seen.insert((from.clone(), kind.as_str().to_string(), to.clone())) {
             continue;
         }
-        let min_conf = conf_of
-            .get(from.as_str())
-            .copied()
-            .unwrap_or(0.0)
-            .min(conf_of.get(to.as_str()).copied().unwrap_or(0.0));
+        let min_conf = ea.confidence.min(eb.confidence);
         out.push(Relation::new(
             from.as_str(),
             to.as_str(),

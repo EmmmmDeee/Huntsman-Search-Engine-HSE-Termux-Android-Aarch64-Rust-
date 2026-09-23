@@ -46,6 +46,19 @@
 //! The three string signals are mutually exclusive (only the strongest tier
 //! fires); **shared-source** is orthogonal and stacks on top.
 //!
+//! # A shared surname is not a shared identity
+//!
+//! No string signal fires between two `Person`s whose names are structurally
+//! incompatible ([`crate::core::scan::person_names_compatible`] — a different
+//! given name beside the same surname), nor between a `Person` and a handle that
+//! does not spell the name ([`crate::core::scan::handle_names_person`] — the
+//! given name or its initial beside the surname, from a word start). Every
+//! relative and namesake shares the surname, a ≥4-char run: a real "Ian Thorpe"
+//! scan scored "Ian Thorpe" ↔ "Megan Thorpe" 0.811 (substring-overlap fused with
+//! three shared module names) and "Ian Thorpe" ↔ `damianthorpe` a 0.62
+//! name-token match (REQ-IDENTITY-GATE-002). Veto-only; a mononym keeps the
+//! plain ladder.
+//!
 //! # Different mailboxes are different accounts
 //!
 //! No string signal fires between two email addresses at different domains.
@@ -87,7 +100,9 @@
 
 use crate::core::entity::{Entity, EntityKind};
 use crate::core::relation::graph::is_identity_kind;
-use crate::core::scan::{identity_norm, identity_overlaps};
+use crate::core::scan::{
+    handle_names_person, identity_norm, identity_overlaps, person_names_compatible,
+};
 
 /// Weight of an exact canonical-handle match — the strongest cross-kind tie.
 const W_HANDLE_EQUIV: f64 = 0.80;
@@ -139,6 +154,20 @@ fn email_domain(value: &str) -> Option<&str> {
     Some(domain)
 }
 
+/// True when `a` and `b` are both email addresses ([`email_domain`]) at
+/// DIFFERENT domains — by construction two different accounts, whose shared
+/// local part is not evidence of one person (see the module docs, "Different
+/// mailboxes are different accounts"). The ONE statement of that rule:
+/// [`string_signal`] reads it to withhold every string tier, and
+/// [`crate::core::relation::builders::derive_handles`] reads it to withhold the
+/// structural `AliasOf` it would otherwise assert between the same pair.
+pub(crate) fn mailboxes_at_different_domains(a: &str, b: &str) -> bool {
+    matches!(
+        (email_domain(a), email_domain(b)),
+        (Some(dom_a), Some(dom_b)) if !dom_a.eq_ignore_ascii_case(dom_b)
+    )
+}
+
 /// The strongest string-similarity signal between two canonical handles, as
 /// `(weight, label)`, or `None` when the handles are unrelated. Tiers are
 /// mutually exclusive: an exact match never also counts as an overlap.
@@ -182,8 +211,37 @@ fn string_signal(
     // Cross-KIND matches (`jsmith` ↔ `jsmith@gmail.com`) are what
     // `W_HANDLE_EQUIV` was designed for and are left alone, though a common
     // handle weakens those too — see the module docs.
-    if let (Some(dom_a), Some(dom_b)) = (email_domain(raw_a), email_domain(raw_b))
-        && !dom_a.eq_ignore_ascii_case(dom_b)
+    if mailboxes_at_different_domains(raw_a, raw_b) {
+        return None;
+    }
+    // A Person's name is structured (given name + surname), and a surname is
+    // shared by every relative and namesake — so no string tier may fire where
+    // that structure says "someone else" (REQ-IDENTITY-GATE-002, scan
+    // `7258fc07`, target "Ian Thorpe"):
+    //   * two Persons whose names are incompatible
+    //     ([`person_names_compatible`] `Some(false)`): "Ian Thorpe" and "Megan
+    //     Thorpe" share the ≥4-char run `anthorpe`, and the substring tier
+    //     (0.45) fused with three shared module names (0.657) reached 0.811 —
+    //     over the graph-promotion floor, so they were asserted `SameAs`;
+    //   * a Person and a handle that does not SPELL the name
+    //     ([`handle_names_person`] `Some(false)`): the name-token tier's plain
+    //     containment scored "Ian Thorpe" ↔ `damianthorpe` (and `brianthorpe`,
+    //     `christianthorpe`) a 0.62 match with no corroboration at all, and the
+    //     substring tier tied the subject to a relative's `aidan_thorpe`.
+    // Veto-only: an unstructured name (`None`) keeps the ladder below, and no
+    // pair gains a signal it did not have. A phone never string-matches a name
+    // in the first place, so the handle veto costs it nothing. Shared-source is
+    // orthogonal and untouched — corroboration can still surface the pair as a
+    // lead in the read-only view.
+    let person_veto = |person: &str, other: &str, other_is_person: bool| {
+        if other_is_person {
+            person_names_compatible(person, other) == Some(false)
+        } else {
+            handle_names_person(person, other) == Some(false)
+        }
+    };
+    if (a_is_person && person_veto(raw_a, raw_b, b_is_person))
+        || (b_is_person && person_veto(raw_b, raw_a, a_is_person))
     {
         return None;
     }

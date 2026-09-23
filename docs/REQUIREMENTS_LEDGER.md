@@ -20649,3 +20649,194 @@ byte-identical, checked with `md5sum -c` against the saved copies.
 **7 of 7 killed.** `a_typed_unavailable_skip_never_feeds_the_circuit_breaker`
 locks existing engine behaviour that the REQ-SOCIAL-003 fix relies on. It
 passed before the fix, and it is recorded as a lock, not as a falsification.
+
+## REQ-CORE-017 / REQ-CORE-018 / REQ-GEO-008 / REQ-REL-002 / REQ-IDENTITY-GATE-002 / REQ-REL-003 / REQ-RESOLVE-001 — corroboration counted what nobody observed; relation builders read a surname, a generator's guess and an edge underscore as identity
+
+**Found** in the second read of the "Ian Thorpe" scan (7258fc07) after #645:
+seven faults in how the engine decides that something is corroborated, and in
+how the relation builders decide that two things are one identity. Each was
+adversarially verified against the exports and the code before it was fixed.
+
+**REQ-CORE-017 — a name-only match counted as independent corroboration.**
+`Entity::source_count` and `corroborating_sources` filtered evidence only by
+source name. They never read `Evidence::verification`, so a record its producer
+marked `Unverified` still counted as a separate source. That mark exists for a
+match made on the name alone, where whose record it is, is exactly what is
+unknown. Entities merge by name uid, so any namesake's register row that landed
+on the subject was counted as independent confirmation of the subject. The seed
+[914] counted an OpenArch US death record (2012) and a Wikidata New Zealand
+soldier among its seven sources. Caroline Thorpe went VERIFIED on two WikiTree
+profiles born in 1748 and 1863. The same path defeated
+`namesake::AMBIGUOUS_CEILING`: two ambiguous rows capped at 0.45 from different
+registers reached c_eff 0.64, above the expansion floor. The fix adds
+`Evidence::is_non_corroborating` in `hse-core`, one per-record statement of the
+rule, and `source_count`, `corroborating_sources` and `corroborating_records`
+all read it. An `Unverified` record no longer corroborates. The duplicate-source
+scan in `source_count` now looks only at earlier countable records, so a source
+whose first record is a name-only match and whose second is a real sighting is
+still counted, once. Two producers matched on name alone without marking the
+record, and both now mark it: `openarch` (every register entry) and the
+`au_unclaimed` QLD owner Person.
+
+**REQ-CORE-018 — a password-list hit was a corroborating source and a breach
+corpus.** REQ-CORE-016 took the `breach` tag off `pwned_passwords` but left
+every consumer that keys on the source name. Four handles (ian_thorpe, iant,
+ianthorpe, ianthorpe26) each gained a phantom extra source. Each also got a
+breach-consensus `single_source_elevated` flag ("attested by 1 breach corpus:
+pwned_passwords"), and those four flags were the scan's whole
+`PASS_WITH_CONCERNS` verdict. AU-001 would have fired CRITICAL on hibp +
+pwned_passwords as "2 breach sources". The module re-emitted its target at up
+to 0.90, so the max-merge could lift a 0.38 guess to PROBABLE on "this string is
+a password" alone. `hse_core::PASSWORD_CORPUS_SOURCE` is now in
+`is_non_corroborating_source` (not in `ENRICHMENT_ONLY_SOURCES`, which is pinned
+to `Module::is_derivation()`). The module re-emits its target at
+`confidence::DERIVED_FLOOR` as an annotation record. The count is kept as the
+`password_occurrences` attribute.
+
+**REQ-GEO-008 — point lookups echoed the queried coordinate as independent
+sources.** `au_geo` (0.85), `overpass` (0.70), `sunrise_sunset` (0.55),
+`qld_cadastre` (0.78) and `wigle` (0.85) each took a Coordinates target and
+re-emitted the same point with their own evidence. The max-merge raised a 0.72
+search-engine city centroid to 0.85. Each echo also counted as a source, so
+[353] -33.8688,151.2093 reached c_eff 1.00, VERIFIED, from one real source; the
+same happened to [327] and [328]. The verdict proposed a Coordinates-only
+source-name list. That was rejected because `wigle` is an anchoring geo source:
+its OTHER Coordinates (each wardriven network's own position) are genuine
+observations, and a source-level exclusion would have turned them into
+infrastructure geo. The exclusion is therefore per record. `Evidence` gains
+`is_annotation`, set with `Evidence::as_annotation`, and
+`Evidence::is_non_corroborating` excludes it. Each module marks only its echo of
+the queried point: the ASGS roll-up, the Overpass summary and breakdown, the
+solar record, the cadastral parcel, and the WiGLE density and SSID records on
+the point. Each emits that echo at `DERIVED_FLOOR`. `wigle`'s echo moved into a
+pure `query_point_annotation` so it can be tested. The engine's dispatch
+exempts a module's re-emission of its own dispatch target from
+`--min-confidence`, so the floor never drops the annotation. That floor is a
+question about new findings, and the target was already admitted.
+
+Consumers that marked or counted corroboration by source string now read the
+record: the debug bundle and dossier "(non-corroborating)" markers, the web
+Browse marker, breach consensus's attesting corpora, AU-045's family diversity,
+AU-081's source label, and the audit's weak-corroboration share. The audit
+reads `AuditEntity::corroborating_sources` from a stored entity or from the
+CSV's `corroborating_sources` column. An older CSV that has only source names
+falls back to the source-level rule, which is all it can express.
+
+**REQ-REL-002 — surname kinship built an unbounded namesake clique.**
+`derive_kinship` paired every Person sharing a distinctive surname. A full-name
+scan on the subject's own surname returns every listed carrier of it, so ~200
+namesake Thorpes became a C(199,2) = 19,701-edge `AssociatedWith` clique, plus
+a 2,346-edge Thorley clique. Together that was 22,073 of the 30,093 relations,
+and 148 nodes (the subject and 147 strangers) shared the top GEXF coreness.
+A group of more than `KINSHIP_MAX_PER_SURNAME` (8, a household-sized bound)
+distinct identities is now skipped whole. Identities are counted by
+`identity_norm`, so two spellings of one person do not count twice. The same
+bound applies to `derive_regional_kinship`'s (surname, postcode) groups.
+
+**REQ-IDENTITY-GATE-002 — a shared surname was read as a shared identity.**
+Two places accepted a surname as identity evidence. The first was
+`derive_identity_ownership`'s fingerprint path: it bound to the subject every
+handle that shared a ≥4-character run with the subject's name. The surname
+always is such a run, so `aidan_thorpe` (`anthorpe`) and `tharleschorpe`
+(`horpe`) were bound to "Ian Thorpe". The second was co-reference. Its
+name-token tier used plain containment, so "Ian Thorpe" ↔ `damianthorpe`
+scored 0.62. Its substring tier plus three shared module names gave "Ian
+Thorpe" ↔ "Megan Thorpe" 0.811, which was promoted to `SameAs`. The new
+`core::scan::handle_names_person` sits beside `person_names_compatible` and
+shares its name parser. It reads a handle's alphabetic runs from a run start,
+so a match can never begin inside a word. It accepts the given name or its
+initial beside the surname, in either order, optionally across one middle
+initial. The fingerprint path now also requires it. `coref::string_signal`
+vetoes every string tier when two Persons' names are incompatible, or when a
+Person and a handle do not spell each other. `derive_coreferences` never
+promotes such a pair: shared-source alone reaches the 0.80 floor at five shared
+module names. Everything here only narrows. A mononym (`None`) keeps the old
+behaviour. Known conservative loss: a nickname handle, a prefixed handle, and a
+person known by a middle name are no longer linked on string alone.
+
+**REQ-REL-003 — `AliasOf` joined generator guesses and different mailboxes.**
+`derive_handles` joined every Email and Username sharing a persona key. 2,966 of
+the scan's 2,992 `alias_of` edges had a `name_intel` / `username_variants`
+permutation at one end, or joined mailboxes at different domains. A generator's
+guesses share the key because the generator spelled them from one name, so the
+edge only restated the generator (`derive_name_lineage` already records it).
+Mailboxes at different domains are two accounts, which `coref::string_signal`
+already held. `derive_handles` now skips a pair with an unobserved guess at
+either end (`is_unobserved_guess`: an uncorroborated name permutation, or a
+`derived` value that no corroborating source has seen; `derived` is required so
+a seed identifier still aliases). It also skips two mailboxes at different
+domains, a rule that now lives once in `coref::mailboxes_at_different_domains`
+for both readers. `derive_coreferences` applies the same guess gate, because
+handle-equivalence alone (0.80) meets its promotion floor.
+
+**REQ-RESOLVE-001 — the handle canonicaliser trimmed edge underscores.**
+`resolve::canonical_handle` went through the person-name tokeniser. That
+tokeniser trims non-alphanumerics from each token's edges, so Instagram
+`_ianthorpe_` folded onto the subject's GitHub/Bluesky composite `ianthorpe`,
+and `derive_canonical_identities` fused them with an undamped 0.95 `SameAs`.
+The same happened to `carolathorpe` / `carolathorpe_` and `_caroline.thorpe` /
+`caroline.thorpe`. Edge `_` and `.` are registrable, account-distinguishing
+characters on those platforms. `canonical_handle` now folds only case and
+whitespace. The name tokeniser, `canonical_name`, AU-081 and
+`core::entity::canonical_handle` are unchanged.
+
+### Locks
+
+- `hse-core` `tests::an_unverified_ownership_record_does_not_corroborate`,
+  `two_ambiguous_rows_stay_under_the_ambiguity_ceiling`,
+  `a_source_counts_once_by_its_first_countable_record`;
+  `modules::openarch::tests::a_name_matched_register_entry_is_ownership_unverified`;
+  `modules::au_unclaimed::tests::qld::an_owner_person_is_a_name_only_match_and_never_corroborates`;
+  `audit::tests::weak_corroboration_reads_the_per_record_verdict_of_a_stored_entity`.
+- `hse-core` `tests::password_corpus_hit_is_not_a_corroborating_source`;
+  `core::breach_consensus::tests::a_password_list_hit_is_not_a_breach_corpus_attestation`;
+  `core::correlator::tests::au001_does_not_count_a_password_corpus_hit_as_a_breach_source`;
+  `modules::pwned_passwords::tests::a_password_corpus_hit_never_raises_or_corroborates_its_target`.
+- `hse-core` `tests::point_annotations_do_not_corroborate_the_point` (with the
+  per-record control: a wigle AP position still corroborates);
+  `the_queried_point_is_annotated_not_corroborated` (au_geo),
+  `the_summary_annotates_the_point_while_nodes_stay_observations` (overpass),
+  `the_parcel_lookup_annotates_the_point` (qld_cadastre),
+  `the_solar_record_annotates_the_point` (sunrise_sunset),
+  `the_queried_point_is_annotated_with_wifi_density_not_corroborated` (wigle),
+  all through `core::test_support::assert_point_annotation`;
+  `core::engine::tests::a_target_annotation_is_exempt_from_the_min_confidence_floor`.
+- `core::relation::tests::kinship_does_not_clique_a_same_surname_crowd`,
+  `regional_kinship_does_not_clique_a_town_crowd`.
+- `core::scan::tests::handle_names_person_needs_the_given_name_beside_the_surname`;
+  `core::relation::tests::identity_ownership_does_not_bind_surname_only_handles`,
+  `coreference_never_same_as_two_differently_named_people`;
+  `core::coref::tests::name_token_tier_respects_token_boundaries`.
+- `core::relation::tests::unobserved_name_permutations_never_alias`,
+  `mailboxes_at_different_domains_do_not_alias_but_observed_handles_do`;
+  `handles_alias_shared_persona_across_platforms` and
+  `role_mailboxes_do_not_alias_across_organisations` now expect no gmail ↔
+  outlook alias.
+- `core::resolve::tests::username_edge_separators_do_not_merge`;
+  `core::relation::tests::canonical_identities_does_not_same_as_edge_separated_handles`.
+
+### Falsified
+
+Each mutation restores the defect. After every run the sources were restored
+byte-identical, checked by md5 against the saved copies.
+
+| # | mutation | result |
+|---|---|---|
+| C1 | `Evidence::is_non_corroborating` without the `Unverified` clause; `openarch` / QLD owner records unmarked | killed by `an_unverified_ownership_record_does_not_corroborate`, `two_ambiguous_rows_stay_under_the_ambiguity_ceiling`, `a_name_matched_register_entry_is_ownership_unverified`, `an_owner_person_is_a_name_only_match_and_never_corroborates`, `weak_corroboration_reads_the_per_record_verdict_of_a_stored_entity` |
+| C2 | `source_count`'s duplicate scan over every earlier record, countable or not | killed by `a_source_counts_once_by_its_first_countable_record` |
+| C3 | `PASSWORD_CORPUS_SOURCE` out of `is_non_corroborating_source`; the banded 0.70/0.90 re-emission, unmarked | killed by `password_corpus_hit_is_not_a_corroborating_source`, `a_password_list_hit_is_not_a_breach_corpus_attestation`, `au001_does_not_count_a_password_corpus_hit_as_a_breach_source`, `a_password_corpus_hit_never_raises_or_corroborates_its_target` |
+| G1 | `is_annotation` out of `is_non_corroborating`; the five echoes at their old confidences; the dispatch exemption off | killed by `point_annotations_do_not_corroborate_the_point`, the five module annotation tests, `a_target_annotation_is_exempt_from_the_min_confidence_floor` |
+| R1 | no crowd bound in `derive_kinship` / `derive_regional_kinship` | killed by `kinship_does_not_clique_a_same_surname_crowd`, `regional_kinship_does_not_clique_a_town_crowd` |
+| I1 | fingerprint path without `handle_names_person`; `string_signal` without the person veto; `derive_coreferences` without the names gate | killed by `identity_ownership_does_not_bind_surname_only_handles`, `coreference_never_same_as_two_differently_named_people`, `name_token_tier_respects_token_boundaries` |
+| I2 | only `derive_coreferences`' names gate removed | killed by `coreference_never_same_as_two_differently_named_people` (five shared module names) |
+| A1 | `derive_handles` skipping only identical values; `derive_coreferences` without the guess gate | killed by `unobserved_name_permutations_never_alias`, `mailboxes_at_different_domains_do_not_alias_but_observed_handles_do`, `handles_alias_shared_persona_across_platforms` |
+| A2 | only `derive_coreferences`' guess gate removed | killed by `unobserved_name_permutations_never_alias` |
+| H1 | `canonical_handle` back through `canonical_word_tokens` | killed by `username_edge_separators_do_not_merge`, `canonical_identities_does_not_same_as_edge_separated_handles` |
+
+**10 of 10 killed.** `handle_names_person` is a new primitive. Its unit test
+pins the accept and reject lists. It has no pre-fix form to falsify against.
+
+`hse-core` changed, and `hse-core` is compiled into `wasm-ui/pkg/`. The
+committed bundle must be regenerated with the pinned toolchain
+(`scripts/wasm_ui_drift_check.sh --write`) before CI's sibling-crates drift
+check can pass.

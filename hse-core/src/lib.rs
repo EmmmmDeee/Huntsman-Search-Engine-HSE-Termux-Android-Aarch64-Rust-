@@ -274,6 +274,20 @@ pub const CROSS_SCAN_SOURCE: &str = "cross_scan_history";
 /// [`Entity::source_count`] / `c_effective`.
 pub const CONSENSUS_SOURCE: &str = "breach_consensus";
 
+/// Evidence source name of the Pwned Passwords k-Anonymity range lookup
+/// (`modules::pwned_passwords`).
+///
+/// A hit says "this exact string appears N times as a password in HIBP's
+/// corpus" — an ANNOTATION of a value the scan already holds (the module only
+/// ever re-emits its own queried target), never a sighting of the account or
+/// of the person behind it, and never "this account was breached"
+/// (REQ-CORE-016 removed its `breach` tag for that reason). Counted as a
+/// source, it made every re-used handle look independently corroborated: a
+/// real "Ian Thorpe" scan gave four handles a phantom extra source and four
+/// `single_source_elevated` breach-consensus flags that were the scan's whole
+/// `PASS_WITH_CONCERNS` verdict (REQ-CORE-018). Kept and shown; never counted.
+pub const PASSWORD_CORPUS_SOURCE: &str = "pwned_passwords";
+
 /// Evidence source name emitted by the multipath-corroboration promotion pass
 /// (`promote_multipath_corroborated` in `crate::core::engine::passes`).
 ///
@@ -331,15 +345,22 @@ pub fn is_engine_corroboration_source(source: &str) -> bool {
 /// True if `source` must NOT count toward cross-source corroboration — a
 /// deterministic self-enrichment pass ([`ENRICHMENT_ONLY_SOURCES`]), the recall
 /// replay ([`RECALL_SOURCE`]), the cross-scan history link ([`CROSS_SCAN_SOURCE`]),
-/// or the breach-consensus summary ([`CONSENSUS_SOURCE`]). All attach genuine,
-/// useful evidence, but none is an independent observation, so none may inflate
-/// the corroboration count.
+/// the breach-consensus summary ([`CONSENSUS_SOURCE`]), or the password-corpus
+/// annotation ([`PASSWORD_CORPUS_SOURCE`]). All attach genuine, useful
+/// evidence, but none is an independent observation, so none may inflate the
+/// corroboration count.
+///
+/// This is the SOURCE-level half of the rule, for callers that hold only a
+/// source name (a CSV's `sources` column, a family classifier). A caller that
+/// holds the record itself asks [`Evidence::is_non_corroborating`], which adds
+/// the two per-record exclusions a source name cannot carry.
 #[inline]
 pub fn is_non_corroborating_source(source: &str) -> bool {
     is_enrichment_source(source)
         || source == RECALL_SOURCE
         || source == CROSS_SCAN_SOURCE
         || source == CONSENSUS_SOURCE
+        || source == PASSWORD_CORPUS_SOURCE
 }
 
 // ─── EntityKind ──────────────────────────────────────────────────────────────
@@ -560,9 +581,13 @@ pub struct Evidence {
     /// Unix timestamp (seconds) when evidence was recorded.
     pub recorded_at: u64,
     /// How this record's ownership was established (whose record it is); `None`
-    /// if not applicable. Set at evidence creation. The exposure index does not
-    /// count an `Unverified` record as the subject's own: entities merge by
-    /// value, so a namesake's record can sit on the subject (REQ-WIKITREE-001).
+    /// if not applicable. Set at evidence creation. An `Unverified` record —
+    /// matched by name only, so whose it is is exactly what is unknown — is not
+    /// counted as the subject's own by the exposure index or the timeline, and
+    /// does not corroborate the entity it sits on
+    /// ([`Evidence::is_non_corroborating`]): entities merge by value, so a
+    /// namesake's record can sit on the subject (REQ-WIKITREE-001,
+    /// REQ-CORE-017).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification: Option<VerificationMethod>,
     /// True if this evidence represents a derivation or inference rather than
@@ -571,6 +596,17 @@ pub struct Evidence {
     /// and should decay confidence in downstream correlations.
     #[serde(default, skip_serializing_if = "is_false")]
     pub is_inferred: bool,
+    /// True if this record ANNOTATES the value it sits on — facts a module
+    /// looked up BY that value (the statistical area, cadastral parcel, solar
+    /// phases or nearby Wi-Fi of a queried point) — rather than observing the
+    /// value itself. Such a record is kept and shown, but it is not a sighting
+    /// of the subject there, so it never corroborates
+    /// ([`Evidence::is_non_corroborating`]). Set by the module that re-emits its
+    /// own queried target via [`Evidence::as_annotation`]; per record, not per
+    /// source, because the same module's OTHER outputs (a Wi-Fi network's
+    /// wardriven location) are genuine observations (REQ-GEO-008).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_annotation: bool,
     /// Id of the scan that produced this evidence. Backfilled from the owning
     /// entity in `Entity::add_evidence` when not set explicitly, so per-record
     /// provenance survives multi-scan merges. Empty for old persisted records
@@ -588,6 +624,7 @@ impl Evidence {
             recorded_at: unix_now(),
             verification: None,
             is_inferred: false,
+            is_annotation: false,
             scan_id: String::new(),
         }
     }
@@ -683,6 +720,39 @@ impl Evidence {
     pub fn with_inferred(mut self, inferred: bool) -> Self {
         self.is_inferred = inferred;
         self
+    }
+
+    /// Mark this evidence as an annotation of the value it sits on (see
+    /// [`Evidence::is_annotation`]) — for a module's re-emission of its own
+    /// queried target.
+    #[must_use]
+    pub fn as_annotation(mut self) -> Self {
+        self.is_annotation = true;
+        self
+    }
+
+    /// True if this record must NOT count toward the corroboration of the
+    /// entity it sits on — the ONE per-record statement of that rule, read by
+    /// [`Entity::source_count`], [`Entity::corroborating_sources`],
+    /// [`Entity::corroborating_records`] and every renderer that marks a record
+    /// "(non-corroborating)", so the count and the mark cannot disagree:
+    ///   * its source is non-corroborating ([`is_non_corroborating_source`]);
+    ///   * it is an annotation of the value, not an observation of it
+    ///     ([`Evidence::is_annotation`], REQ-GEO-008);
+    ///   * its ownership is [`VerificationMethod::Unverified`] — a name-only
+    ///     match. Entities merge by value, so a namesake's register row lands on
+    ///     the subject, and counting it made strangers' records the subject's
+    ///     corroboration: a real "Ian Thorpe" scan graded the subject on a US
+    ///     death record and a New Zealand soldier, and two ambiguous-name rows
+    ///     from different registers (each capped at the ambiguity ceiling)
+    ///     reached c_eff 0.64 — above the expansion floor the ceiling exists to
+    ///     keep them under (REQ-CORE-017).
+    #[inline]
+    #[must_use]
+    pub fn is_non_corroborating(&self) -> bool {
+        is_non_corroborating_source(&self.source)
+            || self.is_annotation
+            || self.verification == Some(VerificationMethod::Unverified)
     }
 }
 
@@ -833,19 +903,25 @@ impl Entity {
         // sources before promotion counts. If the generator is itself
         // non-corroborating (e.g. `name_intel`), it does not contribute to
         // `real`, so external confirmation is needed regardless.
+        //
+        // A record that does not corroborate (`Evidence::is_non_corroborating` —
+        // a non-corroborating source, an annotation, a name-only `Unverified`
+        // match) is skipped, and the duplicate scan below looks only at earlier
+        // COUNTABLE records: a source whose first record is a name-only match
+        // and whose second is a real sighting is counted once, by the sighting.
         let derived = self.has_tag(tags::DERIVED);
         let mut real: u32 = 0;
         let mut promo: u32 = 0;
         for (i, ev) in self.evidence.iter().enumerate() {
             let s = ev.source.as_str();
-            if is_non_corroborating_source(s) {
+            if ev.is_non_corroborating() {
                 continue;
             }
             if self.evidence[..i]
                 .iter()
-                .any(|prev| prev.source == ev.source)
+                .any(|prev| prev.source == ev.source && !prev.is_non_corroborating())
             {
-                continue; // duplicate source — only count first occurrence
+                continue; // duplicate source — only count first countable occurrence
             }
             if is_promotion_source(s) {
                 promo += 1;
@@ -1088,10 +1164,10 @@ impl Entity {
     /// no allocation.
     pub fn is_uncorroborated_name_permutation(&self) -> bool {
         self.has_tag(tags::NAME_DERIVED)
-            && !self.evidence.iter().any(|ev| {
-                let s = ev.source.as_str();
-                !is_non_corroborating_source(s) && s != "search_engines"
-            })
+            && !self
+                .evidence
+                .iter()
+                .any(|ev| !ev.is_non_corroborating() && ev.source != "search_engines")
     }
 
     // ── Evidence helpers ────────────────────────────────────────────────────
@@ -1103,7 +1179,9 @@ impl Entity {
     /// Distinct evidence sources that represent *independent* intelligence —
     /// [`Self::evidence_sources`] minus the non-corroborating passes (the
     /// deterministic self-enrichment ones in [`ENRICHMENT_ONLY_SOURCES`] and the
-    /// [`RECALL_SOURCE`] memory replay; see [`is_non_corroborating_source`]). This
+    /// [`RECALL_SOURCE`] memory replay; see [`is_non_corroborating_source`]) and
+    /// minus a source whose every record here is itself non-corroborating (an
+    /// annotation, a name-only match; see [`Evidence::is_non_corroborating`]). This
     /// is the honest cross-correlation set that drives
     /// [`Self::source_count`]/[`Self::c_effective`] and the corroboration
     /// correlator rules; the full [`Self::evidence_sources`] set is retained for
@@ -1125,7 +1203,9 @@ impl Entity {
         let mut promo: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for ev in &self.evidence {
             let s = ev.source.as_str();
-            if is_non_corroborating_source(s) {
+            // Per RECORD, exactly as `source_count` skips it — see
+            // `Evidence::is_non_corroborating`.
+            if ev.is_non_corroborating() {
                 continue;
             }
             if is_promotion_source(s) {
@@ -1163,7 +1243,7 @@ impl Entity {
     pub fn corroborating_records(&self) -> std::collections::HashSet<(&str, &str)> {
         self.evidence
             .iter()
-            .filter(|ev| !is_non_corroborating_source(&ev.source))
+            .filter(|ev| !ev.is_non_corroborating())
             .map(|ev| (ev.source.as_str(), ev.summary.as_str()))
             .collect()
     }

@@ -64,8 +64,9 @@ fn evidence_detail(ev: &hse_core::Evidence) -> String {
             )
         })
         .collect();
-    let marker = if hse_core::is_non_corroborating_source(&ev.source) {
-        " <span class=\"text-muted\" style=\"font-size:10px\">(non-corroborating: enrichment/recall/cross-scan)</span>"
+    // Per record, exactly as `Entity::source_count` decides it.
+    let marker = if ev.is_non_corroborating() {
+        " <span class=\"text-muted\" style=\"font-size:10px\">(non-corroborating: enrichment/recall/cross-scan/annotation/name-only match)</span>"
     } else {
         ""
     };

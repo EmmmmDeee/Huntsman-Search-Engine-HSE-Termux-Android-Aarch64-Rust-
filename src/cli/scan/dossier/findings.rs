@@ -194,11 +194,13 @@ fn print_finding(e: &Entity) {
         // dossier was the one consumer rendering all evidence as if it were
         // equal, direct observation:
         //   * non-corroborating — a self-enrichment/recall/cross-scan/consensus
-        //     pass that attaches real detail but never counts toward
-        //     `source_count`, so it must not read as independent confirmation;
+        //     pass, an annotation of the value, or a name-only match: real
+        //     detail that never counts toward `source_count`
+        //     (`Evidence::is_non_corroborating`, the same per-record test), so
+        //     it must not read as independent confirmation;
         //   * inferred — a derivation (name permuted from a username,
         //     coordinates computed from an address), not an observation.
-        let marker = if crate::core::entity::is_non_corroborating_source(&ev.source) {
+        let marker = if ev.is_non_corroborating() {
             "  (non-corroborating)"
         } else {
             ""

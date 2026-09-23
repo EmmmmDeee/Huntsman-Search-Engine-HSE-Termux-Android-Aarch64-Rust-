@@ -578,9 +578,18 @@ pub(super) fn records_to_entities(
             } else {
                 "family-candidate"
             });
+            // Ownership `Unverified`: the row names an owner, and the only thing
+            // tying that owner to the subject (or to anyone else in the scan) is
+            // the name. The entity-level confidence and tags do not survive the
+            // engine's merge onto a same-named Person — often the subject's own
+            // anchor — but the record's status does, so a namesake's register
+            // row can never count as the subject's corroboration (scan 7258fc07:
+            // an SA owner with co-owner "Megan Thorpe" corroborated "Ian
+            // Thorpe"; REQ-CORE-017).
             let mut pev = Evidence::new(SRC, format!("QLD unclaimed money owner: {person}"))
                 .with_attr("owner_name", person)
-                .with_attr("register", "QLD Public Trustee unclaimed monies");
+                .with_attr("register", "QLD Public Trustee unclaimed monies")
+                .with_verification(crate::core::entity::VerificationMethod::Unverified);
             if let Some(p4) = pc.as_deref() {
                 pev = pev.with_attr("postcode", p4);
             }

@@ -365,3 +365,34 @@ fn the_observed_false_positive_cluster_collapses_completely() {
     );
     assert!(former > DEFAULT_MIN_SCORE);
 }
+
+/// REQ-IDENTITY-GATE-002 (scan 7258fc07, target "Ian Thorpe"): the name-token
+/// tier was plain containment, so "Ian Thorpe" ↔ `damianthorpe` scored a 0.62
+/// match with no corroboration; the substring tier tied "Ian Thorpe" to
+/// "Megan Thorpe" on `anthorpe`. A shared surname is not a shared identity.
+#[test]
+fn name_token_tier_respects_token_boundaries() {
+    let person = Entity::new(EntityKind::Person, "Ian Thorpe", 0.7, "s");
+    for h in ["damianthorpe", "brianthorpe", "christianthorpe", "aidan_thorpe"] {
+        let user = Entity::new(EntityKind::Username, h, 0.7, "s");
+        let out = resolve_coreferences(&[person.clone(), user], DEFAULT_MIN_SCORE, 50);
+        assert!(out.is_empty(), "{h} does not spell Ian Thorpe: {out:?}");
+    }
+    // Two differently named people get no string tier.
+    assert!(
+        string_signal(
+            "Ian Thorpe",
+            "Megan Thorpe",
+            "ianthorpe",
+            "meganthorpe",
+            true,
+            true
+        )
+        .is_none()
+    );
+    // A handle that does spell the name keeps its tier.
+    let user = Entity::new(EntityKind::Username, "ian_thorpe_au", 0.7, "s");
+    let out = resolve_coreferences(&[person, user], DEFAULT_MIN_SCORE, 50);
+    assert_eq!(out.len(), 1);
+    assert!(out[0].signals.contains(&"name-token-match"));
+}

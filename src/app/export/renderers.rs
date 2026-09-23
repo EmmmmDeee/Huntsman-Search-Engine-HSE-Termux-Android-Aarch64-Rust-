@@ -525,8 +525,11 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
             let _ = writeln!(s, "    MITRE ATT&CK: {}", mitre.join("; "));
         }
         for ev in &e.evidence {
-            let marker = if crate::core::entity::is_non_corroborating_source(&ev.source) {
-                "  (non-corroborating: enrichment/recall/cross-scan — doesn't count toward source_count)"
+            // Per record (`Evidence::is_non_corroborating`), exactly as
+            // `source_count` decides it — an annotation or a name-only match is
+            // marked like an enrichment pass, since it is excluded like one.
+            let marker = if ev.is_non_corroborating() {
+                "  (non-corroborating: enrichment/recall/cross-scan/annotation/name-only match — doesn't count toward source_count)"
             } else {
                 ""
             };

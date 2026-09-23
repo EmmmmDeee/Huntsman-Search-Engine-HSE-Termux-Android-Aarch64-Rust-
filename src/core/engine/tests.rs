@@ -7466,3 +7466,124 @@ async fn a_legacy_untagged_centroid_is_never_pivoted() {
         "{reasons:?}"
     );
 }
+
+/// Re-emits its dispatch target as a floor-confidence annotation (the shape
+/// `au_geo`, `overpass`, `qld_cadastre`, `sunrise_sunset`, `wigle` and
+/// `pwned_passwords` now share) plus one unrelated low-confidence point.
+struct TargetAnnotator;
+
+#[async_trait::async_trait]
+impl Module for TargetAnnotator {
+    fn name(&self) -> &'static str {
+        "target_annotator"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, _: &Target) -> bool {
+        true
+    }
+    async fn process(
+        &self,
+        target: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let mut echo = Entity::new(
+            EntityKind::Coordinates,
+            &target.value,
+            crate::core::confidence::DERIVED_FLOOR,
+            &ctx.scan_id,
+        );
+        echo.add_evidence(Evidence::new("target_annotator", "ASGS region").as_annotation());
+        let mut other = Entity::new(
+            EntityKind::Coordinates,
+            "-27.100000,153.100000",
+            crate::core::confidence::DERIVED_FLOOR,
+            &ctx.scan_id,
+        );
+        other.add_evidence(Evidence::new("target_annotator", "a nearby node"));
+        let mut r = crate::core::module::ModuleResult::new();
+        r.push(echo);
+        r.push(other);
+        Ok(r)
+    }
+}
+
+/// REQ-GEO-008: a module's re-emission of its own dispatch target annotates an
+/// entity the scan already admitted, so the `--min-confidence` floor — a
+/// question about NEW findings — must not drop it (it carries the confidence
+/// floor precisely so the max-merge cannot raise the point). Any other
+/// below-floor entity is still refused.
+#[tokio::test]
+async fn a_target_annotation_is_exempt_from_the_min_confidence_floor() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::test_support::InMemoryStore;
+
+    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(TargetAnnotator)];
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(modules, store, bus.clone());
+
+    let target = Target::new(TargetKind::Coordinates, "-33.868800,151.209300");
+    let opts = ScanOptions {
+        min_confidence: Some(0.3),
+        ..Default::default()
+    };
+    let mut ctx = ModuleContext {
+        scan_id: "annot-scan".to_string(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let cx = DispatchCx {
+        scan_id: "annot-scan",
+        target: &target,
+        opts: &opts,
+        is_expansion: true,
+        seed: &Target::new(TargetKind::FullName, "Ian Thorpe"),
+        quarantined: no_quarantine(),
+    };
+    let mut point = Entity::new(EntityKind::Coordinates, &target.value, 0.72, "annot-scan");
+    point.add_evidence(Evidence::new("search_engines", "known-city centroid"));
+    let point_uid = point.uid.clone();
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+    entity_map.insert(point_uid.clone(), point);
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
+    };
+    engine
+        .dispatch_target(&cx, &mut ctx, &mut state)
+        .await
+        .expect("dispatch runs");
+
+    let merged = entity_map
+        .get_mut(&point_uid)
+        .expect("target point present");
+    assert!(
+        merged.has_evidence_from("target_annotator"),
+        "the annotation merged onto the target despite the 0.3 floor"
+    );
+    assert!(
+        (merged.confidence - 0.72).abs() < 1e-9,
+        "{}",
+        merged.confidence
+    );
+    assert_eq!(
+        merged.source_count(),
+        1,
+        "an annotation does not corroborate"
+    );
+    let other_uid = crate::core::entity::uid_for(&EntityKind::Coordinates, "-27.100000,153.100000");
+    assert!(
+        entity_map.get_mut(&other_uid).is_none(),
+        "a non-target entity below the floor is still refused"
+    );
+}

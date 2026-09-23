@@ -406,12 +406,19 @@ fn assemble(
     if let Some(s) = &state {
         roll_up = roll_up.with_attr("au_state", s);
     }
-    // Enrich the seed coordinate (GREATEST-merge folds this onto the existing
-    // Coordinates entity, only ever adding tags/evidence).
+    // Annotate the queried coordinate. The GREATEST-merge folds this onto the
+    // existing Coordinates entity, and GREATEST means it only adds tags and
+    // evidence when it carries the confidence FLOOR — it used to carry
+    // HIGH_PLUSPLUS_PLUS (0.85), which lifted a 0.72 known-city centroid to 0.85
+    // and, counted as an independent source alongside overpass / sunrise_sunset
+    // / qld_cadastre / wigle, graded it VERIFIED at c_eff 1.00 (scan 7258fc07,
+    // REQ-GEO-008). Which ASGS regions a point lies in is a lookup keyed ON the
+    // point, not a sighting of the subject there, so the roll-up is an
+    // annotation (`Evidence::as_annotation`) and never corroborates.
     let mut coord_e = Entity::new(
         EntityKind::Coordinates,
         coord,
-        confidence::HIGH_PLUSPLUS_PLUS,
+        confidence::DERIVED_FLOOR,
         scan_id,
     );
     coord_e.tag("au");
@@ -428,7 +435,7 @@ fn assemble(
         coord_e.tag(format!("au-state:{code}"));
         coord_e.tag("country:AU");
     }
-    coord_e.add_evidence(roll_up);
+    coord_e.add_evidence(roll_up.as_annotation());
     result.push(coord_e);
 }
 

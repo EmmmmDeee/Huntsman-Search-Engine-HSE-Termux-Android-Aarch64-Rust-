@@ -281,6 +281,83 @@ pub(crate) fn person_names_compatible(a: &str, b: &str) -> Option<bool> {
     )
 }
 
+/// Whether an Email local part or a Username `handle` spells the person `name` —
+/// the identifier-side sibling of [`person_names_compatible`], sharing its name
+/// parser so a handle and a name record are judged by one reading of the name.
+///
+/// [`identity_overlaps`] cannot make this call for a person: any ≥4-character
+/// run satisfies it, and the surname alone always is one. A real "Ian Thorpe"
+/// scan bound `carolthorpe70`, `megthorpeart`, `aidan_thorpe` (`"anthorpe"`)
+/// and `tharleschorpe` (`"horpe"`) to the subject as his own identifiers, and
+/// co-reference scored `damianthorpe` a 0.62 name-token match because
+/// `"ian"` and `"thorpe"` are both substrings of it (REQ-IDENTITY-GATE-002).
+///
+/// The handle (an email's local part only) is read as its lowercase
+/// alphabetic runs — digits and every separator split — and the runs are then
+/// concatenated from a run START, so a match can never begin inside a word
+/// (`dam|ianthorpe` is not `ian thorpe`) while `ian.thorpe`, `ian_thorpe` and
+/// `ianthorpe` read alike. With `g` the given name, `s` the surname (an
+/// internal `-`/`'` dropped, so `o.neill` matches `O'Neill`) and `gi`/`si`
+/// their initials, `Some(true)` iff the text read from some run start is:
+///   * `g s…` — the full given name then the surname, anything after it
+///     (`ianthorpe`, `ian.thorpe`, `ianthorpeofficial`, `ianthorpe26`);
+///   * `g x s…` — the same across one middle initial (`ianjthorpe`,
+///     `ian_j_thorpe`);
+///   * `gi s`, `s g`, `s gi` or `g si` — each ENDING at a run boundary, since
+///     a bare initial is too short to trust inside a longer word (`ithorpe`,
+///     `kdiegmann`, `thorpe_ian`, `thorpe_i` and `haigenb` match;
+///     `thorpe_ivan` does not).
+///
+/// `Some(false)` otherwise — the surname alone or beside another given name
+/// (`thorpe`, `jack_thorpe`, `thorpedo_m`), however many characters it
+/// shares. `None` when `name` is a mononym, which has no given/surname
+/// structure to test; the caller keeps its own check. A known conservative
+/// loss, matching this codebase's default of a missed link over a false one: a
+/// handle built from a nickname (`bobsmith` for Robert Smith) or with a prefix
+/// (`realianthorpe`) is not recognised. Pure; deterministic; no dictionary.
+pub(crate) fn handle_names_person(name: &str, handle: &str) -> Option<bool> {
+    let (given, surname) = person_name_parts(name)?;
+    let letters = |s: &str| -> String {
+        s.chars()
+            .filter(|c| c.is_alphabetic())
+            .flat_map(char::to_lowercase)
+            .collect()
+    };
+    let (g, s) = (letters(&given), letters(&surname));
+    let (Some(gi), Some(si)) = (g.chars().next(), s.chars().next()) else {
+        return None;
+    };
+    let (gi, si) = (gi.to_string(), si.to_string());
+    // Lowercase alphabetic runs of the local part.
+    let runs: Vec<String> = crate::core::validation::email_local(handle)
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|r| !r.is_empty())
+        .map(|r| r.chars().flat_map(char::to_lowercase).collect())
+        .collect();
+    let named = (0..runs.len()).any(|start| {
+        // The runs from `start` joined, and the byte offsets where a run ends.
+        let mut joined = String::new();
+        let mut ends = Vec::new();
+        for r in &runs[start..] {
+            joined.push_str(r);
+            ends.push(joined.len());
+        }
+        let open_ended = |form: &str| joined.starts_with(form);
+        let bounded = |form: &str| joined.starts_with(form) && ends.contains(&form.len());
+        let across_initial = joined.strip_prefix(g.as_str()).is_some_and(|rest| {
+            let mut cs = rest.chars();
+            cs.next().is_some() && cs.as_str().starts_with(s.as_str())
+        });
+        open_ended(&format!("{g}{s}"))
+            || across_initial
+            || bounded(&format!("{gi}{s}"))
+            || bounded(&format!("{s}{g}"))
+            || bounded(&format!("{s}{gi}"))
+            || bounded(&format!("{g}{si}"))
+    });
+    Some(named)
+}
+
 /// Whether free `text` (a search result's title + snippet + URL, or a bare URL
 /// path) NAMES the person `subject` — the search-admission sibling of
 /// [`person_names_compatible`], sharing its name parser so a result and a

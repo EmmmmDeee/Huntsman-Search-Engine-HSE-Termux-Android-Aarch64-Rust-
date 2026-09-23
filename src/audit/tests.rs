@@ -8,6 +8,7 @@ fn ent(kind: &str, value: &str, c: f64, corr: u32, tags: &[&str]) -> AuditEntity
         c_effective: c,
         corroboration: corr,
         sources: vec!["test".into()],
+        corroborating_sources: None,
         tags: tags.iter().map(|s| (*s).to_string()).collect(),
     }
 }
@@ -503,5 +504,44 @@ fn weak_corroboration_ignores_non_corroborating_sources() {
         .iter()
         .find(|f| f.category == "weak-corroboration")
         .expect("seed/url_extract must not mask single-source dominance");
+    assert!(f.message.starts_with("82%"), "got {:?}", f.message);
+}
+
+#[test]
+fn weak_corroboration_reads_the_per_record_verdict_of_a_stored_entity() {
+    // REQ-GEO-008 / REQ-CORE-017: an annotation of the value (a point lookup)
+    // and a name-only register match do not corroborate, so a stored entity
+    // backed by one real source plus those is single-source here exactly as
+    // `Entity::source_count` says — its source NAMES alone would read as three.
+    use crate::core::entity::{Entity, EntityKind, Evidence, VerificationMethod};
+    let mut entities: Vec<AuditEntity> = Vec::new();
+    for i in 0..14 {
+        let mut e = Entity::new(
+            EntityKind::Coordinates,
+            format!("-33.86{i},151.2"),
+            0.72,
+            "s",
+        );
+        e.add_evidence(Evidence::new("search_engines", "centroid"));
+        e.add_evidence(Evidence::new("au_geo", "ASGS").as_annotation());
+        e.add_evidence(
+            Evidence::new("qld_unclaimed", "row").with_verification(VerificationMethod::Unverified),
+        );
+        let a = AuditEntity::from_entity(&e);
+        assert_eq!(a.sources.len(), 3);
+        assert_eq!(a.corroborating_source_count(), 1);
+        entities.push(a);
+    }
+    for i in 0..3 {
+        let mut e = ent("domain", &format!("m{i}.example.com"), 0.9, 2, &[]);
+        e.sources = vec!["dns_intel".into(), "doh_resolver".into()];
+        entities.push(e);
+    }
+    let r = audit(&entities, LogSignals::default());
+    let f = r
+        .findings
+        .iter()
+        .find(|f| f.category == "weak-corroboration")
+        .expect("annotations and name-only matches must not mask single-source dominance");
     assert!(f.message.starts_with("82%"), "got {:?}", f.message);
 }

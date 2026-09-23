@@ -2170,3 +2170,74 @@ fn person_surname_is_read_through_the_name_parser() {
     );
     assert_eq!(person_surname("Thorpey"), None);
 }
+
+#[test]
+fn handle_names_person_needs_the_given_name_beside_the_surname() {
+    // REQ-IDENTITY-GATE-002 (scan 7258fc07, target "Ian Thorpe"): a ≥4-char
+    // substring bound every surname-bearing handle to the subject.
+    let subject = "Ian Thorpe";
+    for handle in [
+        "ianthorpe",
+        "ian.thorpe",
+        "_ianthorpe_",
+        "ianthorpe26",
+        "ianthorpeofficial",
+        "ian.thorpe@gmail.com",
+        "ianjthorpe",
+        "ian_j_thorpe",
+        "i.thorpe",
+        "ithorpe",
+        "thorpe_ian",
+        "thorpeian",
+        "thorpe_i",
+        "thorpei",
+        "iant",
+    ] {
+        assert_eq!(
+            handle_names_person(subject, handle),
+            Some(true),
+            "{handle} spells {subject}"
+        );
+    }
+    for handle in [
+        "carolthorpe70",
+        "megthorpeart",
+        "aidan_thorpe",
+        "damianthorpe",
+        "brianthorpe",
+        "christianthorpe",
+        "tharleschorpe",
+        "thorpe",
+        "thorpedo_m",
+        "jack_thorpe",
+        "john.thorpe@yahoo.com",
+        "thorpe_ivan",
+        "ithorpedo",
+    ] {
+        assert_eq!(
+            handle_names_person(subject, handle),
+            Some(false),
+            "{handle} does not spell {subject}"
+        );
+    }
+    // Initial forms and a compound/apostrophised surname.
+    assert_eq!(
+        handle_names_person("Kyle Diegmann", "kdiegmann"),
+        Some(true)
+    );
+    assert_eq!(handle_names_person("Haigen Bamford", "haigenb"), Some(true));
+    assert_eq!(
+        handle_names_person("Ian O'Neill", "ian.o.neill"),
+        Some(true)
+    );
+    assert_eq!(
+        handle_names_person("Ian Symes-Thorpe", "ian_symes_thorpe"),
+        Some(true)
+    );
+    assert_eq!(
+        handle_names_person("John Smith", "johnsmith_au"),
+        Some(true)
+    );
+    // A mononym has no structure to test.
+    assert_eq!(handle_names_person("Thorpey", "thorpey"), None);
+}

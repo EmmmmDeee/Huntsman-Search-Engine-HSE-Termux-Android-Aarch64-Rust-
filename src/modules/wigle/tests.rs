@@ -1756,3 +1756,29 @@ fn emit_bssid_entities_never_fabricates_a_missing_longitude() {
          from city/region/country and never touches a coordinate"
     );
 }
+
+#[test]
+fn the_queried_point_is_annotated_with_wifi_density_not_corroborated() {
+    // REQ-GEO-008: the density read of a queried point re-emitted it at 0.85 as
+    // an independent source; the networks' own positions are observations.
+    let results = vec![Network {
+        ssid: None,
+        netid: Some("AA:BB:CC:DD:EE:01".into()),
+        encryption: Some("wpa2".into()),
+        lastupdt: None,
+        trilat: Some(-27.4766),
+        trilong: Some(153.0280),
+        city: None,
+        region: None,
+        country: None,
+        postalcode: None,
+    }];
+    let echo = query_point_annotation("-27.469800,153.025100", 12, &results, None, "s");
+    assert!(echo.has_tag("wifi-density:suburban"));
+    crate::core::test_support::assert_point_annotation(&echo);
+    let aps = wifi_ap_entities(&results, -27.4698, 153.0251, "-27.469800,153.025100", "s");
+    assert!(
+        aps.iter()
+            .all(|e| e.evidence.iter().all(|ev| !ev.is_non_corroborating()))
+    );
+}

@@ -83,28 +83,6 @@ use crate::core::{confidence, entity::EntityKind};
         assert!(!is_signal_free("matt@example.com"));
     }
 
-    // ── confidence_for (pure) ───────────────────────────────────────────
-
-    #[test]
-    fn confidence_bands_step_with_count() {
-        assert!((confidence_for(1, TargetKind::Email) - confidence::HIGH_PLUS).abs() < 1e-9);
-        assert!((confidence_for(9, TargetKind::Email) - confidence::HIGH_PLUS).abs() < 1e-9);
-        assert!((confidence_for(10, TargetKind::Email) - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
-        assert!((confidence_for(99, TargetKind::Email) - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
-        assert!((confidence_for(100, TargetKind::Email) - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
-        assert!((confidence_for(50_000, TargetKind::Email) - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
-    }
-
-    #[test]
-    fn username_confidence_is_capped_because_a_handle_is_shared_by_strangers() {
-        // A bare handle in the password corpus was put there by any number of
-        // unrelated people who use it as a password; it says little about this
-        // subject, so no count lifts a Username past HIGH_PLUS.
-        assert!((confidence_for(3, TargetKind::Username) - confidence::HIGH_PLUS).abs() < 1e-9);
-        assert!((confidence_for(50, TargetKind::Username) - confidence::HIGH_PLUS).abs() < 1e-9);
-        assert!((confidence_for(50_000, TargetKind::Username) - confidence::HIGH_PLUS).abs() < 1e-9);
-    }
-
     // ── build_entities (pure) ───────────────────────────────────────────
 
     #[test]
@@ -117,7 +95,7 @@ use crate::core::{confidence, entity::EntityKind};
         // construction, so both value and raw_value are the canonical form here.
         assert_eq!(e.kind, EntityKind::Email);
         assert_eq!(e.raw_value, "test@example.com");
-        assert!((e.confidence - confidence::VERY_HIGH_PLUS).abs() < 1e-9, "5727 ≥ 100 ⇒ confidence::VERY_HIGH_PLUS");
+        assert!((e.confidence - confidence::DERIVED_FLOOR).abs() < 1e-9, "an annotation carries the floor, whatever the count");
         assert!(e.has_tag("pwned-password") && e.has_tag("used-as-password"));
         // A password-corpus hit is NOT a breach of this account: the `breach`
         // tag drives the correlator's breach rules (AU-016/AU-019/AU-022, the
@@ -139,7 +117,37 @@ use crate::core::{confidence, entity::EntityKind};
         let target = Target::new(TargetKind::Username, "alice");
         let e = build_entities(&target, 3, "ABCDE", "scan").remove(0);
         assert_eq!(e.kind, EntityKind::Username);
-        assert!((e.confidence - confidence::HIGH_PLUS).abs() < 1e-9, "3 < 10 ⇒ confidence::HIGH_PLUS");
+        assert!((e.confidence - confidence::DERIVED_FLOOR).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_password_corpus_hit_never_raises_or_corroborates_its_target() {
+        // REQ-CORE-018 (scan 7258fc07, target "Ian Thorpe"): the hit re-emitted
+        // its target at up to 0.90, counted as an independent source, and was
+        // graded as an attesting breach corpus. It annotates a string; it is
+        // not a sighting of the account.
+        for (kind, value, count) in [
+            (TargetKind::Username, "iant", 564_u64),
+            (TargetKind::Email, "a@b.com", 50_000),
+        ] {
+            let e = build_entities(&Target::new(kind, value), count, "87E9C", "s").remove(0);
+            assert!(e.confidence <= confidence::DERIVED_FLOOR + 1e-9, "{value}: {}", e.confidence);
+            assert_eq!(
+                e.evidence[0].attributes.get("password_occurrences").map(String::as_str),
+                Some(count.to_string().as_str())
+            );
+            assert!(e.has_tag("pwned-password"));
+            assert!(e.evidence[0].is_non_corroborating());
+        }
+        // Merged onto a name_intel-style guess, it neither lifts the guess's
+        // confidence nor adds a corroborating source.
+        let mut guess = crate::core::entity::Entity::new(EntityKind::Username, "iant", 0.38, "s");
+        guess.add_evidence(crate::core::entity::Evidence::new("github_user", "profile"));
+        let hit = build_entities(&Target::new(TargetKind::Username, "iant"), 564, "87E9C", "s").remove(0);
+        guess.merge(hit);
+        assert!((guess.confidence - 0.38).abs() < 1e-9, "{}", guess.confidence);
+        assert_eq!(guess.source_count(), 1);
+        assert!(!guess.corroborating_sources().contains("pwned_passwords"));
     }
 
     #[test]

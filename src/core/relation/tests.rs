@@ -421,6 +421,16 @@ fn canonical_identities_links_reordered_person_names() {
 }
 
 #[test]
+fn canonical_identities_does_not_same_as_edge_separated_handles() {
+    // Scan 7258fc07: Instagram `_ianthorpe_` was fused with the subject's
+    // `ianthorpe` composite by an undamped 0.95 SameAs — the resolver's handle
+    // canonicaliser trimmed the edge underscores a platform treats as real.
+    let a = ent(EntityKind::Username, "_ianthorpe_", 0.95);
+    let b = ent(EntityKind::Username, "ianthorpe", 0.95);
+    assert!(derive_canonical_identities(&[a, b], "s").is_empty());
+}
+
+#[test]
 fn canonical_identities_ignores_genuinely_distinct_entities() {
     let a = ent(EntityKind::Email, "alice@gmail.com", 0.6);
     let b = ent(EntityKind::Email, "bob@gmail.com", 0.6);
@@ -1102,8 +1112,10 @@ fn registration_links_domain_to_registrant_person() {
 
 #[test]
 fn handles_alias_shared_persona_across_platforms() {
-    // One persona ("jsmith") across two mailboxes and a username → a 3-clique of
-    // AliasOf edges. A different persona and a numeric handle stay unlinked.
+    // One persona ("jsmith") across two mailboxes and a username → the username
+    // aliases each mailbox. The two mailboxes are at DIFFERENT domains — two
+    // accounts by construction (REQ-REL-003) — so they do not alias each other.
+    // A different persona and a numeric handle stay unlinked.
     let g1 = ent(EntityKind::Email, "jsmith@gmail.com", 0.7);
     let o1 = ent(EntityKind::Email, "jsmith@outlook.com", 0.6);
     let u1 = ent(EntityKind::Username, "jsmith", 0.5);
@@ -1111,7 +1123,11 @@ fn handles_alias_shared_persona_across_platforms() {
     let numeric = ent(EntityKind::Username, "12345", 0.9); // excluded by persona_key
 
     let rels = derive_handles(&[g1.clone(), o1.clone(), u1.clone(), other, numeric], "s");
-    assert_eq!(rels.len(), 3, "C(3,2) alias edges for the one persona");
+    assert_eq!(
+        rels.len(),
+        2,
+        "username ↔ each mailbox; no gmail ↔ outlook alias"
+    );
     for r in &rels {
         assert_eq!(r.kind, RelationKind::AliasOf);
         assert!(
@@ -1144,8 +1160,176 @@ fn role_mailboxes_do_not_alias_across_organisations() {
     // A genuine shared handle still aliases — the guard is specific to the
     // generic-token taxonomy, not a blanket suppression.
     let g1 = ent(EntityKind::Email, "jsmith@gmail.com", 0.7);
-    let g2 = ent(EntityKind::Email, "jsmith@outlook.com", 0.6);
+    let g2 = ent(EntityKind::Username, "jsmith", 0.6);
     assert_eq!(derive_handles(&[g1, g2], "s").len(), 1);
+}
+
+#[test]
+fn unobserved_name_permutations_never_alias() {
+    use crate::core::entity::Evidence;
+    // REQ-REL-003 (scan 7258fc07, target "Ian Thorpe"): 2,966 of 2,992 alias_of
+    // edges had an unobserved name permutation at one end or joined mailboxes
+    // at different domains — every permutation of one name shares the persona
+    // key because the generator spelled them all from it.
+    let perm = |k, v: &str| {
+        let mut e = ent(k, v, 0.27);
+        for t in ["derived", "name-derived", "permuted"] {
+            e.tag(t);
+        }
+        e.add_evidence(Evidence::new(
+            "name_intel",
+            format!("Speculative email '{v}' permuted from name"),
+        ));
+        e
+    };
+    let a = perm(EntityKind::Email, "ian.thorpe@gmail.com");
+    let b = perm(EntityKind::Email, "ian_thorpe@gmail.com"); // same domain, same key
+    let c = perm(EntityKind::Email, "ian.thorpe@ymail.com"); // different domain
+    let mut u = ent(EntityKind::Username, "ianthorpe", 0.38);
+    u.tag("derived");
+    u.add_evidence(Evidence::new("username_variants", "variant"));
+    let ents = [a, b, c, u];
+    assert!(
+        derive_handles(&ents, "s").is_empty(),
+        "no alias among generator guesses"
+    );
+    // The co-reference promotion pass must not re-emit them either: handle
+    // equivalence alone (0.80) meets its floor for the same-domain pair and
+    // every email ↔ username pair.
+    assert!(
+        derive_coreferences(&ents, &[], "s").is_empty(),
+        "no promoted identity edge among generator guesses"
+    );
+
+    // Control: once an independent source observes both, they alias again.
+    let mut seen_a = perm(EntityKind::Email, "ian.thorpe@gmail.com");
+    seen_a.add_evidence(Evidence::new("hibp", "breach record"));
+    let mut seen_u = ent(EntityKind::Username, "ianthorpe", 0.7);
+    seen_u.add_evidence(Evidence::new("github_user", "profile"));
+    assert_eq!(derive_handles(&[seen_a, seen_u], "s").len(), 1);
+    // A seed-supplied identifier (non-corroborating `seed` evidence, but no
+    // `derived` tag) is not a guess either.
+    let mut seed = ent(EntityKind::Email, "ianthorpe@gmail.com", 0.9);
+    seed.add_evidence(Evidence::new("seed", "operator input"));
+    let mut obs = ent(EntityKind::Username, "ianthorpe", 0.7);
+    obs.add_evidence(Evidence::new("github_user", "profile"));
+    assert_eq!(derive_handles(&[seed, obs], "s").len(), 1);
+}
+
+#[test]
+fn mailboxes_at_different_domains_do_not_alias_but_observed_handles_do() {
+    use crate::core::entity::Evidence;
+    let obs = |k, v: &str, src: &str| {
+        let mut e = ent(k, v, 0.7);
+        e.add_evidence(Evidence::new(src, "observed"));
+        e
+    };
+    let g = obs(EntityKind::Email, "jsmith@gmail.com", "hibp");
+    let o = obs(EntityKind::Email, "jsmith@outlook.com", "hibp");
+    let u = obs(EntityKind::Username, "jsmith", "github_user");
+    let rels = derive_handles(&[g.clone(), o.clone(), u], "s");
+    // Consistent with coref::string_signal: no gmail ↔ outlook alias; the
+    // username still aliases each mailbox.
+    assert_eq!(rels.len(), 2);
+    let joins = |r: &Relation, x: &str, y: &str| {
+        (r.from_uid == x && r.to_uid == y) || (r.from_uid == y && r.to_uid == x)
+    };
+    assert!(!rels.iter().any(|r| joins(r, &g.uid, &o.uid)));
+    // Same domain keeps the alias.
+    let g2 = obs(EntityKind::Email, "j.smith@gmail.com", "hibp");
+    assert_eq!(derive_handles(&[g, g2], "s").len(), 1);
+}
+
+#[test]
+fn identity_ownership_does_not_bind_surname_only_handles() {
+    // REQ-IDENTITY-GATE-002 (scan 7258fc07, target "Ian Thorpe"): the ≥4-char
+    // overlap bound every relative's and namesake's handle to the subject.
+    let mut subject = ent(EntityKind::Person, "Ian Thorpe", 0.9);
+    subject.tag("subject");
+    let mut ents = vec![subject.clone()];
+    for h in [
+        "carolthorpe70",
+        "megthorpeart",
+        "aidan_thorpe",
+        "damianthorpe",
+        "tharleschorpe",
+        "thorpe",
+        "ianthorpe",
+        "i.thorpe",
+        "thorpe_i",
+    ] {
+        ents.push(ent(EntityKind::Username, h, 0.5));
+    }
+    let bound: std::collections::BTreeSet<String> = derive_identity_ownership(&ents, "s")
+        .into_iter()
+        .filter(|r| r.kind == RelationKind::IdentifiedBy && r.from_uid == subject.uid)
+        .map(|r| r.to_uid)
+        .collect();
+    let expected: std::collections::BTreeSet<String> = ents
+        .iter()
+        .filter(|e| ["ianthorpe", "i.thorpe", "thorpe_i"].contains(&e.value.as_str()))
+        .map(|e| e.uid.clone())
+        .collect();
+    assert_eq!(expected.len(), 3);
+    assert_eq!(bound, expected);
+}
+
+#[test]
+fn coreference_never_same_as_two_differently_named_people() {
+    use crate::core::entity::Evidence;
+    // REQ-IDENTITY-GATE-002: "Ian Thorpe" ↔ "Megan Thorpe" scored 0.811
+    // (substring `anthorpe` 0.45 ⊕ three shared module names 0.657) and was
+    // promoted to SameAs.
+    let person = |name: &str| {
+        let mut e = ent(EntityKind::Person, name, 0.82);
+        for src in ["qld_unclaimed", "search_engines", "wikitree"] {
+            e.add_evidence(Evidence::new(src, format!("{src} row for {name}")));
+        }
+        e
+    };
+    let rels = derive_coreferences(&[person("Ian Thorpe"), person("Megan Thorpe")], &[], "s");
+    assert!(
+        !rels.iter().any(|r| r.kind == RelationKind::SameAs),
+        "two differently named people are not one: {rels:?}"
+    );
+    // Even five shared module names (0.832 on shared-source alone) do not.
+    let five = |name: &str| {
+        let mut e = ent(EntityKind::Person, name, 0.82);
+        for src in [
+            "qld_unclaimed",
+            "search_engines",
+            "wikitree",
+            "openarch",
+            "wikidata",
+        ] {
+            e.add_evidence(Evidence::new(src, format!("{src} row for {name}")));
+        }
+        e
+    };
+    assert!(
+        derive_coreferences(&[five("Carol Thorpe"), five("Megan Thorpe")], &[], "s").is_empty()
+    );
+    // Nor is a person's identifier a handle that does not spell the name.
+    let mut handle = ent(EntityKind::Username, "aidan_thorpe", 0.82);
+    for src in [
+        "qld_unclaimed",
+        "search_engines",
+        "wikitree",
+        "openarch",
+        "wikidata",
+    ] {
+        handle.add_evidence(Evidence::new(src, "row"));
+    }
+    assert!(derive_coreferences(&[five("Ian Thorpe"), handle], &[], "s").is_empty());
+
+    // Positive control, same evidence: an initial form of the same name.
+    let rels = derive_coreferences(&[person("Ian Thorpe"), person("I Thorpe")], &[], "s");
+    assert_eq!(
+        rels.iter()
+            .filter(|r| r.kind == RelationKind::SameAs)
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -1389,6 +1573,62 @@ fn kinship_skips_one_person_two_spellings() {
     assert!(
         derive_kinship(&[a, b], "s").is_empty(),
         "two spellings of one person are not a kinship pair"
+    );
+}
+
+#[test]
+fn kinship_does_not_clique_a_same_surname_crowd() {
+    // Regression (scan 7258fc07, target "Ian Thorpe"): ~200 namesake Thorpes
+    // from people-search listings and registers produced a 19,701-edge
+    // AssociatedWith clique (22,073 of 30,093 relations) and gave the subject
+    // and 147 strangers the same top GEXF coreness.
+    let mut subject = ent(EntityKind::Person, "Ian Thorpe", 0.9);
+    subject.tag("subject");
+    let mut ents = vec![subject];
+    for i in 0..30 {
+        ents.push(ent(EntityKind::Person, &format!("Given{i} Thorpe"), 0.4));
+    }
+    let rels = derive_kinship(&ents, "s");
+    assert!(
+        rels.is_empty(),
+        "a 31-person same-surname crowd is not a family; got {} edges",
+        rels.len()
+    );
+
+    // Control: a small family with a distinctive surname still links.
+    let a = ent(EntityKind::Person, "Kyle Diegmann", 0.8);
+    let b = ent(EntityKind::Person, "Erik Diegmann", 0.5);
+    let c = ent(EntityKind::Person, "Anna Diegmann", 0.5);
+    assert_eq!(derive_kinship(&[a, b, c], "s").len(), 3);
+
+    // The bound counts DISTINCT people, not entities: 8 identities each also
+    // present under a second spelling (16 entities) is still a family group.
+    let mut fam = Vec::new();
+    for i in 0..8 {
+        fam.push(ent(EntityKind::Person, &format!("Given{i} Diegmann"), 0.6));
+        fam.push(ent(EntityKind::Person, &format!("given{i}  diegmann"), 0.6));
+    }
+    assert!(!derive_kinship(&fam, "s").is_empty());
+    // One more distinct person tips it into a crowd.
+    fam.push(ent(EntityKind::Person, "Given8 Diegmann", 0.6));
+    assert!(derive_kinship(&fam, "s").is_empty());
+}
+
+#[test]
+fn regional_kinship_does_not_clique_a_town_crowd() {
+    use crate::core::entity::Evidence;
+    // The same crowd bound applies to the (common surname, postcode) pass: a
+    // town's register sweep of a dozen Smiths is namesakes, not a family.
+    let smith = |given: &str| {
+        let mut e = ent(EntityKind::Person, &format!("{given} Smith"), 0.6);
+        e.add_evidence(Evidence::new("au_unclaimed", "d").with_attr("postcode", "4557"));
+        e
+    };
+    let crowd: Vec<Entity> = (0..12).map(|i| smith(&format!("Given{i}"))).collect();
+    assert!(derive_regional_kinship(&crowd, "s").is_empty());
+    assert_eq!(
+        derive_regional_kinship(&[smith("John"), smith("Jane")], "s").len(),
+        1
     );
 }
 

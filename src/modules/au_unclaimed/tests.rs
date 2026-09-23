@@ -124,6 +124,34 @@ mod qld {
     }
 
     #[test]
+    fn an_owner_person_is_a_name_only_match_and_never_corroborates() {
+        // REQ-CORE-017 (scan 7258fc07): a register row names an owner, and only
+        // the name ties it to the subject. The owner Person's record is
+        // ownership-`Unverified` — exact match or not — so, merged onto the
+        // subject's anchor, it adds no corroborating source.
+        let recs = sample().result.expect("should succeed").records;
+        let out = records_to_entities(&recs, 3, "Curt Avery", "Avery", true, TargetKind::FullName, "s");
+        for p in out.iter().filter(|e| e.kind == EntityKind::Person) {
+            assert!(
+                p.evidence.iter().all(|ev| ev.verification
+                    == Some(crate::core::entity::VerificationMethod::Unverified)),
+                "{}",
+                p.value
+            );
+        }
+        let curt = out
+            .iter()
+            .find(|e| e.kind == EntityKind::Person && e.value == "Curt Avery")
+            .expect("exact owner")
+            .clone();
+        let mut anchor = Entity::new(EntityKind::Person, "Curt Avery", 0.6, "s");
+        anchor.add_evidence(crate::core::entity::Evidence::new("search_engines", "profile"));
+        anchor.merge(curt);
+        assert_eq!(anchor.source_count(), 1);
+        assert!(!anchor.corroborating_sources().contains(SRC));
+    }
+
+    #[test]
     fn per_record_address_tags_are_correct_before_any_merge() {
         // Real-scan reproduction (a "Riley Morley" scan): two records at the SAME
         // postcode (4001), NEITHER owner matching the seed IN FULL — "MORLEY

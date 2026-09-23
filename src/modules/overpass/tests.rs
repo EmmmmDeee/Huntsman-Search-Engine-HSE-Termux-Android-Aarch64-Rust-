@@ -254,3 +254,16 @@ fn results_survive_even_alongside_a_remark() {
     let els = infrastructure_or_error(resp).expect("elements present is not an error");
     assert_eq!(els.len(), 1);
 }
+
+#[test]
+fn the_summary_annotates_the_point_while_nodes_stay_observations() {
+    // REQ-GEO-008: the summary is a fact about the queried point, not a
+    // sighting of the subject there; the located nodes are OSM observations.
+    let els = elements(
+        r#"[{"type":"node","id":1,"lat":-33.8690,"lon":151.2095,
+             "tags":{"man_made":"surveillance"}}]"#,
+    );
+    let out = build_entities("-33.868800,151.209300", &els, "s");
+    crate::core::test_support::assert_point_annotation(&out[0]);
+    assert!(out[1..].iter().all(|n| n.evidence.iter().all(|ev| !ev.is_non_corroborating())));
+}

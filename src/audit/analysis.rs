@@ -420,15 +420,12 @@ pub fn audit(all_entities: &[AuditEntity], log: LogSignals) -> AuditReport {
         // (`seed`, `url_extract`, `geo_normalize`, `name_intel`, …) are excluded
         // for the same reason they are excluded from `source_count` — they
         // restate the input rather than independently confirming it.
+        // Per record where the input allows it: an annotation of the value or
+        // a name-only match does not corroborate either (REQ-CORE-017,
+        // REQ-GEO-008) — see `AuditEntity::corroborating_source_count`.
         let single = entities
             .iter()
-            .filter(|e| {
-                e.sources
-                    .iter()
-                    .filter(|s| !crate::core::entity::is_non_corroborating_source(s))
-                    .count()
-                    <= 1
-            })
+            .filter(|e| e.corroborating_source_count() <= 1)
             .count();
         let share = single as f64 / entity_total as f64;
         if share >= 0.6 {

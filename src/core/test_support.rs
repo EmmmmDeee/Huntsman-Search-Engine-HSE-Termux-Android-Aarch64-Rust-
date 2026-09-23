@@ -395,6 +395,45 @@ pub fn module_event(kind: crate::core::event::EventKind) -> Event {
     }
 }
 
+/// Assert that `echo` — a point-lookup module's re-emission of the
+/// `Coordinates` it was queried on — is an ANNOTATION of that point
+/// (REQ-GEO-008): it carries the confidence floor, every record is
+/// non-corroborating, and merged onto a search-engine centroid of the same
+/// value it neither raises the centroid's confidence nor adds a corroborating
+/// source. The one statement of that contract for `au_geo`, `overpass`,
+/// `qld_cadastre`, `sunrise_sunset` and `wigle`.
+pub fn assert_point_annotation(echo: &Entity) {
+    use crate::core::confidence;
+    use crate::core::entity::{EntityKind, Evidence};
+    assert_eq!(echo.kind, EntityKind::Coordinates);
+    assert!(
+        echo.confidence <= confidence::DERIVED_FLOOR + 1e-9,
+        "{}: an annotation carries the floor, got {}",
+        echo.value,
+        echo.confidence
+    );
+    assert!(
+        !echo.evidence.is_empty() && echo.evidence.iter().all(Evidence::is_non_corroborating),
+        "{}: every record is an annotation",
+        echo.value
+    );
+    let base = confidence::HIGH_PLUS;
+    let mut centroid = Entity::new(EntityKind::Coordinates, &echo.value, base, "s");
+    centroid.add_evidence(Evidence::new("search_engines", "known-city centroid"));
+    centroid.merge(echo.clone());
+    assert!(
+        (centroid.confidence - base).abs() < 1e-9,
+        "{}: the annotation raised the point to {}",
+        echo.value,
+        centroid.confidence
+    );
+    assert_eq!(centroid.source_count(), 1, "{}", echo.value);
+    assert_eq!(
+        centroid.corroborating_sources(),
+        std::collections::HashSet::from(["search_engines"])
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

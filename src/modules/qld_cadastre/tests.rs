@@ -227,3 +227,12 @@ use super::*;
             }
         }
     }
+
+#[test]
+fn the_parcel_lookup_annotates_the_point() {
+    // REQ-GEO-008: point-in-polygon names the parcel of whatever point it was
+    // asked about; it is not corroboration that the subject is there.
+    let a = attrs(&[("lotplan", "12RP123456"), ("locality", "NUNDAH")]);
+    let out = build_entities("-27.469800,153.025100", &a, "s");
+    crate::core::test_support::assert_point_annotation(&out[0]);
+}
