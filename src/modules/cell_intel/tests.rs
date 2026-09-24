@@ -219,6 +219,30 @@ fn unknown_mcc_returns_none() {
     assert!(mcc_to_centroid("999").is_none());
 }
 
+/// REQ-GEOLABEL-029: the MCC fallback names itself a country signal — the
+/// record `core::place::grain` reads (`source=mcc-centroid`), the tag a CSV
+/// copy keeps, the country in words for the label — and claims no state.
+#[test]
+fn the_mcc_fallback_point_is_a_country_signal() {
+    use super::mcc_centroid_point;
+    use crate::core::place::grain::{MCC_CENTROID_METHOD, MCC_INFERRED_TAG};
+    let e = mcc_centroid_point("505", "505-1-2-3", "s1").expect("AU");
+    assert_eq!(e.kind, EntityKind::Coordinates);
+    assert!(e.has_tag(MCC_INFERRED_TAG), "{:?}", e.tags);
+    assert!(e.has_tag("country:AU"), "{:?}", e.tags);
+    assert!(
+        !e.tags.iter().any(|t| t.starts_with("au-state:")),
+        "the MCC names no state: {:?}",
+        e.tags
+    );
+    let ev = &e.evidence[0];
+    let attr = |k: &str| ev.attributes.get(k).map(String::as_str);
+    assert_eq!(attr("source"), Some(MCC_CENTROID_METHOD));
+    assert_eq!(attr("country"), Some("Australia"));
+    assert_eq!(attr("country_code"), Some("AU"));
+    assert!(mcc_centroid_point("999", "x", "s1").is_none());
+}
+
 // ---- TowerKey / build_tower_device tests ----
 
 use super::types::{Cell, TowerKey};

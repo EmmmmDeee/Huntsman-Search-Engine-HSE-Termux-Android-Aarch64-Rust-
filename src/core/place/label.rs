@@ -649,7 +649,9 @@ fn country_phrase(e: Option<&Entity>, lat: f64, lon: f64) -> Option<String> {
 /// * Region grain — the Australian state ("Queensland, Australia"), else the
 ///   country.
 /// * Finer — the nearest curated centre within [`NEAR_CENTRE_KM`] (Australia's
-///   anchors, then Vietnam's centrally-run cities), then the nearest tabulated
+///   anchors — never a capital's suburb for a fix coarser than a suburb,
+///   `util::geo::nearest_au_town` — then Vietnam's centrally-run cities), then
+///   the nearest tabulated
 ///   city within [`NEAR_CITY_KM`], worded by [`near_centre`] at locality grain;
 ///   an Australian point beyond every centre is "remote QLD — nearest centre
 ///   Alice Springs (~140 km)" at region grain; anything else falls back to the
@@ -677,9 +679,15 @@ fn offline_phrase(
         _ => {}
     }
     let at_locality = grain.max(FixGrain::Locality);
-    if let (Some(st), Some((name, anchor_state, km))) =
-        (au_state, crate::util::geo::nearest_au_locality(lat, lon))
-    {
+    // A capital's suburb anchor ("Footscray", "Bondi") names a position to a
+    // suburb; a fix graded coarser than that is named after the nearest town
+    // or city instead, or the label would be finer than the fix (P1).
+    let nearest_au = if grain > FixGrain::Suburb {
+        crate::util::geo::nearest_au_town(lat, lon)
+    } else {
+        crate::util::geo::nearest_au_locality(lat, lon)
+    };
+    if let (Some(st), Some((name, anchor_state, km))) = (au_state, nearest_au) {
         if km <= NEAR_CENTRE_KM
             && let Some(centre) = au_anchor_position(name)
         {

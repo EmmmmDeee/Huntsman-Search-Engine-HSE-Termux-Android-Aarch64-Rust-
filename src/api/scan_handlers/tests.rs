@@ -110,6 +110,80 @@ Victims:
         );
     }
 
+    /// REQ-SCANSTATUS-006: an import stays in flight for as long as its
+    /// blocking work runs, not for as long as its HTTP request does. The
+    /// registry guard and the semaphore permit lived in the handler's future,
+    /// but the import runs under `spawn_blocking`, which keeps going when that
+    /// future is dropped — as hyper drops it when the client goes away. The
+    /// guard then left the registry mid-import: the `Running` row read as
+    /// interrupted, `DELETE` passed its in-flight check (and the import's
+    /// commit resurrected the deleted row), and cancel answered 404.
+    #[tokio::test]
+    async fn an_import_whose_client_went_away_stays_in_flight_until_it_commits() {
+        use crate::core::test_support::RefusingStore;
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+
+        let inner: Arc<dyn crate::core::StoragePort> =
+            Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"));
+        let (gated, pause) = RefusingStore::new(Arc::clone(&inner)).pausing_entity_batch();
+        let state = crate::api::test_state_with_store(Arc::new(gated));
+        let permits = state.scan_semaphore.available_permits();
+        let app = axum::Router::new()
+            .route("/api/v1/scans/import", axum::routing::post(scan_import))
+            .with_state(Arc::clone(&state));
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/scans/import")
+            .header("x-hse-csrf", "1")
+            .body(Body::from(
+                "Entry #1:\n   \u{2022} email: ops@acme-corp.io\n   \u{2022} name: Ops Lead\n",
+            ))
+            .expect("should succeed");
+        let request = tokio::spawn(app.oneshot(req));
+        // The import has written its `Running` row and is inside its entity
+        // write when the client goes away.
+        let entered = pause.entered;
+        let entered = tokio::task::spawn_blocking(move || {
+            entered
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .map(|()| entered)
+        })
+        .await
+        .expect("should succeed")
+        .expect("the import reached its entity write");
+        request.abort();
+        assert!(request.await.is_err(), "the request future was dropped");
+
+        let sid = {
+            let registry = state.cancellations.lock();
+            let ids: Vec<&String> = registry.keys().collect();
+            assert_eq!(ids.len(), 1, "the import is still in flight: {ids:?}");
+            ids[0].clone()
+        };
+        let row = inner.get_scan(&sid).expect("should succeed").expect("row");
+        assert_eq!(row.status, crate::core::scan::ScanStatus::Running);
+        assert_eq!(
+            state.scan_semaphore.available_permits(),
+            permits - 1,
+            "the import still holds its permit"
+        );
+
+        // Let it finish: it commits, then leaves the registry and frees the
+        // permit.
+        pause.release.send(()).expect("the import is waiting");
+        drop(entered);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while state.cancellations.lock().contains_key(&sid) {
+            assert!(std::time::Instant::now() < deadline, "the import never ended");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let row = inner.get_scan(&sid).expect("should succeed").expect("row");
+        assert_eq!(row.status, crate::core::scan::ScanStatus::Complete);
+        assert_eq!(state.scan_semaphore.available_permits(), permits);
+    }
+
     /// Copilot review of #649: the web upload counted relation / correlation
     /// writes with `.is_ok()`, dropped the errors, wrote the scan `Complete`
     /// with `error: None`, and answered with a hardcoded `"status":

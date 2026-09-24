@@ -433,13 +433,81 @@ pub fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 /// ```
 #[must_use]
 pub fn nearest_au_locality(lat: f64, lon: f64) -> Option<(&'static str, &'static str, f64)> {
+    nearest_au_anchor(lat, lon, |_| true)
+}
+
+/// The nearest AU anchor to `(lat, lon)` among those `keep` admits — ties
+/// break on table order. `None` outside Australia or when `keep` admits none.
+fn nearest_au_anchor(
+    lat: f64,
+    lon: f64,
+    keep: impl Fn(&str) -> bool,
+) -> Option<(&'static str, &'static str, f64)> {
     if !is_in_australia(lat, lon) {
         return None;
     }
     AU_LOCALITY_ANCHORS
         .iter()
+        .filter(|&&(name, _, _, _)| keep(name))
         .map(|&(name, state, alat, alon)| (name, state, haversine_km(lat, lon, alat, alon)))
         .min_by(|a, b| a.2.total_cmp(&b.2))
+}
+
+/// The anchors in [`AU_LOCALITY_ANCHORS`] that name a SUBURB of a capital
+/// city rather than a town or city of its own: the inner metro anchors, each
+/// inside the locality radius (30 km) of its capital's anchor, which is named
+/// beside it. Penrith, Blacktown, Campbelltown, Frankston, Ipswich,
+/// Rockingham and Mandurah — the metro-block anchors 30 km or more out, each
+/// a city in its own right — are not here.
+///
+/// A suburb name states a position to a suburb (a few km). A point graded
+/// coarser than that — a locality-level fix good to ±5–30 km, a redacted
+/// one-decimal value — cannot honestly be named after one, however close its
+/// value lies to the anchor: `-37.8,144.9`, an inner-west Melbourne geocode
+/// redacted to a 0.1° cell, sits exactly on the Footscray anchor and read
+/// "Footscray, VIC (locality-level fix, ±6 km)", naming the very suburb the
+/// redaction was meant to withhold. [`nearest_au_town`] skips these.
+const AU_METRO_SUBURB_ANCHORS: &[(&str, &str)] = &[
+    ("Parramatta", "Sydney"),
+    ("Liverpool", "Sydney"),
+    ("Bondi", "Sydney"),
+    ("Chatswood", "Sydney"),
+    ("Hornsby", "Sydney"),
+    ("Cronulla", "Sydney"),
+    ("Bankstown", "Sydney"),
+    ("Dandenong", "Melbourne"),
+    ("Box Hill", "Melbourne"),
+    ("Footscray", "Melbourne"),
+    ("Werribee", "Melbourne"),
+    ("Ringwood", "Melbourne"),
+    ("Sunshine", "Melbourne"),
+    ("Logan Central", "Brisbane"),
+    ("Redcliffe", "Brisbane"),
+    ("Chermside", "Brisbane"),
+    ("Mount Gravatt", "Brisbane"),
+    ("Joondalup", "Perth"),
+    ("Fremantle", "Perth"),
+    ("Elizabeth", "Adelaide"),
+    ("Noarlunga", "Adelaide"),
+    ("Salisbury", "Adelaide"),
+];
+
+/// The capital a suburb anchor ([`AU_METRO_SUBURB_ANCHORS`]) belongs to, or
+/// `None` for an anchor that names a town or city of its own.
+#[must_use]
+pub(crate) fn au_metro_suburb_parent(name: &str) -> Option<&'static str> {
+    AU_METRO_SUBURB_ANCHORS
+        .iter()
+        .find(|&&(suburb, _)| suburb == name)
+        .map(|&(_, parent)| parent)
+}
+
+/// [`nearest_au_locality`] for a point graded coarser than a suburb: the
+/// nearest anchor that names a town or city, never a capital's suburb
+/// ([`AU_METRO_SUBURB_ANCHORS`]). Pure; ties break on table order.
+#[must_use]
+pub(crate) fn nearest_au_town(lat: f64, lon: f64) -> Option<(&'static str, &'static str, f64)> {
+    nearest_au_anchor(lat, lon, |name| au_metro_suburb_parent(name).is_none())
 }
 
 /// The curated AU locality anchor `(lat, lon)` IS, as `(locality, state)`,

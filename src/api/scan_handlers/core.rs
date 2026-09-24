@@ -625,9 +625,10 @@ pub async fn scan_import(
     }
     // Throttle concurrent imports via the shared scan semaphore — mirrors the
     // gate in spawn_scan so an import flood can't crowd out live scans on a
-    // 2-core Termux device. Permit is held for the entire handler (parse + DB).
-    let sem = Arc::clone(&s.scan_semaphore);
-    let Ok(_permit) = sem.acquire().await else {
+    // 2-core Termux device. Owned, so it can move into the blocking import
+    // below and be held until the import's last write — not only for as long
+    // as this handler's future lives (see the in-flight guard below).
+    let Ok(permit) = Arc::clone(&s.scan_semaphore).acquire_owned().await else {
         return internal_error(&"scan semaphore closed".to_string());
     };
     // `scan_id` is collision-free per call, so the value just needs to be
@@ -696,8 +697,19 @@ pub async fn scan_import(
     // `POST /scans/{id}/cancel` at its two enrichment boundaries (the row then
     // reads `Aborted`, entities and whatever enrichment finished kept, as for
     // a cancelled live scan).
+    //
+    // The guard (and the semaphore permit) MOVE INTO the blocking closure,
+    // which owns them until its last write. They used to live in this
+    // handler's future, but `spawn_blocking` keeps running when the future
+    // awaiting it is dropped — and hyper drops an in-flight handler when its
+    // client goes away (a closed tab, a suspended browser, a proxy timeout).
+    // The guard then left the registry while the import was still writing:
+    // `GET /scans` read the `Running` row as interrupted, `DELETE
+    // /scans/{id}` passed its in-flight check and cascaded, and the import's
+    // `finish` then resurrected the row `Complete` with its entities gone,
+    // and the import could no longer be cancelled (REQ-SCANSTATUS-006).
     let cancel = crate::core::cancel::CancelHandle::new();
-    let _in_flight = crate::core::cancel::CancelRegistryGuard::install(
+    let in_flight = crate::core::cancel::CancelRegistryGuard::install(
         Arc::clone(&s.cancellations),
         sid.clone(),
         cancel.clone(),
@@ -711,6 +723,10 @@ pub async fn scan_import(
         finalise_error,
     ) = match super::offload_store(move || -> crate::core::error::Result<_> {
         use crate::core::scan::{FinaliseTally, FinaliseWrite};
+        // Declared before `row`, so they drop after it: after its terminal
+        // write, or after the `Failed` its Drop records on an early exit.
+        let _in_flight = in_flight;
+        let _permit = permit;
         let row = crate::app::persist::ImportScanRow::begin(Arc::clone(&store), scan)?;
         store.upsert_entities_batch(&entities)?;
         // Every relation / correlation write below counts into this; its

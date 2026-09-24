@@ -205,7 +205,7 @@ re-implemented per module.
   report.json, the API listings), the CSV and GEXF writers, the full dossier /
   debug bundle, `extract_au_location_fix`, the CLI dossier and the wasm-ui
   Browse / Location panes (REQ-GEOLABEL-002..004; the served `wasm-ui/pkg`
-  bundle carries the panes once it is regenerated with the pinned toolchain).
+  bundle carries them, regenerated with the pinned toolchain).
   The CSV's `fix_radius_m` column carries the grade across a re-import as a
   radius floor, so a round trip never sharpens a point (REQ-GEOLABEL-014).
 - `core/exposure/` — the subject's exposure index. It reads evidence through

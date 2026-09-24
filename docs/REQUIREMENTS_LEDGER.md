@@ -22039,7 +22039,7 @@ compared byte for byte with the pre-mutation diff.
 
 | # | mutation | result |
 |---|---|---|
-| S1 | `partial_export_reason` without the `finalise-incomplete` arm | killed by `a_complete_scan_with_a_persist_shortfall_is_a_partial_export` and `every_export_header_brands_a_persist_shortfall_partial` |
+| S1 | `partial_export_reason` without the `finalise-incomplete` arm | killed by `a_complete_scan_with_a_finalise_shortfall_is_a_partial_export` and `every_export_header_brands_a_finalise_shortfall_partial` |
 | S2 | `completeness_caveat` without the `error` arm | killed by `a_complete_scan_missing_stored_records_is_caveated` |
 | S3 | `persist_relations`' fallback back to `.is_ok()` (a refused edge uncounted) | killed by `a_live_scan_whose_store_refuses_relations_records_the_shortfall`, `a_batch_whose_store_refuses_its_graph_records_the_shortfall` and `scan_import_reports_a_refused_graph_as_partial` |
 | S4 | `correlate_and_persist` back to the fail-fast `Correlator::run` | killed by `correlate_and_persist_counts_every_refused_firing` and `a_batch_whose_store_refuses_its_graph_records_the_shortfall` |
@@ -22621,9 +22621,9 @@ Every surface prints this one label:
 - **Web UI.** The Browse and Residency panes are rendered by `wasm-ui`, which
   `src/web/js` calls. Browse reads `place_label.text` in a second pass, so
   `Entity`'s raw `kind` shape is untouched. The Residency map link zooms to
-  the label's grain. This is the `wasm-ui` source; the served bundle,
-  `wasm-ui/pkg`, carries it only once the lead regenerates it with the
-  pinned toolchain, and until then the web panes render as before.
+  the label's grain. The served bundle, `wasm-ui/pkg`, carries it since
+  06fc31f5 regenerated it with the pinned toolchain (wasm-bindgen 0.2.127,
+  binaryen 108); before that commit the web panes rendered as before.
 
 **REQ-GEOLABEL-003 — deterministic, offline.** A label is a pure function of
 the stored records and compiled-in tables. Selections use total orders:
@@ -22921,7 +22921,10 @@ not yet show the label. Under this round's rules only the lead regenerates
 `wasm-ui/pkg`, with the pinned toolchain. The CHANGELOG, the ROADMAP and
 REQ-GEOLABEL-002 above now say that the panes wait on that regeneration.
 `hse-core` changed in this round (REQ-GEOLABEL-015), and `wasm-ui` depends on
-it, so it needs the same regeneration. `wasm-ui/src` is untouched.
+it, so it needs the same regeneration. `wasm-ui/src` is untouched. (Since
+done: 06fc31f5 regenerated `wasm-ui/pkg` with the pinned toolchain, and the
+served panes show the label — see the final-review correction round 1
+section.)
 
 ### Deliberate test updates
 
@@ -23682,3 +23685,113 @@ runs it, which also catches a guard dropped before the engine starts.
 `core::cancel::tests::a_guards_scan_id_is_registered_for_as_long_as_it_can_be_read`
 pins the accessor the structure depends on: it returns the registered key,
 and the key stays registered while the guard lives.
+
+## REQ-GEOLABEL-029 / REQ-GEOLABEL-030 / REQ-SCANSTATUS-006 / REQ-SCANSTATUS-007 — final review, correction round 1
+
+**Found** by the final review of PR #649, which raised six findings. Each
+was checked against the branch head (06fc31f5), and all six were real: four
+behaviour defects and two documentation defects. Each behaviour fix is made
+where its rule lives and has a regression test that fails on the code
+before it. Each fix was then undone in place, the test was seen to fail, and
+the file was restored byte-identically (table below).
+
+**REQ-GEOLABEL-029 — a cell tower's MCC centroid is a country signal.**
+With no OpenCelliD key, `cell_intel` places each tower at the centroid of
+the country its Mobile Country Code names. MCC 530's point,
+`-41.2865,174.7762`, is exactly Wellington's `CITIES` row, and MCC 505's is
+the continent's centre. Those are the stand-ins `+64` and `+61` use.
+`is_country_signal` did not know the record. `cell_intel` is `Measures` in
+`COORDINATE_TARGET_MODULES`, so the record graded as a 30 km MEASURED fix
+that explained the value. The gazetteer coincidence then named the city, so
+every NZ tower read "Wellington (city centroid — not a street location)"
+and every AU tower read "remote NT — nearest centre Alice Springs". A `+64`
+point merged onto it read as Wellington city too. `claims_no_position` was
+false, so the point stayed a person-anchor candidate.
+
+The record now names itself as a country signal. The minting moved into
+`cell_intel::mcc_centroid_point`, which writes three things:
+`source=mcc-centroid` (`MCC_CENTROID_METHOD`), read by `is_country_signal`; the
+`MCC_INFERRED_TAG` (`mcc-inferred`), added to `COUNTRY_SIGNAL_TAGS` so a
+CSV copy still reads as the country; and `cell_intel`, added to
+`COUNTRY_SIGNAL_SOURCES` so an attribute-less copy explains nothing.
+`cell_intel` records no other `Coordinates` under its own name: a tower
+OpenCelliD locates is recorded under `opencellid`. The record also carries
+the country in words (`country`, which `country_signal_place` names) and its
+ISO code (`country_code`), as `geo_intel`'s prefix record does. It no longer
+carries an `au-state:` tag. The MCC names no state, and the NT tag that MCC
+505's point earned described the stand-in, not the tower.
+
+**REQ-GEOLABEL-030 — a coarse fix is never named after a capital's
+suburb.** The T4 offline gazetteer named a point after its nearest AU anchor
+and stamped the label with locality grain, whatever the anchor was. The
+anchors include metro suburbs. A redacted `-37.8,144.9` sits exactly on the
+Footscray anchor, and it read "Footscray, VIC (locality-level fix, ±6 km)",
+which names the very suburb the redaction withheld. An unclassified ±30 km
+point by the Bondi anchor read "Bondi, NSW". `util::geo` now lists the
+anchors that are a capital's suburb (`AU_METRO_SUBURB_ANCHORS`). These are
+the metro-block anchors that lie within the 30 km locality radius of their
+capital's anchor. Anchors 30 km or more out, each a city in its own right,
+are not listed: Penrith, Blacktown, Campbelltown, Frankston, Ipswich,
+Rockingham and Mandurah. For a fix coarser than a suburb, `offline_phrase`
+asks `nearest_au_town`, which skips the listed suburbs. A suburb-grade fix
+still gets the suburb. `tests/architecture.rs` allow-lists
+`nearest_au_town` beside `nearest_au_locality`, since both are pure scans of
+the same compiled-in table. `describe_fused` always passes locality grain or
+coarser, so a fused label never names a suburb either. That matches its doc,
+which says a fused label is never finer than a locality.
+
+**REQ-SCANSTATUS-006 — an import stays in flight while its blocking work
+runs.** The web upload's registry guard and semaphore permit lived in the
+handler's future. The import itself runs under `spawn_blocking`, which keeps
+going after that future is dropped, and hyper drops an in-flight handler
+when its client goes away. The guard then left the registry mid-import, with
+three effects. The `Running` row read as interrupted. `DELETE` passed its
+in-flight check and cascaded, and the import's `finish` then brought the row
+back as `Complete` with its entities gone. `POST /scans/{id}/cancel`
+answered 404. Now both the guard and the permit are moved into the blocking
+closure. The permit comes from `acquire_owned`. Both are declared before the
+row, so they drop after its terminal write, or after the `Failed` write that
+the row's Drop makes on an early exit.
+
+**REQ-SCANSTATUS-007 — a lost Failed row is not announced.** The commit
+step's comment said no completion was announced for a row that never became
+terminal. That held only on the strict path. On the best-effort path, the
+Failed record of a scan whose every entity write failed, a failed
+`upsert_scan` was logged and returned `Ok`, and `scan_complete` was still
+broadcast for a row reading `running`. The commit now reports whether it
+wrote the row, and the completion is broadcast only when it did. The event
+stays in the durable log.
+
+**Documentation.** Row S1 of the REQ-SCANSTATUS-003 mutation table named two
+tests that be1ff546 had renamed. It now names
+`a_complete_scan_with_a_finalise_shortfall_is_a_partial_export` and
+`every_export_header_brands_a_finalise_shortfall_partial`. The CHANGELOG,
+the ROADMAP and REQ-GEOLABEL-002 said the served `wasm-ui/pkg` would show the
+place label only once it was regenerated. 06fc31f5 did regenerate it with
+the pinned toolchain (wasm-bindgen 0.2.127, binaryen 108), and the served
+`.wasm` contains the Browse tooltip text and `label_grain`. All three now
+say so. The round-2 "Not fixed here" note is kept as history, with a pointer
+to this section.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | `is_country_signal` without the `cell_intel` clause, `COUNTRY_SIGNAL_TAGS` without `mcc-inferred`, `COUNTRY_SIGNAL_SOURCES` without `cell_intel` | killed by `core::place::tests::a_cell_tower_mcc_centroid_is_the_country_never_its_stand_in_city` (530 graded `Centroid`, "Wellington") |
+| M1a | only `cell_intel` dropped from `COUNTRY_SIGNAL_SOURCES` | killed by the same test (the attribute-less copy graded `Centroid`) |
+| M1b | only `mcc-inferred` dropped from `COUNTRY_SIGNAL_TAGS` | killed by the same test (the same line) |
+| M2 | `offline_phrase` asks `nearest_au_locality` at every grain | killed by `a_coarse_fix_is_never_named_after_a_capital_suburb` and `a_redacted_value_is_not_the_table_row_it_lands_on` ("Footscray, VIC (locality-level fix, ±6 km)") |
+| M3 | the registry guard and the permit held in the handler, as before | killed by `api::scan_handlers::tests::an_import_whose_client_went_away_stays_in_flight_until_it_commits` ("the import is still in flight: []") |
+| M3a | only the permit held in the handler | killed by the same test ("the import still holds its permit": 8 vs 7) |
+| M4 | the completion broadcast whether or not the row was written | killed by `core::engine::tests::a_failed_scan_whose_row_was_not_written_is_not_announced` (1 announcement, not 0) |
+
+**7 of 7 caught.** `util::geo::tests::suburb_anchors_belong_to_their_capital_and_are_skipped_for_towns`
+keeps the suburb list honest. Every listed suburb is an anchor, in its
+capital's state, within 30 km of its capital's anchor, and never itself a
+capital. Blacktown, at 30.009 km, was dropped from the draft list by this
+test. `cell_intel::tests::the_mcc_fallback_point_is_a_country_signal` pins
+the record's shape. The import test holds the import inside its entity
+write through `RefusingStore::pausing_entity_batch`, drops the request
+future, and checks the registry, the row and the permit. The engine test
+uses `RefusingStore::refusing_terminal_scan_writes` and has a control run
+in which the Failed row is written and announced once.

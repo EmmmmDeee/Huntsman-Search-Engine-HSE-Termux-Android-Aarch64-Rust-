@@ -652,9 +652,23 @@ fn tabulated_radius_m(c: &TabulatedCentroid) -> f64 {
 }
 
 /// The modules that mint country-signal points ([`is_country_signal`]):
-/// `email_locale` (every coordinate it mints) and `geo_intel` (its
-/// `method=e164-prefix` points).
-const COUNTRY_SIGNAL_SOURCES: &[&str] = &["email_locale", "geo_intel"];
+/// `email_locale` (every coordinate it mints), `geo_intel` (its
+/// `method=e164-prefix` points) and `cell_intel` (its MCC country-centroid
+/// fallback, [`MCC_CENTROID_METHOD`]). `cell_intel` records no other
+/// `Coordinates` under its own name — a tower OpenCelliD located is recorded
+/// under `opencellid` — so an attribute-less `cell_intel` record on a point is
+/// only ever the fallback's CSV copy.
+const COUNTRY_SIGNAL_SOURCES: &[&str] = &["email_locale", "geo_intel", "cell_intel"];
+
+/// The `source` attribute `cell_intel` writes on its MCC fallback: a tower
+/// OpenCelliD could not locate, placed at the centroid of the country its
+/// Mobile Country Code names ("MCC 530 -> NZ (country centroid)").
+pub(crate) const MCC_CENTROID_METHOD: &str = "mcc-centroid";
+
+/// The tag `cell_intel` stamps on its MCC country-centroid point — one of the
+/// [`COUNTRY_SIGNAL_TAGS`], so a CSV copy (tags kept, attributes lost) still
+/// reads as the country.
+pub(crate) const MCC_INFERRED_TAG: &str = "mcc-inferred";
 
 /// Whether a record is a country-signal emitter's record with NO attributes —
 /// the shape HSE's CSV importer rebuilds every record in (it keeps source and
@@ -670,13 +684,19 @@ fn is_stripped_country_signal(ev: &Evidence) -> bool {
 }
 
 /// The tags the country-grain inference modules stamp on the point they mint:
-/// `geo_intel`'s dialling-prefix country (`phone-prefix`) and `email_locale`'s
-/// ccTLD and name-pattern locales (`cctld-inferred`, `locale-inferred`). Read
+/// `geo_intel`'s dialling-prefix country (`phone-prefix`), `email_locale`'s
+/// ccTLD and name-pattern locales (`cctld-inferred`, `locale-inferred`) and
+/// `cell_intel`'s Mobile Country Code centroid ([`MCC_INFERRED_TAG`]). Read
 /// by [`assess`] exactly as the record rule ([`is_country_signal`]) is read, so
 /// a copy of the point whose records lost their attributes (a CSV re-import
 /// keeps tags, not attributes) is still read as the country it is — and
 /// yields exactly when the record would (see [`assess`], step 2).
-const COUNTRY_SIGNAL_TAGS: &[&str] = &["phone-prefix", "cctld-inferred", "locale-inferred"];
+const COUNTRY_SIGNAL_TAGS: &[&str] = &[
+    "phone-prefix",
+    "cctld-inferred",
+    "locale-inferred",
+    MCC_INFERRED_TAG,
+];
 
 /// The radius of a country signal: unbounded. The signal says "somewhere in
 /// New Zealand" and nothing about where; its point is a stand-in (Wellington's
@@ -690,17 +710,23 @@ const COUNTRY_SIGNAL_TAGS: &[&str] = &["phone-prefix", "cctld-inferred", "locale
 const COUNTRY_SIGNAL_RADIUS_M: f64 = f64::INFINITY;
 
 /// Whether a record is a COUNTRY-grain inference: a phone number's E.164
-/// dialling prefix (`method=e164-prefix`, `geo_intel`) or an email's ccTLD or
-/// name-pattern locale (every coordinate `email_locale` mints).
+/// dialling prefix (`method=e164-prefix`, `geo_intel`), an email's ccTLD or
+/// name-pattern locale (every coordinate `email_locale` mints), or a cell
+/// tower's Mobile Country Code placed at its country's centroid
+/// (`cell_intel`'s fallback, `source=`[`MCC_CENTROID_METHOD`]).
 ///
 /// Each says only "New Zealand" or "Australia", and places the point at a
-/// stand-in for the whole country — `+64` at Wellington's row, a `.au` domain
-/// at Sydney's, `+61` at the continent's centre. Their sources are
-/// unclassified (`GeoSourceClass::Other`), so without this rule they graded at
-/// the 30 km unknown default, a gazetteer coincidence then named the city, and
-/// the label read "Wellington (city centroid — not a street location)" or
-/// "remote NT — nearest centre Alice Springs (locality-level fix, ±30 km)" for
-/// a signal that names a country and nothing finer.
+/// stand-in for the whole country — `+64` and MCC 530 at Wellington's row, a
+/// `.au` domain at Sydney's, `+61` and MCC 505 at the continent's centre.
+/// Their sources are unclassified (`GeoSourceClass::Other`), so without this
+/// rule they graded at the 30 km unknown default, a gazetteer coincidence then
+/// named the city, and the label read "Wellington (city centroid — not a
+/// street location)" or "remote NT — nearest centre Alice Springs
+/// (locality-level fix, ±30 km)" for a signal that names a country and nothing
+/// finer. `cell_intel` is worse off than the others: its role in
+/// [`COORDINATE_TARGET_MODULES`] is [`CoordinateTargetRole::Measures`] (a
+/// tower OpenCelliD located is a measurement), so its fallback graded as a
+/// 30 km MEASURED fix, which a best-location rung could then anchor on.
 ///
 /// The stand-in is a real city's row, so a genuine finding of that city — a
 /// `+64 4` landline's area code resolved through `city_coords` to Wellington,
@@ -710,11 +736,10 @@ const COUNTRY_SIGNAL_RADIUS_M: f64 = f64::INFINITY;
 /// city finding does. [`assess`] therefore reads a country signal only when
 /// no other record on the point accounts for it (step 2 there).
 fn is_country_signal(ev: &Evidence) -> bool {
+    let attr_is = |k: &str, v: &str| ev.attributes.get(k).is_some_and(|m| m.trim() == v);
     ev.source == "email_locale"
-        || ev
-            .attributes
-            .get("method")
-            .is_some_and(|m| m.trim() == "e164-prefix")
+        || attr_is("method", "e164-prefix")
+        || (ev.source == "cell_intel" && attr_is("source", MCC_CENTROID_METHOD))
 }
 
 /// The place a point's country-signal records NAME, for the label of a point

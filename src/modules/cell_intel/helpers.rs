@@ -112,6 +112,54 @@ pub(super) async fn query_opencellid(
 /// Delegates to the single authoritative implementation in `cell_db`.
 pub(super) use crate::util::cell_db::accuracy_to_confidence;
 
+/// The `Coordinates` `cell_intel` mints for a tower OpenCelliD could not
+/// locate: the centroid of the country its Mobile Country Code names
+/// ([`mcc_to_centroid`]), or `None` for an unrecognised MCC.
+///
+/// A COUNTRY signal, not a measurement. The MCC says only which country's
+/// network the tower belongs to, and the point is a stand-in for that whole
+/// country — MCC 530's is Wellington's row, MCC 505's the continent's centre.
+/// So the record names itself one (`source=`
+/// [`MCC_CENTROID_METHOD`](crate::core::place::grain::MCC_CENTROID_METHOD),
+/// and the [`MCC_INFERRED_TAG`](crate::core::place::grain::MCC_INFERRED_TAG)
+/// that survives a CSV round trip), which the precision authority reads as a
+/// country signal: labelled the country, no radius, never a best-location
+/// anchor. It carries the country in words (`country`, what the label names)
+/// and its ISO code (`country_code`), and no `au-state:` tag — the MCC names
+/// no state, and the NT tag the continent's centre used to earn was the
+/// stand-in's, not the tower's.
+pub(crate) fn mcc_centroid_point(mcc: &str, tower_id: &str, scan_id: &str) -> Option<Entity> {
+    let (lat, lon, country) = mcc_to_centroid(mcc)?;
+    let coords = format!("{lat:.4},{lon:.4}");
+    let mut e = Entity::new(
+        EntityKind::Coordinates,
+        &coords,
+        confidence::VERY_LOW,
+        scan_id,
+    );
+    e.tag("geoint");
+    e.tag(crate::core::tags::CELL_TOWER);
+    e.tag(crate::core::tags::COARSE);
+    e.tag(crate::core::place::grain::MCC_INFERRED_TAG);
+    e.tag(format!("country:{country}"));
+    e.add_evidence(
+        Evidence::new(
+            SRC,
+            format!("Cell tower MCC {mcc} -> {country} (country centroid)"),
+        )
+        .with_attr("tower_id", tower_id)
+        .with_attr("mcc", mcc)
+        .with_attr(
+            "country",
+            crate::util::geohash::country_name_for_iso(country).unwrap_or(country),
+        )
+        .with_attr("country_code", country)
+        .with_attr("source", crate::core::place::grain::MCC_CENTROID_METHOD)
+        .with_attr("accuracy", "country-level"),
+    );
+    Some(e)
+}
+
 /// Coarse country fix from a cell's **Mobile Country Code**: `(lat, lon, ISO)` at
 /// the country centroid, or `None` for an unrecognised MCC. The fallback when no
 /// precise tower location is available — at least the device's *country* is known

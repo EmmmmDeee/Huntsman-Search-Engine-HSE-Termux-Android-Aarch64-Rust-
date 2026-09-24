@@ -169,6 +169,45 @@ use super::*;
         );
     }
 
+    /// REQ-GEOLABEL-030: every suburb anchor is a real anchor, inside the
+    /// locality radius (30 km) of its capital's anchor in the same state, and
+    /// `nearest_au_town` never answers one — a coarse fix sitting exactly on
+    /// the Footscray anchor is named after Melbourne.
+    #[test]
+    fn suburb_anchors_belong_to_their_capital_and_are_skipped_for_towns() {
+        let anchor = |name: &str| {
+            au_locality_anchors()
+                .find(|&(n, _, _, _)| n == name)
+                .unwrap_or_else(|| panic!("{name} is not an anchor"))
+        };
+        for &(suburb, parent) in AU_METRO_SUBURB_ANCHORS {
+            let (_, s_state, s_lat, s_lon) = anchor(suburb);
+            let (_, p_state, p_lat, p_lon) = anchor(parent);
+            assert_eq!(s_state, p_state, "{suburb} / {parent}");
+            let km = haversine_km(s_lat, s_lon, p_lat, p_lon);
+            assert!(km <= 30.0, "{suburb} is {km} km from {parent}");
+            assert!(au_metro_suburb_parent(parent).is_none(), "{parent}");
+        }
+        assert_eq!(
+            nearest_au_locality(-37.8, 144.9).map(|(n, s, _)| (n, s)),
+            Some(("Footscray", "VIC"))
+        );
+        assert_eq!(
+            nearest_au_town(-37.8, 144.9).map(|(n, s, _)| (n, s)),
+            Some(("Melbourne", "VIC"))
+        );
+        assert_eq!(
+            nearest_au_town(-33.8915, 151.2767).map(|(n, s, _)| (n, s)),
+            Some(("Sydney", "NSW"))
+        );
+        // A city of its own stays itself.
+        assert_eq!(
+            nearest_au_town(-27.6171, 152.7600).map(|(n, s, _)| (n, s)),
+            Some(("Ipswich", "QLD"))
+        );
+        assert!(nearest_au_town(40.71, -74.0).is_none());
+    }
+
     #[test]
     fn haversine_km_matches_known_distances() {
         // Sydney ↔ Melbourne ≈ 714 km (great-circle).

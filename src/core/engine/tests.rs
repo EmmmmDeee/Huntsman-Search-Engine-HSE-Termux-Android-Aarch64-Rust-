@@ -6793,6 +6793,80 @@ async fn scan_complete_reaches_live_subscribers_only_after_the_row_is_terminal()
     assert_eq!(heard, 1);
 }
 
+/// REQ-SCANSTATUS-007: a Failed scan whose best-effort terminal write is lost
+/// is not announced. When every entity write fails the scan takes the Failed
+/// branch, whose row write is best-effort; when that write failed too the
+/// error was logged, the scan returned, and `scan_complete` was broadcast for
+/// a row still reading `running` — the REQ-SCANSTATUS-004 symptom on the one
+/// path the reordering missed.
+#[tokio::test]
+async fn a_failed_scan_whose_row_was_not_written_is_not_announced() {
+    use crate::core::test_support::{InMemoryStore, RefusingStore};
+
+    let run = |refuse_row: bool| async move {
+        let inner = Arc::new(InMemoryStore::new());
+        let refusing = RefusingStore::new(inner.clone()).refusing_entity_writes();
+        let refusing = if refuse_row {
+            refusing.refusing_terminal_scan_writes()
+        } else {
+            refusing
+        };
+        let (bus, _rx) = tokio::sync::broadcast::channel(8192);
+        let engine = ScanEngine::new(
+            vec![Arc::new(StubBreachCorpus {
+                name: "stub_breach_corpus",
+            })],
+            Arc::new(refusing),
+            bus.clone(),
+        );
+        let target = Target::new(TargetKind::Email, "lost@example.com");
+        let scan = Scan::new(
+            crate::core::entity::scan_id("email", "lost@example.com"),
+            target.clone(),
+        )
+        .with_options(ScanOptions {
+            depth: 1,
+            max_roi: false,
+            ..Default::default()
+        });
+        let scan_id = scan.id.clone();
+        let mut late = bus.subscribe();
+        let ctx = ModuleContext {
+            scan_id: scan.id.clone(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+        let done = engine.run(scan, target, ctx).await.expect("should succeed");
+        assert_eq!(done.status, ScanStatus::Failed, "{done:?}");
+        let stored = inner
+            .get_scan(&scan_id)
+            .expect("should succeed")
+            .map(|s| s.status);
+        let heard = drain_events(&mut late)
+            .into_iter()
+            .filter(|k| matches!(k, EventKind::ScanComplete { .. }))
+            .count();
+        (stored, heard)
+    };
+
+    let (stored, heard) = run(true).await;
+    assert_ne!(
+        stored,
+        Some(ScanStatus::Failed),
+        "the row write was refused"
+    );
+    assert_eq!(
+        heard, 0,
+        "scan_complete announced for a row that never turned terminal"
+    );
+    // Control: the Failed row that was written is announced, once.
+    let (stored, heard) = run(false).await;
+    assert_eq!(stored, Some(ScanStatus::Failed));
+    assert_eq!(heard, 1);
+}
+
 /// Scan 7258fc07: `expansion_stop max_entities=2500 reached`, then
 /// `breach_sweep {probes: 64}`, then no sweep dispatch at all — the per-probe
 /// budget guard broke on probe 0, and the event (emitted before the loop)

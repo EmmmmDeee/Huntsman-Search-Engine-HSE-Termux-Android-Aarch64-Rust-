@@ -1342,9 +1342,12 @@ fn a_sub_metre_radius_shows_as_one_metre_never_zero() {
 /// `-37.8,144.9` on the Footscray anchor.
 #[test]
 fn a_redacted_value_is_not_the_table_row_it_lands_on() {
+    // `-37.8,144.9` is also exactly the Footscray anchor: a suburb name for a
+    // locality-grade fix would undo the redaction (REQ-GEOLABEL-030).
     for (value, never) in [
         ("-33.8,151.0", "Postcode 21xx"),
         ("-37.8,144.9", "city centroid"),
+        ("-37.8,144.9", "Footscray"),
     ] {
         let mut e = coord("-33.815678,151.003456");
         e.add_evidence(ev(
@@ -1910,4 +1913,107 @@ fn an_unnumbered_street_naming_is_held_to_the_street_it_names() {
         &[("place_type", "house"), ("road", "Smith Street West")],
     );
     assert_eq!(p.grain, FixGrain::Point, "{p:?}");
+}
+
+// ── Final review, correction round 1 ──────────────────────────────────────
+
+/// REQ-GEOLABEL-029: a cell tower's Mobile Country Code centroid is a
+/// COUNTRY signal. With no OpenCelliD key, `cell_intel` places each tower at
+/// its MCC's country centroid — MCC 530's is exactly Wellington's `CITIES`
+/// row, MCC 505's the continent's centre, the very stand-ins `+64` and `+61`
+/// use. It was graded a 30 km MEASURED fix (`cell_intel` measures, in
+/// `COORDINATE_TARGET_MODULES`), so every NZ tower read "Wellington (city
+/// centroid — not a street location)" and every AU tower "remote NT —
+/// nearest centre Alice Springs", and the point stayed a person-anchor
+/// candidate. It explained the value, too, so a `+64` point merged onto it
+/// read as Wellington city.
+#[test]
+fn a_cell_tower_mcc_centroid_is_the_country_never_its_stand_in_city() {
+    use crate::modules::cell_intel::mcc_centroid_point;
+    for (mcc, value, country, never) in [
+        ("530", "-41.286500,174.776200", "New Zealand", "Wellington"),
+        ("505", "-25.274400,133.775100", "Australia", "Alice Springs"),
+    ] {
+        let point = mcc_centroid_point(mcc, "tower-1", "s1").expect("a tabulated MCC");
+        assert_eq!(point.value, value, "the stand-in this test is about");
+        let p = assess(&point);
+        assert_eq!(p.basis, FixBasis::CountrySignal, "{mcc}: {p:?}");
+        assert_eq!(p.grain, FixGrain::Country, "{mcc}: {p:?}");
+        assert_eq!(p.stands_for, None, "{mcc}: {p:?}");
+        let l = label_of(&point, std::slice::from_ref(&point));
+        assert!(l.text.starts_with(country), "{mcc}: {l:?}");
+        assert!(!l.text.contains(never), "{mcc}: {l:?}");
+        assert!(!l.text.contains("city centroid"), "{mcc}: {l:?}");
+        assert_honest(&l, &point);
+        assert!(super::grain::claims_no_position(&point), "{mcc}");
+        assert_eq!(best_precision_radius_m(&point), None, "{mcc}");
+
+        // A CSV copy keeps the tags and loses the attributes: still the
+        // country.
+        let mut bare = coord(value);
+        bare.tags.clone_from(&point.tags);
+        bare.add_evidence(ev(
+            "cell_intel",
+            &format!("Cell tower MCC {mcc} -> (country centroid)"),
+            &[],
+        ));
+        assert_eq!(assess(&bare).basis, FixBasis::CountrySignal, "{mcc}");
+    }
+    // Merged with `+64`'s stand-in (the same value), neither explains it:
+    // the point is New Zealand, not Wellington city.
+    let mut merged = nz_prefix_point();
+    let tower = mcc_centroid_point("530", "tower-1", "s1").expect("NZ");
+    merged.tags.extend(tower.tags.iter().cloned());
+    merged.evidence.extend(tower.evidence.iter().cloned());
+    let l = label_of(&merged, std::slice::from_ref(&merged));
+    assert_eq!(l.fix_grain, FixGrain::Country, "{l:?}");
+    assert!(!l.text.contains("Wellington"), "{l:?}");
+    // Control: a tower OpenCelliD located is a measurement, as before.
+    let mut located = coord("-41.290112,174.781234");
+    located.add_evidence(ev(
+        "opencellid",
+        "Cell tower LTE 530-1-2-3 -> -41.290112,174.781234",
+        &[("range_m", "800"), ("source", "OpenCelliD")],
+    ));
+    let p = assess(&located);
+    assert_eq!(p.basis, FixBasis::Measured, "{p:?}");
+    assert!(!super::grain::claims_no_position(&located));
+}
+
+/// REQ-GEOLABEL-030: a fix coarser than a suburb is never named after a
+/// capital's suburb. The offline gazetteer named a point after its nearest
+/// curated anchor and stamped the label locality grain whatever the anchor
+/// was, and the anchors include metro suburbs — so a redacted `-37.8,144.9`
+/// (on the Footscray anchor) read "Footscray, VIC (locality-level fix, ±6
+/// km)", and any unclassified ±30 km point by the Bondi anchor "Bondi, NSW".
+/// Both name the capital now; a suburb-grade fix still gets the suburb.
+#[test]
+fn a_coarse_fix_is_never_named_after_a_capital_suburb() {
+    let mut redacted = coord("-37.812345,144.901234");
+    redacted.value = "-37.8,144.9".to_string();
+    redacted.raw_value = "-37.8,144.9".to_string();
+    let l = label_of(&redacted, std::slice::from_ref(&redacted));
+    assert_eq!(l.fix_grain, FixGrain::Locality, "{l:?}");
+    assert!(l.text.contains("Melbourne, VIC"), "{l:?}");
+    assert!(!l.text.contains("Footscray"), "{l:?}");
+    assert_honest(&l, &redacted);
+
+    let mut bondi = coord("-33.891612,151.276789");
+    bondi.add_evidence(ev("some_profile", "Location: somewhere", &[]));
+    let l = label_of(&bondi, std::slice::from_ref(&bondi));
+    assert_eq!(l.fix_grain, FixGrain::Locality, "{l:?}");
+    assert!(l.text.contains("Sydney, NSW"), "{l:?}");
+    assert!(!l.text.contains("Bondi"), "{l:?}");
+    assert_honest(&l, &bondi);
+
+    // Control: a suburb-grade measurement by the same anchor keeps the suburb.
+    let mut fine = coord("-33.891612,151.276789");
+    fine.add_evidence(ev(
+        "some_wifi_locator",
+        "Wi-Fi fix",
+        &[("accuracy_m", "2000")],
+    ));
+    let l = label_of(&fine, std::slice::from_ref(&fine));
+    assert_eq!(l.fix_grain, FixGrain::Suburb, "{l:?}");
+    assert!(l.text.starts_with("Bondi, NSW"), "{l:?}");
 }

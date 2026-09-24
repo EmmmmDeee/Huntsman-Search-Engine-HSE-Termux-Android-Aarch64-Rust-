@@ -956,6 +956,10 @@ fn core_does_not_import_util_directly() {
                 // label from them (REQ-GEOLABEL-002).
                 && !line.contains("util::geo::nearest_vn_locality")
                 && !line.contains("util::geo::au_locality_anchors")
+                // `nearest_au_locality` over the same table with the capitals'
+                // suburb anchors skipped (a fix coarser than a suburb is never
+                // named after one); pure, no I/O (REQ-GEOLABEL-030).
+                && !line.contains("util::geo::nearest_au_town")
                 // Pure dependency-free validity predicate on a lat/lon pair (range
                 // and NaN checks only), the same leaf category as
                 // `is_in_australia`; `core::place::label` rejects an invalid

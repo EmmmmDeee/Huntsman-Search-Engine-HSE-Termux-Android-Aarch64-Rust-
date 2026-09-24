@@ -1279,9 +1279,11 @@ impl ScanEngine {
         // the status.
         self.writer.flush().await;
         let commit_store = Arc::clone(&self.store);
-        let scan = tokio::task::spawn_blocking(move || -> Result<Scan> {
+        // The flag says whether the terminal row was written: the best-effort
+        // Failed record can be lost, and a lost row must not be announced.
+        let (scan, committed) = tokio::task::spawn_blocking(move || -> Result<(Scan, bool)> {
             match commit_store.upsert_scan(&scan) {
-                Ok(()) => Ok(scan),
+                Ok(()) => Ok((scan, true)),
                 Err(e) if best_effort_persist => {
                     // error!, not warn!: this is the terminal Failed record for
                     // a scan that persisted nothing. Losing the write means the
@@ -1289,7 +1291,7 @@ impl ScanEngine {
                     // unrecoverable integrity gap the operator can only see
                     // here. The failed scan is still returned to the caller.
                     error!(scan_id = %scan.id, error = %e, "failed to persist failed-scan record");
-                    Ok(scan)
+                    Ok((scan, false))
                 }
                 Err(e) => Err(e),
             }
@@ -1304,10 +1306,15 @@ impl ScanEngine {
         // (the radar view does exactly that, on the documented promise that
         // "the engine writes the row before it emits the event") read
         // `running` and the scan-start row's counts, and nothing prompted it to
-        // look again (REQ-SCANSTATUS-004). A commit that failed outright
-        // returned above, so no completion is announced for a row that never
-        // became terminal.
-        self.emitter.broadcast(completion);
+        // look again (REQ-SCANSTATUS-004). No completion is announced for a
+        // row that never became terminal: a commit that failed outright
+        // returned above, and a best-effort Failed record that was lost is
+        // not `committed` (REQ-SCANSTATUS-007) — a subscriber re-reading the
+        // row would find it `running` and never look again. The recorded
+        // `ScanComplete` event stays in the durable log.
+        if committed {
+            self.emitter.broadcast(completion);
+        }
 
         // Fire the operator's completion webhook, if one was configured via
         // `HUNTSMAN_WEBHOOK_URL` / `ScanOptions`. The URL was already threaded into

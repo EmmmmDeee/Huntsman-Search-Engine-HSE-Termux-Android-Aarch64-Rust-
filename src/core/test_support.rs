@@ -476,6 +476,23 @@ pub struct RefusingStore {
     refuse_detach: bool,
     refuse_entity_writes: bool,
     refuse_template_counts: bool,
+    refuse_terminal_scan_writes: bool,
+    entity_batch_gate: Option<EntityBatchGate>,
+}
+
+/// The store side of [`RefusingStore::pausing_entity_batch`]: announces each
+/// entity batch write, then waits for a release before forwarding it.
+struct EntityBatchGate {
+    entered: std::sync::mpsc::Sender<()>,
+    release: parking_lot::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+/// The test side of [`RefusingStore::pausing_entity_batch`].
+pub struct EntityBatchPause {
+    /// Receives one message each time an entity batch write reaches the gate.
+    pub entered: std::sync::mpsc::Receiver<()>,
+    /// Send one message to let one paused batch write through.
+    pub release: std::sync::mpsc::Sender<()>,
 }
 
 /// The error text [`RefusingStore`] returns for a refused relation write.
@@ -490,6 +507,8 @@ pub const REFUSED_DETACH: &str = "injected detach failure";
 pub const REFUSED_ENTITY: &str = "injected entity write failure";
 /// The error text [`RefusingStore`] returns for a refused route-count read.
 pub const REFUSED_TEMPLATE_COUNT: &str = "injected template count failure";
+/// The error text [`RefusingStore`] returns for a refused terminal scan write.
+pub const REFUSED_TERMINAL_SCAN: &str = "injected terminal scan write failure";
 
 fn injected(text: &str) -> crate::core::error::Error {
     crate::core::error::Error::Other(text.to_string())
@@ -547,6 +566,36 @@ impl RefusingStore {
         self
     }
 
+    /// Refuse every write of a scan row in a terminal status (`Complete`,
+    /// `Failed`, `Aborted`) — the commit step's write — while the scan-start
+    /// `Running` row still lands.
+    #[must_use]
+    pub fn refusing_terminal_scan_writes(mut self) -> Self {
+        self.refuse_terminal_scan_writes = true;
+        self
+    }
+
+    /// Hold every entity batch write until the test releases it: the store
+    /// announces the write on [`EntityBatchPause::entered`] and blocks until
+    /// a message arrives on [`EntityBatchPause::release`] — a write the test
+    /// can keep in flight while it does something else.
+    #[must_use]
+    pub fn pausing_entity_batch(mut self) -> (Self, EntityBatchPause) {
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        self.entity_batch_gate = Some(EntityBatchGate {
+            entered: entered_tx,
+            release: parking_lot::Mutex::new(release_rx),
+        });
+        (
+            self,
+            EntityBatchPause {
+                entered: entered_rx,
+                release: release_tx,
+            },
+        )
+    }
+
     /// Refuse every relation write.
     #[must_use]
     pub fn refusing_relations(mut self) -> Self {
@@ -564,6 +613,15 @@ impl RefusingStore {
 
 impl StoragePort for RefusingStore {
     fn upsert_scan(&self, scan: &Scan) -> Result<()> {
+        use crate::core::scan::ScanStatus;
+        if self.refuse_terminal_scan_writes
+            && matches!(
+                scan.status,
+                ScanStatus::Complete | ScanStatus::Failed | ScanStatus::Aborted
+            )
+        {
+            return Err(injected(REFUSED_TERMINAL_SCAN));
+        }
         self.inner().upsert_scan(scan)
     }
     fn get_scan(&self, id: &str) -> Result<Option<Scan>> {
@@ -587,6 +645,11 @@ impl StoragePort for RefusingStore {
     fn upsert_entities_batch(&self, entities: &[Entity]) -> Result<usize> {
         if self.refuse_entity_writes {
             return Err(injected(REFUSED_ENTITY));
+        }
+        if let Some(gate) = &self.entity_batch_gate {
+            // A test that dropped its side just lets the write through.
+            let _ = gate.entered.send(());
+            let _ = gate.release.lock().recv();
         }
         self.inner().upsert_entities_batch(entities)
     }
